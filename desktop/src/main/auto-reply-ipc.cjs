@@ -1363,32 +1363,50 @@ function resolveWorkflowContactScope(activeTouchDir, recipients) {
   const universe = testContactUniverse(activeTouchDir);
   const aliasIndex = contactAliasIndex(universe);
   const idCounts = testContactIdCounts(universe);
+  const byId = new Map(universe.map((contact) => [normalizeText(contact?.id), contact]));
+  const uniqueByContact = new Map();
+  for (const entry of aliasIndex.values()) {
+    if (entry.contacts.length !== 1 || !entry.alias) continue;
+    const contact = entry.contacts[0];
+    if (!uniqueByContact.has(contact)) uniqueByContact.set(contact, []);
+    uniqueByContact.get(contact).push(entry.alias);
+  }
   const contacts = [];
   const aliases = [];
+  const excluded = [];
   const aliasContacts = new Map();
   const ids = new Set();
   for (const frozen of recipients) {
     const id = normalizeText(frozen?.id);
-    const contact = universe.find((item) => normalizeText(item?.id) === id);
+    const contact = byId.get(id);
     if (!id || ids.has(id) || idCounts.get(id) !== 1 || !contact
       || contact.allowed === false || contact.disabled === true || contact.active === false
       || !normalizeText(contact.wechatAccountId) || identityKey(contact) !== identityKey(frozen)) {
-      return { ok: false, code: "workflow_recipient_changed", error: "接待名单中的联系人已变化，请重新选择" };
+      excluded.push({ id, code: "workflow_recipient_changed" });
+      continue;
     }
-    const uniqueAliases = uniqueAliasesForTestContact(contact, aliasIndex);
-    if (!uniqueAliases.length) return { ok: false, code: "workflow_recipient_ambiguous", error: `接待联系人“${testContactLabel(contact)}”的会话名称与其他联系人重复，请在微信中设置不同备注、重新同步后再选择` };
     ids.add(id);
+    const uniqueAliases = uniqueByContact.get(contact) || [];
+    if (!uniqueAliases.length) {
+      excluded.push({ id, code: "workflow_recipient_ambiguous" });
+      continue;
+    }
     contacts.push(contact);
     for (const alias of uniqueAliases) {
       aliases.push(alias);
       aliasContacts.set(compactConversationAlias(alias), contact);
     }
   }
+  const excludedReasons = Object.fromEntries([...new Set(excluded.map((item) => item.code))]
+    .map((code) => [code, excluded.filter((item) => item.code === code).length]));
+  if (!contacts.length) return { ok: false, code: "workflow_recipients_none_eligible", error: "接待名单中没有可安全自动回复的联系人，请核对名单后重新启动", contacts, aliases, excluded, excludedReasons };
   const accounts = new Set(contacts.map((contact) => normalizeText(contact.wechatAccountId)));
-  if (accounts.size !== 1) return { ok: false, code: "workflow_account_changed", error: "接待名单不属于同一微信账号" };
+  if (accounts.size !== 1) return { ok: false, code: "workflow_account_changed", error: "接待名单不属于同一微信账号", contacts, aliases, excluded, excludedReasons };
   return {
     ok: true,
     strict: true,
+    excluded,
+    excludedReasons,
     scopeBinding: crypto.createHash("sha256").update(JSON.stringify(contacts.map(identityKey).sort())).digest("hex"),
     contacts,
     aliases,
@@ -1485,6 +1503,24 @@ function createAutoReplyController(options = {}) {
   let workflowStartPending = true;
   let workflowHandled = false;
   let workflowProgress = null;
+  let workflowBackoff = { attempt: 0, until: 0, reasonCode: "" };
+  const retryDelays = [30_000, 120_000, 300_000];
+  function resetWorkflowBackoff() { workflowBackoff = { attempt: 0, until: 0, reasonCode: "" }; }
+  function enterWorkflowBackoff(reasonCode) {
+    const attempt = workflowBackoff.attempt + 1;
+    const retryAfterMs = retryDelays[Math.min(attempt - 1, retryDelays.length - 1)];
+    workflowBackoff = { attempt, until: now().getTime() + retryAfterMs, reasonCode };
+    workflowStartPending = true;
+    state.last_event = "workflow_backoff";
+    state.last_error = "";
+    appendDiagnostic("workflow_backoff", { phase: "workflow", code: reasonCode, retry_attempt: attempt, retry_after_ms: retryAfterMs });
+  }
+  function backoffResult() {
+    const retryAfterMs = Math.max(0, workflowBackoff.until - now().getTime());
+    return { handled: false, status: "backoff", reasonCode: workflowBackoff.reasonCode,
+      attempt: workflowBackoff.attempt, retryAfterMs,
+      progressText: `${workflowBackoff.reasonCode === "workflow_chat_navigation_failed" ? "返回聊天失败" : "云端智能暂时不可用"}，约 ${Math.ceil(retryAfterMs / 1000)} 秒后自动重试` };
+  }
   const initialActivityAt = now().toISOString();
   let availableTestContactOptions = singleContactScopeRequired ? testContactScopeOptions(activeTouchDir) : [];
   let activity = {
@@ -1798,7 +1834,13 @@ function createAutoReplyController(options = {}) {
       required_idle_ms: 60_000,
       observed_idle_ms: 86_400_000,
       retry_attempt: 100,
-      retry_polls_remaining: 100
+      retry_polls_remaining: 100,
+      retry_after_ms: 300_000,
+      eligible_count: 10_000,
+      alias_count: 30_000,
+      alias_json_length: 1_000_000,
+      excluded_count: 10_000,
+      scope_ms: 60_000
     })) {
       const numeric = Math.floor(Number(details[field]));
       if (Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= maximum) entry[field] = numeric;
@@ -2776,8 +2818,9 @@ function createAutoReplyController(options = {}) {
       if (!contactScope.strict) return true;
       const refreshedScope = resolveContactScope();
       if (refreshedScope.ok && refreshedScope.scopeBinding === contactScope.scopeBinding) return true;
-      pauseWithError(refreshedScope.code || "test_contact_scope_invalid", refreshedScope.error || "测试联系人范围无法确认");
-      appendDiagnostic("test_scope_invalid", { phase: "scope", code: refreshedScope.code || "test_contact_scope_invalid" });
+      const scopeCode = refreshedScope.ok ? "workflow_scope_changed" : refreshedScope.code || "test_contact_scope_invalid";
+      pauseWithError(scopeCode, refreshedScope.error || "测试联系人范围无法确认");
+      appendDiagnostic("test_scope_invalid", { phase: "scope", code: scopeCode });
       saveBestEffort();
       return false;
     };
@@ -2942,6 +2985,7 @@ function createAutoReplyController(options = {}) {
         }
         state.last_event = outgoingObserved ? "reply_guard_outgoing_observed" : state.last_scan_reason || "scan_result_invalid";
         state.last_error = "";
+        if (workflowMode && candidateReason === "no_unread_message") resetWorkflowBackoff();
         save();
         return publicState();
       }
@@ -3150,6 +3194,7 @@ function createAutoReplyController(options = {}) {
           generated = await deepSeekClient.reply({ context, expert, clarificationAllowed });
         }
         generated = normalizeAutoReplyDecision(generated, { clarificationAllowed });
+        if (workflowMode) resetWorkflowBackoff();
         setActivity("decision_ready", {
           traceId,
           action: generated.action,
@@ -3204,6 +3249,19 @@ function createAutoReplyController(options = {}) {
             return publicState();
           }
           state.processed[fingerprint].status = "generating";
+          const failure = sanitizeSystemError(error);
+          if (workflowMode && ["network", "timeout", "rate_limit"].includes(failure.category)) {
+            if (typeof scanIncoming.requeue === "function" && requeueCandidate(candidate)) {
+              state.processed[fingerprint].status = "retryable";
+              state.system_error = failure;
+              enterWorkflowBackoff(failure.code);
+              saveBestEffort();
+              return publicState();
+            }
+            pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
+            saveBestEffort();
+            return publicState();
+          }
           pauseForSystemError(error, {
             traceId,
             durationMs: generationStartedAt === null ? undefined : Date.now() - generationStartedAt
@@ -3764,10 +3822,22 @@ function createAutoReplyController(options = {}) {
     return { ok: true, state: publicState() };
   }
 
+  function resumeWorkflow() {
+    workflowStartPending = true;
+    resetWorkflowBackoff();
+    appendDiagnostic("workflow_resume_requested", { phase: "control", code: "workflow_resume_requested" });
+    return { ok: true };
+  }
+
   async function runWorkflowStep(input = {}) {
     const enabled = typeof input.isEnabled === "function" ? input.isEnabled : () => false;
-    if (workflowStepActive) return { handled: false, status: "busy" };
-    if (!enabled()) return { handled: false, status: "paused" };
+    let scopeMetrics = {};
+    const stepReturn = (result, reasonCode, diagnosticCode = reasonCode) => {
+      appendDiagnostic("workflow_step_return", { phase: "workflow", code: diagnosticCode, ...scopeMetrics });
+      return { ...result, reasonCode, ...scopeMetrics };
+    };
+    if (workflowStepActive) return stepReturn({ handled: false, status: "busy" }, "workflow_step_busy");
+    if (!enabled()) return stepReturn({ handled: false, status: "paused" }, "workflow_paused");
     workflowStepActive = true;
     workflowProgress = typeof input.onProgress === "function" ? input.onProgress : null;
     try {
@@ -3793,14 +3863,23 @@ function createAutoReplyController(options = {}) {
       workflowRecipients = Array.isArray(input.recipients)
         ? input.recipients.map((contact) => ({ ...contact }))
         : [];
-      if (!workflowRecipients.length) return { handled: false, status: "waiting" };
+      if (!workflowRecipients.length) return stepReturn({ handled: false, status: "waiting" }, "workflow_recipients_empty");
+      if (workflowBackoff.until > now().getTime()) return stepReturn(backoffResult(), workflowBackoff.reasonCode);
+      if (workflowBackoff.until) workflowBackoff.until = 0;
+      const scopeStarted = Date.now();
       const scope = resolveContactScope();
-      if (!scope.ok) return { handled: false, status: "needs_attention", error: scope.error };
+      scopeMetrics = { eligible_count: scope.contacts?.length || 0, alias_count: scope.aliases?.length || 0,
+        alias_json_length: JSON.stringify(scope.aliases || []).length, excluded_count: scope.excluded?.length || 0,
+        scope_ms: Date.now() - scopeStarted, excludedReasons: scope.excludedReasons || {} };
+      if (scope.excluded?.length) appendDiagnostic("workflow_scope_excluded", { phase: "scope", code: "workflow_scope_excluded", ...scopeMetrics });
+      if (!scope.ok) {
+        return stepReturn({ handled: false, status: "needs_attention", error: scope.error }, scope.code, `scope_invalid:${scope.code}`);
+      }
       const accountName = normalizeText(input.accountName);
       if (accountName && scope.contacts.some((contact) => normalizeText(contact.wechatAccountId) !== accountName)) {
-        return { handled: false, status: "needs_attention", error: "接待名单与当前微信账号不一致，请重新同步" };
+        return stepReturn({ handled: false, status: "needs_attention", error: "接待名单与当前微信账号不一致，请重新同步" }, "workflow_account_changed");
       }
-      if (!enabled()) return { handled: false, status: "paused" };
+      if (!enabled()) return stepReturn({ handled: false, status: "paused" }, "workflow_paused");
       if (state.last_event === "workflow_chat_navigation_failed") {
         workflowStartPending = true;
         primeRetryNeeded = true;
@@ -3822,15 +3901,21 @@ function createAutoReplyController(options = {}) {
         save();
       }
       if (state.status !== "running") {
-        return { handled: false, status: "needs_attention", error: state.last_error || "自动回复已暂停，请检查后重新启动" };
+        if (!workflowStartPending) appendDiagnostic("workflow_step_return", { phase: "workflow", code: "start_pending_missing", ...scopeMetrics });
+        return stepReturn({ handled: false, status: "needs_attention", error: state.last_error || "自动回复已暂停，请检查后重新启动" }, state.system_error?.code || state.last_event || "auto_reply_error_paused");
       }
       workflowHandled = false;
       await runOnce();
       if (state.consecutive_scan_failures >= 3 && state.last_scan_reason.startsWith("wechat_chat_")) {
-        pauseWithError("workflow_chat_navigation_failed", "无法返回聊天页面，尚未读取客户消息；请切回微信聊天页后重新启动");
+        state.consecutive_scan_failures = 0;
+        primeRetryNeeded = true;
+        enterWorkflowBackoff("workflow_chat_navigation_failed");
       }
+      if (workflowBackoff.until > now().getTime()) return stepReturn(backoffResult(), workflowBackoff.reasonCode);
+      if (state.status === "paused") return stepReturn({ handled: workflowHandled, status: "needs_attention", error: state.last_error || "自动回复需要处理" }, state.system_error?.code || state.last_event || "auto_reply_error_paused");
       return {
         handled: workflowHandled,
+        ...scopeMetrics,
         ...(primeRetryNeeded ? {
           progressText: "消息读取尚未初始化完成，正在等待重试"
         } : state.consecutive_scan_failures > 0 ? {
@@ -3838,11 +3923,11 @@ function createAutoReplyController(options = {}) {
             ? `返回聊天失败，尚未读取消息（${state.consecutive_scan_failures}/3）`
             : "本次读取消息失败，尚未回复"
         } : {}),
-        status: !enabled() ? "paused" : state.status === "paused" ? "needs_attention" : "running",
-        ...(enabled() && state.status === "paused" ? { error: state.last_error || "自动回复需要处理" } : {})
+        status: !enabled() ? "paused" : "running",
+        ...(!enabled() ? { reasonCode: "workflow_paused" } : {})
       };
     } catch (error) {
-      return { handled: false, status: "needs_attention", error: String(error?.message || "自动回复启动失败") };
+      return stepReturn({ handled: false, status: "needs_attention", error: String(error?.message || "自动回复启动失败") }, normalizeAiWarningCode(error?.code) || "auto_reply_start_failed");
     } finally {
       workflowStepActive = false;
       workflowProgress = null;
@@ -3856,10 +3941,25 @@ function createAutoReplyController(options = {}) {
     const selected = ids.map((id) => universe.find((contact) => normalizeText(contact.id) === id));
     if (selected.some((contact) => !contact)) throw new Error("所选联系人已变化，请重新同步后选择。");
     const scope = resolveWorkflowContactScope(activeTouchDir, selected);
+    if (scope.excluded?.length) {
+      const blocked = scope.excluded[0];
+      const label = testContactLabel(selected.find((contact) => normalizeText(contact.id) === blocked.id));
+      throw new Error(blocked.code === "workflow_recipient_ambiguous"
+        ? `接待联系人“${label}”的会话名称与其他联系人重复，请在微信中设置不同备注、重新同步后再选择`
+        : `接待联系人“${label}”的资料已变化，请重新同步后再选择`);
+    }
     if (!scope.ok) throw new Error(scope.error);
     return scope.contacts.map((contact) => ({ ...contact }));
   }
-  return { acknowledgeManualFollowup, pause, pauseWorkflow, prepareWorkflowRecipients, resumeContact, runOnce, runWorkflowStep, start, status };
+  function screenWorkflowRecipients(contacts) {
+    try {
+      const scope = resolveWorkflowContactScope(activeTouchDir, Array.isArray(contacts) ? contacts : []);
+      return { accepted: scope.ok ? scope.contacts : [], excluded: scope.excluded || [] };
+    } catch {
+      return { accepted: [], excluded: (Array.isArray(contacts) ? contacts : []).map((contact) => ({ id: normalizeText(contact?.id), code: "workflow_recipient_changed" })) };
+    }
+  }
+  return { acknowledgeManualFollowup, pause, pauseWorkflow, prepareWorkflowRecipients, screenWorkflowRecipients, resumeContact, resumeWorkflow, runOnce, runWorkflowStep, start, status };
 }
 
 function registerAutoReplyIpc(options = {}) {

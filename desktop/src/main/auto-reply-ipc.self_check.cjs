@@ -4884,6 +4884,186 @@ async function main() {
   });
   assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-missing-contact" })).ok, false, "the trusted test IPC must still reject a missing contact ID");
   assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-selected-contact", contactId: "c1" })).ok, true, "the trusted test IPC must forward the selected contact ID to the controller");
+  const workflowContacts = writeContactsFixture("workflow_resilience_contacts", [
+    { id: "a", name: "private-a", allowed: true, wechatAccountId: "wx-a", wechatId: "a" },
+    { id: "b", name: "private-duplicate", allowed: true, wechatAccountId: "wx-a", wechatId: "b" },
+    { id: "c", name: "private-duplicate", allowed: false, wechatAccountId: "wx-a", wechatId: "c" },
+    { id: "d", name: "private-old", allowed: true, wechatAccountId: "wx-a", wechatId: "d" }
+  ]);
+  const workflowUniverse = JSON.parse(fs.readFileSync(path.join(workflowContacts, "contacts.json"), "utf8"));
+  const workflowRecipients = [workflowUniverse[0], workflowUniverse[1], { ...workflowUniverse[3], name: "private-stale" }];
+  let workflowNow = new Date("2026-07-15T10:00:00+08:00").getTime();
+  let workflowScans = 0;
+  let workflowSends = 0;
+  let workflowVerify = true;
+  let workflowFailure = "AI_NETWORK_ERROR";
+  let workflowScanFailure = "";
+  let workflowStartupFailure = "";
+  const workflowCandidate = { ok: true, conversation: "private-a", conversationEvidence: "private-a",
+    message: "private-message", runtimeId: "private-turn-1", pid: 81, hWnd: "91",
+    context: [{ role: "user", content: "private-message", key: "private-turn-1" }] };
+  const workflowQueue = [workflowCandidate];
+  const workflowScan = (aliases) => { workflowScans += 1; assert.deepEqual(aliases, ["private-a"]);
+    if (workflowScanFailure) return { ok: false, reason: workflowScanFailure };
+    return workflowQueue.shift() || { ok: false, reason: "no_unread_message" }; };
+  workflowScan.requeue = (candidate) => { workflowQueue.unshift(candidate); return true; };
+  const workflowController = createAutoReplyController({
+    dataDir: path.join(root, "workflow_resilience"), activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => { if (workflowStartupFailure) throw Object.assign(new Error("private-gateway"), { code: workflowStartupFailure }); }, reply: async () => {
+      if (workflowFailure) throw Object.assign(new Error("private-ai-failure"), { code: workflowFailure });
+      return answerDecision("可以继续了解。");
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: workflowScan, verifyIncoming: () => workflowVerify ? { ok: true } : { ok: false, reason: "incoming_message_changed" },
+    send: async (options) => { if (!await options.beforeDraft()) return { ok: false, reason: "incoming_message_changed" }; workflowSends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const workflowInput = { recipients: workflowRecipients, accountName: "wx-a", isEnabled: () => true };
+  assert.deepEqual(workflowController.screenWorkflowRecipients(workflowRecipients).excluded.map((item) => item.code),
+    ["workflow_recipient_ambiguous", "workflow_recipient_changed"]);
+  assert.equal(workflowController.screenWorkflowRecipients([workflowRecipients[1]]).accepted.length, 0,
+    "a disabled contact outside the recipient list must still keep a duplicate ambiguous");
+  let workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "backoff");
+  assert.equal(workflowResult.reasonCode, "AI_NETWORK_ERROR");
+  assert.equal(workflowResult.retryAfterMs, 30_000);
+  assert.equal(workflowResult.excluded_count, 2);
+  assert.equal(Object.hasOwn(workflowResult, "error"), false);
+  assert.equal(workflowScans, 1);
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowScans, 1, "backoff must stop before scanning");
+  workflowNow += 30_000;
+  workflowFailure = "";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "running");
+  assert.equal(workflowSends, 1, "the failed candidate must be replayed exactly once");
+  assert.equal(workflowScans, 2);
+  const nextWorkflowCandidate = (suffix) => ({ ...workflowCandidate, runtimeId: `private-turn-${suffix}`,
+    context: [{ role: "user", content: "private-message", key: `private-turn-${suffix}` }] });
+  workflowQueue.push(nextWorkflowCandidate("2"));
+  workflowFailure = "AI_NETWORK_ERROR";
+  for (const delay of [30_000, 120_000, 300_000, 300_000]) {
+    workflowResult = await workflowController.runWorkflowStep(workflowInput);
+    assert.equal(workflowResult.status, "backoff");
+    assert.equal(workflowResult.retryAfterMs, delay);
+    workflowNow += delay;
+  }
+  workflowFailure = "";
+  workflowVerify = false;
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowSends, 1, "replayed candidate must pass live verification again");
+  workflowVerify = true;
+  workflowQueue.push(nextWorkflowCandidate("3"));
+  workflowFailure = "AI_REQUEST_FAILED";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "needs_attention", "an HTTP 5xx must not enter automatic backoff");
+  assert.equal(workflowResult.reasonCode, "AI_REQUEST_FAILED");
+  workflowController.resumeWorkflow();
+  workflowQueue.push(nextWorkflowCandidate("4"));
+  workflowFailure = "";
+  await workflowController.runWorkflowStep(workflowInput);
+  workflowScanFailure = "wechat_window_changed";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "needs_attention");
+  assert.equal(workflowResult.reasonCode, "workflow_window_changed");
+  workflowScanFailure = "";
+  const beforeResumeScans = workflowScans;
+  workflowController.resumeWorkflow();
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "running");
+  assert.equal(workflowScans, beforeResumeScans + 1, "resume must repeat startup and reach a fresh scan");
+  for (const code of ["API_KEY_INVALID", "AI_EXPERT_NOT_READY"]) {
+    workflowQueue.push(nextWorkflowCandidate(`config-${code}`));
+    workflowFailure = code;
+    workflowResult = await workflowController.runWorkflowStep(workflowInput);
+    assert.equal(workflowResult.status, "needs_attention");
+    assert.equal(workflowResult.reasonCode, code);
+    workflowController.resumeWorkflow();
+  }
+  workflowFailure = "";
+  workflowStartupFailure = "PROVIDER_GATEWAY_UNAVAILABLE";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "needs_attention");
+  assert.equal(workflowResult.reasonCode, "PROVIDER_GATEWAY_UNAVAILABLE");
+  workflowStartupFailure = "";
+  workflowController.resumeWorkflow();
+  workflowScanFailure = "wechat_chat_entry_not_found";
+  await workflowController.runWorkflowStep(workflowInput);
+  await workflowController.runWorkflowStep(workflowInput);
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "backoff");
+  assert.equal(workflowResult.reasonCode, "workflow_chat_navigation_failed");
+  const navigationScans = workflowScans;
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowScans, navigationScans);
+  workflowNow += 30_000;
+  workflowScanFailure = "";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "running");
+  assert.equal(workflowScans, navigationScans + 1);
+  const workflowDiagnosticText = fs.readFileSync(path.join(root, "workflow_resilience", "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.doesNotMatch(workflowDiagnosticText, /private-a|private-duplicate|private-old|private-message|private-ai-failure/u);
+  const noEligible = await workflowController.runWorkflowStep({ ...workflowInput, recipients: workflowRecipients.slice(1) });
+  assert.equal(noEligible.reasonCode, "workflow_recipients_none_eligible");
+
+  const otherValidContact = { id: "e", name: "private-e", allowed: true, wechatAccountId: "wx-a", wechatId: "e" };
+  const changedDir = writeContactsFixture("workflow_changed_mid_step", [workflowUniverse[0], otherValidContact]);
+  let changedSends = 0;
+  const changedController = createAutoReplyController({ dataDir: path.join(root, "workflow_changed_state"), activeTouchDir: changedDir,
+    coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => {
+      fs.writeFileSync(path.join(changedDir, "contacts.json"), JSON.stringify([{ ...workflowUniverse[0], name: "private-changed" }, otherValidContact]));
+      return answerDecision("您好。");
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async () => { changedSends += 1; return { ok: true }; }, runStep: async () => ({ ok: true }) });
+  const changedResult = await changedController.runWorkflowStep({ recipients: [workflowUniverse[0], otherValidContact], accountName: "wx-a", isEnabled: () => true });
+  assert.equal(changedResult.status, "needs_attention");
+  assert.equal(changedResult.reasonCode, "workflow_scope_changed");
+  assert.equal(changedSends, 0, "a scope change during AI generation must stop before send");
+
+  let unknownSends = 0;
+  const unknownWorkflowController = createAutoReplyController({ dataDir: path.join(root, "workflow_unknown_state"), activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { if (await input.beforeDraft()) unknownSends += 1;
+      return { ok: false, blocked_reason: "visual_send_outcome_unknown", outcomeUnknown: true, send_attempted: null }; },
+    runStep: async () => ({ ok: true }) });
+  const unknownInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  const unknownFirst = await unknownWorkflowController.runWorkflowStep(unknownInput);
+  assert.equal(unknownFirst.status, "needs_attention");
+  assert.equal(unknownFirst.reasonCode, "send_outcome_unknown_paused");
+  unknownWorkflowController.resumeWorkflow();
+  await unknownWorkflowController.runWorkflowStep(unknownInput);
+  assert.equal(unknownSends, 1, "an unknown send must not be attempted again after restart");
+
+  const largeContacts = Array.from({ length: 3000 }, (_, index) => ({ id: `large-${index}`, name: `接待客户${index}`,
+    allowed: true, wechatAccountId: "wx-a", wechatId: `wx-large-${index}` }));
+  const largeDir = writeContactsFixture("workflow_large_contacts", largeContacts);
+  const largeFile = path.join(largeDir, "contacts.json");
+  let largeReads = 0;
+  const originalReadFileSync = fs.readFileSync;
+  let largeResult;
+  try {
+    fs.readFileSync = function(file, ...args) {
+      if (String(file) === largeFile) largeReads += 1;
+      return originalReadFileSync.call(this, file, ...args);
+    };
+    const largeController = createAutoReplyController({ dataDir: path.join(root, "workflow_large"), activeTouchDir: largeDir,
+      coordinator, expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true },
+      primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+      scanIncoming: () => ({ ok: false, reason: "no_unread_message" }), verifyIncoming: () => ({ ok: true }),
+      send: async () => ({ ok: true }), runStep: async () => ({ ok: true }), now: () => new Date(workflowNow) });
+    largeResult = await largeController.runWorkflowStep({ recipients: largeContacts.slice(0, 2000), accountName: "wx-a", isEnabled: () => true });
+  } finally { fs.readFileSync = originalReadFileSync; }
+  assert.equal(largeResult.status, "running");
+  assert.equal(largeResult.eligible_count, 2000);
+  console.log(`workflow scope stress: aliases_json=${largeResult.alias_json_length}, scope_ms=${largeResult.scope_ms}, contacts_reads=${largeReads}`);
+
   console.log("auto-reply v4 self-check passed");
 }
 
