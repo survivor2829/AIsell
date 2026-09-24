@@ -440,7 +440,7 @@ function createTouchWorkflow(options = {}) {
         const fingerprint = ruleId && candidateSetHash ? `${ruleId}:${candidateSetHash}` : "";
         const previousFingerprint = current.search_evidence?.fingerprint;
         if (reasonCode) current.search_evidence = ruleId === "search-r008"
-          ? { ...searchDiagnostics, ...finiteSearchEvidence(searchDiagnostics), rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
+          ? { ...finiteSearchEvidence(searchDiagnostics), rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
           : { ...finiteSearchEvidence(searchDiagnostics), ...(ruleId ? { rule_id: ruleId } : {}), fingerprint };
         if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
           current.status = "pre_send_skipped";

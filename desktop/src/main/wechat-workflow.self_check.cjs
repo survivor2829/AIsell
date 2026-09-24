@@ -472,6 +472,54 @@ async function checkT5FourthReviewRulesAndEvidence() {
   }
 }
 
+async function checkR008EvidencePrivacy() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-evidence-privacy-"));
+  try {
+    const secret = "张三客户PLAINTEXT";
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let reads = 0;
+    const failures = [];
+    const contacts = [1, 2, 3].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence) },
+      execute: async () => ({
+        ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+        diagnostics: { rule_id: "search-r008", candidate_set_hash: `hash-${Math.ceil(++reads / 2)}` },
+        state: { search_evidence: {
+          rule_id: "search-r008", capture_source: "untrusted_source", popup_dpi: Infinity,
+          popup_candidate_count: 2, search_columns: [62, Infinity],
+          ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }] }
+        } }
+      })
+    });
+    const record = { id: "r008-evidence-privacy", payload: workflow.prepareWorkflowTask({
+      script: "您好", contactIds: contacts.map((contact) => contact.id)
+    }) };
+    let circuit;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      clock += 60 * 60 * 1000;
+      circuit = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+      if (circuit.status === "needs_attention") break;
+    }
+    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.ok(failures.some((failure) => failure.stage === "search_identity"));
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const task = loadTaskState(taskDir);
+    const evidence = task.results[2].search_evidence;
+    assert.equal(JSON.stringify(task).includes(secret), false, "task state must not retain OCR contact text");
+    assert.equal(JSON.stringify(failures).includes(secret), false, "passport failures must not retain OCR contact text");
+    assert.equal(JSON.stringify(circuit).includes(secret), false, "circuit diagnostics must not retain OCR contact text");
+    assert.equal(evidence.popup_candidate_count, 2, "state-only numeric evidence must survive the whitelist");
+    assert.deepEqual(evidence.search_columns, [62]);
+    assert.equal(evidence.popup_dpi, undefined, "non-finite r008 DPI must be omitted");
+    assert.equal(evidence.capture_source, undefined, "capture source must be a known enum value");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 async function checkT5FourthReviewCircuit() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-t5-partial-circuit-"));
   try {
@@ -1556,6 +1604,7 @@ async function main() {
   await checkR008PartialSend();
   await checkT5FourthReviewExits();
   await checkT5FourthReviewRulesAndEvidence();
+  await checkR008EvidencePrivacy();
   await checkT5FourthReviewCircuit();
   await checkCircuitRejoinKeepsThirdContactRecovery();
   await checkNonIdentitySkipDropsOldSearchRule();

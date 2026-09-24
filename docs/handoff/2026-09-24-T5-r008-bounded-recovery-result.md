@@ -87,3 +87,19 @@
 - `git diff --check`：退出码 0；Git 仅提示工作区 LF/CRLF 转换。
 
 未验证：真实微信发送、异机复验、安装包与发布。没有改 B 线指定文件。四审脚本的 M3g 与本轮要求“结果未知不得标为部分未发”相反，旧 M3g 原样已不适用；本轮按相反方向的变异验证新行为。其余无任务卡异议。
+
+## 五审返工（基线 08be3af，按卡不变基）
+
+- r008 的 `search_evidence` 改为只写白名单字段、规则号、候选集合哈希及本地比较指纹，不再整体展开 `searchDiagnostics`；来自 `state.search_evidence.ocr_observation` 的联系人姓名不会进入任务行、passport 失败记录或熔断诊断。
+- 新自检通过构造的 OCR/UIA 姓名核对上述三处；同时断言 r008 的非有限 `popup_dpi` 被省略、未知 `capture_source` 被省略，且只存在于 state 的数字型 `popup_candidate_count` 仍能保存。
+
+验证命令与实际输出：
+
+- `node src/main/wechat-workflow.self_check.cjs`：退出码 0，输出 `Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.`。
+- `node probe-r008-plaintext-leak.cjs <本 worktree 的 desktop 目录>`：r008 与 r014 的 `taskState.hasPlaintext`、`passport.hasPlaintext`、`attention.hasPlaintext` 三项均为 `false`；两者各有 2 条最终 `search_identity` 记录。
+- `WT=<本 worktree> node mutate.cjs mutations-r4.json M5g M5b M5f`：三项均为 `KILLED`。M5g 在 state 专属数字证据断言失败，M5b 在非有限 DPI 断言失败，M5f 在未知枚举断言失败。
+- 将旧的 r008 整体展开写法作为单独变异临时放回：`KILLED`，明确在 `task state must not retain OCR contact text` 断言失败；脚本已恢复文件。
+- `npm.cmd run build:test`：退出码 0，末行 `test renderer build completed`。
+- `npm.cmd run check:self`：退出码 0，末行 `all source self-checks passed`，策略门禁输出 `WeChat failure policy review passed: every added literal reason is classified`。
+
+未验证：真实微信、异机、安装包与发布。本轮未修改 T10a；五审中 `popup_candidate_count` 从 `ocr_observation` 提到 `searchEvidence` 顶层的要求，待 T5 合并后在 T10a 变基时处理。无新增任务卡异议。
