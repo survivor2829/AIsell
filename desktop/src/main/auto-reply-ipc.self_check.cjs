@@ -1876,7 +1876,7 @@ async function main() {
     regionOcrOk: true,
     text: "message-read-private-text-canary",
     contact: "message-read-private-contact-canary",
-    signature: "zz-sig-canary-read"
+    signature: "f".repeat(64)
   };
   const boundSessionRecheckController = createAutoReplyController({
     dataDir: boundSessionRecheckDir,
@@ -1892,8 +1892,8 @@ async function main() {
       scanTrigger: "current_session_recheck",
       activeSessionBound: boundSessionExplicitBinding,
       activeSessionBindingHash: "b".repeat(64),
-      activeSessionMessageSignature: "zz-sig-canary-session",
-      messageSignature: "zz-sig-canary-message",
+      activeSessionMessageSignature: "c".repeat(64),
+      messageSignature: "d".repeat(64),
       latestRole: "user",
       pid: 81,
       hWnd: "91",
@@ -1957,7 +1957,7 @@ async function main() {
     latest_message_top: 704,
     region_ocr_ok: true
   });
-  assert.doesNotMatch(boundSessionRecheckLog, /untrusted-source-canary|current-session-contact-secret|current-session-message-secret|current-session-context-secret|current-session-key-secret|b{64}|zz-sig-canary-(?:session|message)/, "bound-session diagnostics must not persist source text, customer text, context or raw signatures");
+  assert.doesNotMatch(boundSessionRecheckLog, /untrusted-source-canary|current-session-contact-secret|current-session-message-secret|current-session-context-secret|current-session-key-secret|b{64}|c{64}|d{64}/, "bound-session diagnostics must not persist source text, customer text, context or raw signatures");
   const readScanObservations = () => fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8")
     .trim().split(/\r?\n/u).map((line) => JSON.parse(line)).filter((entry) => entry.event === "scan_observation");
   await boundSessionRecheckController.runOnce();
@@ -1983,7 +1983,7 @@ async function main() {
   }
   assert.equal(incompleteReadObservation.recovered_line_count, 0);
   assert.equal(incompleteReadObservation.region_ocr_ok, false);
-  assert.doesNotMatch(fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8"), /message-read-private-text-canary|message-read-private-contact-canary|untrusted-read-source-canary|untrusted-boundary-source-canary|zz-sig-canary-read/, "OCR observations must preserve only allowlisted metadata and never raw text, contacts or signatures");
+  assert.doesNotMatch(fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8"), /message-read-private-text-canary|message-read-private-contact-canary|untrusted-read-source-canary|untrusted-boundary-source-canary|f{64}/, "OCR observations must preserve only allowlisted metadata and never raw text, contacts or signatures");
   boundSessionRecheckController.pause();
 
   const transientFenceDir = path.join(root, "scan_transient_fences");
