@@ -4,7 +4,6 @@ title AI Customer Diagnostics
 
 set "LOG=%USERPROFILE%\Desktop\AI-Customer-Diagnostics-launch.log"
 echo Starting diagnostics collector... > "%LOG%"
-echo Script folder: %~dp0 >> "%LOG%"
 echo Started at: %DATE% %TIME% >> "%LOG%"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Collect-Diagnostics.ps1" >> "%LOG%" 2>&1

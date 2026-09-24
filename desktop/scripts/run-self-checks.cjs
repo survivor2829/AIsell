@@ -86,7 +86,8 @@ const checks = [
   "scripts/portable-runtime-dependencies.self_check.cjs",
   "scripts/installer-release.self_check.cjs",
   "scripts/release-capabilities.self_check.cjs",
-  "scripts/customer-edition.self_check.cjs"
+  "scripts/customer-edition.self_check.cjs",
+  "scripts/analyze-diagnostics.self_check.cjs"
 ];
 
 const groupDefinitions = [
