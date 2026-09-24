@@ -124,3 +124,26 @@
 **自测**：提交前，先用审查脚本在自己的工作区跑一遍，确认全部被发现：
 - 变异：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t5r3-spec\mutate.cjs`，配 `mutations-r3.json`；
 - 出口探针：同目录下的 `probe-item3-*.cjs`。
+
+## 五审（5cfe222）：只剩 1 处隐私回归，修完即可合并（同一分支追加提交）
+
+**已做对**：
+- 四审 5 条都已落实，新测试在 78e0b76（与 abaf286 内容相同）上失败、在 5cfe222 上通过。
+- M3a/b/d/e/f/g/j 全部被测试发现（M3g、M3j 按新语义改写后也被发现）。
+- 跳过 → 重新加入 → 发送成功：纯文字和图文两种情况的 `rule_counts` 都是 `{}`。
+- "结果未知"手动跳过：`send_attempted` 为 null，不可重试，run-bill 为 `{"outcome_unknown":1}`。
+- `check:self` 84 项和 `build:test` 都通过；没有删掉任何安全保护或测试。
+
+**必须修**
+1. **【回归，隐私】r008 把联系人可读文字写进了任务状态、passport 和熔断诊断。**
+   - 位置：`touch-workflow.cjs:437` 把 `state.search_evidence` 整体并进 `searchDiagnostics`，`:443` 的 r008 分支又整体展开了 `...searchDiagnostics`。
+   - `state.search_evidence` 带有 `ocr_observation`（`wechat_window_driver.cjs:2235`，其中 `visual_lines[].text` 是下拉框里的联系人姓名）。r008 时这些原文会写进任务行的 `search_evidence`、passport `recordFailure` 附件和熔断提醒的诊断数据。这违反卡片第 4 条"不含可读的联系人文字，只存哈希"。
+   - 修法：r008 分支也不要整体展开，只取 `rule_id`、`candidate_set_hash`、`fingerprint` 和 `finiteSearchEvidence` 白名单里的字段。
+   - 用例：构造一个 state，其 `search_evidence.ocr_observation` 里带有中文姓名，走 r008，断言任务行、passport 附件、熔断诊断里都搜不到这个姓名。去掉修复后测试必须失败。
+2. 小项（顺手）：
+   - r008 路径下的非有限 `popup_dpi` 目前不会被去掉（因为先展开了原始数据），第 1 条修完后自然解决，请补 1 条断言。
+   - `capture_source` 只允许枚举值，请补 1 条断言。
+
+**T10a 变基时注意**：T10a 把 `popup_candidate_count` 放在 `searchEvidence.ocr_observation` 里，而 `finiteSearchEvidence` 只读顶层字段，真实运行时这个字段取不到。T10a 变基时，把它提到 `searchEvidence` 顶层（只放数字）。
+
+**自测**：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t5r4\probe-r008-plaintext-leak.cjs`，用法 `node probe-r008-plaintext-leak.cjs <你的工作区>`，三项都必须输出 false。变异用同目录的 `mutate.cjs mutations-r4.json`，并用环境变量 `WT=<你的工作区>` 指定工作区，M5g、M5b、M5f 都必须被发现。
