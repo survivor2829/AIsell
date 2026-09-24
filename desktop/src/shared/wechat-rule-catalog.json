@@ -112,6 +112,12 @@
     "classification": "recoverable"
   },
   {
+    "id": "touch-r001",
+    "file": "desktop/src/main/touch-workflow.cjs",
+    "reason": "wechat_search_identity_circuit_open",
+    "classification": "blocker"
+  },
+  {
     "id": "image-r099",
     "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
     "reason": "image_unclassified_driver_failure",

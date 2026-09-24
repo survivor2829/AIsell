@@ -169,7 +169,7 @@ function createTouchWorkflow(options = {}) {
         passport?.writeRunBill("active_touch", id, (task.results || []).map((result, index) => ({
           taskId: `${id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`, status: result.status,
           reasonCode: result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
-          ruleId: result.search_evidence?.rule_id || ""
+          ruleId: result.status === "sent_verified" ? "" : result.search_evidence?.rule_id || ""
         })));
       }
       return { status, progress: progress(), ...extra };
@@ -377,6 +377,7 @@ function createTouchWorkflow(options = {}) {
       current = task.results[index];
       current.last_trace_id = sendOperation.traceId;
       if (result?.ok && result?.state?.real_send_status === "sent_verified") {
+        delete task.identity_skip_streak;
         current.status = "sent_verified";
         current.retry_blocked = true;
         current.send_attempted = true;
@@ -397,6 +398,18 @@ function createTouchWorkflow(options = {}) {
         const reasonCode = identitySkipReason(result);
         const failurePolicy = classifyWechatFailure(result);
         const failureReason = String(result?.blocked_reason || result?.state?.blocked_reason || "");
+        const searchDiagnostics = result?.diagnostics || {};
+        const ruleId = String(searchDiagnostics.rule_id || result?.rule_id || result?.state?.search_evidence?.rule_id || "");
+        const candidateSetHash = String(searchDiagnostics.candidate_set_hash || result?.state?.search_evidence?.candidate_set_hash || "");
+        const fingerprint = ruleId && candidateSetHash ? `${ruleId}:${candidateSetHash}` : "";
+        const previousFingerprint = current.search_evidence?.fingerprint;
+        if (reasonCode && ruleId) current.search_evidence = ruleId === "search-r008"
+          ? { ...searchDiagnostics, rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
+          : { rule_id: ruleId, fingerprint };
+        if (ruleId === "search-r008") passport?.recordFailure("active_touch", passportTaskId, {
+          stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
+          rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" }
+        });
         if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
           current.status = "pre_send_skipped";
           current.reason = String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人";
@@ -420,16 +433,7 @@ function createTouchWorkflow(options = {}) {
           return attention(current.reason, { deliveryStatus: "not_attempted" }, failureReason);
         }
         if (reasonCode === "search_result_identity_unverified"
-          && String(result?.diagnostics?.rule_id || result?.rule_id || "") === "search-r008") {
-          current.status = "generated";
-          current.reason = "微信搜索框已有输入，但搜索结果面板未出现。请检查微信窗口，恢复后从当前联系人继续。";
-          current.retry_blocked = false;
-          current.send_attempted = false;
-          current.updated_at = now().toISOString();
-          persist();
-          return attention(current.reason, { deliveryStatus: "not_attempted", diagnosticReason: "search-r008" }, "wechat_search_panel_unavailable");
-        }
-        if (reasonCode === "search_result_identity_unverified"
+          && !(fingerprint && fingerprint === previousFingerprint)
           && Math.max(0, Number(current.identity_recovery_attempts) || 0) < IDENTITY_RECOVERY_ATTEMPTS) {
           current.identity_recovery_attempts = Math.max(0, Number(current.identity_recovery_attempts) || 0) + 1;
           current.status = "generated";
@@ -446,6 +450,19 @@ function createTouchWorkflow(options = {}) {
           });
         }
         if (reasonCode) {
+          const streak = task.identity_skip_streak;
+          const nextStreak = ruleId ? (streak?.rule_id === ruleId ? streak.count : 0) + 1 : 0;
+          if (nextStreak >= 3) {
+            current.status = "generated";
+            current.reason = "连续多位联系人的搜索结果无法确认身份，请检查微信搜索窗口";
+            current.retry_blocked = false;
+            current.send_attempted = false;
+            current.updated_at = now().toISOString();
+            persist();
+            return attention(current.reason, { deliveryStatus: "not_attempted", diagnosticReason: ruleId }, "wechat_search_identity_circuit_open");
+          }
+          if (ruleId) task.identity_skip_streak = { rule_id: ruleId, count: nextStreak };
+          else delete task.identity_skip_streak;
           poisonSearchCandidate(current, result);
           current.status = "identity_skipped";
           current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
@@ -549,7 +566,7 @@ function createTouchWorkflow(options = {}) {
       current.send_attempted = null;
       return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
     } catch (error) {
-      if (INTERRUPTED_SEND_STATES.has(task?.results?.[task.current_index]?.status)) recoveredTaskIds.delete(id);
+      recoveredTaskIds.delete(id);
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
     } finally {
       try {
@@ -759,6 +776,7 @@ function createTouchWorkflow(options = {}) {
     }
     const retried = retrySkippedResults(loadWorkflowTask(id), contactIds, now().toISOString());
     if (!retried.ok) return retried;
+    delete retried.task.identity_skip_streak;
     const saved = saveTaskState(taskDir, retried.task);
     return {
       ok: true,

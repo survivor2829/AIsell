@@ -1794,6 +1794,15 @@ try {
   }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
   assert.equal(realCustomerWithoutNetworkBoundary.status, "unverified",
     "a visual friend row must remain non-clickable when the network-search boundary cannot be isolated");
+  assert.equal(realCustomerWithoutNetworkBoundary.rule_id, "search-r008");
+  assert.equal(realCustomerWithoutNetworkBoundary.diagnostics.search_mode, "wechat_id");
+  assert.equal(realCustomerWithoutNetworkBoundary.diagnostics.ocr_box_count, 3);
+  assert.equal(realCustomerWithoutNetworkBoundary.diagnostics.ocr_boxes.length, 3);
+  assert.equal(realCustomerWithoutNetworkBoundary.diagnostics.crop_bounds.bottom, 485);
+  assert.equal(realCustomerWithoutNetworkBoundary.diagnostics.web_search_top_detected, null);
+  assert.match(realCustomerWithoutNetworkBoundary.diagnostics.candidate_set_hash, /^[a-f0-9]{64}$/u);
+  assert.doesNotMatch(JSON.stringify(realCustomerWithoutNetworkBoundary.diagnostics), /fixture68506074|联系人/u,
+    "r008 diagnostics must contain only hashes and geometry, not readable contact text");
   const duplicatedNetworkBoundary = resolveWechatSearchResultObservation({
     uiaCandidates: [], ocrOk: true,
     cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },

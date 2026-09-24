@@ -8,6 +8,7 @@ const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
 const { createTouchWorkflow } = require("./touch-workflow.cjs");
 const { loadTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+const { createTaskPassportStore } = require("./task-passport.cjs");
 
 async function checkTouchStatusDoesNotRecoverActiveSend() {
   for (const multipart of [false, true]) {
@@ -94,6 +95,130 @@ async function checkInterruptedSendRecoveryInSameProcess() {
     assert.equal(sends, 0, "recovery must not automatically send again");
   } finally {
     await controller.dispose();
+  }
+}
+
+async function checkClickedAttentionPersistFailureRecovery() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-clicked-fault-"));
+  const dataDir = path.join(root, "touch");
+  const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+  let sends = 0;
+  let failNextPersist = false;
+  let firstAttention = null;
+  const originalOpenSync = fs.openSync;
+  const touch = createTouchWorkflow({
+    dataDir, readContacts: () => [contact],
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+    execute: async ({ onTransition }) => {
+      sends += 1;
+      onTransition("clicked");
+      failNextPersist = true;
+      return { ok: false, error: "send receipt unavailable" };
+    }
+  });
+  const controller = createWechatWorkflowController({
+    rootDir: root, activeTouchDir: dataDir, autoReplyDir: path.join(root, "reply"), momentsDir: path.join(root, "moments"),
+    autoSchedule: false, getAccount: () => "test-account",
+    onUpdate: (snapshot) => {
+      if (!firstAttention && snapshot.tasks.some((task) => task.status === "needs_attention")) firstAttention = snapshot;
+    },
+    executors: { touch: { ...touch, prepareWorkflowTask: (_id, input) => touch.prepareWorkflowTask(input) } }
+  });
+  try {
+    await controller.addTask({ type: "touch", payload: { script: "您好，想了解您的设备需求。", contactIds: [contact.id] } });
+    fs.openSync = (file, ...args) => {
+      if (failNextPersist && String(file).includes("touch_task.json.") && String(file).endsWith(".tmp")) {
+        failNextPersist = false;
+        throw Object.assign(new Error("injected attention persist failure"), { code: "ENOSPC" });
+      }
+      return originalOpenSync(file, ...args);
+    };
+    await controller.start();
+    await controller.tick();
+    assert.equal(failNextPersist, false, "the fault must reach attention persist");
+    assert.equal(firstAttention?.tasks[0]?.status, "needs_attention");
+    assert.equal(firstAttention.tasks[0].unknownResolution?.required, true,
+      "the first attention snapshot must recover disk clicked despite the changed in-memory status");
+    assert.equal(sends, 1, "recovery must not send again");
+  } finally {
+    fs.openSync = originalOpenSync;
+    await controller.dispose();
+  }
+}
+
+async function checkR008BoundedRecovery() {
+  for (const multipart of [false, true]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-recovery-"));
+    const contacts = [1, 2, 3, 4].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let attempt = 0;
+    let succeed = false;
+    let fixedHash = "";
+    const bills = [];
+    const failures = [];
+    const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0,
+      readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      ...(multipart ? { mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) } } : {}),
+      passport: { recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence), bindTrace() {},
+        writeRunBill: (moduleName, id, rows) => bills.push(billStore.writeRunBill(moduleName, id, rows)) },
+      execute: async () => {
+        attempt += 1;
+        return succeed
+          ? { ok: true, state: { real_send_status: "sent_verified" } }
+          : { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: fixedHash || `candidate-${attempt}` } };
+      }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。",
+      contactIds: contacts.map((contact) => contact.id), ...(multipart ? { imageIds: ["image-1"] } : {}) });
+    const record = { id: `r008-${multipart}`, payload };
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    for (const delay of [2000, 8000, 20000]) {
+      const result = await step();
+      assert.equal(result.status, "pending");
+      assert.equal(result.retryAfterMs, delay);
+      assert.equal(loadTaskState(taskDir).current_index, 0);
+    }
+    assert.equal((await step()).status, "pending");
+    assert.equal(loadTaskState(taskDir).results[0].status, "identity_skipped");
+    assert.equal(loadTaskState(taskDir).results[0].search_evidence.rule_id, "search-r008");
+    assert.equal(failures[0].rawReading.diagnostics.candidate_set_hash, "candidate-1");
+    fixedHash = "stable-candidate-set";
+    assert.equal((await step()).retryAfterMs, 2000);
+    assert.equal((await step()).status, "pending", "unchanged evidence skips after the second read");
+    assert.equal(loadTaskState(taskDir).results[1].status, "identity_skipped");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 2);
+    assert.equal((await step()).retryAfterMs, 2000);
+    const circuit = await step();
+    const paused = loadTaskState(taskDir);
+    assert.equal(circuit.status, "needs_attention");
+    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.equal(paused.current_index, 2);
+    assert.equal(paused.results[2].status, "generated");
+    assert.equal(paused.results[2].send_attempted, false);
+    assert.equal(paused.results[2].retry_blocked, false);
+    assert.equal(workflow.canRetryWorkflowTask(record, payload), true);
+    succeed = true;
+    assert.equal((await step()).status, "pending");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+    succeed = false;
+    assert.equal((await step()).retryAfterMs, 2000);
+    assert.equal((await step()).status, "completed");
+    assert.equal(loadTaskState(taskDir).results[3].status, "identity_skipped",
+      "a verified send between failures resets the circuit count");
+    assert.equal(bills.at(-1).rule_counts["search-r008"], 3);
+    const retry = workflow.retrySkippedWorkflowTask(record, [contacts[0].id]);
+    assert.equal(retry.ok, true);
+    succeed = false;
+    fixedHash = "";
+    const retried = await step();
+    assert.equal(retried.retryAfterMs, 2000, "rejoined contact starts identity verification again");
   }
 }
 
@@ -946,6 +1071,8 @@ async function main() {
   await checkFloatingProgress();
   await checkTouchStatusDoesNotRecoverActiveSend();
   await checkInterruptedSendRecoveryInSameProcess();
+  await checkClickedAttentionPersistFailureRecovery();
+  await checkR008BoundedRecovery();
   await checkWorkflowDiagnostics();
   await checkInProgressTouchEdit();
   await checkUnknownTouchResolution();

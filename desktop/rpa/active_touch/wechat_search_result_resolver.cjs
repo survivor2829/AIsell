@@ -1,3 +1,32 @@
+const crypto = require("node:crypto");
+
+const hash = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
+
+function searchObservationEvidence(observation, identity) {
+  const visual = Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [];
+  const uia = Array.isArray(observation.uiaCandidates) ? observation.uiaCandidates : [];
+  const web = Array.isArray(observation.webSearchCandidates) ? observation.webSearchCandidates : [];
+  const box = (candidate) => ({
+    left: Number(candidate?.left), top: Number(candidate?.top), right: Number(candidate?.right), bottom: Number(candidate?.bottom),
+    text_hash: hash(candidate?.text || candidate?.name || "")
+  });
+  const ocrBoxes = visual.map(box);
+  const candidateSet = [...uia, ...visual, ...web].map(box);
+  const boundaryTops = [...web, ...visual.filter((candidate) => isNetworkSearchLabel(candidate, String(identity.query || "")))]
+    .map((candidate) => Number(candidate?.top)).filter(Number.isFinite);
+  const crop = observation.cropBounds;
+  return {
+    search_mode: identity.queryType === "wechat_id" ? "wechat_id" : "name",
+    ocr_box_count: ocrBoxes.length,
+    ocr_boxes: ocrBoxes,
+    crop_bounds: crop ? { left: Number(crop.left), top: Number(crop.top), right: Number(crop.right), bottom: Number(crop.bottom) } : null,
+    web_search_top_reported: observation.webSearchTop == null ? null : Number(observation.webSearchTop),
+    web_search_boundary_tops: boundaryTops,
+    web_search_top_detected: boundaryTops.length ? Math.min(...boundaryTops) : null,
+    candidate_set_hash: hash(JSON.stringify(candidateSet))
+  };
+}
+
 function normalized(value) {
   return String(value ?? "").normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
 }
@@ -351,7 +380,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
     diagnostics: { rule_id, candidate_count: distinctCandidates(observation.uiaCandidates).length,
       visual_candidate_count: Array.isArray(observation.visualCandidates) ? observation.visualCandidates.length : 0,
-      ocr_ok: observation.ocrOk === true }
+      ocr_ok: observation.ocrOk === true, ...(rule_id === "search-r008" ? searchObservationEvidence(observation, identity) : {}) }
   });
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
