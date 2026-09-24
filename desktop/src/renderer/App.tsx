@@ -10,6 +10,7 @@ import {
   Images,
   ListTodo,
   LogOut,
+  MapPin,
   MessageCircle,
   Pause,
   Play,
@@ -410,13 +411,14 @@ const productionChildren: NavItem[] = [
 ];
 
 const operationsChildren: NavItem[] = [
+  { key: "local-acquisition", label: "同城精准获客", icon: MapPin },
   { key: "keyword-acquisition", label: "关键词获客", icon: Search },
   { key: "product-detail", label: "产品详情图", icon: Images }
 ];
 
 const navGroups: NavGroup[] = [
-  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Search, children: operationsChildren },
   { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
+  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Search, children: operationsChildren },
   { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren }
 ];
 
@@ -781,7 +783,7 @@ export default function App() {
           <img className="brand-mark" src="./app-icon.png" alt="" />
           <div className="brand-copy">
             <span>{productBrand.displayName}</span>
-            <small>找客户 · 做内容 · 接咨询</small>
+            <small>做内容 · 找客户 · 接咨询</small>
           </div>
         </button>
         <nav className="nav-list">

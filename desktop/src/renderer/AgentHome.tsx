@@ -6,6 +6,7 @@ import {
   Clapperboard,
   Folder,
   ListTodo,
+  MapPin,
   MessageCircle,
   Palette,
   RadioTower,
@@ -46,6 +47,7 @@ export type AgentHomeTarget =
   | "finished"
   | "ai-video"
   | "product-video"
+  | "local-acquisition"
   | "keyword-acquisition"
   | "publish"
   | "ai-check"
@@ -110,6 +112,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryLabel: "查找客户需求",
     primaryTarget: "keyword-acquisition",
     capabilities: [
+      { key: "local-acquisition", label: "同城精准获客", description: "按城市和区域找附近的客户", icon: MapPin, available: false },
       { key: "keyword-acquisition", label: "关键词获客", description: "查看客户在搜索什么", icon: Sparkles },
       { key: "product-detail", label: "产品详情图", description: "制作可以发给客户的产品图片", icon: Sparkles }
     ]
