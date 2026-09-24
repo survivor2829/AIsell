@@ -79,3 +79,8 @@ npm.cmd run release:internal -- --base "C:/path/to/accepted-test-app"
 | 其他电脑更新完成 | 对应电脑已安装新版的实际确认或可信运行记录 |
 
 CI/CD 不会自动证明所有微信场景、任意素材的视频质量或跨机器稳定性。完整商业发布的额外条件见 `README.md`、`PROJECT_STATUS.md` 和 `server/maintenance/README.md`。
+
+## 发布规则（2026-09-24 从 AGENTS.md 原样挪入）
+
+- 日常内部更新统一优先走组件增量：`npm.cmd run release:internal` 构建增量候选，验收后 `npm.cmd run publish:internal` 发布；原 `release:components`／`publish:components` 入口继续兼容。首次安装、已核实的底座／数据模式不兼容或明确要求离线安装器时才用 `--full`，不能因改动多、普通构建失败或习惯操作就改成整包。先核对基础文件差异；相同内容的压缩包排列变化不能当作依赖升级。增量仍需同提交检查、组合目录与实际切换验收，详细命令和例外见 [内部更新标准](docs/internal-release.md)。
+- 每次发布须在 `desktop/src/shared/customer-release-notes.json` 为该版本写明客户可感知的功能新增、问题修复及未验证项，不用“修复与体验改进”等空泛概括。整包与增量发布共用同一份内容，随安装包内置，确保离线或手动安装后也能查看；已发布版本不原地替换程序内容，新修复递增版本并补新公告。发布前核对公告、版本、构建及验证证据一致，真实微信待测项不能写成已解决。
