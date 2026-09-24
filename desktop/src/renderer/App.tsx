@@ -11,7 +11,6 @@ import {
   ListTodo,
   LogOut,
   MessageCircle,
-  MonitorPlay,
   Pause,
   Play,
   RefreshCw,
@@ -406,7 +405,6 @@ const agentSecondary: NavItem[] = [
 const productionChildren: NavItem[] = [
   { key: "workspace", label: "创作工作台", icon: Clapperboard },
   { key: "product-video", label: "产品效果视频", icon: Video },
-  { key: "social-video", label: "社媒短片", icon: MonitorPlay },
   { key: "finished", label: "成片中心", icon: Video },
   { key: "ai-video", label: "数字人视频", icon: UserRound }
 ];
@@ -496,7 +494,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "ai-video", "product-video", "social-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -908,8 +906,7 @@ export default function App() {
           {active === "product-detail" && <ProductDetailPage />}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
-          {active === "product-video" && <ProductVideoPage mode="product" />}
-          {active === "social-video" && <ProductVideoPage mode="social" />}
+          {active === "product-video" && <ProductVideoPage />}
           {active === "materials" && <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
             setBatchInitial({ assetIds, collection }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} />}

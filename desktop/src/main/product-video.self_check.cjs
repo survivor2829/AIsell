@@ -54,6 +54,22 @@ async function run() {
     assert.ok(fs.statSync(exported.path).size >= 1024);
     assert.ok(fs.readFileSync(exported.subtitlePath, "utf8").includes("00:00:15,000"));
     assert.ok(exported.sendText.includes("小区外围"));
+    const legacyId = `pv_${require("node:crypto").randomUUID()}`;
+    const legacyDir = path.join(root, legacyId);
+    fs.mkdirSync(legacyDir);
+    const legacy = JSON.parse(fs.readFileSync(path.join(root, created.id, "task.json"), "utf8"));
+    legacy.id = legacyId;
+    legacy.mode = "social";
+    legacy.plan.director = "叶映声";
+    legacy.finalFile = `${legacyId}/final.mp4`;
+    fs.copyFileSync(path.join(root, created.id, "final.mp4"), path.join(legacyDir, "final.mp4"));
+    fs.writeFileSync(path.join(legacyDir, "task.json"), JSON.stringify(legacy));
+    assert.ok(service.list().items.some((task) => task.id === legacyId && task.mode === "social"));
+    assert.equal(service.get(legacyId).plan.director, "叶映声");
+    assert.match(service.media(legacyId).dataUrl, /^data:video\/mp4;base64,/u);
+    const legacyExport = await service.exportVideo(legacyId, path.join(root, "legacy-export.mp4"));
+    assert.ok(fs.statSync(legacyExport.path).size >= 1024);
+    assert.throws(() => service.create({ ...input, mode: "social" }), (error) => error.code === "product_video_invalid_option");
     console.log("product-video self-check passed");
   } finally {
     service.close();

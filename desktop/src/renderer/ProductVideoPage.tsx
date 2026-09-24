@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { ArrowRight, Download, ImagePlus, LoaderCircle, RefreshCw } from "lucide-react";
 import "./ProductVideoPage.css";
 
-type Mode = "product" | "social";
 type Choice = { id: string; name: string };
 type Plan = {
   version: string; director: string; scene: string; surface: string; dirt: string; goal: string;
@@ -12,7 +11,7 @@ type Plan = {
   sendText: string; estimatedVideoUsd: number; estimateNote: string;
 };
 type VideoTask = {
-  id: string; mode: Mode; status: string; statusLabel: string; createdAt: string;
+  id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
   durationSeconds: number; sceneId: string; surfaceId: string; dirtId: string; goalId: string;
   expression: string; facts: string; imageId: string; plan: Plan; currentShot: number;
   completedShots: number; error: string; resumeStatus?: string; canRetry: boolean; canExport: boolean; canPreview: boolean;
@@ -45,7 +44,7 @@ async function unwrap<T>(result: Promise<Result<T>>): Promise<T> {
   return value.data;
 }
 
-export function ProductVideoPage({ mode }: { mode: Mode }) {
+export function ProductVideoPage() {
   const api = window.xiaoxiProductVideo;
   const [choices, setChoices] = useState(fallbackChoices);
   const [ready, setReady] = useState(false);
@@ -71,10 +70,10 @@ export function ProductVideoPage({ mode }: { mode: Mode }) {
         setCapabilityMessage(capability.data.message);
         setChoices({ scenes: capability.data.scenes, surfaces: capability.data.surfaces, dirt: capability.data.dirt, goals: capability.data.goals });
       }
-      if (tasks.ok && tasks.data) setItems(tasks.data.items.filter((task) => task.mode === mode));
+      if (tasks.ok && tasks.data) setItems(tasks.data.items.filter((task) => task.mode === "product"));
     }).catch((cause) => { if (!disposed) setError(String(cause)); });
     return () => { disposed = true; };
-  }, [api, mode]);
+  }, [api]);
   useEffect(() => {
     if (!api || !selected || !ACTIVE.has(selected.status)) return;
     const timer = window.setInterval(() => {
@@ -95,14 +94,14 @@ export function ProductVideoPage({ mode }: { mode: Mode }) {
   };
   const savePlan = () => {
     if (!api) return;
-    void perform("plan", () => unwrap(api.create({ ...draft, mode })), (task) => {
+    void perform("plan", () => unwrap(api.create({ ...draft, mode: "product" })), (task) => {
       selectTask(task); setItems((current) => [task, ...current]);
     });
   };
   const canPlan = Boolean(draft.imageId && !busy);
   return <div className="product-video-page">
-    <header className="pv-header"><div><h1>{mode === "product" ? "产品效果视频" : "社媒短片"}</h1>
-      <p>{mode === "product" ? "选场景、上传产品图、说出重点。先确认分镜，再生成视频。" : "用真实场景和产品细节，制作一条不出镜的获客短片。"}</p>
+    <header className="pv-header"><div><h1>产品效果视频</h1>
+      <p>选场景、上传产品图、说出重点。先确认分镜，再生成视频。</p>
       <p className="pv-quality">默认 480p 生成，本地放大为 1080p 尺寸</p></div></header>
     <div className="pv-layout"><section className="pv-panel">
       <h2>1 · 准备视频内容</h2>

@@ -7,7 +7,6 @@ import {
   Folder,
   ListTodo,
   MessageCircle,
-  MonitorPlay,
   Palette,
   RadioTower,
   Send,
@@ -47,7 +46,6 @@ export type AgentHomeTarget =
   | "finished"
   | "ai-video"
   | "product-video"
-  | "social-video"
   | "keyword-acquisition"
   | "publish"
   | "ai-check"
@@ -100,7 +98,6 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     capabilities: [
       { key: "workspace", label: "创作工作台", description: "用现有素材制作视频", icon: Clapperboard },
       { key: "product-video", label: "产品效果视频", description: "展示设备在场景中的样子", icon: Video },
-      { key: "social-video", label: "社媒短片", description: "做一条不出镜的获客短片", icon: MonitorPlay },
       { key: "finished", label: "成片中心", description: "查看成片，导出给客户", icon: Folder },
       { key: "ai-video", label: "数字人视频", description: "制作本人出镜的数字人视频", icon: UserRound }
     ]
