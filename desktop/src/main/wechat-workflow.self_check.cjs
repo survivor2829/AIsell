@@ -142,13 +142,18 @@ async function checkClickedAttentionPersistFailureRecovery() {
     assert.equal(sends, 1, "recovery must not send again");
   } finally {
     fs.openSync = originalOpenSync;
-    await controller.dispose();
+    try {
+      await controller.dispose();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 }
 
 async function checkR008BoundedRecovery() {
   for (const multipart of [false, true]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-recovery-"));
+    try {
     const contacts = [1, 2, 3, 4].map((number) => ({
       id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
     }));
@@ -185,15 +190,18 @@ async function checkR008BoundedRecovery() {
       assert.equal(result.retryAfterMs, delay);
       assert.equal(loadTaskState(taskDir).current_index, 0);
     }
+    assert.equal(failures.length, 0, "retries must not capture failure attachments");
     assert.equal((await step()).status, "pending");
     assert.equal(loadTaskState(taskDir).results[0].status, "identity_skipped");
     assert.equal(loadTaskState(taskDir).results[0].search_evidence.rule_id, "search-r008");
-    assert.equal(failures[0].rawReading.diagnostics.candidate_set_hash, "candidate-1");
+    assert.equal(failures.length, 1, "one final failure per skipped contact");
+    assert.equal(failures[0].rawReading.diagnostics.candidate_set_hash, "candidate-4");
     fixedHash = "stable-candidate-set";
     assert.equal((await step()).retryAfterMs, 2000);
     assert.equal((await step()).status, "pending", "unchanged evidence skips after the second read");
     assert.equal(loadTaskState(taskDir).results[1].status, "identity_skipped");
     assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 2);
+    assert.equal(failures.length, 2);
     assert.equal((await step()).retryAfterMs, 2000);
     const circuit = await step();
     const paused = loadTaskState(taskDir);
@@ -204,21 +212,60 @@ async function checkR008BoundedRecovery() {
     assert.equal(paused.results[2].send_attempted, false);
     assert.equal(paused.results[2].retry_blocked, false);
     assert.equal(workflow.canRetryWorkflowTask(record, payload), true);
-    succeed = true;
-    assert.equal((await step()).status, "pending");
+    assert.equal(failures.length, 3, "circuit captures one failure for the current contact");
+    for (const delay of [2000, 8000, 20000]) {
+      fixedHash = "";
+      const resumed = await step();
+      assert.equal(resumed.status, "pending");
+      assert.equal(resumed.retryAfterMs, delay, "resumed circuit contact must retry fully");
+    }
     assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
-    succeed = false;
-    assert.equal((await step()).retryAfterMs, 2000);
+    assert.equal((await step()).status, "pending");
+    assert.equal(loadTaskState(taskDir).results[2].status, "identity_skipped");
+    assert.equal(loadTaskState(taskDir).current_index, 3, "resumed circuit must advance to the fourth contact");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 1);
+    assert.equal(failures.length, 4, "resumed contact captures one final failure");
+    succeed = true;
     assert.equal((await step()).status, "completed");
-    assert.equal(loadTaskState(taskDir).results[3].status, "identity_skipped",
-      "a verified send between failures resets the circuit count");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined, "a verified send resets the circuit count");
     assert.equal(bills.at(-1).rule_counts["search-r008"], 3);
     const retry = workflow.retrySkippedWorkflowTask(record, [contacts[0].id]);
     assert.equal(retry.ok, true);
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
     succeed = false;
-    fixedHash = "";
+    fixedHash = "candidate-4";
     const retried = await step();
     assert.equal(retried.retryAfterMs, 2000, "rejoined contact starts identity verification again");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function checkMissingSearchResultsDoNotTripCircuit() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-search-r015-"));
+  try {
+    const contacts = [1, 2, 3].map((number) => ({
+      id: `missing-${number}`, name: `客户${number}`, wechatId: `wxid_missing_${number}`, wechatAccountId: "test-account"
+    }));
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      execute: async () => ({ ok: false, send_attempted: false, blocked_reason: "exact_search_result_not_found",
+        diagnostics: { rule_id: "search-r015" } })
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+    const record = { id: "missing-search-results", payload };
+    for (let index = 0; index < contacts.length; index += 1) {
+      clock += 60 * 60 * 1000;
+      const result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+      assert.equal(result.status, index === contacts.length - 1 ? "completed" : "pending");
+    }
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -1073,6 +1120,7 @@ async function main() {
   await checkInterruptedSendRecoveryInSameProcess();
   await checkClickedAttentionPersistFailureRecovery();
   await checkR008BoundedRecovery();
+  await checkMissingSearchResultsDoNotTripCircuit();
   await checkWorkflowDiagnostics();
   await checkInProgressTouchEdit();
   await checkUnknownTouchResolution();

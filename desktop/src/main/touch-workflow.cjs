@@ -219,6 +219,13 @@ function createTouchWorkflow(options = {}) {
         if (!resumableFreshEdit && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
+        if (task.identity_circuit_open === true) {
+          delete task.identity_circuit_open;
+          delete task.identity_skip_streak;
+          const resumed = task.results[task.current_index];
+          resumed.identity_recovery_attempts = 0;
+          if (resumed.search_evidence) delete resumed.search_evidence.fingerprint;
+        }
         if (multipart) task.results[task.current_index].status = "generated";
         persist();
       }
@@ -406,10 +413,6 @@ function createTouchWorkflow(options = {}) {
         if (reasonCode && ruleId) current.search_evidence = ruleId === "search-r008"
           ? { ...searchDiagnostics, rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
           : { rule_id: ruleId, fingerprint };
-        if (ruleId === "search-r008") passport?.recordFailure("active_touch", passportTaskId, {
-          stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
-          rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" }
-        });
         if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
           current.status = "pre_send_skipped";
           current.reason = String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人";
@@ -451,18 +454,20 @@ function createTouchWorkflow(options = {}) {
         }
         if (reasonCode) {
           const streak = task.identity_skip_streak;
-          const nextStreak = ruleId ? (streak?.rule_id === ruleId ? streak.count : 0) + 1 : 0;
-          if (nextStreak >= 3) {
+          const countIdentityFailure = reasonCode === "search_result_identity_unverified" && Boolean(ruleId);
+          const nextStreak = countIdentityFailure ? (streak?.rule_id === ruleId ? streak.count : 0) + 1 : 0;
+          if (countIdentityFailure && nextStreak >= 3) {
             current.status = "generated";
             current.reason = "连续多位联系人的搜索结果无法确认身份，请检查微信搜索窗口";
             current.retry_blocked = false;
             current.send_attempted = false;
             current.updated_at = now().toISOString();
+            task.identity_circuit_open = true;
             persist();
-            return attention(current.reason, { deliveryStatus: "not_attempted", diagnosticReason: ruleId }, "wechat_search_identity_circuit_open");
+            return attention(current.reason, { deliveryStatus: "not_attempted", diagnosticReason: ruleId,
+              diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
           }
-          if (ruleId) task.identity_skip_streak = { rule_id: ruleId, count: nextStreak };
-          else delete task.identity_skip_streak;
+          if (countIdentityFailure) task.identity_skip_streak = { rule_id: ruleId, count: nextStreak };
           poisonSearchCandidate(current, result);
           current.status = "identity_skipped";
           current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
@@ -481,6 +486,10 @@ function createTouchWorkflow(options = {}) {
             task.completed_at = now().toISOString();
           }
           persist();
+          if (ruleId === "search-r008") passport?.recordFailure("active_touch", passportTaskId, {
+            stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
+            rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" }
+          });
           return response(task.status === "completed" ? "completed" : "pending", {
             result: { deliveryStatus: "not_attempted", skipped: true, reasonCode }
           });
@@ -777,6 +786,11 @@ function createTouchWorkflow(options = {}) {
     const retried = retrySkippedResults(loadWorkflowTask(id), contactIds, now().toISOString());
     if (!retried.ok) return retried;
     delete retried.task.identity_skip_streak;
+    for (const result of retried.task.results) {
+      if (result.status === "generated" && result.reason === "已重新加入，等待继续任务" && result.search_evidence) {
+        delete result.search_evidence.fingerprint;
+      }
+    }
     const saved = saveTaskState(taskDir, retried.task);
     return {
       ok: true,

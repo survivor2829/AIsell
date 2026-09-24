@@ -2,6 +2,24 @@
 
 分支：`codex/fix-r008-bounded-recovery`，基于 `codex/fix-apimart-gateway-transport` 的 `dd6a97a`（包含 T4 合并提交 `1eee65e`）。未合并、未推送、未发布。
 
+## 2026-09-24 审查返工
+
+已将本分支变基到最新基线 `82f248d`，并在同一分支追加审查修复。
+
+- 熔断时在任务上留下标记；从暂停恢复时，仅对该熔断清空连续计数，重置当前联系人的身份重试次数和旧证据指纹。第 3 人若仍为 r008，会完整等待 2/8/20 秒后跳过并继续第 4 人，不会再次熔断。
+- 仅 `search_result_identity_unverified` 按 `rule_id` 累计连续跳过。r015 等其他跳过既不增加也不清除计数。
+- 重新加入的行删除旧证据指纹；重新加入后即使证据相同，首次仍等待 2 秒，任务级连续计数为空。
+- r008 的 passport 失败附件仅在最终跳过或熔断时记一次。熔断沿用 `needs_attention` 的一条失败记录，并附带本次诊断；自动重试期间不生成附件。
+- 两个新增自检结束后清理临时目录。新增断言先在旧代码上失败：前三次自动重试已产生 3 条失败记录（预期 0 条）。
+
+返工验证：`node src/main/wechat-workflow.self_check.cjs` 通过，输出 `Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.`；新增覆盖文字/图文任务熔断恢复、r015 三人连续跳过、重新加入同一证据、每人一次失败记录。
+
+返工后的第一次 `npm.cmd run check:self` 退出码 1：已通过策略门禁、active-touch、朋友圈与自动回复等检查，但在未改动的 `scripts/component-update-selftest.cjs:117` 停止，第三个用例实际状态 `error`、预期 `ready`。单独执行 `node scripts/component-update-selftest.cjs` 退出码 0，4/4 用例通过；随后复跑整套检查确认门禁（最终结果记录在下方）。
+
+第二次 `npm.cmd run check:self` 退出码 0，末行 `all source self-checks passed`，包含 `WeChat failure policy review passed: every added literal reason is classified` 和本次 `Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.`。`git diff --check` 退出码 0（仅有 LF/CRLF 提示）。
+
+审查意见第 5 条所述未加盐文本哈希由 T10b 处理；本次未改变 resolver 的判定与证据设计。`candidate_set_hash` 在本机状态和诊断中保存，比较指纹使用它；按原任务卡要求，最终失败记录仍包含这个哈希。若“仅用于本机比较”意指不得进入本地 passport，便与原卡“failure-evidence / passport 增加候选集合哈希”冲突，需在 T10b 统一调整。
+
 ## 改动
 
 - 第 0 步：最外层异常捕获无条件清理 `recoveredTaskIds`。新增 clicked 后 `attention()` 写盘首次抛 ENOSPC 的故障注入回归。旧代码下首次 `needs_attention` 快照的 `unknownResolution.required` 为 `undefined`；修复后为 `true`，发送次数仍为 1。
