@@ -68,3 +68,22 @@
 ## 对任务卡的异议
 
 - 无范围冲突。卡片要求的 r008 失败证据可通过 resolver 输出中的 `diagnostics` 到 `state_machine` 结果，再由本卡允许修改的触达流程写入 passport；无需扩改 `wechat_window_driver.cjs` 或 `state_machine.cjs`。
+
+## 四审返工（基线 db328d3）
+
+- run-bill 的规则号只取本次跳过记录自己的 `ruleId`，且 `sent_verified` 始终为空；跳过后重新加入并发送成功，以及旧 r008 后遇到没有规则号的其他身份失败，`rule_counts` 都为空。
+- 人工把图片发送结果未知标为跳过时，保持 `send_attempted=null` 和 run-bill 原因 `outcome_unknown`；行原因与界面标签改为“部分已发送，后续结果未知”，不宣称图片未发。
+- 联系人快照变化、图片点击前超时、身份跳过、环境等待超时、可恢复类失败、熔断，分别断言部分发送的响应、行状态、跳过记录和 run-bill。熔断用已持久化的连续数构造，确认文字不重发。
+- 非 r008 身份失败的 `search_evidence` 保留 `capture_source`、`popup_bounds`、`popup_dpi`、`search_columns`、`popup_candidate_count`，过滤非有限数值；构造 r014 诊断后核对写盘状态与 passport 失败记录。
+- 图文测试先把连续计数设为 1，再发送成功段并断言清零，避免空值断言虚通过。
+
+验证命令与实际输出：
+
+- `node src/main/wechat-workflow.self_check.cjs`：退出码 0，输出 `Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.`。
+- 四审 `mutate.cjs`：复制到本 worktree 的忽略目录后只改目标路径和混合换行匹配。M1a–d、M2a–d、M3a–f、M3h–i 均显示 `KILLED`。四审语义已改变原脚本中 M3g、M3j、M4a–c 的查找片段，按当前实现调整片段后也均显示 `KILLED`；M3g 捕获 `send_attempted=true`，M3j 捕获 run-bill 缺少 `partial_sent_`，M4a–c 捕获规则号错误。脚本最终 Git 状态只列出本轮预期修改。
+- 四审 `probe-item3-exits.cjs`：快照变化、图片点击前超时、身份跳过均输出 `partial_sent`、`send_attempted=true`；人工结果未知跳过输出 `send_attempted=null`、run-bill `outcome_unknown`。`probe-item3-circuit.cjs` 输出熔断 `deliveryStatus=partial_sent`、文字发送次数 1，恢复后先 `retry2000` 且文字次数仍为 1。
+- `npm.cmd run build:test`：退出码 0，末行 `test renderer build completed`。第一次仅设置 `NODE_PATH` 时，Vite 无法从 worktree 解析 `react/jsx-runtime`；在 worktree 建立指向现有 `node_modules` 的本地目录联接后重跑通过，没有安装依赖。
+- `npm.cmd run check:self`：退出码 0，末行 `all source self-checks passed`，含 `WeChat failure policy review passed: every added literal reason is classified`、`active-touch self-check passed` 和本轮工作流自检。
+- `git diff --check`：退出码 0；Git 仅提示工作区 LF/CRLF 转换。
+
+未验证：真实微信发送、异机复验、安装包与发布。没有改 B 线指定文件。四审脚本的 M3g 与本轮要求“结果未知不得标为部分未发”相反，旧 M3g 原样已不适用；本轮按相反方向的变异验证新行为。其余无任务卡异议。

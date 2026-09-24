@@ -7,7 +7,7 @@ const { createAiExpertStore } = require("./ai-expert.cjs");
 const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
 const { createTouchWorkflow } = require("./touch-workflow.cjs");
-const { loadTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+const { loadTaskState, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
 const { createTaskPassportStore } = require("./task-passport.cjs");
 const { configureDiagnostics } = require("./diagnostics.cjs");
 const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy.cjs");
@@ -324,6 +324,10 @@ async function checkR008PartialSend() {
     clock += 60 * 60 * 1000;
     result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
     assert.equal(result.retryAfterMs, 2000, "text identity failure gets its first recovery delay");
+    const seededDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const seededTask = loadTaskState(seededDir);
+    seededTask.identity_skip_streak = { rule_id: "search-r008", count: 1 };
+    saveTaskState(seededDir, seededTask);
     for (const delay of [2000, 8000, 20000]) {
       clock += 60 * 60 * 1000;
       result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
@@ -349,6 +353,156 @@ async function checkR008PartialSend() {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+async function checkT5FourthReviewExits() {
+  for (const kind of ["snapshot", "preclick", "identity", "environment", "recoverable", "unknown"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-t5-exit-${kind}-`));
+    try {
+      let clock = Date.parse("2026-09-24T00:00:00.000Z");
+      let changed = false;
+      let imageReads = 0;
+      const bills = [];
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const workflow = createTouchWorkflow({
+        dataDir: root, now: () => new Date(clock), random: () => 0,
+        readContacts: () => changed ? [{ ...contact, name: "客户二" }] : [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill: (_module, _id, rows) => bills.push(rows) },
+        execute: async ({ message }) => {
+          if (!message.startsWith("[图片:")) return { ok: true, state: { real_send_status: "sent_verified" } };
+          imageReads += 1;
+          if (kind === "unknown") return { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" };
+          if (kind === "preclick") return { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout", pre_send_retry_exhausted: true };
+          if (kind === "environment") return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required" };
+          if (kind === "recoverable") return { ok: false, send_attempted: false, blocked_reason: "image_existing_draft_clear_failed" };
+          return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: `image-${imageReads}` } };
+        }
+      });
+      const record = { id: `t5-exit-${kind}`, payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id], imageIds: ["image-1"] }) };
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+      let outcome = await step();
+      if (kind === "snapshot") changed = true;
+      if (kind === "unknown") {
+        assert.equal(outcome.status, "needs_attention");
+        workflow.resolveUnknownWorkflowTask(record, "skip", require("node:crypto").randomUUID());
+        outcome = await step();
+        const row = loadTaskState(taskDir).results[0];
+        assert.equal(row.send_attempted, null, "manual unknown skip must retain uncertain send outcome");
+        assert.match(row.reason, /结果未知/u);
+        assert.doesNotMatch(row.reason, /后续内容未发/u);
+        assert.equal(bills.at(-1)[0].reasonCode, "outcome_unknown");
+        continue;
+      }
+      for (let attempt = 0; outcome.status !== "completed" && attempt < 6; attempt += 1) outcome = await step();
+      assert.equal(outcome.status, "completed", `${kind} reaches its skip exit`);
+      assert.equal(outcome.result.deliveryStatus, "partial_sent", `${kind} response preserves text receipt`);
+      const row = loadTaskState(taskDir).results[0];
+      assert.equal(row.send_attempted, true, `${kind} row preserves text receipt`);
+      assert.match(row.reason, /^部分内容已发送/u, `${kind} reason identifies partial send`);
+      assert.match(row.skip_record.blockedReason, /^部分内容已发送/u, `${kind} skip record identifies partial send`);
+      assert.match(bills.at(-1)[0].reasonCode, /^partial_sent_/u, `${kind} bill identifies partial send`);
+      assert.equal(bills.at(-1)[0].ruleId, kind === "identity" ? "search-r008" : "", `${kind} bill uses only its own identity rule`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function checkT5FourthReviewRulesAndEvidence() {
+  for (const kind of ["rejoined_success", "other_identity", "diagnostics"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-t5-rule-${kind}-`));
+    try {
+      let clock = Date.parse("2026-09-24T00:00:00.000Z");
+      let succeed = false;
+      let reads = 0;
+      const bills = [], billRows = [];
+      const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
+      const failures = [];
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const workflow = createTouchWorkflow({
+        dataDir: root, now: () => new Date(clock), readContacts: () => [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence),
+          writeRunBill: (moduleName, id, rows) => { billRows.push(rows); bills.push(billStore.writeRunBill(moduleName, id, rows)); } },
+        execute: async () => succeed ? { ok: true, state: { real_send_status: "sent_verified" } }
+          : kind === "other_identity" ? ++reads === 1
+            ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+              diagnostics: { rule_id: "search-r008", candidate_set_hash: "old-result" } }
+            : { ok: false, send_attempted: false, blocked_reason: "search_result_not_opened",
+              diagnostics: { candidate_set_hash: "new-result" } }
+            : { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+              diagnostics: kind === "diagnostics"
+                ? { rule_id: "search-r014", candidate_set_hash: "same", capture_source: "popup",
+                  popup_bounds: { left: 300, top: 200, right: 500, bottom: Infinity }, popup_dpi: 120,
+                  search_columns: [62, Infinity], popup_candidate_count: 2 }
+                : { rule_id: "search-r008", candidate_set_hash: "same" } }
+      });
+      const record = { id: `t5-rule-${kind}`, payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id] }) };
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+      if (kind === "other_identity") {
+        assert.equal((await step()).retryAfterMs, 2000);
+        assert.equal((await step()).status, "completed");
+        assert.equal(billRows.at(-1)[0].ruleId, "", "an identity failure without its own rule must not inherit r008");
+        assert.deepEqual(bills.at(-1).rule_counts, {});
+        continue;
+      }
+      assert.equal((await step()).retryAfterMs, 2000);
+      assert.equal((await step()).status, "completed");
+      if (kind === "diagnostics") {
+        const evidence = loadTaskState(taskDir).results[0].search_evidence;
+        assert.equal(evidence.capture_source, "popup");
+        assert.deepEqual(evidence.popup_bounds, { left: 300, top: 200, right: 500 });
+        assert.equal(evidence.popup_dpi, 120);
+        assert.deepEqual(evidence.search_columns, [62]);
+        assert.equal(evidence.popup_candidate_count, 2);
+        assert.deepEqual(failures.at(-1).rawReading.diagnostics, evidence);
+      } else {
+        assert.equal(workflow.retrySkippedWorkflowTask(record, [contact.id]).ok, true);
+        succeed = true;
+        assert.equal((await step()).status, "completed");
+        assert.equal(billRows.at(-1)[0].ruleId, "", "a successful rejoin must not retain the earlier r008 rule");
+        assert.deepEqual(bills.at(-1).rule_counts, {});
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+}
+
+async function checkT5FourthReviewCircuit() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-t5-partial-circuit-"));
+  try {
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let textSends = 0;
+    const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) },
+      execute: async ({ message }) => message.startsWith("[图片:")
+        ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: "search-r008", candidate_set_hash: "same" } }
+        : (textSends += 1, { ok: true, state: { real_send_status: "sent_verified" } })
+    });
+    const record = { id: "t5-partial-circuit", payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id], imageIds: ["image-1"] }) };
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    assert.equal((await step()).retryAfterMs, 2000);
+    const seeded = loadTaskState(taskDir);
+    seeded.identity_skip_streak = { rule_id: "search-r008", count: 2 };
+    saveTaskState(taskDir, seeded);
+    const circuit = await step();
+    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.equal(circuit.result.deliveryStatus, "partial_sent");
+    const row = loadTaskState(taskDir).results[0];
+    assert.equal(row.status, "generated");
+    assert.equal(row.send_attempted, true);
+    assert.match(row.reason, /^部分内容已发送/u);
+    assert.equal(textSends, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 async function checkCircuitRejoinKeepsThirdContactRecovery() {
@@ -1400,6 +1554,9 @@ async function main() {
   await checkR008BoundedRecovery();
   await checkR008PassportAttachmentCount();
   await checkR008PartialSend();
+  await checkT5FourthReviewExits();
+  await checkT5FourthReviewRulesAndEvidence();
+  await checkT5FourthReviewCircuit();
   await checkCircuitRejoinKeepsThirdContactRecovery();
   await checkNonIdentitySkipDropsOldSearchRule();
   await checkOldSearchRuleDoesNotEnterOtherSkipBills();

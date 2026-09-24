@@ -62,6 +62,20 @@ function skippedDelivery(row) {
   return partial ? "partial_sent" : "not_attempted";
 }
 
+function finiteSearchEvidence(diagnostics = {}) {
+  const evidence = {};
+  if (["popup", "formula_crop"].includes(diagnostics.capture_source)) evidence.capture_source = diagnostics.capture_source;
+  if (diagnostics.popup_bounds && typeof diagnostics.popup_bounds === "object") {
+    const bounds = Object.fromEntries(Object.entries(diagnostics.popup_bounds)
+      .filter(([key, value]) => ["left", "top", "right", "bottom", "width", "height"].includes(key) && Number.isFinite(value)));
+    if (Object.keys(bounds).length) evidence.popup_bounds = bounds;
+  }
+  if (Number.isFinite(diagnostics.popup_dpi)) evidence.popup_dpi = diagnostics.popup_dpi;
+  if (Array.isArray(diagnostics.search_columns)) evidence.search_columns = diagnostics.search_columns.filter(Number.isFinite);
+  if (Number.isFinite(diagnostics.popup_candidate_count)) evidence.popup_candidate_count = diagnostics.popup_candidate_count;
+  return evidence;
+}
+
 function createTouchWorkflow(options = {}) {
   const contactsDir = String(options.dataDir || "");
   const coordinator = options.coordinator;
@@ -177,10 +191,11 @@ function createTouchWorkflow(options = {}) {
       if (status === "completed" && task) {
         passport?.writeRunBill("active_touch", id, (task.results || []).map((result, index) => ({
           taskId: `${id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`, status: result.status,
-           reasonCode: result.skip_record && result.message_parts?.some((part) => part.status === "sent_verified")
+           reasonCode: result.skip_record?.reasonCode !== "outcome_unknown" && result.skip_record && result.message_parts?.some((part) => part.status === "sent_verified")
              ? `partial_sent_${result.skip_record?.reasonCode || "search_result_identity_unverified"}`
              : result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
-           ruleId: IDENTITY_SKIP_REASONS.has(result.skip_record?.reasonCode) ? result.search_evidence?.rule_id || "" : ""
+           ruleId: result.status !== "sent_verified" && IDENTITY_SKIP_REASONS.has(result.skip_record?.reasonCode)
+             ? result.skip_record?.ruleId || "" : ""
         })));
       }
       return { status, progress: progress(), ...extra };
@@ -419,14 +434,14 @@ function createTouchWorkflow(options = {}) {
         if (!reasonCode && current.search_evidence) delete current.search_evidence.rule_id;
         const failurePolicy = classifyWechatFailure(result);
         const failureReason = String(result?.blocked_reason || result?.state?.blocked_reason || "");
-        const searchDiagnostics = result?.diagnostics || {};
+        const searchDiagnostics = { ...(result?.state?.search_evidence || {}), ...(result?.diagnostics || {}) };
         const ruleId = String(searchDiagnostics.rule_id || result?.rule_id || result?.state?.search_evidence?.rule_id || "");
         const candidateSetHash = String(searchDiagnostics.candidate_set_hash || result?.state?.search_evidence?.candidate_set_hash || "");
         const fingerprint = ruleId && candidateSetHash ? `${ruleId}:${candidateSetHash}` : "";
         const previousFingerprint = current.search_evidence?.fingerprint;
-        if (reasonCode && ruleId) current.search_evidence = ruleId === "search-r008"
-          ? { ...searchDiagnostics, rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
-          : { rule_id: ruleId, fingerprint };
+        if (reasonCode) current.search_evidence = ruleId === "search-r008"
+          ? { ...searchDiagnostics, ...finiteSearchEvidence(searchDiagnostics), rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
+          : { ...finiteSearchEvidence(searchDiagnostics), ...(ruleId ? { rule_id: ruleId } : {}), fingerprint };
         if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
           current.status = "pre_send_skipped";
           current.reason = String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人";
@@ -491,6 +506,7 @@ function createTouchWorkflow(options = {}) {
           current.updated_at = now().toISOString();
           recordSkippedResult(current, index, {
             reasonCode,
+            ruleId,
             blockedReason: current.reason,
             at: current.updated_at,
             traceId: sendOperation.traceId
@@ -666,7 +682,9 @@ function createTouchWorkflow(options = {}) {
       current.status = "outcome_unknown_skipped";
       current.retry_blocked = true;
       current.send_attempted = null;
-      if (current.message_parts?.some((part) => part.status === "sent_verified")) skippedDelivery(current);
+      if (current.message_parts?.some((part) => part.status === "sent_verified")) {
+        current.reason = "部分内容已发送，后续发送结果未知；请核对微信，勿重复发送";
+      }
       recordSkippedResult(current, task.current_index, {
         reasonCode: "outcome_unknown",
         blockedReason: current.reason,
