@@ -40,4 +40,12 @@
 
 ## 结果
 
-（Codex 在此下方追加：改动文件、验证命令和实际输出、未验证项。）
+分支：`codex/adjust-nav-order`，从 `76bade0` 拉出；未合并、未推送、未发布。
+
+- `desktop/src/renderer/App.tsx`：一级导航改为短视频获客、精准获客、微信拓客，素材仓库仍随后显示；精准获客子项最前增加“同城精准获客”。新 key 未加入 `moduleIsAvailable`，点击只进入现有“下一阶段开放”占位页；品牌副标题同步改序。
+- `desktop/src/renderer/AgentHome.tsx`：增加目标类型和禁用的同城精准获客能力卡，说明为“按城市和区域找附近的客户”；主按钮仍进入关键词获客。
+- `desktop/src/renderer/AgentOverview.tsx`：三位负责人改为短视频获客、精准获客、微信拓客；额外找到写死旧顺序的首页标题，一并改为“做内容、找客户、接咨询”。未发现其他写死三大板块顺序的地方，也没有需更新的旧顺序自检或快照。
+
+验证：在 `desktop/` 执行 `npm.cmd run build:test`，退出码 0，末行 `test renderer build completed`；执行 `npm.cmd run check:self`，退出码 0，末行 `all source self-checks passed`，其中 `WeChat failure policy review passed: every added literal reason is classified`；`git diff --check` 退出码 0（仅 LF/CRLF 提示）。代码检查确认新入口没有页面组件、请求或 IPC 调用，侧边栏使用现有 Placeholder。
+
+未验证：未启动开发版进行人工界面核对，因此无截图；侧边栏与首页视觉顺序、点击占位页及旧模块打开情况由 Claude 在审查环境核对。未操作真实微信、未做安装包验收。对任务卡无异议。
