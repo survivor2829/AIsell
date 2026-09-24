@@ -2277,7 +2277,8 @@ function searchObservationEvidence(observation = {}) {
     popup_bounds: observation.popupBounds || null,
     popup_dpi: Number(observation.popupDpi) || null,
     popup_candidate_count: Number(observation.popupCandidateCount) || 0,
-    search_columns: (Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [])
+    search_columns: [...(Array.isArray(observation.visualCandidates) ? observation.visualCandidates : []),
+      ...(Array.isArray(observation.webSearchCandidates) ? observation.webSearchCandidates : [])]
       .flatMap((line) => (Array.isArray(line.words) ? line.words : []).filter((word) => String(word.text || "").normalize("NFKC").replace(/\s+/gu, "").startsWith("搜"))
         .map((word) => Number(observation.popupDpi) > 0 && observation.popupBounds
           ? (Number(word.left) - Number(observation.popupBounds.left)) * 96 / Number(observation.popupDpi) : null))
@@ -2301,6 +2302,7 @@ function buildSearchEvidence(observed, resolution, query, context) {
     visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count ?? count(observation.visualCandidates)),
     ocr_ok: observation.ocrOk === true,
     capture_source: String(observation.captureSource || "formula_crop"),
+    popup_candidate_count: Number.isFinite(Number(observation.popupCandidateCount)) ? Number(observation.popupCandidateCount) : 0,
     authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
     rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),
     evidence_summary: {

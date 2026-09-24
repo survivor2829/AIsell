@@ -65,3 +65,23 @@
 最后复核时，一次 `node rpa/active_touch/self_check.cjs` 在进入搜索测试前的剪贴板 PowerShell 自检偶发 `powershell_failed`；立即单独复跑退出码 0，末行 `active-touch self-check passed`。此前完整 `check:self` 也通过。未据此修改无关剪贴板代码。
 
 未验证：本轮未再次操作真实微信；真实顶层下拉框定位、实际 OCR `words` 和异机不同微信版本仍需只观察空跑。已有 30 次开发机空跑属于审查文件里的用户授权观测，不算本轮新实现的实机验收。未做安装包或发布。
+
+## 三审返工（变基至 cdb01ed）
+
+- `codex/fix-search-recognition` 已变基到收尾基线 `cdb01ed`。弹窗路径出现不可信网络分界时，不论按微信号还是按名字搜索，均在基线判定前返回 r011。
+- 可疑视觉行同时检查原始行与合并行；合并时排除弹窗第 60 列以内的头像碎片，保留原始可疑行的否决能力。
+- `search_columns` 汇集视觉候选和 PowerShell 已分类的网络候选；无弹窗的生产观测也输出 `capture_source`、`popup_candidate_count`。将纯数字 `popup_candidate_count` 提到 `searchEvidence` 顶层，供 T5 的白名单证据链读取。证据继续只收枚举及有限数字，不写联系人文本。
+- PowerShell 离线回放覆盖生产脚本从 `Find-SearchPopup` 到 JSON 输出的路径：假弹窗原点 (300, 200)、DPI 120 时词框原点为 350；无弹窗时为 308，且 `captureSource=formula_crop`、`popupBounds=null`。另检查候选窗口类名、隐藏、宽高、六个位置边界和 DPI。样例与测试矩阵先按生产匹配器分流，再送入 resolver。
+
+验证命令与实际输出（均在本分支工作区；源码检查在 `desktop/`）：
+
+- `node rpa/active_touch/self_check.cjs`：退出码 0，`active-touch self-check passed`。`node rpa/active_touch/wechat_search_observation.self_check.cjs`：退出码 0，`search observation PowerShell replay passed (spaced OCR; noisy sections ignored; no real input)`。
+- 审查脚本 `t10a-safety/attacks.cjs`：G1–G7 共 20 个攻击场景，0 次点击；`attacks_r3.cjs`、`attacks_name.cjs`：A1/A1b/A1c 为 r011，A2 为 r014，A4 为 r011，G8 为 r007；A3 两个头像碎片正例仍选中好友。
+- `t10a-safety/replay_fixture.cjs`：JS/PS 精确匹配分歧 0；弹窗几何路径好友 `ok=28 missed=0 wrong=0`，非好友 `ok=4 wrongClick=0`。原始公式截图的 6 条仍按无弹窗基线回退返回 r008；该脚本将它们单独列出，不计入弹窗几何的 28/4 结果。
+- `t10a-safety/fuzz_wrongrow.cjs`：`looserWrong=0`、`selWrong=0`（`sel=6487`）。`t10a-r3-safety/fuzz_diff.cjs`：四种模式各 60000 例，`tOnlySel=0`、`diffPoint=0`；弹窗路径 `pOnlySel` 分别为微信号 3155、名字 3530。
+- 定向变异：R3a、R3b 均使对应新断言失败；R9d（漏合并 `webSearchCandidates`）在 `dpi125-friend0-formula_crop-0` 失败。变异只在忽略的临时目录执行，原源码已恢复。
+- `npm.cmd run check:self`：退出码 0，末行 `all source self-checks passed`。`npm.cmd run build:test`：退出码 0，`test renderer build completed`。`git diff --check`：退出码 0（仅工作树 LF/CRLF 提示）。
+
+未验证：本轮没有操作真实微信、实际联系人或执行点击；跨设备和不同微信版本的弹窗识别、OCR 与 DPI 仍待获授权的实机空跑。未做安装包、发布或合并。
+
+对任务卡的异议：无。审查脚本把无弹窗公式截图的 6 条 r008 与有弹窗几何路径的 28/4 分开统计；前者保留基线精确回退规则，与三审要求一致。

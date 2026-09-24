@@ -534,13 +534,21 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   };
   const popup = validRectangle(observation.popupBounds);
   const dpi = Number(observation.popupDpi);
-  if (!popup || !(dpi > 0)) return superstringVeto(observation, resolveBaselineObservation(observation, identity));
+  const searchColumns = [];
+  const withEvidence = (decision) => ({ ...decision, diagnostics: { ...decision.diagnostics,
+    capture_source: observation.captureSource === "popup" ? "popup" : "formula_crop",
+    popup_bounds: popup, popup_dpi: popup && Number.isFinite(dpi) && dpi > 0 ? dpi : null,
+    popup_candidate_count: Number.isFinite(observation.popupCandidateCount) ? observation.popupCandidateCount : 0,
+    search_columns: searchColumns.filter(Number.isFinite) } });
+  if (!popup || !Number.isFinite(dpi) || !(dpi > 0)) {
+    const result = superstringVeto(observation, resolveBaselineObservation(observation, identity));
+    return observation.captureSource || Number.isFinite(observation.popupCandidateCount) ? withEvidence(result) : result;
+  }
 
   const column = (left) => (Number(left) - popup.left) / (dpi / 96);
   const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])];
   const visual = [];
   const web = [];
-  const searchColumns = [];
   for (const line of all) {
     const words = Array.isArray(line.words) ? line.words : [];
     const wordIndex = words.findIndex((_, index) => words.slice(index, index + 6)
@@ -556,10 +564,8 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   }
   const classified = { ...observation, visualCandidates: visual, webSearchCandidates: web,
     webSearchTop: web.length ? Math.min(...web.map((line) => Number(line.top))) : null };
+  if (web.some((line) => line.text === "untrusted_network_boundary")) return withEvidence(reject("search-r011"));
   const result = resolveBaselineObservation(classified, identity);
-  const withEvidence = (decision) => ({ ...decision, diagnostics: { ...decision.diagnostics,
-    capture_source: String(observation.captureSource || "formula_crop"),
-    popup_bounds: popup, popup_dpi: dpi, search_columns: searchColumns } });
 
   const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
   if (!headers.length) {
@@ -580,7 +586,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const sectionEnd = Math.min(classified.webSearchTop ?? Infinity,
     ...visual.filter((line) => isOtherSearchSection(line.text) && Number(line.top) >= Number(header.bottom) - 2)
       .map((line) => Number(line.top)));
-  if (mergeVisualLines(visual).some((line) => isUnsafeVisualText(line.text)
+  if ([...visual, ...mergeVisualLines(visual.filter((line) => column(line.left) > 60))].some((line) => isUnsafeVisualText(line.text)
     && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= sectionEnd)) {
     return withEvidence(reject("search-r014"));
   }
