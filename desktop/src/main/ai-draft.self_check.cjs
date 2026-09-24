@@ -5,51 +5,42 @@ const {
 } = require("./ai-draft.cjs");
 
 async function main() {
-  assert.deepEqual(contactSalutation({ remark: "张总" }), { type: "title", value: "张总" });
-  assert.deepEqual(contactSalutation({ remark: "李经理" }), { type: "title", value: "李经理" });
-  for (const [remark, expected] of [
-    ["刘国强总", "刘总"], ["王建国经理", "王经理"], ["张伟经理", "张经理"],
-    ["保洁部陈主任", "陈主任"], ["王总", "王总"], ["李白老师", ""],
-    ["物业管理公司总经理", ""], ["华东区域经理", ""], ["小李", ""], ["张三", ""],
-    ["苏州陈总", ""], ["万科李总", ""], ["华为李总", ""],
-    ["平安李经理", ""], ["高三王老师", ""], ["韩语李老师", ""],
-    ["东区王经理", "王经理"], ["华东区王经理", "王经理"], ["上海张经理", "张经理"],
-    ["恒大许总", "许总"], ["钢琴陈老师", "陈老师"], ["上海市张总", "张总"],
-    ["项目经理", ""], ["高级经理", ""], ["车间主任", ""],
-    ["居委会主任", ""], ["常务副总", ""], ["包子铺老板", ""],
-    ["房产经理", ""], ["金牌经理", ""], ["华东经理", ""],
-    ["王总 助理", ""], ["王总-司机", ""], ["介绍人：王总", ""],
-    ["王总的助理", ""], ["王总经理", "王总"], ["张伟总经理", "张总"],
-    ["物业管理公司王总经理", "王总"], ["欧阳娜娜总", "欧阳总"], ["司马光老师", "司马老师"],
-    ["小王总", "王总"], ["老王总", "王总"], ["大刘总", ""],
-    ["常玉林总", ""], ["聂小龙总", ""], ["张文龙总", ""],
-    ["陈伟强总", "陈总"], ["王志刚老师", "王老师"], ["李副总", "李总"],
-    ["王总13800138000", "王总"], ["客户-王总", "王总"], ["客户‑王总", "王总"], ["王总(华东)", ""],
-    ["13800138000王总", ""], ["Tony王总", ""], ["曾总", "曾总"]
-  ]) {
-    assert.deepEqual(contactSalutation({ remark }), expected
-      ? { type: "title", value: expected } : { type: "generic", value: "" }, remark);
+  const strictTitles = [
+    ["王总", "王总"], ["李经理", "李经理"], ["曾总", "曾总"], ["王总经理", "王总"],
+    ["王总13800138000", "王总"], ["王总 138 0013 8000", "王总"],
+    ["万科物业-李总", "李总"], ["万科物业 李总", "李总"], ["保洁部 陈主任", "陈主任"],
+    ["XX保洁公司 张经理", "张经理"], ["华润万家超市-王经理", "王经理"],
+    ["方经理", "方经理"], ["高老师", "高老师"], ["马老板", "马老板"]
+  ];
+  for (const [remark, expected] of strictTitles) {
+    assert.deepEqual(contactSalutation({ remark }), { type: "title", value: expected }, remark);
   }
-  for (const [contact, expected] of [
-    [{ remark: "上海张经理", nickname: "房产经理" }, "张经理"],
-    [{ remark: "小王总", nickname: "花店老板" }, "王总"],
-    [{ remark: "客户A", nickname: "王总" }, ""],
-    [{ remark: "", nickname: "王总" }, "王总"]
-  ]) assert.deepEqual(contactSalutation(contact), expected
-    ? { type: "title", value: expected } : { type: "generic", value: "" });
-  for (const [remark, correctSurname] of [
-    ["苏州陈总", "陈"], ["杭州李总", "李"], ["万科李总", "李"],
-    ["华为李总", "李"], ["东区王经理", "王"], ["平安李经理", "李"],
-    ["高三王老师", "王"], ["江苏张总", "张"], ["金地陈总", "陈"], ["国美黄总", "黄"]
-  ]) {
-    const salutation = contactSalutation({ remark });
-    assert.ok(salutation.type === "generic" || salutation.value.startsWith(correctSurname), remark);
+  const strictGeneric = [
+    "凯驰厂家经理", "洗地机厂家老板", "扫地车厂商经理", "洗地机厂方经理", "物业方经理",
+    "万科物业方经理", "医院方主任", "便利店家老板", "凯驰店东老板", "工业园厂房经理",
+    "城管市容经理", "物业和经理", "王总-客户公司", "王总 同学公司", "王总-行政部",
+    "东方经理", "东方总", "南宫经理", "小熊经理", "国美 国总", "平安 平总",
+    "东莞-东总", "成都 成总", "鱼老板", "米老板", "花老板", "水老板", "车老板", "房老板",
+    "河南省代经理", "郑州市代老板", "代总经理", "XX公司代总经理", "王总 李经理",
+    "王总/李总", "李经理 王总", "李经理(王总)", "李经理【王总】", "小李(王总)",
+    "张伟 李总", "老张 李总", "王工 李总", "王董 李总", "小舅子 王总", "爸爸 王总",
+    "嫂子 王总", "老板娘(张总)", "师母(王老师)", "保姆 王总", "保洁阿姨-王总",
+    "店员-李老板", "业务员-王总", "文员 李经理", "跟单 李总", "徒弟 王老师",
+    "学生 王老师", "家长 王老师", "李经理 上级:王总", "张总 跟进人:李经理",
+    "来源：王总", "父亲:王总", "王总 by 李经理", "Assistant: 王总", "批发市场 米老板",
+    "🐟 鱼老板", "㊎老板", "VIP-㊎老板", "河北 南宫经理", "王总(李经理)",
+    "刘国强总", "王建国经理", "苏州陈总", "万科李总", "苏州聂总", "郑州翟总经理",
+    "关小龙总", "白酒老板", "高校老师", "万达经理", "李总-财务小刘", "王总 媳妇",
+    "东方证券经理", "项目经理", "车间主任", "班主任", "居委会主任", "常务副总",
+    "大老板", "Tony王总", "王总(华东)", "介绍人：王总", "王总的助理", "李副总",
+    "小王总", "欧阳总"
+  ];
+  for (const remark of strictGeneric) {
+    assert.deepEqual(contactSalutation({ remark }), { type: "generic", value: "" }, remark);
   }
-  for (const contact of [
-    { name: "黄佳佳" }, { remark: "欧阳娜娜" },
-    { nickname: "产品服务顾问森妮19101706971" }, { remark: "上海星辰科技13800138000" }
-  ]) assert.deepEqual(contactSalutation(contact), { type: "generic", value: "" });
-
+  for (const contact of [{ remark: "", nickname: "王总" }, { remark: "客户A", nickname: "王总" }]) {
+    assert.deepEqual(contactSalutation(contact), { type: "generic", value: "" });
+  }
   for (const [hour, expected] of [[4, "您好"], [8, "早上好"], [12, "中午好"], [16, "下午好"], [20, "晚上好"], [23, "您好"]]) {
     assert.equal(timeGreeting(new Date(2026, 8, 23, hour)), expected);
   }
