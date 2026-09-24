@@ -251,9 +251,10 @@ function createWechatWorkflowController(options) {
       nextTaskId: nextTask()?.id || null, error, replyStatus, replyError, revision,
       classificationQuality: qualitySummary(),
       tasks: store.tasks.map((task) => {
+        const retryable = canRetry(task);
         const resolution = unknownResolution(task);
         const skipped = skippedTouchState(task);
-        return { ...task, canRetry: canRetry(task), ...(resolution ? { unknownResolution: resolution } : {}),
+        return { ...task, canRetry: retryable, ...(resolution ? { unknownResolution: resolution } : {}),
           ...(skipped || {}),
           accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) };
       }),
