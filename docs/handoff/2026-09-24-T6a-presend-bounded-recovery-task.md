@@ -2,6 +2,22 @@
 
 分支：`codex/touch-presend-bounded-recovery`（在 T5 合并后开始。T4、T5、本卡都改 `touch-workflow.cjs`；与 T5 同改 `wechat-failure-policy.cjs` 和 `touch-message-sequence.self_check.cjs`。T8 也改 `touch-workflow.cjs`（:303-365，与本卡的 :393-548 不重叠）和 `touch-message-sequence.self_check.cjs`，谁后合并谁 rebase。T6b 是一键"重新加入并继续"，单独出卡，与本卡同批发布）
 
+> **2026-09-24 补充（A 线；T5、T10a 合并后开工，与下文冲突时以本段为准）**
+>
+> 0. **先修两处"任务卡住"（T4 审查遗留）**
+>    - a. 任务已写成 running，但在写入 sending 之前抛出异常，重启后任务会卡住。
+>      - 用例：先用故障注入复现；
+>      - 修复后：重启能恢复，给出明确原因，自动继续或回到可继续的暂停状态都可以；
+>      - 不能重复发送。
+>    - b. `readWorkflowTask` 用的是 `loadTaskState`，读失败时会从备份恢复并写成 paused，所以不是纯读取。给展示路径加一个"读失败就返回 null"的纯读取函数；允许改动因此增加 `touch_task_state.cjs`。
+> 1. **沿用 T5 定型的做法，不另写一套：**
+>    - 发送前有界重试期间，日志按 warn 记；只在最终跳过或熔断时写 1 条 passport 失败记录（要用和 T5 一样的真实接线测试来验证）；
+>    - 熔断触发时，当场重置当前联系人的重试次数和连续计数，不用延迟标记；
+>    - "部分已发送"用 T5 的统一计算，所有出口保持一致；
+>    - run-bill 只在跳过原因属于本类时写规则号。
+>    - T5 的熔断码 `wechat_search_identity_circuit_open` 带搜索语义，所以按第 4 步新增 `touch_pre_send_failure_streak`，并补上界面文案。
+> 2. **与 B 线并行**：B 线会改 `wechat-failure-policy.cjs` 和规则目录（只做登记）。后合并的一方负责变基；登记的条目按字母顺序插入，减少冲突。
+
 > 行号均指 HEAD `258e37a`。T4、T5 合并后会偏移，以函数和分支语义为准。
 
 ## 现状
