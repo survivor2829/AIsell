@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveSystemTar } = require("./system-tar.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const productBrand = require("../product-brand.json");
@@ -433,7 +434,7 @@ try {
   fs.mkdirSync(appDir, { recursive: true });
   fs.writeFileSync(path.join(appDir, "app.txt"), "packaged-app", "utf8");
   fs.writeFileSync(path.join(target, "marker.txt"), "same-tree", "utf8");
-  const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", portableArchiveFixture, productName], {
+  const archive = spawnSync(resolveSystemTar(), ["-a", "-c", "-f", zip, "-C", portableArchiveFixture, productName], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 30000
