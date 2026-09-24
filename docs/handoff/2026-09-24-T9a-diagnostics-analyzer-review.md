@@ -1,4 +1,4 @@
-# T9a 审查结论：通过，可合并；遗留项并入 T9b
+# T9a 审查结论：通过，已合并（合并提交 `f47822a`）；遗留项并入 T9b
 
 审查对象：`codex/diagnostics-analyzer`（ec13c8c，基线 db328d3）
 
