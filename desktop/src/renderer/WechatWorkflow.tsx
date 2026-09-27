@@ -76,7 +76,7 @@ export type WorkflowState = {
   contactSync?: { running: boolean; stage: string; contactCount: number; error: string } | null;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
 };
-export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; excludedCount?: number; excludedReasons?: Record<string, number> };
+export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; taskCount?: number; contactCount?: number; excludedCount?: number; excludedReasons?: Record<string, number> };
 export type WorkflowContact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
 
 declare global {
@@ -93,8 +93,9 @@ declare global {
       updateTask: (task: WorkflowTaskInput & { id: string }) => Promise<WorkflowResult>;
       cancelTask: (id: string) => Promise<WorkflowResult>;
       deleteTasks: (ids: string[], unsuccessfulOnly?: boolean) => Promise<WorkflowResult>;
-      retryTask: (id: string) => Promise<WorkflowResult>;
-      retrySkipped: (id: string, contactIds?: string[]) => Promise<WorkflowResult>;
+      retryTask: (id: string, andStart?: boolean) => Promise<WorkflowResult>;
+      retrySkipped: (id: string, contactIds?: string[], andStart?: boolean) => Promise<WorkflowResult>;
+      retryAllAndStart: () => Promise<WorkflowResult>;
       resolveTouchUnknown: (id: string, resolution: "sent" | "not_sent" | "skip") => Promise<WorkflowResult>;
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
@@ -398,14 +399,32 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     if (result?.ok) setNotice(TOUCH_RESOLUTION_NOTICES[resolution]);
   };
 
-  const retrySkipped = async (task: WorkflowTask, contactIds?: string[]) => {
+  const retrySkipped = async (task: WorkflowTask, contactIds?: string[], andStart = false) => {
     if (!api) return;
-    const result = await run(() => api.retrySkipped(task.id, contactIds));
+    const result = await run(() => api.retrySkipped(task.id, contactIds, andStart));
     if (result?.ok) {
       const excluded = Number(result.excludedCount || 0);
-      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${excluded ? `，另有 ${excluded} 位因安全原因未加入` : ""}；点击启动程序后一次补跑。`);
+      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${excluded ? `，另有 ${excluded} 位因安全原因未加入` : ""}${andStart ? "并继续。" : "；点击启动程序后一次补跑。"}`);
     }
   };
+
+  const retryAll = async () => {
+    if (!api) return;
+    const result = await run(() => api.retryAllAndStart());
+    if (result?.ok) setNotice(`已重新加入 ${Number(result.contactCount || 0)} 位联系人、${Number(result.taskCount || 0)} 项任务并继续。`);
+  };
+  const retrySingle = async (task: WorkflowTask) => {
+    if (!api) return;
+    const result = await run(() => api.retryTask(task.id, true));
+    if (result?.ok) setNotice(task.type === "touch"
+      ? `已重新加入 ${Math.max(0, task.progress.total - task.progress.done)} 位联系人并继续。`
+      : "已重新加入任务并继续。");
+  };
+  const bulkRetryTasks = state.tasks.filter((task) => !task.accountMismatch && task.status !== "cancelled" && !task.unknownResolution
+    && (task.canRetry || (["completed", "needs_attention"].includes(task.status)
+      && task.type === "touch" && task.skipped_records?.some((record) => record.retryable === true))));
+  const bulkRetryContacts = bulkRetryTasks.reduce((count, task) => count + (task.skipped_records?.filter((record) => record.retryable === true).length
+    || (task.canRetry && task.type === "touch" ? Math.max(0, task.progress.total - task.progress.done) : 0)), 0);
 
   const taskRow = (task: WorkflowTask) => {
     const Icon = TASK_ICONS[task.type];
@@ -427,7 +446,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         {isWaiting && <p className="workflow-small-note">{waitingDetail}</p>}
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
         {task.error && <p className="workflow-task-error">{taskErrorText(task.error, task.reasonCode, task.reasonClassification)}</p>}
-        {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入计划，再点击启动。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
+        {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入并继续。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
         {task.unknownResolution && <div className="workflow-small-note" role="group" aria-label="处理发送结果">
           <p>请核对微信中“{task.unknownResolution.contactLabel}”的{TOUCH_PART_LABELS[task.unknownResolution.partKind] || "消息"}是否已发送。处置后不会自动执行。</p>
           <div className="workflow-row-actions">
@@ -438,7 +457,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         </div>}
         {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
           <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
-            {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task)}>{canRetryWhileListening ? "暂停自动回复并全部重试" : "全部重试"}</button>}
+            {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}>{canRetryWhileListening ? "暂停自动回复，全部重试并继续" : "全部重试并继续"}</button>}
           </div>
           <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}</p>
           <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul></details>
@@ -447,7 +466,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
       </div>
       <div className="workflow-row-actions">
-        {task.canRetry && <button className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => api && void run(() => api.retryTask(task.id))}><Repeat2 size={14} />重新加入</button>}
+        {task.canRetry && <button className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySingle(task)}><Repeat2 size={14} />重新加入并继续</button>}
         {canEdit && <button className="text-button" disabled={busy} onClick={() => void openExisting(task, false)}><Pencil size={14} />{completedDaily ? "编辑后续安排" : "编辑"}</button>}
         {canPauseAndEdit && <button className="text-button" disabled={busy} onClick={() => void pauseAndEdit(task)}><Pause size={14} />暂停并编辑</button>}
         {task.status === "completed" && !completedDaily && <button className="text-button" disabled={busy || planLocked} onClick={() => void openExisting(task, true)}><Repeat2 size={14} />再做一次</button>}
@@ -470,6 +489,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <span>{runningDetail}</span>
       {state.enabled && attentionTasks.length > 0 && <span className="workflow-attention-inline">有 {attentionTasks.length} 项需处理，其他可执行任务会继续。</span>}
       {state.enabled && <button className="text-button" disabled={busy} onClick={() => api && void run(() => api.showFloating())}>查看进度<ChevronRight size={14} /></button>}
+      {!state.enabled && bulkRetryTasks.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || planLocked} onClick={() => void retryAll()}>全部重新加入并继续（{bulkRetryTasks.length} 项 / {bulkRetryContacts} 人）</button>}
     </div>
 
     {(error || state.error) && <div className="workflow-alert" role="alert">{error || state.error}</div>}

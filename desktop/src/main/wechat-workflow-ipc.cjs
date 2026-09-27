@@ -198,8 +198,18 @@ function registerWechatWorkflowIpc(options) {
   handle("get-task", (payload) => controller.getTask(String(payload?.id || "")));
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
   handle("delete-tasks", (payload) => controller.deleteTasks(payload?.ids, payload?.unsuccessfulOnly === true), true);
-  handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
-  handle("retry-skipped", (payload) => controller.retrySkipped(String(payload?.id || ""), payload?.contactIds), true);
+  handle("retry-task", async (payload) => {
+    const result = await controller.retryTask(String(payload?.id || ""));
+    return payload?.andStart === true ? { ...result, ...(await start()) } : result;
+  }, true);
+  handle("retry-skipped", async (payload) => {
+    const result = await controller.retrySkipped(String(payload?.id || ""), payload?.contactIds);
+    return payload?.andStart === true ? { ...result, ...(await start()) } : result;
+  }, true);
+  handle("retry-all-and-start", async () => {
+    const result = await controller.retryAll();
+    return { ...result, ...(await start()) };
+  }, true);
   handle("resolve-touch-unknown", (payload) => {
     const id = String(payload?.id || "");
     const resolution = String(payload?.resolution || "");

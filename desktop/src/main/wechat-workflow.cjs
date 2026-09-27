@@ -754,36 +754,91 @@ function createWechatWorkflowController(options) {
     return { ok: true, state: status() };
   }
 
+  async function pauseForRetry() {
+    if (!enabled) return;
+    if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
+    await pauseWorkflow();
+  }
+
+  function requeueSkipped(task, contactIds) {
+    if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
+    const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
+    if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
+    task.progress = { done: retried.task.current_index, total: retried.task.total };
+    task.status = "pending";
+    task.error = "";
+    delete task.reasonCode;
+    delete task.completedAt;
+    delete task.lastCompletedDate;
+    delete task.notBefore;
+    delete task.waitingReason;
+    log("touch.skipped_requeued", {
+      stage: "retry_skipped", task_kind: task.type, task_id: task.id,
+      retried_count: Number(retried.retriedCount || 0), excluded_count: Number(retried.excludedCount || 0),
+      excluded_reasons: retried.excludedReasons || {}
+    }, { level: "info", code: "retry_skipped_requeued" });
+    return retried;
+  }
+
+  function requeueTask(task) {
+    if (!canRetry(task)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
+    task.status = "pending"; task.error = "";
+    delete task.notBefore;
+    delete task.waitingReason;
+  }
+
   async function retrySkipped(id, contactIds) {
-    if (enabled) {
-      if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
-      await pauseWorkflow();
-    }
+    await pauseForRetry();
     return serialize(() => {
       assertPlanEditable();
       const task = findTask(id);
-      if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
-      const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
-      if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
-      task.progress = { done: retried.task.current_index, total: retried.task.total };
-      task.status = "pending";
-      task.error = "";
-      delete task.reasonCode;
-      delete task.completedAt;
-      delete task.lastCompletedDate;
-      delete task.notBefore;
-      delete task.waitingReason;
+      const retried = requeueSkipped(task, contactIds);
       phase = "paused";
       persist(); emit();
-      log("touch.skipped_requeued", {
-        stage: "retry_skipped", task_kind: task.type, task_id: task.id,
-        retried_count: Number(retried.retriedCount || 0), excluded_count: Number(retried.excludedCount || 0),
-        excluded_reasons: retried.excludedReasons || {}
-      }, { level: "info", code: "retry_skipped_requeued" });
       return {
         ok: true, state: status(), retriedCount: Number(retried.retriedCount || 0),
         excludedCount: Number(retried.excludedCount || 0), excludedReasons: retried.excludedReasons || {}
       };
+    });
+  }
+
+  async function retryTask(id) {
+    await pauseForRetry();
+    return serialize(() => {
+      assertPlanEditable();
+      requeueTask(findTask(id));
+      phase = "paused";
+      persist(); emit(); return { ok: true, state: status() };
+    });
+  }
+
+  async function retryAll() {
+    await pauseForRetry();
+    return serialize(() => {
+      assertPlanEditable();
+      let taskCount = 0, contactCount = 0, excludedCount = 0;
+      for (const task of store.tasks) {
+        if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) continue;
+        const skipped = ["completed", "needs_attention"].includes(task.status)
+          && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => row.retryable === true);
+        if (!skipped && !canRetry(task)) continue;
+        try {
+          if (skipped) {
+            const retried = requeueSkipped(task);
+            contactCount += Number(retried.retriedCount || 0);
+            excludedCount += Number(retried.excludedCount || 0);
+          } else {
+            const remainingContacts = task.type === "touch" ? Math.max(0, Number(task.progress?.total || 0) - Number(task.progress?.done || 0)) : 0;
+            requeueTask(task);
+            contactCount += remainingContacts;
+          }
+          taskCount += 1;
+        } catch { excludedCount += 1; }
+      }
+      if (!taskCount) throw new Error("没有可重新加入的任务或联系人。");
+      phase = "paused";
+      persist(); emit();
+      return { ok: true, state: status(), taskCount, contactCount, excludedCount };
     });
   }
 
@@ -814,16 +869,8 @@ function createWechatWorkflowController(options) {
       persist(); emit(); return { ok: true, state: status() };
     }),
     updateTask: (input) => serialize(() => saveTask(input, findTask(input.id))),
-    retryTask: (id) => serialize(() => {
-      assertPlanEditable();
-      const task = findTask(id);
-      if (!canRetry(task)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
-      task.status = "pending"; task.error = "";
-      delete task.notBefore;
-      delete task.waitingReason;
-      phase = "paused";
-      persist(); emit(); return { ok: true, state: status() };
-    }),
+    retryTask,
+    retryAll,
     getTask: async (id) => {
       assertHealthy();
       const task = findTask(id);
