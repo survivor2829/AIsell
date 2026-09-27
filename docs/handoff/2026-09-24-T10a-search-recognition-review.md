@@ -216,3 +216,20 @@
 - 攻击场景 0 次点击；
 - 28/4 全部正确；
 - `fuzz_diff` 里的 tOnly = 0。
+
+## 四审（c4662b0，已变基到 cdb01ed）：通过，已合并（2026-09-27，合并提交 `c942342`）
+
+- 三审 6 项全部落实。每项把修复撤掉后，`rpa/active_touch/self_check.cjs` 都会失败。
+- 审查脚本的目标全部达到：
+  - 20 个攻击场景一次都没点击，G8 给出 r007；
+  - 回放样本：好友 28/0/0，非好友 4/0；
+  - fuzz_wrongrow 的 selWrong=0；
+  - fuzz_diff 4 种模式各跑 6 万例，tOnlySel=0。T10a 比参考实现更严。
+- 变异 23 个，抓到 22 个。
+- 变基没有碰到 T5：`touch-workflow.cjs` 没变，r008 隐私测试都在。`popup_candidate_count` 已经一路传到任务行（端到端探针确认），并且只有数字。
+- 与基线合并后，`check:self` 87 项全部通过，`build:test` 也通过。
+- 审查中发现 `task-passport.self_check.cjs` 依赖运行当天的日期（9-25 之后每个分支都会失败）。已由 Claude 在基线修掉（`eb9d862`）。
+
+**遗留（转入 T10b，见其卡顶部）**
+- 测试缺口：PS 里弹窗 DPI 如果误取主窗口 DPI，测试发现不了（`wechat_window_driver.cjs:1699`）。低 DPI 回退路径也没测到。
+- 老问题，基线就有：名字搜索"甲乙"时，联系人分区里同时有"甲乙"和"甲乙丙"，会选中"甲乙丙"那一行（`unique_local_surface_visual`）。参考实现也是这样。后续的会话标题核对应该能挡住实际发送，但需要确认。
