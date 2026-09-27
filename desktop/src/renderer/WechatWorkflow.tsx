@@ -67,6 +67,11 @@ export type WorkflowState = {
   error: string;
   replyStatus: string;
   replyError?: string;
+  replyBackoff?: boolean;
+  replyExcludedCount?: number;
+  replyExcludedReasons?: Record<string, number>;
+  replyEnrollExcludedCount?: number;
+  replyEnrollAmbiguousCount?: number;
   classificationQuality?: { buildVersion: string; buildId: string; buildCommit: string; threshold: number; unknownPauseCount: number; unknownReasonCodes: string[]; affectedTaskCount: number; status: "ok" | "needs_review" };
   contactSync?: { running: boolean; stage: string; contactCount: number; error: string } | null;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
@@ -188,6 +193,7 @@ export function workflowStatusText(state: WorkflowState) {
     return task ? `${TASK_LABELS[task.type]}安全间隔` : "安全间隔后继续";
   }
   const task = state.tasks.find((item) => item.id === state.currentTaskId);
+  if (state.replyBackoff && !task) return state.replyStatus;
   if (state.replyError && !task) return "自动回复需处理";
   if (state.phase === "replying") return state.replyStatus || "正在检查客户消息";
   if (state.phase === "listening") return state.replyStatus || "监听新消息";
@@ -346,7 +352,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         : next ? `下一项：${next.title}`
           : current ? "正在执行本轮已安排任务"
             : waitingForSchedule ? "到达已安排的时间后继续执行"
-              : state.replyError || state.replyStatus || (state.replyEnabled === false ? "自动回复未开启" : "正在准备自动回复");
+              : state.replyBackoff ? state.replyStatus : state.replyError || state.replyStatus || (state.replyEnabled === false ? "自动回复未开启" : "正在准备自动回复");
 
   useEffect(() => {
     if (editor) editorAnchor.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -468,7 +474,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     {state.classificationQuality?.status === "needs_review" && <div className="workflow-alert" role="alert">
       当前构建的失败分级表待补全：本轮已暂停 {state.classificationQuality.unknownPauseCount} 次。未知码：{state.classificationQuality.unknownReasonCodes.join("、")}。请导出诊断信息交技术人员处理。
     </div>}
-    {state.replyError && <div className="workflow-alert" role="alert">自动回复需处理：{state.replyError}</div>}
+    {state.replyBackoff ? <div className="workflow-notice" role="status">{state.replyStatus}</div> : state.replyError && <div className="workflow-alert" role="alert">自动回复需处理：{state.replyError}</div>}
     {mode !== "touch" && <WorkflowPublishRecovery workflow={workflow} />}
     {notice && <div className="workflow-notice" role="status"><Check size={16} />{notice}</div>}
     {savedPlannedTask && !state.enabled && <div className="workflow-ready-start" role="status">
@@ -706,6 +712,8 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
   return <section className="workflow-recipients">
     <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />开启自动回复（启动程序后监听新消息）</label>
     <div className="workflow-list-head"><h2>接待范围</h2><span>{state.recipients.length} 位客户</span></div>
+    {!!state.replyExcludedCount && <p className="workflow-small-note">{state.replyExcludedCount} 位因重名、资料变化或账号不一致暂不自动回复。</p>}
+    {!!state.replyEnrollAmbiguousCount && <p className="workflow-small-note">最近一次从触达自动加入时，{state.replyEnrollAmbiguousCount} 位因重名未加入。</p>}
     <p className="workflow-small-note">可以直接选择接待客户，也可以从触达计划加入。保存名单后不会发送消息，启动程序才开始接待。</p>
     <details className="workflow-details" open={state.recipients.length === 0 ? true : undefined}><summary>添加接待联系人</summary>
       {available.length ? <><input className="workflow-recipient-search" aria-label="搜索可添加联系人" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索联系人" />

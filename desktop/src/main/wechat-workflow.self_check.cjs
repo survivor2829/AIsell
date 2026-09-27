@@ -7,6 +7,7 @@ const { createAiExpertStore } = require("./ai-expert.cjs");
 const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
 const { createTouchWorkflow } = require("./touch-workflow.cjs");
+const { createAutoReplyController } = require("./auto-reply-ipc.cjs");
 const { loadTaskState, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
 const { createTaskPassportStore } = require("./task-passport.cjs");
 const { configureDiagnostics } = require("./diagnostics.cjs");
@@ -1039,7 +1040,124 @@ async function checkUnknownReasonQualityCounter() {
   await control.dispose();
 }
 
+async function checkRealReplyWorkflowRecovery() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-reply-workflow-recovery-"));
+  const activeTouchDir = path.join(rootDir, "touch");
+  fs.mkdirSync(activeTouchDir, { recursive: true });
+  const contacts = [
+    { id: "private-good", name: "private-unique", allowed: true, wechatAccountId: "wx-a", wechatId: "good" },
+    { id: "private-bad", name: "private-duplicate", allowed: true, wechatAccountId: "wx-a", wechatId: "bad" },
+    { id: "private-other", name: "private-duplicate", allowed: false, wechatAccountId: "wx-a", wechatId: "other" }
+  ];
+  fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify(contacts));
+  let nowMs = new Date("2026-07-15T10:00:00+08:00").getTime();
+  let scans = 0;
+  let sends = 0;
+  let failure = "AI_NETWORK_ERROR";
+  let scanFailure = "";
+  const candidate = { ok: true, conversation: "private-unique", message: "private-message", runtimeId: "private-turn",
+    pid: 81, hWnd: "91", context: [{ role: "user", content: "private-message", key: "private-turn" }] };
+  const queue = [candidate];
+  const scanIncoming = () => { scans += 1; if (scanFailure) return { ok: false, reason: scanFailure };
+    return queue.shift() || { ok: false, reason: "no_unread_message" }; };
+  scanIncoming.requeue = (item) => { queue.unshift(item); return true; };
+  const reply = createAutoReplyController({
+    dataDir: path.join(rootDir, "reply"), activeTouchDir, now: () => new Date(nowMs),
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "reply" } }), update() {}, release() {} },
+    expertStore: { read: () => ({ ready: true, expertRules: { text: "请礼貌回复" }, businessKnowledge: { text: "设备信息" } }) },
+    deepSeekClient: { assertAvailable() {}, reply: async () => {
+      if (failure) throw Object.assign(new Error("private-ai-error"), { code: failure });
+      return { action: "answer", reply: "您好，可以继续了解。", reasonCode: "general_guidance" };
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { if (await input.beforeDraft()) sends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const events = [];
+  const controller = createWechatWorkflowController({
+    rootDir, activeTouchDir, autoReplyDir: path.join(rootDir, "reply"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, now: () => new Date(nowMs), getAccount: () => "wx-a",
+    logger: { event: (_module, name, details, metadata) => events.push({ name, ...details, logCode: metadata?.code }) }, reply,
+    executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contacts[0], contacts[1]], script: "private-script" }),
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 2, total: 2 } }) } }
+  });
+  try {
+    const added = await controller.addTask({ type: "touch", payload: { contactIds: ["private-good", "private-bad"], script: "private-script" } });
+    assert.equal(added.task.replyEnrollExcluded, 1);
+    assert.equal(added.task.replyEnrollAmbiguous, 1);
+    assert.deepEqual(controller.status().recipients.map((item) => item.id), ["private-good"]);
+    assert.equal(events.find((event) => event.name === "reply.enroll_excluded")?.logCode, "workflow_recipient_ambiguous");
+    await controller.start();
+    await controller.tick();
+    await controller.tick();
+    assert.equal(controller.status().replyError, "");
+    assert.equal(controller.status().phase, "listening");
+    assert.equal(events.filter((event) => event.name === "reply.backoff").length, 1);
+    const beforeBackoffScans = scans;
+    await controller.tick();
+    assert.equal(scans, beforeBackoffScans);
+    assert.equal(controller.status().replyError, "");
+    nowMs += 30_000;
+    failure = "";
+    await controller.tick();
+    assert.equal(sends, 1);
+    assert.equal(controller.status().enabled, true);
+    scanFailure = "wechat_window_changed";
+    await controller.tick();
+    assert.equal(controller.status().phase, "needs_attention");
+    scanFailure = "";
+    await controller.start();
+    const beforeRestartScans = scans;
+    await controller.tick();
+    assert.equal(scans, beforeRestartScans + 1);
+    assert.equal(controller.status().phase, "listening");
+    assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "workflow_window_changed"), true);
+    scanFailure = "wechat_window_changed";
+    await controller.tick();
+    assert.equal(events.filter((event) => event.name === "reply.result" && event.reason === "workflow_window_changed").length, 2,
+      "the same failure must be logged again in a new run");
+    assert.doesNotMatch(JSON.stringify(events), /private-good|private-bad|private-unique|private-duplicate|private-message|private-ai-error/u);
+  } finally { await controller.dispose(); }
+}
+
+async function checkReplyFailureDiagnosticsAcrossRuns() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-reply-diagnostic-dedupe-"));
+  const contact = { id: "private-contact", name: "private-name", allowed: true, wechatAccountId: "wx-a" };
+  const events = [];
+  const controller = createWechatWorkflowController({
+    rootDir, activeTouchDir: path.join(rootDir, "touch"), autoReplyDir: path.join(rootDir, "reply"),
+    momentsDir: path.join(rootDir, "moments"), autoSchedule: false,
+    now: () => new Date("2026-07-15T10:00:00+08:00"), getAccount: () => "wx-a",
+    logger: { event: (_module, name, details) => events.push({ name, ...details }) },
+    reply: { runWorkflowStep: async () => ({ handled: false, status: "needs_attention",
+      reasonCode: "workflow_window_changed", error: "窗口已变化" }) },
+    executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contact], script: "private-script" }),
+      runWorkflowStep: async () => { throw new Error("future task must not run"); } } }
+  });
+  try {
+    await controller.addTask({ type: "touch", scheduledAt: "2026-07-15T11:00:00+08:00",
+      payload: { contactIds: [contact.id], script: "private-script" } });
+    await controller.start();
+    await controller.tick();
+    await controller.tick();
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 1,
+      "a sticky reply error must be diagnosed once while unchanged");
+    await controller.pause();
+    await controller.start();
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.result" && entry.reason === "workflow_window_changed").length, 2,
+      "the same failure must be logged again after restart without an idle result between runs");
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 2);
+    assert.doesNotMatch(JSON.stringify(events), /private-contact|private-name|private-script/u);
+  } finally { await controller.dispose(); }
+}
+
 async function main() {
+  await checkRealReplyWorkflowRecovery();
+  await checkReplyFailureDiagnosticsAcrossRuns();
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
   let clock = new Date(2026, 8, 2, 11, 0);
   let account = "test-account";
