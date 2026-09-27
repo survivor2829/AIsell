@@ -1,5 +1,20 @@
 # T7b【P2】自动回复：空闲时不抢微信前台，只在需要时返回聊天页
 
+> **2026-09-27 追加（T7a 二审遗留，本卡一并处理；与下文冲突时以本段为准）**
+>
+> 1. **【安全，必须修，基线就有】首次接管时，用户的暂停会被覆盖。**
+>    - 位置：`runWorkflowStep` 的首次接管块（`auto-reply-ipc.cjs` 中 `pause("workflow_takeover")` → `await waitForScanIdle()` → `workflowStartPending = true`）。
+>    - 问题：等旧扫描结束的这段时间里，用户点了暂停；接管完成后，程序又把"待启动"标记置回，于是状态变回运行中并发出回复。审查探针 Q7：发送 1 次。
+>    - 要求：用户暂停优先。等待结束后，如果期间用户暂停过，就不要再置待启动。
+>    - 用例：在等待期间暂停，断言最终仍是暂停、发送 0 次；去掉修复后测试必须失败。
+> 2. **界面**：在悬浮窗暂停后，`runWorkflowStep` 返回"已暂停"但不带提示，接待状态显示成"本次未发现待回复消息"，看起来像还在监听。请改为明确提示（例如"自动回复已暂停，请检查后重新启动"），并补断言。
+> 3. **测试缺口**（审查脚本 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t7a-r2\mutations2.json`）：
+>    - N09：去重签名要包含人数，人数变化后要重新记录；
+>    - N10：第二个退避窗口也要记录；
+>    - N15：加入名单的日志码按实际原因写，至少测两种原因；
+>    - 退避中暂停后，再明确启动能恢复发送（Q1b）；
+>    - 退避期间调用 `pauseWorkflow`（Q2b）。
+
 分支：`codex/auto-reply-background-scan`
 
 依赖：T7a 合并后再开始。两张卡都改 `auto-reply-ipc.cjs` 的 `resolveWorkflowContactScope` 和 `runWorkflowStep`，也都改 `wechat-workflow.cjs` 的 reply step。
