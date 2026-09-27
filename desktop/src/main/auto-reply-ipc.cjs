@@ -1504,6 +1504,7 @@ function createAutoReplyController(options = {}) {
   let workflowHandled = false;
   let workflowProgress = null;
   let workflowBackoff = { attempt: 0, until: 0, reasonCode: "" };
+  const workflowDiagnosticCache = new Map();
   const retryDelays = [30_000, 120_000, 300_000];
   function resetWorkflowBackoff() { workflowBackoff = { attempt: 0, until: 0, reasonCode: "" }; }
   function enterWorkflowBackoff(reasonCode) {
@@ -1781,6 +1782,15 @@ function createAutoReplyController(options = {}) {
   }
 
   function appendDiagnostic(event, details = {}) {
+    if (event === "workflow_scope_excluded" || event === "workflow_step_return") {
+      const duringBackoff = event === "workflow_step_return" && workflowBackoff.until > now().getTime()
+        && details.code === workflowBackoff.reasonCode;
+      const signature = duringBackoff ? JSON.stringify([details.code, workflowBackoff.until])
+        : JSON.stringify([details.code, details.eligible_count, details.alias_count,
+          details.alias_json_length, details.excluded_count, details.excludedReasons]);
+      if (workflowDiagnosticCache.get(event) === signature) return;
+      workflowDiagnosticCache.set(event, signature);
+    }
     const phase = diagnosticCode(details.phase, "runtime");
     const code = diagnosticCode(details.code || state.last_scan_reason, "");
     const entry = {
@@ -2229,6 +2239,8 @@ function createAutoReplyController(options = {}) {
 
   function pause(reason = "paused_by_user") {
     runEpoch += 1;
+    workflowStartPending = false;
+    resetWorkflowBackoff();
     if (timer) cancelSchedule(timer);
     timer = null;
     pendingUnsentContexts.clear();
@@ -3815,8 +3827,8 @@ function createAutoReplyController(options = {}) {
 
   async function pauseWorkflow(reason = "workflow_paused") {
     workflowIsEnabled = () => false;
-    workflowStartPending = true;
     pause(reason);
+    workflowStartPending = true;
     await waitForScanIdle();
     while (starting) await new Promise((resolve) => setTimeout(resolve, 10));
     return { ok: true, state: publicState() };
@@ -3826,6 +3838,7 @@ function createAutoReplyController(options = {}) {
     workflowStartPending = true;
     resetWorkflowBackoff();
     appendDiagnostic("workflow_resume_requested", { phase: "control", code: "workflow_resume_requested" });
+    workflowDiagnosticCache.clear();
     return { ok: true };
   }
 
@@ -3859,6 +3872,9 @@ function createAutoReplyController(options = {}) {
       }
       if (timer) cancelSchedule(timer);
       timer = null;
+      if (workflowMode && state.status === "paused" && state.last_event === "paused_by_user" && !workflowStartPending) {
+        return stepReturn({ handled: false, status: "paused" }, "paused_by_user");
+      }
       workflowIsEnabled = () => enabled() === true;
       workflowRecipients = Array.isArray(input.recipients)
         ? input.recipients.map((contact) => ({ ...contact }))
@@ -3954,7 +3970,9 @@ function createAutoReplyController(options = {}) {
   function screenWorkflowRecipients(contacts) {
     try {
       const scope = resolveWorkflowContactScope(activeTouchDir, Array.isArray(contacts) ? contacts : []);
-      return { accepted: scope.ok ? scope.contacts : [], excluded: scope.excluded || [] };
+      return { accepted: scope.ok ? scope.contacts : [], excluded: scope.code === "workflow_account_changed"
+        ? [...(scope.excluded || []), ...scope.contacts.map((contact) => ({ id: normalizeText(contact.id), code: "workflow_account_changed" }))]
+        : scope.excluded || [] };
     } catch {
       return { accepted: [], excluded: (Array.isArray(contacts) ? contacts : []).map((contact) => ({ id: normalizeText(contact?.id), code: "workflow_recipient_changed" })) };
     }

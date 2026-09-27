@@ -712,7 +712,7 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
   return <section className="workflow-recipients">
     <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />开启自动回复（启动程序后监听新消息）</label>
     <div className="workflow-list-head"><h2>接待范围</h2><span>{state.recipients.length} 位客户</span></div>
-    {!!state.replyExcludedCount && <p className="workflow-small-note">{state.replyExcludedCount} 位因重名或资料变化暂不自动回复。</p>}
+    {!!state.replyExcludedCount && <p className="workflow-small-note">{state.replyExcludedCount} 位因重名、资料变化或账号不一致暂不自动回复。</p>}
     {!!state.replyEnrollAmbiguousCount && <p className="workflow-small-note">最近一次从触达自动加入时，{state.replyEnrollAmbiguousCount} 位因重名未加入。</p>}
     <p className="workflow-small-note">可以直接选择接待客户，也可以从触达计划加入。保存名单后不会发送消息，启动程序才开始接待。</p>
     <details className="workflow-details" open={state.recipients.length === 0 ? true : undefined}><summary>添加接待联系人</summary>

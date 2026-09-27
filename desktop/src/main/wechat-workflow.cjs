@@ -79,6 +79,7 @@ function createWechatWorkflowController(options) {
   let replyEnrollExcludedCount = 0;
   let replyEnrollAmbiguousCount = 0;
   let lastReplyBackoff = "";
+  let lastReplySkippedReason = "";
   let loadError = "";
   let timer = null;
   let inFlight = null;
@@ -283,7 +284,8 @@ function createWechatWorkflowController(options) {
     replyEnrollAmbiguousCount = task.replyEnrollAmbiguous;
     if (excluded.length) log("reply.enroll_excluded", { count: excluded.length,
       ambiguous_count: excluded.filter((item) => item.code === "workflow_recipient_ambiguous").length,
-      changed_count: excluded.filter((item) => item.code === "workflow_recipient_changed").length }, { level: "warn", code: "workflow_recipient_ambiguous" });
+      changed_count: excluded.filter((item) => item.code === "workflow_recipient_changed").length,
+      account_count: excluded.filter((item) => item.code === "workflow_account_changed").length }, { level: "warn", code: excluded[0].code });
     const next = { ...recipients, accounts: { ...recipients.accounts, [task.accountName]: [...existing.values()] } };
     writeJsonAtomic(recipientsFile, next);
     recipients = next;
@@ -514,7 +516,10 @@ function createWechatWorkflowController(options) {
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
     } else if (!readyTask && replyError) {
-      log("reply.step_skipped", { reason: "reply_error_sticky" }, { level: "warn", code: "reply_error_sticky" });
+      if (lastReplySkippedReason !== "reply_error_sticky") {
+        log("reply.step_skipped", { reason: "reply_error_sticky" }, { level: "warn", code: "reply_error_sticky" });
+        lastReplySkippedReason = "reply_error_sticky";
+      }
     } else if (!readyTask && !replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
@@ -900,6 +905,7 @@ function createWechatWorkflowController(options) {
         replyBackoff = false;
         lastReplyDiagnostic = "";
         lastReplyBackoff = "";
+        lastReplySkippedReason = "";
         options.reply?.resumeWorkflow?.();
         replyStatus = accountRecipients().length ? "准备接待客户" : "暂无接待客户";
         refreshDay(); settleQueue(); emit(); schedule(0);

@@ -1078,7 +1078,7 @@ async function checkRealReplyWorkflowRecovery() {
   const controller = createWechatWorkflowController({
     rootDir, activeTouchDir, autoReplyDir: path.join(rootDir, "reply"), momentsDir: path.join(rootDir, "moments"),
     autoSchedule: false, now: () => new Date(nowMs), getAccount: () => "wx-a",
-    logger: { event: (_module, name, details) => events.push({ name, ...details }) }, reply,
+    logger: { event: (_module, name, details, metadata) => events.push({ name, ...details, logCode: metadata?.code }) }, reply,
     executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contacts[0], contacts[1]], script: "private-script" }),
       runWorkflowStep: async () => ({ status: "completed", progress: { done: 2, total: 2 } }) } }
   });
@@ -1087,6 +1087,7 @@ async function checkRealReplyWorkflowRecovery() {
     assert.equal(added.task.replyEnrollExcluded, 1);
     assert.equal(added.task.replyEnrollAmbiguous, 1);
     assert.deepEqual(controller.status().recipients.map((item) => item.id), ["private-good"]);
+    assert.equal(events.find((event) => event.name === "reply.enroll_excluded")?.logCode, "workflow_recipient_ambiguous");
     await controller.start();
     await controller.tick();
     await controller.tick();
@@ -1120,8 +1121,43 @@ async function checkRealReplyWorkflowRecovery() {
   } finally { await controller.dispose(); }
 }
 
+async function checkReplyFailureDiagnosticsAcrossRuns() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-reply-diagnostic-dedupe-"));
+  const contact = { id: "private-contact", name: "private-name", allowed: true, wechatAccountId: "wx-a" };
+  const events = [];
+  const controller = createWechatWorkflowController({
+    rootDir, activeTouchDir: path.join(rootDir, "touch"), autoReplyDir: path.join(rootDir, "reply"),
+    momentsDir: path.join(rootDir, "moments"), autoSchedule: false,
+    now: () => new Date("2026-07-15T10:00:00+08:00"), getAccount: () => "wx-a",
+    logger: { event: (_module, name, details) => events.push({ name, ...details }) },
+    reply: { runWorkflowStep: async () => ({ handled: false, status: "needs_attention",
+      reasonCode: "workflow_window_changed", error: "窗口已变化" }) },
+    executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contact], script: "private-script" }),
+      runWorkflowStep: async () => { throw new Error("future task must not run"); } } }
+  });
+  try {
+    await controller.addTask({ type: "touch", scheduledAt: "2026-07-15T11:00:00+08:00",
+      payload: { contactIds: [contact.id], script: "private-script" } });
+    await controller.start();
+    await controller.tick();
+    await controller.tick();
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 1,
+      "a sticky reply error must be diagnosed once while unchanged");
+    await controller.pause();
+    await controller.start();
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.result" && entry.reason === "workflow_window_changed").length, 2,
+      "the same failure must be logged again after restart without an idle result between runs");
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 2);
+    assert.doesNotMatch(JSON.stringify(events), /private-contact|private-name|private-script/u);
+  } finally { await controller.dispose(); }
+}
+
 async function main() {
   await checkRealReplyWorkflowRecovery();
+  await checkReplyFailureDiagnosticsAcrossRuns();
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
   let clock = new Date(2026, 8, 2, 11, 0);
   let account = "test-account";

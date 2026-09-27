@@ -4899,6 +4899,8 @@ async function main() {
   let workflowFailure = "AI_NETWORK_ERROR";
   let workflowScanFailure = "";
   let workflowStartupFailure = "";
+  let workflowStartChecks = 0;
+  let workflowPrimes = 0;
   const workflowCandidate = { ok: true, conversation: "private-a", conversationEvidence: "private-a",
     message: "private-message", runtimeId: "private-turn-1", pid: 81, hWnd: "91",
     context: [{ role: "user", content: "private-message", key: "private-turn-1" }] };
@@ -4910,11 +4912,11 @@ async function main() {
   const workflowController = createAutoReplyController({
     dataDir: path.join(root, "workflow_resilience"), activeTouchDir: workflowContacts, coordinator,
     expertStore: readyExpert(), now: () => new Date(workflowNow),
-    deepSeekClient: { assertAvailable: () => { if (workflowStartupFailure) throw Object.assign(new Error("private-gateway"), { code: workflowStartupFailure }); }, reply: async () => {
+    deepSeekClient: { assertAvailable: () => { workflowStartChecks += 1; if (workflowStartupFailure) throw Object.assign(new Error("private-gateway"), { code: workflowStartupFailure }); }, reply: async () => {
       if (workflowFailure) throw Object.assign(new Error("private-ai-failure"), { code: workflowFailure });
       return answerDecision("可以继续了解。");
     } },
-    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    primeIncoming: () => { workflowPrimes += 1; return { ok: true, source: "session_prime", primed: true, latestRole: "assistant" }; },
     scanIncoming: workflowScan, verifyIncoming: () => workflowVerify ? { ok: true } : { ok: false, reason: "incoming_message_changed" },
     send: async (options) => { if (!await options.beforeDraft()) return { ok: false, reason: "incoming_message_changed" }; workflowSends += 1; return { ok: true }; },
     sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
@@ -4933,14 +4935,19 @@ async function main() {
   assert.equal(workflowScans, 1);
   await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowScans, 1, "backoff must stop before scanning");
+  const checksBeforeRetry = workflowStartChecks;
   workflowNow += 30_000;
   workflowFailure = "";
   workflowResult = await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowResult.status, "running");
   assert.equal(workflowSends, 1, "the failed candidate must be replayed exactly once");
   assert.equal(workflowScans, 2);
+  assert.equal(workflowStartChecks, checksBeforeRetry + 1, "backoff expiry must redo startup checks");
   const nextWorkflowCandidate = (suffix) => ({ ...workflowCandidate, runtimeId: `private-turn-${suffix}`,
     context: [{ role: "user", content: "private-message", key: `private-turn-${suffix}` }] });
+  workflowQueue.push({ ...nextWorkflowCandidate("excluded"), conversation: "private-duplicate", conversationEvidence: "private-duplicate" });
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowSends, 1, "an excluded duplicate conversation must never receive a reply");
   workflowQueue.push(nextWorkflowCandidate("2"));
   workflowFailure = "AI_NETWORK_ERROR";
   for (const delay of [30_000, 120_000, 300_000, 300_000]) {
@@ -4995,6 +5002,7 @@ async function main() {
   assert.equal(workflowResult.status, "backoff");
   assert.equal(workflowResult.reasonCode, "workflow_chat_navigation_failed");
   const navigationScans = workflowScans;
+  const navigationPrimes = workflowPrimes;
   await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowScans, navigationScans);
   workflowNow += 30_000;
@@ -5002,10 +5010,27 @@ async function main() {
   workflowResult = await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowResult.status, "running");
   assert.equal(workflowScans, navigationScans + 1);
+  assert.equal(workflowPrimes, navigationPrimes + 1, "navigation recovery must re-prime before scanning");
   const workflowDiagnosticText = fs.readFileSync(path.join(root, "workflow_resilience", "auto-reply-diagnostics.jsonl"), "utf8");
   assert.doesNotMatch(workflowDiagnosticText, /private-a|private-duplicate|private-old|private-message|private-ai-failure/u);
   const noEligible = await workflowController.runWorkflowStep({ ...workflowInput, recipients: workflowRecipients.slice(1) });
   assert.equal(noEligible.reasonCode, "workflow_recipients_none_eligible");
+  assert.throws(() => workflowController.prepareWorkflowRecipients(["b"]), /private-duplicate|重复/u,
+    "manual selection must reject an ambiguous contact as a whole");
+  workflowController.resumeWorkflow();
+  const noEligibleAgain = await workflowController.runWorkflowStep({ ...workflowInput, recipients: workflowRecipients.slice(1) });
+  assert.equal(noEligibleAgain.reasonCode, "workflow_recipients_none_eligible");
+  const scopeReturns = fs.readFileSync(path.join(root, "workflow_resilience", "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line))
+    .filter((entry) => entry.event === "workflow_step_return" && entry.code === "scope_invalid:workflow_recipients_none_eligible");
+  assert.equal(scopeReturns.length, 2, "the same early-return diagnostic must reappear in a new run");
+  const mixedAccount = { id: "account-b", name: "private-account-b", allowed: true, wechatAccountId: "wx-b", wechatId: "account-b" };
+  const mixedDir = writeContactsFixture("workflow_mixed_accounts", [workflowUniverse[0], mixedAccount]);
+  const mixedController = createAutoReplyController({ dataDir: path.join(root, "workflow_mixed_state"), activeTouchDir: mixedDir });
+  const mixedScreen = mixedController.screenWorkflowRecipients([workflowUniverse[0], mixedAccount]);
+  assert.equal(mixedScreen.accepted.length, 0);
+  assert.deepEqual(mixedScreen.excluded.map((item) => item.code), ["workflow_account_changed", "workflow_account_changed"],
+    "a mixed-account auto-join must report why every eligible contact was rejected");
 
   const otherValidContact = { id: "e", name: "private-e", allowed: true, wechatAccountId: "wx-a", wechatId: "e" };
   const changedDir = writeContactsFixture("workflow_changed_mid_step", [workflowUniverse[0], otherValidContact]);
@@ -5037,11 +5062,74 @@ async function main() {
   const unknownFirst = await unknownWorkflowController.runWorkflowStep(unknownInput);
   assert.equal(unknownFirst.status, "needs_attention");
   assert.equal(unknownFirst.reasonCode, "send_outcome_unknown_paused");
+  await unknownWorkflowController.runWorkflowStep(unknownInput);
+  const unknownDiagnostics = fs.readFileSync(path.join(root, "workflow_unknown_state", "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(unknownDiagnostics, /"code":"start_pending_missing"/u);
   unknownWorkflowController.resumeWorkflow();
   await unknownWorkflowController.runWorkflowStep(unknownInput);
   assert.equal(unknownSends, 1, "an unknown send must not be attempted again after restart");
 
-  const largeContacts = Array.from({ length: 3000 }, (_, index) => ({ id: `large-${index}`, name: `接待客户${index}`,
+  let retryClock = workflowNow;
+  let retrySends = 0;
+  let forceEmptyScan = false;
+  let retryFailure = "AI_NETWORK_ERROR";
+  const retryQueue = [nextWorkflowCandidate("retry-reset")];
+  const retryScan = () => forceEmptyScan ? { ok: false, reason: "no_unread_message" }
+    : retryQueue.shift() || { ok: false, reason: "no_unread_message" };
+  retryScan.requeue = (candidate) => { retryQueue.unshift(candidate); return true; };
+  const retryDir = path.join(root, "workflow_retry_reset");
+  const retryController = createAutoReplyController({ dataDir: retryDir, activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(retryClock),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => {
+      if (retryFailure) throw Object.assign(new Error("private-network-error"), { code: retryFailure });
+      return answerDecision("您好。");
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: retryScan, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { if (await input.beforeDraft()) retrySends += 1; return { ok: true }; },
+    runStep: async () => ({ ok: true }) });
+  const retryInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  assert.equal((await retryController.runWorkflowStep(retryInput)).retryAfterMs, 30_000);
+  for (let poll = 0; poll < 120; poll += 1) await retryController.runWorkflowStep(retryInput);
+  const workflowRetryDiagnostics = () => fs.readFileSync(path.join(retryDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  assert.equal(workflowRetryDiagnostics().filter((entry) => entry.event === "workflow_step_return").length, 1,
+    "repeated backoff returns must not flood diagnostics");
+  retryClock += 30_000;
+  forceEmptyScan = true;
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "running");
+  forceEmptyScan = false;
+  assert.equal((await retryController.runWorkflowStep(retryInput)).retryAfterMs, 30_000,
+    "a complete empty scan must reset the backoff attempt");
+  retryController.pause();
+  retryClock += 30_000;
+  retryFailure = "";
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "paused");
+  assert.equal(retryController.status().status, "paused");
+  assert.equal(retrySends, 0, "user pause during backoff must prevent the queued reply after expiry");
+
+  let floodClock = workflowNow;
+  const floodDir = path.join(root, "workflow_diagnostic_flood");
+  const floodController = createAutoReplyController({ dataDir: floodDir, activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(floodClock),
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }), verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }), runStep: async () => ({ ok: true }) });
+  const floodInput = { recipients: workflowUniverse.slice(0, 2), accountName: "wx-a", isEnabled: () => true };
+  for (let poll = 0; poll < 200; poll += 1) {
+    await floodController.runWorkflowStep(floodInput);
+    floodClock += 2500;
+  }
+  const floodDiagnostics = () => fs.readFileSync(path.join(floodDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 1);
+  floodController.resumeWorkflow();
+  await floodController.runWorkflowStep(floodInput);
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 2);
+
+  const largeContacts = Array.from({ length: 3000 }, (_, index) => ({ id: `large-${index}`,
+    name: `微信昵称客户${index}`, remark: `备注客户名${index}`, nickname: `昵称${index}号`,
     allowed: true, wechatAccountId: "wx-a", wechatId: `wx-large-${index}` }));
   const largeDir = writeContactsFixture("workflow_large_contacts", largeContacts);
   const largeFile = path.join(largeDir, "contacts.json");
