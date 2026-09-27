@@ -86,6 +86,13 @@ try {
   assert.equal(files.some((entry) => entry.name.endsWith("run-bill.json")), true);
   assert.equal(files.some((entry) => entry.name.endsWith("run-bill.txt")), true);
 
+  // cleanup() compares real file mtimes, so pin them to the fake clock instead of the day the check runs.
+  const writtenAt = new Date("2026-09-19T01:00:00.000Z");
+  const pinMtimes = (target) => {
+    if (fs.lstatSync(target).isDirectory()) for (const name of fs.readdirSync(target)) pinMtimes(path.join(target, name));
+    fs.utimesSync(target, writtenAt, writtenAt);
+  };
+  pinMtimes(passportDir);
   clock.value = new Date("2026-10-25T01:00:00.000Z");
   store.cleanup();
   assert.equal(fs.existsSync(passportDir), false, "passports older than 30 days must be removed");
