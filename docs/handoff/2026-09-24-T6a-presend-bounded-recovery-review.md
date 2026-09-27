@@ -45,3 +45,14 @@
 - `failure-evidence.self_check` 在 c8adade 上就失败（"missing source image-r015"）。它不在 `check:self` 里，属于 B 线"接入 12 个未登记自检"要处理的范围。
 
 **自测**：审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t6a\`：探针 `DESK=<你的工作区>/desktop node probe.cjs` 和 `probe-restart.cjs`（同样用 DESK）；变异 `WT=<你的工作区> node mutate.cjs mutations*.json`。上面列出的存活项都必须被抓到，`check:self`、`build:test` 都要通过。
+
+## 二审（ceaa740）：通过，已合并（2026-09-27，合并提交 `9ab1864`）
+
+- 一审 3 条必须修都做到了：
+  - 恢复入口和 `canRetryWorkflowTask` 共用同一个 `resumableFreshEdit`。多段任务在发送前出现异常，重启后可以重试，文字和图片各发 1 次。
+  - 日志级别按实际走的分支来定。
+  - 每次最终跳过或熔断只写 1 条 passport 失败记录（用真实 store 测过）。
+- 一审存活的 8 个变异全部被抓到。24 个安全场景和 18 个"可能已发出"的负例场景都通过，都没有重发。
+- **只缺测试的地方，由 Claude 在基线补上**：删掉 `resumableFreshEdit` 的任一守卫（send_attempted、retry_blocked、message_parts、行状态，即 N02–N05），原来的自检发现不了。其中 N02、N05 会真的重发文字和图片。已在 `touch-message-sequence.self_check.cjs` 补上 4 个"可能已发出"的多段负例，要求 canRetry=false 且发送 0 次；补完后 N02–N05 都会被抓到。
+- 合并版本 `check:self` 87 项、`build:test` 都通过。
+- 遗留（不影响发送安全，T6b 顺手处理）：日志级别的几个边角情况没测到（N09、N10、N12、N18，只影响 passport 条数）；M15（发送前跳过的记录里带上旧的搜索规则号）。

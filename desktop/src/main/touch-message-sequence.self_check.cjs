@@ -462,6 +462,41 @@ async function checkTouchMessageSequence() {
   assert.deepEqual(calls.slice(beforeMultipartCalls).map((call) => call.kind), ["text", "image"],
     "multipart pre-sending recovery sends each part exactly once");
 
+  // The fresh-row exception must never widen to a row that may already have gone out.
+  const { loadTaskState, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+  const possiblySentRows = [
+    ["prepared", { status: "prepared" }],
+    ["send_attempted null", { send_attempted: null }],
+    ["retry_blocked missing", { retry_blocked: undefined }],
+    ["text sent, image unknown", { message_parts: [{ kind: "text", status: "sent_verified" }, { kind: "image", status: "outcome_unknown" }] }]
+  ];
+  for (const [label, patch] of possiblySentRows) {
+    const negativeWorkflow = createTouchWorkflow(config);
+    const negativePayload = negativeWorkflow.prepareWorkflowTask({ script: `多段负例 ${label}`, contactIds: [contact.id], imageIds: [imageId] });
+    const negativeRecord = { id: crypto.randomUUID(), payload: negativePayload, progress: { done: 0 }, status: "running" };
+    const negativeDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(negativeRecord.id).digest("hex"));
+    fs.mkdirSync(path.join(negativeDir, "contacts.json"), { recursive: true });
+    await negativeWorkflow.runWorkflowStep(negativeRecord, context);
+    fs.rmdirSync(path.join(negativeDir, "contacts.json"));
+    const negativeTask = loadTaskState(negativeDir);
+    negativeTask.status = "paused";
+    negativeTask.phase = "preparing_batch";
+    const negativeRow = negativeTask.results[0];
+    Object.assign(negativeRow, { status: "generated", retry_blocked: false, send_attempted: false });
+    delete negativeRow.message_parts;
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === undefined) delete negativeRow[key];
+      else negativeRow[key] = value;
+    }
+    saveTaskState(negativeDir, negativeTask);
+    const beforeNegativeCalls = calls.length;
+    const restartedNegative = createTouchWorkflow(config);
+    assert.equal(restartedNegative.canRetryWorkflowTask(negativeRecord, negativePayload), false,
+      `a possibly-sent multipart row (${label}) must not expose retry`);
+    await restartedNegative.runWorkflowStep(negativeRecord, context);
+    assert.equal(calls.length, beforeNegativeCalls, `a possibly-sent multipart row (${label}) must not be resent`);
+  }
+
   const corruptFile = path.join(interruptedDir, "touch_task.json");
   fs.writeFileSync(corruptFile, "{bad json", "utf8");
   assert.equal(createTouchWorkflow(config).describeSkippedWorkflowTask(interruptedRecord), null,
