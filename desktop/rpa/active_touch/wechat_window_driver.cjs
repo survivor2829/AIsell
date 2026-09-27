@@ -2322,6 +2322,20 @@ function discardSearchCapture(result) {
   }
 }
 
+function cleanupStaleSearchCaptures(now = Date.now()) {
+  const directory = os.tmpdir();
+  try {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(entry.name)) continue;
+      const file = path.join(directory, entry.name);
+      try {
+        const stat = fs.lstatSync(file);
+        if (stat.isFile() && !stat.isSymbolicLink() && now - stat.mtimeMs > 24 * 60 * 60 * 1000) fs.unlinkSync(file);
+      } catch {}
+    }
+  } catch {}
+}
+
 function openWechatSearchResult(query, context = {}) {
   if (!String(query ?? "").trim()) return { ok: false };
   const runner = typeof context.runner === "function" ? context.runner : runPowerShell;
@@ -2859,6 +2873,7 @@ module.exports = {
   openWechatSearchResult,
   openWechatSearchResultAsync,
   discardSearchCapture,
+  cleanupStaleSearchCaptures,
   runPowerShell,
   runPowerShellAsync,
   verifyWechatCurrentConversation,

@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { cleanupStaleSearchCaptures } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
@@ -207,6 +208,7 @@ function createTouchWorkflow(options = {}) {
     if (!id || !contacts.length || !script) return { status: "needs_attention", progress: fallback, reasonCode: TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete, error: "触达任务资料不完整，请重新添加任务" };
     if (!enabled() || activeStep) return { status: "pending", progress: fallback };
     activeStep = true;
+    cleanupStaleSearchCaptures();
     let owner = "";
     let task;
     const taskDir = workflowDirectory(id);

@@ -51,8 +51,8 @@ async function checkWrongConversationTitleGate() {
   let titleLoop = observationScript.slice(observationScript.indexOf("function Get-ObservedElementText"), observationScript.indexOf('$titleToken = ""'));
   titleLoop = titleLoop.replace("[System.Windows.Automation.AutomationElement]$element", "$element")
     .replace("[System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition", "1, 2");
-  function replayProductionObservation(elements) {
-    const fixture = Buffer.from(JSON.stringify({ expected, elements }), "utf8").toString("base64");
+  function replayProductionObservation(expectedName, elements) {
+    const fixture = Buffer.from(JSON.stringify({ expected: expectedName, elements }), "utf8").toString("base64");
     const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\nAdd-Type -AssemblyName UIAutomationClient\n`
       + `$fixture=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${fixture}')))\n`
       + `$expectedConversation=[string]$fixture.expected; $windowRect=[pscustomobject]@{Left=0.0;Top=0.0;Right=1000.0;Bottom=700.0;Width=1000.0;Height=700.0}\n`
@@ -66,18 +66,18 @@ async function checkWrongConversationTitleGate() {
     return JSON.parse(result.stdout.trim().replace(/^\uFEFF/u, "")).titleVisible;
   }
   const header = (name) => ({ name, left: 400, top: 60 });
-  assert.equal(replayProductionObservation([header(expected)]), true, "the send-path observer must accept the exact header");
+  assert.equal(replayProductionObservation(expected, [header(expected)]), true, "the send-path observer must accept the exact header");
   const wrongHeaders = [
     [header(opened)],
     [header(opened), { name: expected, left: 120, top: 80 }],
     [header(opened), { name: expected, left: 500, top: 300 }]
   ];
-  for (const elements of wrongHeaders) assert.equal(replayProductionObservation(elements), false,
+  for (const elements of wrongHeaders) assert.equal(replayProductionObservation(expected, elements), false,
     "a longer active title must be rejected even when the session list or chat body contains the expected name");
   const mismatchedTitle = { ok: false, reason: "atomic_conversation_changed", title: "" };
   try {
     fs.writeFileSync(path.join(root, "contacts.json"), JSON.stringify([
-      { id: "target", name: expected, wechatAccountId: "account", allowed: true }
+      { id: "target", name: expected, wechatId: "wxid_fixture", wechatAccountId: "account", allowed: true }
     ]));
     const observation = {
       uiaCandidates: [], visualCandidates: [
@@ -92,6 +92,7 @@ async function checkWrongConversationTitleGate() {
       popupCandidateCount: 1, captureSource: "popup", ocrOk: true, webSearchVisible: true
     };
     let activeElements = wrongHeaders[0];
+    let openedTitle = opened;
     const sendOptions = { baseDir: root, contactsDir: root,
       contactId: "target", message: "test", authorized: true,
       windowPreflight: async () => ({ ok: true, normalized: true, layoutMode: "stable_target",
@@ -102,22 +103,28 @@ async function checkWrongConversationTitleGate() {
         if (command === "click-search-result-dry-run") {
           return clickSearchResultDryRun(root, (query, context) => openWechatSearchResult(query, {
             ...context,
-            runner: () => ({ ok: true, title: opened, processName: "Weixin", pid: 81, hWnd: "91",
-              inputLeaseTick: 101, searchResultObservation: observation }),
+            runner: () => ({ ok: true, title: openedTitle, processName: "Weixin", pid: 81, hWnd: "91",
+              inputLeaseTick: 101, searchResultObservation: query === "wxid_fixture"
+                ? { uiaCandidates: [], visualCandidates: [], webSearchCandidates: observation.webSearchCandidates,
+                  webSearchTop: 245, cropBounds: observation.cropBounds, captureSource: "formula_crop", ocrOk: true, webSearchVisible: true }
+                : observation }),
             clickRunner: () => { clicks += 1; return { ok: true, exactSearchOpened: true }; }
           }), undefined, undefined, { pid: 81, hWnd: "91" });
         }
         if (command === "input-message-dry-run") {
-          const state = { ...loadState(root), message_input_done: true, message_draft: "test" };
-          saveState(root, state);
-          return { ok: true, state };
+          return require("./state_machine.cjs").inputMessageDryRun(root, "test", () => ({ ok: true,
+            draftVerified: true, draftPoint: { xRatio: 0.5, yRatio: 0.5 } }));
         }
+        if (command === "send") return require("./state_machine.cjs").send(root, { dryRun: true, message: "test" });
         throw new Error(`unexpected step ${command}`);
       },
-      sessionDriver: async () => replayProductionObservation(activeElements)
-        ? { ok: true, title: expected, pid: 81, hWnd: "91", processName: "Weixin" }
+      sessionDriver: async (name) => replayProductionObservation(name, activeElements)
+        ? { ok: true, title: name, pid: 81, hWnd: "91", processName: "Weixin",
+          accountVerified: true, accountId: "account", conversationToken: "conversation:v2:81:91:title:fixture",
+          verificationMode: "conversation_title" }
         : mismatchedTitle,
-      sendDriver: async () => { sends += 1; return { ok: true, sendAttempted: true }; }
+      bubbleVerifier: async () => ({ ok: true, snapshot: [] }),
+      sendDriver: async () => { sends += 1; return { ok: false, sendAttempted: false }; }
     };
     const result = await executeVerifiedContactSend(sendOptions);
     assert.equal(clicks, 1, `the ambiguous local surface must reach the click path: ${JSON.stringify(result)}`);
@@ -138,6 +145,11 @@ async function checkWrongConversationTitleGate() {
       assert.equal(blocked.ok, false, "session list and chat text cannot authorize a longer active title");
       assert.equal(sends, 0, "each wrong-title variant must stop before send");
     }
+    activeElements = [header(expected)];
+    openedTitle = expected;
+    const accepted = await executeVerifiedContactSend(sendOptions);
+    assert.equal(clicks, 4, "the exact-title control must traverse the same click and send path");
+    assert.equal(sends, 1, `an exact active title must reach sendDriver: ${JSON.stringify(accepted)}`);
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
     const rejected = openWechatSearchResult(expected, { pid: 81, hWnd: "91", captureSearchFailure: true,
       searchIdentity: { expectedName: expected },
@@ -575,5 +587,11 @@ foreach($spec in @(
 } else {
   console.log("search observation PowerShell replay skipped: Windows required");
 }
-checkWrongConversationTitleGate().then(() => console.log("search wrong-title send gate passed: longer conversation opened, sends=0"))
+checkWrongConversationTitleGate().then(async () => {
+  console.log("search title send gate passed: longer title sends=0, exact title sends=1");
+  const chain = spawnSync(process.execPath, [require("node:path").join(__dirname, "wechat_search_capture_chain.self_check.cjs")],
+    { encoding: "utf8", windowsHide: true, timeout: 30000 });
+  assert.equal(chain.status, 0, chain.stderr || chain.error?.message);
+  process.stdout.write(chain.stdout);
+})
   .catch((error) => { console.error(error); process.exitCode = 1; });
