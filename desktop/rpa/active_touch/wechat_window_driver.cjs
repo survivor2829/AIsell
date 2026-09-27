@@ -476,6 +476,15 @@ function Set-WechatWindowStage([string]$stage) {
   $windowDiagnostic.window_elapsed_ms = $elapsed
   [Console]::Error.WriteLine("wechat_window_diagnostic:" + ($windowDiagnostic | ConvertTo-Json -Compress))
 }
+function Get-WechatFileVersion([string]$path) {
+  try {
+    if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.File]::Exists($path)) { return "" }
+    $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($path)
+    $version = "{0}.{1}.{2}.{3}" -f $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
+    if ($version -match '^\\d+(\\.\\d+){1,3}$') { return $version }
+  } catch {}
+  return ""
+}
 Set-WechatWindowStage "compile"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
@@ -933,6 +942,8 @@ if ($matches.Count -gt 1) {
 }
 $matched = $matches[0]
 $windowDiagnostic.window_class_code = $matched.windowClass
+$wechatVersion = Get-WechatFileVersion $matched.processPath
+if ($wechatVersion) { $windowDiagnostic.window_wechat_version = $wechatVersion }
 $windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } elseif ($matched.visualNavigation) { "visual_navigation" } else { "native_main" })
 Set-WechatWindowStage "restore"
 $hWnd = [IntPtr]$matched.hWnd

@@ -272,6 +272,8 @@ function createWechatWorkflowController(options) {
     };
   }
 
+  const controlSnapshot = () => ({ enabled, phase, in_flight: Boolean(inFlight) });
+
   function enroll(task, payload) {
     if (task.type !== "touch" || task.enrolled) return;
     const existing = new Map((recipients.accounts[task.accountName] || []).map((contact) => [contact.id, contact]));
@@ -747,14 +749,23 @@ function createWechatWorkflowController(options) {
     return task;
   }
 
-  async function pauseWorkflow() {
-    enabled = false; clearTimeout(timer);
-    phase = inFlight ? "pausing" : "paused";
-    emit();
-    await inFlight;
-    await options.reply?.pauseWorkflow?.();
-    phase = "paused"; replyStatus = "已暂停"; emit();
-    return { ok: true, state: status() };
+  async function pauseWorkflow(trigger = "user") {
+    const operation = options.logger?.begin?.("wechat_workflow", "pause", {
+      stage: "control", trigger_code: trigger, previous_phase: phase, in_flight: Boolean(inFlight)
+    }, { trace: true });
+    try {
+      enabled = false; clearTimeout(timer);
+      phase = inFlight ? "pausing" : "paused";
+      emit();
+      await inFlight;
+      await options.reply?.pauseWorkflow?.();
+      phase = "paused"; replyStatus = "已暂停"; emit();
+      operation?.end?.({ stage: "paused" }, { ok: true });
+      return { ok: true, state: status() };
+    } catch (failure) {
+      operation?.fail?.(failure);
+      throw failure;
+    }
   }
 
   async function pauseForRetry() {
@@ -846,7 +857,7 @@ function createWechatWorkflowController(options) {
   }
 
   return {
-    status, tick,
+    status, controlSnapshot, tick,
     refresh: () => {
       if (!loadError) { refreshDay(); reconcilePublishResults(); }
       return { ok: !loadError, state: status(), ...(loadError ? { error: loadError } : {}) };
@@ -943,7 +954,7 @@ function createWechatWorkflowController(options) {
     }),
     preflightStart,
     start: async () => {
-      const operation = options.logger?.begin?.("wechat_workflow", "start", { stage: "start_preflight", pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
+      const operation = options.logger?.begin?.("wechat_workflow", "start", { stage: "start_preflight", previous_phase: phase, pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
       try {
         const preflight = preflightStart();
         if (preflight.alreadyActive) {
@@ -968,6 +979,7 @@ function createWechatWorkflowController(options) {
     },
     pause: pauseWorkflow,
     dispose: async () => {
+      log("control.disposed", { trigger_code: "app_quit", previous_phase: phase, in_flight: Boolean(inFlight) });
       enabled = false; disposed = true; clearTimeout(timer);
       await inFlight;
       await options.reply?.pauseWorkflow?.();

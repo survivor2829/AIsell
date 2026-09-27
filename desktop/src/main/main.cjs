@@ -267,7 +267,9 @@ function createWindow() {
   mainWindow.on("unresponsive", () => diagnostics().event("renderer", "unresponsive", {}, { level: "error", code: "renderer_unresponsive" }));
   mainWindow.on("responsive", () => diagnostics().event("renderer", "responsive"));
   mainWindow.on("close", () => {
-    diagnostics().event("app", "window_closing");
+    const workflow = workflowController?.controlSnapshot?.();
+    diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
+      workflow_enabled: workflow?.enabled }, { trace: true });
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
@@ -361,18 +363,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       return;
     }
     const build = rendererBuildInfo();
-    const logger = configureDiagnostics({
-      rootDir: runtime.rootDir,
-      appInfo: {
-        name: app.getName(),
-        version: components.businessVersion(app),
-        edition: developmentEdition ? "development" : pilotEdition ? "pilot" : "unknown",
-        build_id: build.buildId || process.env.XIAOXI_BUILD_ID || "",
-        build_commit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
-        source_dirty: build.sourceDirty === true,
-        packaged: app.isPackaged
-      }
-    });
+    const appInfo = {
+      name: app.getName(),
+      version: components.businessVersion(app),
+      edition: developmentEdition ? "development" : pilotEdition ? "pilot" : "unknown",
+      data_profile: developmentEdition ? "test" : pilotEdition ? "delivery" : "unknown",
+      build_id: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      build_commit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
+      source_dirty: build.sourceDirty === true,
+      packaged: app.isPackaged
+    };
+    const logger = configureDiagnostics({ rootDir: runtime.rootDir, appInfo });
     taskPassportStore = createTaskPassportStore({
       rootDir: runtime.rootDir,
       onWriteFailure: () => logger.event("task_passport", "write_failed", {}, { level: "warn", code: "task_passport_write_failed" })
@@ -534,7 +535,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator,
       withProgress: (operation, readProgress) => workflowController.runContactSync(operation, readProgress)
     });
-    registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir });
+    registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir, appInfo, screen,
+      getFeedbackLatest: () => feedbackController?.status()?.items?.[0] || null });
     registerDeepSeekApiIpc({
       keyStore: deepSeekKeyStore,
       client: deepSeekClient,
@@ -847,6 +849,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     event.preventDefault();
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
+    const workflow = workflowController?.controlSnapshot?.();
+    diagnostics().event("app", "quit_requested", { workflow_phase: workflow?.phase,
+      workflow_enabled: workflow?.enabled }, { trace: true });
     cloudMaintenance?.stop();
     feedbackController?.stop();
     feedbackAdmin?.stop();

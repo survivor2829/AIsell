@@ -815,6 +815,11 @@ async function checkFloatingProgress() {
   assert.equal(windows.length, 1, "starting the unified workflow must automatically create its progress window");
   assert.equal(windows[0].visible, true, "progress must be visible before queued WeChat work begins");
   assert.equal(windows[0].settings.frame, false);
+  let closePrevented = false;
+  windows[0].emit("close", { preventDefault() { closePrevented = true; } });
+  assert.equal(closePrevented, true);
+  assert.equal(diagnosticEvents.find((entry) => entry[1] === "floating.close_redirected")?.[2]?.workflow_phase,
+    control.controlSnapshot().phase);
   await invoke("show-main");
   assert.equal(windows[0].visible, true, "returning to the main page must retain progress while work is running");
   await invoke("pause");
@@ -1028,7 +1033,8 @@ async function checkWorkflowDiagnostics() {
     begin: (_module, name, details, metadata) => {
       assert.equal(metadata.trace, true, "workflow operation traces must opt into info retention");
       events.push({ name: `${name}.started`, ...details });
-      return { end: (result) => events.push({ name: `${name}.ended`, ...result }) };
+      return { end: (result) => events.push({ name: `${name}.ended`, ...result }),
+        fail: () => events.push({ name: `${name}.exception` }) };
     }
   };
   let replyResult = { handled: false };
@@ -1057,17 +1063,23 @@ async function checkWorkflowDiagnostics() {
   await assert.rejects(control.tick(), /injected failure/);
   assert.equal(events.at(-1).stage, "reply_step");
   throwReply = false;
+  const phaseBeforePause = control.controlSnapshot().phase;
   await control.pause();
+  assert.equal(events.find((event) => event.name === "pause.started")?.trigger_code, "user");
+  assert.equal(events.find((event) => event.name === "pause.started")?.previous_phase, phaseBeforePause);
+  assert.ok(events.some((event) => event.name === "pause.ended" && event.stage === "paused"));
   replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
   await control.addTask({ type: "touch", payload: {} });
   await control.start(); await control.tick();
   assert.equal(control.status().enabled, false, "a finite task failure pauses before auto reply can run");
   assert.equal(control.status().phase, "needs_attention");
+  assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "paused");
   assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), false,
     "automatic reply must not run before a due finite task");
   assert(events.some((event) => event.name === "task_step.ended" && event.stage === "task_result" && event.reason === "task_needs_attention"));
   assert.equal(/private-customer|private-name|private-script|private-account/.test(JSON.stringify(events)), false, "diagnostics must not receive customer payloads");
   await control.dispose();
+  assert.ok(events.some((event) => event.name === "control.disposed" && event.trigger_code === "app_quit"));
 }
 
 async function checkInProgressTouchEdit() {
@@ -1180,9 +1192,11 @@ async function checkUnknownTouchResolutionRecovery() {
 async function checkUnknownReasonQualityCounter() {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
   let calls = 0;
+  const controlEvents = [];
   const options = {
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
     appVersion: "9.8.7", buildId: "quality-test", buildCommit: "abcdef1234567890",
+    logger: { event: (_module, name, details) => controlEvents.push({ name, ...details }) },
     autoSchedule: false, getAccount: () => "quality-account",
     executors: { interact: {
       prepareWorkflowTask: (_id, payload) => ({ payload }),
@@ -1197,7 +1211,13 @@ async function checkUnknownReasonQualityCounter() {
   let control = createWechatWorkflowController(options);
   const added = await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (attempt) await control.retryTask(added.task.id);
+    if (attempt) {
+      await control.retryTask(added.task.id);
+      const retryEvent = controlEvents.filter((entry) => entry.name === "task.retry_requested").at(-1);
+      assert.equal(retryEvent.previous_status, "needs_attention");
+      assert.equal(retryEvent.reason, attempt === 2 ? "new_reason_beta" : "new_reason_alpha");
+      assert.equal(retryEvent.and_start_requested, false);
+    }
     await control.start(); await control.tick();
   }
   const summary = control.status().classificationQuality;
@@ -1360,7 +1380,78 @@ async function checkReplyFailureDiagnosticsAcrossRuns() {
   } finally { await controller.dispose(); }
 }
 
+async function checkControlSnapshotAndPauseTrace() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-control-trace-"));
+  const events = [];
+  let releaseStep;
+  let enteredStep;
+  let rejectPause = false;
+  let updates = 0;
+  const entered = new Promise((resolve) => { enteredStep = resolve; });
+  const controller = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "test-account", onUpdate: () => { updates += 1; },
+    logger: { event: (_module, name, details) => events.push({ name, ...details }),
+      begin: (_module, name, details) => {
+        events.push({ name: `${name}.started`, ...details });
+        return { end: (value) => events.push({ name: `${name}.finished`, ...value }),
+          fail: () => events.push({ name: `${name}.exception` }) };
+      } },
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { enteredStep(); await new Promise((resolve) => { releaseStep = resolve; }); return { handled: false }; },
+      pauseWorkflow: async () => { if (rejectPause) throw new Error("pause_failed"); }
+    }
+  });
+  await controller.addRecipients(["private-customer"]);
+  const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+  const priorState = fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf8") : null;
+  const priorUpdates = updates;
+  assert.deepEqual(controller.controlSnapshot(), { enabled: false, phase: "paused", in_flight: false });
+  assert.equal(updates, priorUpdates, "controlSnapshot must not emit state updates");
+  assert.equal(fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf8") : null, priorState,
+    "controlSnapshot must not write workflow state");
+  const snapshotRoot = path.join(rootDir, "snapshot-only");
+  const reads = { skipped: 0, unknown: 0, retry: 0, updates: 0 };
+  const snapshotControl = createWechatWorkflowController({
+    rootDir: snapshotRoot, autoReplyDir: path.join(snapshotRoot, "reply"), activeTouchDir: path.join(snapshotRoot, "touch"),
+    momentsDir: path.join(snapshotRoot, "moments"), autoSchedule: false, getAccount: () => "test-account",
+    onUpdate: () => { reads.updates += 1; },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "private-customer" }], script: "private-script" }),
+      describeSkippedWorkflowTask: () => { reads.skipped += 1; return {}; },
+      describeUnknownWorkflowTask: () => { reads.unknown += 1; return {}; },
+      canRetryWorkflowTask: () => { reads.retry += 1; return false; }
+    } }
+  });
+  await snapshotControl.addTask({ type: "touch", payload: { contactIds: ["private-customer"], script: "private-script" } });
+  const snapshotState = fs.readFileSync(path.join(snapshotRoot, "wechat_workflow", "state.json"), "utf8");
+  const priorReads = { ...reads };
+  snapshotControl.controlSnapshot();
+  assert.deepEqual(reads, priorReads, "controlSnapshot must not inspect task executors or broadcast");
+  assert.equal(fs.readFileSync(path.join(snapshotRoot, "wechat_workflow", "state.json"), "utf8"), snapshotState);
+  await snapshotControl.dispose();
+  await controller.start();
+  const ticking = controller.tick();
+  await entered;
+  const pausing = controller.pause();
+  assert.equal(controller.controlSnapshot().in_flight, true);
+  assert.equal(events.some((event) => event.name === "pause.finished"), false,
+    "pause completion must wait for the in-flight step");
+  releaseStep();
+  await ticking; await pausing;
+  assert.equal(events.filter((event) => event.name === "pause.started").at(-1)?.trigger_code, "user");
+  assert.ok(events.some((event) => event.name === "pause.finished"));
+  rejectPause = true;
+  await assert.rejects(controller.pause(), /pause_failed/u);
+  assert.ok(events.some((event) => event.name === "pause.exception"));
+  rejectPause = false;
+  await controller.dispose();
+  assert.ok(events.some((event) => event.name === "control.disposed"));
+}
+
 async function main() {
+  await checkControlSnapshotAndPauseTrace();
   await checkRealReplyWorkflowRecovery();
   await checkReplyFailureDiagnosticsAcrossRuns();
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
@@ -1865,9 +1956,13 @@ async function main() {
 
   const bulkRetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));
   let replyPauseCalls = 0;
+  const bulkControlEvents = [];
   const bulkRetry = createWechatWorkflowController({
     rootDir: bulkRetryRoot, autoReplyDir: path.join(bulkRetryRoot, "reply"), activeTouchDir: path.join(bulkRetryRoot, "touch"), momentsDir: path.join(bulkRetryRoot, "moments"),
     getAccount: () => "test-account", autoSchedule: false,
+    logger: { event: () => undefined, begin: (_module, name, details) => {
+      bulkControlEvents.push({ name, ...details }); return { end: () => undefined, fail: () => undefined };
+    } },
     reply: {
       prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
       runWorkflowStep: async () => ({ handled: false }),
@@ -1891,6 +1986,7 @@ async function main() {
   await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
   assert.equal(bulkRetry.status().phase, "listening");
   const bulkRetryResult = await bulkRetry.retrySkipped(bulkRetryTask.task.id);
+  assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_skipped");
   assert.equal(replyPauseCalls, 1, "bulk retry must safely stop automatic reply before changing persisted progress");
   assert.equal(bulkRetryResult.retriedCount, 1);
   assert.equal(bulkRetryResult.excludedCount, 1);

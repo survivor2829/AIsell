@@ -293,6 +293,32 @@ try {
   assert.equal(windowReport.details.window_recovery_succeeded, false);
   assert.equal(windowReport.details.window_recover_ms, 300);
   assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
+  for (const [version, expected] of [["4.1.15.13", "4.1.15.13"], ["C:\\Weixin\\Weixin.exe", undefined], ["Weixin 4.1", undefined]]) {
+    const detail = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({ ok: false, reason: "powershell_timeout",
+      diagnostics: { window_wechat_version: version } });
+    traceLogger.event("active_touch", "send_stage", detail, { trace: true });
+    const entry = traceLogger.readRecent(1)[0];
+    assert.equal(entry.details.window_wechat_version, expected);
+    const cloud = require("../shared/cloud-report.cjs").reportEntry(entry,
+      { installId: "12345678-1234-1234-1234-123456789012" });
+    assert.equal(cloud.details.window_wechat_version, expected);
+  }
+  const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(mainSource, /event\("app", "window_closing",[\s\S]{0,160}trace: true/u);
+  assert.match(mainSource, /event\("app", "quit_requested",[\s\S]{0,160}trace: true/u);
+  for (const name of ["window_closing", "quit_requested"]) {
+    const block = mainSource.slice(mainSource.indexOf(`event("app", "${name}"`) - 150,
+      mainSource.indexOf(`event("app", "${name}"`) + 180);
+    assert.doesNotMatch(block, /workflowController\?\.status\(/u, "shutdown logging must use the side-effect-free snapshot");
+  }
+  const retentionRoot = path.join(root, "retention");
+  const retained = createDiagnosticLogger({ rootDir: retentionRoot, maxBytes: 1, maxArchives: 19 });
+  for (let index = 0; index < 25; index += 1) retained.event("app", "rotation_probe", { count: index }, { trace: true });
+  const retainedFiles = fs.readdirSync(path.join(retentionRoot, "logs")).filter((name) => /^diagnostics\.jsonl(?:\.\d+)?$/u.test(name));
+  assert.equal(retainedFiles.length, 20, "the active log plus nineteen archives must remain");
+  assert.ok(retainedFiles.includes("diagnostics.jsonl.19"));
+  assert.equal(retainedFiles.some((name) => fs.readFileSync(path.join(retentionRoot, "logs", name), "utf8").includes('"seq":1,')), false,
+    "the oldest rotated event must be discarded");
   const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
   const inputSafety = {
     input_phase: "click_search_result",

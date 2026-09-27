@@ -49,6 +49,20 @@ const selectionStart = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Select-W
 const selectionEnd = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Get-WechatWindowRecoveryCandidate", selectionStart);
 assert.ok(selectionStart >= 0 && selectionEnd > selectionStart);
 const selection = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(selectionStart, selectionEnd);
+const versionStart = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Get-WechatFileVersion");
+const versionEnd = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf('Set-WechatWindowStage "compile"', versionStart);
+assert.ok(versionStart >= 0 && versionEnd > versionStart);
+const versionProbe = runPowerShell(`
+${NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(versionStart, versionEnd)}
+@{ ok = $true; present = (Get-WechatFileVersion (Join-Path $PSHOME 'powershell.exe')); absent = (Get-WechatFileVersion 'C:\\no-such-wechat.exe'); empty = (Get-WechatFileVersion '') } | ConvertTo-Json -Compress
+`, {}, { ensure: false, timeout: 15_000 });
+assert.equal(versionProbe.ok, true, JSON.stringify(versionProbe));
+assert.match(versionProbe.present, /^\d+(\.\d+){1,3}$/u);
+assert.equal(versionProbe.absent, "");
+assert.equal(versionProbe.empty, "");
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /Get-WechatFileVersion \$matched\.processPath/u);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /\$windowDiagnostic\.window_wechat_version = \$wechatVersion/u);
+assert.doesNotMatch(NORMALIZE_WECHAT_WINDOW_SCRIPT, /\$windowDiagnostic\.(?:processPath|window_process_path)/u);
 const enumerationStart = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Get-WechatWindowCandidates {");
 const enumerationEnd = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Update-WechatWindowCandidateDiagnostics", enumerationStart);
 const enumeration = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(enumerationStart, enumerationEnd);

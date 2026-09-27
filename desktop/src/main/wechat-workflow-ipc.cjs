@@ -58,7 +58,12 @@ function registerWechatWorkflowIpc(options) {
       target.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       target.webContents.on("will-navigate", (event) => event.preventDefault());
       target.on("close", (event) => {
-        if (!disposed && !options.isQuitting?.()) { event.preventDefault(); showMain(); }
+        if (!disposed && !options.isQuitting?.()) {
+          event.preventDefault();
+          options.logger?.event?.("wechat_workflow", "floating.close_redirected",
+            { workflow_phase: controller.controlSnapshot().phase }, { trace: true });
+          showMain();
+        }
       });
       target.on("closed", () => {
         if (floatingWindow === target) { floatingWindow = null; floatingLoad = null; }

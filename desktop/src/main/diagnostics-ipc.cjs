@@ -1,4 +1,4 @@
-const { app, dialog, ipcMain, shell } = require("electron");
+const { app, dialog, ipcMain, screen, shell } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -41,13 +41,15 @@ const AUTO_REPLY_VISIBLE_INTEGER_FIELDS = [
 ];
 const AUTO_REPLY_VISIBLE_BOOLEAN_FIELDS = ["send_attempted", "draft_phase_started"];
 
-function buildInfo(appRuntime = app) {
+function buildInfo(appRuntime = app, edition = "") {
   const appRoot = require("./component-paths.cjs").applicationPath(appRuntime);
   const candidates = [
     path.join(appRoot, "dist", "build-edition.json"),
     path.join(appRoot, "dist-pilot", "build-edition.json"),
     path.join(appRoot, "dist-development", "build-edition.json")
   ];
+  if (edition === "development") candidates.unshift(candidates.pop());
+  else if (edition === "pilot") candidates.unshift(candidates.splice(1, 1)[0]);
   for (const file of candidates) {
     try {
       return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -67,6 +69,98 @@ function exportableStatus(status = {}) {
     ...safeStatus
   } = status && typeof status === "object" ? status : {};
   return safeStatus;
+}
+
+const APP_VERSION = /^\d+\.\d+\.\d+$/u;
+const WECHAT_VERSION = /^\d+(\.\d+){1,3}$/u;
+const SAFE_ID = /^[0-9A-Za-z._-]{1,64}$/u;
+const SAFE_TOKEN = /^[a-z][a-z0-9_.:-]{0,79}$/u;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
+const valid = (value, pattern) => typeof value === "string" && pattern.test(value) ? value : null;
+const choice = (value, choices) => choices.includes(value) ? value : null;
+const timestamp = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u.test(value)
+  && !Number.isNaN(Date.parse(value)) ? value : null;
+
+function appSummary(info, appRuntime, component = global.__xiaoxiComponents) {
+  return {
+    version: valid(info.version, APP_VERSION),
+    base_version: valid(appRuntime.getVersion?.(), APP_VERSION),
+    edition: choice(info.edition, ["development", "pilot", "unknown"]),
+    data_profile: choice(info.data_profile, ["test", "delivery", "unknown"]),
+    build_id: valid(info.build_id, SAFE_ID),
+    build_commit: valid(info.build_commit, /^[0-9a-f]{7,40}$/u),
+    source_dirty: typeof info.source_dirty === "boolean" ? info.source_dirty : null,
+    packaged: typeof info.packaged === "boolean" ? info.packaged : null,
+    component: component ? {
+      version: valid(component.version, APP_VERSION),
+      id: valid(component.id, /^[0-9a-f]{64}$/u),
+      healthy: typeof component.healthy === "boolean" ? component.healthy : null
+    } : null
+  };
+}
+
+function diagnosticSummaries(files) {
+  const versions = new Map();
+  const runs = new Map();
+  let latest = null;
+  for (const file of files) {
+    for (const line of file.content.toString("utf8").split(/\r?\n/u)) {
+      const ts = timestamp(/"ts":"([^"]+)"/u.exec(line)?.[1]);
+      const runId = valid(/"run_id":"([^"]+)"/u.exec(line)?.[1], UUID);
+      const seq = Number(/"seq":(\d+)/u.exec(line)?.[1]);
+      if (ts && runId && Number.isSafeInteger(seq) && seq > 0) {
+        const run = runs.get(runId) || { run_id: runId, first_seq: seq, last_seq: seq, first_ts: ts, last_ts: ts };
+        if (seq < run.first_seq) { run.first_seq = seq; run.first_ts = ts; }
+        if (seq > run.last_seq) { run.last_seq = seq; run.last_ts = ts; }
+        runs.set(runId, run);
+      }
+      if (!ts || !line.includes("wechat_version")) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { continue; }
+      const details = row?.details && typeof row.details === "object" ? row.details : {};
+      for (const [key, source] of [["window_wechat_version", "window_driver"], ["wechat_version", "contact_sync"]]) {
+        const version = valid(details[key], WECHAT_VERSION);
+        if (!version) continue;
+        const seen = versions.get(version) || { version, first_ts: ts, last_ts: ts, count: 0 };
+        seen.first_ts = seen.first_ts < ts ? seen.first_ts : ts;
+        seen.last_ts = seen.last_ts > ts ? seen.last_ts : ts;
+        seen.count += 1;
+        versions.set(version, seen);
+        if (!latest || ts >= latest.ts) latest = { version, ts, source };
+      }
+    }
+  }
+  return {
+    wechat: latest ? { ...latest, versions_seen: [...versions.values()].sort((a, b) => a.first_ts.localeCompare(b.first_ts)) }
+      : { version: null, ts: null, source: null, versions_seen: [] },
+    log_coverage: { file_count: files.length, total_bytes: files.reduce((sum, file) => sum + file.size_bytes, 0),
+      runs: [...runs.values()].map((run) => ({ ...run, rotated_prefix: run.first_seq > 1 })) }
+  };
+}
+
+function displaySummary(screenRuntime) {
+  try {
+    const primaryId = screenRuntime.getPrimaryDisplay()?.id;
+    const bounded = (value) => Number.isSafeInteger(value) && Math.abs(value) <= 100_000 ? value : null;
+    const rect = (value) => Object.fromEntries(["x", "y", "width", "height"].map((key) => [key, bounded(value?.[key])]));
+    const displays = screenRuntime.getAllDisplays().map((item) => ({
+      primary: item.id === primaryId,
+      bounds: rect(item.bounds), work_area: rect(item.workArea),
+      scale_factor: Number.isFinite(item.scaleFactor) && item.scaleFactor > 0 && item.scaleFactor <= 10 ? item.scaleFactor : null,
+      rotation: bounded(item.rotation), internal: typeof item.internal === "boolean" ? item.internal : null
+    }));
+    return { count: displays.length, primary: displays.findIndex((item) => item.primary), displays };
+  } catch { return null; }
+}
+
+function feedbackSummary(getLatest) {
+  try {
+    const item = getLatest?.();
+    if (!item) return null;
+    return { id: valid(item.id, UUID), created_at: timestamp(item.createdAt || item.created_at),
+      delivery: choice(item.delivery, ["queued", "sending", "sent", "failed"]),
+      status: valid(item.status, SAFE_TOKEN) };
+  } catch { return null; }
 }
 
 function collectDiagnosticFiles(logsDir) {
@@ -286,9 +380,10 @@ async function exportBundle(options = {}) {
   const logger = options.logger || diagnostics();
   const autoReplyDir = options.autoReplyDir;
   const createArchive = options.createArchive || createZipArchive;
+  const info = appSummary(options.appInfo || {}, appRuntime, options.component);
   const selected = await dialogRuntime.showSaveDialog({
     title: `导出 ${productBrand.displayName} 诊断包`,
-    defaultPath: path.join(appRuntime.getPath("downloads"), `${productBrand.displayName}-诊断日志-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`),
+    defaultPath: path.join(appRuntime.getPath("downloads"), `${productBrand.displayName}-${info.version || "unknown"}-${info.data_profile || "unknown"}-诊断日志-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`),
     filters: [{ name: "ZIP 压缩包", extensions: ["zip"] }]
   });
   if (selected.canceled || !selected.filePath) return { ok: true, canceled: true };
@@ -306,10 +401,16 @@ async function exportBundle(options = {}) {
       size_bytes,
       sha256: digest
     }));
+    const { wechat, log_coverage } = diagnosticSummaries(diagnosticFiles);
     const summary = Buffer.from(`${JSON.stringify({
       exported_at: new Date().toISOString(),
-      build: buildInfo(appRuntime),
+      build: buildInfo(appRuntime, info.edition),
       diagnostics: exportableStatus(logger.status()?.data),
+      app: info,
+      wechat,
+      display: displaySummary(options.screen || screen),
+      feedback_latest: feedbackSummary(options.getFeedbackLatest),
+      log_coverage,
       included_files: includedFiles,
       privacy: "普通结构化日志不包含 DeepSeek Key、客户消息原文、联系人明文或 AI 专家资料原文；任务护照失败附件包含本机微信原始截图和程序原始读数，可能出现屏幕可见信息，仅在用户主动导出诊断包时纳入。"
     }, null, 2)}\n`, "utf8");
@@ -335,7 +436,8 @@ function registerDiagnosticsIpc(options = {}) {
     diagnostics().event("diagnostics", "folder_opened");
     return { ok: true };
   });
-  ipcMain.handle("diagnostics:export", () => exportBundle({ autoReplyDir: options.autoReplyDir }));
+  ipcMain.handle("diagnostics:export", () => exportBundle({ autoReplyDir: options.autoReplyDir,
+    appInfo: options.appInfo, screen: options.screen, getFeedbackLatest: options.getFeedbackLatest }));
 }
 
 module.exports = { exportBundle, registerDiagnosticsIpc };
