@@ -154,6 +154,9 @@ async function checkClickedAttentionPersistFailureRecovery() {
 }
 
 async function checkR008BoundedRecovery() {
+  assert.deepEqual(classifyWechatFailureReason("wechat_window_preflight_failed"), {
+    reasonCode: "wechat_window_preflight_failed", classification: "environment", attentionScope: "global", known: true
+  });
   const circuitPolicy = classifyWechatFailureReason("wechat_search_identity_circuit_open");
   assert.equal(circuitPolicy.known, true);
   assert.equal(circuitPolicy.attentionScope, "global");
@@ -249,8 +252,9 @@ async function checkR008BoundedRecovery() {
 }
 
 async function checkR008PassportAttachmentCount() {
+  const ocrPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
   for (const [ruleId, reasonCode, expectedScreenshots] of [
-    ["search-r008", "search_result_identity_unverified", 1],
+    ["search-r008", "search_result_identity_unverified", 0],
     ["search-r014", "search_result_identity_unverified", 1],
     ["search-r015", "exact_search_result_not_found", 1]
   ]) {
@@ -259,6 +263,7 @@ async function checkR008PassportAttachmentCount() {
     let screenshots = 0;
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     let reads = 0;
+    const temporaryCaptures = [];
     const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
     const logger = configureDiagnostics({ rootDir: path.join(root, "diagnostics") });
     const passport = createTaskPassportStore({ rootDir: path.join(root, "passport"),
@@ -268,8 +273,16 @@ async function checkR008PassportAttachmentCount() {
       const workflow = createTouchWorkflow({
         dataDir: path.join(root, "touch"), now: () => new Date(clock), readContacts: () => [contact], passport,
         coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
-        execute: async () => ({ ok: false, send_attempted: false, blocked_reason: reasonCode,
-          diagnostics: { rule_id: ruleId, candidate_set_hash: `read-${++reads}` } })
+        execute: async () => {
+          const diagnostics = { rule_id: ruleId, candidate_set_hash: `read-${++reads}` };
+          if (ruleId === "search-r008") {
+            const file = path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+            fs.writeFileSync(file, ocrPng);
+            temporaryCaptures.push(file);
+            diagnostics.search_capture_file = file;
+          }
+          return { ok: false, send_attempted: false, blocked_reason: reasonCode, diagnostics };
+        }
       });
       const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id] });
       const record = { id: `passport-count-${ruleId}`, payload };
@@ -281,6 +294,24 @@ async function checkR008PassportAttachmentCount() {
       clock += 60 * 60 * 1000;
       assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
       assert.equal(screenshots, expectedScreenshots, `${ruleId} must have one final failure with the real diagnostics subscriber`);
+      assert.equal(temporaryCaptures.every((file) => !fs.existsSync(file)), true,
+        "each transient OCR capture must be removed after the workflow step");
+      const passportRoot = path.join(root, "passport", "task-passports", "active_touch");
+      const files = fs.readdirSync(passportRoot, { recursive: true }).map(String);
+      const screenshotsOnDisk = files.filter((file) => file.endsWith("-screen.png"));
+      assert.equal(screenshotsOnDisk.length, 1, "final skip must save exactly one failure screenshot");
+      const allPassportEvents = files.filter((file) => file.endsWith("events.jsonl"))
+        .flatMap((file) => fs.readFileSync(path.join(passportRoot, file), "utf8").trim().split(/\r?\n/u).map(JSON.parse));
+      const finalFailures = allPassportEvents
+        .filter((entry) => entry.status === "failed" && entry.attachments?.some((name) => name.endsWith("-screen.png")));
+      assert.equal(finalFailures.length, 1, "final identity skip must attach one passport failure record");
+      if (ruleId === "search-r008") {
+        assert.deepEqual(fs.readFileSync(path.join(passportRoot, screenshotsOnDisk[0])), ocrPng,
+          "r008 passport attachment must be the OCR capture, not a fresh main-window screenshot");
+        const taskDir = path.join(root, "touch", "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+        assert.doesNotMatch(JSON.stringify(loadTaskState(taskDir)), /search_capture_file|searchCapturePng/u,
+          "capture paths and bytes must not enter the task row");
+      }
     } finally {
       unsubscribe();
     }

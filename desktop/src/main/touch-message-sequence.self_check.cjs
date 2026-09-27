@@ -1000,13 +1000,23 @@ async function checkMultipartReuse() {
       },
       execute: async (part) => {
         const index = Number(path.basename(part.baseDir));
+        const alteredAnchor = index === 1 && part.reuseSession?.anchor
+          ? { ...part.reuseSession.anchor,
+            ...(settings.anchorContactChanged ? { contact_identity: "changed-contact" } : {}),
+            ...(settings.anchorAccountChanged ? { wechat_account_id: "changed-account" } : {}) }
+          : part.reuseSession?.anchor;
         const sent = await executeVerifiedContactSend({ ...part,
+          ...(part.reuseSession ? { reuseSession: { ...part.reuseSession, anchor: alteredAnchor } } : {}),
           windowPreflight: async () => { counts.preflight += 1; return preparedWindow(); },
           sessionDriver: async () => {
             if (settings.sessionThrows && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation") {
               throw new Error("session fixture fault");
             }
-            return { ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: contact.name,
+            if (settings.pauseInGate && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation") enabled = false;
+            return { ok: true,
+              pid: settings.driverPidChanged && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation" ? 82 : 81,
+              hWnd: settings.driverWindowChanged && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation" ? "92" : "91",
+              processName: "Weixin", title: contact.name,
             accountId: "test_account", accountVerified: true,
             verificationMode: settings.modeChanged && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation"
               ? "conversation_title" : settings.titleMode ? "conversation_title" : "exact_wechat_id_search",
@@ -1018,6 +1028,9 @@ async function checkMultipartReuse() {
             counts.inspector += 1; inspections.push(context);
             if (settings.inspectorThrows) throw new Error("inspection fixture fault");
             if (settings.inspectorActive) return { ok: false, reason: "wechat_user_active" };
+            if (settings.inspectorRestarted) return { ok: false, reason: "wechat_window_identity_mismatch" };
+            if (settings.inspectorUnfocused) return { ...preparedWindow(), focused: false };
+            if (settings.inspectorLayoutChanged) return { ...preparedWindow(), layoutMode: "unknown" };
             return preparedWindow(settings.inspectorWindowChanged ? 92 : 91);
           },
           sendDriver: async () => { counts.text += 1; return { ok: true, sendAttempted: true,
@@ -1036,7 +1049,7 @@ async function checkMultipartReuse() {
           if (settings.rewindAfterText) clock -= 1_000;
           if (settings.pauseAfterText) enabled = false;
         }
-        return sent;
+        return settings.lateFailure && index === 0 && sent.ok ? { ...sent, ok: false } : sent;
       }
     });
     const payload = workflow.prepareWorkflowTask({ script: "您好，产品资料如下。", contactIds: [contact.id],
@@ -1099,8 +1112,15 @@ async function checkMultipartReuse() {
     [{ tokenChanged: true, titleMode: true }, "session_verify_failed"],
     [{ inspectorActive: true }, "user_input_detected"],
     [{ inspectorWindowChanged: true }, "window_changed"],
+    [{ inspectorUnfocused: true }, "window_not_ready"],
+    [{ inspectorLayoutChanged: true }, "window_not_ready"],
+    [{ inspectorRestarted: true }, "window_changed"],
     [{ inspectorThrows: true }, "window_not_ready"],
     [{ sessionThrows: true }, "window_not_ready"],
+    [{ driverPidChanged: true }, "session_verify_failed"],
+    [{ driverWindowChanged: true }, "session_verify_failed"],
+    [{ anchorContactChanged: true }, "contact_changed"],
+    [{ anchorAccountChanged: true }, "contact_changed"],
     [{ expireAfterText: true }, "anchor_expired"],
     [{ rewindAfterText: true }, "anchor_expired"],
     [{ duplicateName: true }, "name_not_unique"],
@@ -1118,6 +1138,16 @@ async function checkMultipartReuse() {
   assert.equal(failedSearch.result.reasonCode, "search_result_identity_unverified");
   assert.equal(failedSearch.counts.preflight, 2);
   assert.equal(failedSearch.counts.image, 0);
+  const lateFailure = await scenario({ lateFailure: true });
+  assert.equal(lateFailure.result.status, "completed");
+  assert.equal(lateFailure.reuse[0].reuse_outcome, "anchor_missing", "a late failed return must clear the in-memory anchor");
+  assert.equal(lateFailure.counts.text, 1);
+  assert.equal(lateFailure.counts.image, 1);
+  assert.equal(lateFailure.counts.click, 2);
+  const pausedGate = await scenario({ pauseInGate: true });
+  assert.equal(pausedGate.result.status, "pending");
+  assert.equal(pausedGate.counts.text, 1);
+  assert.equal(pausedGate.counts.image, 0, "a pause inside the reuse gate must not send the image");
 }
 
 module.exports = { checkTouchMessageSequence, checkMultipartReuse };

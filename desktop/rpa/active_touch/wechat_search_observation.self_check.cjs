@@ -2,6 +2,109 @@ const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const { openWechatSearchResult } = require("./wechat_window_driver.cjs");
 
+async function checkWrongConversationTitleGate() {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { selectCustomer, calibrate, clickSearchResultDryRun, loadState, saveState } = require("./state_machine.cjs");
+  const { executeVerifiedContactSend } = require("./state_machine.dev.cjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-t10b-title-"));
+  let clicks = 0;
+  let sends = 0;
+  const expected = "甲乙";
+  const opened = "甲乙丙";
+  const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
+  const scriptStart = driverSource.indexOf("const CONVERSATION_TITLE_SCRIPT = `");
+  const verifierFunction = driverSource.indexOf("function verifyWechatCurrentConversation(", scriptStart);
+  const scriptEnd = driverSource.lastIndexOf("`;", verifierFunction);
+  assert.ok(scriptStart >= 0 && scriptEnd > scriptStart, "the production title verifier must be replayable");
+  const titleLoop = driverSource.slice(scriptStart, scriptEnd).slice(driverSource.slice(scriptStart, scriptEnd).indexOf("$found = $null"));
+  function replayProductionTitle(observedName) {
+    const fixture = Buffer.from(JSON.stringify({ expected, observedName }), "utf8").toString("base64");
+    const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n`
+      + `$fixture=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${fixture}')))\n`
+      + `$expected=$fixture.expected; $matched=@{hWnd=[IntPtr]91;title='fixture';processName='Weixin';pid=81;rect=@{Left=200;Top=0}}\n`
+      + `$windowRect=$matched.rect; $script:fixtureItem=[pscustomobject]@{Current=[pscustomobject]@{Name=$fixture.observedName;BoundingRectangle=@{Left=500;Top=60}}}\n`
+      + `$all=[pscustomobject]@{Count=1}; $all | Add-Member ScriptMethod Item { param($index) return $script:fixtureItem }\n`
+      + titleLoop;
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(replay, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    return JSON.parse(result.stdout.trim().replace(/^\uFEFF/u, ""));
+  }
+  assert.equal(replayProductionTitle(expected).ok, true, "the production header check must accept the exact name");
+  const mismatchedTitle = replayProductionTitle(opened);
+  assert.equal(mismatchedTitle.ok, false, "the production header check must reject a longer name");
+  try {
+    fs.writeFileSync(path.join(root, "contacts.json"), JSON.stringify([
+      { id: "target", name: expected, wechatAccountId: "account", allowed: true }
+    ]));
+    const observation = {
+      uiaCandidates: [], visualCandidates: [
+        { text: "联系人", left: 40, top: 100, right: 90, bottom: 120, x: 65, y: 110 },
+        { text: expected, left: 100, top: 140, right: 180, bottom: 160, x: 140, y: 150 },
+        { text: opened, left: 100, top: 168, right: 180, bottom: 188, x: 140, y: 178 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 62, top: 245, right: 150, bottom: 265, x: 106, y: 255,
+        words: [..."搜索网络结果"].map((text, index) => ({ text, left: 62 + index * 12, right: 74 + index * 12 })) }],
+      webSearchTop: 245, cropBounds: { left: 0, top: 0, right: 400, bottom: 400 },
+      popupBounds: { left: 0, top: 0, right: 400, bottom: 400 }, popupDpi: 96,
+      popupCandidateCount: 1, captureSource: "popup", ocrOk: true, webSearchVisible: true
+    };
+    const result = await executeVerifiedContactSend({ baseDir: root, contactsDir: root,
+      contactId: "target", message: "test", authorized: true,
+      windowPreflight: async () => ({ ok: true, normalized: true, layoutMode: "stable_target",
+        focused: true, pid: 81, hWnd: "91", processName: "Weixin" }),
+      runStep(command, args) {
+        if (command === "select-customer") return selectCustomer(root, "target");
+        if (command === "calibrate") return calibrate(root);
+        if (command === "click-search-result-dry-run") {
+          return clickSearchResultDryRun(root, (query, context) => openWechatSearchResult(query, {
+            ...context,
+            runner: () => ({ ok: true, title: opened, processName: "Weixin", pid: 81, hWnd: "91",
+              inputLeaseTick: 101, searchResultObservation: observation }),
+            clickRunner: () => { clicks += 1; return { ok: true, exactSearchOpened: true }; }
+          }), undefined, undefined, { pid: 81, hWnd: "91" });
+        }
+        if (command === "input-message-dry-run") {
+          const state = { ...loadState(root), message_input_done: true, message_draft: "test" };
+          saveState(root, state);
+          return { ok: true, state };
+        }
+        throw new Error(`unexpected step ${command}`);
+      },
+      sessionDriver: async () => mismatchedTitle,
+      sendDriver: async () => { sends += 1; return { ok: true, sendAttempted: true }; }
+    });
+    assert.equal(clicks, 1, `the ambiguous local surface must reach the click path: ${JSON.stringify(result)}`);
+    assert.equal(loadState(root).conversation_title, opened, "the opened conversation must be the longer name");
+    assert.equal(loadState(root).search_evidence.resolver_mode, "unique_local_surface_visual");
+    const evidence = JSON.stringify(loadState(root).search_evidence);
+    for (const line of [expected, opened, "搜索网络结果"]) {
+      assert.equal(evidence.includes(line), false, "persisted evidence must omit the query and every OCR line");
+      assert.equal(evidence.includes(require("node:crypto").createHash("sha256").update(line).digest("hex")), false,
+        "persisted evidence must omit hashes of raw OCR lines");
+    }
+    assert.equal(loadState(root).search_evidence.ocr_observation.ocr_boxes.length, 4);
+    assert.equal(result.ok, false, "the pre-send title gate must reject the longer name");
+    assert.equal(sends, 0, "a wrong conversation must never reach the send driver");
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
+    const rejected = openWechatSearchResult(expected, { pid: 81, hWnd: "91",
+      searchIdentity: { expectedName: expected },
+      runner: () => ({ ok: true, searchCapturePng: png.toString("base64"),
+        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null,
+          popupBounds: null, popupDpi: null, captureSource: "formula_crop" } })
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.searchEvidence.capture_source, "formula_fallback");
+    assert.equal(Object.prototype.hasOwnProperty.call(rejected, "searchCapturePng"), false,
+      "capture bytes must not enter the ordinary result");
+    const capture = rejected.diagnostics.search_capture_file;
+    assert.deepEqual(fs.readFileSync(capture), png, "the detached capture must be the OCR bitmap bytes");
+    fs.unlinkSync(capture);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
 // Replay the generated PowerShell OCR processing, not preclassified resolver fixtures.
 // No window lookup, screenshot, keyboard input, or real click runs in this check.
 if (process.platform === "win32") {
@@ -75,6 +178,11 @@ ${script.slice(start, end)}
 
   const popupStartInObservation = productionSearchScript.indexOf("      $popup = Find-SearchPopup");
   const bitmapStart = productionSearchScript.indexOf("      $bitmap = [System.Drawing.Bitmap]::new", popupStartInObservation);
+  const screenCopy = productionSearchScript.indexOf("$graphics.CopyFromScreen", bitmapStart);
+  const captureSave = productionSearchScript.indexOf("$bitmap.Save($captureStream", screenCopy);
+  const ocrRecognize = productionSearchScript.indexOf("$engine.RecognizeAsync($software)", captureSave);
+  assert.ok(screenCopy > bitmapStart && captureSave > screenCopy && ocrRecognize > captureSave,
+    "the passport image must be copied from the same bitmap before OCR");
   const ocrLoopStart = productionSearchScript.indexOf("      foreach ($line in $ocrResult.Lines)", bitmapStart);
   const observationEnd = productionSearchScript.indexOf("\n  exit", ocrLoopStart);
   assert.ok(popupStartInObservation > 0 && bitmapStart > popupStartInObservation
@@ -264,7 +372,7 @@ public static class Win32WechatWindowSearch {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, ref RECT rect);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int capacity);
-  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
+  [DllImport("user32.dll", EntryPoint="GetDpiForWindow")] private static extern uint NativeDpi(IntPtr hWnd);
   [DllImport("user32.dll", EntryPoint="GetWindowThreadProcessId")] private static extern uint NativePid(IntPtr hWnd, ref uint pid);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern ushort RegisterClass(ref WNDCLASS value);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr CreateWindowEx(uint ex, string cls, string title,
@@ -273,6 +381,13 @@ public static class Win32WechatWindowSearch {
   [DllImport("user32.dll")] private static extern IntPtr DefWindowProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
   private static readonly WindowProc Procedure = DefWindowProc;
   public static IntPtr ForeignWindow;
+  public static IntPtr MainWindow, PopupWindow;
+  public static uint MainDpiOverride=96, PopupDpiOverride=144;
+  public static uint GetDpiForWindow(IntPtr hWnd) {
+    if(hWnd==MainWindow) return MainDpiOverride;
+    if(hWnd==PopupWindow) return PopupDpiOverride;
+    return NativeDpi(hWnd);
+  }
   public static uint GetWindowThreadProcessId(IntPtr hWnd, ref uint pid) {
     uint result=NativePid(hWnd,ref pid); if(hWnd==ForeignWindow) pid+=1; return result;
   }
@@ -293,7 +408,14 @@ ${productionSearchScript.slice(popupStart, popupEnd)}
 $main=[Win32WechatWindowSearch]::Create('STATIC',200,100,800,600,$true)
 $matched=@{ hWnd=$main.ToInt64(); pid=$PID; x=200; y=100; width=800; height=600 }
 $valid=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',220,200,300,250,$true)
+[Win32WechatWindowSearch]::MainWindow=$main
+[Win32WechatWindowSearch]::PopupWindow=$valid
 $one=Find-SearchPopup; $oneCount=$script:searchPopupCandidateCount
+[Win32WechatWindowSearch]::PopupDpiOverride=0
+[Win32WechatWindowSearch]::MainDpiOverride=120
+$lowDpi=Find-SearchPopup
+[Win32WechatWindowSearch]::PopupDpiOverride=144
+[Win32WechatWindowSearch]::MainDpiOverride=96
 $second=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,210,300,250,$true)
 $multiple=Find-SearchPopup; $multipleCount=$script:searchPopupCandidateCount
 [void][Win32WechatWindowSearch]::DestroyWindow($second)
@@ -326,6 +448,7 @@ foreach($spec in @(
 @{ one=($one -ne $null); oneCount=$oneCount; multiple=($multiple -eq $null); multipleCount=$multipleCount;
   foreign=($foreignChoice -ne $null); foreignCount=$foreignCount;
   filtered=($filtered -ne $null); filteredCount=$filteredCount; dpi=[int]$filtered.dpi;
+  mainDpi=[int][Win32WechatWindowSearch]::GetDpiForWindow($main); lowDpi=[int]$lowDpi.dpi;
   nativeDpi=[int][Win32WechatWindowSearch]::GetDpiForWindow($valid); edges=$edgeCounts } | ConvertTo-Json -Compress -Depth 5
 `;
   const popupResult = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
@@ -342,6 +465,9 @@ foreach($spec in @(
   assert.equal(popupChecks.filteredCount, 1);
   assert.ok(popupChecks.dpi >= 72);
   assert.equal(popupChecks.dpi, popupChecks.nativeDpi, "popup DPI must come from the chosen window");
+  assert.equal(popupChecks.mainDpi, 96);
+  assert.equal(popupChecks.dpi, 144, "different popup and main-window DPI must use the popup");
+  assert.equal(popupChecks.lowDpi, 120, "low popup DPI must fall back to the main-window DPI");
   for (const [name, observed] of Object.entries(popupChecks.edges)) {
     assert.deepEqual(observed, { count: 1, kept: true }, `${name} must not add another eligible popup`);
   }
@@ -350,3 +476,5 @@ foreach($spec in @(
 } else {
   console.log("search observation PowerShell replay skipped: Windows required");
 }
+checkWrongConversationTitleGate().then(() => console.log("search wrong-title send gate passed: longer conversation opened, sends=0"))
+  .catch((error) => { console.error(error); process.exitCode = 1; });

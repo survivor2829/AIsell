@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
@@ -84,15 +85,41 @@ function resumableFreshEdit(task, multipart) {
 
 function finiteSearchEvidence(diagnostics = {}) {
   const evidence = {};
-  if (["popup", "formula_crop"].includes(diagnostics.capture_source)) evidence.capture_source = diagnostics.capture_source;
-  if (diagnostics.popup_bounds && typeof diagnostics.popup_bounds === "object") {
-    const bounds = Object.fromEntries(Object.entries(diagnostics.popup_bounds)
-      .filter(([key, value]) => ["left", "top", "right", "bottom", "width", "height"].includes(key) && Number.isFinite(value)));
-    if (Object.keys(bounds).length) evidence.popup_bounds = bounds;
+  if (["popup", "formula_fallback", "formula_crop"].includes(diagnostics.capture_source)) {
+    evidence.capture_source = diagnostics.capture_source === "formula_crop" ? "formula_fallback" : diagnostics.capture_source;
+  }
+  for (const key of ["popup_bounds", "crop_bounds"]) {
+    if (!diagnostics[key] || typeof diagnostics[key] !== "object") continue;
+    const bounds = Object.fromEntries(Object.entries(diagnostics[key])
+      .filter(([name, value]) => ["left", "top", "right", "bottom", "width", "height"].includes(name) && Number.isFinite(value)));
+    if (Object.keys(bounds).length) evidence[key] = bounds;
   }
   if (Number.isFinite(diagnostics.popup_dpi)) evidence.popup_dpi = diagnostics.popup_dpi;
   if (Array.isArray(diagnostics.search_columns)) evidence.search_columns = diagnostics.search_columns.filter(Number.isFinite);
   if (Number.isFinite(diagnostics.popup_candidate_count)) evidence.popup_candidate_count = diagnostics.popup_candidate_count;
+  const observed = diagnostics.ocr_observation;
+  if (observed && typeof observed === "object") {
+    const classes = new Set(["empty", "han", "letter", "number", "punctuation", "symbol", "other"]);
+    const boxes = Array.isArray(observed.ocr_boxes) ? observed.ocr_boxes.slice(0, 80).map((box) => ({
+      ...Object.fromEntries(["left", "top", "right", "bottom", "char_count"].filter((key) => Number.isFinite(box?.[key]))
+        .map((key) => [key, box[key]])),
+      first_class: classes.has(box?.first_class) ? box.first_class : "other",
+      last_class: classes.has(box?.last_class) ? box.last_class : "other",
+      boundary_distance: Array.isArray(box?.boundary_distance) ? box.boundary_distance.filter((value) => Number.isInteger(value) && value >= 0).slice(0, 9) : [],
+      starts_with_wechat_id: box?.starts_with_wechat_id === true,
+      contains_network_lookup: box?.contains_network_lookup === true,
+      equals_query: box?.equals_query === true
+    })) : [];
+    evidence.ocr_observation = {
+      ocr_box_count: boxes.length, ocr_boxes: boxes,
+      crop_bounds: observed.crop_bounds && typeof observed.crop_bounds === "object"
+        ? Object.fromEntries(["left", "top", "right", "bottom"].filter((key) => Number.isFinite(observed.crop_bounds[key]))
+          .map((key) => [key, observed.crop_bounds[key]])) : null,
+      web_search_boundary_tops: Array.isArray(observed.web_search_boundary_tops)
+        ? observed.web_search_boundary_tops.filter(Number.isFinite).slice(0, 80) : [],
+      bottom_gap: Number.isFinite(observed.bottom_gap) ? observed.bottom_gap : null
+    };
+  }
   return evidence;
 }
 
@@ -187,6 +214,7 @@ function createTouchWorkflow(options = {}) {
     const link = String(payload?.link || "");
     const multipart = imageIds.length > 0 || Boolean(link);
     const signature = workflowSignature({ script, contacts, imageIds, link });
+    let searchCaptureBytes = null;
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
     const response = (status, extra = {}) => {
@@ -204,7 +232,8 @@ function createTouchWorkflow(options = {}) {
           passport?.recordFailure("active_touch", passportTaskId, {
             stage: "workflow_step", reasonCode: reasonCode || "touch_workflow_failure_reason_missing", ruleId,
             traceId: current.last_trace_id || "", rawReading: extra.result || current || extra,
-            expected: { status: "sent_verified", progress: progress() }
+            expected: { status: "sent_verified", progress: progress() },
+            ...(ruleId === "search-r008" ? { screenshotBytes: searchCaptureBytes } : {})
           });
         }
       }
@@ -407,7 +436,7 @@ function createTouchWorkflow(options = {}) {
             try { image = options.mediaStore.resolve(part.imageId); }
             catch (error) { sessionAnchor = null; return { ok: false, send_attempted: false, blocked_reason: "touch_image_unavailable", error: error.message }; }
           }
-          const partOutcome = await options.execute({
+          let partOutcome = await options.execute({
             baseDir: executionDir,
             contactsDir,
             contactId: current.id,
@@ -451,6 +480,17 @@ function createTouchWorkflow(options = {}) {
               persist();
             }
           });
+          const captureFile = String(partOutcome?.diagnostics?.search_capture_file || "");
+          if (captureFile) {
+            const resolved = path.resolve(captureFile);
+            if (path.dirname(resolved) === path.resolve(os.tmpdir())
+              && /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(path.basename(resolved))) {
+              try { searchCaptureBytes = fs.readFileSync(resolved); } catch { searchCaptureBytes = null; }
+              try { fs.unlinkSync(resolved); } catch {}
+            }
+            const { search_capture_file: _captureFile, ...safeDiagnostics } = partOutcome.diagnostics;
+            partOutcome = { ...partOutcome, diagnostics: safeDiagnostics };
+          }
           if (!multipart) return partOutcome;
           const { session_anchor: anchor, ...safeOutcome } = partOutcome || {};
           if (partOutcome?.ok === true && partOutcome?.state?.real_send_status === "sent_verified" && anchor) {
@@ -601,7 +641,8 @@ function createTouchWorkflow(options = {}) {
           persist();
           if (reasonCode === "search_result_identity_unverified") passport?.recordFailure("active_touch", passportTaskId, {
             stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
-            rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" }
+            rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" },
+            ...(ruleId === "search-r008" ? { screenshotBytes: searchCaptureBytes } : {})
           });
           return response(task.status === "completed" ? "completed" : "pending", {
             result: { deliveryStatus, skipped: true, reasonCode }
