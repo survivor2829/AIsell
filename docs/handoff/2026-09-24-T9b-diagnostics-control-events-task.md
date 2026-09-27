@@ -8,6 +8,34 @@
 >    - 修法：先检查资格再暂停，或者失败时恢复接待。
 >    - 用例：资格不满足时调用 `retryTask`、`retryAll`，断言返回失败，接待照常。
 > 4. **补 T6b 的测试缺口**：T02、T07、T08、T13、T16、T14、T17，详见 `2026-09-24-T6b-retry-and-continue-review.md` → 遗留。审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t6b\`。
+>
+> **T9b 一审（5c98df7）结果，同一次变基一并处理**
+>
+> 一审结论：发送链路行为没有变化，没有隐私泄露，保留期和采集工具（C4）都对。以下需要改：
+>
+> 5. **T1 还没被测试守住**（`analyze-diagnostics.self_check.cjs:22`）。夹具里成功之后没有再出现 r008 失败。请加上"失败、失败、成功、失败"，并断言最大连续数为 2、分箱正确。
+> 6. **采集工具 zip 要重打**。`tools/AI-Customer-Diagnostics-Tool.zip` 里还是旧的 `.ps1`（`OpenRead` 版）。不重打的话，C4 的修复到不了异机。重打后核对：zip 内文件与源文件逐字节一致。
+> 7. **日志调用本身抛异常时，要不影响操作**：
+>    - `wechat-workflow.cjs:753` 的 `begin` 在 try 外面；
+>    - `:941` 的 `dispose` 在 `enabled=false` 之前就记日志，logger 一抛异常，`enabled` 就会一直是 true；
+>    - `:842` 的 `retryTask` 在已经持久化之后才抛出；
+>    - `wechat-workflow-ipc.cjs:63` 抛异常时会跳过 `showMain()`。
+>
+>    修法：`dispose` 先改状态、再记日志；这些日志调用都包在 try/catch 里。用例：注入一个会抛异常的 logger，pause、retryTask、dispose 的结果要和不记日志时一致。
+> 8. **补测试（变异存活）**：
+>    - `needs_attention` → `start` 的 `previous_phase`；
+>    - `dispose` 的 `previous_phase`；
+>    - `window_closing`、`quit_requested` 的来源断言，要能匹配 `status?.(`；
+>    - `quit_requested` 不能记两次（重入保护要在日志之前）；
+>    - 默认 `MAX_ARCHIVES`；
+>    - summary 校验里的 `build_id`、`component.id`、`feedback.delivery`、`feedback.status`：无效夹具的写法要和断言对得上；
+>    - `rotated_prefix` 的 `>1` 边界。
+>
+>    审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t9b\`（`mutate.cjs`、`failopen.cjs`、`privacy.cjs`、`retention.cjs`、`ps-cases.cjs`、`t1probe.cjs`）。
+> 9. T6b 日志补在哪里（行号以 5c98df7 为准）：
+>    - `retryTask` 的 `and_start_requested` 按实际的 `andStart === true` 写，不要写死 false；
+>    - 新的 `retryAll()` 成功后记 `task.retry_all_requested`，只带 `task_count`、`contact_count`、`excluded_count`、`and_start_requested`，用 `code:` 字段，不用 `reason:`；
+>    - `wechat-workflow.self_check.cjs` 的 bulkRetry 部分补 `retry_task`、`retry_all` 触发断言；`checkUnknownReasonQualityCounter` 加一个 `andStart` 为 true 的用例。
 
 分支：`codex/diagnostics-control-events`
 
