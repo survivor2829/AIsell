@@ -87,3 +87,35 @@ test renderer build completed
 ```
 
 构建仍提示 Vite CJS API 弃用及一个 chunk 大于 500 kB；本轮未改发布包，也未进行真实微信或异机验收。
+
+## 2026-09-27 三审安全修订
+
+- 失败恢复接待只在原本由这次重试暂停、计划未变、当前账号没有待执行有限任务时尝试；重新计算阶段后，只有 `listening` 才调用 `reply.resumeWorkflow()` 并继续调度。`persist()` 在写盘前递增计划修订代次，因此 ENOSPC 前已经发生的内存任务变更也会阻止自动恢复。
+- 仓库自检补 P7–P9：批量重试和跳过联系人重试在入队后落盘失败、重试等待期间手动确认未知结果；三种情况都断言调用失败、保持暂停、有限触达发送 0 次。另补用户在重试前已暂停和重试期间点击暂停的用例，确保失败恢复不覆盖用户操作。
+
+### 三审审查脚本实际结果
+
+- `scratch/t9b-r3/resume-probe.cjs <工作区>`：P1 失败后仅恢复接待、发送 0 次；P2–P3 用户预先暂停后仍 `false/paused`；P4 用户中途暂停后仍 `false/paused`；P5 退出中仍暂停；P6 接待被关闭后仍 `false/paused`，`resumeCalls+0`。P7 `retryAll(false)` 落盘 ENOSPC 后 `false/paused`、`touchSends after tick=0`；P8 `retrySkipped` 落盘 ENOSPC 后 `false/paused`、`touchSends after tick=0`；P9 确认未知结果后 `false/paused`、`touchSends after tick=0`。
+- `scratch/t9b-r3/mutate-r3.cjs`：RS3（忽略暂停代次）`KILLED`，报 `a later user pause must take priority over retry recovery`；RS4（预先暂停仍给恢复凭据）`KILLED`，报 `a retry started after user pause must stay paused`。`mutprobe.cjs` 的对应变异分别复现 P4 错误恢复为 `true/listening resumeCalls+1`、P2/P3 错误恢复为 `true/listening resumeCalls+1`。原脚本的旧工作区路径及 RS3/RS4 旧函数签名只在系统临时目录的脚本副本中适配；R5/R6 旧文本在当前代码中未匹配，非本轮指定变异。
+- `scratch/t6b/probe.cjs`：P01–P15 全部 `PASS`，末行 `done failed=0`。
+
+`desktop/` 下 `npm.cmd run check:self`：退出码 0，末尾实际输出：
+
+```text
+> src/main/wechat-workflow.self_check.cjs
+workflow scope stress: aliases_json=66671, scope_ms=23, contacts_reads=5
+auto-reply v4 self-check passed
+Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.
+
+all source self-checks passed
+```
+
+`desktop/` 下 `npm.cmd run build:test`：退出码 0，末尾实际输出：
+
+```text
+✓ 1643 modules transformed.
+✓ built in 1.49s
+test renderer build completed
+```
+
+构建仍有 Vite CJS API 弃用和超过 500 kB 的 chunk 提示；未做真实微信发送或异机安装包验收。

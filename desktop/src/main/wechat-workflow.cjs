@@ -88,6 +88,7 @@ function createWechatWorkflowController(options) {
   let mutation = Promise.resolve();
   let mutating = false;
   let revision = 0;
+  let queueRevision = 0;
   let lastReplyDiagnostic = "";
   let lastTaskStartKey = "";
   let lastTaskResultKey = "";
@@ -131,7 +132,7 @@ function createWechatWorkflowController(options) {
   }
 
   function assertHealthy() { if (loadError) throw new Error(loadError); }
-  function persist() { assertHealthy(); store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
+  function persist() { assertHealthy(); queueRevision += 1; store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
   function qualitySummary() { return qualityLedger.summary(); }
   function recordUnknownReason(task, reasonCode) {
     const reason = normalizeFailureReasonCode(reasonCode || "task_attention_reason_missing");
@@ -786,15 +787,20 @@ function createWechatWorkflowController(options) {
     if (!enabled) return 0;
     if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
     const generation = pauseGeneration + 1;
+    const queueAtPause = queueRevision;
     await pauseWorkflow(trigger);
-    return generation;
+    return { generation, queueAtPause };
   }
 
-  function resumeAfterFailedRetry(generation) {
-    if (!generation || pauseGeneration !== generation || disposed || enabled || phase !== "paused") return;
+  function resumeAfterFailedRetry(ticket) {
+    if (!ticket || pauseGeneration !== ticket.generation || queueRevision !== ticket.queueAtPause
+      || disposed || enabled || phase !== "paused" || nextTask()
+      || store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))) return;
     enabled = true;
+    settleQueue();
+    if (phase !== "listening") { enabled = false; phase = "paused"; return; }
     options.reply?.resumeWorkflow?.();
-    settleQueue(); emit(); schedule(0);
+    emit(); schedule(0);
   }
 
   function requeueSkipped(task, contactIds) {

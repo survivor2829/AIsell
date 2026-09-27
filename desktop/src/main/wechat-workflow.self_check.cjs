@@ -1065,11 +1065,15 @@ async function checkRetryAndContinueIpc() {
 
   test = await fixture([{ title: "failed-skip", status: "completed", skipped: true, skipFails: true }], { reply: true });
   try {
+    let replyResumes = 0;
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
     await test.control.start(); await test.control.tick();
     assert.equal(test.control.status().phase, "listening");
+    const resumesBefore = replyResumes;
     await assert.rejects(test.control.retryAll(true), /没有可重新加入/);
     assert.equal(test.control.status().enabled, true, "a failed bulk retry must restore reception");
     assert.equal(test.control.status().phase, "listening");
+    assert.equal(replyResumes, resumesBefore + 1, "reception recovery must resume the reply executor");
     assert.equal(test.controlEvents.some((entry) => entry.name === "task.retry_all_requested"), false,
       "a failed bulk retry must not report success");
   } finally { await test.close(); }
@@ -1082,6 +1086,125 @@ async function checkRetryAndContinueIpc() {
     assert.equal(test.control.status().enabled, true, "an ineligible skipped retry must restore reception");
     assert.equal(test.control.status().phase, "listening");
   } finally { await test.close(); }
+
+  const realRename = fs.renameSync;
+  const failStateWrite = (rootDir) => {
+    const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+    fs.renameSync = (from, to) => {
+      if (to === stateFile) { const failure = new Error("ENOSPC retry state"); failure.code = "ENOSPC"; throw failure; }
+      return realRename(from, to);
+    };
+  };
+  for (const [kind, row] of [
+    ["retryAll", { title: "pending-after-error", status: "needs_attention", retryable: true }],
+    ["retrySkipped", { title: "skipped-after-error", status: "completed", skipped: true }]
+  ]) {
+    test = await fixture([row], { reply: true });
+    let touchSends = 0, replyResumes = 0;
+    try {
+      test.options.executors.touch.runWorkflowStep = async () => { touchSends += 1; return { status: "completed" }; };
+      test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+      await test.control.start(); await test.control.tick();
+      assert.equal(test.control.status().phase, "listening");
+      const resumesBefore = replyResumes;
+      failStateWrite(test.rootDir);
+      try {
+        await assert.rejects(kind === "retryAll" ? test.control.retryAll(false) : test.control.retrySkipped(test.rows[0].id),
+          /ENOSPC retry state/);
+      } finally { fs.renameSync = realRename; }
+      assert.equal(test.control.status().tasks[0].status, "pending", `${kind} changed the in-memory queue before persistence failed`);
+      assert.equal(test.control.status().enabled, false, `${kind} failure must leave the workflow paused`);
+      assert.equal(test.control.status().phase, "paused");
+      assert.equal(replyResumes, resumesBefore, `${kind} failure must not resume reception`);
+      await test.control.tick();
+      assert.equal(touchSends, 0, `${kind} failure must not send a finite touch`);
+    } finally { fs.renameSync = realRename; await test.close(); }
+  }
+
+  const unknownRows = [
+    { title: "failed-skip", status: "completed", skipped: true, skipFails: true },
+    { title: "unknown", status: "needs_attention", unknown: true }
+  ];
+  test = await fixture(unknownRows, { reply: true });
+  let releaseRetryPause, retryingUnknown, resolvingUnknown, originalRetryPause;
+  try {
+    let touchSends = 0, replyResumes = 0;
+    test.options.executors.touch.runWorkflowStep = async () => { touchSends += 1; return { status: "completed" }; };
+    test.options.executors.touch.resolveUnknownWorkflowTask = (_task, resolution, resolutionId) => {
+      unknownRows[1].unknown = false;
+      return { resolution, resolutionId, completed: false, progress: { done: 0, total: 1 } };
+    };
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick();
+    const resumesBefore = replyResumes;
+    let enteredPause;
+    const entered = new Promise((resolve) => { enteredPause = resolve; });
+    const pauseGate = new Promise((resolve) => { releaseRetryPause = resolve; });
+    originalRetryPause = test.options.reply.pauseWorkflow;
+    test.options.reply.pauseWorkflow = async () => {
+      enteredPause();
+      await pauseGate;
+    };
+    retryingUnknown = test.control.retryAll(false);
+    await entered;
+    const unknownId = test.rows.find((row) => row.title === "unknown").id;
+    resolvingUnknown = test.control.resolveTouchUnknown(unknownId, "not_sent");
+    releaseRetryPause(); releaseRetryPause = null;
+    assert.equal((await resolvingUnknown).ok, true);
+    await assert.rejects(retryingUnknown, /没有可重新加入/);
+    assert.equal(test.control.status().enabled, false, "a queue change during retry must keep workflow paused");
+    assert.equal(test.control.status().phase, "paused");
+    assert.equal(replyResumes, resumesBefore);
+    await test.control.tick();
+    assert.equal(touchSends, 0, "resolving an unknown result must not send without a new start");
+  } finally {
+    releaseRetryPause?.();
+    await Promise.allSettled([retryingUnknown, resolvingUnknown].filter(Boolean));
+    if (originalRetryPause) test.options.reply.pauseWorkflow = originalRetryPause;
+    await test.close();
+  }
+
+  test = await fixture([{ title: "paused-before-retry", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  try {
+    let replyResumes = 0;
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick(); await test.control.pause();
+    const resumesBefore = replyResumes;
+    await assert.rejects(test.control.retryAll(false), /没有可重新加入/);
+    assert.equal(test.control.status().enabled, false, "a retry started after user pause must stay paused");
+    assert.equal(test.control.status().phase, "paused");
+    assert.equal(replyResumes, resumesBefore);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "paused-during-retry", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  let releaseUserPause, retryingDuringPause, userPause, originalUserPause;
+  try {
+    let replyResumes = 0, enteredPause;
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick();
+    const resumesBefore = replyResumes;
+    const entered = new Promise((resolve) => { enteredPause = resolve; });
+    const pauseGate = new Promise((resolve) => { releaseUserPause = resolve; });
+    originalUserPause = test.options.reply.pauseWorkflow;
+    test.options.reply.pauseWorkflow = async () => {
+      enteredPause();
+      await pauseGate;
+    };
+    retryingDuringPause = test.control.retryAll(false);
+    await entered;
+    userPause = test.control.pause();
+    releaseUserPause(); releaseUserPause = null;
+    await assert.rejects(retryingDuringPause, /没有可重新加入/);
+    await userPause;
+    assert.equal(test.control.status().enabled, false, "a later user pause must take priority over retry recovery");
+    assert.equal(test.control.status().phase, "paused");
+    assert.equal(replyResumes, resumesBefore);
+  } finally {
+    releaseUserPause?.();
+    await Promise.allSettled([retryingDuringPause, userPause].filter(Boolean));
+    if (originalUserPause) test.options.reply.pauseWorkflow = originalUserPause;
+    await test.close();
+  }
 
   const eligibilityRows = [{ title: "became-ineligible", status: "needs_attention", retryable: true }];
   test = await fixture(eligibilityRows, { reply: true });
