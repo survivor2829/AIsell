@@ -73,6 +73,15 @@ function skippedDelivery(row) {
   return partial ? "partial_sent" : "not_attempted";
 }
 
+function resumableFreshEdit(task, multipart) {
+  const current = task.results?.[task.current_index];
+  return Boolean(multipart && task.phase === "preparing_batch"
+    && !Object.prototype.hasOwnProperty.call(current || {}, "message_parts")
+    && ["pending", "generated"].includes(current?.status)
+    && current?.retry_blocked === false
+    && current?.send_attempted === false);
+}
+
 function finiteSearchEvidence(diagnostics = {}) {
   const evidence = {};
   if (["popup", "formula_crop"].includes(diagnostics.capture_source)) evidence.capture_source = diagnostics.capture_source;
@@ -248,12 +257,7 @@ function createTouchWorkflow(options = {}) {
         persist();
       }
       if (task.status === "paused") {
-        const resumableFreshEdit = multipart && task.phase === "preparing_batch"
-          && !Object.prototype.hasOwnProperty.call(task.results[task.current_index] || {}, "message_parts")
-          && ["pending", "generated"].includes(task.results[task.current_index]?.status)
-          && task.results[task.current_index]?.retry_blocked === false
-          && task.results[task.current_index]?.send_attempted === false;
-        if (!resumableFreshEdit && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        if (!resumableFreshEdit(task, multipart) && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
         if (multipart) task.results[task.current_index].status = "generated";
@@ -445,14 +449,17 @@ function createTouchWorkflow(options = {}) {
         } else result = await executePart({ kind: "text", message: current.message }, 0);
         const detail = summarizeSendResult(result);
         const preSendPolicy = classifyWechatFailure(result);
-        const boundedPreSendFailure = result?.send_attempted === false
-          && !identitySkipReason(result)
-          && !TOUCH_PRE_SEND_STOP_REASONS.has(preSendPolicy.reasonCode)
-          && preSendPolicy.classification !== "environment"
-          && preSendPolicy.reasonCode !== "image_send_pre_click_timeout"
-          && !["batch_cancelled", "workflow_paused"].includes(preSendPolicy.reasonCode);
+        const identityReason = identitySkipReason(result);
+        const confirmedPreSend = result?.send_attempted === false
+          && !["prepared", "clicked", "outcome_unknown"].includes(task.results[index]?.status);
+        const pendingPause = !enabled() || ["batch_cancelled", "workflow_paused"].includes(preSendPolicy.reasonCode);
+        const boundedPreSendFailure = !identityReason
+          && preSendPolicy.reasonCode !== "wechat_search_network_lookup_misclick"
+          && (!TOUCH_PRE_SEND_STOP_REASONS.has(preSendPolicy.reasonCode) || pendingPause);
+        const warnPreSend = confirmedPreSend
+          && (identityReason === "search_result_identity_unverified" || boundedPreSendFailure);
         sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason,
-          ...(identitySkipReason(result) === "search_result_identity_unverified" || boundedPreSendFailure ? { level: "warn" } : {}) });
+          ...(warnPreSend ? { level: "warn" } : {}) });
       } catch (error) {
         sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
         task.results[index].status = "outcome_unknown";
@@ -660,7 +667,8 @@ function createTouchWorkflow(options = {}) {
   function canRetryWorkflowTask(record, payload) {
     const task = loadWorkflowTask(record.id);
     const multipart = payload ? (Array.isArray(payload.imageIds) && payload.imageIds.length > 0 || Boolean(payload.link)) : undefined;
-    return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index], multipart);
+    return !task.integrity_error && task.status === "paused"
+      && (resumableFreshEdit(task, multipart) || canContinueTouchResult(task.results[task.current_index], multipart));
   }
 
   function describeUnknownWorkflowTask(record) {

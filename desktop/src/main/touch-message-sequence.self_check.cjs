@@ -39,6 +39,9 @@ async function checkTouchMessageSequence() {
     "image failures must include script/source line mapping");
   assert.doesNotMatch(IMAGE_SEND_SCRIPT, /TickCount64/u,
     "PowerShell image scripts must not use .NET Core-only TickCount64");
+  assert.match(fs.readFileSync(path.join(__dirname, "../renderer/WechatWorkflow.tsx"), "utf8"),
+    /touch_pre_send_failure_streak:\s*"连续 3 位联系人因同一原因在发送前失败/u,
+    "the circuit needs an actionable user-facing label");
   const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "../shared/wechat-rule-catalog.json"), "utf8"));
   const literalReasons = [...IMAGE_SEND_SCRIPT.matchAll(/throw "(image_[a-z0-9_]+)"/g)].map((match) => match[1]);
   const classifiedReasons = new Set(catalog.filter((entry) => entry?.file === "desktop/rpa/active_touch/wechat_image_send.dev.cjs" && typeof entry.reason === "string").map((entry) => entry.reason));
@@ -439,6 +442,26 @@ async function checkTouchMessageSequence() {
   assert.equal(result.status, "completed");
   assert.equal(calls.length, beforeInterruptedCalls + 1, "pre-sending recovery sends once after restart");
 
+  const interruptedMultipart = createTouchWorkflow(config);
+  const interruptedMultipartPayload = interruptedMultipart.prepareWorkflowTask({
+    script: "多段发送前中断恢复测试", contactIds: [contact.id], imageIds: [imageId]
+  });
+  const interruptedMultipartRecord = { id: crypto.randomUUID(), payload: interruptedMultipartPayload, progress: { done: 0 }, status: "running" };
+  const interruptedMultipartDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(interruptedMultipartRecord.id).digest("hex"));
+  fs.mkdirSync(path.join(interruptedMultipartDir, "contacts.json"), { recursive: true });
+  const beforeMultipartCalls = calls.length;
+  result = await interruptedMultipart.runWorkflowStep(interruptedMultipartRecord, context);
+  assert.equal(result.status, "needs_attention");
+  assert.equal(calls.length, beforeMultipartCalls, "the pre-sending fault must happen before any multipart send");
+  fs.rmdirSync(path.join(interruptedMultipartDir, "contacts.json"));
+  const restartedMultipart = createTouchWorkflow(config);
+  assert.equal(restartedMultipart.canRetryWorkflowTask(interruptedMultipartRecord, interruptedMultipartPayload), true,
+    "a fresh multipart row must expose retry after restart");
+  result = await restartedMultipart.runWorkflowStep(interruptedMultipartRecord, context);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.slice(beforeMultipartCalls).map((call) => call.kind), ["text", "image"],
+    "multipart pre-sending recovery sends each part exactly once");
+
   const corruptFile = path.join(interruptedDir, "touch_task.json");
   fs.writeFileSync(corruptFile, "{bad json", "utf8");
   assert.equal(createTouchWorkflow(config).describeSkippedWorkflowTask(interruptedRecord), null,
@@ -486,6 +509,51 @@ async function checkTouchMessageSequence() {
   stopPassportObserver();
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
 
+  async function checkPassportWiring(name, reasonCode, contactIds, image = false) {
+    let screenshots = 0;
+    const logger = require("./diagnostics.cjs").configureDiagnostics({ rootDir: path.join(root, `diagnostics-${name}`) });
+    const passport = createTaskPassportStore({ rootDir: path.join(root, `passport-${name}`),
+      captureScreenshot: () => { screenshots += 1; return Buffer.from("89504e470d0a1a0a", "hex"); } });
+    const unsubscribe = logger.subscribe((entry) => passport.observeDiagnostic(entry));
+    const workflow = createTouchWorkflow({ ...config, readContacts: () => [contact, secondContact, thirdContact], passport,
+      execute: async (part) => {
+        if (image && !part.image) {
+          part.onTransition("sent_verified");
+          return { ok: true, state: { real_send_status: "sent_verified" } };
+        }
+        return { ok: false, send_attempted: false, blocked_reason: reasonCode,
+          ...(reasonCode === "image_send_pre_click_timeout" ? { pre_send_retry_exhausted: true } : {}) };
+      } });
+    const payload = workflow.prepareWorkflowTask({ script: name, contactIds, ...(image ? { imageIds: [imageId] } : {}) });
+    const record = { id: crypto.randomUUID(), payload, progress: { done: 0 }, status: "running" };
+    try {
+      let final;
+      for (const id of contactIds) {
+        final = await workflow.runWorkflowStep(record, context);
+        if (reasonCode === "wechat_login_required") {
+          assert.equal(final.waitingReason, "wechat_environment_recovery");
+          clock.setTime(clock.getTime() + 10 * 60_000);
+          final = await workflow.runWorkflowStep(record, context);
+        } else if (reasonCode === "message_snapshot_unavailable") {
+          assert.equal(final.waitingReason, "wechat_pre_send_recovery");
+          final = await workflow.runWorkflowStep(record, context);
+          final = await workflow.runWorkflowStep(record, context);
+        }
+        if (id !== contactIds.at(-1)) assert.equal(final.status, "pending");
+      }
+      assert.equal(screenshots, contactIds.length,
+        `${name}: each final skip or circuit produces one passport attachment`);
+      return final;
+    } finally {
+      unsubscribe();
+      require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
+    }
+  }
+  assert.equal((await checkPassportWiring("图片点击前超时", "image_send_pre_click_timeout", [contact.id], true)).status, "completed");
+  assert.equal((await checkPassportWiring("环境耗尽", "wechat_login_required", [contact.id])).status, "completed");
+  assert.equal((await checkPassportWiring("连续同因熔断", "message_snapshot_unavailable",
+    [contact.id, secondContact.id, thirdContact.id])).reasonCode, "touch_pre_send_failure_streak");
+
   const taskState = (record) => JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks",
     crypto.createHash("sha256").update(record.id).digest("hex"), "touch_task.json"), "utf8"));
   const testFailure = async (reasonCode, options = {}) => {
@@ -493,13 +561,16 @@ async function checkTouchMessageSequence() {
     const failures = [];
     const bills = [];
     let active = true;
+    let liveContacts = [contact, secondContact, thirdContact, fourthContact];
     const localContext = { isEnabled: () => active };
-    const localConfig = { ...config, readContacts: () => [contact, secondContact, thirdContact, fourthContact],
+    const localConfig = { ...config, readContacts: () => liveContacts,
       passport: { bindTrace() {}, recordEvent() {}, writeRunBill: (_module, _id, rows) => bills.push(rows),
         recordFailure: (_module, _id, failure) => failures.push(failure) },
       execute: async (part) => {
         const kind = part.image ? "image" : "text";
         attempts.push({ contactId: part.contactId, kind });
+        const injected = options.resultForContact?.(part.contactId, part, kind);
+        if (injected) return { ok: false, ...injected };
         if (options.successForContact?.(part.contactId)) {
           part.onTransition("sent_verified");
           return { ok: true, state: { real_send_status: "sent_verified" } };
@@ -520,6 +591,7 @@ async function checkTouchMessageSequence() {
     const payload = workflow.prepareWorkflowTask({ script: "故障注入", contactIds: ids, ...(options.multipart ? { imageIds: [imageId] } : {}) });
     const record = { id: crypto.randomUUID(), payload, progress: { done: 0 }, status: "running" };
     return { workflow, record, payload, attempts, failures, bills, context: localContext, setActive: (value) => { active = value; },
+      setContacts: (contacts) => { liveContacts = contacts; },
       step: () => workflow.runWorkflowStep(record, localContext), state: () => taskState(record) };
   };
   const recoverableCodes = ["message_snapshot_unavailable", "atomic_send_not_verified", "atomic_draft_changed",
@@ -568,6 +640,32 @@ async function checkTouchMessageSequence() {
   result = await preparedOnly.step();
   assert.equal(result.reasonCode, "outcome_unknown");
   assert.equal(preparedOnly.state().results[0].status, "outcome_unknown");
+  const preparedCallCount = preparedOnly.attempts.length;
+  let restartedPreparedCalls = 0;
+  await createTouchWorkflow({ ...config, readContacts: () => [contact, secondContact, thirdContact, fourthContact],
+    execute: () => { restartedPreparedCalls += 1; throw new Error("prepared-only unknown must not execute after restart"); }
+  }).runWorkflowStep(preparedOnly.record, preparedOnly.context);
+  assert.equal(preparedOnly.attempts.length, preparedCallCount, "7b: a new workflow instance cannot retry prepared-only unknown");
+  assert.equal(restartedPreparedCalls, 0);
+  for (const [reasonCode, transitions] of [["atomic_send_not_verified", ["prepared"]],
+    ["wechat_search_network_lookup_misclick", []]]) {
+    const diagnosticLevels = [];
+    const test = await testFailure(reasonCode, { transitions });
+    const stop = require("./diagnostics.cjs").diagnostics().subscribe((entry) => {
+      if (entry.event === "workflow_contact_send.failed") diagnosticLevels.push(entry.level);
+    });
+    await test.step();
+    stop();
+    assert.deepEqual(diagnosticLevels, ["error"], `${reasonCode} takes an attention/unknown branch, not bounded recovery`);
+  }
+  const pausedReason = await testFailure("workflow_paused");
+  result = await pausedReason.step();
+  assert.equal(result.status, "pending");
+  assert.equal(pausedReason.state().results[0].environment_recovery_started_at, undefined);
+  const disabledDuringSend = await testFailure("message_snapshot_unavailable", { pause: true });
+  result = await disabledDuringSend.step();
+  assert.equal(result.status, "pending");
+  assert.equal(disabledDuringSend.state().results[0].pre_send_recovery_attempts || 0, 0);
 
   const excludedCodes = ["batch_authorization_missing", "task_context_missing", "task_context_mismatch", "executor_contact_mismatch",
     "contact_snapshot_changed", "touch_sequence_changed", "contact_or_message_missing", "wechat_account_identity_missing",
@@ -596,6 +694,8 @@ async function checkTouchMessageSequence() {
     result = await test.step();
     assert.equal(result.status, "needs_attention");
     assert.equal(result.reasonCode, "touch_pre_send_failure_streak");
+    assert.equal(result.result.deliveryStatus, multipart ? "partial_sent" : "not_attempted",
+      "circuit delivery status must include already verified message parts");
     assert.equal(classifyWechatFailureReason(result.reasonCode).attentionScope, "global");
     assert.equal(test.state().results[2].status, "generated");
     assert.equal(test.state().results[2].pre_send_recovery_attempts, 0);
@@ -623,6 +723,60 @@ async function checkTouchMessageSequence() {
     await different.step(); await different.step(); result = await different.step();
     assert.notEqual(result.status, "needs_attention", "X, Y, X must not trip a same-reason circuit");
   }
+  const snapshotReset = await testFailure("message_snapshot_unavailable", {
+    contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id]
+  });
+  for (let person = 0; person < 2; person += 1) {
+    await snapshotReset.step(); await snapshotReset.step(); await snapshotReset.step();
+  }
+  snapshotReset.setContacts([contact, secondContact, fourthContact]);
+  assert.equal((await snapshotReset.step()).progress.done, 3);
+  assert.equal(snapshotReset.state().pre_send_skip_streak, undefined, "snapshot change clears the prior pre-send streak");
+  await snapshotReset.step(); await snapshotReset.step();
+  assert.notEqual((await snapshotReset.step()).status, "needs_attention");
+
+  const manualReset = await testFailure("message_snapshot_unavailable", {
+    contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id],
+    resultForContact: (id) => id === thirdContact.id
+      ? { send_attempted: null, blocked_reason: "atomic_send_not_verified" } : null
+  });
+  for (let person = 0; person < 2; person += 1) {
+    await manualReset.step(); await manualReset.step(); await manualReset.step();
+  }
+  assert.equal((await manualReset.step()).reasonCode, "outcome_unknown");
+  manualReset.workflow.resolveUnknownWorkflowTask(manualReset.record, "skip");
+  assert.equal(manualReset.state().pre_send_skip_streak, undefined, "manual disposition clears the prior pre-send streak");
+  await manualReset.step(); await manualReset.step();
+  assert.notEqual((await manualReset.step()).status, "needs_attention");
+
+  const identityReset = await testFailure("message_snapshot_unavailable", {
+    contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id],
+    reasonForContact: (id) => id === thirdContact.id ? "exact_search_result_not_found" : "message_snapshot_unavailable"
+  });
+  for (let person = 0; person < 2; person += 1) {
+    await identityReset.step(); await identityReset.step(); await identityReset.step();
+  }
+  assert.equal((await identityReset.step()).progress.done, 3);
+  assert.equal(identityReset.state().pre_send_skip_streak, undefined, "identity skip clears pre-send count");
+  await identityReset.step(); await identityReset.step();
+  assert.notEqual((await identityReset.step()).status, "needs_attention");
+
+  const preSendResetsIdentity = await testFailure("message_snapshot_unavailable", {
+    contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id],
+    resultForContact: (id) => id === thirdContact.id ? null : {
+      send_attempted: false, blocked_reason: "search_result_identity_unverified",
+      diagnostics: { rule_id: "search-r008", candidate_set_hash: "unchanged" }
+    }
+  });
+  for (let person = 0; person < 2; person += 1) {
+    assert.equal((await preSendResetsIdentity.step()).waitingReason, "wechat_identity_recovery");
+    assert.equal((await preSendResetsIdentity.step()).progress.done, person + 1);
+  }
+  assert.equal(preSendResetsIdentity.state().identity_skip_streak.count, 2);
+  await preSendResetsIdentity.step(); await preSendResetsIdentity.step(); await preSendResetsIdentity.step();
+  assert.equal(preSendResetsIdentity.state().identity_skip_streak, undefined, "pre-send skip clears identity count");
+  assert.equal((await preSendResetsIdentity.step()).waitingReason, "wechat_identity_recovery");
+  assert.notEqual((await preSendResetsIdentity.step()).status, "needs_attention");
   const succeededBetween = await testFailure("message_snapshot_unavailable", {
     contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id],
     successForContact: (id) => id === secondContact.id
