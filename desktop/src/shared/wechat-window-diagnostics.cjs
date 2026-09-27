@@ -28,6 +28,9 @@ function sanitizeWechatWindowDiagnostics(source = {}) {
   if (STAGES.has(source.window_stage)) detail.window_stage = source.window_stage;
   if (MODES.has(source.window_detection_mode)) detail.window_detection_mode = source.window_detection_mode;
   if (typeof source.window_class_code === "string" && /^[a-z][a-z0-9_.:]{0,119}$/i.test(source.window_class_code)) detail.window_class_code = source.window_class_code;
+  if (typeof source.window_wechat_version === "string" && /^\d+(\.\d+){1,3}$/u.test(source.window_wechat_version)) {
+    detail.window_wechat_version = source.window_wechat_version;
+  }
   for (const key of [
     "window_recovery_attempted",
     "window_recovery_succeeded",

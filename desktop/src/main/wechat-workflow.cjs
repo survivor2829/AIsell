@@ -83,10 +83,12 @@ function createWechatWorkflowController(options) {
   let loadError = "";
   let timer = null;
   let inFlight = null;
+  let pauseGeneration = 0;
   let disposed = false;
   let mutation = Promise.resolve();
   let mutating = false;
   let revision = 0;
+  let queueRevision = 0;
   let lastReplyDiagnostic = "";
   let lastTaskStartKey = "";
   let lastTaskResultKey = "";
@@ -94,7 +96,19 @@ function createWechatWorkflowController(options) {
   let replyActivated = false;
   let afterMoments = false;
   let cycleStage = "idle";
-  const log = (name, details, metadata) => options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true });
+  const log = (name, details, metadata) => {
+    try { options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true }); }
+    catch { /* Diagnostics must not change workflow control or send outcomes. */ }
+  };
+  const beginLog = (name, details, metadata) => {
+    try {
+      const operation = options.logger?.begin?.("wechat_workflow", name, details, metadata);
+      return {
+        end: (...args) => { try { operation?.end?.(...args); } catch {} },
+        fail: (...args) => { try { operation?.fail?.(...args); } catch {} }
+      };
+    } catch { return null; }
+  };
   const getAccount = () => String(options.getAccount?.() || "");
   const emit = () => { revision += 1; options.onUpdate?.(status()); };
 
@@ -118,7 +132,7 @@ function createWechatWorkflowController(options) {
   }
 
   function assertHealthy() { if (loadError) throw new Error(loadError); }
-  function persist() { assertHealthy(); store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
+  function persist() { assertHealthy(); queueRevision += 1; store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
   function qualitySummary() { return qualityLedger.summary(); }
   function recordUnknownReason(task, reasonCode) {
     const reason = normalizeFailureReasonCode(reasonCode || "task_attention_reason_missing");
@@ -271,6 +285,8 @@ function createWechatWorkflowController(options) {
       recipients: accountRecipients().map((contact) => ({ id: contact.id, label: contact.remark || contact.nickname || contact.name || contact.id }))
     };
   }
+
+  const controlSnapshot = () => ({ enabled, phase, in_flight: Boolean(inFlight) });
 
   function enroll(task, payload) {
     if (task.type !== "touch" || task.enrolled) return;
@@ -534,7 +550,7 @@ function createWechatWorkflowController(options) {
     const executor = executors[task.type];
     cycleStage = "task_prepare";
     const startKey = `${task.id}:${task.progress.done}`;
-    const operation = options.logger?.begin?.("wechat_workflow", "task_step", { task_kind: task.type, task_id: task.id, stage: cycleStage }, { trace: startKey !== lastTaskStartKey });
+    const operation = beginLog("task_step", { task_kind: task.type, task_id: task.id, stage: cycleStage }, { trace: startKey !== lastTaskStartKey });
     lastTaskStartKey = startKey;
     currentTaskId = task.id;
     lastTaskId = task.id;
@@ -747,20 +763,44 @@ function createWechatWorkflowController(options) {
     return task;
   }
 
-  async function pauseWorkflow() {
-    enabled = false; clearTimeout(timer);
-    phase = inFlight ? "pausing" : "paused";
-    emit();
-    await inFlight;
-    await options.reply?.pauseWorkflow?.();
-    phase = "paused"; replyStatus = "已暂停"; emit();
-    return { ok: true, state: status() };
+  async function pauseWorkflow(trigger = "user") {
+    pauseGeneration += 1;
+    const operation = beginLog("pause", {
+      stage: "control", trigger_code: trigger, previous_phase: phase, in_flight: Boolean(inFlight)
+    }, { trace: true });
+    try {
+      enabled = false; clearTimeout(timer);
+      phase = inFlight ? "pausing" : "paused";
+      emit();
+      await inFlight;
+      await options.reply?.pauseWorkflow?.();
+      phase = "paused"; replyStatus = "已暂停"; emit();
+      operation?.end?.({ stage: "paused" }, { ok: true });
+      return { ok: true, state: status() };
+    } catch (failure) {
+      operation?.fail?.(failure);
+      throw failure;
+    }
   }
 
-  async function pauseForRetry() {
-    if (!enabled) return;
+  async function pauseForRetry(trigger = "retry_skipped") {
+    if (!enabled) return 0;
     if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
-    await pauseWorkflow();
+    const generation = pauseGeneration + 1;
+    const queueAtPause = queueRevision;
+    await pauseWorkflow(trigger);
+    return { generation, queueAtPause };
+  }
+
+  function resumeAfterFailedRetry(ticket) {
+    if (!ticket || pauseGeneration !== ticket.generation || queueRevision !== ticket.queueAtPause
+      || disposed || enabled || phase !== "paused" || nextTask()
+      || store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))) return;
+    enabled = true;
+    settleQueue();
+    if (phase !== "listening") { enabled = false; phase = "paused"; return; }
+    options.reply?.resumeWorkflow?.();
+    emit(); schedule(0);
   }
 
   function requeueSkipped(task, contactIds) {
@@ -791,8 +831,8 @@ function createWechatWorkflowController(options) {
   }
 
   async function retrySkipped(id, contactIds) {
-    await pauseForRetry();
-    return serialize(() => {
+    const generation = await pauseForRetry("retry_skipped");
+    try { return await serialize(() => {
       assertPlanEditable();
       const task = findTask(id);
       const retried = requeueSkipped(task, contactIds);
@@ -802,31 +842,47 @@ function createWechatWorkflowController(options) {
         ok: true, state: status(), retriedCount: Number(retried.retriedCount || 0),
         excludedCount: Number(retried.excludedCount || 0), excludedReasons: retried.excludedReasons || {}
       };
-    });
+    }); }
+    catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
   }
 
-  async function retryTask(id) {
-    await pauseForRetry();
+  async function retryTask(id, andStart = false) {
+    const eligible = findTask(id);
+    if (!canRetry(eligible)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
+    await pauseForRetry("retry_task");
     return serialize(() => {
       assertPlanEditable();
-      requeueTask(findTask(id));
+      const task = findTask(id);
+      const previousStatus = task.status;
+      const previousReason = task.reasonCode;
+      requeueTask(task);
       phase = "paused";
-      persist(); emit(); return { ok: true, state: status() };
+      persist(); emit();
+      log("task.retry_requested", { stage: "control", task_kind: task.type, task_id: task.id,
+        previous_status: previousStatus, reason: previousReason, and_start_requested: andStart === true },
+      { code: "retry_task_requested" });
+      return { ok: true, state: status() };
     });
   }
 
-  async function retryAll() {
-    await pauseForRetry();
-    return serialize(() => {
+  function retryAllEligible(task) {
+    if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) return null;
+    const skipped = ["completed", "needs_attention"].includes(task.status)
+      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => row.retryable === true);
+    return skipped ? "skipped" : canRetry(task) ? "task" : null;
+  }
+
+  async function retryAll(andStart = false) {
+    if (!store.tasks.some(retryAllEligible)) throw new Error("没有可重新加入的任务或联系人。");
+    const generation = await pauseForRetry("retry_all");
+    try { return await serialize(() => {
       assertPlanEditable();
       let taskCount = 0, contactCount = 0, excludedCount = 0;
       for (const task of store.tasks) {
-        if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) continue;
-        const skipped = ["completed", "needs_attention"].includes(task.status)
-          && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => row.retryable === true);
-        if (!skipped && !canRetry(task)) continue;
+        const eligible = retryAllEligible(task);
+        if (!eligible) continue;
         try {
-          if (skipped) {
+          if (eligible === "skipped") {
             const retried = requeueSkipped(task);
             contactCount += Number(retried.retriedCount || 0);
             excludedCount += Number(retried.excludedCount || 0);
@@ -841,12 +897,15 @@ function createWechatWorkflowController(options) {
       if (!taskCount) throw new Error("没有可重新加入的任务或联系人。");
       phase = "paused";
       persist(); emit();
+      log("task.retry_all_requested", { task_count: taskCount, contact_count: contactCount,
+        excluded_count: excludedCount, and_start_requested: andStart === true }, { code: "retry_all_requested" });
       return { ok: true, state: status(), taskCount, contactCount, excludedCount };
-    });
+    }); }
+    catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
   }
 
   return {
-    status, tick,
+    status, controlSnapshot, tick,
     refresh: () => {
       if (!loadError) { refreshDay(); reconcilePublishResults(); }
       return { ok: !loadError, state: status(), ...(loadError ? { error: loadError } : {}) };
@@ -943,7 +1002,7 @@ function createWechatWorkflowController(options) {
     }),
     preflightStart,
     start: async () => {
-      const operation = options.logger?.begin?.("wechat_workflow", "start", { stage: "start_preflight", pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
+      const operation = beginLog("start", { stage: "start_preflight", previous_phase: phase, pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
       try {
         const preflight = preflightStart();
         if (preflight.alreadyActive) {
@@ -968,7 +1027,10 @@ function createWechatWorkflowController(options) {
     },
     pause: pauseWorkflow,
     dispose: async () => {
+      const previousPhase = phase;
+      const wasInFlight = Boolean(inFlight);
       enabled = false; disposed = true; clearTimeout(timer);
+      log("control.disposed", { trigger_code: "app_quit", previous_phase: previousPhase, in_flight: wasInFlight });
       await inFlight;
       await options.reply?.pauseWorkflow?.();
     }

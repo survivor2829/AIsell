@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Module = require("node:module");
+const vm = require("node:vm");
 const diagnosticsPath = require.resolve("./diagnostics.cjs");
 const previousDiagnosticsModule = require.cache[diagnosticsPath];
 const originalLoad = Module._load;
@@ -293,6 +294,79 @@ try {
   assert.equal(windowReport.details.window_recovery_succeeded, false);
   assert.equal(windowReport.details.window_recover_ms, 300);
   assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
+  for (const [version, expected] of [["4.1.15.13", "4.1.15.13"], ["C:\\Weixin\\Weixin.exe", undefined], ["Weixin 4.1", undefined]]) {
+    const detail = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({ ok: false, reason: "powershell_timeout",
+      diagnostics: { window_wechat_version: version } });
+    traceLogger.event("active_touch", "send_stage", detail, { trace: true });
+    const entry = traceLogger.readRecent(1)[0];
+    assert.equal(entry.details.window_wechat_version, expected);
+    const cloud = require("../shared/cloud-report.cjs").reportEntry(entry,
+      { installId: "12345678-1234-1234-1234-123456789012" });
+    assert.equal(cloud.details.window_wechat_version, expected);
+  }
+  const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8").replace(/\r\n/gu, "\n");
+  assert.match(mainSource, /event\("app", "window_closing",[\s\S]{0,160}trace: true/u);
+  assert.match(mainSource, /event\("app", "quit_requested",[\s\S]{0,160}trace: true/u);
+  for (const name of ["window_closing", "quit_requested"]) {
+    const block = mainSource.slice(mainSource.indexOf(`event("app", "${name}"`) - 150,
+      mainSource.indexOf(`event("app", "${name}"`) + 180);
+    assert.doesNotMatch(block, /workflowController\?\.status(?:\?\.)?\(/u, "shutdown logging must use the side-effect-free snapshot");
+  }
+  const quitHandler = mainSource.indexOf('app.on("before-quit"');
+  const quitGuard = mainSource.indexOf("if (quitCleanupStarted) return;", quitHandler);
+  const quitLog = mainSource.indexOf('event("app", "quit_requested"', quitHandler);
+  assert.ok(quitHandler >= 0 && quitGuard > quitHandler && quitLog > quitGuard,
+    "quit_requested must be logged only after the re-entry guard");
+  const closeStart = mainSource.indexOf('mainWindow.on("close", () => {');
+  const closeEnd = mainSource.indexOf('mainWindow.on("blur"', closeStart);
+  assert.ok(closeStart >= 0 && closeEnd > closeStart);
+  let closeHandler, closePaused = 0;
+  vm.runInNewContext(mainSource.slice(closeStart, closeEnd), {
+    mainWindow: { on: (name, handler) => { if (name === "close") closeHandler = handler; } },
+    workflowController: { controlSnapshot: () => ({ phase: "listening", enabled: true }) },
+    diagnostics: () => ({ event: () => { throw new Error("logger_down"); } }),
+    keywordAcquisitionRegistration: undefined,
+    autoReplyController: { pause: () => { closePaused += 1; } },
+    touchTaskController: { pause: () => { closePaused += 1; } },
+    momentsCampaignController: { pauseForAppClose: () => { closePaused += 1; } },
+    disarmRealSend: () => { closePaused += 1; },
+    developmentEdition: false
+  });
+  assert.doesNotThrow(closeHandler, "closing must continue when diagnostics throws");
+  assert.equal(closePaused, 4);
+  const quitEnd = mainSource.indexOf("\n  });\n}", quitHandler);
+  assert.ok(quitEnd > quitHandler);
+  let beforeQuitHandler, quitStopped = 0;
+  vm.runInNewContext(mainSource.slice(quitHandler, quitEnd + "\n  });".length), {
+    app: { on: (name, handler) => { if (name === "before-quit") beforeQuitHandler = handler; }, quit() {} },
+    quitCleanupComplete: false, quitCleanupStarted: false,
+    workflowController: { controlSnapshot: () => ({ phase: "paused", enabled: false }), dispose: async () => undefined },
+    diagnostics: () => ({ event: () => { throw new Error("logger_down"); } }),
+    cloudMaintenance: { stop: () => { quitStopped += 1; }, installOnExit: async () => undefined },
+    feedbackController: { stop: () => { quitStopped += 1; } },
+    feedbackAdmin: { stop: () => { quitStopped += 1; } },
+    keywordAcquisitionRegistration: undefined, digitalHumanRegistration: undefined,
+    productVideoRegistration: undefined, productDetailController: undefined,
+    contentEngineController: undefined, momentsPublishController: undefined,
+    providerGatewayClient: undefined, productDetailIpcRegistration: undefined,
+    productDetailDownloadRegistration: undefined, contentEngineIpcRegistration: undefined,
+    momentsCampaignController: undefined, setTimeout: () => undefined
+  });
+  let quitPrevented = false;
+  assert.doesNotThrow(() => beforeQuitHandler({ preventDefault: () => { quitPrevented = true; } }),
+    "quitting must continue when diagnostics throws");
+  assert.equal(quitPrevented, true);
+  assert.equal(quitStopped, 3);
+  assert.match(fs.readFileSync(path.join(__dirname, "diagnostics.cjs"), "utf8"), /const MAX_ARCHIVES = 19;/u,
+    "default retention must keep nineteen archived logs");
+  const retentionRoot = path.join(root, "retention");
+  const retained = createDiagnosticLogger({ rootDir: retentionRoot, maxBytes: 1, maxArchives: 19 });
+  for (let index = 0; index < 25; index += 1) retained.event("app", "rotation_probe", { count: index }, { trace: true });
+  const retainedFiles = fs.readdirSync(path.join(retentionRoot, "logs")).filter((name) => /^diagnostics\.jsonl(?:\.\d+)?$/u.test(name));
+  assert.equal(retainedFiles.length, 20, "the active log plus nineteen archives must remain");
+  assert.ok(retainedFiles.includes("diagnostics.jsonl.19"));
+  assert.equal(retainedFiles.some((name) => fs.readFileSync(path.join(retentionRoot, "logs", name), "utf8").includes('"seq":1,')), false,
+    "the oldest rotated event must be discarded");
   const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
   const inputSafety = {
     input_phase: "click_search_result",

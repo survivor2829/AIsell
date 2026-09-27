@@ -49,7 +49,7 @@ async function analyzeZipBuffers(buffers, options = {}) {
         if (!line.trim()) continue;
         let row;
         try { row = JSON.parse(line.replace(/^\uFEFF/u, "")); } catch { continue; }
-        if (!row || !Number.isSafeInteger(row.seq) || typeof row.run_id !== "string") continue;
+        if (!row || typeof row.event !== "string" || !Number.isSafeInteger(row.seq) || typeof row.run_id !== "string") continue;
         const key = `${row.run_id}:${row.seq}`;
         (kind === "main" ? rows : replies).set(key, row);
       }
@@ -76,6 +76,36 @@ async function analyzeZipBuffers(buffers, options = {}) {
     out.push(`- 屏幕：${numeric(bounds.width) ?? "?"}×${numeric(bounds.height) ?? "?"}，scale_factor ${numeric(display.scale_factor) ?? "?"}`);
   }
   if (environment) out.push(`- 采集 profile：${safe(environment.profile)}`);
+  if (summary?.app) {
+    const app = summary.app;
+    out.push(`- app：业务 ${safe(app.version)}；底座 ${safe(app.base_version)}；${safe(app.edition)} / ${safe(app.data_profile)}；build ${safe(app.build_id)} / ${safe(app.build_commit)}；源码脏 ${app.source_dirty === true}；已打包 ${app.packaged === true}；组件 ${safe(app.component?.version)} / ${safe(app.component?.id)}；健康 ${app.component?.healthy === true}`);
+  } else out.push("- app：该构建未记录");
+  if (summary?.wechat) out.push(`- 微信版本：${safe(summary.wechat.version)}（${safe(summary.wechat.source)}）；出现过 ${Array.isArray(summary.wechat.versions_seen) ? summary.wechat.versions_seen.length : 0} 个版本`);
+  else out.push("- 微信版本：该构建未记录");
+  for (const version of Array.isArray(summary?.wechat?.versions_seen) ? summary.wechat.versions_seen : []) {
+    out.push(`  - ${safe(version.version)}：${safe(version.first_ts)} → ${safe(version.last_ts)}；${numeric(version.count) ?? "?"} 次`);
+  }
+  if (summary?.display) out.push(`- 导出时显示器：${numeric(summary.display.count) ?? "?"}；主屏索引 ${numeric(summary.display.primary) ?? "?"}`);
+  else out.push("- 导出时显示器：该构建未记录");
+  for (const [index, display] of (Array.isArray(summary?.display?.displays) ? summary.display.displays : []).entries()) {
+    const bounds = display.bounds || {}, work = display.work_area || {};
+    out.push(`  - 屏幕 ${index}：${numeric(bounds.width) ?? "?"}×${numeric(bounds.height) ?? "?"} @ ${numeric(bounds.x) ?? "?"},${numeric(bounds.y) ?? "?"}；工作区 ${numeric(work.width) ?? "?"}×${numeric(work.height) ?? "?"}；scale_factor ${numeric(display.scale_factor) ?? "?"}；旋转 ${numeric(display.rotation) ?? "?"}；内置 ${display.internal === true}`);
+  }
+  if (summary?.feedback_latest) out.push(`- 最新反馈：${safe(summary.feedback_latest.id)} / ${safe(summary.feedback_latest.created_at)} / ${safe(summary.feedback_latest.delivery)} / ${safe(summary.feedback_latest.status)}`);
+  else out.push("- 最新反馈：该构建未记录");
+  if (summary?.log_coverage) out.push(`- 日志覆盖：${numeric(summary.log_coverage.file_count) ?? "?"} 个文件，${numeric(summary.log_coverage.total_bytes) ?? "?"} 字节；${(Array.isArray(summary.log_coverage.runs) ? summary.log_coverage.runs : []).filter((run) => run.rotated_prefix === true).length} 个 run 前段被轮转`);
+  else out.push("- 日志覆盖：该构建未记录");
+  for (const run of Array.isArray(summary?.log_coverage?.runs) ? summary.log_coverage.runs : []) {
+    out.push(`  - run ${compact(run.run_id)}…：seq ${numeric(run.first_seq) ?? "?"}–${numeric(run.last_seq) ?? "?"}；${safe(run.first_ts)} → ${safe(run.last_ts)}；前段被轮转 ${run.rotated_prefix === true}`);
+  }
+  let lastWechatVersion = "";
+  for (const row of ordered) {
+    const version = row?.details?.window_wechat_version;
+    if (typeof version === "string" && /^\d+(\.\d+){1,3}$/u.test(version) && version !== lastWechatVersion) {
+      out.push(`- 微信窗口版本变化：${stamp(ms(row))} → ${version}`);
+      lastWechatVersion = version;
+    }
+  }
   for (const run of runs) {
     const start = run.group[0].seq;
     const end = run.group.at(-1).seq;
@@ -160,6 +190,7 @@ async function analyzeZipBuffers(buffers, options = {}) {
   const globalStops = ordered.filter((r) => r.event === "task.global_stop");
   const starts = ordered.filter((r) => r.event === "start.started");
   const requeues = ordered.filter((r) => r.event === "touch.skipped_requeued");
+  const manualPauses = ordered.filter((r) => r.event === "pause.started" && field(r, "trigger_code") === "user");
   out.push("", "## 全局暂停与恢复");
   for (const row of globalStops) {
     const next = starts.find((start) => ms(start) > ms(row));
@@ -170,6 +201,10 @@ async function analyzeZipBuffers(buffers, options = {}) {
     const prior = results.filter((result) => ms(result) < ms(row)).at(-1);
     out.push(`- ${stamp(ms(row))} touch.skipped_requeued：重新加入 ${numeric(row.details?.retried_count) ?? 0}，排除 ${numeric(row.details?.excluded_count) ?? 0}；距上次发送结束 ${minutes(prior ? ms(row) - ms(prior) : NaN)} 分钟`);
   }
+  for (const row of manualPauses) {
+    const next = starts.find((start) => ms(start) > ms(row));
+    out.push(`- ${stamp(ms(row))} 手动暂停（${field(row, "previous_phase")}）→ 下次启动 ${seconds(next ? ms(next) - ms(row) : NaN)} 秒；启动前状态 ${next ? field(next, "previous_phase") : "unknown"}`);
+  }
 
   const startStatuses = new Map();
   for (const row of ordered.filter((r) => r.event === "start.finished")) count(startStatuses, field(row, "status"));
@@ -177,6 +212,20 @@ async function analyzeZipBuffers(buffers, options = {}) {
   const pausedCodes = new Map();
   for (const row of replyPaused) count(pausedCodes, safe(row.code));
   out.push("", "## 人工操作", `- start.started ${starts.length}；start.finished：${entries(startStatuses).map(([k, v]) => `${k} ${v}`).join("、")}`, `- 重新加入 ${requeues.length}`, `- 自动回复 paused（间接证据）${replyPaused.length}：${entries(pausedCodes).map(([k, v]) => `${k} ${v}`).join("、")}`);
+  const pauseTriggers = new Map();
+  const pauseTraceTriggers = new Map();
+  for (const row of ordered.filter((r) => r.event === "pause.started" && r.trace_id)) {
+    pauseTraceTriggers.set(row.trace_id, field(row, "trigger_code"));
+  }
+  for (const row of ordered.filter((r) => r.event.startsWith("pause."))) {
+    count(pauseTriggers, `${safe(row.event)} / ${field(row, "trigger_code") === "unknown"
+      ? pauseTraceTriggers.get(row.trace_id) || "unknown" : field(row, "trigger_code")}`);
+  }
+  out.push(`- pause.*：${entries(pauseTriggers).map(([k, v]) => `${k} ${v}`).join("、") || "该构建未记录"}`);
+  for (const event of ["task.retry_requested", "task.retry_all_requested", "window_closing", "quit_requested", "floating.close_redirected", "control.disposed"]) {
+    const matching = ordered.filter((row) => row.event === event);
+    out.push(`- ${event}: ${matching.length}${event.startsWith("task.retry") ? `；and_start_requested ${matching.filter((row) => row.details?.and_start_requested === true).length}` : ""}`);
+  }
   for (const row of replyPaused) out.push(`- ${stamp(ms(row))} paused / ${safe(row.code)}（间接证据）`);
 
   const traces = new Map();

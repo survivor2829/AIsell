@@ -141,13 +141,16 @@ if (-not (Test-Path -LiteralPath $OutputRoot -PathType Container)) { New-Item -I
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $zipPath = Join-Path $OutputRoot "AI-Customer-Diagnostics-$profile-$timestamp.zip"
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-$stream = [IO.File]::Open($zipPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+$stream = $null
+$currentEntryName = "archive"
 try {
+  $stream = [IO.File]::Open($zipPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
   $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $false)
   try {
     foreach ($file in $files) {
+      $currentEntryName = $file.name
       $entry = $archive.CreateEntry($file.name, [IO.Compression.CompressionLevel]::Optimal)
-      $inputStream = [IO.File]::OpenRead($file.source)
+      $inputStream = [IO.File]::Open($file.source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
       $entryStream = $entry.Open()
       try { $inputStream.CopyTo($entryStream) }
       finally { $entryStream.Dispose(); $inputStream.Dispose() }
@@ -164,7 +167,12 @@ try {
       } finally { $entryStream.Dispose() }
     }
   } finally { $archive.Dispose() }
-} finally { $stream.Dispose() }
+} catch {
+  if ($stream) { $stream.Dispose() }
+  Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+  [Console]::Error.WriteLine("Diagnostics archive failed: $currentEntryName")
+  exit 1
+} finally { if ($stream) { $stream.Dispose() } }
 
 Write-Host "Diagnostics ZIP created: $(Split-Path -Leaf $zipPath)"
 if (-not $NoOpen) { Start-Process explorer.exe -ArgumentList ('/select,"{0}"' -f $zipPath) -WindowStyle Hidden }
