@@ -30,3 +30,30 @@
 - N1–N7、N20、T16、N17 都必须被自检抓到；
 - T6b 探针保持 15/15；
 - `check:self`、`build:test` 都通过。
+
+## 三审（a6d8df7）：打回 1 处安全回归（同一分支追加）
+
+**已做对**：二审 4 条都完成了。
+- T16 不再假通过：去掉 `assertPlanEditable` 后，自检以 1 退出。
+- 抛异常的 logger 测试已写进自检：N1–N7、N20 都会被抓到；main.cjs 的处理函数在 vm 里真实跑过。
+- 两条"失败后恢复接待"的路径都有测试。
+- N17 已补断言。
+- T6b 探针 15/15；与 a6f5caa 合并后 `check:self` 97 项、`build:test` 都通过。
+
+**必须修**
+1. **【安全回归】重试失败后恢复接待时，会把用户没启动的有限触达任务发出去。**
+   - 位置：`wechat-workflow.cjs:793-798` 的 `resumeAfterFailedRetry`，在 :840 和 :898 的 catch 里调用。
+   - 问题：任何失败都会恢复，包括任务已经在内存里重新入队之后才发生的失败。恢复后 `settleQueue()` 切到 working，`schedule(0)` 就开始发送。cf7a0b2 在同样的场景下发送 0 次。
+   - 审查探针 `resume-probe.cjs` 复现了三种情况：
+     - P7：接待中执行 `retryAll(false)`，`requeueTask` 之后 `persist()` 抛出 ENOSPC。调用返回失败，但状态变成 true/working，下一次 tick 发出 1 条触达。
+     - P8：同样的情况经由 `retrySkipped` 触发，发出 1 条。
+     - P9：重试暂停期间，`resolveTouchUnknown(not_sent)` 落地（它会有意把 enabled 设为 false）；随后重试失败并恢复，这个已处理的任务被发出，用户并没有点开始。
+   - 修法：只允许恢复到"接待中"。如果当前账号有待执行的任务（`nextTask()`），或者重试期间队列变过，就不恢复，保持暂停。恢复前先确认 phase 仍是 listening。`reply.resumeWorkflow` 也只在真正恢复接待时才调用；目前 P6 里接待已经关掉了，却仍然记了一条 `workflow_resume_requested`。
+   - 用例：把 P7、P8、P9 写进自检，断言返回失败、保持暂停、发送 0 次。
+2. **测试缺口**：RS3（忽略 generation 检查）、RS4（已暂停时 `pauseForRetry` 仍返回 generation）目前只有探针能抓到，请写进自检，覆盖"重试前用户已暂停，失败后不恢复"。
+
+**自测**：审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t9b-r3\`（`resume-probe.cjs`、`mutprobe.cjs`、`mutate-r3.cjs` + `extra.json`）。
+- P1–P9 都要符合预期，P7–P9 发送 0 次；
+- RS3、RS4 必须被自检抓到；
+- T6b 探针保持 15/15；
+- `check:self`、`build:test` 都通过。
