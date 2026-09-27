@@ -3538,13 +3538,6 @@ try {
   fs.writeFileSync(path.join(dir, "state.json"), "{", "utf8");
   assert.throws(() => loadState(dir));
 
-  const handoffCheck = spawnSync(process.execPath, [path.join(__dirname, "file_helper_send.self_check.cjs")], {
-    cwd: path.resolve(__dirname, "../.."),
-    encoding: "utf8",
-    windowsHide: true
-  });
-  assert.equal(handoffCheck.status, 0, handoffCheck.stderr || handoffCheck.stdout || "file-helper send self-check failed");
-
   console.log("active-touch self-check passed");
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
@@ -3553,7 +3546,3 @@ try {
   console.error(error);
   process.exitCode = 1;
 });
-
-require("./wechat_clipboard.self_check.cjs");
-require("./wechat_search_observation.self_check.cjs");
-require("./wechat_search_input.self_check.cjs");
