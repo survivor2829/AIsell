@@ -70,6 +70,7 @@ const workflowPolicies = Object.freeze({
   wechat_id_no_result: { classification: "recoverable", attentionScope: "task" },
   wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" },
   auto_reply_start_failed: { classification: "blocker", attentionScope: "global" },
+  current_session_baselined: { classification: "recoverable", attentionScope: "global" },
   foreground_required: { classification: "environment", attentionScope: "global" },
   no_unread_message: { classification: "recoverable", attentionScope: "global" },
   visual_capture_failed: { classification: "environment", attentionScope: "global" },

@@ -1305,6 +1305,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       if (primed?.ok === true) {
         sessionPreviewPrimed = true;
         sessionPreviewProcess = processIdentity(primed);
+        needsReprime = false;
         lastForegroundScanAt = Date.now();
         passiveUnusableCount = 0;
         passiveDisabled = false;
@@ -1360,20 +1361,29 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
         const pending = driver?.hasPendingScanState?.() === true;
         if (typeof driver?.observeWechatIncoming !== "function") foregroundReason = "passive_unusable";
         else if (pending) foregroundReason = "pending_state";
-        else if (Date.now() - lastForegroundScanAt >= PASSIVE_RECHECK_MS) foregroundReason = "periodic_recheck";
         else {
-          const observed = await driver.observeWechatIncoming(allowed, matchOptions);
-          if (observed?.reason === "wechat_process_changed" || observed?.reason === "wechat_window_changed") return observed;
+          let observed;
+          try { observed = await driver.observeWechatIncoming(allowed, matchOptions); }
+          catch { observed = { ok: false, reason: "foreground_required", trigger: "other" }; }
+          if (observed?.reason === "wechat_process_changed" || observed?.reason === "wechat_window_changed") {
+            normalizedWindowIdentity = null;
+            sessionPreviewProcess = null;
+            resetSessionIdentityForReprime();
+            return observed;
+          }
           if (materiallyChangedWindow(normalizedWindowIdentity, windowIdentity(observed))) foregroundReason = "geometry_changed";
-          else if (observed?.reason === "no_unread_message") {
+          else if (observed?.ok === false && observed.reason === "no_unread_message") {
+            passiveUnusableCount = 0;
+            passiveUnusableWindow = "";
             passiveIdleSinceForeground = true;
-            return { ok: false, reason: "no_unread_message", passive: true };
+            if (Date.now() - lastForegroundScanAt >= PASSIVE_RECHECK_MS) foregroundReason = "periodic_recheck";
+            else return { ok: false, reason: "no_unread_message", passive: true };
           } else {
-            foregroundReason = observed?.trigger || "other";
+            foregroundReason = observed?.ok === false ? observed.trigger || "other" : "other";
             const key = `${observed?.pid || ""}:${observed?.hWnd || ""}`;
             passiveUnusableCount = foregroundReason === "printwindow_unusable"
               ? (key === passiveUnusableWindow ? passiveUnusableCount + 1 : 1) : 0;
-            passiveUnusableWindow = key;
+            passiveUnusableWindow = foregroundReason === "printwindow_unusable" ? key : "";
             if (passiveUnusableCount >= 3) passiveDisabled = true;
           }
         }

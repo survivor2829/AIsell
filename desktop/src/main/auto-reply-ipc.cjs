@@ -3908,9 +3908,7 @@ function createAutoReplyController(options = {}) {
         const pauseGeneration = workflowPauseGeneration;
         await waitForScanIdle();
         while (starting) await new Promise((resolve) => setTimeout(resolve, 10));
-        if (workflowPauseGeneration !== pauseGeneration || !enabled()) {
-          return stepReturn({ handled: false, status: "paused", progressText: "自动回复已暂停，请检查后重新启动" }, "paused_by_user");
-        }
+        const pausedDuringTakeover = workflowPauseGeneration !== pauseGeneration || !enabled();
         discardTestScopeRuntimeState();
         scanIncoming.restoreTurnBoundaries?.(Object.values(state.reply_guards || {}).map((guard) => ({
           conversation: normalizeText(guard?.conversation),
@@ -3918,8 +3916,11 @@ function createAutoReplyController(options = {}) {
           runtimeId: normalizeText(guard?.incoming_runtime_id)
         })));
         primeRetryNeeded = true;
-        workflowStartPending = true;
         restoreWorkflowChatSurface = true;
+        if (pausedDuringTakeover) {
+          return stepReturn({ handled: false, status: "paused", progressText: "自动回复已暂停，请检查后重新启动" }, "paused_by_user");
+        }
+        workflowStartPending = true;
       }
       if (input.afterMoments === true) restoreWorkflowChatSurface = true;
       if (timer) cancelSchedule(timer);

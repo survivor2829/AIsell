@@ -1826,7 +1826,8 @@ try {
 
   if ($mode -ceq "observe") {
     $unread = @($rows | Where-Object { $_.unread -and -not $_.draft }).Count -gt 0
-    if (-not $unread) { $unread = @(Get-AutoReplyVisualUnreadBadges $frame $sidebarRight).Count -gt 0 }
+    # Unknown red dots can be groups or contacts outside the reply list.
+    # Only the same allowlisted sidebar rows used by scan can trigger a foreground pass.
     $currentChanged = $false
     if ($currentConversation.active -and $currentMessage -ne $null -and $currentMessage.hasMessage) {
       $previous = Get-AutoReplyVisualBaseline $messageBaselines ([string]$currentConversation.conversation)

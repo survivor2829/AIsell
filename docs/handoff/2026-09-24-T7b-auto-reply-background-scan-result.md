@@ -16,3 +16,56 @@
 - `git diff --check` 与视觉 PowerShell 脚本解析：通过。
 
 未操作真实微信、未发送真实消息、未发布。真实账号下的 30 分钟前台次数、已打开及未打开会话的回复延迟、最小化恢复和朋友圈返回聊天页，留待用户指定测试账号及联系人后验收。PrintWindow 落后一帧时当前会话可能等待最多约 60 秒周期复核；是否调整周期由真实验收决定。
+
+## 一审返修（同分支追加，未变基）
+
+- 在 `workflowPolicies` 登记 `current_session_baselined`。首次接管等待期间即使用户暂停，仍完成旧测试态清理、发送边界恢复、重新 prime 标记和聊天页恢复标记；暂停优先，恢复前不置待启动。自检验证暂停后旧消息不发送，显式恢复会重新 prime。
+- 观察仅用允许名单的侧栏未读行判断候选；名单外角标不触发前台。观察发现 PID/HWND 改变时清除旧窗口身份并要求下次前台重新建基线。周期复核前仍执行观察，观察到未读时用 `minIdleMs=0` 前台扫描；成功的空闲观察清除 PrintWindow 失败次数。
+- 增补审查点名的 T05、T09、T11、T12、T25、T29、T35 断言；T14、T16 用实际 PowerShell 分支夹具检验，同时覆盖名单内外角标、活跃用户未读、交替捕获失败与空闲，以及空闲观察不改 `reply_guards`、`processed`、`pending_observation`。
+
+### 审查脚本实际输出
+
+`probe3.cjs`：
+
+```text
+H2 takeover paused then resume: step=paused text=yes again=paused/text resumed=running primes_after_takeover=1 restoreTurnBoundaries=2 resets=2 scans=1 sends=0
+H3 popup pause after running: step=paused progressText=自动回复已暂停，请检查后重新启动
+```
+
+`probe4.cjs`：
+
+```text
+PA WeChat restart, repeated user restarts: wechat_window_changed,current_session_baselined,no_unread_message,no_unread_message,no_unread_message,no_unread_message,no_unread_message,no_unread_message,no_unread_message
+PB user active >60s, message waiting: results=no_unread_message,no_unread_message,no_unread_message,no_unread_message,no_unread_message observe_calls=5 minIdle=0
+PB2 user active <60s, message waiting: result=no_unread_message fg=unread_candidate minIdle=0
+PE requeued retry candidate: requeued=true result_ok=true fg=pending_state prepared=1
+PF unusable/idle alternating: printwindow_unusable,idle,printwindow_unusable,idle,printwindow_unusable,idle,printwindow_unusable,idle
+```
+
+T7a `probe.cjs`：`P1 ... after_expiry step=paused auto_reply_status=paused sends=0`。`probe2.cjs`：`Q7 user pause during takeover wait: step=paused status=paused sends=0`；Q1/Q2 暂停发送 0 次，Q1b/Q2b 明确恢复各发送 1 次。
+
+`mutate3.cjs mutations3.json`：审查点名的 T05、T09、T11、T12、T14、T16、T25、T29、T35 均输出 `KILLED`；额外补的 T15 也输出 `KILLED`。完整集的其他存活项为 T04、T18、T32、T34、T37；T01、T02、T06、T10、T20、T33、T41 因旧替换片段与返修代码不匹配输出 `SETUP-ERROR`，不能算检出。变异脚本结束后已恢复源码。T7a `mutate.cjs mutations.json` 的 M01–M31 全部 `KILLED`；二审 `mutations2.json` 的 N05–N16 全部 `KILLED`，N01–N04 为旧片段 `SETUP-ERROR`。
+
+### 项目门禁实际输出
+
+`npm.cmd run check:self`，退出码 0，末尾输出：
+
+```text
+> src/main/wechat-workflow.self_check.cjs
+workflow scope stress: aliases_json=66671, scope_ms=22, contacts_reads=5
+auto-reply v4 self-check passed
+Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.
+all source self-checks passed
+```
+
+`npm.cmd run build:test`，退出码 0，末尾输出：
+
+```text
+✓ 1643 modules transformed.
+dist-development/assets/index-LjKoAXww.js                      547.61 kB │ gzip: 180.47 kB
+(!) Some chunks are larger than 500 kB after minification.
+✓ built in 1.54s
+test renderer build completed
+```
+
+`git diff --check` 通过。未做真实微信验收、安装包验证或发布。

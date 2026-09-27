@@ -4933,11 +4933,16 @@ async function main() {
   const takeoverPrimeGate = new Promise((resolve) => { releaseTakeoverPrime = resolve; });
   const takeoverPrimeEntered = new Promise((resolve) => { markTakeoverPrimeEntered = resolve; });
   let takeoverSends = 0;
+  let takeoverPrimes = 0;
+  let takeoverRestores = 0;
+  const takeoverScan = () => takeoverPrimes < 2 ? workflowCandidate : { ok: false, reason: "no_unread_message" };
+  takeoverScan.restoreTurnBoundaries = () => { takeoverRestores += 1; };
   const takeoverPauseController = createAutoReplyController({
     dataDir: path.join(root, "workflow_takeover_pause"), activeTouchDir: workflowContacts, coordinator,
     expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
-    primeIncoming: async () => { markTakeoverPrimeEntered(); await takeoverPrimeGate; return { ok: true, source: "session_prime", primed: true }; },
-    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    primeIncoming: async () => { takeoverPrimes += 1; markTakeoverPrimeEntered(); await takeoverPrimeGate;
+      return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: takeoverScan, verifyIncoming: () => ({ ok: true }),
     send: async () => { takeoverSends += 1; return { ok: true }; },
     sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
   });
@@ -4952,6 +4957,11 @@ async function main() {
   assert.match(takeoverResult.progressText, /已暂停/u, "floating pause must show an explicit paused message");
   assert.equal(takeoverPauseController.status().status, "paused");
   assert.equal(takeoverSends, 0, "a paused takeover must not send");
+  assert.ok(takeoverRestores >= 2, "paused takeover must still restore the workflow turn boundary");
+  takeoverPauseController.resumeWorkflow();
+  assert.equal((await takeoverPauseController.runWorkflowStep(workflowInput)).status, "running");
+  assert.equal(takeoverPrimes, 2, "resuming a paused takeover must prime before scanning old messages");
+  assert.equal(takeoverSends, 0, "an old message visible before the restored prime must not be sent");
   assert.deepEqual(workflowController.screenWorkflowRecipients(workflowRecipients).excluded.map((item) => item.code),
     ["workflow_recipient_ambiguous", "workflow_recipient_changed"]);
   assert.equal(workflowController.screenWorkflowRecipients([workflowRecipients[1]]).accepted.length, 0,
@@ -5146,7 +5156,9 @@ async function main() {
   retryController.pause();
   retryClock += 30_000;
   retryFailure = "";
-  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "paused");
+  const popupPaused = await retryController.runWorkflowStep(retryInput);
+  assert.equal(popupPaused.status, "paused");
+  assert.match(popupPaused.progressText, /已暂停/u, "the floating pause path must explain the paused state");
   assert.equal(retryController.status().status, "paused");
   assert.equal(retrySends, 0, "user pause during backoff must prevent the queued reply after expiry");
   retryController.resumeWorkflow();
@@ -5194,13 +5206,20 @@ async function main() {
     expertStore: readyExpert(), now: () => new Date(statsClock),
     deepSeekClient: { assertAvailable: () => true },
     primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
-    scanIncoming: () => ++statsScans === 2
+    scanIncoming: () => ++statsScans === 3
       ? { ok: false, reason: "no_unread_message", foregroundScan: true, foregroundReason: "periodic_recheck" }
       : { ok: false, reason: "no_unread_message", passive: true },
     verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
   });
   const statsInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
   await statsController.runWorkflowStep(statsInput);
+  const statsState = () => JSON.parse(fs.readFileSync(path.join(statsDir, "auto-reply-state.json"), "utf8"));
+  const beforePassiveIdle = statsState();
+  await statsController.runWorkflowStep(statsInput);
+  const afterPassiveIdle = statsState();
+  for (const field of ["reply_guards", "processed", "pending_observation"]) {
+    assert.deepEqual(afterPassiveIdle[field], beforePassiveIdle[field], `passive idle must preserve ${field}`);
+  }
   await statsController.runWorkflowStep(statsInput);
   statsClock += 3_600_000;
   await statsController.runWorkflowStep(statsInput);
@@ -5209,9 +5228,26 @@ async function main() {
   assert.equal(hourlyRows.length, 1, "scan diagnostics must be aggregated once per elapsed hour");
   assert.equal(hourlyRows[0].foreground_prime, 1);
   assert.equal(hourlyRows[0].foreground_periodic_recheck, 1);
-  assert.equal(hourlyRows[0].observe_idle_count, 1);
+  assert.equal(hourlyRows[0].observe_idle_count, 2);
   assert.equal(hourlyRows[0].navigation_count, 1);
   assert.doesNotMatch(JSON.stringify(hourlyRows), /private-a/u, "hourly stats must contain no customer identity");
+
+  const sidebarFlags = [];
+  const sidebarReasons = ["no_unread_message", "visual_sidebar_match_missing", "no_unread_message"];
+  const sidebarController = createAutoReplyController({
+    dataDir: path.join(root, "workflow_sidebar_restore"), activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: (_aliases, driverOptions) => { sidebarFlags.push(driverOptions.restoreChatSurface);
+      if (driverOptions.restoreChatSurface) driverOptions.onChatSurfaceRestored?.();
+      return { ok: false, reason: sidebarReasons.shift() || "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  await sidebarController.runWorkflowStep(statsInput);
+  await sidebarController.runWorkflowStep(statsInput);
+  await sidebarController.runWorkflowStep(statsInput);
+  assert.deepEqual(sidebarFlags, [false, false, true],
+    "visual_sidebar_match_missing must request chat restoration on the next scan");
 
   const largeContacts = Array.from({ length: 3000 }, (_, index) => ({ id: `large-${index}`,
     name: `微信昵称客户${index}`, remark: `备注客户名${index}`, nickname: `昵称${index}号`,

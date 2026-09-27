@@ -1360,6 +1360,7 @@ async function main() {
   const scheduledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
   let scheduledClock = new Date(2026, 8, 4, 10, 0);
   let scheduledReplyCalls = 0;
+  let scheduledReplyOverride = null;
   let scheduledTaskCalls = 0;
   const scheduledReplyInputs = [];
   const scheduled = createWechatWorkflowController({
@@ -1367,7 +1368,13 @@ async function main() {
     now: () => scheduledClock, getAccount: () => "test-account", autoSchedule: false,
     reply: {
       prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
-      runWorkflowStep: async (input) => { scheduledReplyCalls += 1; scheduledReplyInputs.push(input); return { handled: false }; }
+      runWorkflowStep: async (input) => {
+        scheduledReplyCalls += 1;
+        scheduledReplyInputs.push(input);
+        const result = scheduledReplyOverride || { handled: false };
+        scheduledReplyOverride = null;
+        return result;
+      }
     },
     executors: { publish: {
       prepareWorkflowTask: (_id, payload) => payload,
@@ -1395,8 +1402,15 @@ async function main() {
   await scheduled.pause();
   await scheduled.addTask({ type: "interact", payload: { maxPosts: 1 } });
   await scheduled.start();
-  await scheduled.tick(); await scheduled.tick();
-  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "interact must request chat restoration");
+  await scheduled.tick();
+  scheduledReplyOverride = { handled: false, status: "busy" };
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "interact must request chat restoration through a busy reply");
+  scheduledReplyOverride = { handled: false, status: "paused", reasonCode: "workflow_paused" };
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "paused reply must preserve chat restoration");
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "the next reply must still restore chat");
   await scheduled.pause();
   await scheduled.addTask({ type: "touch", payload: { contactIds: ["reply-contact"], script: "test" } });
   await scheduled.start();
