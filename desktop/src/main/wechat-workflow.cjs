@@ -94,7 +94,19 @@ function createWechatWorkflowController(options) {
   let replyActivated = false;
   let afterMoments = false;
   let cycleStage = "idle";
-  const log = (name, details, metadata) => options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true });
+  const log = (name, details, metadata) => {
+    try { options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true }); }
+    catch { /* Diagnostics must not change workflow control or send outcomes. */ }
+  };
+  const beginLog = (name, details, metadata) => {
+    try {
+      const operation = options.logger?.begin?.("wechat_workflow", name, details, metadata);
+      return {
+        end: (...args) => { try { operation?.end?.(...args); } catch {} },
+        fail: (...args) => { try { operation?.fail?.(...args); } catch {} }
+      };
+    } catch { return null; }
+  };
   const getAccount = () => String(options.getAccount?.() || "");
   const emit = () => { revision += 1; options.onUpdate?.(status()); };
 
@@ -536,7 +548,7 @@ function createWechatWorkflowController(options) {
     const executor = executors[task.type];
     cycleStage = "task_prepare";
     const startKey = `${task.id}:${task.progress.done}`;
-    const operation = options.logger?.begin?.("wechat_workflow", "task_step", { task_kind: task.type, task_id: task.id, stage: cycleStage }, { trace: startKey !== lastTaskStartKey });
+    const operation = beginLog("task_step", { task_kind: task.type, task_id: task.id, stage: cycleStage }, { trace: startKey !== lastTaskStartKey });
     lastTaskStartKey = startKey;
     currentTaskId = task.id;
     lastTaskId = task.id;
@@ -750,7 +762,7 @@ function createWechatWorkflowController(options) {
   }
 
   async function pauseWorkflow(trigger = "user") {
-    const operation = options.logger?.begin?.("wechat_workflow", "pause", {
+    const operation = beginLog("pause", {
       stage: "control", trigger_code: trigger, previous_phase: phase, in_flight: Boolean(inFlight)
     }, { trace: true });
     try {
@@ -768,10 +780,10 @@ function createWechatWorkflowController(options) {
     }
   }
 
-  async function pauseForRetry() {
+  async function pauseForRetry(trigger = "retry_skipped") {
     if (!enabled) return;
     if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
-    await pauseWorkflow();
+    await pauseWorkflow(trigger);
   }
 
   function requeueSkipped(task, contactIds) {
@@ -802,7 +814,7 @@ function createWechatWorkflowController(options) {
   }
 
   async function retrySkipped(id, contactIds) {
-    await pauseForRetry();
+    await pauseForRetry("retry_skipped");
     return serialize(() => {
       assertPlanEditable();
       const task = findTask(id);
@@ -816,28 +828,43 @@ function createWechatWorkflowController(options) {
     });
   }
 
-  async function retryTask(id) {
-    await pauseForRetry();
+  async function retryTask(id, andStart = false) {
+    const eligible = findTask(id);
+    if (!canRetry(eligible)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
+    await pauseForRetry("retry_task");
     return serialize(() => {
       assertPlanEditable();
-      requeueTask(findTask(id));
+      const task = findTask(id);
+      const previousStatus = task.status;
+      const previousReason = task.reasonCode;
+      requeueTask(task);
       phase = "paused";
-      persist(); emit(); return { ok: true, state: status() };
+      persist(); emit();
+      log("task.retry_requested", { stage: "control", task_kind: task.type, task_id: task.id,
+        previous_status: previousStatus, reason: previousReason, and_start_requested: andStart === true },
+      { code: "retry_task_requested" });
+      return { ok: true, state: status() };
     });
   }
 
-  async function retryAll() {
-    await pauseForRetry();
+  function retryAllEligible(task) {
+    if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) return null;
+    const skipped = ["completed", "needs_attention"].includes(task.status)
+      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => row.retryable === true);
+    return skipped ? "skipped" : canRetry(task) ? "task" : null;
+  }
+
+  async function retryAll(andStart = false) {
+    if (!store.tasks.some(retryAllEligible)) throw new Error("没有可重新加入的任务或联系人。");
+    await pauseForRetry("retry_all");
     return serialize(() => {
       assertPlanEditable();
       let taskCount = 0, contactCount = 0, excludedCount = 0;
       for (const task of store.tasks) {
-        if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) continue;
-        const skipped = ["completed", "needs_attention"].includes(task.status)
-          && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => row.retryable === true);
-        if (!skipped && !canRetry(task)) continue;
+        const eligible = retryAllEligible(task);
+        if (!eligible) continue;
         try {
-          if (skipped) {
+          if (eligible === "skipped") {
             const retried = requeueSkipped(task);
             contactCount += Number(retried.retriedCount || 0);
             excludedCount += Number(retried.excludedCount || 0);
@@ -852,6 +879,8 @@ function createWechatWorkflowController(options) {
       if (!taskCount) throw new Error("没有可重新加入的任务或联系人。");
       phase = "paused";
       persist(); emit();
+      log("task.retry_all_requested", { task_count: taskCount, contact_count: contactCount,
+        excluded_count: excludedCount, and_start_requested: andStart === true }, { code: "retry_all_requested" });
       return { ok: true, state: status(), taskCount, contactCount, excludedCount };
     });
   }
@@ -954,7 +983,7 @@ function createWechatWorkflowController(options) {
     }),
     preflightStart,
     start: async () => {
-      const operation = options.logger?.begin?.("wechat_workflow", "start", { stage: "start_preflight", previous_phase: phase, pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
+      const operation = beginLog("start", { stage: "start_preflight", previous_phase: phase, pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
       try {
         const preflight = preflightStart();
         if (preflight.alreadyActive) {
@@ -979,8 +1008,10 @@ function createWechatWorkflowController(options) {
     },
     pause: pauseWorkflow,
     dispose: async () => {
-      log("control.disposed", { trigger_code: "app_quit", previous_phase: phase, in_flight: Boolean(inFlight) });
+      const previousPhase = phase;
+      const wasInFlight = Boolean(inFlight);
       enabled = false; disposed = true; clearTimeout(timer);
+      log("control.disposed", { trigger_code: "app_quit", previous_phase: previousPhase, in_flight: wasInFlight });
       await inFlight;
       await options.reply?.pauseWorkflow?.();
     }

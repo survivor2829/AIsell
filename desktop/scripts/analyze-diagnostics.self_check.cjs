@@ -24,7 +24,8 @@ const early = [
   make("z-early", 7, 3.5, "start.started", { details: { previous_phase: "needs_attention" } }),
   make("z-early", 8, 6, "touch.skipped_requeued", { details: { retried_count: 2, excluded_count: 1 } }),
   make("z-early", 9, 7, "workflow_contact_send.started", { trace_id: "trace-b" }),
-  make("z-early", 10, 8, "workflow_contact_send.finished", { trace_id: "trace-b", duration_ms: 11000, details: { outcome: "sent_verified", side_effect: "confirmed", send_attempted: true, ok: true } })
+  make("z-early", 10, 8, "workflow_contact_send.finished", { trace_id: "trace-b", duration_ms: 11000, details: { outcome: "sent_verified", side_effect: "confirmed", send_attempted: true, ok: true } }),
+  make("z-early", 11, 8.5, "workflow_contact_send.failed", { trace_id: "trace-d", code: "search_result_identity_unverified", details: { rule_id: "search-r008", outcome: "not_attempted", side_effect: "none", send_attempted: false, ok: false } })
 ];
 const late = [
   make("a-late", 1, 12, "workflow_contact_send.started", { trace_id: "trace-c" }),
@@ -101,9 +102,10 @@ async function main() {
   assert.equal(stats.sessions, 3);
   assert.equal(stats.sentVerified, 1);
   assert.equal(stats.outcomeUnknown, 0);
-  assert.equal(stats.rules["search-r008"], 2);
+  assert.equal(stats.rules["search-r008"], 3);
   assert.equal(stats.rules["search-r014"], 1);
   assert.equal(stats.streaks["search-r008"].max, 2, "a success must separate consecutive failure streaks");
+  assert.deepEqual(stats.streaks["search-r008"].bins, [1, 1, 0, 0]);
   assert.deepEqual(stats.durations["sample / 成功"], { n: 10, p50: 600, p90: 900, max: 1000 });
   assert.equal(stats.globalStops, 1);
   assert.equal(stats.requeues, 1);

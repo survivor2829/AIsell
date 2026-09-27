@@ -60,8 +60,10 @@ function registerWechatWorkflowIpc(options) {
       target.on("close", (event) => {
         if (!disposed && !options.isQuitting?.()) {
           event.preventDefault();
-          options.logger?.event?.("wechat_workflow", "floating.close_redirected",
-            { workflow_phase: controller.controlSnapshot().phase }, { trace: true });
+          try {
+            options.logger?.event?.("wechat_workflow", "floating.close_redirected",
+              { workflow_phase: controller.controlSnapshot().phase }, { trace: true });
+          } catch { /* A diagnostic failure must not prevent returning to the main window. */ }
           showMain();
         }
       });
@@ -204,7 +206,7 @@ function registerWechatWorkflowIpc(options) {
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
   handle("delete-tasks", (payload) => controller.deleteTasks(payload?.ids, payload?.unsuccessfulOnly === true), true);
   handle("retry-task", async (payload) => {
-    const result = await controller.retryTask(String(payload?.id || ""));
+    const result = await controller.retryTask(String(payload?.id || ""), payload?.andStart === true);
     return payload?.andStart === true ? { ...result, ...(await start()) } : result;
   }, true);
   handle("retry-skipped", async (payload) => {
@@ -212,7 +214,7 @@ function registerWechatWorkflowIpc(options) {
     return payload?.andStart === true ? { ...result, ...(await start()) } : result;
   }, true);
   handle("retry-all-and-start", async () => {
-    const result = await controller.retryAll();
+    const result = await controller.retryAll(true);
     return { ...result, ...(await start()) };
   }, true);
   handle("resolve-touch-unknown", (payload) => {

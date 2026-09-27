@@ -309,8 +309,15 @@ try {
   for (const name of ["window_closing", "quit_requested"]) {
     const block = mainSource.slice(mainSource.indexOf(`event("app", "${name}"`) - 150,
       mainSource.indexOf(`event("app", "${name}"`) + 180);
-    assert.doesNotMatch(block, /workflowController\?\.status\(/u, "shutdown logging must use the side-effect-free snapshot");
+    assert.doesNotMatch(block, /workflowController\?\.status(?:\?\.)?\(/u, "shutdown logging must use the side-effect-free snapshot");
   }
+  const quitHandler = mainSource.indexOf('app.on("before-quit"');
+  const quitGuard = mainSource.indexOf("if (quitCleanupStarted) return;", quitHandler);
+  const quitLog = mainSource.indexOf('event("app", "quit_requested"', quitHandler);
+  assert.ok(quitHandler >= 0 && quitGuard > quitHandler && quitLog > quitGuard,
+    "quit_requested must be logged only after the re-entry guard");
+  assert.match(fs.readFileSync(path.join(__dirname, "diagnostics.cjs"), "utf8"), /const MAX_ARCHIVES = 19;/u,
+    "default retention must keep nineteen archived logs");
   const retentionRoot = path.join(root, "retention");
   const retained = createDiagnosticLogger({ rootDir: retentionRoot, maxBytes: 1, maxArchives: 19 });
   for (let index = 0; index < 25; index += 1) retained.event("app", "rotation_probe", { count: index }, { trace: true });

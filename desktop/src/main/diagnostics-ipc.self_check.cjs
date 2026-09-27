@@ -312,15 +312,24 @@ async function main() {
 
     const invalidInfo = await exportBundle({ app: electron.app, dialog: electron.dialog, logger, autoReplyDir,
       appInfo: { version: "private-version", edition: "private-edition", data_profile: "private-profile",
-        build_commit: "C:\\Users\\private-path", build_id: "private/path" } });
+        build_commit: "C:\\Users\\private-path", build_id: "private/path" },
+      component: { version: "1.1.54", id: "private/component", healthy: true },
+      getFeedbackLatest: () => ({ id: "12345678-1234-1234-1234-123456789012",
+        createdAt: "2026-09-23T01:01:00.000Z", delivery: "private-delivery", status: "private/status", text: "private-feedback-text" }) });
     assert.equal(invalidInfo.ok, true);
     const invalidSummary = JSON.parse(await (await JSZip.loadAsync(fs.readFileSync(destination))).file("summary.json").async("string"));
     assert.equal(invalidSummary.app.build_commit, null);
+    assert.equal(invalidSummary.app.build_id, null);
+    assert.equal(invalidSummary.app.component.id, null);
     assert.equal(invalidSummary.app.version, null);
     assert.equal(invalidSummary.app.edition, null);
+    assert.equal(invalidSummary.feedback_latest.delivery, null);
+    assert.equal(invalidSummary.feedback_latest.status, null);
     assert.doesNotMatch(JSON.stringify(invalidSummary.app), /private-path|private-profile/u);
 
-    const replacement = Buffer.from('{"event":"replacement"}\n', "utf8");
+    const replacementRun = "22345678-1234-1234-1234-123456789012";
+    const replacement = Buffer.from(`${JSON.stringify({ ts: "2026-09-23T01:00:00.000Z",
+      run_id: replacementRun, seq: 1, event: "replacement" })}\n`, "utf8");
     fs.writeFileSync(path.join(logsDir, "diagnostics.jsonl"), replacement);
     const replaced = await exportBundle({
       app: electron.app,
@@ -331,6 +340,9 @@ async function main() {
     assert.equal(replaced.ok, true, "a verified archive must atomically replace an older destination");
     const replacedArchive = await JSZip.loadAsync(fs.readFileSync(destination), { checkCRC32: true });
     assert.deepEqual(await replacedArchive.file("diagnostics.jsonl").async("nodebuffer"), replacement);
+    const replacedSummary = JSON.parse(await replacedArchive.file("summary.json").async("string"));
+    assert.equal(replacedSummary.log_coverage.runs.find((run) => run.run_id === replacementRun).rotated_prefix, false,
+      "a run beginning at seq 1 has not lost its prefix to rotation");
 
     const missingAutoReply = await exportBundle({
       app: electron.app,

@@ -841,8 +841,9 @@ async function checkRetryAndContinueIpc() {
   const click = () => require("node:crypto").randomUUID();
   async function fixture(rows, { reply = false } = {}) {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-retry-continue-"));
-    const handlers = new Map(), windows = [], skippedCalls = [];
+    const handlers = new Map(), windows = [], skippedCalls = [], skippedSelections = [], controlEvents = [];
     let mainHideCount = 0;
+    let replyPauseCalls = 0;
     const mainWindow = { webContents: { send() {} }, isDestroyed: () => false,
       show() {}, hide() { mainHideCount += 1; }, focus() {} };
     class ProgressWindow extends EventEmitter {
@@ -865,16 +866,20 @@ async function checkRetryAndContinueIpc() {
       describeUnknownWorkflowTask: (task) => rowFor(task)?.unknown ? { required: true, contactLabel: "test", partKind: "text" } : null,
       describeSkippedWorkflowTask: (task) => ({ skipped_records: rowFor(task)?.skipped
         ? [{ contactId: `${task.title}-contact`, retryable: true, status: "pre_send_skipped" }] : [] }),
-      retrySkippedWorkflowTask: (task) => {
+      retrySkippedWorkflowTask: (task, contactIds) => {
         skippedCalls.push(task.title);
+        skippedSelections.push(contactIds);
         if (rowFor(task)?.skipFails) return { ok: false, blocked_reason: "retry_skipped_empty", error: "没有可重试的跳过联系人" };
         return { ok: true, task: { current_index: 0, total: 1 }, retriedCount: 1, excludedCount: 0 };
       }
     };
     const replyExecutor = { prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
-      runWorkflowStep: async () => ({ handled: false }), pauseWorkflow: async () => {} };
+      runWorkflowStep: async () => ({ handled: false }), pauseWorkflow: async () => { replyPauseCalls += 1; } };
     const options = { rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
       momentsDir: path.join(rootDir, "moments"), autoSchedule: false, getAccount: () => "test-account",
+      logger: { event: (_module, name, details, metadata) => controlEvents.push({ name, details, code: metadata?.code }),
+        begin: (_module, name, details) => { controlEvents.push({ name: `${name}.started`, details });
+          return { end() {}, fail() {} }; } },
       executors: { touch }, ...(reply ? { reply: replyExecutor } : {}) };
     const setup = createWechatWorkflowController(options);
     for (const row of rows) await setup.addTask({ type: "touch", title: row.title, payload: { contactIds: [`${row.title}-contact`], script: "test" } });
@@ -893,7 +898,8 @@ async function checkRetryAndContinueIpc() {
       electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, BrowserWindow: ProgressWindow,
         screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } } });
     const event = { sender: mainWindow.webContents };
-    return { control, windows, skippedCalls, rows: control.status().tasks,
+    return { control, windows, skippedCalls, skippedSelections, controlEvents, rootDir, options,
+      replyPauseCalls: () => replyPauseCalls, rows: control.status().tasks,
       invoke: (name, payload) => handlers.get(`wechat-workflow:${name}`)(event, payload),
       mainHideCount: () => mainHideCount,
       close: async () => { await control.dispose(); fs.rmSync(rootDir, { recursive: true, force: true }); } };
@@ -908,6 +914,7 @@ async function checkRetryAndContinueIpc() {
     assert.equal(result.state.tasks[0].status, "pending");
     assert.equal(test.windows[0].visible, true);
     assert.equal(test.mainHideCount(), 1);
+    assert.equal(test.controlEvents.filter((entry) => entry.name === "task.retry_requested").at(-1)?.details.and_start_requested, true);
   } finally { await test.close(); }
 
   test = await fixture([{ title: "listen", status: "needs_attention", retryable: true }], { reply: true });
@@ -918,6 +925,7 @@ async function checkRetryAndContinueIpc() {
     assert.equal(result.ok, true);
     assert.equal(result.state.enabled, true);
     assert.equal(result.state.tasks[0].status, "pending");
+    assert.equal(test.controlEvents.filter((entry) => entry.name === "pause.started").at(-1)?.details.trigger_code, "retry_task");
   } finally { await test.close(); }
 
   test = await fixture([{ title: "blocked", status: "needs_attention", retryable: true },
@@ -928,6 +936,9 @@ async function checkRetryAndContinueIpc() {
     assert.equal(result.ok, false);
     assert.match(result.error, /当前有限任务/);
     assert.equal(result.state.tasks[0].status, "needs_attention");
+    const bulk = await test.invoke("retry-all-and-start", { clickToken: click() });
+    assert.equal(bulk.ok, false);
+    assert.match(bulk.error, /当前有限任务/);
   } finally { await test.close(); }
 
   test = await fixture([{ title: "skip", status: "completed", skipped: true }]);
@@ -938,24 +949,41 @@ async function checkRetryAndContinueIpc() {
     assert.equal(result.state.tasks[0].status, "pending");
   } finally { await test.close(); }
 
+  test = await fixture([{ title: "skip-strict", status: "completed", skipped: true }]);
+  try {
+    const result = await test.invoke("retry-skipped", { id: test.rows[0].id, andStart: "true", clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, false, "only boolean true may start after a retry");
+    assert.equal(test.windows.length, 0);
+  } finally { await test.close(); }
+
   test = await fixture([{ title: "first", status: "needs_attention", retryable: true },
     { title: "both", status: "needs_attention", retryable: true, skipped: true },
     { title: "skip", status: "completed", skipped: true },
     { title: "unknown", status: "needs_attention", retryable: true, unknown: true }]);
   try {
-    const result = await test.invoke("retry-all-and-start", { clickToken: click() });
+    assert.match((await test.invoke("retry-all-and-start", { clickToken: "invalid" })).error, /请在程序中点击/);
+    const token = click();
+    const result = await test.invoke("retry-all-and-start", { clickToken: token });
     assert.equal(result.ok, true);
     assert.equal(result.taskCount, 3);
     assert.equal(result.contactCount, 3);
     assert.deepEqual(test.skippedCalls, ["both", "skip"], "a task eligible in both ways is requeued only once");
+    assert.deepEqual(test.skippedSelections, [undefined, undefined], "retryAll lets the executor exclude unsafe skipped rows");
+    const retryAllEvent = test.controlEvents.filter((entry) => entry.name === "task.retry_all_requested").at(-1);
+    assert.deepEqual(retryAllEvent.details, { task_count: 3, contact_count: 3, excluded_count: 0, and_start_requested: true });
+    assert.equal(retryAllEvent.code, "retry_all_requested");
     assert.equal(result.state.enabled, true);
     assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "pending", "pending", "needs_attention"]);
     assert.equal(result.state.tasks[3].unknownResolution.required, true);
+    assert.match((await test.invoke("retry-all-and-start", { clickToken: token })).error, /请在程序中点击/,
+      "a consumed bulk-retry click token must not be replayed");
   } finally { await test.close(); }
 
   test = await fixture([{ title: "safe", status: "needs_attention", retryable: true },
     { title: "failed-skip", status: "completed", skipped: true, skipFails: true },
     { title: "wrong-account", status: "needs_attention", retryable: true, accountName: "another-account" },
+    { title: "wrong-account-completed", status: "completed", skipped: true, accountName: "another-account" },
     { title: "cancelled", status: "cancelled", skipped: true }]);
   try {
     const result = await test.invoke("retry-all-and-start", { clickToken: click() });
@@ -963,7 +991,7 @@ async function checkRetryAndContinueIpc() {
     assert.equal(result.taskCount, 1);
     assert.equal(result.contactCount, 1);
     assert.equal(result.excludedCount, 1, "one failed candidate does not stop the other items");
-    assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "completed", "needs_attention", "cancelled"]);
+    assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "completed", "needs_attention", "completed", "cancelled"]);
   } finally { await test.close(); }
 
   test = await fixture([{ title: "unsafe", status: "needs_attention", retryable: false }]);
@@ -975,6 +1003,70 @@ async function checkRetryAndContinueIpc() {
     assert.equal(test.control.status().tasks[0].status, "needs_attention");
     assert.equal(test.control.status().enabled, false);
     assert.equal(test.windows.length, 0);
+  } finally { await test.close(); }
+
+  const eligibilityRows = [{ title: "became-ineligible", status: "needs_attention", retryable: true }];
+  test = await fixture(eligibilityRows, { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening");
+    const pauses = test.replyPauseCalls();
+    eligibilityRows[0].retryable = false;
+    assert.equal((await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() })).ok, false);
+    assert.equal((await test.invoke("retry-all-and-start", { clickToken: click() })).ok, false);
+    assert.equal(test.control.status().enabled, true, "a rejected retry must not stop reception");
+    assert.equal(test.control.status().phase, "listening");
+    assert.equal(test.replyPauseCalls(), pauses);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "serialized", status: "needs_attention", retryable: true }], { reply: true });
+  try {
+    let releaseRecipients, enteredRecipients;
+    const entered = new Promise((resolve) => { enteredRecipients = resolve; });
+    test.options.reply.prepareWorkflowRecipients = async (ids) => {
+      enteredRecipients();
+      await new Promise((resolve) => { releaseRecipients = resolve; });
+      return ids.map((id) => ({ id, name: id }));
+    };
+    const adding = test.control.addRecipients(["held"]);
+    await entered;
+    let retrySettled = false;
+    const retrying = test.control.retryAll().then((result) => { retrySettled = true; return result; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(retrySettled, false, "retryAll must wait behind an earlier serialized edit");
+    assert.equal(test.control.status().tasks[0].status, "needs_attention");
+    releaseRecipients();
+    await adding;
+    const retried = await retrying;
+    assert.equal(retried.taskCount, 1);
+    assert.equal(retried.state.phase, "paused");
+    const saved = JSON.parse(fs.readFileSync(path.join(test.rootDir, "wechat_workflow", "state.json"), "utf8"));
+    assert.equal(saved.tasks[0].status, "pending", "bulk retry must persist before returning");
+    const restored = createWechatWorkflowController(test.options);
+    assert.equal(restored.status().tasks[0].status, "pending", "bulk retry must survive restart");
+    await restored.dispose();
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "pausing", status: "needs_attention", retryable: true }], { reply: true });
+  try {
+    let enteredReply, releaseReply;
+    const entered = new Promise((resolve) => { enteredReply = resolve; });
+    test.options.reply.runWorkflowStep = async () => {
+      enteredReply();
+      await new Promise((resolve) => { releaseReply = resolve; });
+      return { handled: false };
+    };
+    await test.control.start();
+    const ticking = test.control.tick();
+    await entered;
+    const pausing = test.control.pause();
+    assert.equal(test.control.controlSnapshot().phase, "pausing");
+    await assert.rejects(test.control.retryAll(), /请先暂停/);
+    await assert.rejects(test.control.retryTask(test.rows[0].id), /请先暂停/);
+    assert.equal(test.control.status().tasks[0].status, "needs_attention",
+      "a retry during an in-flight pause must not mutate the task");
+    releaseReply();
+    await ticking; await pausing;
   } finally { await test.close(); }
 
   test = await fixture([{ title: "sync", status: "needs_attention", retryable: true }]);
@@ -1074,12 +1166,15 @@ async function checkWorkflowDiagnostics() {
   assert.equal(control.status().enabled, false, "a finite task failure pauses before auto reply can run");
   assert.equal(control.status().phase, "needs_attention");
   assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "paused");
+  await control.start();
+  assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "needs_attention");
+  await control.pause();
   assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), false,
     "automatic reply must not run before a due finite task");
   assert(events.some((event) => event.name === "task_step.ended" && event.stage === "task_result" && event.reason === "task_needs_attention"));
   assert.equal(/private-customer|private-name|private-script|private-account/.test(JSON.stringify(events)), false, "diagnostics must not receive customer payloads");
   await control.dispose();
-  assert.ok(events.some((event) => event.name === "control.disposed" && event.trigger_code === "app_quit"));
+  assert.ok(events.some((event) => event.name === "control.disposed" && event.trigger_code === "app_quit" && event.previous_phase === "paused"));
 }
 
 async function checkInProgressTouchEdit() {
@@ -1212,11 +1307,11 @@ async function checkUnknownReasonQualityCounter() {
   const added = await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (attempt) {
-      await control.retryTask(added.task.id);
+      await control.retryTask(added.task.id, attempt === 2);
       const retryEvent = controlEvents.filter((entry) => entry.name === "task.retry_requested").at(-1);
       assert.equal(retryEvent.previous_status, "needs_attention");
       assert.equal(retryEvent.reason, attempt === 2 ? "new_reason_beta" : "new_reason_alpha");
-      assert.equal(retryEvent.and_start_requested, false);
+      assert.equal(retryEvent.and_start_requested, attempt === 2);
     }
     await control.start(); await control.tick();
   }
@@ -1993,6 +2088,10 @@ async function main() {
   assert.deepEqual(bulkRetryResult.excludedReasons, { retry_skipped_poisoned_forbidden: 1 });
   assert.equal(bulkRetry.status().enabled, false, "bulk retry must wait for an explicit start");
   assert.equal(bulkRetry.status().tasks[0].status, "pending");
+  await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
+  assert.equal(bulkRetry.status().phase, "listening");
+  assert.equal((await bulkRetry.retryAll()).ok, true);
+  assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_all");
   await bulkRetry.dispose();
 
   const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));

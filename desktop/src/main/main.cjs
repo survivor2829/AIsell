@@ -268,8 +268,8 @@ function createWindow() {
   mainWindow.on("responsive", () => diagnostics().event("renderer", "responsive"));
   mainWindow.on("close", () => {
     const workflow = workflowController?.controlSnapshot?.();
-    diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
-      workflow_enabled: workflow?.enabled }, { trace: true });
+    try { diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
+      workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
@@ -850,8 +850,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
     const workflow = workflowController?.controlSnapshot?.();
-    diagnostics().event("app", "quit_requested", { workflow_phase: workflow?.phase,
-      workflow_enabled: workflow?.enabled }, { trace: true });
+    try { diagnostics().event("app", "quit_requested", { workflow_phase: workflow?.phase,
+      workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     cloudMaintenance?.stop();
     feedbackController?.stop();
     feedbackAdmin?.stop();
