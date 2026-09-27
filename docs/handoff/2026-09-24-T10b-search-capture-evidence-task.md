@@ -8,6 +8,9 @@
 > 2. **先查证再定**：名字搜索"甲乙"时，联系人分区里同时有"甲乙"和"甲乙丙"，目前会选中"甲乙丙"（`unique_local_surface_visual`，基线 9d77c2d 和参考实现都一样）。
 >    - 请写一条端到端用例：打开"甲乙丙"的会话后，在发送前被会话标题核对拦下，发送 0 次。
 >    - 如果拦不住，这是发错人的问题，立即停下并报告，不要在本卡里自行改判定规则。
+> 3. **T8 遗留（本卡一并处理）**，详见 `2026-09-24-T8-multipart-session-reuse-review.md` → 遗留：
+>    - 登记 `wechat_window_preflight_failed`。T8 用常量 `WINDOW_PREFLIGHT_FAILED` 绕过了失败原因门禁，这个原因码原本就没登记。
+>    - 在 `touch-message-sequence.self_check.cjs` 补测试：M09（失焦或布局变化）、M11（联系人或账号变化）、M16（迟到失败后保留锚点）；会话驱动报告句柄或 pid 变化、微信重启、闸门内暂停。审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t8\`。
 
 分支：`codex/search-capture-evidence`。在 T10a 合并后，从最新基线拉出。
 
