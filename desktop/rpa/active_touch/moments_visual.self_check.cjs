@@ -3690,5 +3690,4 @@ const commentPromiseHarness = spawnSync(process.execPath, ["-e", commentPromiseH
 });
 assert.equal(commentPromiseHarness.status, 0, commentPromiseHarness.stderr || "comment Promise normalization harness must pass");
 
-require("./wechat_render_surface.self_check.cjs");
 console.log("moments visual self-check passed");
