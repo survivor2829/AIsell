@@ -1,5 +1,14 @@
 # T9b 诊断补强：暂停/继续/关窗日志、微信版本、summary.json、保留期
 
+> **2026-09-27 追加（T6b 已合并，本卡变基时一并处理；与下文冲突时以本段为准）**
+>
+> 1. 把本分支变基到最新基线（含 T6b 合并 `cc05e75`），解决与 T6b 在 `wechat-workflow*.cjs` 的冲突。
+> 2. 补上 `retryAll()` 和 `retryTask(..., andStart)` 的日志，并补对应测试（与本卡其他控制事件同一规则：日志写失败不影响操作，不含联系人文字）。
+> 3. **修 T6b 遗留的小缺陷**：`pauseForRetry` 在资格检查之前执行。接待中点"重新加入并继续"，如果此时 `canRetry` 已经是 false，调用返回失败，自动回复却一直停着。
+>    - 修法：先检查资格再暂停，或者失败时恢复接待。
+>    - 用例：资格不满足时调用 `retryTask`、`retryAll`，断言返回失败，接待照常。
+> 4. **补 T6b 的测试缺口**：T02、T07、T08、T13、T16、T14、T17，详见 `2026-09-24-T6b-retry-and-continue-review.md` → 遗留。审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t6b\`。
+
 分支：`codex/diagnostics-control-events`
 
 **开始时机**：T9a、T6b、T7a 都合并后再开始。
