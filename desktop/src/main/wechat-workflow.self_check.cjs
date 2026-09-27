@@ -1047,7 +1047,8 @@ async function checkRealReplyWorkflowRecovery() {
   const contacts = [
     { id: "private-good", name: "private-unique", allowed: true, wechatAccountId: "wx-a", wechatId: "good" },
     { id: "private-bad", name: "private-duplicate", allowed: true, wechatAccountId: "wx-a", wechatId: "bad" },
-    { id: "private-other", name: "private-duplicate", allowed: false, wechatAccountId: "wx-a", wechatId: "other" }
+    { id: "private-other", name: "private-duplicate", allowed: false, wechatAccountId: "wx-a", wechatId: "other" },
+    { id: "private-account", name: "private-account", allowed: true, wechatAccountId: "wx-b", wechatId: "account" }
   ];
   fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify(contacts));
   let nowMs = new Date("2026-07-15T10:00:00+08:00").getTime();
@@ -1088,6 +1089,19 @@ async function checkRealReplyWorkflowRecovery() {
     assert.equal(added.task.replyEnrollAmbiguous, 1);
     assert.deepEqual(controller.status().recipients.map((item) => item.id), ["private-good"]);
     assert.equal(events.find((event) => event.name === "reply.enroll_excluded")?.logCode, "workflow_recipient_ambiguous");
+    const accountEvents = [];
+    const accountController = createWechatWorkflowController({
+      rootDir: path.join(rootDir, "account_enrollment"), activeTouchDir,
+      autoReplyDir: path.join(rootDir, "account_enrollment", "reply"), momentsDir: path.join(rootDir, "account_enrollment", "moments"),
+      autoSchedule: false, getAccount: () => "wx-a",
+      logger: { event: (_module, name, details, metadata) => accountEvents.push({ name, code: metadata?.code }) },
+      reply: { screenWorkflowRecipients: (items) => ({ accepted: [items[0]], excluded: [{ code: "workflow_account_changed" }] }) },
+      executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contacts[0], contacts[3]], script: "private-script" }) } }
+    });
+    await accountController.addTask({ type: "touch", payload: { contactIds: ["private-good", "private-account"], script: "private-script" } });
+    assert.equal(accountEvents.find((event) => event.name === "reply.enroll_excluded")?.code, "workflow_account_changed",
+      "enrollment diagnostics must use the actual exclusion cause");
+    await accountController.dispose();
     await controller.start();
     await controller.tick();
     await controller.tick();
@@ -1346,17 +1360,31 @@ async function main() {
   const scheduledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
   let scheduledClock = new Date(2026, 8, 4, 10, 0);
   let scheduledReplyCalls = 0;
+  let scheduledReplyOverride = null;
   let scheduledTaskCalls = 0;
+  const scheduledReplyInputs = [];
   const scheduled = createWechatWorkflowController({
     rootDir: scheduledRoot, autoReplyDir: path.join(scheduledRoot, "reply"), activeTouchDir: path.join(scheduledRoot, "touch"), momentsDir: path.join(scheduledRoot, "moments"),
     now: () => scheduledClock, getAccount: () => "test-account", autoSchedule: false,
     reply: {
       prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
-      runWorkflowStep: async () => { scheduledReplyCalls += 1; return { handled: false }; }
+      runWorkflowStep: async (input) => {
+        scheduledReplyCalls += 1;
+        scheduledReplyInputs.push(input);
+        const result = scheduledReplyOverride || { handled: false };
+        scheduledReplyOverride = null;
+        return result;
+      }
     },
     executors: { publish: {
       prepareWorkflowTask: (_id, payload) => payload,
       runWorkflowStep: async () => { scheduledTaskCalls += 1; return { status: "completed", progress: { done: 1, total: 1 } }; }
+    }, interact: {
+      prepareWorkflowTask: (_id, payload) => payload,
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 1, total: 1 } })
+    }, touch: {
+      prepareWorkflowTask: (_id, payload) => ({ ...payload, contacts: [{ id: "reply-contact" }] }),
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 1, total: 1 } })
     } }
   });
   await scheduled.addRecipients(["reply-contact"]);
@@ -1369,6 +1397,25 @@ async function main() {
   assert.equal(scheduledReplyCalls, 1);
   await scheduled.tick();
   assert.equal(scheduledReplyCalls, 2, "automatic reply resumes after the due task completes");
+  assert.equal(scheduledReplyInputs[0].afterMoments, false);
+  assert.equal(scheduledReplyInputs[1].afterMoments, true, "publish must request chat restoration");
+  await scheduled.pause();
+  await scheduled.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await scheduled.start();
+  await scheduled.tick();
+  scheduledReplyOverride = { handled: false, status: "busy" };
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "interact must request chat restoration through a busy reply");
+  scheduledReplyOverride = { handled: false, status: "paused", reasonCode: "workflow_paused" };
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "paused reply must preserve chat restoration");
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "the next reply must still restore chat");
+  await scheduled.pause();
+  await scheduled.addTask({ type: "touch", payload: { contactIds: ["reply-contact"], script: "test" } });
+  await scheduled.start();
+  await scheduled.tick(); await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, false, "touch must not request chat restoration");
   await scheduled.dispose();
 
   const batchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-batch-"));

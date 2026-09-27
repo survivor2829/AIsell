@@ -1410,7 +1410,7 @@ function resolveWorkflowContactScope(activeTouchDir, recipients) {
     scopeBinding: crypto.createHash("sha256").update(JSON.stringify(contacts.map(identityKey).sort())).digest("hex"),
     contacts,
     aliases,
-    driverOptions: { exactConversationMatch: true, restoreChatSurface: true },
+    driverOptions: { exactConversationMatch: true, passiveScan: true },
     resolveContact: (candidate) => {
       // An anonymous red-dot identity cannot authorize a scoped workflow reply.
       if (candidate?.messageDriven === true) return null;
@@ -1501,6 +1501,32 @@ function createAutoReplyController(options = {}) {
   let workflowIsEnabled = () => false;
   let workflowStepActive = false;
   let workflowStartPending = true;
+  let workflowPauseGeneration = 0;
+  let restoreWorkflowChatSurface = true;
+  let scanHour = "";
+  let scanHourStats = null;
+  function recordWorkflowScanStats(result, { prime = false, navigation = false } = {}) {
+    if (!workflowMode) return;
+    const hour = now().toISOString().slice(0, 13);
+    if (scanHour && scanHour !== hour && scanHourStats) {
+      appendDiagnostic("workflow_scan_hourly", { phase: "workflow", code: "workflow_scan_hourly", ...scanHourStats });
+    }
+    if (scanHour !== hour) {
+      scanHour = hour;
+      scanHourStats = { foreground_count: 0, observe_idle_count: 0, navigation_count: 0, passive_miss: 0,
+        foreground_prime: 0, foreground_unread_candidate: 0, foreground_periodic_recheck: 0,
+        foreground_pending_state: 0, foreground_chat_surface_restore: 0, foreground_passive_unusable: 0,
+        foreground_other: 0 };
+    }
+    if (navigation) scanHourStats.navigation_count += 1;
+    if (result?.passive === true && result.reason === "no_unread_message") scanHourStats.observe_idle_count += 1;
+    if (result?.foregroundScan === true || prime) {
+      scanHourStats.foreground_count += 1;
+      const key = `foreground_${prime ? "prime" : result.foregroundReason}`;
+      scanHourStats[Object.hasOwn(scanHourStats, key) ? key : "foreground_other"] += 1;
+    }
+    if (result?.passiveMiss === true) scanHourStats.passive_miss += 1;
+  }
   let workflowHandled = false;
   let workflowProgress = null;
   let workflowBackoff = { attempt: 0, until: 0, reasonCode: "" };
@@ -1856,6 +1882,14 @@ function createAutoReplyController(options = {}) {
       if (Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= maximum) entry[field] = numeric;
     }
     const deliveryAttempt = Math.floor(Number(details.delivery_attempt));
+    if (entry.event === "workflow_scan_hourly") {
+      for (const field of ["foreground_count", "observe_idle_count", "navigation_count", "passive_miss",
+        "foreground_prime", "foreground_unread_candidate", "foreground_periodic_recheck",
+        "foreground_pending_state", "foreground_chat_surface_restore", "foreground_passive_unusable", "foreground_other"]) {
+        const count = Math.floor(Number(details[field]));
+        if (Number.isSafeInteger(count) && count >= 0) entry[field] = count;
+      }
+    }
     if (Number.isSafeInteger(deliveryAttempt) && deliveryAttempt >= 1 && deliveryAttempt <= 100) entry.delivery_attempt = deliveryAttempt;
     if (typeof details.send_attempted === "boolean") entry.send_attempted = details.send_attempted;
     if (typeof details.draft_phase_started === "boolean") entry.draft_phase_started = details.draft_phase_started;
@@ -2064,7 +2098,14 @@ function createAutoReplyController(options = {}) {
   function resolveContactScope() {
     if (workflowMode) {
       const scope = resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
-      return { ...scope, driverOptions: { ...scope.driverOptions, onProgress: workflowProgress } };
+      const driverOptions = { ...scope.driverOptions, onProgress: workflowProgress,
+        restoreChatSurface: restoreWorkflowChatSurface };
+      driverOptions.onChatSurfaceRestored = () => {
+        restoreWorkflowChatSurface = false;
+        driverOptions.restoreChatSurface = false;
+        recordWorkflowScanStats(null, { navigation: true });
+      };
+      return { ...scope, driverOptions };
     }
     if (!singleContactScopeRequired) {
       const contacts = eligibleContacts(activeTouchDir);
@@ -2239,6 +2280,7 @@ function createAutoReplyController(options = {}) {
 
   function pause(reason = "paused_by_user") {
     runEpoch += 1;
+    if (reason === "paused_by_user" || reason === "workflow_paused") workflowPauseGeneration += 1;
     workflowStartPending = false;
     resetWorkflowBackoff();
     if (timer) cancelSchedule(timer);
@@ -2871,6 +2913,7 @@ function createAutoReplyController(options = {}) {
         }
         if (!isCurrentRun()) return publicState();
         recordScanResult(primed, "prime");
+        recordWorkflowScanStats(primed, { prime: true });
         recordOutgoingObservation(primed, current, contactScope.resolveContact);
         if (primed?.ok !== true) {
           if (!workflowMode && state.last_scan_reason !== USER_IDLE_WAIT_REASON) {
@@ -2893,6 +2936,9 @@ function createAutoReplyController(options = {}) {
         throw error;
       }
       if (!isCurrentRun()) return publicState();
+      recordWorkflowScanStats(candidate);
+      if (["visual_ocr_structure_missing", "visual_sidebar_match_missing"].includes(candidate?.reason)
+        || String(candidate?.reason || "").startsWith("wechat_chat_")) restoreWorkflowChatSurface = true;
       if (candidate?.scanProbe?.ok !== null) {
         const observation = candidate?.scanProbe
           ? { ...candidate.scanProbe, pid: candidate.pid, hWnd: candidate.hWnd }
@@ -3859,8 +3905,10 @@ function createAutoReplyController(options = {}) {
         // caller. Wait for any in-flight send to finish verification.
         pause("workflow_takeover");
         workflowMode = true;
+        const pauseGeneration = workflowPauseGeneration;
         await waitForScanIdle();
         while (starting) await new Promise((resolve) => setTimeout(resolve, 10));
+        const pausedDuringTakeover = workflowPauseGeneration !== pauseGeneration || !enabled();
         discardTestScopeRuntimeState();
         scanIncoming.restoreTurnBoundaries?.(Object.values(state.reply_guards || {}).map((guard) => ({
           conversation: normalizeText(guard?.conversation),
@@ -3868,12 +3916,17 @@ function createAutoReplyController(options = {}) {
           runtimeId: normalizeText(guard?.incoming_runtime_id)
         })));
         primeRetryNeeded = true;
+        restoreWorkflowChatSurface = true;
+        if (pausedDuringTakeover) {
+          return stepReturn({ handled: false, status: "paused", progressText: "自动回复已暂停，请检查后重新启动" }, "paused_by_user");
+        }
         workflowStartPending = true;
       }
+      if (input.afterMoments === true) restoreWorkflowChatSurface = true;
       if (timer) cancelSchedule(timer);
       timer = null;
       if (workflowMode && state.status === "paused" && state.last_event === "paused_by_user" && !workflowStartPending) {
-        return stepReturn({ handled: false, status: "paused" }, "paused_by_user");
+        return stepReturn({ handled: false, status: "paused", progressText: "自动回复已暂停，请检查后重新启动" }, "paused_by_user");
       }
       workflowIsEnabled = () => enabled() === true;
       workflowRecipients = Array.isArray(input.recipients)

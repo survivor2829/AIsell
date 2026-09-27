@@ -2426,6 +2426,101 @@ assert.equal((await driver.verifyWechatIncoming({ conversation: "", message: "" 
 assert.equal((await driver.verifyWechatIncoming({ conversation: "A测试客户", message: "你是谁", runtimeId: "bad" })).reason, "incoming_identity_missing");
 assert.equal((await driver.scanWechatIncoming([])).reason, "whitelist_empty");
 
+const observePowerShell = AUTO_REPLY_VISUAL_SCRIPT.slice(
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf('if ($mode -ceq "observe") {', AUTO_REPLY_VISUAL_SCRIPT.indexOf('if ($mode -eq "prime")')),
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf('if ($mode -eq "recover")')
+);
+assert.match(observePowerShell, /no_unread_message/u);
+assert.doesNotMatch(observePowerShell, /Open-AutoReplyVisualConversation|New-AutoReplyVisualScreenFrame|SetCursorPos|mouse_event/u,
+  "observe must exit before any click or foreground screenshot");
+const observeBadgeFixture = runPowerShellJson(`
+function Write-AutoReplyVisualResult($value) { $value | ConvertTo-Json -Compress; exit }
+function Get-AutoReplyVisualUnreadBadges { return @(@{ unread = $true }) }
+$mode = "observe"
+$rows = @(); $currentConversation = @{ active = $false }; $currentMessage = $null
+$process = @{ Id = 141 }; $hWnd = [IntPtr]142
+${observePowerShell}
+`);
+assert.equal(observeBadgeFixture.reason, "no_unread_message", "an unread badge outside the allowlist must not trigger a foreground scan");
+const allowedBadgeFixture = runPowerShellJson(`
+function Write-AutoReplyVisualResult($value) { $value | ConvertTo-Json -Compress; exit }
+$mode = "observe"; $rows = @(@{ unread = $true; draft = $false })
+$currentConversation = @{ active = $false }; $currentMessage = $null
+$process = @{ Id = 141 }; $hWnd = [IntPtr]142
+${observePowerShell}
+`);
+assert.equal(allowedBadgeFixture.reason, "foreground_required", "an allowlisted unread badge must trigger a foreground scan");
+assert.equal(allowedBadgeFixture.trigger, "unread_candidate");
+
+const frameFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualFrame"),
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualPointOwned")
+);
+const observeFrame = runPowerShellJson(`
+Add-Type -TypeDefinition 'public static class Win32WechatMomentsVisualReadOnly { public static bool IsWindowVisible(System.IntPtr h) { return true; } public static bool IsIconic(System.IntPtr h) { return false; } }'
+function New-AutoReplyVisualPrintWindowFrame { return @{ ok = $false; reason = "visual_capture_failed" } }
+function New-AutoReplyVisualScreenFrame { return @{ ok = $true; captureMethod = "foreground_screen" } }
+${frameFunction}
+[Environment]::SetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE", "observe")
+[Environment]::SetEnvironmentVariable("XIAOXI_FORCE_SCREEN_CAPTURE", "")
+Get-AutoReplyVisualFrame ([IntPtr]142) @{ Left = 0; Top = 0; Right = 1100; Bottom = 700 } 141 | ConvertTo-Json -Compress
+`);
+assert.equal(observeFrame.ok, false, "observe must never fall back to a foreground screen capture");
+assert.equal(observeFrame.reason, "visual_capture_failed");
+
+const minimizedGuard = AUTO_REPLY_VISUAL_SCRIPT.slice(
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf("$process = $resolvedWindow.process"),
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf("$nativeWindowRect = New-Object Win32WechatAutoReplyVisual+RECT")
+);
+const minimizedObservation = runPowerShellJson(`
+Add-Type -TypeDefinition 'public static class Win32WechatAutoReplyVisual { public static bool IsIconic(System.IntPtr h) { return true; } }'
+function Write-AutoReplyVisualResult($value) { $value | ConvertTo-Json -Compress; exit }
+$mode = "observe"; $expectedPid = 141; $expectedHWnd = 142
+$resolvedWindow = @{ process = @{ Id = 141 }; hWnd = 142 }
+${minimizedGuard}
+@{ reason = "minimized_guard_missing" } | ConvertTo-Json -Compress
+`);
+assert.equal(minimizedObservation.reason, "foreground_required", "a minimized window must leave observe mode");
+assert.equal(minimizedObservation.trigger, "window_minimized");
+const observeEnvironments = [];
+const observeDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  observeEnvironments.push(env);
+  if (env.XIAOXI_AUTO_REPLY_MODE === "prime") return { ok: true, source: "session_prime", pid: 141, hWnd: 142,
+    sessionBaselines: [{ conversation: "观察客户", signature: "a".repeat(64) }], startupBoundarySupported: false };
+  return { ok: true, pid: 141, hWnd: 142, conversation: "观察客户", message: "private-message",
+    sessionBaselines: [{ conversation: "观察客户", signature: "b".repeat(64) }] };
+});
+assert.equal((await observeDriver.primeWechatSession(["观察客户"])).ok, true);
+for (let index = 0; index < 2; index += 1) {
+  const observed = await observeDriver.observeWechatIncoming(["观察客户"]);
+  assert.equal(observed.ok, false);
+  assert.equal(observed.reason, "foreground_required");
+  assert.equal(observed.conversation, undefined);
+  assert.equal(observed.message, undefined);
+}
+assert.equal(observeEnvironments[1].XIAOXI_VISUAL_BASELINES, observeEnvironments[2].XIAOXI_VISUAL_BASELINES,
+  "observe must not advance preview baselines");
+assert.equal(observeEnvironments[1].XIAOXI_VISUAL_MESSAGE_BASELINES, observeEnvironments[2].XIAOXI_VISUAL_MESSAGE_BASELINES,
+  "observe must not advance message baselines");
+assert.equal(observeEnvironments[1].XIAOXI_FORCE_SCREEN_CAPTURE, "");
+const preferredEnvironments = [];
+const preferredDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  preferredEnvironments.push(env);
+  if (env.XIAOXI_AUTO_REPLY_MODE === "prime") return { ok: true, source: "session_prime", pid: 141, hWnd: 142,
+    startupBoundarySupported: false };
+  if (env.XIAOXI_AUTO_REPLY_MODE === "scan") return { ok: true, source: "unread", captureMode: "foreground_screen",
+    pid: 141, hWnd: 142, conversation: "观察客户", conversationEvidence: "观察客户", message: "新问题",
+    runtimeId: `visual:v1:${"c".repeat(64)}`, previewSignature: "a".repeat(64),
+    messageSignature: "b".repeat(64), latestRole: "user" };
+  return { ok: false, reason: "no_unread_message", pid: 141, hWnd: 142 };
+}, () => ({ pid: 141, hWnd: "142" }));
+assert.equal((await preferredDriver.primeWechatSession(["观察客户"])).ok, true);
+assert.equal((await preferredDriver.scanWechatIncoming(["观察客户"])).ok, true);
+assert.equal((await preferredDriver.observeWechatIncoming(["观察客户"])).reason, "no_unread_message");
+assert.equal(preferredEnvironments.at(-1).XIAOXI_AUTO_REPLY_MODE, "observe");
+assert.equal(preferredEnvironments.at(-1).XIAOXI_FORCE_SCREEN_CAPTURE, "",
+  "a prior successful foreground screen scan must not disable PrintWindow observation");
+
 console.log("wechat auto-reply visual driver self-check passed");
 }
 

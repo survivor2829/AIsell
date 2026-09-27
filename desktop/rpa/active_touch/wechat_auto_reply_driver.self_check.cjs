@@ -829,6 +829,134 @@ assert.equal(restoredCalls[0].script, AUTO_REPLY_VISUAL_SCRIPT);
 assert.equal(restoredCalls[0].env.XIAOXI_AUTO_REPLY_MODE, "recover");
 
 let eventLoopAdvanced = false;
+const passiveCalls = [];
+let passiveClock = Date.now();
+const realNow = Date.now;
+try {
+  Date.now = () => passiveClock;
+  let observeResult = { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: normalizedWindow };
+  const passiveRunner = (_script, env) => {
+    passiveCalls.push(env.XIAOXI_AUTO_REPLY_MODE);
+    if (env.XIAOXI_AUTO_REPLY_MODE === "prime") return { ok: true, source: "session_prime", pid: 81, hWnd: "91" };
+    if (env.XIAOXI_AUTO_REPLY_MODE === "observe") return observeResult;
+    return { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: normalizedWindow };
+  };
+  const prepared = [];
+  let userActive = false;
+  const passiveDriver = createWechatAutoReplyDriver(passiveRunner, (options) => {
+    prepared.push(options);
+    return userActive && options.minIdleMs >= 5000 ? { ok: false, reason: "wechat_user_active" } : normalizedWindow;
+  });
+  assert.equal((await passiveDriver.primeWechatSession(["测试客户"])).ok, true);
+  prepared.length = 0;
+  for (let index = 0; index < 10; index += 1) {
+    const idle = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+    assert.equal(idle.passive, true);
+  }
+  assert.equal(prepared.length, 0, "ten unchanged observe polls must leave WeChat in the background");
+  assert.equal(passiveCalls.filter((mode) => mode === "observe").length, 10);
+  passiveClock += 60_000;
+  userActive = true;
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).reason, "wechat_user_active");
+  assert.equal(passiveCalls.at(-1), "observe", "an active user must defer periodic foreground capture");
+  observeResult = { ok: false, reason: "foreground_required", trigger: "unread_candidate", pid: 81, hWnd: "91", window: normalizedWindow };
+  const activeUnread = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(activeUnread.foregroundReason, "unread_candidate", "an observed unread message must scan even while the user is active");
+  assert.equal(prepared.at(-1).minIdleMs, 0, "unread observation must not use the periodic idle gate");
+  observeResult = { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: normalizedWindow };
+  userActive = false;
+  passiveClock += 60_000;
+  const periodic = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(periodic.foregroundReason, "periodic_recheck");
+  assert.equal(prepared.at(-1).minIdleMs, 5000);
+  prepared.length = 0;
+  const retry = { ok: true, conversation: "测试客户", message: "待处理问题", runtimeId: `visual:v1:${"b".repeat(64)}`, pid: 81, hWnd: 91 };
+  assert.equal(passiveDriver.scanWechatIncoming.requeue(retry), true);
+  const pending = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(pending.foregroundReason, "pending_state", "queued visual work must bypass observation");
+  assert.equal(prepared.length, 1);
+  assert.equal(passiveCalls.at(-1), "scan");
+  prepared.length = 0;
+  const navigation = require("./moments_navigation.dev.cjs");
+  const originalReturn = navigation.returnWechatFromMomentsToChat;
+  try {
+    navigation.returnWechatFromMomentsToChat = async () => ({ ok: true, pid: 81, hWnd: "91" });
+    const restored = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true, restoreChatSurface: true });
+    assert.equal(restored.foregroundReason, "chat_surface_restore", "chat restoration must force a foreground scan");
+    assert.equal(prepared.length, 1);
+    assert.equal(passiveCalls.at(-1), "scan");
+    navigation.returnWechatFromMomentsToChat = async () => ({ ok: true, pid: 82, hWnd: "92" });
+    assert.equal((await passiveDriver.primeWechatSession(["测试客户"], { restoreChatSurface: true })).reason,
+      "wechat_window_identity_mismatch", "restored chat must retain the preflight window identity");
+  } finally { navigation.returnWechatFromMomentsToChat = originalReturn; }
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "foreground_required", trigger: "unread_candidate", pid: 81, hWnd: "91", window: normalizedWindow };
+  const unread = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(unread.foregroundReason, "unread_candidate");
+  assert.equal(prepared.length, 1);
+  assert.equal(passiveCalls.at(-1), "scan", "an observed candidate must still run the original foreground scanner");
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "foreground_required", trigger: "window_minimized", pid: 81, hWnd: "91" };
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "window_minimized");
+  assert.equal(prepared.length, 1, "a minimized window must be restored through the foreground path");
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: { ...normalizedWindow, x: 100 } };
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "geometry_changed");
+  assert.equal(prepared.length, 1, "moving the same HWND must re-normalize instead of failing closed");
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "wechat_process_changed", pid: 82, hWnd: "91" };
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).reason, "wechat_process_changed");
+  assert.equal(prepared.length, 0);
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).reason, "current_session_baselined",
+    "an observed identity change must force a foreground prime on the next poll");
+  observeResult = { ok: false, reason: "foreground_required", trigger: "printwindow_unusable", pid: 81, hWnd: "91", window: normalizedWindow };
+  for (let index = 0; index < 3; index += 1) await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  const observeCount = passiveCalls.filter((mode) => mode === "observe").length;
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "passive_unusable");
+  assert.equal(passiveCalls.filter((mode) => mode === "observe").length, observeCount,
+    "three unusable PrintWindow frames must disable observe until prime");
+  let alternatingObservations = 0;
+  const alternatingModes = [];
+  const alternatingDriver = createWechatAutoReplyDriver((_script, env) => {
+    alternatingModes.push(env.XIAOXI_AUTO_REPLY_MODE);
+    if (env.XIAOXI_AUTO_REPLY_MODE === "prime") return { ok: true, source: "session_prime", pid: 81, hWnd: "91" };
+    if (env.XIAOXI_AUTO_REPLY_MODE === "observe") {
+      alternatingObservations += 1;
+      return alternatingObservations % 2
+        ? { ok: false, reason: "foreground_required", trigger: "printwindow_unusable", pid: 81, hWnd: "91" }
+        : { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: normalizedWindow };
+    }
+    return { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91" };
+  });
+  assert.equal((await alternatingDriver.primeWechatSession(["测试客户"])).ok, true);
+  for (let index = 0; index < 8; index += 1) await alternatingDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(alternatingObservations, 8, "a successful observe must clear the PrintWindow failure streak");
+  assert.equal(alternatingModes.at(-1), "observe");
+} finally { Date.now = realNow; }
+const visualModule = require("./wechat_auto_reply_visual_driver.dev.cjs");
+const originalVisualFactory = visualModule.createWechatVisualAutoReplyDriver;
+let pendingObserveCalls = 0;
+try {
+  visualModule.createWechatVisualAutoReplyDriver = (...args) => {
+    const visual = originalVisualFactory(...args);
+    const observe = visual.observeWechatIncoming;
+    visual.observeWechatIncoming = (...observeArgs) => {
+      pendingObserveCalls += 1;
+      return observe(...observeArgs);
+    };
+    return visual;
+  };
+  const pendingDriver = createWechatAutoReplyDriver((_script, env) =>
+    env.XIAOXI_AUTO_REPLY_MODE === "prime"
+      ? { ok: true, source: "session_prime", pid: 81, hWnd: "91" }
+      : { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91" });
+  assert.equal((await pendingDriver.primeWechatSession(["测试客户"])).ok, true);
+  assert.equal(pendingDriver.scanWechatIncoming.requeue({
+    ok: true, conversation: "测试客户", message: "待处理问题", runtimeId: `visual:v1:${"b".repeat(64)}`, pid: 81, hWnd: 91
+  }), true);
+  assert.equal((await pendingDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "pending_state");
+  assert.equal(pendingObserveCalls, 0, "pending visual work must not call the passive observer");
+} finally { visualModule.createWechatVisualAutoReplyDriver = originalVisualFactory; }
 setTimeout(() => { eventLoopAdvanced = true; }, 0);
 const asynchronousProbe = await runPowerShellAsync("Start-Sleep -Milliseconds 150; @{ ok = $true } | ConvertTo-Json -Compress", {}, { ensure: false, timeout: 5000 });
 assert.equal(asynchronousProbe.ok, true);
