@@ -915,7 +915,210 @@ async function checkTouchMessageSequence() {
     driver_exception_type: "System.Runtime.InteropServices.ExternalException", driver_exception_hresult: "hresult_800401D0",
     send_attempted: false
   });
+
+  const worker = require("node:child_process").spawnSync(process.execPath, ["-e", `
+    const cp = require("node:child_process");
+    let powerShellLaunches = 0;
+    for (const method of ["spawn", "spawnSync"]) {
+      const original = cp[method];
+      cp[method] = (...args) => {
+        if (/^(?:powershell|pwsh)(?:\\.exe)?$/iu.test(require("node:path").basename(String(args[0])))) {
+          powerShellLaunches += 1;
+          throw new Error("T8 must not launch PowerShell");
+        }
+        return original(...args);
+      };
+    }
+    require(${JSON.stringify(__filename)}).checkMultipartReuse().then(() => {
+      if (powerShellLaunches !== 0) throw new Error("PowerShell was launched");
+      process.stdout.write("T8 multipart session reuse checks passed; PowerShell launches: 0\\n");
+    }).catch((error) => { process.stderr.write(error.stack + "\\n"); process.exitCode = 1; });
+  `], { encoding: "utf8", timeout: 120_000 });
+  assert.equal(worker.status, 0, worker.stderr || worker.error?.message || "T8 isolated worker failed");
+  process.stdout.write(worker.stdout);
 }
 
-module.exports = { checkTouchMessageSequence };
+async function checkMultipartReuse() {
+  const { executeVerifiedContactSend } = require("../../rpa/active_touch/state_machine.dev.cjs");
+  const { loadState, saveState } = require("../../rpa/active_touch/state_machine.cjs");
+  const { loadTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+  const TOKEN = "conversation:v2:81:91:visual:fixture-token";
+  const preparedWindow = (hWnd = 91) => ({ ok: true, inspectionOnly: true, normalized: true,
+    layoutMode: "stable_target", focused: true, pid: 81, hWnd, processName: "Weixin" });
+
+  async function scenario(settings = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-t8-reuse-"));
+    const contact = { id: "t8-contact", name: "测试客户", wechatId: "wxid_t8", wechatAccountId: "test_account", allowed: true };
+    const contacts = settings.duplicateName ? [contact, { ...contact, id: "other", wechatId: "wxid_other" }] : [contact];
+    fs.writeFileSync(path.join(root, "contacts.json"), JSON.stringify(contacts));
+    if (settings.flag !== undefined) fs.writeFileSync(path.join(root, "feature-flags.json"), settings.flag);
+    const logger = require("./diagnostics.cjs").configureDiagnostics({ rootDir: path.join(root, "diagnostics") });
+    const events = [], passports = [];
+    const unsubscribe = logger.subscribe((entry) => events.push(entry));
+    const counts = { select: 0, preflight: 0, click: 0, inspector: 0, text: 0, image: 0 };
+    const inspections = [];
+    let clock = Date.parse("2026-09-27T08:00:00.000Z");
+    let enabled = true;
+    let firstText = false;
+    const imageId = "b".repeat(64);
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "t8" } }), release() {} },
+      mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "fixture-image.png" }) },
+      passport: { bindTrace() {}, recordEvent: (...args) => passports.push(args), recordFailure: (...args) => passports.push(args),
+        writeRunBill: (...args) => passports.push(args) },
+      runStep: (args, context) => {
+        const [command] = args;
+        if (["select-customer", "calibrate", "send"].includes(command)) {
+          if (command === "select-customer") counts.select += 1;
+          return runCli(["node", "active_touch_cli.cjs", ...args, "--data-dir", context.dataDir]);
+        }
+        const state = loadState(context.dataDir);
+        if (command === "click-search-result-dry-run") {
+          counts.click += 1;
+          if (settings.failFallback && path.basename(context.dataDir) === "1") {
+            return { ok: false, blocked_reason: "search_result_identity_unverified", action: command };
+          }
+          const next = { ...state, conversation_located: true, conversation_verified: true,
+            conversation_title: contact.name, located_window_title: contact.name,
+            conversation_verification_mode: settings.titleMode ? "conversation_title" : "exact_wechat_id_search",
+            conversation_token: TOKEN, conversation_title_mode: settings.titleMode ? "title" : "visual",
+            search_input_done: true, search_result_clicked: true, search_query: contact.wechatId, search_query_type: "wechat_id",
+            window_pid: 81, window_handle: "91", window_process_name: "Weixin",
+            send_gate_status: "pending", real_send_status: "not_sent", blocked_reason: "" };
+          saveState(context.dataDir, next);
+          return { ok: true, state: next };
+        }
+        if (command === "input-message-dry-run") {
+          const message = args[args.indexOf("--message") + 1];
+          const next = { ...state, message_input_done: true, message_draft: message,
+            send_gate_status: "pending", real_send_status: "not_sent", blocked_reason: "" };
+          saveState(context.dataDir, next);
+          return { ok: true, state: next };
+        }
+        throw new Error(`Unexpected CLI command: ${command}`);
+      },
+      execute: async (part) => {
+        const index = Number(path.basename(part.baseDir));
+        const sent = await executeVerifiedContactSend({ ...part,
+          windowPreflight: async () => { counts.preflight += 1; return preparedWindow(); },
+          sessionDriver: async () => {
+            if (settings.sessionThrows && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation") {
+              throw new Error("session fixture fault");
+            }
+            return { ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: contact.name,
+            accountId: "test_account", accountVerified: true,
+            verificationMode: settings.modeChanged && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation"
+              ? "conversation_title" : settings.titleMode ? "conversation_title" : "exact_wechat_id_search",
+            conversationToken: settings.tokenMissing && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation"
+              ? undefined : settings.tokenChanged && index === 1 && loadState(part.baseDir).session_source === "reused_verified_conversation"
+                ? `${TOKEN}-changed` : TOKEN };
+          },
+          windowInspector: async (context) => {
+            counts.inspector += 1; inspections.push(context);
+            if (settings.inspectorThrows) throw new Error("inspection fixture fault");
+            if (settings.inspectorActive) return { ok: false, reason: "wechat_user_active" };
+            return preparedWindow(settings.inspectorWindowChanged ? 92 : 91);
+          },
+          sendDriver: async () => { counts.text += 1; return { ok: true, sendAttempted: true,
+            conversationVerified: true, composerVerified: true, draftVerified: true }; },
+          bubbleVerifier: async (message, context) => context.phase === "before"
+            ? { ok: true, snapshot: `before-${index}` }
+            : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: message },
+          imageSender: async ({ onTransition }) => {
+            counts.image += 1; onTransition?.("sent_verified");
+            return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
+          }
+        });
+        if (index === 0 && sent.ok && !firstText) {
+          firstText = true;
+          if (settings.expireAfterText) clock += 16_000;
+          if (settings.rewindAfterText) clock -= 1_000;
+          if (settings.pauseAfterText) enabled = false;
+        }
+        return sent;
+      }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，产品资料如下。", contactIds: [contact.id],
+      ...(!settings.singleText ? { imageIds: settings.fourParts ? [imageId, imageId] : [imageId] } : {}),
+      ...(settings.fourParts ? { link: "https://example.com/product" } : {}) });
+    const record = { id: crypto.randomUUID(), payload, progress: { done: 0 }, status: "running" };
+    let result = await workflow.runWorkflowStep(record, { isEnabled: () => enabled });
+    if (settings.pauseAfterText) {
+      assert.equal(result.status, "pending");
+      enabled = true;
+      result = await workflow.runWorkflowStep(record, { isEnabled: () => enabled });
+    }
+    const reuse = events.filter((entry) => entry.event === "send_stage" && entry.details?.stage === "session_reuse" && entry.details?.phase === "finish")
+      .map((entry) => entry.details);
+    const stages = (name) => events.filter((entry) => entry.event === "send_stage" && entry.details?.stage === name && entry.details?.phase === "finish");
+    try {
+      const taskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(record.id).digest("hex"));
+      const task = loadTaskState(taskDir);
+      assert.doesNotMatch(JSON.stringify({ result, task, passports, events }), /session_anchor/u,
+        "session anchors must not escape the in-memory part boundary");
+      if (fs.existsSync(logger.logFile)) assert.doesNotMatch(fs.readFileSync(logger.logFile, "utf8"), /session_anchor/u);
+      for (const file of fs.readdirSync(taskDir, { recursive: true })) {
+        const full = path.join(taskDir, file);
+        if (fs.statSync(full).isFile() && /\.json(?:l)?$/u.test(file)) assert.doesNotMatch(fs.readFileSync(full, "utf8"), /session_anchor/u);
+      }
+      assert.equal(global.__t8PowerShellLaunches || 0, 0);
+      return { result, counts, inspections, reuse, stages, task, events };
+    } finally { unsubscribe(); fs.rmSync(root, { recursive: true, force: true }); }
+  }
+
+  const normal = await scenario({ fourParts: true });
+  assert.equal(normal.result.status, "completed");
+  assert.equal(normal.counts.select, 4);
+  assert.equal(normal.counts.preflight, 1);
+  assert.equal(normal.counts.click, 1);
+  assert.equal(normal.stages("verify_session").length, 1);
+  assert.equal(normal.stages("session_reuse_verify").length, 3);
+  assert.equal(normal.counts.inspector, 3);
+  assert.equal(normal.task.results[0].message_parts.every((part) => part.status === "sent_verified"), true);
+  assert.deepEqual(normal.reuse.map((entry) => entry.reuse_outcome), ["reused", "reused", "reused"]);
+  assert.deepEqual(normal.reuse.map((entry) => entry.reused_from_part), [0, 1, 2]);
+  assert.equal(normal.inspections.every((entry) => entry.expectedPid === 81 && entry.expectedHWnd === "91" && entry.minIdleMs >= 1), true);
+  const single = await scenario({ singleText: true });
+  assert.equal(single.result.status, "completed");
+  assert.equal(single.reuse.length, 0, "a single text send does not request a session anchor");
+
+  const disabled = await scenario({ flag: '{"multipartSessionReuse":false}' });
+  assert.equal(disabled.result.status, "completed");
+  assert.equal(disabled.counts.preflight, 2);
+  assert.equal(disabled.counts.click, 2);
+  assert.deepEqual(disabled.reuse.map((entry) => entry.reuse_outcome), ["disabled"]);
+  const malformed = await scenario({ flag: "{broken" });
+  assert.equal(malformed.reuse[0].reuse_outcome, "reused");
+  assert.equal(malformed.events.some((entry) => entry.event === "session_reuse.flags_invalid" && entry.level === "warn"), true);
+
+  for (const [settings, expected] of [
+    [{ tokenChanged: true }, "conversation_token_changed"],
+    [{ tokenMissing: true }, "conversation_token_changed"],
+    [{ modeChanged: true }, "session_verify_failed"],
+    [{ tokenChanged: true, titleMode: true }, "session_verify_failed"],
+    [{ inspectorActive: true }, "user_input_detected"],
+    [{ inspectorWindowChanged: true }, "window_changed"],
+    [{ inspectorThrows: true }, "window_not_ready"],
+    [{ sessionThrows: true }, "window_not_ready"],
+    [{ expireAfterText: true }, "anchor_expired"],
+    [{ rewindAfterText: true }, "anchor_expired"],
+    [{ duplicateName: true }, "name_not_unique"],
+    [{ pauseAfterText: true }, "anchor_missing"]
+  ]) {
+    const failedReuse = await scenario(settings);
+    assert.equal(failedReuse.result.status, "completed", `${expected}: full search still succeeds`);
+    assert.equal(failedReuse.reuse.at(-1).reuse_outcome, expected);
+    assert.equal(failedReuse.counts.preflight, 2);
+    assert.equal(failedReuse.counts.click, 2);
+    if (expected === "name_not_unique") assert.equal(failedReuse.counts.inspector, 0);
+  }
+  const failedSearch = await scenario({ tokenChanged: true, failFallback: true });
+  assert.equal(failedSearch.reuse[0].reuse_outcome, "conversation_token_changed");
+  assert.equal(failedSearch.result.reasonCode, "search_result_identity_unverified");
+  assert.equal(failedSearch.counts.preflight, 2);
+  assert.equal(failedSearch.counts.image, 0);
+}
+
+module.exports = { checkTouchMessageSequence, checkMultipartReuse };
 if (require.main === module) checkTouchMessageSequence().then(() => process.stdout.write("Touch sequence checks passed: order, restart, partial failure, pause, unknown outcome and image receipts.\n")).catch(error => { console.error(error); process.exitCode = 1; });

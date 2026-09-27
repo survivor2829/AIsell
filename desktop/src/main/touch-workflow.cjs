@@ -385,6 +385,16 @@ function createTouchWorkflow(options = {}) {
         stage: "workflow_contact_send", direction: "in", status: "started", traceId: sendOperation.traceId
       });
       try {
+        let sessionAnchor = null;
+        let sourcePartIndex = null;
+        let reuseEnabled = true;
+        if (multipart) {
+          try { reuseEnabled = JSON.parse(fs.readFileSync(path.join(contactsDir, "feature-flags.json"), "utf8"))?.multipartSessionReuse !== false; }
+          catch (error) {
+            if (error.code !== "ENOENT") diagnostics().event("active_touch", "session_reuse.flags_invalid", { task_id: id },
+              { trace: true, level: "warn", code: "session_reuse_flags_invalid" });
+          }
+        }
         const executePart = async (part, partIndex, onPartTransition) => {
           const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");
           const executionDir = multipart ? path.join(taskDir, "message-parts", recipientKey, String(partIndex)) : taskDir;
@@ -395,9 +405,9 @@ function createTouchWorkflow(options = {}) {
           let image;
           if (part.kind === "image") {
             try { image = options.mediaStore.resolve(part.imageId); }
-            catch (error) { return { ok: false, send_attempted: false, blocked_reason: "touch_image_unavailable", error: error.message }; }
+            catch (error) { sessionAnchor = null; return { ok: false, send_attempted: false, blocked_reason: "touch_image_unavailable", error: error.message }; }
           }
-          return options.execute({
+          const partOutcome = await options.execute({
             baseDir: executionDir,
             contactsDir,
             contactId: current.id,
@@ -407,6 +417,8 @@ function createTouchWorkflow(options = {}) {
             attemptId: multipart ? `${current.request_id}:${partIndex}` : current.request_id,
             authorized: isBatchAuthorized(task),
             windowMinIdleMs: 0,
+            ...(multipart ? { captureSessionAnchor: true, now,
+              ...(partIndex > 0 ? { reuseSession: { partIndex, sourcePartIndex, anchor: sessionAnchor, disabled: !reuseEnabled } } : {}) } : {}),
             onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
               trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
             }),
@@ -439,6 +451,16 @@ function createTouchWorkflow(options = {}) {
               persist();
             }
           });
+          if (!multipart) return partOutcome;
+          const { session_anchor: anchor, ...safeOutcome } = partOutcome || {};
+          if (partOutcome?.ok === true && partOutcome?.state?.real_send_status === "sent_verified" && anchor) {
+            sessionAnchor = anchor;
+            sourcePartIndex = partIndex;
+          } else {
+            sessionAnchor = null;
+            sourcePartIndex = null;
+          }
+          return safeOutcome;
         };
         if (multipart) {
           current = task.results[index];

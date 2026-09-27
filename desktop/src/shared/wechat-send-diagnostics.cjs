@@ -8,6 +8,8 @@ const SAFE_SEND_STAGES = new Set([
   "preflight", "send_session_check", "before_send_snapshot", "draft", "visual_send",
   "send", "after_send_confirmation", "verify", "handoff", "unknown"
 ]);
+const SAFE_REUSE_OUTCOMES = new Set(["reused", "anchor_missing", "anchor_expired", "contact_changed", "name_not_unique",
+  "session_verify_failed", "window_changed", "conversation_token_changed", "user_input_detected", "window_not_ready", "disabled"]);
 
 const SAFE_INPUT_PHASES = new Set([
   "preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
@@ -64,12 +66,14 @@ function summarizeSendResult(result = {}, context = {}) {
     || (blocked === "outcome_unknown" ? state.real_send_reason || blocked : blocked || state.real_send_reason);
   for (const [key, value] of Object.entries({
     action: result?.action,
+    reuse_outcome: result?.reuse_outcome,
     reason,
     send_status: result?.send_result || state.real_send_status,
     verification_mode: result?.verificationMode || result?.verification_mode || state.post_send_verification_mode,
     input_read_reason: proof.input_read_reason
   })) {
-    if (typeof value === "string" && /^[a-z][a-z0-9_.:-]{0,119}$/iu.test(value)) detail[key] = value;
+    if (typeof value === "string" && /^[a-z][a-z0-9_.:-]{0,119}$/iu.test(value)
+      && (key !== "reuse_outcome" || SAFE_REUSE_OUTCOMES.has(value))) detail[key] = value;
   }
   Object.assign(detail, sendOutcomeEnvelope(result, { ...detail, ...context }));
   for (const [key, value] of Object.entries({
@@ -101,7 +105,8 @@ function summarizeSendResult(result = {}, context = {}) {
     outgoing_exact_count: proof.outgoing_exact_count,
     previous_exact_count: proof.previous_exact_count,
     new_outgoing_exact_count: proof.new_outgoing_exact_count,
-    clipboard_write_attempts: proof.clipboard_write_attempts
+    clipboard_write_attempts: proof.clipboard_write_attempts,
+    reused_from_part: result?.reused_from_part
   })) {
     if (Number.isFinite(value) && value >= 0) detail[key] = value;
   }
