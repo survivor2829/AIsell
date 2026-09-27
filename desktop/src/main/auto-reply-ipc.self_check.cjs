@@ -4958,6 +4958,12 @@ async function main() {
   assert.equal(takeoverPauseController.status().status, "paused");
   assert.equal(takeoverSends, 0, "a paused takeover must not send");
   assert.ok(takeoverRestores >= 2, "paused takeover must still restore the workflow turn boundary");
+  const primesWhilePaused = takeoverPrimes;
+  assert.notEqual((await takeoverPauseController.runWorkflowStep(workflowInput)).status, "running",
+    "the next workflow step must not silently undo a takeover pause");
+  assert.equal(takeoverPauseController.status().status, "paused", "a takeover pause lasts until an explicit resume");
+  assert.equal(takeoverPrimes, primesWhilePaused, "a paused takeover must not prime on the next step");
+  assert.equal(takeoverSends, 0, "a paused takeover must not send on the next step");
   takeoverPauseController.resumeWorkflow();
   assert.equal((await takeoverPauseController.runWorkflowStep(workflowInput)).status, "running");
   assert.equal(takeoverPrimes, 2, "resuming a paused takeover must prime before scanning old messages");
@@ -5219,6 +5225,36 @@ async function main() {
   const afterPassiveIdle = statsState();
   for (const field of ["reply_guards", "processed", "pending_observation"]) {
     assert.deepEqual(afterPassiveIdle[field], beforePassiveIdle[field], `passive idle must preserve ${field}`);
+  }
+  // Seed a real-shaped exactly-once ledger so passive-idle preservation cannot pass on empty state.
+  // Takeover discards pending_observation by design, so only reply_guards and processed can be seeded.
+  const ledgerDir = path.join(root, "workflow_passive_ledger");
+  const ledgerController = () => createAutoReplyController({ dataDir: ledgerDir, activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), now: () => new Date(statsClock), deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message", passive: true }),
+    verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  await ledgerController().runWorkflowStep(statsInput);
+  const ledgerFile = path.join(ledgerDir, "auto-reply-state.json");
+  const ledgerState = () => JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  const seededSignature = "c".repeat(64);
+  const seeded = ledgerState();
+  seeded.processed = { ["d".repeat(64)]: { contact_id: workflowUniverse[0].id, status: "sent_verified",
+    message_signature: seededSignature, at: new Date(statsClock - 60_000).toISOString() } };
+  seeded.reply_guards = { [workflowUniverse[0].id]: { contact_id: workflowUniverse[0].id, conversation: "种子会话",
+    message_signature: seededSignature, fingerprint: "d".repeat(64), delivery_status: "sent_verified",
+    turn_state: "outgoing_observed", at: new Date(statsClock - 60_000).toISOString() } };
+  fs.writeFileSync(ledgerFile, JSON.stringify(seeded), "utf8");
+  const reloadedLedger = ledgerController();
+  await reloadedLedger.runWorkflowStep(statsInput);
+  const beforeSeededIdle = ledgerState();
+  assert.ok(Object.keys(beforeSeededIdle.reply_guards || {}).length && Object.keys(beforeSeededIdle.processed || {}).length,
+    "the passive-idle fixture must start from a non-empty ledger");
+  await reloadedLedger.runWorkflowStep(statsInput);
+  const afterSeededIdle = ledgerState();
+  for (const field of ["reply_guards", "processed"]) {
+    assert.deepEqual(afterSeededIdle[field], beforeSeededIdle[field], `passive idle must preserve a seeded ${field}`);
   }
   await statsController.runWorkflowStep(statsInput);
   statsClock += 3_600_000;

@@ -870,6 +870,9 @@ try {
   assert.equal(periodic.foregroundReason, "periodic_recheck");
   assert.equal(prepared.at(-1).minIdleMs, 5000);
   prepared.length = 0;
+  const afterPeriodic = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(afterPeriodic.passive, true, "the idle poll right after a periodic recheck must stay in the background");
+  assert.equal(prepared.length, 0, "a periodic recheck must restart the 60 s window instead of recapturing every poll");
   const retry = { ok: true, conversation: "测试客户", message: "待处理问题", runtimeId: `visual:v1:${"b".repeat(64)}`, pid: 81, hWnd: 91 };
   assert.equal(passiveDriver.scanWechatIncoming.requeue(retry), true);
   const pending = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
