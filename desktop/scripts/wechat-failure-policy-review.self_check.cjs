@@ -19,6 +19,17 @@ assert.deepEqual(unclassifiedAddedReasons('+ log("reply.activated", { reason: "f
 assert.deepEqual(unclassifiedAddedReasons('+ return { reason: "invalid_unclassified_reason" };'), []);
 
 for (const [reason, classification, attentionScope] of [
+  ["atomic_draft_changed", "recoverable", "task"],
+  ["atomic_send_not_verified", "recoverable", "task"],
+  ["message_snapshot_unavailable", "recoverable", "task"],
+  ["wechat_clipboard_read_failed", "recoverable", "task"],
+  ["wechat_focus_failed", "recoverable", "task"],
+  ["message_input_failed", "recoverable", "task"],
+  ["message_input_failed_wechat_clipboard_read_failed", "recoverable", "task"],
+  ["message_input_failed_clipboard_write_or_paste_failed_attempts_2", "recoverable", "task"],
+  ["message_input_failed_wechat_window_not_foreground_attempts_3", "environment", "global"],
+  ["message_input_failed_wechat_user_active", "environment", "global"],
+  ["touch_pre_send_failure_streak", "blocker", "global"],
   ["retry_skipped_selection_invalid", "recoverable", "task"],
   ["retry_skipped_task_mismatch", "recoverable", "task"],
   ["retry_skipped_sent_verified_forbidden", "blocker", "task"],

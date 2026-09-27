@@ -3,6 +3,9 @@ const catalog = require("./wechat-rule-catalog.json");
 const FAILURE_CLASSIFICATIONS = Object.freeze(["environment", "recoverable", "blocker"]);
 
 const workflowPolicies = Object.freeze({
+  atomic_draft_changed: { classification: "recoverable", attentionScope: "task" },
+  atomic_send_not_verified: { classification: "recoverable", attentionScope: "task" },
+  message_snapshot_unavailable: { classification: "recoverable", attentionScope: "task" },
   touch_task_payload_incomplete: { classification: "blocker", attentionScope: "task" },
   moments_no_new_posts: { classification: "recoverable", attentionScope: "task" },
   moments_interaction_incomplete: { classification: "recoverable", attentionScope: "task" },
@@ -12,6 +15,9 @@ const workflowPolicies = Object.freeze({
   workflow_occurrence_date_invalid: { classification: "blocker", attentionScope: "task" },
   workflow_executor_unavailable: { classification: "blocker", attentionScope: "task" },
   touch_draft_generation_failed: { classification: "recoverable", attentionScope: "task" },
+  touch_pre_send_failure_streak: { classification: "blocker", attentionScope: "global" },
+  wechat_clipboard_read_failed: { classification: "recoverable", attentionScope: "task" },
+  wechat_focus_failed: { classification: "recoverable", attentionScope: "task" },
   wechat_search_panel_unavailable: { classification: "blocker", attentionScope: "global" },
   wechat_search_identity_circuit_open: { classification: "blocker", attentionScope: "global" },
   task_context_mismatch: { classification: "blocker", attentionScope: "global" },
@@ -109,6 +115,12 @@ function classifyWechatFailureReason(reasonCode) {
   const reason = normalizeFailureReasonCode(reasonCode || "task_attention_reason_missing");
   if (/^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason)) {
     return { reasonCode: reason, classification: "environment", attentionScope: "global", known: true };
+  }
+  if (/^message_input_failed_wechat_window_not_foreground(?:_attempts_[1-9]\d*)?$/u.test(reason)) {
+    return { reasonCode: reason, classification: "environment", attentionScope: "global", known: true };
+  }
+  if (/^message_input_failed(?:_[a-z0-9_]+)?$/u.test(reason)) {
+    return { reasonCode: reason, classification: "recoverable", attentionScope: "task", known: true };
   }
   const policy = reasonPolicies.get(reason);
   return policy
