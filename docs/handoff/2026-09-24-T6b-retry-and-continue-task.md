@@ -1,5 +1,17 @@
 # T6b【P1】"重新加入并继续"改为一键
 
+> **2026-09-27 追加（T6a 二审遗留，顺手处理）**
+>
+> - 补日志级别边角情况的测试：
+>   - 停机码加已停用，记 warn；
+>   - 停机码，记 error；
+>   - `send_attempted` 为 null，记 error；
+>   - clicked 或结果未知之后返回 false，记 error。
+>
+>   对应审查变异 N09、N10、N12、N18，见 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t6a-r2\`。
+> - 发送前跳过的记录，不要带上旧的搜索规则号（M15）。
+> - 从最新基线新建分支。基线已含 T6a 的 `resumableFreshEdit`：放行"全新行"时，必须沿用它的全部守卫，不能放宽。
+
 分支：`codex/workflow-retry-and-continue`
 
 - **依赖**：代码上不依赖 T4、T5、T6a。
