@@ -6,7 +6,7 @@ const crypto = require("node:crypto");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
-const { resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
+const { NETWORK_SEARCH_LABELS, resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
 const { WECHAT_SEARCH_INPUT_GUARD_CSHARP } = require("./wechat_search_input.cjs");
 
 let cachedWechatExecutable = "";
@@ -1540,7 +1540,9 @@ public static class Win32WechatWindowSearch {
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   [DllImport("user32.dll")] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
   private const uint KeyEventfKeyUp = 0x0002u;
@@ -1598,7 +1600,7 @@ ${WECHAT_SEARCH_INPUT_GUARD_CSHARP}
 "@
 $query = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_QUERY")
 $compactQuery = [Text.RegularExpressions.Regex]::Replace(([string]$query).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
-$networkSearchPattern = "^[^\\p{L}\\p{Nd}]{0,2}(?:搜一搜|网络搜索|搜索网络|搜索网络结果)(?:" + [Text.RegularExpressions.Regex]::Escape($compactQuery) + ")?$"
+$networkSearchPattern = @(${NETWORK_SEARCH_LABELS.map((label) => JSON.stringify(label)).join(",")})
 $ocrScale = 2
 $pressEnter = [Environment]::GetEnvironmentVariable("XIAOXI_PRESS_ENTER") -eq "1"
 $resultAutomationId = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_AUTOMATION_ID")
@@ -1673,6 +1675,38 @@ function Stop-SearchForOwnedInputFailure {
   if ($reason -eq "wechat_input_lease_unavailable") { Stop-SearchForInputLeaseUnavailable }
   @{ ok = $false; reason = "wechat_search_input_failed"; rule_id = (Write-XiaoxiFailure "wx1-r036" "wechat_search_input_failed"); pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = $script:searchInputPhase } } | ConvertTo-Json -Compress
   exit
+}
+function Find-SearchPopup {
+  $script:searchPopup = $null
+  $script:searchPopupCandidateCount = 0
+  $callback = [Win32WechatWindowSearch+EnumWindowsProc]{
+    param([IntPtr]$hWnd, [IntPtr]$lParam)
+    if ($hWnd -eq [IntPtr]$matched.hWnd -or -not [Win32WechatWindowSearch]::IsWindowVisible($hWnd)) { return $true }
+    [uint32]$windowPid = 0
+    [void][Win32WechatWindowSearch]::GetWindowThreadProcessId($hWnd, [ref]$windowPid)
+    if ([int]$windowPid -ne [int]$matched.pid) { return $true }
+    $class = [Text.StringBuilder]::new(256)
+    [void][Win32WechatWindowSearch]::GetClassName($hWnd, $class, $class.Capacity)
+    if ($class.ToString() -notmatch '^Qt.*QWindowToolSaveBits$') { return $true }
+    $rect = New-Object Win32WechatWindowSearch+RECT
+    if (-not [Win32WechatWindowSearch]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
+    $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
+    if ($width -lt 120 -or $height -lt 100 -or $rect.Left -lt $matched.x -or
+        $rect.Left -gt $matched.x + $matched.width * 0.3 -or
+        $rect.Right -gt $matched.x + $matched.width -or
+        $rect.Top -lt $matched.y + 40 -or $rect.Top -gt $matched.y + $matched.height * 0.4 -or
+        $rect.Bottom -gt $matched.y + $matched.height) { return $true }
+    $dpi = [Win32WechatWindowSearch]::GetDpiForWindow($hWnd)
+    if ($dpi -lt 72) { $dpi = [Win32WechatWindowSearch]::GetDpiForWindow([IntPtr]$matched.hWnd) }
+    if ($dpi -lt 72) { return $true }
+    $script:searchPopupCandidateCount += 1
+    $script:searchPopup = @{ left=$rect.Left; top=$rect.Top; right=$rect.Right; bottom=$rect.Bottom;
+      dpi=[int]$dpi; hWnd=$hWnd.ToInt64() }
+    return $true
+  }
+  [void][Win32WechatWindowSearch]::EnumWindows($callback, [IntPtr]::Zero)
+  if ($script:searchPopupCandidateCount -ne 1) { return $null }
+  return $script:searchPopup
 }
 $matched = $null
 $callback = [Win32WechatWindowSearch+EnumWindowsProc]{
@@ -1749,6 +1783,9 @@ $ocrOk = $false
 $webSearchVisible = $false
 $webSearchTop = $null
 $cropBounds = $null
+$popupBounds = $null
+$popupDpi = $null
+$captureSource = "formula_crop"
 if ($observeLocalResults) {
   $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$matched.hWnd)
   for ($attempt = 0; $attempt -lt 5 -and $uiaCandidates.Count -eq 0; $attempt++) {
@@ -1779,10 +1816,19 @@ if ($observeLocalResults) {
       $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
       $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
       $null = [Windows.Storage.Streams.DataWriter, Windows.Foundation, ContentType=WindowsRuntime]
-      $cropLeft = [int]$matched.x + [Math]::Min(58, [Math]::Floor($matched.width * 0.08))
-      $cropTop = [int]$matched.y + [Math]::Max(72, [Math]::Floor($matched.height * 0.09))
-      $cropWidth = [Math]::Max(120, [Math]::Min(430, [Math]::Floor($matched.width * 0.38)))
-      $cropHeight = [Math]::Max(160, [Math]::Min(420, [Math]::Floor($matched.height * 0.55)))
+      $popup = Find-SearchPopup
+      if ($popup -ne $null) {
+        $popupBounds = @{ left=[int]$popup.left; top=[int]$popup.top; right=[int]$popup.right; bottom=[int]$popup.bottom }
+        $popupDpi = [int]$popup.dpi
+        $captureSource = "popup"
+        $cropLeft = [int]$popup.left; $cropTop = [int]$popup.top
+        $cropWidth = [int]($popup.right - $popup.left); $cropHeight = [int]($popup.bottom - $popup.top)
+      } else {
+        $cropLeft = [int]$matched.x + [Math]::Min(58, [Math]::Floor($matched.width * 0.08))
+        $cropTop = [int]$matched.y + [Math]::Max(72, [Math]::Floor($matched.height * 0.09))
+        $cropWidth = [Math]::Max(120, [Math]::Min(430, [Math]::Floor($matched.width * 0.38)))
+        $cropHeight = [Math]::Max(160, [Math]::Min(420, [Math]::Floor($matched.height * 0.55)))
+      }
       $cropBounds = @{ left = $cropLeft; top = $cropTop; right = $cropLeft + $cropWidth; bottom = $cropTop + $cropHeight }
       $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -1814,6 +1860,9 @@ if ($observeLocalResults) {
         $bottom = ($words | ForEach-Object { [double]($_.BoundingRect.Y + $_.BoundingRect.Height) } | Measure-Object -Maximum).Maximum
         $candidate = @{
           text = $text
+          words = @($words | ForEach-Object { @{ text = [string]$_.Text;
+            left = [int]($cropLeft + ($_.BoundingRect.X / $ocrScale));
+            right = [int]($cropLeft + (($_.BoundingRect.X + $_.BoundingRect.Width) / $ocrScale)) } })
           left = [int]($cropLeft + ($left / $ocrScale))
           top = [int]($cropTop + ($top / $ocrScale))
           right = [int]($cropLeft + ($right / $ocrScale))
@@ -1821,14 +1870,33 @@ if ($observeLocalResults) {
           x = [int]($cropLeft + (($left + $right) / (2 * $ocrScale)))
           y = [int]($cropTop + (($top + $bottom) / (2 * $ocrScale)))
         }
-        if ([Text.RegularExpressions.Regex]::IsMatch($compactText, $networkSearchPattern)) {
+        [void]$visualCandidates.Add($candidate)
+      }
+      function Test-LocalContactSection($value) {
+        $text = [Text.RegularExpressions.Regex]::Replace(([string]$value).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
+        return $text -match '^(?:最)?常.{0,2}用$' -or $text -in @('联系人','最近联系人','好友')
+      }
+      function Test-NetworkSearchLabel($candidate, $headers) {
+        $text = [Text.RegularExpressions.Regex]::Replace(([string]$candidate.text).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
+        for ($prefix = 0; $prefix -le 2 -and $prefix -le $text.Length; $prefix++) {
+          if ($prefix -gt 0 -and $text.Substring(0, $prefix) -match '[\\p{L}\\p{N}\\uD800-\\uDBFF]') { break }
+          $rest = $text.Substring($prefix)
+          foreach ($label in $networkSearchPattern) {
+            if ($rest -ceq $label -or ($compactQuery -and $rest -ceq ($label + $compactQuery))) { return $true }
+          }
+        }
+        return $false
+      }
+      $headers = @($visualCandidates | Where-Object { Test-LocalContactSection $_.text })
+      $localVisual = New-Object System.Collections.Generic.List[object]
+      foreach ($candidate in $visualCandidates) {
+        if (Test-NetworkSearchLabel $candidate $headers) {
           $webSearchVisible = $true
           [void]$webSearchCandidates.Add($candidate)
           if ($webSearchTop -eq $null -or [int]$candidate.top -lt [int]$webSearchTop) { $webSearchTop = [int]$candidate.top }
-          continue
-        }
-        [void]$visualCandidates.Add($candidate)
+        } else { [void]$localVisual.Add($candidate) }
       }
+      $visualCandidates = $localVisual
       $ocrOk = $true
     } catch {
       $ocrOk = $false
@@ -1837,7 +1905,7 @@ if ($observeLocalResults) {
     }
   }
   Assert-ExactSearchForeground
-  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 6
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 8
   exit
 } elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   # Kept for the explicitly named File Transfer Assistant flow.
@@ -2205,6 +2273,16 @@ function searchObservationEvidence(observation = {}) {
   const list = (value) => (Array.isArray(value) ? value : value && typeof value === "object" ? [value] : []).map(bounded);
   return {
     crop_bounds: observation.cropBounds || null,
+    capture_source: String(observation.captureSource || "formula_crop"),
+    popup_bounds: observation.popupBounds || null,
+    popup_dpi: Number(observation.popupDpi) || null,
+    popup_candidate_count: Number(observation.popupCandidateCount) || 0,
+    search_columns: [...(Array.isArray(observation.visualCandidates) ? observation.visualCandidates : []),
+      ...(Array.isArray(observation.webSearchCandidates) ? observation.webSearchCandidates : [])]
+      .flatMap((line) => (Array.isArray(line.words) ? line.words : []).filter((word) => String(word.text || "").normalize("NFKC").replace(/\s+/gu, "").startsWith("搜"))
+        .map((word) => Number(observation.popupDpi) > 0 && observation.popupBounds
+          ? (Number(word.left) - Number(observation.popupBounds.left)) * 96 / Number(observation.popupDpi) : null))
+      .filter(Number.isFinite),
     web_search_top: Number.isFinite(Number(observation.webSearchTop)) ? Number(observation.webSearchTop) : null,
     uia_candidates: list(observation.uiaCandidates),
     visual_lines: list(observation.visualCandidates),
@@ -2223,6 +2301,8 @@ function buildSearchEvidence(observed, resolution, query, context) {
     candidate_count: Number(resolution.diagnostics?.candidate_count ?? count(observation.uiaCandidates)),
     visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count ?? count(observation.visualCandidates)),
     ocr_ok: observation.ocrOk === true,
+    capture_source: String(observation.captureSource || "formula_crop"),
+    popup_candidate_count: Number.isFinite(Number(observation.popupCandidateCount)) ? Number(observation.popupCandidateCount) : 0,
     authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
     rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),
     evidence_summary: {
@@ -2308,7 +2388,8 @@ function openWechatSearchResultAsync(query, context = {}) {
         if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
         }
-        return { ...observed, ok: false, reason: resolution.reason, diagnostics: resolution.diagnostics, searchEvidence };
+        return { ...observed, ok: false, reason: resolution.reason, diagnostics: resolution.diagnostics, searchEvidence,
+          };
       }
       const clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
         XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),

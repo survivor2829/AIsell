@@ -5,6 +5,7 @@ const { openWechatSearchResult } = require("./wechat_window_driver.cjs");
 // Replay the generated PowerShell OCR processing, not preclassified resolver fixtures.
 // No window lookup, screenshot, keyboard input, or real click runs in this check.
 if (process.platform === "win32") {
+  let productionSearchScript = "";
   for (const networkText of ["〕 搜 一 搜 sams_01", "搜 一 搜 sam_01"]) {
     let clicks = 0;
     let clickedX = 0;
@@ -13,6 +14,7 @@ if (process.platform === "win32") {
       hWnd: "22",
       searchIdentity: { expectedName: "测试客户" },
       runner(script) {
+        productionSearchScript = script;
         const initialization = script.split(/\r?\n/u).filter((line) =>
           line.startsWith("$compactQuery =") || line.startsWith("$networkSearchPattern =") || line.startsWith("$ocrScale =")
         ).join("\n");
@@ -20,9 +22,13 @@ if (process.platform === "win32") {
         const end = script.indexOf("      $ocrOk = $true", start);
         assert.equal(initialization.split("\n").length, 3, "production OCR must upscale small WeChat search text");
         assert.ok(start >= 0 && end > start, "production OCR processing must be replayed");
+        const characterWords = (value, x, y, width, height) => [...value.replace(/\s+/gu, "")].map((character, index, all) => ({
+          Text: character, BoundingRect: { X: x + index * width / all.length, Y: y,
+            Width: width / all.length, Height: height }
+        }));
         const fixture = Buffer.from(JSON.stringify({ Lines: [
-          { Text: "微信号：sams_01", Words: [{ BoundingRect: { X: 68, Y: 156, Width: 360, Height: 48 } }] },
-          { Text: networkText, Words: [{ BoundingRect: { X: 60, Y: 304, Width: 380, Height: 52 } }] }
+          { Text: "微信号：sams_01", Words: characterWords("微信号：sams_01", 68, 156, 360, 48) },
+          { Text: networkText, Words: characterWords(networkText, 60, 304, 380, 52) }
         ] }), "utf8").toString("base64");
         const replay = `
 $ErrorActionPreference = "Stop"
@@ -48,6 +54,11 @@ ${script.slice(start, end)}
         assert.equal(replayed.status, 0, replayed.stderr || replayed.error?.message);
         const observation = JSON.parse(replayed.stdout.trim().replace(/^\uFEFF/u, ""));
         assert.equal(observation.compactQuery, "sams_01", "normalization must preserve the letter s");
+        const words = observation.searchResultObservation.visualCandidates[0].words;
+        assert.equal(words.length, [..."微信号：sams_01"].length);
+        assert.equal(words[0].text, "微");
+        assert.equal(words[0].left, 92);
+        assert.equal(words.at(-1).right, 272, "each OCR word must use the production crop origin and scale");
         return { ok: true, pid: 11, hWnd: "22", inputLeaseTick: 101, ...observation };
       },
       clickRunner(_script, env) {
@@ -60,6 +71,46 @@ ${script.slice(start, end)}
     assert.equal(result.searchResultMode, "exact_wechat_id_visual");
     assert.equal(clicks, 1);
     assert.equal(clickedX, 182, "upscaled OCR coordinates must map back to the original screen point");
+  }
+
+  const popupStartInObservation = productionSearchScript.indexOf("      $popup = Find-SearchPopup");
+  const bitmapStart = productionSearchScript.indexOf("      $bitmap = [System.Drawing.Bitmap]::new", popupStartInObservation);
+  const ocrLoopStart = productionSearchScript.indexOf("      foreach ($line in $ocrResult.Lines)", bitmapStart);
+  const observationEnd = productionSearchScript.indexOf("\n  exit", ocrLoopStart);
+  assert.ok(popupStartInObservation > 0 && bitmapStart > popupStartInObservation
+    && ocrLoopStart > bitmapStart && observationEnd > ocrLoopStart,
+  "the production popup, OCR and output path must be replayed together");
+  const replayBody = productionSearchScript.slice(popupStartInObservation, bitmapStart)
+    + "      $ocrResult = ConvertFrom-Json $fixtureJson\n"
+    + productionSearchScript.slice(ocrLoopStart, observationEnd);
+  const characterWords = (value, x, y) => [...value].map((character, index) => ({
+    Text: character, BoundingRect: { X: x + index * 30, Y: y, Width: 30, Height: 42 }
+  }));
+  const fixtureJson = JSON.stringify({ Lines: [{ Text: "微信号：offline123", Words: characterWords("微信号：offline123", 150, 90) }] });
+  for (const found of [true, false]) {
+    const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n`
+      + `$query='offline123'; $ocrScale=3; $script:inputLeaseTick=1; $script:searchPopupCandidateCount=0\n`
+      + `$matched=@{title='offline';focused=$true;processName='Weixin';pid=11;hWnd=22;x=200;y=100;width=800;height=600}\n`
+      + `$uiaCandidates=New-Object System.Collections.Generic.List[object]\n$visualCandidates=New-Object System.Collections.Generic.List[object]\n`
+      + `$webSearchCandidates=New-Object System.Collections.Generic.List[object]\n$webSearchTop=$null;$webSearchVisible=$false;$ocrOk=$false\n`
+      + `$cropBounds=$null;$popupBounds=$null;$popupDpi=$null;$captureSource='formula_crop'\n`
+      + `$compactQuery='offline123';$networkSearchPattern=@('搜索网络结果','搜一搜')\n`
+      + `$fixtureJson=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(fixtureJson, "utf8").toString("base64")}'))\n`
+      + `function Assert-ExactSearchForeground {}\n`
+      + `function Find-SearchPopup { $script:searchPopupCandidateCount=${found ? 1 : 0}; ${found
+        ? "return @{left=300;top=200;right=700;bottom=550;dpi=120}" : "return $null"} }\n`
+      + `if ($true) { if ($uiaCandidates.Count -eq 0) { try {\n${replayBody}\n}\n`;
+    const replayed = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(replay, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+    assert.equal(replayed.status, 0, replayed.stderr || replayed.error?.message);
+    const observation = JSON.parse(replayed.stdout.trim().replace(/^\uFEFF/u, "")).searchResultObservation;
+    assert.equal(observation.captureSource, found ? "popup" : "formula_crop");
+    assert.deepEqual(observation.popupBounds, found ? { left: 300, top: 200, right: 700, bottom: 550 } : null);
+    assert.equal(observation.popupDpi, found ? 120 : null);
+    assert.equal(observation.popupCandidateCount, found ? 1 : 0);
+    assert.equal(observation.visualCandidates[0].words[0].left, found ? 350 : 308,
+      "production OCR word coordinates must use the chosen popup or formula crop origin");
+    assert.equal(observation.ocrOk, true);
   }
 
   let relaxedIdentityClicks = 0;
@@ -189,6 +240,111 @@ ${script.slice(start, end)}
     sameProcessPopup: true,
     foreignProcess: false
   });
+
+  const popupStart = productionSearchScript.indexOf("function Find-SearchPopup {");
+  const popupEnd = productionSearchScript.indexOf("\n$matched = $null", popupStart);
+  assert.ok(popupStart > 0 && popupEnd > popupStart, "production popup finder must be replayable");
+  const popupReplay = String.raw`
+$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class Win32WechatWindowSearch {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr data);
+  public delegate IntPtr WindowProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct WNDCLASS {
+    public uint style; public WindowProc lpfnWndProc; public int cbClsExtra, cbWndExtra;
+    public IntPtr hInstance, hIcon, hCursor, hbrBackground;
+    public string lpszMenuName, lpszClassName;
+  }
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr data);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, ref RECT rect);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int capacity);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
+  [DllImport("user32.dll", EntryPoint="GetWindowThreadProcessId")] private static extern uint NativePid(IntPtr hWnd, ref uint pid);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern ushort RegisterClass(ref WNDCLASS value);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr CreateWindowEx(uint ex, string cls, string title,
+    uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
+  [DllImport("user32.dll")] public static extern bool DestroyWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] private static extern IntPtr DefWindowProc(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+  private static readonly WindowProc Procedure = DefWindowProc;
+  public static IntPtr ForeignWindow;
+  public static uint GetWindowThreadProcessId(IntPtr hWnd, ref uint pid) {
+    uint result=NativePid(hWnd,ref pid); if(hWnd==ForeignWindow) pid+=1; return result;
+  }
+  static Win32WechatWindowSearch() {
+    var cls=new WNDCLASS { lpfnWndProc=Procedure, lpszClassName="QtTestQWindowToolSaveBits" };
+    if(RegisterClass(ref cls)==0) throw new Exception("register_popup_class_failed");
+  }
+  public static IntPtr Create(string cls, int x, int y, int width, int height, bool visible) {
+    uint style=0x80000000u | (visible ? 0x10000000u : 0u);
+    IntPtr handle=CreateWindowEx(0x08000000u, cls, "", style, x,y,width,height,
+      IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);
+    if(handle==IntPtr.Zero) throw new Exception("create_test_window_failed: "+cls);
+    return handle;
+  }
+}
+"@
+${productionSearchScript.slice(popupStart, popupEnd)}
+$main=[Win32WechatWindowSearch]::Create('STATIC',200,100,800,600,$true)
+$matched=@{ hWnd=$main.ToInt64(); pid=$PID; x=200; y=100; width=800; height=600 }
+$valid=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',220,200,300,250,$true)
+$one=Find-SearchPopup; $oneCount=$script:searchPopupCandidateCount
+$second=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,210,300,250,$true)
+$multiple=Find-SearchPopup; $multipleCount=$script:searchPopupCandidateCount
+[void][Win32WechatWindowSearch]::DestroyWindow($second)
+$foreign=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,210,300,250,$true)
+[Win32WechatWindowSearch]::ForeignWindow=$foreign
+$foreignChoice=Find-SearchPopup; $foreignCount=$script:searchPopupCandidateCount
+$hidden=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,210,300,250,$false)
+$small=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,210,80,80,$true)
+$above=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,110,300,250,$true)
+$wrongClass=[Win32WechatWindowSearch]::Create('STATIC',230,210,300,250,$true)
+$filtered=Find-SearchPopup; $filteredCount=$script:searchPopupCandidateCount
+$edgeCounts=@{}
+foreach($spec in @(
+  @{name='class';cls='STATIC';x=230;y=210;w=300;h=250;visible=$true},
+  @{name='hidden';cls='QtTestQWindowToolSaveBits';x=230;y=210;w=300;h=250;visible=$false},
+  @{name='width';cls='QtTestQWindowToolSaveBits';x=230;y=210;w=119;h=250;visible=$true},
+  @{name='height';cls='QtTestQWindowToolSaveBits';x=230;y=210;w=300;h=99;visible=$true},
+  @{name='left_before';cls='QtTestQWindowToolSaveBits';x=199;y=210;w=300;h=250;visible=$true},
+  @{name='left_after';cls='QtTestQWindowToolSaveBits';x=441;y=210;w=300;h=250;visible=$true},
+  @{name='right_after';cls='QtTestQWindowToolSaveBits';x=250;y=210;w=751;h=250;visible=$true},
+  @{name='top_before';cls='QtTestQWindowToolSaveBits';x=230;y=139;w=300;h=250;visible=$true},
+  @{name='top_after';cls='QtTestQWindowToolSaveBits';x=230;y=341;w=300;h=250;visible=$true},
+  @{name='bottom_after';cls='QtTestQWindowToolSaveBits';x=230;y=300;w=300;h=401;visible=$true}
+)) {
+  $edge=[Win32WechatWindowSearch]::Create($spec.cls,$spec.x,$spec.y,$spec.w,$spec.h,$spec.visible)
+  $choice=Find-SearchPopup
+  $edgeCounts[$spec.name]=@{ count=$script:searchPopupCandidateCount; kept=($choice -ne $null -and [int64]$choice.hWnd -eq $valid.ToInt64()) }
+  [void][Win32WechatWindowSearch]::DestroyWindow($edge)
+}
+@{ one=($one -ne $null); oneCount=$oneCount; multiple=($multiple -eq $null); multipleCount=$multipleCount;
+  foreign=($foreignChoice -ne $null); foreignCount=$foreignCount;
+  filtered=($filtered -ne $null); filteredCount=$filteredCount; dpi=[int]$filtered.dpi;
+  nativeDpi=[int][Win32WechatWindowSearch]::GetDpiForWindow($valid); edges=$edgeCounts } | ConvertTo-Json -Compress -Depth 5
+`;
+  const popupResult = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(popupReplay, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+  assert.equal(popupResult.status, 0, popupResult.stderr || popupResult.error?.message);
+  const popupChecks = JSON.parse(popupResult.stdout.trim().replace(/^\uFEFF/u, ""));
+  assert.equal(popupChecks.one, true);
+  assert.equal(popupChecks.oneCount, 1);
+  assert.equal(popupChecks.multiple, true, "multiple eligible popups must disable popup recognition");
+  assert.equal(popupChecks.multipleCount, 2);
+  assert.equal(popupChecks.foreign, true);
+  assert.equal(popupChecks.foreignCount, 1);
+  assert.equal(popupChecks.filtered, true, "hidden, small, misplaced, or wrong-class windows must be ignored");
+  assert.equal(popupChecks.filteredCount, 1);
+  assert.ok(popupChecks.dpi >= 72);
+  assert.equal(popupChecks.dpi, popupChecks.nativeDpi, "popup DPI must come from the chosen window");
+  for (const [name, observed] of Object.entries(popupChecks.edges)) {
+    assert.deepEqual(observed, { count: 1, kept: true }, `${name} must not add another eligible popup`);
+  }
 
   console.log("search observation PowerShell replay passed (spaced OCR; noisy sections ignored; no real input)");
 } else {
