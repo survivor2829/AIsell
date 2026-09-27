@@ -83,6 +83,7 @@ function createWechatWorkflowController(options) {
   let loadError = "";
   let timer = null;
   let inFlight = null;
+  let pauseGeneration = 0;
   let disposed = false;
   let mutation = Promise.resolve();
   let mutating = false;
@@ -762,6 +763,7 @@ function createWechatWorkflowController(options) {
   }
 
   async function pauseWorkflow(trigger = "user") {
+    pauseGeneration += 1;
     const operation = beginLog("pause", {
       stage: "control", trigger_code: trigger, previous_phase: phase, in_flight: Boolean(inFlight)
     }, { trace: true });
@@ -781,9 +783,18 @@ function createWechatWorkflowController(options) {
   }
 
   async function pauseForRetry(trigger = "retry_skipped") {
-    if (!enabled) return;
+    if (!enabled) return 0;
     if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
+    const generation = pauseGeneration + 1;
     await pauseWorkflow(trigger);
+    return generation;
+  }
+
+  function resumeAfterFailedRetry(generation) {
+    if (!generation || pauseGeneration !== generation || disposed || enabled || phase !== "paused") return;
+    enabled = true;
+    options.reply?.resumeWorkflow?.();
+    settleQueue(); emit(); schedule(0);
   }
 
   function requeueSkipped(task, contactIds) {
@@ -814,8 +825,8 @@ function createWechatWorkflowController(options) {
   }
 
   async function retrySkipped(id, contactIds) {
-    await pauseForRetry("retry_skipped");
-    return serialize(() => {
+    const generation = await pauseForRetry("retry_skipped");
+    try { return await serialize(() => {
       assertPlanEditable();
       const task = findTask(id);
       const retried = requeueSkipped(task, contactIds);
@@ -825,7 +836,8 @@ function createWechatWorkflowController(options) {
         ok: true, state: status(), retriedCount: Number(retried.retriedCount || 0),
         excludedCount: Number(retried.excludedCount || 0), excludedReasons: retried.excludedReasons || {}
       };
-    });
+    }); }
+    catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
   }
 
   async function retryTask(id, andStart = false) {
@@ -856,8 +868,8 @@ function createWechatWorkflowController(options) {
 
   async function retryAll(andStart = false) {
     if (!store.tasks.some(retryAllEligible)) throw new Error("没有可重新加入的任务或联系人。");
-    await pauseForRetry("retry_all");
-    return serialize(() => {
+    const generation = await pauseForRetry("retry_all");
+    try { return await serialize(() => {
       assertPlanEditable();
       let taskCount = 0, contactCount = 0, excludedCount = 0;
       for (const task of store.tasks) {
@@ -882,7 +894,8 @@ function createWechatWorkflowController(options) {
       log("task.retry_all_requested", { task_count: taskCount, contact_count: contactCount,
         excluded_count: excludedCount, and_start_requested: andStart === true }, { code: "retry_all_requested" });
       return { ok: true, state: status(), taskCount, contactCount, excludedCount };
-    });
+    }); }
+    catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
   }
 
   return {

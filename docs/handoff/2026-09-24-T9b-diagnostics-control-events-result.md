@@ -46,3 +46,44 @@ test renderer build completed
 ```
 
 `git diff --check` 对本卡文本源码逐项检查通过。构建有 Vite CJS API 弃用和大于 500 kB 的 chunk 提示。未做真实微信、异机安装包或正式发布验收。
+
+## 2026-09-27 二审修订
+
+- `wechat-workflow.self_check.cjs` 在开头设置 `process.exitCode = 1`，只有输出最终通过消息才清零。T16 的 `releaseReply` 和串行化用例的 `releaseRecipients` 均在 `finally` 兜底释放，失败时不会因悬空 Promise 假装通过。
+- 仓库自检新增抛错 logger 的控制结果对照：`event`/`begin` 都抛、操作句柄 `end`/`fail` 抛、读取属性就抛，覆盖 `retryTask`、`retryAll`、暂停成功和失败、`dispose` 后 `enabled=false`，以及悬浮窗关闭后回到主窗。`diagnostics.self_check.cjs` 还执行主窗关闭和退出处理函数，验证诊断抛错不跳过后续清理。
+- `retryAll` 的候选执行器全失败，以及 `retrySkipped` 重试失败时，若此前正在接待且期间没有新的用户暂停，则恢复接待；用户主动暂停不会被恢复动作覆盖。失败的批量重试不记录成功事件。`retryTask` 成功后的落盘也有断言。
+
+### 二审审查脚本实际结果
+
+| 脚本 | 实际结果 |
+| --- | --- |
+| `scratch/t9b-r2/failopen2.cjs <工作区>` | `none`、`allThrow`、`opThrow`、`getterThrow`、`realWriterThrows` 均为 `SAME-AS-NONE`；悬浮窗 `closeShowMain` 均为 `true/1` |
+| `scratch/t9b-r2/resid.cjs <工作区>` | R1 批量重试失败后 `true/listening`；R2 跳过联系人重试失败后 `true/listening`；R3 无效任务 ID 后 `true/listening` |
+| `scratch/t9b-r2/t16run.cjs` | 按当前 `retryAll` 包装写法适配临时变异：内部自检 `exit 1 signal null`，报 `Missing expected rejection`；脚本本身退出 0，表示测试缺口已抓到 |
+| `scratch/t9b-r2/mutate-r2.cjs N` | N1–N7、N17、N20 均 `KILLED`；首轮 20 项 `KILLED`、N19 `SURVIVED`。补充 `retryTask` 落盘断言后单独重测 N19 为 `KILLED` |
+| `scratch/t6b/probe.cjs` | P01–P15 全部 `PASS`，末行 `done failed=0` |
+
+审查变异脚本中写死的旧工作区路径，以及 T16 的旧 `return serialize` 匹配文本，只在系统临时目录的脚本副本中适配；仓库源码在每项变异后恢复。未在真实微信上运行。
+
+### 二审完整检查实际输出
+
+`desktop/` 下 `npm.cmd run check:self`：退出码 0，末尾输出：
+
+```text
+> src/main/wechat-workflow.self_check.cjs
+workflow scope stress: aliases_json=66671, scope_ms=23, contacts_reads=5
+auto-reply v4 self-check passed
+Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.
+
+all source self-checks passed
+```
+
+`desktop/` 下 `npm.cmd run build:test`：退出码 0，末尾输出：
+
+```text
+✓ 1643 modules transformed.
+✓ built in 1.47s
+test renderer build completed
+```
+
+构建仍提示 Vite CJS API 弃用及一个 chunk 大于 500 kB；本轮未改发布包，也未进行真实微信或异机验收。
