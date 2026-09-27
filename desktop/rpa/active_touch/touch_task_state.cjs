@@ -598,6 +598,14 @@ function loadTaskState(baseDir = __dirname) {
   }
 }
 
+function readTaskState(baseDir = __dirname) {
+  try {
+    return readTaskFile(taskPath(baseDir));
+  } catch {
+    return null;
+  }
+}
+
 function saveTaskState(baseDir = __dirname, task) {
   const nextTask = normalizeTask({ ...task, updated_at: nowIso() });
   fs.mkdirSync(baseDir, { recursive: true });
@@ -822,6 +830,7 @@ module.exports = {
   hasUnfinishedPausedTask,
   isBatchAuthorized,
   loadTaskState,
+  readTaskState,
   markPreviousBuildTask,
   identityKey,
   publicTaskState,

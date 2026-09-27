@@ -205,6 +205,8 @@ const TASK_ERROR_LABELS: Record<string, string> = {
   wechat_window_ambiguous: "检测到多个个人微信主窗口；请只保留一个可见主窗口后重试。",
   wechat_window_not_ready: "已找到微信主窗口，但当前尺寸不可操作；请展开微信窗口后重试。",
   wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化；请保持当前微信窗口后重试。",
+  wechat_search_identity_circuit_open: "连续多位联系人的搜索结果无法确认身份，已暂停；请检查微信搜索窗口后重新加入继续。",
+  touch_pre_send_failure_streak: "连续 3 位联系人因同一原因在发送前失败，失败的内容都没有发出，已暂停；已发出的内容不会重发。请检查微信后重新加入继续。",
   powershell_timeout: "微信读取或识别超时，本次任务已暂停；具体阶段见诊断日志。",
   moments_publish_outcome_unknown: "已尝试发布，但未核验到结果；请先到微信确认，勿重复发布。",
   moments_publish_outcome_unknown_requires_resolution: "上次发布结果尚未确认；请先到微信核对，再标记是否已发布。",
