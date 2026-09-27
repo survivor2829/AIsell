@@ -617,6 +617,9 @@ async function checkNonIdentitySkipDropsOldSearchRule() {
     assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, 2000);
     clock += 60 * 60 * 1000;
     assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    assert.equal(loadTaskState(taskDir).results[0].skip_record.ruleId, "",
+      "a pre-send skip must not carry the previous search rule into its record");
     assert.equal(bills.at(-1).rule_counts["search-r008"], undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -827,6 +830,194 @@ async function checkFloatingProgress() {
   assert.equal(status.state.contactSync.contactCount, 3);
   assert.equal(windows.length, 1, "all task types reuse one floating window");
   await control.dispose();
+}
+
+async function checkRetryAndContinueIpc() {
+  const click = () => require("node:crypto").randomUUID();
+  async function fixture(rows, { reply = false } = {}) {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-retry-continue-"));
+    const handlers = new Map(), windows = [], skippedCalls = [];
+    let mainHideCount = 0;
+    const mainWindow = { webContents: { send() {} }, isDestroyed: () => false,
+      show() {}, hide() { mainHideCount += 1; }, focus() {} };
+    class ProgressWindow extends EventEmitter {
+      constructor() {
+        super(); this.visible = false; this.destroyed = false;
+        this.webContents = Object.assign(new EventEmitter(), { send() {}, setWindowOpenHandler() {}, async executeJavaScript() { return true; } });
+        windows.push(this);
+      }
+      isDestroyed() { return this.destroyed; }
+      isVisible() { return this.visible; }
+      setMenu() {} setPosition() {} async loadFile() {}
+      showInactive() { this.visible = true; }
+      hide() { this.visible = false; }
+      destroy() { this.destroyed = true; this.emit("closed"); }
+    }
+    const rowFor = (task) => rows.find((row) => row.title === task.title);
+    const touch = {
+      prepareWorkflowTask: (_id, input) => ({ contacts: input.contactIds.map((id) => ({ id })), script: input.script }),
+      canRetryWorkflowTask: (task) => rowFor(task)?.retryable === true,
+      describeUnknownWorkflowTask: (task) => rowFor(task)?.unknown ? { required: true, contactLabel: "test", partKind: "text" } : null,
+      describeSkippedWorkflowTask: (task) => ({ skipped_records: rowFor(task)?.skipped
+        ? [{ contactId: `${task.title}-contact`, retryable: true, status: "pre_send_skipped" }] : [] }),
+      retrySkippedWorkflowTask: (task) => {
+        skippedCalls.push(task.title);
+        if (rowFor(task)?.skipFails) return { ok: false, blocked_reason: "retry_skipped_empty", error: "没有可重试的跳过联系人" };
+        return { ok: true, task: { current_index: 0, total: 1 }, retriedCount: 1, excludedCount: 0 };
+      }
+    };
+    const replyExecutor = { prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => ({ handled: false }), pauseWorkflow: async () => {} };
+    const options = { rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
+      momentsDir: path.join(rootDir, "moments"), autoSchedule: false, getAccount: () => "test-account",
+      executors: { touch }, ...(reply ? { reply: replyExecutor } : {}) };
+    const setup = createWechatWorkflowController(options);
+    for (const row of rows) await setup.addTask({ type: "touch", title: row.title, payload: { contactIds: [`${row.title}-contact`], script: "test" } });
+    if (reply) await setup.addRecipients(["reply-contact"]);
+    await setup.dispose();
+    const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+    const stored = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    for (const task of stored.tasks) {
+      task.status = rowFor(task).status;
+      if (rowFor(task).accountName) task.accountName = rowFor(task).accountName;
+      if (task.status === "completed") task.progress = { done: 1, total: 1 };
+    }
+    fs.writeFileSync(stateFile, JSON.stringify(stored));
+    const control = registerWechatWorkflowIpc({ ...options, getMainWindow: () => mainWindow,
+      rendererPath: __filename, preloadPath: __filename,
+      electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, BrowserWindow: ProgressWindow,
+        screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } } });
+    const event = { sender: mainWindow.webContents };
+    return { control, windows, skippedCalls, rows: control.status().tasks,
+      invoke: (name, payload) => handlers.get(`wechat-workflow:${name}`)(event, payload),
+      mainHideCount: () => mainHideCount,
+      close: async () => { await control.dispose(); fs.rmSync(rootDir, { recursive: true, force: true }); } };
+  }
+
+  let test = await fixture([{ title: "single", status: "needs_attention", retryable: true }]);
+  try {
+    const id = test.rows[0].id;
+    const result = await test.invoke("retry-task", { id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, true);
+    assert.equal(result.state.tasks[0].status, "pending");
+    assert.equal(test.windows[0].visible, true);
+    assert.equal(test.mainHideCount(), 1);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "listen", status: "needs_attention", retryable: true }], { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening");
+    const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, true);
+    assert.equal(result.state.tasks[0].status, "pending");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "blocked", status: "needs_attention", retryable: true },
+    { title: "finite", status: "pending" }]);
+  try {
+    await test.control.start();
+    const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /当前有限任务/);
+    assert.equal(result.state.tasks[0].status, "needs_attention");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "skip", status: "completed", skipped: true }]);
+  try {
+    const result = await test.invoke("retry-skipped", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, true);
+    assert.equal(result.state.tasks[0].status, "pending");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "first", status: "needs_attention", retryable: true },
+    { title: "both", status: "needs_attention", retryable: true, skipped: true },
+    { title: "skip", status: "completed", skipped: true },
+    { title: "unknown", status: "needs_attention", retryable: true, unknown: true }]);
+  try {
+    const result = await test.invoke("retry-all-and-start", { clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.taskCount, 3);
+    assert.equal(result.contactCount, 3);
+    assert.deepEqual(test.skippedCalls, ["both", "skip"], "a task eligible in both ways is requeued only once");
+    assert.equal(result.state.enabled, true);
+    assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "pending", "pending", "needs_attention"]);
+    assert.equal(result.state.tasks[3].unknownResolution.required, true);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "safe", status: "needs_attention", retryable: true },
+    { title: "failed-skip", status: "completed", skipped: true, skipFails: true },
+    { title: "wrong-account", status: "needs_attention", retryable: true, accountName: "another-account" },
+    { title: "cancelled", status: "cancelled", skipped: true }]);
+  try {
+    const result = await test.invoke("retry-all-and-start", { clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.taskCount, 1);
+    assert.equal(result.contactCount, 1);
+    assert.equal(result.excludedCount, 1, "one failed candidate does not stop the other items");
+    assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "completed", "needs_attention", "cancelled"]);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "unsafe", status: "needs_attention", retryable: false }]);
+  try {
+    const id = test.rows[0].id;
+    assert.equal((await test.invoke("retry-all-and-start", { clickToken: click() })).ok, false);
+    assert.equal((await test.invoke("retry-task", { id, andStart: true, clickToken: click() })).ok, false);
+    assert.equal((await test.invoke("retry-task", { id, andStart: true, clickToken: "invalid" })).ok, false);
+    assert.equal(test.control.status().tasks[0].status, "needs_attention");
+    assert.equal(test.control.status().enabled, false);
+    assert.equal(test.windows.length, 0);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "sync", status: "needs_attention", retryable: true }]);
+  try {
+    let completeSync;
+    const syncing = test.control.runContactSync(() => new Promise((resolve) => { completeSync = resolve; }), () => ({}));
+    for (let i = 0; i < 10 && !completeSync; i += 1) await Promise.resolve();
+    assert.equal(typeof completeSync, "function");
+    const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /联系人正在同步/);
+    assert.equal(result.state.tasks[0].status, "pending", "a failed start retains the requeued task");
+    assert.equal(result.state.enabled, false);
+    completeSync({ ok: true, state: { contact_count: 1 } });
+    await syncing;
+  } finally { await test.close(); }
+}
+
+async function checkPresendDiagnosticLevels() {
+  const cases = [
+    { name: "disabled-stop", reason: "batch_authorization_missing", disable: true, expected: "warn" },
+    { name: "active-stop", reason: "batch_authorization_missing", expected: "error" },
+    { name: "unknown-attempt", reason: "message_snapshot_unavailable", attempted: null, expected: "error" },
+    { name: "clicked", reason: "message_snapshot_unavailable", transition: "clicked", expected: "error" },
+    { name: "unknown-transition", reason: "message_snapshot_unavailable", transition: "outcome_unknown", expected: "error" }
+  ];
+  for (const test of cases) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-send-level-${test.name}-`));
+    let enabled = true;
+    const levels = [];
+    const unsubscribe = require("./diagnostics.cjs").configureDiagnostics({ rootDir: root }).subscribe((entry) => {
+      if (entry.event === "workflow_contact_send.failed") levels.push(entry.level);
+    });
+    try {
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const workflow = createTouchWorkflow({ dataDir: root, readContacts: () => [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill() {} },
+        execute: async (part) => {
+          if (test.transition) part.onTransition(test.transition);
+          if (test.disable) enabled = false;
+          return { ok: false, send_attempted: test.attempted === null ? null : false, blocked_reason: test.reason };
+        } });
+      const record = { id: `send-level-${test.name}`, payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id] }) };
+      await workflow.runWorkflowStep(record, { isEnabled: () => enabled });
+      assert.deepEqual(levels, [test.expected], `${test.name}: diagnostic level follows the actual branch`);
+    } finally { unsubscribe(); fs.rmSync(root, { recursive: true, force: true }); }
+  }
 }
 
 async function checkWorkflowDiagnostics() {
@@ -1761,6 +1952,8 @@ async function main() {
   assert.deepEqual(expert.read(), before, "interview drafts cannot silently replace live expert");
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
+  await checkRetryAndContinueIpc();
+  await checkPresendDiagnosticLevels();
   await checkTouchStatusDoesNotRecoverActiveSend();
   await checkInterruptedSendRecoveryInSameProcess();
   await checkClickedAttentionPersistFailureRecovery();
