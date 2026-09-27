@@ -59,3 +59,43 @@
 - `check:self`、`build:test` 都通过。
 
 **另记（不属于本卡）**：`state_machine.cjs` 约 :789 的子串捷径 `titles.find(t => t.includes(customerName))` 是原来就有的宽松判断。目前后面还有 B、C 两层兜底；冻结后单独评估。
+
+## 二审（f9f9210）：再修一轮（同一分支追加）
+
+**已做对**：
+- 判定逻辑没变，T10a 的各项目标与一审逐字一致。
+- 隐私暴力扫描 hits={}。T5 明文探针全部为 false。
+- 可用性已修：maxBuffer 16 MiB，PS 端 5 MiB 上限；1.07 MB、4.1 MB 的截图都能正常判为 r008。
+- 一审要求的回退删除、自动回复和 IPC 路径不再写截图，都做到了。
+- N23 以及一审点名的存活变异全部被抓到；T8 的 M09、M11、M16 也被抓到。
+- 最终合并版本（基线 + T9b + T10b）上 `check:self`、`build:test`、所有历史安全探针都通过。
+
+**必须修**（以下每条都有两名独立复核者复现过）：
+1. **【代码，隐私】搜索进行中暂停，会留下下拉框截图。**
+   - 位置：`state_machine.dev.cjs:816-817`。点击步骤返回后，如果 `executionMayContinue` 为 false，就直接返回 `cancelVerifiedContactSend`，丢掉了 `openedConversation.diagnostics.search_capture_file`。touch-workflow（:484）只从返回值里取路径。
+   - 实测：单段、多段任务各留下 1 张。
+   - 修法：取消分支先 `discardSearchCapture`，或者把 diagnostics 带回给工作流。
+2. **【代码，隐私】进程内异常也会留下截图。**
+   - 位置：`state_machine.cjs:706-744`。`block()` 里的 saveState 或 appendLog 抛错时（ENOSPC、EACCES），没有 try/finally 删除截图；安全 CLI 的 main 也没有 catch，主进程只拿到 `executor_no_result`，路径丢失。
+   - 修法：截图写好之后，用 try/finally 保证删除或者交回。
+   - **兜底**：工作流步骤开始时，清扫过期的 `xiaoxi-search-capture-*.png`（只清本程序的前缀，只清 %TEMP% 顶层，不跟随链接）。
+3. **【测试，关键】"甲乙丙"用例中"经真实 executeVerifiedContactSend、发送 0 次"这一半没有判别力。**
+   - sessionDriver 忽略传入的 name，固定用"甲乙"回放；返回的"接受"对象又缺少 `accountVerified`/`accountId`，所以链路总会以 `wechat_account_not_verified` 拒绝。
+   - 后果：如果以后发送路径改用已打开的标题去核对（变异 R19，属于发错人的回归），`check:self` 仍然全绿。
+   - 修法：
+     - mock 用传入的 name 作为 `$expectedConversation`；
+     - 返回完整的接受对象（包括账号和 token）；
+     - 加一条正向对照：精确标题能走到 sendDriver，sends=1。
+   - R19 必须被抓到。
+4. **【测试】截图生命周期缺端到端用例**：
+   - 工作流参数经 CLI、state_machine 传到驱动（R09）；
+   - 执行器把路径交回给工作流（R21）；
+   - 暂停和异常路径（第 1、2 条）。
+   - R09、R21 必须被抓到。
+5. **【文档】结果文档**：第 27 行的"链路层 0 次发送"要按第 3 条的实际情况改写；第 28、41 行要补上暂停和异常这两条残留路径，并写明修复方式。
+
+**自测**：审查脚本在 `C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t10b-r2\`：
+- `orphan_paths.cjs`：pause 和 exception 场景的 orphans 都必须是 0；
+- `chain_vacuity.cjs`、`mutations-r2.json`：R09、R19、R21 必须被自检抓到；
+- `bufprobe_r2.cjs`、`probe_privacy_r2.cjs`；
+- T10a 的目标不变，`check:self`、`build:test` 都通过。
