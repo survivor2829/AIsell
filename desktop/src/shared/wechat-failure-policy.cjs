@@ -70,6 +70,10 @@ const workflowPolicies = Object.freeze({
   wechat_id_no_result: { classification: "recoverable", attentionScope: "task" },
   wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" },
   auto_reply_start_failed: { classification: "blocker", attentionScope: "global" },
+  foreground_required: { classification: "environment", attentionScope: "global" },
+  no_unread_message: { classification: "recoverable", attentionScope: "global" },
+  visual_capture_failed: { classification: "environment", attentionScope: "global" },
+  visual_driver_missing: { classification: "blocker", attentionScope: "global" },
   reply_error_sticky: { classification: "blocker", attentionScope: "global" },
   start_pending_missing: { classification: "blocker", attentionScope: "global" },
   workflow_account_changed: { classification: "blocker", attentionScope: "global" },
@@ -82,6 +86,7 @@ const workflowPolicies = Object.freeze({
   workflow_resume_requested: { classification: "environment", attentionScope: "global" },
   workflow_scope_changed: { classification: "blocker", attentionScope: "global" },
   workflow_scope_excluded: { classification: "recoverable", attentionScope: "global" },
+  workflow_scan_hourly: { classification: "environment", attentionScope: "global" },
   workflow_step_busy: { classification: "environment", attentionScope: "global" },
   workflow_window_changed: { classification: "blocker", attentionScope: "global" }
 });

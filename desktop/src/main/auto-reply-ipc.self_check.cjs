@@ -4901,11 +4901,14 @@ async function main() {
   let workflowStartupFailure = "";
   let workflowStartChecks = 0;
   let workflowPrimes = 0;
+  const workflowDriverOptions = [];
   const workflowCandidate = { ok: true, conversation: "private-a", conversationEvidence: "private-a",
     message: "private-message", runtimeId: "private-turn-1", pid: 81, hWnd: "91",
     context: [{ role: "user", content: "private-message", key: "private-turn-1" }] };
   const workflowQueue = [workflowCandidate];
-  const workflowScan = (aliases) => { workflowScans += 1; assert.deepEqual(aliases, ["private-a"]);
+  const workflowScan = (aliases, driverOptions) => { workflowScans += 1; assert.deepEqual(aliases, ["private-a"]);
+    workflowDriverOptions.push({ phase: "scan", passiveScan: driverOptions.passiveScan, restoreChatSurface: driverOptions.restoreChatSurface });
+    if (driverOptions.restoreChatSurface) driverOptions.onChatSurfaceRestored?.();
     if (workflowScanFailure) return { ok: false, reason: workflowScanFailure };
     return workflowQueue.shift() || { ok: false, reason: "no_unread_message" }; };
   workflowScan.requeue = (candidate) => { workflowQueue.unshift(candidate); return true; };
@@ -4916,18 +4919,48 @@ async function main() {
       if (workflowFailure) throw Object.assign(new Error("private-ai-failure"), { code: workflowFailure });
       return answerDecision("可以继续了解。");
     } },
-    primeIncoming: () => { workflowPrimes += 1; return { ok: true, source: "session_prime", primed: true, latestRole: "assistant" }; },
+    primeIncoming: (_aliases, driverOptions) => { workflowPrimes += 1;
+      workflowDriverOptions.push({ phase: "prime", passiveScan: driverOptions.passiveScan, restoreChatSurface: driverOptions.restoreChatSurface });
+      if (driverOptions.restoreChatSurface) driverOptions.onChatSurfaceRestored?.();
+      return { ok: true, source: "session_prime", primed: true, latestRole: "assistant" }; },
     scanIncoming: workflowScan, verifyIncoming: () => workflowVerify ? { ok: true } : { ok: false, reason: "incoming_message_changed" },
     send: async (options) => { if (!await options.beforeDraft()) return { ok: false, reason: "incoming_message_changed" }; workflowSends += 1; return { ok: true }; },
     sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
   });
   const workflowInput = { recipients: workflowRecipients, accountName: "wx-a", isEnabled: () => true };
+  let releaseTakeoverPrime;
+  let markTakeoverPrimeEntered;
+  const takeoverPrimeGate = new Promise((resolve) => { releaseTakeoverPrime = resolve; });
+  const takeoverPrimeEntered = new Promise((resolve) => { markTakeoverPrimeEntered = resolve; });
+  let takeoverSends = 0;
+  const takeoverPauseController = createAutoReplyController({
+    dataDir: path.join(root, "workflow_takeover_pause"), activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+    primeIncoming: async () => { markTakeoverPrimeEntered(); await takeoverPrimeGate; return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async () => { takeoverSends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const legacyTakeover = takeoverPauseController.start();
+  await Promise.race([takeoverPrimeEntered, new Promise((_, reject) => setTimeout(() => reject(new Error("takeover fixture did not reach prime")), 1000))]);
+  const takeoverStep = takeoverPauseController.runWorkflowStep(workflowInput);
+  takeoverPauseController.pause();
+  releaseTakeoverPrime();
+  await legacyTakeover;
+  const takeoverResult = await takeoverStep;
+  assert.equal(takeoverResult.status, "paused", "user pause while takeover waits must win");
+  assert.match(takeoverResult.progressText, /已暂停/u, "floating pause must show an explicit paused message");
+  assert.equal(takeoverPauseController.status().status, "paused");
+  assert.equal(takeoverSends, 0, "a paused takeover must not send");
   assert.deepEqual(workflowController.screenWorkflowRecipients(workflowRecipients).excluded.map((item) => item.code),
     ["workflow_recipient_ambiguous", "workflow_recipient_changed"]);
   assert.equal(workflowController.screenWorkflowRecipients([workflowRecipients[1]]).accepted.length, 0,
     "a disabled contact outside the recipient list must still keep a duplicate ambiguous");
   let workflowResult = await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowResult.status, "backoff");
+  assert.deepEqual(workflowDriverOptions.slice(0, 2).map((item) => item.restoreChatSurface), [true, false],
+    "first workflow prime restores chat once, then the scan may observe without navigating");
+  assert.equal(workflowDriverOptions[0].passiveScan, true);
   assert.equal(workflowResult.reasonCode, "AI_NETWORK_ERROR");
   assert.equal(workflowResult.retryAfterMs, 30_000);
   assert.equal(workflowResult.excluded_count, 2);
@@ -4941,12 +4974,15 @@ async function main() {
   workflowResult = await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowResult.status, "running");
   assert.equal(workflowSends, 1, "the failed candidate must be replayed exactly once");
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, false);
   assert.equal(workflowScans, 2);
   assert.equal(workflowStartChecks, checksBeforeRetry + 1, "backoff expiry must redo startup checks");
   const nextWorkflowCandidate = (suffix) => ({ ...workflowCandidate, runtimeId: `private-turn-${suffix}`,
     context: [{ role: "user", content: "private-message", key: `private-turn-${suffix}` }] });
   workflowQueue.push({ ...nextWorkflowCandidate("excluded"), conversation: "private-duplicate", conversationEvidence: "private-duplicate" });
-  await workflowController.runWorkflowStep(workflowInput);
+  await workflowController.runWorkflowStep({ ...workflowInput, afterMoments: true });
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, true,
+    "a Moments task must restore the chat page on the next auto-reply scan");
   assert.equal(workflowSends, 1, "an excluded duplicate conversation must never receive a reply");
   workflowQueue.push(nextWorkflowCandidate("2"));
   workflowFailure = "AI_NETWORK_ERROR";
@@ -4997,7 +5033,10 @@ async function main() {
   workflowController.resumeWorkflow();
   workflowScanFailure = "wechat_chat_entry_not_found";
   await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, false);
   await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, true,
+    "a missing chat entry must request foreground navigation on the next scan");
   workflowResult = await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowResult.status, "backoff");
   assert.equal(workflowResult.reasonCode, "workflow_chat_navigation_failed");
@@ -5101,12 +5140,29 @@ async function main() {
   forceEmptyScan = false;
   assert.equal((await retryController.runWorkflowStep(retryInput)).retryAfterMs, 30_000,
     "a complete empty scan must reset the backoff attempt");
+  assert.equal(workflowRetryDiagnostics().filter((entry) => entry.event === "workflow_step_return"
+    && entry.code === "ai_network_error").length, 2,
+  "a second backoff window must create a new diagnostic entry");
   retryController.pause();
   retryClock += 30_000;
   retryFailure = "";
   assert.equal((await retryController.runWorkflowStep(retryInput)).status, "paused");
   assert.equal(retryController.status().status, "paused");
   assert.equal(retrySends, 0, "user pause during backoff must prevent the queued reply after expiry");
+  retryController.resumeWorkflow();
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "running");
+  assert.equal(retrySends, 1, "an explicit restart after a backoff pause must resume the queued reply");
+  retryFailure = "AI_NETWORK_ERROR";
+  retryQueue.push(nextWorkflowCandidate("pause-workflow-backoff"));
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "backoff");
+  await retryController.pauseWorkflow();
+  retryClock += 30_000;
+  assert.equal((await retryController.runWorkflowStep({ ...retryInput, isEnabled: () => false })).status, "paused");
+  assert.equal(retrySends, 1, "pausing the whole workflow during backoff must not send after expiry");
+  retryFailure = "";
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "running",
+    "an explicit workflow restart after pauseWorkflow must leave the stopped state");
+  assert.equal(retrySends, 2, "the explicit workflow restart may safely send the retained candidate once");
 
   let floodClock = workflowNow;
   const floodDir = path.join(root, "workflow_diagnostic_flood");
@@ -5124,9 +5180,38 @@ async function main() {
   const floodDiagnostics = () => fs.readFileSync(path.join(floodDir, "auto-reply-diagnostics.jsonl"), "utf8")
     .trim().split(/\r?\n/u).map((line) => JSON.parse(line));
   assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 1);
+  await floodController.runWorkflowStep({ ...floodInput, recipients: workflowUniverse.slice(0, 3) });
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 2,
+    "a changed excluded count must produce a fresh diagnostic");
   floodController.resumeWorkflow();
   await floodController.runWorkflowStep(floodInput);
-  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 2);
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 3);
+
+  let statsClock = new Date("2026-07-15T10:00:00+08:00").getTime();
+  let statsScans = 0;
+  const statsDir = path.join(root, "workflow_scan_hourly");
+  const statsController = createAutoReplyController({ dataDir: statsDir, activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), now: () => new Date(statsClock),
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => ++statsScans === 2
+      ? { ok: false, reason: "no_unread_message", foregroundScan: true, foregroundReason: "periodic_recheck" }
+      : { ok: false, reason: "no_unread_message", passive: true },
+    verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const statsInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  await statsController.runWorkflowStep(statsInput);
+  await statsController.runWorkflowStep(statsInput);
+  statsClock += 3_600_000;
+  await statsController.runWorkflowStep(statsInput);
+  const hourlyRows = fs.readFileSync(path.join(statsDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line)).filter((entry) => entry.event === "workflow_scan_hourly");
+  assert.equal(hourlyRows.length, 1, "scan diagnostics must be aggregated once per elapsed hour");
+  assert.equal(hourlyRows[0].foreground_prime, 1);
+  assert.equal(hourlyRows[0].foreground_periodic_recheck, 1);
+  assert.equal(hourlyRows[0].observe_idle_count, 1);
+  assert.equal(hourlyRows[0].navigation_count, 1);
+  assert.doesNotMatch(JSON.stringify(hourlyRows), /private-a/u, "hourly stats must contain no customer identity");
 
   const largeContacts = Array.from({ length: 3000 }, (_, index) => ({ id: `large-${index}`,
     name: `微信昵称客户${index}`, remark: `备注客户名${index}`, nickname: `昵称${index}号`,

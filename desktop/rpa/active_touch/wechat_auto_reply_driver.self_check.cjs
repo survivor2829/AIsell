@@ -829,6 +829,65 @@ assert.equal(restoredCalls[0].script, AUTO_REPLY_VISUAL_SCRIPT);
 assert.equal(restoredCalls[0].env.XIAOXI_AUTO_REPLY_MODE, "recover");
 
 let eventLoopAdvanced = false;
+const passiveCalls = [];
+let passiveClock = Date.now();
+const realNow = Date.now;
+try {
+  Date.now = () => passiveClock;
+  let observeResult = { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: normalizedWindow };
+  const passiveRunner = (_script, env) => {
+    passiveCalls.push(env.XIAOXI_AUTO_REPLY_MODE);
+    if (env.XIAOXI_AUTO_REPLY_MODE === "prime") return { ok: true, source: "session_prime", pid: 81, hWnd: "91" };
+    if (env.XIAOXI_AUTO_REPLY_MODE === "observe") return observeResult;
+    return { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: normalizedWindow };
+  };
+  const prepared = [];
+  let userActive = false;
+  const passiveDriver = createWechatAutoReplyDriver(passiveRunner, (options) => {
+    prepared.push(options);
+    return userActive && options.minIdleMs >= 5000 ? { ok: false, reason: "wechat_user_active" } : normalizedWindow;
+  });
+  assert.equal((await passiveDriver.primeWechatSession(["测试客户"])).ok, true);
+  prepared.length = 0;
+  for (let index = 0; index < 10; index += 1) {
+    const idle = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+    assert.equal(idle.passive, true);
+  }
+  assert.equal(prepared.length, 0, "ten unchanged observe polls must leave WeChat in the background");
+  assert.equal(passiveCalls.filter((mode) => mode === "observe").length, 10);
+  passiveClock += 60_000;
+  userActive = true;
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).reason, "wechat_user_active");
+  assert.equal(passiveCalls.at(-1), "observe", "an active user must defer periodic foreground capture");
+  userActive = false;
+  const periodic = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(periodic.foregroundReason, "periodic_recheck");
+  assert.equal(prepared.at(-1).minIdleMs, 5000);
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "foreground_required", trigger: "unread_candidate", pid: 81, hWnd: "91", window: normalizedWindow };
+  const unread = await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  assert.equal(unread.foregroundReason, "unread_candidate");
+  assert.equal(prepared.length, 1);
+  assert.equal(passiveCalls.at(-1), "scan", "an observed candidate must still run the original foreground scanner");
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "foreground_required", trigger: "window_minimized", pid: 81, hWnd: "91" };
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "window_minimized");
+  assert.equal(prepared.length, 1, "a minimized window must be restored through the foreground path");
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "no_unread_message", pid: 81, hWnd: "91", window: { ...normalizedWindow, x: 100 } };
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "geometry_changed");
+  assert.equal(prepared.length, 1, "moving the same HWND must re-normalize instead of failing closed");
+  prepared.length = 0;
+  observeResult = { ok: false, reason: "wechat_process_changed", pid: 82, hWnd: "91" };
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).reason, "wechat_process_changed");
+  assert.equal(prepared.length, 0);
+  observeResult = { ok: false, reason: "foreground_required", trigger: "printwindow_unusable", pid: 81, hWnd: "91", window: normalizedWindow };
+  for (let index = 0; index < 3; index += 1) await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true });
+  const observeCount = passiveCalls.filter((mode) => mode === "observe").length;
+  assert.equal((await passiveDriver.scanWechatIncoming(["测试客户"], { passiveScan: true })).foregroundReason, "passive_unusable");
+  assert.equal(passiveCalls.filter((mode) => mode === "observe").length, observeCount,
+    "three unusable PrintWindow frames must disable observe until prime");
+} finally { Date.now = realNow; }
 setTimeout(() => { eventLoopAdvanced = true; }, 0);
 const asynchronousProbe = await runPowerShellAsync("Start-Sleep -Milliseconds 150; @{ ok = $true } | ConvertTo-Json -Compress", {}, { ensure: false, timeout: 5000 });
 assert.equal(asynchronousProbe.ok, true);

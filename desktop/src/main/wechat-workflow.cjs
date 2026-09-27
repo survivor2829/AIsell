@@ -92,6 +92,7 @@ function createWechatWorkflowController(options) {
   let lastTaskResultKey = "";
   let lastQueueTransitionKey = "";
   let replyActivated = false;
+  let afterMoments = false;
   let cycleStage = "idle";
   const log = (name, details, metadata) => options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true });
   const getAccount = () => String(options.getAccount?.() || "");
@@ -489,9 +490,10 @@ function createWechatWorkflowController(options) {
       }
       emit();
       const reply = await options.reply.runWorkflowStep({
-        recipients: people, accountName: getAccount(), isEnabled: () => enabled,
+        recipients: people, accountName: getAccount(), isEnabled: () => enabled, afterMoments,
         onProgress: (text) => { if (enabled) { replyStatus = text; emit(); } }
       });
+      if (reply.status !== "busy" && reply.reasonCode !== "workflow_paused") afterMoments = false;
       replyExcludedCount = reply.excluded_count ?? reply.excludedCount ?? replyExcludedCount;
       replyExcludedReasons = reply.excludedReasons || replyExcludedReasons;
       replyBackoff = reply.status === "backoff";
@@ -600,6 +602,7 @@ function createWechatWorkflowController(options) {
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
       applyTaskAttention(task, workflowFailureReason(failure), failure.message || "任务执行中断，请核对实际结果。", true);
     } finally {
+      if (task.type === "publish" || task.type === "interact") afterMoments = true;
       currentTaskId = null;
       settleQueue();
       persist();

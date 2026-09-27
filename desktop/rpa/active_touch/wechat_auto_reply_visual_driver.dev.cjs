@@ -916,6 +916,9 @@ function Get-AutoReplyVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedProc
     $printed = New-AutoReplyVisualPrintWindowFrame $hWnd $width $height
     if ($printed.ok) { return $printed }
   }
+  if ([Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE") -ceq "observe") {
+    return @{ ok = $false; reason = "visual_capture_failed" }
+  }
   # Screen-copy is allowed only while the exact preflight-bound HWND remains
   # foreground. A user focus change always aborts instead of being reversed.
   return New-AutoReplyVisualScreenFrame $hWnd $windowRect $width $height $allowForegroundFallback
@@ -1720,6 +1723,9 @@ $process = $resolvedWindow.process
 $hWnd = [IntPtr]$resolvedWindow.hWnd
 if ($expectedPid -gt 0 -and $expectedPid -ne [int]$process.Id) { Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_process_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
 if ($expectedHWnd -gt 0 -and $expectedHWnd -ne [int64]$hWnd) { Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_window_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+if ($mode -ceq "observe" -and [Win32WechatAutoReplyVisual]::IsIconic($hWnd)) {
+  Write-AutoReplyVisualResult @{ ok = $false; reason = "foreground_required"; trigger = "window_minimized"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+}
 $nativeWindowRect = New-Object Win32WechatAutoReplyVisual+RECT
 if (-not [Win32WechatAutoReplyVisual]::GetWindowRect($hWnd, [ref]$nativeWindowRect)) {
   Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_window_not_ready" }
@@ -1815,6 +1821,24 @@ try {
       discoveredConversation = [bool]$currentConversationDiscovered
       sessionBaselines = $sessionBaselines
       sessionMessageBaselines = $sessionMessageBaselines
+    }
+  }
+
+  if ($mode -ceq "observe") {
+    $unread = @($rows | Where-Object { $_.unread -and -not $_.draft }).Count -gt 0
+    if (-not $unread) { $unread = @(Get-AutoReplyVisualUnreadBadges $frame $sidebarRight).Count -gt 0 }
+    $currentChanged = $false
+    if ($currentConversation.active -and $currentMessage -ne $null -and $currentMessage.hasMessage) {
+      $previous = Get-AutoReplyVisualBaseline $messageBaselines ([string]$currentConversation.conversation)
+      $currentChanged = -not (Test-AutoReplyVisualSignature $previous) -or
+        $previous -cne [string]$currentMessage.evidenceSignature
+    }
+    Write-AutoReplyVisualResult @{
+      ok = $false
+      reason = if ($unread -or $currentChanged) { "foreground_required" } else { "no_unread_message" }
+      trigger = if ($unread -or $currentChanged) { "unread_candidate" } else { "" }
+      pid = [int]$process.Id
+      hWnd = [int64]$hWnd
     }
   }
 
@@ -3021,8 +3045,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const expectedHwnd = String(extra.XIAOXI_EXPECTED_HWND || sharedWindow?.hWnd || "");
     const windowKey = expectedPid && expectedHwnd ? `${expectedPid}:${expectedHwnd}` : "";
     const sharedWindowKey = sharedWindow?.pid && sharedWindow?.hWnd ? `${sharedWindow.pid}:${sharedWindow.hWnd}` : "";
-    if (preferredScreenWindow && (windowKey !== preferredScreenWindow || sharedWindowKey !== windowKey)) preferredScreenWindow = "";
-    const preferScreen = windowKey && sharedWindowKey === windowKey && preferredScreenWindow === windowKey;
+    if (mode !== "observe" && preferredScreenWindow && (windowKey !== preferredScreenWindow || sharedWindowKey !== windowKey)) preferredScreenWindow = "";
+    const preferScreen = mode !== "observe" && windowKey && sharedWindowKey === windowKey && preferredScreenWindow === windowKey;
     return Promise.resolve(powerShellRunner(AUTO_REPLY_VISUAL_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: mode,
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
@@ -3037,7 +3061,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       ...(preferScreen ? { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" } : {}),
       ...extra
     }, { ensure: false, sta: true, timeout: 45_000, diagnostics: true })).then((result) => {
-      if (windowKey && sharedWindowKey === windowKey && result?.ok === true && result.captureMode === "foreground_screen"
+      if (mode !== "observe" && windowKey && sharedWindowKey === windowKey && result?.ok === true && result.captureMode === "foreground_screen"
         && `${result.pid}:${result.hWnd}` === windowKey) preferredScreenWindow = windowKey;
       return {
         ...result,
@@ -3258,6 +3282,32 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     return decorated;
   }
 
+  async function observeWechatIncoming(names, matchOptions = {}) {
+    const identity = allowedNameIdentity(names);
+    if (identity.ambiguous || !identity.compactNames.length || !primedProcess) {
+      return { ok: false, reason: "foreground_required", trigger: "pending_state" };
+    }
+    if (pendingOpenedUnread || restoredPendingObservation || startupBoundary || startupBoundaryCandidate || retryCandidates.length) {
+      return { ok: false, reason: "foreground_required", trigger: "pending_state" };
+    }
+    const result = await invoke("observe", identity.compactNames, {
+      XIAOXI_EXPECTED_PID: String(primedProcess.pid),
+      XIAOXI_EXPECTED_HWND: primedProcess.hWnd
+    }, matchOptions);
+    const process = processIdentity(result);
+    if (process && (process.pid !== primedProcess.pid || process.hWnd !== primedProcess.hWnd)) {
+      return { ok: false, reason: process.pid !== primedProcess.pid ? "wechat_process_changed" : "wechat_window_changed", pid: process.pid, hWnd: process.hWnd };
+    }
+    if (result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
+      return { ok: false, reason: result.reason };
+    }
+    if (result?.reason === "no_unread_message") return { ok: false, reason: "no_unread_message", pid: process?.pid, hWnd: process?.hWnd, window: result.window, dpi: result.dpi };
+    const trigger = result?.trigger || (result?.reason === "visual_capture_failed" ? "printwindow_unusable"
+      : result?.reason === "visual_ocr_structure_missing" || result?.reason === "visual_sidebar_match_missing" ? "structure_missing"
+        : result?.reason === "wechat_window_missing" ? "window_minimized" : "other");
+    return { ok: false, reason: "foreground_required", trigger, pid: process?.pid, hWnd: process?.hWnd, window: result?.window, dpi: result?.dpi };
+  }
+
   async function verifyWechatIncoming(candidate = {}, matchOptions = {}) {
     const nameIdentity = allowedNameIdentity([candidate.conversation]);
     const conversation = nameIdentity.compactNames[0] || "";
@@ -3401,7 +3451,9 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     preferredScreenWindow = "";
   };
 
-  return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming, noteVerifiedSend, noteSendAttempted, restoreTurnBoundaries };
+  return { primeWechatSession, scanWechatIncoming, observeWechatIncoming,
+    hasPendingScanState: () => Boolean(pendingOpenedUnread || restoredPendingObservation || startupBoundary || startupBoundaryCandidate || retryCandidates.length),
+    verifyWechatIncoming, noteVerifiedSend, noteSendAttempted, restoreTurnBoundaries };
 }
 
 const driver = createWechatVisualAutoReplyDriver();
