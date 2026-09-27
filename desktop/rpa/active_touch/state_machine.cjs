@@ -8,6 +8,7 @@ const {
   inputWechatSearchQuery,
   isPreparedWechatRpaLayout,
   openWechatSearchResult,
+  discardSearchCapture,
   verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
 const { isVerifiedWechatSearchResultMode } = require("./wechat_search_result_resolver.cjs");
@@ -698,6 +699,7 @@ function clickSearchResultDryRun(
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
     minIdleMs: Number(windowContext.minIdleMs) || 0,
+    ...(windowContext.captureSearchFailure === true ? { captureSearchFailure: true } : {}),
     searchQueryType: searchPlan.queryType,
     searchIdentity: { query: searchQuery, expectedName: customerName }
   };
@@ -705,6 +707,7 @@ function clickSearchResultDryRun(
   if (!inputResult?.ok && searchPlan.queryType === "wechat_id"
     && inputResult?.reason === "exact_search_result_not_found"
     && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
+    discardSearchCapture(inputResult);
     inputResult = openResultDriver(searchPlan.fallbackQuery, {
       ...exactWindow,
       searchIdentity: { query: searchPlan.fallbackQuery, expectedName: customerName },

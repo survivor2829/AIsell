@@ -505,12 +505,19 @@ async function checkT5FourthReviewRulesAndEvidence() {
 }
 
 async function checkR008EvidencePrivacy(ruleId = "search-r008") {
+  const workflowSource = fs.readFileSync(path.join(__dirname, "touch-workflow.cjs"), "utf8");
+  assert.match(workflowSource, /const \{ search_capture_file: _captureFile, \.\.\.safeDiagnostics \} = partOutcome\.diagnostics;\s*partOutcome = \{ \.\.\.partOutcome, diagnostics: safeDiagnostics \};/u,
+    "the consumed temp path must be removed from the workflow result before diagnostics can propagate");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-evidence-privacy-"));
   try {
     const secret = "张三客户PLAINTEXT";
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     let reads = 0;
     const failures = [];
+    const capturePng = Buffer.from("89504e470d0a1a0a", "hex");
+    const unsafeCapture = path.join(root, `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+    fs.writeFileSync(unsafeCapture, capturePng);
+    const temporaryCaptures = [];
     const contacts = [1, 2, 3].map((number) => ({
       id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
     }));
@@ -518,15 +525,22 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
       dataDir: root, now: () => new Date(clock), readContacts: () => contacts,
       coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
       passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence) },
-      execute: async () => ({
-        ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
-        diagnostics: { rule_id: ruleId, candidate_set_hash: `hash-${Math.ceil(++reads / 2)}` },
-        state: { search_evidence: {
-          rule_id: ruleId, capture_source: "untrusted_source", popup_dpi: Infinity,
-          popup_candidate_count: 2, search_columns: [62, Infinity],
-          ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }] }
-        } }
-      })
+      execute: async () => {
+        const capture = reads === 0 ? unsafeCapture
+          : path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+        if (capture !== unsafeCapture) { fs.writeFileSync(capture, capturePng); temporaryCaptures.push(capture); }
+        return {
+          ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: ruleId, candidate_set_hash: `hash-${Math.ceil(++reads / 2)}`, search_capture_file: capture },
+          state: { search_evidence: {
+            rule_id: ruleId, capture_source: "untrusted_source", popup_dpi: Infinity,
+            popup_candidate_count: 2, search_columns: [62, Infinity],
+            ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }],
+              capture_source: "formula_fallback", ocr_boxes: [{ text: secret, left: 1, top: 2, right: 3, bottom: 4,
+                char_count: 2, first_class: "han", last_class: "han", boundary_distance: [2], equals_query: true }] }
+          } }
+        };
+      }
     });
     const record = { id: `${ruleId}-evidence-privacy`, payload: workflow.prepareWorkflowTask({
       script: "您好", contactIds: contacts.map((contact) => contact.id)
@@ -545,10 +559,22 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     assert.equal(JSON.stringify(task).includes(secret), false, "task state must not retain OCR contact text");
     assert.equal(JSON.stringify(failures).includes(secret), false, "passport failures must not retain OCR contact text");
     assert.equal(JSON.stringify(circuit).includes(secret), false, "circuit diagnostics must not retain OCR contact text");
+    assert.equal(JSON.stringify(task).includes("search_capture_file"), false);
+    assert.equal(JSON.stringify(failures).includes("search_capture_file"), false);
+    assert.equal(JSON.stringify(circuit).includes("search_capture_file"), false);
+    assert.equal(fs.existsSync(unsafeCapture), true, "an untrusted screenshot path must never be read or deleted");
+    assert.equal(temporaryCaptures.every((file) => !fs.existsSync(file)), true);
+    if (ruleId === "search-r008") assert.equal(failures.some((failure) => failure.stage === "workflow_step"
+      && Buffer.isBuffer(failure.screenshotBytes)
+      && failure.screenshotBytes.equals(capturePng)), true, "r008 circuit evidence must attach OCR bytes");
     assert.equal(evidence.popup_candidate_count, 2, "state-only numeric evidence must survive the whitelist");
     assert.deepEqual(evidence.search_columns, [62]);
     assert.equal(evidence.popup_dpi, undefined, `non-finite ${ruleId} DPI must be omitted`);
     assert.equal(evidence.capture_source, undefined, "capture source must be a known enum value");
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].char_count, 2);
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].first_class, "han");
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].text, undefined,
+      "a raw OCR box must be projected through the whitelist");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

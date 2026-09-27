@@ -457,6 +457,7 @@ function createTouchWorkflow(options = {}) {
               ? drivers.clickWechatSendButtonAsync(key, sendContext)
               : { ok: false, sendAttempted: false, reason: "workflow_paused" },
             runStep: (command, args = []) => options.runStep([command, ...args,
+              ...(command === "click-search-result-dry-run" ? ["--capture-search-failure"] : []),
               ...(multipart ? ["--task-data-dir", taskDir] : []),
               "--task-id", id, "--contact-id", current.id, "--current-index", String(index)
             ], {

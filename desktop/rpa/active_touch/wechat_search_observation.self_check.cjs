@@ -1,6 +1,36 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
-const { openWechatSearchResult } = require("./wechat_window_driver.cjs");
+const { openWechatSearchResult, openWechatSearchResultAsync, discardSearchCapture, runPowerShell } = require("./wechat_window_driver.cjs");
+const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
+
+{
+  const fs = require("node:fs");
+  const path = require("node:path");
+  for (const cli of ["active_touch_cli.cjs", "active_touch_cli.dev.cjs"]) {
+    assert.match(fs.readFileSync(path.join(__dirname, cli), "utf8"), /captureSearchFailure: args\.includes\("--capture-search-failure"\)/u,
+      `${cli} must require the workflow's explicit screenshot request`);
+  }
+  assert.match(fs.readFileSync(path.join(__dirname, "../../src/main/touch-workflow.cjs"), "utf8"),
+    /command === "click-search-result-dry-run" \? \["--capture-search-failure"\]/u,
+    "only the passport-owning workflow may request a transient search screenshot");
+}
+
+{
+  const observation = { captureSource: "formula_crop", cropBounds: { left: 0, top: 0, right: 100, bottom: 100 },
+    visualCandidates: [{ text: "甲乙", left: 10, top: 20, right: 30, bottom: 30 },
+      { text: "甲乙丙", left: 10, top: 40, right: 40, bottom: 60 }] };
+  const evidence = searchObservationEvidence(observation, { query: "甲乙", queryType: "name" });
+  assert.equal(evidence.capture_source, "formula_fallback");
+  assert.equal(evidence.bottom_gap, 40, "bottom gap uses the bottom edge of the last OCR row");
+  assert.deepEqual(evidence.ocr_boxes.map((box) => box.equals_query), [true, false]);
+  assert.equal(evidence.ocr_boxes[0].first_class, "han");
+  assert.equal(evidence.ocr_boxes[0].char_count, 2);
+  const otherNames = searchObservationEvidence({ ...observation, visualCandidates: [
+    { ...observation.visualCandidates[0], text: "丁戊" }, { ...observation.visualCandidates[1], text: "丁戊己" }
+  ] }, { query: "丁戊", queryType: "name" });
+  assert.equal(evidence.candidate_set_hash, otherNames.candidate_set_hash,
+    "candidate fingerprint must depend on shape rather than raw contact text");
+}
 
 async function checkWrongConversationTitleGate() {
   const fs = require("node:fs");
@@ -13,28 +43,38 @@ async function checkWrongConversationTitleGate() {
   let sends = 0;
   const expected = "甲乙";
   const opened = "甲乙丙";
-  const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
-  const scriptStart = driverSource.indexOf("const CONVERSATION_TITLE_SCRIPT = `");
-  const verifierFunction = driverSource.indexOf("function verifyWechatCurrentConversation(", scriptStart);
-  const scriptEnd = driverSource.lastIndexOf("`;", verifierFunction);
-  assert.ok(scriptStart >= 0 && scriptEnd > scriptStart, "the production title verifier must be replayable");
-  const titleLoop = driverSource.slice(scriptStart, scriptEnd).slice(driverSource.slice(scriptStart, scriptEnd).indexOf("$found = $null"));
-  function replayProductionTitle(observedName) {
-    const fixture = Buffer.from(JSON.stringify({ expected, observedName }), "utf8").toString("base64");
-    const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n`
+  const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
+  const scriptStart = driverSource.indexOf("const OBSERVE_CONVERSATION_SCRIPT = `");
+  const scriptEnd = driverSource.indexOf("`;", scriptStart);
+  assert.ok(scriptStart >= 0 && scriptEnd > scriptStart, "the production send-path verifier must be replayable");
+  const observationScript = driverSource.slice(scriptStart, scriptEnd);
+  let titleLoop = observationScript.slice(observationScript.indexOf("function Get-ObservedElementText"), observationScript.indexOf('$titleToken = ""'));
+  titleLoop = titleLoop.replace("[System.Windows.Automation.AutomationElement]$element", "$element")
+    .replace("[System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition", "1, 2");
+  function replayProductionObservation(elements) {
+    const fixture = Buffer.from(JSON.stringify({ expected, elements }), "utf8").toString("base64");
+    const replay = `$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\nAdd-Type -AssemblyName UIAutomationClient\n`
       + `$fixture=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${fixture}')))\n`
-      + `$expected=$fixture.expected; $matched=@{hWnd=[IntPtr]91;title='fixture';processName='Weixin';pid=81;rect=@{Left=200;Top=0}}\n`
-      + `$windowRect=$matched.rect; $script:fixtureItem=[pscustomobject]@{Current=[pscustomobject]@{Name=$fixture.observedName;BoundingRectangle=@{Left=500;Top=60}}}\n`
-      + `$all=[pscustomobject]@{Count=1}; $all | Add-Member ScriptMethod Item { param($index) return $script:fixtureItem }\n`
-      + titleLoop;
+      + `$expectedConversation=[string]$fixture.expected; $windowRect=[pscustomobject]@{Left=0.0;Top=0.0;Right=1000.0;Bottom=700.0;Width=1000.0;Height=700.0}\n`
+      + `$script:items=@(foreach($e in $fixture.elements){ $o=[pscustomobject]@{Current=[pscustomobject]@{Name=[string]$e.name;IsOffscreen=$false;BoundingRectangle=[pscustomobject]@{Left=[double]$e.left;Top=[double]$e.top}}}; $o | Add-Member ScriptMethod GetCurrentPattern { param($p) return $null }; $o })\n`
+      + `$all=[pscustomobject]@{Count=$script:items.Count}; $all | Add-Member ScriptMethod Item { param($i) return $script:items[$i] }\n`
+      + `$root=[pscustomobject]@{}; $root | Add-Member ScriptMethod FindAll { param($a,$b) return $all }\n`
+      + titleLoop + `\n@{titleVisible=$titleVisible} | ConvertTo-Json -Compress`;
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
       Buffer.from(replay, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 10000 });
     assert.equal(result.status, 0, result.stderr || result.error?.message);
-    return JSON.parse(result.stdout.trim().replace(/^\uFEFF/u, ""));
+    return JSON.parse(result.stdout.trim().replace(/^\uFEFF/u, "")).titleVisible;
   }
-  assert.equal(replayProductionTitle(expected).ok, true, "the production header check must accept the exact name");
-  const mismatchedTitle = replayProductionTitle(opened);
-  assert.equal(mismatchedTitle.ok, false, "the production header check must reject a longer name");
+  const header = (name) => ({ name, left: 400, top: 60 });
+  assert.equal(replayProductionObservation([header(expected)]), true, "the send-path observer must accept the exact header");
+  const wrongHeaders = [
+    [header(opened)],
+    [header(opened), { name: expected, left: 120, top: 80 }],
+    [header(opened), { name: expected, left: 500, top: 300 }]
+  ];
+  for (const elements of wrongHeaders) assert.equal(replayProductionObservation(elements), false,
+    "a longer active title must be rejected even when the session list or chat body contains the expected name");
+  const mismatchedTitle = { ok: false, reason: "atomic_conversation_changed", title: "" };
   try {
     fs.writeFileSync(path.join(root, "contacts.json"), JSON.stringify([
       { id: "target", name: expected, wechatAccountId: "account", allowed: true }
@@ -51,7 +91,8 @@ async function checkWrongConversationTitleGate() {
       popupBounds: { left: 0, top: 0, right: 400, bottom: 400 }, popupDpi: 96,
       popupCandidateCount: 1, captureSource: "popup", ocrOk: true, webSearchVisible: true
     };
-    const result = await executeVerifiedContactSend({ baseDir: root, contactsDir: root,
+    let activeElements = wrongHeaders[0];
+    const sendOptions = { baseDir: root, contactsDir: root,
       contactId: "target", message: "test", authorized: true,
       windowPreflight: async () => ({ ok: true, normalized: true, layoutMode: "stable_target",
         focused: true, pid: 81, hWnd: "91", processName: "Weixin" }),
@@ -73,9 +114,12 @@ async function checkWrongConversationTitleGate() {
         }
         throw new Error(`unexpected step ${command}`);
       },
-      sessionDriver: async () => mismatchedTitle,
+      sessionDriver: async () => replayProductionObservation(activeElements)
+        ? { ok: true, title: expected, pid: 81, hWnd: "91", processName: "Weixin" }
+        : mismatchedTitle,
       sendDriver: async () => { sends += 1; return { ok: true, sendAttempted: true }; }
-    });
+    };
+    const result = await executeVerifiedContactSend(sendOptions);
     assert.equal(clicks, 1, `the ambiguous local surface must reach the click path: ${JSON.stringify(result)}`);
     assert.equal(loadState(root).conversation_title, opened, "the opened conversation must be the longer name");
     assert.equal(loadState(root).search_evidence.resolver_mode, "unique_local_surface_visual");
@@ -88,8 +132,14 @@ async function checkWrongConversationTitleGate() {
     assert.equal(loadState(root).search_evidence.ocr_observation.ocr_boxes.length, 4);
     assert.equal(result.ok, false, "the pre-send title gate must reject the longer name");
     assert.equal(sends, 0, "a wrong conversation must never reach the send driver");
+    for (const elements of wrongHeaders.slice(1)) {
+      activeElements = elements;
+      const blocked = await executeVerifiedContactSend(sendOptions);
+      assert.equal(blocked.ok, false, "session list and chat text cannot authorize a longer active title");
+      assert.equal(sends, 0, "each wrong-title variant must stop before send");
+    }
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
-    const rejected = openWechatSearchResult(expected, { pid: 81, hWnd: "91",
+    const rejected = openWechatSearchResult(expected, { pid: 81, hWnd: "91", captureSearchFailure: true,
       searchIdentity: { expectedName: expected },
       runner: () => ({ ok: true, searchCapturePng: png.toString("base64"),
         searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null,
@@ -102,12 +152,61 @@ async function checkWrongConversationTitleGate() {
     const capture = rejected.diagnostics.search_capture_file;
     assert.deepEqual(fs.readFileSync(capture), png, "the detached capture must be the OCR bitmap bytes");
     fs.unlinkSync(capture);
+    const noCapture = openWechatSearchResult(expected, { pid: 81, hWnd: "91",
+      searchIdentity: { expectedName: expected },
+      runner: () => ({ ok: true, searchCapturePng: png.toString("base64"),
+        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null } })
+    });
+    assert.equal(noCapture.diagnostics.search_capture_file, undefined,
+      "default search callers, including auto reply and development IPC, must not write a transient screenshot");
+    const noCaptureAsync = await openWechatSearchResultAsync(expected, { pid: 81, hWnd: "91",
+      searchIdentity: { expectedName: expected },
+      runner: async () => ({ ok: true, searchCapturePng: png.toString("base64"),
+        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null } })
+    });
+    assert.equal(noCaptureAsync.diagnostics.search_capture_file, undefined);
+    const captureNames = () => new Set(fs.readdirSync(os.tmpdir()).filter((name) => /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(name)));
+    const beforeSelected = captureNames();
+    try {
+      const selectedWithCapture = openWechatSearchResult(expected, { pid: 81, hWnd: "91", captureSearchFailure: true,
+        searchIdentity: { expectedName: expected },
+        runner: () => ({ ok: true, pid: 81, hWnd: "91", inputLeaseTick: 101,
+          searchCapturePng: png.toString("base64"), searchResultObservation: observation }),
+        clickRunner: () => ({ ok: true, exactSearchOpened: true })
+      });
+      assert.equal(selectedWithCapture.ok, true);
+      assert.equal(selectedWithCapture.diagnostics?.search_capture_file, undefined,
+        "a selected contact must not create a transient screenshot");
+      assert.deepEqual([...captureNames()].filter((name) => !beforeSelected.has(name)), [],
+        "selected resolutions must not leave a PNG in the temp directory");
+    } finally {
+      for (const name of captureNames()) if (!beforeSelected.has(name)) fs.unlinkSync(path.join(os.tmpdir(), name));
+    }
+    const first = path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+    const second = path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+    fs.writeFileSync(first, png); fs.writeFileSync(second, png);
+    try {
+      const state = loadState(root);
+      saveState(root, { ...state, target_selected: true,
+        selected_customer: { ...state.selected_customer, wechatId: "wxid_fixture" } });
+      let calls = 0;
+      const fallback = clickSearchResultDryRun(root, () => ({ ok: false,
+        reason: "exact_search_result_not_found", diagnostics: { search_capture_file: ++calls === 1 ? first : second } }));
+      assert.equal(calls, 2, "WeChat ID not found must fall back to a name search");
+      assert.equal(fs.existsSync(first), false, "the superseded ID-search screenshot must be removed before fallback");
+      assert.equal(fallback.diagnostics.search_capture_file, second);
+      discardSearchCapture(fallback);
+      assert.equal(fs.existsSync(second), false, "the final screenshot owner must remove its capture");
+    } finally { for (const file of [first, second]) { try { fs.unlinkSync(file); } catch {} } }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 // Replay the generated PowerShell OCR processing, not preclassified resolver fixtures.
 // No window lookup, screenshot, keyboard input, or real click runs in this check.
 if (process.platform === "win32") {
+  const largeOutput = runPowerShell('$data="A" * 1600000; @{ok=$true; data=$data} | ConvertTo-Json -Compress', {}, { ensure: false });
+  assert.equal(largeOutput.ok, true, "a large OCR screenshot must not exhaust the PowerShell stdout buffer");
+  assert.equal(largeOutput.data.length, 1600000);
   let productionSearchScript = "";
   for (const networkText of ["〕 搜 一 搜 sams_01", "搜 一 搜 sam_01"]) {
     let clicks = 0;

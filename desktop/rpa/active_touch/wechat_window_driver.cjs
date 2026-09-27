@@ -372,6 +372,7 @@ function runPowerShell(script, env = {}, options = {}) {
   shellArgs.push("-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP);
   const spawnOptions = {
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
     env: {
       ...process.env,
       ...evidenceEnvironment(),
@@ -1837,7 +1838,7 @@ if ($observeLocalResults) {
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
       $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
       $captureStream = [IO.MemoryStream]::new()
-      try { $bitmap.Save($captureStream, [System.Drawing.Imaging.ImageFormat]::Png); $searchCapturePng = [Convert]::ToBase64String($captureStream.ToArray()) }
+      try { $bitmap.Save($captureStream, [System.Drawing.Imaging.ImageFormat]::Png); if ($captureStream.Length -le 5MB) { $searchCapturePng = [Convert]::ToBase64String($captureStream.ToArray()) } }
       finally { $captureStream.Dispose() }
       $ocrBitmap = [System.Drawing.Bitmap]::new($cropWidth * $ocrScale, $cropHeight * $ocrScale, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $ocrGraphics = [System.Drawing.Graphics]::FromImage($ocrBitmap)
@@ -2294,8 +2295,9 @@ function buildSearchEvidence(observed, resolution, query, context) {
   };
 }
 
-function detachedSearchCapture(observed, resolution) {
+function detachedSearchCapture(observed, resolution, captureFailure = false) {
   const { searchCapturePng, ...safeObserved } = observed;
+  if (!captureFailure) return { observed: safeObserved, diagnostics: resolution.diagnostics };
   if (resolution.status === "selected" || typeof searchCapturePng !== "string" || searchCapturePng.length > 8_000_000) {
     return { observed: safeObserved, diagnostics: resolution.diagnostics };
   }
@@ -2308,6 +2310,16 @@ function detachedSearchCapture(observed, resolution) {
     fs.writeFileSync(file, png, { flag: "wx", mode: 0o600 });
     return { observed: safeObserved, diagnostics: { ...resolution.diagnostics, search_capture_file: file } };
   } catch { return { observed: safeObserved, diagnostics: resolution.diagnostics }; }
+}
+
+function discardSearchCapture(result) {
+  const file = String(result?.diagnostics?.search_capture_file || "");
+  if (!file) return;
+  const resolved = path.resolve(file);
+  if (path.dirname(resolved) === path.resolve(os.tmpdir())
+    && /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(path.basename(resolved))) {
+    try { fs.unlinkSync(resolved); } catch {}
+  }
 }
 
 function openWechatSearchResult(query, context = {}) {
@@ -2329,7 +2341,7 @@ function openWechatSearchResult(query, context = {}) {
       queryType: context.searchQueryType
     });
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
-    const capture = detachedSearchCapture(observed, resolution);
+    const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
       if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
         try { runPowerShell(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
@@ -2379,7 +2391,7 @@ function openWechatSearchResultAsync(query, context = {}) {
       queryType: context.searchQueryType
     });
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
-      const capture = detachedSearchCapture(observed, resolution);
+      const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
         if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
@@ -2846,6 +2858,7 @@ module.exports = {
   resolveWechatRpaWindowTarget,
   openWechatSearchResult,
   openWechatSearchResultAsync,
+  discardSearchCapture,
   runPowerShell,
   runPowerShellAsync,
   verifyWechatCurrentConversation,

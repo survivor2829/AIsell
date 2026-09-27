@@ -140,7 +140,8 @@ function execute(command, baseDir, args) {
     return clickSearchResultDryRun(baseDir, undefined, undefined, undefined, {
       pid: optionalValueAfter(args, "--expected-pid"),
       hWnd: optionalValueAfter(args, "--expected-hwnd"),
-      minIdleMs: optionalValueAfter(args, "--min-idle-ms")
+      minIdleMs: optionalValueAfter(args, "--min-idle-ms"),
+      captureSearchFailure: args.includes("--capture-search-failure")
     });
   }
   if (command === "input-message-dry-run") return inputMessageDryRun(baseDir, valueAfter(args, "--message"));
