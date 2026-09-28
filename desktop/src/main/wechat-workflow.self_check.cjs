@@ -1353,6 +1353,200 @@ async function checkRetryAndContinueIpc() {
   } finally { await test.close(); }
 }
 
+async function checkFailedRetryRecoveryGuards() {
+  const now = new Date(2026, 8, 27, 10).getTime();
+  async function fixture(rows, autoSchedule = false) {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-retry-guard-"));
+    const state = { account: "acct", rows, touchSends: 0, replySteps: 0, replyResumes: 0,
+      replyResult: { handled: false }, pauseGate: null, pauseEntered: null, replyGate: null };
+    const rowFor = (task) => rows.find((row) => row.title === task.title);
+    const touch = {
+      prepareWorkflowTask: (_id, input) => ({ contacts: input.contactIds.map((id) => ({ id })), script: input.script }),
+      canRetryWorkflowTask: (task) => rowFor(task)?.retryable === true,
+      describeUnknownWorkflowTask: (task) => rowFor(task)?.unknown ? { required: true } : null,
+      resolveUnknownWorkflowTask: (task, resolution, resolutionId) => {
+        const row = rowFor(task);
+        row.unknown = false;
+        return { resolution, resolutionId, completed: true, progress: { done: 1, total: 1 } };
+      },
+      describeSkippedWorkflowTask: (task) => ({ skipped_records: rowFor(task)?.skipped
+        ? [{ contactId: `${task.title}-contact`, retryable: true }] : [] }),
+      retrySkippedWorkflowTask: () => ({ ok: false, blocked_reason: "retry_skipped_empty", error: "none" }),
+      runWorkflowStep: async () => { state.touchSends += 1; return { status: "completed" }; }
+    };
+    const reply = {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => {
+        state.replySteps += 1;
+        if (state.replyGate) await state.replyGate;
+        return state.replyResult;
+      },
+      pauseWorkflow: async () => {
+        state.pauseEntered?.();
+        if (state.pauseGate) await state.pauseGate;
+      },
+      resumeWorkflow: () => { state.replyResumes += 1; }
+    };
+    const options = { rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
+      momentsDir: path.join(rootDir, "moments"), autoSchedule: false, pollIntervalMs: 5,
+      now: () => new Date(now), getAccount: () => state.account, executors: { touch }, reply };
+    const setup = createWechatWorkflowController(options);
+    for (const row of rows) await setup.addTask({ type: "touch", title: row.title,
+      payload: { contactIds: [`${row.title}-contact`], script: "test" } });
+    await setup.addRecipients(["r"]);
+    await setup.dispose();
+    const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+    const stored = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    for (const task of stored.tasks) {
+      const row = rowFor(task);
+      task.status = row.status;
+      if (row.status === "completed") task.progress = { done: 1, total: 1 };
+      if (row.accountName) task.accountName = row.accountName;
+    }
+    fs.writeFileSync(stateFile, JSON.stringify(stored));
+    state.control = createWechatWorkflowController({ ...options, autoSchedule });
+    state.id = (title) => state.control.status().tasks.find((task) => task.title === title).id;
+    await state.control.start();
+    await state.control.tick();
+    return state;
+  }
+
+  function blockPause(state) {
+    let release, entered;
+    const enteredPromise = new Promise((resolve) => { entered = resolve; });
+    state.pauseGate = new Promise((resolve) => { release = resolve; });
+    state.pauseEntered = entered;
+    return { entered: enteredPromise, release: () => { state.pauseGate = null; state.pauseEntered = null; release(); } };
+  }
+
+  async function failedRetryDuring(state, mutate) {
+    const gate = blockPause(state);
+    let retrying;
+    try {
+      retrying = state.control.retryAll(false);
+      await gate.entered;
+      await mutate(state);
+      gate.release();
+      await assert.rejects(retrying, /没有可重新加入/);
+    } finally {
+      gate.release();
+      if (retrying) await Promise.allSettled([retrying]);
+    }
+  }
+
+  const skipFail = () => ({ title: "skip-fail", status: "completed", skipped: true });
+  for (const [name, row, mutate] of [
+    ["resolve sent", { title: "unknown", status: "needs_attention", unknown: true },
+      (state) => state.control.resolveTouchUnknown(state.id("unknown"), "sent")],
+    ["cancel", { title: "attention", status: "needs_attention" },
+      (state) => state.control.cancelTask(state.id("attention"))],
+    ["delete", { title: "attention", status: "needs_attention" },
+      (state) => state.control.deleteTasks([state.id("attention")], true)]
+  ]) {
+    const state = await fixture([skipFail(), row]);
+    try {
+      const resumes = state.replyResumes;
+      await failedRetryDuring(state, mutate);
+      assert.equal(state.control.status().enabled, false, `${name} changed the plan during retry`);
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes);
+      await state.control.tick();
+      assert.equal(state.touchSends, 0);
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    try {
+      const resumes = state.replyResumes;
+      await failedRetryDuring(state, async (current) => {
+        for (const recipient of current.control.status().recipients) await current.control.removeRecipient(recipient.id);
+        assert.equal(current.control.status().recipients.length, 0);
+      });
+      assert.equal(state.control.status().enabled, false, "removing the final recipient must not resume reception");
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes, "a rejected reception recovery must not call resumeWorkflow");
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    let releaseReply;
+    try {
+      state.replyResult = { handled: false, error: "reply failed", reasonCode: "reply_probe_error" };
+      state.replyGate = new Promise((resolve) => { releaseReply = resolve; });
+      const ticking = state.control.tick();
+      await new Promise((resolve) => setImmediate(resolve));
+      const resumes = state.replyResumes;
+      const retrying = state.control.retryAll(false);
+      releaseReply(); releaseReply = null; state.replyGate = null;
+      await ticking;
+      await assert.rejects(retrying, /没有可重新加入/);
+      assert.equal(state.control.status().enabled, false, "reply failure must prevent reception recovery");
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes);
+    } finally { releaseReply?.(); state.replyGate = null; await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    const gate = blockPause(state);
+    let retrying, disposing;
+    try {
+      retrying = state.control.retryAll(false);
+      await gate.entered;
+      disposing = state.control.dispose();
+      gate.release();
+      await disposing;
+      await assert.rejects(retrying, /没有可重新加入/);
+      assert.equal(state.control.controlSnapshot().enabled, false, "dispose during retry must prevent recovery");
+    } finally {
+      gate.release();
+      await Promise.allSettled([retrying, disposing].filter(Boolean));
+      await state.control.dispose();
+    }
+  }
+
+  {
+    const state = await fixture([skipFail(), { title: "other", status: "pending", accountName: "acct2" }]);
+    try {
+      const resumes = state.replyResumes;
+      await assert.rejects(state.control.retryAll(false), /没有可重新加入/);
+      assert.equal(state.control.status().phase, "listening", "another account's pending task must not block reception");
+      assert.equal(state.control.status().enabled, true);
+      assert.equal(state.replyResumes, resumes + 1);
+      assert.equal(state.touchSends, 0);
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail(), { title: "other", status: "pending", accountName: "acct2" }]);
+    try {
+      const resumes = state.replyResumes;
+      await failedRetryDuring(state, (current) => { current.account = "acct2"; });
+      assert.equal(state.control.status().enabled, false, "switching to an account with pending work must stay paused");
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes);
+      await state.control.tick();
+      assert.equal(state.touchSends, 0, "account switching must not start finite touch work");
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()], true);
+    try {
+      await assert.rejects(state.control.retryAll(false), /没有可重新加入/);
+      assert.equal(state.control.status().phase, "listening");
+      const steps = state.replySteps;
+      for (let attempt = 0; attempt < 50 && state.replySteps === steps; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(state.replySteps > steps, "recovered reception must schedule another poll");
+      assert.equal(state.touchSends, 0);
+    } finally { await state.control.dispose(); }
+  }
+}
+
 async function checkPresendDiagnosticLevels() {
   const cases = [
     { name: "disabled-stop", reason: "batch_authorization_missing", disable: true, expected: "warn" },
@@ -2417,6 +2611,7 @@ async function main() {
   await checkFloatingProgress();
   await checkDiagnosticLoggerFailureIsolation();
   await checkRetryAndContinueIpc();
+  await checkFailedRetryRecoveryGuards();
   await checkPresendDiagnosticLevels();
   await checkTouchStatusDoesNotRecoverActiveSend();
   await checkInterruptedSendRecoveryInSameProcess();
