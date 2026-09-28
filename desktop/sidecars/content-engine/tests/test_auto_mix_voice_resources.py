@@ -572,13 +572,13 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             / f"{voice_preview_cache_key(persona)}.wav"
         )
 
-    def _preview_volc_voice(self, persona_id):
+    def _preview_volc_voice(self, persona_id, **kwargs):
         # Stands in for the cloud call and the loudness pass; the fake analyzer
         # writes the WAV where preview() expects it.
         with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": "offline-test"}), \
                 mock.patch("content_engine.creative_domain.voice_preview_ffmpeg", return_value="fake-ffmpeg"), \
-                mock.patch("content_engine.creative_domain.normalize_voice_preview", return_value=None):
-            return self.service.preview_auto_mix_voice_persona(persona_id)
+                mock.patch("content_engine.creative_domain.normalize_voice_preview", side_effect=_normalize_like_ffmpeg):
+            return self.service.preview_auto_mix_voice_persona(persona_id, **kwargs)
 
     def test_unchanged_configured_voice_keeps_its_approval_across_a_catalog_absence(self):
         configured = {
@@ -763,6 +763,8 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         )
         for persona_id in ("volc-control@1", "volc-unknown@1", "steady-story@1"):
             _write_test_wav(self._saved_preview_path(persona_id))
+        for persona_id in ("volc-control@1", "volc-unknown@1"):
+            _normalize_like_ffmpeg(self._saved_preview_path(persona_id))
         self._saved_preview_path("volc-broken@1").write_bytes(b"RIFF-but-not-a-wave" * 64)
         _write_test_wav(self._saved_preview_path("volc-oversized@1"), frame_count=4_300_000)
         self.assertGreater(self._saved_preview_path("volc-oversized@1").stat().st_size, 8 * 1024 * 1024)
@@ -784,6 +786,107 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
                 self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
         self.assertEqual([], self.analyzer.calls)
         self.assertEqual([], self.analyzer.design_calls[design_calls:])
+
+    def test_raw_volcengine_audio_is_put_back_as_pending_loudness_not_as_a_saved_preview(self):
+        # The loudness pass failed, so the row was failed/normalization_failed and the
+        # file on disk was the provider's raw audio. The older build deleted that row too.
+        monkey = {
+            "persona_id": "volc-monkey-brother-2@1",
+            "provider": "volcengine",
+            "provider_model": "seed-tts-2.0",
+            "display_name": "猴哥 2.0",
+            "style": "playful",
+            "catalog_version": "2026.09.21-volcengine-monkey-2",
+            "provider_voice_id": "volc-monkey-private-voice",
+            "instruction": "",
+        }
+        bailian = {
+            "persona_id": "steady-story@2",
+            "display_name": "沉稳叙事",
+            "style": "steady_narration",
+            "catalog_version": "2026.08",
+            "provider_voice_id": "steady-provider-voice",
+            "instruction": "沉稳但不拖沓。",
+        }
+        self._sync([monkey, bailian])
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": "offline-test"}), \
+                mock.patch("content_engine.creative_domain.voice_preview_ffmpeg", return_value="fake-ffmpeg"), \
+                mock.patch("content_engine.creative_domain.normalize_voice_preview", side_effect=ContentEngineError(
+                    "auto_mix_voice_preview_normalization_failed", "local-only failure")):
+            with self.assertRaises(ContentEngineError):
+                self.service.preview_auto_mix_voice_persona("volc-monkey-brother-2@1")
+        self.assertEqual("auto_mix_voice_preview_normalization_failed",
+                         self._row("auto_mix_voice_previews_v1", "volc-monkey-brother-2@1")["error_code"])
+        raw = self._saved_preview_path("volc-monkey-brother-2@1")
+        raw_bytes = raw.read_bytes()
+        self.assertFalse(self.service.creative_domain._ffmpeg_wrote_wav(raw))
+        # Bailian audio is never rewritten: its saved file is the preview as heard.
+        _write_test_wav(self._saved_preview_path("steady-story@2"))
+        self.service.connection.execute(
+            "DELETE FROM auto_mix_voice_previews_v1 WHERE status NOT IN ('submitted', 'outcome_unknown')")
+
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": ""}):
+            self._restart([monkey, bailian])
+        row = self._row("auto_mix_voice_previews_v1", "volc-monkey-brother-2@1")
+        self.assertEqual(("failed", "auto_mix_voice_preview_normalization_pending", hashlib.sha256(raw_bytes).hexdigest()),
+                         (row["status"], row["error_code"], row["audio_digest"]))
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "steady-story@2")["status"])
+        listed = {item["voicePersonaId"]: item for item in self.service.list_auto_mix_voice_personas()["items"]}
+        self.assertNotEqual("completed", listed["volc-monkey-brother-2@1"]["previewStatus"])
+        with self.assertRaises(ContentEngineError) as held:
+            self.service.preview_auto_mix_voice_persona("volc-monkey-brother-2@1", cache_only=True)
+        self.assertEqual("auto_mix_voice_preview_not_cached", held.exception.code)
+        with self.assertRaises(ContentEngineError) as unheard:
+            self.service.approve_auto_mix_voice_persona("volc-monkey-brother-2@1")
+        self.assertEqual("auto_mix_voice_preview_required", unheard.exception.code)
+
+        # The next preview finishes only the local loudness pass: no provider call.
+        finished = self._preview_volc_voice("volc-monkey-brother-2@1")
+        self.assertEqual("completed", finished["previewStatus"])
+        self.assertEqual([], self.analyzer.calls)
+        self.assertTrue(self.service.creative_domain._ffmpeg_wrote_wav(raw))
+        self.assertEqual("approved", self.service.approve_auto_mix_voice_persona("volc-monkey-brother-2@1")["approvalStatus"])
+
+    def test_the_ffmpeg_mark_matches_what_normalize_voice_preview_writes(self):
+        from content_engine.auto_mix_resources import normalize_voice_preview, voice_preview_ffmpeg
+        try:
+            ffmpeg = voice_preview_ffmpeg()
+        except ContentEngineError:
+            self.skipTest("FFmpeg is not available on this machine")
+        path = self.root / "raw-provider-audio.wav"
+        tone = b"".join(int(8000 * ((index // 27) % 2 * 2 - 1)).to_bytes(2, "little", signed=True)
+                        for index in range(24_000))
+        with wave.open(str(path), "wb") as stream:
+            stream.setnchannels(1)
+            stream.setsampwidth(2)
+            stream.setframerate(24_000)
+            stream.writeframes(tone)
+        domain = self.service.creative_domain
+        self.assertFalse(domain._ffmpeg_wrote_wav(path), "the provider's raw audio carries no ffmpeg mark")
+        normalize_voice_preview(path, ffmpeg)
+        self.assertTrue(domain._ffmpeg_wrote_wav(path), "the loudness pass leaves ffmpeg's mark")
+
+    def test_only_ffmpeg_s_own_tag_marks_a_normalized_preview(self):
+        wrote = self.service.creative_domain._ffmpeg_wrote_wav
+        raw = self.root / "raw.wav"
+        _write_test_wav(raw)
+        self.assertFalse(wrote(raw))
+        normalized = self.root / "normalized.wav"
+        _write_test_wav(normalized)
+        _normalize_like_ffmpeg(normalized)
+        self.assertTrue(wrote(normalized))
+        # Other writers' INFO tags, or ffmpeg's name under another tag, are not the mark.
+        for name, tag, value in (("other-encoder", b"ISFT", b"Audition"),
+                                 ("title-only", b"INAM", b"Lavf62.12.101\x00")):
+            with self.subTest(name):
+                path = self.root / f"{name}.wav"
+                _write_test_wav(path)
+                _normalize_like_ffmpeg(path, tag=tag, value=value)
+                self.assertGreater(self.service.creative_domain._wav_duration_ms(path), 0, "still a valid WAV")
+                self.assertFalse(wrote(path))
+        not_wave = self.root / "not-a-wave.wav"
+        not_wave.write_bytes(b"RIFF\x00\x00\x00\x00AVI LIST")
+        self.assertFalse(wrote(not_wave))
 
     def test_cache_only_preview_without_a_saved_preview_never_reaches_the_provider(self):
         from content_engine.protocol import METHODS
@@ -884,6 +987,28 @@ def _write_test_wav(path, *, sample=b"\x01\x00", frame_count=2_400):
         stream.setsampwidth(2)
         stream.setframerate(24_000)
         stream.writeframes(sample * frame_count)
+
+
+def _normalize_like_ffmpeg(path, executable=None, *, tag=b"ISFT", value=b"Lavf62.12.101\x00"):
+    """What normalize_voice_preview leaves: the audio rewritten by ffmpeg's WAV muxer,
+    which adds LIST/INFO/ISFT "Lavf..." between fmt and data (as in the saved
+    previews on the development machine). tag and value (even length) vary the tag."""
+    path = Path(path)
+    with wave.open(str(path), "rb") as stream:
+        channels, width, rate = stream.getnchannels(), stream.getsampwidth(), stream.getframerate()
+        frames = stream.readframes(stream.getnframes())
+    fmt = b"".join((
+        (1).to_bytes(2, "little"), channels.to_bytes(2, "little"), rate.to_bytes(4, "little"),
+        (rate * channels * width).to_bytes(4, "little"), (channels * width).to_bytes(2, "little"),
+        (width * 8).to_bytes(2, "little"),
+    ))
+    info = b"INFO" + tag + len(value).to_bytes(4, "little") + value
+    chunks = b"".join((
+        b"fmt ", len(fmt).to_bytes(4, "little"), fmt,
+        b"LIST", len(info).to_bytes(4, "little"), info,
+        b"data", len(frames).to_bytes(4, "little"), frames,
+    ))
+    path.write_bytes(b"RIFF" + (4 + len(chunks)).to_bytes(4, "little") + b"WAVE" + chunks)
 
 
 def _write_streaming_placeholder_wav(path):

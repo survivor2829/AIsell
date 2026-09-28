@@ -779,6 +779,16 @@ class CreativeDomain:
         configuration. Recording it lets the user replay what they heard, free,
         and approve again themselves. This never approves anything. Design
         templates are skipped: their cache key does not bind the private voice.
+
+        preview() rewrites Volcengine audio through ffmpeg (loudness) in place;
+        until then the file is the provider's raw audio and its row is
+        failed/normalization_pending, a row the older build deleted as well.
+        Such a file is put back in that state, so the next preview only finishes
+        the local loudness pass (free) and the raw audio is never offered as the
+        saved preview. Bailian audio is not rewritten; it is written in one step
+        after a complete download, so a file cut short there means outside damage,
+        which the WAV check below catches unless the streaming placeholder header
+        (whose length is unknown by design) hides it.
         """
         rows = self.connection.execute(
             """
@@ -808,27 +818,61 @@ class CreativeDomain:
                     continue
                 self._wav_duration_ms(output)
                 audio_digest = self._sha256_file(output)
+                normalized = persona["provider"] != "volcengine" or self._ffmpeg_wrote_wav(output)
             except (ContentEngineError, OSError, RuntimeError, ValueError):
                 # One unreadable file must not keep the engine from starting.
                 continue
+            status, error_code = (
+                ("completed", None) if normalized
+                else ("failed", "auto_mix_voice_preview_normalization_pending")
+            )
             self.connection.execute(
                 """
                 INSERT INTO auto_mix_voice_previews_v1(
                     persona_id, cache_key, status, managed_relative_path,
                     audio_digest, error_code, created_at, updated_at
-                ) VALUES (?, ?, 'completed', ?, ?, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(persona_id) DO UPDATE SET
                     cache_key = excluded.cache_key,
-                    status = 'completed',
+                    status = excluded.status,
                     managed_relative_path = excluded.managed_relative_path,
                     audio_digest = excluded.audio_digest,
-                    error_code = NULL,
+                    error_code = excluded.error_code,
                     updated_at = excluded.updated_at
                 WHERE auto_mix_voice_previews_v1.status
                     NOT IN ('submitted', 'outcome_unknown')
                 """,
-                (persona["id"], cache_key, str(relative), audio_digest, now, now),
+                (persona["id"], cache_key, status, str(relative), audio_digest,
+                 error_code, now, now),
             )
+
+    @staticmethod
+    def _ffmpeg_wrote_wav(path):
+        """Whether ffmpeg's WAV muxer wrote this file (it tags LIST/INFO/ISFT "Lavf...").
+
+        normalize_voice_preview rewrites a Volcengine preview with ffmpeg; the
+        provider's own audio comes from Python's wave module, which writes only
+        the fmt and data chunks.
+        """
+        with Path(path).open("rb") as source:
+            header = source.read(4096)
+        if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+            return False
+        cursor = 12
+        while cursor + 8 <= len(header):
+            chunk, size = header[cursor:cursor + 4], int.from_bytes(header[cursor + 4:cursor + 8], "little")
+            if chunk == b"data":
+                return False
+            body = header[cursor + 8:cursor + 8 + size]
+            if chunk == b"LIST" and body[:4] == b"INFO":
+                inner = 4
+                while inner + 8 <= len(body):
+                    tag, length = body[inner:inner + 4], int.from_bytes(body[inner + 4:inner + 8], "little")
+                    if tag == b"ISFT" and body[inner + 8:inner + 8 + length].startswith(b"Lavf"):
+                        return True
+                    inner += 8 + length + length % 2
+            cursor += 8 + size + size % 2
+        return False
 
     def _auto_mix_voice_persona_row(self, voice_persona_id):
         persona_id = str(voice_persona_id or "").strip()
