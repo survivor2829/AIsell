@@ -168,6 +168,95 @@ const render = (batch, voices) => renderToStaticMarkup(React.createElement(Batch
   assert.equal(resumeNeedsVoice(null), false);
 }
 
+// The live card's click handlers. BatchVoiceRecovery is called as a plain function under a
+// minimal useState host (state kept per hook slot across renders), so its real play() and
+// approve() run against a stubbed window.xiaoxiContent.creative. Each click takes the
+// handler from the latest render, as React would, and the card is read again afterwards.
+function hookHost(Component, props) {
+  const slots = [];
+  let index = 0;
+  const original = React.useState;
+  React.useState = (initial) => {
+    const at = index++;
+    if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial;
+    return [slots[at], (next) => { slots[at] = typeof next === "function" ? next(slots[at]) : next; }];
+  };
+  return { render() { index = 0; return Component(props); }, restore() { React.useState = original; } };
+}
+async function clickCard(voices, api, clicks) {
+  const calls = { previews: [], approvals: [], onApproved: [] };
+  global.window = { xiaoxiContent: { creative: {
+    previewAutoMixVoicePersona: async (payload) => { calls.previews.push(payload); return api.preview(payload); },
+    approveAutoMixVoicePersona: async (payload) => { calls.approvals.push(payload); return api.approve(payload); }
+  } } };
+  const host = hookHost(BatchVoiceRecovery, { batch: batchWith(monkeyId), voices,
+    onApproved: async (name) => { calls.onApproved.push(name); } });
+  try {
+    const after = [];
+    for (const click of clicks) {
+      const view = host.render();
+      assert.ok(view.props.recovery.actions.includes(click), `${click} is on the card`);
+      view.props.onAction(click);
+      for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+      const { recovery, audio, notice, busy } = host.render().props;
+      after.push({ kind: recovery.kind, actions: recovery.actions, audio, notice, busy });
+    }
+    return { calls, after };
+  } finally {
+    host.restore();
+    delete global.window;
+  }
+}
+async function cardHandlers() {
+  const AUDIO = "data:audio/wav;base64,UklGRg==";
+  const played = async () => ({ ok: true, data: { audioDataUrl: AUDIO } });
+  const refused = (code, error) => async () => ({ ok: false, code, error });
+  const NOT_CACHED = "本机没有该声音已保存的试听；重新生成会调用一次云端配音（计费）。";
+  const approved = async () => ({ ok: true, data: { voicePersonaId: monkeyId, approvalStatus: "approved" } });
+
+  // 播放已保存试听 is a cacheOnly replay; 批准使用 appears only once it played.
+  let run = await clickCard([monkey()], { preview: played }, ["play_saved"]);
+  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId, cacheOnly: true }], "the free button replays with cacheOnly");
+  assert.deepEqual(run.after[0], { kind: "free", actions: ["play_saved", "approve"], audio: AUDIO, notice: "", busy: false });
+
+  // No saved preview: 重新生成试听 is an ordinary (charged) preview, never a cacheOnly one.
+  run = await clickCard([monkey({ previewStatus: "not_ready" })], { preview: played }, ["regenerate"]);
+  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId }]);
+  assert.deepEqual(run.after[0].actions, ["regenerate", "approve"]);
+
+  // The saved file is gone (not_cached): the card switches to the labelled paid button and
+  // does not offer 批准使用; that paid preview is then an ordinary request.
+  run = await clickCard([monkey()], {
+    preview: async (payload) => payload.cacheOnly ? refused(NOT_CACHED_CODE, NOT_CACHED)() : played()
+  }, ["play_saved", "regenerate"]);
+  assert.deepEqual(run.after[0], { kind: "paid", actions: ["regenerate"], audio: "", notice: NOT_CACHED, busy: false },
+    "not_cached switches the card to the paid preview, without approval");
+  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId, cacheOnly: true }, { voicePersonaId: monkeyId }]);
+  assert.deepEqual(run.after[1].actions, ["regenerate", "approve"]);
+
+  // Any other failed replay, or a reply without audio, leaves approval locked and says why.
+  for (const [preview, notice] of [
+    [refused("cloud_request_failed", "云端请求失败，请稍后再试。"), "云端请求失败，请稍后再试。"],
+    [async () => ({ ok: true, data: { audioDataUrl: null } }), "试听尚未就绪，请稍后再试。"]
+  ]) {
+    run = await clickCard([monkey()], { preview }, ["play_saved"]);
+    assert.deepEqual(run.after[0], { kind: "free", actions: ["play_saved"], audio: "", notice, busy: false },
+      `${notice}: nothing was heard, so 批准使用 stays hidden`);
+  }
+
+  // A refused approval is not reported as approved and does not re-read the list.
+  run = await clickCard([monkey()], { preview: played, approve: refused("auto_mix_voice_preview_required", "请先试听这个声音。") },
+    ["play_saved", "approve"]);
+  assert.deepEqual(run.calls.approvals, [{ voicePersonaId: monkeyId }]);
+  assert.deepEqual(run.calls.onApproved, [], "a refused approval does not tell the page it landed");
+  assert.equal(run.after[1].notice, "请先试听这个声音。");
+  // A landed one tells the page, which re-reads the approved list (voiceApproved).
+  run = await clickCard([monkey()], { preview: played, approve: approved }, ["play_saved", "approve"]);
+  assert.deepEqual(run.calls.approvals, [{ voicePersonaId: monkeyId }]);
+  assert.deepEqual(run.calls.onApproved, ["猴哥 2.0"], "the approval hands the page the voice name to re-read the list");
+  assert.equal(run.after[1].notice, "");
+}
+
 // The page after an approval (CE1 round-3 leftover): the approved list was read once on
 // mount, so every batch loaded afterwards still reported the voice as unapproved. Wired as
 // BatchCreativePage.tsx wires it; the source assertions below pin the lines it mirrors.
@@ -208,6 +297,7 @@ function workbench(api, { refreshAfterApproval }) {
   };
 }
 async function main() {
+  await cardHandlers();
   for (const refreshAfterApproval of [false, true]) {
     engineCalls.previews.length = 0;
     const bench = workbench(engine(), { refreshAfterApproval });
