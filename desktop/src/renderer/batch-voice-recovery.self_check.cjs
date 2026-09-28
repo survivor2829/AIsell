@@ -14,9 +14,10 @@ for (const extension of [".ts", ".tsx"]) {
   };
 }
 const {
-  ACTION_LABELS, NOT_CACHED_CODE, VOICE_RECOVERY_BLOCKS, approvedVoiceIds, sessionAfterPreview, voiceRecovery
+  ACTION_LABELS, NOT_CACHED_CODE, VOICE_RECOVERY_BLOCKS, approvedVoiceIds, previewAfterFailure, previewCharge,
+  resumeNeedsVoice, sessionAfterPreview, voiceRecovery
 } = require("./batch-voice-recovery.ts");
-const { BatchVoiceRecovery } = require("./BatchVoiceRecovery.tsx");
+const { BatchVoiceRecovery, VoiceRecoveryCard } = require("./BatchVoiceRecovery.tsx");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const read = (name) => fs.readFileSync(path.join(__dirname, name), "utf8");
@@ -97,6 +98,47 @@ const render = (batch, voices) => renderToStaticMarkup(React.createElement(Batch
     assert.doesNotMatch(markup, /<button/u);
   }
   assert.equal(render(batchWith(monkeyId), [monkey({ approvalStatus: "approved" })]), "");
+
+  // After a preview played: 批准使用 must feed the approval gate. With the preview gate
+  // instead, the preload hands the approval no click token and it can never go through.
+  const card = (session) => renderToStaticMarkup(React.createElement(VoiceRecoveryCard, {
+    recovery: voiceRecovery(batchWith(monkeyId), session.notCached ? [monkey({ previewStatus: "not_ready" })] : [monkey()], session),
+    audio: "data:audio/wav;base64,UklGRg==", onAction: () => undefined }));
+  for (const session of [{ auditioned: true }, { auditioned: true, notCached: true }]) {
+    const markup = card(session);
+    assert.match(markup, /<button type="button" class="batch-primary" data-xiaoxi-auto-mix-voice-approve="">批准使用「猴哥 2\.0」<\/button>/u,
+      "批准使用 carries the approval gate");
+    assert.equal((markup.match(/data-xiaoxi-auto-mix-voice-approve/gu) || []).length, 1);
+    assert.equal((markup.match(/data-xiaoxi-auto-mix-voice-preview/gu) || []).length, 1, "only the preview button feeds the audition gate");
+    assert.match(markup, session.notCached ? /data-xiaoxi-auto-mix-voice-preview="">重新生成试听/u : /data-xiaoxi-auto-mix-voice-preview="">播放已保存试听/u);
+    assert.match(markup, /<audio controls="" autoplay="" src="data:audio\/wav;base64,UklGRg==" aria-label="试听 猴哥 2\.0">/u);
+  }
+}
+
+// What a voice preview button costs, wherever it is (resource panel, 声音与配乐).
+{
+  assert.deepEqual(previewCharge("completed"), { cacheOnly: true, label: "不计费" }, "a completed preview only replays");
+  for (const status of ["not_ready", "failed", "submitted", "outcome_unknown", undefined]) {
+    assert.deepEqual(previewCharge(status), { cacheOnly: false, label: "计费一次" }, `${status}: synthesizes once`);
+  }
+  const saved = monkey();
+  const relabelled = previewAfterFailure(saved, true, NOT_CACHED_CODE);
+  assert.equal(relabelled.previewStatus, "not_ready", "a replay that found nothing saved relabels the voice");
+  assert.deepEqual(previewCharge(relabelled.previewStatus), { cacheOnly: false, label: "计费一次" },
+    "so the next click is the labelled paid preview, not the same free button forever");
+  assert.equal(saved.previewStatus, "completed", "the voice list item itself is not mutated");
+  assert.equal(previewAfterFailure(saved, true, "cloud_request_failed"), saved, "other failures change nothing");
+  assert.equal(previewAfterFailure(saved, false, NOT_CACHED_CODE), saved, "only a cacheOnly replay can report not_cached");
+}
+
+// 恢复任务 continues paid production that ends in the voice step (the engine refuses it
+// too, resume_creative_task) for confirmed copy and legacy batches; writing copy does not.
+{
+  const confirmed = { script_confirmation: { script_id: "s", revision: 1 } };
+  assert.equal(resumeNeedsVoice(batchWith(monkeyId, confirmed)), true, "e506: confirmed copy, paused production");
+  assert.equal(resumeNeedsVoice(batchWith(monkeyId)), false, "a paused copy-writing task does not use the voice");
+  assert.equal(resumeNeedsVoice({ settings: { voice_persona_id: monkeyId } }), true, "legacy samples and continue voice too");
+  assert.equal(resumeNeedsVoice(null), false);
 }
 
 // The page after an approval (CE1 round-3 leftover): the approved list was read once on
@@ -183,8 +225,23 @@ async function main() {
   assert.match(card, /previewAutoMixVoicePersona\?\.\(\{ voicePersonaId: voiceId, \.\.\.\(cacheOnly \? \{ cacheOnly: true \} : \{\}\) \}\)/u);
   assert.match(card, /play_saved: \(\) => play\(true\), regenerate: \(\) => play\(false\)/u, "only the free button replays with cacheOnly");
   assert.match(card, /sessionAfterPreview\(current, result\)/u);
-  assert.match(resourcePanel, /const cacheOnly = persona\.previewStatus === "completed";/u, "the panel's 不计费 button is a cacheOnly replay");
-  assert.match(resourcePanel, /persona\.previewStatus === "completed" \? "试听（不计费）" : "试听（计费一次）"/u);
+  assert.match(page, /const resumeHeld = paused && voiceBlocked && resumeNeedsVoice\(batch\) \? VOICE_RECOVERY_BLOCKS : "";/u);
+  assert.match(page, /\{resumeHeld && <p className="batch-hint" role="status">\{resumeHeld\}<\/p>\}<button disabled=\{busy \|\| Boolean\(resumeHeld\)\} title=\{resumeHeld \|\| undefined\} onClick=\{\(\) => void run\(async \(\) => \{\s*const action = paused \? "resume" : "pause";/u,
+    "恢复任务 waits for the voice card too, and says why");
+  // The resource panel and 声音与配乐 label and send their previews the same way.
+  assert.match(resourcePanel, /const \{ cacheOnly \} = previewCharge\(persona\.previewStatus\);[\s\S]{0,120}previewAutoMixVoicePersona\(\{ voicePersonaId: persona\.voicePersonaId, \.\.\.\(cacheOnly \? \{ cacheOnly \} : \{\}\) \}\)/u,
+    "the panel's 不计费 button is a cacheOnly replay");
+  assert.match(resourcePanel, /const next = previewAfterFailure\(persona, cacheOnly, errorCode\(error\)\);\s*if \(next !== persona\) setVoiceItems\(\(items\) => replacePersona\(items, next\)\);/u,
+    "and after not_cached it relabels the voice instead of offering 不计费 again");
+  assert.match(resourcePanel, /isPreviewing \? "读取中" : `试听（\$\{previewCharge\(persona\.previewStatus\)\.label\}）`/u);
+  assert.match(soundSettings, /const \{ cacheOnly \} = previewCharge\(voice\.previewStatus\);[\s\S]{0,200}api\.previewAutoMixVoicePersona\(\{ voicePersonaId: voice\.voicePersonaId, \.\.\.\(cacheOnly \? \{ cacheOnly \} : \{\}\) \}\)/u,
+    "试听声音 in 声音与配乐 replays a saved preview with cacheOnly");
+  assert.match(soundSettings, /const next = previewAfterFailure\(voice, cacheOnly, \(error as \{ code\?: string \}\)\.code\);\s*if \(next !== voice\) setVoices\(/u);
+  assert.match(soundSettings, /const voiceCharge = previewCharge\(current\?\.previewStatus\);/u);
+  assert.match(soundSettings, /onClick=\{\(\) => current && void auditionVoice\(current\)\}>\{loading === current\?\.voicePersonaId \? "准备试听…" : current \? `试听声音（\$\{voiceCharge\.label\}）` : "试听声音"\}/u,
+    "and says whether it is charged");
+  assert.doesNotMatch(soundSettings, /previewAutoMixVoicePersona\(\{ voicePersonaId: id \}\)/u, "no unlabelled paid preview is left");
+  assert.match(card, /onAction=\{\(action\) => void run\[action\]\(\)\} \/>/u, "the live card renders the checked view");
 
   console.log("Batch voice recovery card self-check passed");
 }

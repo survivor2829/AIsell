@@ -22,6 +22,7 @@ import {
   useState
 } from "react";
 import "./AutoMixResourcePanel.css";
+import { previewAfterFailure, previewCharge } from "./batch-voice-recovery";
 
 export type AutoMixVoiceApprovalStatus = "approved" | "pending" | "retired";
 export type AutoMixVoicePreviewStatus =
@@ -521,7 +522,7 @@ export function AutoMixResourcePanel({
     setPreviewingId(persona.voicePersonaId);
     setVoiceNotice(null);
     // A button labelled 不计费 only ever replays the saved preview.
-    const cacheOnly = persona.previewStatus === "completed";
+    const { cacheOnly } = previewCharge(persona.previewStatus);
     try {
       const result = await previewAutoMixVoicePersona({ voicePersonaId: persona.voicePersonaId, ...(cacheOnly ? { cacheOnly } : {}) });
       if (!result.audioDataUrl) {
@@ -535,10 +536,9 @@ export function AutoMixResourcePanel({
         text: result.cacheHit ? "试听已就绪（复用本地缓存）" : "试听已生成并开始播放"
       });
     } catch (error) {
-      if (cacheOnly && errorCode(error) === "auto_mix_voice_preview_not_cached") {
-        // Nothing saved to replay after all: the button now says the next try is charged.
-        setVoiceItems((items) => replacePersona(items, { ...persona, previewStatus: "not_ready" }));
-      }
+      // Nothing saved to replay after all: the button now says the next try is charged.
+      const next = previewAfterFailure(persona, cacheOnly, errorCode(error));
+      if (next !== persona) setVoiceItems((items) => replacePersona(items, next));
       setVoiceNotice({ tone: "error", text: errorText(error, "声音试听失败，请重试") });
     } finally {
       setPreviewingId(null);
@@ -798,7 +798,7 @@ export function AutoMixResourcePanel({
                         disabled={!canPreview || voiceBusy}
                       >
                         {isPreviewing ? <LoaderCircle className="is-spinning" size={15} aria-hidden="true" /> : <Play size={15} aria-hidden="true" />}
-                        {isPreviewing ? "读取中" : persona.previewStatus === "completed" ? "试听（不计费）" : "试听（计费一次）"}
+                        {isPreviewing ? "读取中" : `试听（${previewCharge(persona.previewStatus).label}）`}
                       </button>
                       <button
                         type="button"

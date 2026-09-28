@@ -7,7 +7,7 @@ export type RecoveryVoice = {
   approvalStatus?: string;
   previewStatus?: string;
 };
-export type RecoveryBatch = { archived?: boolean; settings?: { voice_persona_id?: string } };
+export type RecoveryBatch = { archived?: boolean; script_confirmation?: unknown; settings?: { voice_persona_id?: string; workflow_version?: number } };
 // play_saved replays the saved preview (cacheOnly, no charge); regenerate synthesizes
 // a new one (one paid cloud call); approve appears only after a preview played.
 export type VoiceRecoveryAction = "play_saved" | "regenerate" | "approve";
@@ -35,6 +35,28 @@ export const ACTION_LABELS: Record<VoiceRecoveryAction, (name: string) => string
 export function sessionAfterPreview(session: VoiceRecoverySession, outcome: { audioDataUrl?: string | null; code?: string }) {
   if (outcome.audioDataUrl) return { ...session, auditioned: true };
   return outcome.code === NOT_CACHED_CODE ? { ...session, notCached: true } : session;
+}
+
+// What a voice's preview button costs. Only a completed preview replays from the
+// engine's cache, and cacheOnly makes sure that is never a paid call; any other state
+// synthesizes once (one paid cloud call).
+export function previewCharge(previewStatus?: string) {
+  const cacheOnly = previewStatus === "completed";
+  return { cacheOnly, label: cacheOnly ? "不计费" : "计费一次" };
+}
+// A cacheOnly replay that found nothing saved (a deleted file, a stale key): the voice
+// has no free preview after all, so its button says the next try is charged instead of
+// sending cacheOnly forever.
+export function previewAfterFailure<T extends { previewStatus?: string }>(voice: T, cacheOnly: boolean, code?: string): T {
+  return cacheOnly && code === NOT_CACHED_CODE ? { ...voice, previewStatus: "not_ready" } as T : voice;
+}
+
+// Resuming a paused task (恢复任务) continues paid production that ends in the voice
+// step when the batch has confirmed copy, or is a legacy batch (its samples and
+// continue); the engine refuses those resumes too (resume_creative_task). Writing copy
+// does not use the voice.
+export function resumeNeedsVoice(batch: RecoveryBatch | null | undefined) {
+  return Boolean(batch) && (batch?.settings?.workflow_version !== 2 || Boolean(batch?.script_confirmation));
 }
 
 export function approvedVoiceIds(items: RecoveryVoice[]) {

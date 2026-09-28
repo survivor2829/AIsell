@@ -8,7 +8,7 @@ import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
 import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
 import { BatchVoiceRecovery } from "./BatchVoiceRecovery";
-import { type RecoveryVoice, VOICE_RECOVERY_BLOCKS, approvedVoiceIds as approvedIn, voiceRecovery } from "./batch-voice-recovery";
+import { type RecoveryVoice, VOICE_RECOVERY_BLOCKS, approvedVoiceIds as approvedIn, resumeNeedsVoice, voiceRecovery } from "./batch-voice-recovery";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
 import creativeThinkingStill from "./assets/creative-thinking-still.webp";
@@ -397,6 +397,9 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty || voiceBlocked} onClick={() => void start("continue")}>继续未完成作品</button></div>
     : null;
   const recoveryHeld = voiceBlocked ? VOICE_RECOVERY_BLOCKS : dirty || saving ? "有修改正在保存，保存完成后再重试。" : "";
+  // 恢复任务 requeues the paused production itself (tasks.resume); the engine refuses it
+  // without the voice as well, so it waits for the card like 继续未完成作品.
+  const resumeHeld = paused && voiceBlocked && resumeNeedsVoice(batch) ? VOICE_RECOVERY_BLOCKS : "";
   const skippedJobs = batch?.production_jobs?.filter((job) => job.status === "skipped") || [];
   const flowStep = flowView ?? (dirty ? 0 : batch?.archived || batch?.script_confirmation || shownCandidates.length ? 3 : options.length ? 2 : running ? 1 : 0);
   const flowSteps = [
@@ -464,7 +467,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
         <span>第三方配音或回听没有返回可用回执，系统已保留前面已完成的结果。请先核对对应平台记录，确认这次未生成可用音频后，仅重试未完成的语音步骤。{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
         <button type="button" data-batch-action="voice-resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverVoice()}>确认风险，仅重试未完成配音</button>
       </div>}
-      {batch.task_id && (running || paused) && batch.status !== "outcome_unknown" && <><button disabled={busy} onClick={() => void run(async () => {
+      {batch.task_id && (running || paused) && batch.status !== "outcome_unknown" && <>{resumeHeld && <p className="batch-hint" role="status">{resumeHeld}</p>}<button disabled={busy || Boolean(resumeHeld)} title={resumeHeld || undefined} onClick={() => void run(async () => {
         const action = paused ? "resume" : "pause";
         const r = await window.xiaoxiContent?.tasks[action]({ taskId: batch.task_id! });
         if (!r?.ok) throw new Error(r?.error); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id }));

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ACTION_LABELS, type RecoveryBatch, type RecoveryVoice, type VoiceRecoveryAction, type VoiceRecoverySession, sessionAfterPreview, voiceRecovery } from "./batch-voice-recovery";
+import { ACTION_LABELS, type RecoveryBatch, type RecoveryVoice, type VoiceRecovery, type VoiceRecoveryAction, type VoiceRecoverySession, sessionAfterPreview, voiceRecovery } from "./batch-voice-recovery";
 
 type Result = { ok: boolean; data?: { audioDataUrl?: string | null } | null; error?: string; code?: string };
 type VoiceApi = {
@@ -51,13 +51,24 @@ export function BatchVoiceRecovery({ batch, voices, disabled, onApproved }: {
     } finally { setBusy(false); }
   }
   const run: Record<VoiceRecoveryAction, () => Promise<void>> = { play_saved: () => play(true), regenerate: () => play(false), approve };
+  return <VoiceRecoveryCard recovery={recovery} audio={audio} notice={notice} busy={busy} disabled={disabled}
+    onAction={(action) => void run[action]()} />;
+}
+
+// The card as shown. Each button carries the trusted-click gate the preload checks for
+// its call: the previews feed the audition gate, 批准使用 the approval gate (with the
+// wrong one the approval gets no click token and can never go through).
+export function VoiceRecoveryCard({ recovery, audio, notice, busy, disabled, onAction }: {
+  recovery: VoiceRecovery; audio?: string; notice?: string; busy?: boolean; disabled?: boolean; onAction: (action: VoiceRecoveryAction) => void;
+}) {
+  const { name } = recovery;
   // Every row is a span so it takes the card's full width (.batch-planning-recovery > span).
   return <div className="batch-planning-recovery batch-voice-recovery" role="status">
     <span>{recovery.message}</span>
     {recovery.actions.length > 0 && <span className="batch-toolbar">{recovery.actions.map((action) => <button key={action} type="button"
       className={action === "approve" ? "batch-primary" : undefined}
       {...(action === "approve" ? { "data-xiaoxi-auto-mix-voice-approve": "" } : { "data-xiaoxi-auto-mix-voice-preview": "" })}
-      disabled={busy || disabled} onClick={() => void run[action]()}>{busy && action !== "approve" ? "读取中…" : ACTION_LABELS[action](name)}</button>)}</span>}
+      disabled={busy || disabled} onClick={() => onAction(action)}>{busy && action !== "approve" ? "读取中…" : ACTION_LABELS[action](name)}</button>)}</span>}
     {audio && <span className="batch-audition"><audio controls autoPlay src={audio} aria-label={`试听 ${name}`} /></span>}
     {notice && <span className="batch-notice" role="alert">{notice}</span>}
   </div>;
