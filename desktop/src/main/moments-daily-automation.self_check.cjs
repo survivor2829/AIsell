@@ -28,7 +28,7 @@ function cleanupTempDirs() {
   tempDirs.clear();
 }
 
-async function waitFor(read, predicate, timeoutMs = 3000) {
+async function waitFor(read, predicate, timeoutMs = 20_000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const value = read();

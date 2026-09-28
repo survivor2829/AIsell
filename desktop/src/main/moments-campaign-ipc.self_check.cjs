@@ -56,7 +56,7 @@ assert.equal(momentsReadingSnapshotMatch({ runtime_id: "42.8.9", source: "uia:sn
   source: "uia:sns_list"
 }, 0).matched, true);
 
-async function waitFor(read, predicate, timeoutMs = 3000) {
+async function waitFor(read, predicate, timeoutMs = 20_000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const value = read();

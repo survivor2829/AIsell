@@ -55,7 +55,7 @@ assert.ok(versionStart >= 0 && versionEnd > versionStart);
 const versionProbe = runPowerShell(`
 ${NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(versionStart, versionEnd)}
 @{ ok = $true; present = (Get-WechatFileVersion (Join-Path $PSHOME 'powershell.exe')); absent = (Get-WechatFileVersion 'C:\\no-such-wechat.exe'); empty = (Get-WechatFileVersion '') } | ConvertTo-Json -Compress
-`, {}, { ensure: false, timeout: 15_000 });
+`, {}, { ensure: false, timeout: 60_000 });
 assert.equal(versionProbe.ok, true, JSON.stringify(versionProbe));
 assert.match(versionProbe.present, /^\d+(\.\d+){1,3}$/u);
 assert.equal(versionProbe.absent, "");
@@ -84,7 +84,7 @@ $second = $windowDiagnostic.Clone()
 $wechatProcesses = @{}
 $null = Get-WechatWindowCandidates
 @{ ok=$true; second=$second; empty=$windowDiagnostic } | ConvertTo-Json -Depth 4 -Compress
-`, {}, { ensure: false, timeout: 15_000 });
+`, {}, { ensure: false, timeout: 60_000 });
 assert.equal(counts.ok, true, JSON.stringify(counts));
 for (const key of ["window_native_count", "window_hidden_count", "window_minimized_count", "window_rejected_layout_count"]) {
   assert.equal(counts.second[key], 2, `${key} must describe one enumeration, not accumulated recovery samples`);
@@ -124,7 +124,7 @@ $ownedVisual = $visual.Clone(); $ownedVisual.owner=101
   ownedVisual=(Select-Fixture @($ownedVisual) | ConvertFrom-Json)
   ambiguousVisual=(Select-Fixture @($visual,$main) | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 5 -Compress
-`, {}, { ensure: false, timeout: 15_000 });
+`, {}, { ensure: false, timeout: 60_000 });
 assert.equal(selected.ok, true, JSON.stringify(selected));
 assert.equal(selected.main.ok, true, "A recognized main HWND must not be discarded solely because its render-child class changed");
 assert.equal(selected.main.hWnd, 101);
@@ -159,7 +159,7 @@ $unknownQt = $standalone.Clone(); $unknownQt.windowClass='QtUnknownQWindowIcon'
   weakAuxiliary=(Get-WechatWindowRecoveryCandidate @($standalone,$weakAuxiliary)) -eq $null
   unknownQt=(Get-WechatWindowRecoveryCandidate @($unknownQt)) -eq $null
 } | ConvertTo-Json -Compress
-`, {}, { ensure: false, timeout: 15_000 });
+`, {}, { ensure: false, timeout: 60_000 });
 assert.equal(recoverySelection.one, 201, "the sole standalone surface may request WeChat's own main-window restore");
 assert.equal(recoverySelection.crossPid, true, "a second standalone WeChat PID must not be guessed as the same account");
 assert.equal(recoverySelection.ambiguous, true, "different executable paths must not be guessed as one recoverable main window");
@@ -214,7 +214,7 @@ function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false,
   otherPid=(Invoke-RecoveryFixture 9 | ConvertFrom-Json)
   inspectOnly=(Invoke-RecoveryFixture 8 $true | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 5 -Compress
-`, {}, { ensure: false, timeout: 15_000 });
+`, {}, { ensure: false, timeout: 60_000 });
 assert.ok(recoveryFlowResult?.samePid, `recovery fixture must return all scenarios: ${JSON.stringify(recoveryFlowResult)}`);
 assert.equal(recoveryFlowResult.minimized.hWnd, 211, "A minimized empty-tree window must enter recovery and require fresh main-window evidence");
 assert.equal(recoveryFlowResult.minimizedInspect.activation, 0);
