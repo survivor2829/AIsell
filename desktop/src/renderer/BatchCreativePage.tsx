@@ -6,7 +6,7 @@ import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionTe
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { createDraftQueue, waitForDraftWrites } from "./batch-draft-queue";
+import { createDraftQueue, discardPendingDraft, isDeterministicDraftError, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
 import creativeThinkingStill from "./assets/creative-thinking-still.webp";
@@ -72,8 +72,10 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const draftOwner = useRef(0);
   const mounted = useRef(true);
   const latestFingerprint = useRef("");
+  const approvedVoiceIds = useRef<Set<string> | null>(null);
   const [draftQueue] = useState(() => createDraftQueue<Record<string, unknown> & { batch_id?: string }, Batch>({
     save: (value) => callBatch<Batch>("save", value),
+    discard: isDeterministicDraftError,
     active: (value) => { if (mounted.current) setSaving(value); },
     saved: (value, fingerprint, owner) => {
       if (owner !== draftOwner.current) return;
@@ -89,10 +91,17 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       setBatch(value);
       if (fingerprint === latestFingerprint.current) setDirty(false);
     },
-    failed: (error, owner) => {
+    failed: (error, owner, fingerprint) => {
+      // The queue has dropped this edit; keep a copy instead of replaying it on every open.
+      if (isDeterministicDraftError(error)) discardPendingDraft(localStorage, String((error as { code?: string }).code), fingerprint);
       if (mounted.current && owner === draftOwner.current) setNotice(`草稿尚未保存：${(error as Error).message}`);
     },
   }));
+  function voiceWarning(b: Batch) {
+    const voice = b.settings?.voice_persona_id;
+    return voice && !b.archived && approvedVoiceIds.current && !approvedVoiceIds.current.has(voice)
+      ? "该批次的声音需要重新试听批准，或改选已批准的声音。" : "";
+  }
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
   const locked = busy || running || paused || Boolean(batch?.archived);
@@ -140,7 +149,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       : b.selected_script_id ? { [b.selected_script_id]: String(b.target_count || 1) }
       : b.script_options?.length === 1 ? { [b.script_options[0].candidate_id]: "1" } : {});
     setSoundDirty(false);
-    setCount(b.target_count ? String(b.target_count) : b.recommended_count ? String(b.recommended_count) : ""); manualCount.current = b.target_count != null; setDirty(false); setNotice("");
+    setCount(b.target_count ? String(b.target_count) : b.recommended_count ? String(b.recommended_count) : ""); manualCount.current = b.target_count != null; setDirty(false); setNotice(voiceWarning(b));
 
   }
   async function run(action: () => Promise<void>) {
@@ -159,6 +168,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       if (creative) {
         const results = await Promise.allSettled([creative.listAutoMixVoicePersonas(), creative.listBrandProfiles()]);
         if (results[0].status === "fulfilled") {
+          approvedVoiceIds.current = new Set((results[0].value.data?.items || []).filter((v) => v.approvalStatus === "approved").map((v) => v.voicePersonaId));
           const approved = (results[0].value.data?.items || []).filter((v) => v.approvalStatus === "approved" && v.provider === "volcengine");
           setVoices(approved);
           const savedVoice = preferredVoice();
@@ -174,30 +184,34 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
         }
         if (results[1].status === "fulfilled") setBrands(results[1].value.data?.items || []);
       }
-      let pending: { draft: Record<string, unknown>; fingerprint: string } | null = null;
       // The previous page may still be saving a newly created batch. Recover its ID first.
       await waitForDraftWrites();
-      try { pending = JSON.parse(localStorage.getItem("batch-studio-pending-draft") || "null"); } catch { /* Ignore invalid UI recovery data. */ }
-      if (pending?.draft && (!initial?.batchId || pending.draft.batch_id === initial.batchId)) {
-        try {
-          const restored = await callBatch<Batch>("save", pending.draft);
-          localStorage.removeItem("batch-studio-pending-draft");
-          localStorage.setItem("batch-studio-draft-id", restored.batch_id);
-          load(restored);
-          if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
-          return;
-        } catch { setNotice("上次编辑仍保存在本机，当前任务结束后可重新打开恢复。"); }
+      // Never replays onto a batch past drafting, keeps the edit through transient
+      // failures, and backs it up once a deterministic rejection stops the replay.
+      const restore = await restorePendingDraft<Batch>({
+        storage: localStorage, batchId: initial?.batchId,
+        get: (batchId) => callBatch<Batch>("get", { batch_id: batchId }),
+        save: (value) => callBatch<Batch>("save", value),
+      });
+      if (restore.kind === "restored") {
+        localStorage.setItem("batch-studio-draft-id", restore.batch.batch_id);
+        load(restore.batch);
+        if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
+        return;
       }
-      if (initial?.batchId) load(await callBatch<Batch>("get", { batch_id: initial.batchId }));
+      const notices = restore.kind === "none" ? [] : [restore.message];
+      let loaded: Batch | null = null;
+      if (initial?.batchId) load(loaded = await callBatch<Batch>("get", { batch_id: initial.batchId }));
       else if (initial?.assetIds) { setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: "ideas" }); setDirty(true); }
       else {
         const savedId = localStorage.getItem("batch-studio-draft-id");
         if (savedId) {
-          try { const restored = await callBatch<Batch>("get", { batch_id: savedId }); if (!restored.archived) load(restored); }
-          catch { setNotice("上次草稿暂时无法读取，可从制作记录重新打开。"); }
+          try { const restored = await callBatch<Batch>("get", { batch_id: savedId }); if (!restored.archived) load(loaded = restored); }
+          catch { notices.push("上次草稿暂时无法读取，可从制作记录重新打开。"); }
         }
       }
-      if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
+      notices.push((loaded && voiceWarning(loaded)) || (incompatibleVoice ? "上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。" : ""));
+      if (notices.some(Boolean)) setNotice(notices.filter(Boolean).join(" "));
     });
   }, []);
   useEffect(() => {

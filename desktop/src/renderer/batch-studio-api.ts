@@ -44,9 +44,13 @@ export function batchApi(): BatchApi {
   if (!api) throw new Error("内容引擎尚未连接，请重新启动应用。");
   return api;
 }
+export type BatchError = Error & { code?: string };
 export async function callBatch<T>(action: string, payload?: unknown): Promise<T> {
   const result = await batchApi()[action](payload);
-  if (!result.ok || result.data === undefined) throw new Error(result.error || "操作未完成，请重试。");
+  if (!result.ok || result.data === undefined) {
+    // Callers decide between "retry later" and "this draft can never be saved" by code.
+    throw Object.assign(new Error(result.error || "操作未完成，请重试。"), { code: result.code }) as BatchError;
+  }
   return result.data as T;
 }
 export const assetUrl = (id: string, variant = "thumbnail") => `xiaoxi-content://asset/${id}/${variant}`;
