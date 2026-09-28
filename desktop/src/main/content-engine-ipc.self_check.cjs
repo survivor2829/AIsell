@@ -1301,9 +1301,10 @@ async function main() {
       transitioningTaskId,
       "task failures must deduplicate per task without persisting the task id in the logger signature"
     );
+    // new_failure is not a registered code: since CE2 its validated raw_code is kept too.
     assert.deepEqual(
-      Object.keys(transitionEvents[0][2] || {}).sort(),
-      ["error_code", "task_id"],
+      transitionEvents[0][2],
+      { task_id: transitioningTaskId, error_code: "unknown_error", raw_code: "new_failure" },
       "task diagnostics must contain only the fields needed to locate and repair the failure"
     );
     assert.equal(JSON.stringify(transitionEvents).includes("must-not-leak"), false);
@@ -1774,6 +1775,27 @@ async function main() {
       1,
       "a task that fails before the first poll must still be logged when it failed in this session"
     );
+    // An unregistered task error code stays locatable in task_terminal, as it does for a
+    // failed IPC call; a registered code or anything shaped like a secret adds nothing.
+    assert.deepEqual(
+      diagnosticEvents.find((entry) => entry[1] === "task_terminal" && entry[2]?.task_id === directFailureTaskId)[2],
+      { task_id: directFailureTaskId, error_code: "unknown_error", raw_code: "fast_failure" }
+    );
+    for (const [taskId, errorCode, expected] of [
+      ["task_6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a", "cloud_request_failed", { error_code: "cloud_request_failed" }],
+      ["task_6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b", "sk_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", { error_code: "unknown_error" }],
+      ["task_6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c", "0123456789abcdef0123456789abcdef", { error_code: "unknown_error" }],
+      ["task_6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d", "narrated future check", { error_code: "unknown_error" }]
+    ]) {
+      listedTaskItems = [task({
+        task_id: taskId, status: "failed", error_code: errorCode, error_message: "失败",
+        updated_at: "2026-08-21T00:03:00.000Z"
+      })];
+      await handlers.get(CONTENT_ENGINE_CHANNELS.listTasks)({}, { limit: 10 });
+      const terminal = diagnosticEvents.find((entry) => entry[1] === "task_terminal" && entry[2]?.task_id === taskId);
+      assert.deepEqual(terminal[2], { task_id: taskId, ...expected }, `task_terminal for ${errorCode}`);
+      assert.equal(JSON.stringify(terminal).includes("ABCDEFGHIJ"), false);
+    }
 
     const sessionOwnedTaskId = "task_56565656565656565656565656565656";
     const analyzeAssetsForSessionTask = controller.analyzeAssets;
@@ -2733,6 +2755,81 @@ async function main() {
       approveVoiceCallCount,
       "审批点击 token 重放不得到达内容引擎"
     );
+
+    // The batch page's recovery card replays the saved preview with cacheOnly: the flag
+    // reaches the engine as a real boolean, the click is still required, and only a
+    // replay that returned audio opens the approval gate.
+    {
+      const monkeyId = "volc-monkey-brother-2@1";
+      const originalPreview = controller.previewAutoMixVoicePersona;
+      const previewCalls = [];
+      let notCached = false;
+      controller.previewAutoMixVoicePersona = async (voicePersonaId, options) => {
+        previewCalls.push([voicePersonaId, options]);
+        if (notCached) {
+          throw Object.assign(new Error("本机没有可直接播放的已保存试听。C:\\must-not-leak"), {
+            code: "auto_mix_voice_preview_not_cached"
+          });
+        }
+        return autoMixVoicePreview({ voicePersona: autoMixVoicePersona({ voicePersonaId }) });
+      };
+      const preview = (extra, clickToken = autoMixClickToken(
+        CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona, randomUUID()
+      )) => handlers.get(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona)(
+        { sender: mainWindow.webContents }, { voicePersonaId: monkeyId, clickToken, ...extra }
+      );
+      const approve = () => handlers.get(CONTENT_ENGINE_CHANNELS.approveAutoMixVoicePersona)(
+        { sender: mainWindow.webContents },
+        { voicePersonaId: monkeyId, clickToken: autoMixClickToken(CONTENT_ENGINE_CHANNELS.approveAutoMixVoicePersona, randomUUID()) }
+      );
+      const approvalsBefore = calls.filter((call) => call[0] === "approveAutoMixVoicePersona").length;
+      for (const cacheOnly of ["true", 1, 0, null, {}]) {
+        const refused = await preview({ cacheOnly });
+        assert.equal(refused.code, "invalid_params", `cacheOnly ${JSON.stringify(cacheOnly)} must be refused, not coerced`);
+      }
+      assert.equal((await preview({ cacheOnly: true }, "")).code, "trusted_user_click_required",
+        "a free replay still needs the user's own click");
+      assert.equal(previewCalls.length, 0, "refused previews never reach the engine");
+
+      notCached = true;
+      const notificationsBefore = notifications.length;
+      const missing = await preview({ cacheOnly: true });
+      assert.deepEqual(previewCalls.at(-1), [monkeyId, { cacheOnly: true }]);
+      assert.equal(missing.code, "auto_mix_voice_preview_not_cached");
+      assert.match(missing.error, /已保存试听.*计费/u);
+      assert.equal(missing.error.includes("must-not-leak"), false);
+      assert.equal(notifications.length, notificationsBefore, "the page offers the paid preview instead; no desktop notification");
+      assert.equal((await approve()).code, "auto_mix_voice_preview_required", "a replay that found nothing does not open the gate");
+
+      notCached = false;
+      const replay = await preview({ cacheOnly: true });
+      assert.equal(replay.ok, true);
+      assert.match(replay.data.audioDataUrl, /^data:audio\/wav;base64,/u);
+      const approvedAfterReplay = await approve();
+      assert.equal(approvedAfterReplay.ok, true, "a replay that returned audio lets the user approve");
+      assert.equal((await approve()).code, "auto_mix_voice_preview_required", "and only once");
+      assert.equal(calls.filter((call) => call[0] === "approveAutoMixVoicePersona").length, approvalsBefore + 1);
+
+      await preview({});
+      assert.deepEqual(previewCalls.at(-1), [monkeyId, { cacheOnly: false }], "an ordinary preview says so explicitly");
+      controller.previewAutoMixVoicePersona = originalPreview;
+    }
+    for (const [code, text] of [
+      ["provider_usage_write_failed", /无法写入云端调用记录.*磁盘/u]
+    ]) {
+      const originalPreview = controller.previewAutoMixVoicePersona;
+      controller.previewAutoMixVoicePersona = async () => {
+        throw Object.assign(new Error("调用记录无法保存。C:\\must-not-leak"), { code });
+      };
+      const failed = await handlers.get(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona)(
+        { sender: mainWindow.webContents },
+        { voicePersonaId: "natural-life@1", clickToken: autoMixClickToken(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona, randomUUID()) }
+      );
+      controller.previewAutoMixVoicePersona = originalPreview;
+      assert.equal(failed.code, code, `${code} must reach the page as its own code`);
+      assert.match(failed.error, text);
+      assert.equal(failed.error.includes("must-not-leak"), false);
+    }
 
     const rejectedPrivateMusicField = await handlers.get(
       CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack
