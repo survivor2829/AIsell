@@ -29,3 +29,10 @@
 
 - %TEMP% 里有损坏条目 `xiaoxi-workflow-order-kqPUYj`，需要用管理员权限运行 `chkdsk C: /f`（重启时执行）修复。修好后，%TEMP% 下的 `xiaoxi-*` 测试垃圾可以一起清掉。
 - 9-24 创建的审查工作树曾被 Windows 临时清理删掉。基线工作树已改到 `C:\Users\Scott\xiaoxi-review\base-branch`，审查脚本备份在 `C:\Users\Scott\xiaoxi-review\scratch-backup`。
+
+## 处理安排（2026-09-28）
+
+- 第 1、2、8 条 → L1（B 线，`2026-09-28-L1-selfcheck-hygiene-task.md`）。
+- 第 3–7、11 条 → L2（A 线，`2026-09-28-L2-capture-sweep-and-tests-task.md`）。
+- 第 9 条：保守设计，不改。
+- 第 10 条：属于发送链路的判定规则，发布前不改；冻结后用真实数据评估。
