@@ -6,7 +6,7 @@ import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionTe
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
+import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, retryHold, waitForDraftWrites } from "./batch-draft-queue";
 import { BatchVoiceRecovery } from "./BatchVoiceRecovery";
 import { type RecoveryVoice, VOICE_RECOVERY_BLOCKS, approvedVoiceIds as approvedIn, resumeNeedsVoice, voiceRecovery } from "./batch-voice-recovery";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
@@ -67,6 +67,9 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const [now, setNow] = useState(Date.now());
   const [notice, setNotice] = useState("");
   const [dirty, setDirty] = useState(false);
+  // The edit the engine last rejected outright. The queue holds it without retrying, so
+  // the retry buttons name that rejection instead of waiting for a save that never comes.
+  const [rejectedEdit, setRejectedEdit] = useState<{ fingerprint: string; owner: number; message: string } | null>(null);
   const [soundDirty, setSoundDirty] = useState(false);
   const [visibleCandidates, setVisibleCandidates] = useState(12);
   const [selectedCounts, setSelectedCounts] = useState<Record<string, string>>({});
@@ -93,6 +96,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       if (!mounted.current || owner !== draftOwner.current) return;
       selectedId.current = value.batch_id;
       setBatch(value);
+      setRejectedEdit(null);
       if (fingerprint === latestFingerprint.current) {
         setDirty(false);
         const failure = draftFailure.current;
@@ -108,6 +112,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       const message = `${dropped ? "上一份编辑未能保存" : "草稿尚未保存"}：${(error as Error).message}`;
       if (dropped) droppedNotice.current = message;
       else draftFailure.current = message;
+      if (isDeterministicDraftError(error)) setRejectedEdit({ fingerprint, owner, message: (error as Error).message });
       setNotice(message);
     },
   }));
@@ -133,6 +138,12 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     applyVoices(result.data.items || []);
     const current = batch ? voiceWarning(batch) : "";
     if (!current) setNotice((notice) => notice.replace("该批次的声音需要重新试听批准，或改选已批准的声音。", "").trim());
+  }
+  // An edit the engine rejected for the unapproved voice is held, not retried, so after the
+  // approval it is tried once more right away instead of waiting for the next change.
+  async function voiceApproved() {
+    await refreshVoices();
+    await draftQueue.retryHeld().catch(() => undefined);
   }
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
@@ -396,7 +407,8 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const continueAction = batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown"
     ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty || voiceBlocked} onClick={() => void start("continue")}>继续未完成作品</button></div>
     : null;
-  const recoveryHeld = voiceBlocked ? VOICE_RECOVERY_BLOCKS : dirty || saving ? "有修改正在保存，保存完成后再重试。" : "";
+  const editRejected = rejectedEdit && rejectedEdit.owner === draftOwner.current && rejectedEdit.fingerprint === draftFingerprint ? rejectedEdit.message : undefined;
+  const recoveryHeld = voiceBlocked ? VOICE_RECOVERY_BLOCKS : retryHold({ saving, dirty, rejected: editRejected });
   // 恢复任务 requeues the paused production itself (tasks.resume); the engine refuses it
   // without the voice as well, so it waits for the card like 继续未完成作品.
   const resumeHeld = paused && voiceBlocked && resumeNeedsVoice(batch) ? VOICE_RECOVERY_BLOCKS : "";
@@ -458,7 +470,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       </div>
       {onOpenDiagnostics && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status) && <button type="button" onClick={() => onOpenDiagnostics({ module: "content_engine", taskId: batch.task_id || batch.batch_id })}>反馈这个问题</button>}
       <BatchVoiceRecovery key={`${batch.batch_id}:${batch.settings?.voice_persona_id || ""}`} batch={batch} voices={catalog} disabled={busy || submitting}
-        onApproved={async (name) => { await refreshVoices(); setNotice(`已批准「${name}」，这个批次可以正常保存和继续制作了。`); }} />
+        onApproved={async (name) => { setNotice(`已批准「${name}」，这个批次可以正常保存和继续制作了。`); await voiceApproved(); }} />
       {batch.status === "outcome_unknown" && batch.planning_recovery_available && <div className="batch-planning-recovery">
         <span>原请求结果仍无法确认。请确认是否重试未完成规划；可能产生一次云端费用。{batch.planning_checkpoint ? ` 已保留${batch.planning_checkpoint.stage} ${batch.planning_checkpoint.completed}/${batch.planning_checkpoint.total}。` : ""}{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
         <button type="button" data-batch-action="resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverPlanning()}>确认风险，重试未完成规划</button>
@@ -549,7 +561,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       </article>)}</div>}
       {(!visualFlow || flowStep === 2) && <>
       {modern && chosen.length === 1 && <details className="batch-advanced"><summary>批量制作 · {chosenTotal || 1} 条</summary><label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label><p className="batch-hint">第一条使用确认正文，其余沿用这个方向创作不同内容，最多300条。</p></details>}
-      <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={refreshVoices} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
+      <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={voiceApproved} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
       <VideoTemplatePicker value={settings.video_template || "topic_fixed"} disabled={locked || !!batch?.script_confirmation} onChange={(video_template) => changeSoundSettings({ ...settings, video_template })} />
       {soundDirty && <p className="batch-hint">制作设置已更新。</p>}

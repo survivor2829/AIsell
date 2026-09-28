@@ -18,8 +18,8 @@ function loadTs(name) {
 }
 const { callBatch } = loadTs("batch-studio-api.ts");
 const {
-  CARRIED_ASSETS_WAIT, DISCARDED_DRAFT_KEY, PENDING_DRAFT_KEY, RESTORED_ELSEWHERE, carriedAssetsAutosave, createDraftQueue,
-  createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft
+  CARRIED_ASSETS_WAIT, DISCARDED_DRAFT_KEY, PENDING_DRAFT_KEY, RESTORED_ELSEWHERE, RETRY_WAITS_FOR_SAVE, carriedAssetsAutosave,
+  createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, retryHold
 } = loadTs("batch-draft-queue.ts");
 const page = fs.readFileSync(path.join(__dirname, "BatchCreativePage.tsx"), "utf8");
 
@@ -102,22 +102,24 @@ function fakeEngine(batches = []) {
 // The page's wiring around the slot, the queue and the restore (BatchCreativePage.tsx).
 // The source assertions at the end pin the page lines each step mirrors.
 function workbench(storage, engine) {
-  const state = { owner: 0, mounted: true, notice: "", batch: null, form: null, dirty: false };
+  const state = { owner: 0, mounted: true, notice: "", batch: null, form: null, dirty: false, saving: false, rejected: null };
   const slot = createPendingDraftSlot(storage);
   const queue = createDraftQueue({
     save: (value) => engine.save(value),
     hold: isDeterministicDraftError,
-    active: () => undefined,
+    active: (value) => { state.saving = value; },
     saved: (value, fingerprint, owner) => {
       if (owner !== state.owner) return;
       slot.saved(fingerprint, owner, value);
       state.batch = value;
+      state.rejected = null;
       if (fingerprint === state.form?.fingerprint) state.dirty = false;
     },
     failed: (error, owner, fingerprint, dropped) => {
       if (dropped && state.mounted) discardPendingDraft(storage, String(error.code), fingerprint);
       if (!state.mounted || owner !== state.owner) return;
       state.notice = `${dropped ? "上一份编辑未能保存" : "草稿尚未保存"}：${error.message}`;
+      if (isDeterministicDraftError(error)) state.rejected = { fingerprint, owner, message: error.message };
     }
   });
   return {
@@ -146,13 +148,24 @@ function workbench(storage, engine) {
       state.dirty = true;
       return this.effect();
     },
+    // What the retry buttons say while they wait (recoveryHeld without the voice card).
+    retryHint() {
+      const { rejected } = state;
+      return retryHold({ saving: state.saving, dirty: state.dirty,
+        rejected: rejected && rejected.owner === state.owner && rejected.fingerprint === state.form?.fingerprint ? rejected.message : undefined });
+    },
     // recoverPlanning / recoverVoice. The button is disabled while an edit is unsaved; the
     // handler, like start(), awaits nothing before the call and drops any queued edit.
     async recover() {
-      if (state.dirty || queue.busy()) return false;
+      if (this.retryHint() || queue.busy()) return false;
       queue.cancelPending();
       await engine.resolve();
       return true;
+    },
+    // voiceApproved(): the recovery card or 声音与配乐 approved the voice.
+    async approved({ retry = true } = {}) {
+      engine.approved = true;
+      if (retry) await queue.retryHeld().catch(() => undefined);
     },
     // The autosave effect; it also runs again whenever busy flips back after an action.
     effect() {
@@ -761,6 +774,63 @@ async function main() {
     assert.equal(carriedAssetsAutosave({ kind: "kept", message: "x" }), false);
   }
 
+  {
+    // 1b08 / e506: the user renames the batch before approving the voice. The engine rejects
+    // the save (approval_required) and the queue holds the edit without a background retry.
+    // The old wiring re-read the voice list after the approval and nothing else, so the
+    // held edit stayed unsaved: both retry buttons said "正在保存" and stayed disabled, and
+    // so did 继续未完成作品, until another change or leaving the batch.
+    for (const wiring of ["old wiring", "page"]) {
+      const storage = memoryStorage();
+      const engine = fakeEngine([{ ...draftBatch, groups: oneAsset, settings: monkey }]);
+      engine.resolve = async () => undefined;
+      const bench = workbench(storage, engine);
+      bench.load(await engine.get(batchId));
+      bench.edit({ title: "批准前改的标题" }, "fingerprint-before-approval");
+      assert.equal(bench.retryHint(), RETRY_WAITS_FOR_SAVE, "an edit on its way is saved before a retry");
+      await sleep(450);
+      assert.equal(engine.saves.length, 1);
+      assert.equal(bench.state.dirty, true);
+      assert.equal(bench.retryHint(), `有修改未能保存：${approvalMessage}请先处理这份修改，再重试。`,
+        "a rejected edit is not being saved: the hint gives the rejection");
+      await bench.approved({ retry: wiring === "page" });
+      await sleep(450);
+      if (wiring === "old wiring") {
+        assert.deepEqual([engine.saves.length, bench.state.dirty, await bench.recover()], [1, true, false],
+          "the model reproduces the finding: approved, yet the edit never saves and the retry stays held");
+        continue;
+      }
+      assert.equal(engine.saves.length, 2, "the held edit is tried once more at the approval");
+      assert.equal(engine.db.get(batchId).title, "批准前改的标题");
+      assert.deepEqual([bench.state.dirty, bench.retryHint()], [false, ""]);
+      assert.equal(pendingText(storage), "", "its cached copy is done");
+      assert.equal(await bench.recover(), true, "and the retry can go");
+    }
+    {
+      // A retry that is rejected again keeps holding the edit (it is not the user moving on):
+      // the cached copy stays, and the next explicit flush is still its last try.
+      const storage = memoryStorage();
+      const engine = fakeEngine([{ ...draftBatch, groups: oneAsset, settings: monkey }]);
+      const bench = workbench(storage, engine);
+      bench.load(await engine.get(batchId));
+      bench.edit({ title: "仍被拒绝" }, "fingerprint-still-rejected");
+      await sleep(450);
+      await bench.queue.retryHeld().catch(() => undefined);
+      assert.equal(engine.saves.length, 2);
+      assert.match(bench.state.notice, /^草稿尚未保存：/u, "held again, not dropped");
+      assert.equal(JSON.parse(pendingText(storage)).fingerprint, "fingerprint-still-rejected");
+      assert.equal(storage.map.has(DISCARDED_DRAFT_KEY), false);
+      await bench.queue.flush().catch(() => undefined);
+      assert.equal(engine.saves.length, 3);
+      assert.match(bench.state.notice, /^上一份编辑未能保存：/u, "the explicit flush is still its last try");
+      await bench.queue.retryHeld();
+      assert.equal(engine.saves.length, 3, "nothing held, nothing retried");
+    }
+    assert.equal(retryHold({ saving: true, dirty: true, rejected: "x。" }), RETRY_WAITS_FOR_SAVE, "a save in flight is waited for");
+    assert.equal(retryHold({ saving: false, dirty: true }), RETRY_WAITS_FOR_SAVE, "so is one still debounced");
+    assert.equal(retryHold({ saving: false, dirty: false, rejected: "x。" }), "");
+  }
+
   // The page wires the pieces together and no longer promises a recovery that cannot happen.
   assert.doesNotMatch(page, /当前任务结束后可重新打开恢复/u);
   assert.doesNotMatch(page, /callBatch<Batch>\("save", pending\.draft\)/u, "the page must not replay the cached draft directly");
@@ -786,7 +856,15 @@ async function main() {
 
   assert.equal((page.match(/if \(!batch \|\| draftQueue\.busy\(\)\) return;\s*draftQueue\.cancelPending\(\);/gu) || []).length, 2,
     "both retries handle the save queue the way start() does");
-  assert.match(page, /const recoveryHeld = voiceBlocked \? VOICE_RECOVERY_BLOCKS : dirty \|\| saving \? "有修改正在保存，保存完成后再重试。" : "";/u);
+  assert.match(page, /const editRejected = rejectedEdit && rejectedEdit\.owner === draftOwner\.current && rejectedEdit\.fingerprint === draftFingerprint \? rejectedEdit\.message : undefined;\s*const recoveryHeld = voiceBlocked \? VOICE_RECOVERY_BLOCKS : retryHold\(\{ saving, dirty, rejected: editRejected \}\);/u,
+    "the retry buttons wait for a save on its way and name a rejection");
+  assert.match(page, /if \(isDeterministicDraftError\(error\)\) setRejectedEdit\(\{ fingerprint, owner, message: \(error as Error\)\.message \}\);/u);
+  assert.match(page, /setBatch\(value\);\s*setRejectedEdit\(null\);/u, "a landed save clears the rejection");
+  assert.match(page, /async function voiceApproved\(\) \{\s*await refreshVoices\(\);\s*await draftQueue\.retryHeld\(\)\.catch\(\(\) => undefined\);\s*\}/u,
+    "an approval retries the held edit");
+  assert.match(page, /onApproved=\{async \(name\) => \{ setNotice\(`已批准「\$\{name\}」，这个批次可以正常保存和继续制作了。`\); await voiceApproved\(\); \}\}/u,
+    "from the recovery card");
+  assert.match(page, /onVoiceApproved=\{voiceApproved\}/u, "and from 声音与配乐");
   assert.equal((page.match(/disabled=\{busy \|\| submitting \|\| Boolean\(recoveryHeld\)\} onClick=\{\(\) => void recover(?:Planning|Voice)\(\)\}/gu) || []).length, 2,
     "an unsaved edit holds both retry buttons");
   assert.match(page, /if \(carriedAssetsAutosave\(restore\)\) setDirty\(true\); else notices\.push\(CARRIED_ASSETS_WAIT\);/u,

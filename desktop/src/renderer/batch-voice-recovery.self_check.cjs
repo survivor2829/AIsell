@@ -206,8 +206,9 @@ async function main() {
   assert.match(page, /const approved = applyVoices\(results\[0\]\.value\.data\?\.items \|\| \[\]\);/u, "the mount read goes through it");
   assert.match(page, /results\[0\]\.status === "fulfilled" && results\[0\]\.value\.ok !== false/u, "a failed read is not an empty catalog");
   assert.match(page, /async function refreshVoices\(\) \{[\s\S]{0,400}applyVoices\(result\.data\.items \|\| \[\]\);/u);
-  assert.match(page, /onApproved=\{async \(name\) => \{ await refreshVoices\(\);/u, "the card's approval re-reads the list");
-  assert.match(page, /onVoiceApproved=\{refreshVoices\} refreshToken=\{catalog\}/u, "so does an approval in 声音与配乐");
+  assert.match(page, /async function voiceApproved\(\) \{\s*await refreshVoices\(\);/u);
+  assert.match(page, /onApproved=\{async \(name\) => \{ setNotice\([^;]+\); await voiceApproved\(\); \}\}/u, "the card's approval re-reads the list");
+  assert.match(page, /onVoiceApproved=\{voiceApproved\} refreshToken=\{catalog\}/u, "so does an approval in 声音与配乐");
   assert.match(page, /<BatchVoiceRecovery key=\{`\$\{batch\.batch_id\}:\$\{batch\.settings\?\.voice_persona_id \|\| ""\}`\} batch=\{batch\} voices=\{catalog\}/u);
   assert.match(page, /const voiceBlocked = voiceRecovery\(batch, catalog\) !== null;/u);
   assert.match(page, /\(!visualFlow \|\| running \|\| paused \|\| submitting \|\| failedState \|\| voiceBlocked\)/u,
