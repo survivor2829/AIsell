@@ -1159,6 +1159,23 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(before + 1, self._task_count())
         self.assertEqual("confirmed", self._task_action(continued["task_id"]))
 
+    def test_saving_a_confirmed_script_batch_keeps_its_confirmed_count(self):
+        # e506: two works confirmed. The page's script-flow draft always sends
+        # target_count 1, so any later edit (a new title, a replayed draft) lowered it.
+        domain, batch_id, task_id = self._confirmed_batch("两条已确认")
+        self.s.update_task(task_id, "completed")
+        state = domain._load(batch_id)
+        state["target_count"] = 2
+        domain._store(state)
+        page_draft = {"batch_id": batch_id, "groups": state["groups"], "title": "两条已确认（改名）",
+                      "target_count": 1, "settings": state["settings"]}
+        saved = self.s.save_narrated_batch(page_draft)
+        self.assertEqual(("两条已确认（改名）", 2), (saved["title"], saved["target_count"]))
+        self.assertEqual(state["script_confirmation"], saved["script_confirmation"])
+        # Changed copy clears the confirmation; the next confirmation sets the count again.
+        changed = self.s.save_narrated_batch({**page_draft, "cta": "新的行动号召"})
+        self.assertEqual((None, 1), (changed["script_confirmation"], changed["target_count"]))
+
     def _stop(self, task_id, status="paused", error_code=None):
         self.s.connection.execute(
             "UPDATE content_tasks SET status = ?, error_code = ? WHERE id = ?", (status, error_code, task_id))

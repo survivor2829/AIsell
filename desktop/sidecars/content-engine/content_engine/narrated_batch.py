@@ -1285,6 +1285,11 @@ class NarratedBatchDomain:
                 b.setdefault("script_confirmation_history", []).append(copy.deepcopy(b["script_confirmation"]))
                 b.update(script_confirmation=None, selected_script_id=None, direction=None, status="scripts_ready")
                 narrated_production.clear_selection(b)
+        if b.get("script_confirmation") and settings.get("workflow_version") == 2:
+            # A kept confirmation keeps its count: the confirmed selections add up to it.
+            # Script-flow drafts send 1, a placeholder until the copy is confirmed, so an
+            # edit such as a new title must not lower a confirmed batch of 2 to 1.
+            target = b.get("target_count") or target
         b.update(groups=groups, title=title, description=description, cta=cta, material_context=material_context,
                  target_count=target, collection_id=collection_id, settings=settings,
                  brief_version=brief_version, script_source=script_source, **brief)
