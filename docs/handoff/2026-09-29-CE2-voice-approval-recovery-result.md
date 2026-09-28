@@ -241,3 +241,102 @@ CI 仍不跑 `test_auto_mix_voice_resources.py`。本轮尝试在 `.github/workf
 
 - 真实 Electron 界面仍未复验，用户验收流程同上文。
 - `ce2-diag/` 现约 885MB（本轮 `r2/` 约 118MB，含两份数据副本），清理候选同上文，待用户确认。
+
+## 第 3 轮（审查第 2 轮发现的修复）
+
+提交（未推送）：
+
+- `03608ad` 界面：声音批准后重试被拒的编辑；重试按钮如实说明原因（correctness-R2C-1）；
+- `64ec972` 界面：声音列表读回之前，不再把本批声音标成"已不在声音目录"（correctness-R2C-2）；
+- `2fe3ca9` 内容引擎：没有单独选声音的批次，付费前要求至少有一个已批准的声音（safety-C1）；
+- `b9e0d34` 测试：登记试听的其余三条保护、引擎声明 `voice_preview_cache_only`（correctness-R2C-3、tests-T2）；
+- `40416ee` CI：service-and-content 任务运行 `test_auto_mix_voice_resources.py`（tests-T1、correctness-R2C-4、safety-T1，即第 1、2 轮遗留的 tests-T2）；
+- 本文档和 `PROJECT_STATUS.md` 的提交。
+
+### 改了什么
+
+1. **批准后重试被拒的编辑**（R2C-1）
+   - 草稿队列新增 `retryHeld()`：把被确定性拒绝而保留的编辑立即再试一次。它按后台保存处理，再次被拒时继续保留，不会像第二次显式 flush 那样放弃并挪进备份槽。
+   - 页面新增 `voiceApproved()`：重新拉取声音列表，然后 `retryHeld()`。恢复卡和「声音与配乐」的批准都走它。恢复卡先显示"已批准「X」……"，重试失败时由失败提示替换。
+   - 重试按钮的原因改由 `retryHold()` 给出：有保存在途或还在防抖时仍是"有修改正在保存，保存完成后再重试。"；当前编辑已被引擎确定性拒绝时改为"有修改未能保存：<拒绝原因>请先处理这份修改，再重试。"。按钮仍保持禁用，因为这份编辑在重试后仍可能被保存进去；恢复卡显示期间仍优先显示声音原因。页面在 `failed` 回调里记录被拒编辑的 fingerprint 和 owner，任何保存落地时清掉。
+2. **声音列表读回之前的标签**（R2C-2）：`BatchSoundSettings` 的声音列表初始为 `null`（未读取，读取失败时保持 `null`）。标签逻辑移到 `batch-voice-recovery.ts` 的 `unavailableVoiceLabel`：未读取时为"<id>（声音列表尚未读取）"；只有读回的列表里确实没有时才是"（已不在声音目录）"；未批准为"（需重新批准）"。
+3. **没有单独选声音的批次**（safety-C1）：`_require_approved_voice` 原来在 `voice_persona_id` 为空时直接放行，而 worker 会退回使用任意已批准的声音。现在改为检查"制作时实际会用的声音"：本批的声音，或退回的已批准声音；一个都没有就报 `auto_mix_voice_persona_approval_required`。覆盖 `start()`（samples、continue、confirmed）、暂停中的"继续"、规划和配音的重试、「恢复任务」。
+   - **没有加"v2 必须是火山声音"**：审查建议括号里提到与确认时的规则一致。备份数据里没有单独选声音的 v2 批次（518c82、371775、0f8f03）退回的已批准声音是 `reliable-business@1`（百炼，`auto_select_priority` 最高）。加上这条会让 518c82 的「恢复任务」和另两个批次的"继续"从可用变成被拒，而现有证据只说明"没有任何已批准声音"会在付费后失败，没有说明退回到百炼会失败。所以本轮只修"一个都没有"的情况；是否对这类批次统一要求火山声音，需要另行确认。
+   - 副作用（有意）：旧流程批次在一个声音都没批准时，worker 原本会走 `_auto_prepare_default_voice_persona`（自动设计、试听并批准一个内置百炼声音，计费）。现在在建任务前就被拒，不会再自动批准。新建批次都是 v2，确认时本来就要求已批准的火山声音。
+4. **测试补强**（R2C-3、tests-T2）
+   - `test_saved_preview_recording_leaves_a_current_row_and_a_voice_without_an_id_alone`：已有当前 cache key 的 completed 行，磁盘文件被换成另一段带 ffmpeg 标记的有效音频；重启后该行逐字段不变，`cache_only` 报 not_cached。没有私有音色 ID 的声音不登记；对照声音登记。
+   - `test_saved_preview_recording_ignores_a_file_outside_the_data_directory`：`voice-previews` 是指向数据目录外的目录链接（能建符号链接就用符号链接，Windows 上否则用 junction，都建不了才跳过），文件不登记；同一个文件放回数据目录内则登记。
+   - `test_the_engine_advertises_cache_only_and_honours_it_over_the_protocol`：`serve_jsonl` 的 ready 消息声明 `voice_preview_cache_only: true`；经协议发送 `cache_only` 请求报 not_cached，没有写行、没有提供方调用。
+   - sidecar 自检另加一条跨文件断言：sidecar 要求的能力名与 `protocol.py` 声明的一致。
+5. **CI**：service-and-content 任务末尾加 "Voice approvals and saved previews" 一步（`python -m unittest discover -s tests -p 'test_auto_mix_voice_resources.py'`，工作目录 `desktop/sidecars/content-engine`）。本轮修改没有被权限拦下。
+
+### 撤掉修复后测试会失败
+
+- **引擎逐项变异**（`ce2-diag/r3/mutate_py.py`，每次改一处，按 CI 方式跑整个测试文件，按字节还原；结果 `ce2-diag/r3/mutations-engine.log`）：6 个，全部测出。
+
+| 撤回内容 | 运行 | 失败的测试 |
+|---|---|---|
+| 去掉"现有行已是当前 key 就跳过" | `-p test_auto_mix_voice_resources.py`：`Ran 30 tests` `FAILED (failures=1)` | `test_saved_preview_recording_leaves_a_current_row_…` |
+| 去掉 data_dir 包含检查 | 同上 `FAILED (failures=1)` | `test_saved_preview_recording_ignores_a_file_outside_…` |
+| 去掉 provider_voice_id 非空检查 | 同上 `FAILED (failures=1)` | `test_saved_preview_recording_leaves_a_current_row_…` |
+| ready 消息去掉 `voice_preview_cache_only` | 同上 `FAILED (errors=1)` | `test_the_engine_advertises_cache_only_…` |
+| protocol 不透传 `cache_only` | 同上 `FAILED (failures=4, errors=1)` | 上一条和 `test_cache_only_preview_without_a_saved_preview_…` |
+| `_require_approved_voice` 换回第 2 轮（没有声音就放行） | `-p 'test_narrated*.py'`：`Ran 117 tests` `FAILED (failures=5)` | `test_a_batch_without_its_own_voice_needs_some_approved_voice_before_paid_work`（samples、continue、暂停中继续、规划重试四个子测试和「恢复任务」） |
+
+- **界面和主进程逐项变异**（`ce2-diag/r3/mutate_ui.cjs`，结果 `mutations-ui.log`）：13 个，全部测出。
+
+| 撤回内容 | 失败的断言 |
+|---|---|
+| `retryHeld()` 什么都不做 | draft-queue：`the held edit is tried once more at the approval` |
+| `retryHeld()` 按显式 flush 处理 | draft-queue：`held again, not dropped` |
+| 被拒的编辑仍提示"正在保存" | draft-queue：`a rejected edit is not being saved: the hint gives the rejection` |
+| 批准后不重试 / 恢复卡或「声音与配乐」的批准只重新拉取列表（第 2 轮接线） | draft-queue：`an approval retries the held edit` / `from the recovery card` / `and from 声音与配乐`；voice-recovery：`the card's approval re-reads the list` / `so does an approval in 声音与配乐` |
+| `recoveryHeld` 换回第 2 轮 / 不记录被拒编辑 | draft-queue 源码断言 |
+| 声音列表初始为 `[]` / 未读取当成空列表 / 标签换回第 2 轮 | voice-recovery：首次渲染的 `<option … selected="">volc-xiaohe-2@1（声音列表尚未读取）</option>` 断言、`unavailableVoiceLabel` 单测 |
+| 引擎不声明能力 / sidecar 要求另一个能力名 | sidecar 自检：`the engine's ready message declares what the sidecar requires` |
+
+- draft-queue 自检用 harness 按页面接线建模，并有"旧接线"对照：批准后被保留的编辑一直没保存、重试一直被挡，复现审查的探针结果（`[1, true, false]`）；新接线下编辑落地、`dirty` 清除、重试可以进行。
+- **把四个界面源文件整体换回第 2 轮提交 4746800**（测试保持本轮）：draft-queue 自检 `TypeError: retryHold is not a function`，voice-recovery 自检 `TypeError: unavailableVoiceLabel is not a function`。
+
+### 验证（`C:/Users/Scott/xiaoxi-review/ce2/desktop`，%TEMP% 以外，Python 3.12.14）
+
+| 命令 | 结果 |
+|---|---|
+| `python -m unittest discover -s tests -p 'test_narrated*.py'` | `Ran 117 tests in 14.860s` `OK` |
+| `-p 'test_production_summary.py'` | `Ran 4 tests in 0.032s` `OK` |
+| `-p 'test_provider_usage.py'` | `Ran 10 tests in 0.589s` `OK` |
+| `-p 'test_auto_mix_voice_resources.py'`（CI 新增的一步） | `Ran 30 tests in 1.651s` `OK`；PATH 去掉 ffmpeg：`Ran 30 tests in 1.748s` `OK (skipped=1)` |
+| 全量 `discover -s sidecars/content-engine/tests` | `Ran 565 tests in 48.851s` `FAILED (failures=13, errors=4)`；17 个失败与第 2 轮逐个相同（16 个在 `test_creative_workbench`，1 个在 `test_packaging_renderer`），没有新增 |
+| `node src/renderer/batch-draft-queue.self_check.cjs` | `Batch draft restore and save queue self-check passed` |
+| `node src/renderer/batch-voice-recovery.self_check.cjs` | `Batch voice recovery card self-check passed` |
+| `node src/main/content-engine-sidecar.self_check.cjs` | `content-engine sidecar self-check passed` |
+| `node src/main/content-engine-ipc.self_check.cjs` | `content-engine IPC self-check passed` |
+| `node src/main/content-engine-voice-preview-errors.self_check.cjs` | `voice preview public error self-check passed` |
+| `node src/renderer/product-one-click.self_check.cjs` | `product one-click V2 self-check passed` |
+| `npm.cmd run check:self` | exit 0，用时 294 秒，100 项，最后一行 `all source self-checks passed` |
+| `npm.cmd run build:test` | exit 0，`✓ built in 3.72s`、`test renderer build completed`；产物里有「声音列表尚未读取」「有修改未能保存」 |
+| tsc（缺 `@types/react` 的环境，与第 2 轮比） | 6175 → 6174；没有新增的报错，少了 `BatchSoundSettings.tsx` 的一条 TS7006；`batch-draft-queue.ts`、`batch-voice-recovery.ts` 为 0 |
+
+### 端到端（数据副本）
+
+- **IPC 链路**（`ce2-diag/r3/e2e/e2e_r3.cjs`，第 2 轮脚本原样复制，只把数据目录改到 `ce2-diag/r3/e2e/data-head`）：本分支 `worker.py` ← 真实 `content-engine-sidecar.cjs` ← 真实 `content-engine-ipc.cjs`。数据是 `backup-pre-1.1.54` 的数据库、3 个试听 WAV 和 `provider-usage.jsonl` 的副本，没有密钥，环境变量不含 `XIAOXI_*`。结果与第 2 轮相同：
+  - 启动后猴哥试听行 completed，digest `33a5d934d02b69d9b673a0d338fd304d189a021286b5cf9acb60bd1a9034e1d0`，`approved_at` 为空；
+  - 批准前四个批次保存、三个"继续"、1b08 规划重试都被拒（1b08 的"继续"报 `narrated_planning_outcome_unknown`）；
+  - `cacheOnly` 播放 `cacheHit=true`，返回音频等于文件；随后批准成功；
+  - 批准后四个批次保存成功，状态 completed / completed / completed_with_errors / outcome_unknown，逐字段与保存前相同；
+  - 任务数 277 → 277；`provider-usage.jsonl` sha256 `3ccb7a0a…dbad6`、2562 行，前后不变；0 条桌面通知；引擎只收到 1 次试听请求。
+- **safety-C1 进程内探针**（`ce2-diag/r3/probe_c1.py`，另一份副本，所有提供方入口换成计数桩，不跑后台任务；结果 `probe-c1/probe-c1-result.json`）：
+  - 按备份里的批准状态，没有单独选声音的 7 个未归档批次（含 518c82、371775、0f8f03）都通过校验，退回的声音是 `reliable-business@1`；
+  - 把所有批准清空后，7 个都报 `auto_mix_voice_persona_approval_required`；371775、0f8f03 的"继续"被拒；518c82 的「恢复任务」被拒，任务仍为 paused（它的"继续"先报 `narrated_planning_outcome_unknown`）；
+  - 任务数 277 → 277，提供方调用 0 次，`provider-usage.jsonl` 不变。
+
+### 卡片清单外的文件
+
+- `.github/workflows/ci.yml`：加一步（见上）。
+- `batch-draft-queue.ts` 及其自检：`retryHeld()`、`retryHold()`（第 2 轮起就在改这两个文件）。
+
+### 仍未验证
+
+- 真实 Electron 界面仍未复验，用户验收流程同上文。R2C-1 的界面行为（批准后按钮解开、被拒原因的文字）只有 harness 和源码断言，需要在验收时顺带看一次：在恢复卡批准之前改一下标题，批准后标题应被保存、重试按钮解开。
+- CI 新增的一步只在本机按同样命令跑过，还没有在 GitHub Actions 上跑过（未推送）。
+- `ce2-diag/` 现约 1.2GB（本轮 `r3/` 约 120MB，含两份数据副本），清理候选同上文，待用户确认。
