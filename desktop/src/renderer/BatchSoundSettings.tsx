@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AutoMixResourcePanel, type AutoMixResourcePanelProps, type AutoMixVoicePersona, type MusicCatalogTrack } from "./AutoMixResourcePanel";
 import { type Batch, callBatch } from "./batch-studio-api";
-import { previewAfterFailure, previewCharge } from "./batch-voice-recovery";
+import { previewAfterFailure, previewCharge, unavailableVoiceLabel } from "./batch-voice-recovery";
 
 type ResourceApi = Pick<AutoMixResourcePanelProps, "listMusicCatalogTracks" | "importMusicCatalogTrack" | "listAutoMixVoicePersonas" | "designAutoMixVoicePersona" | "previewAutoMixVoicePersona" | "approveAutoMixVoicePersona">;
 type ResourceResult = { ok: boolean; data?: unknown; error?: string; code?: string };
@@ -35,7 +35,8 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
     try { await approvedCallback.current?.(); } catch { /* The approval itself has landed. */ }
     return approved;
   } }));
-  const [voices, setVoices] = useState<AutoMixVoicePersona[]>([]);
+  // null until the voice list has been read (it stays null if that read fails).
+  const [voices, setVoices] = useState<AutoMixVoicePersona[] | null>(null);
   const [tracks, setTracks] = useState<MusicCatalogTrack[]>([]);
   const [resourceSection, setResourceSection] = useState<"voice" | "music" | null>(null);
   const [preview, setPreview] = useState<{ id: string; name: string; url: string } | null>(null);
@@ -52,14 +53,11 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
   const pool = settings.music_track_ids || [];
   const musicMode = settings.music_mode || (pool.length ? "selected" : "none");
   const availableTrackCount = tracks.filter(selectable).length;
-  const current = voices.find((voice) => voice.voicePersonaId === settings.voice_persona_id);
-  const approvedVoices = voices.filter((voice) => voice.approvalStatus === "approved" && voice.provider === "volcengine");
+  const current = voices?.find((voice) => voice.voicePersonaId === settings.voice_persona_id);
+  const approvedVoices = (voices || []).filter((voice) => voice.approvalStatus === "approved" && voice.provider === "volcengine");
   // The batch's own voice stays visible when it can no longer be chosen, instead of the
   // select silently showing its first option.
-  const unavailable = settings.voice_persona_id && !approvedVoices.some((voice) => voice.voicePersonaId === settings.voice_persona_id)
-    ? !current ? `${settings.voice_persona_id}（已不在声音目录）`
-      : current.approvalStatus === "approved" ? current.displayName : `${current.displayName}（需重新批准）`
-    : "";
+  const unavailable = unavailableVoiceLabel(settings.voice_persona_id, voices);
   async function auditionMusic(id: string, name: string) {
     setLoading(id); setNotice("");
     try {
@@ -79,10 +77,10 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
       const result = await api.previewAutoMixVoicePersona({ voicePersonaId: voice.voicePersonaId, ...(cacheOnly ? { cacheOnly } : {}) });
       if (!result.audioDataUrl) throw new Error("试听尚未就绪，请在声音管理中检查状态。");
       setPreview({ id: voice.voicePersonaId, name: voice.displayName, url: result.audioDataUrl });
-      if (result.voicePersona) setVoices((items) => items.map((item) => item.voicePersonaId === voice.voicePersonaId ? result.voicePersona : item));
+      if (result.voicePersona) setVoices((items) => items && items.map((item) => item.voicePersonaId === voice.voicePersonaId ? result.voicePersona : item));
     } catch (error) {
       const next = previewAfterFailure(voice, cacheOnly, (error as { code?: string }).code);
-      if (next !== voice) setVoices((items) => items.map((item) => item.voicePersonaId === voice.voicePersonaId ? next : item));
+      if (next !== voice) setVoices((items) => items && items.map((item) => item.voicePersonaId === voice.voicePersonaId ? next : item));
       setNotice((error as Error).message);
     } finally { setLoading(""); }
   }

@@ -13,11 +13,14 @@ for (const extension of [".ts", ".tsx"]) {
     module._compile(output, filename);
   };
 }
+// The components import their stylesheets; only the markup matters here.
+require.extensions[".css"] = () => undefined;
 const {
   ACTION_LABELS, NOT_CACHED_CODE, VOICE_RECOVERY_BLOCKS, approvedVoiceIds, previewAfterFailure, previewCharge,
-  resumeNeedsVoice, sessionAfterPreview, voiceRecovery
+  resumeNeedsVoice, sessionAfterPreview, unavailableVoiceLabel, voiceRecovery
 } = require("./batch-voice-recovery.ts");
 const { BatchVoiceRecovery, VoiceRecoveryCard } = require("./BatchVoiceRecovery.tsx");
+const { BatchSoundSettings } = require("./BatchSoundSettings.tsx");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const read = (name) => fs.readFileSync(path.join(__dirname, name), "utf8");
@@ -131,6 +134,30 @@ const render = (batch, voices) => renderToStaticMarkup(React.createElement(Batch
   assert.equal(previewAfterFailure(saved, false, NOT_CACHED_CODE), saved, "only a cacheOnly replay can report not_cached");
 }
 
+// 声音与配乐's select keeps the batch's own voice visible when it cannot be chosen, and says
+// why. Before its list has been read (or when the read failed) nothing is known about the
+// voice yet: it must not be called gone from the catalog, approved or not.
+{
+  const bailian = { voicePersonaId: "natural-life@1", displayName: "自然生活", approvalStatus: "approved", provider: "bailian" };
+  assert.equal(unavailableVoiceLabel(xiaohe.voicePersonaId, null), "volc-xiaohe-2@1（声音列表尚未读取）");
+  assert.equal(unavailableVoiceLabel(monkeyId, null), "volc-monkey-brother-2@1（声音列表尚未读取）");
+  assert.equal(unavailableVoiceLabel(xiaohe.voicePersonaId, [xiaohe]), "", "an approved Volcengine voice is a normal choice");
+  assert.equal(unavailableVoiceLabel(monkeyId, [xiaohe, monkey()]), "猴哥 2.0（需重新批准）");
+  assert.equal(unavailableVoiceLabel(monkeyId, [xiaohe]), "volc-monkey-brother-2@1（已不在声音目录）", "only a list that was read can lack it");
+  assert.equal(unavailableVoiceLabel(monkeyId, []), "volc-monkey-brother-2@1（已不在声音目录）");
+  assert.equal(unavailableVoiceLabel("natural-life@1", [bailian]), "自然生活", "approved, but not a Volcengine voice");
+  assert.equal(unavailableVoiceLabel(undefined, null), "");
+  // The first render, before refresh() returns: the batch's approved voice is not "gone".
+  global.window = {};
+  try {
+    const markup = renderToStaticMarkup(React.createElement(BatchSoundSettings, {
+      settings: { voice_persona_id: xiaohe.voicePersonaId }, locked: false, onChange: () => undefined }));
+    const select = markup.match(/<select aria-label="配音声音">.*?<\/select>/u)?.[0] || "";
+    assert.match(select, /<option value="volc-xiaohe-2@1" disabled="" selected="">volc-xiaohe-2@1（声音列表尚未读取）<\/option>/u);
+    assert.doesNotMatch(select, /已不在声音目录/u);
+  } finally { delete global.window; }
+}
+
 // 恢复任务 continues paid production that ends in the voice step (the engine refuses it
 // too, resume_creative_task) for confirmed copy and legacy batches; writing copy does not.
 {
@@ -222,7 +249,8 @@ async function main() {
   assert.match(soundSettings, /approveAutoMixVoicePersona: async \(payload\) => \{\s*const approved = await api\.approveAutoMixVoicePersona\(payload\);[\s\S]{0,200}await approvedCallback\.current\?\.\(\);/u);
   assert.match(soundSettings, /useEffect\(\(\) => \{ void refresh\(\); \}, \[refreshToken\]\);/u);
   assert.match(soundSettings, /\{unavailable && <option value=\{settings\.voice_persona_id\} disabled>\{unavailable\}<\/option>\}/u);
-  assert.match(soundSettings, /`\$\{current\.displayName\}（需重新批准）`/u);
+  assert.match(soundSettings, /const \[voices, setVoices\] = useState<AutoMixVoicePersona\[\] \| null>\(null\);/u, "the list starts unread");
+  assert.match(soundSettings, /const unavailable = unavailableVoiceLabel\(settings\.voice_persona_id, voices\);/u);
   assert.match(card, /previewAutoMixVoicePersona\?\.\(\{ voicePersonaId: voiceId, \.\.\.\(cacheOnly \? \{ cacheOnly: true \} : \{\}\) \}\)/u);
   assert.match(card, /play_saved: \(\) => play\(true\), regenerate: \(\) => play\(false\)/u, "only the free button replays with cacheOnly");
   assert.match(card, /sessionAfterPreview\(current, result\)/u);

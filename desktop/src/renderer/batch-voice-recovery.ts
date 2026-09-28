@@ -59,6 +59,20 @@ export function resumeNeedsVoice(batch: RecoveryBatch | null | undefined) {
   return Boolean(batch) && (batch?.settings?.workflow_version !== 2 || Boolean(batch?.script_confirmation));
 }
 
+// The 声音与配乐 select's option for the batch's own voice when it is not among the
+// approved choices ("" when it is, or there is none), so the select does not silently show
+// its first option. voices is null until the list has been read: until then (or when the
+// read failed) the voice is only "not read yet", never "gone from the catalog".
+export function unavailableVoiceLabel(voiceId: string | undefined, voices: (RecoveryVoice & { provider?: string })[] | null) {
+  if (!voiceId) return "";
+  if (!voices) return `${voiceId}（声音列表尚未读取）`;
+  const current = voices.find((voice) => voice.voicePersonaId === voiceId);
+  if (current?.approvalStatus === "approved" && current.provider === "volcengine") return "";
+  if (!current) return `${voiceId}（已不在声音目录）`;
+  const name = current.displayName || voiceId;
+  return current.approvalStatus === "approved" ? name : `${name}（需重新批准）`;
+}
+
 export function approvedVoiceIds(items: RecoveryVoice[]) {
   return new Set(items.filter((voice) => voice.approvalStatus === "approved").map((voice) => voice.voicePersonaId));
 }
