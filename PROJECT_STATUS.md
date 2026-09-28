@@ -2,9 +2,19 @@
 
 > 当前能力与验证矩阵
 >
-> 最后更新：2026-09-28
+> 最后更新：2026-09-29
 >
 > 当前验收顺序：Windows 10/11 x64 + 当前安装的主流个人微信优先，再用至少一个不同版本做兼容回归
+
+## 2026-09-29 声音批准规则与免费恢复（CE2，分支 `claude/voice-approval-recovery`，未合并、未发布）
+
+- **下线只停用**：目录里暂时没有的声音只置 `active=0`，批准和试听留在停用行上，所有读取都按 `active=1` 过滤，停用期间不可列出、不可使用。以相同配置回到目录时保留原批准；配置变了（catalogVersion、音色 ID、instruction 等）照旧撤销批准和试听。需要强制重审时改 catalogVersion。这是有意的安全语义变化，用户已于 9-29 同意。
+- **登记本机已有试听**：启动同步末尾，把 `voice-previews/<当前 cache key>.wav`（通过 WAV 校验、≤8MB、非设计型声音、非 submitted/outcome_unknown）登记为 completed 试听，digest 取文件 sha256。只登记试听，从不写批准。
+- **只播放已保存试听**：`cacheOnly` 从页面经 preload、IPC、sidecar 到引擎逐层透传，没有可用缓存时报 `auto_mix_voice_preview_not_cached`，不检查提供方、不写行、不合成。IPC 只接受布尔值；可信点击和"本会话已试听"门槛不变。sidecar 只向声明 `voice_preview_cache_only` 能力的引擎发送。
+- **付费前先校验声音**：`start()` 中 scripts/recommend 以外的动作、`resolve_planning_outcome` 走 confirmed 的重试、暂停中批次的"继续"，在建任务前要求本批声音已批准。`save()` 的校验不变（它挡着旧草稿覆盖已完成批次）。
+- **批次页恢复卡**：声音批准失效时，在状态区显示恢复卡：有已保存试听时「播放已保存试听（不计费）」，播放后才出现「批准使用」；没有缓存时「重新生成试听（调用一次云端配音，计费）」；试听结果不明时只提示；声音已下架时提示用「新建视频」。卡片显示期间「继续未完成作品」和「重试未完成规划」禁用并说明原因。
+- 已发布的旧包（1.1.54 及更早）启动时仍会清空不认识的声音的批准，装了本版后可按上面免费恢复。发布不得早于 CE1（已在 `main` 3274036）。
+- 验证：内容引擎按 CI 方式、`check:self`、`build:test` 通过；数据副本端到端恢复猴哥 0 次提供方调用、`provider-usage.jsonl` 不变、四个批次保存成功。真实 Electron 界面未复验。详情见 `docs/handoff/2026-09-29-CE2-voice-approval-recovery-result.md`。
 
 ## 2026-09-28 1.1.54 微信拓客收尾（源码已合入 `main`，发布进行中）
 
