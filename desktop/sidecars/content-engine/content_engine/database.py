@@ -688,8 +688,11 @@ def _migration_013_voice_persona_catalog_source(
         )
         # Before this marker existed, the only application-managed CosyVoice
         # rows were created from the private Bailian catalog. Mark them before
-        # startup synchronization runs so a catalog removal can revoke both
-        # activity and approval instead of preserving the DEFAULT 'manual'.
+        # startup synchronization runs so a catalog removal retires them instead
+        # of preserving the DEFAULT 'manual'. Retiring only deactivates (since
+        # CE2): the approval stays on the inactive row, unusable because every
+        # read filters on active = 1, and a return with a changed private
+        # configuration still revokes it (see _sync_configured_voice_persona_rows).
         connection.execute(
             """
             UPDATE voice_personas_v1
