@@ -70,6 +70,21 @@ try {
   assert.equal(capped.attachments.length, 0, "daily cap must reserve complete failure triplets");
   assert.equal(capped.attachmentStatus, "daily_limit_reached");
   assert.equal(screenshotCalls, 1);
+  const cappedBytes = store.recordFailure("active_touch", "touch-3", {
+    stage: "search", reasonCode: "search_result_identity_unverified", ruleId: "search-r008",
+    screenshotBytes: Buffer.from("89504e470d0a1a0a", "hex")
+  });
+  assert.equal(cappedBytes.attachmentStatus, "daily_limit_reached",
+    "provided OCR bytes must still obey the daily attachment limit");
+  assert.equal(cappedBytes.attachments.length, 0);
+  const unavailableStore = createTaskPassportStore({ rootDir: path.join(root, "unavailable"),
+    captureScreenshot: () => { throw new Error("fresh main-window capture is forbidden for missing OCR bytes"); } });
+  const unavailable = unavailableStore.recordFailure("active_touch", "touch-missing-ocr", {
+    stage: "search", reasonCode: "search_result_identity_unverified", ruleId: "search-r008", screenshotBytes: null
+  });
+  assert.equal(unavailable.attachmentStatus, "screenshot_unavailable");
+  assert.equal(unavailable.attachments.some((name) => name.endsWith("-screen.png")), false,
+    "missing OCR bytes cannot use a fresh main-window image");
 
   const bill = store.writeRunBill("active_touch", "batch-1", [
     { taskId: "a", status: "sent_verified" },

@@ -18,6 +18,7 @@ const workflowPolicies = Object.freeze({
   touch_pre_send_failure_streak: { classification: "blocker", attentionScope: "global" },
   wechat_clipboard_read_failed: { classification: "recoverable", attentionScope: "task" },
   wechat_focus_failed: { classification: "recoverable", attentionScope: "task" },
+  wechat_window_preflight_failed: { classification: "environment", attentionScope: "global" },
   wechat_search_panel_unavailable: { classification: "blocker", attentionScope: "global" },
   wechat_search_identity_circuit_open: { classification: "blocker", attentionScope: "global" },
   task_context_mismatch: { classification: "blocker", attentionScope: "global" },

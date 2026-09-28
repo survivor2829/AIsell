@@ -3,10 +3,13 @@ const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evid
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
-const { NETWORK_SEARCH_LABELS, resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
+const { NETWORK_SEARCH_LABELS, resolveWechatSearchResultObservation, searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 const { WECHAT_SEARCH_INPUT_GUARD_CSHARP } = require("./wechat_search_input.cjs");
 
 let cachedWechatExecutable = "";
@@ -369,6 +372,7 @@ function runPowerShell(script, env = {}, options = {}) {
   shellArgs.push("-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP);
   const spawnOptions = {
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
     env: {
       ...process.env,
       ...evidenceEnvironment(),
@@ -1844,6 +1848,9 @@ if ($observeLocalResults) {
       $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
       $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
+      $captureStream = [IO.MemoryStream]::new()
+      try { $bitmap.Save($captureStream, [System.Drawing.Imaging.ImageFormat]::Png); if ($captureStream.Length -le 5MB) { $searchCapturePng = [Convert]::ToBase64String($captureStream.ToArray()) } }
+      finally { $captureStream.Dispose() }
       $ocrBitmap = [System.Drawing.Bitmap]::new($cropWidth * $ocrScale, $cropHeight * $ocrScale, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $ocrGraphics = [System.Drawing.Graphics]::FromImage($ocrBitmap)
       $ocrGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -1916,7 +1923,7 @@ if ($observeLocalResults) {
     }
   }
   Assert-ExactSearchForeground
-  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 8
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 8
   exit
 } elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   # Kept for the explicitly named File Transfer Assistant flow.
@@ -2273,34 +2280,6 @@ function runPowerShellAsync(script, env = {}, options = {}) {
   });
 }
 
-function searchObservationEvidence(observation = {}) {
-  const bounded = (candidate = {}) => ({
-    text: String(candidate.text || candidate.name || ""),
-    automation_id: String(candidate.automationId || ""),
-    left: Number(candidate.left), top: Number(candidate.top),
-    right: Number(candidate.right), bottom: Number(candidate.bottom),
-    x: Number(candidate.x), y: Number(candidate.y)
-  });
-  const list = (value) => (Array.isArray(value) ? value : value && typeof value === "object" ? [value] : []).map(bounded);
-  return {
-    crop_bounds: observation.cropBounds || null,
-    capture_source: String(observation.captureSource || "formula_crop"),
-    popup_bounds: observation.popupBounds || null,
-    popup_dpi: Number(observation.popupDpi) || null,
-    popup_candidate_count: Number(observation.popupCandidateCount) || 0,
-    search_columns: [...(Array.isArray(observation.visualCandidates) ? observation.visualCandidates : []),
-      ...(Array.isArray(observation.webSearchCandidates) ? observation.webSearchCandidates : [])]
-      .flatMap((line) => (Array.isArray(line.words) ? line.words : []).filter((word) => String(word.text || "").normalize("NFKC").replace(/\s+/gu, "").startsWith("搜"))
-        .map((word) => Number(observation.popupDpi) > 0 && observation.popupBounds
-          ? (Number(word.left) - Number(observation.popupBounds.left)) * 96 / Number(observation.popupDpi) : null))
-      .filter(Number.isFinite),
-    web_search_top: Number.isFinite(Number(observation.webSearchTop)) ? Number(observation.webSearchTop) : null,
-    uia_candidates: list(observation.uiaCandidates),
-    visual_lines: list(observation.visualCandidates),
-    web_search_lines: list(observation.webSearchCandidates)
-  };
-}
-
 function buildSearchEvidence(observed, resolution, query, context) {
   const observation = observed?.searchResultObservation || {};
   const count = (value) => Array.isArray(value) ? value.length : value && typeof value === "object" ? 1 : 0;
@@ -2312,7 +2291,7 @@ function buildSearchEvidence(observed, resolution, query, context) {
     candidate_count: Number(resolution.diagnostics?.candidate_count ?? count(observation.uiaCandidates)),
     visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count ?? count(observation.visualCandidates)),
     ocr_ok: observation.ocrOk === true,
-    capture_source: String(observation.captureSource || "formula_crop"),
+    capture_source: observation.captureSource === "popup" ? "popup" : "formula_fallback",
     popup_candidate_count: Number.isFinite(Number(observation.popupCandidateCount)) ? Number(observation.popupCandidateCount) : 0,
     authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
     rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),
@@ -2323,8 +2302,49 @@ function buildSearchEvidence(observed, resolution, query, context) {
       identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
       local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
     },
-    ocr_observation: searchObservationEvidence(observation)
+    ocr_observation: searchObservationEvidence(observation, { query, queryType: context.searchQueryType })
   };
+}
+
+function detachedSearchCapture(observed, resolution, captureFailure = false) {
+  const { searchCapturePng, ...safeObserved } = observed;
+  if (!captureFailure) return { observed: safeObserved, diagnostics: resolution.diagnostics };
+  if (resolution.status === "selected" || typeof searchCapturePng !== "string" || searchCapturePng.length > 8_000_000) {
+    return { observed: safeObserved, diagnostics: resolution.diagnostics };
+  }
+  try {
+    const png = Buffer.from(searchCapturePng, "base64");
+    if (!png.length || png.length > 5 * 1024 * 1024 || !png.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) {
+      return { observed: safeObserved, diagnostics: resolution.diagnostics };
+    }
+    const file = path.join(os.tmpdir(), `xiaoxi-search-capture-${crypto.randomBytes(16).toString("hex")}.png`);
+    fs.writeFileSync(file, png, { flag: "wx", mode: 0o600 });
+    return { observed: safeObserved, diagnostics: { ...resolution.diagnostics, search_capture_file: file } };
+  } catch { return { observed: safeObserved, diagnostics: resolution.diagnostics }; }
+}
+
+function discardSearchCapture(result) {
+  const file = String(result?.diagnostics?.search_capture_file || "");
+  if (!file) return;
+  const resolved = path.resolve(file);
+  if (path.dirname(resolved) === path.resolve(os.tmpdir())
+    && /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(path.basename(resolved))) {
+    try { fs.unlinkSync(resolved); } catch {}
+  }
+}
+
+function cleanupStaleSearchCaptures(now = Date.now()) {
+  const directory = os.tmpdir();
+  try {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(entry.name)) continue;
+      const file = path.join(directory, entry.name);
+      try {
+        const stat = fs.lstatSync(file);
+        if (stat.isFile() && !stat.isSymbolicLink() && now - stat.mtimeMs > 24 * 60 * 60 * 1000) fs.unlinkSync(file);
+      } catch {}
+    }
+  } catch {}
 }
 
 function openWechatSearchResult(query, context = {}) {
@@ -2346,11 +2366,12 @@ function openWechatSearchResult(query, context = {}) {
       queryType: context.searchQueryType
     });
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
+    const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
       if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
         try { runPowerShell(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
       }
-      return { ...observed, ok: false, reason: resolution.reason, diagnostics: resolution.diagnostics, searchEvidence };
+      return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence };
     }
     const clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
       XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
@@ -2362,7 +2383,7 @@ function openWechatSearchResult(query, context = {}) {
       XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode
     }, { ensure: false });
     return clicked?.ok
-      ? { ...observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
+      ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
       : clicked;
   }
   return runner(SEARCH_SCRIPT, {
@@ -2395,11 +2416,12 @@ function openWechatSearchResultAsync(query, context = {}) {
       queryType: context.searchQueryType
     });
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
+      const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
         if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
         }
-        return { ...observed, ok: false, reason: resolution.reason, diagnostics: resolution.diagnostics, searchEvidence,
+        return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
           };
       }
       const clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
@@ -2412,7 +2434,7 @@ function openWechatSearchResultAsync(query, context = {}) {
         XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode
       }, { ensure: false });
       return clicked?.ok
-        ? { ...observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
+        ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
         : clicked;
     })();
   }
@@ -2861,6 +2883,8 @@ module.exports = {
   resolveWechatRpaWindowTarget,
   openWechatSearchResult,
   openWechatSearchResultAsync,
+  discardSearchCapture,
+  cleanupStaleSearchCaptures,
   runPowerShell,
   runPowerShellAsync,
   verifyWechatCurrentConversation,

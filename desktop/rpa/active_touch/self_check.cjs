@@ -245,7 +245,7 @@ function checkSearchRecognitionMatrix() {
   const fallbackResult = openWechatSearchResult(noisyFormula.query, { pid: 11, hWnd: "22",
     searchIdentity: identity(noisyFormula), searchQueryType: "wechat_id",
     runner: () => ({ ok: true, pid: 11, hWnd: "22", searchResultObservation: noPopup }) });
-  assert.equal(fallbackResult.searchEvidence.capture_source, "formula_crop");
+  assert.equal(fallbackResult.searchEvidence.capture_source, "formula_fallback");
   assert.equal(fallbackResult.searchEvidence.popup_candidate_count, 2, "candidate count must reach the T5 whitelist at the top level");
   assert.equal(fallbackResult.searchEvidence.ocr_observation.popup_candidate_count, 2);
   const popupEvidence = openWechatSearchResult(friend.query, { pid: 11, hWnd: "22",
@@ -2529,8 +2529,9 @@ try {
   assert.equal(idSearchResult.searchEvidence.evidence_summary.local_candidate_unique, true);
   assert.equal(idSearchResult.searchEvidence.visual_candidate_count, 3,
     "successful task-passport evidence must report the observed OCR candidate count");
-  assert.equal(idSearchResult.searchEvidence.ocr_observation.visual_lines[1].text, "测式客户",
-    "the task passport evidence must retain the original OCR text for successful resolutions");
+  assert.equal(idSearchResult.searchEvidence.ocr_observation.ocr_boxes[1].char_count, 4,
+    "task passport evidence must retain shape without the original OCR text");
+  assert.equal(JSON.stringify(idSearchResult.searchEvidence).includes("测式客户"), false);
   assert.deepEqual(idSearchResult.searchEvidence.ocr_observation.crop_bounds, strictCrop,
     "the OCR coordinates must retain their source crop for cross-DPI replay");
   assert.equal(idSearchClicks, 1);
@@ -2567,8 +2568,9 @@ try {
   });
   assert.equal(networkLookupResult.ok, false);
   assert.equal(networkLookupClicks, 0, "the huatengcangku network lookup fixture must be rejected without any click");
-  assert.equal(networkLookupResult.searchEvidence.ocr_observation.visual_lines[0].text, "网络查找微信号：",
-    "denied resolutions must persist the original OCR text instead of only the final rule code");
+  assert.equal(networkLookupResult.searchEvidence.ocr_observation.ocr_boxes[0].contains_network_lookup, true,
+    "denied resolutions must retain the network-lookup shape without its original OCR text");
+  assert.equal(JSON.stringify(networkLookupResult.searchEvidence).includes("网络查找微信号："), false);
   const recoveredLandingMisclick = clickSearchResultDryRun(
     dir,
     () => ({

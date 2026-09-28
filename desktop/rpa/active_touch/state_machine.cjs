@@ -8,6 +8,7 @@ const {
   inputWechatSearchQuery,
   isPreparedWechatRpaLayout,
   openWechatSearchResult,
+  discardSearchCapture,
   verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
 const { isVerifiedWechatSearchResultMode } = require("./wechat_search_result_resolver.cjs");
@@ -698,13 +699,17 @@ function clickSearchResultDryRun(
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
     minIdleMs: Number(windowContext.minIdleMs) || 0,
+    ...(windowContext.captureSearchFailure === true ? { captureSearchFailure: true } : {}),
     searchQueryType: searchPlan.queryType,
     searchIdentity: { query: searchQuery, expectedName: customerName }
   };
   let inputResult = openResultDriver(searchQuery, exactWindow);
+  let captureHandedOff = false;
+  try {
   if (!inputResult?.ok && searchPlan.queryType === "wechat_id"
     && inputResult?.reason === "exact_search_result_not_found"
     && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
+    discardSearchCapture(inputResult);
     inputResult = openResultDriver(searchPlan.fallbackQuery, {
       ...exactWindow,
       searchIdentity: { query: searchPlan.fallbackQuery, expectedName: customerName },
@@ -738,7 +743,7 @@ function clickSearchResultDryRun(
         evidence_summary: { query_present: Boolean(searchQuery), expected_name_present: Boolean(customerName), network_lookup_isolated: true, identity_match: false }
       }
     });
-    return block(
+    const blocked = block(
       baseDir,
       "点击搜索结果 dry-run",
       failedState,
@@ -751,6 +756,9 @@ function clickSearchResultDryRun(
         poisoned_candidate: inputResult?.poisoned_candidate || null
       }
     );
+    captureHandedOff = Boolean(inputResult?.diagnostics?.search_capture_file
+      && blocked?.diagnostics?.search_capture_file === inputResult.diagnostics.search_capture_file);
+    return blocked;
   }
 
   if ((exactWindow.pid && Number(inputResult.pid) !== exactWindow.pid)
@@ -870,6 +878,9 @@ function clickSearchResultDryRun(
   appendLog(baseDir, "点击搜索结果 dry-run", `已打开并验证：${title}`);
   timings.total_ms = Date.now() - operationStartedAt;
   return output(true, "click-search-result-dry-run", nextState, { baseDir, diagnostics: { timings } });
+  } finally {
+    if (!captureHandedOff) discardSearchCapture(inputResult);
+  }
 }
 
 function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inputWechatMessageDraft) {

@@ -15,6 +15,7 @@ const {
   inputWechatMessageDraftAsync,
   isPreparedWechatRpaLayout,
   openWechatSearchResultAsync,
+  discardSearchCapture,
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
@@ -814,7 +815,10 @@ async function executeVerifiedContactSendCore(options = {}) {
       "0"
     ];
     const openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
-    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    if (!(await executionMayContinue(options))) {
+      discardSearchCapture(openedConversation);
+      return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    }
     if (!openedConversation?.ok) {
       return withSendAttempted({
         ...openedConversation,
