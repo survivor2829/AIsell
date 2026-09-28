@@ -1,12 +1,55 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { publicError } = require("./content-engine-ipc.cjs");
 
 const failureCodes = [
   "auto_mix_voice_preview_unavailable", "auto_mix_voice_preview_outcome_unknown",
   "auto_mix_voice_outcome_unknown", "auto_mix_voice_invalid", "auto_mix_voice_write_failed",
   "auto_mix_voice_unavailable", "auto_mix_voice_persona_invalid",
-  "cloud_request_failed", "cloud_request_rejected"
+  "cloud_request_failed", "cloud_request_rejected",
+  "auto_mix_voice_download_failed", "cloud_response_invalid", "cloud_response_too_large",
+  "provider_gateway_tls_not_configured", "provider_gateway_tls_invalid"
 ];
+
+// Static guard: every code the engine raises while the user waits on a voice preview or
+// voice design must reach the page (and the desktop notification) as its own message,
+// never as "内容引擎暂时不可用，请重试。".
+const engineDir = path.join(__dirname, "../../sidecars/content-engine/content_engine");
+function pythonFunction(source, name) {
+  const lines = source.split(/\r?\n/u);
+  const start = lines.findIndex((line) => new RegExp(`^\\s*def ${name}\\(`, "u").test(line));
+  assert.ok(start >= 0, `${name} must exist`);
+  const indent = lines[start].search(/\S/u);
+  let end = start + 1;
+  while (end < lines.length && !(lines[end].trim() && lines[end].search(/\S/u) <= indent && !/^\s*[)\]}#]/u.test(lines[end]))) end += 1;
+  return lines.slice(start + 1, end).join("\n");
+}
+function raisedCodes(file, functions) {
+  const source = fs.readFileSync(path.join(engineDir, file), "utf8");
+  const body = functions === "*" ? source : functions.map((name) => pythonFunction(source, name)).join("\n");
+  const raised = [...body.matchAll(/\bContentEngineError\(\s*([^,)\s]+)/gu)].map((match) => match[1]);
+  const bounded = [...body.matchAll(/\b_read_bounded\([^,]+,[^,]+,\s*([^,)\s]+)/gu)].map((match) => match[1]);
+  return [...raised, ...bounded].map((literal) => {
+    const code = /^['"]([A-Za-z0-9_]+)['"]$/u.exec(literal)?.[1];
+    assert.ok(code, `${file} raises a non-literal code ${literal}; map it explicitly`);
+    return code;
+  });
+}
+const voiceCodes = new Set([
+  ...raisedCodes("provider_tls.py", "*"),
+  ...raisedCodes("volcengine_tts.py", "*"),
+  // The first definitions are the Bailian client's; the analyzer only forwards to them.
+  ...raisedCodes("creative_analysis.py", ["synthesize_auto_mix_phrase", "design_auto_mix_voice", "_request_json"]),
+  ...raisedCodes("creative_domain.py", ["preview_auto_mix_voice_persona", "design_auto_mix_voice_persona",
+    "approve_auto_mix_voice_persona", "_auto_mix_voice_persona_row"])
+]);
+for (const expected of ["provider_gateway_tls_invalid", "provider_gateway_tls_not_configured", "auto_mix_voice_download_failed",
+  "cloud_response_too_large", "auto_mix_voice_preview_outcome_unknown", "auto_mix_voice_persona_invalid"]) {
+  assert.ok(voiceCodes.has(expected), `the voice preview scan must see ${expected}`);
+}
+assert.deepEqual([...voiceCodes].filter((code) => publicError({ code, message: "x" }).code !== code), [],
+  "every voice preview or design error code needs a public message");
 
 assert.deepEqual(failureCodes.map((code) => {
   const result = publicError(Object.assign(new Error("private provider detail 403"), { code }));

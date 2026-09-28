@@ -2586,6 +2586,30 @@ async function main() {
     controller.previewAutoMixVoicePersona = originalPreviewAutoMixVoicePersona;
     assert.equal(rejectedInvalidWavPreview.ok, true);
     assert.equal(rejectedInvalidWavPreview.data.audioDataUrl, null);
+
+    // A preview the user clicked that fails at the gateway certificate or the audio
+    // download names that cause on the page and on the desktop, instead of falling
+    // back to "内容引擎暂时不可用" and, since round one, no notification at all.
+    for (const [code, text] of [
+      ["provider_gateway_tls_invalid", /安全证书无效，请求未发出/u],
+      ["provider_gateway_tls_not_configured", /安全证书未配置，请求未发出/u],
+      ["auto_mix_voice_download_failed", /配音音频下载失败/u]
+    ]) {
+      controller.previewAutoMixVoicePersona = async () => {
+        throw Object.assign(new Error("统一 AI 网关证书无效，已停止请求。C:\\must-not-leak"), { code });
+      };
+      const notificationsBefore = notifications.length;
+      const failedPreview = await handlers.get(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona)({ sender: mainWindow.webContents }, {
+        voicePersonaId: "natural-life@1",
+        clickToken: autoMixClickToken(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona, randomUUID())
+      });
+      controller.previewAutoMixVoicePersona = originalPreviewAutoMixVoicePersona;
+      assert.equal(failedPreview.code, code, `${code} must reach the page as its own code`);
+      assert.match(failedPreview.error, text);
+      assert.equal(failedPreview.error.includes("must-not-leak"), false);
+      assert.equal(notifications.length, notificationsBefore + 1, `${code} on a preview the user clicked must notify`);
+      assert.equal(notifications.at(-1).body, failedPreview.error);
+    }
     const rejectedApprovalAfterInvalidWav = await handlers.get(
       CONTENT_ENGINE_CHANNELS.approveAutoMixVoicePersona
     )({ sender: mainWindow.webContents }, {

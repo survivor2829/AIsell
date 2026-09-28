@@ -394,6 +394,12 @@ const PUBLIC_ERRORS = Object.freeze({
   auto_mix_voice_persona_invalid: "音色或模型配置无效，请检查当前声音设置。",
   cloud_request_failed: "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。",
   cloud_request_rejected: "云端未接受本次请求，请检查模型或音色权限、请求参数和账户额度。",
+  cloud_response_invalid: "云端返回的结果无法识别，本次未完成；请稍后重试，请勿连续重复提交。",
+  cloud_response_too_large: "云端返回的数据超过安全大小限制，本次未完成；请稍后重试，请勿连续重复提交。",
+  auto_mix_voice_download_failed: "配音音频下载失败，请检查网络后稍后重试；请勿连续重复提交。",
+  // provider_tls.py stops a gateway request before it is sent when the gateway certificate is missing or invalid.
+  provider_gateway_tls_not_configured: "云端智能服务的安全证书未配置，请求未发出；请重启应用，若仍无法使用，请通过吐槽中心反馈。",
+  provider_gateway_tls_invalid: "云端智能服务的安全证书无效，请求未发出；请重启应用，若仍无法使用，请通过吐槽中心反馈。",
   BAILIAN_API_KEY_INVALID: "云端智能服务暂不可用，请稍后重试。",
   BAILIAN_API_HOST_INVALID: "百炼 API Host 必须是官方 HTTPS 地址。",
   BAILIAN_API_KEY_UNREADABLE: "云端智能服务暂不可用，请稍后重试。",
