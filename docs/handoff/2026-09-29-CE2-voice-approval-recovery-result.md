@@ -138,7 +138,7 @@ draft-queue 自检和恢复卡自检用 harness 按页面接线建模，并各�
   3. 点「播放已保存试听（不计费）」，听完点「批准使用「猴哥 2.0」」，卡片消失；
   4. 四个批次都能正常保存；0a89、c84e 可直接查看和导出；e506 的「继续未完成作品」、1b08 的「确认风险，重试未完成规划」恢复可用（是否继续由用户逐项决定，继续属于正常付费制作）；
   5. 复验时核对 `provider-usage.jsonl`，恢复过程中不应新增记录。
-- 开发机上已装的旧测试包（1.1.28）以及已发布的 1.1.54 及更早版本，启动时仍会清空它们不认识的声音的批准。本版之后，每次都可以按上面的流程免费恢复（两次点击）；零点击需要批准台账，本卡按用户决定不做。
+- 开发机上已装的旧测试包（1.1.28）、已发布的 1.1.53 及更早版本，以及任何不含 CE2 的 1.1.54 本机测试构建，启动时仍会清空它们不认识的声音的批准。1.1.54 尚未发布，按卡片与 CE1、CE2 一起发布，发布后的 1.1.54 不再清空（第 4 轮更正：原文写成"已发布的 1.1.54 及更早版本"）。本版之后，每次都可以按上面的流程免费恢复（两次点击）；零点击需要批准台账，本卡按用户决定不做。
 - 发布顺序：不得早于 CE1（CE1 已在 `main`）。
 - 需要用户确认的清理候选：`C:/Users/Scott/xiaoxi-review/ce2-diag/`（约 241MB，含数据库副本、试听文件和调用记录，都是用户数据副本；审查复跑脚本时还要用）以及设计阶段留下的 `ce-design/ce2-judge/`、`ce-design/ce2-ux/` 副本。确认用不上后再删。
 - narrated 的 4 个新测试里，`test_unconfirmed_planning_retry_does_not_need_the_voice` 守护"不该多拦"，在 base 上本来就通过。
@@ -340,3 +340,82 @@ CI 仍不跑 `test_auto_mix_voice_resources.py`。本轮尝试在 `.github/workf
 - 真实 Electron 界面仍未复验，用户验收流程同上文。R2C-1 的界面行为（批准后按钮解开、被拒原因的文字）只有 harness 和源码断言，需要在验收时顺带看一次：在恢复卡批准之前改一下标题，批准后标题应被保存、重试按钮解开。
 - CI 新增的一步只在本机按同样命令跑过，还没有在 GitHub Actions 上跑过（未推送）。
 - `ce2-diag/` 现约 1.2GB（本轮 `r3/` 约 120MB，含两份数据副本），清理候选同上文，待用户确认。
+
+## 第 4 轮（审查第 3 轮发现的修复）
+
+提交（未推送）：
+
+- `18d59fd` sidecar：`cacheOnly: null` 报 `invalid_params`，不再当成 false 发出计费试听（safety-S3-2）；
+- `4cef949` 测试：让 wave 模块抛裸 `RuntimeError` 的试听文件被跳过，启动不受影响（correctness-R3C-T1）；
+- `e96b490` 测试：恢复卡 `play()`、`approve()` 的点击处理（tests-T1）；
+- 本文档和 `PROJECT_STATUS.md` 的提交（correctness-R3C-D1）。
+
+### 改了什么
+
+1. **sidecar 拒绝 null**（safety-S3-2）
+   - `previewAutoMixVoicePersona` 原来写的是 `options?.cacheOnly ?? false`。`??` 在类型检查之前就把 null 变成了 false，所以主进程里如果有调用方传 `{cacheOnly: null}`，会发出普通（计费）试听。
+   - 现在只有没传这个字段才算普通试听；null 和其他非布尔值都报 `invalid_params`，不发请求。`options` 本身为 null 或省略时仍按普通试听，与原来相同。
+   - IPC 层本来就拒绝 null，页面发起的试听行为不变。
+   - sidecar 自检：引擎声明了 `voice_preview_cache_only` 时，`cacheOnly` 取 `null`、`0`、`1`、`""`、`"false"`、`"true"` 都报 `invalid_params`，引擎收不到任何请求。
+   - 审查探针 `probe_null_cacheonly.cjs` 复跑（`ce2-diag/r4/`）：两种引擎能力下，`{cacheOnly: null}` 都是 `rejected:invalid_params`、`sent: []`。
+2. **坏 WAV 抛 RuntimeError**（R3C-T1）
+   - `test_saved_preview_recording_skips_unknown_invalid_oversized_and_designed_voices` 新增声音 `volc-fmt-overrun@1`：一个带 ffmpeg 标记的有效 WAV，把 fmt 块长度改成 0xE410，越过文件末尾。
+   - 测试先断言 `_wav_duration_ms` 对这个文件抛 `RuntimeError`，确保用例确实走到这个异常（CI 用 Python 3.12）；再断言重启成功、这个声音没有登记。
+   - 代码未改。
+3. **恢复卡的点击处理**（tests-T1）
+   - `batch-voice-recovery.self_check.cjs` 新增 `cardHandlers()`。它把 `BatchVoiceRecovery` 当普通函数调用，用一个最小的 useState 宿主跨渲染保存状态。和 React 一样，每次点击取最近一次渲染的处理函数。preload API 用桩代替，并记录调用。
+   - 断言：
+     - 「播放已保存试听」发送 `{voicePersonaId, cacheOnly: true}`，播放后才出现「批准使用」，并设置音频；
+     - 「重新生成试听」发送不带 cacheOnly 的普通请求；
+     - 返回 not_cached 后，卡片换成计费按钮，没有「批准使用」，并显示错误；之后的计费试听是普通请求，播放后出现「批准使用」；
+     - 其他失败，或成功却没有音频（"试听尚未就绪"）：不出现「批准使用」，并说明原因；
+     - 批准被拒：不调用 `onApproved`，显示拒绝原因；批准成功：`onApproved("猴哥 2.0")` 调用一次，页面据此重新拉取声音列表。
+4. **文档**（R3C-D1）：`PROJECT_STATUS.md` 和本文档"仍未验证"一节原来写"已发布的 1.1.54 及更早版本仍会清空批准"。现改为：会清空的是开发机上的旧测试包（1.1.28）、已发布的 1.1.53 及更早版本，以及任何不含 CE2 的 1.1.54 本机测试构建。1.1.54 尚未发布，按卡片与 CE1、CE2 一起发布。
+
+### 撤掉修复后测试会失败
+
+- **sidecar**：先加自检，代码未改时运行 `node src/main/content-engine-sidecar.self_check.cjs`，报 `AssertionError [ERR_ASSERTION]: cacheOnly null is refused`（actual `'sent'`，expected `'invalid_params'`）。改代码后输出 `content-engine sidecar self-check passed`。
+- **R3C-T1**（`ce2-diag/r4/mutate_py.py`，结果在 `mutations-engine.log`）：把登记处的 except 改成 `(ContentEngineError, OSError, ValueError)`，按 CI 方式跑整个文件，结果 `Ran 30 tests in 1.671s` `FAILED (errors=1)`，出错的是 `test_saved_preview_recording_skips_unknown_invalid_oversized_and_designed_voices`，异常为 `RuntimeError`。之后按字节还原。这个变异体让重启中途抛错，测试临时目录留下一个未关闭的 sqlite，已删除。
+- **tests-T1**（`ce2-diag/r4/mutate_ui.cjs`，结果在 `mutations-ui.log`）：审查留下的 5 个存活变异体，加上 U37，分别用第 3 轮提交 `ca64b79` 的自检和当前自检运行，每次按字节还原。未变异时两份自检都通过。
+
+| 变异 | 第 3 轮自检 | 当前自检失败的断言 |
+|---|---|---|
+| U09 `play()` 丢掉 cacheOnly | 通过 | `the free button replays with cacheOnly` |
+| U10 批准被拒仍报已批准 | 通过 | `a refused approval does not tell the page it landed` |
+| U11 试听失败仍解锁批准 | 通过 | `regenerate is on the card`（not_cached 后没有换成计费按钮） |
+| U12 not_cached 不记录 | 通过 | `regenerate is on the card` |
+| U36 批准后不调用 `onApproved` | 通过 | `the approval hands the page the voice name to re-read the list` |
+| U37 没有音频也不报错 | 通过 | `试听尚未就绪，请稍后再试。: nothing was heard, so 批准使用 stays hidden` |
+
+### 验证（`C:/Users/Scott/xiaoxi-review/ce2/desktop`，%TEMP% 以外，Python 3.12.14）
+
+| 命令 | 结果 |
+|---|---|
+| `python -m unittest discover -s tests -p 'test_narrated*.py'` | `Ran 117 tests in 15.039s` `OK` |
+| `-p 'test_production_summary.py'` | `Ran 4 tests in 0.033s` `OK` |
+| `-p 'test_provider_usage.py'` | `Ran 10 tests in 0.602s` `OK` |
+| `-p 'test_auto_mix_voice_resources.py'` | `Ran 30 tests in 1.659s` `OK` |
+| 全量 `discover -s sidecars/content-engine/tests` | `Ran 565 tests in 48.055s` `FAILED (failures=13, errors=4)`；17 个失败与第 3 轮逐个相同（按测试名比对），没有新增 |
+| `node src/main/content-engine-sidecar.self_check.cjs` | `content-engine sidecar self-check passed` |
+| `node src/renderer/batch-voice-recovery.self_check.cjs` | `Batch voice recovery card self-check passed` |
+| `node src/main/content-engine-ipc.self_check.cjs` | `content-engine IPC self-check passed` |
+| `node src/renderer/batch-draft-queue.self_check.cjs` | `Batch draft restore and save queue self-check passed` |
+| `npm.cmd run check:self` | exit 0，用时 241 秒，最后一行 `all source self-checks passed` |
+| `npm.cmd run build:test` | exit 0，`✓ built in 1.42s`、`test renderer build completed` |
+| tsc | 未重跑：本轮没有改 TypeScript 源码，只改了 `.cjs`、Python 测试和文档 |
+
+### 端到端（数据副本）
+
+`ce2-diag/r4/e2e/e2e_r4.cjs` 是第 3 轮脚本，只把数据目录改到 `ce2-diag/r4/e2e/data-head`，在 `e96b490` 上运行，链路和数据来源与第 3 轮相同。结果与第 3 轮一致：
+
+- 启动后猴哥试听行 completed，digest `33a5d934d02b69d9b673a0d338fd304d189a021286b5cf9acb60bd1a9034e1d0`，启动时没有写批准；
+- 批准前，四个批次保存、三个"继续"、1b08 的规划重试都被拒（1b08 的"继续"报 `narrated_planning_outcome_unknown`）；没有试听就批准、`cacheOnly: "true"`、非可信点击也都被拒；
+- `cacheOnly` 播放 `cacheHit=true`，返回的音频就是那个文件；随后批准成功；没有新的试听就再批准一次，被拒；
+- 批准后四个批次保存成功，状态分别为 completed / completed / completed_with_errors / outcome_unknown，逐字段与保存前相同；
+- 任务数 277 → 277；`provider-usage.jsonl` 前后都是 sha256 `3ccb7a0a…dbad6`、2562 行；0 条桌面通知；引擎只收到 1 次试听和 1 次批准请求。`noProviderWorkPreflight` 仍为 false，原因与第 2、3 轮相同：它记录的是 IPC 桩的 4 次空能力列表调用，没有真实请求。
+
+### 仍未验证
+
+- 真实 Electron 界面仍未复验，用户验收流程同上文。恢复卡的点击处理现在有组件级自检，但真实 DOM 里的点击和可信点击令牌仍要靠验收时检查。
+- CI 新增的一步仍未在 GitHub Actions 上运行（未推送）。
+- `ce2-diag/` 现约 1.3GB（本轮 `r4/` 约 61MB，含一份数据副本），清理候选同上文，待用户确认。
