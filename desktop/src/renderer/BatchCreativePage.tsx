@@ -6,7 +6,7 @@ import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionTe
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { createDraftQueue, discardPendingDraft, isDeterministicDraftError, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
+import { createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
 import creativeThinkingStill from "./assets/creative-thinking-still.webp";
@@ -73,28 +73,38 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const mounted = useRef(true);
   const latestFingerprint = useRef("");
   const approvedVoiceIds = useRef<Set<string> | null>(null);
+  // Save-failure notices: the latest one is cleared once that edit saves, and one for an
+  // edit the user moved on from survives the batch that "选择任务" loads next.
+  const draftFailure = useRef("");
+  const droppedNotice = useRef("");
+  const [draftSlot] = useState(() => createPendingDraftSlot(localStorage));
   const [draftQueue] = useState(() => createDraftQueue<Record<string, unknown> & { batch_id?: string }, Batch>({
     save: (value) => callBatch<Batch>("save", value),
-    discard: isDeterministicDraftError,
+    hold: isDeterministicDraftError,
     active: (value) => { if (mounted.current) setSaving(value); },
     saved: (value, fingerprint, owner) => {
       if (owner !== draftOwner.current) return;
-      try {
-        localStorage.setItem("batch-studio-draft-id", value.batch_id);
-        const pending = JSON.parse(localStorage.getItem("batch-studio-pending-draft") || "null");
-        if (pending?.fingerprint === fingerprint) localStorage.removeItem("batch-studio-pending-draft");
-        else if (pending && !pending.draft.batch_id) localStorage.setItem("batch-studio-pending-draft",
-          JSON.stringify({ ...pending, draft: { ...pending.draft, batch_id: value.batch_id } }));
-      } catch { /* Main-process save is authoritative. */ }
+      draftSlot.saved(fingerprint, owner, value);
+      try { localStorage.setItem("batch-studio-draft-id", value.batch_id); } catch { /* Main-process save is authoritative. */ }
       if (!mounted.current || owner !== draftOwner.current) return;
       selectedId.current = value.batch_id;
       setBatch(value);
-      if (fingerprint === latestFingerprint.current) setDirty(false);
+      if (fingerprint === latestFingerprint.current) {
+        setDirty(false);
+        const failure = draftFailure.current;
+        if (failure) setNotice((current) => current === failure ? "" : current);
+      }
     },
-    failed: (error, owner, fingerprint) => {
-      // The queue has dropped this edit; keep a copy instead of replaying it on every open.
-      if (isDeterministicDraftError(error)) discardPendingDraft(localStorage, String((error as { code?: string }).code), fingerprint);
-      if (mounted.current && owner === draftOwner.current) setNotice(`草稿尚未保存：${(error as Error).message}`);
+    failed: (error, owner, fingerprint, dropped) => {
+      // The user moved on from an edit the engine rejected twice: keep a copy instead of
+      // replaying it on the next open. Leaving the page keeps it cached, so the next open
+      // can still restore it once the cause is fixed elsewhere (e.g. the voice approved).
+      if (dropped && mounted.current) discardPendingDraft(localStorage, String((error as { code?: string }).code), fingerprint);
+      if (!mounted.current || owner !== draftOwner.current) return;
+      const message = `${dropped ? "上一份编辑未能保存" : "草稿尚未保存"}：${(error as Error).message}`;
+      if (dropped) droppedNotice.current = message;
+      else draftFailure.current = message;
+      setNotice(message);
     },
   }));
   function voiceWarning(b: Batch) {
@@ -149,11 +159,11 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       : b.selected_script_id ? { [b.selected_script_id]: String(b.target_count || 1) }
       : b.script_options?.length === 1 ? { [b.script_options[0].candidate_id]: "1" } : {});
     setSoundDirty(false);
-    setCount(b.target_count ? String(b.target_count) : b.recommended_count ? String(b.recommended_count) : ""); manualCount.current = b.target_count != null; setDirty(false); setNotice(voiceWarning(b));
+    setCount(b.target_count ? String(b.target_count) : b.recommended_count ? String(b.recommended_count) : ""); manualCount.current = b.target_count != null; setDirty(false); setNotice([droppedNotice.current, voiceWarning(b)].filter(Boolean).join(" "));
 
   }
   async function run(action: () => Promise<void>) {
-    setBusy(true); setNotice("");
+    setBusy(true); setNotice(""); droppedNotice.current = "";
     try { await action(); } catch (e) { setNotice((e as Error).message); } finally { setBusy(false); }
   }
   useEffect(() => {
@@ -270,7 +280,9 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     if (!dirty || busy || running || submitting) return;
     try {
       const value = draft();
-      try { localStorage.setItem("batch-studio-pending-draft", JSON.stringify({ draft: value, fingerprint: draftFingerprint })); } catch { /* IPC still saves. */ }
+      // The batch state this edit starts from, so a later replay can tell whether the batch changed since.
+      const base = batch && value.batch_id && batch.batch_id === value.batch_id ? batch.updated_at : undefined;
+      draftSlot.write({ draft: value, fingerprint: draftFingerprint, ...(base ? { base_updated_at: base } : {}) }, draftOwner.current);
       draftQueue.enqueue(value, draftFingerprint, draftOwner.current);
     }
     catch (error) { setNotice((error as Error).message); }
@@ -285,7 +297,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       if (modern && action === "scripts" && !brief.target_audience.trim()) throw new Error("请填写这条视频想给谁看。");
       const payload = action === "continue" ? { batch_id: batch?.batch_id } : { draft: draft() };
       const b = await callBatch<Batch>(action, payload);
-      localStorage.removeItem("batch-studio-pending-draft");
+      draftSlot.started(draftOwner.current);
       localStorage.setItem("batch-studio-draft-id", b.batch_id);
       selectedId.current = b.batch_id; setBatch(b); setDirty(false); setSoundDirty(false);
       setFlowView(null);
