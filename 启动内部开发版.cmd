@@ -26,7 +26,7 @@ powershell.exe -NoProfile -NonInteractive -Command ^
 timeout /t 1 /nobreak >nul
 
 echo Starting AI acquisition internal development edition...
-"%CD%\node_modules\electron\dist\electron.exe" .
+node.exe "%CD%\scripts\launch-internal-development.cjs"
 if errorlevel 1 (
   echo Internal development edition failed to start.
   pause

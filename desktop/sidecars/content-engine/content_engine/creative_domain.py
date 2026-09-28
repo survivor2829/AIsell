@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import inspect
 import itertools
 import json
 import math
@@ -103,6 +104,7 @@ CREATIVE_TASK_TYPES = frozenset(
         "guided_auto_mix_draft",
         "guided_auto_mix_supplemental_image",
         "narrated_batch_v1",
+        "import_base_video",
     }
 )
 AUTO_MIX_REUSE_SELECTED_VOICE_RECOVERY_CODES = frozenset(
@@ -126,6 +128,60 @@ SKIPPABLE_ANALYSIS_ERRORS = frozenset(
         "analysis_timeout",
     }
 )
+
+
+def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=160):
+    """Move only phrase boundaries so measured speech fits the ordered shots."""
+    if not phrases or len(phrases) != len(phrase_audio) or len(segments) < len(phrases):
+        raise ContentEngineError("narrated_voice_mapping", "口播与镜头数量不匹配。")
+    segment_refs = [segment["evidence_ref"] for segment in segments]
+    original_refs = [list(phrase.get("evidenceRefs") or []) for phrase in phrases]
+    if any(not refs for refs in original_refs) or list(itertools.chain.from_iterable(original_refs)) != segment_refs:
+        raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配。")
+
+    durations = [int(segment["target_duration_ms"]) for segment in segments]
+    prefix = [0]
+    for duration in durations:
+        prefix.append(prefix[-1] + duration)
+    required = [
+        int(item["duration_ms"]) + (pause_ms if index < len(phrases) - 1 else 0)
+        for index, item in enumerate(phrase_audio)
+    ]
+    original_ends = list(itertools.accumulate(len(refs) for refs in original_refs))
+    # Each state stores (moved boundaries, unused milliseconds, boundaries).
+    states = {0: (0, 0, [])}
+    phrase_count = len(phrases)
+    segment_count = len(segments)
+    for phrase_index, need in enumerate(required):
+        next_states = {}
+        remaining_phrases = phrase_count - phrase_index - 1
+        for start, (moved, unused, boundaries) in states.items():
+            minimum_end = start + 1
+            maximum_end = segment_count - remaining_phrases
+            for end in range(minimum_end, maximum_end + 1):
+                available = prefix[end] - prefix[start]
+                if available < need:
+                    continue
+                if phrase_index == phrase_count - 1 and end != segment_count:
+                    continue
+                boundary_move = 0 if end == segment_count else abs(end - original_ends[phrase_index])
+                score = (moved + boundary_move, unused + available - need, boundaries + [end])
+                previous = next_states.get(end)
+                if previous is None or score[:2] < previous[:2]:
+                    next_states[end] = score
+        states = next_states
+        if not states:
+            raise ContentEngineError("narrated_copy_too_long", "实际配音超过全部画面的可用时长。")
+
+    boundaries = states[segment_count][2]
+    start = 0
+    for phrase, previous_refs, end in zip(phrases, original_refs, boundaries):
+        refs = segment_refs[start:end]
+        phrase["evidenceRefs"] = refs
+        if refs != previous_refs:
+            phrase.pop("sentenceBindings", None)
+        start = end
+    return phrases
 # Product one-click is deliberately more forgiving only after the provider
 # request has exhausted its bounded timeout. Course/mix workflows keep the
 # stricter contract so a missing voice backbone cannot silently become a
@@ -341,6 +397,57 @@ class CreativeDomain:
             "creative_analysis",
             {"asset_ids": safe_ids, "profile": sanitize_public_value(safe_profile)},
         )
+
+    def import_base_video(self, request):
+        from .video_presentation import TEMPLATES
+        if not isinstance(request, dict):
+            raise ContentEngineError("invalid_video_import", "视频导入参数无效。")
+        source_id = str(request.get("source_id") or "")
+        if not re.fullmatch(r"digital_human_[a-f0-9-]{32,36}", source_id):
+            raise ContentEngineError("invalid_video_import", "数字人任务编号无效。")
+        template = request.get("template_id", "topic_fixed")
+        if template not in TEMPLATES or request.get("cover_mode", "apimart") not in {"apimart", "local_frame"}:
+            raise ContentEngineError("invalid_video_import", "视频模板或封面方式无效。")
+        title = self._validate_text(request.get("title"), "title", 100)
+        script = self._validate_text(request.get("confirmed_script"), "confirmed_script", 5000)
+        source = Path(str(request.get("input_video_path") or ""))
+        if not source.is_absolute() or not source.is_file() or source.is_symlink() or source.suffix.lower() != ".mp4":
+            raise ContentEngineError("invalid_video_import", "找不到可用的数字人视频文件。")
+        if source.stat().st_size > 500 * 1024 * 1024:
+            raise ContentEngineError("invalid_video_import", "视频超过500MB，请缩短后再试。")
+        # Admission is internal IPC only. Copy once into the engine-owned tree;
+        # subsequent task execution never follows a renderer-controlled path.
+        existing = self.connection.execute("SELECT id, payload_json FROM content_tasks WHERE task_type='import_base_video' ORDER BY created_at DESC").fetchall()
+        for row in existing:
+            saved = json.loads(row["payload_json"])
+            if saved.get("source_id") == source_id:
+                self.connection.execute("UPDATE content_tasks SET status='queued',error_code=NULL,error_message=NULL,resume_from_status=NULL,updated_at=? WHERE id=? AND status IN ('failed','paused','cancelled')", (self._now(), row["id"]))
+                return {**self._public_task(self._task_row(row["id"])), "project_id": saved["project_id"]}
+        project_id = self._new_id("creative_project")
+        managed = self.data_dir / "video-imports" / source_id / "base.mp4"
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, managed)
+        now = self._now()
+        self.connection.execute("INSERT INTO creative_projects(id,mode,name,theme,settings_json,created_at,updated_at) VALUES (?,'course',?,?,?, ?,?)",
+            (project_id, title, title, self._json({"workflow": "digital_human", "internal_only": False}), now, now))
+        payload = {"source_id": source_id, "project_id": project_id, "managed_path": str(managed), "title": title,
+                   "confirmed_script": script, "template_id": template, "cover_mode": request.get("cover_mode", "apimart"),
+                   "music_track_id": str(request.get("music_track_id") or "")}
+        return {**self._create_task("import_base_video", payload), "project_id": project_id}
+
+    def update_cover_title(self, generated_video_id, headline_lines):
+        from .video_presentation import validate_headlines
+        lines = validate_headlines(headline_lines)
+        row = self._generated_row(generated_video_id)
+        recipe = json.loads(row["recipe_json"])
+        cover = (recipe.get("packaging") or {}).get("cover") or {}
+        if row["status"] != "completed" or not cover.get("background_path"):
+            raise ContentEngineError("cover_background_unavailable", "请先生成封面底图，再调整标题。")
+        background = self._validate_generated_path(cover["background_path"])
+        cover.setdefault("plan", {})["headline_lines"] = lines
+        self.renderer.compose_cover(background, self._validate_generated_path(row["thumbnail_path"]), recipe["packaging"], resolve_asset_path=self._resolve_asset_path)
+        self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), row["id"]))
+        return self._public_generated(self._generated_row(row["id"]))
 
     def create_course_task(
         self,
@@ -1144,7 +1251,7 @@ class CreativeDomain:
         if persona["provider"] == "volcengine":
             from .volcengine_tts import VolcengineTTSProvider
             if not VolcengineTTSProvider().configured:
-                raise ContentEngineError("volcengine_tts_not_configured", "请先在声音设置中配置火山语音 API Key。")
+                raise ContentEngineError("provider_gateway_unavailable", "云端配音服务暂不可用；当前进度已保留，请稍后重试。")
             normalize_executable = voice_preview_ffmpeg()
         reuse_generated = bool(previous is not None and previous["cache_key"] == cache_key
                                and previous["status"] == "failed"
@@ -2215,7 +2322,7 @@ class CreativeDomain:
             )
         if self.cover_client is None or not getattr(self.cover_client, "configured", False):
             raise ContentEngineError(
-                "apimart_not_configured", "请先配置 AI 图片服务后再生成补图。"
+                "provider_gateway_unavailable", "云端图片服务暂不可用；当前进度已保留，请稍后重试。"
             )
         session, draft, digest = self._validated_guided_auto_mix_supplemental_context(
             session_id,
@@ -2411,7 +2518,7 @@ class CreativeDomain:
             )
         if self.cover_client is None or not getattr(self.cover_client, "configured", False):
             raise ContentEngineError(
-                "apimart_not_configured", "请先配置 AI 图片服务后再生成补图。"
+                "provider_gateway_unavailable", "云端图片服务暂不可用；当前进度已保留，请稍后重试。"
             )
         if operation["status"] == "planned":
             try:
@@ -3283,6 +3390,64 @@ class CreativeDomain:
             return "text"
         return None
 
+    def _complete_auto_mix_quality_check(self, task_id, row, public_plan, private_state):
+        """Finish a locally rendered V2 video without rendering it again.
+
+        This is used after an application restart or a renderer-version fix
+        when the durable run is already at ``quality_check`` and the generated
+        file passed the local render step.  It never submits provider work.
+        """
+        generated_id = str(row["generated_video_id"] or "")
+        try:
+            generated = self._generated_row(generated_id)
+            if generated["status"] != "completed" or not generated["output_path"]:
+                raise ContentEngineError(
+                    "auto_mix_quality_invalid",
+                    "成片文件尚未通过本地输出校验。",
+                )
+            persisted_recipe = self._json_object(generated["recipe_json"])
+            validate_formal_recipe(persisted_recipe)
+            raw_quality = persisted_recipe.get("audio_quality_report")
+            quality_input = (
+                dict(raw_quality)
+                if isinstance(raw_quality, dict)
+                else self._json_object(raw_quality)
+            )
+            quality_input.setdefault(
+                "music_mode", persisted_recipe.get("music_mode", "licensed")
+            )
+            quality_report = validate_quality_report(quality_input)
+        except ContentEngineError as error:
+            return self._pause_auto_mix(
+                task_id,
+                row["id"],
+                state="needs_attention",
+                code=error.code,
+                message=error.message,
+                public_plan=public_plan,
+                private_state=private_state,
+            )
+        public_plan["qualityReport"] = quality_report
+        public_plan.pop("attention", None)
+        public_plan["cache"] = {
+            **(
+                public_plan.get("cache")
+                if isinstance(public_plan.get("cache"), dict)
+                else {}
+            ),
+            "analysisReused": bool(private_state.get("analysis_reused")),
+            "ttsPhraseCount": len(private_state.get("phrase_audio") or []),
+        }
+        self._save_auto_mix_run(
+            row["id"],
+            status="completed",
+            public_plan=public_plan,
+            private_state=private_state,
+        )
+        return public_auto_mix_plan(
+            self._auto_mix_run_value(self._auto_mix_run_row(run_id=row["id"]))
+        )
+
     def _run_auto_mix_v2(self, task_id, payload):
         run_id = str(payload.get("run_id") or "")
         row = self._auto_mix_run_row(run_id=run_id)
@@ -3294,6 +3459,10 @@ class CreativeDomain:
         private_state = self._json_object(row["private_state_json"])
         if row["status"] == "completed":
             return public_auto_mix_plan(self._auto_mix_run_value(row))
+        if row["status"] == "quality_check" and row["generated_video_id"]:
+            return self._complete_auto_mix_quality_check(
+                task_id, row, public_plan, private_state
+            )
         if row["status"] == "outcome_unknown":
             previous_attention = public_plan.get("attention")
             previous_code = (
@@ -3318,7 +3487,11 @@ class CreativeDomain:
             )
 
         public_plan, private_state = self._ensure_auto_mix_planned(
-            task_id, row, public_plan, private_state
+            task_id,
+            row,
+            public_plan,
+            private_state,
+            skip_pinned_validation=payload.get("regeneration_layer") == "music",
         )
         if not self._auto_mix_analysis_timeline(public_plan, private_state):
             return self._pause_auto_mix(
@@ -3466,7 +3639,16 @@ class CreativeDomain:
             private_state=private_state,
         )
 
-        no_music = bool(private_state.get('narrated_batch_id')) and private_state.get('music_track_ids') == []
+        music_mode = private_state.get("music_mode")
+        # Before music_mode existed, an empty list meant "no music". Keep that
+        # legacy meaning for persisted runs while new batches use explicit auto/none.
+        legacy_no_music = (
+            bool(private_state.get("narrated_batch_id"))
+            and music_mode is None
+            and private_state.get("music_track_ids") == []
+        )
+        no_music = music_mode == "none" or legacy_no_music
+        allowed_track_ids = None if music_mode == "auto" else private_state.get("music_track_ids")
         music = None
         if no_music:
             private_state.pop('music_track', None)
@@ -3483,16 +3665,17 @@ class CreativeDomain:
                     public_plan.get("musicBrief") or {},
                     required_duration_ms=voice_bundle["duration_ms"],
                     excluded_id=str(private_state.get("excluded_music_track_id") or ""),
-                    allowed_track_ids=private_state.get("music_track_ids"),
+                    allowed_track_ids=allowed_track_ids,
                     prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
                 )
             if music is None:
+                selected_pool_empty = music_mode == "selected" and not private_state.get("music_track_ids")
                 return self._pause_auto_mix(
                     task_id,
                     run_id,
                     state="needs_attention",
-                    code="narrated_music_pool_empty" if private_state.get("music_track_ids") == [] else "auto_mix_licensed_music_required",
-                    message="请先试听并选入至少一首可导出的配乐。" if private_state.get("music_track_ids") == [] else "选定配乐库中没有授权有效且适配本条时长的音乐。",
+                    code="narrated_music_pool_empty" if selected_pool_empty else "auto_mix_licensed_music_required",
+                    message="请先试听并选入至少一首可导出的配乐。" if selected_pool_empty else "授权曲库中没有适配本条时长的音乐，请稍后重试或明确选择无配乐。",
                     public_plan=public_plan,
                     private_state=private_state,
                 )
@@ -3581,7 +3764,34 @@ class CreativeDomain:
             generated_video_id=generated_id,
         )
         self._set_task(task_id, "rendering", progress=0.86)
-        rendered = self._render_generated(generated_id, task_id=task_id)
+        def render_progress(stage, percent):
+            if not private_state.get("narrated_batch_id"):
+                return
+            try:
+                from .narrated_batch import NarratedBatchDomain
+                narrated = NarratedBatchDomain(self)
+                batch = narrated._load(private_state["narrated_batch_id"])
+                job = batch.get("_active_production_job") or {}
+                total = max(1, len(batch.get("production_jobs") or []))
+                index = max(0, int(job.get("production_index") or 1) - 1)
+                item = next((candidate for candidate in batch.get("candidates") or []
+                             if candidate.get("candidate_id") == job.get("candidate_id")), {})
+                production_percent = round((index + max(0, min(100, percent)) / 100) * 100 / total)
+                narrated._activity(
+                    batch, stage, index, total,
+                    phase="production", phase_label="配音与剪辑",
+                    overall_percent=60 + round(production_percent * 0.35),
+                    phase_percent=production_percent,
+                    item_index=index + 1, item_total=total,
+                    item_name=item.get("title") or f"第 {index + 1} 条作品",
+                )
+            except Exception:
+                # Progress reporting must never invalidate a completed local render.
+                return
+
+        rendered = self._render_generated(
+            generated_id, task_id=task_id, progress_callback=render_progress
+        )
         if not rendered:
             return public_auto_mix_plan(
                 self._auto_mix_run_value(self._auto_mix_run_row(run_id=run_id))
@@ -3645,9 +3855,18 @@ class CreativeDomain:
         generated = self._generated_row(generated_id)
         persisted_recipe = self._json_object(generated["recipe_json"])
         validate_formal_recipe(persisted_recipe)
-        quality_report = validate_quality_report(
-            persisted_recipe.get("audio_quality_report")
+        raw_quality = persisted_recipe.get("audio_quality_report")
+        quality_input = (
+            dict(raw_quality)
+            if isinstance(raw_quality, dict)
+            else self._json_object(raw_quality)
         )
+        if "music_mode" not in quality_input:
+            # Older renderers wrote the probe beside the mezzanine without
+            # repeating the recipe mode.  Reuse the authoritative recipe so a
+            # voice-only video is not rejected for a margin it never needed.
+            quality_input["music_mode"] = persisted_recipe.get("music_mode", "licensed")
+        quality_report = validate_quality_report(quality_input)
         public_plan["qualityReport"] = quality_report
         public_plan.pop("attention", None)
         public_plan["cache"] = {
@@ -3733,11 +3952,15 @@ class CreativeDomain:
         public_plan["cache"] = cache
 
     def _ensure_auto_mix_planned(
-        self, task_id, row, public_plan, private_state
+        self, task_id, row, public_plan, private_state, *, skip_pinned_validation=False
     ):
         if private_state.get("narrated_batch_v1"):
             from .narrated_batch import NarratedBatchDomain
-            NarratedBatchDomain(self).validate_pinned_plan(private_state)
+            # Music-only regeneration reuses the pinned timeline, voice and
+            # captions. Do not block this local soundtrack fix on an analysis
+            # version bump when no visual evidence is being changed.
+            if not skip_pinned_validation:
+                NarratedBatchDomain(self).validate_pinned_plan(private_state)
             return public_plan, private_state
         warnings = list(public_plan.get("qualityWarnings") or [])
         asset_ids = json.loads(row["asset_ids_json"] or "[]")
@@ -4400,6 +4623,7 @@ class CreativeDomain:
         preserve_shots = bool(private_state.get("narrated_preserve_shot_duration"))
         def full_shot_timeline(phrases, audio):
             segments = [dict(s) for s in analysis_timeline["selected_segments"]]
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
             cursor = 0
             position = 0
             for index, (phrase, item) in enumerate(zip(phrases, audio)):
@@ -5557,7 +5781,7 @@ class CreativeDomain:
         if not isinstance(previous, dict):
             return None
         track_id = str(previous.get("track_id") or "")
-        allowed_ids = private_state.get("music_track_ids")
+        allowed_ids = None if private_state.get("music_mode") == "auto" else private_state.get("music_track_ids")
         if (not track_id or private_state.get("excluded_music_track_id") == track_id
                 or (allowed_ids is not None and track_id not in allowed_ids)):
             return None
@@ -5773,8 +5997,12 @@ class CreativeDomain:
             private_state.get("guided_supplemental_image"),
             duration_ms,
         )
+        visual_items = public_plan.get("visualTextItems") or []
+        if private_state.get('narrated_brief_version') == 1:
+            from .narrated_brief import renderable_visual_items
+            visual_items = renderable_visual_items(visual_items)
         visual_events = self._auto_mix_visual_events(
-            public_plan.get("visualTextItems") or [],
+            visual_items,
             duration_ms,
             timeline=timeline,
         )
@@ -5821,7 +6049,8 @@ class CreativeDomain:
             "music_track_id": music["track_id"]}),
             "voice_persona_id": persona["id"],
             **({"music_track_ids": list(private_state["music_track_ids"])}
-               if private_state.get("music_track_ids") is not None else {}),
+               if private_state.get("music_mode") != "auto"
+               and private_state.get("music_track_ids") is not None else {}),
             "voice_segment": {
                 "asset_id": visual_segments[0]["asset_id"],
                 "start_ms": 0,
@@ -5832,7 +6061,11 @@ class CreativeDomain:
             **({"caption_presentation": "reference_narration"}
                if private_state.get("narrated_reference_captions") else {}),
             "subtitle_style": {
-                "preset": "dynamic_clean",
+                # The V2 Remotion package renders a restrained social style:
+                # white captions with a yellow active word and sparse emoji
+                # decorations.  Keep this explicit in the recipe so fallback
+                # inspection and later re-renders use the same intent.
+                "preset": "social_pop",
                 "font_size": 52,
                 "margin_bottom": 220,
                 "max_chars": 14,
@@ -5841,7 +6074,7 @@ class CreativeDomain:
                 "mode": "auto",
                 "preset_id": "auto_mix_v2",
                 "subtitle": {
-                    "preset": "dynamic_clean",
+                    "preset": "social_pop",
                     "font_size": 52,
                     "margin_bottom": 220,
                     "max_chars": 14,
@@ -5872,6 +6105,12 @@ class CreativeDomain:
         if private_state.get("narrated_brand"):
             recipe["packaging"]["brand"] = private_state["narrated_brand"]
             recipe["packaging"]["brand_profile_id"] = private_state["narrated_brand"].get("brand_profile_id")
+        if private_state.get("narrated_reference_captions"):
+            from .video_presentation import presentation
+            recipe["presentation"] = presentation(recipe["captions"],
+                run["title"],
+                private_state.get("video_template") or "topic_fixed")
+            recipe["packaging"]["cover"]["auto_generate"] = True
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
         recipe["skeleton_id"] = self._skeleton_id(recipe)
@@ -6526,7 +6765,10 @@ class CreativeDomain:
         ):
             return self._public_task(self._task_row(task_id))
         try:
-            if task["task_type"] == "narrated_batch_v1":
+            if task["task_type"] == "import_base_video":
+                from .video_presentation import run_imported_video
+                result = run_imported_video(self, task_id, payload)
+            elif task["task_type"] == "narrated_batch_v1":
                 from .narrated_batch import NarratedBatchDomain
                 result = NarratedBatchDomain(self).run(task_id, payload)
             elif task["task_type"] == "creative_analysis":
@@ -6566,6 +6808,9 @@ class CreativeDomain:
                 result = self._run_regeneration(task_id, payload)
             state = self._task_status(task_id)
             if state in {"paused", "cancelled"}:
+                if task["task_type"] == "narrated_batch_v1":
+                    from .narrated_batch import NarratedBatchDomain
+                    NarratedBatchDomain(self).mark_task_stopped(payload.get("batch_id"), task_id, None)
                 self._sync_stopped_project(payload.get("project_id"), state)
                 return self._public_task(self._task_row(task_id))
             if not self._set_task(task_id, "completed", progress=1, result=result):
@@ -6586,6 +6831,19 @@ class CreativeDomain:
                 "auto_mix_v2_regeneration",
             }:
                 self._fail_auto_mix_run(payload.get("run_id"), error.code)
+            if (
+                task["task_type"] == "narrated_batch_v1"
+                and error.code == "provider_gateway_unavailable"
+                and state not in {"paused", "cancelled", "completed", "failed"}
+            ):
+                # A gateway outage is a local, retryable interruption. Keep the
+                # task resumable and preserve the narrated batch instead of
+                # turning a preflight failure into a terminal task failure.
+                self._pause_task_for_local_recovery(task_id, error)
+                from .narrated_batch import NarratedBatchDomain
+                NarratedBatchDomain(self).mark_task_stopped(payload.get('batch_id'), task_id, error)
+                self._sync_stopped_project(payload.get("project_id"), "paused")
+                return self._public_task(self._task_row(task_id))
             elif task["task_type"] in {
                 "guided_auto_mix_analysis",
                 "guided_auto_mix_draft",
@@ -6654,6 +6912,9 @@ class CreativeDomain:
                     )
             else:
                 self._sync_stopped_project(payload.get("project_id"), state)
+            if task["task_type"] == "narrated_batch_v1":
+                from .narrated_batch import NarratedBatchDomain
+                NarratedBatchDomain(self).mark_task_stopped(payload.get("batch_id"), task_id, error)
             return self._public_task(self._task_row(task_id))
         except Exception as error:
             state = self._task_status(task_id)
@@ -6693,6 +6954,11 @@ class CreativeDomain:
                     )
             else:
                 self._sync_stopped_project(payload.get("project_id"), state)
+            if task["task_type"] == "narrated_batch_v1":
+                from .narrated_batch import NarratedBatchDomain
+                NarratedBatchDomain(self).mark_task_stopped(
+                    payload.get("batch_id"), task_id,
+                    ContentEngineError("creative_task_failed", redact_text(str(error))[:500]))
             return self._public_task(self._task_row(task_id))
 
     def _run_visual_comparison(self, task_id, payload):
@@ -7347,7 +7613,8 @@ class CreativeDomain:
         }
 
     def _analyze_asset(
-        self, task_id, asset_id, profile=None, *, return_analysis_version=False
+        self, task_id, asset_id, profile=None, *, return_analysis_version=False,
+        progress_callback=None,
     ):
         asset = self._asset_row(asset_id)
         source = self._resolve_asset_path(asset_id)
@@ -7363,6 +7630,7 @@ class CreativeDomain:
             task_id=task_id,
             profile=effective_profile,
             should_stop=lambda: self._should_stop(task_id),
+            progress=progress_callback,
         )
         if outcome.get("stopped") or self._should_stop(task_id):
             return "" if return_analysis_version else False
@@ -8518,6 +8786,7 @@ class CreativeDomain:
                 "generated_video_not_ready", "Only completed videos can be repackaged."
             )
         created_ids = []
+        required_capabilities = set()
         with self.database.transaction() as connection:
             task_id = self._create_task("creative_packaging", {})["task_id"]
             now = self._now()
@@ -8553,6 +8822,11 @@ class CreativeDomain:
                     index=packaging_index,
                     options=validated,
                 )
+                if (
+                    (recipe.get("packaging") or {}).get("cover", {}).get("mode")
+                    == "ai_generate"
+                ):
+                    required_capabilities.add("apimart")
                 if reuse_cover and recipe.get("packaging"):
                     recipe["packaging"]["cover"].update(
                         {
@@ -8585,6 +8859,7 @@ class CreativeDomain:
             payload = {
                 "generated_video_ids": created_ids,
                 "source_generated_video_ids": [row["id"] for row in source_rows],
+                "required_capabilities": sorted(required_capabilities),
             }
             connection.execute(
                 "UPDATE content_tasks SET payload_json = ?, updated_at = ? WHERE id = ?",
@@ -8728,6 +9003,9 @@ class CreativeDomain:
                 "generated_video_not_ready", "Only completed videos can request a new cover."
             )
         recipe = json.loads(row["recipe_json"])
+        latest = self.connection.execute("SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (row["id"],)).fetchone()
+        if latest is not None and latest["status"] == "outcome_unknown":
+            raise ContentEngineError("cover_outcome_unknown", "上次封面请求结果尚未确认，请先核对该请求，暂不重复提交。")
         reused_operation = False
         with self.database.transaction() as connection:
             operation = connection.execute(
@@ -8915,6 +9193,9 @@ class CreativeDomain:
         ).fetchone()
         if operation is None or operation["status"] == "completed":
             return None
+        recipe = json.loads(self._generated_row(video_id)["recipe_json"])
+        if ((recipe.get("packaging") or {}).get("cover") or {}).get("auto_generate"):
+            return self._public_cover_operation(operation)
         return self._execute_cover_operation(
             operation["id"],
             should_stop=(lambda: self._should_stop(task_id)) if task_id else None,
@@ -8937,7 +9218,7 @@ class CreativeDomain:
             )
         if self.cover_client is None or not self.cover_client.configured:
             raise ContentEngineError(
-                "apimart_not_configured", "Configure the APIMart cover service first."
+                "apimart_not_configured", "网感封面服务尚未配置，视频已保留，可稍后单独重试封面。"
             )
         video_row = self._generated_row(operation["generated_video_id"])
         recipe = json.loads(video_row["recipe_json"])
@@ -8946,7 +9227,8 @@ class CreativeDomain:
                 raise APIMartPollingStopped(
                     "APIMart cover submission was stopped before admission."
                 )
-            reference_path = self._cover_reference_path(recipe)
+            from .video_presentation import prepare_cover
+            reference_path = prepare_cover(self, video_row, recipe, should_stop)
             # Freeze the opaque reference selection before the one-way paid
             # admission. A restart can then resume without silently switching
             # to a different source frame.
@@ -9033,7 +9315,7 @@ class CreativeDomain:
             )
             raise ContentEngineError("cover_poll_failed", str(error)) from error
         target = self._validate_generated_path(video_row["thumbnail_path"])
-        background = target.with_name(f".{target.stem}.ai-background")
+        background = target.with_name("cover-background.png")
         try:
             try:
                 self.cover_client.download(image_url, background)
@@ -9046,8 +9328,10 @@ class CreativeDomain:
                 )
                 raise ContentEngineError(
                     "cover_download_failed",
-                    "The completed APIMart cover could not be downloaded locally.",
+                    "封面已生成，但下载未完成。视频已保留，继续处理封面即可。",
                 ) from error
+            recipe["packaging"]["cover"]["background_path"] = str(background)
+            self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), video_row["id"]))
             try:
                 self.renderer.compose_cover(
                     background,
@@ -9064,7 +9348,7 @@ class CreativeDomain:
                 )
                 raise ContentEngineError(
                     "cover_composition_failed",
-                    "The AI cover could not be composed locally.",
+                    "封面底图已保存，但标题合成未完成。视频已保留，可以单独重试封面。",
                 ) from error
         except ContentEngineError:
             raise
@@ -9072,8 +9356,6 @@ class CreativeDomain:
             raise ContentEngineError(
                 "cover_composition_failed", "The AI cover could not be composed locally."
             ) from error
-        finally:
-            background.unlink(missing_ok=True)
         return self.update_cover_operation(
             operation["id"],
             "completed",
@@ -9083,6 +9365,15 @@ class CreativeDomain:
     @staticmethod
     def _cover_prompt(video_row, recipe):
         packaging = recipe.get("packaging") or {}
+        plan = (packaging.get("cover") or {}).get("plan") or {}
+        if plan.get("source") == "finished_video":
+            composition = ("Keep the product clear in the lower two thirds, with clean upper space for a title."
+                           if plan.get("style") == "product_demo" else
+                           "Keep the actual speaker prominent toward the lower right, with clean space in the upper left.")
+            return ("Create a polished editorial vertical 9:16 short-video cover BACKGROUND ONLY from this actual finished-video frame. "
+                    "Preserve the real face, age, product shape, packaging and all physical details. Improve lighting and separation. "
+                    "Remove overlaid captions from the reference. Do not add people, products, logos, comparison panels, claims or results. "
+                    "Do not generate any text, Chinese characters, letters, numbers, labels, badges or watermark. " + composition)
         brand = packaging.get("brand") or {}
         title = str(video_row["title"] or packaging.get("title") or "")[:80]
         primary = str(brand.get("primary_color") or "neutral violet")[:16]
@@ -9471,6 +9762,9 @@ class CreativeDomain:
                 for row in rows
             ]
         }
+
+    def get_generated_video(self, candidate_id):
+        return self._public_generated(self._generated_row(candidate_id))
 
     def _latest_cover_operations(self, generated_video_ids):
         latest = {}
@@ -10522,7 +10816,7 @@ class CreativeDomain:
             (request_key,),
         ).fetchone()
 
-    def _render_generated(self, video_id, *, task_id=None):
+    def _render_generated(self, video_id, *, task_id=None, progress_callback=None):
         row = self._generated_row(video_id)
         if row["status"] == "rejected":
             return False
@@ -10544,12 +10838,18 @@ class CreativeDomain:
             output_dir = self.data_dir / "generated" / row["project_id"] / video_id
             recipe = json.loads(row["recipe_json"])
             self._validate_auto_mix_v2_runtime_resources(recipe)
-            rendered = self.renderer.render(
+            render_args = dict(
                 video_id=video_id,
                 recipe=recipe,
                 output_dir=output_dir,
                 resolve_asset_path=self._resolve_render_asset_path,
             )
+            parameters = inspect.signature(self.renderer.render).parameters.values()
+            if progress_callback is not None and any(
+                parameter.name == "progress_callback" for parameter in parameters
+            ):
+                render_args["progress_callback"] = progress_callback
+            rendered = self.renderer.render(**render_args)
             cover = (recipe.get("packaging") or {}).get("cover") or {}
             if cover.get("mode") == "reuse":
                 source_id = str(cover.get("source_generated_video_id") or "")
@@ -10572,6 +10872,9 @@ class CreativeDomain:
                     "integrated_lufs": report["integratedLufs"],
                     "true_peak_dbtp": report["truePeakDbtp"],
                     "speech_music_margin_lu": report["speechMusicMarginLu"],
+                    "music_mode": report.get(
+                        "musicMode", recipe.get("music_mode", "licensed")
+                    ),
                 }
                 validate_formal_recipe(recipe)
             persisted_recipe = self._json(recipe)
@@ -10609,6 +10912,16 @@ class CreativeDomain:
                     video_id,
                 ),
             )
+            # Cover has its own task and failure state. A finished MP4 stays
+            # completed even when analysis, provider or local cover composition fails.
+            if cover.get("auto_generate"):
+                try:
+                    cover_task = self.regenerate_cover(video_id)
+                    self.run_task(cover_task["task_id"])
+                except Exception as cover_error:
+                    cover["status"] = "failed"
+                    cover["issue_message"] = redact_text(str(cover_error))[:300]
+                    self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), video_id))
             return True
         except Exception as error:
             code = error.code if isinstance(error, ContentEngineError) else "render_failed"
@@ -10850,6 +11163,8 @@ class CreativeDomain:
             if cover_operation is not None
             else None
         )
+        cover_task = (self.connection.execute("SELECT error_message FROM content_tasks WHERE id=?", (_stable_id("task_cover", cover_operation["id"]),)).fetchone()
+                      if cover_operation is not None else None)
         return {
             "generated_video_id": row["id"],
             "project_id": row["project_id"],
@@ -10868,6 +11183,11 @@ class CreativeDomain:
             "packaging_version": packaging.get("version"),
             "brand_profile_id": packaging.get("brand_profile_id"),
             "cover_status": cover_status,
+            "cover_headline_lines": (cover.get("plan") or {}).get("headline_lines") or [],
+            "cover_title_editable": bool(cover.get("background_path") and Path(cover["background_path"]).is_file()
+                                         and cover_status not in {"planned", "submitted"}),
+            "cover_style": (cover.get("plan") or {}).get("style"),
+            "cover_issue_message": redact_text(cover_task["error_message"] or "") if cover_task else cover.get("issue_message"),
             "cover_phase": (
                 public_cover["phase"]
                 if public_cover is not None
@@ -11072,6 +11392,41 @@ class CreativeDomain:
         ).fetchall()
         return {candidate["id"]: candidate for candidate in candidates}
 
+    def _legacy_packaging_required_capabilities(self, task_payload):
+        """Recover cover requirements for packaging tasks created before metadata existed."""
+        video_ids = task_payload.get("generated_video_ids")
+        if not isinstance(video_ids, list) or not video_ids:
+            return ["apimart"]
+        for video_id in video_ids:
+            try:
+                row = self._generated_row(str(video_id))
+                recipe = json.loads(row["recipe_json"])
+            except (ContentEngineError, TypeError, ValueError):
+                return ["apimart"]
+            packaging = recipe.get("packaging")
+            if packaging is None:
+                continue
+            if not isinstance(packaging, dict):
+                return ["apimart"]
+            cover = packaging.get("cover")
+            if not isinstance(cover, dict):
+                return ["apimart"]
+            mode = str(cover.get("mode") or "")
+            if mode == "ai_generate":
+                operation = self.connection.execute(
+                    """
+                    SELECT status FROM cover_generation_ledger
+                    WHERE generated_video_id = ?
+                    ORDER BY created_at DESC, rowid DESC LIMIT 1
+                    """,
+                    (str(video_id),),
+                ).fetchone()
+                if operation is None or operation["status"] != "completed":
+                    return ["apimart"]
+            elif mode not in {"local_frame", "none", "reuse"}:
+                return ["apimart"]
+        return []
+
     def _public_task(self, row, *, capability=None, candidate_lookup=None):
         result = {
             "task_id": row["id"],
@@ -11090,6 +11445,19 @@ class CreativeDomain:
             task_payload = {}
         if isinstance(task_payload, dict) and task_payload.get("project_id"):
             result["project_id"] = str(task_payload["project_id"])
+        if isinstance(task_payload, dict) and isinstance(
+            task_payload.get("required_capabilities"), list
+        ):
+            result["required_capabilities"] = [
+                capability
+                for capability in task_payload["required_capabilities"]
+                if capability
+                in {"apimart", "volcengine_ark", "volcengine_asr", "volcengine_tts"}
+            ]
+        elif row["task_type"] == "creative_packaging" and isinstance(task_payload, dict):
+            result["required_capabilities"] = (
+                self._legacy_packaging_required_capabilities(task_payload)
+            )
         if (
             row["task_type"] in {
                 "auto_mix_v2_generation",
@@ -11121,6 +11489,14 @@ class CreativeDomain:
                     ),
                 }
         if row["task_type"] != "creative_visual_comparison":
+            if row["task_type"] == "import_base_video":
+                try:
+                    imported_result = json.loads(row["result_json"] or "{}")
+                except (TypeError, ValueError):
+                    imported_result = {}
+                generated_id = imported_result.get("generated_video_id") if isinstance(imported_result, dict) else None
+                if isinstance(generated_id, str) and re.fullmatch(r"generated_video_[a-f0-9]{32}", generated_id):
+                    result["generated_video_id"] = generated_id
             return result
         payload = task_payload
         if not isinstance(payload, dict):

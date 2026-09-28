@@ -131,8 +131,11 @@ function createTaskPassportStore(options = {}) {
         writeJsonAtomic(path.join(directory, rawName), failure.rawReading ?? null);
         writeJsonAtomic(path.join(directory, expectedName), failure.expected ?? null);
         attachments.push(rawName, expectedName);
-        const screenshot = captureScreenshot({ moduleName, taskId, failure });
-        if (screenshot && typeof screenshot.then === "function") {
+        const screenshot = Object.prototype.hasOwnProperty.call(failure, "screenshotBytes")
+          ? failure.screenshotBytes : captureScreenshot({ moduleName, taskId, failure });
+        if (Object.prototype.hasOwnProperty.call(failure, "screenshotBytes") && !Buffer.isBuffer(screenshot)) {
+          attachmentStatus = "screenshot_unavailable";
+        } else if (screenshot && typeof screenshot.then === "function") {
           attachmentStatus = "screenshot_pending";
           attachments.push(screenshotName);
           Promise.resolve(screenshot).then((content) => {
@@ -152,7 +155,9 @@ function createTaskPassportStore(options = {}) {
             });
           });
         } else {
-          if (!Buffer.isBuffer(screenshot) || !screenshot.length) throw new Error("task_passport_screenshot_unavailable");
+          if (!Buffer.isBuffer(screenshot) || !screenshot.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) {
+            throw new Error("task_passport_screenshot_unavailable");
+          }
           writeFileAtomic(path.join(directory, screenshotName), screenshot);
           attachments.push(screenshotName);
         }

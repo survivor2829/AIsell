@@ -1,8 +1,8 @@
-const { spawn, spawnSync } = require("node:child_process");
-const fs = require("node:fs");
-const os = require("node:os");
+const { spawn } = require("node:child_process");
 const path = require("node:path");
 const electronPath = require("electron");
+const { resolveDevelopmentContentEngineLaunch } = require("../src/main/development-sidecar-runtime.cjs");
+const { startApimartTestRelay } = require("./apimart-test-relay.cjs");
 
 const developmentEnv = { ...process.env, XIAOXI_EDITION: "development", VITE_XIAOXI_EDITION: "development" };
 
@@ -19,33 +19,16 @@ function resolveDevServerPort(rawValue = developmentEnv.XIAOXI_DEV_SERVER_PORT) 
   return port;
 }
 
-function findDevelopmentPython() {
-  const candidates = [
-    developmentEnv.XIAOXI_CONTENT_ENGINE_DEV_PYTHON,
-    path.join(__dirname, "..", ".build", "product-detail-venv", "Scripts", "python.exe"),
-    path.join(os.homedir(), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe")
-  ];
-  for (const candidate of candidates.map((value) => String(value || "").trim()).filter(Boolean)) {
-    if (!fs.existsSync(candidate)) continue;
-    const check = spawnSync(candidate, ["-c", "import sys; assert sys.version_info >= (3, 10)"], {
-      encoding: "utf8",
-      windowsHide: true
-    });
-    if (check.status === 0) return candidate;
-  }
-  return "";
-}
-
 function startDesktop() {
   const devServerPort = resolveDevServerPort();
   const url = `http://127.0.0.1:${devServerPort}`;
   const viteCli = path.join(path.dirname(require.resolve("vite")), "bin", "vite.js");
+  const apimartRelay = startApimartTestRelay();
   if (!developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR) {
-    const python = findDevelopmentPython();
-    const worker = path.join(__dirname, "..", "sidecars", "content-engine", "worker.py");
-    if (python && fs.existsSync(worker)) {
-      developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR = python;
-      developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY = worker;
+    const launch = resolveDevelopmentContentEngineLaunch({ environment: developmentEnv });
+    if (launch.runtimePath) {
+      developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR = launch.runtimePath;
+      developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY = launch.runtimeArgs[0] || "";
     }
   }
   const vite = spawn(
@@ -69,6 +52,7 @@ function startDesktop() {
     if (startupTimer) clearTimeout(startupTimer);
     console.error(message);
     vite.kill();
+    apimartRelay.stop();
     process.exitCode = 1;
   }
 
@@ -76,14 +60,17 @@ function startDesktop() {
     if (startupFailed || electronStarted) return;
     electronStarted = true;
     if (startupTimer) clearTimeout(startupTimer);
+    const electronEnv = { ...developmentEnv, VITE_DEV_SERVER_URL: url };
+    delete electronEnv.ELECTRON_RUN_AS_NODE;
     const electron = spawn(electronPath, ["."], {
       stdio: "inherit",
-      env: { ...developmentEnv, VITE_DEV_SERVER_URL: url }
+      env: electronEnv
     });
     electron.once("error", (error) => failStartup(`Electron could not start: ${error.message}`));
     electron.on("exit", () => {
       electronExited = true;
       vite.kill();
+      apimartRelay.stop();
     });
   }
 

@@ -8,6 +8,9 @@
 |---|---|---|
 | `desktop/src/renderer/` | React 页面、用户输入、状态展示和 IPC 调用 | 直接访问微信、文件系统、明文 Key 或执行业务发送 |
 | `desktop/src/main/` | Electron 生命周期、IPC、业务编排、DeepSeek、运行协调和数据目录注入 | 在页面组件中复制 RPA 逻辑；把单功能状态写进共享适配配置 |
+| `desktop/src/main/keyword-acquisition*`、`douyin-browser-adapter.cjs` | 独立关键词任务、线索、会话及发送账本；官方网页观察和受约束私信适配 | 依赖内容引擎启动；猜测账号、私信归属或发送成功；自动重发未知结果 |
+| `desktop/src/main/digital-human-*` | 数字人图片导入、草稿、预览确认、供应商素材审核和异步视频任务 | 向 renderer 暴露密钥或本地路径；重复提交结果不明的付费请求 |
+| `content_engine/video_presentation.py`、`desktop/remotion-packaging/`、`VideoPresentation.tsx` | 两类视频共用的字幕时间、模板、成片封面和标题修改；生成结果仍由内容引擎登记 | 在封面失败时丢弃视频；修改标题时重新调用生图 |
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
 | `desktop/rpa/active_touch/` | 微信窗口观察/发送适配、主动触达状态机及测试版朋友圈执行器 | renderer 状态管理、API Key 持久化、跨业务混用发送账本 |
 | `desktop/sidecars/product-detail/` | 产品详情图本地 sidecar、隔离工作台和用户数据迁移 | 向 renderer 暴露文件系统、密钥或任意本机进程能力 |
@@ -58,6 +61,8 @@
 | `moments/` | 朋友圈观察、帖子稳定标识、动作尝试、去重账本及独立的每日计划状态 |
 | `wechat_workflow/` | 跨模块任务编号、排序、执行时间、汇总进度与最后展示任务；不保存正文、联系人快照或发送凭证 |
 | `wechat_adapter/` | 共享微信窗口与 adapter 配置，不含业务结果 |
+| `keyword_acquisition/state.json` | 关键词任务、来源评论、线索、会话、联系额度及逐次发送状态；独立抖音 session partition 不复用微信状态 |
+| `digital_human/` | 图片副本、可编辑草稿、预览版本确认、供应商操作编号与返回结果、基础视频；成片编号指向内容引擎 |
 | `role-preferences.json` | 各角色已保存的名字和该角色有效形象 ID；共享目录定义默认值与可选范围 |
 | `feedback/state.json` | 反馈草稿、不可变正文/诊断快照、当前 Windows 账户加密的回执凭据、投递重试和已收到的服务端状态 |
 | `cloud-maintenance/state.json`、`cloud-maintenance/outbox.json` | 签名更新/公告缓存、已读状态、自动上报授权和独立自动诊断队列；不承担反馈状态 |

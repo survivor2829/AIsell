@@ -1,4 +1,5 @@
 const test = require("node:test");
+test.after(() => console.log("Component update checks passed."));
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");

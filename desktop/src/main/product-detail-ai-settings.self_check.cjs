@@ -163,6 +163,22 @@ async function main() {
     assert.equal(changes.length, 2);
     assert.equal(changes[1].action, "deleted");
 
+    const managedHandlers = new Map();
+    registerProductDetailAiSettingsIpc({
+      ipcMain: { handle: (channel, handler) => managedHandlers.set(channel, handler) },
+      store: {
+        status: () => { throw new Error("must not read retained local settings"); },
+        save: () => { throw new Error("must not write retained local settings"); },
+        clear: () => { throw new Error("must not delete retained local settings"); },
+        validate: () => { throw new Error("must not validate retained local settings"); }
+      },
+      managed: true
+    });
+    assert.equal((await managedHandlers.get(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.status)()).data.managed, true);
+    assert.equal((await managedHandlers.get(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.save)(null, { apiKey: secret })).code, "PROVIDER_GATEWAY_MANAGED");
+    assert.equal((await managedHandlers.get(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.delete)()).code, "PROVIDER_GATEWAY_MANAGED");
+    assert.equal((await managedHandlers.get(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.validate)(null, { apiKey: secret })).code, "PROVIDER_GATEWAY_MANAGED");
+
     const unavailableRoot = path.join(root, "unavailable");
     const unavailable = createProductDetailAiSettingsStore({
       rootDir: unavailableRoot,
@@ -186,12 +202,10 @@ async function main() {
       mainSource,
       /getProviderEnvironment: productDetailReleaseSmokeMode\s*\? \(\) => \(\{\}\)\s*: getProductDetailProviderEnvironment/u
     );
-    assert.match(mainSource, /DEEPSEEK_API_KEY = deepSeekKeyStore\.read\(\)/u);
-    assert.match(mainSource, /REFINE_API_KEY = refine\.apiKey/u);
-    assert.match(mainSource, /REFINE_API_BASE_URL = refine\.baseUrl/u);
-    assert.match(mainSource, /APIMART_API_KEY = imageProvider\.apiKey/u);
-    assert.match(mainSource, /APIMART_API_BASE_URL = imageProvider\.baseUrl/u);
-    assert.match(mainSource, /APIMART_IMAGE_MODEL = imageProvider\.model/u);
+    assert.doesNotMatch(mainSource, /DEEPSEEK_API_KEY = deepSeekKeyStore\.read\(\)/u);
+    assert.match(mainSource, /REFINE_API_KEY = providerGatewayClient\.token\(\)/u);
+    assert.match(mainSource, /REFINE_API_BASE_URL = providerGatewayClient\.url\("\/apimart"\)/u);
+    assert.match(mainSource, /managed: true/u);
     assert.match(mainSource, /function restartImageProviderConsumers\(\)/u);
     assert.match(mainSource, /onChanged: restartImageProviderConsumers/u);
     assert.match(
@@ -209,10 +223,7 @@ async function main() {
       path.join(__dirname, "../renderer/App.tsx"),
       "utf8"
     );
-    assert.match(rendererSource, /function ApiMartSettings\(\)/u);
-    assert.match(rendererSource, /https:\/\/api\.apimart\.ai\/v1/u);
-    assert.match(rendererSource, /gpt-image-2/u);
-    assert.match(rendererSource, /paidCallPerformed !== false/u);
+    assert.doesNotMatch(rendererSource, /active === "api-key"/u);
     const productPage = fs.readFileSync(
       path.join(__dirname, "../renderer/ProductDetailPage.tsx"),
       "utf8"

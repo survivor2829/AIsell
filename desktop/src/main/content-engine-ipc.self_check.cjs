@@ -414,6 +414,8 @@ async function main() {
     const sent = [];
     const notifications = [];
     const calls = [];
+    const providerPreflightCalls = [];
+    let providerPreflightFailure = null;
     const shown = [];
     const opened = [];
     const diagnosticOperations = [];
@@ -534,6 +536,8 @@ async function main() {
         calls.push(["listTasks", payload]);
         return { items: listedTaskItems };
       },
+      getTask: async (taskId) => listedTaskItems.find((item) => item.task_id === taskId)
+        || task({ task_id: taskId }),
       pauseTask: async (taskId) => task({ task_id: taskId }),
       resumeTask: async (taskId) => task({
         task_id: taskId,
@@ -645,6 +649,18 @@ async function main() {
           answers,
           prefill: { title: "室内清洁机器人展示", answers: { productName: "清洁机器人" } },
           draft: { revision: 0 }
+        };
+      },
+      createGuidedAutoMixSupplementalImageV2: async (input) => {
+        calls.push(["createGuidedAutoMixSupplementalImageV2", input]);
+        return {
+          operation_id: "guided_auto_mix_supplemental_image_04040404040404040404040404040404",
+          session_id: input.sessionId,
+          script_revision: input.scriptRevision,
+          status: "submitted",
+          estimated_image_calls: 1,
+          provider: "apimart",
+          paid_call_performed: true
         };
       },
       getAutoMixPlanV2: async (options) => {
@@ -865,6 +881,14 @@ async function main() {
         calls.push(["listGeneratedVideos", options]);
         return { items: [generatedVideo()] };
       },
+      getGeneratedVideo: async (candidateId) => {
+        calls.push(["getGeneratedVideo", candidateId]);
+        return generatedVideo({ cover_headline_lines: ["看清细节"], cover_title_editable: true });
+      },
+      updateCoverTitle: async (candidateId, headlineLines) => {
+        calls.push(["updateCoverTitle", candidateId, headlineLines]);
+        return generatedVideo({ cover_headline_lines: headlineLines, cover_title_editable: true });
+      },
       regenerateCover: async (candidateId) => {
         calls.push(["regenerateCover", candidateId]);
         return task({ task_id: packagingTaskId, task_type: "creative_cover", status: "queued" });
@@ -956,7 +980,12 @@ async function main() {
       electron,
       getMainWindow: () => mainWindow,
       ipcMain,
-      notificationFactory
+      notificationFactory,
+      providerCapabilityStatus: (capability) => capability === "volcengine_ark",
+      beforeProviderWork: async (capabilities) => {
+        providerPreflightCalls.push(capabilities);
+        if (providerPreflightFailure) throw providerPreflightFailure;
+      }
     });
     assert.deepEqual(
       [...handlers.keys()].sort(),
@@ -976,6 +1005,17 @@ async function main() {
         code: ""
       }
     });
+    const managedArkStatus = await handlers.get(CONTENT_ENGINE_CHANNELS.volcengineArkStatus)({}, {});
+    assert.deepEqual(managedArkStatus, {
+      ok: true,
+      data: {
+        configured: true,
+        secureStorageAvailable: true,
+        maskedKey: "",
+        managed: true,
+        code: ""
+      }
+    }, "managed provider status must reflect the current gateway capability without reading a local key");
 
     const restartResult = await handlers.get(CONTENT_ENGINE_CHANNELS.restart)();
     assert.deepEqual(restartResult, statusResult);
@@ -1145,6 +1185,68 @@ async function main() {
       assert.equal(response.ok, true);
       assert.equal(response.data.status, expectedStatus);
     }
+    providerPreflightCalls.length = 0;
+    const providerTaskId = task().task_id;
+    listedTaskItems = [task({ task_id: providerTaskId, task_type: "narrated_batch_v1" })];
+    const providerResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(providerResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls,
+      [["volcengine_ark", "volcengine_asr", "volcengine_tts"]],
+      "narrated production must require only its Ark, ASR and TTS capabilities"
+    );
+    listedTaskItems = [task({ task_id: providerTaskId, task_type: "creative_cover" })];
+    const coverResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(coverResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "cover resume must check APIMart instead of the narrated provider set"
+    );
+    listedTaskItems = [task({ task_id: providerTaskId, task_type: "auto_mix_v2_generation" })];
+    const autoMixResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(autoMixResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["volcengine_ark", "volcengine_asr", "volcengine_tts"],
+      "other provider-backed resumes must keep the managed gateway preflight"
+    );
+    const providerCallsBeforeLocalPackagingResume = providerPreflightCalls.length;
+    listedTaskItems = [task({
+      task_id: providerTaskId,
+      task_type: "creative_packaging",
+      required_capabilities: []
+    })];
+    const localPackagingResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(localPackagingResume.ok, true);
+    assert.equal(
+      providerPreflightCalls.length,
+      providerCallsBeforeLocalPackagingResume,
+      "local packaging resume must remain gateway-free"
+    );
+    listedTaskItems = [task({
+      task_id: providerTaskId,
+      task_type: "creative_packaging"
+    })];
+    const legacyPackagingResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(legacyPackagingResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "legacy packaging without capability metadata must fail closed"
+    );
+    listedTaskItems = [task({
+      task_id: providerTaskId,
+      task_type: "creative_packaging",
+      required_capabilities: ["apimart"]
+    })];
+    const aiPackagingResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(aiPackagingResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "AI-cover packaging resume must require APIMart only"
+    );
 
     listedTaskItems = [task({
       task_id: "task_33333333333333333333333333333333",
@@ -1228,8 +1330,15 @@ async function main() {
     const providerFailure = await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
     controller.listAssets = originalListAssets;
     assert.equal(providerFailure.ok, false);
-    assert.equal(notifications.length, 2, "an operational provider failure must notify the user once");
-    assert.match(notifications[1].body, /云端请求未成功/);
+    assert.equal(notifications.length, 1, "background queries report provider errors inline without desktop notifications");
+    controller.listAssets = async () => {
+      throw Object.assign(new Error("runtime missing"), { code: "CONTENT_ENGINE_RUNTIME_UNAVAILABLE" });
+    };
+    const runtimeFailure = await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
+    await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
+    controller.listAssets = originalListAssets;
+    assert.equal(runtimeFailure.code, "CONTENT_ENGINE_RUNTIME_UNAVAILABLE");
+    assert.equal(notifications.length, 1, "repeated unavailable-engine queries must not produce desktop notifications");
     listedTaskItems = [task({
       task_id: transitioningTaskId,
       status: "queued",
@@ -1899,6 +2008,20 @@ async function main() {
         }
       }]
     );
+    const supplementalImage = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2
+    )({ sender: mainWindow.webContents }, {
+      sessionId: liveGuidedSessionId,
+      scriptRevision: 1,
+      draftHash: "a".repeat(64),
+      confirmPaidCalls: true,
+      clickToken: autoMixClickToken(
+        CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2,
+        "34343434-3434-4434-8434-343434343434"
+      )
+    });
+    assert.equal(supplementalImage.ok, true);
+    assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "supplemental image submission must require APIMart");
     const replayedAutoMixV2 = await handlers.get(
       CONTENT_ENGINE_CHANNELS.createAutoMixV2
     )({ sender: mainWindow.webContents }, {
@@ -2538,8 +2661,33 @@ async function main() {
     });
     assert.equal(productGeneration.ok, true);
     assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "one-click AI cover generation must use the registration-level provider preflight"
+    );
+    assert.deepEqual(
       calls.find((call) => call[0] === "generateOneClickCandidates"),
       ["generateOneClickCandidates", creativeProjectId, { targetCount: 1, durationMs: 75_000, coverMode: "ai_generate" }]
+    );
+    const generationCallsBeforeRejectedPreflight = calls.filter(
+      (call) => call[0] === "generateOneClickCandidates"
+    ).length;
+    providerPreflightFailure = Object.assign(new Error("gateway unavailable"), {
+      code: "provider_gateway_unavailable"
+    });
+    const rejectedProductGeneration = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.generateOneClickCandidates
+    )({}, {
+      projectId: createdProduct.data.projectId,
+      options: { durationMs: 75_000, targetCount: 1, coverMode: "ai_generate" }
+    });
+    providerPreflightFailure = null;
+    assert.equal(rejectedProductGeneration.ok, false);
+    assert.equal(rejectedProductGeneration.code, "provider_gateway_unavailable");
+    assert.equal(
+      calls.filter((call) => call[0] === "generateOneClickCandidates").length,
+      generationCallsBeforeRejectedPreflight,
+      "failed one-click preflight must reject before task submission"
     );
     const productCandidates = await handlers.get(
       CONTENT_ENGINE_CHANNELS.listOneClickCandidates
@@ -2743,6 +2891,7 @@ async function main() {
       calls.find((call) => call[0] === "getPackagingCostEstimate" && call[3] === 5),
       ["getPackagingCostEstimate", [], "ai_generate", 5]
     );
+    const providerCallsBeforeLocalPackaging = providerPreflightCalls.length;
     const packaged = await handlers.get(
       CONTENT_ENGINE_CHANNELS.packageGeneratedVideos
     )({}, {
@@ -2753,6 +2902,11 @@ async function main() {
       reuseCover: true
     });
     assert.equal(packaged.data.taskId, packagingTaskId);
+    assert.equal(
+      providerPreflightCalls.length,
+      providerCallsBeforeLocalPackaging,
+      "local-frame packaging must not require a cloud image capability"
+    );
     assert.deepEqual(
       calls.find((call) => call[0] === "packageGeneratedVideos").slice(1),
       [[generatedVideoId], {
@@ -2762,6 +2916,20 @@ async function main() {
         coverMode: "local_frame",
         reuseCover: true
       }]
+    );
+    const callsBeforeDefaultCoverReuse = providerPreflightCalls.length;
+    const reusedDefaultCover = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.packageGeneratedVideos
+    )({}, {
+      candidateIds: [generatedVideoId],
+      packagingMode: "auto",
+      reuseCover: true
+    });
+    assert.equal(reusedDefaultCover.ok, true);
+    assert.equal(
+      providerPreflightCalls.length,
+      callsBeforeDefaultCoverReuse,
+      "default ai_generate cover mode must not require APIMart when the existing cover is reused"
     );
     const repackaged = await handlers.get(
       CONTENT_ENGINE_CHANNELS.repackageVideo
@@ -2773,6 +2941,25 @@ async function main() {
       reuseCover: true
     });
     assert.equal(repackaged.data.taskId, packagingTaskId);
+    assert.equal(
+      providerPreflightCalls.length,
+      callsBeforeDefaultCoverReuse,
+      "repackaging with a reused cover must remain local"
+    );
+    const freshAiRepackage = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.repackageVideo
+    )({}, {
+      candidateId: generatedVideoId,
+      packagingMode: "auto",
+      coverMode: "ai_generate",
+      reuseCover: false
+    });
+    assert.equal(freshAiRepackage.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "an explicit fresh AI cover must require APIMart"
+    );
     const preflight = await handlers.get(
       CONTENT_ENGINE_CHANNELS.preflightVisualComparison
     )({}, { candidateId: generatedVideoId });
@@ -2842,10 +3029,19 @@ async function main() {
     assert.equal(generated.data.items[0].shotCount, 6);
     assert.equal(generated.data.items[0].captionSource, "tts_voiceover");
     assert.equal(JSON.stringify(generated).includes("must-not-leak"), false);
+    const exactVideo = await handlers.get(CONTENT_ENGINE_CHANNELS.getGeneratedVideo)({}, { candidateId: generatedVideoId });
+    assert.deepEqual(exactVideo.data.coverHeadlineLines, ["看清细节"]);
+    assert.equal(exactVideo.data.coverTitleEditable, true);
+    assert.equal(JSON.stringify(exactVideo).includes("must-not-leak"), false);
+    const preflightsBeforeTitle = providerPreflightCalls.length;
+    const editedTitle = await handlers.get(CONTENT_ENGINE_CHANNELS.updateCoverTitle)({}, { candidateId: generatedVideoId, headlineLines: ["真实产品", "看清细节"] });
+    assert.deepEqual(editedTitle.data.coverHeadlineLines, ["真实产品", "看清细节"]);
+    assert.equal(providerPreflightCalls.length, preflightsBeforeTitle, "Editing a saved cover title must not request a provider");
     const coverTask = await handlers.get(
       CONTENT_ENGINE_CHANNELS.regenerateCover
     )({}, { candidateId: generatedVideoId });
     assert.equal(coverTask.data.taskId, packagingTaskId);
+    assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "AI cover regeneration must require APIMart");
 
     for (const [channel, payload, expectedCode] of [
       [CONTENT_ENGINE_CHANNELS.listPackagingPresets, { kind: "movie" }, "invalid_packaging_kind"],
@@ -2974,6 +3170,29 @@ async function main() {
       error: "媒体分析组件当前不可用，请安装或恢复组件后重试。"
     });
     assert.equal(JSON.stringify(unavailableCapability).includes("must-not-leak"), false);
+    assert.deepEqual(publicError(Object.assign(
+      new Error("当前不重复可用画面约 145 秒，按每条至少 60 秒最多可制作 2 条；请减少数量或补充素材。"),
+      { code: "narrated_insufficient_unique_footage" }
+    )), {
+      ok: false,
+      code: "narrated_insufficient_unique_footage",
+      error: "当前不重复可用画面约 145 秒，按每条至少 60 秒最多可制作 2 条；请减少数量或补充素材。"
+    });
+    assert.deepEqual(publicError(Object.assign(
+      new Error("C:\\must-not-leak\\private.mp4"),
+      { code: "narrated_insufficient_unique_footage" }
+    )), {
+      ok: false,
+      code: "narrated_insufficient_unique_footage",
+      error: "不重复可用画面不足，请减少成片数量、降低最低时长或补充素材。"
+    });
+    assert.deepEqual(publicError(Object.assign(new Error("private provider detail"), {
+      code: "provider_gateway_unavailable"
+    })), {
+      ok: false,
+      code: "provider_gateway_unavailable",
+      error: "云端智能服务暂不可用，当前进度已保留，请稍后重试。"
+    });
 
     const metadataPending = publicError(Object.assign(
       new Error("Analyze media metadata first."),

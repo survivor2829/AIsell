@@ -1,3 +1,4 @@
+import { VideoCoverDetails } from "./VideoPresentation";
 import {
   Archive,
   CircleAlert,
@@ -981,6 +982,7 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
                 ) : (
                   <p className="finished-card-missing">本地文件已删除或不可访问，已从可用成片中移出。</p>
                 )}
+                {generatedVideoId && available && <VideoCoverDetails generatedId={generatedVideoId} />}
               </div>
             </article>
           );

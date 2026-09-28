@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveSystemTar } = require("./system-tar.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const productBrand = require("../product-brand.json");
@@ -74,20 +75,20 @@ function assertStageWorkflowContract() {
   const source = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
   const workflow = read(path.join(desktopDir, "src", "renderer", "WechatWorkflow.tsx"));
   const preload = read(path.join(desktopDir, "src", "main", "preload-api.cjs"));
-  assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = "workflow"/, "the app must open on today's unified plan");
+  assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = "overview"/, "the app must open on the acquisition overview");
   const momentsNavEntries = source.match(/\{ key: "moments", label: "[^"]+", icon: [A-Za-z]+ \}/g) ?? [];
   assert.equal(momentsNavEntries.length, 1, "moments publishing and engagement must share exactly one sidebar entry");
   assert.equal(momentsNavEntries[0], "{ key: \"moments\", label: \"朋友圈运营\", icon: ThumbsUp }", "the unified moments entry must use the product name");
   assert.match(source, /\{ key: "agent", persona: AGENT_ROLE_IDENTITIES\.agent\.name, label: AGENT_ROLE_IDENTITIES\.agent\.responsibility, icon: UsersRound, children: agentChildren \}/, "the WeChat group must use the shared role identity");
   const roles = JSON.parse(read(path.join(desktopDir, "src", "shared", "role-appearance.json")));
-  assert.equal(roles.agent.name, "小玺");
+  assert.equal(roles.agent.name, "许玺达");
   assert.equal(roles.agent.responsibility, "微信拓客", "the shared WeChat responsibility must retain the product name");
   assert.match(read(path.join(desktopDir, "src", "renderer", "AgentHome.tsx")), /export \{ AGENT_ROLE_IDENTITIES \} from "\.\/role-appearance"/u);
   assert.equal(source.includes("个微Agent"), false, "the retired 个微Agent name must not remain in the UI");
   assert.equal(source.includes("小玺AI员工"), false, "the retired app name must not remain in the UI");
   assert.match(source, /productBrand\.displayName/, "the app brand must use the shared V1.0 product name");
   assert.equal(source.includes('name: "2829347524"'), false, "packaged editions must not expose a developer account identifier as the default profile");
-  assert.match(source, /if \(!license\?\.authorized \|\| !sessionEntered\) return <LoginScreen/u, "packaged editions must require an explicit login before entering the workspace");
+  assert.match(source, /if \(!license\?\.authorized \|\| !sessionEntered\) return <div[\s\S]*?<LoginScreen/u, "packaged editions must require an explicit login before entering the workspace");
   assert.match(source, /identity\?\.nickname \|\| "未同步微信"/u, "unsynchronized accounts must not show an invented customer identity");
   assert.match(source, /DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION\s*\?/u, "business-specific outreach copy must be limited to the development edition");
   assert.equal(source.includes('<button className="guide">'), false, "the shell must not expose a non-functional onboarding button");
@@ -433,7 +434,7 @@ try {
   fs.mkdirSync(appDir, { recursive: true });
   fs.writeFileSync(path.join(appDir, "app.txt"), "packaged-app", "utf8");
   fs.writeFileSync(path.join(target, "marker.txt"), "same-tree", "utf8");
-  const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", portableArchiveFixture, productName], {
+  const archive = spawnSync(resolveSystemTar(), ["-a", "-c", "-f", zip, "-C", portableArchiveFixture, productName], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 30000

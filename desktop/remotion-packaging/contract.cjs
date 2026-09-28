@@ -299,7 +299,13 @@ function normalizeMotionManifest(input) {
     const timing = normalizeTimedItem(caption, durationMs, index, "caption");
     const text = cleanCaptionText(caption.text);
     if (!text) throw new Error(`Invalid caption text at index ${index}.`);
-    return { ...timing, text };
+    const words = (Array.isArray(caption.words) ? caption.words : []).map((word, wordIndex) => {
+      const wordTiming = normalizeTimedItem(word, durationMs, wordIndex, "caption word");
+      const wordText = cleanCaptionText(word.text);
+      if (!wordText || wordTiming.startMs < timing.startMs || wordTiming.endMs > timing.endMs) throw new Error("Caption word is outside its measured page.");
+      return { ...wordTiming, text: wordText };
+    });
+    return { ...timing, text, ...(words.length ? { words } : {}) };
   }).sort((left, right) => left.startMs - right.startMs);
   const normalizeRectangle = (rectangle, index, kind) => {
     const timing = normalizeTimedItem(rectangle, durationMs, index, kind);
@@ -391,6 +397,13 @@ function normalizeMotionManifest(input) {
     },
     captions,
     ...(input.captionPresentation === "reference_narration" ? { captionPresentation: "reference_narration" } : {}),
+    ...(["topic_fixed", "key_points"].includes(input.presentation?.templateId) ? { presentation: {
+      templateId: input.presentation.templateId,
+      topic: cleanText(input.presentation.topic, 32),
+      points: (Array.isArray(input.presentation.points) ? input.presentation.points : []).slice(0, 6).map((point, index) => ({
+        ...normalizeTimedItem(point, durationMs, index, "outline point"), text: cleanText(point.text, 24)
+      })).filter((point) => point.text)
+    } } : {}),
     events: registeredEvents,
     focusRects,
     protectedRects

@@ -39,7 +39,7 @@ def test_desktop_parser_reuses_explicit_scenes_and_numeric_specs_without_network
         ]
     )
 
-    with mock.patch("requests.post", side_effect=AssertionError("network call")):
+    with mock.patch("app.post_provider_json", side_effect=AssertionError("network call")):
         mapped = _parse_text_for_desktop(raw_text, "\u8bbe\u5907\u7c7b", "")
 
     parsed = mapped["_raw_parsed"]

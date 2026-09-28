@@ -3,12 +3,95 @@ import unittest
 from unittest.mock import patch
 from urllib import request
 from urllib.error import HTTPError
+from urllib.error import URLError
 
 from content_engine.errors import ContentEngineError
 from content_engine.volcengine_media import ARK_ENDPOINT, VolcengineMediaClient
 
 
 class VolcengineMediaTests(unittest.TestCase):
+    def test_tts_rejects_non_volcengine_persona_without_naming_a_different_voice(self):
+        with self.assertRaises(ContentEngineError) as raised:
+            VolcengineMediaClient().synthesize_auto_mix_phrase(
+                "测试", None, {"provider": "bailian"}
+            )
+        self.assertEqual("auto_mix_voice_invalid", raised.exception.code)
+        self.assertNotIn("小何", raised.exception.message)
+
+    def test_gateway_disconnect_recovers_original_receipt_without_second_post(self):
+        origin = "https://gateway.example"
+        endpoint = origin + "/v1/provider-gateway/volcengine/ark/chat/completions"
+
+        class Receipt:
+            status = 200
+            headers = {"X-Request-Id": "original-response"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+        calls = []
+
+        def open_request(op, timeout):
+            calls.append((op.get_method(), op.full_url))
+            if op.get_method() == "POST":
+                raise URLError("connection reset")
+            return Receipt()
+
+        with patch.dict(os.environ, {
+            "XIAOXI_PROVIDER_GATEWAY_ORIGIN": origin,
+            "XIAOXI_PROVIDER_GATEWAY_TOKEN": "gateway-token",
+            "XIAOXI_PROVIDER_GATEWAY_CA_PEM": "fixture-ca",
+        }), patch("content_engine.provider_tls.ssl.create_default_context"), patch(
+            "content_engine.volcengine_media.request.build_opener"
+        ) as opener:
+            opener.return_value.open.side_effect = open_request
+            result = VolcengineMediaClient()._post(endpoint, {"model": "test"}, {}, 1, "方舟")
+        self.assertEqual(result["choices"][0]["message"]["content"], "ok")
+        self.assertEqual([method for method, _url in calls], ["POST", "GET"])
+        self.assertIn("/operations/", calls[1][1])
+
+    def test_gateway_replays_same_operation_after_missing_receipt(self):
+        origin = "https://gateway.example"
+        endpoint = origin + "/v1/provider-gateway/volcengine/ark/chat/completions"
+        calls = []
+
+        class Response:
+            status = 200
+            headers = {}
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, _limit):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+        def open_request(op, timeout):
+            calls.append((op.get_header("X-xiaoxi-operation-id"), op.data))
+            if len(calls) == 1:
+                raise URLError("connection reset")
+            return Response()
+
+        with patch.dict(os.environ, {
+            "XIAOXI_PROVIDER_GATEWAY_ORIGIN": origin,
+            "XIAOXI_PROVIDER_GATEWAY_TOKEN": "gateway-token",
+            "XIAOXI_PROVIDER_GATEWAY_CA_PEM": "fixture-ca",
+        }), patch("content_engine.provider_tls.ssl.create_default_context"), \
+                patch("content_engine.volcengine_media.request.build_opener") as opener, \
+                patch.object(VolcengineMediaClient, "_recover_gateway_receipt", return_value=None), \
+                patch("content_engine.volcengine_media.time.sleep"):
+            opener.return_value.open.side_effect = open_request
+            result = VolcengineMediaClient()._post(endpoint, {"model": "test"}, {}, 1, "方舟")
+        self.assertEqual("ok", result["choices"][0]["message"]["content"])
+        self.assertEqual(2, len(calls))
+        self.assertIsNotNone(calls[0][0])
+        self.assertEqual(calls[0], calls[1])
+
     def test_gateway_asr_uses_configured_ca_without_disabling_tls(self):
         origin = "https://gateway.example"
         ca_pem = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----"

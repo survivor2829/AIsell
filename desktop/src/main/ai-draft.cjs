@@ -1,70 +1,54 @@
-const COMMON_SURNAMES = "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔吉龚程邢裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰雍桑寿通燕浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁";
-const BUSINESS_WORDS = /(公司|工厂|物业|保洁|清洁|设备|轴承|万向轮|润滑油|售后|采购|客服|主管|经理|顾问|销售|运营|专员|助理|负责人|展会|会员|福利|厂家|产品|业务|团队|群|助手|文件传输|手机号|电话|客户|部门|项目|地址|订单|报价|合同|收款|供应商)/;
+const TOP_SURNAMES = new Set("王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤");
 const PERSON_TITLE_RE = /^[\u4e00-\u9fa5]{1,6}(总|姐|哥|老师|老板|经理|先生|女士|总监|主任)$/;
-const COMPOUND_SURNAMES = /^(欧阳|司马|上官|诸葛|夏侯|东方|皇甫|尉迟|公孙|慕容|长孙|宇文|令狐|独孤|南宫|闻人|轩辕|澹台)/;
-const NICKNAME_RE = /^(老|小|阿)[\u4e00-\u9fa5]{1,2}$/;
-const GENERIC_ENTITY_SUFFIX_RE = /(公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|部门|团队)$/;
-
-function extractTrailingPhoneSalutation(value) {
-  const compact = String(value || "").normalize("NFKC").replace(/\s+/gu, "").trim();
-  const match = compact.match(/([\u4e00-\u9fa5]{2,8})[-_]?\d{6,}$/u);
-  if (!match) return "";
-  const suffix = match[1];
-  const compound = suffix.slice(-4);
-  if (COMPOUND_SURNAMES.test(compound) && !BUSINESS_WORDS.test(compound)) return compound;
-  for (const length of [4, 3, 2]) {
-    const candidate = suffix.slice(-length);
-    if ((PERSON_TITLE_RE.test(candidate) || NICKNAME_RE.test(candidate)
-      || COMMON_SURNAMES.includes(candidate[0]))
-      && !BUSINESS_WORDS.test(candidate) && !GENERIC_ENTITY_SUFFIX_RE.test(candidate)) return candidate;
-  }
-  const fallback = suffix.slice(-2);
-  return BUSINESS_WORDS.test(fallback) || GENERIC_ENTITY_SUFFIX_RE.test(fallback) ? "" : fallback;
-}
-
-function extractPersonalSalutation(value) {
-  const trailing = extractTrailingPhoneSalutation(value);
-  if (trailing) return trailing;
-  for (const token of String(value || "").trim().split(/[，,\s/|_()（）【】\[\]-]+/).filter(Boolean)) {
-    if (BUSINESS_WORDS.test(token) || /\d{4,}/.test(token)) continue;
-    if (PERSON_TITLE_RE.test(token)) return token;
-    const clean = token.replace(/(先生|女士|老师|经理|老板|总)$/g, "");
-    if (/^[\u4e00-\u9fa5]{2,4}$/.test(clean)
-      && (COMMON_SURNAMES.includes(clean[0]) || COMPOUND_SURNAMES.test(clean) || NICKNAME_RE.test(clean))) return token;
-  }
-  return "";
-}
+const SEP = String.raw`[\s,，、;；:：_·/|\p{Pd}−]`;
+const ORG_END_RE = /(?:公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|厂|店|部门|部|团队|物业|酒店|医院|学校|大厦|广场|有限|股份|超市|商场|银行|小区|园区|分公司|总部|办事处|事业部|项目部)$/u;
+const RELATION_RE = /助理|秘书|司机|老公|老婆|爱人|太太|夫人|家属|儿子|女儿|介绍|推荐|朋友|同事|亲戚|的|媳妇|老板娘|嫂|来源|渠道|引荐|邀请|跟进|业务员|销售|客服|跟单|经办|录入|归属|上级|领导|决策|拍板|下属|员工|财务|会计|出纳|采购|前台|对接|店员|徒弟|学生|家长|保姆|阿姨|保安|文员|仓管|父|母|爸|妈|舅|侄|甥|婿|姐夫|妹夫|表|岳/u;
+const SALUTATION_RE = new RegExp(String.raw`^(?:([一-龥A-Za-z0-9]+)${SEP}+)?([一-龥])(总经理|总监|总|经理|主任|老师|老板)(?:(${SEP}*\+?\d[\d\s-]*))?${SEP}*$`, "u");
 
 function contactSalutation(contact) {
-  for (const value of [contact?.remark, contact?.nickname, contact?.name]) {
-    const candidate = extractPersonalSalutation(value);
-    if (candidate) return { type: "person", value: candidate };
-  }
-  return { type: "generic", value: "" };
+  const generic = { type: "generic", value: "" };
+  const rawRemark = String(contact?.remark || "");
+  if (rawRemark.length > 64) return generic;
+  const remark = rawRemark.replace(/[\u3200-\u32ff\u2460-\u24ff]/gu, "").normalize("NFKC").trim();
+  if (!remark || RELATION_RE.test(remark)) return generic;
+  const match = remark.match(SALUTATION_RE);
+  if (!match) return generic;
+  if (match[1] && (match[1].length > 24 || !ORG_END_RE.test(match[1]))) return generic;
+  if (match[4] && (match[4].match(/\d/gu) || []).length < 6) return generic;
+  if (!TOP_SURNAMES.has(match[2])) return generic;
+  return { type: "title", value: match[2] + (match[3] === "总经理" ? "总" : match[3]) };
 }
 
-function isExactContactSalutation(value, contact, sourceName = "") {
-  const candidate = String(value || "").trim();
-  if (candidate.length < 2 || candidate.length > 20 || BUSINESS_WORDS.test(candidate)
-    || !/^[\u4e00-\u9fa5]{2,6}$/u.test(candidate)
-    || !["remark", "nickname", "name"].includes(sourceName)) return false;
-  const source = String(contact?.[sourceName] || "").trim();
-  return source.includes(candidate);
+function timeGreeting(at = new Date()) {
+  const hour = at instanceof Date ? at.getHours() : NaN;
+  if (!Number.isInteger(hour) || hour < 5 || hour >= 23) return "您好";
+  if (hour < 11) return "早上好";
+  if (hour < 13) return "中午好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
 }
 
-async function resolveContactSalutation(client, contact) {
-  const local = contactSalutation(contact);
-  if (local.type === "person" || typeof client?.classifySalutation !== "function") return local;
-  try {
-    const classified = await client.classifySalutation({ contact });
-    const decision = classified?.salutation || classified || {};
-    const value = String(decision.value || "").trim();
-    return isExactContactSalutation(value, contact, String(decision.source || "")) ? { type: "person", value } : local;
-  } catch {
-    // A classification failure must never turn into a guessed name. The draft
-    // request may still succeed, in which case its safe fallback is "您好".
-    return local;
-  }
+function greetingForContact(contact, at = new Date()) {
+  const title = contactSalutation(contact);
+  const greeting = timeGreeting(at);
+  return title.type === "title" ? `${title.value}，${greeting}` : greeting;
+}
+
+function fillRespectfulTemplate(template, contact, at = new Date()) {
+  const greeting = greetingForContact(contact, at);
+  const source = String(template || "").trim();
+  if (!source) return "";
+  let message = source
+    .replace(/\{称呼\}[，,、\s]*(?:您好|你好|早上好|中午好|下午好|晚上好)?[，,、\s]*/gu, `${greeting}，`)
+    .replace(/\{称呼\}/gu, greeting);
+  if (source.includes("{称呼}") || message.startsWith(greeting)) return message;
+  const names = [contact?.name, contact?.remark, contact?.nickname]
+    .map((value) => String(value || "").trim())
+    .filter((value) => /^[\u4e00-\u9fa5]{2,4}$/u.test(value) && !PERSON_TITLE_RE.test(value));
+  const opening = names.find((name) => message.startsWith(name));
+  if (opening) message = message.slice(opening.length).replace(/^[，,、:：\s]*/u, "");
+  message = message.replace(/^(您好|你好|早上好|中午好|下午好|晚上好)[，,、\s]*/u, "");
+  return `${greeting}，${message}`;
 }
 
 function sanitizeAiMessage(content) {
@@ -73,15 +57,16 @@ function sanitizeAiMessage(content) {
 }
 
 async function generatePersonalizedDraft({ client, task, result }) {
-  const salutation = await resolveContactSalutation(client, result.contact);
+  const salutation = contactSalutation(result.contact);
   result.salutation = salutation;
-  const data = await client.draft({ task, result: { ...result, salutation } });
+  const greeting = greetingForContact(result.contact);
+  const data = await client.draft({ task, result: { ...result, salutation, greeting } });
   const message = sanitizeAiMessage(data.draft);
   if (!message) throw new Error("DeepSeek 未返回可用文案。");
-  const startsWithExpected = salutation.type === "person"
-    ? new RegExp(`^${salutation.value.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}(?=$|[，,、:：;；\\s])`, "u").test(message)
-    : /^(您好|你好)[，,、\s]/u.test(message);
-  if (!startsWithExpected) {
+  if (!message.startsWith(greeting)
+    || (result.contact?.name && String(result.contact.name).length >= 2
+      && message.includes(String(result.contact.name))
+      && String(result.contact.name) !== salutation.value)) {
     const error = new Error("DeepSeek 未按已确认称呼开场。");
     error.code = "AI_RESPONSE_INVALID";
     throw error;
@@ -92,12 +77,7 @@ async function generatePersonalizedDraft({ client, task, result }) {
 function generateFixedScriptFallback({ task, result, error } = {}) {
   const script = String(task?.script || "").trim();
   if (!script) return null;
-  const salutation = result?.salutation?.type === "person" ? result.salutation : contactSalutation(result?.contact);
-  const name = salutation.type === "person" ? salutation.value : "";
-  const usesSalutationPlaceholder = script.includes("{称呼}");
-  let message = script.replaceAll("{称呼}", name).trim();
-  if (!name) message = message.replace(/^[，,、:：;；\s]+/, "");
-  else if (!usesSalutationPlaceholder && !message.startsWith(name)) message = `${name}，${message}`;
+  let message = fillRespectfulTemplate(script, result?.contact);
   message = sanitizeAiMessage(message);
   if (!message) return null;
   const code = String(error?.code || "AI_GENERATION_FAILED");
@@ -109,4 +89,4 @@ function generateFixedScriptFallback({ task, result, error } = {}) {
   };
 }
 
-module.exports = { contactSalutation, extractPersonalSalutation, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage };
+module.exports = { contactSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage };

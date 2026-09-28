@@ -429,6 +429,40 @@ const ReferenceEndingCta: React.FC<{ event: MotionEvent }> = ({ event }) => {
   );
 };
 
+// Keep measured ASR words inside their sentence page. With sentence-only timing
+// the complete phrase pulses once; we never invent individual word timing.
+const BoldNarration: React.FC<{ captions: TimedWord[]; nowMs: number; frame: number; fps: number }> = ({ captions, nowMs, frame, fps }) => {
+  const index = findActiveCaptionIndex(captions, nowMs);
+  if (index < 0) return null;
+  const cue = captions[index];
+  const words = cue.words?.length ? cue.words : [cue];
+  return <div style={{ position: "absolute", left: 78, right: 96, top: "72%", transform: "translateY(-50%)",
+    textAlign: "center", fontFamily: baseFont, fontSize: 72, fontWeight: 950, lineHeight: 1.32,
+    WebkitTextStroke: "6px #111", paintOrder: "stroke fill", textShadow: "0 5px 5px #0009" }}>
+    {words.map((word, wordIndex) => {
+      const active = activeAt(word.startMs, word.endMs, nowMs);
+      const pop = spring({ frame: Math.max(0, frame - msToFrame(word.startMs, fps)), fps, config: { damping: 15, stiffness: 230, mass: .5 } });
+      return <span key={`${word.startMs}-${wordIndex}`} style={{ display: "inline-block", whiteSpace: "pre-wrap",
+        maxWidth: "100%", color: active ? "#FFE24A" : "#FFFFFF", transformOrigin: "center bottom",
+        transform: active ? `translateY(${-5 * Math.sin(Math.min(1, pop) * Math.PI)}px) scale(${1 + .07 * Math.sin(Math.min(1, pop) * Math.PI)})` : "none" }}>{word.text}</span>;
+    })}
+  </div>;
+};
+
+const VideoOutline: React.FC<{ manifest: MotionManifest; nowMs: number }> = ({ manifest, nowMs }) => {
+  const presentation = manifest.presentation;
+  if (!presentation) return null;
+  const point = presentation.points.find((item) => activeAt(item.startMs, item.endMs, nowMs));
+  const text = presentation.templateId === "key_points" ? point?.text || presentation.topic : presentation.topic;
+  if (!text) return null;
+  return <div style={{ position: "absolute", top: 156, left: 78, right: 104, fontFamily: baseFont,
+    fontSize: text.length > 18 ? 54 : 64, fontWeight: 950, lineHeight: 1.22, color: "#fff",
+    WebkitTextStroke: "5px #151318", paintOrder: "stroke fill", textShadow: "0 5px 12px #0009" }}>
+    <div style={{ width: 58, height: 8, borderRadius: 4, background: "#FFE24A", marginBottom: 16 }} />
+    {text}
+  </div>;
+};
+
 const SoundEffects: React.FC<{ events: MotionEvent[]; fps: number }> = ({ events, fps }) => (
   <>
     {events.map((event, index) => {
@@ -468,13 +502,16 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
   return (
     <AbsoluteFill style={{ background: pack.palette.ink, overflow: "hidden" }}>
       <VideoBase manifest={manifest} pack={pack} frame={frame} zoomProgress={zoomProgress} />
+      <VideoOutline manifest={manifest} nowMs={nowMs} />
       {activeFocus ? <RegisteredFocusEffect focus={activeFocus.focus} definition={activeFocus.definition} pack={pack} frame={frame} /> : null}
       {activeEvents.map(({ event, definition }, index) => (
         manifest.captionPresentation === "reference_narration"
           ? <ReferenceEndingCta key={`${event.startMs}-${index}`} event={event} />
           : <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
       ))}
-      {manifest.captionPresentation === "reference_narration"
+      {manifest.presentation
+        ? <BoldNarration captions={manifest.captions} nowMs={nowMs} frame={frame} fps={fps} />
+        : manifest.captionPresentation === "reference_narration"
         ? <ReferenceCaptionTrack captions={manifest.captions} nowMs={nowMs} durationMs={manifest.durationMs} />
         : <CaptionTrack captions={manifest.captions} pack={pack} nowMs={nowMs} frame={frame} />}
       {manifest.captionPresentation !== "reference_narration" ? <SoundEffects events={soundEvents} fps={fps} /> : null}

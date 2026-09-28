@@ -89,16 +89,17 @@ function createDeepSeekKeyStore({ rootDir, safeStorage }) {
   };
 }
 
-function prompt({ salutation, script }) {
-  const greeting = salutation ? `${salutation}，您好` : "您好";
-  const baseScript = String(script || "").replaceAll("{称呼}", salutation || "").replace(/^，/, "");
+function prompt({ salutation, greeting, script }) {
+  const opening = String(greeting || (salutation ? `${salutation}，您好` : "您好"));
+  const baseScript = String(script || "").replace(/\{称呼\}[，,、\s]*(?:您好|你好|早上好|中午好|下午好|晚上好)?/gu, "")
+    .replace(/^[，,、\s]+/u, "").trim();
   return [
     {
       role: "system",
       content: `你是微信一对一客户触达文案助手。请根据提供的基础话术，改写成一条可以直接发送给客户的完整微信消息。
 要求：
-1. 使用提供的称呼自然开场；称呼由程序根据备注、花名或昵称预先确认。没有明确可用称呼时只使用“您好”，不得编造姓名。
-2. 称呼必须原样使用，不得把姓名改成“某女士”“某总”等其他称呼；如果客户称呼为“您好”，首句必须以“您好”开头。
+1. 首句必须原样使用给定问候语。只有备注或昵称明确带职务时才使用尊称，不得直呼客户全名或猜测性别和职务。
+2. 基础话术里的旧问候不要重复写；没有明确尊称时直接使用给定时间问候语或“您好”。
 3. 保留基础话术中的核心业务、优惠信息和询问目的。
 4. 不得增加基础话术中没有提供的价格、承诺、活动或客户信息。
 5. 表达自然、简洁、有礼貌，不要像群发广告，不要过度营销。
@@ -106,7 +107,7 @@ function prompt({ salutation, script }) {
 7. 自然加入2至3个与语义相关的Emoji，最少2个；优先放在问候后或业务亮点处，不得连续堆叠，不使用夸张、催促类表情。
 8. 只输出最终文案，不解释、不编号、不加引号，不得输出称呼以外的联系人隐私。`
     },
-    { role: "user", content: `客户称呼：${greeting}\n基础话术：${baseScript}` }
+    { role: "user", content: `首句问候语：${opening}\n基础话术：${baseScript}` }
   ];
 }
 
@@ -398,18 +399,32 @@ async function responseError(response) {
 }
 
 function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetch, requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  const managedGateway = Boolean(gatewayClient);
+  const effectiveRequestTimeoutMs = managedGateway ? Math.max(requestTimeoutMs, 270_000) : requestTimeoutMs;
   const gatewayReady = () => Boolean(
     gatewayClient
     && typeof gatewayClient.isReady === "function"
     && gatewayClient.isReady()
     && typeof gatewayClient.fetch === "function"
+    && gatewayClient.status?.().capabilities?.deepseek === true
   );
-  const readCredential = () => gatewayReady() ? "" : keyStore.read();
+  const gatewayUnavailable = () => new DeepSeekApiError(
+    "PROVIDER_GATEWAY_UNAVAILABLE",
+    "云端智能服务暂不可用，已保留当前任务；请稍后重试或反馈问题。"
+  );
+  const readCredential = () => {
+    if (managedGateway) {
+      if (!gatewayReady()) throw gatewayUnavailable();
+      return "";
+    }
+    return keyStore.read();
+  };
 
   async function request({ key, messages, maxTokens = 180, responseFormat, disableThinking = false, temperature = 0.4 }) {
+    if (managedGateway && !gatewayReady()) throw gatewayUnavailable();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
-    const useGateway = gatewayReady() && !String(key || "").trim();
+    const timer = setTimeout(() => controller.abort(), effectiveRequestTimeoutMs);
+    const useGateway = managedGateway;
     const requestUrl = useGateway
       ? gatewayClient.url("/deepseek/chat/completions")
       : `${DEEPSEEK_ORIGIN}/chat/completions`;
@@ -426,13 +441,14 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
       temperature,
       response_format: responseFormat?.type || "plain",
       thinking_disabled: disableThinking,
-      timeout_ms: requestTimeoutMs
+      timeout_ms: effectiveRequestTimeoutMs
     });
     try {
       const response = await requestFetch(requestUrl, {
         method: "POST",
         redirect: "error",
         signal: controller.signal,
+        ...(useGateway ? { timeoutMs: effectiveRequestTimeoutMs } : {}),
         headers: { "content-type": "application/json", ...requestHeaders },
         body: JSON.stringify({
           model: DEEPSEEK_MODEL,
@@ -480,8 +496,8 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
   }
 
   async function generateDraftWithKey(key, { task, result }) {
-    const salutation = result?.salutation?.type === "person" ? result.salutation.value : "";
-    const messages = prompt({ salutation, script: String(task?.script || "").trim() });
+    const salutation = result?.salutation?.type === "title" ? result.salutation.value : "";
+    const messages = prompt({ salutation, greeting: result?.greeting, script: String(task?.script || "").trim() });
     let lastError;
     for (const maxTokens of [300, 600]) {
       try {
@@ -624,9 +640,19 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
   }
 
   return {
-    assertAvailable: () => gatewayReady() ? true : keyStore.read(),
+    isManaged: () => managedGateway,
+    status: () => managedGateway
+      ? { configured: gatewayReady(), managed: true, code: gatewayReady() ? "" : "PROVIDER_GATEWAY_UNAVAILABLE" }
+      : keyStore.status(),
+    assertAvailable: () => {
+      if (managedGateway) {
+        if (!gatewayReady()) throw gatewayUnavailable();
+        return true;
+      }
+      return keyStore.read();
+    },
     async test(value) {
-      const key = String(value || "").trim() || readCredential();
+      const key = managedGateway ? readCredential() : String(value || "").trim() || readCredential();
       const draft = await generateDraftWithKey(key, {
         task: { script: "您好，这是 DeepSeek 文案能力测试，请用一句自然问候回复。" },
         result: { salutation: { type: "person", value: "测试客户" } }

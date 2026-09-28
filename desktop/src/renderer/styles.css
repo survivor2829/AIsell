@@ -74,6 +74,8 @@ button:focus-visible {
   font-weight: 700;
 }
 
+.brand-home { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+
 .brand-copy {
   min-width: 0;
   display: flex;
@@ -305,7 +307,9 @@ button:focus-visible {
   border-radius: 10px;
   color: #fff;
   background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
 }
+.nav-role-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 21%; }
 
 .nav-role-avatar.is-agent {
   background: rgba(174, 20, 42, 0.42);
@@ -351,6 +355,38 @@ button:focus-visible {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
+.desktop-window { height: 100vh; padding-top: 36px; }
+.desktop-window .app-shell { height: 100%; }
+.desktop-window .sidebar, .desktop-window .workspace { height: 100%; }
+.desktop-window .topbar { top: 36px; }
+.desktop-window .content-card { height: calc(100vh - 104px); }
+.desktop-window-login { background: #241a1e; }
+.desktop-window-workspace { background: #c91739; }
+.window-chrome {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 160px 0 12px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.window-chrome img { width: 18px; height: 18px; border-radius: 4px; }
+
+.nav-group > .nav-item.active {
+  background: rgba(255, 255, 255, .25);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .28), 0 8px 18px rgba(12, 16, 38, .2);
+}
+
+.nav-standalone { margin: 16px 0 0; padding-left: 18px; }
+.topbar-current-module { color: #2f3447; font-size: 17px; font-weight: 800; }
+
 .nav-chevron {
   display: inline-flex;
   align-items: center;
@@ -378,7 +414,7 @@ button:focus-visible {
 
 .sub-nav-item {
   width: 100%;
-  height: 36px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -395,10 +431,16 @@ button:focus-visible {
 
 .sub-nav-label {
   min-width: 0;
+  display: grid;
+  gap: 2px;
+  line-height: 1.1;
+}
+.sub-nav-label strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sub-nav-label strong { font-size: 12px; }
 
 .nav-stage-badge {
   flex: 0 0 auto;
@@ -411,10 +453,28 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.sub-nav-label .nav-stage-badge {
+  justify-self: start;
+  margin-left: 0;
+  padding: 1px 5px;
+}
+
 .sub-nav-item.active,
 .sub-nav-item:hover {
   background: rgba(255, 255, 255, 0.17);
 }
+
+.sub-agent-avatar {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.17);
+}
+
 
 .workspace {
   position: relative;

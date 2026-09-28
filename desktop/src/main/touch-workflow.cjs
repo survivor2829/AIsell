@@ -1,6 +1,8 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { cleanupStaleSearchCaptures } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
@@ -15,6 +17,7 @@ const {
   identityKey,
   isBatchAuthorized,
   loadTaskState,
+  readTaskState,
   poisonedSearchCandidate,
   recordSkippedResult,
   recoverInterruptedTask,
@@ -26,7 +29,7 @@ const {
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
-const INTERRUPTED_SEND_STATES = new Set(["sending", "prepared", "clicked"]);
+const COMPLETED_ROW_STATES = new Set(["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped"]);
 const PRE_SEND_RECOVERY_ATTEMPTS = 2;
 const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
@@ -34,6 +37,8 @@ const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
 const IDENTITY_RECOVERY_DELAYS_MS = Object.freeze([2_000, 8_000, 20_000]);
 const IDENTITY_RECOVERY_ATTEMPTS = IDENTITY_RECOVERY_DELAYS_MS.length;
+const SEARCH_CAPTURE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+let lastSearchCaptureSweepAt = null;
 const TOUCH_WORKFLOW_REASON_CODES = Object.freeze({
   payloadIncomplete: "touch_task_payload_incomplete",
   executorUnavailable: "workflow_executor_unavailable",
@@ -47,11 +52,79 @@ const IDENTITY_SKIP_REASONS = new Set([
   "search_result_not_opened",
   "customer_conversation_not_found"
 ]);
+const TOUCH_PRE_SEND_STOP_REASONS = new Set([
+  "batch_authorization_missing", "contact_identity_ambiguous", "contact_or_message_missing", "contact_snapshot_changed",
+  "executor_contact_mismatch", "image_attempt_context_missing", "invalid_unclassified_reason", "prepared_task_persist_failed",
+  "real_send_already_attempted", "real_send_explicit_allow_missing", "real_send_final_confirmation_missing",
+  "real_send_gate_failed", "real_send_not_armed", "real_send_session_not_verified", "send_gate_not_passed",
+  "task_attention_reason_missing", "task_context_mismatch", "task_context_missing", "touch_image_changed",
+  "touch_sequence_changed", "wechat_account_ambiguous", "wechat_account_changed", "wechat_account_directory_missing",
+  "wechat_account_identity_missing", "wechat_account_not_verified", "wechat_id_name_conflict",
+  "wechat_search_result_landing_unverified"
+]);
 const MANUAL_RESOLUTION_REASONS = {
   sent: "用户已确认发送成功",
   not_sent: "用户已确认未发送，等待再次启动",
   skip: "用户无法确认发送结果，已跳过当前联系人"
 };
+
+function skippedDelivery(row) {
+  const partial = row.message_parts?.some((part) => part.status === "sent_verified") === true;
+  if (partial) {
+    if (!row.reason.startsWith("部分内容已发送")) row.reason = `部分内容已发送，${row.reason}；已发送内容不会重发`;
+    row.send_attempted = true;
+  } else row.send_attempted = false;
+  return partial ? "partial_sent" : "not_attempted";
+}
+
+function resumableFreshEdit(task, multipart) {
+  const current = task.results?.[task.current_index];
+  return Boolean(multipart && task.phase === "preparing_batch"
+    && !Object.prototype.hasOwnProperty.call(current || {}, "message_parts")
+    && ["pending", "generated"].includes(current?.status)
+    && current?.retry_blocked === false
+    && current?.send_attempted === false);
+}
+
+function finiteSearchEvidence(diagnostics = {}) {
+  const evidence = {};
+  if (["popup", "formula_fallback", "formula_crop"].includes(diagnostics.capture_source)) {
+    evidence.capture_source = diagnostics.capture_source === "formula_crop" ? "formula_fallback" : diagnostics.capture_source;
+  }
+  for (const key of ["popup_bounds", "crop_bounds"]) {
+    if (!diagnostics[key] || typeof diagnostics[key] !== "object") continue;
+    const bounds = Object.fromEntries(Object.entries(diagnostics[key])
+      .filter(([name, value]) => ["left", "top", "right", "bottom", "width", "height"].includes(name) && Number.isFinite(value)));
+    if (Object.keys(bounds).length) evidence[key] = bounds;
+  }
+  if (Number.isFinite(diagnostics.popup_dpi)) evidence.popup_dpi = diagnostics.popup_dpi;
+  if (Array.isArray(diagnostics.search_columns)) evidence.search_columns = diagnostics.search_columns.filter(Number.isFinite);
+  if (Number.isFinite(diagnostics.popup_candidate_count)) evidence.popup_candidate_count = diagnostics.popup_candidate_count;
+  const observed = diagnostics.ocr_observation;
+  if (observed && typeof observed === "object") {
+    const classes = new Set(["empty", "han", "letter", "number", "punctuation", "symbol", "other"]);
+    const boxes = Array.isArray(observed.ocr_boxes) ? observed.ocr_boxes.slice(0, 80).map((box) => ({
+      ...Object.fromEntries(["left", "top", "right", "bottom", "char_count"].filter((key) => Number.isFinite(box?.[key]))
+        .map((key) => [key, box[key]])),
+      first_class: classes.has(box?.first_class) ? box.first_class : "other",
+      last_class: classes.has(box?.last_class) ? box.last_class : "other",
+      boundary_distance: Array.isArray(box?.boundary_distance) ? box.boundary_distance.filter((value) => Number.isInteger(value) && value >= 0).slice(0, 9) : [],
+      starts_with_wechat_id: box?.starts_with_wechat_id === true,
+      contains_network_lookup: box?.contains_network_lookup === true,
+      equals_query: box?.equals_query === true
+    })) : [];
+    evidence.ocr_observation = {
+      ocr_box_count: boxes.length, ocr_boxes: boxes,
+      crop_bounds: observed.crop_bounds && typeof observed.crop_bounds === "object"
+        ? Object.fromEntries(["left", "top", "right", "bottom"].filter((key) => Number.isFinite(observed.crop_bounds[key]))
+          .map((key) => [key, observed.crop_bounds[key]])) : null,
+      web_search_boundary_tops: Array.isArray(observed.web_search_boundary_tops)
+        ? observed.web_search_boundary_tops.filter(Number.isFinite).slice(0, 80) : [],
+      bottom_gap: Number.isFinite(observed.bottom_gap) ? observed.bottom_gap : null
+    };
+  }
+  return evidence;
+}
 
 function createTouchWorkflow(options = {}) {
   const contactsDir = String(options.dataDir || "");
@@ -62,13 +135,14 @@ function createTouchWorkflow(options = {}) {
   let activeStep = false;
   const recoveredTaskIds = new Set();
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
+  const readWorkflowTask = (id) => readTaskState(workflowDirectory(String(id)));
   const loadWorkflowTask = (id) => {
     const taskId = String(id);
     const taskDir = workflowDirectory(taskId);
     let task = loadTaskState(taskDir);
     if (!recoveredTaskIds.has(taskId)) {
       const current = task.results?.[task.current_index];
-      if (task.status === "running" && INTERRUPTED_SEND_STATES.has(current?.status)) {
+      if (task.status === "running" && !COMPLETED_ROW_STATES.has(current?.status) && current?.status !== "outcome_unknown") {
         task = recoverInterruptedTask(taskDir);
       }
       recoveredTaskIds.add(taskId);
@@ -136,6 +210,11 @@ function createTouchWorkflow(options = {}) {
     if (!id || !contacts.length || !script) return { status: "needs_attention", progress: fallback, reasonCode: TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete, error: "触达任务资料不完整，请重新添加任务" };
     if (!enabled() || activeStep) return { status: "pending", progress: fallback };
     activeStep = true;
+    const stepStartedAt = now().getTime();
+    if (lastSearchCaptureSweepAt === null || stepStartedAt - lastSearchCaptureSweepAt >= SEARCH_CAPTURE_SWEEP_INTERVAL_MS) {
+      lastSearchCaptureSweepAt = stepStartedAt;
+      cleanupStaleSearchCaptures(stepStartedAt);
+    }
     let owner = "";
     let task;
     const taskDir = workflowDirectory(id);
@@ -143,6 +222,7 @@ function createTouchWorkflow(options = {}) {
     const link = String(payload?.link || "");
     const multipart = imageIds.length > 0 || Boolean(link);
     const signature = workflowSignature({ script, contacts, imageIds, link });
+    let searchCaptureBytes = null;
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
     const response = (status, extra = {}) => {
@@ -160,15 +240,19 @@ function createTouchWorkflow(options = {}) {
           passport?.recordFailure("active_touch", passportTaskId, {
             stage: "workflow_step", reasonCode: reasonCode || "touch_workflow_failure_reason_missing", ruleId,
             traceId: current.last_trace_id || "", rawReading: extra.result || current || extra,
-            expected: { status: "sent_verified", progress: progress() }
+            expected: { status: "sent_verified", progress: progress() },
+            ...(ruleId === "search-r008" ? { screenshotBytes: searchCaptureBytes } : {})
           });
         }
       }
       if (status === "completed" && task) {
         passport?.writeRunBill("active_touch", id, (task.results || []).map((result, index) => ({
           taskId: `${id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`, status: result.status,
-          reasonCode: result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
-          ruleId: result.search_evidence?.rule_id || ""
+           reasonCode: result.skip_record?.reasonCode !== "outcome_unknown" && result.skip_record && result.message_parts?.some((part) => part.status === "sent_verified")
+             ? `partial_sent_${result.skip_record?.reasonCode || "search_result_identity_unverified"}`
+             : result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
+           ruleId: result.status !== "sent_verified" && IDENTITY_SKIP_REASONS.has(result.skip_record?.reasonCode)
+             ? result.skip_record?.ruleId || "" : ""
         })));
       }
       return { status, progress: progress(), ...extra };
@@ -202,6 +286,7 @@ function createTouchWorkflow(options = {}) {
         task = authorizeTask(task, now().toISOString());
         persist();
         writeJsonAtomic(bindingFile, { taskId: id, signature });
+        recoveredTaskIds.add(id);
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
       if (task.manual_resolution_pending && taskRecord?.status !== "needs_attention") {
@@ -209,12 +294,7 @@ function createTouchWorkflow(options = {}) {
         persist();
       }
       if (task.status === "paused") {
-        const resumableFreshEdit = multipart && task.phase === "preparing_batch"
-          && !Object.prototype.hasOwnProperty.call(task.results[task.current_index] || {}, "message_parts")
-          && ["pending", "generated"].includes(task.results[task.current_index]?.status)
-          && task.results[task.current_index]?.retry_blocked === false
-          && task.results[task.current_index]?.send_attempted === false;
-        if (!resumableFreshEdit && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        if (!resumableFreshEdit(task, multipart) && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
         if (multipart) task.results[task.current_index].status = "generated";
@@ -223,7 +303,7 @@ function createTouchWorkflow(options = {}) {
       let current = task.results[task.current_index];
       // A completed receipt is authoritative even if the app exited before the
       // queue received the next index. Never send that contact a second time.
-      if (current && ["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped"].includes(current.status)) {
+      if (current && COMPLETED_ROW_STATES.has(current.status)) {
         task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
@@ -244,8 +324,11 @@ function createTouchWorkflow(options = {}) {
       const liveClassification = classifyContacts(liveContacts);
       const liveContact = liveClassification.eligible.find((contact) => String(contact.id) === current.id);
       if (!liveContact || identityKey(liveContact) !== current.identity_hash) {
+        delete task.identity_skip_streak;
+        delete task.pre_send_skip_streak;
         current.status = "identity_skipped";
         current.reason = "联系人已变化或不再允许触达，已跳过";
+        const deliveryStatus = skippedDelivery(current);
         recordSkippedResult(current, task.current_index, {
           reasonCode: "contact_snapshot_changed",
           blockedReason: current.reason,
@@ -254,7 +337,7 @@ function createTouchWorkflow(options = {}) {
         task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
-        return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true } });
+        return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus, skipped: true } });
       }
       if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器", null, TOUCH_WORKFLOW_REASON_CODES.executorUnavailable);
       if (!current.message) {
@@ -294,13 +377,61 @@ function createTouchWorkflow(options = {}) {
       current.send_attempted = null;
       persist();
       let result;
+      const verifiedPartsBefore = new Set(current.message_parts?.flatMap((part, partIndex) => part.status === "sent_verified" ? [partIndex] : []) || []);
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? index) || 0)}`;
+      const preSendSkip = (reasonCode, reason, classification = "") => {
+        const key = `pre_send:${reasonCode}`;
+        const streak = task.pre_send_skip_streak;
+        const count = (streak?.key === key ? streak.count : 0) + 1;
+        current.reason = reason;
+        current.updated_at = now().toISOString();
+        if (count >= 3) {
+          current.reason = "连续 3 位联系人因同一原因在发送前失败，失败的内容都没有发出，已暂停；已发出的内容不会重发。请检查微信后重新加入继续。";
+          current.status = "generated";
+          current.retry_blocked = false;
+          const deliveryStatus = skippedDelivery(current);
+          current.send_attempted = false;
+          current.pre_send_recovery_attempts = 0;
+          delete current.environment_recovery_started_at;
+          delete task.identity_skip_streak;
+          delete task.pre_send_skip_streak;
+          persist();
+          return attention(current.reason,
+            { deliveryStatus, diagnosticReason: reasonCode }, "touch_pre_send_failure_streak");
+        }
+        delete task.identity_skip_streak;
+        task.pre_send_skip_streak = { key, count };
+        current.status = "pre_send_skipped";
+        current.retry_blocked = true;
+        const deliveryStatus = skippedDelivery(current);
+        recordSkippedResult(current, index, { reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
+        passport?.recordFailure("active_touch", passportTaskId, {
+          stage: "pre_send", reasonCode, traceId: sendOperation.traceId,
+          rawReading: { reasonCode, deliveryStatus }, expected: { status: "sent_verified" }
+        });
+        task.current_index = index + 1;
+        if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+        persist();
+        return response(task.status === "completed" ? "completed" : "pending", {
+          result: { deliveryStatus, skipped: true, reasonCode, ...(classification ? { classification } : {}) }
+        });
+      };
       passport?.bindTrace("active_touch", sendOperation.traceId, passportTaskId);
       passport?.recordEvent("active_touch", passportTaskId, {
         stage: "workflow_contact_send", direction: "in", status: "started", traceId: sendOperation.traceId
       });
       try {
+        let sessionAnchor = null;
+        let sourcePartIndex = null;
+        let reuseEnabled = true;
+        if (multipart) {
+          try { reuseEnabled = JSON.parse(fs.readFileSync(path.join(contactsDir, "feature-flags.json"), "utf8"))?.multipartSessionReuse !== false; }
+          catch (error) {
+            if (error.code !== "ENOENT") diagnostics().event("active_touch", "session_reuse.flags_invalid", { task_id: id },
+              { trace: true, level: "warn", code: "session_reuse_flags_invalid" });
+          }
+        }
         const executePart = async (part, partIndex, onPartTransition) => {
           const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");
           const executionDir = multipart ? path.join(taskDir, "message-parts", recipientKey, String(partIndex)) : taskDir;
@@ -311,9 +442,9 @@ function createTouchWorkflow(options = {}) {
           let image;
           if (part.kind === "image") {
             try { image = options.mediaStore.resolve(part.imageId); }
-            catch (error) { return { ok: false, send_attempted: false, blocked_reason: "touch_image_unavailable", error: error.message }; }
+            catch (error) { sessionAnchor = null; return { ok: false, send_attempted: false, blocked_reason: "touch_image_unavailable", error: error.message }; }
           }
-          return options.execute({
+          let partOutcome = await options.execute({
             baseDir: executionDir,
             contactsDir,
             contactId: current.id,
@@ -323,6 +454,8 @@ function createTouchWorkflow(options = {}) {
             attemptId: multipart ? `${current.request_id}:${partIndex}` : current.request_id,
             authorized: isBatchAuthorized(task),
             windowMinIdleMs: 0,
+            ...(multipart ? { captureSessionAnchor: true, now,
+              ...(partIndex > 0 ? { reuseSession: { partIndex, sourcePartIndex, anchor: sessionAnchor, disabled: !reuseEnabled } } : {}) } : {}),
             onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
               trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
             }),
@@ -332,6 +465,7 @@ function createTouchWorkflow(options = {}) {
               ? drivers.clickWechatSendButtonAsync(key, sendContext)
               : { ok: false, sendAttempted: false, reason: "workflow_paused" },
             runStep: (command, args = []) => options.runStep([command, ...args,
+              ...(command === "click-search-result-dry-run" ? ["--capture-search-failure"] : []),
               ...(multipart ? ["--task-data-dir", taskDir] : []),
               "--task-id", id, "--contact-id", current.id, "--current-index", String(index)
             ], {
@@ -355,6 +489,27 @@ function createTouchWorkflow(options = {}) {
               persist();
             }
           });
+          const captureFile = String(partOutcome?.diagnostics?.search_capture_file || "");
+          if (captureFile) {
+            const resolved = path.resolve(captureFile);
+            if (path.dirname(resolved) === path.resolve(os.tmpdir())
+              && /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(path.basename(resolved))) {
+              try { searchCaptureBytes = fs.readFileSync(resolved); } catch { searchCaptureBytes = null; }
+              try { fs.unlinkSync(resolved); } catch {}
+            }
+            const { search_capture_file: _captureFile, ...safeDiagnostics } = partOutcome.diagnostics;
+            partOutcome = { ...partOutcome, diagnostics: safeDiagnostics };
+          }
+          if (!multipart) return partOutcome;
+          const { session_anchor: anchor, ...safeOutcome } = partOutcome || {};
+          if (partOutcome?.ok === true && partOutcome?.state?.real_send_status === "sent_verified" && anchor) {
+            sessionAnchor = anchor;
+            sourcePartIndex = partIndex;
+          } else {
+            sessionAnchor = null;
+            sourcePartIndex = null;
+          }
+          return safeOutcome;
         };
         if (multipart) {
           current = task.results[index];
@@ -364,7 +519,18 @@ function createTouchWorkflow(options = {}) {
           });
         } else result = await executePart({ kind: "text", message: current.message }, 0);
         const detail = summarizeSendResult(result);
-        sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason });
+        const preSendPolicy = classifyWechatFailure(result);
+        const identityReason = identitySkipReason(result);
+        const confirmedPreSend = result?.send_attempted === false
+          && !["prepared", "clicked", "outcome_unknown"].includes(task.results[index]?.status);
+        const pendingPause = !enabled() || ["batch_cancelled", "workflow_paused"].includes(preSendPolicy.reasonCode);
+        const boundedPreSendFailure = !identityReason
+          && preSendPolicy.reasonCode !== "wechat_search_network_lookup_misclick"
+          && (!TOUCH_PRE_SEND_STOP_REASONS.has(preSendPolicy.reasonCode) || pendingPause);
+        const warnPreSend = confirmedPreSend
+          && (identityReason === "search_result_identity_unverified" || boundedPreSendFailure);
+        sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason,
+          ...(warnPreSend ? { level: "warn" } : {}) });
       } catch (error) {
         sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
         task.results[index].status = "outcome_unknown";
@@ -375,6 +541,8 @@ function createTouchWorkflow(options = {}) {
       current = task.results[index];
       current.last_trace_id = sendOperation.traceId;
       if (result?.ok && result?.state?.real_send_status === "sent_verified") {
+        delete task.identity_skip_streak;
+        delete task.pre_send_skip_streak;
         current.status = "sent_verified";
         current.retry_blocked = true;
         current.send_attempted = true;
@@ -390,22 +558,28 @@ function createTouchWorkflow(options = {}) {
           ? { result: { deliveryStatus: "sent_verified", contactId: current.id } }
           : { ...safetyInterval(task.next_send_not_before), result: { deliveryStatus: "sent_verified", contactId: current.id, nextEligibleAt: task.next_send_not_before } });
       }
-      const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
+      const notAttempted = result?.send_attempted === false;
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         const reasonCode = identitySkipReason(result);
+        const newlyVerifiedPart = current.message_parts?.some((part, partIndex) => part.status === "sent_verified" && !verifiedPartsBefore.has(partIndex)) === true;
+        if (result?.state?.conversation_verified === true || newlyVerifiedPart) {
+          delete task.identity_skip_streak;
+          if (current.search_evidence) delete current.search_evidence.fingerprint;
+          if (newlyVerifiedPart) current.identity_recovery_attempts = 0;
+        }
+        if (!reasonCode && current.search_evidence) delete current.search_evidence.rule_id;
         const failurePolicy = classifyWechatFailure(result);
         const failureReason = String(result?.blocked_reason || result?.state?.blocked_reason || "");
+        const searchDiagnostics = { ...(result?.state?.search_evidence || {}), ...(result?.diagnostics || {}) };
+        const ruleId = String(searchDiagnostics.rule_id || result?.rule_id || result?.state?.search_evidence?.rule_id || "");
+        const candidateSetHash = String(searchDiagnostics.candidate_set_hash || result?.state?.search_evidence?.candidate_set_hash || "");
+        const fingerprint = ruleId && candidateSetHash ? `${ruleId}:${candidateSetHash}` : "";
+        const previousFingerprint = current.search_evidence?.fingerprint;
+        if (reasonCode) current.search_evidence = ruleId === "search-r008"
+          ? { ...finiteSearchEvidence(searchDiagnostics), rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
+          : { ...finiteSearchEvidence(searchDiagnostics), ...(ruleId ? { rule_id: ruleId } : {}), fingerprint };
         if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
-          current.status = "pre_send_skipped";
-          current.reason = String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人";
-          current.retry_blocked = true;
-          current.send_attempted = false;
-          current.updated_at = now().toISOString();
-          recordSkippedResult(current, index, { reasonCode: failureReason, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
-          task.current_index = index + 1;
-          if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
-          persist();
-          return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failureReason } });
+          return preSendSkip(failureReason, String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人");
         }
         if (failureReason === "wechat_search_network_lookup_misclick" && !reasonCode) {
           current.poisoned = poisonedSearchCandidate(result, now().toISOString());
@@ -418,6 +592,7 @@ function createTouchWorkflow(options = {}) {
           return attention(current.reason, { deliveryStatus: "not_attempted" }, failureReason);
         }
         if (reasonCode === "search_result_identity_unverified"
+          && !(fingerprint && fingerprint === previousFingerprint)
           && Math.max(0, Number(current.identity_recovery_attempts) || 0) < IDENTITY_RECOVERY_ATTEMPTS) {
           current.identity_recovery_attempts = Math.max(0, Number(current.identity_recovery_attempts) || 0) + 1;
           current.status = "generated";
@@ -434,14 +609,35 @@ function createTouchWorkflow(options = {}) {
           });
         }
         if (reasonCode) {
+          const streak = task.identity_skip_streak;
+          const countIdentityFailure = reasonCode === "search_result_identity_unverified" && Boolean(ruleId);
+          const nextStreak = countIdentityFailure ? ((streak?.key || (streak?.rule_id ? `identity:${streak.rule_id}` : "")) === `identity:${ruleId}` ? streak.count : 0) + 1 : 0;
+          if (countIdentityFailure && nextStreak >= 3) {
+            current.status = "generated";
+            current.reason = "连续多位联系人的搜索结果无法确认身份，请检查微信搜索窗口";
+            current.retry_blocked = false;
+            const deliveryStatus = skippedDelivery(current);
+            current.updated_at = now().toISOString();
+            current.identity_recovery_attempts = 0;
+            current.pre_send_recovery_attempts = 0;
+            delete current.environment_recovery_started_at;
+            if (current.search_evidence) delete current.search_evidence.fingerprint;
+            delete task.identity_skip_streak;
+            delete task.pre_send_skip_streak;
+            persist();
+            return attention(current.reason, { deliveryStatus, diagnosticReason: ruleId, diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
+          }
+          delete task.pre_send_skip_streak;
+          if (countIdentityFailure) task.identity_skip_streak = { key: `identity:${ruleId}`, rule_id: ruleId, count: nextStreak };
           poisonSearchCandidate(current, result);
           current.status = "identity_skipped";
           current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
           current.retry_blocked = true;
-          current.send_attempted = false;
+          const deliveryStatus = skippedDelivery(current);
           current.updated_at = now().toISOString();
           recordSkippedResult(current, index, {
             reasonCode,
+            ruleId,
             blockedReason: current.reason,
             at: current.updated_at,
             traceId: sendOperation.traceId
@@ -452,9 +648,22 @@ function createTouchWorkflow(options = {}) {
             task.completed_at = now().toISOString();
           }
           persist();
-          return response(task.status === "completed" ? "completed" : "pending", {
-            result: { deliveryStatus: "not_attempted", skipped: true, reasonCode }
+          if (reasonCode === "search_result_identity_unverified") passport?.recordFailure("active_touch", passportTaskId, {
+            stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
+            rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" },
+            ...(ruleId === "search-r008" ? { screenshotBytes: searchCaptureBytes } : {})
           });
+          return response(task.status === "completed" ? "completed" : "pending", {
+            result: { deliveryStatus, skipped: true, reasonCode }
+          });
+        }
+        if (!enabled() || failurePolicy.reasonCode === "batch_cancelled" || failurePolicy.reasonCode === "workflow_paused") {
+          current.status = "generated";
+          current.retry_blocked = false;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return response("pending", { result: { deliveryStatus: "not_attempted" } });
         }
         if (failurePolicy.classification === "environment") {
           let environmentStartedAt = Date.parse(current.environment_recovery_started_at);
@@ -464,16 +673,7 @@ function createTouchWorkflow(options = {}) {
           }
           const environmentElapsedMs = Math.max(0, now().getTime() - environmentStartedAt);
           if (environmentElapsedMs >= ENVIRONMENT_RECOVERY_MAX_MS) {
-            current.status = "pre_send_skipped";
-            current.reason = "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单";
-            current.retry_blocked = true;
-            current.send_attempted = false;
-            current.updated_at = now().toISOString();
-            recordSkippedResult(current, index, { reasonCode: failurePolicy.reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
-            task.current_index = index + 1;
-            if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
-            persist();
-            return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification } });
+            return preSendSkip(failurePolicy.reasonCode, "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单", failurePolicy.classification);
           }
           current.status = "generated";
           current.reason = "运行环境暂不可用，消息尚未发送，等待恢复";
@@ -488,7 +688,7 @@ function createTouchWorkflow(options = {}) {
             result: { deliveryStatus: "not_attempted", classification: failurePolicy.classification }
           });
         }
-        if (failurePolicy.classification === "recoverable" && failurePolicy.known) {
+        if (result?.send_attempted === false && !TOUCH_PRE_SEND_STOP_REASONS.has(failurePolicy.reasonCode)) {
           delete current.environment_recovery_started_at;
           current.pre_send_recovery_attempts = Math.max(0, Number(current.pre_send_recovery_attempts) || 0) + 1;
           if (current.pre_send_recovery_attempts <= PRE_SEND_RECOVERY_ATTEMPTS) {
@@ -505,21 +705,9 @@ function createTouchWorkflow(options = {}) {
               result: { deliveryStatus: "not_attempted", classification: failurePolicy.classification }
             });
           }
-          current.status = "pre_send_skipped";
-          current.reason = String(result.error || failurePolicy.reasonCode) + "，两次自动恢复仍失败，已跳过当前联系人";
-          current.retry_blocked = true;
-          current.send_attempted = false;
-          current.updated_at = now().toISOString();
-          recordSkippedResult(current, index, {
-            reasonCode: failurePolicy.reasonCode, blockedReason: current.reason,
-            at: current.updated_at, traceId: sendOperation.traceId
-          });
-          task.current_index = index + 1;
-          if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
-          persist();
-          return response(task.status === "completed" ? "completed" : "pending", {
-            result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification }
-          });
+          return preSendSkip(failurePolicy.reasonCode,
+            String(result.error || failurePolicy.reasonCode) + "，两次自动恢复仍失败，已跳过当前联系人",
+            failurePolicy.classification);
         }
         current.status = "generated";
         current.retry_blocked = false;
@@ -537,6 +725,7 @@ function createTouchWorkflow(options = {}) {
       current.send_attempted = null;
       return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
     } catch (error) {
+      recoveredTaskIds.delete(id);
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
     } finally {
       try {
@@ -550,15 +739,16 @@ function createTouchWorkflow(options = {}) {
   function canRetryWorkflowTask(record, payload) {
     const task = loadWorkflowTask(record.id);
     const multipart = payload ? (Array.isArray(payload.imageIds) && payload.imageIds.length > 0 || Boolean(payload.link)) : undefined;
-    return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index], multipart);
+    return !task.integrity_error && task.status === "paused"
+      && (resumableFreshEdit(task, multipart) || canContinueTouchResult(task.results[task.current_index], multipart));
   }
 
   function describeUnknownWorkflowTask(record) {
     const id = String(record?.id || record || "").trim();
     if (!id) return null;
-    const task = loadWorkflowTask(id);
-    const current = task.results?.[task.current_index];
-    if (task.integrity_error) return null;
+    const task = readWorkflowTask(id);
+    const current = task?.results?.[task.current_index];
+    if (!task || task.integrity_error) return null;
     if (task.status === "paused" && current?.status === "outcome_unknown") {
       const unknown = unknownMessagePart(current);
       if (Array.isArray(current.message_parts) && !unknown) return null;
@@ -601,6 +791,8 @@ function createTouchWorkflow(options = {}) {
       ...(unknown ? { part_index: unknown.index, part_kind: String(unknown.part.kind || "") } : {})
     }];
     current.manual_resolution = resolution;
+    delete task.identity_skip_streak;
+    delete task.pre_send_skip_streak;
     current.manual_resolved_at = resolvedAt;
     current.awaiting_resolution = false;
     current.reason = MANUAL_RESOLUTION_REASONS[resolution];
@@ -611,6 +803,9 @@ function createTouchWorkflow(options = {}) {
       current.status = "outcome_unknown_skipped";
       current.retry_blocked = true;
       current.send_attempted = null;
+      if (current.message_parts?.some((part) => part.status === "sent_verified")) {
+        current.reason = "部分内容已发送，后续发送结果未知；请核对微信，勿重复发送";
+      }
       recordSkippedResult(current, task.current_index, {
         reasonCode: "outcome_unknown",
         blockedReason: current.reason,
@@ -716,6 +911,8 @@ function createTouchWorkflow(options = {}) {
       result.updated_at = now().toISOString();
     }
     task.script = script;
+    delete task.identity_skip_streak;
+    delete task.pre_send_skip_streak;
     task.status = "paused";
     task.phase = "preparing_batch";
     task.pause_reason = "话术已修改，点击启动程序继续未发送联系人";
@@ -734,7 +931,8 @@ function createTouchWorkflow(options = {}) {
     if (!id) return null;
     const taskDir = workflowDirectory(id);
     if (!fs.existsSync(path.join(taskDir, "touch_task.json"))) return null;
-    const task = loadWorkflowTask(id);
+    const task = readWorkflowTask(id);
+    if (!task || task.integrity_error) return null;
     const summary = skippedTaskSummary(task);
     return { skipped_breakdown: summary.breakdown, skipped_records: summary.records };
   }
@@ -746,6 +944,13 @@ function createTouchWorkflow(options = {}) {
     }
     const retried = retrySkippedResults(loadWorkflowTask(id), contactIds, now().toISOString());
     if (!retried.ok) return retried;
+    delete retried.task.identity_skip_streak;
+    delete retried.task.pre_send_skip_streak;
+    for (const result of retried.task.results) {
+      if (result.status === "generated" && result.reason === "已重新加入，等待继续任务" && result.search_evidence) {
+        delete result.search_evidence.fingerprint;
+      }
+    }
     const saved = saveTaskState(taskDir, retried.task);
     return {
       ok: true,

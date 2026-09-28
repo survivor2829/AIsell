@@ -3,6 +3,9 @@ const catalog = require("./wechat-rule-catalog.json");
 const FAILURE_CLASSIFICATIONS = Object.freeze(["environment", "recoverable", "blocker"]);
 
 const workflowPolicies = Object.freeze({
+  atomic_draft_changed: { classification: "recoverable", attentionScope: "task" },
+  atomic_send_not_verified: { classification: "recoverable", attentionScope: "task" },
+  message_snapshot_unavailable: { classification: "recoverable", attentionScope: "task" },
   touch_task_payload_incomplete: { classification: "blocker", attentionScope: "task" },
   moments_no_new_posts: { classification: "recoverable", attentionScope: "task" },
   moments_interaction_incomplete: { classification: "recoverable", attentionScope: "task" },
@@ -12,6 +15,13 @@ const workflowPolicies = Object.freeze({
   workflow_occurrence_date_invalid: { classification: "blocker", attentionScope: "task" },
   workflow_executor_unavailable: { classification: "blocker", attentionScope: "task" },
   touch_draft_generation_failed: { classification: "recoverable", attentionScope: "task" },
+  touch_pre_send_failure_streak: { classification: "blocker", attentionScope: "global" },
+  wechat_clipboard_read_failed: { classification: "recoverable", attentionScope: "task" },
+  wechat_focus_failed: { classification: "recoverable", attentionScope: "task" },
+  wechat_window_preflight_failed: { classification: "environment", attentionScope: "global" },
+  wechat_search_panel_unavailable: { classification: "blocker", attentionScope: "global" },
+  wechat_search_identity_circuit_open: { classification: "blocker", attentionScope: "global" },
+  task_context_mismatch: { classification: "blocker", attentionScope: "global" },
   moments_interaction_outcome_unknown: { classification: "blocker", attentionScope: "global" },
   outcome_unknown: { classification: "blocker", attentionScope: "global" },
   contact_identity_ambiguous: { classification: "blocker", attentionScope: "global" },
@@ -65,7 +75,28 @@ const workflowPolicies = Object.freeze({
   image_send_pre_click_timeout: { classification: "recoverable", attentionScope: "task" },
   wechat_id_name_conflict: { classification: "blocker", attentionScope: "task" },
   wechat_id_no_result: { classification: "recoverable", attentionScope: "task" },
-  wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" }
+  wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" },
+  auto_reply_start_failed: { classification: "blocker", attentionScope: "global" },
+  current_session_baselined: { classification: "recoverable", attentionScope: "global" },
+  foreground_required: { classification: "environment", attentionScope: "global" },
+  no_unread_message: { classification: "recoverable", attentionScope: "global" },
+  visual_capture_failed: { classification: "environment", attentionScope: "global" },
+  visual_driver_missing: { classification: "blocker", attentionScope: "global" },
+  reply_error_sticky: { classification: "blocker", attentionScope: "global" },
+  start_pending_missing: { classification: "blocker", attentionScope: "global" },
+  workflow_account_changed: { classification: "blocker", attentionScope: "global" },
+  workflow_backoff: { classification: "recoverable", attentionScope: "global" },
+  workflow_chat_navigation_failed: { classification: "recoverable", attentionScope: "global" },
+  workflow_recipient_ambiguous: { classification: "blocker", attentionScope: "global" },
+  workflow_recipient_changed: { classification: "blocker", attentionScope: "global" },
+  workflow_recipients_empty: { classification: "recoverable", attentionScope: "global" },
+  workflow_recipients_none_eligible: { classification: "blocker", attentionScope: "global" },
+  workflow_resume_requested: { classification: "environment", attentionScope: "global" },
+  workflow_scope_changed: { classification: "blocker", attentionScope: "global" },
+  workflow_scope_excluded: { classification: "recoverable", attentionScope: "global" },
+  workflow_scan_hourly: { classification: "environment", attentionScope: "global" },
+  workflow_step_busy: { classification: "environment", attentionScope: "global" },
+  workflow_window_changed: { classification: "blocker", attentionScope: "global" }
 });
 
 const reasonPolicies = new Map(Object.entries(workflowPolicies));
@@ -91,6 +122,12 @@ function classifyWechatFailureReason(reasonCode) {
   const reason = normalizeFailureReasonCode(reasonCode || "task_attention_reason_missing");
   if (/^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason)) {
     return { reasonCode: reason, classification: "environment", attentionScope: "global", known: true };
+  }
+  if (/^message_input_failed_wechat_window_not_foreground(?:_attempts_[1-9]\d*)?$/u.test(reason)) {
+    return { reasonCode: reason, classification: "environment", attentionScope: "global", known: true };
+  }
+  if (/^message_input_failed(?:_[a-z0-9_]+)?$/u.test(reason)) {
+    return { reasonCode: reason, classification: "recoverable", attentionScope: "task", known: true };
   }
   const policy = reasonPolicies.get(reason);
   return policy

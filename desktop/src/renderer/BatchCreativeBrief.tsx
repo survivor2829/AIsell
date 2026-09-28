@@ -16,20 +16,17 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
   return <section className="batch-creative-brief" aria-label="创作需求">
     <label><span>给谁看？ <span className="batch-field-note">必填</span></span>
       <input required aria-label="目标客户群体" value={value.target_audience} maxLength={150}
-        placeholder="例如：物业保洁负责人、清洁设备经销商" aria-describedby="batch-audience-help"
+        placeholder="例如：物业保洁负责人"
         onChange={(event) => onChange({ ...value, target_audience: event.target.value })} />
-      <small id="batch-audience-help" className="batch-hint">写具体的人群，以及他们关心的问题，帮助文案贴近观众。</small>
     </label>
     <div className="batch-brief-field"><label><span>想讲什么？ <span className="batch-field-note">选填</span></span>
-      <textarea aria-label="你想表达什么" aria-describedby="batch-expression-help" value={value.expression} maxLength={14000} rows={4}
-        placeholder="可以直接粘贴完整文案，也可以写零碎想法、口语要点或真实经历"
+      <textarea aria-label="你想表达什么" value={value.expression} maxLength={14000} rows={4}
+        placeholder="写下想法，或粘贴完整文案"
         onChange={(event) => onChange({ ...value, expression: event.target.value })} /></label>
-      <p id="batch-expression-help" className="batch-hint">已有完整文案，勾选下方选项后保留原文；零碎想法会按你的方向整理。涉及人物或经历，请注明对应素材。</p>
       <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "provided"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "provided" : "ideas" })} /><span>这是完整文案，保留原文</span></label>
-      {value.script_source === "provided" && <small className="batch-hint">直接进入文案确认，不调用 AI 写稿。当前支持 2400 字以内；制作前仍会核对素材与实际时长。</small>}
+      {value.script_source === "provided" && <small className="batch-hint">完整文案最多 2400 字。</small>}
       {!value.expression.trim() && expressionText(suggestions) && <details className="batch-inline-suggestion"><summary>查看 AI 建议</summary>
         <p>{expressionText(suggestions)}</p><button type="button" onClick={() => onChange({ ...value, expression: expressionText(suggestions) })}>采用并修改</button>
-        <small>采用后重新生成选题，也可以跳过。</small>
       </details>}
     </div>
     <details className="batch-brief-optional" hidden={value.script_source === "provided"}><summary>结尾引导{cta ? " · 已填写" : " · 选填"}</summary>

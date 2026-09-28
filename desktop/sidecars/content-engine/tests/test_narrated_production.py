@@ -6,9 +6,82 @@ from unittest.mock import patch
 
 import test_narrated_batch as batch_fixtures
 from content_engine.errors import ContentEngineError
+from content_engine.creative_domain import rebalance_narrated_phrase_refs
 from content_engine.narrated_batch import NarratedBatchDomain
+from content_engine.narrated_sources import related_shots
 from content_engine import narrated_script_drafts
-from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, complete_mapping_capacity, confirmed_narration_units, normalize_preserved_mapping, confirm_selections
+from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, cohere_mapping_sources, complete_mapping_capacity, confirmed_narration_units, remap_units_with_source_capacity, normalize_preserved_mapping, confirm_selections, retryable_planning_jobs, retry_failed_planning
+
+
+class NarratedTimelineTests(unittest.TestCase):
+    def test_rebalances_ordered_shots_for_measured_phrase_audio(self):
+        phrases = [
+            {'evidenceRefs': ['s1'], 'sentenceBindings': [{'evidenceRefs': ['s1']}]},
+            {'evidenceRefs': ['s2', 's3']},
+        ]
+        audio = [{'duration_ms': 5_500}, {'duration_ms': 2_000}]
+        segments = [
+            {'evidence_ref': 's1', 'target_duration_ms': 3_000},
+            {'evidence_ref': 's2', 'target_duration_ms': 3_000},
+            {'evidence_ref': 's3', 'target_duration_ms': 3_000},
+        ]
+
+        rebalance_narrated_phrase_refs(phrases, audio, segments)
+
+        self.assertEqual([['s1', 's2'], ['s3']], [p['evidenceRefs'] for p in phrases])
+        self.assertNotIn('sentenceBindings', phrases[0])
+
+    def test_rebalancing_rejects_insufficient_total_duration(self):
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s2']}]
+        audio = [{'duration_ms': 4_000}, {'duration_ms': 4_000}]
+        segments = [
+            {'evidence_ref': 's1', 'target_duration_ms': 3_000},
+            {'evidence_ref': 's2', 'target_duration_ms': 3_000},
+        ]
+
+        with self.assertRaisesRegex(ContentEngineError, '全部画面'):
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
+
+    def test_same_material_accepts_different_copy_shapes(self):
+        segments = [
+            {'evidence_ref': f's{index}', 'target_duration_ms': 3_000}
+            for index in range(1, 7)
+        ]
+        cases = [
+            (
+                [
+                    {'text': '短开场', 'evidenceRefs': ['s1', 's2']},
+                    {'text': '较长的主体内容', 'evidenceRefs': ['s3', 's4']},
+                    {'text': '简短收尾', 'evidenceRefs': ['s5', 's6']},
+                ],
+                [{'duration_ms': 1_500}, {'duration_ms': 5_200}, {'duration_ms': 2_500}],
+            ),
+            (
+                [
+                    {'text': '换一种开场', 'evidenceRefs': ['s1']},
+                    {'text': '换成两段主体中的第一段', 'evidenceRefs': ['s2', 's3']},
+                    {'text': '换成两段主体中的第二段', 'evidenceRefs': ['s4']},
+                    {'text': '新的结尾', 'evidenceRefs': ['s5', 's6']},
+                ],
+                [
+                    {'duration_ms': 2_200},
+                    {'duration_ms': 4_000},
+                    {'duration_ms': 1_800},
+                    {'duration_ms': 2_500},
+                ],
+            ),
+        ]
+
+        for phrases, audio in cases:
+            with self.subTest(phrase_count=len(phrases)):
+                rebalance_narrated_phrase_refs(phrases, audio, segments)
+                refs = [ref for phrase in phrases for ref in phrase['evidenceRefs']]
+                self.assertEqual([f's{index}' for index in range(1, 7)], refs)
+                durations = {segment['evidence_ref']: segment['target_duration_ms'] for segment in segments}
+                for index, (phrase, voice) in enumerate(zip(phrases, audio)):
+                    required = voice['duration_ms'] + (160 if index < len(phrases) - 1 else 0)
+                    available = sum(durations[ref] for ref in phrase['evidenceRefs'])
+                    self.assertGreaterEqual(available, required)
 
 
 class NarratedProductionTests(unittest.TestCase):
@@ -18,6 +91,18 @@ class NarratedProductionTests(unittest.TestCase):
         self.fixture.setUp()
         self.s = self.fixture.s
         self.domain = self.s._narrated_batches()
+        # Production tests exercise an approved voice compatible with the narrated TTS path.
+        approved_voice = self.domain.d._approved_auto_mix_voice_persona
+        def compatible_voice(*args, **kwargs):
+            persona = approved_voice(*args, **kwargs)
+            return {**persona, 'provider': 'volcengine'} if persona else None
+        voice = patch.object(self.domain.d, '_approved_auto_mix_voice_persona', side_effect=compatible_voice)
+        voice.start()
+        self.addCleanup(voice.stop)
+        tts = patch('content_engine.volcengine_tts.VolcengineTTSProvider')
+        tts_provider = tts.start()
+        tts_provider.return_value.configured = True
+        self.addCleanup(tts.stop)
         self.events = []
         self.failure = None
         self.batch = self.s.save_narrated_batch({
@@ -80,6 +165,7 @@ class NarratedProductionTests(unittest.TestCase):
         result = self.run_selection(request)
         self.assertEqual('completed', result['status'])
         self.assertEqual(3, result['target_count'])
+        self.assertTrue(result['count_is_exact'])
         self.assertEqual([2, 1], [item['count'] for item in result['script_selections']])
         for option in self.options[:2]:
             candidate = next(c for c in result['candidates'] if c['candidate_id'] == option['candidate_id'])
@@ -97,7 +183,109 @@ class NarratedProductionTests(unittest.TestCase):
                 self.s.confirm_narrated_script(self.request())
         self.assertEqual('volcengine_tts_not_configured', error.exception.code)
         self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+
+    def test_incompatible_voice_stops_at_confirmation(self):
+        with patch.object(self.domain.d, '_approved_auto_mix_voice_persona',
+                          return_value={'id': 'legacy-voice', 'provider': 'bailian'}):
+            with self.assertRaises(ContentEngineError) as error:
+                self.s.confirm_narrated_script(self.request())
+        self.assertEqual('auto_mix_voice_persona_invalid', error.exception.code)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
         self.assertEqual([], self.events)
+
+    def test_unavailable_selected_music_stops_before_production_is_created(self):
+        self.s.save_narrated_batch({
+            'batch_id': self.batch['batch_id'],
+            'settings': {
+                'workflow_version': 2,
+                'voice_persona_id': 'natural-life@1',
+                'music_mode': 'selected',
+                'music_track_ids': ['missing-track'],
+            },
+        })
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.confirm_narrated_script(self.request())
+        self.assertEqual('narrated_music_pool_empty', error.exception.code)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+        self.assertEqual([], self.events)
+
+    def test_empty_auto_music_pool_stops_before_production_is_created(self):
+        self.s.save_narrated_batch({
+            'batch_id': self.batch['batch_id'],
+            'settings': {
+                'workflow_version': 2,
+                'voice_persona_id': 'natural-life@1',
+                'music_mode': 'auto',
+                'music_track_ids': [],
+            },
+        })
+        with patch.object(self.domain.d, '_select_auto_mix_music', return_value=None):
+            with self.assertRaises(ContentEngineError) as error:
+                self.s.confirm_narrated_script(self.request(first_count=1))
+        self.assertEqual('auto_mix_licensed_music_required', error.exception.code)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+        self.assertEqual([], self.events)
+
+    def test_legacy_missing_music_mode_keeps_voice_only_semantics(self):
+        with patch.object(self.domain.d, '_select_auto_mix_music', return_value=None) as select_music:
+            task = self.s.confirm_narrated_script(self.request(first_count=1))
+        self.assertEqual('rendering', task['status'])
+        self.assertFalse(select_music.called)
+        self.assertEqual(2, len(self.domain._load(self.batch['batch_id'])['production_jobs']))
+
+    def test_selected_music_is_accepted_when_the_track_is_ready(self):
+        track_id = self.fixture.fixture._import_valid_music(with_loop=True)['trackId']
+        self.s.save_narrated_batch({
+            'batch_id': self.batch['batch_id'],
+            'settings': {
+                'workflow_version': 2,
+                'voice_persona_id': 'natural-life@1',
+                'music_mode': 'selected',
+                'music_track_ids': [track_id],
+            },
+        })
+        task = self.s.confirm_narrated_script(self.request())
+        self.assertEqual('rendering', task['status'])
+        self.assertEqual(3, len(self.domain._load(self.batch['batch_id'])['production_jobs']))
+
+    def test_unavailable_formal_renderer_stops_before_production_is_created(self):
+        with patch.object(self.domain.d.renderer, 'capability', {
+            'available': True,
+            'remotion': {'available': False, 'code': 'worker_unavailable'},
+        }):
+            with self.assertRaises(ContentEngineError) as error:
+                self.s.confirm_narrated_script(self.request(first_count=1))
+        self.assertEqual('remotion_runtime_unavailable', error.exception.code)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+        self.assertEqual([], self.events)
+
+    def test_insufficient_unique_footage_stops_before_production_is_created(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings']['minimum_duration_seconds'] = 30
+        state['available_shots'] = [{
+            'segment_id': 'short-only', 'asset_id': self.fixture.ids[0],
+            'source_start_ms': 0, 'source_end_ms': 5_000,
+            'target_duration_ms': 5_000,
+        }]
+        self.domain._store(state)
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.confirm_narrated_script(self.request(first_count=1))
+        self.assertEqual('narrated_insufficient_unique_footage', error.exception.code)
+        self.assertIn('最多可制作 0 条', error.exception.message)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+
+    def test_missing_analysis_defers_unique_footage_gate_until_production(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings']['minimum_duration_seconds'] = 30
+        state['available_shots'] = []
+        for option in state['script_options']:
+            option['narration'] = '这是对现场操作过程的详细说明。' * 40
+        self.domain._store(state)
+        self.options = state['script_options']
+        task = self.s.confirm_narrated_script(self.request(first_count=1))
+        saved = self.domain._load(self.batch['batch_id'])
+        self.assertEqual(task['task_id'], saved['task_id'])
+        self.assertEqual(2, len(saved['production_jobs']))
 
     def test_grounding_group_order_does_not_replace_confirmed_edit_order(self):
         state = self.domain._load(self.batch['batch_id'])
@@ -143,6 +331,193 @@ class NarratedProductionTests(unittest.TestCase):
             self.s.continue_narrated_batch(self.batch['batch_id'])
         self.assertEqual('narrated_planning_outcome_unknown', error.exception.code)
         self.assertEqual(1, sum(kind == 'render' for kind, _ in self.events))
+
+    def test_explicit_voice_recovery_invalidates_only_unresolved_voice_steps(self):
+        queued = self.s.confirm_narrated_script(self.request(first_count=1))
+        state = self.domain._load(self.batch['batch_id'])
+        candidate = state['candidates'][0]
+        run_id = self.domain._create_run(queued['task_id'], state, candidate)
+        self.domain.d._save_auto_mix_run(
+            run_id,
+            status='outcome_unknown',
+            public_plan={'attention': {'code': 'auto_mix_voice_outcome_unknown'}},
+            private_state={},
+        )
+        self.domain.d._record_auto_mix_artifact(run_id, 'tts', 'unknown-tts', 'outcome_unknown')
+        self.domain.d._record_auto_mix_artifact(run_id, 'voice_alignment', 'completed-asr', 'completed')
+        job = state['production_jobs'][0]
+        job.update(status='outcome_unknown', candidate_id=candidate['candidate_id'],
+                   error_code='auto_mix_voice_outcome_unknown', error='等待配音回执')
+        candidate.update(status='outcome_unknown', error_code='auto_mix_voice_outcome_unknown', error='等待配音回执')
+        state.update(status='outcome_unknown', _active_production_job=copy.deepcopy(job))
+        self.domain._store(state)
+        self.domain.db.execute(
+            "UPDATE content_tasks SET status='paused', error_code=?, error_message=? WHERE id=?",
+            ('auto_mix_voice_outcome_unknown', '等待配音回执', queued['task_id']),
+        )
+
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.resolve_narrated_voice_outcome({
+                'batch_id': self.batch['batch_id'], 'provider_log_checked': False,
+                'resolution': 'retry_voice', 'note': '尚未核对',
+            })
+        self.assertEqual('narrated_voice_confirmation_required', error.exception.code)
+
+        result = self.s.resolve_narrated_voice_outcome({
+            'batch_id': self.batch['batch_id'], 'provider_log_checked': True,
+            'resolution': 'retry_voice', 'note': '平台记录没有可下载的第三段音频',
+        })
+        self.assertEqual('queued', result['task_status'])
+        self.assertFalse(result['voice_recovery_available'])
+        self.assertEqual('planned', self.domain.d._auto_mix_run_row(run_id=run_id)['status'])
+        self.assertEqual('queued', self.domain._load(self.batch['batch_id'])['production_jobs'][0]['status'])
+        self.assertEqual('planned', self.domain._load(self.batch['batch_id'])['candidates'][0]['status'])
+        statuses = {row['cache_key']: row['status'] for row in self.domain.db.execute(
+            "SELECT cache_key, status FROM auto_mix_stage_artifacts_v2 WHERE run_id=?", (run_id,)
+        )}
+        self.assertEqual('invalidated', statuses['unknown-tts'])
+        self.assertEqual('completed', statuses['completed-asr'])
+
+    def test_voice_recovery_can_requeue_a_gateway_preflight_failure(self):
+        queued = self.s.confirm_narrated_script(self.request(first_count=1))
+        state = self.domain._load(self.batch['batch_id'])
+        candidate = state['candidates'][0]
+        run_id = self.domain._create_run(queued['task_id'], state, candidate)
+        self.domain.d._save_auto_mix_run(
+            run_id,
+            status='outcome_unknown',
+            public_plan={'attention': {'code': 'auto_mix_voice_outcome_unknown'}},
+            private_state={},
+        )
+        self.domain.d._record_auto_mix_artifact(run_id, 'tts', 'gateway-tts', 'outcome_unknown')
+        job = state['production_jobs'][0]
+        job.update(status='outcome_unknown', candidate_id=candidate['candidate_id'],
+                   error_code='auto_mix_voice_outcome_unknown', error='等待配音回执')
+        candidate.update(status='outcome_unknown', error_code='auto_mix_voice_outcome_unknown', error='等待配音回执')
+        state.update(status='outcome_unknown', _active_production_job=copy.deepcopy(job))
+        self.domain._store(state)
+        self.domain.db.execute(
+            "UPDATE content_tasks SET status='failed', error_code=?, error_message=? WHERE id=?",
+            ('provider_gateway_unavailable', '云端服务暂不可用', queued['task_id']),
+        )
+
+        result = self.s.resolve_narrated_voice_outcome({
+            'batch_id': self.batch['batch_id'], 'provider_log_checked': True,
+            'resolution': 'retry_voice', 'note': '已确认本次没有成功提交配音请求',
+        })
+        self.assertEqual('queued', result['task_status'])
+        task = self.s.get_task(queued['task_id'])
+        self.assertEqual('queued', task['status'])
+        self.assertIsNone(task['error_code'])
+        self.assertEqual('planned', self.domain.d._auto_mix_run_row(run_id=run_id)['status'])
+
+    def test_known_voice_failure_resumes_from_accepted_review_checkpoint(self):
+        task = self.s.confirm_narrated_script(self.request(first_count=1))
+        state = self.domain._load(self.batch['batch_id'])
+        for candidate in state['candidates']:
+            candidate['status'] = 'needs_review'
+        self.domain._store(state)
+
+        reviewed = []
+        rendered = []
+        failed_candidate_id = self.options[1]['candidate_id']
+        voice_available = False
+
+        def accept_review(candidate, batch):
+            reviewed.append(candidate['candidate_id'])
+            candidate.update(review_version=2, status='planned')
+
+        def render_after_review(task_id, batch, candidate, index, total):
+            nonlocal voice_available
+            self.domain._verify_confirmed_script(batch, candidate)
+            rendered.append(candidate['candidate_id'])
+            if candidate['candidate_id'] == failed_candidate_id and not voice_available:
+                self.domain.db.execute(
+                    "UPDATE content_tasks SET status='paused',error_code=? WHERE id=?",
+                    ('auto_mix_voice_request_failed', task_id),
+                )
+                raise ContentEngineError('auto_mix_voice_request_failed', '云端配音暂时不可用')
+            candidate.update(status='completed', generated_video_id=f'fake-{index}')
+
+        with patch.object(NarratedBatchDomain, '_review_edit', side_effect=accept_review), \
+             patch.object(NarratedBatchDomain, '_render_candidate', side_effect=render_after_review):
+            self.s.run_creative_task(task['task_id'])
+            interrupted = self.domain._load(self.batch['batch_id'])
+            failed = next(c for c in interrupted['candidates'] if c['candidate_id'] == failed_candidate_id)
+            checkpoint = {
+                'candidate_id': failed['candidate_id'],
+                'review_version': failed['review_version'],
+                'shots': copy.deepcopy(failed['shots']),
+                'phrases': copy.deepcopy(failed['phrases']),
+            }
+            self.assertEqual('planned', failed['status'])
+            self.assertEqual('queued', interrupted['production_jobs'][1]['status'])
+            self.assertEqual('needs_attention', interrupted['status'])
+            self.assertEqual('needs_attention', self.s.get_narrated_batch(self.batch['batch_id'])['status'])
+
+            voice_available = True
+            self.s.continue_narrated_batch(self.batch['batch_id'])
+            self.s.run_creative_task(task['task_id'])
+
+        result = self.domain._load(self.batch['batch_id'])
+        resumed = next(c for c in result['candidates'] if c['candidate_id'] == failed_candidate_id)
+        self.assertEqual('completed', result['status'])
+        self.assertEqual(checkpoint['candidate_id'], resumed['candidate_id'])
+        self.assertEqual(checkpoint['review_version'], resumed['review_version'])
+        self.assertEqual(checkpoint['shots'], resumed['shots'])
+        self.assertEqual(checkpoint['phrases'], resumed['phrases'])
+        self.assertEqual(1, reviewed.count(failed_candidate_id), '已通过的付费审核不得在续跑时重复调用。')
+        self.assertEqual(1, rendered.count(self.options[0]['candidate_id']), '已完成作品不得重复渲染。')
+        self.assertEqual(2, rendered.count(failed_candidate_id), '只应重试中断的本地/配音制作步骤。')
+
+    def test_failed_two_item_batch_can_replan_without_reusing_short_voice_run(self):
+        state = self.domain._load(self.batch['batch_id'])
+        first = copy.deepcopy(self.options[0])
+        first['_run_id'] = 'old-voice-run'
+        first['status'] = 'failed'
+        state['candidates'] = [first]
+        state['status'] = 'completed_with_errors'
+        state['production_jobs'] = [
+            {'candidate_id': first['candidate_id'], 'status': 'skipped',
+             'error_code': 'narrated_copy_too_long'},
+            {'candidate_id': None, 'status': 'skipped',
+             'error_code': 'narrated_no_usable_candidate'},
+        ]
+        self.assertEqual(2, len(retryable_planning_jobs(state)))
+        retry_failed_planning(state)
+        self.assertEqual(['queued', 'queued'], [j['status'] for j in state['production_jobs']])
+        self.assertEqual('needs_review', first['status'])
+        self.assertNotIn('_run_id', first)
+        self.assertTrue(first['_voice_capacity_retry'])
+
+    def test_voice_overflow_retry_adds_unused_source_before_review(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['_story_planning_version'] = 2
+        state['_speech_budget'] = {'version': 1, 'capacity_ms_per_char': 283.4}
+        state['available_shots'] = [
+            {'segment_id': f'S{i}', 'asset_id': 'same-source',
+             'source_start_ms': i * 5000, 'source_end_ms': (i + 1) * 5000,
+             'target_duration_ms': 5000} for i in range(4)]
+        candidate = {'candidate_id': 'retry', 'title': '现场说明',
+                     'narration': '文' * 45, 'status': 'needs_review',
+                     '_voice_capacity_retry': True,
+                     'phrases': [{'text': '文' * 45, 'shot_ids': ['S0', 'S1', 'S2']}],
+                     'shots': state['available_shots'][:3]}
+        state['candidates'] = [candidate]
+        def normalize(raw, *_args):
+            return {'shots': [state['available_shots'][int(ref[1:])]
+                              for ref in raw['shot_ids']],
+                    'phrases': raw['phrases'], '_tracks': {}, '_timeline': {},
+                    'duration_ms': len(raw['shot_ids']) * 5000}
+        with patch.object(self.domain, '_source_evidence_for', return_value={}), \
+             patch.object(self.domain, '_normalize_candidate', side_effect=normalize), \
+             patch.object(self.domain, '_ground_shots', side_effect=lambda _task, _batch, shots, *_: shots), \
+             patch.object(self.domain, '_review_edit', side_effect=lambda current, _batch: current.update(status='planned')):
+            review_confirmed_candidate(self.domain, state, candidate)
+        self.assertEqual(['S0', 'S1', 'S2', 'S3'],
+                         [shot['segment_id'] for shot in candidate['shots']])
+        self.assertEqual('文' * 45, candidate['narration'])
+        self.assertNotIn('_voice_capacity_retry', candidate)
 
     def test_explicit_continue_retries_invalid_planning_but_not_completed_work(self):
         self.failure = 'cloud_response_invalid'
@@ -298,6 +673,18 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual(narration, candidate['narration'])
         self.assertEqual(narration, ''.join(phrase['text'] for phrase in candidate['phrases']))
 
+    def test_short_user_copy_is_rejected_before_paid_mapping(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings']['minimum_duration_seconds'] = 30
+        self.domain._initialize_speech_budget(state)
+        candidate = {**state['script_options'][0], '_draft_only': True, '_user_supplied': True,
+                     'narration': '这是一段很短的文案。', 'phrases': []}
+        with patch.object(self.domain, '_cloud', side_effect=AssertionError('No paid mapping')) as cloud:
+            with self.assertRaises(ContentEngineError) as error:
+                review_confirmed_candidate(self.domain, state, candidate)
+        self.assertEqual('narrated_duration_too_short', error.exception.code)
+        cloud.assert_not_called()
+
     def test_confirmed_units_preserve_full_sentences_and_only_split_overlong_copy(self):
         state = self.domain._load(self.batch['batch_id'])
         first = '现场人员说明，先观察部件位置，再核对用途；'
@@ -315,6 +702,43 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual('还有什么疑问？', texts[-1])
         self.assertEqual([self.domain._phrase_budget_ms(state, text) for text in texts],
                          [unit['required_ms'] for unit in units])
+
+    def test_slow_voice_splits_approved_copy_to_fit_three_typical_shots(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['_story_planning_version'] = 2
+        state['_speech_budget'] = {'capacity_ms_per_char': 307.0}
+        state['available_shots'] = [
+            {'target_duration_ms': 5000} for _ in range(12)
+        ]
+        narration = '现场演示，' * 12 + '继续核对。'
+        units = confirmed_narration_units(self.domain, state, narration)
+        self.assertEqual(narration, ''.join(unit['text'] for unit in units))
+        self.assertGreater(len(units), 1)
+        self.assertTrue(all(unit['required_ms'] <= 15000 for unit in units))
+
+    def test_existing_voice_budget_reserves_a_fourth_shot_for_long_phrase(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['_story_planning_version'] = 2
+        state['_speech_budget'] = {'version': 1, 'capacity_ms_per_char': 283.4}
+        # The observed voice took 15.8 seconds for this length; three 5-second
+        # shots passed the old estimate but failed after paid TTS completed.
+        self.assertGreater(self.domain._phrase_budget_ms(state, '文' * 45), 15_000)
+
+    def test_slow_voice_mapping_keeps_neighbouring_shots_beyond_stale_draft_estimate(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['_story_planning_version'] = 2
+        state['_speech_budget'] = {'capacity_ms_per_char': 307.0}
+        state['available_shots'] = [
+            {'segment_id': f'S{number}', 'asset_id': f'asset-{number // 10}',
+             'source_start_ms': number % 10 * 5000,
+             'source_end_ms': (number % 10 + 1) * 5000,
+             'target_duration_ms': 5000, 'description': ''}
+            for number in range(39)
+        ]
+        candidate = {'narration': '文' * 267, 'estimated_duration_ms': 45245, 'shots': []}
+        with patch.object(self.domain, '_source_evidence_for', return_value={}):
+            selected = related_shots(self.domain, state, candidate)
+        self.assertEqual(39, len(selected))
 
     def test_local_copy_edit_reuses_runtime_mapping_and_confirmation_still_requires_review(self):
         initial = self.domain._load(self.batch['batch_id'])
@@ -342,6 +766,16 @@ class NarratedProductionTests(unittest.TestCase):
                     saved = self.domain._load(state['batch_id'])
                     option = saved['script_options'][0]
                     self.assertFalse(option.get('_draft_only'))
+                    self.assertTrue(option.get('_user_supplied'))
+                    self.assertEqual(edited_text, self.domain._candidate_user_context(saved, option))
+                    statement = {'kind': 'fact', 'risk_scope': 'outcome', 'supported': False,
+                                 'evidence': [], 'reason': '画面无法证明用户提供的活动信息'}
+                    source = {'user_context_authority': 'confirmed_script', 'user_context': edited_text,
+                              'facts': [{'shot_id': 'shot-1', 'fact_id': 'fact-1'}]}
+                    self.assertFalse(self.domain._bind_confirmed_user_statement(
+                        source, statement, {'quote': edited_text}))
+                    self.assertEqual('outcome', statement['risk_scope'])
+                    self.assertEqual([], statement['evidence'])
                     self.assertEqual(edited_text, ''.join(p['text'] for p in option['phrases']))
                     self.assertEqual([p['shot_ids'] for p in phrases], [p['shot_ids'] for p in option['phrases']])
                     for index in (0, 2):
@@ -353,8 +787,12 @@ class NarratedProductionTests(unittest.TestCase):
                     seed = confirmed['candidates'][0]
                     self.assertEqual(option['phrases'], seed['phrases'])
                     self.assertEqual(edited_text, seed['_confirmed_script']['narration'])
-                    with patch.object(self.domain, '_review', side_effect=lambda candidates, batch, audit: candidates) as review:
+                    def review_candidates(candidates, batch, audit):
+                        self.assertTrue(candidates[0].get('_user_supplied'))
+                        return candidates
+                    with patch.object(self.domain, '_review', side_effect=review_candidates) as review:
                         self.domain._review_edit(seed, confirmed)
+                    self.assertTrue(seed.get('_user_supplied'))
                     review.assert_called_once()
                     cloud.assert_not_called()
 
@@ -545,13 +983,40 @@ class NarratedProductionTests(unittest.TestCase):
         for source in ({}, {'source_provenance': {'activity_label': None}}):
             with patch.object(self.domain, '_source_evidence_for', return_value=source), self.assertRaises(ContentEngineError):
                 self.domain._repack_duration_candidate(raw, state, state['available_shots'], allow_same_activity_cuts=True)
+        state['material_context'] = '往期培训'
+        with patch.object(self.domain, '_source_evidence_for', return_value={}):
+            result = self.domain._repack_duration_candidate(raw, state, state['available_shots'], allow_same_activity_cuts=True)
+        self.assertEqual(raw['phrases'], result['phrases'])
+
+    def test_mapping_repair_keeps_one_source_when_activity_identity_is_unverified(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['available_shots'] = [
+            {'segment_id': 'A1', 'asset_id': 'source-a', 'source_start_ms': 0,
+             'source_end_ms': 5000, 'target_duration_ms': 5000},
+            {'segment_id': 'A2', 'asset_id': 'source-a', 'source_start_ms': 5000,
+             'source_end_ms': 10000, 'target_duration_ms': 5000},
+            {'segment_id': 'B1', 'asset_id': 'source-b', 'source_start_ms': 0,
+             'source_end_ms': 5000, 'target_duration_ms': 5000},
+        ]
+        phrases = [{'text': '现场结合真机了解部署，再核对地图、网络和路线。',
+                    'shot_ids': ['A1', 'B1']}]
+        with patch.object(self.domain, '_source_evidence_for', return_value={}):
+            coherent, source_changes = cohere_mapping_sources(self.domain, state, phrases)
+            completed, _ = complete_mapping_capacity(self.domain, state, coherent)
+            result = self.domain._repack_duration_candidate(
+                {'title': '部署学习', 'phrases': completed}, state,
+                state['available_shots'], allow_same_activity_cuts=True)
+        self.assertEqual(phrases[0]['text'], result['phrases'][0]['text'])
+        self.assertEqual(['A1', 'A2'], result['phrases'][0]['shot_ids'])
+        self.assertEqual('B1', source_changes[0]['removed_shot_ids'][0])
+        self.assertEqual(['A1', 'B1'], phrases[0]['shot_ids'])
 
     def test_capacity_fill_reserves_unused_footage_without_changing_copy_or_other_groups(self):
         state = self.domain._load(self.batch['batch_id'])
         state['available_shots'] = [{'segment_id': f'S{number}', 'asset_id': 'source-a',
             'source_start_ms': number * 5000, 'source_end_ms': (number + 1) * 5000,
             'target_duration_ms': 5000} for number in range(3)]
-        phrases = [{'text': '现场讲解提到了设备部件、联网和设置，大家可以结合实物了解这些问题。', 'shot_ids': ['S0']},
+        phrases = [{'text': '现场讲解了设备部件、联网和设置。', 'shot_ids': ['S0']},
                    {'text': '带着问题来看看。', 'shot_ids': ['S2']}]
         completed, changes = complete_mapping_capacity(self.domain, state, phrases)
         self.assertEqual(['S0', 'S1'], completed[0]['shot_ids'])
@@ -574,6 +1039,40 @@ class NarratedProductionTests(unittest.TestCase):
             completed, _ = complete_mapping_capacity(self.domain, state, phrases)
         self.assertEqual(['S0', 'S1'], completed[0]['shot_ids'])
         self.assertEqual([p['text'] for p in phrases], [p['text'] for p in completed])
+
+    def test_capacity_fill_uses_explicit_material_context_when_cached_provenance_is_missing(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['material_context'] = '已确认的同场培训'
+        state['available_shots'] = [
+            {'segment_id': 'A1', 'asset_id': 'source-a', 'source_start_ms': 0,
+             'source_end_ms': 5000, 'target_duration_ms': 5000},
+            {'segment_id': 'B1', 'asset_id': 'source-b', 'source_start_ms': 0,
+             'source_end_ms': 5000, 'target_duration_ms': 5000},
+        ]
+        phrases = [{'text': '同一培训现场的长段说明。', 'shot_ids': ['A1']}]
+        with patch.object(self.domain, '_source_evidence_for', return_value={}), \
+             patch.object(self.domain, '_phrase_budget_ms', return_value=9000):
+            completed, _ = complete_mapping_capacity(self.domain, state, phrases)
+        self.assertEqual(['A1', 'B1'], completed[0]['shot_ids'])
+
+    def test_capacity_fallback_moves_whole_unit_instead_of_mixing_unverified_sources(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['available_shots'] = [
+            {'segment_id': f'A{number}', 'asset_id': 'a', 'source_start_ms': number * 5000,
+             'source_end_ms': (number + 1) * 5000, 'target_duration_ms': 5000}
+            for number in range(2)] + [
+            {'segment_id': f'B{number}', 'asset_id': 'b', 'source_start_ms': number * 5000,
+             'source_end_ms': (number + 1) * 5000, 'target_duration_ms': 5000}
+            for number in range(4)]
+        units = [{'unit_id': 'U1', 'text': '第一段。'}, {'unit_id': 'U2', 'text': '第二段。'}]
+        assignments = [{'unit_ids': ['U1'], 'shot_ids': ['A0', 'A1']},
+                       {'unit_ids': ['U2'], 'shot_ids': ['A0', 'A1']}]
+        short_ids = {shot['segment_id']: shot for shot in state['available_shots']}
+        with patch.object(self.domain, '_phrase_budget_ms', return_value=9000):
+            repaired = remap_units_with_source_capacity(self.domain, state, units, assignments, short_ids)
+        self.assertEqual(''.join(unit['text'] for unit in units), ''.join(row['text'] for row in repaired))
+        self.assertEqual([['A0', 'A1'], ['B0', 'B1']], [row['shot_ids'] for row in repaired])
+        self.assertEqual(len({ref for row in repaired for ref in row['shot_ids']}), 4)
 
     def test_provider_retry_receives_errors_beyond_display_truncation(self):
         state = self.domain._load(self.batch['batch_id'])

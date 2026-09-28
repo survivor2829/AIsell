@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveSystemTar } = require("./system-tar.cjs");
 const { treeSha256 } = require("./release-tree-hash.cjs");
 const {
   PRODUCT_DETAIL_EXECUTABLE,
@@ -120,7 +121,7 @@ function normalizeArchiveEntry(entry, expectedRoot = null) {
 }
 
 function runTar(args, timeout = 30000) {
-  return spawnSync("tar.exe", args, {
+  return spawnSync(resolveSystemTar(), args, {
     encoding: "utf8",
     windowsHide: true,
     timeout,

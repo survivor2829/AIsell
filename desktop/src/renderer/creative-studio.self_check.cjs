@@ -6,8 +6,7 @@ const page = fs.readFileSync(path.join(__dirname, "CreativeStudioPage.tsx"), "ut
 const styles = fs.readFileSync(path.join(__dirname, "CreativeStudioPage.css"), "utf8");
 
 for (const contract of [
-  /视频创作中心/u,
-  /开始创作/u,
+  /制作记录/u,
   /制作任务/u,
   /制作任务筛选/u,
   /系统状态/u,

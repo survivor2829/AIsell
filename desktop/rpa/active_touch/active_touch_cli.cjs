@@ -82,7 +82,7 @@ function validateTaskContext(command, baseDir, args) {
     !current ||
     String(current.id) !== context.contactId
   ) {
-    return { error: contextError(command, "task_context_mismatch", "任务当前联系人已变化，已阻断执行器") };
+    return { error: contextError(command, "task_context_mismatch", "任务状态或当前联系人已变化，发送前已安全停止；请检查任务进度后继续") };
   }
   return { context };
 }
@@ -140,7 +140,8 @@ function execute(command, baseDir, args) {
     return clickSearchResultDryRun(baseDir, undefined, undefined, undefined, {
       pid: optionalValueAfter(args, "--expected-pid"),
       hWnd: optionalValueAfter(args, "--expected-hwnd"),
-      minIdleMs: optionalValueAfter(args, "--min-idle-ms")
+      minIdleMs: optionalValueAfter(args, "--min-idle-ms"),
+      captureSearchFailure: args.includes("--capture-search-failure")
     });
   }
   if (command === "input-message-dry-run") return inputMessageDryRun(baseDir, valueAfter(args, "--message"));

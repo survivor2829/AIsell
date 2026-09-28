@@ -6,10 +6,16 @@ const checks = [
   "scripts/run-self-checks.self_check.cjs",
   "scripts/artifact-retention.self_check.cjs",
   "scripts/build-renderer.self_check.cjs",
+  "scripts/dev-electron.self_check.cjs",
   "scripts/wechat-failure-policy-review.self_check.cjs",
   "scripts/wechat-failure-policy-review.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",
   "rpa/active_touch/wechat_window_visual.self_check.cjs",
+  "rpa/active_touch/file_helper_send.self_check.cjs",
+  "rpa/active_touch/wechat_clipboard.self_check.cjs",
+  "rpa/active_touch/wechat_search_observation.self_check.cjs",
+  "rpa/active_touch/wechat_search_input.self_check.cjs",
+  "rpa/active_touch/wechat_render_surface.self_check.cjs",
   "rpa/active_touch/self_check.cjs",
   "rpa/active_touch/moments_visual.self_check.cjs",
   "rpa/active_touch/moments_visual_geometry.self_check.cjs",
@@ -26,6 +32,9 @@ const checks = [
   "rpa/contact_sync/self_check.cjs",
   "src/main/contact-sync-ipc.self_check.cjs",
   "src/main/ai-expert.self_check.cjs",
+  "src/main/product-video.self_check.cjs",
+  "src/main/digital-human.self_check.cjs",
+  "src/main/keyword-acquisition.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",
   "src/main/deepseek-api.self_check.cjs",
@@ -33,6 +42,7 @@ const checks = [
   "src/main/bootstrap.self_check.cjs",
   "src/main/diagnostics.self_check.cjs",
   "src/main/task-passport.self_check.cjs",
+  "src/main/failure-evidence.self_check.cjs",
   "src/main/cloud-maintenance.self_check.cjs",
   "scripts/update-helper.electron.self_check.cjs",
   "scripts/update-helper.e2e.cjs",
@@ -48,6 +58,8 @@ const checks = [
   "src/main/moments-publish-ipc.self_check.cjs",
   "src/main/moments-daily-automation.self_check.cjs",
   "src/main/touch-task-ipc.self_check.cjs",
+  "src/main/touch-message-sequence.self_check.cjs",
+  "src/main/touch-capture-sweep.self_check.cjs",
   "src/main/wechat-workflow.self_check.cjs",
   "src/main/development-sidecar-runtime.self_check.cjs",
   "src/main/product-detail-sidecar.self_check.cjs",
@@ -59,6 +71,8 @@ const checks = [
   "src/main/content-engine-sidecar.self_check.cjs",
   "src/main/remotion-runtime-environment.self_check.cjs",
   "src/main/content-engine-ipc.self_check.cjs",
+  "src/main/content-engine-voice-preview-errors.self_check.cjs",
+  "src/main/narrated-batch-ipc.self_check.cjs",
   "src/main/content-engine-download.self_check.cjs",
   "src/main/bailian-api-key.self_check.cjs",
   "src/main/content-media-protocol.self_check.cjs",
@@ -83,7 +97,8 @@ const checks = [
   "scripts/portable-runtime-dependencies.self_check.cjs",
   "scripts/installer-release.self_check.cjs",
   "scripts/release-capabilities.self_check.cjs",
-  "scripts/customer-edition.self_check.cjs"
+  "scripts/customer-edition.self_check.cjs",
+  "scripts/analyze-diagnostics.self_check.cjs"
 ];
 
 const groupDefinitions = [
@@ -107,16 +122,22 @@ const parallelCheckGroups = groupDefinitions.map(group => ({
 const groupedChecks = new Set(parallelCheckGroups.flatMap(group => group.checks));
 const serialChecks = checks.filter(check => !groupedChecks.has(check));
 
-function runChecks(list) {
+function runChecks(list, execute = spawnSync) {
   for (const check of list) {
     console.log(`\n> ${check}`);
-    const result = spawnSync(process.execPath, [path.join(desktopDir, check)], {
+    const result = execute(process.execPath, [path.join(desktopDir, check)], {
       cwd: desktopDir,
       env: process.env,
-      stdio: "inherit",
+      stdio: ["inherit", "pipe", "inherit"],
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
       windowsHide: true
     });
-    if (result.status !== 0) process.exit(result.status || 1);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.status !== 0) throw result.error || new Error(`self-check failed: ${check} (status ${result.status})`);
+    if (!result.stdout?.split(/\r?\n/u).some(line => /\bpassed\b/iu.test(line))) {
+      throw new Error(`self-check exited 0 without a passed line: ${check}`);
+    }
   }
 }
 
@@ -148,4 +169,4 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { parallelCheckGroups, serialChecks };
+module.exports = { parallelCheckGroups, serialChecks, runChecks };

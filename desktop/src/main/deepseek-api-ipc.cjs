@@ -33,8 +33,8 @@ function registerDeepSeekApiIpc({ keyStore, client, onChanged, ipcMain = electro
   };
 
   ipcMain.handle("deepseek-api:status", () => {
-    const result = { ok: true, data: keyStore.status() };
-    diagnostics().event("deepseek", "key_status", { configured: result.data?.configured === true });
+    const result = { ok: true, data: typeof client.status === "function" ? client.status() : keyStore.status() };
+    diagnostics().event("deepseek", "service_status", { configured: result.data?.configured === true, managed: result.data?.managed === true });
     return result;
   });
   ipcMain.handle("deepseek-api:save", (_event, payload = {}) => {
@@ -42,6 +42,7 @@ function registerDeepSeekApiIpc({ keyStore, client, onChanged, ipcMain = electro
       supplied_key: Boolean(String(payload.apiKey || "").trim())
     });
     try {
+      if (client.isManaged?.()) throw Object.assign(new Error("AI 服务由云端统一提供，客户端无需保存密钥。"), { code: "PROVIDER_GATEWAY_MANAGED" });
       const result = { ok: true, data: keyStore.write(payload.apiKey) };
       operation.end({ ok: true, configured: result.data?.configured === true });
       notifyChanged("saved", result.data?.configured === true);
@@ -65,6 +66,7 @@ function registerDeepSeekApiIpc({ keyStore, client, onChanged, ipcMain = electro
   ipcMain.handle("deepseek-api:delete", () => {
     const operation = diagnostics().begin("deepseek", "key_delete");
     try {
+      if (client.isManaged?.()) throw Object.assign(new Error("AI 服务由云端统一提供，本机历史密钥不会参与调用。"), { code: "PROVIDER_GATEWAY_MANAGED" });
       const result = { ok: true, data: keyStore.clear() };
       operation.end({ ok: true });
       notifyChanged("deleted", false);

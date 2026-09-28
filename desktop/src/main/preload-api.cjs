@@ -168,7 +168,7 @@ function createContentEngineApi(ipcRenderer) {
   }
 
   const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
-  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "samples", "continue"].map((action) => [
+  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "voice-resolve", "samples", "continue"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(
@@ -754,10 +754,15 @@ function createContentEngineApi(ipcRenderer) {
         "content-engine:regenerate-cover",
         { candidateId: String(payload?.candidateId || "") }
       ),
+      updateCoverTitle: (payload) => ipcRenderer.invoke(
+        "content-engine:update-cover-title",
+        { candidateId: String(payload?.candidateId || ""), headlineLines: payload?.headlineLines }
+      ),
       getProject: (payload) => ipcRenderer.invoke(
         "content-engine:get-creative-project",
         { projectId: String(payload?.projectId || "") }
       ),
+      getGenerated: (payload) => ipcRenderer.invoke(CONTENT_ENGINE_CHANNELS.getGeneratedVideo, payload),
       listGenerated: (payload) => ipcRenderer.invoke(
         "content-engine:list-generated-videos",
         {
@@ -803,7 +808,7 @@ function createContentEngineApi(ipcRenderer) {
       ),
       downloadCandidate: (payload) => ipcRenderer.invoke(
         "content-engine:download-candidate",
-        { candidateId: String(payload?.candidateId || "") }
+        { candidateId: String(payload?.candidateId || ""), ...(payload?.variant != null ? { variant: payload.variant } : {}) }
       ),
       reveal: (payload) => ipcRenderer.invoke(
         "content-engine:reveal-generated-video",
@@ -957,8 +962,9 @@ function createPreloadApis(ipcRenderer) {
       getTask: (id) => ipcRenderer.invoke("wechat-workflow:get-task", { id: String(id || "") }),
       cancelTask: (id) => ipcRenderer.invoke("wechat-workflow:cancel-task", { id: String(id || "") }),
       deleteTasks: (ids, unsuccessfulOnly = false) => ipcRenderer.invoke("wechat-workflow:delete-tasks", { ids, unsuccessfulOnly, clickToken: consumeWorkflowSave() }),
-      retryTask: (id) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
-      retrySkipped: (id, contactIds) => ipcRenderer.invoke("wechat-workflow:retry-skipped", { id: String(id || ""), ...(contactIds ? { contactIds } : {}), clickToken: consumeWorkflowSave() }),
+      retryTask: (id, andStart = false) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), andStart, clickToken: andStart ? consumeWorkflowStart() : consumeWorkflowSave() }),
+      retrySkipped: (id, contactIds, andStart = false) => ipcRenderer.invoke("wechat-workflow:retry-skipped", { id: String(id || ""), ...(contactIds ? { contactIds } : {}), andStart, clickToken: andStart ? consumeWorkflowStart() : consumeWorkflowSave() }),
+      retryAllAndStart: () => ipcRenderer.invoke("wechat-workflow:retry-all-and-start", { clickToken: consumeWorkflowStart() }),
       resolveTouchUnknown: (id, resolution) => {
         const click = consumeWorkflowResolution();
         return ipcRenderer.invoke("wechat-workflow:resolve-touch-unknown", {

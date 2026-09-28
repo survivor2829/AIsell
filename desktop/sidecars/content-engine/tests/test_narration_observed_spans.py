@@ -50,3 +50,16 @@ class ObservedSpanTests(unittest.TestCase):
         words = [{'text':c,'begin_time':i*100,'end_time':(i+1)*100} for i,c in enumerate(chars)]
         result = align_narration(text,[{'transcript':recognized,'start_ms':0,'end_ms':len(chars)*100,'metadata':{'words':words}}],len(chars)*100)
         self.assertEqual('phrase',result['source'])
+
+    def test_long_phrase_uses_measured_audio_bounds_for_readable_caption_pages(self):
+        text = ('全品牌开放平台，高仙、普渡、萤石、云象、汤恩、智元、极目行远等等，'
+                '带你入门、教你部署、帮你接单，第5期清洁机器人运维加AI短视频获客实训营。')
+        cues = reference_caption_cues([{'text': text, 'start_ms': 500, 'end_ms': 12_500,
+            'alignment': {'source': 'phrase', 'matched': False, 'sentences': [
+                {'text': text, 'start_ms': 500, 'end_ms': 12_500}]}}])
+        self.assertEqual(text, ''.join(cue['text'] for cue in cues))
+        self.assertEqual((500, 12_500), (cues[0]['start_ms'], cues[-1]['end_ms']))
+        self.assertTrue(all(cue['timing_source'] == 'audio_measured_proportional' for cue in cues))
+        self.assertTrue(all(cue['start_ms'] < cue['end_ms'] for cue in cues))
+        self.assertTrue(all(sum(0.55 if ord(char) < 128 else 1 for char in cue['text'] if not char.isspace()) <= 26
+                            for cue in cues))

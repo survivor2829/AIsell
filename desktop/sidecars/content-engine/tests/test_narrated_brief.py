@@ -14,6 +14,17 @@ class NarratedBriefTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         fixture.setUp()
         self.domain = fixture.s._narrated_batches()
+        approved_voice = self.domain.d._approved_auto_mix_voice_persona
+        def compatible_voice(*args, **kwargs):
+            persona = approved_voice(*args, **kwargs)
+            return {**persona, 'provider': 'volcengine'} if persona else None
+        voice = patch.object(self.domain.d, '_approved_auto_mix_voice_persona',
+                             side_effect=compatible_voice)
+        voice.start()
+        self.addCleanup(voice.stop)
+        tts = patch('content_engine.volcengine_tts.VolcengineTTSProvider')
+        tts.start().return_value.configured = True
+        self.addCleanup(tts.stop)
         self.batch = self.domain.save({'groups': {'middle': fixture.ids}, 'brief_version': 1,
             'target_audience': '物业保洁负责人', 'advantages': '可安排现场试用',
             'customer_pain_points': '担心地面不适用', 'cta': '评论77领取选型表',
@@ -61,6 +72,13 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertNotEqual(previous_hash, narrated_brief.stamp(candidate, cleared))
         with self.assertRaises(ContentEngineError):
             self.domain.save({'batch_id': saved['batch_id'], 'expression': '长' * 14001})
+
+    def test_expression_preserves_explicit_material_context_for_same_shoot(self):
+        text = '这是确认过的完整文案。'
+        saved = self.domain.save({'batch_id': self.batch['batch_id'], 'expression': text,
+                                  'material_context': '清洁机器人培训现场'})
+        self.assertEqual(text, saved['expression'])
+        self.assertEqual('清洁机器人培训现场', saved['material_context'])
 
     def test_legacy_pass_reused_for_identical_words_but_not_changed_context(self):
         candidate = self.candidate('free')
@@ -138,6 +156,7 @@ class NarratedBriefTests(unittest.TestCase):
 
     def test_single_direction_batch_keeps_confirmed_copy_and_framework(self):
         batch = self.domain._load(self.batch['batch_id'])
+        batch['settings']['minimum_duration_seconds'] = 10
         batch['script_options'] = [dict(self.candidate(), candidate_id=f'script-{i}',
             framework=narrated_brief.FRAMEWORK if i == 0 else 'free') for i in range(3)]
         self.domain._store(batch)
@@ -161,6 +180,14 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual(events[0]['reason'], 'narrated_ending_cta')
         with self.assertRaises(ContentEngineError):
             narrated_brief.align_ending_events([{'reason': 'cta', 'text': '评论88领取资料'}], captions)
+
+    def test_long_final_sentence_is_not_truncated_into_a_false_cta(self):
+        long_ending = '现场讲师说明哪些场景能做，哪些场景不能做，' * 4 + '一次讲清！'
+        self.assertEqual('', narrated_brief.ending_overlay('前言。' + long_ending))
+        legacy_items = [{'type': 'hook', 'text': '前言'},
+                        {'type': 'cta', 'text': long_ending}]
+        self.assertEqual([legacy_items[0]], narrated_brief.renderable_visual_items(legacy_items))
+        self.assertEqual('欢迎咨询。', narrated_brief.ending_overlay('前言。欢迎咨询。'))
 
     def test_default_one_draft_repairs_once_and_add_direction_preserves_existing(self):
         batch = copy.deepcopy(self.batch)
@@ -246,6 +273,7 @@ class NarratedBriefTests(unittest.TestCase):
                 state.pop('script_selections', None)
                 state.pop('production_jobs', None)
                 state['script_options'] = [dict(self.candidate('free'), candidate_id=f'draft-{i}') for i in range(count)]
+                state['settings']['minimum_duration_seconds'] = 10
                 self.domain._store(state)
                 queued = self.domain.confirm_script({'batch_id': state['batch_id'], 'selections': [
                     {'script_id': 'draft-0', 'revision': 1, 'count': 1}]})

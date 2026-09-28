@@ -1,3 +1,77 @@
+const crypto = require("node:crypto");
+
+const hash = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
+const EVIDENCE_BOUNDARIES = ["常用", "最常使用", "联系人", "最近联系人", "好友", "搜一搜", "网络搜索", "搜索网络", "搜索网络结果"];
+
+function editDistance(left, right) {
+  const target = [...right];
+  let row = Array.from({ length: target.length + 1 }, (_, index) => index);
+  for (const [index, character] of [...left].entries()) {
+    const next = [index + 1];
+    for (let column = 1; column <= target.length; column += 1) {
+      next[column] = Math.min(next[column - 1] + 1, row[column] + 1,
+        row[column - 1] + (character === target[column - 1] ? 0 : 1));
+    }
+    row = next;
+  }
+  return row[target.length];
+}
+
+function unicodeClass(character) {
+  if (!character) return "empty";
+  if (/\p{Script=Han}/u.test(character)) return "han";
+  if (/\p{L}/u.test(character)) return "letter";
+  if (/\p{N}/u.test(character)) return "number";
+  if (/\p{P}/u.test(character)) return "punctuation";
+  if (/\p{S}/u.test(character)) return "symbol";
+  return "other";
+}
+
+function searchObservationEvidence(observation, identity) {
+  const visual = Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [];
+  const uia = Array.isArray(observation.uiaCandidates) ? observation.uiaCandidates : [];
+  const web = Array.isArray(observation.webSearchCandidates) ? observation.webSearchCandidates : [];
+  const box = (candidate) => {
+    const text = normalized(candidate?.text || candidate?.name || "");
+    const characters = [...text];
+    return {
+      left: Number(candidate?.left), top: Number(candidate?.top), right: Number(candidate?.right), bottom: Number(candidate?.bottom),
+      char_count: characters.length, first_class: unicodeClass(characters[0]), last_class: unicodeClass(characters.at(-1)),
+      boundary_distance: EVIDENCE_BOUNDARIES.map((label) => editDistance(text, label)),
+      starts_with_wechat_id: text.startsWith("微信号"), contains_network_lookup: text.includes("网络查找"),
+      equals_query: text === normalized(identity.query)
+    };
+  };
+  const ocrBoxes = [...visual, ...web].map(box);
+  const candidateSet = [...uia, ...visual, ...web].map(box);
+  const boundaryTops = [...web, ...visual.filter((candidate) => isNetworkSearchLabel(candidate, String(identity.query || "")))]
+    .map((candidate) => Number(candidate?.top)).filter(Number.isFinite);
+  const crop = observation.cropBounds;
+  return {
+    search_mode: identity.queryType === "wechat_id" ? "wechat_id" : "name",
+    capture_source: observation.captureSource === "popup" ? "popup" : "formula_fallback",
+    popup_bounds: observation.popupBounds ? {
+      left: Number(observation.popupBounds.left), top: Number(observation.popupBounds.top),
+      right: Number(observation.popupBounds.right), bottom: Number(observation.popupBounds.bottom)
+    } : null,
+    popup_dpi: Number.isFinite(Number(observation.popupDpi)) && Number(observation.popupDpi) > 0 ? Number(observation.popupDpi) : null,
+    popup_candidate_count: Number.isFinite(observation.popupCandidateCount) ? observation.popupCandidateCount : 0,
+    search_columns: [...visual, ...web].flatMap((line) => (Array.isArray(line.words) ? line.words : [])
+      .filter((word) => normalized(word.text).startsWith("搜"))
+      .map((word) => Number(observation.popupDpi) > 0 && observation.popupBounds
+        ? (Number(word.left) - Number(observation.popupBounds.left)) * 96 / Number(observation.popupDpi) : null))
+      .filter(Number.isFinite),
+    ocr_box_count: ocrBoxes.length,
+    ocr_boxes: ocrBoxes,
+    crop_bounds: crop ? { left: Number(crop.left), top: Number(crop.top), right: Number(crop.right), bottom: Number(crop.bottom) } : null,
+    web_search_top_reported: observation.webSearchTop == null ? null : Number(observation.webSearchTop),
+    web_search_boundary_tops: boundaryTops,
+    web_search_top_detected: boundaryTops.length ? Math.min(...boundaryTops) : null,
+    bottom_gap: crop && ocrBoxes.length ? Number(crop.bottom) - Math.max(...ocrBoxes.map((item) => item.bottom)) : null,
+    candidate_set_hash: hash(JSON.stringify(candidateSet))
+  };
+}
+
 function normalized(value) {
   return String(value ?? "").normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
 }
@@ -187,11 +261,12 @@ function labelledWechatIdCandidates(candidates, query, webSearchTop) {
   });
 }
 
+const NETWORK_SEARCH_LABELS = Object.freeze(["搜一搜", "网络搜索", "搜索网络", "搜索网络结果"]);
+
 function isNetworkSearchLabel(candidate, query) {
   const text = normalized(candidate?.text).replace(/^[^\p{L}\p{N}]{1,2}/u, "");
   const expectedQuery = normalized(query);
-  const labels = ["搜一搜", "网络搜索", "搜索网络", "搜索网络结果"];
-  for (const label of labels) {
+  for (const label of NETWORK_SEARCH_LABELS) {
     if (text === label || (expectedQuery && text === `${label}${expectedQuery}`)) return true;
   }
   return false;
@@ -346,12 +421,12 @@ function uniqueWechatIdLocalSurface(candidates, webCandidate, query) {
   };
 }
 
-function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
+function resolveBaselineObservation(observation = {}, identity = {}) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
     diagnostics: { rule_id, candidate_count: distinctCandidates(observation.uiaCandidates).length,
       visual_candidate_count: Array.isArray(observation.visualCandidates) ? observation.visualCandidates.length : 0,
-      ocr_ok: observation.ocrOk === true }
+      ocr_ok: observation.ocrOk === true, ...(rule_id === "search-r008" ? searchObservationEvidence(observation, identity) : {}) }
   });
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
@@ -482,8 +557,89 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   return reject("search-r015", "exact_search_result_not_found");
 }
 
+const POPUP_NETWORK_LABEL = "搜索网络结果";
+const isUnsafeVisualText = (value) => normalized(value).includes("查找")
+  || (normalized(value).includes("微信号") && !normalized(value).startsWith("微信号"));
+const foldedWechatId = (value) => normalized(value).replace(/[|il1]/gu, "1").replace(/[o0]/gu, "0");
+
+function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
+  const reject = (rule_id, reason = "search_result_identity_unverified") => ({
+    status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
+    diagnostics: { rule_id, candidate_count: 0,
+      visual_candidate_count: (observation.visualCandidates || []).length, ocr_ok: observation.ocrOk === true }
+  });
+  const superstringVeto = (obs, result) => {
+    if (result.status !== "selected" || identity.queryType !== "wechat_id") return result;
+    const query = foldedWechatId(identity.query);
+    const longerId = (obs.visualCandidates || []).some((line) => {
+      const match = normalized(line.text).match(/^微信号[:：]?(.+)$/u);
+      return match && foldedWechatId(match[1]).includes(query) && foldedWechatId(match[1]).length > query.length;
+    });
+    return longerId ? reject("search-r014") : result;
+  };
+  const popup = validRectangle(observation.popupBounds);
+  const dpi = Number(observation.popupDpi);
+  const searchColumns = [];
+  const withEvidence = (decision) => ({ ...decision, diagnostics: { ...decision.diagnostics,
+    capture_source: observation.captureSource === "popup" ? "popup" : "formula_crop",
+    popup_bounds: popup, popup_dpi: popup && Number.isFinite(dpi) && dpi > 0 ? dpi : null,
+    popup_candidate_count: Number.isFinite(observation.popupCandidateCount) ? observation.popupCandidateCount : 0,
+    search_columns: searchColumns.filter(Number.isFinite) } });
+  if (!popup || !Number.isFinite(dpi) || !(dpi > 0)) {
+    const result = superstringVeto(observation, resolveBaselineObservation(observation, identity));
+    return observation.captureSource || Number.isFinite(observation.popupCandidateCount) ? withEvidence(result) : result;
+  }
+
+  const column = (left) => (Number(left) - popup.left) / (dpi / 96);
+  const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])];
+  const visual = [];
+  const web = [];
+  for (const line of all) {
+    const words = Array.isArray(line.words) ? line.words : [];
+    const wordIndex = words.findIndex((_, index) => words.slice(index, index + 6)
+      .map((word) => normalized(word.text)).join("") === POPUP_NETWORK_LABEL);
+    if (wordIndex >= 0) searchColumns.push(column(words[wordIndex].left));
+    const text = normalized(line.text);
+    if (text.endsWith(POPUP_NETWORK_LABEL)) {
+      if ([...text.slice(0, -POPUP_NETWORK_LABEL.length)].length <= 4
+        && wordIndex >= 0 && Math.abs(column(words[wordIndex].left) - 62) <= 8) {
+        web.push({ ...line, text: POPUP_NETWORK_LABEL, left: words[wordIndex].left });
+      } else web.push({ ...line, text: "untrusted_network_boundary" });
+    } else visual.push(line);
+  }
+  const classified = { ...observation, visualCandidates: visual, webSearchCandidates: web,
+    webSearchTop: web.length ? Math.min(...web.map((line) => Number(line.top))) : null };
+  if (web.some((line) => line.text === "untrusted_network_boundary")) return withEvidence(reject("search-r011"));
+  const result = resolveBaselineObservation(classified, identity);
+
+  const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
+  if (!headers.length) {
+    if (result.status === "selected" || (web.length && result.rule_id === "search-r014")) {
+      return withEvidence(reject("search-r015", "exact_search_result_not_found"));
+    }
+    return withEvidence(result);
+  }
+  if (result.status !== "selected") return withEvidence(result);
+  const candidate = result.candidate;
+  const header = headers.filter((line) => Number(line.bottom) <= Number(candidate.top) + 2)
+    .sort((left, right) => Number(right.top) - Number(left.top))[0];
+  if (!header) return withEvidence(reject("search-r014"));
+  if (visual.some((line) => isOtherSearchSection(line.text)
+    && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= Number(candidate.top) + 2)) {
+    return withEvidence(reject("search-r014"));
+  }
+  const sectionEnd = Math.min(classified.webSearchTop ?? Infinity,
+    ...visual.filter((line) => isOtherSearchSection(line.text) && Number(line.top) >= Number(header.bottom) - 2)
+      .map((line) => Number(line.top)));
+  if ([...visual, ...mergeVisualLines(visual.filter((line) => column(line.left) > 60))].some((line) => isUnsafeVisualText(line.text)
+    && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= sectionEnd)) {
+    return withEvidence(reject("search-r014"));
+  }
+  return withEvidence(superstringVeto(classified, result));
+}
+
 function isVerifiedWechatSearchResultMode(mode) {
   return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual"].includes(mode);
 }
 
-module.exports = { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation };
+module.exports = { NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation, searchObservationEvidence };

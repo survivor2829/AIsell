@@ -1,0 +1,156 @@
+# T5 审查结论：打回（修 1 个卡死问题和 3 个主要问题，在同一分支追加）
+
+审查对象：`codex/fix-r008-bounded-recovery`（ac8f68a）
+
+## 已确认做对的部分
+
+- 改动范围符合卡片。resolver 的判定逻辑与基线逐字节一致，只多了证据输出。
+- 要求的 6 个变异（恢复旧 r008 分支、去掉指纹提前跳过、熔断不触发、熔断时跳过第 3 人、第 0 步改回有条件删除、不写 rule_id）全部被自检抓到。另外做了 9 个附加变异，只漏了一个（见下面第 5 条）。
+- 策略门禁（CI 方式）通过。合并版 `check:self` 84 项通过。
+- 证据能从 resolver 一路传到 touch-workflow（resolver → driver → state_machine → CLI → workflow），指纹提前跳过在生产环境也有效。
+
+## 必须修
+
+1. **【卡死】熔断后永远卡在同一个人身上。**
+   - 现象：熔断把第 3 人留作当前联系人，但以下三个值都没有重置：`identity_recovery_attempts`（停在 3 或 1）、`search_evidence.fingerprint`、`identity_skip_streak`（停在 2）。用户点"重新加入 + 启动"后，程序只读一次就立刻再次熔断，没有出路。
+   - 修法：熔断时在任务上记一个标记。用户恢复（任务从 paused 转回 running）时，如果有这个标记：清零 `identity_skip_streak`，把当前联系人的 `identity_recovery_attempts` 置 0，删掉它的 `search_evidence.fingerprint`，然后清掉标记。
+   - 效果：恢复后这个人会完整重走 2/8/20 秒重试；还不行就正常跳过（计数从 1 开始），任务继续往下走。
+   - 用例：连续 3 人都是 r008，熔断，恢复，第 3 人依然 r008。断言恢复后先有 `retryAfterMs 2000`，最终该人 `identity_skipped`，任务继续到第 4 人，没有第二次熔断。
+2. **只让"身份无法确认"触发熔断。**
+   - 现象："搜不到这个人"（`search-r015` / `exact_search_result_not_found`，比如已删好友）也在计数，连续 3 个就会全局停。T5 之前这种情况只是跳过继续。
+   - 修法：只有 `reasonCode === "search_result_identity_unverified"` 才计入连续数，其他跳过既不计数也不清零。
+   - 用例：连续 3 人都是 r015，不会熔断。
+3. **重新加入时清掉旧指纹。**
+   - 修法：在 `retrySkippedWorkflowTask` 里，对被重新加入的行删掉 `search_evidence.fingerprint`。
+   - 用例：补跑时证据与跳过前相同，仍要先走 2 秒重试，不能第一次就跳过。
+   - 同时补上漏掉的那个变异：断言重新加入后 `identity_skip_streak` 为 undefined。
+4. **失败记录每人只写一次。**
+   - 现象：现在每次 r008 尝试都调 `passport.recordFailure`，每人最多 4 次，每次都截图。每天共享的 200 个附件上限，异机约 40 分钟就会用完，之后当天真正的故障（包括 outcome_unknown）都没有截图。
+   - 修法：只在最终跳过或熔断时写一次。
+   - 另外，这张截图拍的是主窗口，看不到下拉框，所以本身证据价值有限；截图方式由 T10b 修。
+
+## 顺手修（小）
+
+5. 文本哈希目前是不加盐的 SHA-256，短名字对照通讯录就能反推出来。`diagnostics.cjs` 的加盐摘要是闭包私有的，RPA 子进程拿不到，所以本卡不改；T10b 会把证据整体换成不含姓名的"形态特征"，并取消文本哈希。本卡只需保证 `candidate_set_hash` 仅用于本机比较指纹。
+6. 新增的两个自检不清理临时目录，补上清理。
+
+## 暂不改（等 T10 之后再定）
+
+熔断时到底"整体暂停等人"还是"只让精准触达冷却几分钟后自动继续"，要等 T10 修好识别之后，看 r008 还剩多少再决定。用户已把这个问题延后。本次修完后的行为是：暂停一次；人工恢复后，这个人完整重试一遍；仍失败就跳过，继续下一个人。
+
+## 二审（1bb3b70）：再修一轮（在同一分支追加提交）
+
+**已做对**
+- 删掉 r008 专门分支、2/8/20 秒重试、指纹提前跳过、熔断、r015 不计数、第 0 步无条件删除，这几项都有测试，而且测试能抓住对应的变异。新测试在 18f2a7d 和 82f248d 上都会失败。
+- resolver 用 20 万条随机观测对比，前后判定零差异，确实只增加了证据。
+- 重新加入图文任务时，不会重发已经发出的文字。
+- T1c、T5、T10a 的合并版：`check:self` 85 项、`build:test` 都通过。
+
+**必须修**
+1. **一审第 4 条在生产环境没做到。**
+   - 现象：每次 r008 重试仍然截图。原因是每次尝试结束时，`sendOperation.end(...)` 按 error 级别写日志；`main.cjs` 把 error 日志转给 `taskPassportStore.observeDiagnostic`，后者对每条 error 都调用 `recordFailure`（截图加 2 个附件）。结果是一个被跳过的联系人实际写了 5 次、15 个附件。自检用的是假 passport，所以看不到这个问题。
+   - 修法：身份失败进入有界重试（返回 pending 和 retryAfterMs）时，以 warn 级别结束 `sendOperation`，或用其他不会触发记录的方式；只在最终跳过或熔断时写一次。
+   - 用例：用真实的 `configureDiagnostics` 和 `createTaskPassportStore`，截图函数换成计数版，断言一个被跳过的 r008 联系人只截图 1 次。
+2. **一审第 1 条换个做法：熔断时直接重置，不用延迟标记。**
+   - 现象：现在的标记在 paused 转回 running 时，作用于当时的当前行。如果用户在熔断后点跳过列表里的"全部重试"或"重试"，当前行会被移到第一个被跳过的人身上，标记就用在了他身上。熔断的那个人还带着旧次数和旧指纹，恢复后要么没有重试就被跳过，要么立刻再次熔断；反复点就会一直循环。
+   - 修法：在熔断分支里、写盘之前，直接把当前人的 `identity_recovery_attempts` 置 0，删掉他的 `search_evidence.fingerprint` 和任务上的 `identity_skip_streak`，并去掉 `identity_circuit_open` 标记。
+   - 用例：熔断后走 `retrySkippedWorkflowTask`，再启动，熔断的那个人完整重试 2/8/20 秒。
+3. **两条测试形同虚设，要改成真能抓住变异。**
+   - 恢复后删指纹：测试在恢复后换了新哈希，所以删不删结果都一样。改法：恢复后第一次读取保持同一个哈希，断言先等 2 秒。
+   - 重新加入后连续数为 undefined：调用这个断言时，连续数早已被一次成功发送清零。改法：在连续数 ≥1 时调用（比如第 2 人刚被跳过），再断言；同时断言下一位 r008 联系人不会触发熔断。
+4. **熔断码的登记要让门禁看得到。**
+   - 现象：`attention(` 和原因码字面量被拆成了两行，门禁的正则匹配不到。把登记删掉，门禁照样通过。
+   - 修法：放回同一行。在用例里断言 `classifyWechatFailureReason` 返回 `known === true` 和 `attentionScope === "global"`。
+5. **"中间任何一人成功，计数清零"要覆盖两种情况。**
+   - 人工核对后确认"已发送"（`resolveUnknownWorkflowTask` 选 sent），也要清零。
+   - 已通过身份核验、但在发送前因其他原因被跳过的人，也要清零，因为他证明了搜索是正常的。
+6. **图文任务：文字已发出、图片段因 r008 被跳过。**
+   - 跳过记录和 run-bill 要标明"部分已发送"，界面上不要显示成"身份不唯一，已跳过"。
+   - 某一段通过身份核验并发送成功后，清掉该行的旧指纹，避免图片段第一次失败就被提前跳过。
+   - 补一个"文字已发、图片 r008"的用例。现在的图文用例走不到图片段。
+7. **非身份类的跳过不要沿用旧的 rule_id。** 上一次 r008 留下的 `search_evidence.rule_id` 会被带到后面的非身份类跳过上，run-bill 就会把它算成 r008。
+
+**不改**：未加盐的哈希留给 T10b。本轮复核发现，真正能被反推的是每个文字框的 `text_hash`，而不是 `candidate_set_hash`。T10b 会统一处理，所以先发布 T5 可以接受。
+
+## 三审（ab4872b）：再修一轮，都是小项（同一分支追加提交）
+
+**已做对**：二审第 2、3、4、5 条全部到位，而且故意改坏代码时测试都能发现。
+- 熔断时当场重置，不再用延迟标记。
+- 之前两条"什么也没测到"的测试，现在能发现问题了。
+- 熔断码的登记已经放回同一行，门禁能检查到。
+- 人工确认"已发送"之后，连续失败计数会清零。
+
+另外：
+- 一个被跳过的 r008 联系人，在真实接线下只截图 1 次（之前是 5 次）。
+- 重新加入图文任务时，已发出的文字不会重发。
+- 合并版 `check:self` 85 项、`build:test` 都通过。
+
+**必须修**
+1. **其他"身份无法确认"的跳过，现在一条失败记录都没有。** 这次把所有 `search_result_identity_unverified` 的日志都降成了 warn，但最终跳过时补记的那一次，只对 search-r008 生效。所以 r014、r007、r011 等规则被跳过的联系人，passport 里什么都没留下（T5 之前每人有 4 条）。
+   - 修法：最终跳过时补记的条件，改为 `reasonCode === "search_result_identity_unverified"`，任何规则号都算。
+   - 用例：用真实接线跑一个被跳过的 r014 联系人，断言正好截图 1 次；再断言 r015 等非身份类跳过仍按原来的 error 级别记录。
+2. **图文任务里某一段发出成功后：**
+   - 除了清掉旧指纹，还要把 `identity_recovery_attempts` 也清零，让图片段拿到完整的 2/8/20 秒重试；
+   - 补上用例：文字段先遇到 r008、哈希为 H，然后发出成功；图片段也遇到 r008、哈希同样为 H。断言图片段会重试，而不是马上被跳过；断言连续计数为 undefined；断言文字只发了 1 次。
+   - 现在去掉"成功段清指纹"或 `newlyVerifiedPart` 条件，自检照样通过，说明没有测试在守这条逻辑。
+3. **"部分已发送"要在每个出口都一致。** 每一步开始时，先按 `message_parts` 算一次"是否已有段发出"，然后在所有跳过出口统一套用到 `deliveryStatus`、`send_attempted`、原因文字和 run-bill 上。跳过出口包括：身份跳过、联系人快照变化、图片点击前超时、熔断。
+4. **旧的 r008 规则号还会漏进 run-bill**，出现在两处：联系人快照变化，和人工把"结果不明"标为"跳过"。修法：run-bill 只在跳过原因属于"搜索身份类"时才写规则号。
+5. **界面文字**（同意 Codex 的异议，扩大允许范围）：允许修改 `desktop/src/renderer/WechatWorkflow.tsx`，但只改部分已发送那一行的状态文字，例如"部分已发送（文字已发出，图片未发）"，不改其他逻辑。
+
+## 四审（abaf286）：最后一轮小修（同一分支追加提交）
+
+**已做对**：
+- 三审第 1、2、4、5 条都做到了，每一条故意改坏代码后都有测试失败。
+- 任何规则的"身份无法确认"跳过，都只记 1 条失败记录、截 1 张图。
+- 图片段能拿到完整的重试次数。
+- 新测试在 5ee347f 上都会失败。
+- 与 T10a、T11 的合并版：`check:self` 和 `build:test` 都通过。
+
+**必须修**
+1. **【回归】** run-bill 去掉了 `status === "sent_verified" ? ""` 这层保护。结果是：一个人因 r008 被跳过，重新加入后发送成功，统计里仍记了 1 次 r008。
+   - 修法：把这层保护加回来，和"只有身份类原因才写规则号"的新条件同时生效。
+   - 同一处还有一个老问题：`search_result_not_opened` 和 `customer_conversation_not_found` 也会沿用旧的 r008。修法是规则号只取本次失败自己的 `rule_id`。
+   - 用例：跳过 → 重新加入 → 发送成功，断言 `rule_counts` 为空。
+2. **"结果未知"的手动跳过，不要当成"部分已发送"。**
+   - 现象：文字已发出、图片结果未知时，用户选"无法确认，跳过"，界面却显示"部分已发送（后续内容未发）"。其实图片可能已经发出去了，操作员如果信了这句话、手动再发一次，客户就会收到重复的图片。
+   - 修法：去掉这个分支里的 `skippedDelivery`，恢复 5ee347f 的行为：`send_attempted` 保持 null，run-bill 的原因码保持 `outcome_unknown`。如果要提示"文字已发出"，改用"部分已发送，后续结果未知"。
+   - 用例：锁定上面这几点。
+3. **"部分已发送"在其他出口的测试**：联系人快照变化、图片点击前超时、熔断、环境失败、可恢复类失败，每个出口至少 1 条断言。要求审查脚本 `scratch/t5r3-spec/mutations-r3.json` 里的 M3a、b、d、e、f、g、j 全部被测试发现。
+4. **证据接线**：对非 r008 的身份类失败，也保留 resolver 诊断里的数字和枚举字段：`capture_source`、`popup_bounds`、`popup_dpi`、`search_columns`、`popup_candidate_count`，去掉非有限值。这些字段写进 search_evidence 和 passport，好让异机出问题时能判断下拉框的定位和"搜"字位置对不对。用例用构造的诊断数据。
+5. 小项：
+   - "连续计数为 undefined"这条断言永远不会失败，改成先让计数 ≥1，再断言它被清零。
+   - 界面文字按第 2 条同步修改。
+
+**自测**：提交前，先用审查脚本在自己的工作区跑一遍，确认全部被发现：
+- 变异：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t5r3-spec\mutate.cjs`，配 `mutations-r3.json`；
+- 出口探针：同目录下的 `probe-item3-*.cjs`。
+
+## 五审（5cfe222）：只剩 1 处隐私回归，修完即可合并（同一分支追加提交）
+
+**已做对**：
+- 四审 5 条都已落实，新测试在 78e0b76（与 abaf286 内容相同）上失败、在 5cfe222 上通过。
+- M3a/b/d/e/f/g/j 全部被测试发现（M3g、M3j 按新语义改写后也被发现）。
+- 跳过 → 重新加入 → 发送成功：纯文字和图文两种情况的 `rule_counts` 都是 `{}`。
+- "结果未知"手动跳过：`send_attempted` 为 null，不可重试，run-bill 为 `{"outcome_unknown":1}`。
+- `check:self` 84 项和 `build:test` 都通过；没有删掉任何安全保护或测试。
+
+**必须修**
+1. **【回归，隐私】r008 把联系人可读文字写进了任务状态、passport 和熔断诊断。**
+   - 位置：`touch-workflow.cjs:437` 把 `state.search_evidence` 整体并进 `searchDiagnostics`，`:443` 的 r008 分支又整体展开了 `...searchDiagnostics`。
+   - `state.search_evidence` 带有 `ocr_observation`（`wechat_window_driver.cjs:2235`，其中 `visual_lines[].text` 是下拉框里的联系人姓名）。r008 时这些原文会写进任务行的 `search_evidence`、passport `recordFailure` 附件和熔断提醒的诊断数据。这违反卡片第 4 条"不含可读的联系人文字，只存哈希"。
+   - 修法：r008 分支也不要整体展开，只取 `rule_id`、`candidate_set_hash`、`fingerprint` 和 `finiteSearchEvidence` 白名单里的字段。
+   - 用例：构造一个 state，其 `search_evidence.ocr_observation` 里带有中文姓名，走 r008，断言任务行、passport 附件、熔断诊断里都搜不到这个姓名。去掉修复后测试必须失败。
+2. 小项（顺手）：
+   - r008 路径下的非有限 `popup_dpi` 目前不会被去掉（因为先展开了原始数据），第 1 条修完后自然解决，请补 1 条断言。
+   - `capture_source` 只允许枚举值，请补 1 条断言。
+
+**T10a 变基时注意**：T10a 把 `popup_candidate_count` 放在 `searchEvidence.ocr_observation` 里，而 `finiteSearchEvidence` 只读顶层字段，真实运行时这个字段取不到。T10a 变基时，把它提到 `searchEvidence` 顶层（只放数字）。
+
+**自测**：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t5r4\probe-r008-plaintext-leak.cjs`，用法 `node probe-r008-plaintext-leak.cjs <你的工作区>`，三项都必须输出 false。变异用同目录的 `mutate.cjs mutations-r4.json`，并用环境变量 `WT=<你的工作区>` 指定工作区，M5g、M5b、M5f 都必须被发现。
+
+## 六审（b35b45a）：通过，已合并（2026-09-24，合并提交 `fe37554`）
+
+- 隐私回归已修：r008 和 r014 两种情况下，任务行、passport、熔断诊断里都查不到联系人姓名原文。把旧写法（整体展开）放回去，新测试会失败（M5i）。
+- 变异 26 个，抓到 23 个。M4d、M4f 与原代码行为等价，不算问题。唯一的缺口是 M5j：非 r008 分支如果也改成整体展开，测试发现不了。这是只缺测试，已由 Claude 在基线上补上：隐私用例对 r014 也跑一遍，补上后 M5j 能被发现。
+- 独立工作树 `check:self` 和 `build:test` 都通过。与 T9a 合并后的版本 `check:self` 87 项、`build:test` 也都通过。
+- 下一步：T10a 基于本次合并变基，并按三审修改；同时把 `popup_candidate_count` 提到 `searchEvidence` 顶层（见五审"T10a 变基时注意"）。

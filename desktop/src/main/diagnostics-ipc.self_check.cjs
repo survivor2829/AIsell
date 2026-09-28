@@ -41,8 +41,14 @@ async function main() {
   const autoReplyDir = path.join(root, "auto_reply_runtime");
   const destination = path.join(root, "diagnostics.zip");
   const logger = createLogger(logsDir);
-  const current = Buffer.from('{"event":"current"}\n', "utf8");
-  const archived = Buffer.from('{"event":"archived"}\n', "utf8");
+  const current = Buffer.from('{"event":"current"}\n' + JSON.stringify({
+    ts: "2026-09-23T01:00:00.000Z", run_id: "12345678-1234-1234-1234-123456789012", seq: 3,
+    event: "send_stage", details: { window_wechat_version: "4.1.15.13", wechat_version: { present: false } }
+  }) + "\n", "utf8");
+  const archived = Buffer.from('{"event":"archived"}\n' + JSON.stringify({
+    ts: "2026-09-22T01:00:00.000Z", run_id: "12345678-1234-1234-1234-123456789012", seq: 2,
+    event: "contact_sync", details: { wechat_version: "4.1.13.65" }
+  }) + "\n", "utf8");
   const autoReplyCurrent = Buffer.from([
     JSON.stringify({
       v: 1,
@@ -131,14 +137,16 @@ async function main() {
   fs.writeFileSync(path.join(passportDir, "events.jsonl"), passportEvent);
 
   let spawnCalls = 0;
+  let saveDefaultPath = "";
   const ipcHandlers = new Map();
   const electron = {
     app: {
       getAppPath: () => root,
-      getPath: () => root
+      getPath: () => root,
+      getVersion: () => "1.1.54"
     },
     dialog: {
-      showSaveDialog: async () => ({ canceled: false, filePath: destination })
+      showSaveDialog: async (settings) => { saveDefaultPath = settings.defaultPath; return { canceled: false, filePath: destination }; }
     },
     ipcMain: { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
     shell: { openPath: async () => "" }
@@ -245,9 +253,15 @@ async function main() {
       app: electron.app,
       dialog: electron.dialog,
       logger,
-      autoReplyDir
+      autoReplyDir,
+      appInfo: { version: "1.1.54", edition: "development", data_profile: "test", build_id: "build-1", build_commit: "abcdef0", source_dirty: false, packaged: false },
+      component: { version: "1.1.54", id: "a".repeat(64), healthy: true },
+      screen: { getPrimaryDisplay: () => ({ id: 1 }), getAllDisplays: () => [{ id: 1, label: "private-monitor-label",
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 }, scaleFactor: 1.25, rotation: 0, internal: false }] },
+      getFeedbackLatest: () => ({ id: "12345678-1234-1234-1234-123456789012", createdAt: "2026-09-23T01:01:00.000Z", delivery: "sent", status: "resolved", text: "private-feedback-text" })
     });
     assert.equal(exported.ok, true, "diagnostic export must not depend on PowerShell or Compress-Archive");
+    assert.match(saveDefaultPath, /1\.1\.54-test-诊断日志/u);
     assert.equal(spawnCalls, 0, "diagnostic export must stay inside the packaged Node runtime");
 
     const archive = await JSZip.loadAsync(fs.readFileSync(destination), { checkCRC32: true });
@@ -287,8 +301,35 @@ async function main() {
     ]);
     assert.equal("logDirectory" in summary.diagnostics, false);
     assert.equal("logFile" in summary.diagnostics, false);
+    assert.deepEqual([summary.app.version, summary.app.edition, summary.app.data_profile, summary.app.component.id],
+      ["1.1.54", "development", "test", "a".repeat(64)]);
+    assert.equal(summary.wechat.version, "4.1.15.13");
+    assert.deepEqual(summary.wechat.versions_seen.map((item) => item.version), ["4.1.13.65", "4.1.15.13"]);
+    assert.equal(summary.display.displays[0].scale_factor, 1.25);
+    assert.equal(summary.feedback_latest.delivery, "sent");
+    assert.equal(summary.log_coverage.runs[0].rotated_prefix, true);
+    assert.doesNotMatch(summaryText, /private-monitor-label|private-feedback-text/u);
 
-    const replacement = Buffer.from('{"event":"replacement"}\n', "utf8");
+    const invalidInfo = await exportBundle({ app: electron.app, dialog: electron.dialog, logger, autoReplyDir,
+      appInfo: { version: "private-version", edition: "private-edition", data_profile: "private-profile",
+        build_commit: "C:\\Users\\private-path", build_id: "private/path" },
+      component: { version: "1.1.54", id: "private/component", healthy: true },
+      getFeedbackLatest: () => ({ id: "12345678-1234-1234-1234-123456789012",
+        createdAt: "2026-09-23T01:01:00.000Z", delivery: "private-delivery", status: "private/status", text: "private-feedback-text" }) });
+    assert.equal(invalidInfo.ok, true);
+    const invalidSummary = JSON.parse(await (await JSZip.loadAsync(fs.readFileSync(destination))).file("summary.json").async("string"));
+    assert.equal(invalidSummary.app.build_commit, null);
+    assert.equal(invalidSummary.app.build_id, null);
+    assert.equal(invalidSummary.app.component.id, null);
+    assert.equal(invalidSummary.app.version, null);
+    assert.equal(invalidSummary.app.edition, null);
+    assert.equal(invalidSummary.feedback_latest.delivery, null);
+    assert.equal(invalidSummary.feedback_latest.status, null);
+    assert.doesNotMatch(JSON.stringify(invalidSummary.app), /private-path|private-profile/u);
+
+    const replacementRun = "22345678-1234-1234-1234-123456789012";
+    const replacement = Buffer.from(`${JSON.stringify({ ts: "2026-09-23T01:00:00.000Z",
+      run_id: replacementRun, seq: 1, event: "replacement" })}\n`, "utf8");
     fs.writeFileSync(path.join(logsDir, "diagnostics.jsonl"), replacement);
     const replaced = await exportBundle({
       app: electron.app,
@@ -299,6 +340,9 @@ async function main() {
     assert.equal(replaced.ok, true, "a verified archive must atomically replace an older destination");
     const replacedArchive = await JSZip.loadAsync(fs.readFileSync(destination), { checkCRC32: true });
     assert.deepEqual(await replacedArchive.file("diagnostics.jsonl").async("nodebuffer"), replacement);
+    const replacedSummary = JSON.parse(await replacedArchive.file("summary.json").async("string"));
+    assert.equal(replacedSummary.log_coverage.runs.find((run) => run.run_id === replacementRun).rotated_prefix, false,
+      "a run beginning at seq 1 has not lost its prefix to rotation");
 
     const missingAutoReply = await exportBundle({
       app: electron.app,
@@ -338,6 +382,31 @@ async function main() {
       knownGood,
       "a failed replacement must preserve the previous diagnostic archive"
     );
+    if (process.env.XIAOXI_DIAGNOSTICS_BENCHMARK === "1") {
+      const benchRoot = path.join(root, "bench");
+      const benchLogs = path.join(benchRoot, "logs");
+      const benchZip = path.join(benchRoot, "benchmark.zip");
+      fs.mkdirSync(benchLogs, { recursive: true });
+      const rows = Array.from({ length: 1300 }, (_, index) => JSON.stringify({
+        ts: "2026-09-23T01:00:00.000Z", run_id: "12345678-1234-1234-1234-123456789012",
+        seq: index + 1, event: "send_stage", details: { stage: "fixture", padding: "x".repeat(3300),
+          nonce: Array.from({ length: 8 }, (_, part) => sha256(`${index}:${part}`)).join("").slice(0, 500) }
+      }) + "\n").join("");
+      const block = Buffer.from(rows.repeat(Math.ceil(5 * 1024 * 1024 / Buffer.byteLength(rows))), "utf8").subarray(0, 5 * 1024 * 1024);
+      for (let index = 0; index < 20; index += 1) fs.writeFileSync(path.join(benchLogs, `diagnostics.jsonl${index ? `.${index}` : ""}`), block);
+      const beforeRss = process.memoryUsage().rss;
+      let peakRss = beforeRss;
+      const monitor = setInterval(() => { peakRss = Math.max(peakRss, process.memoryUsage().rss); }, 10);
+      const startedAt = performance.now();
+      let benchResult;
+      try {
+        benchResult = await exportBundle({ app: electron.app, dialog: { showSaveDialog: async () => ({ canceled: false, filePath: benchZip }) },
+          logger: createLogger(benchLogs), appInfo: { version: "1.1.54", data_profile: "test" } });
+      } finally { clearInterval(monitor); }
+      peakRss = Math.max(peakRss, process.memoryUsage().rss);
+      assert.equal(benchResult.ok, true, benchResult.error);
+      console.log(`diagnostics export benchmark: ms=${Math.round(performance.now() - startedAt)} rss_before=${beforeRss} rss_peak_sampled=${peakRss} zip_bytes=${fs.statSync(benchZip).size}`);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

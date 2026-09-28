@@ -220,7 +220,7 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": ""}):
             with self.assertRaises(ContentEngineError) as error:
                 domain.preview_auto_mix_voice_persona(persona_id)
-            self.assertEqual("volcengine_tts_not_configured", error.exception.code)
+            self.assertEqual("provider_gateway_unavailable", error.exception.code)
         self.assertEqual([], self.analyzer.calls)
         with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": "offline-test"}), \
                 mock.patch("content_engine.creative_domain.voice_preview_ffmpeg", return_value="fake-ffmpeg"), \
@@ -790,6 +790,7 @@ class AutoMixVoiceCacheIntegrityTests(unittest.TestCase):
         self.service.creative_domain.analyzer = analyzer
         persona = {
             "id": "verified-cache@1",
+            "provider": "bailian",
             "catalog_version": "test-catalog-v1",
             "provider_model": "cosyvoice-v3.5-plus",
             "provider_voice_id": "private-provider-voice",
@@ -828,15 +829,13 @@ class AutoMixVoiceMigrationTests(unittest.TestCase):
                 start_background_jobs=False,
             )
             listed = service.list_auto_mix_voice_personas()["items"]
-            self.assertEqual(4, len(listed))
-            self.assertTrue(
-                all(
-                    item["provisioningStatus"] == "not_created"
-                    and item["previewStatus"] == "not_ready"
-                    and item["approvalStatus"] == "pending"
-                    for item in listed
-                )
-            )
+            configured = {item["persona_id"]: item for item in configured_voice_personas({})}
+            self.assertEqual(set(configured), {item["voicePersonaId"] for item in listed})
+            for item in listed:
+                expected = "ready" if configured[item["voicePersonaId"]].get("provider_voice_id") else "not_created"
+                self.assertEqual(expected, item["provisioningStatus"])
+                self.assertEqual("not_ready", item["previewStatus"])
+                self.assertEqual("pending", item["approvalStatus"])
             encoded = json.dumps(listed, ensure_ascii=False)
             self.assertNotIn("provider_voice", encoded)
             self.assertNotIn("voice_prompt", encoded)

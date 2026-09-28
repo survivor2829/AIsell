@@ -55,6 +55,7 @@ RestartSec=3
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
+ReadWritePaths=/var/lib/ai-provider-gateway
 ProtectHome=true
 PrivateTmp=true
 MemoryMax=512M

@@ -20,16 +20,31 @@ PY
 backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup"
 cp -p "$app_dir/service.py" "$backup/service.py"
+override_dir=/etc/systemd/system/ai-provider-gateway.service.d
+override_file="$override_dir/20-operation-receipts.conf"
+if [ -e "$override_file" ]; then
+  cp -p "$override_file" "$backup/20-operation-receipts.conf"
+fi
 
 rollback() {
   echo 'Provider gateway update failed; restoring previous code.' >&2
   install -m 644 "$backup/service.py" "$app_dir/service.py"
+  if [ -e "$backup/20-operation-receipts.conf" ]; then
+    install -m 644 "$backup/20-operation-receipts.conf" "$override_file"
+  else
+    rm -f "$override_file"
+  fi
+  systemctl daemon-reload
   systemctl restart ai-provider-gateway || true
 }
 
 systemctl stop ai-provider-gateway
 trap rollback EXIT
 install -m 644 "$source_dir/service.py" "$app_dir/service.py"
+install -d -m 755 "$override_dir"
+printf '%s\n' '[Service]' 'ReadWritePaths=/var/lib/ai-provider-gateway' > "$override_file"
+chmod 644 "$override_file"
+systemctl daemon-reload
 systemctl start ai-provider-gateway
 python3 - <<'PY'
 import json

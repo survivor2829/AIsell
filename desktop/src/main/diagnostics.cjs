@@ -7,7 +7,7 @@ const { sanitizeVisualSendReceipt } = require("../shared/visual-send-receipt.cjs
 const { sanitizeFailureDiagnostics } = require("../shared/failure-diagnostics.cjs");
 
 const MAX_BYTES = 5 * 1024 * 1024;
-const MAX_ARCHIVES = 5;
+const MAX_ARCHIVES = 19;
 const MAX_DEPTH = 4;
 const MAX_ARRAY = 20;
 const MAX_OBJECT_KEYS = 40;
@@ -202,13 +202,13 @@ function boundedDetails(details, salt) {
   }
 }
 
-function rotate(file) {
-  if (!fs.existsSync(file) || fs.statSync(file).size < MAX_BYTES) return;
-  for (let index = MAX_ARCHIVES; index >= 1; index -= 1) {
+function rotate(file, maxBytes, maxArchives) {
+  if (!fs.existsSync(file) || fs.statSync(file).size < maxBytes) return;
+  for (let index = maxArchives; index >= 1; index -= 1) {
     const source = index === 1 ? file : `${file}.${index - 1}`;
     const destination = `${file}.${index}`;
     if (!fs.existsSync(source)) continue;
-    if (index === MAX_ARCHIVES) fs.rmSync(destination, { force: true });
+    if (index === maxArchives) fs.rmSync(destination, { force: true });
     replaceWithRetry(source, destination);
   }
 }
@@ -226,7 +226,11 @@ function readRecent(file, limit = 100) {
   }
 }
 
-function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date() } = {}) {
+function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(),
+  maxBytes = MAX_BYTES, maxArchives = MAX_ARCHIVES } = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || !Number.isSafeInteger(maxArchives) || maxArchives < 1) {
+    throw new TypeError("invalid_diagnostic_retention");
+  }
   const logsDir = path.join(String(rootDir || ""), "logs");
   const logFile = path.join(logsDir, "diagnostics.jsonl");
   const installFile = path.join(logsDir, "install-id");
@@ -302,7 +306,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
               recovered_code: recoveredCode
             }, salt)
           };
-          rotate(logFile);
+          rotate(logFile, maxBytes, maxArchives);
           fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
           sequence += 1;
           publish(entry);
@@ -336,7 +340,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       for (const key of Object.keys(entry)) {
         if (entry[key] === "" || entry[key] === undefined) delete entry[key];
       }
-      rotate(logFile);
+      rotate(logFile, maxBytes, maxArchives);
       fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
       sequence += 1;
       if (ACTIONABLE_LEVELS.has(level)) rememberFault(module, faultSignature);

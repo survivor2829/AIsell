@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import json
 import shutil
 import sys
+import time
 import unittest
 from unittest import mock
 import uuid
@@ -21,6 +22,7 @@ from content_engine.creative_analysis import (  # noqa: E402
 from content_engine.auto_mix_v2 import build_material_timeline  # noqa: E402
 from content_engine.creative_domain import CreativeDomain  # noqa: E402
 from content_engine.database import Database  # noqa: E402
+from content_engine.errors import ContentEngineError  # noqa: E402
 
 
 class OfflineCloudClient:
@@ -45,6 +47,31 @@ class CreativeVisualSignalTests(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_ffmpeg_watchdog_allows_progress_and_kills_inactive_process(self):
+        self.assertIsNone(
+            FFmpegCreativeAnalyzer._command_with_inactivity_watchdog(
+                [sys.executable, "-c", "print('progress', flush=True)"], 1
+            )
+        )
+        started = time.monotonic()
+        with self.assertRaises(ContentEngineError) as error:
+            FFmpegCreativeAnalyzer._command_with_inactivity_watchdog(
+                [sys.executable, "-c", "import time; time.sleep(10)"], 1
+            )
+        self.assertEqual("analysis_stalled", error.exception.code)
+        self.assertLess(time.monotonic() - started, 5)
+
+        stderr_only = (
+            "import sys,time\n"
+            "for _ in range(12):\n"
+            " print('diagnostic', file=sys.stderr, flush=True); time.sleep(.2)\n"
+        )
+        with self.assertRaises(ContentEngineError) as stderr_error:
+            FFmpegCreativeAnalyzer._command_with_inactivity_watchdog(
+                [sys.executable, "-c", stderr_only], 1
+            )
+        self.assertEqual("analysis_stalled", stderr_error.exception.code)
 
     def test_local_frame_evidence_detects_black_blur_and_real_visual_content(self):
         black = FFmpegCreativeAnalyzer._frame_visual_evidence(bytes(64 * 64))
@@ -108,15 +135,19 @@ class CreativeVisualSignalTests(unittest.TestCase):
 
         def fake_ffmpeg(args, **_kwargs):
             calls.append(list(args))
-            output = Path(args[-1])
-            output.parent.mkdir(parents=True, exist_ok=True)
             if "rawvideo" in args:
-                if output.name == "visual-evidence.gray":
+                outputs = [Path(item) for item in args if str(item).endswith(".gray")]
+                for output in outputs:
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                if len(outputs) == 1 and outputs[0].name == "visual-evidence.gray":
                     frame_count = int(args[args.index("-frames:v") + 1])
-                    output.write_bytes(checkerboard() * frame_count)
+                    outputs[0].write_bytes(checkerboard() * frame_count)
                 else:
-                    output.write_bytes(checkerboard())
+                    for output in outputs:
+                        output.write_bytes(checkerboard())
             else:
+                output = Path(args[-1])
+                output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"media-fixture")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -145,15 +176,18 @@ class CreativeVisualSignalTests(unittest.TestCase):
 
         self.assertGreater(len(outcome["segments"]), 0)
         self.assertEqual(6, len(outcome["segments"]))
-        proxy_command = next(command for command in calls if command[-1].endswith("proxy.mp4"))
-        self.assertEqual("h264_mf", proxy_command[proxy_command.index("-c:v") + 1])
-        self.assertEqual("50", proxy_command[proxy_command.index("-quality") + 1])
-        self.assertNotIn("libx264", proxy_command)
-        evidence_command = next(command for command in calls if command[-1].endswith("visual-evidence.gray"))
-        self.assertEqual(
-            str(self.root / "data" / "analysis-temp" / "task-one" / "asset-one" / "proxy.mp4"),
-            evidence_command[evidence_command.index("-i") + 1],
+        self.assertFalse(
+            any(command[-1].endswith("proxy.mp4") for command in calls),
+            "V2 analysis must not transcode the full source into a 30 fps proxy",
         )
+        evidence_commands = [
+            command for command in calls
+            if any(str(item).endswith(".gray") for item in command)
+        ]
+        self.assertEqual(1, len(evidence_commands), "nearby timestamp seeks should share one FFmpeg process")
+        self.assertEqual(15, evidence_commands[0].count("-ss"))
+        self.assertEqual(15, evidence_commands[0].count("-i"))
+        self.assertEqual(15, sum(str(item).endswith(".gray") for item in evidence_commands[0]))
         for segment in outcome["segments"]:
             metadata = segment["metadata"]
             self.assertEqual(LOCAL_VISUAL_SIGNAL_VERSION, metadata["visual_signal_version"])
@@ -286,15 +320,11 @@ class CreativeVisualSignalTests(unittest.TestCase):
 
         def fake_ffmpeg(args, **_kwargs):
             calls.append(list(args))
-            output = Path(args[-1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            frame_count = int(args[args.index("-frames:v") + 1])
-            output.write_bytes(
-                b"".join(
-                    checkerboard(brighten=index % 2)
-                    for index in range(frame_count)
-                )
-            )
+            outputs = [Path(item) for item in args if str(item).endswith(".gray")]
+            for output in outputs:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                index = int(output.stem.rsplit("-", 1)[-1])
+                output.write_bytes(checkerboard(brighten=index % 2))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         analyzer = FFmpegCreativeAnalyzer(
@@ -308,8 +338,13 @@ class CreativeVisualSignalTests(unittest.TestCase):
             self.root / "long-source.mp4", self.root / "bulk", duration_ms
         )
 
-        self.assertEqual(1, len(calls))
-        self.assertIn("fps=fps=1/2:start_time=0", calls[0][calls[0].index("-vf") + 1])
+        self.assertEqual(8, len(calls))
+        self.assertTrue(all("-ss" in command for command in calls))
+        self.assertTrue(all(command[command.index("-i") + 1] == str(self.root / "long-source.mp4")
+                            for command in calls))
+        self.assertEqual("0.000", calls[0][calls[0].index("-ss") + 1])
+        last_seek = max(index for index, value in enumerate(calls[-1]) if value == "-ss")
+        self.assertEqual("244.000", calls[-1][last_seek + 1])
         self.assertEqual(123, len(evidence_frames))
         thumbnails = [
             {"timestamp_ms": round(duration_ms * (index + 1) / 13)}
@@ -356,6 +391,39 @@ class CreativeVisualSignalTests(unittest.TestCase):
             self.assertIsNotNone(segment["metadata"]["content_signature"])
         self.assertEqual("开场事实", segments[0]["transcript"])
         self.assertEqual("结尾事实", segments[-1]["transcript"])
+
+    def test_v2_evidence_tolerates_one_seek_failure_but_rejects_sparse_results(self):
+        failures = {3}
+
+        def flaky_ffmpeg(args, **_kwargs):
+            indexes = [round(float(args[index + 1]) * 1000) // 2_000
+                       for index, value in enumerate(args) if value == "-ss"]
+            if any(index in failures for index in indexes):
+                raise ContentEngineError("analysis_failed", "fixture seek failed")
+            outputs = [Path(item) for item in args if str(item).endswith(".gray")]
+            for index, output in zip(indexes, outputs):
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(checkerboard(brighten=index % 2))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        analyzer = FFmpegCreativeAnalyzer(
+            self.root / "data",
+            ffmpeg_path="ffmpeg-fixture",
+            cloud_client=OfflineCloudClient(),
+            command_runner=flaky_ffmpeg,
+        )
+        frames = analyzer._extract_visual_evidence_frames(
+            self.root / "source.mp4", self.root / "one-miss", 20_000
+        )
+        self.assertEqual(9, len(frames))
+
+        failures.update({1, 5})
+        self.assertEqual(
+            [],
+            analyzer._extract_visual_evidence_frames(
+                self.root / "source.mp4", self.root / "too-sparse", 20_000
+            ),
+        )
 
     def test_v1_keeps_asr_sentence_boundaries(self):
         evidence = FFmpegCreativeAnalyzer._frame_visual_evidence(checkerboard())

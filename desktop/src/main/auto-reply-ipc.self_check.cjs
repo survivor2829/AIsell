@@ -1957,7 +1957,7 @@ async function main() {
     latest_message_top: 704,
     region_ocr_ok: true
   });
-  assert.doesNotMatch(boundSessionRecheckLog, /untrusted-source-canary|current-session-contact-secret|current-session-message-secret|current-session-context-secret|current-session-key-secret|bbbb|cccc|dddd/, "bound-session diagnostics must not persist source text, customer text, context or raw signatures");
+  assert.doesNotMatch(boundSessionRecheckLog, /untrusted-source-canary|current-session-contact-secret|current-session-message-secret|current-session-context-secret|current-session-key-secret|b{64}|c{64}|d{64}/, "bound-session diagnostics must not persist source text, customer text, context or raw signatures");
   const readScanObservations = () => fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8")
     .trim().split(/\r?\n/u).map((line) => JSON.parse(line)).filter((entry) => entry.event === "scan_observation");
   await boundSessionRecheckController.runOnce();
@@ -1983,7 +1983,7 @@ async function main() {
   }
   assert.equal(incompleteReadObservation.recovered_line_count, 0);
   assert.equal(incompleteReadObservation.region_ocr_ok, false);
-  assert.doesNotMatch(fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8"), /message-read-private-text-canary|message-read-private-contact-canary|untrusted-read-source-canary|untrusted-boundary-source-canary|ffff/, "OCR observations must preserve only allowlisted metadata and never raw text, contacts or signatures");
+  assert.doesNotMatch(fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8"), /message-read-private-text-canary|message-read-private-contact-canary|untrusted-read-source-canary|untrusted-boundary-source-canary|f{64}/, "OCR observations must preserve only allowlisted metadata and never raw text, contacts or signatures");
   boundSessionRecheckController.pause();
 
   const transientFenceDir = path.join(root, "scan_transient_fences");
@@ -3787,11 +3787,11 @@ async function main() {
   assert.equal(aiConfigFailureController.status().reply_count, 0);
   assert.equal(aiConfigFailureController.status().status, "paused");
   assert.equal(aiConfigFailureController.status().last_event, "system_error_paused");
-  assert.match(aiConfigFailureController.status().last_error, /API Key 无效/);
+  assert.match(aiConfigFailureController.status().last_error, /云端智能服务暂不可用/);
   assert.deepEqual(aiConfigFailureController.status().system_error, {
     code: "API_KEY_INVALID",
     category: "configuration",
-    message: "DeepSeek API Key 无效或已失效，请检查后重新启动。"
+    message: "云端智能服务暂不可用，请稍后重新启动自动回复。"
   });
   assert.doesNotMatch(JSON.stringify(aiConfigFailureController.status()), /secret-bearing upstream/);
   const aiFailureDiagnosticText = fs.readFileSync(path.join(aiConfigFailureDir, "auto-reply-diagnostics.jsonl"), "utf8");
@@ -4884,6 +4884,431 @@ async function main() {
   });
   assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-missing-contact" })).ok, false, "the trusted test IPC must still reject a missing contact ID");
   assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-selected-contact", contactId: "c1" })).ok, true, "the trusted test IPC must forward the selected contact ID to the controller");
+  const workflowContacts = writeContactsFixture("workflow_resilience_contacts", [
+    { id: "a", name: "private-a", allowed: true, wechatAccountId: "wx-a", wechatId: "a" },
+    { id: "b", name: "private-duplicate", allowed: true, wechatAccountId: "wx-a", wechatId: "b" },
+    { id: "c", name: "private-duplicate", allowed: false, wechatAccountId: "wx-a", wechatId: "c" },
+    { id: "d", name: "private-old", allowed: true, wechatAccountId: "wx-a", wechatId: "d" }
+  ]);
+  const workflowUniverse = JSON.parse(fs.readFileSync(path.join(workflowContacts, "contacts.json"), "utf8"));
+  const workflowRecipients = [workflowUniverse[0], workflowUniverse[1], { ...workflowUniverse[3], name: "private-stale" }];
+  let workflowNow = new Date("2026-07-15T10:00:00+08:00").getTime();
+  let workflowScans = 0;
+  let workflowSends = 0;
+  let workflowVerify = true;
+  let workflowFailure = "AI_NETWORK_ERROR";
+  let workflowScanFailure = "";
+  let workflowStartupFailure = "";
+  let workflowStartChecks = 0;
+  let workflowPrimes = 0;
+  const workflowDriverOptions = [];
+  const workflowCandidate = { ok: true, conversation: "private-a", conversationEvidence: "private-a",
+    message: "private-message", runtimeId: "private-turn-1", pid: 81, hWnd: "91",
+    context: [{ role: "user", content: "private-message", key: "private-turn-1" }] };
+  const workflowQueue = [workflowCandidate];
+  const workflowScan = (aliases, driverOptions) => { workflowScans += 1; assert.deepEqual(aliases, ["private-a"]);
+    workflowDriverOptions.push({ phase: "scan", passiveScan: driverOptions.passiveScan, restoreChatSurface: driverOptions.restoreChatSurface });
+    if (driverOptions.restoreChatSurface) driverOptions.onChatSurfaceRestored?.();
+    if (workflowScanFailure) return { ok: false, reason: workflowScanFailure };
+    return workflowQueue.shift() || { ok: false, reason: "no_unread_message" }; };
+  workflowScan.requeue = (candidate) => { workflowQueue.unshift(candidate); return true; };
+  const workflowController = createAutoReplyController({
+    dataDir: path.join(root, "workflow_resilience"), activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => { workflowStartChecks += 1; if (workflowStartupFailure) throw Object.assign(new Error("private-gateway"), { code: workflowStartupFailure }); }, reply: async () => {
+      if (workflowFailure) throw Object.assign(new Error("private-ai-failure"), { code: workflowFailure });
+      return answerDecision("可以继续了解。");
+    } },
+    primeIncoming: (_aliases, driverOptions) => { workflowPrimes += 1;
+      workflowDriverOptions.push({ phase: "prime", passiveScan: driverOptions.passiveScan, restoreChatSurface: driverOptions.restoreChatSurface });
+      if (driverOptions.restoreChatSurface) driverOptions.onChatSurfaceRestored?.();
+      return { ok: true, source: "session_prime", primed: true, latestRole: "assistant" }; },
+    scanIncoming: workflowScan, verifyIncoming: () => workflowVerify ? { ok: true } : { ok: false, reason: "incoming_message_changed" },
+    send: async (options) => { if (!await options.beforeDraft()) return { ok: false, reason: "incoming_message_changed" }; workflowSends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const workflowInput = { recipients: workflowRecipients, accountName: "wx-a", isEnabled: () => true };
+  let releaseTakeoverPrime;
+  let markTakeoverPrimeEntered;
+  const takeoverPrimeGate = new Promise((resolve) => { releaseTakeoverPrime = resolve; });
+  const takeoverPrimeEntered = new Promise((resolve) => { markTakeoverPrimeEntered = resolve; });
+  let takeoverSends = 0;
+  let takeoverPrimes = 0;
+  let takeoverRestores = 0;
+  const takeoverScan = () => takeoverPrimes < 2 ? workflowCandidate : { ok: false, reason: "no_unread_message" };
+  takeoverScan.restoreTurnBoundaries = () => { takeoverRestores += 1; };
+  const takeoverPauseController = createAutoReplyController({
+    dataDir: path.join(root, "workflow_takeover_pause"), activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+    primeIncoming: async () => { takeoverPrimes += 1; markTakeoverPrimeEntered(); await takeoverPrimeGate;
+      return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: takeoverScan, verifyIncoming: () => ({ ok: true }),
+    send: async () => { takeoverSends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const legacyTakeover = takeoverPauseController.start();
+  await Promise.race([takeoverPrimeEntered, new Promise((_, reject) => setTimeout(() => reject(new Error("takeover fixture did not reach prime")), 1000))]);
+  const takeoverStep = takeoverPauseController.runWorkflowStep(workflowInput);
+  takeoverPauseController.pause();
+  releaseTakeoverPrime();
+  await legacyTakeover;
+  const takeoverResult = await takeoverStep;
+  assert.equal(takeoverResult.status, "paused", "user pause while takeover waits must win");
+  assert.match(takeoverResult.progressText, /已暂停/u, "floating pause must show an explicit paused message");
+  assert.equal(takeoverPauseController.status().status, "paused");
+  assert.equal(takeoverSends, 0, "a paused takeover must not send");
+  assert.ok(takeoverRestores >= 2, "paused takeover must still restore the workflow turn boundary");
+  const primesWhilePaused = takeoverPrimes;
+  assert.notEqual((await takeoverPauseController.runWorkflowStep(workflowInput)).status, "running",
+    "the next workflow step must not silently undo a takeover pause");
+  assert.equal(takeoverPauseController.status().status, "paused", "a takeover pause lasts until an explicit resume");
+  assert.equal(takeoverPrimes, primesWhilePaused, "a paused takeover must not prime on the next step");
+  assert.equal(takeoverSends, 0, "a paused takeover must not send on the next step");
+  takeoverPauseController.resumeWorkflow();
+  assert.equal((await takeoverPauseController.runWorkflowStep(workflowInput)).status, "running");
+  assert.equal(takeoverPrimes, 2, "resuming a paused takeover must prime before scanning old messages");
+  assert.equal(takeoverSends, 0, "an old message visible before the restored prime must not be sent");
+  assert.deepEqual(workflowController.screenWorkflowRecipients(workflowRecipients).excluded.map((item) => item.code),
+    ["workflow_recipient_ambiguous", "workflow_recipient_changed"]);
+  assert.equal(workflowController.screenWorkflowRecipients([workflowRecipients[1]]).accepted.length, 0,
+    "a disabled contact outside the recipient list must still keep a duplicate ambiguous");
+  let workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "backoff");
+  assert.deepEqual(workflowDriverOptions.slice(0, 2).map((item) => item.restoreChatSurface), [true, false],
+    "first workflow prime restores chat once, then the scan may observe without navigating");
+  assert.equal(workflowDriverOptions[0].passiveScan, true);
+  assert.equal(workflowResult.reasonCode, "AI_NETWORK_ERROR");
+  assert.equal(workflowResult.retryAfterMs, 30_000);
+  assert.equal(workflowResult.excluded_count, 2);
+  assert.equal(Object.hasOwn(workflowResult, "error"), false);
+  assert.equal(workflowScans, 1);
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowScans, 1, "backoff must stop before scanning");
+  const checksBeforeRetry = workflowStartChecks;
+  workflowNow += 30_000;
+  workflowFailure = "";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "running");
+  assert.equal(workflowSends, 1, "the failed candidate must be replayed exactly once");
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, false);
+  assert.equal(workflowScans, 2);
+  assert.equal(workflowStartChecks, checksBeforeRetry + 1, "backoff expiry must redo startup checks");
+  const nextWorkflowCandidate = (suffix) => ({ ...workflowCandidate, runtimeId: `private-turn-${suffix}`,
+    context: [{ role: "user", content: "private-message", key: `private-turn-${suffix}` }] });
+  workflowQueue.push({ ...nextWorkflowCandidate("excluded"), conversation: "private-duplicate", conversationEvidence: "private-duplicate" });
+  await workflowController.runWorkflowStep({ ...workflowInput, afterMoments: true });
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, true,
+    "a Moments task must restore the chat page on the next auto-reply scan");
+  assert.equal(workflowSends, 1, "an excluded duplicate conversation must never receive a reply");
+  workflowQueue.push(nextWorkflowCandidate("2"));
+  workflowFailure = "AI_NETWORK_ERROR";
+  for (const delay of [30_000, 120_000, 300_000, 300_000]) {
+    workflowResult = await workflowController.runWorkflowStep(workflowInput);
+    assert.equal(workflowResult.status, "backoff");
+    assert.equal(workflowResult.retryAfterMs, delay);
+    workflowNow += delay;
+  }
+  workflowFailure = "";
+  workflowVerify = false;
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowSends, 1, "replayed candidate must pass live verification again");
+  workflowVerify = true;
+  workflowQueue.push(nextWorkflowCandidate("3"));
+  workflowFailure = "AI_REQUEST_FAILED";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "needs_attention", "an HTTP 5xx must not enter automatic backoff");
+  assert.equal(workflowResult.reasonCode, "AI_REQUEST_FAILED");
+  workflowController.resumeWorkflow();
+  workflowQueue.push(nextWorkflowCandidate("4"));
+  workflowFailure = "";
+  await workflowController.runWorkflowStep(workflowInput);
+  workflowScanFailure = "wechat_window_changed";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "needs_attention");
+  assert.equal(workflowResult.reasonCode, "workflow_window_changed");
+  workflowScanFailure = "";
+  const beforeResumeScans = workflowScans;
+  workflowController.resumeWorkflow();
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "running");
+  assert.equal(workflowScans, beforeResumeScans + 1, "resume must repeat startup and reach a fresh scan");
+  for (const code of ["API_KEY_INVALID", "AI_EXPERT_NOT_READY"]) {
+    workflowQueue.push(nextWorkflowCandidate(`config-${code}`));
+    workflowFailure = code;
+    workflowResult = await workflowController.runWorkflowStep(workflowInput);
+    assert.equal(workflowResult.status, "needs_attention");
+    assert.equal(workflowResult.reasonCode, code);
+    workflowController.resumeWorkflow();
+  }
+  workflowFailure = "";
+  workflowStartupFailure = "PROVIDER_GATEWAY_UNAVAILABLE";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "needs_attention");
+  assert.equal(workflowResult.reasonCode, "PROVIDER_GATEWAY_UNAVAILABLE");
+  workflowStartupFailure = "";
+  workflowController.resumeWorkflow();
+  workflowScanFailure = "wechat_chat_entry_not_found";
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, false);
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowDriverOptions.at(-1).restoreChatSurface, true,
+    "a missing chat entry must request foreground navigation on the next scan");
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "backoff");
+  assert.equal(workflowResult.reasonCode, "workflow_chat_navigation_failed");
+  const navigationScans = workflowScans;
+  const navigationPrimes = workflowPrimes;
+  await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowScans, navigationScans);
+  workflowNow += 30_000;
+  workflowScanFailure = "";
+  workflowResult = await workflowController.runWorkflowStep(workflowInput);
+  assert.equal(workflowResult.status, "running");
+  assert.equal(workflowScans, navigationScans + 1);
+  assert.equal(workflowPrimes, navigationPrimes + 1, "navigation recovery must re-prime before scanning");
+  const workflowDiagnosticText = fs.readFileSync(path.join(root, "workflow_resilience", "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.doesNotMatch(workflowDiagnosticText, /private-a|private-duplicate|private-old|private-message|private-ai-failure/u);
+  const noEligible = await workflowController.runWorkflowStep({ ...workflowInput, recipients: workflowRecipients.slice(1) });
+  assert.equal(noEligible.reasonCode, "workflow_recipients_none_eligible");
+  assert.throws(() => workflowController.prepareWorkflowRecipients(["b"]), /private-duplicate|重复/u,
+    "manual selection must reject an ambiguous contact as a whole");
+  workflowController.resumeWorkflow();
+  const noEligibleAgain = await workflowController.runWorkflowStep({ ...workflowInput, recipients: workflowRecipients.slice(1) });
+  assert.equal(noEligibleAgain.reasonCode, "workflow_recipients_none_eligible");
+  const scopeReturns = fs.readFileSync(path.join(root, "workflow_resilience", "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line))
+    .filter((entry) => entry.event === "workflow_step_return" && entry.code === "scope_invalid:workflow_recipients_none_eligible");
+  assert.equal(scopeReturns.length, 2, "the same early-return diagnostic must reappear in a new run");
+  const mixedAccount = { id: "account-b", name: "private-account-b", allowed: true, wechatAccountId: "wx-b", wechatId: "account-b" };
+  const mixedDir = writeContactsFixture("workflow_mixed_accounts", [workflowUniverse[0], mixedAccount]);
+  const mixedController = createAutoReplyController({ dataDir: path.join(root, "workflow_mixed_state"), activeTouchDir: mixedDir });
+  const mixedScreen = mixedController.screenWorkflowRecipients([workflowUniverse[0], mixedAccount]);
+  assert.equal(mixedScreen.accepted.length, 0);
+  assert.deepEqual(mixedScreen.excluded.map((item) => item.code), ["workflow_account_changed", "workflow_account_changed"],
+    "a mixed-account auto-join must report why every eligible contact was rejected");
+
+  const otherValidContact = { id: "e", name: "private-e", allowed: true, wechatAccountId: "wx-a", wechatId: "e" };
+  const changedDir = writeContactsFixture("workflow_changed_mid_step", [workflowUniverse[0], otherValidContact]);
+  let changedSends = 0;
+  const changedController = createAutoReplyController({ dataDir: path.join(root, "workflow_changed_state"), activeTouchDir: changedDir,
+    coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => {
+      fs.writeFileSync(path.join(changedDir, "contacts.json"), JSON.stringify([{ ...workflowUniverse[0], name: "private-changed" }, otherValidContact]));
+      return answerDecision("您好。");
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async () => { changedSends += 1; return { ok: true }; }, runStep: async () => ({ ok: true }) });
+  const changedResult = await changedController.runWorkflowStep({ recipients: [workflowUniverse[0], otherValidContact], accountName: "wx-a", isEnabled: () => true });
+  assert.equal(changedResult.status, "needs_attention");
+  assert.equal(changedResult.reasonCode, "workflow_scope_changed");
+  assert.equal(changedSends, 0, "a scope change during AI generation must stop before send");
+
+  let unknownSends = 0;
+  const unknownWorkflowController = createAutoReplyController({ dataDir: path.join(root, "workflow_unknown_state"), activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { if (await input.beforeDraft()) unknownSends += 1;
+      return { ok: false, blocked_reason: "visual_send_outcome_unknown", outcomeUnknown: true, send_attempted: null }; },
+    runStep: async () => ({ ok: true }) });
+  const unknownInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  const unknownFirst = await unknownWorkflowController.runWorkflowStep(unknownInput);
+  assert.equal(unknownFirst.status, "needs_attention");
+  assert.equal(unknownFirst.reasonCode, "send_outcome_unknown_paused");
+  await unknownWorkflowController.runWorkflowStep(unknownInput);
+  const unknownDiagnostics = fs.readFileSync(path.join(root, "workflow_unknown_state", "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(unknownDiagnostics, /"code":"start_pending_missing"/u);
+  unknownWorkflowController.resumeWorkflow();
+  await unknownWorkflowController.runWorkflowStep(unknownInput);
+  assert.equal(unknownSends, 1, "an unknown send must not be attempted again after restart");
+
+  let retryClock = workflowNow;
+  let retrySends = 0;
+  let forceEmptyScan = false;
+  let retryFailure = "AI_NETWORK_ERROR";
+  const retryQueue = [nextWorkflowCandidate("retry-reset")];
+  const retryScan = () => forceEmptyScan ? { ok: false, reason: "no_unread_message" }
+    : retryQueue.shift() || { ok: false, reason: "no_unread_message" };
+  retryScan.requeue = (candidate) => { retryQueue.unshift(candidate); return true; };
+  const retryDir = path.join(root, "workflow_retry_reset");
+  const retryController = createAutoReplyController({ dataDir: retryDir, activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(retryClock),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => {
+      if (retryFailure) throw Object.assign(new Error("private-network-error"), { code: retryFailure });
+      return answerDecision("您好。");
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: retryScan, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { if (await input.beforeDraft()) retrySends += 1; return { ok: true }; },
+    runStep: async () => ({ ok: true }) });
+  const retryInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  assert.equal((await retryController.runWorkflowStep(retryInput)).retryAfterMs, 30_000);
+  for (let poll = 0; poll < 120; poll += 1) await retryController.runWorkflowStep(retryInput);
+  const workflowRetryDiagnostics = () => fs.readFileSync(path.join(retryDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  assert.equal(workflowRetryDiagnostics().filter((entry) => entry.event === "workflow_step_return").length, 1,
+    "repeated backoff returns must not flood diagnostics");
+  retryClock += 30_000;
+  forceEmptyScan = true;
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "running");
+  forceEmptyScan = false;
+  assert.equal((await retryController.runWorkflowStep(retryInput)).retryAfterMs, 30_000,
+    "a complete empty scan must reset the backoff attempt");
+  assert.equal(workflowRetryDiagnostics().filter((entry) => entry.event === "workflow_step_return"
+    && entry.code === "ai_network_error").length, 2,
+  "a second backoff window must create a new diagnostic entry");
+  retryController.pause();
+  retryClock += 30_000;
+  retryFailure = "";
+  const popupPaused = await retryController.runWorkflowStep(retryInput);
+  assert.equal(popupPaused.status, "paused");
+  assert.match(popupPaused.progressText, /已暂停/u, "the floating pause path must explain the paused state");
+  assert.equal(retryController.status().status, "paused");
+  assert.equal(retrySends, 0, "user pause during backoff must prevent the queued reply after expiry");
+  retryController.resumeWorkflow();
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "running");
+  assert.equal(retrySends, 1, "an explicit restart after a backoff pause must resume the queued reply");
+  retryFailure = "AI_NETWORK_ERROR";
+  retryQueue.push(nextWorkflowCandidate("pause-workflow-backoff"));
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "backoff");
+  await retryController.pauseWorkflow();
+  retryClock += 30_000;
+  assert.equal((await retryController.runWorkflowStep({ ...retryInput, isEnabled: () => false })).status, "paused");
+  assert.equal(retrySends, 1, "pausing the whole workflow during backoff must not send after expiry");
+  retryFailure = "";
+  assert.equal((await retryController.runWorkflowStep(retryInput)).status, "running",
+    "an explicit workflow restart after pauseWorkflow must leave the stopped state");
+  assert.equal(retrySends, 2, "the explicit workflow restart may safely send the retained candidate once");
+
+  let floodClock = workflowNow;
+  const floodDir = path.join(root, "workflow_diagnostic_flood");
+  const floodController = createAutoReplyController({ dataDir: floodDir, activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(floodClock),
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }), verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }), runStep: async () => ({ ok: true }) });
+  const floodInput = { recipients: workflowUniverse.slice(0, 2), accountName: "wx-a", isEnabled: () => true };
+  for (let poll = 0; poll < 200; poll += 1) {
+    await floodController.runWorkflowStep(floodInput);
+    floodClock += 2500;
+  }
+  const floodDiagnostics = () => fs.readFileSync(path.join(floodDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 1);
+  await floodController.runWorkflowStep({ ...floodInput, recipients: workflowUniverse.slice(0, 3) });
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 2,
+    "a changed excluded count must produce a fresh diagnostic");
+  floodController.resumeWorkflow();
+  await floodController.runWorkflowStep(floodInput);
+  assert.equal(floodDiagnostics().filter((entry) => entry.event === "workflow_scope_excluded").length, 3);
+
+  let statsClock = new Date("2026-07-15T10:00:00+08:00").getTime();
+  let statsScans = 0;
+  const statsDir = path.join(root, "workflow_scan_hourly");
+  const statsController = createAutoReplyController({ dataDir: statsDir, activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), now: () => new Date(statsClock),
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => ++statsScans === 3
+      ? { ok: false, reason: "no_unread_message", foregroundScan: true, foregroundReason: "periodic_recheck" }
+      : { ok: false, reason: "no_unread_message", passive: true },
+    verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const statsInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  await statsController.runWorkflowStep(statsInput);
+  const statsState = () => JSON.parse(fs.readFileSync(path.join(statsDir, "auto-reply-state.json"), "utf8"));
+  const beforePassiveIdle = statsState();
+  await statsController.runWorkflowStep(statsInput);
+  const afterPassiveIdle = statsState();
+  for (const field of ["reply_guards", "processed", "pending_observation"]) {
+    assert.deepEqual(afterPassiveIdle[field], beforePassiveIdle[field], `passive idle must preserve ${field}`);
+  }
+  // Seed a real-shaped exactly-once ledger so passive-idle preservation cannot pass on empty state.
+  // Takeover discards pending_observation by design, so only reply_guards and processed can be seeded.
+  const ledgerDir = path.join(root, "workflow_passive_ledger");
+  const ledgerController = () => createAutoReplyController({ dataDir: ledgerDir, activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), now: () => new Date(statsClock), deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message", passive: true }),
+    verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  await ledgerController().runWorkflowStep(statsInput);
+  const ledgerFile = path.join(ledgerDir, "auto-reply-state.json");
+  const ledgerState = () => JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+  const seededSignature = "c".repeat(64);
+  const seeded = ledgerState();
+  seeded.processed = { ["d".repeat(64)]: { contact_id: workflowUniverse[0].id, status: "sent_verified",
+    message_signature: seededSignature, at: new Date(statsClock - 60_000).toISOString() } };
+  seeded.reply_guards = { [workflowUniverse[0].id]: { contact_id: workflowUniverse[0].id, conversation: "种子会话",
+    message_signature: seededSignature, fingerprint: "d".repeat(64), delivery_status: "sent_verified",
+    turn_state: "outgoing_observed", at: new Date(statsClock - 60_000).toISOString() } };
+  fs.writeFileSync(ledgerFile, JSON.stringify(seeded), "utf8");
+  const reloadedLedger = ledgerController();
+  await reloadedLedger.runWorkflowStep(statsInput);
+  const beforeSeededIdle = ledgerState();
+  assert.ok(Object.keys(beforeSeededIdle.reply_guards || {}).length && Object.keys(beforeSeededIdle.processed || {}).length,
+    "the passive-idle fixture must start from a non-empty ledger");
+  await reloadedLedger.runWorkflowStep(statsInput);
+  const afterSeededIdle = ledgerState();
+  for (const field of ["reply_guards", "processed"]) {
+    assert.deepEqual(afterSeededIdle[field], beforeSeededIdle[field], `passive idle must preserve a seeded ${field}`);
+  }
+  await statsController.runWorkflowStep(statsInput);
+  statsClock += 3_600_000;
+  await statsController.runWorkflowStep(statsInput);
+  const hourlyRows = fs.readFileSync(path.join(statsDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line)).filter((entry) => entry.event === "workflow_scan_hourly");
+  assert.equal(hourlyRows.length, 1, "scan diagnostics must be aggregated once per elapsed hour");
+  assert.equal(hourlyRows[0].foreground_prime, 1);
+  assert.equal(hourlyRows[0].foreground_periodic_recheck, 1);
+  assert.equal(hourlyRows[0].observe_idle_count, 2);
+  assert.equal(hourlyRows[0].navigation_count, 1);
+  assert.doesNotMatch(JSON.stringify(hourlyRows), /private-a/u, "hourly stats must contain no customer identity");
+
+  const sidebarFlags = [];
+  const sidebarReasons = ["no_unread_message", "visual_sidebar_match_missing", "no_unread_message"];
+  const sidebarController = createAutoReplyController({
+    dataDir: path.join(root, "workflow_sidebar_restore"), activeTouchDir: workflowContacts, coordinator,
+    expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: (_aliases, driverOptions) => { driverOptions.onChatSurfaceRestored?.(); return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: (_aliases, driverOptions) => { sidebarFlags.push(driverOptions.restoreChatSurface);
+      if (driverOptions.restoreChatSurface) driverOptions.onChatSurfaceRestored?.();
+      return { ok: false, reason: sidebarReasons.shift() || "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }), send: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  await sidebarController.runWorkflowStep(statsInput);
+  await sidebarController.runWorkflowStep(statsInput);
+  await sidebarController.runWorkflowStep(statsInput);
+  assert.deepEqual(sidebarFlags, [false, false, true],
+    "visual_sidebar_match_missing must request chat restoration on the next scan");
+
+  const largeContacts = Array.from({ length: 3000 }, (_, index) => ({ id: `large-${index}`,
+    name: `微信昵称客户${index}`, remark: `备注客户名${index}`, nickname: `昵称${index}号`,
+    allowed: true, wechatAccountId: "wx-a", wechatId: `wx-large-${index}` }));
+  const largeDir = writeContactsFixture("workflow_large_contacts", largeContacts);
+  const largeFile = path.join(largeDir, "contacts.json");
+  let largeReads = 0;
+  const originalReadFileSync = fs.readFileSync;
+  let largeResult;
+  try {
+    fs.readFileSync = function(file, ...args) {
+      if (String(file) === largeFile) largeReads += 1;
+      return originalReadFileSync.call(this, file, ...args);
+    };
+    const largeController = createAutoReplyController({ dataDir: path.join(root, "workflow_large"), activeTouchDir: largeDir,
+      coordinator, expertStore: readyExpert(), deepSeekClient: { assertAvailable: () => true },
+      primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+      scanIncoming: () => ({ ok: false, reason: "no_unread_message" }), verifyIncoming: () => ({ ok: true }),
+      send: async () => ({ ok: true }), runStep: async () => ({ ok: true }), now: () => new Date(workflowNow) });
+    largeResult = await largeController.runWorkflowStep({ recipients: largeContacts.slice(0, 2000), accountName: "wx-a", isEnabled: () => true });
+  } finally { fs.readFileSync = originalReadFileSync; }
+  assert.equal(largeResult.status, "running");
+  assert.equal(largeResult.eligible_count, 2000);
+  console.log(`workflow scope stress: aliases_json=${largeResult.alias_json_length}, scope_ms=${largeResult.scope_ms}, contacts_reads=${largeReads}`);
+
   console.log("auto-reply v4 self-check passed");
 }
 

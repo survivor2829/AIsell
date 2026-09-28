@@ -23,6 +23,37 @@ const TRUSTED_RUNTIME_ENV_KEYS = new Set([
   "XIAOXI_REMOTION_BROWSER_PATH",
   "XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE"
 ]);
+const PROVIDER_ENV_KEYS = new Set([
+  "DASHSCOPE_API_KEY",
+  "APIMART_API_KEY",
+  "XIAOXI_BAILIAN_API_HOST",
+  "XIAOXI_PROVIDER_GATEWAY_CA_PEM",
+  "XIAOXI_PROVIDER_GATEWAY_ORIGIN",
+  "XIAOXI_PROVIDER_GATEWAY_TOKEN",
+  "XIAOXI_VOLCENGINE_ARK_API_HOST",
+  "XIAOXI_VOLCENGINE_ARK_API_KEY",
+  "XIAOXI_VOLCENGINE_ARK_API_URL",
+  "XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN",
+  "XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN",
+  "XIAOXI_VOLCENGINE_ASR_API_KEY",
+  "XIAOXI_VOLCENGINE_ASR_APP_ID",
+  "XIAOXI_VOLCENGINE_ASR_ENDPOINT",
+  "XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED",
+  "XIAOXI_VOLCENGINE_TTS_API_KEY",
+  "XIAOXI_VOLCENGINE_TTS_API_URL",
+  "XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED"
+]);
+const PROVIDER_TASK_TYPES = new Set([
+  "creative_analysis", "course_generation", "mix_generation", "creative_regeneration",
+  "creative_packaging", "creative_cover", "creative_visual_comparison", "product_asset_analysis",
+  "product_copy", "product_voice", "product_generation", "auto_mix_v2_generation",
+  "auto_mix_v2_regeneration", "guided_auto_mix_analysis", "guided_auto_mix_draft",
+  "guided_auto_mix_supplemental_image", "narrated_batch_v1", "import_base_video"
+]);
+
+function isProviderTaskType(value) {
+  return PROVIDER_TASK_TYPES.has(String(value || ""));
+}
 
 function createError(code, message = code) {
   const error = new Error(message);
@@ -355,12 +386,14 @@ function createContentEngineSidecar(options = {}) {
             if (normalized) trustedRuntimeEnvironment[key] = normalized;
           }
         }
+        const childEnvironment = { ...environment };
+        for (const key of PROVIDER_ENV_KEYS) delete childEnvironment[key];
         child = spawnProcess(runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
           shell: false,
           stdio: ["pipe", "pipe", "pipe"],
           env: {
-            ...environment,
+            ...childEnvironment,
             ...(providerEnvironment && typeof providerEnvironment === "object"
               ? providerEnvironment
               : {}),
@@ -624,6 +657,7 @@ function createContentEngineSidecar(options = {}) {
     getNarratedOutputDirectory: (batchId) => request("get_narrated_output_directory", { batch_id: batchId }),
     previewMusicCatalogTrack: (trackId) => request("preview_music_catalog_track", { track_id: trackId }),
     resolveNarratedPlanningOutcome: (payload) => request("resolve_narrated_planning_outcome", payload),
+    resolveNarratedVoiceOutcome: (payload) => request("resolve_narrated_voice_outcome", payload),
     generateNarratedSamples: (batchId) => request("generate_narrated_samples", { batch_id: batchId }),
     continueNarratedBatch: (batchId) => request("continue_narrated_batch", { batch_id: batchId }),
     updateNarratedCandidate: (payload) => request("update_narrated_candidate", payload),
@@ -878,6 +912,7 @@ function createContentEngineSidecar(options = {}) {
       limit: optionsForList.limit
     }),
     listFinished: (limit) => request("list_finished", { limit }),
+    getGeneratedVideo: (candidateId) => request("get_generated_video", { generated_video_id: candidateId }),
     listGeneratedVideos: (optionsForList = {}) => request(
       "list_generated_videos",
       {
@@ -954,6 +989,11 @@ function createContentEngineSidecar(options = {}) {
     regenerateCover: (candidateId) => request("regenerate_cover", {
       candidate_id: candidateId
     }),
+    updateCoverTitle: (candidateId, headlineLines) => request("update_cover_title", {
+      candidate_id: candidateId, headline_lines: headlineLines
+    }),
+    // Internal main-process integration only: paths are never accepted from renderer IPC.
+    importBaseVideo: (payload) => request("import_base_video", payload, { timeoutMs: renderTimeoutMs }),
     listMediaSegments: (optionsForList = {}) => request(
       "list_media_segments",
       {
@@ -1074,27 +1114,7 @@ function createContentEngineSidecar(options = {}) {
         const refreshed = await request("list_tasks", { limit: 2_000 });
         return refreshed.items.find((item) => item?.task_id === taskId);
       }
-      if ([
-        "creative_analysis",
-        "course_generation",
-        "mix_generation",
-        "creative_regeneration",
-        "creative_packaging",
-        "creative_cover",
-        "creative_visual_comparison",
-        "product_asset_analysis",
-        "product_copy",
-        "product_voice",
-        "product_generation",
-        "auto_mix_v2_generation",
-        "auto_mix_v2_regeneration",
-        "guided_auto_mix_analysis",
-        "guided_auto_mix_draft",
-        "guided_auto_mix_supplemental_image",
-        "narrated_batch_v1"
-      ].includes(
-        task.task_type
-      )) {
+      if (isProviderTaskType(task.task_type)) {
         return request("resume_creative_task", { task_id: taskId });
       }
       const resumeStatus = [
@@ -1143,6 +1163,7 @@ function createContentEngineSidecar(options = {}) {
 module.exports = {
   createContentEngineSidecar,
   createError,
+  isProviderTaskType,
   parseReady,
   sanitizeCapabilities
 };

@@ -1094,6 +1094,9 @@ Invoke-Expression ([IO.StreamReader]::new($g).ReadToEnd())
 const AUTO_REPLY_RUN_SCRIPT = compressedPowerShell(AUTO_REPLY_SCAN_SCRIPT);
 
 function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, windowNormalizer = null) {
+  const PASSIVE_SCAN_ENABLED = true;
+  const PASSIVE_RECHECK_MS = 60_000;
+  const PERIODIC_MIN_IDLE_MS = 5_000;
   const windowPreparer = typeof windowNormalizer === "function"
     ? windowNormalizer
     : (context) => prepareWechatRpaWindowAsync(context, powerShellRunner);
@@ -1106,6 +1109,11 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   let sessionPreviewPrimedAt = 0;
   let sessionPreviewProcess = null;
   let needsReprime = false;
+  let lastForegroundScanAt = 0;
+  let passiveUnusableCount = 0;
+  let passiveUnusableWindow = "";
+  let passiveDisabled = false;
+  let passiveIdleSinceForeground = false;
   let normalizedWindowIdentity = null;
   let normalizedForReprime = false;
   // WeChat 4.1.x exposes only a compositor pane through UIA on many machines.
@@ -1215,7 +1223,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
           expectedPid: expectedIdentity.pid,
           expectedHWnd: expectedIdentity.hWnd
         } : {}),
-        minIdleMs: 0,
+        minIdleMs: matchOptions.periodicRecheck === true ? PERIODIC_MIN_IDLE_MS : 0,
         requireFocused: true
       }));
     } catch {
@@ -1239,6 +1247,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
         || String(restored.hWnd) !== String(normalizedWindowIdentity.hWnd)) {
         return { ok: false, reason: "wechat_window_identity_mismatch" };
       }
+      matchOptions.onChatSurfaceRestored?.();
     }
     matchOptions.onProgress?.("正在读取聊天列表和客户消息");
     return null;
@@ -1292,7 +1301,17 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
-      return driver ? driver.primeWechatSession(allowed, matchOptions) : { ok: false, reason: "visual_driver_missing" };
+      const primed = driver ? await driver.primeWechatSession(allowed, matchOptions) : { ok: false, reason: "visual_driver_missing" };
+      if (primed?.ok === true) {
+        sessionPreviewPrimed = true;
+        sessionPreviewProcess = processIdentity(primed);
+        needsReprime = false;
+        lastForegroundScanAt = Date.now();
+        passiveUnusableCount = 0;
+        passiveDisabled = false;
+        passiveIdleSinceForeground = false;
+      }
+      return primed;
     }
     const activeBaselineEpoch = baselineEpoch;
     const result = await Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
@@ -1331,7 +1350,47 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function scanWechatIncoming(names, matchOptions = {}) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
-    const scanWindowFailure = await normalizeWindowForExecution(normalizedWindowIdentity || sessionPreviewProcess, matchOptions);
+    let foregroundReason = "";
+    let passiveMiss = false;
+    if (PASSIVE_SCAN_ENABLED && matchOptions.passiveScan === true && activeScanMode === "visual") {
+      foregroundReason = !sessionPreviewPrimed || needsReprime ? "prime"
+        : matchOptions.restoreChatSurface === true ? "chat_surface_restore"
+          : passiveDisabled ? "passive_unusable" : "";
+      if (!foregroundReason) {
+        const driver = getVisualDriver();
+        const pending = driver?.hasPendingScanState?.() === true;
+        if (typeof driver?.observeWechatIncoming !== "function") foregroundReason = "passive_unusable";
+        else if (pending) foregroundReason = "pending_state";
+        else {
+          let observed;
+          try { observed = await driver.observeWechatIncoming(allowed, matchOptions); }
+          catch { observed = { ok: false, reason: "foreground_required", trigger: "other" }; }
+          if (observed?.reason === "wechat_process_changed" || observed?.reason === "wechat_window_changed") {
+            normalizedWindowIdentity = null;
+            sessionPreviewProcess = null;
+            resetSessionIdentityForReprime();
+            return observed;
+          }
+          if (materiallyChangedWindow(normalizedWindowIdentity, windowIdentity(observed))) foregroundReason = "geometry_changed";
+          else if (observed?.ok === false && observed.reason === "no_unread_message") {
+            passiveUnusableCount = 0;
+            passiveUnusableWindow = "";
+            passiveIdleSinceForeground = true;
+            if (Date.now() - lastForegroundScanAt >= PASSIVE_RECHECK_MS) foregroundReason = "periodic_recheck";
+            else return { ok: false, reason: "no_unread_message", passive: true };
+          } else {
+            foregroundReason = observed?.ok === false ? observed.trigger || "other" : "other";
+            const key = `${observed?.pid || ""}:${observed?.hWnd || ""}`;
+            passiveUnusableCount = foregroundReason === "printwindow_unusable"
+              ? (key === passiveUnusableWindow ? passiveUnusableCount + 1 : 1) : 0;
+            passiveUnusableWindow = foregroundReason === "printwindow_unusable" ? key : "";
+            if (passiveUnusableCount >= 3) passiveDisabled = true;
+          }
+        }
+      }
+    }
+    const scanOptions = foregroundReason === "periodic_recheck" ? { ...matchOptions, periodicRecheck: true } : matchOptions;
+    const scanWindowFailure = await normalizeWindowForExecution(normalizedWindowIdentity || sessionPreviewProcess, scanOptions);
     if (scanWindowFailure) {
       if (new Set([
         "wechat_window_identity_mismatch",
@@ -1342,30 +1401,38 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
         normalizedWindowIdentity = null;
         resetSessionIdentityForReprime();
       }
-      return scanWindowFailure;
+      return foregroundReason ? { ...scanWindowFailure, foregroundScan: false, foregroundReason } : scanWindowFailure;
     }
+    if (foregroundReason) {
+      passiveMiss = foregroundReason === "periodic_recheck" && passiveIdleSinceForeground;
+      passiveIdleSinceForeground = false;
+      lastForegroundScanAt = Date.now();
+    }
+    const withForeground = (result) => foregroundReason
+      ? { ...result, foregroundScan: true, foregroundReason, passiveMiss: passiveMiss && result?.ok === true }
+      : result;
     if (needsReprime) {
       normalizedForReprime = true;
-      const primed = await primeWechatSession(allowed, matchOptions);
-      return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
+      const primed = await primeWechatSession(allowed, scanOptions);
+      return withForeground(primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed);
     }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
-      if (!driver) return { ok: false, reason: "visual_driver_missing" };
-      const result = visualCandidate(await driver.scanWechatIncoming(allowed, matchOptions));
+      if (!driver) return withForeground({ ok: false, reason: "visual_driver_missing" });
+      const result = visualCandidate(await driver.scanWechatIncoming(allowed, scanOptions));
       if (result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
         // The visual adapter has dropped its old binding. Drop the shared
         // normalizer identity too; otherwise the next prime would be forced
         // back onto the dead HWND forever.
         normalizedWindowIdentity = null;
-        return result;
+        return withForeground(result);
       }
       const changedWindow = rejectChangedWindow(result);
-      if (changedWindow) return changedWindow;
+      if (changedWindow) return withForeground(changedWindow);
       const fenced = scanFenceResult(result);
-      if (!fenced) return result;
+      if (!fenced) return withForeground(result);
       if (result?.ok === true && result?.scanProbe) driver.scanWechatIncoming?.requeue?.(result);
-      return fenced;
+      return withForeground(fenced);
     }
     if (retryAfterFresh) {
       retryAfterFresh = false;
@@ -1494,6 +1561,11 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     needsReprime = false;
     normalizedWindowIdentity = null;
     normalizedForReprime = false;
+    lastForegroundScanAt = 0;
+    passiveUnusableCount = 0;
+    passiveUnusableWindow = "";
+    passiveDisabled = false;
+    passiveIdleSinceForeground = false;
     visualDriver?.scanWechatIncoming?.resetBaselines?.();
   };
   return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming };

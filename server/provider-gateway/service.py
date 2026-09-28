@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -20,12 +20,14 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import ssl
+import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlsplit
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener, urlopen
 
 
 PREFIX = "/v1/provider-gateway"
@@ -44,6 +46,9 @@ RUNTIME_REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 DEFAULT_UPSTREAM_TIMEOUT_SECONDS = 180
 MIN_UPSTREAM_TIMEOUT_SECONDS = 30
 MAX_UPSTREAM_TIMEOUT_SECONDS = 180
+RECEIPT_MAX_BYTES = 4 * 1024 * 1024
+RECEIPT_RETENTION_SECONDS = 24 * 60 * 60
+RECEIPT_TOMBSTONE_SECONDS = 90 * 24 * 60 * 60
 
 PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsPhBY7urbSK6OeM6CkL0
@@ -136,6 +141,48 @@ def _bounded_timeout(value, default=DEFAULT_UPSTREAM_TIMEOUT_SECONDS) -> int:
     return max(MIN_UPSTREAM_TIMEOUT_SECONDS, min(MAX_UPSTREAM_TIMEOUT_SECONDS, candidate))
 
 
+class _NoProviderRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise URLError("provider_redirect_rejected")
+
+
+class _FixedApimartProxy(ProxyHandler):
+    def __init__(self, proxy_url, parsed):
+        super().__init__({"https": proxy_url})
+        self._proxy_host = parsed.netloc.rsplit("@", 1)[-1]
+        self._proxy_auth = ""
+        if parsed.username is not None:
+            credentials = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}"
+            self._proxy_auth = "Basic " + base64.b64encode(credentials.encode()).decode("ascii")
+
+    def proxy_open(self, req, proxy, type):
+        # An explicit route must not silently fall back through NO_PROXY or
+        # the system proxy settings. HTTPSConnection keeps verified TLS inside CONNECT.
+        if self._proxy_auth:
+            req.add_unredirected_header("Proxy-Authorization", self._proxy_auth)
+        req.set_proxy(self._proxy_host, "http")
+        return None
+
+
+def _apimart_proxy_open(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        # urllib does not provide TLS-to-proxy for an https:// proxy URL.
+        # Reject it instead of silently sending proxy credentials over plaintext.
+        if (len(raw) > 4096 or re.search(r"[\x00-\x20\x7f]", raw)
+                or parsed.scheme != "http" or not parsed.hostname or "%" in parsed.hostname
+                or parsed.port == 0 or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+            raise ValueError()
+        return build_opener(_FixedApimartProxy(raw, parsed),
+                            HTTPSHandler(context=ssl.create_default_context()),
+                            _NoProviderRedirect()).open
+    except (ValueError, TypeError):
+        raise ValueError("apimart_proxy_config_invalid") from None
+
+
 def _runtime_revision(value) -> str:
     candidate = str(value or "").strip()
     if candidate and RUNTIME_REVISION.fullmatch(candidate):
@@ -152,6 +199,7 @@ class SessionStore:
         self.ttl_seconds = max(300, min(7 * 24 * 60 * 60, int(ttl_seconds)))
         self._sessions: dict[bytes, tuple[float, str]] = {}
         self._lock = threading.Lock()
+        self.receipts = None
 
     def _digest(self, token: str) -> bytes:
         return hmac.new(self.secret, token.encode("utf-8"), hashlib.sha256).digest()
@@ -168,6 +216,8 @@ class SessionStore:
             if len(self._sessions) >= 4096:
                 self._sessions.pop(next(iter(self._sessions)))
             self._sessions[digest] = (expiry, license_id)
+            if self.receipts is not None:
+                self.receipts.store_session(digest, expiry, license_id)
         return token, datetime.fromtimestamp(expiry, timezone.utc)
 
     def validate(self, token: str) -> bool:
@@ -181,7 +231,9 @@ class SessionStore:
         with self._lock:
             self._cleanup_locked(now)
             entry = self._sessions.get(digest)
-            return entry[1] if entry and entry[0] > now else None
+            if entry and entry[0] > now:
+                return entry[1]
+            return self.receipts.lookup_session(digest, now) if self.receipts is not None else None
 
     def _cleanup_locked(self, now: float) -> None:
         for digest, (expires, _license_id) in list(self._sessions.items()):
@@ -197,12 +249,14 @@ class GatewayConfig:
     origins: dict[str, str] | None = None
     license_validator: object = validate_license
     upstream_open: object = urlopen
+    apimart_open: object = field(default=None, repr=False)
     max_request_bytes: int = 32 * 1024 * 1024
     max_response_bytes: int = 96 * 1024 * 1024
     session_ttl_seconds: int = 24 * 60 * 60
     session_secret: str = ""
     upstream_timeout_seconds: int = DEFAULT_UPSTREAM_TIMEOUT_SECONDS
     runtime_revision: str = ""
+    receipt_db_path: str = ""
 
     @classmethod
     def from_environment(cls, environ=None):
@@ -237,6 +291,7 @@ class GatewayConfig:
                 env.get("XIAOXI_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", DEFAULT_UPSTREAM_TIMEOUT_SECONDS)
             ),
             runtime_revision=_runtime_revision(env.get("XIAOXI_GATEWAY_RUNTIME_REVISION", "")),
+            apimart_open=_apimart_proxy_open(env.get("XIAOXI_GATEWAY_APIMART_PROXY_URL", "")),
         )
 
     def __post_init__(self):
@@ -261,10 +316,120 @@ class GatewayConfig:
             "volcengine_tts": bool(self.keys.get("volcengine_tts")),
             "volcengine_asr": bool(self.keys.get("volcengine_asr") or (self.asr_app_id and self.asr_access_token)),
             "apimart": bool(self.keys.get("apimart")),
+            # These advertise installed fixed routes, not a guarantee that an
+            # upstream account/model or an individual face has been approved.
+            "apimart_video": bool(self.keys.get("apimart")),
+            "apimart_avatar_assets": bool(self.keys.get("apimart")),
         }
 
     def configured(self, provider: str) -> bool:
         return self.capabilities().get(provider, False)
+
+
+class ReceiptStore:
+    """Bounded, subject-scoped result receipts; never persists request bodies."""
+
+    def __init__(self, path, secret):
+        self.lock = threading.Lock()
+        self.secret = secret
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.execute("""CREATE TABLE IF NOT EXISTS operation_receipts (
+            subject_hash TEXT NOT NULL, operation_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+            response_status INTEGER, headers_json TEXT, raw BLOB,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY(subject_hash, operation_id, fingerprint))""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS gateway_sessions (
+            token_digest BLOB PRIMARY KEY, expires_at REAL NOT NULL,
+            subject TEXT NOT NULL)""")
+        self.db.commit()
+
+    def store_session(self, digest, expiry, subject):
+        with self.lock:
+            self.db.execute("DELETE FROM gateway_sessions WHERE expires_at<=?", (time.time(),))
+            self.db.execute("""INSERT OR REPLACE INTO gateway_sessions
+                (token_digest, expires_at, subject) VALUES (?,?,?)""", (digest, expiry, subject))
+            self.db.commit()
+
+    def lookup_session(self, digest, now):
+        with self.lock:
+            row = self.db.execute("""SELECT subject FROM gateway_sessions
+                WHERE token_digest=? AND expires_at>?""", (digest, now)).fetchone()
+            return row[0] if row else None
+
+    def close(self):
+        with self.lock:
+            self.db.close()
+
+    def _subject(self, subject):
+        return hmac.new(self.secret, subject.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _result(row):
+        if row[0] != "completed":
+            return None
+        return {"status": row[1], "headers": json.loads(row[2] or "{}"), "raw": row[3] or b""}
+
+    def _expire(self, now):
+        self.db.execute("""UPDATE operation_receipts
+            SET state='expired', raw=NULL, headers_json=NULL, updated_at=?
+            WHERE state='completed' AND created_at<?""",
+            (now, now - RECEIPT_RETENTION_SECONDS))
+        self.db.execute("DELETE FROM operation_receipts WHERE created_at<?",
+                        (now - RECEIPT_TOMBSTONE_SECONDS,))
+
+    def begin(self, subject, operation_id, fingerprint):
+        now = time.time()
+        subject_hash = self._subject(subject)
+        with self.lock:
+            self._expire(now)
+            row = self.db.execute("""SELECT fingerprint,state,response_status,headers_json,raw
+                FROM operation_receipts WHERE subject_hash=? AND operation_id=? AND fingerprint=?""",
+                (subject_hash, operation_id, fingerprint)).fetchone()
+            if row:
+                self.db.commit()
+                return row[1], self._result(row[1:])
+            self.db.execute("""INSERT INTO operation_receipts
+                (subject_hash,operation_id,fingerprint,state,created_at,updated_at)
+                VALUES (?,?,?,'pending',?,?)""",
+                (subject_hash, operation_id, fingerprint, now, now))
+            self.db.commit()
+            return "new", None
+
+    def finish(self, subject, operation_id, fingerprint, result):
+        raw = result.get("raw", b"")
+        state = "completed" if isinstance(raw, bytes) and len(raw) <= RECEIPT_MAX_BYTES else "unrecoverable"
+        now = time.time()
+        with self.lock:
+            if int(result.get("status", 503)) == 429:
+                # A rate limit is a known rejection, not a billable unknown outcome.
+                # Keep the existing bounded retry contract for the same operation.
+                self.db.execute("""DELETE FROM operation_receipts WHERE subject_hash=?
+                    AND operation_id=? AND fingerprint=? AND state='pending'""",
+                    (self._subject(subject), operation_id, fingerprint))
+                self.db.commit()
+                return
+            self.db.execute("""UPDATE operation_receipts SET state=?,response_status=?,
+                headers_json=?,raw=?,updated_at=? WHERE subject_hash=? AND operation_id=?
+                AND fingerprint=? AND state='pending'""",
+                (state, int(result.get("status", 503)),
+                 json.dumps(result.get("headers", {})) if state == "completed" else None,
+                 raw if state == "completed" else None, now,
+                 self._subject(subject), operation_id, fingerprint))
+            self.db.commit()
+
+    def lookup(self, subject, operation_id):
+        now = time.time()
+        with self.lock:
+            self._expire(now)
+            rows = self.db.execute("""SELECT fingerprint,state,response_status,headers_json,raw
+                FROM operation_receipts WHERE subject_hash=? AND operation_id=? LIMIT 2""",
+                (self._subject(subject), operation_id)).fetchall()
+            self.db.commit()
+        if len(rows) > 1:
+            return "ambiguous", None, None
+        row = rows[0] if rows else None
+        return (row[1], self._result(row[1:]), row[0]) if row else ("missing", None, None)
 
 
 class GatewayServer(ThreadingHTTPServer):
@@ -278,6 +443,23 @@ class GatewayServer(ThreadingHTTPServer):
         self.rates = collections.OrderedDict()
         self.inflight_lock = threading.Lock()
         self.inflight = {}
+        self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
+        config.sessions.receipts = self.receipts
+
+    def server_close(self):
+        try:
+            self.receipts.close()
+        finally:
+            super().server_close()
+
+    def begin_operation(self, subject, operation_id, fingerprint):
+        with self.inflight_lock:
+            state, result = self.receipts.begin(subject, operation_id, fingerprint)
+            if state == "new":
+                entry = {"event": threading.Event(), "result": None}
+                self.inflight[fingerprint] = entry
+                return state, entry, None
+            return state, self.inflight.get(fingerprint), result
 
     def process_request(self, request, address):
         if not self.slots.acquire(False):
@@ -439,6 +621,9 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/apimart/(uploads/images|images/generations|tasks/[A-Za-z0-9._-]{1,255})", suffix)
         if match:
             return "apimart", self.config.origins["apimart"] + "/v1/" + match.group(1)
+        match = re.fullmatch(r"/apimart/(videos/generations|seedance2/private-avatar/assets)", suffix)
+        if match:
+            return "apimart", self.config.origins["apimart"] + "/v1/" + match.group(1)
         return None
 
     def _upstream_headers(self, provider: str) -> dict[str, str]:
@@ -470,7 +655,10 @@ class Handler(BaseHTTPRequestHandler):
         operation = Request(target, data=body, headers=self._upstream_headers(provider), method=method)
         response = None
         try:
-            response = self.config.upstream_open(
+            upstream_open = self.config.upstream_open
+            if provider == "apimart" and self.config.apimart_open is not None:
+                upstream_open = self.config.apimart_open
+            response = upstream_open(
                 operation,
                 timeout=self.config.upstream_timeout_seconds,
             )
@@ -533,6 +721,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply_json(503, {"error": "provider_not_configured", "provider": provider})
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
+        avatar_library = provider == "apimart" and parsed.path.endswith("/seedance2/private-avatar/assets")
+        avatar_prefix = None
+        avatar_group = None
+        if avatar_library:
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            subject = self.config.sessions.subject(token)
+            if subject is None:
+                return self._reply_json(401, {"error": "session_required"})
+            # The upstream key is shared. Bind submitted names to this license,
+            # then strip the prefix only after filtering its own library rows.
+            avatar_prefix = "xh_" + self.server.receipts._subject(subject)[:24] + "_"
+            if method == "GET" and query:
+                groups = query.get("group") if set(query) == {"group"} else None
+                if not groups or len(groups) != 1 or not re.fullmatch(r"dh_(?:[a-f0-9]{24}|[a-f0-9-]{36})", groups[0]):
+                    return self._reply_json(400, {"error": "invalid_query"})
+                avatar_group = avatar_prefix + groups[0]
+        if provider == "apimart" and ("/videos/" in parsed.path or "/private-avatar/" in parsed.path):
+            is_video = parsed.path.endswith("/videos/generations")
+            is_asset_collection = parsed.path.endswith("/private-avatar/assets")
+            if query and avatar_group is None:
+                return self._reply_json(400, {"error": "invalid_query"})
+            if (is_video and method != "POST") or (not is_video and method not in ({"GET", "POST"} if is_asset_collection else {"GET"})):
+                return self._reply_json(405, {"error": "method_not_allowed"})
         if provider == "apimart" and "/tasks/" in parsed.path:
             if any(key != "language" for key in query) or any(value != ["en"] for value in query.values()):
                 return self._reply_json(400, {"error": "invalid_query"})
@@ -544,11 +755,40 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_body()
             except (ValueError, UnicodeError):
                 return self._reply_json(400, {"error": "invalid_body"})
+            if avatar_library:
+                try:
+                    payload = json.loads(body)
+                    if not isinstance(payload, dict) or set(payload) - {"model", "group", "asset_type", "assets"}:
+                        raise ValueError("fields")
+                    assets = payload.get("assets")
+                    group = payload.get("group")
+                    if payload.get("model") != "seedance-2.5" or payload.get("asset_type") != "Image" or not isinstance(assets, list) or not 1 <= len(assets) <= 20:
+                        raise ValueError("assets")
+                    if (not isinstance(group, dict) or set(group) != {"name"}
+                            or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(group["name"]))
+                            or len(avatar_prefix + group["name"]) > 64):
+                        raise ValueError("group")
+                    group["name"] = avatar_prefix + group["name"]
+                    for asset in assets:
+                        if (not isinstance(asset, dict) or set(asset) != {"url", "name"}
+                                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(asset["name"]))
+                                or len(avatar_prefix + asset["name"]) > 64):
+                            raise ValueError("asset")
+                        if not isinstance(asset["url"], str):
+                            raise ValueError("asset_url")
+                        source = urlsplit(asset["url"])
+                        if source.scheme != "https" or not source.hostname or source.username or source.password:
+                            raise ValueError("asset_url")
+                        asset["name"] = avatar_prefix + asset["name"]
+                    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                except (ValueError, TypeError, KeyError, UnicodeError):
+                    return self._reply_json(400, {"error": "invalid_avatar_submission"})
 
         operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "").strip()
         key = None
         entry = None
         owner = True
+        subject = None
         if method == "POST" and OPERATION_ID.fullmatch(operation_id):
             token = self.headers.get('Authorization', '').removeprefix('Bearer ').strip()
             subject = self.config.sessions.subject(token)
@@ -561,7 +801,12 @@ class Handler(BaseHTTPRequestHandler):
                               'host', 'user-agent', 'x-request-id', 'x-xiaoxi-operation-id'}}
             key = hashlib.sha256(json.dumps([subject, operation_id, method, provider, target,
                 parameters, hashlib.sha256(body or b'').hexdigest()], sort_keys=True).encode()).hexdigest()
-            entry, owner = self.server.acquire_inflight(key)
+            state, entry, stored = self.server.begin_operation(subject, operation_id, key)
+            if state == "completed":
+                return self._send_result(stored)
+            if state in {"expired", "unrecoverable"} or state == "pending" and entry is None:
+                return self._reply_json(409, {"error": "operation_outcome_unknown"})
+            owner = state == "new"
             if not owner:
                 if not entry["event"].wait(self.config.upstream_timeout_seconds + 60):
                     return self._send_result(self._json_result(
@@ -573,7 +818,56 @@ class Handler(BaseHTTPRequestHandler):
                     {"X-Xiaoxi-Error-Origin": "gateway_transport"},
                 ))
         try:
+            if avatar_group:
+                group_target = self.config.origins["apimart"] + "/v1/seedance2/private-avatar/groups?name=" + quote(avatar_group, safe="")
+                group_result = self._proxy_upstream("GET", "apimart", group_target, None)
+                if not 200 <= group_result["status"] < 300:
+                    return self._reply_json(502, {"error": "avatar_group_lookup_failed"})
+                try:
+                    groups_payload = json.loads(group_result["raw"])
+                    groups_data = groups_payload.get("Result", groups_payload.get("data", groups_payload))
+                    groups_rows = groups_data.get("Items", groups_data.get("items"))
+                    if not isinstance(groups_rows, list):
+                        raise ValueError("unsupported_group_response")
+                    owned_groups = [row for row in groups_rows if isinstance(row, dict)
+                                    and row.get("Name", row.get("name")) == avatar_group]
+                    if not owned_groups:
+                        return self._reply_json(200, {"data": {"items": []}})
+                    if len(owned_groups) != 1:
+                        raise ValueError("ambiguous_group")
+                    group_id = owned_groups[0].get("Id", owned_groups[0].get("id"))
+                    if not isinstance(group_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", group_id):
+                        raise ValueError("invalid_group_id")
+                    target += "?group_id=" + quote(group_id, safe="")
+                except (ValueError, TypeError, AttributeError):
+                    return self._reply_json(502, {"error": "avatar_group_response_invalid"})
             result = self._proxy_upstream(method, provider, target, body)
+            if avatar_library and method == "GET" and 200 <= result["status"] < 300:
+                try:
+                    payload = json.loads(result["raw"])
+                    if not isinstance(payload, dict):
+                        raise ValueError("unsupported_library_response")
+                    data = payload.get("Result", payload.get("data", payload))
+                    rows = data if isinstance(data, list) else data.get("Items", data.get("items", data.get("assets", data.get("list"))))
+                    if not isinstance(rows, list):
+                        raise ValueError("unsupported_library_response")
+                    owned = []
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        name = str(row.get("Name", row.get("name", row.get("asset_name", ""))))
+                        if name.startswith(avatar_prefix):
+                            item = {
+                                "id": row.get("Id", row.get("id", row.get("asset_id"))),
+                                "status": row.get("Status", row.get("status", row.get("moderation_status"))),
+                            }
+                            if not isinstance(item["id"], str) or not isinstance(item["status"], str):
+                                continue
+                            item["name"] = name[len(avatar_prefix):]
+                            owned.append(item)
+                    result = self._json_result(200, {"data": {"items": owned}}, {"Content-Type": "application/json"})
+                except (ValueError, TypeError, AttributeError):
+                    result = self._json_result(502, {"error": "avatar_library_response_invalid"})
         except Exception:
             result = self._json_result(
                 503, {"error": "provider_unavailable"},
@@ -581,7 +875,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         finally:
             if key is not None and entry is not None and owner:
-                self.server.finish_inflight(key, entry, result)
+                try:
+                    self.server.receipts.finish(subject, operation_id, key, result)
+                finally:
+                    self.server.finish_inflight(key, entry, result)
         return self._send_result(result)
 
     def do_GET(self):
@@ -605,6 +902,24 @@ class Handler(BaseHTTPRequestHandler):
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
             return self._reply_json(200, {"ok": True, "schema": 1, "capabilities": self.config.capabilities()})
+        operation = route.removeprefix(PREFIX + "/operations/") if route.startswith(PREFIX + "/operations/") else ""
+        if operation:
+            if not OPERATION_ID.fullmatch(operation):
+                return self._reply_json(404, {"error": "not_found"})
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            subject = self.config.sessions.subject(token)
+            if subject is None:
+                return self._reply_json(401, {"error": "session_required"})
+            state, result, fingerprint = self.server.receipts.lookup(subject, operation)
+            if state == "completed":
+                return self._send_result(result)
+            if state == "pending":
+                with self.server.inflight_lock:
+                    active = fingerprint in self.server.inflight
+                return self._reply_json(202 if active else 409,
+                                        {"status": "pending"} if active else {"error": "operation_outcome_unknown"})
+            return self._reply_json(404 if state == "missing" else 409,
+                                    {"error": "receipt_not_found" if state == "missing" else "operation_outcome_unknown"})
         if route.startswith(PREFIX + "/"):
             return self._proxy("GET")
         return self._reply_json(404, {"error": "not_found"})
@@ -665,6 +980,7 @@ def main():
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         raise SystemExit("provider gateway must bind to loopback")
     config = GatewayConfig.from_environment()
+    config.receipt_db_path = "/var/lib/ai-provider-gateway/operation-receipts.sqlite3"
     server = GatewayServer((args.host, args.port), Handler, config)
     server.serve_forever()
 

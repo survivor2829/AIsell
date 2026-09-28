@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import base64
+import ssl
 import urllib.error
+from pathlib import Path
 
 import pytest
 
 import ai_image_apimart as adapter
+import provider_transport
+
+
+def test_gateway_tls_is_verified_and_only_applies_to_gateway_requests(monkeypatch):
+    origin = "https://gateway.invalid"
+    gateway_url = origin + "/v1/provider-gateway/apimart/tasks/example"
+    pem = (Path(__file__).resolve().parents[4] / "src/main/cloud-test-ca.crt").read_text()
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", origin)
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_CA_PEM", pem)
+    opener = adapter._build_apimart_opener(gateway_url, direct=True)
+    handler = next(item for item in opener.handlers if isinstance(item, adapter.urllib.request.HTTPSHandler))
+    assert handler._context.check_hostname is True
+    assert handler._context.verify_mode == ssl.CERT_REQUIRED
+    assert ssl.PEM_cert_to_DER_cert(pem) in handler._context.get_ca_certs(binary_form=True)
+    for url in ("https://api.apimart.ai/v1/tasks/example", origin + ".other/v1/provider-gateway/a",
+                origin + "/cdn/result.png"):
+        assert provider_transport.gateway_tls_context(url) is None
+    redirect = next(item for item in opener.handlers if isinstance(item, provider_transport._GatewayNoRedirect))
+    with pytest.raises(urllib.error.HTTPError):
+        redirect.redirect_request(adapter.urllib.request.Request(gateway_url), None, 302, "redirect", {}, "https://other.invalid/")
+    monkeypatch.delenv("XIAOXI_PROVIDER_GATEWAY_CA_PEM")
+    with pytest.raises(ValueError, match="证书未配置"):
+        provider_transport.build_provider_opener(gateway_url, proxies={})
 
 
 @pytest.fixture(autouse=True)

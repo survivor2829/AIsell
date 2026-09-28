@@ -54,6 +54,21 @@
       "catalogVersion": "2026.09.05-volcengine-xiaohe-2"
     },
     {
+      "voicePersonaId": "volc-monkey-brother-2@1",
+      "displayName": "猴哥 2.0",
+      "provider": "volcengine",
+      "providerModel": "seed-tts-2.0",
+      "providerVoiceId": "zh_male_sunwukong_uranus_bigtts",
+      "instruction": "中文男声，表达有力量但不夸张，适合清洁机器人渠道和实训营解说；重点清楚，停顿自然。",
+      "style": "reliable_business",
+      "autoSelectPriority": 0,
+      "approvalStatus": "pending",
+      "sourceUrl": "https://www.volcengine.com/docs/6561/1257544",
+      "researchDate": "2026-09-21",
+      "evidenceNote": "公开音色目录标注的豆包语音 2.0 猴哥候选音色；需在当前火山账号控制台试听并批准后用于正式成片，账号未开通时不自动重试。",
+      "catalogVersion": "2026.09.21-volcengine-monkey-2"
+    },
+    {
       "voicePersonaId": "volc-straight-yingzi@1",
       "displayName": "直率英子",
       "provider": "volcengine",

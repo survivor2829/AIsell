@@ -97,11 +97,11 @@ async function assertPreloadContract() {
   ]);
   assert.deepEqual(Object.keys(api.creative).sort(), [
     "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate",
-    "generateCourseCuts", "generateGuidedAutoMixScriptV2", "generateMixBatch", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
+    "generateCourseCuts", "generateGuidedAutoMixScriptV2", "generateMixBatch", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGenerated", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
     "getPackagingCostEstimate", "getProject", "importMusicCatalogTrack", "listAutoMixVoicePersonas", "listBrandProfiles", "listGenerated", "listMediaReviews", "listMusicCatalogTracks", "listOneClickCandidates", "listPackagingPresets",
     "listSegments", "mediaUrl", "open", "packageGeneratedVideos", "preflightVisualComparison", "prepareGuidedAutoMixV2", "previewAutoMixVoicePersona",
     "queue", "recordMediaReview", "regenerate", "regenerateAutoMixLayer", "regenerateCover", "reject", "repackageVideo", "reveal",
-    "saveBrandProfile"
+    "saveBrandProfile", "updateCoverTitle"
   ]);
   assert.deepEqual(Object.keys(api.mix).sort(), [
     "calculateCombinations", "createProject", "generateCandidates", "getProject",
@@ -697,24 +697,21 @@ function assertMainLifecycle() {
   const ipcSource = read("src/main/content-engine-ipc.cjs");
   assert.equal(ipcSource.includes("const MEDIA_FILTERS"), false);
   assert.equal(ipcSource.includes("const VIDEO_FILTERS"), false);
-  assert.match(source, /XIAOXI_CONTENT_ENGINE_SIDECAR/);
+  const runtimeGateSource = read("src/main/development-sidecar-runtime.cjs");
   const runtimeResolver = source.match(/function contentEngineRuntimePath\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
-  assert.equal(
-    runtimeResolver.indexOf("app.isPackaged") < runtimeResolver.indexOf("XIAOXI_CONTENT_ENGINE_SIDECAR"),
-    true,
-    "packaged builds must ignore the development runtime environment override"
-  );
+  assert.match(runtimeResolver, /app\.isPackaged[\s\S]*resolveDevelopmentContentEngineLaunch/);
   assert.match(
     source,
     /components\.resourcesPath\(\)[\s\S]*?"content-engine"[\s\S]*?"content-engine-worker\.exe"/
   );
   assert.match(
-    source,
-    /resolveDefaultDevelopmentSidecarRuntime\("content-engine"\)/
+    runtimeGateSource,
+    /resolveDefaultDevelopmentSidecarRuntime\("content-engine"(?:, options)?\)/
   );
   assert.match(source, /function contentEngineRuntimeArgs\(\)/);
-  assert.match(source, /XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY/);
   assert.match(source, /runtimeArgs: contentEngineRuntimeArgs\(\)/);
+  assert.match(runtimeGateSource, /XIAOXI_CONTENT_ENGINE_SIDECAR/);
+  assert.match(runtimeGateSource, /XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY/);
   const remotionRuntimeResolver = source.match(/function remotionRuntimeEnvironment\(\) \{([\s\S]*?)\n\}/u)?.[1] || "";
   assert.match(remotionRuntimeResolver, /resolveRemotionRuntimeEnvironment/u);
   assert.match(remotionRuntimeResolver, /isPackaged: app\.isPackaged/u);
@@ -738,7 +735,6 @@ function assertMainLifecycle() {
     /\.build", "remotion-runtime", "development", "remotion-bundle"/u,
     "development must load the bundle produced by build:remotion-runtime"
   );
-  const runtimeGateSource = read("src/main/development-sidecar-runtime.cjs");
   assert.match(
     runtimeGateSource,
     /"content-engine-runtime", "content-engine-worker\.exe"/

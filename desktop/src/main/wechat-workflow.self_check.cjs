@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+process.exitCode = 1;
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -6,6 +7,816 @@ const { createWechatWorkflowController, workflowFailureReason } = require("./wec
 const { createAiExpertStore } = require("./ai-expert.cjs");
 const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
+const { createTouchWorkflow } = require("./touch-workflow.cjs");
+const { createAutoReplyController } = require("./auto-reply-ipc.cjs");
+const { loadTaskState, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+const { createTaskPassportStore } = require("./task-passport.cjs");
+const { configureDiagnostics } = require("./diagnostics.cjs");
+const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy.cjs");
+
+const temporaryDirectories = [];
+function trackedMkdtemp(prefix) {
+  const dir = fs.mkdtempSync(prefix);
+  temporaryDirectories.push(dir);
+  return dir;
+}
+
+async function checkTouchStatusDoesNotRecoverActiveSend() {
+  for (const multipart of [false, true]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-status-race-"));
+    const dataDir = path.join(root, "touch");
+    const id = multipart ? "multipart" : "text";
+    const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const payload = { script: "您好，想了解您的设备需求。", contacts: [contact], ...(multipart ? { imageIds: ["image-1"] } : {}) };
+    const taskRecord = { id, payload };
+    const taskDir = path.join(dataDir, "workflow-tasks", require("node:crypto").createHash("sha256").update(id).digest("hex"));
+    let release;
+    const workflowOptions = {
+      dataDir, readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      mediaStore: { resolve: () => ({ path: "image-1" }) },
+      execute: async () => {
+        if (!release) await new Promise((resolve) => { release = resolve; });
+        return { ok: true, state: { real_send_status: "sent_verified" } };
+      }
+    };
+    const workflow = createTouchWorkflow(workflowOptions);
+    const running = workflow.runWorkflowStep(taskRecord, { isEnabled: () => true });
+    for (let attempt = 0; !release && attempt < 100; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(release, `the fake sender must hold the persisted sending state: ${JSON.stringify(release ? null : await running)}`);
+    for (let poll = 0; poll < 3; poll += 1) {
+      workflow.describeSkippedWorkflowTask(taskRecord);
+      assert.equal(workflow.canRetryWorkflowTask(taskRecord, payload), false);
+    }
+    const duringSend = loadTaskState(taskDir);
+    assert.equal(duringSend.status, "running", "status polling must not recover a live task");
+    assert.equal(duringSend.results[0].status, "sending");
+
+    const restartRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-restart-"));
+    const restartDir = path.join(restartRoot, "touch", "workflow-tasks", path.basename(taskDir));
+    fs.mkdirSync(path.dirname(restartDir), { recursive: true });
+    fs.cpSync(taskDir, restartDir, { recursive: true });
+    const restarted = createTouchWorkflow({ ...workflowOptions, dataDir: path.join(restartRoot, "touch"),
+      execute: async () => { throw new Error("interrupted sends must not be repeated"); } });
+    const restartResult = await restarted.runWorkflowStep(taskRecord, { isEnabled: () => true });
+    const recovered = loadTaskState(restartDir);
+    assert.equal(restartResult.status, "needs_attention");
+    assert.equal(recovered.status, "paused", "a real restart must still recover an interrupted send");
+    if (!multipart) assert.equal(recovered.results[0].status, "outcome_unknown");
+
+    release();
+    const completed = await running;
+    assert.equal(completed.status, "completed");
+    assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified");
+  }
+}
+
+async function checkInterruptedSendRecoveryInSameProcess() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-send-fault-"));
+  const dataDir = path.join(root, "touch");
+  const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+  let sends = 0;
+  let firstAttention = null;
+  const touch = createTouchWorkflow({
+    dataDir, readContacts: () => [contact],
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+    passport: { bindTrace() { throw Object.assign(new Error("injected post-persist fault"), { code: "ENOSPC" }); } },
+    execute: async () => { sends += 1; throw new Error("the uncertain send must not be repeated"); }
+  });
+  const controller = createWechatWorkflowController({
+    rootDir: root, activeTouchDir: dataDir, autoReplyDir: path.join(root, "reply"), momentsDir: path.join(root, "moments"),
+    autoSchedule: false, getAccount: () => "test-account",
+    onUpdate: (snapshot) => {
+      if (!firstAttention && snapshot.tasks.some((task) => task.status === "needs_attention")) firstAttention = snapshot;
+    },
+    executors: { touch: { ...touch, prepareWorkflowTask: (_id, input) => touch.prepareWorkflowTask(input) } }
+  });
+  try {
+    const added = await controller.addTask({ type: "touch", payload: { script: "您好，想了解您的设备需求。", contactIds: [contact.id] } });
+    await controller.start();
+    await controller.tick();
+    assert.equal(firstAttention?.tasks[0]?.status, "needs_attention");
+    assert.equal(firstAttention.tasks[0].canRetry, false);
+    assert.equal(firstAttention.tasks[0].unknownResolution?.required, true,
+      "the first attention snapshot must show manual confirmation after recovery");
+    const taskDir = path.join(dataDir, "workflow-tasks", require("node:crypto").createHash("sha256").update(added.task.id).digest("hex"));
+    const recovered = loadTaskState(taskDir);
+    assert.equal(recovered.status, "paused");
+    assert.equal(recovered.results[0].status, "outcome_unknown");
+    assert.equal(sends, 0, "recovery must not automatically send again");
+  } finally {
+    await controller.dispose();
+  }
+}
+
+async function checkClickedAttentionPersistFailureRecovery() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-clicked-fault-"));
+  const dataDir = path.join(root, "touch");
+  const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+  let sends = 0;
+  let failNextPersist = false;
+  let firstAttention = null;
+  const originalOpenSync = fs.openSync;
+  const touch = createTouchWorkflow({
+    dataDir, readContacts: () => [contact],
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+    execute: async ({ onTransition }) => {
+      sends += 1;
+      onTransition("clicked");
+      failNextPersist = true;
+      return { ok: false, error: "send receipt unavailable" };
+    }
+  });
+  const controller = createWechatWorkflowController({
+    rootDir: root, activeTouchDir: dataDir, autoReplyDir: path.join(root, "reply"), momentsDir: path.join(root, "moments"),
+    autoSchedule: false, getAccount: () => "test-account",
+    onUpdate: (snapshot) => {
+      if (!firstAttention && snapshot.tasks.some((task) => task.status === "needs_attention")) firstAttention = snapshot;
+    },
+    executors: { touch: { ...touch, prepareWorkflowTask: (_id, input) => touch.prepareWorkflowTask(input) } }
+  });
+  try {
+    await controller.addTask({ type: "touch", payload: { script: "您好，想了解您的设备需求。", contactIds: [contact.id] } });
+    fs.openSync = (file, ...args) => {
+      if (failNextPersist && String(file).includes("touch_task.json.") && String(file).endsWith(".tmp")) {
+        failNextPersist = false;
+        throw Object.assign(new Error("injected attention persist failure"), { code: "ENOSPC" });
+      }
+      return originalOpenSync(file, ...args);
+    };
+    await controller.start();
+    await controller.tick();
+    assert.equal(failNextPersist, false, "the fault must reach attention persist");
+    assert.equal(firstAttention?.tasks[0]?.status, "needs_attention");
+    assert.equal(firstAttention.tasks[0].unknownResolution?.required, true,
+      "the first attention snapshot must recover disk clicked despite the changed in-memory status");
+    assert.equal(sends, 1, "recovery must not send again");
+  } finally {
+    fs.openSync = originalOpenSync;
+    try {
+      await controller.dispose();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function checkR008BoundedRecovery() {
+  assert.deepEqual(classifyWechatFailureReason("wechat_window_preflight_failed"), {
+    reasonCode: "wechat_window_preflight_failed", classification: "environment", attentionScope: "global", known: true
+  });
+  const circuitPolicy = classifyWechatFailureReason("wechat_search_identity_circuit_open");
+  assert.equal(circuitPolicy.known, true);
+  assert.equal(circuitPolicy.attentionScope, "global");
+  for (const multipart of [false, true]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-recovery-"));
+    try {
+    const contacts = [1, 2, 3, 4].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let attempt = 0;
+    let succeed = false;
+    let fixedHash = "";
+    const bills = [];
+    const failures = [];
+    const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0,
+      readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      ...(multipart ? { mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) } } : {}),
+      passport: { recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence), bindTrace() {},
+        writeRunBill: (moduleName, id, rows) => bills.push(billStore.writeRunBill(moduleName, id, rows)) },
+      execute: async () => {
+        attempt += 1;
+        return succeed
+          ? { ok: true, state: { real_send_status: "sent_verified" } }
+          : { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: fixedHash || `candidate-${attempt}` } };
+      }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。",
+      contactIds: contacts.map((contact) => contact.id), ...(multipart ? { imageIds: ["image-1"] } : {}) });
+    const record = { id: `r008-${multipart}`, payload };
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    for (const delay of [2000, 8000, 20000]) {
+      const result = await step();
+      assert.equal(result.status, "pending");
+      assert.equal(result.retryAfterMs, delay);
+      assert.equal(loadTaskState(taskDir).current_index, 0);
+    }
+    assert.equal(failures.length, 0, "retries must not capture failure attachments");
+    assert.equal((await step()).status, "pending");
+    assert.equal(loadTaskState(taskDir).results[0].status, "identity_skipped");
+    assert.equal(loadTaskState(taskDir).results[0].search_evidence.rule_id, "search-r008");
+    assert.equal(failures.length, 1, "one final failure per skipped contact");
+    assert.equal(failures[0].rawReading.diagnostics.candidate_set_hash, "candidate-4");
+    fixedHash = "stable-candidate-set";
+    assert.equal((await step()).retryAfterMs, 2000);
+    assert.equal((await step()).status, "pending", "unchanged evidence skips after the second read");
+    assert.equal(loadTaskState(taskDir).results[1].status, "identity_skipped");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 2);
+    assert.equal(failures.length, 2);
+    assert.equal((await step()).retryAfterMs, 2000);
+    const circuit = await step();
+    const paused = loadTaskState(taskDir);
+    assert.equal(circuit.status, "needs_attention");
+    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.equal(paused.current_index, 2);
+    assert.equal(paused.results[2].status, "generated");
+    assert.equal(paused.results[2].send_attempted, false);
+    assert.equal(paused.results[2].retry_blocked, false);
+    assert.equal(workflow.canRetryWorkflowTask(record, payload), true);
+    assert.equal(failures.length, 3, "circuit captures one failure for the current contact");
+    for (const delay of [2000, 8000, 20000]) {
+      fixedHash = "";
+      const resumed = await step();
+      assert.equal(resumed.status, "pending");
+      assert.equal(resumed.retryAfterMs, delay, "resumed circuit contact must retry fully");
+    }
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+    assert.equal((await step()).status, "pending");
+    assert.equal(loadTaskState(taskDir).results[2].status, "identity_skipped");
+    assert.equal(loadTaskState(taskDir).current_index, 3, "resumed circuit must advance to the fourth contact");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 1);
+    assert.equal(failures.length, 4, "resumed contact captures one final failure");
+    succeed = true;
+    assert.equal((await step()).status, "completed");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined, "a verified send resets the circuit count");
+    assert.equal(bills.at(-1).rule_counts["search-r008"], 3);
+    const retry = workflow.retrySkippedWorkflowTask(record, [contacts[0].id]);
+    assert.equal(retry.ok, true);
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+    succeed = false;
+    fixedHash = "candidate-4";
+    const retried = await step();
+    assert.equal(retried.retryAfterMs, 2000, "rejoined contact starts identity verification again");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function checkR008PassportAttachmentCount() {
+  const ocrPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
+  for (const [ruleId, reasonCode, expectedScreenshots] of [
+    ["search-r008", "search_result_identity_unverified", 0],
+    ["search-r014", "search_result_identity_unverified", 1],
+    ["search-r015", "exact_search_result_not_found", 1]
+  ]) {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-passport-"));
+  try {
+    let screenshots = 0;
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let reads = 0;
+    const temporaryCaptures = [];
+    const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const logger = configureDiagnostics({ rootDir: path.join(root, "diagnostics") });
+    const passport = createTaskPassportStore({ rootDir: path.join(root, "passport"),
+      captureScreenshot: () => { screenshots += 1; return Buffer.from("89504e470d0a1a0a", "hex"); } });
+    const unsubscribe = logger.subscribe((entry) => passport.observeDiagnostic(entry));
+    try {
+      const workflow = createTouchWorkflow({
+        dataDir: path.join(root, "touch"), now: () => new Date(clock), readContacts: () => [contact], passport,
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        execute: async () => {
+          const diagnostics = { rule_id: ruleId, candidate_set_hash: `read-${++reads}` };
+          if (ruleId === "search-r008") {
+            const file = path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+            fs.writeFileSync(file, ocrPng);
+            temporaryCaptures.push(file);
+            diagnostics.search_capture_file = file;
+          }
+          return { ok: false, send_attempted: false, blocked_reason: reasonCode, diagnostics };
+        }
+      });
+      const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id] });
+      const record = { id: `passport-count-${ruleId}`, payload };
+      for (const delay of reasonCode === "search_result_identity_unverified" ? [2000, 8000, 20000] : []) {
+        clock += 60 * 60 * 1000;
+        assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, delay);
+        assert.equal(screenshots, 0, "bounded retries must not consume passport attachments");
+      }
+      clock += 60 * 60 * 1000;
+      assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+      assert.equal(screenshots, expectedScreenshots, `${ruleId} must have one final failure with the real diagnostics subscriber`);
+      assert.equal(temporaryCaptures.every((file) => !fs.existsSync(file)), true,
+        "each transient OCR capture must be removed after the workflow step");
+      const passportRoot = path.join(root, "passport", "task-passports", "active_touch");
+      const files = fs.readdirSync(passportRoot, { recursive: true }).map(String);
+      const screenshotsOnDisk = files.filter((file) => file.endsWith("-screen.png"));
+      assert.equal(screenshotsOnDisk.length, 1, "final skip must save exactly one failure screenshot");
+      const allPassportEvents = files.filter((file) => file.endsWith("events.jsonl"))
+        .flatMap((file) => fs.readFileSync(path.join(passportRoot, file), "utf8").trim().split(/\r?\n/u).map(JSON.parse));
+      const finalFailures = allPassportEvents
+        .filter((entry) => entry.status === "failed" && entry.attachments?.some((name) => name.endsWith("-screen.png")));
+      assert.equal(finalFailures.length, 1, "final identity skip must attach one passport failure record");
+      if (ruleId === "search-r008") {
+        assert.deepEqual(fs.readFileSync(path.join(passportRoot, screenshotsOnDisk[0])), ocrPng,
+          "r008 passport attachment must be the OCR capture, not a fresh main-window screenshot");
+        const taskDir = path.join(root, "touch", "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+        assert.doesNotMatch(JSON.stringify(loadTaskState(taskDir)), /search_capture_file|searchCapturePng/u,
+          "capture paths and bytes must not enter the task row");
+      }
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  }
+}
+
+async function checkR008PartialSend() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-partial-"));
+  try {
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let textSends = 0;
+    let textReads = 0;
+    let imageReads = 0;
+    const bills = [];
+    const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
+    const contact = { id: "partial-1", name: "客户一", wechatId: "wxid_partial_1", wechatAccountId: "test-account" };
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure() {},
+        writeRunBill: (moduleName, id, rows) => bills.push(billStore.writeRunBill(moduleName, id, rows)) },
+      execute: async ({ message }) => {
+        if (!message.startsWith("[图片:")) {
+          textReads += 1;
+          if (textReads === 1) return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: "same-search-result" } };
+          textSends += 1;
+          return { ok: true, state: { real_send_status: "sent_verified" } };
+        }
+        imageReads += 1;
+        return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: "search-r008", candidate_set_hash: imageReads === 1 ? "same-search-result" : `image-read-${imageReads}` } };
+      }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id], imageIds: ["image-1"] });
+    const record = { id: "r008-partial", payload };
+    let result;
+    clock += 60 * 60 * 1000;
+    result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+    assert.equal(result.retryAfterMs, 2000, "text identity failure gets its first recovery delay");
+    const seededDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const seededTask = loadTaskState(seededDir);
+    seededTask.identity_skip_streak = { rule_id: "search-r008", count: 1 };
+    saveTaskState(seededDir, seededTask);
+    for (const delay of [2000, 8000, 20000]) {
+      clock += 60 * 60 * 1000;
+      result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+      assert.equal(result.retryAfterMs, delay);
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      assert.equal(loadTaskState(taskDir).results[0].identity_recovery_attempts, [1, 2, 3][[2000, 8000, 20000].indexOf(delay)],
+        "the successful text part resets recovery attempts before the image retry");
+      if (delay === 2000) assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+    }
+    clock += 60 * 60 * 1000;
+    result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+    assert.equal(result.status, "completed");
+    assert.equal(result.result.deliveryStatus, "partial_sent");
+    assert.equal(textSends, 1, "verified text must never be sent again");
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const row = loadTaskState(taskDir).results[0];
+    assert.equal(row.message_parts[0].status, "sent_verified");
+    assert.equal(row.status, "identity_skipped");
+    assert.equal(row.send_attempted, true);
+    assert.equal(row.identity_recovery_attempts, 3);
+    assert.match(row.skip_record.blockedReason, /部分内容已发送/u);
+    assert.equal(bills.at(-1).reason_counts.partial_sent_search_result_identity_unverified, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function checkT5FourthReviewExits() {
+  for (const kind of ["snapshot", "preclick", "identity", "environment", "recoverable", "unknown"]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-t5-exit-${kind}-`));
+    try {
+      let clock = Date.parse("2026-09-24T00:00:00.000Z");
+      let changed = false;
+      let imageReads = 0;
+      const bills = [];
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const workflow = createTouchWorkflow({
+        dataDir: root, now: () => new Date(clock), random: () => 0,
+        readContacts: () => changed ? [{ ...contact, name: "客户二" }] : [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill: (_module, _id, rows) => bills.push(rows) },
+        execute: async ({ message }) => {
+          if (!message.startsWith("[图片:")) return { ok: true, state: { real_send_status: "sent_verified" } };
+          imageReads += 1;
+          if (kind === "unknown") return { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" };
+          if (kind === "preclick") return { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout", pre_send_retry_exhausted: true };
+          if (kind === "environment") return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required" };
+          if (kind === "recoverable") return { ok: false, send_attempted: false, blocked_reason: "image_existing_draft_clear_failed" };
+          return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: `image-${imageReads}` } };
+        }
+      });
+      const record = { id: `t5-exit-${kind}`, payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id], imageIds: ["image-1"] }) };
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+      let outcome = await step();
+      if (kind === "snapshot") changed = true;
+      if (kind === "unknown") {
+        assert.equal(outcome.status, "needs_attention");
+        workflow.resolveUnknownWorkflowTask(record, "skip", require("node:crypto").randomUUID());
+        outcome = await step();
+        const row = loadTaskState(taskDir).results[0];
+        assert.equal(row.send_attempted, null, "manual unknown skip must retain uncertain send outcome");
+        assert.match(row.reason, /结果未知/u);
+        assert.doesNotMatch(row.reason, /后续内容未发/u);
+        assert.equal(bills.at(-1)[0].reasonCode, "outcome_unknown");
+        continue;
+      }
+      for (let attempt = 0; outcome.status !== "completed" && attempt < 6; attempt += 1) outcome = await step();
+      assert.equal(outcome.status, "completed", `${kind} reaches its skip exit`);
+      assert.equal(outcome.result.deliveryStatus, "partial_sent", `${kind} response preserves text receipt`);
+      const row = loadTaskState(taskDir).results[0];
+      assert.equal(row.send_attempted, true, `${kind} row preserves text receipt`);
+      assert.match(row.reason, /^部分内容已发送/u, `${kind} reason identifies partial send`);
+      assert.match(row.skip_record.blockedReason, /^部分内容已发送/u, `${kind} skip record identifies partial send`);
+      assert.match(bills.at(-1)[0].reasonCode, /^partial_sent_/u, `${kind} bill identifies partial send`);
+      assert.equal(bills.at(-1)[0].ruleId, kind === "identity" ? "search-r008" : "", `${kind} bill uses only its own identity rule`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function checkT5FourthReviewRulesAndEvidence() {
+  for (const kind of ["rejoined_success", "other_identity", "diagnostics"]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-t5-rule-${kind}-`));
+    try {
+      let clock = Date.parse("2026-09-24T00:00:00.000Z");
+      let succeed = false;
+      let reads = 0;
+      const bills = [], billRows = [];
+      const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
+      const failures = [];
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const workflow = createTouchWorkflow({
+        dataDir: root, now: () => new Date(clock), readContacts: () => [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence),
+          writeRunBill: (moduleName, id, rows) => { billRows.push(rows); bills.push(billStore.writeRunBill(moduleName, id, rows)); } },
+        execute: async () => succeed ? { ok: true, state: { real_send_status: "sent_verified" } }
+          : kind === "other_identity" ? ++reads === 1
+            ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+              diagnostics: { rule_id: "search-r008", candidate_set_hash: "old-result" } }
+            : { ok: false, send_attempted: false, blocked_reason: "search_result_not_opened",
+              diagnostics: { candidate_set_hash: "new-result" } }
+            : { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+              diagnostics: kind === "diagnostics"
+                ? { rule_id: "search-r014", candidate_set_hash: "same", capture_source: "popup",
+                  popup_bounds: { left: 300, top: 200, right: 500, bottom: Infinity }, popup_dpi: 120,
+                  search_columns: [62, Infinity], popup_candidate_count: 2 }
+                : { rule_id: "search-r008", candidate_set_hash: "same" } }
+      });
+      const record = { id: `t5-rule-${kind}`, payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id] }) };
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+      if (kind === "other_identity") {
+        assert.equal((await step()).retryAfterMs, 2000);
+        assert.equal((await step()).status, "completed");
+        assert.equal(billRows.at(-1)[0].ruleId, "", "an identity failure without its own rule must not inherit r008");
+        assert.deepEqual(bills.at(-1).rule_counts, {});
+        continue;
+      }
+      assert.equal((await step()).retryAfterMs, 2000);
+      assert.equal((await step()).status, "completed");
+      if (kind === "diagnostics") {
+        const evidence = loadTaskState(taskDir).results[0].search_evidence;
+        assert.equal(evidence.capture_source, "popup");
+        assert.deepEqual(evidence.popup_bounds, { left: 300, top: 200, right: 500 });
+        assert.equal(evidence.popup_dpi, 120);
+        assert.deepEqual(evidence.search_columns, [62]);
+        assert.equal(evidence.popup_candidate_count, 2);
+        assert.deepEqual(failures.at(-1).rawReading.diagnostics, evidence);
+      } else {
+        assert.equal(workflow.retrySkippedWorkflowTask(record, [contact.id]).ok, true);
+        succeed = true;
+        assert.equal((await step()).status, "completed");
+        assert.equal(billRows.at(-1)[0].ruleId, "", "a successful rejoin must not retain the earlier r008 rule");
+        assert.deepEqual(bills.at(-1).rule_counts, {});
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+}
+
+async function checkR008EvidencePrivacy(ruleId = "search-r008") {
+  const workflowSource = fs.readFileSync(path.join(__dirname, "touch-workflow.cjs"), "utf8");
+  assert.match(workflowSource, /const \{ search_capture_file: _captureFile, \.\.\.safeDiagnostics \} = partOutcome\.diagnostics;\s*partOutcome = \{ \.\.\.partOutcome, diagnostics: safeDiagnostics \};/u,
+    "the consumed temp path must be removed from the workflow result before diagnostics can propagate");
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-evidence-privacy-"));
+  try {
+    const secret = "张三客户PLAINTEXT";
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let reads = 0;
+    const failures = [];
+    const capturePng = Buffer.from("89504e470d0a1a0a", "hex");
+    const unsafeCapture = path.join(root, `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+    fs.writeFileSync(unsafeCapture, capturePng);
+    const temporaryCaptures = [];
+    const contacts = [1, 2, 3].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence) },
+      execute: async () => {
+        const capture = reads === 0 ? unsafeCapture
+          : path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
+        if (capture !== unsafeCapture) { fs.writeFileSync(capture, capturePng); temporaryCaptures.push(capture); }
+        return {
+          ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: ruleId, candidate_set_hash: `hash-${Math.ceil(++reads / 2)}`, search_capture_file: capture },
+          state: { search_evidence: {
+            rule_id: ruleId, capture_source: "untrusted_source", popup_dpi: Infinity,
+            popup_candidate_count: 2, search_columns: [62, Infinity],
+            ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }],
+              capture_source: "formula_fallback", ocr_boxes: [{ text: secret, left: 1, top: 2, right: 3, bottom: 4,
+                char_count: 2, first_class: "han", last_class: "han", boundary_distance: [2], equals_query: true }] }
+          } }
+        };
+      }
+    });
+    const record = { id: `${ruleId}-evidence-privacy`, payload: workflow.prepareWorkflowTask({
+      script: "您好", contactIds: contacts.map((contact) => contact.id)
+    }) };
+    let circuit;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      clock += 60 * 60 * 1000;
+      circuit = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+      if (circuit.status === "needs_attention") break;
+    }
+    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.ok(failures.some((failure) => failure.stage === "search_identity"));
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const task = loadTaskState(taskDir);
+    const evidence = task.results[2].search_evidence;
+    assert.equal(JSON.stringify(task).includes(secret), false, "task state must not retain OCR contact text");
+    assert.equal(JSON.stringify(failures).includes(secret), false, "passport failures must not retain OCR contact text");
+    assert.equal(JSON.stringify(circuit).includes(secret), false, "circuit diagnostics must not retain OCR contact text");
+    assert.equal(JSON.stringify(task).includes("search_capture_file"), false);
+    assert.equal(JSON.stringify(failures).includes("search_capture_file"), false);
+    assert.equal(JSON.stringify(circuit).includes("search_capture_file"), false);
+    assert.equal(fs.existsSync(unsafeCapture), true, "an untrusted screenshot path must never be read or deleted");
+    assert.equal(temporaryCaptures.every((file) => !fs.existsSync(file)), true);
+    if (ruleId === "search-r008") assert.equal(failures.some((failure) => failure.stage === "workflow_step"
+      && Buffer.isBuffer(failure.screenshotBytes)
+      && failure.screenshotBytes.equals(capturePng)), true, "r008 circuit evidence must attach OCR bytes");
+    assert.equal(evidence.popup_candidate_count, 2, "state-only numeric evidence must survive the whitelist");
+    assert.deepEqual(evidence.search_columns, [62]);
+    assert.equal(evidence.popup_dpi, undefined, `non-finite ${ruleId} DPI must be omitted`);
+    assert.equal(evidence.capture_source, undefined, "capture source must be a known enum value");
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].char_count, 2);
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].first_class, "han");
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].text, undefined,
+      "a raw OCR box must be projected through the whitelist");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function checkT5FourthReviewCircuit() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-t5-partial-circuit-"));
+  try {
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let textSends = 0;
+    const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) },
+      execute: async ({ message }) => message.startsWith("[图片:")
+        ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: "search-r008", candidate_set_hash: "same" } }
+        : (textSends += 1, { ok: true, state: { real_send_status: "sent_verified" } })
+    });
+    const record = { id: "t5-partial-circuit", payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id], imageIds: ["image-1"] }) };
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    assert.equal((await step()).retryAfterMs, 2000);
+    const seeded = loadTaskState(taskDir);
+    seeded.identity_skip_streak = { rule_id: "search-r008", count: 2 };
+    saveTaskState(taskDir, seeded);
+    const circuit = await step();
+    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.equal(circuit.result.deliveryStatus, "partial_sent");
+    const row = loadTaskState(taskDir).results[0];
+    assert.equal(row.status, "generated");
+    assert.equal(row.send_attempted, true);
+    assert.match(row.reason, /^部分内容已发送/u);
+    assert.equal(textSends, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+async function checkCircuitRejoinKeepsThirdContactRecovery() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-circuit-rejoin-"));
+  try {
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    let allowFirst = false;
+    const contacts = [1, 2, 3].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      execute: async ({ contactId }) => allowFirst && contactId === contacts[0].id
+        ? { ok: true, state: { real_send_status: "sent_verified" } }
+        : { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: "search-r008", candidate_set_hash: "unchanged" } }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+    const record = { id: "r008-circuit-rejoin", payload };
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    for (let index = 0; index < 2; index += 1) {
+      assert.equal((await step()).retryAfterMs, 2000);
+      assert.equal((await step()).status, "pending");
+    }
+    assert.equal((await step()).retryAfterMs, 2000);
+    assert.equal((await step()).reasonCode, "wechat_search_identity_circuit_open");
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const circuitRow = loadTaskState(taskDir).results[2];
+    assert.equal(circuitRow.identity_recovery_attempts, 0);
+    assert.equal(circuitRow.search_evidence.fingerprint, undefined);
+    assert.equal(workflow.retrySkippedWorkflowTask(record, [contacts[0].id]).ok, true);
+    allowFirst = true;
+    assert.equal((await step()).status, "pending");
+    assert.equal((await step()).status, "pending", "already skipped second contact advances without sending");
+    assert.equal((await step()).retryAfterMs, 2000, "third contact still gets full recovery after another row is rejoined");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function checkNonIdentitySkipDropsOldSearchRule() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-old-rule-"));
+  try {
+    let calls = 0;
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    const bills = [];
+    const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
+    const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure() {},
+        writeRunBill: (moduleName, id, rows) => bills.push(billStore.writeRunBill(moduleName, id, rows)) },
+      execute: async () => ++calls === 1
+        ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+          diagnostics: { rule_id: "search-r008", candidate_set_hash: "first" } }
+        : { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout", pre_send_retry_exhausted: true }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id] });
+    const record = { id: "r008-old-rule", payload };
+    clock += 60 * 60 * 1000;
+    assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, 2000);
+    clock += 60 * 60 * 1000;
+    assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    assert.equal(loadTaskState(taskDir).results[0].skip_record.ruleId, "",
+      "a pre-send skip must not carry the previous search rule into its record");
+    assert.equal(bills.at(-1).rule_counts["search-r008"], undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function checkOldSearchRuleDoesNotEnterOtherSkipBills() {
+  for (const exit of ["snapshot", "manual"]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-old-rule-${exit}-`));
+    try {
+      let calls = 0;
+      let changed = false;
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const bills = [];
+      const workflow = createTouchWorkflow({
+        dataDir: root, readContacts: () => changed ? [{ ...contact, name: "客户二" }] : [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill: (_module, _id, rows) => bills.push(rows) },
+        execute: async () => ++calls === 1
+          ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: "old" } }
+          : { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" }
+      });
+      const payload = workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id] });
+      const record = { id: `old-rule-${exit}`, payload };
+      assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, 2000);
+      if (exit === "snapshot") changed = true;
+      else {
+        assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "needs_attention");
+        workflow.resolveUnknownWorkflowTask(record, "skip", require("node:crypto").randomUUID());
+      }
+      assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+      assert.equal(bills.at(-1)[0].ruleId, "", `${exit} skip must not inherit r008 rule`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+}
+
+async function checkIdentityStreakClearsAfterManualOrVerifiedContact() {
+  for (const resolution of ["sent", "verified_pre_send_skip"]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-streak-reset-"));
+    try {
+      let clock = Date.parse("2026-09-24T00:00:00.000Z");
+      const contacts = [1, 2].map((number) => ({
+        id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+      }));
+      const workflow = createTouchWorkflow({
+        dataDir: root, now: () => new Date(clock), readContacts: () => contacts,
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        execute: async ({ contactId }) => contactId === contacts[0].id
+          ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: "unchanged" } }
+          : resolution === "sent"
+            ? { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" }
+            : { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout",
+              pre_send_retry_exhausted: true, state: { conversation_verified: true } }
+      });
+      const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+      const record = { id: `r008-streak-${resolution}`, payload };
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+      assert.equal((await step()).retryAfterMs, 2000);
+      assert.equal((await step()).status, "pending");
+      assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 1);
+      await step();
+      if (resolution === "sent") workflow.resolveUnknownWorkflowTask(record, "sent", require("node:crypto").randomUUID());
+      assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined,
+        "a manually confirmed send or verified pre-send skip proves search is working");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function checkRejoinedIdentityStreakStartsEmpty() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-rejoin-streak-"));
+  try {
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    const contacts = [1, 2].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      execute: async () => ({ ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+        diagnostics: { rule_id: "search-r008", candidate_set_hash: "unchanged" } })
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+    const record = { id: "r008-rejoin-streak", payload };
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    for (let contact = 0; contact < 2; contact += 1) {
+      assert.equal((await step()).retryAfterMs, 2000);
+      await step();
+    }
+    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 2);
+    assert.equal(workflow.retrySkippedWorkflowTask(record, contacts.map((contact) => contact.id)).ok, true);
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+    for (let contact = 0; contact < 2; contact += 1) {
+      assert.equal((await step()).retryAfterMs, 2000);
+      assert.notEqual((await step()).status, "needs_attention", "rejoined contacts must not inherit the old circuit count");
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function checkMissingSearchResultsDoNotTripCircuit() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-search-r015-"));
+  try {
+    const contacts = [1, 2, 3].map((number) => ({
+      id: `missing-${number}`, name: `客户${number}`, wechatId: `wxid_missing_${number}`, wechatAccountId: "test-account"
+    }));
+    let clock = Date.parse("2026-09-24T00:00:00.000Z");
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      execute: async () => ({ ok: false, send_attempted: false, blocked_reason: "exact_search_result_not_found",
+        diagnostics: { rule_id: "search-r015" } })
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+    const record = { id: "missing-search-results", payload };
+    for (let index = 0; index < contacts.length; index += 1) {
+      clock += 60 * 60 * 1000;
+      const result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+      assert.equal(result.status, index === contacts.length - 1 ? "completed" : "pending");
+    }
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
 
 async function checkFloatingProgress() {
   const windows = [];
@@ -32,7 +843,7 @@ async function checkFloatingProgress() {
     hide() { this.visible = false; }
     destroy() { this.destroyed = true; this.emit("closed"); }
   }
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-window-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-window-"));
   const control = registerWechatWorkflowIpc({
     logger: { event: (...args) => diagnosticEvents.push(args) },
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
@@ -69,6 +880,11 @@ async function checkFloatingProgress() {
   assert.equal(windows.length, 1, "starting the unified workflow must automatically create its progress window");
   assert.equal(windows[0].visible, true, "progress must be visible before queued WeChat work begins");
   assert.equal(windows[0].settings.frame, false);
+  let closePrevented = false;
+  windows[0].emit("close", { preventDefault() { closePrevented = true; } });
+  assert.equal(closePrevented, true);
+  assert.equal(diagnosticEvents.find((entry) => entry[1] === "floating.close_redirected")?.[2]?.workflow_phase,
+    control.controlSnapshot().phase);
   await invoke("show-main");
   assert.equal(windows[0].visible, true, "returning to the main page must retain progress while work is running");
   await invoke("pause");
@@ -86,15 +902,725 @@ async function checkFloatingProgress() {
   await control.dispose();
 }
 
+async function checkDiagnosticLoggerFailureIsolation() {
+  const boom = () => { throw new Error("logger_down"); };
+  const variants = [
+    ["none", undefined],
+    ["event-and-begin", { event: boom, begin: boom }],
+    ["operation", { event: boom, begin: () => ({ end: boom, fail: boom }) }],
+    ["getter", new Proxy({}, { get: boom })]
+  ];
+  let baseline;
+  for (const [name, logger] of variants) {
+    const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-log-fail-"));
+    let pauseFails = false;
+    const reply = { pauseWorkflow: async () => { if (pauseFails) throw new Error("pause_error"); } };
+    const control = createWechatWorkflowController({
+      rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
+      momentsDir: path.join(rootDir, "moments"), autoSchedule: false, getAccount: () => "test-account",
+      logger, reply,
+      executors: { interact: {
+        prepareWorkflowTask: (_id, payload) => ({ payload }), canRetryWorkflowTask: () => true,
+        runWorkflowStep: async (task) => ({ status: "needs_attention", reasonCode: "test_retry", error: "test", progress: task.progress })
+      } }
+    });
+    const added = await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
+    await control.start(); await control.tick();
+    await control.retryTask(added.task.id, true);
+    const afterRetryTask = control.status().tasks[0].status;
+    await control.start(); await control.tick();
+    await control.retryAll(true);
+    const afterRetryAll = control.status().tasks[0].status;
+    await control.start();
+    pauseFails = true;
+    await assert.rejects(control.pause(), /pause_error/, `${name}: operation.fail must preserve the original error`);
+    pauseFails = false;
+    await control.start(); await control.pause();
+    const afterPause = control.controlSnapshot();
+    await control.start(); await control.dispose();
+    const afterDispose = control.controlSnapshot();
+    const result = { afterRetryTask, afterRetryAll, afterPause, afterDispose };
+    assert.equal(afterDispose.enabled, false, `${name}: dispose must disable workflow even if logging fails`);
+    if (baseline) assert.deepEqual(result, baseline, `${name}: logging failure changed a control outcome`);
+    else baseline = result;
+  }
+}
+
+async function checkRetryAndContinueIpc() {
+  const click = () => require("node:crypto").randomUUID();
+  async function fixture(rows, { reply = false } = {}) {
+    const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-retry-continue-"));
+    const handlers = new Map(), windows = [], skippedCalls = [], skippedSelections = [], controlEvents = [];
+    let mainHideCount = 0, mainShowCount = 0;
+    let replyPauseCalls = 0;
+    const mainWindow = { webContents: { send() {} }, isDestroyed: () => false,
+      show() { mainShowCount += 1; }, hide() { mainHideCount += 1; }, focus() {} };
+    class ProgressWindow extends EventEmitter {
+      constructor() {
+        super(); this.visible = false; this.destroyed = false;
+        this.webContents = Object.assign(new EventEmitter(), { send() {}, setWindowOpenHandler() {}, async executeJavaScript() { return true; } });
+        windows.push(this);
+      }
+      isDestroyed() { return this.destroyed; }
+      isVisible() { return this.visible; }
+      setMenu() {} setPosition() {} async loadFile() {}
+      showInactive() { this.visible = true; }
+      hide() { this.visible = false; }
+      destroy() { this.destroyed = true; this.emit("closed"); }
+    }
+    const rowFor = (task) => rows.find((row) => row.title === task.title);
+    const touch = {
+      prepareWorkflowTask: (_id, input) => ({ contacts: input.contactIds.map((id) => ({ id })), script: input.script }),
+      canRetryWorkflowTask: (task) => rowFor(task)?.retryable === true,
+      describeUnknownWorkflowTask: (task) => rowFor(task)?.unknown ? { required: true, contactLabel: "test", partKind: "text" } : null,
+      describeSkippedWorkflowTask: (task) => ({ skipped_records: rowFor(task)?.skipped
+        ? [{ contactId: `${task.title}-contact`, retryable: true, status: "pre_send_skipped" }] : [] }),
+      retrySkippedWorkflowTask: (task, contactIds) => {
+        skippedCalls.push(task.title);
+        skippedSelections.push(contactIds);
+        if (rowFor(task)?.skipFails) return { ok: false, blocked_reason: "retry_skipped_empty", error: "没有可重试的跳过联系人" };
+        return { ok: true, task: { current_index: 0, total: 1 }, retriedCount: 1, excludedCount: 0 };
+      }
+    };
+    const replyExecutor = { prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => ({ handled: false }), pauseWorkflow: async () => { replyPauseCalls += 1; } };
+    const options = { rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
+      momentsDir: path.join(rootDir, "moments"), autoSchedule: false, getAccount: () => "test-account",
+      logger: { event: (_module, name, details, metadata) => controlEvents.push({ name, details, code: metadata?.code }),
+        begin: (_module, name, details) => { controlEvents.push({ name: `${name}.started`, details });
+          return { end() {}, fail() {} }; } },
+      executors: { touch }, ...(reply ? { reply: replyExecutor } : {}) };
+    const setup = createWechatWorkflowController(options);
+    for (const row of rows) await setup.addTask({ type: "touch", title: row.title, payload: { contactIds: [`${row.title}-contact`], script: "test" } });
+    if (reply) await setup.addRecipients(["reply-contact"]);
+    await setup.dispose();
+    const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+    const stored = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    for (const task of stored.tasks) {
+      task.status = rowFor(task).status;
+      if (rowFor(task).accountName) task.accountName = rowFor(task).accountName;
+      if (task.status === "completed") task.progress = { done: 1, total: 1 };
+    }
+    fs.writeFileSync(stateFile, JSON.stringify(stored));
+    const control = registerWechatWorkflowIpc({ ...options, getMainWindow: () => mainWindow,
+      rendererPath: __filename, preloadPath: __filename,
+      electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, BrowserWindow: ProgressWindow,
+        screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } } });
+    const event = { sender: mainWindow.webContents };
+    return { control, windows, skippedCalls, skippedSelections, controlEvents, rootDir, options,
+      replyPauseCalls: () => replyPauseCalls, rows: control.status().tasks,
+      invoke: (name, payload) => handlers.get(`wechat-workflow:${name}`)(event, payload),
+      mainHideCount: () => mainHideCount,
+      mainShowCount: () => mainShowCount,
+      close: async () => { await control.dispose(); fs.rmSync(rootDir, { recursive: true, force: true }); } };
+  }
+
+  let test = await fixture([{ title: "single", status: "needs_attention", retryable: true }]);
+  try {
+    const id = test.rows[0].id;
+    const result = await test.invoke("retry-task", { id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, true);
+    assert.equal(result.state.tasks[0].status, "pending");
+    const persisted = JSON.parse(fs.readFileSync(path.join(test.rootDir, "wechat_workflow", "state.json"), "utf8"));
+    assert.equal(persisted.tasks[0].status, "pending", "retryTask must persist before continuing");
+    assert.equal(test.windows[0].visible, true);
+    assert.equal(test.mainHideCount(), 1);
+    assert.equal(test.controlEvents.filter((entry) => entry.name === "task.retry_requested").at(-1)?.details.and_start_requested, true);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "log-fails", status: "needs_attention", retryable: true }]);
+  try {
+    test.options.logger.event = () => { throw new Error("logger_down"); };
+    assert.equal((await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() })).ok, true);
+    let prevented = false;
+    test.windows[0].emit("close", { preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(test.mainShowCount(), 1, "a floating-window log failure must still return to the main window");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "listen", status: "needs_attention", retryable: true }], { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening");
+    const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, true);
+    assert.equal(result.state.tasks[0].status, "pending");
+    assert.equal(test.controlEvents.filter((entry) => entry.name === "pause.started").at(-1)?.details.trigger_code, "retry_task");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "blocked", status: "needs_attention", retryable: true },
+    { title: "finite", status: "pending" }]);
+  try {
+    await test.control.start();
+    const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /当前有限任务/);
+    assert.equal(result.state.tasks[0].status, "needs_attention");
+    const bulk = await test.invoke("retry-all-and-start", { clickToken: click() });
+    assert.equal(bulk.ok, false);
+    assert.match(bulk.error, /当前有限任务/);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "skip", status: "completed", skipped: true }]);
+  try {
+    const result = await test.invoke("retry-skipped", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, true);
+    assert.equal(result.state.tasks[0].status, "pending");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "skip-strict", status: "completed", skipped: true }]);
+  try {
+    const result = await test.invoke("retry-skipped", { id: test.rows[0].id, andStart: "true", clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.state.enabled, false, "only boolean true may start after a retry");
+    assert.equal(test.windows.length, 0);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "first", status: "needs_attention", retryable: true },
+    { title: "both", status: "needs_attention", retryable: true, skipped: true },
+    { title: "skip", status: "completed", skipped: true },
+    { title: "unknown", status: "needs_attention", retryable: true, unknown: true }]);
+  try {
+    assert.match((await test.invoke("retry-all-and-start", { clickToken: "invalid" })).error, /请在程序中点击/);
+    const token = click();
+    const result = await test.invoke("retry-all-and-start", { clickToken: token });
+    assert.equal(result.ok, true);
+    assert.equal(result.taskCount, 3);
+    assert.equal(result.contactCount, 3);
+    assert.deepEqual(test.skippedCalls, ["both", "skip"], "a task eligible in both ways is requeued only once");
+    assert.deepEqual(test.skippedSelections, [undefined, undefined], "retryAll lets the executor exclude unsafe skipped rows");
+    const retryAllEvent = test.controlEvents.filter((entry) => entry.name === "task.retry_all_requested").at(-1);
+    assert.deepEqual(retryAllEvent.details, { task_count: 3, contact_count: 3, excluded_count: 0, and_start_requested: true });
+    assert.equal(retryAllEvent.code, "retry_all_requested");
+    assert.equal(result.state.enabled, true);
+    assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "pending", "pending", "needs_attention"]);
+    assert.equal(result.state.tasks[3].unknownResolution.required, true);
+    assert.match((await test.invoke("retry-all-and-start", { clickToken: token })).error, /请在程序中点击/,
+      "a consumed bulk-retry click token must not be replayed");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "safe", status: "needs_attention", retryable: true },
+    { title: "failed-skip", status: "completed", skipped: true, skipFails: true },
+    { title: "wrong-account", status: "needs_attention", retryable: true, accountName: "another-account" },
+    { title: "wrong-account-completed", status: "completed", skipped: true, accountName: "another-account" },
+    { title: "cancelled", status: "cancelled", skipped: true }]);
+  try {
+    const result = await test.invoke("retry-all-and-start", { clickToken: click() });
+    assert.equal(result.ok, true);
+    assert.equal(result.taskCount, 1);
+    assert.equal(result.contactCount, 1);
+    assert.equal(result.excludedCount, 1, "one failed candidate does not stop the other items");
+    assert.deepEqual(result.state.tasks.map((task) => task.status), ["pending", "completed", "needs_attention", "completed", "cancelled"]);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "unsafe", status: "needs_attention", retryable: false }]);
+  try {
+    const id = test.rows[0].id;
+    assert.equal((await test.invoke("retry-all-and-start", { clickToken: click() })).ok, false);
+    assert.equal((await test.invoke("retry-task", { id, andStart: true, clickToken: click() })).ok, false);
+    assert.equal((await test.invoke("retry-task", { id, andStart: true, clickToken: "invalid" })).ok, false);
+    assert.equal(test.control.status().tasks[0].status, "needs_attention");
+    assert.equal(test.control.status().enabled, false);
+    assert.equal(test.windows.length, 0);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "failed-skip", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  try {
+    let replyResumes = 0;
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening");
+    const resumesBefore = replyResumes;
+    await assert.rejects(test.control.retryAll(true), /没有可重新加入/);
+    assert.equal(test.control.status().enabled, true, "a failed bulk retry must restore reception");
+    assert.equal(test.control.status().phase, "listening");
+    assert.equal(replyResumes, resumesBefore + 1, "reception recovery must resume the reply executor");
+    assert.equal(test.controlEvents.some((entry) => entry.name === "task.retry_all_requested"), false,
+      "a failed bulk retry must not report success");
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "no-skip", status: "completed", skipFails: true }], { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening");
+    await assert.rejects(test.control.retrySkipped(test.rows[0].id), /没有可重试/);
+    assert.equal(test.control.status().enabled, true, "an ineligible skipped retry must restore reception");
+    assert.equal(test.control.status().phase, "listening");
+  } finally { await test.close(); }
+
+  const realRename = fs.renameSync;
+  const failStateWrite = (rootDir) => {
+    const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+    fs.renameSync = (from, to) => {
+      if (to === stateFile) { const failure = new Error("ENOSPC retry state"); failure.code = "ENOSPC"; throw failure; }
+      return realRename(from, to);
+    };
+  };
+  for (const [kind, row] of [
+    ["retryAll", { title: "pending-after-error", status: "needs_attention", retryable: true }],
+    ["retrySkipped", { title: "skipped-after-error", status: "completed", skipped: true }]
+  ]) {
+    test = await fixture([row], { reply: true });
+    let touchSends = 0, replyResumes = 0;
+    try {
+      test.options.executors.touch.runWorkflowStep = async () => { touchSends += 1; return { status: "completed" }; };
+      test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+      await test.control.start(); await test.control.tick();
+      assert.equal(test.control.status().phase, "listening");
+      const resumesBefore = replyResumes;
+      failStateWrite(test.rootDir);
+      try {
+        await assert.rejects(kind === "retryAll" ? test.control.retryAll(false) : test.control.retrySkipped(test.rows[0].id),
+          /ENOSPC retry state/);
+      } finally { fs.renameSync = realRename; }
+      assert.equal(test.control.status().tasks[0].status, "pending", `${kind} changed the in-memory queue before persistence failed`);
+      assert.equal(test.control.status().enabled, false, `${kind} failure must leave the workflow paused`);
+      assert.equal(test.control.status().phase, "paused");
+      assert.equal(replyResumes, resumesBefore, `${kind} failure must not resume reception`);
+      await test.control.tick();
+      assert.equal(touchSends, 0, `${kind} failure must not send a finite touch`);
+    } finally { fs.renameSync = realRename; await test.close(); }
+  }
+
+  const unknownRows = [
+    { title: "failed-skip", status: "completed", skipped: true, skipFails: true },
+    { title: "unknown", status: "needs_attention", unknown: true }
+  ];
+  test = await fixture(unknownRows, { reply: true });
+  let releaseRetryPause, retryingUnknown, resolvingUnknown, originalRetryPause;
+  try {
+    let touchSends = 0, replyResumes = 0;
+    test.options.executors.touch.runWorkflowStep = async () => { touchSends += 1; return { status: "completed" }; };
+    test.options.executors.touch.resolveUnknownWorkflowTask = (_task, resolution, resolutionId) => {
+      unknownRows[1].unknown = false;
+      return { resolution, resolutionId, completed: false, progress: { done: 0, total: 1 } };
+    };
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick();
+    const resumesBefore = replyResumes;
+    let enteredPause;
+    const entered = new Promise((resolve) => { enteredPause = resolve; });
+    const pauseGate = new Promise((resolve) => { releaseRetryPause = resolve; });
+    originalRetryPause = test.options.reply.pauseWorkflow;
+    test.options.reply.pauseWorkflow = async () => {
+      enteredPause();
+      await pauseGate;
+    };
+    retryingUnknown = test.control.retryAll(false);
+    await entered;
+    const unknownId = test.rows.find((row) => row.title === "unknown").id;
+    resolvingUnknown = test.control.resolveTouchUnknown(unknownId, "not_sent");
+    releaseRetryPause(); releaseRetryPause = null;
+    assert.equal((await resolvingUnknown).ok, true);
+    await assert.rejects(retryingUnknown, /没有可重新加入/);
+    assert.equal(test.control.status().enabled, false, "a queue change during retry must keep workflow paused");
+    assert.equal(test.control.status().phase, "paused");
+    assert.equal(replyResumes, resumesBefore);
+    await test.control.tick();
+    assert.equal(touchSends, 0, "resolving an unknown result must not send without a new start");
+  } finally {
+    releaseRetryPause?.();
+    await Promise.allSettled([retryingUnknown, resolvingUnknown].filter(Boolean));
+    if (originalRetryPause) test.options.reply.pauseWorkflow = originalRetryPause;
+    await test.close();
+  }
+
+  test = await fixture([{ title: "paused-before-retry", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  try {
+    let replyResumes = 0;
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick(); await test.control.pause();
+    const resumesBefore = replyResumes;
+    await assert.rejects(test.control.retryAll(false), /没有可重新加入/);
+    assert.equal(test.control.status().enabled, false, "a retry started after user pause must stay paused");
+    assert.equal(test.control.status().phase, "paused");
+    assert.equal(replyResumes, resumesBefore);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "paused-during-retry", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  let releaseUserPause, retryingDuringPause, userPause, originalUserPause;
+  try {
+    let replyResumes = 0, enteredPause;
+    test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.start(); await test.control.tick();
+    const resumesBefore = replyResumes;
+    const entered = new Promise((resolve) => { enteredPause = resolve; });
+    const pauseGate = new Promise((resolve) => { releaseUserPause = resolve; });
+    originalUserPause = test.options.reply.pauseWorkflow;
+    test.options.reply.pauseWorkflow = async () => {
+      enteredPause();
+      await pauseGate;
+    };
+    retryingDuringPause = test.control.retryAll(false);
+    await entered;
+    userPause = test.control.pause();
+    releaseUserPause(); releaseUserPause = null;
+    await assert.rejects(retryingDuringPause, /没有可重新加入/);
+    await userPause;
+    assert.equal(test.control.status().enabled, false, "a later user pause must take priority over retry recovery");
+    assert.equal(test.control.status().phase, "paused");
+    assert.equal(replyResumes, resumesBefore);
+  } finally {
+    releaseUserPause?.();
+    await Promise.allSettled([retryingDuringPause, userPause].filter(Boolean));
+    if (originalUserPause) test.options.reply.pauseWorkflow = originalUserPause;
+    await test.close();
+  }
+
+  const eligibilityRows = [{ title: "became-ineligible", status: "needs_attention", retryable: true }];
+  test = await fixture(eligibilityRows, { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening");
+    const pauses = test.replyPauseCalls();
+    eligibilityRows[0].retryable = false;
+    assert.equal((await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() })).ok, false);
+    assert.equal((await test.invoke("retry-all-and-start", { clickToken: click() })).ok, false);
+    assert.equal(test.control.status().enabled, true, "a rejected retry must not stop reception");
+    assert.equal(test.control.status().phase, "listening");
+    assert.equal(test.replyPauseCalls(), pauses);
+  } finally { await test.close(); }
+
+  test = await fixture([{ title: "serialized", status: "needs_attention", retryable: true }], { reply: true });
+  let releaseRecipients, adding, retrying;
+  try {
+    let enteredRecipients;
+    const entered = new Promise((resolve) => { enteredRecipients = resolve; });
+    test.options.reply.prepareWorkflowRecipients = async (ids) => {
+      enteredRecipients();
+      await new Promise((resolve) => { releaseRecipients = resolve; });
+      return ids.map((id) => ({ id, name: id }));
+    };
+    adding = test.control.addRecipients(["held"]);
+    await entered;
+    let retrySettled = false;
+    retrying = test.control.retryAll().then((result) => { retrySettled = true; return result; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(retrySettled, false, "retryAll must wait behind an earlier serialized edit");
+    assert.equal(test.control.status().tasks[0].status, "needs_attention");
+    releaseRecipients(); releaseRecipients = null;
+    await adding;
+    const retried = await retrying;
+    assert.equal(retried.taskCount, 1);
+    assert.equal(retried.state.phase, "paused");
+    const saved = JSON.parse(fs.readFileSync(path.join(test.rootDir, "wechat_workflow", "state.json"), "utf8"));
+    assert.equal(saved.tasks[0].status, "pending", "bulk retry must persist before returning");
+    const restored = createWechatWorkflowController(test.options);
+    assert.equal(restored.status().tasks[0].status, "pending", "bulk retry must survive restart");
+    await restored.dispose();
+  } finally {
+    releaseRecipients?.();
+    await Promise.allSettled([adding, retrying].filter(Boolean));
+    await test.close();
+  }
+
+  test = await fixture([{ title: "pausing", status: "needs_attention", retryable: true }], { reply: true });
+  let releaseReply, ticking, pausing;
+  try {
+    let enteredReply;
+    const entered = new Promise((resolve) => { enteredReply = resolve; });
+    test.options.reply.runWorkflowStep = async () => {
+      enteredReply();
+      await new Promise((resolve) => { releaseReply = resolve; });
+      return { handled: false };
+    };
+    await test.control.start();
+    ticking = test.control.tick();
+    await entered;
+    pausing = test.control.pause();
+    assert.equal(test.control.controlSnapshot().phase, "pausing");
+    await assert.rejects(test.control.retryAll(), /请先暂停/);
+    await assert.rejects(test.control.retryTask(test.rows[0].id), /请先暂停/);
+    assert.equal(test.control.status().tasks[0].status, "needs_attention",
+      "a retry during an in-flight pause must not mutate the task");
+    releaseReply(); releaseReply = null;
+    await ticking; await pausing;
+  } finally {
+    releaseReply?.();
+    await Promise.allSettled([ticking, pausing].filter(Boolean));
+    await test.close();
+  }
+
+  test = await fixture([{ title: "sync", status: "needs_attention", retryable: true }]);
+  try {
+    let completeSync;
+    const syncing = test.control.runContactSync(() => new Promise((resolve) => { completeSync = resolve; }), () => ({}));
+    for (let i = 0; i < 10 && !completeSync; i += 1) await Promise.resolve();
+    assert.equal(typeof completeSync, "function");
+    const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /联系人正在同步/);
+    assert.equal(result.state.tasks[0].status, "pending", "a failed start retains the requeued task");
+    assert.equal(result.state.enabled, false);
+    completeSync({ ok: true, state: { contact_count: 1 } });
+    await syncing;
+  } finally { await test.close(); }
+}
+
+async function checkFailedRetryRecoveryGuards() {
+  const now = new Date(2026, 8, 27, 10).getTime();
+  async function fixture(rows, autoSchedule = false) {
+    const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-retry-guard-"));
+    const state = { account: "acct", rows, touchSends: 0, replySteps: 0, replyResumes: 0, updates: [],
+      replyResult: { handled: false }, pauseGate: null, pauseEntered: null, replyGate: null };
+    const rowFor = (task) => rows.find((row) => row.title === task.title);
+    const touch = {
+      prepareWorkflowTask: (_id, input) => ({ contacts: input.contactIds.map((id) => ({ id })), script: input.script }),
+      canRetryWorkflowTask: (task) => rowFor(task)?.retryable === true,
+      describeUnknownWorkflowTask: (task) => rowFor(task)?.unknown ? { required: true } : null,
+      resolveUnknownWorkflowTask: (task, resolution, resolutionId) => {
+        const row = rowFor(task);
+        row.unknown = false;
+        return { resolution, resolutionId, completed: true, progress: { done: 1, total: 1 } };
+      },
+      describeSkippedWorkflowTask: (task) => ({ skipped_records: rowFor(task)?.skipped
+        ? [{ contactId: `${task.title}-contact`, retryable: true }] : [] }),
+      retrySkippedWorkflowTask: () => ({ ok: false, blocked_reason: "retry_skipped_empty", error: "none" }),
+      runWorkflowStep: async () => { state.touchSends += 1; return { status: "completed" }; }
+    };
+    const reply = {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => {
+        state.replySteps += 1;
+        if (state.replyGate) await state.replyGate;
+        return state.replyResult;
+      },
+      pauseWorkflow: async () => {
+        state.pauseEntered?.();
+        if (state.pauseGate) await state.pauseGate;
+      },
+      resumeWorkflow: () => { state.replyResumes += 1; }
+    };
+    const options = { rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
+      momentsDir: path.join(rootDir, "moments"), autoSchedule: false, pollIntervalMs: 5,
+      now: () => new Date(now), getAccount: () => state.account, onUpdate: (snapshot) => state.updates.push(snapshot),
+      executors: { touch }, reply };
+    const setup = createWechatWorkflowController(options);
+    for (const row of rows) await setup.addTask({ type: "touch", title: row.title,
+      payload: { contactIds: [`${row.title}-contact`], script: "test" } });
+    await setup.addRecipients(["r"]);
+    await setup.dispose();
+    const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+    const stored = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    for (const task of stored.tasks) {
+      const row = rowFor(task);
+      task.status = row.status;
+      if (row.status === "completed") task.progress = { done: 1, total: 1 };
+      if (row.accountName) task.accountName = row.accountName;
+    }
+    fs.writeFileSync(stateFile, JSON.stringify(stored));
+    state.control = createWechatWorkflowController({ ...options, autoSchedule });
+    state.id = (title) => state.control.status().tasks.find((task) => task.title === title).id;
+    await state.control.start();
+    await state.control.tick();
+    return state;
+  }
+
+  function blockPause(state) {
+    let release, entered;
+    const enteredPromise = new Promise((resolve) => { entered = resolve; });
+    state.pauseGate = new Promise((resolve) => { release = resolve; });
+    state.pauseEntered = entered;
+    return { entered: enteredPromise, release: () => { state.pauseGate = null; state.pauseEntered = null; release(); } };
+  }
+
+  async function failedRetryDuring(state, mutate) {
+    const gate = blockPause(state);
+    let retrying;
+    try {
+      retrying = state.control.retryAll(false);
+      await gate.entered;
+      await mutate(state);
+      gate.release();
+      await assert.rejects(retrying, /没有可重新加入/);
+    } finally {
+      gate.release();
+      if (retrying) await Promise.allSettled([retrying]);
+    }
+  }
+
+  const skipFail = () => ({ title: "skip-fail", status: "completed", skipped: true });
+  for (const [name, row, mutate] of [
+    ["resolve sent", { title: "unknown", status: "needs_attention", unknown: true },
+      (state) => state.control.resolveTouchUnknown(state.id("unknown"), "sent")],
+    ["cancel", { title: "attention", status: "needs_attention" },
+      (state) => state.control.cancelTask(state.id("attention"))],
+    ["delete", { title: "attention", status: "needs_attention" },
+      (state) => state.control.deleteTasks([state.id("attention")], true)]
+  ]) {
+    const state = await fixture([skipFail(), row]);
+    try {
+      const resumes = state.replyResumes;
+      await failedRetryDuring(state, mutate);
+      assert.equal(state.control.status().enabled, false, `${name} changed the plan during retry`);
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes);
+      await state.control.tick();
+      assert.equal(state.touchSends, 0);
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    try {
+      const resumes = state.replyResumes;
+      await failedRetryDuring(state, async (current) => {
+        for (const recipient of current.control.status().recipients) await current.control.removeRecipient(recipient.id);
+        assert.equal(current.control.status().recipients.length, 0);
+      });
+      assert.equal(state.control.status().enabled, false, "removing the final recipient must not resume reception");
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes, "a rejected reception recovery must not call resumeWorkflow");
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    let releaseReply;
+    try {
+      state.replyResult = { handled: false, error: "reply failed", reasonCode: "reply_probe_error" };
+      state.replyGate = new Promise((resolve) => { releaseReply = resolve; });
+      const ticking = state.control.tick();
+      await new Promise((resolve) => setImmediate(resolve));
+      const resumes = state.replyResumes;
+      const retrying = state.control.retryAll(false);
+      releaseReply(); releaseReply = null; state.replyGate = null;
+      await ticking;
+      await assert.rejects(retrying, /没有可重新加入/);
+      assert.equal(state.control.status().enabled, false, "reply failure must prevent reception recovery");
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes);
+    } finally { releaseReply?.(); state.replyGate = null; await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    const gate = blockPause(state);
+    let retrying, disposing;
+    try {
+      retrying = state.control.retryAll(false);
+      await gate.entered;
+      disposing = state.control.dispose();
+      gate.release();
+      await disposing;
+      await assert.rejects(retrying, /没有可重新加入/);
+      assert.equal(state.control.controlSnapshot().enabled, false, "dispose during retry must prevent recovery");
+    } finally {
+      gate.release();
+      await Promise.allSettled([retrying, disposing].filter(Boolean));
+      await state.control.dispose();
+    }
+  }
+
+  {
+    const state = await fixture([skipFail(), { title: "other", status: "pending", accountName: "acct2" }]);
+    try {
+      const resumes = state.replyResumes;
+      const updates = state.updates.length;
+      await assert.rejects(state.control.retryAll(false), /没有可重新加入/);
+      assert.equal(state.control.status().phase, "listening", "another account's pending task must not block reception");
+      assert.equal(state.control.status().enabled, true);
+      assert.equal(state.replyResumes, resumes + 1);
+      assert.ok(state.updates.length > updates, "recovery must notify status subscribers");
+      assert.equal(state.updates.at(-1).phase, "listening");
+      assert.equal(state.updates.at(-1).enabled, true);
+      assert.equal(state.touchSends, 0);
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    const gate = blockPause(state);
+    let retrying;
+    try {
+      retrying = state.control.retryAll(false);
+      await gate.entered;
+      const resumes = state.replyResumes;
+      assert.equal((await state.control.start()).ok, true);
+      assert.equal(state.replyResumes, resumes + 1, "user start must resume reception once");
+      gate.release();
+      await assert.rejects(retrying, /请先暂停/);
+      assert.equal(state.replyResumes, resumes + 1, "failed retry must not resume an already started workflow again");
+    } finally {
+      gate.release();
+      if (retrying) await Promise.allSettled([retrying]);
+      await state.control.dispose();
+    }
+  }
+
+  {
+    const state = await fixture([skipFail(), { title: "other", status: "pending", accountName: "acct2" }]);
+    try {
+      const resumes = state.replyResumes;
+      await failedRetryDuring(state, (current) => { current.account = "acct2"; });
+      assert.equal(state.control.status().enabled, false, "switching to an account with pending work must stay paused");
+      assert.equal(state.control.status().phase, "paused");
+      assert.equal(state.replyResumes, resumes);
+      await state.control.tick();
+      assert.equal(state.touchSends, 0, "account switching must not start finite touch work");
+    } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()], true);
+    try {
+      await assert.rejects(state.control.retryAll(false), /没有可重新加入/);
+      assert.equal(state.control.status().phase, "listening");
+      const steps = state.replySteps;
+      for (let attempt = 0; attempt < 50 && state.replySteps === steps; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(state.replySteps > steps, "recovered reception must schedule another poll");
+      assert.equal(state.touchSends, 0);
+    } finally { await state.control.dispose(); }
+  }
+}
+
+async function checkPresendDiagnosticLevels() {
+  const cases = [
+    { name: "disabled-stop", reason: "batch_authorization_missing", disable: true, expected: "warn" },
+    { name: "active-stop", reason: "batch_authorization_missing", expected: "error" },
+    { name: "unknown-attempt", reason: "message_snapshot_unavailable", attempted: null, expected: "error" },
+    { name: "clicked", reason: "message_snapshot_unavailable", transition: "clicked", expected: "error" },
+    { name: "unknown-transition", reason: "message_snapshot_unavailable", transition: "outcome_unknown", expected: "error" }
+  ];
+  for (const test of cases) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-send-level-${test.name}-`));
+    let enabled = true;
+    const levels = [];
+    const unsubscribe = require("./diagnostics.cjs").configureDiagnostics({ rootDir: root }).subscribe((entry) => {
+      if (entry.event === "workflow_contact_send.failed") levels.push(entry.level);
+    });
+    try {
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const workflow = createTouchWorkflow({ dataDir: root, readContacts: () => [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill() {} },
+        execute: async (part) => {
+          if (test.transition) part.onTransition(test.transition);
+          if (test.disable) enabled = false;
+          return { ok: false, send_attempted: test.attempted === null ? null : false, blocked_reason: test.reason };
+        } });
+      const record = { id: `send-level-${test.name}`, payload: workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id] }) };
+      await workflow.runWorkflowStep(record, { isEnabled: () => enabled });
+      assert.deepEqual(levels, [test.expected], `${test.name}: diagnostic level follows the actual branch`);
+    } finally { unsubscribe(); fs.rmSync(root, { recursive: true, force: true }); }
+  }
+}
+
 async function checkWorkflowDiagnostics() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-diagnostics-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-diagnostics-"));
   const events = [];
   const logger = {
     event: (_module, name, details, metadata) => { assert.equal(metadata.trace, true); events.push({ name, ...details }); },
     begin: (_module, name, details, metadata) => {
       assert.equal(metadata.trace, true, "workflow operation traces must opt into info retention");
       events.push({ name: `${name}.started`, ...details });
-      return { end: (result) => events.push({ name: `${name}.ended`, ...result }) };
+      return { end: (result) => events.push({ name: `${name}.ended`, ...result }),
+        fail: () => events.push({ name: `${name}.exception` }) };
     }
   };
   let replyResult = { handled: false };
@@ -123,21 +1649,30 @@ async function checkWorkflowDiagnostics() {
   await assert.rejects(control.tick(), /injected failure/);
   assert.equal(events.at(-1).stage, "reply_step");
   throwReply = false;
+  const phaseBeforePause = control.controlSnapshot().phase;
   await control.pause();
+  assert.equal(events.find((event) => event.name === "pause.started")?.trigger_code, "user");
+  assert.equal(events.find((event) => event.name === "pause.started")?.previous_phase, phaseBeforePause);
+  assert.ok(events.some((event) => event.name === "pause.ended" && event.stage === "paused"));
   replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
   await control.addTask({ type: "touch", payload: {} });
   await control.start(); await control.tick();
   assert.equal(control.status().enabled, false, "a finite task failure pauses before auto reply can run");
   assert.equal(control.status().phase, "needs_attention");
+  assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "paused");
+  await control.start();
+  assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "needs_attention");
+  await control.pause();
   assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), false,
     "automatic reply must not run before a due finite task");
   assert(events.some((event) => event.name === "task_step.ended" && event.stage === "task_result" && event.reason === "task_needs_attention"));
   assert.equal(/private-customer|private-name|private-script|private-account/.test(JSON.stringify(events)), false, "diagnostics must not receive customer payloads");
   await control.dispose();
+  assert.ok(events.some((event) => event.name === "control.disposed" && event.trigger_code === "app_quit" && event.previous_phase === "paused"));
 }
 
 async function checkInProgressTouchEdit() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-edit-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-edit-"));
   let updateInput;
   let calls = 0;
   const control = createWechatWorkflowController({
@@ -162,7 +1697,7 @@ async function checkInProgressTouchEdit() {
 }
 
 async function checkUnknownTouchResolution() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-resolution-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-resolution-"));
   let runCalls = 0;
   let resolutionCalls = 0;
   const control = createWechatWorkflowController({
@@ -199,7 +1734,7 @@ async function checkUnknownTouchResolution() {
 }
 
 async function checkUnknownTouchResolutionRecovery() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-recovery-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-recovery-"));
   let durableResolution = null;
   let runCalls = 0;
   const events = [];
@@ -244,11 +1779,13 @@ async function checkUnknownTouchResolutionRecovery() {
 }
 
 async function checkUnknownReasonQualityCounter() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
   let calls = 0;
+  const controlEvents = [];
   const options = {
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
     appVersion: "9.8.7", buildId: "quality-test", buildCommit: "abcdef1234567890",
+    logger: { event: (_module, name, details) => controlEvents.push({ name, ...details }) },
     autoSchedule: false, getAccount: () => "quality-account",
     executors: { interact: {
       prepareWorkflowTask: (_id, payload) => ({ payload }),
@@ -263,7 +1800,13 @@ async function checkUnknownReasonQualityCounter() {
   let control = createWechatWorkflowController(options);
   const added = await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (attempt) await control.retryTask(added.task.id);
+    if (attempt) {
+      await control.retryTask(added.task.id, attempt === 2);
+      const retryEvent = controlEvents.filter((entry) => entry.name === "task.retry_requested").at(-1);
+      assert.equal(retryEvent.previous_status, "needs_attention");
+      assert.equal(retryEvent.reason, attempt === 2 ? "new_reason_beta" : "new_reason_alpha");
+      assert.equal(retryEvent.and_start_requested, attempt === 2);
+    }
     await control.start(); await control.tick();
   }
   const summary = control.status().classificationQuality;
@@ -297,8 +1840,210 @@ async function checkUnknownReasonQualityCounter() {
   await control.dispose();
 }
 
+async function checkRealReplyWorkflowRecovery() {
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-reply-workflow-recovery-"));
+  const activeTouchDir = path.join(rootDir, "touch");
+  fs.mkdirSync(activeTouchDir, { recursive: true });
+  const contacts = [
+    { id: "private-good", name: "private-unique", allowed: true, wechatAccountId: "wx-a", wechatId: "good" },
+    { id: "private-bad", name: "private-duplicate", allowed: true, wechatAccountId: "wx-a", wechatId: "bad" },
+    { id: "private-other", name: "private-duplicate", allowed: false, wechatAccountId: "wx-a", wechatId: "other" },
+    { id: "private-account", name: "private-account", allowed: true, wechatAccountId: "wx-b", wechatId: "account" }
+  ];
+  fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify(contacts));
+  let nowMs = new Date("2026-07-15T10:00:00+08:00").getTime();
+  let scans = 0;
+  let sends = 0;
+  let failure = "AI_NETWORK_ERROR";
+  let scanFailure = "";
+  const candidate = { ok: true, conversation: "private-unique", message: "private-message", runtimeId: "private-turn",
+    pid: 81, hWnd: "91", context: [{ role: "user", content: "private-message", key: "private-turn" }] };
+  const queue = [candidate];
+  const scanIncoming = () => { scans += 1; if (scanFailure) return { ok: false, reason: scanFailure };
+    return queue.shift() || { ok: false, reason: "no_unread_message" }; };
+  scanIncoming.requeue = (item) => { queue.unshift(item); return true; };
+  const reply = createAutoReplyController({
+    dataDir: path.join(rootDir, "reply"), activeTouchDir, now: () => new Date(nowMs),
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "reply" } }), update() {}, release() {} },
+    expertStore: { read: () => ({ ready: true, expertRules: { text: "请礼貌回复" }, businessKnowledge: { text: "设备信息" } }) },
+    deepSeekClient: { assertAvailable() {}, reply: async () => {
+      if (failure) throw Object.assign(new Error("private-ai-error"), { code: failure });
+      return { action: "answer", reply: "您好，可以继续了解。", reasonCode: "general_guidance" };
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { if (await input.beforeDraft()) sends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  const events = [];
+  const controller = createWechatWorkflowController({
+    rootDir, activeTouchDir, autoReplyDir: path.join(rootDir, "reply"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, now: () => new Date(nowMs), getAccount: () => "wx-a",
+    logger: { event: (_module, name, details, metadata) => events.push({ name, ...details, logCode: metadata?.code }) }, reply,
+    executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contacts[0], contacts[1]], script: "private-script" }),
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 2, total: 2 } }) } }
+  });
+  try {
+    const added = await controller.addTask({ type: "touch", payload: { contactIds: ["private-good", "private-bad"], script: "private-script" } });
+    assert.equal(added.task.replyEnrollExcluded, 1);
+    assert.equal(added.task.replyEnrollAmbiguous, 1);
+    assert.deepEqual(controller.status().recipients.map((item) => item.id), ["private-good"]);
+    assert.equal(events.find((event) => event.name === "reply.enroll_excluded")?.logCode, "workflow_recipient_ambiguous");
+    const accountEvents = [];
+    const accountController = createWechatWorkflowController({
+      rootDir: path.join(rootDir, "account_enrollment"), activeTouchDir,
+      autoReplyDir: path.join(rootDir, "account_enrollment", "reply"), momentsDir: path.join(rootDir, "account_enrollment", "moments"),
+      autoSchedule: false, getAccount: () => "wx-a",
+      logger: { event: (_module, name, details, metadata) => accountEvents.push({ name, code: metadata?.code }) },
+      reply: { screenWorkflowRecipients: (items) => ({ accepted: [items[0]], excluded: [{ code: "workflow_account_changed" }] }) },
+      executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contacts[0], contacts[3]], script: "private-script" }) } }
+    });
+    await accountController.addTask({ type: "touch", payload: { contactIds: ["private-good", "private-account"], script: "private-script" } });
+    assert.equal(accountEvents.find((event) => event.name === "reply.enroll_excluded")?.code, "workflow_account_changed",
+      "enrollment diagnostics must use the actual exclusion cause");
+    await accountController.dispose();
+    await controller.start();
+    await controller.tick();
+    await controller.tick();
+    assert.equal(controller.status().replyError, "");
+    assert.equal(controller.status().phase, "listening");
+    assert.equal(events.filter((event) => event.name === "reply.backoff").length, 1);
+    const beforeBackoffScans = scans;
+    await controller.tick();
+    assert.equal(scans, beforeBackoffScans);
+    assert.equal(controller.status().replyError, "");
+    nowMs += 30_000;
+    failure = "";
+    await controller.tick();
+    assert.equal(sends, 1);
+    assert.equal(controller.status().enabled, true);
+    scanFailure = "wechat_window_changed";
+    await controller.tick();
+    assert.equal(controller.status().phase, "needs_attention");
+    scanFailure = "";
+    await controller.start();
+    const beforeRestartScans = scans;
+    await controller.tick();
+    assert.equal(scans, beforeRestartScans + 1);
+    assert.equal(controller.status().phase, "listening");
+    assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "workflow_window_changed"), true);
+    scanFailure = "wechat_window_changed";
+    await controller.tick();
+    assert.equal(events.filter((event) => event.name === "reply.result" && event.reason === "workflow_window_changed").length, 2,
+      "the same failure must be logged again in a new run");
+    assert.doesNotMatch(JSON.stringify(events), /private-good|private-bad|private-unique|private-duplicate|private-message|private-ai-error/u);
+  } finally { await controller.dispose(); }
+}
+
+async function checkReplyFailureDiagnosticsAcrossRuns() {
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-reply-diagnostic-dedupe-"));
+  const contact = { id: "private-contact", name: "private-name", allowed: true, wechatAccountId: "wx-a" };
+  const events = [];
+  const controller = createWechatWorkflowController({
+    rootDir, activeTouchDir: path.join(rootDir, "touch"), autoReplyDir: path.join(rootDir, "reply"),
+    momentsDir: path.join(rootDir, "moments"), autoSchedule: false,
+    now: () => new Date("2026-07-15T10:00:00+08:00"), getAccount: () => "wx-a",
+    logger: { event: (_module, name, details) => events.push({ name, ...details }) },
+    reply: { runWorkflowStep: async () => ({ handled: false, status: "needs_attention",
+      reasonCode: "workflow_window_changed", error: "窗口已变化" }) },
+    executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contact], script: "private-script" }),
+      runWorkflowStep: async () => { throw new Error("future task must not run"); } } }
+  });
+  try {
+    await controller.addTask({ type: "touch", scheduledAt: "2026-07-15T11:00:00+08:00",
+      payload: { contactIds: [contact.id], script: "private-script" } });
+    await controller.start();
+    await controller.tick();
+    await controller.tick();
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 1,
+      "a sticky reply error must be diagnosed once while unchanged");
+    await controller.pause();
+    await controller.start();
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.result" && entry.reason === "workflow_window_changed").length, 2,
+      "the same failure must be logged again after restart without an idle result between runs");
+    await controller.tick();
+    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 2);
+    assert.doesNotMatch(JSON.stringify(events), /private-contact|private-name|private-script/u);
+  } finally { await controller.dispose(); }
+}
+
+async function checkControlSnapshotAndPauseTrace() {
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-control-trace-"));
+  const events = [];
+  let releaseStep;
+  let enteredStep;
+  let rejectPause = false;
+  let updates = 0;
+  const entered = new Promise((resolve) => { enteredStep = resolve; });
+  const controller = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "test-account", onUpdate: () => { updates += 1; },
+    logger: { event: (_module, name, details) => events.push({ name, ...details }),
+      begin: (_module, name, details) => {
+        events.push({ name: `${name}.started`, ...details });
+        return { end: (value) => events.push({ name: `${name}.finished`, ...value }),
+          fail: () => events.push({ name: `${name}.exception` }) };
+      } },
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { enteredStep(); await new Promise((resolve) => { releaseStep = resolve; }); return { handled: false }; },
+      pauseWorkflow: async () => { if (rejectPause) throw new Error("pause_failed"); }
+    }
+  });
+  await controller.addRecipients(["private-customer"]);
+  const stateFile = path.join(rootDir, "wechat_workflow", "state.json");
+  const priorState = fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf8") : null;
+  const priorUpdates = updates;
+  assert.deepEqual(controller.controlSnapshot(), { enabled: false, phase: "paused", in_flight: false });
+  assert.equal(updates, priorUpdates, "controlSnapshot must not emit state updates");
+  assert.equal(fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf8") : null, priorState,
+    "controlSnapshot must not write workflow state");
+  const snapshotRoot = path.join(rootDir, "snapshot-only");
+  const reads = { skipped: 0, unknown: 0, retry: 0, updates: 0 };
+  const snapshotControl = createWechatWorkflowController({
+    rootDir: snapshotRoot, autoReplyDir: path.join(snapshotRoot, "reply"), activeTouchDir: path.join(snapshotRoot, "touch"),
+    momentsDir: path.join(snapshotRoot, "moments"), autoSchedule: false, getAccount: () => "test-account",
+    onUpdate: () => { reads.updates += 1; },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "private-customer" }], script: "private-script" }),
+      describeSkippedWorkflowTask: () => { reads.skipped += 1; return {}; },
+      describeUnknownWorkflowTask: () => { reads.unknown += 1; return {}; },
+      canRetryWorkflowTask: () => { reads.retry += 1; return false; }
+    } }
+  });
+  await snapshotControl.addTask({ type: "touch", payload: { contactIds: ["private-customer"], script: "private-script" } });
+  const snapshotState = fs.readFileSync(path.join(snapshotRoot, "wechat_workflow", "state.json"), "utf8");
+  const priorReads = { ...reads };
+  snapshotControl.controlSnapshot();
+  assert.deepEqual(reads, priorReads, "controlSnapshot must not inspect task executors or broadcast");
+  assert.equal(fs.readFileSync(path.join(snapshotRoot, "wechat_workflow", "state.json"), "utf8"), snapshotState);
+  await snapshotControl.dispose();
+  await controller.start();
+  const ticking = controller.tick();
+  await entered;
+  const pausing = controller.pause();
+  assert.equal(controller.controlSnapshot().in_flight, true);
+  assert.equal(events.some((event) => event.name === "pause.finished"), false,
+    "pause completion must wait for the in-flight step");
+  releaseStep();
+  await ticking; await pausing;
+  assert.equal(events.filter((event) => event.name === "pause.started").at(-1)?.trigger_code, "user");
+  assert.ok(events.some((event) => event.name === "pause.finished"));
+  rejectPause = true;
+  await assert.rejects(controller.pause(), /pause_failed/u);
+  assert.ok(events.some((event) => event.name === "pause.exception"));
+  rejectPause = false;
+  await controller.dispose();
+  assert.ok(events.some((event) => event.name === "control.disposed"));
+}
+
 async function main() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
+  await checkControlSnapshotAndPauseTrace();
+  await checkRealReplyWorkflowRecovery();
+  await checkReplyFailureDiagnosticsAcrossRuns();
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
   let clock = new Date(2026, 8, 2, 11, 0);
   let account = "test-account";
   let customerWaiting = false;
@@ -332,7 +2077,7 @@ async function main() {
     const remaining = [...tasks];
     const ordered = [];
     while (remaining.length) {
-      const orderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-order-"));
+      const orderRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-order-"));
       const stateDir = path.join(orderRoot, "wechat_workflow");
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ version: 1, tasks: remaining }), "utf8");
@@ -483,20 +2228,34 @@ async function main() {
   assert.equal(restored.status().tasks.find((t) => t.id === busy.task.id).status, "missed", "busy preflight cannot count as execution across dates");
   await restored.dispose();
 
-  const scheduledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
+  const scheduledRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
   let scheduledClock = new Date(2026, 8, 4, 10, 0);
   let scheduledReplyCalls = 0;
+  let scheduledReplyOverride = null;
   let scheduledTaskCalls = 0;
+  const scheduledReplyInputs = [];
   const scheduled = createWechatWorkflowController({
     rootDir: scheduledRoot, autoReplyDir: path.join(scheduledRoot, "reply"), activeTouchDir: path.join(scheduledRoot, "touch"), momentsDir: path.join(scheduledRoot, "moments"),
     now: () => scheduledClock, getAccount: () => "test-account", autoSchedule: false,
     reply: {
       prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
-      runWorkflowStep: async () => { scheduledReplyCalls += 1; return { handled: false }; }
+      runWorkflowStep: async (input) => {
+        scheduledReplyCalls += 1;
+        scheduledReplyInputs.push(input);
+        const result = scheduledReplyOverride || { handled: false };
+        scheduledReplyOverride = null;
+        return result;
+      }
     },
     executors: { publish: {
       prepareWorkflowTask: (_id, payload) => payload,
       runWorkflowStep: async () => { scheduledTaskCalls += 1; return { status: "completed", progress: { done: 1, total: 1 } }; }
+    }, interact: {
+      prepareWorkflowTask: (_id, payload) => payload,
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 1, total: 1 } })
+    }, touch: {
+      prepareWorkflowTask: (_id, payload) => ({ ...payload, contacts: [{ id: "reply-contact" }] }),
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 1, total: 1 } })
     } }
   });
   await scheduled.addRecipients(["reply-contact"]);
@@ -509,9 +2268,28 @@ async function main() {
   assert.equal(scheduledReplyCalls, 1);
   await scheduled.tick();
   assert.equal(scheduledReplyCalls, 2, "automatic reply resumes after the due task completes");
+  assert.equal(scheduledReplyInputs[0].afterMoments, false);
+  assert.equal(scheduledReplyInputs[1].afterMoments, true, "publish must request chat restoration");
+  await scheduled.pause();
+  await scheduled.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await scheduled.start();
+  await scheduled.tick();
+  scheduledReplyOverride = { handled: false, status: "busy" };
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "interact must request chat restoration through a busy reply");
+  scheduledReplyOverride = { handled: false, status: "paused", reasonCode: "workflow_paused" };
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "paused reply must preserve chat restoration");
+  await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, true, "the next reply must still restore chat");
+  await scheduled.pause();
+  await scheduled.addTask({ type: "touch", payload: { contactIds: ["reply-contact"], script: "test" } });
+  await scheduled.start();
+  await scheduled.tick(); await scheduled.tick();
+  assert.equal(scheduledReplyInputs.at(-1).afterMoments, false, "touch must not request chat restoration");
   await scheduled.dispose();
 
-  const batchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-batch-"));
+  const batchRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-batch-"));
   const batch = createWechatWorkflowController({ ...options, rootDir: batchRoot, autoReplyDir: path.join(batchRoot, "reply") });
   await assert.rejects(batch.start(), /没有待执行任务/);
   assert.equal(batch.status().enabled, false, "empty plans cannot appear to start");
@@ -525,7 +2303,7 @@ async function main() {
   assert.equal(batch.status().phase, "needs_attention", "unfinished work must not look completed or idle");
   await batch.dispose();
 
-  const contentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
+  const contentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
   const contentionCalls = [];
   const contentionClock = new Date(2026, 8, 3, 11, 30);
   const contention = createWechatWorkflowController({
@@ -566,7 +2344,7 @@ async function main() {
   assert.deepEqual(contentionCalls, ["touch", "publish"]);
   await contention.dispose();
 
-  const localAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-local-attention-"));
+  const localAttentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-local-attention-"));
   let localAttentionReplyCalls = 0;
   const localAttentionCalls = [];
   const localAttention = createWechatWorkflowController({
@@ -604,7 +2382,7 @@ async function main() {
   assert.equal(localAttentionReplyCalls, 1, "automatic reply must resume after the remaining finite task completes");
   await localAttention.dispose();
 
-  const globalAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-global-attention-"));
+  const globalAttentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-global-attention-"));
   let globalAttentionReplyCalls = 0;
   const globalAttention = createWechatWorkflowController({
     rootDir: globalAttentionRoot, autoReplyDir: path.join(globalAttentionRoot, "reply"), activeTouchDir: path.join(globalAttentionRoot, "touch"), momentsDir: path.join(globalAttentionRoot, "moments"),
@@ -627,7 +2405,7 @@ async function main() {
   assert.equal(globalAttentionReplyCalls, 0, "auto reply must remain stopped while an unknown outcome awaits review");
   await globalAttention.dispose();
 
-  const brokenPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
+  const brokenPayloadRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
   const brokenPayloadOptions = {
     rootDir: brokenPayloadRoot, autoReplyDir: path.join(brokenPayloadRoot, "reply"), activeTouchDir: path.join(brokenPayloadRoot, "touch"), momentsDir: path.join(brokenPayloadRoot, "moments"),
     getAccount: () => "test-account", autoSchedule: false,
@@ -659,7 +2437,7 @@ async function main() {
   assert.match(brokenPayloadRow.error, new RegExp(brokenPayloadFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the task error must identify the corrupt payload file");
   await brokenPayload.dispose();
 
-  const dailyPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-daily-broken-payload-"));
+  const dailyPayloadRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-daily-broken-payload-"));
   let dailyPayloadClock = new Date(2026, 8, 3, 12, 0, 0);
   let dailyPayloadReplyCalls = 0;
   const dailyPayload = createWechatWorkflowController({
@@ -702,7 +2480,7 @@ async function main() {
   await dailyPayload.dispose();
   fs.rmSync(dailyPayloadRoot, { recursive: true, force: true });
 
-  const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
+  const cooldownRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;
   let replyCalls = 0;
@@ -739,7 +2517,7 @@ async function main() {
   assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");
   await cooldown.dispose();
 
-  const attentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-attention-stop-"));
+  const attentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-attention-stop-"));
   let attentionReplyCalls = 0;
   let attentionTaskCalls = 0;
   const attention = createWechatWorkflowController({
@@ -765,11 +2543,15 @@ async function main() {
   assert.equal(attention.status().phase, "needs_attention");
   await attention.dispose();
 
-  const bulkRetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));
+  const bulkRetryRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));
   let replyPauseCalls = 0;
+  const bulkControlEvents = [];
   const bulkRetry = createWechatWorkflowController({
     rootDir: bulkRetryRoot, autoReplyDir: path.join(bulkRetryRoot, "reply"), activeTouchDir: path.join(bulkRetryRoot, "touch"), momentsDir: path.join(bulkRetryRoot, "moments"),
     getAccount: () => "test-account", autoSchedule: false,
+    logger: { event: () => undefined, begin: (_module, name, details) => {
+      bulkControlEvents.push({ name, ...details }); return { end: () => undefined, fail: () => undefined };
+    } },
     reply: {
       prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
       runWorkflowStep: async () => ({ handled: false }),
@@ -793,15 +2575,20 @@ async function main() {
   await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
   assert.equal(bulkRetry.status().phase, "listening");
   const bulkRetryResult = await bulkRetry.retrySkipped(bulkRetryTask.task.id);
+  assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_skipped");
   assert.equal(replyPauseCalls, 1, "bulk retry must safely stop automatic reply before changing persisted progress");
   assert.equal(bulkRetryResult.retriedCount, 1);
   assert.equal(bulkRetryResult.excludedCount, 1);
   assert.deepEqual(bulkRetryResult.excludedReasons, { retry_skipped_poisoned_forbidden: 1 });
   assert.equal(bulkRetry.status().enabled, false, "bulk retry must wait for an explicit start");
   assert.equal(bulkRetry.status().tasks[0].status, "pending");
+  await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
+  assert.equal(bulkRetry.status().phase, "listening");
+  assert.equal((await bulkRetry.retryAll()).ok, true);
+  assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_all");
   await bulkRetry.dispose();
 
-  const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
+  const retryRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
   let retryAllowed = true;
   const retryOptions = { ...options, rootDir: retryRoot, autoReplyDir: path.join(retryRoot, "reply"),
     executors: { interact: {
@@ -854,6 +2641,27 @@ async function main() {
   assert.deepEqual(expert.read(), before, "interview drafts cannot silently replace live expert");
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
+  await checkDiagnosticLoggerFailureIsolation();
+  await checkRetryAndContinueIpc();
+  await checkFailedRetryRecoveryGuards();
+  await checkPresendDiagnosticLevels();
+  await checkTouchStatusDoesNotRecoverActiveSend();
+  await checkInterruptedSendRecoveryInSameProcess();
+  await checkClickedAttentionPersistFailureRecovery();
+  await checkR008BoundedRecovery();
+  await checkR008PassportAttachmentCount();
+  await checkR008PartialSend();
+  await checkT5FourthReviewExits();
+  await checkT5FourthReviewRulesAndEvidence();
+  await checkR008EvidencePrivacy();
+  await checkR008EvidencePrivacy("search-r014");
+  await checkT5FourthReviewCircuit();
+  await checkCircuitRejoinKeepsThirdContactRecovery();
+  await checkNonIdentitySkipDropsOldSearchRule();
+  await checkOldSearchRuleDoesNotEnterOtherSkipBills();
+  await checkIdentityStreakClearsAfterManualOrVerifiedContact();
+  await checkRejoinedIdentityStreakStartsEmpty();
+  await checkMissingSearchResultsDoNotTripCircuit();
   await checkWorkflowDiagnostics();
   await checkInProgressTouchEdit();
   await checkUnknownTouchResolution();
@@ -883,6 +2691,12 @@ async function main() {
   await waitingControl.dispose();
   await require("./touch-message-sequence.self_check.cjs").checkTouchMessageSequence();
   process.stdout.write("Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.\n");
+  process.exitCode = 0;
 }
 
-main().catch((error) => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });
+main().catch((error) => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; }).finally(() => {
+  for (const dir of temporaryDirectories) {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

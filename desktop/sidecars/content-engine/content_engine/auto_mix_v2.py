@@ -795,6 +795,74 @@ def matching_spoken_critical_terms(
     return tuple(sorted(matching))
 
 
+def _spoken_number_variants(token: str) -> tuple[str, ...]:
+    """Return common Mandarin ASR spellings for an Arabic numeric token."""
+    raw = str(token or "").strip()
+    percent = raw.endswith("%")
+    number = raw[:-1] if percent else raw
+    if not re.fullmatch(r"\d+(?:\.\d+)?", number):
+        return ()
+    digits = "零一二三四五六七八九"
+
+    def integer_words(value: int) -> str:
+        if value == 0:
+            return "零"
+        if value > 99_999_999:
+            return "".join(digits[int(character)] for character in str(value))
+        units = ("", "十", "百", "千")
+
+        def under_ten_thousand(part: int, *, omit_leading_one_ten: bool = True) -> str:
+            output, pending_zero = [], False
+            for position in range(3, -1, -1):
+                divisor = 10 ** position
+                digit, part = divmod(part, divisor)
+                if digit:
+                    if pending_zero and output:
+                        output.append("零")
+                    if not (omit_leading_one_ten and digit == 1 and position == 1 and not output):
+                        output.append(digits[digit])
+                    output.append(units[position])
+                    pending_zero = False
+                elif output and part:
+                    pending_zero = True
+            return "".join(output)
+
+        high, low = divmod(value, 10_000)
+        if not high:
+            return under_ten_thousand(low)
+        bridge = "零" if 0 < low < 1_000 else ""
+        low_words = (
+            under_ten_thousand(low, omit_leading_one_ten=False) if low else ""
+        )
+        return under_ten_thousand(high) + "万" + bridge + low_words
+
+    whole, dot, fraction = number.partition(".")
+    cardinal = integer_words(int(whole))
+    if dot:
+        cardinal += "点" + "".join(digits[int(character)] for character in fraction)
+    sequential = "".join(digits[int(character)] for character in whole)
+    if dot:
+        sequential += "点" + "".join(digits[int(character)] for character in fraction)
+    variants = {sequential}
+    if len(whole) == 1 or not whole.startswith("0"):
+        variants.add(cardinal)
+    if whole == "2" and not dot:
+        variants.add("两")
+    if percent:
+        variants = {"百分之" + item for item in variants}
+    return tuple(sorted(item for item in variants if item))
+
+
+def _spoken_numeric_lexemes(value: Any) -> set[str]:
+    """Extract complete Mandarin numeric expressions from normalized ASR text."""
+    normalized = _normalize_spoken_phrase_text(value)
+    digits_and_units = "零〇一二两三四五六七八九十百千万亿点"
+    return set(re.findall(
+        rf"百分之[{digits_and_units}]+|[{digits_and_units}]+",
+        normalized,
+    ))
+
+
 def verify_spoken_phrase(
     expected_text: Any,
     recognized_text: Any,
@@ -811,18 +879,66 @@ def verify_spoken_phrase(
         "auto_mix_voice_verification_invalid",
         "配音回听没有得到可核对的文字。",
     )
-    critical = {
-        _normalize_spoken_phrase_text(token)
-        for token in re.findall(r"\d+(?:\.\d+)?%?", str(expected_text or ""))
-        if _normalize_spoken_phrase_text(token)
+    expected_numeric_lexemes = tuple(dict.fromkeys(
+        re.findall(r"\d+(?:\.\d+)?%?", unicodedata.normalize(
+            "NFKC", str(expected_text or "")
+        ))
+    ))
+    recognized_numeric_lexemes = set(re.findall(
+        r"\d+(?:\.\d+)?%?", unicodedata.normalize(
+            "NFKC", str(recognized_text or "")
+        )
+    ))
+    recognized_spoken_numeric_lexemes = _spoken_numeric_lexemes(recognized_text)
+    normalized_numeric_tokens = {
+        _normalize_spoken_phrase_text(token) for token in expected_numeric_lexemes
     }
+    critical = set()
     safe_title = _normalize_spoken_phrase_text(title)
     if 2 <= len(safe_title) <= 24 and safe_title in expected:
         critical.add(safe_title)
-    critical.update(matching_spoken_critical_terms(expected_text, critical_terms))
-    missing = sorted(token for token in critical if token not in recognized)
+    critical.update(
+        term for term in matching_spoken_critical_terms(
+            expected_text, critical_terms
+        ) if term not in normalized_numeric_tokens
+    )
+    numeric_tokens = tuple(
+        (token, _spoken_number_variants(token))
+        for token in expected_numeric_lexemes
+    )
+    missing = sorted(
+        token for token in critical if token not in recognized
+    )
+    missing.extend(
+        token for token, variants in numeric_tokens
+        if token not in recognized_numeric_lexemes
+        and not any(
+            _normalize_spoken_phrase_text(variant)
+            in recognized_spoken_numeric_lexemes
+            for variant in variants
+        )
+    )
     matcher = SequenceMatcher(None, expected, recognized)
     similarity = matcher.ratio()
+    spoken_expected = str(expected_text or "")
+    for token, variants in numeric_tokens:
+        spoken_variant = next(
+            (
+                variant
+                for variant in variants
+                if _normalize_spoken_phrase_text(variant)
+                in recognized_spoken_numeric_lexemes
+            ),
+            None,
+        )
+        if spoken_variant:
+            spoken_expected = re.sub(
+                re.escape(token), spoken_variant, spoken_expected
+            )
+    spoken_similarity = SequenceMatcher(
+        None, _normalize_spoken_phrase_text(spoken_expected), recognized
+    ).ratio()
+    similarity = max(similarity, spoken_similarity)
     # Mandarin ASR cannot distinguish a small number of same-sound characters
     # (for example, 闸机 / 炸鸡). Keep brands and numbers fail-closed, but do
     # not reject a short, otherwise anchored sentence solely for that ambiguity.
@@ -842,7 +958,7 @@ def verify_spoken_phrase(
         ),
         "similarity": round(similarity, 4),
         "missingCriticalTokens": missing,
-        "criticalTokenCount": len(critical),
+        "criticalTokenCount": len(critical) + len(numeric_tokens),
     }
 
 

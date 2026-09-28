@@ -11,9 +11,11 @@ const {
 const {
   WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
   inspectForegroundWechatMainWindow,
+  runPowerShellAsync,
   inputWechatMessageDraftAsync,
   isPreparedWechatRpaLayout,
   openWechatSearchResultAsync,
+  discardSearchCapture,
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
@@ -25,6 +27,7 @@ const RETRYABLE_POST_SEND_CONFIRMATION_REASONS = new Set(["input_draft_read_fail
 const { summarizeSendResult, observeSendStage } = require("../../src/shared/wechat-send-diagnostics.cjs");
 
 const IDLE_WINDOW_RECOVERY_ATTEMPTS = 3;
+const WINDOW_PREFLIGHT_FAILED = "wechat_window_preflight_failed";
 
 function attemptKey(state, message, attemptId = "") {
   const taskId = String(attemptId || state.task_context?.task_id || "single-contact");
@@ -511,6 +514,86 @@ async function executeVerifiedContactSend(options = {}) {
   return observeSendStage(options, "contact_send", () => executeVerifiedContactSendCore(observed));
 }
 
+function withSessionAnchor(result, options, baseDir) {
+  if (options.captureSessionAnchor !== true || result?.ok !== true || result?.state?.real_send_status !== "sent_verified") return result;
+  try {
+    const state = loadState(baseDir);
+    return { ...result, session_anchor: {
+      pid: state.window_pid, hWnd: state.window_handle, process_name: state.window_process_name,
+      conversation_token: state.conversation_token,
+      conversation_verification_mode: state.conversation_verification_mode,
+      conversation_title_mode: state.conversation_title_mode,
+      search_query: state.search_query, search_query_type: state.search_query_type,
+      wechat_account_id: state.wechat_account_id,
+      contact_identity: identityKey(state.selected_customer),
+      anchored_at: Number(options.now?.() ?? Date.now())
+    } };
+  } catch { return result; }
+}
+
+async function inspectSessionReuse(options, baseDir, snapshot) {
+  const anchor = options.reuseSession?.anchor;
+  const reusedFromPart = options.reuseSession?.sourcePartIndex;
+  const outcome = (reuse_outcome, ok = false, cancelled = false) => ({
+    ok, action: "session_reuse", reuse_outcome, reused_from_part: reusedFromPart, cancelled
+  });
+  try {
+    if (options.reuseSession?.disabled === true) return outcome("disabled");
+    if (!anchor) return outcome("anchor_missing");
+    if (anchor.contact_identity !== identityKey(snapshot.selected_customer)
+      || String(anchor.wechat_account_id) !== String(snapshot.selected_customer?.wechatAccountId || snapshot.wechat_account_id)) return outcome("contact_changed");
+    const age = Number(options.now?.() ?? Date.now()) - Number(anchor.anchored_at);
+    if (!Number.isFinite(age) || age < 0 || age > 15_000) return outcome("anchor_expired");
+    if (contactIdentityError(readContacts(options.contactsDir || baseDir), snapshot.selected_customer, undefined,
+      { requireUniqueName: true })) return outcome("name_not_unique");
+    if (!(await executionMayContinue(options))) return outcome("window_not_ready", false, true);
+    saveState(baseDir, {
+      ...snapshot,
+      conversation_located: true, conversation_verified: true,
+      conversation_title: snapshot.selected_customer.name,
+      located_window_title: snapshot.selected_customer.name,
+      window_pid: Number(anchor.pid), window_handle: String(anchor.hWnd), window_process_name: String(anchor.process_name),
+      wechat_account_id: String(anchor.wechat_account_id),
+      conversation_verification_mode: String(anchor.conversation_verification_mode),
+      conversation_token: String(anchor.conversation_token), conversation_title_mode: String(anchor.conversation_title_mode),
+      search_query: String(anchor.search_query), search_query_type: String(anchor.search_query_type),
+      search_input_done: false, search_result_clicked: false,
+      send_gate_status: "pending", send_gate_reason: "", real_send_armed: false, real_send_enabled: false,
+      real_send_clicked: false, real_send_status: "not_sent", real_send_reason: "",
+      post_send_verified: false, post_send_status: "not_checked", post_send_reason: "",
+      message_bubble_verified: false, message_bubble_status: "not_checked", message_bubble_reason: "",
+      blocked_reason: "", session_source: "reused_verified_conversation", reused_from_part: reusedFromPart
+    });
+    if (!(await executionMayContinue(options))) return outcome("window_not_ready", false, true);
+    let observedSession;
+    const sessionDriver = options.sessionDriver || verifyWechatCurrentConversationAsync;
+    const session = await observeSendStage(options, "session_reuse_verify", () =>
+      verifyRealSendSessionAsync(baseDir, async (...args) => {
+        observedSession = await sessionDriver(...args);
+        return observedSession;
+      }));
+    if (!(await executionMayContinue(options))) return outcome("window_not_ready", false, true);
+    if (!session?.ok) return outcome("session_verify_failed");
+    const verified = loadState(baseDir);
+    if (Number(verified.window_pid) !== Number(anchor.pid) || String(verified.window_handle) !== String(anchor.hWnd)) return outcome("window_changed");
+    if (!String(anchor.conversation_token || "") || !String(observedSession?.conversationToken || "")
+      || String(observedSession.conversationToken) !== String(anchor.conversation_token)
+      || String(verified.conversation_token || "") !== String(anchor.conversation_token)) return outcome("conversation_token_changed");
+    if (observedSession?.verificationMode !== anchor.conversation_verification_mode
+      || verified.conversation_verification_mode !== anchor.conversation_verification_mode) return outcome("session_verify_failed");
+    if (!(await executionMayContinue(options))) return outcome("window_not_ready", false, true);
+    const inspector = options.windowInspector || ((ctx) => inspectForegroundWechatMainWindow(ctx, runPowerShellAsync));
+    const inspected = await Promise.resolve(inspector({ expectedPid: anchor.pid, expectedHWnd: anchor.hWnd,
+      minIdleMs: Math.max(1, Math.ceil(Number(options.now?.() ?? Date.now()) - Number(anchor.anchored_at))) }));
+    if (!(await executionMayContinue(options))) return outcome("window_not_ready", false, true);
+    if (inspected?.reason === "wechat_user_active") return outcome("user_input_detected");
+    if (inspected?.reason === "wechat_window_identity_mismatch") return outcome("window_changed");
+    if (inspected?.inspectionOnly !== true || !strictPreparedWechatWindow(inspected)) return outcome("window_not_ready");
+    if (Number(inspected.pid) !== Number(anchor.pid) || String(inspected.hWnd) !== String(anchor.hWnd)) return outcome("window_changed");
+    return outcome("reused", true);
+  } catch { return outcome("window_not_ready"); }
+}
+
 async function executeVerifiedContactSendCore(options = {}) {
   const baseDir = options.baseDir || __dirname;
   const contactId = String(options.contactId || "").trim();
@@ -655,82 +738,111 @@ async function executeVerifiedContactSendCore(options = {}) {
     }
   }
 
-  if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  const windowPreflight = options.windowPreflight || prepareWechatRpaWindowAsync;
-  const requestedWindowIdleMs = Number(options.windowMinIdleMs);
-  const windowMinIdleMs = Number.isFinite(requestedWindowIdleMs)
-    ? Math.max(0, Math.min(60_000, Math.floor(requestedWindowIdleMs)))
-    : 0;
-  let preparedWindow;
-  try {
-    preparedWindow = await observeSendStage(options, "prepare_window", () => windowPreflight({
-      minIdleMs: windowMinIdleMs,
-      requireFocused: true
-    }));
-  } catch {
-    preparedWindow = { ok: false, reason: "wechat_window_preflight_failed" };
+  let reusedSession = false;
+  if (options.reuseSession) {
+    let snapshot;
+    const inspected = await observeSendStage(options, "session_reuse", async () => {
+      try {
+        snapshot = loadState(baseDir);
+        return await inspectSessionReuse(options, baseDir, snapshot);
+      } catch {
+        return { ok: false, action: "session_reuse", reuse_outcome: "window_not_ready",
+          reused_from_part: options.reuseSession.sourcePartIndex };
+      }
+    });
+    if (inspected.ok) reusedSession = true;
+    else {
+      if (snapshot) {
+        try { saveState(baseDir, snapshot); } catch { /* The original search path will still fail closed on bad state. */ }
+      }
+      if (inspected.cancelled) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    }
   }
-  let preflightRecoveryAttempts = 0;
-  while (["wechat_user_active", "wechat_external_input_detected"].includes(String(preparedWindow?.reason || ""))
-    && windowMinIdleMs > 0
-    && preflightRecoveryAttempts < IDLE_WINDOW_RECOVERY_ATTEMPTS) {
-    preflightRecoveryAttempts += 1;
-    const waitForIdleWindow = typeof options.windowIdleWait === "function"
-      ? options.windowIdleWait
-      : (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
-    await waitForIdleWindow(windowMinIdleMs);
+  let session = { ok: true };
+  if (!reusedSession) {
     if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    const windowPreflight = options.windowPreflight || prepareWechatRpaWindowAsync;
+    const requestedWindowIdleMs = Number(options.windowMinIdleMs);
+    const windowMinIdleMs = Number.isFinite(requestedWindowIdleMs)
+      ? Math.max(0, Math.min(60_000, Math.floor(requestedWindowIdleMs)))
+      : 0;
+    let preparedWindow;
     try {
       preparedWindow = await observeSendStage(options, "prepare_window", () => windowPreflight({
         minIdleMs: windowMinIdleMs,
         requireFocused: true
       }));
     } catch {
-      preparedWindow = { ok: false, reason: "wechat_window_preflight_failed" };
+      preparedWindow = { ok: false, reason: WINDOW_PREFLIGHT_FAILED };
     }
-  }
-  const preparedIdentity = strictPreparedWechatWindow(preparedWindow);
-  if (!preparedIdentity) {
-    setRealSendArm(baseDir, false);
-    return withSendAttempted({
-      ok: false,
-      action: "prepare-wechat-window",
-      blocked_reason: String(preparedWindow?.reason || "wechat_window_not_ready"),
-      error: wechatWindowBlockText(preparedWindow?.reason || "wechat_window_not_ready"),
-      send_diagnostics: preflightDiagnostics(preparedWindow, "prepare_wechat_window", windowMinIdleMs, preflightRecoveryAttempts)
-    });
-  }
-  if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  const exactWindowArgs = [
-    "--expected-pid",
-    String(preparedIdentity.pid),
-    "--expected-hwnd",
-    preparedIdentity.hWnd,
-    "--min-idle-ms",
-    "0"
-  ];
-  const openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
-  if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  if (!openedConversation?.ok) {
-    return withSendAttempted({
-      ...openedConversation,
-      action: "click-search-result-dry-run",
-      step_action: String(openedConversation?.action || "")
-    });
-  }
+    let preflightRecoveryAttempts = 0;
+    while (["wechat_user_active", "wechat_external_input_detected"].includes(String(preparedWindow?.reason || ""))
+      && windowMinIdleMs > 0
+      && preflightRecoveryAttempts < IDLE_WINDOW_RECOVERY_ATTEMPTS) {
+      preflightRecoveryAttempts += 1;
+      const waitForIdleWindow = typeof options.windowIdleWait === "function"
+        ? options.windowIdleWait
+        : (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+      await waitForIdleWindow(windowMinIdleMs);
+      if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+      try {
+        preparedWindow = await observeSendStage(options, "prepare_window", () => windowPreflight({
+          minIdleMs: windowMinIdleMs,
+          requireFocused: true
+        }));
+      } catch {
+        preparedWindow = { ok: false, reason: WINDOW_PREFLIGHT_FAILED };
+      }
+    }
+    const preparedIdentity = strictPreparedWechatWindow(preparedWindow);
+    if (!preparedIdentity) {
+      setRealSendArm(baseDir, false);
+      return withSendAttempted({
+        ok: false,
+        action: "prepare-wechat-window",
+        blocked_reason: String(preparedWindow?.reason || "wechat_window_not_ready"),
+        error: wechatWindowBlockText(preparedWindow?.reason || "wechat_window_not_ready"),
+        send_diagnostics: preflightDiagnostics(preparedWindow, "prepare_wechat_window", windowMinIdleMs, preflightRecoveryAttempts)
+      });
+    }
+    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    const exactWindowArgs = [
+      "--expected-pid",
+      String(preparedIdentity.pid),
+      "--expected-hwnd",
+      preparedIdentity.hWnd,
+      "--min-idle-ms",
+      "0"
+    ];
+    const openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
+    if (!(await executionMayContinue(options))) {
+      discardSearchCapture(openedConversation);
+      return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    }
+    if (!openedConversation?.ok) {
+      return withSendAttempted({
+        ...openedConversation,
+        action: "click-search-result-dry-run",
+        step_action: String(openedConversation?.action || "")
+      });
+    }
 
-  if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  const session = await observeSendStage(options, "verify_session", () => verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync));
-  if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  if (!session.ok) return withSendAttempted(session);
+    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    session = await observeSendStage(options, "verify_session", () => verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync));
+    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    if (!session.ok) return withSendAttempted(session);
+  }
+  if (reusedSession && !(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   if (options.image) {
     const state = loadState(baseDir);
-    return observeSendStage(options, "image_send", () => require("./wechat_image_send.dev.cjs").sendWechatImage({
+    const imageSender = options.imageSender || require("./wechat_image_send.dev.cjs").sendWechatImage;
+    const imageOutcome = await observeSendStage(options, "image_send", () => imageSender({
       baseDir, attemptId: options.attemptId,
       image: options.image, onTransition: options.onTransition, isExecutionAllowed: options.isExecutionAllowed,
       context: { pid: state.window_pid, hWnd: state.window_handle, expectedConversation: state.selected_customer?.name,
         expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token }
     }));
+    return withSessionAnchor(imageOutcome, options, baseDir);
   }
   if (typeof options.beforeDraft === "function") {
     let allowed = false;
@@ -755,7 +867,7 @@ async function executeVerifiedContactSendCore(options = {}) {
   const armed = setRealSendArm(baseDir, true, options.contactsDir || baseDir);
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   if (!armed.ok) return withSendAttempted(armed, sendAttemptedFromState(armed.state));
-  return sendReal(baseDir, {
+  const textOutcome = await sendReal(baseDir, {
     allowRealSend: true,
     userConfirmed: true,
     message,
@@ -765,6 +877,7 @@ async function executeVerifiedContactSendCore(options = {}) {
     onTransition: options.onTransition,
     onDiagnostic: options.onDiagnostic
   }, options.sendDriver || clickWechatSendButtonAsync, options.sessionDriver || verifyWechatCurrentConversationAsync, options.bubbleVerifier || verifyWechatMessageBubbleAsync);
+  return withSessionAnchor(textOutcome, options, baseDir);
 }
 
 function personalWechatBindingValidity(result, expectedPid, expectedHWnd) {

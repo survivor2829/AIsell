@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { resolveSystemTar } = require("./system-tar.cjs");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 const {
   copyProductDetailRuntime,
@@ -397,7 +398,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   scanRelease(target);
 
   if (paths.componentsOnly) return { target, manifest, componentsOnly: true };
-  const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", archiveBaseDir, productName], { encoding: "utf8", windowsHide: true });
+  const archive = spawnSync(resolveSystemTar(), ["-a", "-c", "-f", zip, "-C", archiveBaseDir, productName], { encoding: "utf8", windowsHide: true });
   if (archive.status !== 0 || !fs.existsSync(zip)) throw new Error(archive.stderr || archive.stdout || "portable ZIP creation failed");
   return { target, zip, manifest };
 }

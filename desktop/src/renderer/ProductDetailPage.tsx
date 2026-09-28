@@ -184,7 +184,7 @@ export function ProductDetailPage() {
       }
       : {
         title: "服务已就绪，AI 精修尚未配置",
-        description: "普通上传、排版和导出可以使用；如需 AI 精修，请前往“API密钥”填写 DeepSeek 与 APIMart Key。"
+        description: "普通上传、排版和导出可以使用；云端智能服务暂不可用时，AI 精修会保留当前工作并提示稍后重试。"
       }
     : STATE_COPY[displayState];
   const canShowWorkspace = status.state === "ready" && Boolean(status.bootstrapUrl);

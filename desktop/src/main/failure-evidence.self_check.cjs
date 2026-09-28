@@ -16,11 +16,15 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-evidence-test-'));
 try {
   const ids = new Set();
   const catalogPairs = new Set(catalog.map(row => `${row.id}\0${row.reason}`));
+  // These catalog entries classify reason branches; their IDs are not source literals.
+  const reasonOnlySourceRules = new Set(['image-r015', 'touch-r001']);
   for (const row of catalog) {
     assert(!ids.has(row.id), `duplicate rule ${row.id}`); ids.add(row.id);
     assert(["environment", "recoverable", "blocker"].includes(row.classification), `unclassified rule ${row.id}`);
     const source = fs.readFileSync(path.resolve(__dirname, '../..', row.file.replace(/^desktop\//, '')), 'utf8');
-    assert(source.includes(`"${row.dynamic ? row.condition : row.id}"`), `missing source ${row.id}`);
+    const sourceMarker = reasonOnlySourceRules.has(row.id) || row.id.startsWith('image-literal.')
+      ? row.reason : row.dynamic ? row.condition : row.id;
+    assert(source.includes(`"${sourceMarker}"`), `missing source ${row.id}`);
   }
   for (const [reason, policy] of Object.entries(workflowPolicies)) {
     assert(FAILURE_CLASSIFICATIONS.includes(policy.classification), `unclassified workflow reason ${reason}`);
@@ -58,7 +62,7 @@ $second=Write-XiaoxiFailure 'draft-read.copy' 'input_draft_read_failed'
 if($first -cne 'search-r003' -or $second -cne 'draft-read.copy') { throw 'changed_result' }
 $png=Get-ChildItem -LiteralPath $env:XIAOXI_FAILURE_DIR -Filter '*.png'
 $bmp=[Drawing.Bitmap]::FromFile($png.FullName)
-try { foreach($point in @(@(0,0),@($bmp.Width-1,0),@(0,$bmp.Height-1),@($bmp.Width-1,$bmp.Height-1),@(50,40))) { if($bmp.GetPixel($point[0],$point[1]).ToArgb() -ne [Drawing.Color]::DimGray.ToArgb()) { throw 'unmasked_pixels' } } } finally { $bmp.Dispose() }
+try { foreach($point in @(@(0,0),@(($bmp.Width - 1),0),@(0,($bmp.Height - 1)),@(($bmp.Width - 1),($bmp.Height - 1)),@(50,40))) { if($bmp.GetPixel($point[0],$point[1]).ToArgb() -ne [Drawing.Color]::DimGray.ToArgb()) { throw 'unmasked_pixels' } } } finally { $bmp.Dispose() }
 `;
   const child = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     '$ErrorActionPreference="Stop"; Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())))'],
