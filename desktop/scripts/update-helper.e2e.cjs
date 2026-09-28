@@ -115,6 +115,7 @@ class FixtureInstaller { static int Main(string[] args) {
     await fs.writeFile(path.join(root, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, evidence: path.join(root, "result.json") }));
     passed = true;
+    console.log("Update helper process fixture passed.");
   } finally {
     try {
       // Include a restarted fixture that timed out before writing its boot receipt.

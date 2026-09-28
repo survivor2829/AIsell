@@ -121,16 +121,22 @@ const parallelCheckGroups = groupDefinitions.map(group => ({
 const groupedChecks = new Set(parallelCheckGroups.flatMap(group => group.checks));
 const serialChecks = checks.filter(check => !groupedChecks.has(check));
 
-function runChecks(list) {
+function runChecks(list, execute = spawnSync) {
   for (const check of list) {
     console.log(`\n> ${check}`);
-    const result = spawnSync(process.execPath, [path.join(desktopDir, check)], {
+    const result = execute(process.execPath, [path.join(desktopDir, check)], {
       cwd: desktopDir,
       env: process.env,
-      stdio: "inherit",
+      stdio: ["inherit", "pipe", "inherit"],
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
       windowsHide: true
     });
-    if (result.status !== 0) process.exit(result.status || 1);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.status !== 0) throw result.error || new Error(`self-check failed: ${check} (status ${result.status})`);
+    if (!result.stdout?.split(/\r?\n/u).some(line => /\bpassed\b/iu.test(line))) {
+      throw new Error(`self-check exited 0 without a passed line: ${check}`);
+    }
   }
 }
 
@@ -162,4 +168,4 @@ async function main(args = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { parallelCheckGroups, serialChecks };
+module.exports = { parallelCheckGroups, serialChecks, runChecks };

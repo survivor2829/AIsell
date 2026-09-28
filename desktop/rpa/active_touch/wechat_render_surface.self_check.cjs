@@ -63,3 +63,4 @@ try {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+console.log("WeChat render surface checks passed.");
