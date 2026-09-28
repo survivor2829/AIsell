@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AutoMixResourcePanel, type AutoMixResourcePanelProps, type AutoMixVoicePersona, type MusicCatalogTrack } from "./AutoMixResourcePanel";
 import { type Batch, callBatch } from "./batch-studio-api";
 
@@ -19,11 +19,20 @@ function selectable(track: MusicCatalogTrack) {
     && (!license.expiresAt || Date.parse(license.expiresAt) > Date.now());
 }
 
-export function BatchSoundSettings({ settings, locked, resourceLocked = false, onChange }: { settings: Batch["settings"]; locked: boolean; resourceLocked?: boolean; onChange: (settings: Batch["settings"]) => void }) {
+// refreshToken: re-read the lists when it changes (the page passes its voice catalog, so an
+// approval made elsewhere on the page shows up here too).
+export function BatchSoundSettings({ settings, locked, resourceLocked = false, onChange, onVoiceApproved, refreshToken }: { settings: Batch["settings"]; locked: boolean; resourceLocked?: boolean; onChange: (settings: Batch["settings"]) => void; onVoiceApproved?: () => Promise<void> | void; refreshToken?: unknown }) {
   const [api] = useState(resourceApi);
+  const approvedCallback = useRef(onVoiceApproved);
+  approvedCallback.current = onVoiceApproved;
   const [auditionApi] = useState<ResourceApi>(() => ({ ...api, listAutoMixVoicePersonas: async () => {
     const result = await api.listAutoMixVoicePersonas();
     return { items: result.items.filter((voice) => voice.provider === "volcengine") };
+  }, approveAutoMixVoicePersona: async (payload) => {
+    const approved = await api.approveAutoMixVoicePersona(payload);
+    // The page re-reads the approved list, or later loads still report this voice as unapproved.
+    try { await approvedCallback.current?.(); } catch { /* The approval itself has landed. */ }
+    return approved;
   } }));
   const [voices, setVoices] = useState<AutoMixVoicePersona[]>([]);
   const [tracks, setTracks] = useState<MusicCatalogTrack[]>([]);
@@ -38,11 +47,18 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
     const failed = results.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") setNotice(failed.reason?.message || "资源暂时无法读取");
   }
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => { void refresh(); }, [refreshToken]);
   const pool = settings.music_track_ids || [];
   const musicMode = settings.music_mode || (pool.length ? "selected" : "none");
   const availableTrackCount = tracks.filter(selectable).length;
   const current = voices.find((voice) => voice.voicePersonaId === settings.voice_persona_id);
+  const approvedVoices = voices.filter((voice) => voice.approvalStatus === "approved" && voice.provider === "volcengine");
+  // The batch's own voice stays visible when it can no longer be chosen, instead of the
+  // select silently showing its first option.
+  const unavailable = settings.voice_persona_id && !approvedVoices.some((voice) => voice.voicePersonaId === settings.voice_persona_id)
+    ? !current ? `${settings.voice_persona_id}（已不在声音目录）`
+      : current.approvalStatus === "approved" ? current.displayName : `${current.displayName}（需重新批准）`
+    : "";
   async function audition(kind: "voice" | "music", id: string, name: string) {
     setLoading(id); setNotice("");
     try {
@@ -55,7 +71,7 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
   return <section className="batch-sound-settings" aria-label="声音与配乐">
     <div className="batch-notice" role="status"><strong>云端智能服务由系统统一提供</strong><br />客户无需配置密钥；开始制作时会实时检查素材理解、语音识别和配音能力。</div>
     <div className="batch-sound-row"><label>配音声音<select aria-label="配音声音" disabled={locked} value={settings.voice_persona_id || ""} onChange={(event) => onChange({ ...settings, voice_persona_id: event.target.value || undefined })}>
-      <option value="">试听后选择声音</option>{voices.filter((voice) => voice.approvalStatus === "approved" && voice.provider === "volcengine").map((voice) => <option key={voice.voicePersonaId} value={voice.voicePersonaId}>{voice.displayName}</option>)}
+      <option value="">试听后选择声音</option>{unavailable && <option value={settings.voice_persona_id} disabled>{unavailable}</option>}{approvedVoices.map((voice) => <option key={voice.voicePersonaId} value={voice.voicePersonaId}>{voice.displayName}</option>)}
     </select></label><button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !current} onClick={() => current && void audition("voice", current.voicePersonaId, current.displayName)}>{loading === current?.voicePersonaId ? "准备试听…" : "试听声音"}</button><button type="button" disabled={resourceLocked} onClick={() => setResourceSection("voice")}>选择试听候选</button></div>
     <details className="batch-music-settings"><summary>配乐 · {musicMode === "none" ? "明确不加配乐" : musicMode === "selected" && pool.length ? `已选 ${pool.length} 首，按内容轮换` : "自动从授权曲库选曲"}</summary>
       <label>配乐策略<select aria-label="配乐策略" disabled={locked} value={musicMode} onChange={(event) => {

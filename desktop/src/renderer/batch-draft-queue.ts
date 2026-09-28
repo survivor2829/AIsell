@@ -156,6 +156,13 @@ export const RESTORED_ELSEWHERE = "上次未保存的编辑已存回它所属的
 export function restoreNotice(restore: DraftRestore<unknown>) {
   return restore.kind === "restored" ? RESTORED_ELSEWHERE : restore.kind === "none" ? "" : restore.message;
 }
+// Materials carried in from the library start a new video that is saved at once, except
+// while an edit kept through a transient failure is still cached: that save would move it
+// to the backup slot without a word. The new video then waits for the user's first change.
+export const CARRIED_ASSETS_WAIT = "所选素材已带入，但还没有保存成新视频；开始修改后才会保存。";
+export function carriedAssetsAutosave(restore: DraftRestore<unknown>) {
+  return restore.kind !== "kept";
+}
 async function restoreOnce<B extends RestorableBatch>({ storage, get, save }: RestoreOptions<B>): Promise<DraftRestore<B>> {
   const pending = readPending(storage);
   const draft = pending?.draft;

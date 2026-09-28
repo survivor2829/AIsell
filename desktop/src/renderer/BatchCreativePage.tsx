@@ -6,7 +6,9 @@ import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionTe
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
+import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
+import { BatchVoiceRecovery } from "./BatchVoiceRecovery";
+import { type RecoveryVoice, VOICE_RECOVERY_BLOCKS, approvedVoiceIds as approvedIn, voiceRecovery } from "./batch-voice-recovery";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
 import creativeThinkingStill from "./assets/creative-thinking-still.webp";
@@ -53,6 +55,8 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     return { minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: [], ...saved, voice_persona_id: preferredVoice(saved?.voice_persona_id), workflow_version: 2 };
   });
   const [voices, setVoices] = useState<{ voicePersonaId: string; displayName: string; approvalStatus?: string; provider?: string }[]>([]);
+  // The whole voice catalog (approved or not), for the recovery card; null until read.
+  const [catalog, setCatalog] = useState<RecoveryVoice[] | null>(null);
   const [brands, setBrands] = useState<{ brandProfileId: string; name: string }[]>([]);
   const [picker, setPicker] = useState<Group | null>(null);
   const [preview, setPreview] = useState<Asset | null>(null);
@@ -111,6 +115,24 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     const voice = b.settings?.voice_persona_id;
     return voice && !b.archived && approvedVoiceIds.current && !approvedVoiceIds.current.has(voice)
       ? "该批次的声音需要重新试听批准，或改选已批准的声音。" : "";
+  }
+  type VoiceItem = RecoveryVoice & { displayName: string; provider?: string };
+  function applyVoices(items: VoiceItem[]) {
+    approvedVoiceIds.current = approvedIn(items);
+    setCatalog(items);
+    const approved = items.filter((v) => v.approvalStatus === "approved" && v.provider === "volcengine");
+    setVoices(approved);
+    return approved;
+  }
+  // After any approval on this page (recovery card or the voice panel), so the card,
+  // voiceWarning and later loads all use the new list instead of the one read on mount.
+  async function refreshVoices() {
+    const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ ok?: boolean; data?: { items: VoiceItem[] } }> } })?.creative;
+    const result = await creative?.listAutoMixVoicePersonas();
+    if (!result?.ok || !result.data) return;
+    applyVoices(result.data.items || []);
+    const current = batch ? voiceWarning(batch) : "";
+    if (!current) setNotice((notice) => notice.replace("该批次的声音需要重新试听批准，或改选已批准的声音。", "").trim());
   }
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
@@ -174,13 +196,12 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       if (failure?.status === "rejected") setNotice(failure.reason?.message || "部分资源暂时不可用");
       let incompatibleVoice = false;
       // Existing resource pickers retain ownership of audition/approval and licensing.
-      const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ data?: { items: typeof voices } }>; listBrandProfiles: () => Promise<{ data?: { items: typeof brands } }> } })?.creative;
+      const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ ok?: boolean; data?: { items: VoiceItem[] } }>; listBrandProfiles: () => Promise<{ data?: { items: typeof brands } }> } })?.creative;
       if (creative) {
         const results = await Promise.allSettled([creative.listAutoMixVoicePersonas(), creative.listBrandProfiles()]);
-        if (results[0].status === "fulfilled") {
-          approvedVoiceIds.current = new Set((results[0].value.data?.items || []).filter((v) => v.approvalStatus === "approved").map((v) => v.voicePersonaId));
-          const approved = (results[0].value.data?.items || []).filter((v) => v.approvalStatus === "approved" && v.provider === "volcengine");
-          setVoices(approved);
+        // A failed read leaves the catalog unknown rather than flagging every voice.
+        if (results[0].status === "fulfilled" && results[0].value.ok !== false) {
+          const approved = applyVoices(results[0].value.data?.items || []);
           const savedVoice = preferredVoice();
           if (savedVoice && !approved.some((voice) => voice.voicePersonaId === savedVoice)) {
             try { localStorage.removeItem(preferredVoiceStorageKey); } catch { /* Selection can still be corrected in this session. */ }
@@ -214,7 +235,11 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       const notices = [restoreNotice(restore)];
       let loaded: Batch | null = null;
       if (initial?.batchId) load(loaded = await callBatch<Batch>("get", { batch_id: initial.batchId }));
-      else if (initial?.assetIds) { setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: "ideas" }); setDirty(true); }
+      else if (initial?.assetIds) {
+        setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: "ideas" });
+        // Saving the carried-in materials at once would push a kept edit into the backup unseen.
+        if (carriedAssetsAutosave(restore)) setDirty(true); else notices.push(CARRIED_ASSETS_WAIT);
+      }
       else {
         const savedId = localStorage.getItem("batch-studio-draft-id");
         if (savedId) {
@@ -321,7 +346,11 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     }); } finally { setSubmitting(false); }
   }
   async function recoverPlanning() {
-    if (!batch) return;
+    // As in start(): the call consumes the trusted click at once, so nothing is awaited
+    // before it. The buttons wait for the autosave (disabled while an edit is unsaved)
+    // and no queued older edit may land after the retry has started.
+    if (!batch || draftQueue.busy()) return;
+    draftQueue.cancelPending();
     setSubmitting(true);
     try { await run(async () => {
       const b = await callBatch<Batch>("resolve", {
@@ -334,7 +363,8 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     }); } finally { setSubmitting(false); }
   }
   async function recoverVoice() {
-    if (!batch) return;
+    if (!batch || draftQueue.busy()) return;
+    draftQueue.cancelPending();
     setSubmitting(true);
     try { await run(async () => {
       const b = await callBatch<Batch>("voice-resolve", {
@@ -357,12 +387,16 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const shownCandidates = [...(batch?.candidates || [])].sort((a, b) => (a.production_index || 0) - (b.production_index || 0)).slice(0, batch?.target_count || batch?.recommended_count || 3);
   const completed = shownCandidates.filter((c) => c.status === "completed").length;
   const pendingJobs = batch?.production_retry_available || (batch?.production_jobs ? batch.production_jobs.some((job) => ["queued", "processing"].includes(job.status)) : completed < (batch?.target_count || 1));
-  const continueHint = batch?.production_retry_available
+  // While the batch's voice needs its approval back, paid production is held here too
+  // (the engine refuses it before creating a task).
+  const voiceBlocked = voiceRecovery(batch, catalog) !== null;
+  const continueHint = voiceBlocked ? VOICE_RECOVERY_BLOCKS : batch?.production_retry_available
     ? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。"
     : "继续会从未完成的步骤接着做；已完成的分析、审核和成片会保留。";
   const continueAction = batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown"
-    ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button></div>
+    ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty || voiceBlocked} onClick={() => void start("continue")}>继续未完成作品</button></div>
     : null;
+  const recoveryHeld = voiceBlocked ? VOICE_RECOVERY_BLOCKS : dirty || saving ? "有修改正在保存，保存完成后再重试。" : "";
   const skippedJobs = batch?.production_jobs?.filter((job) => job.status === "skipped") || [];
   const flowStep = flowView ?? (dirty ? 0 : batch?.archived || batch?.script_confirmation || shownCandidates.length ? 3 : options.length ? 2 : running ? 1 : 0);
   const flowSteps = [
@@ -403,7 +437,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     {notice && <p className="batch-notice" role="alert">{notice}</p>}
     {batch?.archived && <p className="batch-notice" role="status">这是已归档的批次，可查看记录、预览与导出已有成片。</p>}
     {submitting && !batch && <section className="batch-progress" role="status">正在提交素材并启动任务…</section>}
-    {batch && (!visualFlow || running || paused || submitting || failedState) && <section className={`batch-progress${failedState ? " is-attention" : ""}`}>
+    {batch && (!visualFlow || running || paused || submitting || failedState || voiceBlocked) && <section className={`batch-progress${failedState || voiceBlocked ? " is-attention" : ""}`}>
       <div className="batch-progress-illustration" aria-hidden="true"><img className="batch-progress-motion" src={activityArt} alt="" /><img className="batch-progress-still" src={activityStill} alt="" /></div>
       <div className="batch-progress-content">
         <div className="batch-progress-heading"><div><strong>{submitting ? "正在提交任务" : activity?.phase_label || (running ? "正在处理" : batchStatus[batch.status] || "处理中")}</strong><span>{scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已完成 ${completed} / ${batch.target_count || "待定"} 条`}</span></div>{progressPercent !== null && <b>{progressPercent}%</b>}</div>
@@ -420,13 +454,15 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
         {batch.status === "outcome_unknown" && <p className="batch-provider-final" role="status">软件已停止继续等待，不会自动重复扣费；最后一次真实进度为 {progressPercent === null ? "未量化" : `${progressPercent}%`}。核对云端记录后，只从这里继续未完成步骤。</p>}
       </div>
       {onOpenDiagnostics && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status) && <button type="button" onClick={() => onOpenDiagnostics({ module: "content_engine", taskId: batch.task_id || batch.batch_id })}>反馈这个问题</button>}
+      <BatchVoiceRecovery key={`${batch.batch_id}:${batch.settings?.voice_persona_id || ""}`} batch={batch} voices={catalog} disabled={busy || submitting}
+        onApproved={async (name) => { await refreshVoices(); setNotice(`已批准「${name}」，这个批次可以正常保存和继续制作了。`); }} />
       {batch.status === "outcome_unknown" && batch.planning_recovery_available && <div className="batch-planning-recovery">
-        <span>原请求结果仍无法确认。请确认是否重试未完成规划；可能产生一次云端费用。{batch.planning_checkpoint ? ` 已保留${batch.planning_checkpoint.stage} ${batch.planning_checkpoint.completed}/${batch.planning_checkpoint.total}。` : ""}</span>
-        <button type="button" data-batch-action="resolve" className="batch-primary" disabled={busy || submitting} onClick={() => void recoverPlanning()}>确认风险，重试未完成规划</button>
+        <span>原请求结果仍无法确认。请确认是否重试未完成规划；可能产生一次云端费用。{batch.planning_checkpoint ? ` 已保留${batch.planning_checkpoint.stage} ${batch.planning_checkpoint.completed}/${batch.planning_checkpoint.total}。` : ""}{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
+        <button type="button" data-batch-action="resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverPlanning()}>确认风险，重试未完成规划</button>
       </div>}
       {batch.voice_recovery_available && <div className="batch-planning-recovery">
-        <span>第三方配音或回听没有返回可用回执，系统已保留前面已完成的结果。请先核对对应平台记录，确认这次未生成可用音频后，仅重试未完成的语音步骤。</span>
-        <button type="button" data-batch-action="voice-resolve" className="batch-primary" disabled={busy || submitting} onClick={() => void recoverVoice()}>确认风险，仅重试未完成配音</button>
+        <span>第三方配音或回听没有返回可用回执，系统已保留前面已完成的结果。请先核对对应平台记录，确认这次未生成可用音频后，仅重试未完成的语音步骤。{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
+        <button type="button" data-batch-action="voice-resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverVoice()}>确认风险，仅重试未完成配音</button>
       </div>}
       {batch.task_id && (running || paused) && batch.status !== "outcome_unknown" && <><button disabled={busy} onClick={() => void run(async () => {
         const action = paused ? "resume" : "pause";
@@ -510,7 +546,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       </article>)}</div>}
       {(!visualFlow || flowStep === 2) && <>
       {modern && chosen.length === 1 && <details className="batch-advanced"><summary>批量制作 · {chosenTotal || 1} 条</summary><label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label><p className="batch-hint">第一条使用确认正文，其余沿用这个方向创作不同内容，最多300条。</p></details>}
-      <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
+      <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={refreshVoices} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
       <VideoTemplatePicker value={settings.video_template || "topic_fixed"} disabled={locked || !!batch?.script_confirmation} onChange={(video_template) => changeSoundSettings({ ...settings, video_template })} />
       {soundDirty && <p className="batch-hint">制作设置已更新。</p>}
@@ -522,7 +558,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     </section>}
     {showResults && batch && completed > 0 && <div className="batch-output-row"><p>{batch.export_ready ? `已自动保存 ${batch.exported_count} 条成片` : "已完成的作品可以保存到成片文件夹"}</p><button disabled={busy} onClick={() => void run(async () => { await callBatch("open-output", { batch_id: batch.batch_id }); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); })}>打开成片文件夹</button>{batch.export_error && <p className="batch-notice" role="status">视频已制作完成，但保存遇到问题。点击上方按钮可重新保存，无需重新制作。</p>}</div>}
     {showResults && !!skippedJobs.length && <section className="batch-skipped" aria-label="未完成的作品"><h2>有 {skippedJobs.length} 条未能完成</h2><p>其他作品已继续制作。下面保留每条的原因。</p><ul>{skippedJobs.map((job) => <li key={job.production_index}>第 {job.production_index} 条：{job.error || "当前素材未能支持这条作品。"}</li>)}</ul></section>}
-    {showResults && !!shownCandidates.length && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
+    {showResults && !!shownCandidates.length && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty || voiceBlocked} title={voiceBlocked ? VOICE_RECOVERY_BLOCKS : undefined} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
       <div className="batch-result-grid">{shownCandidates.slice(0, visibleCandidates).map((c, index) => <article className="batch-result" key={c.candidate_id}>{c.generated_video_id ? <video controls preload="none" poster={videoUrl(c.generated_video_id, "thumbnail")} src={videoUrl(c.generated_video_id)} /> : <div className="batch-result-placeholder"><span>{String(index + 1).padStart(2, "0")}</span><p>{batchStatus[c.status] || "待制作"}</p></div>}<div className="batch-result-body"><h3>{c.title}</h3><p>{c.angle}</p><small>使用 {new Set((c.actual_shots || c.shots).map((s) => s.asset_id)).size} 个原素材 · {(c.actual_shots || c.shots).length} 个镜头 · {c.generated_video_id ? "成片" : "预计"} {((c.duration_ms || c.shots.reduce((n, s) => n + s.source_end_ms - s.source_start_ms, 0)) / 1000).toFixed(1)} 秒</small>{c.music_track_id && <p>配乐：{batch?.music_selections?.find((item) => item.candidate_id === c.candidate_id)?.display_name || "本批已选曲目"}</p>}{c.error && c.status !== "rendering" && <p className="batch-notice">{c.error}</p>}<details open={!visualFlow && !c.generated_video_id}><summary>完整口播与镜头安排</summary><p>{c.narration}</p><ol>{(c.actual_shots || c.shots).map((s) => <li key={s.segment_id}>{s.description}（{(s.source_start_ms / 1000).toFixed(1)}–{(s.source_end_ms / 1000).toFixed(1)} 秒）</li>)}</ol></details>{!scriptFlow && <button disabled={locked} onClick={() => setEditing(c)}>调整这一条</button>}{c.generated_video_id && <button onClick={() => void run(async () => {
           const creative = (window.xiaoxiContent as unknown as { creative: { downloadCandidate: (p: { candidateId: string }) => Promise<{ ok: boolean; error?: string }> } }).creative;
           const r = await creative.downloadCandidate({ candidateId: c.generated_video_id! }); if (!r.ok) throw new Error(r.error);
