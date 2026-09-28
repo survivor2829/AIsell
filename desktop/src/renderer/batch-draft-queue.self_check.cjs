@@ -84,10 +84,14 @@ function fakeEngine(batches = []) {
       await tick();
       if (draft.settings?.voice_persona_id && !engine.approved) throw failure("auto_mix_voice_persona_approval_required", approvalMessage);
       const id = draft.batch_id || `narrated_batch_${String(db.size + 1).padStart(32, "0")}`;
-      // A content save resets the batch to draft and drops _archived_at (narrated_batch.py save);
-      // the save response carries no archived flag.
-      const { archived: _dropped, ...previous } = db.get(id) || { candidates: [] };
-      const saved = { ...previous, ...draft, batch_id: id, status: "draft", updated_at: `2026-09-28T02:00:${String(++clock).padStart(2, "0")}.000Z` };
+      // A save that changes materials or the brief drops _archived_at (narrated_batch.py save,
+      // `changed`); a title alone does not. The save response carries no archived flag.
+      const prior = db.get(id) || { candidates: [] };
+      const changed = ["groups", "expression", "target_audience", "material_context", "cta"]
+        .some((key) => key in draft && JSON.stringify(draft[key]) !== JSON.stringify(prior[key]));
+      const { archived, ...previous } = prior;
+      const saved = { ...previous, ...(archived && !changed ? { archived } : {}), ...draft, batch_id: id, status: "draft",
+        updated_at: `2026-09-28T02:00:${String(++clock).padStart(2, "0")}.000Z` };
       db.set(id, saved);
       return { ...saved };
     },
@@ -631,9 +635,11 @@ async function main() {
     assert.equal(backupOf(incident).pending, pendingRaw(legacyEmpty));
   }
   {
-    // 归档批次 within the autosave delay of an edit. The old wiring let the delayed save
-    // land after the archive: it took the batch out of the archive and selected it again.
+    // 归档批次 within the autosave delay of an edit. With the old wiring the delayed save
+    // landed after the archive and its response selected the archived batch again, so the
+    // next video typed into the cleared form was saved into it, taking it out of the archive.
     const oldWiring = async (bench, engine) => { await engine.archive(bench.state.batch.batch_id); bench.state.batch = null; bench.state.form = null; };
+    const nextVideo = { groups: { ...emptyGroups, middle: ["asset_new"] }, title: "新视频", expression: "新视频文案" };
     for (const [label, archive] of [["old wiring", oldWiring], ["page", (bench) => bench.archive()]]) {
       const storage = memoryStorage();
       const engine = fakeEngine([{ ...draftBatch, groups: oneAsset }]);
@@ -642,18 +648,18 @@ async function main() {
       bench.edit({ title: "归档前的最后一改" }, "fingerprint-last");
       await archive(bench, engine);
       await sleep(450);
+      bench.edit(nextVideo, "fingerprint-new");
+      await sleep(450);
       if (label === "old wiring") {
-        assert.equal(engine.db.get(batchId).archived, undefined, "the model reproduces the race: the late save revives the batch");
-        assert.equal(bench.state.batch?.batch_id, batchId);
+        assert.deepEqual([engine.db.get(batchId).title, engine.db.get(batchId).archived, engine.db.size], ["新视频", undefined, 1],
+          "the model reproduces the race: the next video overwrites the archived batch and revives it");
         continue;
       }
       assert.equal(engine.db.get(batchId).archived, true, "an archived batch stays archived");
-      assert.equal(engine.db.get(batchId).title, "归档前的最后一改", "the last edit lands before the archive");
-      assert.equal(bench.state.batch, null, "no late response selects the archived batch again");
-      bench.edit({ groups: oneAsset, title: "新视频" }, "fingerprint-new");
-      await sleep(450);
-      assert.equal(engine.db.get(batchId).title, "归档前的最后一改", "the next video is not saved into the archived batch");
-      assert.equal(engine.db.size, 2);
+      assert.equal(engine.db.get(batchId).title, "归档前的最后一改", "the last edit lands before the archive, and the next video not at all");
+      assert.deepEqual(engine.db.get(batchId).groups, oneAsset);
+      assert.equal(engine.db.size, 2, "the next video is saved as a new batch");
+      assert.notEqual(bench.state.batch.batch_id, batchId);
     }
   }
 
