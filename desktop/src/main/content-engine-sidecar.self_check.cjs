@@ -751,6 +751,17 @@ async function main() {
         setImmediate(() => child.emit("close", 0, null));
       });
       assert.equal((await controller.stop()).state, "stopped");
+
+      // The fake engines above only declare the capability. The real one must declare it
+      // under the name this sidecar requires (the engine test
+      // test_the_engine_advertises_cache_only_and_honours_it_over_the_protocol checks
+      // the ready message itself), or every free replay is refused.
+      const sidecarSource = fs.readFileSync(path.join(__dirname, "content-engine-sidecar.cjs"), "utf8");
+      const protocolSource = fs.readFileSync(
+        path.join(__dirname, "..", "..", "sidecars", "content-engine", "content_engine", "protocol.py"), "utf8");
+      const required = sidecarSource.match(/"preview_auto_mix_voice_persona",\s*\{ voice_persona_id: voicePersonaId, cache_only: true \},\s*\{ requiredCapability: "([a-z_]+)" \}/u)?.[1];
+      assert.equal(required, "voice_preview_cache_only");
+      assert.match(protocolSource, new RegExp(`"${required}": True,`, "u"), "the engine's ready message declares what the sidecar requires");
     }
 
     {

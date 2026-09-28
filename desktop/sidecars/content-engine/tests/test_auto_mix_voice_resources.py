@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -787,6 +789,99 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         self.assertEqual([], self.analyzer.calls)
         self.assertEqual([], self.analyzer.design_calls[design_calls:])
 
+    @staticmethod
+    def _volc(persona_id, provider_voice_id=None):
+        return {
+            "persona_id": persona_id,
+            "provider": "volcengine",
+            "provider_model": "seed-tts-2.0",
+            "display_name": persona_id.split("@")[0],
+            "style": "natural_life",
+            "catalog_version": "2026.09",
+            "provider_voice_id": f"{persona_id.split('@')[0]}-private" if provider_voice_id is None else provider_voice_id,
+            "instruction": "",
+        }
+
+    def test_saved_preview_recording_leaves_a_current_row_and_a_voice_without_an_id_alone(self):
+        current, unbound, control = (self._volc("volc-current@1"), self._volc("volc-unbound@1", ""),
+                                     self._volc("volc-control@1"))
+        personas = [current, unbound, control]
+        self._sync(personas)
+        # volc-current@1 was heard: its row already carries the current cache key.
+        self._preview_volc_voice("volc-current@1")
+        row = tuple(self._row("auto_mix_voice_previews_v1", "volc-current@1"))
+        saved = self._saved_preview_path("volc-current@1")
+        heard = saved.read_bytes()
+        # Its file is then replaced by other valid, loudness-marked audio. preview()
+        # checks the digest and no longer replays it; recording the replacement under
+        # its new digest would make it a free replay the user never heard.
+        _write_test_wav(saved, sample=b"\x05\x00", frame_count=4_800)
+        _normalize_like_ffmpeg(saved)
+        self.assertNotEqual(hashlib.sha256(heard).hexdigest(), hashlib.sha256(saved.read_bytes()).hexdigest())
+        # volc-unbound@1 has no private provider voice, so its cache key binds nothing.
+        for persona_id in ("volc-unbound@1", "volc-control@1"):
+            _write_test_wav(self._saved_preview_path(persona_id))
+            _normalize_like_ffmpeg(self._saved_preview_path(persona_id))
+        calls = len(self.analyzer.calls)
+
+        self._restart(personas)
+
+        self.assertEqual(row, tuple(self._row("auto_mix_voice_previews_v1", "volc-current@1")),
+                         "a row with the current cache key is left as it is")
+        with self.assertRaises(ContentEngineError) as replaced:
+            self.service.preview_auto_mix_voice_persona("volc-current@1", cache_only=True)
+        self.assertEqual("auto_mix_voice_preview_not_cached", replaced.exception.code)
+        self.assertIsNone(self._row("auto_mix_voice_previews_v1", "volc-unbound@1"))
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "volc-control@1")["status"],
+                         "the control voice shows the files themselves would be recorded")
+        self.assertEqual([], self.analyzer.calls[calls:])
+
+    def test_saved_preview_recording_ignores_a_file_outside_the_data_directory(self):
+        persona = self._volc("volc-outside@1")
+        self._sync([persona])
+        outside = SIDECAR_ROOT / f".auto-mix-voice-resources-outside-{uuid.uuid4().hex}"
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        audio = outside / self._saved_preview_path("volc-outside@1").name
+        _write_test_wav(audio)
+        _normalize_like_ffmpeg(audio)
+        previews = self.root / "auto-mix-cache" / "voice-previews"
+        previews.parent.mkdir(parents=True, exist_ok=True)
+        if previews.exists():
+            previews.rmdir()
+        _link_directory(previews, outside, self)
+        try:
+            self.assertTrue(self._saved_preview_path("volc-outside@1").is_file(), "the path inside resolves outside")
+            self._restart([persona])
+            self.assertIsNone(self._row("auto_mix_voice_previews_v1", "volc-outside@1"))
+        finally:
+            _remove_directory_link(previews)
+        # The same file inside the data directory is recorded.
+        previews.mkdir()
+        shutil.copyfile(audio, previews / audio.name)
+        self._restart([persona])
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "volc-outside@1")["status"])
+        self.assertEqual([], self.analyzer.calls)
+
+    def test_the_engine_advertises_cache_only_and_honours_it_over_the_protocol(self):
+        # The sidecar sends cache_only only to an engine whose ready message declares
+        # voice_preview_cache_only (content-engine-sidecar.cjs); an engine that dropped
+        # the flag would turn every 不计费 click into a capability error, and one that
+        # declared it without honouring it would bill it.
+        from content_engine.protocol import serve_jsonl
+
+        request = {"id": "replay-1", "method": "preview_auto_mix_voice_persona",
+                   "params": {"voice_persona_id": "natural-life@1", "cache_only": True}}
+        output = io.StringIO()
+        serve_jsonl(self.service, input_stream=io.StringIO(json.dumps(request) + "\n"), output_stream=output)
+        ready, reply = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual("ready", ready["type"])
+        self.assertIs(True, ready["capabilities"]["voice_preview_cache_only"])
+        self.assertEqual(("replay-1", False, "auto_mix_voice_preview_not_cached"),
+                         (reply["id"], reply["ok"], reply["error"]["code"]))
+        self.assertIsNone(self._row("auto_mix_voice_previews_v1", "natural-life@1"))
+        self.assertEqual([], self.analyzer.calls)
+
     def test_raw_volcengine_audio_is_put_back_as_pending_loudness_not_as_a_saved_preview(self):
         # The loudness pass failed, so the row was failed/normalization_failed and the
         # file on disk was the provider's raw audio. The older build deleted that row too.
@@ -977,6 +1072,32 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             "auto_mix_voice_preview_outcome_unknown", resumed.exception.code
         )
         self.assertEqual([], resumed_analyzer.calls)
+
+
+def _link_directory(link, target, test):
+    """A directory link at link pointing to target: a symlink, or on Windows a junction
+    (which needs no symlink privilege)."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform == "win32":
+        import _winapi
+        try:
+            _winapi.CreateJunction(str(target), str(link))
+            return
+        except OSError:
+            pass
+    test.skipTest("this machine cannot create a directory link")
+
+
+def _remove_directory_link(link):
+    # Removes the link itself, never what it points to.
+    try:
+        os.unlink(link)
+    except OSError:
+        os.rmdir(link)
 
 
 def _write_test_wav(path, *, sample=b"\x01\x00", frame_count=2_400):
