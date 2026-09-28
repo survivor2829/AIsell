@@ -37,6 +37,8 @@ const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
 const IDENTITY_RECOVERY_DELAYS_MS = Object.freeze([2_000, 8_000, 20_000]);
 const IDENTITY_RECOVERY_ATTEMPTS = IDENTITY_RECOVERY_DELAYS_MS.length;
+const SEARCH_CAPTURE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+let lastSearchCaptureSweepAt = null;
 const TOUCH_WORKFLOW_REASON_CODES = Object.freeze({
   payloadIncomplete: "touch_task_payload_incomplete",
   executorUnavailable: "workflow_executor_unavailable",
@@ -208,7 +210,11 @@ function createTouchWorkflow(options = {}) {
     if (!id || !contacts.length || !script) return { status: "needs_attention", progress: fallback, reasonCode: TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete, error: "触达任务资料不完整，请重新添加任务" };
     if (!enabled() || activeStep) return { status: "pending", progress: fallback };
     activeStep = true;
-    cleanupStaleSearchCaptures();
+    const stepStartedAt = now().getTime();
+    if (lastSearchCaptureSweepAt === null || stepStartedAt - lastSearchCaptureSweepAt >= SEARCH_CAPTURE_SWEEP_INTERVAL_MS) {
+      lastSearchCaptureSweepAt = stepStartedAt;
+      cleanupStaleSearchCaptures(stepStartedAt);
+    }
     let owner = "";
     let task;
     const taskDir = workflowDirectory(id);

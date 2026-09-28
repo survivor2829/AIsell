@@ -67,6 +67,8 @@ async function checkWrongConversationTitleGate() {
   }
   const header = (name) => ({ name, left: 400, top: 60 });
   assert.equal(replayProductionObservation(expected, [header(expected)]), true, "the send-path observer must accept the exact header");
+  assert.equal(replayProductionObservation("Abc", [header("abc")]), false,
+    "the send-path observer must reject a Latin title with different letter case");
   const wrongHeaders = [
     [header(opened)],
     [header(opened), { name: expected, left: 120, top: 80 }],
@@ -587,11 +589,18 @@ foreach($spec in @(
 } else {
   console.log("search observation PowerShell replay skipped: Windows required");
 }
+let observationFinished = false;
 checkWrongConversationTitleGate().then(async () => {
   console.log("search title send gate passed: longer title sends=0, exact title sends=1");
   const chain = spawnSync(process.execPath, [require("node:path").join(__dirname, "wechat_search_capture_chain.self_check.cjs")],
     { encoding: "utf8", windowsHide: true, timeout: 30000 });
   assert.equal(chain.status, 0, chain.stderr || chain.error?.message);
+  assert.match(chain.stdout, /search capture chain passed:/u,
+    "the chain subprocess must finish its assertions before observation passes");
   process.stdout.write(chain.stdout);
+  observationFinished = true;
 })
   .catch((error) => { console.error(error); process.exitCode = 1; });
+process.on("beforeExit", () => {
+  if (process.exitCode !== 1) assert.equal(observationFinished, true, "search observation chain must finish before process exit");
+});
