@@ -293,6 +293,9 @@ const PUBLIC_ERRORS = Object.freeze({
   CONTENT_ENGINE_DOWNLOAD_FAILED: "成片保存失败，请检查目标磁盘空间和文件夹权限。",
   CONTENT_ENGINE_CAPABILITY_UNAVAILABLE: "当前内容引擎版本不支持这项操作。",
   CONTENT_ENGINE_METHOD_INVALID: "当前内容引擎版本不支持这项操作，请重启应用；若仍无法使用，请通过吐槽中心反馈。",
+  // Raised by main.cjs beforeContentProviderWork when a batch starts after the AI authorization changed.
+  CONTENT_ENGINE_PROVIDER_REFRESH_BUSY: "AI 授权已更新，请等待当前制作完成或取消后继续，已有结果会保留。",
+  CONTENT_ENGINE_PROVIDER_REFRESH_FAILED: "AI 授权已更新，但内容引擎尚未就绪，请稍后重试。",
   UPDATE_IN_PROGRESS: "软件正在更新，请等更新完成后再试。",
   capability_unavailable: "媒体分析组件当前不可用，请安装或恢复组件后重试。",
   CONTENT_DIALOG_CANCELLED: "已取消选择。",

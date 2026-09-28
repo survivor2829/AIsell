@@ -1357,7 +1357,10 @@ async function main() {
     const hadSaveNarratedBatch = Object.hasOwn(controller, "saveNarratedBatch");
     const originalSaveNarratedBatch = controller.saveNarratedBatch;
     let batchSaveFailure = null;
-    controller.saveNarratedBatch = async () => { throw batchSaveFailure; };
+    controller.saveNarratedBatch = async () => {
+      if (batchSaveFailure) throw batchSaveFailure;
+      return { batch_id: batchDraft.batch_id };
+    };
     const batchSave = () => handlers.get(BATCH_CHANNELS.save)({ sender: mainWindow.webContents }, batchDraft);
     const lastBatchSaveEvent = () => diagnosticEvents.filter((entry) => entry[1] === "batch-save.failed").at(-1);
     const notificationsBeforeBatch = notifications.length;
@@ -1376,6 +1379,30 @@ async function main() {
     assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", raw_code: "narrated_future_check_failed" },
       "an unregistered code must stay locatable in the log");
     assert.equal(JSON.stringify(lastBatchSaveEvent()).includes("secret-provider-detail"), false);
+    // raw_code only ever holds a short plain identifier, and each distinct unknown code
+    // on the same operation is logged once.
+    const batchSaveEvents = () => diagnosticEvents.filter((entry) => entry[1] === "batch-save.failed").length;
+    for (const [code, expected] of [
+      ["narrated_future_other_check", { raw_code: "narrated_future_other_check" }],
+      ["narrated future check", {}], ["未登记的错误", {}], [`narrated_${"x".repeat(57)}`, {}],
+      ["0123456789abcdef0123456789abcdef", {}], ["123e4567-e89b-12d3-a456-426614174000", {}]
+    ]) {
+      const eventsBefore = batchSaveEvents();
+      batchSaveFailure = Object.assign(new Error("x"), { code });
+      assert.equal((await batchSave()).code, "CONTENT_ENGINE_FAILED");
+      assert.equal(batchSaveEvents(), eventsBefore + 1, `${code} must be logged as a new failure`);
+      assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", ...expected }, `${code} raw_code`);
+      assert.equal((await batchSave()).code, "CONTENT_ENGINE_FAILED");
+      assert.equal(batchSaveEvents(), eventsBefore + 1, `a repeated ${code} is logged once`);
+      batchSaveFailure = Object.assign(new Error("x"), { code: "CONTENT_ENGINE_NOT_READY" });
+      await batchSave();
+    }
+    batchSaveFailure = Object.assign(new Error("x"), { code: "narrated_future_first" });
+    await batchSave();
+    batchSaveFailure = Object.assign(new Error("x"), { code: "narrated_future_second" });
+    await batchSave();
+    assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", raw_code: "narrated_future_second" },
+      "a different unknown code on the same operation is a new log entry");
     batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
     assert.equal((await batchSave()).code, "CONTENT_ENGINE_EXITED");
     assert.equal(notifications.length, notificationsBeforeBatch, "automatic draft saves report engine faults on the page only");
@@ -1401,6 +1428,23 @@ async function main() {
     assert.equal((await startScripts()).code, "CONTENT_ENGINE_EXITED");
     assert.equal(notifications.length, notificationsBeforeBatch + 1, "an engine fault during work the user started still notifies");
     assert.equal(notifications.at(-1).body, "内容引擎已意外停止，请重试。");
+    // Registered provider and preflight failures on a start the user clicked keep their own
+    // text and still notify, including the two codes main.cjs raises after the AI authorization changed.
+    batchSaveFailure = null;
+    for (const [code, body] of [
+      ["cloud_request_failed", "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。"],
+      ["provider_gateway_unavailable", "云端智能服务暂不可用，当前进度已保留，请稍后重试。"],
+      ["CONTENT_ENGINE_PROVIDER_REFRESH_BUSY", "AI 授权已更新，请等待当前制作完成或取消后继续，已有结果会保留。"],
+      ["CONTENT_ENGINE_PROVIDER_REFRESH_FAILED", "AI 授权已更新，但内容引擎尚未就绪，请稍后重试。"]
+    ]) {
+      const notificationsBefore = notifications.length;
+      providerPreflightFailure = Object.assign(new Error("授权已更新，内容引擎尚未就绪。"), { code });
+      const started = await startScripts();
+      providerPreflightFailure = null;
+      assert.deepEqual(started, { ok: false, code, error: body }, `${code} must reach the page as its own message`);
+      assert.equal(notifications.length, notificationsBefore + 1, `${code} on a user-started batch must still notify`);
+      assert.equal(notifications.at(-1).body, body);
+    }
     if (hadSaveNarratedBatch) controller.saveNarratedBatch = originalSaveNarratedBatch;
     else delete controller.saveNarratedBatch;
     listedTaskItems = [task({

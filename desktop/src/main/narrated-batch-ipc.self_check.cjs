@@ -65,6 +65,17 @@ const ipcCodes = [...ipcSource.matchAll(/\binvalid\("([A-Za-z0-9_]+)"\)/gu)].map
 assert.ok(ipcCodes.includes("invalid_narrated_settings"));
 assert.deepEqual([...new Set([...ipcCodes, "invalid_params", "invalid_id", "invalid_voice_persona_id"])]
   .filter((code) => publicError({ code }).code !== code), [], "every batch IPC validation code needs a public message");
+// The batch start and confirm handlers call beforeProviderWork, which main.cjs implements;
+// its codes reach the same page.
+const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+const preflightStart = mainSource.indexOf("const beforeContentProviderWork = async");
+assert.ok(preflightStart >= 0, "main.cjs must still define beforeContentProviderWork");
+const preflightBody = mainSource.slice(preflightStart, mainSource.indexOf("\n      };", preflightStart));
+const preflightCodes = [...preflightBody.matchAll(/\bcode:\s*['"]([A-Za-z0-9_]+)['"]/gu)].map((match) => match[1]);
+assert.deepEqual([...preflightCodes].sort(), ["CONTENT_ENGINE_PROVIDER_REFRESH_BUSY", "CONTENT_ENGINE_PROVIDER_REFRESH_FAILED",
+  "PROVIDER_GATEWAY_UNAVAILABLE"], "the provider preflight scan must see every code it raises");
+assert.deepEqual(preflightCodes.filter((code) => publicError({ code, message: "x" }).code !== code), [],
+  "every provider preflight code needs a public message");
 
 async function main() {
   const handlers = new Map();
