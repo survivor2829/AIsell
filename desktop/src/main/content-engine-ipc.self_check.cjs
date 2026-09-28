@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { constants: cryptoConstants, publicEncrypt } = require("node:crypto");
+const { constants: cryptoConstants, publicEncrypt, randomUUID } = require("node:crypto");
 
 const {
   CONTENT_ENGINE_CHANNELS,
@@ -10,6 +10,8 @@ const {
   registerContentEngineIpc,
   stripPrivateValue
 } = require("./content-engine-ipc.cjs");
+const { CHANNELS: BATCH_CHANNELS } = require("./narrated-batch-ipc.cjs");
+const { createDiagnosticLogger } = require("./diagnostics.cjs");
 
 function autoMixClickToken(channel, uuid) {
   return `${channel}:${uuid}`;
@@ -421,6 +423,11 @@ async function main() {
     const diagnosticOperations = [];
     const diagnosticEvents = [];
     const diagnosticRecoveries = [];
+    // The production logger also folds repeated faults, so every event and recovery is
+    // written through a real one as well; its file is what a support export contains.
+    const realDiagnostics = createDiagnosticLogger({ rootDir: path.join(root, "real-diagnostics") });
+    const realDiagnosticEntries = () => fs.readFileSync(path.join(root, "real-diagnostics", "logs", "diagnostics.jsonl"), "utf8")
+      .split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
     const diagnosticLogger = {
       begin: (area, operation) => {
         const entry = { area, operation, endings: [] };
@@ -429,8 +436,8 @@ async function main() {
           end: (...args) => entry.endings.push(args)
         };
       },
-      event: (...args) => diagnosticEvents.push(args),
-      recover: (...args) => diagnosticRecoveries.push(args)
+      event: (...args) => { diagnosticEvents.push(args); realDiagnostics.event(...args); },
+      recover: (...args) => { diagnosticRecoveries.push(args); realDiagnostics.recover(...args); }
     };
     let listedTaskItems = [task()];
     let updateListener = null;
@@ -1339,6 +1346,132 @@ async function main() {
     controller.listAssets = originalListAssets;
     assert.equal(runtimeFailure.code, "CONTENT_ENGINE_RUNTIME_UNAVAILABLE");
     assert.equal(notifications.length, 1, "repeated unavailable-engine queries must not produce desktop notifications");
+
+    // A cached draft whose voice lost its approval used to come back from every
+    // automatic save as "内容引擎暂时不可用", raise a Windows notification on each
+    // open, and leave only unknown_error in the log.
+    const batchDraft = {
+      batch_id: "narrated_batch_0a89fb41936f449bb671fb030d823ec0",
+      groups: { opening: [], middle: [], ending: [] },
+      title: "批量创作",
+      target_count: 1,
+      settings: {
+        voice_persona_id: "volc-monkey-brother-2@1", workflow_version: 2,
+        music_mode: "auto", music_track_ids: [], minimum_duration_seconds: 60
+      }
+    };
+    const hadSaveNarratedBatch = Object.hasOwn(controller, "saveNarratedBatch");
+    const originalSaveNarratedBatch = controller.saveNarratedBatch;
+    let batchSaveFailure = null;
+    controller.saveNarratedBatch = async () => {
+      if (batchSaveFailure) throw batchSaveFailure;
+      return { batch_id: batchDraft.batch_id };
+    };
+    const batchSave = () => handlers.get(BATCH_CHANNELS.save)({ sender: mainWindow.webContents }, batchDraft);
+    const lastBatchSaveEvent = () => diagnosticEvents.filter((entry) => entry[1] === "batch-save.failed").at(-1);
+    const notificationsBeforeBatch = notifications.length;
+    batchSaveFailure = Object.assign(new Error("请选择已试听批准的声音。"), {
+      code: "auto_mix_voice_persona_approval_required"
+    });
+    const unapprovedVoiceSave = await batchSave();
+    assert.equal(unapprovedVoiceSave.ok, false);
+    assert.equal(unapprovedVoiceSave.code, "auto_mix_voice_persona_approval_required");
+    assert.match(unapprovedVoiceSave.error, /声音尚未批准或批准已失效.*声音与配乐/u);
+    assert.equal(notifications.length, notificationsBeforeBatch, "an automatic draft save must not raise a desktop notification");
+    assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "auto_mix_voice_persona_approval_required" });
+    batchSaveFailure = Object.assign(new Error("供应商原文 secret-provider-detail"), { code: "narrated_future_check_failed" });
+    const unregisteredSave = await batchSave();
+    assert.deepEqual(unregisteredSave, { ok: false, code: "CONTENT_ENGINE_FAILED", error: "内容引擎暂时不可用，请重试。" });
+    assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", raw_code: "narrated_future_check_failed" },
+      "an unregistered code must stay locatable in the log");
+    assert.equal(JSON.stringify(lastBatchSaveEvent()).includes("secret-provider-detail"), false);
+    // raw_code only ever holds a short plain identifier, and each distinct unknown code
+    // on the same operation is logged once.
+    const batchSaveEvents = () => diagnosticEvents.filter((entry) => entry[1] === "batch-save.failed").length;
+    for (const [code, expected] of [
+      ["narrated_future_other_check", { raw_code: "narrated_future_other_check" }],
+      ["narrated future check", {}], ["未登记的错误", {}], [`narrated_${"x".repeat(57)}`, {}],
+      ["0123456789abcdef0123456789abcdef", {}], ["123e4567-e89b-12d3-a456-426614174000", {}]
+    ]) {
+      const eventsBefore = batchSaveEvents();
+      batchSaveFailure = Object.assign(new Error("x"), { code });
+      assert.equal((await batchSave()).code, "CONTENT_ENGINE_FAILED");
+      assert.equal(batchSaveEvents(), eventsBefore + 1, `${code} must be logged as a new failure`);
+      assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", ...expected }, `${code} raw_code`);
+      assert.equal((await batchSave()).code, "CONTENT_ENGINE_FAILED");
+      assert.equal(batchSaveEvents(), eventsBefore + 1, `a repeated ${code} is logged once`);
+      batchSaveFailure = Object.assign(new Error("x"), { code: "CONTENT_ENGINE_NOT_READY" });
+      await batchSave();
+    }
+    batchSaveFailure = Object.assign(new Error("x"), { code: "narrated_future_first" });
+    await batchSave();
+    batchSaveFailure = Object.assign(new Error("x"), { code: "narrated_future_second" });
+    await batchSave();
+    assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", raw_code: "narrated_future_second" },
+      "a different unknown code on the same operation is a new log entry");
+    batchSaveFailure = Object.assign(new Error("x"), { code: "narrated_future_first" });
+    await batchSave();
+    // Back to back, with no success or other fault in between: the written log keeps all three.
+    assert.deepEqual(realDiagnosticEntries().filter((entry) => entry.event === "batch-save.failed").slice(-3)
+      .map((entry) => [entry.code, entry.details?.raw_code]), [
+      ["unknown_error", "narrated_future_first"], ["unknown_error", "narrated_future_second"], ["unknown_error", "narrated_future_first"]
+    ], "the real logger must not fold different unknown codes into one entry");
+    batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
+    assert.equal((await batchSave()).code, "CONTENT_ENGINE_EXITED");
+    assert.equal(notifications.length, notificationsBeforeBatch, "automatic draft saves report engine faults on the page only");
+    // Opening the workbench reads the cached draft's batch before restoring it, and lists
+    // batches and material collections; none of these reads is work the user started.
+    for (const [method, channel, payload] of [
+      ["getNarratedBatch", BATCH_CHANNELS.get, { batch_id: batchDraft.batch_id }],
+      ["listNarratedBatches", BATCH_CHANNELS.list, {}],
+      ["listAssetCollections", BATCH_CHANNELS.collections, {}]
+    ]) {
+      const hadMethod = Object.hasOwn(controller, method);
+      const originalMethod = controller[method];
+      controller[method] = async () => { throw batchSaveFailure; };
+      const read = await handlers.get(channel)({}, payload);
+      if (hadMethod) controller[method] = originalMethod;
+      else delete controller[method];
+      assert.equal(read.code, "CONTENT_ENGINE_EXITED", `${channel} must report the engine fault`);
+      assert.equal(notifications.length, notificationsBeforeBatch, `${channel} while the workbench opens reports on the page only`);
+    }
+    const startScripts = () => handlers.get(BATCH_CHANNELS.scripts)({ sender: mainWindow.webContents }, {
+      draft: batchDraft, clickToken: autoMixClickToken(BATCH_CHANNELS.scripts, randomUUID())
+    });
+    // Voice and music selection checks are fixed on the page that reports them, even on a
+    // start the user clicked; each keeps its own code and message.
+    for (const code of ["auto_mix_voice_persona_approval_required", "auto_mix_voice_persona_required", "auto_mix_voice_persona_not_found",
+      "auto_mix_voice_preview_required", "auto_mix_voice_design_required", "auto_mix_music_required"]) {
+      batchSaveFailure = Object.assign(new Error("请选择已试听批准的声音。"), { code });
+      assert.equal((await startScripts()).code, code, `${code} must reach the page as its own code`);
+      assert.equal(notifications.length, notificationsBeforeBatch, `${code} is fixed on the page, not announced on the desktop`);
+    }
+    batchSaveFailure = Object.assign(new Error("new provider failure"), { code: "cloud_brand_new_failure" });
+    assert.equal((await startScripts()).code, "CONTENT_ENGINE_FAILED");
+    assert.equal(notifications.length, notificationsBeforeBatch, "a code that falls back to CONTENT_ENGINE_FAILED must not notify");
+    batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
+    assert.equal((await startScripts()).code, "CONTENT_ENGINE_EXITED");
+    assert.equal(notifications.length, notificationsBeforeBatch + 1, "an engine fault during work the user started still notifies");
+    assert.equal(notifications.at(-1).body, "内容引擎已意外停止，请重试。");
+    // Registered provider and preflight failures on a start the user clicked keep their own
+    // text and still notify, including the two codes main.cjs raises after the AI authorization changed.
+    batchSaveFailure = null;
+    for (const [code, body] of [
+      ["cloud_request_failed", "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。"],
+      ["provider_gateway_unavailable", "云端智能服务暂不可用，当前进度已保留，请稍后重试。"],
+      ["CONTENT_ENGINE_PROVIDER_REFRESH_BUSY", "AI 授权已更新，请等待当前制作完成或取消后继续，已有结果会保留。"],
+      ["CONTENT_ENGINE_PROVIDER_REFRESH_FAILED", "AI 授权已更新，但内容引擎尚未就绪，请稍后重试。"]
+    ]) {
+      const notificationsBefore = notifications.length;
+      providerPreflightFailure = Object.assign(new Error("授权已更新，内容引擎尚未就绪。"), { code });
+      const started = await startScripts();
+      providerPreflightFailure = null;
+      assert.deepEqual(started, { ok: false, code, error: body }, `${code} must reach the page as its own message`);
+      assert.equal(notifications.length, notificationsBefore + 1, `${code} on a user-started batch must still notify`);
+      assert.equal(notifications.at(-1).body, body);
+    }
+    if (hadSaveNarratedBatch) controller.saveNarratedBatch = originalSaveNarratedBatch;
+    else delete controller.saveNarratedBatch;
     listedTaskItems = [task({
       task_id: transitioningTaskId,
       status: "queued",
@@ -2465,6 +2598,30 @@ async function main() {
     controller.previewAutoMixVoicePersona = originalPreviewAutoMixVoicePersona;
     assert.equal(rejectedInvalidWavPreview.ok, true);
     assert.equal(rejectedInvalidWavPreview.data.audioDataUrl, null);
+
+    // A preview the user clicked that fails at the gateway certificate or the audio
+    // download names that cause on the page and on the desktop, instead of falling
+    // back to "内容引擎暂时不可用" and, since round one, no notification at all.
+    for (const [code, text] of [
+      ["provider_gateway_tls_invalid", /安全证书无效，请求未发出/u],
+      ["provider_gateway_tls_not_configured", /安全证书未配置，请求未发出/u],
+      ["auto_mix_voice_download_failed", /配音音频下载失败/u]
+    ]) {
+      controller.previewAutoMixVoicePersona = async () => {
+        throw Object.assign(new Error("统一 AI 网关证书无效，已停止请求。C:\\must-not-leak"), { code });
+      };
+      const notificationsBefore = notifications.length;
+      const failedPreview = await handlers.get(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona)({ sender: mainWindow.webContents }, {
+        voicePersonaId: "natural-life@1",
+        clickToken: autoMixClickToken(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona, randomUUID())
+      });
+      controller.previewAutoMixVoicePersona = originalPreviewAutoMixVoicePersona;
+      assert.equal(failedPreview.code, code, `${code} must reach the page as its own code`);
+      assert.match(failedPreview.error, text);
+      assert.equal(failedPreview.error.includes("must-not-leak"), false);
+      assert.equal(notifications.length, notificationsBefore + 1, `${code} on a preview the user clicked must notify`);
+      assert.equal(notifications.at(-1).body, failedPreview.error);
+    }
     const rejectedApprovalAfterInvalidWav = await handlers.get(
       CONTENT_ENGINE_CHANNELS.approveAutoMixVoicePersona
     )({ sender: mainWindow.webContents }, {

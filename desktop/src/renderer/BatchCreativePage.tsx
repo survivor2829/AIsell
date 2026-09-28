@@ -6,7 +6,7 @@ import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionTe
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { createDraftQueue, waitForDraftWrites } from "./batch-draft-queue";
+import { createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
 import creativeThinkingStill from "./assets/creative-thinking-still.webp";
@@ -72,27 +72,46 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const draftOwner = useRef(0);
   const mounted = useRef(true);
   const latestFingerprint = useRef("");
+  const approvedVoiceIds = useRef<Set<string> | null>(null);
+  // Save-failure notices: the latest one is cleared once that edit saves, and one for an
+  // edit the user moved on from survives the batch that "选择任务" loads next.
+  const draftFailure = useRef("");
+  const droppedNotice = useRef("");
+  const [draftSlot] = useState(() => createPendingDraftSlot(localStorage));
   const [draftQueue] = useState(() => createDraftQueue<Record<string, unknown> & { batch_id?: string }, Batch>({
     save: (value) => callBatch<Batch>("save", value),
+    hold: isDeterministicDraftError,
     active: (value) => { if (mounted.current) setSaving(value); },
     saved: (value, fingerprint, owner) => {
       if (owner !== draftOwner.current) return;
-      try {
-        localStorage.setItem("batch-studio-draft-id", value.batch_id);
-        const pending = JSON.parse(localStorage.getItem("batch-studio-pending-draft") || "null");
-        if (pending?.fingerprint === fingerprint) localStorage.removeItem("batch-studio-pending-draft");
-        else if (pending && !pending.draft.batch_id) localStorage.setItem("batch-studio-pending-draft",
-          JSON.stringify({ ...pending, draft: { ...pending.draft, batch_id: value.batch_id } }));
-      } catch { /* Main-process save is authoritative. */ }
+      draftSlot.saved(fingerprint, owner, value);
+      try { localStorage.setItem("batch-studio-draft-id", value.batch_id); } catch { /* Main-process save is authoritative. */ }
       if (!mounted.current || owner !== draftOwner.current) return;
       selectedId.current = value.batch_id;
       setBatch(value);
-      if (fingerprint === latestFingerprint.current) setDirty(false);
+      if (fingerprint === latestFingerprint.current) {
+        setDirty(false);
+        const failure = draftFailure.current;
+        if (failure) setNotice((current) => current === failure ? "" : current);
+      }
     },
-    failed: (error, owner) => {
-      if (mounted.current && owner === draftOwner.current) setNotice(`草稿尚未保存：${(error as Error).message}`);
+    failed: (error, owner, fingerprint, dropped) => {
+      // The user moved on from an edit the engine rejected twice: keep a copy instead of
+      // replaying it on the next open. Leaving the page keeps it cached, so the next open
+      // can still restore it once the cause is fixed elsewhere (e.g. the voice approved).
+      if (dropped && mounted.current) discardPendingDraft(localStorage, String((error as { code?: string }).code), fingerprint);
+      if (!mounted.current || owner !== draftOwner.current) return;
+      const message = `${dropped ? "上一份编辑未能保存" : "草稿尚未保存"}：${(error as Error).message}`;
+      if (dropped) droppedNotice.current = message;
+      else draftFailure.current = message;
+      setNotice(message);
     },
   }));
+  function voiceWarning(b: Batch) {
+    const voice = b.settings?.voice_persona_id;
+    return voice && !b.archived && approvedVoiceIds.current && !approvedVoiceIds.current.has(voice)
+      ? "该批次的声音需要重新试听批准，或改选已批准的声音。" : "";
+  }
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
   const locked = busy || running || paused || Boolean(batch?.archived);
@@ -140,11 +159,11 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       : b.selected_script_id ? { [b.selected_script_id]: String(b.target_count || 1) }
       : b.script_options?.length === 1 ? { [b.script_options[0].candidate_id]: "1" } : {});
     setSoundDirty(false);
-    setCount(b.target_count ? String(b.target_count) : b.recommended_count ? String(b.recommended_count) : ""); manualCount.current = b.target_count != null; setDirty(false); setNotice("");
+    setCount(b.target_count ? String(b.target_count) : b.recommended_count ? String(b.recommended_count) : ""); manualCount.current = b.target_count != null; setDirty(false); setNotice([droppedNotice.current, voiceWarning(b)].filter(Boolean).join(" "));
 
   }
   async function run(action: () => Promise<void>) {
-    setBusy(true); setNotice("");
+    setBusy(true); setNotice(""); droppedNotice.current = "";
     try { await action(); } catch (e) { setNotice((e as Error).message); } finally { setBusy(false); }
   }
   useEffect(() => {
@@ -159,6 +178,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       if (creative) {
         const results = await Promise.allSettled([creative.listAutoMixVoicePersonas(), creative.listBrandProfiles()]);
         if (results[0].status === "fulfilled") {
+          approvedVoiceIds.current = new Set((results[0].value.data?.items || []).filter((v) => v.approvalStatus === "approved").map((v) => v.voicePersonaId));
           const approved = (results[0].value.data?.items || []).filter((v) => v.approvalStatus === "approved" && v.provider === "volcengine");
           setVoices(approved);
           const savedVoice = preferredVoice();
@@ -174,30 +194,36 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
         }
         if (results[1].status === "fulfilled") setBrands(results[1].value.data?.items || []);
       }
-      let pending: { draft: Record<string, unknown>; fingerprint: string } | null = null;
       // The previous page may still be saving a newly created batch. Recover its ID first.
       await waitForDraftWrites();
-      try { pending = JSON.parse(localStorage.getItem("batch-studio-pending-draft") || "null"); } catch { /* Ignore invalid UI recovery data. */ }
-      if (pending?.draft && (!initial?.batchId || pending.draft.batch_id === initial.batchId)) {
-        try {
-          const restored = await callBatch<Batch>("save", pending.draft);
-          localStorage.removeItem("batch-studio-pending-draft");
-          localStorage.setItem("batch-studio-draft-id", restored.batch_id);
-          load(restored);
-          if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
-          return;
-        } catch { setNotice("上次编辑仍保存在本机，当前任务结束后可重新打开恢复。"); }
+      // Never replays onto a batch past drafting, keeps the edit through transient
+      // failures, and backs it up once a deterministic rejection stops the replay. The
+      // edit is replayed whichever batch this page opens, so it is not left behind for
+      // the first keystroke here to replace.
+      const restore = await restorePendingDraft<Batch>({
+        storage: localStorage,
+        get: (batchId) => callBatch<Batch>("get", { batch_id: batchId }),
+        save: (value) => callBatch<Batch>("save", value),
+      });
+      if (restore.kind === "restored" && (!initial?.batchId || restore.batch.batch_id === initial.batchId)) {
+        localStorage.setItem("batch-studio-draft-id", restore.batch.batch_id);
+        load(restore.batch);
+        if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
+        return;
       }
-      if (initial?.batchId) load(await callBatch<Batch>("get", { batch_id: initial.batchId }));
+      const notices = [restoreNotice(restore)];
+      let loaded: Batch | null = null;
+      if (initial?.batchId) load(loaded = await callBatch<Batch>("get", { batch_id: initial.batchId }));
       else if (initial?.assetIds) { setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: "ideas" }); setDirty(true); }
       else {
         const savedId = localStorage.getItem("batch-studio-draft-id");
         if (savedId) {
-          try { const restored = await callBatch<Batch>("get", { batch_id: savedId }); if (!restored.archived) load(restored); }
-          catch { setNotice("上次草稿暂时无法读取，可从制作记录重新打开。"); }
+          try { const restored = await callBatch<Batch>("get", { batch_id: savedId }); if (!restored.archived) load(loaded = restored); }
+          catch { notices.push("上次草稿暂时无法读取，可从制作记录重新打开。"); }
         }
       }
-      if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
+      notices.push((loaded && voiceWarning(loaded)) || (incompatibleVoice ? "上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。" : ""));
+      if (notices.some(Boolean)) setNotice(notices.filter(Boolean).join(" "));
     });
   }, []);
   useEffect(() => {
@@ -256,7 +282,9 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     if (!dirty || busy || running || submitting) return;
     try {
       const value = draft();
-      try { localStorage.setItem("batch-studio-pending-draft", JSON.stringify({ draft: value, fingerprint: draftFingerprint })); } catch { /* IPC still saves. */ }
+      // The batch state this edit starts from, so a later replay can tell whether the batch changed since.
+      const base = batch && value.batch_id && batch.batch_id === value.batch_id ? batch.updated_at : undefined;
+      draftSlot.write({ draft: value, fingerprint: draftFingerprint, ...(base ? { base_updated_at: base } : {}) }, draftOwner.current);
       draftQueue.enqueue(value, draftFingerprint, draftOwner.current);
     }
     catch (error) { setNotice((error as Error).message); }
@@ -271,7 +299,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       if (modern && action === "scripts" && !brief.target_audience.trim()) throw new Error("请填写这条视频想给谁看。");
       const payload = action === "continue" ? { batch_id: batch?.batch_id } : { draft: draft() };
       const b = await callBatch<Batch>(action, payload);
-      localStorage.removeItem("batch-studio-pending-draft");
+      draftSlot.started(draftOwner.current);
       localStorage.setItem("batch-studio-draft-id", b.batch_id);
       selectedId.current = b.batch_id; setBatch(b); setDirty(false); setSoundDirty(false);
       setFlowView(null);
@@ -361,7 +389,12 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     {visualFlow && <nav className="batch-flow-steps" aria-label="视频创作步骤">{flowSteps.map(({ step, label, icon: Icon, enabled }, index) => <button key={label} type="button" aria-current={(flowStep === 1 ? 2 : flowStep) === step ? "step" : undefined} disabled={!enabled || submitting} onClick={() => setFlowView(step)}><span className="batch-flow-icon"><Icon size={21} strokeWidth={1.7} /></span><span><small>0{index + 1}</small>{label}</span></button>)}</nav>}
     <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); load(await callBatch<Batch>("get", { batch_id: id })); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {
+        // An edit still waiting for its save lands before the archive, never after it: a
+        // content save would take the batch out of the archive, and its response would
+        // select that batch again for the next edit on the cleared form.
+        await draftQueue.flush();
         await callBatch("archive", { batch_id: batch.batch_id });
+        draftOwner.current += 1; draftQueue.cancelPending();
         setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false); setSettings({ ...settings, workflow_version: 2, minimum_duration_seconds: Math.max(30, settings.minimum_duration_seconds || 30) }); manualCount.current = false;
         await refreshBatches(); setNotice("批次已归档，可在制作任务的已归档分类查看。本地素材和成片文件保留。");
       })}>归档批次</button>}

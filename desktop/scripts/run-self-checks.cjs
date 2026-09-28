@@ -78,6 +78,7 @@ const checks = [
   "src/main/content-media-protocol.self_check.cjs",
   "src/main/content-engine-desktop-integration.self_check.cjs",
   "src/renderer/creative-workspace-concurrency.self_check.cjs",
+  "src/renderer/batch-draft-queue.self_check.cjs",
   "src/renderer/status-subscription.self_check.cjs",
   "src/renderer/creative-workspace.self_check.cjs",
   "src/renderer/creative-studio.self_check.cjs",

@@ -1,7 +1,96 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
+const { publicError, registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { CHANNELS, publicBatch } = require("./narrated-batch-ipc.cjs");
+
+// Static guard: every code the engine can raise while saving or starting a batch
+// must reach the page as its own message. An unmapped code turns into the generic
+// "内容引擎暂时不可用，请重试。" and hides a fixable cause such as an unapproved voice.
+function pythonFunction(source, name) {
+  const lines = source.split(/\r?\n/u);
+  const start = lines.findIndex((line) => new RegExp(`^\\s*def ${name}\\(`, "u").test(line));
+  assert.ok(start >= 0, `${name} must exist`);
+  const indent = lines[start].search(/\S/u);
+  let end = start + 1;
+  while (end < lines.length && !(lines[end].trim() && lines[end].search(/\S/u) <= indent && !/^\s*[)\]}#]/u.test(lines[end]))) end += 1;
+  return lines.slice(start + 1, end).join("\n");
+}
+function callArguments(source, callee) {
+  return [...source.matchAll(new RegExp(`\\b${callee}\\(`, "gu"))].map((match) => {
+    const args = [];
+    let depth = 1; let quote = ""; let current = "";
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+      const char = source[index];
+      if (quote) {
+        current += char;
+        if (char === "\\") current += source[++index];
+        else if (char === quote) quote = "";
+        continue;
+      }
+      if (char === "'" || char === "\"") quote = char;
+      else if ("([{".includes(char)) depth += 1;
+      else if (")]}".includes(char) && --depth === 0) break;
+      else if (char === "," && depth === 1) { args.push(current.trim()); current = ""; continue; }
+      current += char;
+    }
+    return [...args, current.trim()];
+  });
+}
+// Codes computed at runtime, resolved by hand. The formal renderer's capability code is
+// creative_render.py FFmpegRenderer.capability: media_tools_unavailable, or the code its
+// encoder check raises (media_encoder_unavailable).
+const DYNAMIC_CODES = {
+  "narrated_production.py:_validate_render_capacity:capability.get('code') or 'media_tools_unavailable'":
+    ["media_tools_unavailable", "media_encoder_unavailable"]
+};
+function raisedCodes(file, functions) {
+  const source = fs.readFileSync(path.join(__dirname, "../../sidecars/content-engine/content_engine", file), "utf8");
+  return functions.flatMap((name) => {
+    const body = pythonFunction(source, name);
+    return [...callArguments(body, "require").map((args) => args[1]), ...callArguments(body, "ContentEngineError").map((args) => args[0])]
+      .flatMap((literal) => {
+        const code = /^['"]([A-Za-z0-9_]+)['"]$/u.exec(literal || "")?.[1];
+        const resolved = code ? [code] : DYNAMIC_CODES[`${file}:${name}:${literal}`];
+        assert.ok(resolved, `${file}:${name} raises a non-literal code ${literal}; map it explicitly`);
+        return resolved;
+      });
+  });
+}
+const saveStartCodes = new Set([
+  ...raisedCodes("narrated_batch.py", ["save", "start", "_load", "_idle", "_asset_ids", "validate_count", "confirm_script"]),
+  ...raisedCodes("creative_domain.py", ["_asset_row", "_brand_row", "_task_row"]),
+  // Every start goes through the service wrapper, which probes new materials first.
+  ...raisedCodes("service.py", ["_start_narrated_batch", "probe_asset", "_require_media_probe", "_validate_id"]),
+  // "确认制作" checks the chosen copy, voice, music and render capacity before it starts.
+  ...raisedCodes("narrated_production.py", ["confirm_selections", "_require_unique_footage_capacity",
+    "_require_source_duration_upper_bound", "_validate_music_capacity", "_validate_render_capacity"])
+]);
+for (const expected of ["auto_mix_voice_persona_approval_required", "invalid_narrated_settings", "invalid_narrated_groups",
+  "asset_archived", "narrated_batch_busy", "narrated_script_already_confirmed", "asset_not_found",
+  "media_metadata_unavailable", "capability_unavailable", "invalid_id", "invalid_narrated_selection",
+  "narrated_duration_too_short", "volcengine_tts_not_configured", "narrated_candidate_not_found", "media_encoder_unavailable"]) {
+  assert.ok(saveStartCodes.has(expected), `the save/start/confirm scan must see ${expected}`);
+}
+assert.deepEqual([...saveStartCodes].filter((code) => publicError({ code, message: "x" }).code !== code), [],
+  "every save/start/confirm error code the engine raises needs a public message");
+const ipcSource = fs.readFileSync(path.join(__dirname, "narrated-batch-ipc.cjs"), "utf8");
+const ipcCodes = [...ipcSource.matchAll(/\binvalid\("([A-Za-z0-9_]+)"\)/gu)].map((match) => match[1]);
+assert.ok(ipcCodes.includes("invalid_narrated_settings"));
+assert.deepEqual([...new Set([...ipcCodes, "invalid_params", "invalid_id", "invalid_voice_persona_id"])]
+  .filter((code) => publicError({ code }).code !== code), [], "every batch IPC validation code needs a public message");
+// The batch start and confirm handlers call beforeProviderWork, which main.cjs implements;
+// its codes reach the same page.
+const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+const preflightStart = mainSource.indexOf("const beforeContentProviderWork = async");
+assert.ok(preflightStart >= 0, "main.cjs must still define beforeContentProviderWork");
+const preflightBody = mainSource.slice(preflightStart, mainSource.indexOf("\n      };", preflightStart));
+const preflightCodes = [...preflightBody.matchAll(/\bcode:\s*['"]([A-Za-z0-9_]+)['"]/gu)].map((match) => match[1]);
+assert.deepEqual([...preflightCodes].sort(), ["CONTENT_ENGINE_PROVIDER_REFRESH_BUSY", "CONTENT_ENGINE_PROVIDER_REFRESH_FAILED",
+  "PROVIDER_GATEWAY_UNAVAILABLE"], "the provider preflight scan must see every code it raises");
+assert.deepEqual(preflightCodes.filter((code) => publicError({ code, message: "x" }).code !== code), [],
+  "every provider preflight code needs a public message");
 
 async function main() {
   const handlers = new Map();

@@ -292,6 +292,11 @@ const PUBLIC_ERRORS = Object.freeze({
   CONTENT_ENGINE_DOWNLOAD_SOURCE: "不能覆盖内容引擎中的原始成片，请选择其他位置。",
   CONTENT_ENGINE_DOWNLOAD_FAILED: "成片保存失败，请检查目标磁盘空间和文件夹权限。",
   CONTENT_ENGINE_CAPABILITY_UNAVAILABLE: "当前内容引擎版本不支持这项操作。",
+  CONTENT_ENGINE_METHOD_INVALID: "当前内容引擎版本不支持这项操作，请重启应用；若仍无法使用，请通过吐槽中心反馈。",
+  // Raised by main.cjs beforeContentProviderWork when a batch starts after the AI authorization changed.
+  CONTENT_ENGINE_PROVIDER_REFRESH_BUSY: "AI 授权已更新，请等待当前制作完成或取消后继续，已有结果会保留。",
+  CONTENT_ENGINE_PROVIDER_REFRESH_FAILED: "AI 授权已更新，但内容引擎尚未就绪，请稍后重试。",
+  UPDATE_IN_PROGRESS: "软件正在更新，请等更新完成后再试。",
   capability_unavailable: "媒体分析组件当前不可用，请安装或恢复组件后重试。",
   CONTENT_DIALOG_CANCELLED: "已取消选择。",
   trusted_user_click_required: "请在当前主窗口本人点击后再执行这项操作。",
@@ -389,6 +394,12 @@ const PUBLIC_ERRORS = Object.freeze({
   auto_mix_voice_persona_invalid: "音色或模型配置无效，请检查当前声音设置。",
   cloud_request_failed: "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。",
   cloud_request_rejected: "云端未接受本次请求，请检查模型或音色权限、请求参数和账户额度。",
+  cloud_response_invalid: "云端返回的结果无法识别，本次未完成；请稍后重试，请勿连续重复提交。",
+  cloud_response_too_large: "云端返回的数据超过安全大小限制，本次未完成；请稍后重试，请勿连续重复提交。",
+  auto_mix_voice_download_failed: "配音音频下载失败，请检查网络后稍后重试；请勿连续重复提交。",
+  // provider_tls.py stops a gateway request before it is sent when the gateway certificate is missing or invalid.
+  provider_gateway_tls_not_configured: "云端智能服务的安全证书未配置，请求未发出；请重启应用，若仍无法使用，请通过吐槽中心反馈。",
+  provider_gateway_tls_invalid: "云端智能服务的安全证书无效，请求未发出；请重启应用，若仍无法使用，请通过吐槽中心反馈。",
   BAILIAN_API_KEY_INVALID: "云端智能服务暂不可用，请稍后重试。",
   BAILIAN_API_HOST_INVALID: "百炼 API Host 必须是官方 HTTPS 地址。",
   BAILIAN_API_KEY_UNREADABLE: "云端智能服务暂不可用，请稍后重试。",
@@ -535,6 +546,15 @@ const PUBLIC_ERRORS = Object.freeze({
 const DIAGNOSTIC_ERROR_CODES = new Set([
   ...Object.keys(PUBLIC_ERRORS),
   "unknown_error"
+]);
+// Selection/approval checks the user resolves on the page that reported them.
+const PAGE_ONLY_ERROR_CODES = new Set([
+  "auto_mix_voice_persona_approval_required",
+  "auto_mix_voice_persona_required",
+  "auto_mix_voice_persona_not_found",
+  "auto_mix_voice_preview_required",
+  "auto_mix_voice_design_required",
+  "auto_mix_music_required"
 ]);
 
 function safeText(value, maxLength = 500) {
@@ -761,6 +781,17 @@ function diagnosticCode(value, fallback = "unknown_error") {
   return DIAGNOSTIC_ERROR_CODES.has(code) ? code : fallback;
 }
 
+// Keeps an unregistered code locatable in the log without keeping anything
+// shaped like a key or opaque token; never the provider message.
+function rawDiagnosticCode(value) {
+  return typeof value === "string"
+    && /^[a-z0-9_-]{1,64}$/i.test(value)
+    && !/(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-z0-9]{8,})/iu.test(value)
+    && !/^[a-f0-9-]{16,}$/iu.test(value)
+    ? value
+    : null;
+}
+
 function opaqueId(value, prefix) {
   const id = safeText(value, 80);
   return new RegExp(`^${prefix}_[a-f0-9]{32}$`).test(id) ? id : null;
@@ -821,6 +852,11 @@ function publicError(error) {
     let message = PUBLIC_ERRORS[suppliedCode];
     const providerMessage = typeof error?.message === "string" ? error.message : "";
     if (suppliedCode === "narrated_brief_invalid") message = safePublicText(providerMessage, 500) || message;
+    // The engine's settings checks name the exact field in fixed Chinese; anything
+    // with Latin letters (IPC code echo, key names, paths) keeps the mapped text.
+    if (suppliedCode === "invalid_narrated_settings" && /^[^A-Za-z\\/]{1,200}$/u.test(providerMessage)) {
+      message = safePublicText(providerMessage, 200) || message;
+    }
     const footage = suppliedCode === "narrated_insufficient_unique_footage"
       ? providerMessage.match(/^当前不重复可用画面约 ([0-9]{1,9}) 秒，按每条至少 ([0-9]{1,9}) 秒最多可制作 ([0-9]{1,6}) 条；请减少数量或补充素材。$/u)
       : null;
@@ -2197,12 +2233,19 @@ function registerContentEngineIpc(options = {}) {
   }
 
   function shouldNotifyOperationError(code, operationName) {
-    // Background list refreshes report their error to the page. Only work the
-    // user started, or an actual task failure, should interrupt the desktop.
-    if (code === "CONTENT_ENGINE_RUNTIME_UNAVAILABLE"
+    // Background reads and automatic draft saves (including the workbench
+    // restoring its cached draft on open) report their error to the page. Only
+    // work the user started, or an actual task failure, should interrupt the
+    // desktop. An unregistered code only reaches the user as the generic
+    // CONTENT_ENGINE_FAILED text, and validation the user can fix on the page is
+    // not a desktop-level event either.
+    if (!Object.hasOwn(PUBLIC_ERRORS, code)
+        || PAGE_ONLY_ERROR_CODES.has(code)
+        || code === "CONTENT_ENGINE_RUNTIME_UNAVAILABLE"
         || /^(list-|get-)/u.test(operationName)
         || /(?:^|-)status$/u.test(operationName)
-        || ["production-summary", "provider-usage", "generated-media-url"].includes(operationName)) return false;
+        || ["batch-save", "batch-get", "batch-list", "batch-collections",
+          "production-summary", "provider-usage", "generated-media-url"].includes(operationName)) return false;
     return code.startsWith("cloud_")
       || code.startsWith("volcengine_")
       || code.startsWith("auto_mix_voice_")
@@ -2407,17 +2450,21 @@ function registerContentEngineIpc(options = {}) {
             `operation-failed:${operationName}:${errorCode}`
           );
         }
+        const rawCode = errorCode === "unknown_error" ? rawDiagnosticCode(error?.code) : null;
+        const failureKey = rawCode ? `${errorCode}:${rawCode}` : errorCode;
         if (errorCode === "CONTENT_DIALOG_CANCELLED") {
           if (observedOperationFailures.delete(operationName)) {
             diagnosticLogger.recover?.("content_engine");
           }
-        } else if (observedOperationFailures.get(operationName) !== errorCode) {
-          observedOperationFailures.set(operationName, errorCode);
+        } else if (observedOperationFailures.get(operationName) !== failureKey) {
+          observedOperationFailures.set(operationName, failureKey);
+          // The logger folds repeats by event and code, and every unknown code is
+          // logged as unknown_error, so the raw code has to be part of its key too.
           diagnosticLogger.event(
             "content_engine",
             `${operationName}.failed`,
-            { error_code: errorCode },
-            { level: "error", code: errorCode }
+            { error_code: errorCode, ...(rawCode ? { raw_code: rawCode } : {}) },
+            { level: "error", code: errorCode, ...(rawCode ? { dedupeKey: failureKey } : {}) }
           );
         }
         return publicError(error);
