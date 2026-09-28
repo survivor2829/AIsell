@@ -757,7 +757,7 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             "voice_prefix": "story26",
         }
         personas = [volc("volc-control@1"), volc("volc-unknown@1"), volc("volc-broken@1"),
-                    volc("volc-oversized@1"), designed]
+                    volc("volc-oversized@1"), volc("volc-fmt-overrun@1"), designed]
         self._sync(personas)
         self.service.design_auto_mix_voice_persona("steady-story@1")
         self.service.connection.execute(
@@ -770,6 +770,18 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         self._saved_preview_path("volc-broken@1").write_bytes(b"RIFF-but-not-a-wave" * 64)
         _write_test_wav(self._saved_preview_path("volc-oversized@1"), frame_count=4_300_000)
         self.assertGreater(self._saved_preview_path("volc-oversized@1").stat().st_size, 8 * 1024 * 1024)
+        # A fmt chunk whose length runs past the end of the file: Python's wave module
+        # raises a bare RuntimeError (from its chunk seek), which _wav_duration_ms does not
+        # turn into ContentEngineError. Recording must skip it, not stop the engine starting.
+        overrun = self._saved_preview_path("volc-fmt-overrun@1")
+        _write_test_wav(overrun)
+        _normalize_like_ffmpeg(overrun)
+        damaged = bytearray(overrun.read_bytes())
+        self.assertEqual(b"fmt ", bytes(damaged[12:16]))
+        damaged[16:20] = (0xE410).to_bytes(4, "little")
+        overrun.write_bytes(bytes(damaged))
+        with self.assertRaises(RuntimeError, msg="the case this pins: wave raises a bare RuntimeError"):
+            self.service.creative_domain._wav_duration_ms(overrun)
         unknown = ("volc-unknown@1", "an-earlier-request", "outcome_unknown", None, None,
                    "auto_mix_voice_preview_outcome_unknown", "2026-09-01T00:00:00.000Z",
                    "2026-09-01T00:00:00.000Z")
@@ -783,7 +795,7 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "volc-control@1")["status"],
                          "the control voice shows a valid saved preview is recorded")
         self.assertEqual(unknown, tuple(self._row("auto_mix_voice_previews_v1", "volc-unknown@1")))
-        for persona_id in ("volc-broken@1", "volc-oversized@1", "steady-story@1"):
+        for persona_id in ("volc-broken@1", "volc-oversized@1", "volc-fmt-overrun@1", "steady-story@1"):
             with self.subTest(persona_id=persona_id):
                 self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
         self.assertEqual([], self.analyzer.calls)
