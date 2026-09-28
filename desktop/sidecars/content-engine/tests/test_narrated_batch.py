@@ -1140,6 +1140,95 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(before + 1, self._task_count())
         self.assertEqual("scripts", self._task_action(recovered["task_id"]))
 
+    def test_revoked_voice_stops_continuing_a_confirmed_script_batch(self):
+        # e506: confirmed copy, the last run ended. 继续未完成作品 goes through start(),
+        # which turns the action into "confirmed" for a script-flow batch.
+        domain, batch_id, task_id = self._confirmed_batch("已确认待继续")
+        self.s.update_task(task_id, "completed")
+        self._set_voice_approval(None)
+        before = self._task_count()
+        stored = json.dumps(domain._load(batch_id), sort_keys=True)
+        with self.assertRaises(ContentEngineError) as rejected:
+            self.s.continue_narrated_batch(batch_id)
+        self.assertEqual("auto_mix_voice_persona_approval_required", rejected.exception.code)
+        self.assertEqual(before, self._task_count())
+        self.assertEqual(stored, json.dumps(domain._load(batch_id), sort_keys=True))
+
+        self._set_voice_approval("2026-09-29T00:00:00.000Z")
+        continued = self.s.continue_narrated_batch(batch_id)
+        self.assertEqual(before + 1, self._task_count())
+        self.assertEqual("confirmed", self._task_action(continued["task_id"]))
+
+    def _stop(self, task_id, status="paused", error_code=None):
+        self.s.connection.execute(
+            "UPDATE content_tasks SET status = ?, error_code = ? WHERE id = ?", (status, error_code, task_id))
+
+    def _resume(self, task_id):
+        enqueued = []
+        def enqueue(task):
+            enqueued.append(task["task_id"])
+            return task
+        with patch.object(self.s, "_enqueue_creative_task", side_effect=enqueue):
+            try:
+                return self.s.resume_creative_task(task_id), enqueued
+            except ContentEngineError as error:
+                return error.code, enqueued
+
+    def test_resuming_stopped_production_needs_the_voice_approved_first(self):
+        # The page's 恢复任务 is tasks.resume -> resume_creative_task: it requeues the
+        # same task without start(), and the worker would redo paid planning and review
+        # before the voice step refused.
+        domain, batch_id, task_id = self._confirmed_batch("暂停中的制作")
+        self.s.update_task(task_id, "completed")
+        production = self.s.continue_narrated_batch(batch_id)["task_id"]
+        self.assertEqual("confirmed", self._task_action(production))
+        # Whatever task a confirmed batch holds, it resumes toward production, as the
+        # paused branch of continue_narrated_batch already assumes.
+        _, _, copy_task = self._confirmed_batch("已确认，旧的文案任务")
+        self._stop(copy_task)
+        self._set_voice_approval(None)
+        stored = json.dumps(domain._load(batch_id), sort_keys=True)
+        before = self._task_count()
+        for status, error_code in (("paused", "application_restarted"), ("failed", "provider_gateway_unavailable")):
+            with self.subTest(status=status):
+                self._stop(production, status, error_code)
+                self.assertEqual(("auto_mix_voice_persona_approval_required", []), self._resume(production))
+                task = self.s.get_task(production)
+                self.assertEqual((status, error_code), (task["status"], task["error_code"]))
+                self.assertEqual(stored, json.dumps(domain._load(batch_id), sort_keys=True))
+        self.assertEqual(("auto_mix_voice_persona_approval_required", []), self._resume(copy_task))
+        self.assertEqual(before, self._task_count())
+
+        # Approved again (after replaying the saved preview), the same task resumes.
+        self._set_voice_approval("2026-09-29T00:00:00.000Z")
+        for status, error_code in (("paused", "application_restarted"), ("failed", "provider_gateway_unavailable")):
+            with self.subTest(approved=status):
+                self._stop(production, status, error_code)
+                resumed, enqueued = self._resume(production)
+                self.assertEqual(("queued", [production]), (resumed["status"], enqueued))
+        self.assertEqual(before, self._task_count())
+
+    def test_resuming_copy_or_count_planning_does_not_need_the_voice(self):
+        scripts = self.s.save_narrated_batch({
+            "groups": {"opening": [], "middle": self.ids, "ending": []}, "title": "先写文案",
+            "target_count": 1, "settings": {"voice_persona_id": "natural-life@1", "workflow_version": 2}})
+        tasks = {
+            "scripts": self.s.prepare_narrated_scripts(scripts["batch_id"])["task_id"],
+            "recommend": self.s.recommend_narrated_batch(self.create(1)["batch_id"])["task_id"],
+            "samples": self.s.generate_narrated_samples(self.create(1)["batch_id"])["task_id"],
+        }
+        for task_id in tasks.values():
+            self.s.update_task(task_id, "analyzing")
+            self.s.update_task(task_id, "paused")
+        self._set_voice_approval(None)
+        for action in ("scripts", "recommend"):
+            with self.subTest(action=action):
+                resumed, enqueued = self._resume(tasks[action])
+                self.assertEqual(("queued", [tasks[action]]), (resumed["status"], enqueued))
+        # A legacy batch's samples are production, like start("samples").
+        self.assertEqual(("auto_mix_voice_persona_approval_required", []), self._resume(tasks["samples"]))
+        self.assertEqual("paused", self.s.get_task(tasks["samples"])["status"])
+
     def test_future_observation_guidance_does_not_excuse_sparse_motion_claims(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         claim_frames = patch.object(domain, "_claim_frames", side_effect=lambda batch, candidate, source: ([], source["frames"]))

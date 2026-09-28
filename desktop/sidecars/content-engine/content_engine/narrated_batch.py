@@ -883,6 +883,24 @@ class NarratedBatchDomain:
             require(self.d._approved_auto_mix_voice_persona(selected_id=persona_id) is not None,
                     "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
 
+    def require_voice_to_resume(self, task_id):
+        """Requeuing a stopped production is the same paid work as starting it.
+
+        The worker would redo the paid planning and review and stop only at the
+        voice step, so resume_creative_task refuses first, like start() does:
+        writing copy and recommending a count never need the voice; a confirmed
+        script-flow batch always does.
+        """
+        try:
+            payload = json.loads(self.d._task_row(task_id)["payload_json"] or "{}")
+            b = self._load(payload.get("batch_id"))
+        except (ContentEngineError, TypeError, ValueError):
+            # Nothing to check here; the worker reports a missing batch itself.
+            return
+        confirmed = (b.get("settings") or {}).get("workflow_version") == 2 and bool(b.get("script_confirmation"))
+        if confirmed or payload.get("action") not in {"scripts", "recommend"}:
+            self._require_approved_voice(b)
+
     def _idle(self, b):
         if b.get("task_id"):
             status = self.d._task_row(b["task_id"])["status"]
@@ -1007,6 +1025,9 @@ class NarratedBatchDomain:
         context = self._voice_recovery_context(b)
         require(context is not None, "narrated_voice_recovery_not_available",
                 "当前批次没有可人工确认并重试的未完成配音。")
+        # The retry voices with this batch's voice; refuse before the unresolved
+        # artifacts are invalidated and the audit is written.
+        self._require_approved_voice(b)
 
         task = context["task"]
         run = context["run"]
