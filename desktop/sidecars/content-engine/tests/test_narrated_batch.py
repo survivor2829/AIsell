@@ -1048,11 +1048,11 @@ class NarratedBatchTests(unittest.TestCase):
         self.s.connection.execute(
             "UPDATE voice_personas_v1 SET approved_at = ? WHERE id = 'natural-life@1'", (approved_at,))
 
-    def _confirmed_batch(self, title):
+    def _confirmed_batch(self, title, voice="natural-life@1"):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = self.s.save_narrated_batch({
             "groups": {"opening": [], "middle": self.ids, "ending": []}, "title": title,
-            "target_count": 1, "settings": {"voice_persona_id": "natural-life@1", "workflow_version": 2}})
+            "target_count": 1, "settings": {**({"voice_persona_id": voice} if voice else {}), "workflow_version": 2}})
         queued = self.s.prepare_narrated_scripts(batch["batch_id"])
         state = domain._load(batch["batch_id"])
         state["script_confirmation"] = {"script_id": "narrated_candidate_confirmed", "revision": 1}
@@ -1060,9 +1060,9 @@ class NarratedBatchTests(unittest.TestCase):
         self.s.update_task(queued["task_id"], "analyzing")
         return domain, batch["batch_id"], queued["task_id"]
 
-    def _confirmed_planning_unknown(self):
+    def _confirmed_planning_unknown(self, voice="natural-life@1"):
         """A confirmed-copy batch whose planning request outcome is unknown (like 1b08)."""
-        domain, batch_id, task_id = self._confirmed_batch("已确认文案")
+        domain, batch_id, task_id = self._confirmed_batch("已确认文案", voice)
         state = domain._load(batch_id)
         state["_planning_inflight"] = "confirmed-planning-fingerprint"
         domain._store(state)
@@ -1245,6 +1245,50 @@ class NarratedBatchTests(unittest.TestCase):
         # A legacy batch's samples are production, like start("samples").
         self.assertEqual(("auto_mix_voice_persona_approval_required", []), self._resume(tasks["samples"]))
         self.assertEqual("paused", self.s.get_task(tasks["samples"])["status"])
+
+    def test_a_batch_without_its_own_voice_needs_some_approved_voice_before_paid_work(self):
+        # Without a voice of its own a batch is voiced with whichever voice is approved.
+        # With none approved at all (every approval cleared, e.g. by an older build),
+        # starting, continuing, retrying or resuming it would spend the paid planning
+        # and review and then stop at the voice step.
+        legacy = self.s.save_narrated_batch({
+            "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},
+            "title": "旧流程，没有选声音", "target_count": 1, "settings": {}})
+        _, continued_id, continued_task = self._confirmed_batch("已确认，没有选声音", voice=None)
+        self.s.update_task(continued_task, "completed")
+        _, paused_id, paused_task = self._confirmed_batch("暂停中，没有选声音", voice=None)
+        self.s.update_task(paused_task, "paused")
+        planning_domain, planning_id, _ = self._confirmed_planning_unknown(voice=None)
+        for batch_id in (legacy["batch_id"], continued_id, paused_id, planning_id):
+            self.assertNotIn("voice_persona_id", self.s.get_narrated_batch(batch_id)["settings"])
+        self._set_voice_approval(None)
+        self.assertIsNone(self.s.creative_domain._approved_auto_mix_voice_persona())
+        before = self._task_count()
+        planning_state = json.dumps(planning_domain._load(planning_id), sort_keys=True)
+        attempts = {
+            "samples": lambda: self.s.generate_narrated_samples(legacy["batch_id"]),
+            "continue": lambda: self.s.continue_narrated_batch(continued_id),
+            "continue paused": lambda: self.s.continue_narrated_batch(paused_id),
+            "retry planning": lambda: self.s.resolve_narrated_planning_outcome({
+                "batch_id": planning_id, "user_confirmed_retry": True, "resolution": "retry_planning"}),
+        }
+        for name, attempt in attempts.items():
+            with self.subTest(name):
+                with self.assertRaises(ContentEngineError) as rejected:
+                    attempt()
+                self.assertEqual("auto_mix_voice_persona_approval_required", rejected.exception.code)
+        self.assertEqual(("auto_mix_voice_persona_approval_required", []), self._resume(paused_task))
+        self.assertEqual("paused", self.s.get_task(paused_task)["status"])
+        self.assertEqual(before, self._task_count())
+        self.assertEqual(planning_state, json.dumps(planning_domain._load(planning_id), sort_keys=True))
+
+        # With any voice approved again, the same batches go ahead with it.
+        self._set_voice_approval("2026-09-29T00:00:00.000Z")
+        self.assertEqual("samples", self._task_action(self.s.generate_narrated_samples(legacy["batch_id"])["task_id"]))
+        self.assertEqual("confirmed", self._task_action(self.s.continue_narrated_batch(continued_id)["task_id"]))
+        resumed, enqueued = self._resume(paused_task)
+        self.assertEqual(("queued", [paused_task]), (resumed["status"], enqueued))
+        self.assertEqual(before + 2, self._task_count())
 
     def test_future_observation_guidance_does_not_excuse_sparse_motion_claims(self):
         domain = NarratedBatchDomain(self.s.creative_domain)

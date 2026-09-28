@@ -877,11 +877,16 @@ class NarratedBatchDomain:
         return ids
 
     def _require_approved_voice(self, b):
-        """The batch's chosen voice must still be approved before paid production."""
+        """The voice production will use must still be approved before paid production.
+
+        A batch without a voice of its own is voiced with whichever voice is
+        approved (the fallback in _initialize_speech_budget and _run_auto_mix_v2),
+        so with none approved at all the paid planning and review would run and
+        the task would stop at the voice step.
+        """
         persona_id = str((b.get("settings") or {}).get("voice_persona_id") or "").strip()
-        if persona_id:
-            require(self.d._approved_auto_mix_voice_persona(selected_id=persona_id) is not None,
-                    "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
+        require(self.d._approved_auto_mix_voice_persona(selected_id=persona_id or None) is not None,
+                "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
 
     def require_voice_to_resume(self, task_id):
         """Requeuing a stopped production is the same paid work as starting it.
