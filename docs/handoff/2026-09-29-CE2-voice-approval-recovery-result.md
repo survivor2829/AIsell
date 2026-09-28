@@ -142,3 +142,102 @@ draft-queue 自检和恢复卡自检用 harness 按页面接线建模，并各�
 - 发布顺序：不得早于 CE1（CE1 已在 `main`）。
 - 需要用户确认的清理候选：`C:/Users/Scott/xiaoxi-review/ce2-diag/`（约 241MB，含数据库副本、试听文件和调用记录，都是用户数据副本；审查复跑脚本时还要用）以及设计阶段留下的 `ce-design/ce2-judge/`、`ce-design/ce2-ux/` 副本。确认用不上后再删。
 - narrated 的 4 个新测试里，`test_unconfirmed_planning_retry_does_not_need_the_voice` 守护"不该多拦"，在 base 上本来就通过。
+
+## 第 2 轮（审查第 1 轮发现的修复）
+
+提交（未推送）：
+
+- `3cbfec9` 内容引擎：「恢复任务」和"仅重试未完成配音"在声音批准前拒绝（correctness-R1-1、safety-F1、tests-C1、tests-T1）；
+- `4b1bbda` 内容引擎：已确认文案的批次保存时保留确认数量（safety-F3）；
+- `1af0e51` 内容引擎：未做响度处理的火山原始音频不再登记成已保存试听（safety-F2）；
+- `c73a5a8` migration 013 注释（safety-F4）；
+- `83ad8bc` 界面：「恢复任务」随恢复卡禁用；「声音与配乐」的试听按钮标出计费（correctness-R1-4）；R1-2、R1-3 的测试；
+- 本文档和 `PROJECT_STATUS.md` 的提交。
+
+### 改了什么
+
+1. **「恢复任务」不再绕过声音校验**（R1-1 / F1 / C1）
+   - `service.resume_creative_task`：narrated 任务在两条重排分支（暂停中、网关不可用后失败）之前调用新的 `NarratedBatchDomain.require_voice_to_resume`，在写任何东西之前拒绝。规则与 `start()` 一致：写文案（scripts）、推荐数量（recommend）不需要声音；已确认文案的批次、旧流程的 samples/continue 需要。批次读不到时不在这里拦，由 worker 照旧报错。
+   - `resolve_voice_outcome`（仅重试未完成配音）在作废未完成产物、写审计之前校验声音。否则它先改了批次，随后的 resume 再被拒，批次会停在半重置状态（引擎是自动提交，没有回滚）。
+   - 页面：「恢复任务」在恢复卡显示、且暂停的是制作（已确认文案或旧流程批次）时禁用，按钮上方显示同一句原因。页面拿不到暂停任务的 action，所以旧流程批次暂停中的"推荐数量"任务也会被页面挡住（引擎允许）；这类批次先处理声音或取消任务即可。
+2. **tests-T1**：新增 `test_revoked_voice_stops_continuing_a_confirmed_script_batch`（e506 的「继续未完成作品」，start() 里 action 变成 confirmed）。审查的 E11 变异（`{"scripts", "recommend", "confirmed"}`）现在被测出。
+3. **已确认批次的数量**（F3）：页面脚本流程的草稿固定传 `target_count: 1`（确认前的占位，确认时由所选方向的数量相加得出）。`save()` 现在在确认保留的情况下保留原数量；文案改动清掉确认时照旧取请求里的值。改在引擎而不是页面，因为旧版本缓存的草稿重放时也带着 1。
+4. **原始音频不当成已保存试听**（F2）
+   - 火山试听由 `normalize_voice_preview` 用 ffmpeg 原地重写，ffmpeg 的 WAV 封装会写入 `LIST/INFO/ISFT "Lavf…"`（开发机备份里的两个火山试听文件都有，猴哥那个是 `Lavf62.12.101`）；提供方原始音频由 Python `wave` 写出，没有这个块。
+   - 登记时，火山声音的文件没有这个标记，就按 preview() 当时留下的样子记为 `failed / auto_mix_voice_preview_normalization_pending`（digest 为文件 sha256）。下次（非 cacheOnly）试听走已有的复用分支，只在本机补做响度处理，不调用提供方；cacheOnly 仍报 not_cached，批准仍要求试听。
+   - 百炼音频不重写，照旧登记为 completed。被截断的百炼流式占位文件无法识别（占位头本来就不写长度）；百炼是下载完整并校验后一次写入，所以只可能是外部损坏，按"接受"写在注释里。
+   - 取舍：这种行在恢复卡上显示为计费的「重新生成试听」，实际点击只做本机响度处理、不计费。这是它被旧版本删掉之前的原样，标签偏保守。
+5. **migration 013 注释**（F4）改为"下线只停用，批准留在停用行上，被 active=1 过滤挡住；配置变了回来时照旧撤销"。`database.py` 不在卡片允许的文件里，这次按编排方要求改，只改注释。
+6. **「声音与配乐」的试听按钮**（R1-4）：按钮文字改为「试听声音（不计费）」或「试听声音（计费一次）」；已完成的试听用 cacheOnly 重放，返回 not_cached 后改标计费；付费试听成功后更新列表里的试听状态。原来的 `audition("voice", …)` 分支删掉，音乐试听不变。
+7. **测试补强**
+   - R1-2：恢复卡拆出无状态的 `VoiceRecoveryCard`，自检渲染"已试听"状态，断言「批准使用」只带 `data-xiaoxi-auto-mix-voice-approve`、试听按钮只带 `data-xiaoxi-auto-mix-voice-preview`。
+   - R1-3：资源面板和「声音与配乐」共用 `previewCharge` / `previewAfterFailure`（在 `batch-voice-recovery.ts`），自检测两者的行为，并用源码断言固定两处调用（包括面板在 not_cached 后改标的那一行）。本仓库没有 DOM 测试工具，面板本身只能用源码断言。
+
+### 未完成：tests-T2（需要编排方或用户处理）
+
+CI 仍不跑 `test_auto_mix_voice_resources.py`。本轮尝试在 `.github/workflows/ci.yml` 的 service-and-content 任务末尾加一步，被本环境的权限检查拒绝（修改共享配置），没有绕过。需要加的内容：
+
+```yaml
+      - name: Voice approvals and saved previews
+        working-directory: desktop/sidecars/content-engine
+        run: python -m unittest discover -s tests -p 'test_auto_mix_voice_resources.py'
+```
+
+本机去掉 PATH 里的 ffmpeg 后，这个文件 `Ran 27 tests in 0.909s` `OK (skipped=1)`（跳过的是需要真实 ffmpeg 的那一条），不需要额外依赖。
+
+### 撤掉修复后测试会失败
+
+- **换回 base 3274036 的引擎源码**（`ce2-diag/r2/onbase_py.py`：`creative_domain.py`、`narrated_batch.py`、`service.py`、`protocol.py` 换成 base，测试保持本分支，跑完按字节还原）：本轮 8 个新引擎测试全部失败，`Ran 8 tests in 0.506s` `FAILED (failures=7, errors=3)`（含子测试）。其中 `test_resuming_copy_or_count_planning_does_not_need_the_voice` 在 base 上失败于旧流程 samples 被恢复；它的 scripts/recommend 部分是"不该多拦"的守护。
+- **引擎逐项变异**（`ce2-diag/r2/mutate_py.py`，结果 `mutations-engine.log`）：13 个，全部测出。
+
+| 撤回内容 | 测出的测试 |
+|---|---|
+| resume 不校验 / 只看 action（已确认批次的旧文案任务放行）/ 只看是否确认（旧流程 samples 放行）/ 连写文案、推荐也拦 | `test_resuming_stopped_production_…`、`test_resuming_copy_or_count_planning_…` |
+| 仅重试配音在作废产物之后才校验 | `test_voice_retry_needs_the_batch_voice_approved_first` |
+| start() 豁免 confirmed（审查 E11） | `test_revoked_voice_stops_continuing_a_confirmed_script_batch` |
+| 原始火山音频登记为 completed / 没有 LIST 就算处理过 / 任意 INFO 标签都算 / 所有文件都不算 / 百炼也要求标记 | `test_raw_volcengine_audio_…`、`test_saved_preview_is_recorded_again_…`、`test_only_ffmpeg_s_own_tag_…`、`test_the_ffmpeg_mark_…` |
+| 保存时不保留确认数量 / 确认清掉后仍保留 | `test_saving_a_confirmed_script_batch_keeps_its_confirmed_count` |
+
+- **界面逐项变异**（`ce2-diag/r2/mutate_ui.cjs`，结果 `mutations-ui.log`）：13 个，全部测出。包括审查做过的两处：批准按钮换成试听门槛（`批准使用 carries the approval gate`）、面板的 not_cached 回退换成 `void 0`（`and after not_cached it relabels the voice instead of offering 不计费 again`）。其余是「声音与配乐」不传 cacheOnly、不标计费、不回退，「恢复任务」不禁用，`resumeNeedsVoice` 恒假或连写文案也拦，以及 `previewCharge`、`previewAfterFailure` 的几种撤回。
+- 审查的 `probe_resume_bypass.py` 在本轮代码上：`resume_creative_task` 返回 `auto_mix_voice_persona_approval_required`，任务仍为 paused，没有入队，没有新任务（`ce2-diag/r2/probe-resume-r2.txt`）。它的"花费"模式现在在 resume 那一步就被拒，后面的 worker 不再运行；该脚本没有接住这个异常，所以显示为 error。
+
+### 验证（`C:/Users/Scott/xiaoxi-review/ce2/desktop`，%TEMP% 以外，Python 3.12.14）
+
+| 命令 | 结果 |
+|---|---|
+| `python -m unittest discover -s tests -p 'test_narrated*.py'` | `Ran 116 tests in 14.916s` `OK` |
+| `-p 'test_production_summary.py'` | `Ran 4 tests in 0.032s` `OK` |
+| `-p 'test_provider_usage.py'` | `Ran 10 tests in 0.579s` `OK` |
+| `-p 'test_auto_mix_voice_resources.py'`（CI 不跑，见上） | `Ran 27 tests in 1.477s` `OK`；PATH 去掉 ffmpeg：`Ran 27 tests in 0.909s` `OK (skipped=1)` |
+| 全量 `discover -s sidecars/content-engine/tests` | `Ran 561 tests in 48.243s` `FAILED (failures=13, errors=4)`；失败的 17 个与第 1 轮逐个相同（都在 `test_creative_workbench`、`test_packaging_renderer`，本机 FFmpeg 和封面旧断言），没有新增失败 |
+| `node src/renderer/batch-voice-recovery.self_check.cjs` | `Batch voice recovery card self-check passed` |
+| `node src/renderer/batch-draft-queue.self_check.cjs` | `Batch draft restore and save queue self-check passed` |
+| `node src/renderer/product-one-click.self_check.cjs` | `product one-click V2 self-check passed` |
+| `npm.cmd run check:self` | exit 0，用时 4 分 3 秒，100 项，最后一行 `all source self-checks passed` |
+| `npm.cmd run build:test` | exit 0，`✓ built in 1.39s`、`test renderer build completed`；产物里有「试听声音（」「计费一次」 |
+| tsc（缺 `@types/react` 的环境，与第 1 轮比） | 6169 → 6175；多出的 6 条都是同类环境报错（`BatchCreativePage.tsx` 2 条 TS7026 JSX，`BatchSoundSettings.tsx` 4 条 TS7006 隐式 any，来自无类型的 `useState` 回调参数），`batch-voice-recovery.ts` 为 0 |
+
+主进程文件本轮没有改动，它们的自检在 `check:self` 中通过。
+
+### 端到端（数据副本，`ce2-diag/r2/e2e/e2e_r2.cjs`）
+
+审查第 1 轮的 `e2e_copy.cjs` 原样复制，只把数据目录改到 `ce2-diag/r2/e2e/data-head`、代码树改成本工作树：本分支 `worker.py` ← 真实 `content-engine-sidecar.cjs` ← 真实 `content-engine-ipc.cjs`。数据是 `backup-pre-1.1.54` 的数据库、3 个试听 WAV 和 `provider-usage.jsonl` 的副本，没有密钥，环境变量不含 `XIAOXI_*`，没有碰实时数据目录。保存用的是页面 `draft()` 实际发送的草稿（脚本流程 `target_count: 1`）。
+
+- 启动后猴哥试听行 completed，digest `33a5d934d02b69d9b673a0d338fd304d189a021286b5cf9acb60bd1a9034e1d0`，`approved_at` 为空（猴哥的文件带 ffmpeg 标记，按 completed 登记）。
+- 批准前：四个批次保存、三个"继续"、1b08 的规划重试都被拒（1b08 的"继续"报 `narrated_planning_outcome_unknown`，与第 1 轮相同）；未试听就批准、`cacheOnly: "true"`、非可信点击都被拒。
+- 播放已保存试听：`cacheHit=true`，返回音频等于文件；随后批准成功；再批准一次（没有新试听）被拒。
+- 批准后四个批次保存成功，状态 completed / completed / completed_with_errors / outcome_unknown。
+- **四个批次的状态与保存前逐字段相同**（`finishedBatchesUnchanged: true`）。第 1 轮代码上同一脚本的 e506 差异是 `target_count 2 → 1`，本轮为空。
+- 任务数 277 → 277；`provider-usage.jsonl` sha256 `3ccb7a0a…dbad6`、2562 行，前后不变；0 条桌面通知。`noProviderWorkPreflight` 为 false，与第 1 轮相同：那是 IPC 在"继续"前调用的 `beforeProviderWork` 桩（记录了 4 次空能力列表），没有真实请求。
+- 备份里唯一暂停中的已确认制作（518c）没有设置声音，不适用这项校验，所以端到端没有覆盖「恢复任务」；这条由引擎测试和审查的探针覆盖。
+
+### 卡片清单外的文件
+
+- `database.py`：只改 migration 013 的注释（编排方要求）。
+- `tests/test_narrated_production.py`：新增 `test_voice_retry_needs_the_batch_voice_approved_first`（重试配音的夹具在这个文件里；CI 的 `test_narrated*.py` 会跑它）。
+- `.github/workflows/ci.yml`：未改（见"未完成"）。
+
+### 仍未验证
+
+- 真实 Electron 界面仍未复验，用户验收流程同上文。
+- `ce2-diag/` 现约 885MB（本轮 `r2/` 约 118MB，含两份数据副本），清理候选同上文，待用户确认。
