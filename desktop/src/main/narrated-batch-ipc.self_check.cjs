@@ -1,7 +1,70 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
+const { publicError, registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { CHANNELS, publicBatch } = require("./narrated-batch-ipc.cjs");
+
+// Static guard: every code the engine can raise while saving or starting a batch
+// must reach the page as its own message. An unmapped code turns into the generic
+// "内容引擎暂时不可用，请重试。" and hides a fixable cause such as an unapproved voice.
+function pythonFunction(source, name) {
+  const lines = source.split(/\r?\n/u);
+  const start = lines.findIndex((line) => new RegExp(`^\\s*def ${name}\\(`, "u").test(line));
+  assert.ok(start >= 0, `${name} must exist`);
+  const indent = lines[start].search(/\S/u);
+  let end = start + 1;
+  while (end < lines.length && !(lines[end].trim() && lines[end].search(/\S/u) <= indent && !/^\s*[)\]}#]/u.test(lines[end]))) end += 1;
+  return lines.slice(start + 1, end).join("\n");
+}
+function callArguments(source, callee) {
+  return [...source.matchAll(new RegExp(`\\b${callee}\\(`, "gu"))].map((match) => {
+    const args = [];
+    let depth = 1; let quote = ""; let current = "";
+    for (let index = match.index + match[0].length; index < source.length; index += 1) {
+      const char = source[index];
+      if (quote) {
+        current += char;
+        if (char === "\\") current += source[++index];
+        else if (char === quote) quote = "";
+        continue;
+      }
+      if (char === "'" || char === "\"") quote = char;
+      else if ("([{".includes(char)) depth += 1;
+      else if (")]}".includes(char) && --depth === 0) break;
+      else if (char === "," && depth === 1) { args.push(current.trim()); current = ""; continue; }
+      current += char;
+    }
+    return [...args, current.trim()];
+  });
+}
+function raisedCodes(file, functions) {
+  const source = fs.readFileSync(path.join(__dirname, "../../sidecars/content-engine/content_engine", file), "utf8");
+  return functions.flatMap((name) => {
+    const body = pythonFunction(source, name);
+    return [...callArguments(body, "require").map((args) => args[1]), ...callArguments(body, "ContentEngineError").map((args) => args[0])]
+      .map((literal) => {
+        const code = /^['"]([A-Za-z0-9_]+)['"]$/u.exec(literal || "")?.[1];
+        assert.ok(code, `${file}:${name} raises a non-literal code ${literal}; map it explicitly`);
+        return code;
+      });
+  });
+}
+const saveStartCodes = new Set([
+  ...raisedCodes("narrated_batch.py", ["save", "start", "_load", "_idle", "_asset_ids", "validate_count"]),
+  ...raisedCodes("creative_domain.py", ["_asset_row", "_brand_row", "_task_row"])
+]);
+for (const expected of ["auto_mix_voice_persona_approval_required", "invalid_narrated_settings", "invalid_narrated_groups",
+  "asset_archived", "narrated_batch_busy", "narrated_script_already_confirmed", "asset_not_found"]) {
+  assert.ok(saveStartCodes.has(expected), `the save/start scan must see ${expected}`);
+}
+assert.deepEqual([...saveStartCodes].filter((code) => publicError({ code, message: "x" }).code !== code), [],
+  "every save/start error code in narrated_batch.py needs a public message");
+const ipcSource = fs.readFileSync(path.join(__dirname, "narrated-batch-ipc.cjs"), "utf8");
+const ipcCodes = [...ipcSource.matchAll(/\binvalid\("([A-Za-z0-9_]+)"\)/gu)].map((match) => match[1]);
+assert.ok(ipcCodes.includes("invalid_narrated_settings"));
+assert.deepEqual([...new Set([...ipcCodes, "invalid_params", "invalid_id", "invalid_voice_persona_id"])]
+  .filter((code) => publicError({ code }).code !== code), [], "every batch IPC validation code needs a public message");
 
 async function main() {
   const handlers = new Map();

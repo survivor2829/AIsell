@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { constants: cryptoConstants, publicEncrypt } = require("node:crypto");
+const { constants: cryptoConstants, publicEncrypt, randomUUID } = require("node:crypto");
 
 const {
   CONTENT_ENGINE_CHANNELS,
@@ -10,6 +10,7 @@ const {
   registerContentEngineIpc,
   stripPrivateValue
 } = require("./content-engine-ipc.cjs");
+const { CHANNELS: BATCH_CHANNELS } = require("./narrated-batch-ipc.cjs");
 
 function autoMixClickToken(channel, uuid) {
   return `${channel}:${uuid}`;
@@ -1339,6 +1340,69 @@ async function main() {
     controller.listAssets = originalListAssets;
     assert.equal(runtimeFailure.code, "CONTENT_ENGINE_RUNTIME_UNAVAILABLE");
     assert.equal(notifications.length, 1, "repeated unavailable-engine queries must not produce desktop notifications");
+
+    // A cached draft whose voice lost its approval used to come back from every
+    // automatic save as "内容引擎暂时不可用", raise a Windows notification on each
+    // open, and leave only unknown_error in the log.
+    const batchDraft = {
+      batch_id: "narrated_batch_0a89fb41936f449bb671fb030d823ec0",
+      groups: { opening: [], middle: [], ending: [] },
+      title: "批量创作",
+      target_count: 1,
+      settings: {
+        voice_persona_id: "volc-monkey-brother-2@1", workflow_version: 2,
+        music_mode: "auto", music_track_ids: [], minimum_duration_seconds: 60
+      }
+    };
+    const hadSaveNarratedBatch = Object.hasOwn(controller, "saveNarratedBatch");
+    const originalSaveNarratedBatch = controller.saveNarratedBatch;
+    let batchSaveFailure = null;
+    controller.saveNarratedBatch = async () => { throw batchSaveFailure; };
+    const batchSave = () => handlers.get(BATCH_CHANNELS.save)({ sender: mainWindow.webContents }, batchDraft);
+    const lastBatchSaveEvent = () => diagnosticEvents.filter((entry) => entry[1] === "batch-save.failed").at(-1);
+    const notificationsBeforeBatch = notifications.length;
+    batchSaveFailure = Object.assign(new Error("请选择已试听批准的声音。"), {
+      code: "auto_mix_voice_persona_approval_required"
+    });
+    const unapprovedVoiceSave = await batchSave();
+    assert.equal(unapprovedVoiceSave.ok, false);
+    assert.equal(unapprovedVoiceSave.code, "auto_mix_voice_persona_approval_required");
+    assert.match(unapprovedVoiceSave.error, /声音尚未批准或批准已失效.*声音与配乐/u);
+    assert.equal(notifications.length, notificationsBeforeBatch, "an automatic draft save must not raise a desktop notification");
+    assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "auto_mix_voice_persona_approval_required" });
+    batchSaveFailure = Object.assign(new Error("供应商原文 secret-provider-detail"), { code: "narrated_future_check_failed" });
+    const unregisteredSave = await batchSave();
+    assert.deepEqual(unregisteredSave, { ok: false, code: "CONTENT_ENGINE_FAILED", error: "内容引擎暂时不可用，请重试。" });
+    assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", raw_code: "narrated_future_check_failed" },
+      "an unregistered code must stay locatable in the log");
+    assert.equal(JSON.stringify(lastBatchSaveEvent()).includes("secret-provider-detail"), false);
+    batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
+    assert.equal((await batchSave()).code, "CONTENT_ENGINE_EXITED");
+    assert.equal(notifications.length, notificationsBeforeBatch, "automatic draft saves report engine faults on the page only");
+    // Opening the workbench reads the cached draft's batch before restoring it.
+    const originalGetNarratedBatch = controller.getNarratedBatch;
+    controller.getNarratedBatch = async () => { throw batchSaveFailure; };
+    assert.equal((await handlers.get(BATCH_CHANNELS.get)({}, { batch_id: batchDraft.batch_id })).code, "CONTENT_ENGINE_EXITED");
+    if (originalGetNarratedBatch) controller.getNarratedBatch = originalGetNarratedBatch;
+    else delete controller.getNarratedBatch;
+    assert.equal(notifications.length, notificationsBeforeBatch, "reading a batch while the workbench opens reports on the page only");
+    const startScripts = () => handlers.get(BATCH_CHANNELS.scripts)({ sender: mainWindow.webContents }, {
+      draft: batchDraft, clickToken: autoMixClickToken(BATCH_CHANNELS.scripts, randomUUID())
+    });
+    batchSaveFailure = Object.assign(new Error("请选择已试听批准的声音。"), {
+      code: "auto_mix_voice_persona_approval_required"
+    });
+    assert.equal((await startScripts()).code, "auto_mix_voice_persona_approval_required");
+    assert.equal(notifications.length, notificationsBeforeBatch, "voice approval is fixed on the page, not announced on the desktop");
+    batchSaveFailure = Object.assign(new Error("new provider failure"), { code: "cloud_brand_new_failure" });
+    assert.equal((await startScripts()).code, "CONTENT_ENGINE_FAILED");
+    assert.equal(notifications.length, notificationsBeforeBatch, "a code that falls back to CONTENT_ENGINE_FAILED must not notify");
+    batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
+    assert.equal((await startScripts()).code, "CONTENT_ENGINE_EXITED");
+    assert.equal(notifications.length, notificationsBeforeBatch + 1, "an engine fault during work the user started still notifies");
+    assert.equal(notifications.at(-1).body, "内容引擎已意外停止，请重试。");
+    if (hadSaveNarratedBatch) controller.saveNarratedBatch = originalSaveNarratedBatch;
+    else delete controller.saveNarratedBatch;
     listedTaskItems = [task({
       task_id: transitioningTaskId,
       status: "queued",

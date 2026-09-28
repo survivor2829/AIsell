@@ -53,7 +53,17 @@ const ERRORS = {
   narrated_voice_confirmation_required: "请先核对配音服务记录，并勾选确认。",
   narrated_voice_note_required: "请填写本次配音核对依据。",
   narrated_voice_recovery_not_available: "当前批次没有可人工确认并重试的未完成配音。",
-  invalid_narrated_voice_resolution: "本次配音核对操作无效，请刷新后重试。"
+  invalid_narrated_voice_resolution: "本次配音核对操作无效，请刷新后重试。",
+  // Save/start validation is fixable on the page; it must never read as "engine unavailable".
+  auto_mix_voice_persona_approval_required: "这条视频使用的声音尚未批准或批准已失效，请在「声音与配乐」中改选已批准的声音，或重新试听并批准后再试。",
+  auto_mix_voice_persona_not_found: "所选声音已不在声音列表中，请在「声音与配乐」中改选已批准的声音。",
+  invalid_voice_persona_id: "声音设置无效，请在「声音与配乐」中重新选择已批准的声音。",
+  invalid_narrated_settings: "制作设置无效，请检查最短时长、配乐和视频模板后重试。",
+  invalid_narrated_groups: "素材分组无效，请重新选择素材。",
+  invalid_asset_ids: "素材选择无效，请重新选择素材。",
+  invalid_asset_id: "素材编号无效，请重新选择素材。",
+  asset_archived: "所选素材中有已归档的素材，请移除后再试。",
+  narrated_script_already_confirmed: "正文已确认；如需更换，请先修改文案再重新选择。"
 };
 const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available voice_recovery_available").split(" "));
 for (const field of "phase phase_label overall_percent phase_percent item_index item_total item_name heartbeat_at".split(" ")) PUBLIC_FIELDS.add(field);
