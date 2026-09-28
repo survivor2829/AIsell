@@ -88,6 +88,7 @@ async function main() {
   assert.ok(firstOpen.message.includes(approvalMessage), "the page must show the real reason");
   assert.doesNotMatch(firstOpen.message, /当前任务结束后/u);
   assert.equal(rejected.map.has(PENDING_DRAFT_KEY), false);
+  assert.ok(rejected.map.has(DISCARDED_DRAFT_KEY), "a discarded edit must be backed up, not silently lost");
   const backup = JSON.parse(rejected.map.get(DISCARDED_DRAFT_KEY));
   assert.equal(backup.pending, unapprovedRaw, "the discarded edit must be kept verbatim");
   assert.equal(backup.reason, "auto_mix_voice_persona_approval_required");
