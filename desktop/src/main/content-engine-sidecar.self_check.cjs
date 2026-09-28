@@ -733,6 +733,18 @@ async function main() {
       await waitFor(() => child.stdout.listenerCount("data") === 1);
       child.ready({ capabilities: { asset_index: true, voice_preview_cache_only: true } });
       await start;
+      // Only a missing flag is an ordinary (paid) preview. null or any other non-boolean
+      // is refused here too, not read as false, even though the IPC layer refuses it first.
+      for (const cacheOnly of [null, 0, 1, "", "false", "true"]) {
+        const written = child.stdin.writes.length;
+        const outcome = controller.previewAutoMixVoicePersona("volc-monkey-brother-2@1", { cacheOnly })
+          .then(() => "sent", (error) => error.code);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const sent = child.stdin.writes.slice(written);
+        for (const request of sent) child.respond(request, { cacheHit: false });
+        assert.equal(await outcome, "invalid_params", `cacheOnly ${JSON.stringify(cacheOnly)} is refused`);
+        assert.deepEqual(sent, [], `cacheOnly ${JSON.stringify(cacheOnly)} never reaches the engine`);
+      }
       for (const [options, params] of [
         [{ cacheOnly: true }, { voice_persona_id: "volc-monkey-brother-2@1", cache_only: true }],
         [{ cacheOnly: false }, { voice_persona_id: "volc-monkey-brother-2@1" }],

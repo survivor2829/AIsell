@@ -868,7 +868,9 @@ function createContentEngineSidecar(options = {}) {
       }
     },
     previewAutoMixVoicePersona: async (voicePersonaId, options = {}) => {
-      const cacheOnly = options?.cacheOnly ?? false;
+      // Only a missing flag means an ordinary (paid) preview; null or any other
+      // non-boolean is refused, never read as false.
+      const cacheOnly = options?.cacheOnly === undefined ? false : options.cacheOnly;
       if (typeof cacheOnly !== "boolean") throw createError("invalid_params");
       if (!cacheOnly) {
         return request("preview_auto_mix_voice_persona", { voice_persona_id: voicePersonaId });
