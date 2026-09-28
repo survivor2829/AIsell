@@ -2452,11 +2452,13 @@ function registerContentEngineIpc(options = {}) {
           }
         } else if (observedOperationFailures.get(operationName) !== failureKey) {
           observedOperationFailures.set(operationName, failureKey);
+          // The logger folds repeats by event and code, and every unknown code is
+          // logged as unknown_error, so the raw code has to be part of its key too.
           diagnosticLogger.event(
             "content_engine",
             `${operationName}.failed`,
             { error_code: errorCode, ...(rawCode ? { raw_code: rawCode } : {}) },
-            { level: "error", code: errorCode }
+            { level: "error", code: errorCode, ...(rawCode ? { dedupeKey: failureKey } : {}) }
           );
         }
         return publicError(error);

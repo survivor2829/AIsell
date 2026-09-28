@@ -11,6 +11,7 @@ const {
   stripPrivateValue
 } = require("./content-engine-ipc.cjs");
 const { CHANNELS: BATCH_CHANNELS } = require("./narrated-batch-ipc.cjs");
+const { createDiagnosticLogger } = require("./diagnostics.cjs");
 
 function autoMixClickToken(channel, uuid) {
   return `${channel}:${uuid}`;
@@ -422,6 +423,11 @@ async function main() {
     const diagnosticOperations = [];
     const diagnosticEvents = [];
     const diagnosticRecoveries = [];
+    // The production logger also folds repeated faults, so every event and recovery is
+    // written through a real one as well; its file is what a support export contains.
+    const realDiagnostics = createDiagnosticLogger({ rootDir: path.join(root, "real-diagnostics") });
+    const realDiagnosticEntries = () => fs.readFileSync(path.join(root, "real-diagnostics", "logs", "diagnostics.jsonl"), "utf8")
+      .split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line));
     const diagnosticLogger = {
       begin: (area, operation) => {
         const entry = { area, operation, endings: [] };
@@ -430,8 +436,8 @@ async function main() {
           end: (...args) => entry.endings.push(args)
         };
       },
-      event: (...args) => diagnosticEvents.push(args),
-      recover: (...args) => diagnosticRecoveries.push(args)
+      event: (...args) => { diagnosticEvents.push(args); realDiagnostics.event(...args); },
+      recover: (...args) => { diagnosticRecoveries.push(args); realDiagnostics.recover(...args); }
     };
     let listedTaskItems = [task()];
     let updateListener = null;
@@ -1403,6 +1409,13 @@ async function main() {
     await batchSave();
     assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "unknown_error", raw_code: "narrated_future_second" },
       "a different unknown code on the same operation is a new log entry");
+    batchSaveFailure = Object.assign(new Error("x"), { code: "narrated_future_first" });
+    await batchSave();
+    // Back to back, with no success or other fault in between: the written log keeps all three.
+    assert.deepEqual(realDiagnosticEntries().filter((entry) => entry.event === "batch-save.failed").slice(-3)
+      .map((entry) => [entry.code, entry.details?.raw_code]), [
+      ["unknown_error", "narrated_future_first"], ["unknown_error", "narrated_future_second"], ["unknown_error", "narrated_future_first"]
+    ], "the real logger must not fold different unknown codes into one entry");
     batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
     assert.equal((await batchSave()).code, "CONTENT_ENGINE_EXITED");
     assert.equal(notifications.length, notificationsBeforeBatch, "automatic draft saves report engine faults on the page only");
