@@ -14,9 +14,16 @@ const { createTaskPassportStore } = require("./task-passport.cjs");
 const { configureDiagnostics } = require("./diagnostics.cjs");
 const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy.cjs");
 
+const temporaryDirectories = [];
+function trackedMkdtemp(prefix) {
+  const dir = fs.mkdtempSync(prefix);
+  temporaryDirectories.push(dir);
+  return dir;
+}
+
 async function checkTouchStatusDoesNotRecoverActiveSend() {
   for (const multipart of [false, true]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-status-race-"));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-status-race-"));
     const dataDir = path.join(root, "touch");
     const id = multipart ? "multipart" : "text";
     const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
@@ -45,7 +52,7 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
     assert.equal(duringSend.status, "running", "status polling must not recover a live task");
     assert.equal(duringSend.results[0].status, "sending");
 
-    const restartRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-restart-"));
+    const restartRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-restart-"));
     const restartDir = path.join(restartRoot, "touch", "workflow-tasks", path.basename(taskDir));
     fs.mkdirSync(path.dirname(restartDir), { recursive: true });
     fs.cpSync(taskDir, restartDir, { recursive: true });
@@ -65,7 +72,7 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
 }
 
 async function checkInterruptedSendRecoveryInSameProcess() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-send-fault-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-send-fault-"));
   const dataDir = path.join(root, "touch");
   const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
   let sends = 0;
@@ -103,7 +110,7 @@ async function checkInterruptedSendRecoveryInSameProcess() {
 }
 
 async function checkClickedAttentionPersistFailureRecovery() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-clicked-fault-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-clicked-fault-"));
   const dataDir = path.join(root, "touch");
   const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
   let sends = 0;
@@ -162,7 +169,7 @@ async function checkR008BoundedRecovery() {
   assert.equal(circuitPolicy.known, true);
   assert.equal(circuitPolicy.attentionScope, "global");
   for (const multipart of [false, true]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-recovery-"));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-recovery-"));
     try {
     const contacts = [1, 2, 3, 4].map((number) => ({
       id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
@@ -259,7 +266,7 @@ async function checkR008PassportAttachmentCount() {
     ["search-r014", "search_result_identity_unverified", 1],
     ["search-r015", "exact_search_result_not_found", 1]
   ]) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-passport-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-passport-"));
   try {
     let screenshots = 0;
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
@@ -323,7 +330,7 @@ async function checkR008PassportAttachmentCount() {
 }
 
 async function checkR008PartialSend() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-partial-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-partial-"));
   try {
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     let textSends = 0;
@@ -390,7 +397,7 @@ async function checkR008PartialSend() {
 
 async function checkT5FourthReviewExits() {
   for (const kind of ["snapshot", "preclick", "identity", "environment", "recoverable", "unknown"]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-t5-exit-${kind}-`));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-t5-exit-${kind}-`));
     try {
       let clock = Date.parse("2026-09-24T00:00:00.000Z");
       let changed = false;
@@ -447,7 +454,7 @@ async function checkT5FourthReviewExits() {
 
 async function checkT5FourthReviewRulesAndEvidence() {
   for (const kind of ["rejoined_success", "other_identity", "diagnostics"]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-t5-rule-${kind}-`));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-t5-rule-${kind}-`));
     try {
       let clock = Date.parse("2026-09-24T00:00:00.000Z");
       let succeed = false;
@@ -509,7 +516,7 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
   const workflowSource = fs.readFileSync(path.join(__dirname, "touch-workflow.cjs"), "utf8");
   assert.match(workflowSource, /const \{ search_capture_file: _captureFile, \.\.\.safeDiagnostics \} = partOutcome\.diagnostics;\s*partOutcome = \{ \.\.\.partOutcome, diagnostics: safeDiagnostics \};/u,
     "the consumed temp path must be removed from the workflow result before diagnostics can propagate");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-evidence-privacy-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-evidence-privacy-"));
   try {
     const secret = "张三客户PLAINTEXT";
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
@@ -580,7 +587,7 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
 }
 
 async function checkT5FourthReviewCircuit() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-t5-partial-circuit-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-t5-partial-circuit-"));
   try {
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     let textSends = 0;
@@ -613,7 +620,7 @@ async function checkT5FourthReviewCircuit() {
 }
 
 async function checkCircuitRejoinKeepsThirdContactRecovery() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-circuit-rejoin-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-circuit-rejoin-"));
   try {
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     let allowFirst = false;
@@ -652,7 +659,7 @@ async function checkCircuitRejoinKeepsThirdContactRecovery() {
 }
 
 async function checkNonIdentitySkipDropsOldSearchRule() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-old-rule-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-old-rule-"));
   try {
     let calls = 0;
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
@@ -686,7 +693,7 @@ async function checkNonIdentitySkipDropsOldSearchRule() {
 
 async function checkOldSearchRuleDoesNotEnterOtherSkipBills() {
   for (const exit of ["snapshot", "manual"]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-old-rule-${exit}-`));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-old-rule-${exit}-`));
     try {
       let calls = 0;
       let changed = false;
@@ -717,7 +724,7 @@ async function checkOldSearchRuleDoesNotEnterOtherSkipBills() {
 
 async function checkIdentityStreakClearsAfterManualOrVerifiedContact() {
   for (const resolution of ["sent", "verified_pre_send_skip"]) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-streak-reset-"));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-streak-reset-"));
     try {
       let clock = Date.parse("2026-09-24T00:00:00.000Z");
       const contacts = [1, 2].map((number) => ({
@@ -752,7 +759,7 @@ async function checkIdentityStreakClearsAfterManualOrVerifiedContact() {
 }
 
 async function checkRejoinedIdentityStreakStartsEmpty() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-rejoin-streak-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-rejoin-streak-"));
   try {
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     const contacts = [1, 2].map((number) => ({
@@ -785,7 +792,7 @@ async function checkRejoinedIdentityStreakStartsEmpty() {
 }
 
 async function checkMissingSearchResultsDoNotTripCircuit() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-search-r015-"));
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-search-r015-"));
   try {
     const contacts = [1, 2, 3].map((number) => ({
       id: `missing-${number}`, name: `客户${number}`, wechatId: `wxid_missing_${number}`, wechatAccountId: "test-account"
@@ -836,7 +843,7 @@ async function checkFloatingProgress() {
     hide() { this.visible = false; }
     destroy() { this.destroyed = true; this.emit("closed"); }
   }
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-window-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-window-"));
   const control = registerWechatWorkflowIpc({
     logger: { event: (...args) => diagnosticEvents.push(args) },
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
@@ -905,7 +912,7 @@ async function checkDiagnosticLoggerFailureIsolation() {
   ];
   let baseline;
   for (const [name, logger] of variants) {
-    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-log-fail-"));
+    const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-log-fail-"));
     let pauseFails = false;
     const reply = { pauseWorkflow: async () => { if (pauseFails) throw new Error("pause_error"); } };
     const control = createWechatWorkflowController({
@@ -942,7 +949,7 @@ async function checkDiagnosticLoggerFailureIsolation() {
 async function checkRetryAndContinueIpc() {
   const click = () => require("node:crypto").randomUUID();
   async function fixture(rows, { reply = false } = {}) {
-    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-retry-continue-"));
+    const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-retry-continue-"));
     const handlers = new Map(), windows = [], skippedCalls = [], skippedSelections = [], controlEvents = [];
     let mainHideCount = 0, mainShowCount = 0;
     let replyPauseCalls = 0;
@@ -1356,8 +1363,8 @@ async function checkRetryAndContinueIpc() {
 async function checkFailedRetryRecoveryGuards() {
   const now = new Date(2026, 8, 27, 10).getTime();
   async function fixture(rows, autoSchedule = false) {
-    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-retry-guard-"));
-    const state = { account: "acct", rows, touchSends: 0, replySteps: 0, replyResumes: 0,
+    const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-retry-guard-"));
+    const state = { account: "acct", rows, touchSends: 0, replySteps: 0, replyResumes: 0, updates: [],
       replyResult: { handled: false }, pauseGate: null, pauseEntered: null, replyGate: null };
     const rowFor = (task) => rows.find((row) => row.title === task.title);
     const touch = {
@@ -1389,7 +1396,8 @@ async function checkFailedRetryRecoveryGuards() {
     };
     const options = { rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"),
       momentsDir: path.join(rootDir, "moments"), autoSchedule: false, pollIntervalMs: 5,
-      now: () => new Date(now), getAccount: () => state.account, executors: { touch }, reply };
+      now: () => new Date(now), getAccount: () => state.account, onUpdate: (snapshot) => state.updates.push(snapshot),
+      executors: { touch }, reply };
     const setup = createWechatWorkflowController(options);
     for (const row of rows) await setup.addTask({ type: "touch", title: row.title,
       payload: { contactIds: [`${row.title}-contact`], script: "test" } });
@@ -1511,12 +1519,36 @@ async function checkFailedRetryRecoveryGuards() {
     const state = await fixture([skipFail(), { title: "other", status: "pending", accountName: "acct2" }]);
     try {
       const resumes = state.replyResumes;
+      const updates = state.updates.length;
       await assert.rejects(state.control.retryAll(false), /没有可重新加入/);
       assert.equal(state.control.status().phase, "listening", "another account's pending task must not block reception");
       assert.equal(state.control.status().enabled, true);
       assert.equal(state.replyResumes, resumes + 1);
+      assert.ok(state.updates.length > updates, "recovery must notify status subscribers");
+      assert.equal(state.updates.at(-1).phase, "listening");
+      assert.equal(state.updates.at(-1).enabled, true);
       assert.equal(state.touchSends, 0);
     } finally { await state.control.dispose(); }
+  }
+
+  {
+    const state = await fixture([skipFail()]);
+    const gate = blockPause(state);
+    let retrying;
+    try {
+      retrying = state.control.retryAll(false);
+      await gate.entered;
+      const resumes = state.replyResumes;
+      assert.equal((await state.control.start()).ok, true);
+      assert.equal(state.replyResumes, resumes + 1, "user start must resume reception once");
+      gate.release();
+      await assert.rejects(retrying, /请先暂停/);
+      assert.equal(state.replyResumes, resumes + 1, "failed retry must not resume an already started workflow again");
+    } finally {
+      gate.release();
+      if (retrying) await Promise.allSettled([retrying]);
+      await state.control.dispose();
+    }
   }
 
   {
@@ -1556,7 +1588,7 @@ async function checkPresendDiagnosticLevels() {
     { name: "unknown-transition", reason: "message_snapshot_unavailable", transition: "outcome_unknown", expected: "error" }
   ];
   for (const test of cases) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-send-level-${test.name}-`));
+    const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-send-level-${test.name}-`));
     let enabled = true;
     const levels = [];
     const unsubscribe = require("./diagnostics.cjs").configureDiagnostics({ rootDir: root }).subscribe((entry) => {
@@ -1580,7 +1612,7 @@ async function checkPresendDiagnosticLevels() {
 }
 
 async function checkWorkflowDiagnostics() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-diagnostics-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-diagnostics-"));
   const events = [];
   const logger = {
     event: (_module, name, details, metadata) => { assert.equal(metadata.trace, true); events.push({ name, ...details }); },
@@ -1640,7 +1672,7 @@ async function checkWorkflowDiagnostics() {
 }
 
 async function checkInProgressTouchEdit() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-edit-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-edit-"));
   let updateInput;
   let calls = 0;
   const control = createWechatWorkflowController({
@@ -1665,7 +1697,7 @@ async function checkInProgressTouchEdit() {
 }
 
 async function checkUnknownTouchResolution() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-resolution-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-resolution-"));
   let runCalls = 0;
   let resolutionCalls = 0;
   const control = createWechatWorkflowController({
@@ -1702,7 +1734,7 @@ async function checkUnknownTouchResolution() {
 }
 
 async function checkUnknownTouchResolutionRecovery() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-recovery-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-recovery-"));
   let durableResolution = null;
   let runCalls = 0;
   const events = [];
@@ -1747,7 +1779,7 @@ async function checkUnknownTouchResolutionRecovery() {
 }
 
 async function checkUnknownReasonQualityCounter() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
   let calls = 0;
   const controlEvents = [];
   const options = {
@@ -1809,7 +1841,7 @@ async function checkUnknownReasonQualityCounter() {
 }
 
 async function checkRealReplyWorkflowRecovery() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-reply-workflow-recovery-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-reply-workflow-recovery-"));
   const activeTouchDir = path.join(rootDir, "touch");
   fs.mkdirSync(activeTouchDir, { recursive: true });
   const contacts = [
@@ -1904,7 +1936,7 @@ async function checkRealReplyWorkflowRecovery() {
 }
 
 async function checkReplyFailureDiagnosticsAcrossRuns() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-reply-diagnostic-dedupe-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-reply-diagnostic-dedupe-"));
   const contact = { id: "private-contact", name: "private-name", allowed: true, wechatAccountId: "wx-a" };
   const events = [];
   const controller = createWechatWorkflowController({
@@ -1938,7 +1970,7 @@ async function checkReplyFailureDiagnosticsAcrossRuns() {
 }
 
 async function checkControlSnapshotAndPauseTrace() {
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-control-trace-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-control-trace-"));
   const events = [];
   let releaseStep;
   let enteredStep;
@@ -2011,7 +2043,7 @@ async function main() {
   await checkControlSnapshotAndPauseTrace();
   await checkRealReplyWorkflowRecovery();
   await checkReplyFailureDiagnosticsAcrossRuns();
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
   let clock = new Date(2026, 8, 2, 11, 0);
   let account = "test-account";
   let customerWaiting = false;
@@ -2045,7 +2077,7 @@ async function main() {
     const remaining = [...tasks];
     const ordered = [];
     while (remaining.length) {
-      const orderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-order-"));
+      const orderRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-order-"));
       const stateDir = path.join(orderRoot, "wechat_workflow");
       fs.mkdirSync(stateDir, { recursive: true });
       fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ version: 1, tasks: remaining }), "utf8");
@@ -2196,7 +2228,7 @@ async function main() {
   assert.equal(restored.status().tasks.find((t) => t.id === busy.task.id).status, "missed", "busy preflight cannot count as execution across dates");
   await restored.dispose();
 
-  const scheduledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
+  const scheduledRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
   let scheduledClock = new Date(2026, 8, 4, 10, 0);
   let scheduledReplyCalls = 0;
   let scheduledReplyOverride = null;
@@ -2257,7 +2289,7 @@ async function main() {
   assert.equal(scheduledReplyInputs.at(-1).afterMoments, false, "touch must not request chat restoration");
   await scheduled.dispose();
 
-  const batchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-batch-"));
+  const batchRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-batch-"));
   const batch = createWechatWorkflowController({ ...options, rootDir: batchRoot, autoReplyDir: path.join(batchRoot, "reply") });
   await assert.rejects(batch.start(), /没有待执行任务/);
   assert.equal(batch.status().enabled, false, "empty plans cannot appear to start");
@@ -2271,7 +2303,7 @@ async function main() {
   assert.equal(batch.status().phase, "needs_attention", "unfinished work must not look completed or idle");
   await batch.dispose();
 
-  const contentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
+  const contentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
   const contentionCalls = [];
   const contentionClock = new Date(2026, 8, 3, 11, 30);
   const contention = createWechatWorkflowController({
@@ -2312,7 +2344,7 @@ async function main() {
   assert.deepEqual(contentionCalls, ["touch", "publish"]);
   await contention.dispose();
 
-  const localAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-local-attention-"));
+  const localAttentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-local-attention-"));
   let localAttentionReplyCalls = 0;
   const localAttentionCalls = [];
   const localAttention = createWechatWorkflowController({
@@ -2350,7 +2382,7 @@ async function main() {
   assert.equal(localAttentionReplyCalls, 1, "automatic reply must resume after the remaining finite task completes");
   await localAttention.dispose();
 
-  const globalAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-global-attention-"));
+  const globalAttentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-global-attention-"));
   let globalAttentionReplyCalls = 0;
   const globalAttention = createWechatWorkflowController({
     rootDir: globalAttentionRoot, autoReplyDir: path.join(globalAttentionRoot, "reply"), activeTouchDir: path.join(globalAttentionRoot, "touch"), momentsDir: path.join(globalAttentionRoot, "moments"),
@@ -2373,7 +2405,7 @@ async function main() {
   assert.equal(globalAttentionReplyCalls, 0, "auto reply must remain stopped while an unknown outcome awaits review");
   await globalAttention.dispose();
 
-  const brokenPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
+  const brokenPayloadRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
   const brokenPayloadOptions = {
     rootDir: brokenPayloadRoot, autoReplyDir: path.join(brokenPayloadRoot, "reply"), activeTouchDir: path.join(brokenPayloadRoot, "touch"), momentsDir: path.join(brokenPayloadRoot, "moments"),
     getAccount: () => "test-account", autoSchedule: false,
@@ -2405,7 +2437,7 @@ async function main() {
   assert.match(brokenPayloadRow.error, new RegExp(brokenPayloadFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the task error must identify the corrupt payload file");
   await brokenPayload.dispose();
 
-  const dailyPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-daily-broken-payload-"));
+  const dailyPayloadRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-daily-broken-payload-"));
   let dailyPayloadClock = new Date(2026, 8, 3, 12, 0, 0);
   let dailyPayloadReplyCalls = 0;
   const dailyPayload = createWechatWorkflowController({
@@ -2448,7 +2480,7 @@ async function main() {
   await dailyPayload.dispose();
   fs.rmSync(dailyPayloadRoot, { recursive: true, force: true });
 
-  const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
+  const cooldownRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;
   let replyCalls = 0;
@@ -2485,7 +2517,7 @@ async function main() {
   assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");
   await cooldown.dispose();
 
-  const attentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-attention-stop-"));
+  const attentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-attention-stop-"));
   let attentionReplyCalls = 0;
   let attentionTaskCalls = 0;
   const attention = createWechatWorkflowController({
@@ -2511,7 +2543,7 @@ async function main() {
   assert.equal(attention.status().phase, "needs_attention");
   await attention.dispose();
 
-  const bulkRetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));
+  const bulkRetryRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));
   let replyPauseCalls = 0;
   const bulkControlEvents = [];
   const bulkRetry = createWechatWorkflowController({
@@ -2556,7 +2588,7 @@ async function main() {
   assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_all");
   await bulkRetry.dispose();
 
-  const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
+  const retryRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
   let retryAllowed = true;
   const retryOptions = { ...options, rootDir: retryRoot, autoReplyDir: path.join(retryRoot, "reply"),
     executors: { interact: {
@@ -2662,4 +2694,9 @@ async function main() {
   process.exitCode = 0;
 }
 
-main().catch((error) => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });
+main().catch((error) => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; }).finally(() => {
+  for (const dir of temporaryDirectories) {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

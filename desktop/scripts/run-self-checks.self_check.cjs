@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { parallelCheckGroups, serialChecks } = require("./run-self-checks.cjs");
+const { parallelCheckGroups, serialChecks, runChecks } = require("./run-self-checks.cjs");
 
 assert.deepEqual(parallelCheckGroups.map(group => group.name), ["active-touch", "moments", "auto-reply"]);
 assert.ok(parallelCheckGroups.every(group => group.checks.length > 0));
@@ -12,4 +12,23 @@ assert.equal(grouped.some(check => check.startsWith("rpa/")), false,
   "PowerShell and system-clock RPA harnesses remain serial to avoid local resource contention");
 assert.equal(serialChecks.some(check => grouped.includes(check)), false, "Serial and parallel checks must be disjoint");
 
-console.log("Independent active-touch, moments and auto-reply checks are configured as parallel groups.");
+const output = [];
+const originalWrite = process.stdout.write;
+process.stdout.write = function (chunk, ...args) { output.push(String(chunk)); return true; };
+try {
+  const child = (status, stdout) => (_node, _args, options) => {
+    assert.deepEqual(options.stdio, ["inherit", "pipe", "inherit"]);
+    assert.ok(options.maxBuffer >= 1024 * 1024);
+    return { status, stdout };
+  };
+  assert.throws(() => runChecks(["silent.cjs"], child(0, "child original output\n")),
+    /self-check exited 0 without a passed line: silent\.cjs/);
+  assert.ok(output.join("").includes("child original output"), "child stdout must remain visible");
+  runChecks(["ok.cjs"], child(0, "child says passed\n"));
+  assert.ok(output.join("").includes("child says passed"));
+  assert.throws(() => runChecks(["failed.cjs"], child(2, "child says passed\n")), /self-check failed/);
+} finally {
+  process.stdout.write = originalWrite;
+}
+
+console.log("Self-check runner checks passed: grouping, exit status, passed lines and output forwarding.");
