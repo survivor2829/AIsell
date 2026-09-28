@@ -18,8 +18,8 @@ function loadTs(name) {
 }
 const { callBatch } = loadTs("batch-studio-api.ts");
 const {
-  DISCARDED_DRAFT_KEY, PENDING_DRAFT_KEY, createDraftQueue, createPendingDraftSlot, discardPendingDraft,
-  isDeterministicDraftError, restorePendingDraft
+  DISCARDED_DRAFT_KEY, PENDING_DRAFT_KEY, RESTORED_ELSEWHERE, createDraftQueue, createPendingDraftSlot, discardPendingDraft,
+  isDeterministicDraftError, restoreNotice, restorePendingDraft
 } = loadTs("batch-draft-queue.ts");
 const page = fs.readFileSync(path.join(__dirname, "BatchCreativePage.tsx"), "utf8");
 
@@ -54,12 +54,11 @@ const completedBatch = {
   candidates: [{ status: "completed", generated_video_id: "generated_video_1" }]
 };
 const pendingRaw = (draft, fingerprint = "fingerprint-1", extra = {}) => JSON.stringify({ draft, fingerprint, ...extra });
-function restorer(storage, { current = draftBatch, getError, saveErrors = [] } = {}) {
+function restorer(storage, { current = draftBatch, getError, saveErrors = [], duringGet } = {}) {
   const calls = { get: 0, save: [] };
-  const run = (batchIdFilter) => restorePendingDraft({
+  const run = () => restorePendingDraft({
     storage,
-    batchId: batchIdFilter,
-    get: async () => { calls.get += 1; if (getError) throw getError; return current; },
+    get: async () => { calls.get += 1; duringGet?.(); await tick(); if (getError) throw getError; return current; },
     save: async (draft) => {
       calls.save.push(draft);
       const error = saveErrors.shift();
@@ -82,18 +81,24 @@ function fakeEngine(batches = []) {
     },
     save: async (draft) => {
       engine.saves.push(draft);
+      await tick();
       if (draft.settings?.voice_persona_id && !engine.approved) throw failure("auto_mix_voice_persona_approval_required", approvalMessage);
       const id = draft.batch_id || `narrated_batch_${String(db.size + 1).padStart(32, "0")}`;
-      const saved = { ...(db.get(id) || { candidates: [] }), ...draft, batch_id: id, status: "draft", updated_at: `2026-09-28T02:00:${String(++clock).padStart(2, "0")}.000Z` };
+      // A content save resets the batch to draft and drops _archived_at (narrated_batch.py save);
+      // the save response carries no archived flag.
+      const { archived: _dropped, ...previous } = db.get(id) || { candidates: [] };
+      const saved = { ...previous, ...draft, batch_id: id, status: "draft", updated_at: `2026-09-28T02:00:${String(++clock).padStart(2, "0")}.000Z` };
       db.set(id, saved);
       return { ...saved };
-    }
+    },
+    archive: async (id) => { await tick(); db.set(id, { ...db.get(id), archived: true }); return { batch_id: id }; }
   };
   return engine;
 }
 // The page's wiring around the slot, the queue and the restore (BatchCreativePage.tsx).
+// The source assertions at the end pin the page lines each step mirrors.
 function workbench(storage, engine) {
-  const state = { owner: 0, mounted: true, notice: "", batch: null };
+  const state = { owner: 0, mounted: true, notice: "", batch: null, form: null };
   const slot = createPendingDraftSlot(storage);
   const queue = createDraftQueue({
     save: (value) => engine.save(value),
@@ -112,16 +117,44 @@ function workbench(storage, engine) {
   });
   return {
     state, slot, queue,
-    open: () => restorePendingDraft({ storage, get: engine.get, save: engine.save }),
-    load(batch) { state.owner += 1; queue.cancelPending(); state.batch = batch; },
+    // The mount effect: replay the cached edit, then load what the page was opened on.
+    async open(openedBatchId) {
+      const restore = await restorePendingDraft({ storage, get: engine.get, save: engine.save });
+      if (restore.kind === "restored" && (!openedBatchId || restore.batch.batch_id === openedBatchId)) {
+        this.load(restore.batch);
+        return restore;
+      }
+      state.notice = restoreNotice(restore);
+      if (openedBatchId) this.load(await engine.get(openedBatchId));
+      return restore;
+    },
+    load(batch) { state.owner += 1; queue.cancelPending(); state.batch = batch; state.form = null; },
     edit(changes, fingerprint) {
       const draft = { ...(state.batch ? { batch_id: state.batch.batch_id, groups: state.batch.groups, settings: state.batch.settings } : {}), ...changes };
+      state.form = { draft, fingerprint };
+      return this.effect();
+    },
+    // The autosave effect; it also runs again whenever busy flips back after an action.
+    effect() {
+      if (!state.form) return undefined;
+      const { draft, fingerprint } = state.form;
       const base = state.batch && draft.batch_id === state.batch.batch_id ? state.batch.updated_at : undefined;
       slot.write({ draft, fingerprint, ...(base ? { base_updated_at: base } : {}) }, state.owner);
       queue.enqueue(draft, fingerprint, state.owner);
       return draft;
     },
-    async newVideo() { await queue.flush(); state.owner += 1; state.batch = null; },
+    // run(): a failed action shows its error, and busy flipping back re-runs the effect.
+    async click(action) {
+      try { await action(); return true; } catch (error) { state.notice = error.message; return false; } finally { this.effect(); }
+    },
+    async newVideo() { await queue.flush(); state.owner += 1; state.batch = null; state.form = null; },
+    async archive() {
+      const id = state.batch.batch_id;
+      await queue.flush();
+      await engine.archive(id);
+      state.owner += 1; queue.cancelPending();
+      state.batch = null; state.form = null;
+    },
     async start(draft) { queue.cancelPending(); const b = await engine.save(draft); slot.started(state.owner); state.batch = b; return b; },
     leave() { state.mounted = false; return queue.flush().catch(() => undefined); }
   };
@@ -249,10 +282,50 @@ async function main() {
   const newBatch = restorer(unsaved);
   assert.equal((await newBatch.run()).kind, "restored");
   assert.equal(newBatch.calls.get, 0, "a never-saved batch has nothing to protect");
-  const otherBatch = memoryStorage({ [PENDING_DRAFT_KEY]: unapprovedRaw });
-  const scoped = restorer(otherBatch);
-  assert.deepEqual(await scoped.run(otherBatchId), { kind: "none" });
-  assert.equal(otherBatch.map.get(PENDING_DRAFT_KEY), unapprovedRaw);
+
+  // The page shows the outcome of every replay it does not load.
+  assert.equal(restoreNotice({ kind: "none" }), "");
+  assert.equal(restoreNotice({ kind: "kept", message: "原因甲" }), "原因甲");
+  assert.equal(restoreNotice({ kind: "discarded", message: "原因乙" }), "原因乙");
+  assert.equal(restoreNotice({ kind: "restored", batch: draftBatch }), RESTORED_ELSEWHERE);
+  assert.match(RESTORED_ELSEWHERE, /已存回.*制作记录/u);
+
+  // A batch whose task row is gone fails every read the same way: stop replaying it.
+  assert.equal(isDeterministicDraftError(failure("task_not_found")), true);
+  const dangling = memoryStorage({ [PENDING_DRAFT_KEY]: unapprovedRaw });
+  const danglingTask = restorer(dangling, { getError: failure("task_not_found", "没有找到这条任务记录。") });
+  const danglingOpen = await danglingTask.run();
+  assert.equal(danglingOpen.kind, "discarded", "a dangling task reference must not be replayed on every open");
+  assert.match(danglingOpen.message, /不会再自动恢复：没有找到这条任务记录/u);
+  assert.equal(backupOf(dangling).pending, unapprovedRaw);
+  assert.deepEqual(await danglingTask.run(), { kind: "none" });
+
+  // Overlapping opens (React StrictMode runs the mount effect twice in development) share
+  // one replay: both report what actually happened, and the engine sees one request.
+  for (const [current, kind, message] of [
+    [completedBatch, "discarded", /已确认文案或已有成片.*也不会再自动恢复。$/u],
+    [draftBatch, "restored", null]
+  ]) {
+    const storage = memoryStorage({ [PENDING_DRAFT_KEY]: pendingRaw({ batch_id: batchId, groups: emptyGroups }) });
+    const twice = restorer(storage, { current });
+    const [first, second] = await Promise.all([twice.run(), twice.run()]);
+    assert.equal(first.kind, kind, `overlapping opens: ${kind}`);
+    assert.deepEqual(second, first, "the second open must report the same outcome, never 'kept' for an edit the first one moved");
+    if (message) assert.match(second.message, message);
+    assert.equal(twice.calls.get, 1);
+    assert.equal(twice.calls.save.length, kind === "restored" ? 1 : 0);
+    assert.equal(storage.map.has(PENDING_DRAFT_KEY), false);
+  }
+  // An edit that left the slot while its batch was being read (moved, restored or
+  // replaced by someone else) is not this replay's to report; only a failed backup is "kept".
+  const vanished = memoryStorage({ [PENDING_DRAFT_KEY]: unapprovedRaw });
+  const gone = await restorer(vanished, { current: completedBatch, duringGet: () => vanished.removeItem(PENDING_DRAFT_KEY) }).run();
+  assert.deepEqual(gone, { kind: "none" }, "an edit no longer cached must not be reported as kept");
+  const replaced = memoryStorage({ [PENDING_DRAFT_KEY]: unapprovedRaw });
+  const newer = pendingRaw({ batch_id: batchId, groups: oneAsset, title: "newer" }, "fingerprint-newer");
+  assert.deepEqual(await restorer(replaced, { current: completedBatch, duringGet: () => replaced.setItem(PENDING_DRAFT_KEY, newer) }).run(), { kind: "none" });
+  assert.equal(replaced.map.get(PENDING_DRAFT_KEY), newer, "a newer edit is left alone");
+  assert.equal(replaced.map.has(DISCARDED_DRAFT_KEY), false);
 
   // No backup, no discard, and no claim that the replay has stopped: the edit stays and
   // is checked again on the next open.
@@ -389,6 +462,27 @@ async function main() {
     rejectCode = null;
     await queue.flush();
     assert.equal(saves.length, beforeCancel, "cancelPending also forgets a held edit");
+
+    // The page re-enqueues the unchanged form after each failed action. That neither
+    // clears the rejection nor starts another background save.
+    rejectCode = "asset_archived";
+    const unchanged = { batch_id: batchId, title: "unchanged" };
+    queue.enqueue(unchanged, "fingerprint-unchanged", 1);
+    await assert.rejects(queue.flush(), (error) => error.code === "asset_archived");
+    const afterFirstRejection = saves.length;
+    queue.enqueue({ ...unchanged }, "fingerprint-unchanged", 1);
+    await sleep(450);
+    assert.equal(saves.length, afterFirstRejection, "re-enqueueing the rejected form does not retry it in the background");
+    await queue.flush();
+    assert.equal(saves.length, afterFirstRejection + 1);
+    assert.deepEqual(failures.at(-1), ["asset_archived", 1, "fingerprint-unchanged", true],
+      "re-enqueueing the unchanged form keeps its rejection: the next explicit flush is its last try");
+    queue.enqueue({ batch_id: batchId, title: "changed" }, "fingerprint-changed", 2);
+    await assert.rejects(queue.flush(), (error) => error.code === "asset_archived", "a changed form starts over");
+    queue.enqueue({ batch_id: batchId, title: "changed" }, "fingerprint-changed", 3);
+    await assert.rejects(queue.flush(), (error) => error.code === "asset_archived", "the same form under a new owner starts over");
+    queue.cancelPending();
+    rejectCode = null;
   }
   // A newer edit that arrives while an older one is failing is saved right away, whether
   // or not its own debounce already fired during that save.
@@ -495,12 +589,86 @@ async function main() {
     assert.equal(backupOf(storage).pending, kept, "the next edit backs the kept edit up before replacing it");
     assert.equal(JSON.parse(pendingText(storage)).fingerprint, "fingerprint-new");
   }
+  {
+    // Clicking 新建视频 again right after it was blocked by a rejected edit: busy flipping
+    // back re-runs the autosave effect, and that must not reset the rejection count.
+    const storage = memoryStorage();
+    const engine = fakeEngine([monkeyBatch]);
+    const bench = workbench(storage, engine);
+    bench.load(await engine.get(batchId));
+    bench.edit(typed, "fingerprint-typed");
+    assert.equal(await bench.click(() => bench.newVideo()), false, "the first rejection is shown and holds the page");
+    assert.equal(bench.state.notice, approvalMessage);
+    await sleep(200);
+    assert.equal(await bench.click(() => bench.newVideo()), true, "the second click moves on without waiting for a background save");
+    assert.equal(engine.saves.length, 2, "one save per click, no extra background save");
+    assert.equal(bench.state.batch, null);
+    assert.equal(JSON.parse(backupOf(storage).pending).draft.expression, typed.expression);
+  }
+  {
+    // Opened on another batch from 制作记录: the cached edit is still replayed into its own
+    // batch, the page says so, and the first keystroke here has nothing to replace.
+    const other = { ...draftBatch, batch_id: otherBatchId, groups: oneAsset };
+    const cached = pendingRaw({ batch_id: batchId, groups: oneAsset, expression: "另一条视频上没存上的文案" }, "fingerprint-x",
+      { base_updated_at: draftBatch.updated_at });
+    const storage = memoryStorage({ [PENDING_DRAFT_KEY]: cached });
+    const engine = fakeEngine([draftBatch, other]);
+    const bench = workbench(storage, engine);
+    assert.equal((await bench.open(otherBatchId)).kind, "restored");
+    assert.equal(bench.state.batch.batch_id, otherBatchId, "the page still opens the batch that was asked for");
+    assert.equal(bench.state.notice, RESTORED_ELSEWHERE);
+    assert.equal(engine.db.get(batchId).expression, "另一条视频上没存上的文案", "the cached edit lands in its own batch");
+    assert.equal(storage.map.has(PENDING_DRAFT_KEY), false);
+    bench.edit({ title: "在这条上开始编辑" }, "fingerprint-y");
+    assert.equal(storage.map.has(DISCARDED_DRAFT_KEY), false, "nothing was left behind for the first keystroke to replace");
+    bench.load(other);
+    // The same open with the incident draft: refused, backed up, and the reason is shown here.
+    const incident = memoryStorage({ [PENDING_DRAFT_KEY]: pendingRaw(legacyEmpty) });
+    const refused = workbench(incident, fakeEngine([completedBatch, other]));
+    assert.equal((await refused.open(otherBatchId)).kind, "discarded");
+    assert.match(refused.state.notice, /已确认文案或已有成片.*不会再自动恢复/u);
+    assert.equal(refused.state.batch.batch_id, otherBatchId);
+    assert.equal(backupOf(incident).pending, pendingRaw(legacyEmpty));
+  }
+  {
+    // 归档批次 within the autosave delay of an edit. The old wiring let the delayed save
+    // land after the archive: it took the batch out of the archive and selected it again.
+    const oldWiring = async (bench, engine) => { await engine.archive(bench.state.batch.batch_id); bench.state.batch = null; bench.state.form = null; };
+    for (const [label, archive] of [["old wiring", oldWiring], ["page", (bench) => bench.archive()]]) {
+      const storage = memoryStorage();
+      const engine = fakeEngine([{ ...draftBatch, groups: oneAsset }]);
+      const bench = workbench(storage, engine);
+      bench.load(await engine.get(batchId));
+      bench.edit({ title: "归档前的最后一改" }, "fingerprint-last");
+      await archive(bench, engine);
+      await sleep(450);
+      if (label === "old wiring") {
+        assert.equal(engine.db.get(batchId).archived, undefined, "the model reproduces the race: the late save revives the batch");
+        assert.equal(bench.state.batch?.batch_id, batchId);
+        continue;
+      }
+      assert.equal(engine.db.get(batchId).archived, true, "an archived batch stays archived");
+      assert.equal(engine.db.get(batchId).title, "归档前的最后一改", "the last edit lands before the archive");
+      assert.equal(bench.state.batch, null, "no late response selects the archived batch again");
+      bench.edit({ groups: oneAsset, title: "新视频" }, "fingerprint-new");
+      await sleep(450);
+      assert.equal(engine.db.get(batchId).title, "归档前的最后一改", "the next video is not saved into the archived batch");
+      assert.equal(engine.db.size, 2);
+    }
+  }
 
   // The page wires the pieces together and no longer promises a recovery that cannot happen.
   assert.doesNotMatch(page, /当前任务结束后可重新打开恢复/u);
   assert.doesNotMatch(page, /callBatch<Batch>\("save", pending\.draft\)/u, "the page must not replay the cached draft directly");
   assert.doesNotMatch(page, /(?:setItem|removeItem)\("batch-studio-pending-draft"/u, "every cache write goes through the draft slot");
   assert.match(page, /restorePendingDraft<Batch>\(\{/u);
+  assert.doesNotMatch(page, /batchId: initial\?\.batchId/u, "the cached edit is replayed whichever batch the page opens");
+  assert.match(page, /if \(restore\.kind === "restored" && \(!initial\?\.batchId \|\| restore\.batch\.batch_id === initial\.batchId\)\) \{/u);
+  assert.match(page, /const notices = \[restoreNotice\(restore\)\];/u, "the page must show the outcome of a replay it does not load");
+  assert.match(page, /if \(notices\.some\(Boolean\)\) setNotice\(notices\.filter\(Boolean\)\.join\(" "\)\);/u);
+  assert.match(page, /\}, \[dirty, busy, running, submitting, draftFingerprint\]\);/u, "the harness models the effect re-running when busy flips");
+  assert.match(page, /await draftQueue\.flush\(\);\s*await callBatch\("archive", \{ batch_id: batch\.batch_id \}\);\s*draftOwner\.current \+= 1; draftQueue\.cancelPending\(\);/u,
+    "archiving must let a waiting edit land first and ignore later responses for the old form");
   assert.match(page, /const \[draftSlot\] = useState\(\(\) => createPendingDraftSlot\(localStorage\)\)/u);
   assert.match(page, /hold: isDeterministicDraftError/u);
   assert.match(page, /draftSlot\.saved\(fingerprint, owner, value\)/u);

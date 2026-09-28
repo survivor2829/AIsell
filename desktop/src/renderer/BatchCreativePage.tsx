@@ -6,7 +6,7 @@ import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionTe
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
+import { createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, waitForDraftWrites } from "./batch-draft-queue";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
 import creativeThinkingStill from "./assets/creative-thinking-still.webp";
@@ -197,19 +197,21 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       // The previous page may still be saving a newly created batch. Recover its ID first.
       await waitForDraftWrites();
       // Never replays onto a batch past drafting, keeps the edit through transient
-      // failures, and backs it up once a deterministic rejection stops the replay.
+      // failures, and backs it up once a deterministic rejection stops the replay. The
+      // edit is replayed whichever batch this page opens, so it is not left behind for
+      // the first keystroke here to replace.
       const restore = await restorePendingDraft<Batch>({
-        storage: localStorage, batchId: initial?.batchId,
+        storage: localStorage,
         get: (batchId) => callBatch<Batch>("get", { batch_id: batchId }),
         save: (value) => callBatch<Batch>("save", value),
       });
-      if (restore.kind === "restored") {
+      if (restore.kind === "restored" && (!initial?.batchId || restore.batch.batch_id === initial.batchId)) {
         localStorage.setItem("batch-studio-draft-id", restore.batch.batch_id);
         load(restore.batch);
         if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
         return;
       }
-      const notices = restore.kind === "none" ? [] : [restore.message];
+      const notices = [restoreNotice(restore)];
       let loaded: Batch | null = null;
       if (initial?.batchId) load(loaded = await callBatch<Batch>("get", { batch_id: initial.batchId }));
       else if (initial?.assetIds) { setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: "ideas" }); setDirty(true); }
@@ -387,7 +389,12 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     {visualFlow && <nav className="batch-flow-steps" aria-label="视频创作步骤">{flowSteps.map(({ step, label, icon: Icon, enabled }, index) => <button key={label} type="button" aria-current={(flowStep === 1 ? 2 : flowStep) === step ? "step" : undefined} disabled={!enabled || submitting} onClick={() => setFlowView(step)}><span className="batch-flow-icon"><Icon size={21} strokeWidth={1.7} /></span><span><small>0{index + 1}</small>{label}</span></button>)}</nav>}
     <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); load(await callBatch<Batch>("get", { batch_id: id })); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {
+        // An edit still waiting for its save lands before the archive, never after it: a
+        // content save would take the batch out of the archive, and its response would
+        // select that batch again for the next edit on the cleared form.
+        await draftQueue.flush();
         await callBatch("archive", { batch_id: batch.batch_id });
+        draftOwner.current += 1; draftQueue.cancelPending();
         setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false); setSettings({ ...settings, workflow_version: 2, minimum_duration_seconds: Math.max(30, settings.minimum_duration_seconds || 30) }); manualCount.current = false;
         await refreshBatches(); setNotice("批次已归档，可在制作任务的已归档分类查看。本地素材和成片文件保留。");
       })}>归档批次</button>}

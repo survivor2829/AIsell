@@ -14,6 +14,8 @@ const DETERMINISTIC_DRAFT_ERRORS = new Set([
   "invalid_narrated_settings", "invalid_narrated_groups", "invalid_narrated_count",
   "invalid_asset_ids", "invalid_asset_id", "asset_archived", "asset_not_found",
   "collection_not_found", "brand_profile_not_found", "narrated_batch_not_found", "invalid_params", "invalid_id",
+  // A batch whose task row is gone fails every read the same way.
+  "task_not_found",
 ]);
 export function isDeterministicDraftError(error: unknown) {
   const code = (error as { code?: unknown } | null)?.code;
@@ -34,20 +36,25 @@ function readPending(storage: DraftStorage): PendingDraft | null {
 
 // Copies the cached edit verbatim to a single backup slot before it stops being
 // replayed. With a fingerprint, only that exact edit is moved, never a newer one.
-// If the backup cannot be written the edit stays where it was.
-export function discardPendingDraft(storage: DraftStorage, reason: string, fingerprint?: string) {
+// "absent": the slot no longer holds that edit (already moved, restored or replaced).
+// "failed": the backup could not be written, so the edit stays where it was.
+function movePendingDraft(storage: DraftStorage, reason: string, fingerprint?: string): "moved" | "absent" | "failed" {
+  let raw: string | null;
+  try { raw = storage.getItem(PENDING_DRAFT_KEY); } catch { return "failed"; }
+  if (raw === null) return "absent";
+  if (fingerprint !== undefined) {
+    let current: { fingerprint?: unknown } | null = null;
+    try { current = JSON.parse(raw); } catch { /* Not the edit that failed. */ }
+    if (current?.fingerprint !== fingerprint) return "absent";
+  }
   try {
-    const raw = storage.getItem(PENDING_DRAFT_KEY);
-    if (raw === null) return false;
-    if (fingerprint !== undefined) {
-      let current: { fingerprint?: unknown } | null = null;
-      try { current = JSON.parse(raw); } catch { /* Not the edit that failed. */ }
-      if (current?.fingerprint !== fingerprint) return false;
-    }
     storage.setItem(DISCARDED_DRAFT_KEY, JSON.stringify({ discarded_at: new Date().toISOString(), reason, pending: raw }));
     storage.removeItem(PENDING_DRAFT_KEY);
-    return true;
-  } catch { return false; }
+    return "moved";
+  } catch { return "failed"; }
+}
+export function discardPendingDraft(storage: DraftStorage, reason: string, fingerprint?: string) {
+  return movePendingDraft(storage, reason, fingerprint) === "moved";
 }
 
 // The page's cache slot. The page only overwrites or clears its own latest edit for
@@ -125,19 +132,41 @@ export function restoreBlocker(batch: RestorableBatch, entry: PendingDraft): Res
 export type DraftRestore<B> = { kind: "none" } | { kind: "restored"; batch: B } | { kind: "kept" | "discarded"; message: string };
 const reasonOf = (error: unknown) => (error as Error | null)?.message || "操作未完成。";
 const KEPT_AFTER_REJECTION = "这份编辑仍保留在本机，下次打开时会再次检查。";
-export async function restorePendingDraft<B extends RestorableBatch>({ storage, batchId, get, save }: {
+type RestoreOptions<B> = {
   storage: DraftStorage;
-  batchId?: string;
   get: (batchId: string) => Promise<B>;
   save: (draft: Record<string, unknown>) => Promise<B>;
-}): Promise<DraftRestore<B>> {
+};
+// Every open replays the cached edit, whichever batch the page opens: it belongs to one
+// batch (or to a new one), and leaving it for a later open lets the first keystroke on
+// another batch replace it without a word. Opens that overlap (React StrictMode runs
+// the mount effect twice in development) share one replay and one result, so a second
+// run cannot report on an edit the first one already moved.
+const restoring = new WeakMap<DraftStorage, Promise<DraftRestore<unknown>>>();
+export function restorePendingDraft<B extends RestorableBatch>(options: RestoreOptions<B>): Promise<DraftRestore<B>> {
+  const running = restoring.get(options.storage) as Promise<DraftRestore<B>> | undefined;
+  if (running) return running;
+  const flight = restoreOnce(options).finally(() => restoring.delete(options.storage));
+  restoring.set(options.storage, flight);
+  return flight;
+}
+// The page's notice for a replay it does not load: a kept or rejected edit says why, and
+// one restored into another batch than the page opened says where it went.
+export const RESTORED_ELSEWHERE = "上次未保存的编辑已存回它所属的视频草稿，可在「制作记录」中找到。";
+export function restoreNotice(restore: DraftRestore<unknown>) {
+  return restore.kind === "restored" ? RESTORED_ELSEWHERE : restore.kind === "none" ? "" : restore.message;
+}
+async function restoreOnce<B extends RestorableBatch>({ storage, get, save }: RestoreOptions<B>): Promise<DraftRestore<B>> {
   const pending = readPending(storage);
   const draft = pending?.draft;
-  if (!pending || !draft || typeof draft !== "object" || (batchId && draft.batch_id !== batchId)) return { kind: "none" };
+  if (!pending || !draft || typeof draft !== "object") return { kind: "none" };
   // The replay stops only once a copy exists. Without one the edit stays cached, the
-  // message says so, and the next open checks it again.
-  const stop = (reason: string, discarded: string, kept: string): DraftRestore<B> =>
-    discardPendingDraft(storage, reason, pending.fingerprint) ? { kind: "discarded", message: discarded } : { kind: "kept", message: kept };
+  // message says so, and the next open checks it again. If the edit has left the slot
+  // meanwhile, whatever moved it decided its fate and there is nothing to report.
+  const stop = (reason: string, discarded: string, kept: string): DraftRestore<B> => {
+    const moved = movePendingDraft(storage, reason, pending.fingerprint);
+    return moved === "moved" ? { kind: "discarded", message: discarded } : moved === "absent" ? { kind: "none" } : { kind: "kept", message: kept };
+  };
   try {
     if (draft.batch_id) {
       const blocker = restoreBlocker(await get(draft.batch_id), pending);
@@ -215,9 +244,17 @@ export function createDraftQueue<T extends { batch_id?: string }, R extends { ba
   }
   return {
     enqueue(draft: T, fingerprint: string, owner: number) {
+      clearTimeout(timer);
+      // The page re-enqueues the unchanged form after every failed action. That is still
+      // the edit the engine rejected: keep holding it, marked, without a background retry,
+      // so the next explicit flush is its second and last try.
+      if (held && held.fingerprint === fingerprint && held.owner === owner) {
+        held = { ...held, draft };
+        pending = null;
+        return;
+      }
       pending = { draft, fingerprint, owner };
       held = null;
-      clearTimeout(timer);
       timer = setTimeout(() => { void run(false).catch(() => undefined); }, 400);
     },
     flush: () => run(true),
