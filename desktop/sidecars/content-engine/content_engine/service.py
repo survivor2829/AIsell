@@ -732,6 +732,8 @@ class ContentEngineService:
                 raise ContentEngineError("narrated_planning_outcome_unknown", "外部请求结果未知，请先核对服务记录。")
             if not batch.get("script_confirmation"):
                 raise ContentEngineError("narrated_script_confirmation_required", "请先完成文案选择并确认。")
+            # Resuming is the same paid production as start("continue").
+            domain._require_approved_voice(state)
             state["_retry_local_failures_task_id"] = batch["task_id"]
             domain._store(state)
             self.resume_creative_task(batch["task_id"])
@@ -879,9 +881,9 @@ class ContentEngineService:
             voice_persona_id
         )
 
-    def preview_auto_mix_voice_persona(self, voice_persona_id):
+    def preview_auto_mix_voice_persona(self, voice_persona_id, *, cache_only=False):
         return self.creative_domain.preview_auto_mix_voice_persona(
-            voice_persona_id
+            voice_persona_id, cache_only=cache_only
         )
 
     def approve_auto_mix_voice_persona(self, voice_persona_id):

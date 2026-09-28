@@ -1039,6 +1039,107 @@ class NarratedBatchTests(unittest.TestCase):
                 })
                 self.assertEqual("queued", recovered["task_status"])
 
+    def _task_count(self):
+        return self.s.connection.execute("SELECT COUNT(*) FROM content_tasks").fetchone()[0]
+
+    def _set_voice_approval(self, approved_at):
+        # None is what an older build's catalog sync leaves behind (see CE2): the
+        # voice is listed again, but its approval is gone.
+        self.s.connection.execute(
+            "UPDATE voice_personas_v1 SET approved_at = ? WHERE id = 'natural-life@1'", (approved_at,))
+
+    def _confirmed_batch(self, title):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.s.save_narrated_batch({
+            "groups": {"opening": [], "middle": self.ids, "ending": []}, "title": title,
+            "target_count": 1, "settings": {"voice_persona_id": "natural-life@1", "workflow_version": 2}})
+        queued = self.s.prepare_narrated_scripts(batch["batch_id"])
+        state = domain._load(batch["batch_id"])
+        state["script_confirmation"] = {"script_id": "narrated_candidate_confirmed", "revision": 1}
+        domain._store(state)
+        self.s.update_task(queued["task_id"], "analyzing")
+        return domain, batch["batch_id"], queued["task_id"]
+
+    def _confirmed_planning_unknown(self):
+        """A confirmed-copy batch whose planning request outcome is unknown (like 1b08)."""
+        domain, batch_id, task_id = self._confirmed_batch("已确认文案")
+        state = domain._load(batch_id)
+        state["_planning_inflight"] = "confirmed-planning-fingerprint"
+        domain._store(state)
+        self.s.update_task(task_id, "failed", error_code="cloud_request_failed",
+                           error_message="调用结果无法确认")
+        return domain, batch_id, task_id
+
+    def _task_action(self, task_id):
+        return json.loads(self.s.connection.execute(
+            "SELECT payload_json FROM content_tasks WHERE id = ?", (task_id,)).fetchone()[0])["action"]
+
+    def test_revoked_voice_stops_paid_production_before_a_task_is_created(self):
+        finished = self.run_samples(self.create(6))
+        self.assertEqual("awaiting_confirmation", finished["status"])
+        scripts = self.s.save_narrated_batch({
+            "groups": {"opening": [], "middle": self.ids, "ending": []}, "title": "先写文案",
+            "target_count": 1, "settings": {"voice_persona_id": "natural-life@1", "workflow_version": 2}})
+        legacy = self.create(1)
+        self._set_voice_approval(None)
+        before = self._task_count()
+        for start in (self.s.continue_narrated_batch, self.s.generate_narrated_samples):
+            with self.subTest(start=start.__name__):
+                with self.assertRaises(ContentEngineError) as rejected:
+                    start(finished["batch_id"])
+                self.assertEqual("auto_mix_voice_persona_approval_required", rejected.exception.code)
+                self.assertEqual(before, self._task_count())
+                current = self.s.get_narrated_batch(finished["batch_id"])
+                self.assertEqual((finished["task_id"], False), (current["task_id"], current["approved"]))
+        # Writing copy and recommending a count spend nothing on the voice.
+        self.assertEqual("planning", self.s.prepare_narrated_scripts(scripts["batch_id"])["status"])
+        self.assertEqual("planning", self.s.recommend_narrated_batch(legacy["batch_id"])["status"])
+        self.assertEqual(before + 2, self._task_count())
+
+    def test_paused_confirmed_production_is_not_resumed_with_a_revoked_voice(self):
+        domain, batch_id, task_id = self._confirmed_batch("暂停中的制作")
+        self.s.update_task(task_id, "paused")
+        self._set_voice_approval(None)
+        with self.assertRaises(ContentEngineError) as rejected:
+            self.s.continue_narrated_batch(batch_id)
+        self.assertEqual("auto_mix_voice_persona_approval_required", rejected.exception.code)
+        self.assertEqual("paused", self.s.get_narrated_batch(batch_id)["task_status"])
+        self.assertNotIn("_retry_local_failures_task_id", domain._load(batch_id))
+
+    def test_confirmed_planning_retry_needs_the_voice_approved_first(self):
+        domain, batch_id, task_id = self._confirmed_planning_unknown()
+        self._set_voice_approval(None)
+        before = self._task_count()
+        stored = json.dumps(domain._load(batch_id), sort_keys=True)
+        with self.assertRaises(ContentEngineError) as rejected:
+            self.s.resolve_narrated_planning_outcome({
+                "batch_id": batch_id, "user_confirmed_retry": True, "resolution": "retry_planning"})
+        self.assertEqual("auto_mix_voice_persona_approval_required", rejected.exception.code)
+        self.assertEqual(before, self._task_count())
+        self.assertEqual(stored, json.dumps(domain._load(batch_id), sort_keys=True),
+                         "the unknown marker, the audit trail and the task stay as they were")
+        self.assertTrue(self.s.get_narrated_batch(batch_id)["planning_recovery_available"])
+
+        # Approved again (after replaying the saved preview), the same retry runs.
+        self._set_voice_approval("2026-09-29T00:00:00.000Z")
+        recovered = self.s.resolve_narrated_planning_outcome({
+            "batch_id": batch_id, "user_confirmed_retry": True, "resolution": "retry_planning"})
+        self.assertNotEqual(task_id, recovered["task_id"])
+        self.assertEqual(before + 1, self._task_count())
+        self.assertEqual("confirmed", self._task_action(recovered["task_id"]))
+
+    def test_unconfirmed_planning_retry_does_not_need_the_voice(self):
+        domain, batch_id, _ = self._confirmed_planning_unknown()
+        state = domain._load(batch_id)
+        state.pop("script_confirmation")
+        domain._store(state)
+        self._set_voice_approval(None)
+        before = self._task_count()
+        recovered = self.s.resolve_narrated_planning_outcome({
+            "batch_id": batch_id, "user_confirmed_retry": True, "resolution": "retry_planning"})
+        self.assertEqual(before + 1, self._task_count())
+        self.assertEqual("scripts", self._task_action(recovered["task_id"]))
+
     def test_future_observation_guidance_does_not_excuse_sparse_motion_claims(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         claim_frames = patch.object(domain, "_claim_frames", side_effect=lambda batch, candidate, source: ([], source["frames"]))

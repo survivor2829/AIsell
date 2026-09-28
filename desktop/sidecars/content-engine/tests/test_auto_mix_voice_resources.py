@@ -25,6 +25,7 @@ from content_engine.auto_mix_resources import (
     BAILIAN_STREAMING_WAV_PLACEHOLDER_SIZES,
     POPULAR_VOICE_PREVIEW_SAMPLE,
     VOICE_PREVIEW_SAMPLE,
+    voice_preview_cache_key,
     voice_preview_sample,
 )
 
@@ -518,8 +519,16 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             "SELECT * FROM auto_mix_voice_previews_v1 WHERE persona_id = 'steady-story@2'"
         ).fetchone()
         self.assertEqual(0, retired["active"])
-        self.assertIsNone(retired["approved_at"])
-        self.assertIsNone(retired_preview)
+        # Intentional since CE2: retiring only deactivates. The approval and the
+        # preview stay on the inactive row, where the active = 1 filter keeps them
+        # unusable; they count again only if the same configuration returns.
+        self.assertIsNotNone(retired["approved_at"])
+        self.assertIsNotNone(retired_preview)
+        self.assertIsNone(
+            self.service.creative_domain._approved_auto_mix_voice_persona(
+                selected_id="steady-story@2"
+            )
+        )
         self.assertEqual("manual", manual["catalog_source"])
         self.assertEqual(1, manual["active"])
         listed_ids = {
@@ -527,6 +536,304 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             for item in self.service.list_auto_mix_voice_personas()["items"]
         }
         self.assertNotIn("steady-story@2", listed_ids)
+
+    def _sync(self, personas):
+        with mock.patch(
+            "content_engine.creative_domain.configured_voice_personas",
+            return_value=personas,
+        ):
+            self.service.creative_domain._sync_configured_voice_persona()
+
+    def _restart(self, personas):
+        """Reopen the engine the way the app starts it, with a fresh provider fake."""
+        self.service.close()
+        self.analyzer = _PreviewAnalyzer()
+        with mock.patch(
+            "content_engine.creative_domain.configured_voice_personas",
+            return_value=personas,
+        ):
+            self.service = ContentEngineService(
+                self.root,
+                creative_analyzer=self.analyzer,
+                creative_renderer=_Renderer(),
+                start_background_jobs=False,
+            )
+
+    def _row(self, table, persona_id):
+        column = "id" if table == "voice_personas_v1" else "persona_id"
+        return self.service.connection.execute(
+            f"SELECT * FROM {table} WHERE {column} = ?", (persona_id,)
+        ).fetchone()
+
+    def _saved_preview_path(self, persona_id):
+        persona = self._row("voice_personas_v1", persona_id)
+        return (
+            self.root / "auto-mix-cache" / "voice-previews"
+            / f"{voice_preview_cache_key(persona)}.wav"
+        )
+
+    def _preview_volc_voice(self, persona_id):
+        # Stands in for the cloud call and the loudness pass; the fake analyzer
+        # writes the WAV where preview() expects it.
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": "offline-test"}), \
+                mock.patch("content_engine.creative_domain.voice_preview_ffmpeg", return_value="fake-ffmpeg"), \
+                mock.patch("content_engine.creative_domain.normalize_voice_preview", return_value=None):
+            return self.service.preview_auto_mix_voice_persona(persona_id)
+
+    def test_unchanged_configured_voice_keeps_its_approval_across_a_catalog_absence(self):
+        configured = {
+            "persona_id": "steady-story@2",
+            "display_name": "沉稳叙事",
+            "style": "steady_narration",
+            "catalog_version": "2026.08",
+            "provider_voice_id": "steady-provider-voice",
+            "instruction": "沉稳但不拖沓。",
+        }
+        self._sync([configured])
+        self.service.preview_auto_mix_voice_persona("steady-story@2")
+        self.service.approve_auto_mix_voice_persona("steady-story@2")
+        approved_at = self._row("voice_personas_v1", "steady-story@2")["approved_at"]
+        self.assertIsNotNone(approved_at)
+        calls = len(self.analyzer.calls)
+
+        # Absent from the catalog: not listed, not usable, not auditionable.
+        self._sync([])
+        domain = self.service.creative_domain
+        self.assertNotIn(
+            "steady-story@2",
+            {item["voicePersonaId"] for item in self.service.list_auto_mix_voice_personas()["items"]},
+        )
+        self.assertIsNone(domain._approved_auto_mix_voice_persona(selected_id="steady-story@2"))
+        self.assertIsNone(domain._approved_auto_mix_voice_persona(excluded_id="natural-life@1"))
+        for attempt in (
+            lambda: self.service.preview_auto_mix_voice_persona("steady-story@2"),
+            lambda: self.service.preview_auto_mix_voice_persona("steady-story@2", cache_only=True),
+            lambda: self.service.approve_auto_mix_voice_persona("steady-story@2"),
+        ):
+            with self.assertRaises(ContentEngineError) as caught:
+                attempt()
+            self.assertEqual("auto_mix_voice_persona_not_found", caught.exception.code)
+
+        # Back with the same configuration: the user's approval and preview stand.
+        self._sync([configured])
+        listed = {
+            item["voicePersonaId"]: item
+            for item in self.service.list_auto_mix_voice_personas()["items"]
+        }
+        self.assertEqual("approved", listed["steady-story@2"]["approvalStatus"])
+        self.assertEqual("completed", listed["steady-story@2"]["previewStatus"])
+        self.assertEqual(approved_at, self._row("voice_personas_v1", "steady-story@2")["approved_at"])
+        self.assertEqual(
+            "steady-story@2",
+            domain._approved_auto_mix_voice_persona(selected_id="steady-story@2")["id"],
+        )
+        self.assertTrue(
+            self.service.preview_auto_mix_voice_persona("steady-story@2", cache_only=True)["cacheHit"]
+        )
+        self.assertEqual(calls, len(self.analyzer.calls))
+        self.assertEqual([], self.analyzer.design_calls)
+
+    def test_changed_configuration_on_return_still_revokes_approval_and_preview(self):
+        # Regression protection: this held before CE2 and must keep holding.
+        self.service.preview_auto_mix_voice_persona("natural-life@1")
+        self.service.approve_auto_mix_voice_persona("natural-life@1")
+        manual_approved_at = self._row("voice_personas_v1", "natural-life@1")["approved_at"]
+        for index, field in enumerate(("catalog_version", "provider_voice_id", "instruction")):
+            with self.subTest(changed=field):
+                persona_id = f"steady-story@{index + 3}"
+                configured = {
+                    "persona_id": persona_id,
+                    "display_name": f"沉稳叙事 {index}",
+                    "style": "steady_narration",
+                    "catalog_version": "2026.08",
+                    "provider_voice_id": f"steady-provider-voice-{index}",
+                    "instruction": "沉稳但不拖沓。",
+                }
+                self._sync([configured])
+                self.service.preview_auto_mix_voice_persona(persona_id)
+                self.service.approve_auto_mix_voice_persona(persona_id)
+                self._sync([])
+                self._sync([{**configured, field: f"{configured[field]}-v2"}])
+                self.assertIsNone(self._row("voice_personas_v1", persona_id)["approved_at"])
+                self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
+                with self.assertRaises(ContentEngineError) as caught:
+                    self.service.approve_auto_mix_voice_persona(persona_id)
+                self.assertEqual("auto_mix_voice_preview_required", caught.exception.code)
+                calls = len(self.analyzer.calls)
+                self.assertFalse(self.service.preview_auto_mix_voice_persona(persona_id)["cacheHit"],
+                                 "the old preview is not replayed for the changed configuration")
+                self.assertEqual(calls + 1, len(self.analyzer.calls))
+        manual = self._row("voice_personas_v1", "natural-life@1")
+        self.assertEqual(("manual", 1, manual_approved_at),
+                         (manual["catalog_source"], manual["active"], manual["approved_at"]))
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "natural-life@1")["status"])
+
+    def test_saved_preview_is_recorded_again_after_an_old_build_cleared_it(self):
+        monkey = {
+            "persona_id": "volc-monkey-brother-2@1",
+            "provider": "volcengine",
+            "provider_model": "seed-tts-2.0",
+            "display_name": "猴哥 2.0",
+            "style": "playful",
+            "catalog_version": "2026.09.21-volcengine-monkey-2",
+            "provider_voice_id": "volc-monkey-private-voice",
+            "instruction": "",
+        }
+        self._sync([monkey])
+        self._preview_volc_voice("volc-monkey-brother-2@1")
+        self.service.approve_auto_mix_voice_persona("volc-monkey-brother-2@1")
+        saved = self._saved_preview_path("volc-monkey-brother-2@1")
+        self.assertTrue(saved.is_file())
+        saved_bytes = saved.read_bytes()
+
+        # What a build without this voice ran at its start (the retire branch
+        # from fc0d1ac up to CE2): approval cleared, preview row deleted, the WAV
+        # itself left on disk.
+        now = "2026-09-22T00:00:00.000Z"
+        connection = self.service.connection
+        connection.execute(
+            "UPDATE voice_personas_v1 SET active = 0, approved_at = NULL, updated_at = ? "
+            "WHERE id = ? AND catalog_source = 'configured'",
+            (now, "volc-monkey-brother-2@1"),
+        )
+        connection.execute(
+            "DELETE FROM auto_mix_voice_previews_v1 WHERE persona_id = ? "
+            "AND status NOT IN ('submitted', 'outcome_unknown')",
+            ("volc-monkey-brother-2@1",),
+        )
+
+        # The current build starts again, with no Volcengine key at all.
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": ""}):
+            self._restart([monkey])
+            preview = self._row("auto_mix_voice_previews_v1", "volc-monkey-brother-2@1")
+            persona = self._row("voice_personas_v1", "volc-monkey-brother-2@1")
+            self.assertEqual("completed", preview["status"])
+            self.assertEqual(hashlib.sha256(saved_bytes).hexdigest(), preview["audio_digest"])
+            self.assertEqual(
+                str(Path("auto-mix-cache") / "voice-previews" / saved.name),
+                preview["managed_relative_path"],
+            )
+            self.assertEqual(1, persona["active"])
+            self.assertIsNone(persona["approved_at"], "recording a preview never approves")
+            listed = {
+                item["voicePersonaId"]: item
+                for item in self.service.list_auto_mix_voice_personas()["items"]
+            }
+            self.assertEqual("pending", listed["volc-monkey-brother-2@1"]["approvalStatus"])
+            self.assertEqual("completed", listed["volc-monkey-brother-2@1"]["previewStatus"])
+
+            replay = self.service.preview_auto_mix_voice_persona(
+                "volc-monkey-brother-2@1", cache_only=True
+            )
+            self.assertTrue(replay["cacheHit"])
+            self.assertTrue(replay["audioDataUrl"].startswith("data:audio/wav;base64,"))
+            self.assertEqual([], self.analyzer.calls)
+            approved = self.service.approve_auto_mix_voice_persona("volc-monkey-brother-2@1")
+        self.assertEqual("approved", approved["approvalStatus"])
+        self.assertEqual(saved_bytes, saved.read_bytes())
+
+    def test_saved_preview_recording_skips_unknown_invalid_oversized_and_designed_voices(self):
+        def volc(persona_id):
+            return {
+                "persona_id": persona_id,
+                "provider": "volcengine",
+                "provider_model": "seed-tts-2.0",
+                "display_name": persona_id.split("@")[0],
+                "style": "natural_life",
+                "catalog_version": "2026.09",
+                "provider_voice_id": f"{persona_id.split('@')[0]}-private",
+                "instruction": "",
+            }
+        designed = {
+            "persona_id": "steady-story@1",
+            "display_name": "沉稳叙事",
+            "style": "steady_narration",
+            "catalog_version": "2026.08",
+            "provider_voice_id": "",
+            "instruction": "沉稳但不拖沓。",
+            "voice_prompt": "温暖沉稳的中文男声，语气自然，适合真实项目讲述。",
+            "voice_prefix": "story26",
+        }
+        personas = [volc("volc-control@1"), volc("volc-unknown@1"), volc("volc-broken@1"),
+                    volc("volc-oversized@1"), designed]
+        self._sync(personas)
+        self.service.design_auto_mix_voice_persona("steady-story@1")
+        self.service.connection.execute(
+            "DELETE FROM auto_mix_voice_previews_v1 WHERE persona_id = 'steady-story@1'"
+        )
+        for persona_id in ("volc-control@1", "volc-unknown@1", "steady-story@1"):
+            _write_test_wav(self._saved_preview_path(persona_id))
+        self._saved_preview_path("volc-broken@1").write_bytes(b"RIFF-but-not-a-wave" * 64)
+        _write_test_wav(self._saved_preview_path("volc-oversized@1"), frame_count=4_300_000)
+        self.assertGreater(self._saved_preview_path("volc-oversized@1").stat().st_size, 8 * 1024 * 1024)
+        unknown = ("volc-unknown@1", "an-earlier-request", "outcome_unknown", None, None,
+                   "auto_mix_voice_preview_outcome_unknown", "2026-09-01T00:00:00.000Z",
+                   "2026-09-01T00:00:00.000Z")
+        self.service.connection.execute(
+            "INSERT INTO auto_mix_voice_previews_v1 VALUES (?, ?, ?, ?, ?, ?, ?, ?)", unknown
+        )
+        design_calls = len(self.analyzer.design_calls)
+
+        self._restart(personas)
+
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "volc-control@1")["status"],
+                         "the control voice shows a valid saved preview is recorded")
+        self.assertEqual(unknown, tuple(self._row("auto_mix_voice_previews_v1", "volc-unknown@1")))
+        for persona_id in ("volc-broken@1", "volc-oversized@1", "steady-story@1"):
+            with self.subTest(persona_id=persona_id):
+                self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
+        self.assertEqual([], self.analyzer.calls)
+        self.assertEqual([], self.analyzer.design_calls[design_calls:])
+
+    def test_cache_only_preview_without_a_saved_preview_never_reaches_the_provider(self):
+        from content_engine.protocol import METHODS
+
+        monkey = {
+            "persona_id": "volc-monkey-brother-2@1",
+            "provider": "volcengine",
+            "provider_model": "seed-tts-2.0",
+            "display_name": "猴哥 2.0",
+            "style": "playful",
+            "catalog_version": "2026.09.21-volcengine-monkey-2",
+            "provider_voice_id": "volc-monkey-private-voice",
+            "instruction": "",
+        }
+        self._sync([monkey])
+        for persona_id, key in (("natural-life@1", "offline-test"),
+                                ("volc-monkey-brother-2@1", "offline-test"),
+                                ("volc-monkey-brother-2@1", "")):
+            with self.subTest(persona_id=persona_id, volcengine_key=bool(key)), \
+                    mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": key}):
+                with self.assertRaises(ContentEngineError) as caught:
+                    METHODS["preview_auto_mix_voice_persona"](
+                        self.service, {"voice_persona_id": persona_id, "cache_only": True}
+                    )
+                self.assertEqual("auto_mix_voice_preview_not_cached", caught.exception.code)
+                self.assertIn("计费", caught.exception.message)
+                self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
+        self.assertEqual([], self.analyzer.calls)
+
+        with self.assertRaises(ContentEngineError) as invalid:
+            METHODS["preview_auto_mix_voice_persona"](
+                self.service, {"voice_persona_id": "natural-life@1", "cache_only": "true"}
+            )
+        self.assertEqual("invalid_params", invalid.exception.code)
+        self.assertEqual([], self.analyzer.calls)
+
+        # A preview whose audio was produced but not yet loudness-normalized is not
+        # a saved preview either: replaying it for free is not on offer.
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": "offline-test"}), \
+                mock.patch("content_engine.creative_domain.voice_preview_ffmpeg", return_value="fake-ffmpeg"), \
+                mock.patch("content_engine.creative_domain.normalize_voice_preview", side_effect=ContentEngineError(
+                    "auto_mix_voice_preview_normalization_failed", "local-only failure")):
+            with self.assertRaises(ContentEngineError):
+                self.service.preview_auto_mix_voice_persona("volc-monkey-brother-2@1")
+        pending = tuple(self._row("auto_mix_voice_previews_v1", "volc-monkey-brother-2@1"))
+        with self.assertRaises(ContentEngineError) as held:
+            self.service.preview_auto_mix_voice_persona("volc-monkey-brother-2@1", cache_only=True)
+        self.assertEqual("auto_mix_voice_preview_not_cached", held.exception.code)
+        self.assertEqual(pending, tuple(self._row("auto_mix_voice_previews_v1", "volc-monkey-brother-2@1")))
+        self.assertEqual(1, len(self.analyzer.calls))
 
     def test_unknown_preview_is_never_resubmitted_even_after_restart(self):
         self.service.close()
@@ -947,7 +1254,14 @@ class AutoMixVoiceMigrationTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual("configured", row["catalog_source"])
             self.assertEqual(0, row["active"])
-            self.assertIsNone(row["approved_at"])
+            # Intentional since CE2: the approval stays on the inactive row and is
+            # unusable there; only the same configuration returning revives it.
+            self.assertEqual(now, row["approved_at"])
+            self.assertIsNone(
+                service.creative_domain._approved_auto_mix_voice_persona(
+                    selected_id="removed-config@1"
+                )
+            )
             self.assertNotIn(
                 "removed-config@1",
                 {

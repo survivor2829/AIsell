@@ -634,6 +634,7 @@ class CreativeDomain:
         personas = configured_voice_personas()
         with self.database.transaction():
             self._sync_configured_voice_persona_rows(now, personas)
+            self._register_saved_voice_previews(now)
 
     def _sync_configured_voice_persona_rows(self, now, personas):
         configured_ids = {persona["persona_id"] for persona in personas}
@@ -645,29 +646,19 @@ class CreativeDomain:
             if row["id"] not in configured_ids
         ]
         for persona_id in retired_ids:
+            # Retiring only deactivates. Every read of an approval or a preview
+            # filters on active = 1, so a retired voice can be neither listed
+            # nor used; a voice that returns with a changed private
+            # configuration loses both below (private_configuration_changed).
+            # One that returns unchanged keeps what the user approved. To force
+            # a new audition for an unchanged voice, change its catalogVersion.
             self.connection.execute(
                 """
                 UPDATE voice_personas_v1
-                SET active = 0, approved_at = NULL, updated_at = ?
+                SET active = 0, updated_at = ?
                 WHERE id = ? AND catalog_source = 'configured'
                 """,
                 (now, persona_id),
-            )
-            self.connection.execute(
-                """
-                DELETE FROM auto_mix_voice_previews_v1
-                WHERE persona_id = ?
-                  AND status NOT IN ('submitted', 'outcome_unknown')
-                """,
-                (persona_id,),
-            )
-            self.connection.execute(
-                """
-                DELETE FROM auto_mix_voice_designs_v1
-                WHERE persona_id = ?
-                  AND status NOT IN ('submitted', 'outcome_unknown')
-                """,
-                (persona_id,),
             )
         for persona in personas:
             provider = persona.get("provider") or "bailian"
@@ -779,6 +770,65 @@ class CreativeDomain:
                     """,
                     (persona["persona_id"],),
                 )
+
+    def _register_saved_voice_previews(self, now):
+        """Record a preview WAV still on disk for the current configuration.
+
+        An older build that did not know a voice deleted its preview row, while
+        the audio stayed in voice-previews under the cache key of the unchanged
+        configuration. Recording it lets the user replay what they heard, free,
+        and approve again themselves. This never approves anything. Design
+        templates are skipped: their cache key does not bind the private voice.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT p.*, v.cache_key AS saved_preview_key,
+                   v.status AS saved_preview_status
+            FROM voice_personas_v1 p
+            LEFT JOIN auto_mix_voice_previews_v1 v ON v.persona_id = p.id
+            WHERE p.active = 1 AND p.catalog_source = 'configured'
+            """
+        ).fetchall()
+        for persona in rows:
+            if (
+                not str(persona["provider_voice_id"] or "").strip()
+                or str(persona["voice_prompt"] or "").strip()
+                or persona["saved_preview_status"] in {"submitted", "outcome_unknown"}
+            ):
+                continue
+            cache_key = voice_preview_cache_key(persona)
+            if persona["saved_preview_key"] == cache_key:
+                continue
+            relative = Path("auto-mix-cache") / "voice-previews" / f"{cache_key}.wav"
+            try:
+                output = (self.data_dir / relative).resolve(strict=True)
+                if self.data_dir not in output.parents or not output.is_file():
+                    continue
+                if not 0 < output.stat().st_size <= MAX_VOICE_PREVIEW_BYTES:
+                    continue
+                self._wav_duration_ms(output)
+                audio_digest = self._sha256_file(output)
+            except (ContentEngineError, OSError, RuntimeError, ValueError):
+                # One unreadable file must not keep the engine from starting.
+                continue
+            self.connection.execute(
+                """
+                INSERT INTO auto_mix_voice_previews_v1(
+                    persona_id, cache_key, status, managed_relative_path,
+                    audio_digest, error_code, created_at, updated_at
+                ) VALUES (?, ?, 'completed', ?, ?, NULL, ?, ?)
+                ON CONFLICT(persona_id) DO UPDATE SET
+                    cache_key = excluded.cache_key,
+                    status = 'completed',
+                    managed_relative_path = excluded.managed_relative_path,
+                    audio_digest = excluded.audio_digest,
+                    error_code = NULL,
+                    updated_at = excluded.updated_at
+                WHERE auto_mix_voice_previews_v1.status
+                    NOT IN ('submitted', 'outcome_unknown')
+                """,
+                (persona["id"], cache_key, str(relative), audio_digest, now, now),
+            )
 
     def _auto_mix_voice_persona_row(self, voice_persona_id):
         persona_id = str(voice_persona_id or "").strip()
@@ -1196,7 +1246,9 @@ class CreativeDomain:
             (status, error_code, self._now(), persona_id),
         )
 
-    def preview_auto_mix_voice_persona(self, voice_persona_id):
+    def preview_auto_mix_voice_persona(self, voice_persona_id, *, cache_only=False):
+        if not isinstance(cache_only, bool):
+            raise ContentEngineError("invalid_params", "试听参数无效。")
         persona = self._auto_mix_voice_persona_row(voice_persona_id)
         sample = voice_preview_sample(persona)
         if not str(persona["provider_voice_id"] or "").strip():
@@ -1247,6 +1299,13 @@ class CreativeDomain:
                     "audioDataUrl": voice_preview_data_url(previous_output),
                     "cacheHit": True,
                 }
+        if cache_only:
+            # "不计费" on the page rests on this: without a usable saved preview
+            # nothing is checked, recorded or synthesized.
+            raise ContentEngineError(
+                "auto_mix_voice_preview_not_cached",
+                "本机没有可直接播放的已保存试听；重新生成试听会调用一次云端配音并计费。",
+            )
         normalize_executable = None
         if persona["provider"] == "volcengine":
             from .volcengine_tts import VolcengineTTSProvider
