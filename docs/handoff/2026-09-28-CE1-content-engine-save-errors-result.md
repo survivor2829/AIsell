@@ -213,3 +213,147 @@
 - 仍没在真实 Electron 界面里复验，原因同上。上面的手动验收步骤已按新文案更新。另外可以加测一条：打开一个声音已失效的批次，改一句文案，看到“草稿尚未保存：…”；在“声音与配乐”里重新批准该声音，然后点“新建视频”。回到制作记录，这句改动应该已经存进该批次。
 - 备份键只存最近一份，也没有界面能读取它；它只供排查用，客户提示里不再提。
 - 旧版本写的缓存没有 base，无法判断批次在那之后有没有改过：只要批次还是 draft、缓存也没有清空素材，就会写回。每台机器最多遇到一次。
+
+## 第三轮：按第二轮审查意见修复（2026-09-29）
+
+提交如下，都未推送：
+
+- `40a90b5` 主进程：真实日志器不再把不同的未登记码合并成一条（correctness-F1）；
+- `9414987` 主进程：登记网关证书、配音下载等错误码（correctness-F5）；
+- `b2eba7a` 自检：工作台读取豁免、页面级校验码、开始与确认路径的扫描（correctness-F2、F3、F4）；
+- `ca9660d` 界面：恢复结果如实上报、挂起的拒绝不被重置、`task_not_found`、从别的批次打开时也恢复、归档竞态（draft-safety-F1～F5、draft-safety-T1、tests-T1）；
+- `b259da3` 自检：按引擎的真实行为模拟归档竞态；
+- 本文档的提交。
+
+### 改了什么
+
+1. **`raw_code` 去重**（correctness-F1）
+   - 诊断日志器按 event + code 合并连续的相同故障，而所有未登记码的 code 都是 `unknown_error`，所以同一操作上第二个不同的未登记码会被吞掉。
+   - 现在有 `raw_code` 时，把 `unknown_error:<raw_code>` 作为 `dedupeKey` 传给日志器。已登记的码不传，行为不变。
+   - 自检里的桩日志器同时把每条事件写进一个真实的 `createDiagnosticLogger`（临时目录）。断言写出的文件里，连续的 first、second、first 三条都在。
+2. **声音试听和生成的错误码**（correctness-F5）
+   - 新登记 5 个码：`provider_gateway_tls_not_configured`、`provider_gateway_tls_invalid`、`auto_mix_voice_download_failed`、`cloud_response_invalid`、`cloud_response_too_large`。
+   - 用户点击试听遇到这些错误时，页面显示各自的原因，并照旧弹一次通知。它们带 `provider_`、`cloud_` 或 `auto_mix_voice_` 前缀，且已登记。
+   - 审查提到的 `cloud_timeout` 在内容引擎的 Python 代码里不存在，只出现在更新下载用的 `cloud-transport.cjs` 里，所以没有登记。
+   - voice-preview 自检新增静态扫描，覆盖以下代码，共扫到 23 个码，要求全部有映射：
+     - `provider_tls.py`、`volcengine_tts.py` 全文件；
+     - `creative_analysis.py` 的 `synthesize_auto_mix_phrase`、`design_auto_mix_voice`、`_request_json`；
+     - `creative_domain.py` 的试听、生成、批准和取声音记录。
+3. **自检覆盖**（correctness-F2、F3、F4）
+   - `batch-get`、`batch-list`、`batch-collections` 遇到 `CONTENT_ENGINE_EXITED` 时都不弹通知。
+   - `PAGE_ONLY_ERROR_CODES` 的 6 个码逐个放在用户点击的开始任务上验证：返回自己的 code，不弹通知。
+   - 静态扫描新增以下函数，覆盖的码从 21 个增加到 38 个：
+     - `service.py` 的 `_start_narrated_batch`、`probe_asset`、`_require_media_probe`、`_validate_id`；
+     - `narrated_batch.py` 的 `confirm_script`；
+     - `narrated_production.py` 的 `confirm_selections` 及其 4 个容量检查。
+   - `_validate_render_capacity` 抛出的是运行时得到的码（渲染器的 capability code），手工解析为 `media_tools_unavailable`、`media_encoder_unavailable`，两个都已有映射。
+   - 这两条路径上目前没有未映射的码，所以 F4 只扩大了扫描范围，源码没改。
+4. **恢复结果如实上报**（draft-safety-F1）
+   - 同一份存储上重叠的恢复（开发版 StrictMode 会把挂载 effect 跑两遍）共用一次重放和同一个结果。
+   - 停止重放时区分三种情况：
+     - 已移进备份：报 discarded；
+     - 缓存槽里已经不是这份编辑（被别的流程移走、写回或替换）：报 none，不再给提示；
+     - 备份写不进去：报 kept。
+5. **挂起的拒绝**（draft-safety-F2）
+   - 页面每次操作失败、busy 变回 false 后，会把同一份表单重新入队。
+   - 现在同一 owner、同一指纹的重新入队会保留“已拒绝一次”的标记，也不再触发后台保存。下一次显式 flush 就是最后一次尝试。
+6. **`task_not_found`**（draft-safety-F3）：加入确定性错误白名单。
+7. **从别的批次打开时的缓存编辑**（draft-safety-F4）
+   - 以前只在“打开的批次就是缓存编辑所属批次”时才恢复。现在无论从哪里打开工作台，都先按同样的守卫重放缓存编辑。
+   - 如果编辑写回的是另一个批次，页面仍打开所请求的批次，并提示“上次未保存的编辑已存回它所属的视频草稿，可在「制作记录」中找到。”。被拒绝或暂未恢复时，显示对应的原因。
+   - 这样在所打开批次上的第一次按键没有东西可替换，不会再悄悄把那份编辑移进备份。
+   - 备份仍只留一份（卡片的规定）。暂未恢复（临时错误）时，提示里已经写明“如果现在开始新的编辑，将以新的编辑为准”。
+8. **归档竞态**（draft-safety-F5，base 已有的问题）
+   - “归档批次”先 `await draftQueue.flush()`，让还在防抖中的编辑先存进去，然后再归档。
+   - 归档后执行 `draftOwner += 1` 和 `cancelPending()`，旧表单之后的保存响应不会再把已归档的批次选回来。
+   - flush 第一次遇到确定性拒绝时，和“新建视频”一样先挡一次；再点一次就放下这份编辑。
+9. **自检**（draft-safety-T1、tests-T1）
+   - 新增单元测试：并发恢复（`Promise.all`）；“缓存槽已不在”和“备份失败”分开测；`task_not_found`；重新入队不重置拒绝标记；`restoreNotice` 对 none、kept、discarded、restored 四种结果的返回值。
+   - 页面 harness 现在会模拟 busy 变回 false 后自动保存 effect 重跑，以及点击失败后重新入队。
+   - 新增页面流程：
+     - 连点两次“新建视频”；
+     - 从制作记录打开另一个批次；
+     - 归档竞态，同时用旧接线跑一遍作对照，证明模型能复现这个竞态。
+   - 源码断言固定 harness 模拟的页面代码：
+     - 恢复时不再传 batchId；
+     - 恢复成功后只在打开的是同一批次时载入；
+     - `const notices = [restoreNotice(restore)];` 以及随后的 `setNotice`；
+     - 自动保存 effect 的依赖里有 busy；
+     - 归档前 flush，归档后 owner 递增。
+
+### 验证（`C:/Users/Scott/xiaoxi-review/ce-fix/desktop`，%TEMP% 以外）
+
+| 命令 | 结果 |
+|---|---|
+| `node src/main/content-engine-ipc.self_check.cjs` | exit 0，`content-engine IPC self-check passed` |
+| `node src/main/narrated-batch-ipc.self_check.cjs` | exit 0，`narrated batch IPC self-check passed` |
+| `node src/main/content-engine-voice-preview-errors.self_check.cjs` | exit 0，`voice preview public error self-check passed` |
+| `node src/renderer/batch-draft-queue.self_check.cjs` | exit 0，`Batch draft restore and save queue self-check passed`（约 7 秒） |
+| `node scripts/run-self-checks.self_check.cjs` | exit 0 |
+| `npm.cmd run check:self` | exit 0，用时 4 分 2 秒，最后一行 `all source self-checks passed`。上面四份自检都在输出里（日志第 202、205、208、226 行），日志在 `ce-diag/r3/check-self.log` |
+| `npm.cmd run build:test` | exit 0，`test renderer build completed`。`dist-development` 里有新提示和 `task_not_found`；旧文案（“当前任务结束后可重新打开恢复”“已在本机另存备份”“下次打开时会继续恢复”）都是 0 处 |
+
+- **tsc**：
+  - 项目 `tsc -p` 在三个界面文件上报 639 条错误，按“文件 + 错误码 + 信息”对比，与本轮修改前完全相同。这些都是本环境原有的问题，例如缺 `@types/react`、webp 模块声明。
+  - `batch-draft-queue.ts` 单独用 strict 模式检查，0 错误。
+
+### 撤掉修复后测试会失败
+
+- **整体换回第二轮**：把 4 个源文件换回第二轮（`4f300fc`）的版本，再跑新自检：
+  - 界面：`TypeError: restoreNotice is not a function`；
+  - ipc：`the real logger must not fold different unknown codes into one entry`；
+  - voice-preview：`every voice preview or design error code needs a public message`；
+  - narrated-batch：exit 0。F4 只扩大了扫描范围，第二轮的源码本来就没有未映射的码。
+- **逐项变异**：
+  - 脚本 `ce-diag/r3/mutate.cjs`，按原字节还原，不碰 git。
+  - 清单 `ce-diag/r3/m-main-all.json`、`m-renderer-all.json`，结果在 `r3-main-mutations.results.json`、`r3-renderer-mutations.results.json`。
+  - 共 35 个变异，全部被测出。
+
+| 撤回内容 | 失败的断言 |
+|---|---|
+| 不传 `dedupeKey` | ipc :1415 `the real logger must not fold different unknown codes into one entry` |
+| 删掉两个 TLS 码之一，或删掉 `auto_mix_voice_download_failed` | voice-preview :51（扫描）；ipc :2619 `… must reach the page as its own code` |
+| 删掉 `cloud_response_too_large` 或 `cloud_response_invalid` | voice-preview :51 |
+| 豁免列表去掉 `batch-list` 或 `batch-collections` | ipc :1436 `… while the workbench opens reports on the page only` |
+| `PAGE_ONLY_ERROR_CODES` 删掉或改名其余 5 个码中的任意一个 | ipc :1447 `… is fixed on the page, not announced on the desktop` |
+| 在 `_start_narrated_batch`、`probe_asset` 或 `confirm_selections` 里新增一个未登记的码；删掉 `narrated_duration_too_short` 或 `media_encoder_unavailable` 的映射 | narrated-batch :76 `every save/start/confirm error code the engine raises needs a public message` |
+| 把 `media_metadata_unavailable` 改名 | narrated-batch :74（扫描必须看到它） |
+| 去掉单飞 | 界面 :317（第二次恢复的结果必须和第一次相同） |
+| 缓存槽已不在时仍报 kept | 界面 :327 `an edit no longer cached must not be reported as kept` |
+| 指纹不同也照样移走 | 界面 :187 |
+| 重新入队清掉拒绝标记 / 保留标记但仍后台重试 | 界面 :479 `re-enqueueing the rejected form does not retry it in the background` |
+| 不比较 owner | 界面 :487 `the same form under a new owner starts over` |
+| 只撤回队列修复并删掉单元测试段（只留页面流程） | 界面 :587 `the second click moves on without waiting for a background save` |
+| 去掉 `task_not_found` | 界面 :298 |
+| `restoreNotice` 不提示“已存回” | 界面 :294 |
+| 页面仍传 `batchId: initial?.batchId` / 恢复后无论打开哪个批次都载入恢复的批次 | 界面 :671 / :672 |
+| `const notices: string[] = []`（tests-T1 的变异）/ 不再 `setNotice(notices…)` | 界面 :673 `the page must show the outcome of a replay it does not load` / :674 |
+| 自动保存 effect 的依赖去掉 busy | 界面 :675 |
+| 归档前不 flush / 归档后不递增 owner | 界面 :676 `archiving must let a waiting edit land first and ignore later responses for the old form` |
+
+### 端到端回放（全部在数据副本上）
+
+- 脚本 `ce-diag/r3/e2e.cjs`，输出在 `ce-diag/r3/e2e-*.json`。
+- 用已安装 1.1.54 的 `content-engine-worker.exe`，数据用 `backup-pre-1.1.54` 数据库的新副本，缓存草稿用诊断时导出的真实值。
+- 主进程接本工作树真实的 `content-engine-ipc.cjs`，界面用真实的恢复逻辑和队列，按第三轮的页面接线组装。
+- 只调用本地的 get、save、archive，没有付费调用，没有碰实时数据。
+
+| 场景 | 结果 |
+|---|---|
+| 猴哥未批准，连续打开两次（`asis`） | 第一次 discarded，提示“…已确认文案或已有成片的批次…也不会再自动恢复。”，备份与原文逐字相同。第二次 none。0 次 save，0 条通知，0a89 逐字节不变 |
+| StrictMode 并发打开，缓存为事故草稿（`strictmode-asis`） | 两次运行结果相同，都是 discarded 且提示相同。只读了 1 次批次，0 次 save，0 条通知。第二轮这里 run B 报 kept |
+| StrictMode 并发打开，缓存为可恢复的草稿（`strictmode-restore`） | 两次都是 restored，结果相同。只 save 1 次，5befae 的标题变成“R3 恢复标题”。第二轮这里 run B 报 kept，并说“所属批次又有了更新” |
+| 从制作记录打开 0a89，缓存的是 5befae 的编辑（`open-other`） | restored。页面仍打开 0a89，提示“上次未保存的编辑已存回它所属的视频草稿…”。5befae 已写入这份编辑，缓存槽已清空。反过来打开 5befae、缓存为事故草稿时：discarded，显示原因，0a89 逐字节不变 |
+| 声音未批准，200 ms 内连点两次“新建视频”（`click-twice`） | 第一次被挡，显示原因。第二次放行，提示“上一份编辑未能保存：…”，这份编辑已备份。共 2 次 save，之后 700 ms 内没有后台保存。0 条通知 |
+| 改完标题立即归档（`archive-race`） | 最后一次编辑先存进 5befae，然后归档。页面没有把该批次选回来。下一条视频存成新批次，5befae 仍是已归档 |
+| 同上，旧接线对照（`archive-race-old`） | 页面把已归档批次选了回来。下一条视频存进 5befae，5befae 变成未归档、0 个素材、标题“新视频”，和审查的结论一致 |
+| 批次指向不存在的任务（`dangling-task`：在副本里把 5befae 的 task_id 改成一个不存在的值） | 第一次 discarded，提示“…没有恢复，也不会再自动恢复：没有找到这条任务记录。”。第二次 none。0 次 save，0 条通知 |
+
+### 仍未验证或需要确认
+
+- **需要用户确认的行为变化（F4）**：从制作记录打开批次 Y 时，如果本机缓存了批次 X 的未保存编辑，现在会在同样的守卫下写回 X，或者新建一个草稿（缓存的是从未保存过的新视频时），并在 Y 的页面上提示。以前这种情况什么都不做，而在 Y 上第一次按键时，这份编辑会被悄悄移进备份。
+- **真实 Electron 界面仍未复验**，原因同前。手动验收在前面的步骤之外，再加三条：
+  1. 开发版（`npm.cmd run desktop`，StrictMode）打开工作台，只出现一条“…也不会再自动恢复。”，不会出现“仍保留在本机”；
+  2. 在某个批次上改一句，400 ms 内点“归档批次”。制作记录里该批次应在已归档分类里，并且带着这句改动；随后新写的视频是一个新批次；
+  3. 先在一个草稿批次上改一句，并让它没存上（例如保存时引擎未就绪），关掉应用；再从制作记录打开另一个批次。页面应提示“已存回它所属的视频草稿”，原批次里应有这句改动。
+- 备份仍只留最近一份，也没有界面能读取（卡片规定，未改）。
