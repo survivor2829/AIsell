@@ -38,28 +38,43 @@ function callArguments(source, callee) {
     return [...args, current.trim()];
   });
 }
+// Codes computed at runtime, resolved by hand. The formal renderer's capability code is
+// creative_render.py FFmpegRenderer.capability: media_tools_unavailable, or the code its
+// encoder check raises (media_encoder_unavailable).
+const DYNAMIC_CODES = {
+  "narrated_production.py:_validate_render_capacity:capability.get('code') or 'media_tools_unavailable'":
+    ["media_tools_unavailable", "media_encoder_unavailable"]
+};
 function raisedCodes(file, functions) {
   const source = fs.readFileSync(path.join(__dirname, "../../sidecars/content-engine/content_engine", file), "utf8");
   return functions.flatMap((name) => {
     const body = pythonFunction(source, name);
     return [...callArguments(body, "require").map((args) => args[1]), ...callArguments(body, "ContentEngineError").map((args) => args[0])]
-      .map((literal) => {
+      .flatMap((literal) => {
         const code = /^['"]([A-Za-z0-9_]+)['"]$/u.exec(literal || "")?.[1];
-        assert.ok(code, `${file}:${name} raises a non-literal code ${literal}; map it explicitly`);
-        return code;
+        const resolved = code ? [code] : DYNAMIC_CODES[`${file}:${name}:${literal}`];
+        assert.ok(resolved, `${file}:${name} raises a non-literal code ${literal}; map it explicitly`);
+        return resolved;
       });
   });
 }
 const saveStartCodes = new Set([
-  ...raisedCodes("narrated_batch.py", ["save", "start", "_load", "_idle", "_asset_ids", "validate_count"]),
-  ...raisedCodes("creative_domain.py", ["_asset_row", "_brand_row", "_task_row"])
+  ...raisedCodes("narrated_batch.py", ["save", "start", "_load", "_idle", "_asset_ids", "validate_count", "confirm_script"]),
+  ...raisedCodes("creative_domain.py", ["_asset_row", "_brand_row", "_task_row"]),
+  // Every start goes through the service wrapper, which probes new materials first.
+  ...raisedCodes("service.py", ["_start_narrated_batch", "probe_asset", "_require_media_probe", "_validate_id"]),
+  // "确认制作" checks the chosen copy, voice, music and render capacity before it starts.
+  ...raisedCodes("narrated_production.py", ["confirm_selections", "_require_unique_footage_capacity",
+    "_require_source_duration_upper_bound", "_validate_music_capacity", "_validate_render_capacity"])
 ]);
 for (const expected of ["auto_mix_voice_persona_approval_required", "invalid_narrated_settings", "invalid_narrated_groups",
-  "asset_archived", "narrated_batch_busy", "narrated_script_already_confirmed", "asset_not_found"]) {
-  assert.ok(saveStartCodes.has(expected), `the save/start scan must see ${expected}`);
+  "asset_archived", "narrated_batch_busy", "narrated_script_already_confirmed", "asset_not_found",
+  "media_metadata_unavailable", "capability_unavailable", "invalid_id", "invalid_narrated_selection",
+  "narrated_duration_too_short", "volcengine_tts_not_configured", "narrated_candidate_not_found", "media_encoder_unavailable"]) {
+  assert.ok(saveStartCodes.has(expected), `the save/start/confirm scan must see ${expected}`);
 }
 assert.deepEqual([...saveStartCodes].filter((code) => publicError({ code, message: "x" }).code !== code), [],
-  "every save/start error code in narrated_batch.py needs a public message");
+  "every save/start/confirm error code the engine raises needs a public message");
 const ipcSource = fs.readFileSync(path.join(__dirname, "narrated-batch-ipc.cjs"), "utf8");
 const ipcCodes = [...ipcSource.matchAll(/\binvalid\("([A-Za-z0-9_]+)"\)/gu)].map((match) => match[1]);
 assert.ok(ipcCodes.includes("invalid_narrated_settings"));

@@ -1419,21 +1419,33 @@ async function main() {
     batchSaveFailure = Object.assign(new Error("exited"), { code: "CONTENT_ENGINE_EXITED" });
     assert.equal((await batchSave()).code, "CONTENT_ENGINE_EXITED");
     assert.equal(notifications.length, notificationsBeforeBatch, "automatic draft saves report engine faults on the page only");
-    // Opening the workbench reads the cached draft's batch before restoring it.
-    const originalGetNarratedBatch = controller.getNarratedBatch;
-    controller.getNarratedBatch = async () => { throw batchSaveFailure; };
-    assert.equal((await handlers.get(BATCH_CHANNELS.get)({}, { batch_id: batchDraft.batch_id })).code, "CONTENT_ENGINE_EXITED");
-    if (originalGetNarratedBatch) controller.getNarratedBatch = originalGetNarratedBatch;
-    else delete controller.getNarratedBatch;
-    assert.equal(notifications.length, notificationsBeforeBatch, "reading a batch while the workbench opens reports on the page only");
+    // Opening the workbench reads the cached draft's batch before restoring it, and lists
+    // batches and material collections; none of these reads is work the user started.
+    for (const [method, channel, payload] of [
+      ["getNarratedBatch", BATCH_CHANNELS.get, { batch_id: batchDraft.batch_id }],
+      ["listNarratedBatches", BATCH_CHANNELS.list, {}],
+      ["listAssetCollections", BATCH_CHANNELS.collections, {}]
+    ]) {
+      const hadMethod = Object.hasOwn(controller, method);
+      const originalMethod = controller[method];
+      controller[method] = async () => { throw batchSaveFailure; };
+      const read = await handlers.get(channel)({}, payload);
+      if (hadMethod) controller[method] = originalMethod;
+      else delete controller[method];
+      assert.equal(read.code, "CONTENT_ENGINE_EXITED", `${channel} must report the engine fault`);
+      assert.equal(notifications.length, notificationsBeforeBatch, `${channel} while the workbench opens reports on the page only`);
+    }
     const startScripts = () => handlers.get(BATCH_CHANNELS.scripts)({ sender: mainWindow.webContents }, {
       draft: batchDraft, clickToken: autoMixClickToken(BATCH_CHANNELS.scripts, randomUUID())
     });
-    batchSaveFailure = Object.assign(new Error("请选择已试听批准的声音。"), {
-      code: "auto_mix_voice_persona_approval_required"
-    });
-    assert.equal((await startScripts()).code, "auto_mix_voice_persona_approval_required");
-    assert.equal(notifications.length, notificationsBeforeBatch, "voice approval is fixed on the page, not announced on the desktop");
+    // Voice and music selection checks are fixed on the page that reports them, even on a
+    // start the user clicked; each keeps its own code and message.
+    for (const code of ["auto_mix_voice_persona_approval_required", "auto_mix_voice_persona_required", "auto_mix_voice_persona_not_found",
+      "auto_mix_voice_preview_required", "auto_mix_voice_design_required", "auto_mix_music_required"]) {
+      batchSaveFailure = Object.assign(new Error("请选择已试听批准的声音。"), { code });
+      assert.equal((await startScripts()).code, code, `${code} must reach the page as its own code`);
+      assert.equal(notifications.length, notificationsBeforeBatch, `${code} is fixed on the page, not announced on the desktop`);
+    }
     batchSaveFailure = Object.assign(new Error("new provider failure"), { code: "cloud_brand_new_failure" });
     assert.equal((await startScripts()).code, "CONTENT_ENGINE_FAILED");
     assert.equal(notifications.length, notificationsBeforeBatch, "a code that falls back to CONTENT_ENGINE_FAILED must not notify");
