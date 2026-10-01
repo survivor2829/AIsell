@@ -16,7 +16,7 @@ for (const extension of [".ts", ".tsx"]) {
 // The components import their stylesheets; only the markup matters here.
 require.extensions[".css"] = () => undefined;
 const {
-  ACTION_LABELS, NOT_CACHED_CODE, VOICE_RECOVERY_BLOCKS, approvedVoiceIds, previewAfterFailure, previewCharge,
+  ACTION_LABELS, NOT_CACHED_CODE, PAID_PREVIEW_ARM_MS, VOICE_RECOVERY_BLOCKS, approvedVoiceIds, paidPreviewArmed, previewAfterFailure, previewCharge,
   resumeNeedsVoice, sessionAfterPreview, unavailableVoiceLabel, voiceRecovery
 } = require("./batch-voice-recovery.ts");
 const { BatchVoiceRecovery, VoiceRecoveryCard } = require("./BatchVoiceRecovery.tsx");
@@ -176,12 +176,15 @@ function hookHost(Component, props) {
   const slots = [];
   let index = 0;
   const original = React.useState;
+  const originalEffect = React.useEffect;
+  // The arm timer only re-renders; time is driven by the fake clock in clickCard.
+  React.useEffect = () => undefined;
   React.useState = (initial) => {
     const at = index++;
     if (!(at in slots)) slots[at] = typeof initial === "function" ? initial() : initial;
     return [slots[at], (next) => { slots[at] = typeof next === "function" ? next(slots[at]) : next; }];
   };
-  return { render() { index = 0; return Component(props); }, restore() { React.useState = original; } };
+  return { render() { index = 0; return Component(props); }, restore() { React.useState = original; React.useEffect = originalEffect; } };
 }
 async function clickCard(voices, api, clicks) {
   const calls = { previews: [], approvals: [], onApproved: [] };
@@ -191,18 +194,28 @@ async function clickCard(voices, api, clicks) {
   } } };
   const host = hookHost(BatchVoiceRecovery, { batch: batchWith(monkeyId), voices,
     onApproved: async (name) => { calls.onApproved.push(name); } });
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
   try {
     const after = [];
     for (const click of clicks) {
+      // A number waits that many milliseconds on the fake clock.
+      if (typeof click === "number") { now += click; continue; }
       const view = host.render();
-      assert.ok(view.props.recovery.actions.includes(click), `${click} is on the card`);
-      view.props.onAction(click);
+      if (click === "confirm_paid") view.props.onConfirmPaid();
+      else if (click === "cancel_paid") view.props.onCancelPaid();
+      else {
+        assert.ok(view.props.recovery.actions.includes(click), `${click} is on the card`);
+        view.props.onAction(click);
+      }
       for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-      const { recovery, audio, notice, busy } = host.render().props;
-      after.push({ kind: recovery.kind, actions: recovery.actions, audio, notice, busy });
+      const { recovery, audio, notice, busy, paidConfirm } = host.render().props;
+      after.push({ kind: recovery.kind, actions: recovery.actions, audio, notice, busy, paidConfirm: paidConfirm || null });
     }
     return { calls, after };
   } finally {
+    Date.now = realNow;
     host.restore();
     delete global.window;
   }
@@ -217,22 +230,35 @@ async function cardHandlers() {
   // 播放已保存试听 is a cacheOnly replay; 批准使用 appears only once it played.
   let run = await clickCard([monkey()], { preview: played }, ["play_saved"]);
   assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId, cacheOnly: true }], "the free button replays with cacheOnly");
-  assert.deepEqual(run.after[0], { kind: "free", actions: ["play_saved", "approve"], audio: AUDIO, notice: "", busy: false });
+  assert.deepEqual(run.after[0], { kind: "free", actions: ["play_saved", "approve"], audio: AUDIO, notice: "", busy: false, paidConfirm: null });
 
-  // No saved preview: 重新生成试听 is an ordinary (charged) preview, never a cacheOnly one.
-  run = await clickCard([monkey({ previewStatus: "not_ready" })], { preview: played }, ["regenerate"]);
-  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId }]);
-  assert.deepEqual(run.after[0].actions, ["regenerate", "approve"]);
+  // No saved preview: 重新生成试听 only opens the paid confirmation. Its button does nothing
+  // before PAID_PREVIEW_ARM_MS; afterwards it sends one ordinary (charged) preview.
+  run = await clickCard([monkey({ previewStatus: "not_ready" })], { preview: played },
+    ["regenerate", "regenerate", "confirm_paid", PAID_PREVIEW_ARM_MS - 1, "confirm_paid", 1, "confirm_paid"]);
+  assert.deepEqual(run.after[0].paidConfirm, { armed: false }, "计费 opens the confirmation, not a preview");
+  assert.deepEqual(run.after[2].paidConfirm, { armed: false }, "an immediate confirm is ignored");
+  assert.deepEqual(run.after[3].paidConfirm, { armed: false }, "still ignored just before the arm delay");
+  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId }], "exactly one paid preview, only after the delay");
+  assert.equal(run.after[4].paidConfirm, null);
+  assert.deepEqual(run.after[4].actions, ["regenerate", "approve"]);
+  run = await clickCard([monkey({ previewStatus: "not_ready" })], { preview: played }, ["regenerate", PAID_PREVIEW_ARM_MS, "cancel_paid", "confirm_paid"]);
+  assert.deepEqual(run.calls.previews, [], "cancel closes the confirmation without a call");
 
   // The saved file is gone (not_cached): the card switches to the labelled paid button and
   // does not offer 批准使用; that paid preview is then an ordinary request.
   run = await clickCard([monkey()], {
     preview: async (payload) => payload.cacheOnly ? refused(NOT_CACHED_CODE, NOT_CACHED)() : played()
-  }, ["play_saved", "regenerate"]);
-  assert.deepEqual(run.after[0], { kind: "paid", actions: ["regenerate"], audio: "", notice: NOT_CACHED, busy: false },
+  }, ["play_saved", "regenerate", "regenerate", PAID_PREVIEW_ARM_MS, "confirm_paid"]);
+  assert.deepEqual(run.after[0], { kind: "paid", actions: ["regenerate"], audio: "", notice: NOT_CACHED, busy: false, paidConfirm: null },
     "not_cached switches the card to the paid preview, without approval");
-  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId, cacheOnly: true }, { voicePersonaId: monkeyId }]);
-  assert.deepEqual(run.after[1].actions, ["regenerate", "approve"]);
+  // A double-click on 播放已保存试听: its second click lands on 重新生成试听 in the same place
+  // and must not reach a paid call, nor may a third click.
+  assert.deepEqual(run.after[1].paidConfirm, { armed: false });
+  assert.deepEqual(run.after[2].paidConfirm, { armed: false });
+  assert.deepEqual(run.calls.previews, [{ voicePersonaId: monkeyId, cacheOnly: true }, { voicePersonaId: monkeyId }],
+    "the only paid preview is the confirmed one");
+  assert.deepEqual(run.after[3].actions, ["regenerate", "approve"]);
 
   // Any other failed replay, or a reply without audio, leaves approval locked and says why.
   for (const [preview, notice] of [
@@ -240,7 +266,7 @@ async function cardHandlers() {
     [async () => ({ ok: true, data: { audioDataUrl: null } }), "试听尚未就绪，请稍后再试。"]
   ]) {
     run = await clickCard([monkey()], { preview }, ["play_saved"]);
-    assert.deepEqual(run.after[0], { kind: "free", actions: ["play_saved"], audio: "", notice, busy: false },
+    assert.deepEqual(run.after[0], { kind: "free", actions: ["play_saved"], audio: "", notice, busy: false, paidConfirm: null },
       `${notice}: nothing was heard, so 批准使用 stays hidden`);
   }
 
@@ -342,7 +368,16 @@ async function main() {
   assert.match(soundSettings, /const \[voices, setVoices\] = useState<AutoMixVoicePersona\[\] \| null>\(null\);/u, "the list starts unread");
   assert.match(soundSettings, /const unavailable = unavailableVoiceLabel\(settings\.voice_persona_id, voices\);/u);
   assert.match(card, /previewAutoMixVoicePersona\?\.\(\{ voicePersonaId: voiceId, \.\.\.\(cacheOnly \? \{ cacheOnly: true \} : \{\}\) \}\)/u);
-  assert.match(card, /play_saved: \(\) => play\(true\), regenerate: \(\) => play\(false\)/u, "only the free button replays with cacheOnly");
+  assert.match(card, /play_saved: \(\) => play\(true\), regenerate: \(\) => setPaidShownAt\(/u, "计费 only opens the confirmation");
+  assert.doesNotMatch(card, /regenerate: \(\) => play\(false\)/u, "no one-click paid preview on the card");
+  assert.match(card, /function confirmPaid\(\) \{\s*if \(paidShownAt === null \|\| !paidPreviewArmed\(paidShownAt, Date\.now\(\)\)\) return;\s*setPaidShownAt\(null\);\s*void play\(false\);/u);
+  assert.equal(paidPreviewArmed(0, PAID_PREVIEW_ARM_MS - 1), false);
+  assert.equal(paidPreviewArmed(0, PAID_PREVIEW_ARM_MS), true);
+  assert.ok(PAID_PREVIEW_ARM_MS >= 1000, "long enough that a double-click cannot reach it");
+  const unarmed = renderToStaticMarkup(React.createElement(VoiceRecoveryCard, {
+    recovery: voiceRecovery(batchWith(monkeyId), [monkey({ previewStatus: "not_ready" })], {}),
+    onAction: () => undefined, paidConfirm: { armed: false } }));
+  assert.match(unarmed, /data-xiaoxi-auto-mix-voice-preview="" disabled="">我知道会计费，重新生成（请稍候）<\/button>/u, "the confirm button starts disabled");
   assert.match(card, /sessionAfterPreview\(current, result\)/u);
   assert.match(page, /const resumeHeld = paused && voiceBlocked && resumeNeedsVoice\(batch\) \? VOICE_RECOVERY_BLOCKS : "";/u);
   assert.match(page, /\{resumeHeld && <p className="batch-hint" role="status">\{resumeHeld\}<\/p>\}<button disabled=\{busy \|\| Boolean\(resumeHeld\)\} title=\{resumeHeld \|\| undefined\} onClick=\{\(\) => void run\(async \(\) => \{\s*const action = paused \? "resume" : "pause";/u,
@@ -353,14 +388,20 @@ async function main() {
   assert.match(resourcePanel, /const next = previewAfterFailure\(persona, cacheOnly, errorCode\(error\)\);\s*if \(next !== persona\) setVoiceItems\(\(items\) => replacePersona\(items, next\)\);/u,
     "and after not_cached it relabels the voice instead of offering 不计费 again");
   assert.match(resourcePanel, /isPreviewing \? "读取中" : `试听（\$\{previewCharge\(persona\.previewStatus\)\.label\}）`/u);
+  assert.match(resourcePanel, /onClick=\{\(\) => requestPreview\(persona\)\}/u, "the panel's preview button goes through the charge check");
+  assert.doesNotMatch(resourcePanel, /onClick=\{\(\) => void previewVoice\(persona\)\}/u, "no one-click paid preview in the panel");
+  assert.match(resourcePanel, /function requestPreview\(persona: AutoMixVoicePersona\) \{\s*if \(previewCharge\(persona\.previewStatus\)\.cacheOnly\) \{\s*void previewVoice\(persona\);\s*return;\s*\}\s*setPaidConfirm\(/u);
+  assert.match(resourcePanel, /function confirmPaidPreview\(persona: AutoMixVoicePersona\) \{\s*if \(!paidConfirm \|\| paidConfirm\.id !== persona\.voicePersonaId \|\| !paidPreviewArmed\(paidConfirm\.shownAt, Date\.now\(\)\)\) return;/u);
+  assert.match(soundSettings, /function requestAudition\(voice: AutoMixVoicePersona\) \{\s*if \(previewCharge\(voice\.previewStatus\)\.cacheOnly\) \{ void auditionVoice\(voice\); return; \}\s*setPaidShownAt\(/u);
+  assert.match(soundSettings, /function confirmPaidAudition\(voice: AutoMixVoicePersona\) \{\s*if \(paidShownAt === null \|\| !paidPreviewArmed\(paidShownAt, Date\.now\(\)\)\) return;/u);
   assert.match(soundSettings, /const \{ cacheOnly \} = previewCharge\(voice\.previewStatus\);[\s\S]{0,200}api\.previewAutoMixVoicePersona\(\{ voicePersonaId: voice\.voicePersonaId, \.\.\.\(cacheOnly \? \{ cacheOnly \} : \{\}\) \}\)/u,
     "试听声音 in 声音与配乐 replays a saved preview with cacheOnly");
   assert.match(soundSettings, /const next = previewAfterFailure\(voice, cacheOnly, \(error as \{ code\?: string \}\)\.code\);\s*if \(next !== voice\) setVoices\(/u);
   assert.match(soundSettings, /const voiceCharge = previewCharge\(current\?\.previewStatus\);/u);
-  assert.match(soundSettings, /onClick=\{\(\) => current && void auditionVoice\(current\)\}>\{loading === current\?\.voicePersonaId \? "准备试听…" : current \? `试听声音（\$\{voiceCharge\.label\}）` : "试听声音"\}/u,
+  assert.match(soundSettings, /onClick=\{\(\) => current && requestAudition\(current\)\}>\{loading === current\?\.voicePersonaId \? "准备试听…" : current \? `试听声音（\$\{voiceCharge\.label\}）` : "试听声音"\}/u,
     "and says whether it is charged");
   assert.doesNotMatch(soundSettings, /previewAutoMixVoicePersona\(\{ voicePersonaId: id \}\)/u, "no unlabelled paid preview is left");
-  assert.match(card, /onAction=\{\(action\) => void run\[action\]\(\)\} \/>/u, "the live card renders the checked view");
+  assert.match(card, /onAction=\{\(action\) => void run\[action\]\(\)\}\s*paidConfirm=/u, "the live card renders the checked view");
 
   console.log("Batch voice recovery card self-check passed");
 }

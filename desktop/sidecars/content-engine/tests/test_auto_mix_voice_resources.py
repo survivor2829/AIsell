@@ -670,6 +670,149 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
                          (manual["catalog_source"], manual["active"], manual["approved_at"]))
         self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "natural-life@1")["status"])
 
+    def test_every_other_compared_field_revokes_approval_and_preview_on_return(self):
+        # Retiring keeps the approval (CE2), so for a returning voice the comparison in
+        # _sync_configured_voice_persona_rows (private_configuration_changed) is the only
+        # revocation. catalog_version, provider_voice_id and instruction are changed alone
+        # above; here each other field it compares is changed alone.
+        plain = {
+            "style": "steady_narration",
+            "catalog_version": "2026.08",
+            "instruction": "沉稳但不拖沓。",
+        }
+        designed = {
+            **plain,
+            "provider_voice_id": "",
+            "voice_prompt": "温暖沉稳的中文男声，语气自然，适合真实项目讲述。",
+            "voice_prefix": "story26",
+        }
+        cases = (
+            ("provider", plain, {"provider": "volcengine"}),
+            ("provider_model", plain, {"provider_model": "cosyvoice-v3.5-flash"}),
+            ("voice_prompt", designed, {"voice_prompt": "沉稳自然的中文男声，重点清楚。"}),
+            ("voice_prefix", designed, {"voice_prefix": "story27"}),
+        )
+        for index, (field, base, change) in enumerate(cases):
+            with self.subTest(changed=field):
+                persona_id = f"compared-field-{index}@1"
+                configured = {
+                    "provider_voice_id": f"compared-provider-voice-{index}",
+                    **base,
+                    "persona_id": persona_id,
+                    "display_name": f"比对字段 {index}",
+                }
+                self._sync([configured])
+                if base is designed:
+                    self.service.design_auto_mix_voice_persona(persona_id)
+                    self.assertIsNotNone(self._row("auto_mix_voice_designs_v1", persona_id))
+                self.service.preview_auto_mix_voice_persona(persona_id)
+                self.service.approve_auto_mix_voice_persona(persona_id)
+                self._sync([])
+                self.assertIsNotNone(self._row("voice_personas_v1", persona_id)["approved_at"],
+                                     "retiring alone keeps the approval")
+                self._sync([{**configured, **change}])
+                self.assertIsNone(self._row("voice_personas_v1", persona_id)["approved_at"])
+                self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
+                if base is designed:
+                    self.assertIsNone(self._row("auto_mix_voice_designs_v1", persona_id))
+                with self.assertRaises(ContentEngineError) as caught:
+                    self.service.approve_auto_mix_voice_persona(persona_id)
+                self.assertEqual("auto_mix_voice_preview_required", caught.exception.code)
+
+        # catalog_source: a manual voice the catalog now configures under the same id and
+        # with the same settings is still not the voice the user approved. Its saved WAV
+        # has the same cache key (the private configuration is the same), so the same start
+        # would record it again as a free replay (_register_saved_voice_previews), never the
+        # approval; the file is moved aside here to see the row itself go.
+        self.service.preview_auto_mix_voice_persona("natural-life@1")
+        self.service.approve_auto_mix_voice_persona("natural-life@1")
+        manual = self._row("voice_personas_v1", "natural-life@1")
+        self._saved_preview_path("natural-life@1").unlink()
+        self._sync([{key: manual[key] for key in (
+            "display_name", "style", "catalog_version", "provider", "provider_model",
+            "provider_voice_id", "instruction", "voice_prompt", "voice_prefix")} | {"persona_id": "natural-life@1"}])
+        taken_over = self._row("voice_personas_v1", "natural-life@1")
+        self.assertEqual("configured", taken_over["catalog_source"])
+        self.assertIsNone(taken_over["approved_at"])
+        self.assertIsNone(self._row("auto_mix_voice_previews_v1", "natural-life@1"))
+
+    def test_retiring_keeps_a_designed_voice_s_design_and_preview(self):
+        # Retiring only deactivates: it deletes neither the preview row nor the design row
+        # (what the provider created for this voice). The unchanged voice comes back with
+        # both, with its designed provider voice and its approval, and is not designed again.
+        designed = {
+            "persona_id": "steady-story@1",
+            "display_name": "沉稳叙事",
+            "style": "steady_narration",
+            "catalog_version": "2026.08",
+            "provider_voice_id": "",
+            "instruction": "沉稳但不拖沓。",
+            "voice_prompt": "温暖沉稳的中文男声，语气自然，适合真实项目讲述。",
+            "voice_prefix": "story26",
+        }
+        self._sync([designed])
+        self.service.design_auto_mix_voice_persona("steady-story@1")
+        self.service.preview_auto_mix_voice_persona("steady-story@1")
+        self.service.approve_auto_mix_voice_persona("steady-story@1")
+        approved_at = self._row("voice_personas_v1", "steady-story@1")["approved_at"]
+        design = tuple(self._row("auto_mix_voice_designs_v1", "steady-story@1"))
+        preview = tuple(self._row("auto_mix_voice_previews_v1", "steady-story@1"))
+        self.assertEqual("completed", design[2])
+
+        self._sync([])
+        retired = self._row("voice_personas_v1", "steady-story@1")
+        self.assertEqual((0, approved_at), (retired["active"], retired["approved_at"]))
+        self.assertEqual(design, tuple(self._row("auto_mix_voice_designs_v1", "steady-story@1")),
+                         "retiring leaves the design row alone")
+        self.assertEqual(preview, tuple(self._row("auto_mix_voice_previews_v1", "steady-story@1")),
+                         "and the preview row")
+
+        self._sync([designed])
+        back = self._row("voice_personas_v1", "steady-story@1")
+        self.assertEqual((1, approved_at, "private-designed-voice-id"),
+                         (back["active"], back["approved_at"], back["provider_voice_id"]))
+        self.assertEqual(design, tuple(self._row("auto_mix_voice_designs_v1", "steady-story@1")))
+        self.assertEqual(preview, tuple(self._row("auto_mix_voice_previews_v1", "steady-story@1")))
+        listed = {
+            item["voicePersonaId"]: item
+            for item in self.service.list_auto_mix_voice_personas()["items"]
+        }["steady-story@1"]
+        self.assertEqual(("approved", "completed", "ready"),
+                         (listed["approvalStatus"], listed["previewStatus"], listed["provisioningStatus"]))
+        self.assertEqual(1, len(self.analyzer.design_calls))
+        self.assertEqual([], self.analyzer.calls)
+
+    def test_saved_preview_recording_skips_a_retired_voice_and_a_manual_voice(self):
+        # Only a listed voice (active = 1) from the catalog (catalog_source = 'configured')
+        # gets a saved preview recorded: a retired voice is offered nowhere, and a manual
+        # voice is not the catalog's to restore. The control voice, and the retired one once
+        # it is back unchanged, show that the files themselves would be recorded.
+        retired, control = self._volc("volc-retired@1"), self._volc("volc-control@1")
+        self._sync([retired, control])
+        for persona_id in ("volc-retired@1", "volc-control@1", "natural-life@1"):
+            path = self._saved_preview_path(persona_id)
+            _write_test_wav(path)
+            _normalize_like_ffmpeg(path)
+        manual = self._row("voice_personas_v1", "natural-life@1")
+        self.assertEqual(("manual", 1, ""), (manual["catalog_source"], manual["active"], manual["voice_prompt"]))
+        self.assertTrue(manual["provider_voice_id"])
+
+        self._restart([control])  # volc-retired@1 leaves the catalog at this start
+
+        self.assertEqual(0, self._row("voice_personas_v1", "volc-retired@1")["active"])
+        self.assertIsNone(self._row("auto_mix_voice_previews_v1", "volc-retired@1"),
+                          "a retired voice gets nothing recorded")
+        self.assertIsNone(self._row("auto_mix_voice_previews_v1", "natural-life@1"),
+                          "nor does a manual voice")
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "volc-control@1")["status"])
+
+        self._restart([retired, control])
+
+        self.assertEqual("completed", self._row("auto_mix_voice_previews_v1", "volc-retired@1")["status"],
+                         "back in the catalog unchanged, its file is recorded")
+        self.assertIsNone(self._row("auto_mix_voice_previews_v1", "natural-life@1"))
+        self.assertEqual([], self.analyzer.calls)
+
     def test_saved_preview_is_recorded_again_after_an_old_build_cleared_it(self):
         monkey = {
             "persona_id": "volc-monkey-brother-2@1",

@@ -8,9 +8,11 @@ export type RecoveryVoice = {
   previewStatus?: string;
 };
 export type RecoveryBatch = { archived?: boolean; script_confirmation?: unknown; settings?: { voice_persona_id?: string; workflow_version?: number } };
-// play_saved replays the saved preview (cacheOnly, no charge); regenerate synthesizes
-// a new one (one paid cloud call); approve appears only after a preview played.
+// play_saved replays the saved preview (cacheOnly, no charge); regenerate only opens the
+// paid confirmation, whose own button (confirm_paid) synthesizes a new one (one paid cloud
+// call); approve appears only after a preview played.
 export type VoiceRecoveryAction = "play_saved" | "regenerate" | "approve";
+export type VoiceRecoveryControl = VoiceRecoveryAction | "confirm_paid" | "cancel_paid";
 export type VoiceRecovery = {
   kind: "free" | "paid" | "unknown" | "retired";
   voiceId: string;
@@ -30,6 +32,18 @@ export const ACTION_LABELS: Record<VoiceRecoveryAction, (name: string) => string
   approve: (name) => `批准使用「${name}」`,
 };
 
+// A paid preview is never one click away from a free one. A button that says 计费 only
+// opens a confirmation; the confirmation's own button, in a row of its own, sends the paid
+// preview, and only accepts a click PAID_PREVIEW_ARM_MS after it appeared. So the second
+// click of a double-click on a free button that came back not_cached (it turns into the
+// 计费 button in the same place), or clicks repeated on that spot, never reach a paid call.
+export const PAID_PREVIEW_ARM_MS = 1500;
+export const PAID_PREVIEW_WARNING = "重新生成试听会调用一次云端配音并计费一次。";
+export const PAID_PREVIEW_CONFIRM = "我知道会计费，重新生成";
+export function paidPreviewArmed(shownAt: number, now: number) {
+  return now - shownAt >= PAID_PREVIEW_ARM_MS;
+}
+
 // A preview that played lets the approval follow (the main process also requires it in
 // this session); a replay that found nothing saved switches the card to the paid preview.
 export function sessionAfterPreview(session: VoiceRecoverySession, outcome: { audioDataUrl?: string | null; code?: string }) {
@@ -39,14 +53,14 @@ export function sessionAfterPreview(session: VoiceRecoverySession, outcome: { au
 
 // What a voice's preview button costs. Only a completed preview replays from the
 // engine's cache, and cacheOnly makes sure that is never a paid call; any other state
-// synthesizes once (one paid cloud call).
+// synthesizes once (one paid cloud call), and its button only opens the paid confirmation.
 export function previewCharge(previewStatus?: string) {
   const cacheOnly = previewStatus === "completed";
   return { cacheOnly, label: cacheOnly ? "不计费" : "计费一次" };
 }
 // A cacheOnly replay that found nothing saved (a deleted file, a stale key): the voice
-// has no free preview after all, so its button says the next try is charged instead of
-// sending cacheOnly forever.
+// has no free preview after all, so its button says the next try is charged (and asks
+// first) instead of sending cacheOnly forever.
 export function previewAfterFailure<T extends { previewStatus?: string }>(voice: T, cacheOnly: boolean, code?: string): T {
   return cacheOnly && code === NOT_CACHED_CODE ? { ...voice, previewStatus: "not_ready" } as T : voice;
 }

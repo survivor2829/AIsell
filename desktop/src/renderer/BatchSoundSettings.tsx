@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AutoMixResourcePanel, type AutoMixResourcePanelProps, type AutoMixVoicePersona, type MusicCatalogTrack } from "./AutoMixResourcePanel";
 import { type Batch, callBatch } from "./batch-studio-api";
-import { previewAfterFailure, previewCharge, unavailableVoiceLabel } from "./batch-voice-recovery";
+import { PAID_PREVIEW_ARM_MS, PAID_PREVIEW_CONFIRM, PAID_PREVIEW_WARNING, paidPreviewArmed, previewAfterFailure, previewCharge, unavailableVoiceLabel } from "./batch-voice-recovery";
 
 type ResourceApi = Pick<AutoMixResourcePanelProps, "listMusicCatalogTracks" | "importMusicCatalogTrack" | "listAutoMixVoicePersonas" | "designAutoMixVoicePersona" | "previewAutoMixVoicePersona" | "approveAutoMixVoicePersona">;
 type ResourceResult = { ok: boolean; data?: unknown; error?: string; code?: string };
@@ -69,6 +69,25 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
   // Labelled like the resource panel: 不计费 replays the saved preview only (cacheOnly),
   // 计费一次 synthesizes; a replay that finds nothing saved relabels the button.
   const voiceCharge = previewCharge(current?.previewStatus);
+  // 计费一次 only opens a confirmation whose own button works PAID_PREVIEW_ARM_MS later, so a
+  // double-click on a 不计费 button that came back not_cached never reaches a paid call.
+  const [paidShownAt, setPaidShownAt] = useState<number | null>(null);
+  const [, setPaidArmTick] = useState(0);
+  useEffect(() => {
+    if (paidShownAt === null) return undefined;
+    const timer = setTimeout(() => setPaidArmTick((tick) => tick + 1), PAID_PREVIEW_ARM_MS);
+    return () => clearTimeout(timer);
+  }, [paidShownAt]);
+  const paidArmed = paidShownAt !== null && paidPreviewArmed(paidShownAt, Date.now());
+  function requestAudition(voice: AutoMixVoicePersona) {
+    if (previewCharge(voice.previewStatus).cacheOnly) { void auditionVoice(voice); return; }
+    setPaidShownAt((shown) => shown ?? Date.now());
+  }
+  function confirmPaidAudition(voice: AutoMixVoicePersona) {
+    if (paidShownAt === null || !paidPreviewArmed(paidShownAt, Date.now())) return;
+    setPaidShownAt(null);
+    void auditionVoice(voice);
+  }
   async function auditionVoice(voice: AutoMixVoicePersona) {
     const { cacheOnly } = previewCharge(voice.previewStatus);
     setLoading(voice.voicePersonaId); setNotice("");
@@ -88,7 +107,8 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
     <div className="batch-notice" role="status"><strong>云端智能服务由系统统一提供</strong><br />客户无需配置密钥；开始制作时会实时检查素材理解、语音识别和配音能力。</div>
     <div className="batch-sound-row"><label>配音声音<select aria-label="配音声音" disabled={locked} value={settings.voice_persona_id || ""} onChange={(event) => onChange({ ...settings, voice_persona_id: event.target.value || undefined })}>
       <option value="">试听后选择声音</option>{unavailable && <option value={settings.voice_persona_id} disabled>{unavailable}</option>}{approvedVoices.map((voice) => <option key={voice.voicePersonaId} value={voice.voicePersonaId}>{voice.displayName}</option>)}
-    </select></label><button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !current} onClick={() => current && void auditionVoice(current)}>{loading === current?.voicePersonaId ? "准备试听…" : current ? `试听声音（${voiceCharge.label}）` : "试听声音"}</button><button type="button" disabled={resourceLocked} onClick={() => setResourceSection("voice")}>选择试听候选</button></div>
+    </select></label><button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !current} onClick={() => current && requestAudition(current)}>{loading === current?.voicePersonaId ? "准备试听…" : current ? `试听声音（${voiceCharge.label}）` : "试听声音"}</button><button type="button" disabled={resourceLocked} onClick={() => setResourceSection("voice")}>选择试听候选</button></div>
+    {paidShownAt !== null && current && <div className="batch-toolbar batch-voice-paid-confirm" role="alert">{PAID_PREVIEW_WARNING}<button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !paidArmed} onClick={() => confirmPaidAudition(current)}>{paidArmed ? PAID_PREVIEW_CONFIRM : `${PAID_PREVIEW_CONFIRM}（请稍候）`}</button><button type="button" onClick={() => setPaidShownAt(null)}>取消</button></div>}
     <details className="batch-music-settings"><summary>配乐 · {musicMode === "none" ? "明确不加配乐" : musicMode === "selected" && pool.length ? `已选 ${pool.length} 首，按内容轮换` : "自动从授权曲库选曲"}</summary>
       <label>配乐策略<select aria-label="配乐策略" disabled={locked} value={musicMode} onChange={(event) => {
         const next = event.target.value as "auto" | "none" | "selected";
