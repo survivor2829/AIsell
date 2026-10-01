@@ -156,6 +156,23 @@ export const RESTORED_ELSEWHERE = "上次未保存的编辑已存回它所属的
 export function restoreNotice(restore: DraftRestore<unknown>) {
   return restore.kind === "restored" ? RESTORED_ELSEWHERE : restore.kind === "none" ? "" : restore.message;
 }
+// Materials carried in from the library start a new video that is saved at once, except
+// while an edit kept through a transient failure is still cached: that save would move it
+// to the backup slot without a word. The new video then waits for the user's first change.
+export const CARRIED_ASSETS_WAIT = "所选素材已带入，但还没有保存成新视频；开始修改后才会保存。";
+export function carriedAssetsAutosave(restore: DraftRestore<unknown>) {
+  return restore.kind !== "kept";
+}
+// Why 确认风险，重试未完成规划 / 仅重试未完成配音 wait. An edit on its way is saved first, so
+// it cannot land after the retry. One the engine rejected outright is not on its way (the
+// queue holds it without retrying), so the hint gives that rejection instead of promising
+// a save that never comes. rejected: the message of the current edit's rejection, if any.
+export const RETRY_WAITS_FOR_SAVE = "有修改正在保存，保存完成后再重试。";
+export function retryHold({ saving, dirty, rejected }: { saving: boolean; dirty: boolean; rejected?: string }) {
+  if (saving) return RETRY_WAITS_FOR_SAVE;
+  if (!dirty) return "";
+  return rejected ? `有修改未能保存：${rejected}请先处理这份修改，再重试。` : RETRY_WAITS_FOR_SAVE;
+}
 async function restoreOnce<B extends RestorableBatch>({ storage, get, save }: RestoreOptions<B>): Promise<DraftRestore<B>> {
   const pending = readPending(storage);
   const draft = pending?.draft;
@@ -201,7 +218,8 @@ export function createDraftQueue<T extends { batch_id?: string }, R extends { ba
   active: (saving: boolean) => void;
   // Errors the engine repeats on every attempt. Such an edit is held instead of retried
   // in the background; the next explicit flush ("新建视频", "选择任务", leaving the page)
-  // tries it once more, since the user may have fixed the cause meanwhile.
+  // tries it once more, since the user may have fixed the cause meanwhile, and
+  // retryHeld() tries it at once when the page itself fixed the cause.
   hold?: (error: unknown) => boolean;
 }) {
   type Ticket = { draft: T; fingerprint: string; owner: number; rejected?: boolean };
@@ -258,6 +276,16 @@ export function createDraftQueue<T extends { batch_id?: string }, R extends { ba
       timer = setTimeout(() => { void run(false).catch(() => undefined); }, 400);
     },
     flush: () => run(true),
+    // The cause of a held rejection may be gone now (the voice approved on this page):
+    // try the held edit once more right away. It goes as a background save, so another
+    // rejection holds it again instead of dropping it the way a second explicit try does.
+    retryHeld() {
+      if (flight) return flight;
+      if (!held) return Promise.resolve();
+      pending = held;
+      held = null;
+      return run(false);
+    },
     cancelPending() { clearTimeout(timer); pending = null; held = null; },
     busy: () => flight !== null,
   };

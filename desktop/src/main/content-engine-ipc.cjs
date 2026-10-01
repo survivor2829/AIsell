@@ -387,6 +387,9 @@ const PUBLIC_ERRORS = Object.freeze({
   auto_mix_voice_preview_normalization_failed: "试听音量处理失败。已保存原始配音，重试只处理本地音频。",
   auto_mix_voice_preview_unavailable: "声音试听文件不可用，请检查本地缓存文件。",
   auto_mix_voice_preview_outcome_unknown: "声音试听提交结果不明；为避免重复计费，请勿重复提交。",
+  auto_mix_voice_preview_not_cached: "本机没有可直接播放的已保存试听；重新生成试听会调用一次云端配音并计费。",
+  // provider_usage.py stops before (or right after) a provider request when its usage record cannot be written.
+  provider_usage_write_failed: "本机无法写入云端调用记录（例如磁盘已满），已停止继续请求；请先检查磁盘可用空间，再重试。",
   auto_mix_voice_outcome_unknown: "配音提交结果不明；为避免重复计费，请勿重复提交。",
   auto_mix_voice_invalid: "配音音频无效，请检查返回文件及声音配置。",
   auto_mix_voice_write_failed: "配音已返回，但本地保存失败；请检查缓存目录权限与磁盘空间，不要重复合成。",
@@ -554,7 +557,9 @@ const PAGE_ONLY_ERROR_CODES = new Set([
   "auto_mix_voice_persona_not_found",
   "auto_mix_voice_preview_required",
   "auto_mix_voice_design_required",
-  "auto_mix_music_required"
+  "auto_mix_music_required",
+  // The page switches the free replay button to the paid one.
+  "auto_mix_voice_preview_not_cached"
 ]);
 
 function safeText(value, maxLength = 500) {
@@ -2411,12 +2416,15 @@ function registerContentEngineIpc(options = {}) {
       && !belongsToCurrentSession
     ) return;
     const errorCode = diagnosticCode(item?.errorCode);
+    // Same rule as a failed IPC call: an unregistered code stays locatable.
+    const rawCode = errorCode === "unknown_error" ? rawDiagnosticCode(item?.errorCode) : null;
     diagnosticLogger.event(
       "content_engine",
       "task_terminal",
       {
         task_id: taskId,
-        error_code: errorCode
+        error_code: errorCode,
+        ...(rawCode ? { raw_code: rawCode } : {})
       },
       {
         level: "error",
@@ -3387,15 +3395,19 @@ function registerContentEngineIpc(options = {}) {
     );
   });
   handle(CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona, async (payload, event) => {
-    assertKeys(payload, new Set(["voicePersonaId", "clickToken"]));
+    assertKeys(payload, new Set(["voicePersonaId", "clickToken", "cacheOnly"]));
+    // Replaying the saved preview is still an audition the user clicked.
     requireTrustedAutoMixClick(
       event,
       payload.clickToken,
       CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona
     );
     const voicePersonaId = validateVoicePersonaId(payload.voicePersonaId);
+    // Only a real boolean: coercing "true" to false would turn a free replay
+    // into a paid synthesis.
+    if (payload.cacheOnly !== undefined && typeof payload.cacheOnly !== "boolean") invalid();
     const preview = publicAutoMixVoicePreview(
-      await controller.previewAutoMixVoicePersona(voicePersonaId)
+      await controller.previewAutoMixVoicePersona(voicePersonaId, { cacheOnly: payload.cacheOnly === true })
     );
     if (
       preview.previewStatus === "completed"

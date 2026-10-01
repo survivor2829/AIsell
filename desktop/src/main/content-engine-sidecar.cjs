@@ -531,6 +531,10 @@ function createContentEngineSidecar(options = {}) {
     if (!run || run.closed || (run.stopping && method !== "shutdown")) {
       throw createError("CONTENT_ENGINE_NOT_READY");
     }
+    if (optionsForRequest.requiredCapability
+        && snapshot.capabilities[optionsForRequest.requiredCapability] !== true) {
+      throw createError("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
+    }
     const requestId = randomUUID();
     const timeoutMs = Math.max(
       1,
@@ -863,10 +867,22 @@ function createContentEngineSidecar(options = {}) {
         throw error;
       }
     },
-    previewAutoMixVoicePersona: (voicePersonaId) => request(
-      "preview_auto_mix_voice_persona",
-      { voice_persona_id: voicePersonaId }
-    ),
+    previewAutoMixVoicePersona: async (voicePersonaId, options = {}) => {
+      // Only a missing flag means an ordinary (paid) preview; null or any other
+      // non-boolean is refused, never read as false.
+      const cacheOnly = options?.cacheOnly === undefined ? false : options.cacheOnly;
+      if (typeof cacheOnly !== "boolean") throw createError("invalid_params");
+      if (!cacheOnly) {
+        return request("preview_auto_mix_voice_persona", { voice_persona_id: voicePersonaId });
+      }
+      // An engine older than cache_only would ignore the flag and synthesize a
+      // paid preview under a "不计费" button, so it must say it honours it.
+      return request(
+        "preview_auto_mix_voice_persona",
+        { voice_persona_id: voicePersonaId, cache_only: true },
+        { requiredCapability: "voice_preview_cache_only" }
+      );
+    },
     approveAutoMixVoicePersona: (voicePersonaId) => request(
       "approve_auto_mix_voice_persona",
       { voice_persona_id: voicePersonaId }

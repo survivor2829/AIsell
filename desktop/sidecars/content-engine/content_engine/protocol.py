@@ -202,7 +202,7 @@ METHODS = {
         params.get("voice_persona_id")
     ),
     "preview_auto_mix_voice_persona": lambda service, params: service.preview_auto_mix_voice_persona(
-        params.get("voice_persona_id")
+        params.get("voice_persona_id"), cache_only=params.get("cache_only", False)
     ),
     "approve_auto_mix_voice_persona": lambda service, params: service.approve_auto_mix_voice_persona(
         params.get("voice_persona_id")
@@ -408,6 +408,7 @@ def serve_jsonl(
                 ),
                 "auto_mix_v2": True,
                 "licensed_music_catalog_v1": True,
+                "voice_preview_cache_only": True,
             },
         },
     )

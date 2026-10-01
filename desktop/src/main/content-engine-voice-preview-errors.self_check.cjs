@@ -9,7 +9,8 @@ const failureCodes = [
   "auto_mix_voice_unavailable", "auto_mix_voice_persona_invalid",
   "cloud_request_failed", "cloud_request_rejected",
   "auto_mix_voice_download_failed", "cloud_response_invalid", "cloud_response_too_large",
-  "provider_gateway_tls_not_configured", "provider_gateway_tls_invalid"
+  "provider_gateway_tls_not_configured", "provider_gateway_tls_invalid",
+  "auto_mix_voice_preview_not_cached", "provider_usage_write_failed"
 ];
 
 // Static guard: every code the engine raises while the user waits on a voice preview or
@@ -42,10 +43,13 @@ const voiceCodes = new Set([
   // The first definitions are the Bailian client's; the analyzer only forwards to them.
   ...raisedCodes("creative_analysis.py", ["synthesize_auto_mix_phrase", "design_auto_mix_voice", "_request_json"]),
   ...raisedCodes("creative_domain.py", ["preview_auto_mix_voice_persona", "design_auto_mix_voice_persona",
-    "approve_auto_mix_voice_persona", "_auto_mix_voice_persona_row"])
+    "approve_auto_mix_voice_persona", "_auto_mix_voice_persona_row"]),
+  // Every provider request journals itself first; a failed write stops the preview, design or generation.
+  ...raisedCodes("provider_usage.py", ["_append_event"])
 ]);
 for (const expected of ["provider_gateway_tls_invalid", "provider_gateway_tls_not_configured", "auto_mix_voice_download_failed",
-  "cloud_response_too_large", "auto_mix_voice_preview_outcome_unknown", "auto_mix_voice_persona_invalid"]) {
+  "cloud_response_too_large", "auto_mix_voice_preview_outcome_unknown", "auto_mix_voice_persona_invalid",
+  "auto_mix_voice_preview_not_cached", "provider_usage_write_failed"]) {
   assert.ok(voiceCodes.has(expected), `the voice preview scan must see ${expected}`);
 }
 assert.deepEqual([...voiceCodes].filter((code) => publicError({ code, message: "x" }).code !== code), [],
@@ -110,5 +114,10 @@ const mappedSettings = publicError({ code: "invalid_narrated_settings", message:
 for (const message of ["invalid_narrated_settings", "target_audience须为150字以内的文字。", "素材位于 C:\\Users\\secret", "\\\\server\\share"]) {
   assert.equal(publicError({ code: "invalid_narrated_settings", message }).error, mappedSettings);
 }
+
+// The free replay's miss names the charge the other button carries; a failed usage
+// record says what to check instead of reading as an engine outage.
+assert.match(publicError({ code: "auto_mix_voice_preview_not_cached", message: "x" }).error, /已保存试听.*重新生成.*计费/u);
+assert.match(publicError({ code: "provider_usage_write_failed", message: "x" }).error, /调用记录.*磁盘/u);
 
 console.log("voice preview public error self-check passed");

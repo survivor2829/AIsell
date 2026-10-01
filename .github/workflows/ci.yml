@@ -78,3 +78,6 @@ jobs:
       - name: Provider accounting
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_provider_usage.py'
+      - name: Voice approvals and saved previews
+        working-directory: desktop/sidecars/content-engine
+        run: python -m unittest discover -s tests -p 'test_auto_mix_voice_resources.py'

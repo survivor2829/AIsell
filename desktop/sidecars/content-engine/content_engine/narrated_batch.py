@@ -876,6 +876,36 @@ class NarratedBatchDomain:
             require(not asset["archived_at"], "asset_archived", "请移除已归档素材。")
         return ids
 
+    def _require_approved_voice(self, b):
+        """The voice production will use must still be approved before paid production.
+
+        A batch without a voice of its own is voiced with whichever voice is
+        approved (the fallback in _initialize_speech_budget and _run_auto_mix_v2),
+        so with none approved at all the paid planning and review would run and
+        the task would stop at the voice step.
+        """
+        persona_id = str((b.get("settings") or {}).get("voice_persona_id") or "").strip()
+        require(self.d._approved_auto_mix_voice_persona(selected_id=persona_id or None) is not None,
+                "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
+
+    def require_voice_to_resume(self, task_id):
+        """Requeuing a stopped production is the same paid work as starting it.
+
+        The worker would redo the paid planning and review and stop only at the
+        voice step, so resume_creative_task refuses first, like start() does:
+        writing copy and recommending a count never need the voice; a confirmed
+        script-flow batch always does.
+        """
+        try:
+            payload = json.loads(self.d._task_row(task_id)["payload_json"] or "{}")
+            b = self._load(payload.get("batch_id"))
+        except (ContentEngineError, TypeError, ValueError):
+            # Nothing to check here; the worker reports a missing batch itself.
+            return
+        confirmed = (b.get("settings") or {}).get("workflow_version") == 2 and bool(b.get("script_confirmation"))
+        if confirmed or payload.get("action") not in {"scripts", "recommend"}:
+            self._require_approved_voice(b)
+
     def _idle(self, b):
         if b.get("task_id"):
             status = self.d._task_row(b["task_id"])["status"]
@@ -1000,6 +1030,9 @@ class NarratedBatchDomain:
         context = self._voice_recovery_context(b)
         require(context is not None, "narrated_voice_recovery_not_available",
                 "当前批次没有可人工确认并重试的未完成配音。")
+        # The retry voices with this batch's voice; refuse before the unresolved
+        # artifacts are invalidated and the audit is written.
+        self._require_approved_voice(b)
 
         task = context["task"]
         run = context["run"]
@@ -1090,6 +1123,11 @@ class NarratedBatchDomain:
         require(self._planning_recovery_available(b),
                 "narrated_planning_recovery_not_available",
                 "当前批次没有可人工确认并重试的未知请求。")
+        confirmed = (b.get("settings") or {}).get("workflow_version") == 2 and bool(b.get("script_confirmation"))
+        if confirmed:
+            # The retry plans and then voices the confirmed script. Stop before the
+            # paid planning if the voice step can only fail afterwards.
+            self._require_approved_voice(b)
 
         previous_task = self.d._task_row(b["task_id"])
         resolved_at = self.d._now()
@@ -1113,7 +1151,7 @@ class NarratedBatchDomain:
 
         task = self.d._create_task("narrated_batch_v1", {
             "project_id": b["project_id"], "batch_id": b["batch_id"],
-            "action": ("confirmed" if b.get("script_confirmation") else "scripts")
+            "action": ("confirmed" if confirmed else "scripts")
                       if (b.get("settings") or {}).get("workflow_version") == 2 else "recommend",
         })
         b.update(task_id=task["task_id"], status="planning")
@@ -1252,6 +1290,11 @@ class NarratedBatchDomain:
                 b.setdefault("script_confirmation_history", []).append(copy.deepcopy(b["script_confirmation"]))
                 b.update(script_confirmation=None, selected_script_id=None, direction=None, status="scripts_ready")
                 narrated_production.clear_selection(b)
+        if b.get("script_confirmation") and settings.get("workflow_version") == 2:
+            # A kept confirmation keeps its count: the confirmed selections add up to it.
+            # Script-flow drafts send 1, a placeholder until the copy is confirmed, so an
+            # edit such as a new title must not lower a confirmed batch of 2 to 1.
+            target = b.get("target_count") or target
         b.update(groups=groups, title=title, description=description, cta=cta, material_context=material_context,
                  target_count=target, collection_id=collection_id, settings=settings,
                  brief_version=brief_version, script_source=script_source, **brief)
@@ -1280,6 +1323,10 @@ class NarratedBatchDomain:
         elif script_workflow:
             require(bool(b.get("script_confirmation")), "narrated_script_confirmation_required", "请先选择并确认一份完整文案。")
             action = "confirmed"
+        if action not in {"scripts", "recommend"}:
+            # Production ends in the voice step; with the voice unapproved every paid
+            # call before it would be spent on a task that cannot finish.
+            self._require_approved_voice(b)
         if action == "continue":
             count = b.get("target_count") or b["recommended_count"]
             require(count > 3 and all(c["status"] == "completed" for c in b["candidates"][:3]),

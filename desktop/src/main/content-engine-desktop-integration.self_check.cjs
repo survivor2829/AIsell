@@ -866,6 +866,19 @@ async function assertAutoMixTrustedClickBinding() {
       "声音试听 token 必须绑定试听 channel"
     );
     assert.equal(replayedPreview.payload.clickToken, "", "同一次试听点击只能消费一次");
+    assert.equal(Object.hasOwn(intendedPreview.payload, "cacheOnly"), false, "普通试听不附带 cacheOnly");
+
+    // The recovery card's free replay: cacheOnly travels as given, with the same click
+    // binding; the main process refuses anything but a boolean instead of coercing it.
+    for (const cacheOnly of [true, false, "true"]) {
+      dispatchTrustedClick("data-xiaoxi-auto-mix-voice-preview");
+      await api.creative.previewAutoMixVoicePersona({ voicePersonaId: "volc-monkey-brother-2@1", cacheOnly });
+      const replay = calls.at(-1);
+      assert.equal(replay.channel, "content-engine:preview-auto-mix-voice-persona");
+      assert.deepEqual(Object.keys(replay.payload).sort(), ["cacheOnly", "clickToken", "voicePersonaId"]);
+      assert.equal(replay.payload.cacheOnly, cacheOnly, "cacheOnly must reach the main process unchanged");
+      assert.match(replay.payload.clickToken, /^content-engine:preview-auto-mix-voice-persona:[a-f0-9-]{36}$/u);
+    }
 
     for (const [attribute, invoke, channel] of [
       [

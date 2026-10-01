@@ -609,6 +609,9 @@ function createContentEngineApi(ipcRenderer) {
         AUTO_MIX_TRUSTED_CLICK_CHANNELS.previewVoice,
         {
           voicePersonaId: String(payload?.voicePersonaId || ""),
+          // Passed as given: the main process refuses anything but a boolean, where
+          // coercing here could turn a free replay into a paid synthesis.
+          ...(payload?.cacheOnly === undefined ? {} : { cacheOnly: payload.cacheOnly }),
           clickToken: consumeAutoMixVoicePreviewClick()
         }
       ),

@@ -411,6 +411,46 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertIsNone(task['error_code'])
         self.assertEqual('planned', self.domain.d._auto_mix_run_row(run_id=run_id)['status'])
 
+    def test_voice_retry_needs_the_batch_voice_approved_first(self):
+        # CE2: an older build cleared the approval of this batch's voice. The retry would
+        # voice with it and fail again, so nothing is invalidated or requeued first.
+        queued = self.s.confirm_narrated_script(self.request(first_count=1))
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings'] = {**state['settings'], 'voice_persona_id': 'natural-life@1'}
+        candidate = state['candidates'][0]
+        run_id = self.domain._create_run(queued['task_id'], state, candidate)
+        self.domain.d._save_auto_mix_run(
+            run_id, status='outcome_unknown',
+            public_plan={'attention': {'code': 'auto_mix_voice_outcome_unknown'}}, private_state={})
+        self.domain.d._record_auto_mix_artifact(run_id, 'tts', 'unknown-tts', 'outcome_unknown')
+        job = state['production_jobs'][0]
+        job.update(status='outcome_unknown', candidate_id=candidate['candidate_id'],
+                   error_code='auto_mix_voice_outcome_unknown', error='等待配音回执')
+        candidate.update(status='outcome_unknown', error_code='auto_mix_voice_outcome_unknown', error='等待配音回执')
+        state.update(status='outcome_unknown', _active_production_job=copy.deepcopy(job))
+        self.domain._store(state)
+        self.domain.db.execute(
+            "UPDATE content_tasks SET status='paused', error_code=? WHERE id=?",
+            ('auto_mix_voice_outcome_unknown', queued['task_id']))
+        self.domain.db.execute("UPDATE voice_personas_v1 SET approved_at = NULL WHERE id = 'natural-life@1'")
+        stored = self.domain._load(self.batch['batch_id'])
+        request = {'batch_id': self.batch['batch_id'], 'provider_log_checked': True,
+                   'resolution': 'retry_voice', 'note': '平台记录没有可下载的音频'}
+
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.resolve_narrated_voice_outcome(request)
+        self.assertEqual('auto_mix_voice_persona_approval_required', error.exception.code)
+        self.assertEqual(stored, self.domain._load(self.batch['batch_id']), 'no audit, no queued job')
+        self.assertEqual('outcome_unknown', self.domain.d._auto_mix_run_row(run_id=run_id)['status'])
+        self.assertEqual(['outcome_unknown'], [row['status'] for row in self.domain.db.execute(
+            "SELECT status FROM auto_mix_stage_artifacts_v2 WHERE run_id=?", (run_id,))])
+        self.assertEqual('paused', self.s.get_task(queued['task_id'])['status'])
+        self.assertTrue(self.s.get_narrated_batch(self.batch['batch_id'])['voice_recovery_available'])
+
+        self.domain.db.execute(
+            "UPDATE voice_personas_v1 SET approved_at = '2026-09-29T00:00:00.000Z' WHERE id = 'natural-life@1'")
+        self.assertEqual('queued', self.s.resolve_narrated_voice_outcome(request)['task_status'])
+
     def test_known_voice_failure_resumes_from_accepted_review_checkpoint(self):
         task = self.s.confirm_narrated_script(self.request(first_count=1))
         state = self.domain._load(self.batch['batch_id'])
