@@ -120,6 +120,46 @@ if (!process.versions.electron) {
     } finally { global.__xiaoxiComponents = previous; }
   }
 
+  async function checkProcessTreeIgnoresReusedPids() {
+    const { createRequire } = require("node:module");
+    const { promisify } = require("node:util");
+    const helperFile = path.resolve(__dirname, "../src/main/update-helper.cjs");
+    const load = createRequire(helperFile);
+    const { descendants } = load("./update-helper.cjs");
+    const at = time => `/Date(${Date.parse(`2026-10-01T${time}+08:00`)})/`;
+    const pids = rows => rows.map(row => row.pid).sort((a, b) => a - b);
+    // 2026-10-01: a cloud-drive widget started at 08:46 kept the PID of its exited launcher as its
+    // parent; Windows reused that PID for an app worker, and the update waited on the widget and failed.
+    const app = { pid: 14088, parent: 10764, created: at("10:34:29") }, worker = { pid: 27816, parent: 14088, created: at("10:34:31") };
+    const widget = { pid: 40348, parent: 27816, created: at("08:46:37") }, child = { pid: 3404, parent: 27816, created: at("10:35:31") };
+    assert.deepEqual(pids(descendants([widget, app, worker, child], app.pid)), [3404, 14088, 27816],
+      "a process older than its recorded parent is not that parent's child");
+    const iso = row => ({ ...row, created: new Date(Number(/-?\d+/.exec(row.created)[0])).toISOString() });
+    assert.deepEqual(pids(descendants([widget, app, worker, child].map(iso), app.pid)), [3404, 14088, 27816], "ISO start times are compared too");
+    assert.deepEqual(pids(descendants([app, worker, { ...widget, created: undefined }], app.pid)), [14088, 27816, 40348],
+      "an unknown start time keeps the link: waiting on a stranger is safer than installing under a worker");
+    // After a tracked process exits, its PID can belong to a newer stranger: neither that stranger nor
+    // its children are ours, but a child started while our process still owned the PID is.
+    const strangerRoot = { pid: app.pid, parent: 1, created: at("10:40:00") }, strangerRootChild = { pid: 600, parent: app.pid, created: at("10:40:01") };
+    assert.deepEqual(descendants([strangerRoot, strangerRootChild], app.pid, [app, worker]), [app, worker],
+      "a reused root PID neither replaces the tracked root nor adds the new owner's children");
+    const orphan = { pid: 700, parent: worker.pid, created: at("10:34:40") };
+    const strangerWorker = { pid: worker.pid, parent: 1, created: at("10:41:00") }, strangerChild = { pid: 701, parent: worker.pid, created: at("10:41:05") };
+    assert.deepEqual(pids(descendants([app, orphan, strangerWorker, strangerChild], app.pid, [app, worker])), [700, 14088, 27816],
+      "a reused worker PID keeps the worker's own orphans and drops the new owner's children");
+    // Replay the incident through waitForExit: only the widget is still running, so the update proceeds.
+    const execFile = () => assert.fail("processSnapshot must use its promise interface");
+    const snapshot = [{ ProcessId: process.pid, ParentProcessId: process.ppid, CreationDate: at("10:35:34") },
+      { ProcessId: widget.pid, ParentProcessId: widget.parent, CreationDate: widget.created }];
+    execFile[promisify.custom] = async () => ({ stdout: JSON.stringify(snapshot) });
+    const helperModule = { exports: {} };
+    new Function("require", "module", fs.readFileSync(helperFile, "utf8"))(
+      request => request === "node:child_process" ? { execFile, spawn() { throw Error("unexpected_process_start"); } } : load(request), helperModule);
+    const stages = [];
+    await helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), 0);
+    assert.deepEqual(stages, [], "an unrelated process with a reused parent PID must not hold back the update");
+  }
+
   async function checkFailedBackupStopsInstaller(userData, failureMode = "existing-backup") {
     const crypto = require("node:crypto");
     const { createRequire } = require("node:module");
@@ -227,6 +267,7 @@ if (!process.versions.electron) {
     for (const [relative, content] of Object.entries({ ...kept, ...excluded })) {
       assert.deepEqual(fs.readFileSync(path.join(userData, relative)), content, `source remains unchanged: ${relative}`);
     }
+    await checkProcessTreeIgnoresReusedPids();
     await checkBackupCapacityAndFailure(userData);
     await checkCopyAccounting();
     await checkFailedBackupStopsInstaller(userData);

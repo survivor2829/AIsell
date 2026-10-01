@@ -17,13 +17,31 @@ async function processSnapshot() {
   const rows = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
   return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate }));
 }
+// CreationDate is "/Date(ms)/" from Windows PowerShell or ISO text; null when unknown.
+function createdAt(row) {
+  const value = String(row?.created ?? ""), match = /^\/Date\((-?\d+)\)\/$/.exec(value);
+  const time = match ? Number(match[1]) : Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+// Windows keeps a child's ParentProcessId after the parent exits and later reuses that PID, so the
+// link only counts if the child started after the parent and before any newer owner of the PID.
+// Unknown times keep the link: waiting on a stranger is safer than installing under a worker.
+function startedUnder(row, parent, owner) {
+  const started = createdAt(row), since = createdAt(parent), reused = owner ? createdAt(owner) : null;
+  if (started === null || since === null) return true;
+  return started >= since && (reused === null || reused <= since || started < reused);
+}
 function descendants(rows, rootPid, seed = []) {
-  const selected = new Map(seed.map(row => [row.pid, row]));
-  const root = rows.find(row => row.pid === rootPid); if (root) selected.set(root.pid, root);
+  const selected = new Map(seed.map(row => [row.pid, row])), current = new Map(rows.map(row => [row.pid, row]));
+  // A reused root PID must not replace the tracked root.
+  const root = current.get(rootPid); if (root && !selected.has(root.pid)) selected.set(root.pid, root);
   let changed = true;
   while (changed) {
     changed = false;
-    for (const row of rows) if (selected.has(row.parent) && !selected.has(row.pid)) { selected.set(row.pid, row); changed = true; }
+    for (const row of rows) {
+      const parent = selected.get(row.parent);
+      if (parent && !selected.has(row.pid) && startedUnder(row, parent, current.get(row.parent))) { selected.set(row.pid, row); changed = true; }
+    }
   }
   return [...selected.values()];
 }
