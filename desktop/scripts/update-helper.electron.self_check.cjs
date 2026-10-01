@@ -181,6 +181,15 @@ if (!process.versions.electron) {
     await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), 0),
       { message: "update_workers_still_running" });
     assert.equal(stages[0][0], "waiting", "a running child of an exited worker holds back the update");
+    // The helper itself may get the PID of an exited app process: the app's recorded child of that
+    // process is not the helper's own, even when it started less than the clock slack before the helper.
+    const exitedUnderHelperPid = { pid: process.pid, parent: app.pid, created: at("10:34:35") };
+    const recordedChild = { pid: 900, parent: process.pid, created: at("10:35:04") };
+    snapshot = [self, { ProcessId: recordedChild.pid, ParentProcessId: recordedChild.parent, CreationDate: recordedChild.created }];
+    stages.length = 0;
+    await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, exitedUnderHelperPid, recordedChild] },
+      (...stage) => stages.push(stage), 0), { message: "update_workers_still_running" });
+    assert.equal(stages[0][0], "waiting", "an app process recorded before the helper started is never the helper's own");
   }
 
   async function checkFailedBackupStopsInstaller(userData, failureMode = "existing-backup") {

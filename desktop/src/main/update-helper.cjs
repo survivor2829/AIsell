@@ -54,9 +54,14 @@ function descendants(rows, rootPid, seed = []) {
 }
 async function waitForExit(job, onStage, timeoutMs = 120000) {
   let tracked = job.processes, until = Date.now() + timeoutMs;
+  const recorded = new Set(job.processes.map(identity));
   while (true) {
     const rows = await processSnapshot();
-    const own = new Set(descendants(rows, process.pid).map(row => row.pid));
+    // The app recorded its processes before starting the helper: if the helper now holds the PID of
+    // an exited parent, those processes and their children still belong to the app, not the helper.
+    const since = createdAt(rows.find(row => row.pid === process.pid));
+    const recordedBefore = row => since !== null && recorded.has(identity(row)) && createdAt(row) !== null && createdAt(row) < since;
+    const own = new Set(descendants(rows.filter(row => !recordedBefore(row)), process.pid).map(row => row.pid));
     tracked = descendants(rows, job.parentPid, tracked).filter(row => !own.has(row.pid));
     const alive = tracked.filter(row => rows.some(candidate => candidate.pid === row.pid && candidate.created === row.created));
     if (!alive.length) return;
