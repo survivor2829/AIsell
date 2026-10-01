@@ -157,6 +157,9 @@ if (!process.versions.electron) {
     const strangerWorker = { pid: worker.pid, parent: 1, created: at("10:41:00") }, strangerChild = { pid: 701, parent: worker.pid, created: at("10:42:30") };
     assert.deepEqual(pids(descendants([app, orphan, strangerWorker, strangerChild], app.pid, [app, worker])), [700, 14088, 27816],
       "a reused worker PID keeps the worker's own orphans and drops the new owner's children");
+    const closeToTakeover = { pid: 702, parent: worker.pid, created: at("10:41:00", 1000) };
+    assert.deepEqual(pids(descendants([app, strangerWorker, closeToTakeover], app.pid, [app, worker])), [702, 14088, 27816],
+      "a child started within the clock slack of the PID's new owner is still waited on");
     // If one of our own processes takes over that PID, it and its children are ours again.
     const sibling = { pid: 28000, parent: app.pid, created: at("10:34:32") }, takeover = { pid: worker.pid, parent: sibling.pid, created: at("10:36:00") };
     const takeoverChild = { pid: 801, parent: worker.pid, created: at("10:38:00") };
