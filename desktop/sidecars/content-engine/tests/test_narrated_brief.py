@@ -191,6 +191,7 @@ class NarratedBriefTests(unittest.TestCase):
 
     def test_default_one_draft_repairs_once_and_add_direction_preserves_existing(self):
         batch = copy.deepcopy(self.batch)
+        batch['settings']['strict_visual_review'] = True
         batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '现场设备试用', 'visual_facts': {'observation': '设备试用'}, 'target_duration_ms': 60000}]
         domain = self.domain
         scripts = [dict(self.candidate(narrated_brief.FRAMEWORK if i == 0 else 'free'),

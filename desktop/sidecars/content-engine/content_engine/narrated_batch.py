@@ -1205,9 +1205,12 @@ class NarratedBatchDomain:
         cta = str(request.get("cta", b["cta"] if b else ""))[:300]
         settings = request.get("settings", b.get("settings", {}) if b else {})
         require(isinstance(settings, dict) and not set(settings) - {
-            "voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template"},
+            "voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template",
+            "strict_visual_review"},
                 "invalid_narrated_settings", "批量创作设置格式无效。")
         require(settings.get("video_template", "topic_fixed") in {"topic_fixed", "key_points"}, "invalid_narrated_settings", "视频模板无效。")
+        # Absent in older batches, which keep the default: follow the confirmed script.
+        require(type(settings.get("strict_visual_review", False)) is bool, "invalid_narrated_settings", "画面核对开关无效。")
         require(settings.get("workflow_version", 1) in {1, 2}, "invalid_narrated_settings", "创作流程版本无效。")
         music_ids = settings.get("music_track_ids", [])
         require(isinstance(music_ids, list) and len(music_ids) <= 50
@@ -1561,7 +1564,7 @@ class NarratedBatchDomain:
             self._store(b)
         return result
 
-    def _analysis(self, task_id, b):
+    def _analysis(self, task_id, b, observe=True):
         ids = list(dict.fromkeys(a for values in b["groups"].values() for a in values))
         snapshots = self.d._auto_mix_asset_snapshots(ids)
         profile = self.d._auto_mix_v2_analysis_profile()
@@ -1631,7 +1634,11 @@ class NarratedBatchDomain:
                            item_index=index + 1, item_total=len(ids), item_name=asset_name)
         key = canonical_hash({"snapshots": snapshots, "versions": versions,
                               "visual_facts": VISUAL_FACTS_VERSION})
-        if b.get("_analysis_key") == key and b.get("available_shots"):
+        # Follow-script production needs no frame facts. Its unobserved shots carry
+        # their own key, so a later draft that needs observations still grounds them.
+        unobserved_key = canonical_hash({"snapshots": snapshots, "versions": versions,
+                                         "visual_facts": "not_observed"})
+        if b.get("_analysis_key") in ({key} if observe else {key, unobserved_key}) and b.get("available_shots"):
             # The analysis cache predates the editable material context in
             # modern batches. Rehydrate its provenance on a cache hit so a
             # form-only save cannot silently disable same-shoot capacity
@@ -1663,10 +1670,14 @@ class NarratedBatchDomain:
         self._store(b)
         from .narrated_sources import representatives
         selected = representatives(shots) if b.get('_preparing_scripts') else shots
-        observations = self._ground_shots(task_id, b, selected, snapshots, versions)
+        observations = self._ground_shots(task_id, b, selected, snapshots, versions) if observe else []
         if observations is None:
             return False
-        if b.get('_preparing_scripts'):
+        if not observe:
+            key = unobserved_key
+            shots = [{**shot, 'description': '', 'visual_facts': {}, 'evidence_scope': 'not_observed'} for shot in shots]
+            b['_source_summary'] = {'version': 1, 'observed_shot_ids': [], 'total_intervals': len(shots)}
+        elif b.get('_preparing_scripts'):
             grounded_index = {shot['segment_id']: shot for shot in observations}
             # Unsampled intervals remain available for editing, with no visual fact claim.
             shots = [grounded_index.get(shot['segment_id'], {**shot, 'description': '',
@@ -4687,7 +4698,12 @@ class NarratedBatchDomain:
 
     def _create_run(self, task_id, b, c):
         self._verify_confirmed_script(b, c)
-        narrated_brief.review(self, c, b)
+        if c.get('review_mode') == 'follow_script':
+            # Default mode makes no copy review call; only the local format check remains.
+            issue = narrated_brief.issue(c, b)
+            require(not issue, 'narrated_brief_invalid', issue)
+        else:
+            narrated_brief.review(self, c, b)
         if narrated_brief.enabled(b):
             visual = c['_tracks']['visual_text_items']
             ending_overlay = narrated_brief.ending_overlay(c['narration'])
@@ -4761,6 +4777,10 @@ class NarratedBatchDomain:
                     "narrated_actual_evidence_missing", "实际剪辑没有保留已核验的画面，请调整本段镜头。")
         previous = self._history(b["batch_id"]) + [x.get("actual_shots", x["shots"]) for x in b["candidates"]
                                                     if x["candidate_id"] != c["candidate_id"] and x["status"] == "completed"]
+        if c.get("review_mode") == "follow_script":
+            # A confirmed script is never refused as a repeat; a variation was only
+            # staggered from this batch's works, and published works still refuse it.
+            previous = [] if c.get("_confirmed_script") else self._history(b["batch_id"])
         require(not any(near_duplicate(actual, old) for old in previous), "narrated_duplicate", "配音拟合后的镜头与已有作品过于相似。")
 
     def _render_candidate(self, task_id, b, c, index, total):
@@ -4846,7 +4866,9 @@ class NarratedBatchDomain:
                           'selected_script_id', 'script_selections', 'production_jobs')}
             b['_preparing_scripts'] = True
             try:
-                if not self._analysis(task_id, b):
+                # Default mode orders footage by time; the representative frames
+                # are only looked at for the strict visual fact review.
+                if not self._analysis(task_id, b, observe=narrated_production.strict_visual_review(b)):
                     return False
             finally:
                 b.update(preserved)
@@ -4862,7 +4884,7 @@ class NarratedBatchDomain:
                 "narrated_assets_changed", "素材文件已变更，请重新选择素材。")
         previous = copy.deepcopy(b)
         try:
-            if not self._analysis(task_id, b):
+            if not self._analysis(task_id, b, observe=narrated_production.strict_visual_review(b)):
                 b["candidates"] = previous["candidates"]
                 self._store(b)
                 return False
@@ -4988,7 +5010,7 @@ class NarratedBatchDomain:
                     b["reasons"] = [candidate.get("error") or "这条作品上次制作失败，已保留确认稿，请查看具体原因。"]
                     break
             if candidate.get("status") == "needs_review":
-                if candidate.get('_draft_only'):
+                if candidate.get('_draft_only') or narrated_production.follows_script(b, candidate):
                     narrated_production.review_confirmed_candidate(self, b, candidate)
                 else:
                     self._review_edit(candidate, b)

@@ -1,5 +1,8 @@
 """Selected directions run through the real service/DB; only paid/media work is faked."""
+import contextlib
 import copy
+import json
+import re
 import unittest
 import time
 from unittest.mock import patch
@@ -9,8 +12,9 @@ from content_engine.errors import ContentEngineError
 from content_engine.creative_domain import rebalance_narrated_phrase_refs
 from content_engine.narrated_batch import NarratedBatchDomain
 from content_engine.narrated_sources import related_shots
-from content_engine import narrated_script_drafts
+from content_engine import narrated_production, narrated_script_drafts
 from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, cohere_mapping_sources, complete_mapping_capacity, confirmed_narration_units, remap_units_with_source_capacity, normalize_preserved_mapping, confirm_selections, retryable_planning_jobs, retry_failed_planning
+from content_engine.narrated_production import follow_script_footage, follow_script_phrases, follow_script_candidate, strict_visual_review
 
 
 class NarratedTimelineTests(unittest.TestCase):
@@ -84,6 +88,16 @@ class NarratedTimelineTests(unittest.TestCase):
                     self.assertGreaterEqual(available, required)
 
 
+# The kind of copy the 2026-10-01 batch was skipped for: business claims that no
+# frame can show (已办4期, 20-25款, 每月免费复训). Synthetic wording, same shape.
+PROVIDED_COPY = ('有人问：学费凭什么每月涨100？清洁设备渠道商老板们，我今天交个底。\n\n'
+                 '我们已经办了4期了，这次第5期课程新增了机器人二开定制化服务；真机加到了20-25款，'
+                 '不同品牌不同价位摆一起让你摸；主机厂讲师也请得更多了。\n\n'
+                 '还有一句实话：这个营办一期亏一期，真机调运、场地、讲师，每期都在加。\n'
+                 '你交的这一次费用，买的是往后每一期的门票。学不会每月免费复训、不限次数；\n\n'
+                 '还在犹豫的，建议先报名，随时可退，现场等你来')
+
+
 class NarratedProductionTests(unittest.TestCase):
     def setUp(self):
         self.fixture = batch_fixtures.NarratedBatchTests(methodName='runTest')
@@ -121,6 +135,11 @@ class NarratedProductionTests(unittest.TestCase):
         self.s.run_creative_task(task['task_id'])
         self.options = self.s.get_narrated_batch(self.batch['batch_id'])['script_options']
         self.events.clear()
+
+    def strict(self):
+        """Pins today's visual fact review: the batch opts into strict_visual_review."""
+        self.s.save_narrated_batch({'batch_id': self.batch['batch_id'],
+                                    'settings': {'workflow_version': 2, 'strict_visual_review': True}})
 
     def plan(self, task_id, state, wanted):
         rows = state.setdefault('script_options', []) if state.get('_preparing_scripts') else state['candidates']
@@ -161,6 +180,7 @@ class NarratedProductionTests(unittest.TestCase):
         return self.s.get_narrated_batch(self.batch['batch_id'])
 
     def test_selected_counts_preserve_both_seeds_and_resume_without_duplicates(self):
+        self.strict()
         request = self.request()
         result = self.run_selection(request)
         self.assertEqual('completed', result['status'])
@@ -289,6 +309,7 @@ class NarratedProductionTests(unittest.TestCase):
 
     def test_grounding_group_order_does_not_replace_confirmed_edit_order(self):
         state = self.domain._load(self.batch['batch_id'])
+        state['settings']['strict_visual_review'] = True
         candidate = copy.deepcopy(state['script_options'][0])
         candidate['shots'] = [state['available_shots'][3], state['available_shots'][0]]
         expected = [shot['segment_id'] for shot in candidate['shots']]
@@ -452,6 +473,7 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual('queued', self.s.resolve_narrated_voice_outcome(request)['task_status'])
 
     def test_known_voice_failure_resumes_from_accepted_review_checkpoint(self):
+        self.strict()
         task = self.s.confirm_narrated_script(self.request(first_count=1))
         state = self.domain._load(self.batch['batch_id'])
         for candidate in state['candidates']:
@@ -532,6 +554,7 @@ class NarratedProductionTests(unittest.TestCase):
 
     def test_voice_overflow_retry_adds_unused_source_before_review(self):
         state = self.domain._load(self.batch['batch_id'])
+        state['settings']['strict_visual_review'] = True
         state['_story_planning_version'] = 2
         state['_speech_budget'] = {'version': 1, 'capacity_ms_per_char': 283.4}
         state['available_shots'] = [
@@ -636,6 +659,7 @@ class NarratedProductionTests(unittest.TestCase):
 
     def test_draft_preparation_keeps_good_choices_and_repairs_only_the_rejected_one(self):
         state = self.domain._load(self.batch['batch_id'])
+        state['settings']['strict_visual_review'] = True
         state['script_options'] = []
         scripts = [{'title': title, 'audience': title, 'pain_point': title, 'angle': title,
                     'narration': text, 'source_ids': ['S1']} for title, text in (
@@ -663,6 +687,7 @@ class NarratedProductionTests(unittest.TestCase):
 
     def test_unmapped_confirmed_draft_cannot_reach_paid_render(self):
         state = self.domain._load(self.batch['batch_id'])
+        state['settings']['strict_visual_review'] = True
         for option in state['script_options']:
             option.update(_draft_only=True, status='needs_review', phrases=[])
         self.domain._store(state)
@@ -691,6 +716,7 @@ class NarratedProductionTests(unittest.TestCase):
 
     def test_confirmed_mapping_keeps_words_local_and_exposes_measured_budgets(self):
         state = self.domain._load(self.batch['batch_id'])
+        state['settings']['strict_visual_review'] = True
         narration = '我想了解这个部件。再看看设备的屏幕。'
         candidate = {**state['script_options'][0], '_draft_only': True, 'narration': narration, 'phrases': []}
         def choose_shots(payload, instruction, **kwargs):
@@ -861,6 +887,7 @@ class NarratedProductionTests(unittest.TestCase):
         for succeeds in (False, True):
             with self.subTest(succeeds=succeeds):
                 state = self.domain._load(self.batch['batch_id'])
+                state['settings']['strict_visual_review'] = True
                 candidate = copy.deepcopy(state['script_options'][0])
                 candidate['status'] = 'needs_review'
                 state['candidates'] = [candidate]
@@ -914,6 +941,7 @@ class NarratedProductionTests(unittest.TestCase):
                             ('volcengine_request_rejected', 'review'), ('cloud_request_outcome_unknown', 'review')):
             with self.subTest(code=code, phase=phase):
                 state = self.domain._load(self.batch['batch_id'])
+                state['settings']['strict_visual_review'] = True
                 candidate = copy.deepcopy(state['script_options'][0])
                 state['candidates'] = [candidate]
                 original = copy.deepcopy(candidate)
@@ -951,6 +979,7 @@ class NarratedProductionTests(unittest.TestCase):
 
     def test_editorial_quality_failure_preserves_rejection_without_remapping(self):
         state = self.domain._load(self.batch['batch_id'])
+        state['settings']['strict_visual_review'] = True
         candidate = copy.deepcopy(state['script_options'][0])
         state['candidates'] = [candidate]
         error = ContentEngineError('narrated_edit_rejected', '编辑质量评分不足')
@@ -1128,6 +1157,427 @@ class NarratedProductionTests(unittest.TestCase):
             self.domain._cloud({}, 'local test', validation_error=lambda _: issue)
         self.assertNotIn('_planning_inflight', state)
 
+
+    # CE3: the default follow-script mode. Each test counts the paid and reviewing entry points.
+    def footage(self, state, durations=(6000, 6000, 6000)):
+        """Distinct visual windows on the fixture assets, as a current analysis yields them."""
+        base = {key: value for key, value in state['available_shots'][0].items()
+                if key not in {'fact_id', 'visual_facts', 'description'}} if state.get('available_shots') else {}
+        ids = list(dict.fromkeys(asset for group in ('opening', 'middle', 'ending') for asset in state['groups'][group]))
+        shots = []
+        for asset in ids:
+            cursor = 0
+            for number, duration in enumerate(durations):
+                ref = f'shot_{asset[-6:]}_{number:02d}'
+                shots.append({**base, 'segment_id': ref, 'evidence_ref': ref, 'source_evidence_ref': ref,
+                              'asset_id': asset, 'source_start_ms': cursor, 'source_end_ms': cursor + duration,
+                              'target_duration_ms': duration, 'content_signature': f'sig-{asset}-{number}',
+                              'description': '', 'visual_facts': {}, 'evidence_scope': 'not_observed'})
+                cursor += duration
+        state['available_shots'] = shots
+        profile = self.domain.d._auto_mix_v2_analysis_profile()
+        state['_snapshots'] = self.domain.d._auto_mix_asset_snapshots(ids)
+        state['_versions'] = {asset: self.domain.d.analyzer.analysis_version_for(self.domain.d._asset_row(asset), profile)
+                              for asset in ids}
+        state['_analysis_provider'] = self.domain.d.analyzer.capability['provider']
+        return shots
+
+    @contextlib.contextmanager
+    def paid_calls(self, allow=()):
+        """Doubles for every paid or reviewing entry point; the test asserts none ran."""
+        names = ('_cloud', '_ground_shots', '_review', '_review_edit', '_grounded_claim_review', '_visual_review', '_plan')
+        with contextlib.ExitStack() as stack:
+            mocks = {name: stack.enter_context(patch.object(NarratedBatchDomain, name,
+                         side_effect=ContentEngineError('test_paid_call', name))) for name in names if name not in allow}
+            mocks['_analyze_asset'] = stack.enter_context(patch.object(
+                self.s.creative_domain, '_analyze_asset', side_effect=AssertionError('no media analysis')))
+            if 'provider' not in allow:
+                mocks['provider'] = stack.enter_context(patch.object(
+                    self.domain.d.analyzer.cloud_client, '_structured_completion',
+                    side_effect=AssertionError('no provider request')))
+            yield mocks
+
+    def draft_options(self, state):
+        """Confirmable drafts as preparation leaves them: copy only, shots still to be arranged."""
+        self.footage(state)
+        for option in state['script_options']:
+            option.update(status='needs_review', _draft_only=True, phrases=[])
+        self.domain._store(state)
+        self.options = state['script_options']
+
+    def provided_batch(self, narration):
+        saved = self.s.save_narrated_batch({'groups': {'middle': self.fixture.ids}, 'title': '学员招募',
+            'target_count': 1, 'brief_version': 1, 'script_source': 'provided', 'target_audience': '清洁设备渠道商',
+            'expression': narration, 'settings': {'workflow_version': 2}})
+        self.s.run_creative_task(self.s.prepare_narrated_scripts(saved['batch_id'])['task_id'])
+        state = self.domain._load(saved['batch_id'])
+        # Like the 2026-10-01 batch: the materials were analysed by the earlier attempt.
+        self.footage(state)
+        self.domain._store(state)
+        return state
+
+    def test_provided_copy_with_unseen_claims_reaches_render_without_any_paid_call(self):
+        state = self.provided_batch(PROVIDED_COPY)
+        option = state['script_options'][0]
+        self.assertTrue(option['_user_supplied'])
+        progress, rendered = [], []
+        original_activity = NarratedBatchDomain._activity
+        def activity(domain, batch, message, *args, **kwargs):
+            original_activity(domain, batch, message, *args, **kwargs)
+            progress.append((message, batch['activity'].get('overall_percent')))
+        def render(domain, task_id, batch, candidate, index, total):
+            domain._verify_confirmed_script(batch, candidate)
+            domain._create_run(task_id, batch, candidate)  # pins the recipe locally; voice is not part of this test
+            rendered.append(copy.deepcopy(candidate))
+            candidate.update(status='completed', generated_video_id=f'fake-{index}')
+        with self.paid_calls() as mocks, \
+             patch.object(NarratedBatchDomain, '_activity', autospec=True, side_effect=activity), \
+             patch.object(NarratedBatchDomain, '_render_candidate', render):
+            task = self.s.confirm_narrated_script({'batch_id': state['batch_id'], 'selections': [
+                {'script_id': option['candidate_id'], 'revision': option['revision'], 'count': 1}]})
+            self.s.run_creative_task(task['task_id'])
+        for name, mock in mocks.items():
+            self.assertEqual(0, mock.call_count, f'{name} must not run in the default mode')
+        result = self.domain._load(state['batch_id'])
+        self.assertEqual('completed', result['status'], result.get('reasons'))
+        self.assertEqual('completed', result['production_jobs'][0]['status'])
+        candidate = rendered[0]
+        self.assertEqual(PROVIDED_COPY, candidate['narration'])
+        self.assertEqual(PROVIDED_COPY, candidate['_confirmed_script']['narration'])
+        self.assertEqual(re.sub(r'\s+', '', PROVIDED_COPY), re.sub(r'\s+', '', ''.join(
+            phrase['text'] for phrase in candidate['_tracks']['spoken_phrases'])))
+        for claim in ('已经办了4期', '20-25款', '学不会每月免费复训'):
+            self.assertIn(claim, ''.join(phrase['text'] for phrase in candidate['phrases']))
+        self.assertEqual(('planned', 2, 'follow_script'),
+                         (candidate['status'], candidate['review_version'], candidate['review_mode']))
+        rank = {asset: number for number, asset in enumerate(result['groups']['middle'])}
+        positions = [(rank[shot['asset_id']], shot['source_start_ms']) for shot in candidate['shots']]
+        self.assertEqual(sorted(set(positions)), positions, 'material order, then source time, each shot once')
+        refs = [shot['segment_id'] for shot in candidate['shots']]
+        self.assertEqual(refs, [shot['segment_id'] for shot in follow_script_footage(result) if shot['segment_id'] in refs])
+        by_id = {shot['segment_id']: shot for shot in candidate['shots']}
+        for phrase in candidate['phrases']:
+            self.assertGreaterEqual(sum(by_id[ref]['target_duration_ms'] for ref in phrase['shot_ids']),
+                                    self.domain._phrase_budget_ms(result, phrase['text']))
+        self.assertEqual(set(self.fixture.ids), {shot['asset_id'] for shot in candidate['shots']},
+                         'surplus footage is spread over every material')
+        self.assertIn(('正在按文案顺序安排镜头', 45), progress)
+        self.assertIn(('已按文案顺序安排镜头', 60), progress)
+        # The same shots as a published work refuse neither the arrangement nor the voiced timeline.
+        again = {**copy.deepcopy(result['candidates'][0]), 'status': 'needs_review'}
+        with patch.object(NarratedBatchDomain, '_history', return_value=[candidate['shots']]):
+            review_confirmed_candidate(self.domain, result, again)
+            self.assertEqual(refs, [shot['segment_id'] for shot in again['shots']])
+            identity = {'narrated_batch_id': state['batch_id'], 'narrated_candidate_id': candidate['candidate_id']}
+            self.domain.validate_actual_timeline(identity, {'selected_segments': candidate['shots']})
+            result['candidates'][0].pop('review_mode')
+            self.domain._store(result)
+            with self.assertRaises(ContentEngineError) as duplicate:
+                self.domain.validate_actual_timeline(identity, {'selected_segments': candidate['shots']})
+        self.assertEqual('narrated_duplicate', duplicate.exception.code, 'reviewed works keep the repeat check')
+
+    def test_strict_mode_still_reviews_and_refuses_the_same_copy(self):
+        for strict in (True, False):
+            with self.subTest(strict=strict):
+                state = self.domain._load(self.batch['batch_id'])
+                self.footage(state)
+                # The arrangement the earlier attempt already had; strict mode reviews it.
+                candidate = follow_script_candidate(self.domain, state, PROVIDED_COPY, '学员招募', {})
+                for key in ('review_mode', 'review_version', 'review_reason'):
+                    candidate.pop(key)
+                candidate.update(status='needs_review', narration=PROVIDED_COPY, _user_supplied=True,
+                                 _confirmed_script={'narration': PROVIDED_COPY})
+                state['settings']['strict_visual_review'] = strict
+                state['candidates'] = [candidate]
+                grounded, reviewed = [], []
+                def ground(task_id, batch, shots, *_args):
+                    grounded.append(len(shots))
+                    return [{**shot, 'fact_id': f"fact-{shot['segment_id']}"} for shot in shots]
+                def claim_review(candidates, batch, audit=None):
+                    reviewed.append(re.sub(r'\s+', '', candidates[0]['narration']))
+                    audit['rejections'].append({'stage': 'claim_review', 'candidate_id': candidates[0]['candidate_id'],
+                                                'reason': '缺少画面证据：已办4期'})
+                    return []
+                def remap(payload, instruction, **kwargs):
+                    self.assertEqual(PROVIDED_COPY, payload['confirmed_narration'])
+                    raise ContentEngineError('narrated_edit_rejected', '缺少画面证据：已办4期')
+                with patch.object(self.domain, '_ground_shots', side_effect=ground), \
+                     patch.object(self.domain, '_grounded_claim_review', side_effect=claim_review), \
+                     patch.object(self.domain, '_cloud', side_effect=remap) as cloud:
+                    if strict:
+                        with self.assertRaises(ContentEngineError) as refused:
+                            review_confirmed_candidate(self.domain, state, candidate)
+                        self.assertEqual('narrated_edit_rejected', refused.exception.code)
+                        self.assertIn('已办4期', refused.exception.message)
+                        self.assertEqual(1, len(grounded))
+                        self.assertEqual([re.sub(r'\s+', '', PROVIDED_COPY)], reviewed)
+                        self.assertEqual(1, cloud.call_count, 'the strict path keeps its paid remapping')
+                    else:
+                        review_confirmed_candidate(self.domain, state, candidate)
+                        self.assertEqual(([], [], 0), (grounded, reviewed, cloud.call_count))
+                        self.assertEqual(('planned', 'follow_script'), (candidate['status'], candidate['review_mode']))
+                        self.assertEqual(PROVIDED_COPY, candidate['narration'])
+
+    def test_surplus_footage_spreads_in_order_and_shortage_stops_before_paid_work(self):
+        state = self.domain._load(self.batch['batch_id'])
+        shots = self.footage(state)
+        narration = '先说第一件事。再说第二件事。最后说第三件事。'
+        phrases = follow_script_phrases(self.domain, state, narration)
+        refs = [ref for phrase in phrases for ref in phrase['shot_ids']]
+        order = [shot['segment_id'] for shot in shots]
+        self.assertEqual(sorted(refs, key=order.index), refs)
+        assets = [next(shot['asset_id'] for shot in shots if shot['segment_id'] == ref) for ref in refs]
+        self.assertEqual(self.fixture.ids[0], assets[0])
+        self.assertEqual(self.fixture.ids[-1], assets[-1], 'not only the start of the first material')
+        self.assertGreaterEqual(len(set(assets)), 3)
+        self.assertEqual(narration, ''.join(phrase['text'] for phrase in phrases))
+        # Uneven windows: a paragraph may run past where the next one would start; no shot is reused.
+        uneven = {'groups': {'middle': ['a']}, 'available_shots': [
+            {'segment_id': f's{number}', 'asset_id': 'a', 'source_start_ms': start, 'source_end_ms': start + duration,
+             'target_duration_ms': duration, 'content_signature': f'k{number}'}
+            for number, (start, duration) in enumerate(zip((0, 3000, 6000, 7000, 12000, 15000, 23000),
+                                                           (3000, 3000, 1000, 5000, 3000, 8000, 5000)))]}
+        with patch.object(self.domain, '_phrase_budget_ms', side_effect=lambda batch, text: len(text.strip()) * 1000), \
+             patch.object(self.domain, '_max_narration_chars', return_value=80):
+            groups = [phrase['shot_ids'] for phrase in follow_script_phrases(self.domain, uneven, '甲甲甲甲甲。甲甲。甲甲。甲。')]
+        self.assertEqual([['s0', 's1'], ['s3'], ['s5'], ['s6']], groups)
+        # Shortage: two short windows. The job waits for the user before any voice or model call.
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        state['available_shots'] = state['available_shots'][:1] + state['available_shots'][3:4]
+        state['script_options'][0]['narration'] = '这段口播比两个镜头长得多，需要更多素材才能配完，' * 3 + '请补充。'
+        self.domain._store(state)
+        self.options = state['script_options']
+        with self.paid_calls() as mocks:
+            result = self.run_selection(self.request(first_count=1))
+        for name, mock in mocks.items():
+            self.assertEqual(0, mock.call_count, name)
+        self.assertEqual('needs_attention', result['status'])
+        self.assertIn('素材总时长不够配完这段口播', result['reasons'][0])
+        self.assertIn('请补充素材或缩短文案', result['reasons'][0])
+        self.assertEqual(('queued', 'narrated_insufficient_unique_footage'),
+                         (result['production_jobs'][0]['status'], result['production_jobs'][0]['error_code']))
+        self.assertFalse(any(kind == 'render' for kind, _ in self.events))
+
+    def test_default_mode_lets_one_paragraph_continue_into_the_next_material(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.footage(state, durations=(3000,))
+        text = '这一段口播需要跨两个素材才够长。'
+        phrases = follow_script_phrases(self.domain, state, text)
+        self.assertEqual(1, len(phrases))
+        assets = {shot['asset_id'] for shot in state['available_shots'] if shot['segment_id'] in phrases[0]['shot_ids']}
+        self.assertEqual(2, len(assets))
+        candidate = follow_script_candidate(self.domain, state, text, '跨素材', {})
+        self.assertEqual(phrases[0]['shot_ids'], [shot['segment_id'] for shot in candidate['shots']])
+        with patch.object(self.domain, '_source_evidence_for', return_value={}), self.assertRaises(ContentEngineError) as strict:
+            self.domain._repack_duration_candidate({'title': '跨素材', 'phrases': phrases}, state,
+                                                   state['available_shots'], allow_same_activity_cuts=True)
+        self.assertEqual('narrated_mapping_invalid', strict.exception.code, 'the strict mapping keeps one activity per paragraph')
+
+    def test_continue_reruns_confirmed_copy_skipped_by_the_visual_review(self):
+        for code in ('narrated_edit_rejected', 'narrated_facts_invalid'):
+            with self.subTest(code=code):
+                state = self.domain._load(self.batch['batch_id'])
+                narrated_production.clear_selection(state)
+                state.update(script_confirmation=None, candidates=[], status='scripts_ready')
+                self.draft_options(state)
+                task = self.s.confirm_narrated_script(self.request(first_count=1))
+                # What the earlier build left: the confirmed script skipped by the visual review.
+                old = self.domain._load(self.batch['batch_id'])
+                first = old['candidates'][0]
+                first.update(status='failed', error_code=code, error='缺少画面证据')
+                old['production_jobs'][0].update(status='skipped', error_code=code, error='缺少画面证据')
+                old['production_jobs'][1]['status'] = 'completed'
+                old['status'] = 'completed_with_errors'
+                self.domain._store(old)
+                self.domain.db.execute("UPDATE content_tasks SET status='completed' WHERE id=?", (task['task_id'],))
+                self.assertTrue(self.domain.get(self.batch['batch_id'])['production_retry_available'])
+                strict = copy.deepcopy(old)
+                strict['settings']['strict_visual_review'] = True
+                self.assertEqual(code == 'narrated_edit_rejected', bool(retryable_planning_jobs(strict)),
+                                 'strict mode keeps the earlier retry rules')
+                for blocked in ({'_run_id': 'already-voiced'}, {'status': 'outcome_unknown'},
+                                {'error_code': 'cloud_request_outcome_unknown'}):
+                    probe = copy.deepcopy(old)
+                    probe['candidates'][0].update(blocked)
+                    self.assertEqual([], retryable_planning_jobs(probe), blocked)
+                self.assertEqual([], retryable_planning_jobs({**copy.deepcopy(old), '_planning_inflight': 'pending'}))
+                self.events.clear()
+                with self.paid_calls() as mocks:
+                    continued = self.s.continue_narrated_batch(self.batch['batch_id'])
+                    self.s.run_creative_task(continued['task_id'])
+                for name, mock in mocks.items():
+                    self.assertEqual(0, mock.call_count, name)
+                result = self.domain._load(self.batch['batch_id'])
+                self.assertEqual('completed', result['status'], result.get('reasons'))
+                self.assertEqual([('render', first['candidate_id'])], self.events)
+                self.assertEqual(self.options[0]['narration'], result['candidates'][0]['narration'])
+                self.assertEqual('follow_script', result['candidates'][0]['review_mode'])
+
+    def test_ai_draft_confirmed_unchanged_takes_the_follow_script_path(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        self.assertFalse(any(option.get('_user_supplied') for option in self.options))
+        with self.paid_calls() as mocks:
+            result = self.run_selection(self.request(first_count=1))
+        for name, mock in mocks.items():
+            self.assertEqual(0, mock.call_count, name)
+        self.assertEqual('completed', result['status'], result.get('reasons'))
+        for option in self.options[:2]:
+            candidate = next(c for c in result['candidates'] if c['candidate_id'] == option['candidate_id'])
+            self.assertEqual(option['narration'], candidate['narration'])
+            self.assertEqual('follow_script', candidate['review_mode'])
+
+    def test_strict_setting_is_boolean_defaults_off_and_unconfirms_when_changed(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.assertNotIn('strict_visual_review', state['settings'])
+        self.assertFalse(strict_visual_review(state))
+        for value in ('yes', 1, None, 'true'):
+            with self.subTest(value=value), self.assertRaises(ContentEngineError) as error:
+                self.s.save_narrated_batch({'batch_id': self.batch['batch_id'],
+                                            'settings': {'workflow_version': 2, 'strict_visual_review': value}})
+            self.assertEqual('invalid_narrated_settings', error.exception.code)
+        self.strict()
+        self.assertTrue(strict_visual_review(self.domain._load(self.batch['batch_id'])))
+        self.assertIs(True, self.s.get_narrated_batch(self.batch['batch_id'])['settings']['strict_visual_review'])
+        task = self.s.confirm_narrated_script(self.request(first_count=1))
+        self.domain.db.execute("UPDATE content_tasks SET status='completed' WHERE id=?", (task['task_id'],))
+        self.assertTrue(self.domain._load(self.batch['batch_id'])['script_confirmation'])
+        changed = self.s.save_narrated_batch({'batch_id': self.batch['batch_id'],
+                                              'settings': {'workflow_version': 2, 'strict_visual_review': False}})
+        self.assertIsNone(changed['script_confirmation'])
+        self.assertEqual('scripts_ready', changed['status'])
+
+    def variation_completion(self, responses, calls):
+        """The provider double: up to three attempts inside one request, as _structured_completion makes."""
+        def completion(**kwargs):
+            calls.append(kwargs.get('operation_label'))
+            payload = json.loads(kwargs['messages'][-1]['content'])
+            self.assertIn('source_narration', payload)
+            self.assertIn('数字', kwargs['messages'][0]['content'])
+            issue = None
+            for _ in range(3):
+                response = next(responses)
+                if isinstance(response, Exception):
+                    raise response
+                issue = kwargs['validation_error'](response)
+                if issue is None:
+                    return response
+            raise ContentEngineError(kwargs['parse_code'], f"{kwargs['parse_message']}：{issue}")
+        return completion
+
+    def test_variations_are_one_text_rewrite_each_without_visual_review(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        source = self.options[0]['narration']
+        self.assertEqual('我想了解第1个问题。', source)
+        responses = iter([
+            {'title': '换个开头', 'narration': '第1个问题我想弄懂，' * 4},         # too long, rewritten in the same request
+            {'title': '换个开头', 'narration': '第1个问题我很想弄懂！'},
+            {'title': '再换一种', 'narration': source},                             # the confirmed copy again
+            {'title': '再换一种', 'narration': '第1个问题，怎么弄懂？' * 3},         # too long
+            {'title': '再换一种', 'narration': ''},
+        ])
+        calls, rendered = [], []
+        def render(domain, task_id, batch, candidate, index, total):
+            domain._verify_confirmed_script(batch, candidate)
+            domain._create_run(task_id, batch, candidate)
+            rendered.append(candidate['candidate_id'])
+            candidate.update(status='completed', generated_video_id=f'fake-{index}')
+        cloud = self.domain.d.analyzer.cloud_client
+        with self.paid_calls(allow=('_cloud', 'provider')) as mocks, \
+             patch.object(NarratedBatchDomain, '_render_candidate', render), \
+             patch('content_engine.narrated_brief.review', side_effect=AssertionError('no copy review')) as brief_review, \
+             patch.object(cloud, '_structured_completion', side_effect=self.variation_completion(responses, calls)):
+            result = self.run_selection({'batch_id': self.batch['batch_id'], 'selections': [
+                {'script_id': self.options[0]['candidate_id'], 'revision': self.options[0]['revision'], 'count': 3}]})
+        self.assertEqual(['文案改写', '文案改写'], calls, 'exactly one text request per variation')
+        for name, mock in mocks.items():
+            self.assertEqual(0, mock.call_count, name)
+        brief_review.assert_not_called()
+        self.assertEqual(['completed', 'completed', 'skipped'], [job['status'] for job in result['production_jobs']])
+        self.assertEqual('completed_with_errors', result['status'])
+        self.assertEqual('narrated_variation_invalid', result['production_jobs'][2]['error_code'])
+        self.assertIn('AI 改写未通过格式检查', result['production_jobs'][2]['error'])
+        confirmed, variation = result['candidates']
+        self.assertEqual(rendered, [confirmed['candidate_id'], variation['candidate_id']])
+        self.assertEqual(source, confirmed['narration'])
+        self.assertEqual('第1个问题我很想弄懂！', variation['narration'])
+        self.assertEqual(('follow_script', self.options[0]['candidate_id'], 2),
+                         (variation['review_mode'], variation['source_script_id'], variation['production_index']))
+        self.assertNotEqual(confirmed['shots'][0]['segment_id'], variation['shots'][0]['segment_id'], 'staggered start')
+        self.assertNotIn('_planning_inflight', self.domain._load(self.batch['batch_id']))
+
+    def test_unknown_variation_rewrite_is_not_sent_again(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        calls = []
+        unknown = ContentEngineError('cloud_request_outcome_unknown', '云端结果未知')
+        cloud = self.domain.d.analyzer.cloud_client
+        with patch.object(cloud, '_structured_completion', side_effect=self.variation_completion(iter([unknown]), calls)):
+            result = self.run_selection({'batch_id': self.batch['batch_id'], 'selections': [
+                {'script_id': self.options[0]['candidate_id'], 'revision': self.options[0]['revision'], 'count': 2}]})
+            self.assertEqual(['文案改写'], calls)
+            self.assertEqual('outcome_unknown', result['status'])
+            self.assertEqual(['completed', 'outcome_unknown'], [job['status'] for job in result['production_jobs']])
+            with self.assertRaises(ContentEngineError) as error:
+                self.s.continue_narrated_batch(self.batch['batch_id'])
+            self.assertEqual('narrated_planning_outcome_unknown', error.exception.code)
+        self.assertEqual(['文案改写'], calls, 'an unknown rewrite is never sent again automatically')
+
+    def test_default_draft_preparation_keeps_drafts_for_the_user_to_confirm(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['script_options'] = []
+        script = {'title': '准备提问', 'audience': '学员', 'pain_point': '不知道问什么', 'angle': '准备提问',
+                  'narration': '参加活动之前可以整理疑问，已办4期的老学员都这么做。', 'source_ids': ['S1']}
+        calls = []
+        def cloud(payload, instruction, **kwargs):
+            calls.append(kwargs.get('purpose'))
+            result = {'scripts': [script]}
+            self.assertIsNone(kwargs['validation_error'](result))
+            return result
+        with patch.object(self.domain, '_cloud', side_effect=cloud):
+            narrated_script_drafts.prepare(self.domain, state['task_id'], state)
+        self.assertEqual(['文案生成'], calls, 'no fact review drops a draft in the default mode')
+        self.assertEqual([script['narration']], [option['narration'] for option in state['script_options']])
+        self.assertIsNone(state['script_options'][0]['_draft_review'])
+
+    def test_single_confirmation_path_also_follows_the_script_by_default(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.footage(state)
+        option = state['script_options'][0]
+        option['status'] = 'needs_review'  # an edited draft that still has its earlier arrangement
+        self.domain._store(state)
+        with self.paid_calls() as mocks:
+            task = self.s.confirm_narrated_script({'batch_id': self.batch['batch_id'],
+                                                   'script_id': option['candidate_id'], 'revision': option['revision']})
+            self.s.run_creative_task(task['task_id'])
+        for name, mock in mocks.items():
+            self.assertEqual(0, mock.call_count, name)
+        result = self.domain._load(self.batch['batch_id'])
+        self.assertNotIn('production_jobs', result)
+        self.assertEqual([('render', option['candidate_id'])], self.events)
+        self.assertEqual('follow_script', result['candidates'][0]['review_mode'])
+
+    def test_default_analysis_skips_representative_frames_but_strict_keeps_them(self):
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                state = self.provided_batch(PROVIDED_COPY)
+                state['settings']['strict_visual_review'] = strict
+                state['available_shots'] = []
+                grounded = []
+                def ground(task_id, batch, shots, *_args):
+                    grounded.append(len(shots))
+                    return shots
+                with patch.object(NarratedBatchDomain, '_ground_shots', side_effect=ground), \
+                     patch.object(self.s.creative_domain, '_analyze_asset', side_effect=AssertionError('cached analysis')):
+                    self.assertTrue(self.domain._refresh_provider_analysis(state['task_id'], state))
+                self.assertTrue(state['available_shots'])
+                if strict:
+                    self.assertEqual(1, len(grounded), 'strict drafts still look at representative frames')
+                else:
+                    self.assertEqual([], grounded)
+                    self.assertTrue(all(shot['evidence_scope'] == 'not_observed' for shot in state['available_shots']))
 
 if __name__ == '__main__':
     unittest.main()

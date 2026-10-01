@@ -4,7 +4,7 @@ import time
 from difflib import SequenceMatcher
 
 from .errors import ContentEngineError
-from . import narrated_brief
+from . import narrated_brief, narrated_production
 
 
 def prepare(domain, task_id, batch):
@@ -117,7 +117,12 @@ def prepare(domain, task_id, batch):
                 domain._store(batch)
                 continue
         domain._store(batch)
-        domain._activity(batch, '正在核对完整文案与素材依据')
+        if not narrated_production.strict_visual_review(batch):
+            # Default mode: the user reads and confirms each draft; no fact review drops one.
+            review = {'reviews': [None] * len(scripts)}
+        else:
+            review = None
+            domain._activity(batch, '正在核对完整文案与素材依据')
 
         def validate_reviews(result):
             reviews = result.get('reviews') if isinstance(result, dict) else None
@@ -133,7 +138,7 @@ def prepare(domain, task_id, batch):
                     return 'unsupported_claims须为待修正表述的文字列表。'
             return None
 
-        review = domain._cloud({'scripts': [{'index': number, **script} for number, script in enumerate(scripts)],
+        review = review or domain._cloud({'scripts': [{'index': number, **script} for number, script in enumerate(scripts)],
             'sources': [source for source in sources if source['source_id'] in {ref for script in scripts for ref in script['source_ids']}], **({'creative_brief': narrated_brief.context(batch),
                 'existing_choices': [{key: option.get(key, '') for key in
                     ('title', 'summary', 'pain_point', 'angle', 'narration')} for option in options]} if modern else {})},
@@ -154,8 +159,8 @@ def prepare(domain, task_id, batch):
         for script, decision in zip(scripts, review['reviews']):
             duplicate = any(SequenceMatcher(None, script['narration'], option['narration'], autojunk=False).ratio() > .9
                             or script['angle'] == option['angle'] for option in options)
-            if not decision['accepted'] or decision['unsupported_claims'] or duplicate:
-                feedback.append({'script': script, 'issues': decision['unsupported_claims'],
+            if duplicate or decision is not None and (not decision['accepted'] or decision['unsupported_claims']):
+                feedback.append({'script': script, 'issues': decision['unsupported_claims'] if decision else [],
                     'reason': '与已保留方向重复，请换一个具体切入点。' if duplicate else decision['reason']})
                 continue
             options.append({**{field: script[field].strip() for field in ('title', 'audience', 'pain_point', 'angle', 'narration')},
@@ -167,7 +172,8 @@ def prepare(domain, task_id, batch):
                 'phrases': [], 'status': 'needs_review', 'generated_video_id': None,
                 'estimated_duration_ms': domain._estimated_speech_duration_ms(batch, [script['narration']]),
                 'duration_ms': 0, '_draft_only': True, '_draft_source_ids': script['source_ids'],
-                '_draft_review': decision, 'review_reason': '文案依据已核对；确认后安排并检查镜头。'})
+                '_draft_review': decision, 'review_reason': '文案依据已核对；确认后安排并检查镜头。' if decision is not None
+                    else '请通读文案后确认；确认后按文案顺序安排镜头。'})
         if modern:
             batch['_script_draft_feedback'] = copy.deepcopy(feedback)
         domain._store(batch)
