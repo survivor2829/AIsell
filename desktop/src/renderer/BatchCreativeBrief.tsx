@@ -1,6 +1,7 @@
 import { Check, Film } from "lucide-react";
 import { AssetThumb } from "./BatchAssets";
 import type { Asset, Batch, Candidate } from "./batch-studio-api";
+import { adLawSentences } from "./ad-law-terms";
 
 export type CreativeBrief = { target_audience: string; expression: string; script_source: "ideas" | "provided" };
 export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "", script_source: "ideas" });
@@ -36,6 +37,15 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
   </section>;
 }
 
+// Lists wording the advertising law may treat as absolute or as a promise. A hint only:
+// confirmation stays available and the copy is shown and voiced exactly as written.
+export function AdLawHint({ text }: { text: string }) {
+  const sentences = adLawSentences(text);
+  if (!sentences.length) return null;
+  return <div className="batch-ad-law-hint" role="note"><p>广告法提示：以下说法可能属于绝对化或承诺用语，仅供参考，不影响确认和制作。</p>
+    <ul>{sentences.map((item) => <li key={item.start}><b>{item.terms.map((hit) => hit.kind === "promise" ? `${hit.term}（承诺用语）` : hit.term).join("、")}</b>：{item.sentence}</li>)}</ul></div>;
+}
+
 export function BatchTopicChoices({ options, selected, locked, selectionLocked, onSelect, onEdit, assets = [], mode = "both" }: {
   options: Candidate[]; selected?: string; locked: boolean; selectionLocked?: boolean;
   onSelect: (id: string) => void; onEdit: (candidate: Candidate) => void;
@@ -67,7 +77,7 @@ export function BatchTopicChoices({ options, selected, locked, selectionLocked, 
         <button type="button" disabled={locked} onClick={() => onEdit(chosen)}>修改文案</button></header>
       <div className="batch-copy-review-layout">
         <div className="batch-copy-review-image">{previewFor(chosen) ? <AssetThumb asset={previewFor(chosen)!} /> : <Film size={48} />}<span>将使用你的真实素材</span></div>
-        <div><p className="batch-script-body">{chosen.narration}</p><small>预计 {Math.round((chosen.estimated_duration_ms || chosen.duration_ms || 0) / 1000)} 秒</small></div>
+        <div><p className="batch-script-body">{chosen.narration}</p><small>预计 {Math.round((chosen.estimated_duration_ms || chosen.duration_ms || 0) / 1000)} 秒</small><AdLawHint text={chosen.narration} /></div>
       </div>
     </section>}
   </>;

@@ -58,7 +58,7 @@ const ERRORS = {
   auto_mix_voice_persona_approval_required: "这条视频使用的声音尚未批准或批准已失效，请在「声音与配乐」中改选已批准的声音，或重新试听并批准后再试。",
   auto_mix_voice_persona_not_found: "所选声音已不在声音列表中，请在「声音与配乐」中改选已批准的声音。",
   invalid_voice_persona_id: "声音设置无效，请在「声音与配乐」中重新选择已批准的声音。",
-  invalid_narrated_settings: "制作设置无效，请检查最短时长、配乐和视频模板后重试。",
+  invalid_narrated_settings: "制作设置无效，请检查最短时长、配乐、视频模板和画面核对开关后重试。",
   invalid_narrated_groups: "素材分组无效，请重新选择素材。",
   invalid_asset_ids: "素材选择无效，请重新选择素材。",
   invalid_asset_id: "素材编号无效，请重新选择素材。",
@@ -72,6 +72,8 @@ for (const field of "material_context script_selections count production_jobs or
 for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
 PUBLIC_FIELDS.add("video_template");
+// The strict visual review switch, and the mark on works made without it.
+for (const field of ["strict_visual_review", "review_mode"]) PUBLIC_FIELDS.add(field);
 for (const field of ['stage_times', 'action', 'finished_at']) PUBLIC_FIELDS.add(field);
 for (const field of ['planning_checkpoint', 'stage']) PUBLIC_FIELDS.add(field);
 function publicBatch(value, depth = 0) {
@@ -116,8 +118,9 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return result;
   }
   function soundSettings(value) {
-    keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template"]);
+    keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template", "strict_visual_review"]);
     if (value.video_template != null && !["topic_fixed", "key_points"].includes(value.video_template)) invalid("invalid_narrated_settings");
+    if (value.strict_visual_review !== undefined && typeof value.strict_visual_review !== "boolean") invalid("invalid_narrated_settings");
     const result = { settings: { ...value } };
     if (result.settings.minimum_duration_seconds != null && (!Number.isSafeInteger(result.settings.minimum_duration_seconds) || result.settings.minimum_duration_seconds < 0)) invalid("invalid_narrated_settings");
     if (result.settings.voice_persona_id) validateVoicePersonaId(result.settings.voice_persona_id);

@@ -223,6 +223,32 @@ async function main() {
   assert.equal(briefResult.script_options[0].framework, "problem_solution_cta");
   assert.equal(briefResult.brief_suggestions.expression, "围绕现场演示介绍学习内容");
   assert.equal(briefResult.script_options[0]._brief_review_hash, undefined);
+  // CE3: the strict visual review switch is a boolean setting that reaches the engine and comes back.
+  const save = (settings) => handlers.get(CHANNELS.save)({ sender }, { ...draft, settings });
+  for (const value of [true, false]) {
+    assert.equal((await save({ workflow_version: 2, strict_visual_review: value })).ok, true);
+    assert.equal(saved.at(-1).settings.strict_visual_review, value);
+  }
+  assert.equal((await save({ workflow_version: 2 })).ok, true);
+  assert.equal("strict_visual_review" in saved.at(-1).settings, false, "an older batch without the switch keeps the default");
+  const savedBefore = saved.length;
+  for (const value of ["true", 1, null, {}]) {
+    const refused = await save({ workflow_version: 2, strict_visual_review: value });
+    assert.equal(refused.code, "invalid_narrated_settings", `strict_visual_review=${JSON.stringify(value)} must be refused`);
+  }
+  assert.equal(saved.length, savedBefore, "an invalid switch never reaches the engine");
+  const strictConfirm = await confirm({ batch_id: batchId, selections: selections.slice(0, 1),
+    settings: { workflow_version: 2, strict_visual_review: true }, clickToken: `${CHANNELS.confirm}:${randomUUID()}` });
+  assert.equal(strictConfirm.ok, true);
+  assert.equal(confirmed.at(-1).settings.strict_visual_review, true);
+  const confirmedBefore = confirmed.length;
+  assert.equal((await confirm({ batch_id: batchId, selections: selections.slice(0, 1),
+    settings: { workflow_version: 2, strict_visual_review: "yes" }, clickToken: `${CHANNELS.confirm}:${randomUUID()}` })).code,
+    "invalid_narrated_settings");
+  assert.equal(confirmed.length, confirmedBefore);
+  assert.deepEqual(publicBatch({ settings: { strict_visual_review: true, private_detail: "x" },
+    candidates: [{ candidate_id: "c", review_mode: "follow_script", review_reason: "internal", _run_id: "r" }] }),
+  { settings: { strict_visual_review: true }, candidates: [{ candidate_id: "c", review_mode: "follow_script" }] });
   registration.dispose();
   console.log("narrated batch IPC self-check passed");
 }
