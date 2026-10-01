@@ -17,21 +17,51 @@ async function processSnapshot() {
   const rows = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
   return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate }));
 }
+// CreationDate is "/Date(ms)/" from Windows PowerShell or ISO text; null when unknown.
+function createdAt(row) {
+  const value = String(row?.created ?? ""), match = /^\/Date\((-?\d+)\)\/$/.exec(value);
+  const time = match ? Number(match[1]) : Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+// Start times are wall-clock and Windows steps the clock back by a second or so; only gaps beyond
+// this slack prove a link stale (the 2026-10-01 stranger was 1 h 48 min older than its "parent").
+const CLOCK_SLACK_MS = 60000;
+// Windows keeps a child's ParentProcessId after the parent exits and later reuses that PID, so the
+// link only counts if the child started after the parent and before any newer owner of the PID.
+// Unknown times keep the link: waiting on a stranger is safer than installing under a worker.
+function startedUnder(row, parent, owner) {
+  const started = createdAt(row), since = createdAt(parent), reused = owner ? createdAt(owner) : null;
+  if (started === null || since === null) return true;
+  if (started < since - CLOCK_SLACK_MS) return false;
+  return reused === null || reused <= since || started <= reused + CLOCK_SLACK_MS;
+}
+// A process is its PID plus start time: once a PID is reused, the old and new owners are different.
+const identity = row => `${row.pid}@${row.created}`;
 function descendants(rows, rootPid, seed = []) {
-  const selected = new Map(seed.map(row => [row.pid, row]));
-  const root = rows.find(row => row.pid === rootPid); if (root) selected.set(root.pid, root);
+  const selected = new Map(seed.map(row => [identity(row), row])), current = new Map(rows.map(row => [row.pid, row]));
+  // A reused root PID must not stand in for the tracked root.
+  const root = current.get(rootPid); if (root && !seed.some(row => row.pid === rootPid)) selected.set(identity(root), root);
   let changed = true;
   while (changed) {
     changed = false;
-    for (const row of rows) if (selected.has(row.parent) && !selected.has(row.pid)) { selected.set(row.pid, row); changed = true; }
+    for (const row of rows) {
+      if (selected.has(identity(row))) continue;
+      const parents = [...selected.values()].filter(parent => parent.pid === row.parent);
+      if (parents.some(parent => startedUnder(row, parent, current.get(parent.pid)))) { selected.set(identity(row), row); changed = true; }
+    }
   }
   return [...selected.values()];
 }
 async function waitForExit(job, onStage, timeoutMs = 120000) {
   let tracked = job.processes, until = Date.now() + timeoutMs;
+  const recorded = new Set(job.processes.map(identity));
   while (true) {
     const rows = await processSnapshot();
-    const own = new Set(descendants(rows, process.pid).map(row => row.pid));
+    // The app recorded its processes before starting the helper: if the helper now holds the PID of
+    // an exited parent, those processes and their children still belong to the app, not the helper.
+    const since = createdAt(rows.find(row => row.pid === process.pid));
+    const recordedBefore = row => since !== null && recorded.has(identity(row)) && createdAt(row) !== null && createdAt(row) < since;
+    const own = new Set(descendants(rows.filter(row => !recordedBefore(row)), process.pid).map(row => row.pid));
     tracked = descendants(rows, job.parentPid, tracked).filter(row => !own.has(row.pid));
     const alive = tracked.filter(row => rows.some(candidate => candidate.pid === row.pid && candidate.created === row.created));
     if (!alive.length) return;

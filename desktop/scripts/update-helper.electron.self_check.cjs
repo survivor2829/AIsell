@@ -120,6 +120,78 @@ if (!process.versions.electron) {
     } finally { global.__xiaoxiComponents = previous; }
   }
 
+  async function checkProcessTreeIgnoresReusedPids() {
+    const { createRequire } = require("node:module");
+    const { promisify } = require("node:util");
+    const helperFile = path.resolve(__dirname, "../src/main/update-helper.cjs");
+    const load = createRequire(helperFile);
+    const { descendants } = load("./update-helper.cjs");
+    const at = (time, deltaMs = 0) => `/Date(${Date.parse(`2026-10-01T${time}+08:00`) + deltaMs})/`;
+    const pids = rows => rows.map(row => row.pid).sort((a, b) => a - b);
+    // 2026-10-01: a cloud-drive widget started at 08:46 kept the PID of its exited launcher as its
+    // parent; Windows reused that PID for an app worker, and the update waited on the widget and failed.
+    const app = { pid: 14088, parent: 10764, created: at("10:34:29") }, worker = { pid: 27816, parent: 14088, created: at("10:34:31") };
+    const widget = { pid: 40348, parent: 27816, created: at("08:46:37") }, child = { pid: 3404, parent: 27816, created: at("10:35:31") };
+    assert.deepEqual(pids(descendants([widget, app, worker, child], app.pid)), [3404, 14088, 27816],
+      "a process older than its recorded parent is not that parent's child");
+    const iso = row => ({ ...row, created: new Date(Number(/-?\d+/.exec(row.created)[0])).toISOString() });
+    assert.deepEqual(pids(descendants([widget, app, worker, child].map(iso), app.pid)), [3404, 14088, 27816], "ISO start times are compared too");
+    // Every doubtful case below must keep waiting: dropping a real worker would install under it.
+    assert.deepEqual(pids(descendants([app, worker, { ...widget, created: undefined }], app.pid)), [14088, 27816, 40348],
+      "an unknown start time keeps the link: waiting on a stranger is safer than installing under a worker");
+    assert.deepEqual(pids(descendants([app, { ...worker, created: undefined }, child], app.pid)), [3404, 14088, 27816],
+      "an unknown parent start time keeps the link");
+    const clockStepped = { pid: 3500, parent: worker.pid, created: at("10:34:31", -1500) }, sameMs = { pid: 3501, parent: worker.pid, created: worker.created };
+    assert.deepEqual(pids(descendants([app, worker, clockStepped, sameMs], app.pid)), [3500, 3501, 14088, 27816],
+      "a child that looks slightly older after a clock step, or started in the same millisecond, is still ours");
+    const orphan = { pid: 700, parent: worker.pid, created: at("10:34:40") };
+    assert.deepEqual(pids(descendants([app, orphan], app.pid, [app, worker])), [700, 14088, 27816],
+      "a child of an exited worker is still waited on");
+    assert.deepEqual(pids(descendants([app, orphan, { pid: worker.pid, parent: 1, created: undefined }], app.pid, [app, worker])), [700, 14088, 27816],
+      "an unknown start time of the PID's new owner keeps the link");
+    // After a tracked process exits, its PID can belong to a newer stranger: neither that stranger nor
+    // its later children are ours, but a child started while our process still owned the PID is.
+    const strangerRoot = { pid: app.pid, parent: 1, created: at("10:40:00") }, strangerRootChild = { pid: 600, parent: app.pid, created: at("10:41:30") };
+    assert.deepEqual(descendants([strangerRoot, strangerRootChild], app.pid, [app, worker]), [app, worker],
+      "a reused root PID neither replaces the tracked root nor adds the new owner's children");
+    const strangerWorker = { pid: worker.pid, parent: 1, created: at("10:41:00") }, strangerChild = { pid: 701, parent: worker.pid, created: at("10:42:30") };
+    assert.deepEqual(pids(descendants([app, orphan, strangerWorker, strangerChild], app.pid, [app, worker])), [700, 14088, 27816],
+      "a reused worker PID keeps the worker's own orphans and drops the new owner's children");
+    const closeToTakeover = { pid: 702, parent: worker.pid, created: at("10:41:00", 1000) };
+    assert.deepEqual(pids(descendants([app, strangerWorker, closeToTakeover], app.pid, [app, worker])), [702, 14088, 27816],
+      "a child started within the clock slack of the PID's new owner is still waited on");
+    // If one of our own processes takes over that PID, it and its children are ours again.
+    const sibling = { pid: 28000, parent: app.pid, created: at("10:34:32") }, takeover = { pid: worker.pid, parent: sibling.pid, created: at("10:36:00") };
+    const takeoverChild = { pid: 801, parent: worker.pid, created: at("10:38:00") };
+    assert.deepEqual(pids(descendants([app, sibling, takeover, takeoverChild], app.pid, [app, worker, sibling])), [801, 14088, 27816, 27816, 28000],
+      "a PID reused by our own worker is tracked as a new process together with its children");
+    // Replay the incident through waitForExit: only the widget is still running, so the update proceeds;
+    // with a real worker's child still running it keeps waiting and then fails without installing.
+    const execFile = () => assert.fail("processSnapshot must use its promise interface");
+    const self = { ProcessId: process.pid, ParentProcessId: process.ppid, CreationDate: at("10:35:34") };
+    let snapshot = [self, { ProcessId: widget.pid, ParentProcessId: widget.parent, CreationDate: widget.created }];
+    execFile[promisify.custom] = async () => ({ stdout: JSON.stringify(snapshot) });
+    const helperModule = { exports: {} };
+    new Function("require", "module", fs.readFileSync(helperFile, "utf8"))(
+      request => request === "node:child_process" ? { execFile, spawn() { throw Error("unexpected_process_start"); } } : load(request), helperModule);
+    const stages = [];
+    await helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), 0);
+    assert.deepEqual(stages, [], "an unrelated process with a reused parent PID must not hold back the update");
+    snapshot = [self, { ProcessId: orphan.pid, ParentProcessId: orphan.parent, CreationDate: orphan.created }];
+    await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), 0),
+      { message: "update_workers_still_running" });
+    assert.equal(stages[0][0], "waiting", "a running child of an exited worker holds back the update");
+    // The helper itself may get the PID of an exited app process: the app's recorded child of that
+    // process is not the helper's own, even when it started less than the clock slack before the helper.
+    const exitedUnderHelperPid = { pid: process.pid, parent: app.pid, created: at("10:34:35") };
+    const recordedChild = { pid: 900, parent: process.pid, created: at("10:35:04") };
+    snapshot = [self, { ProcessId: recordedChild.pid, ParentProcessId: recordedChild.parent, CreationDate: recordedChild.created }];
+    stages.length = 0;
+    await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, exitedUnderHelperPid, recordedChild] },
+      (...stage) => stages.push(stage), 0), { message: "update_workers_still_running" });
+    assert.equal(stages[0][0], "waiting", "an app process recorded before the helper started is never the helper's own");
+  }
+
   async function checkFailedBackupStopsInstaller(userData, failureMode = "existing-backup") {
     const crypto = require("node:crypto");
     const { createRequire } = require("node:module");
@@ -227,6 +299,7 @@ if (!process.versions.electron) {
     for (const [relative, content] of Object.entries({ ...kept, ...excluded })) {
       assert.deepEqual(fs.readFileSync(path.join(userData, relative)), content, `source remains unchanged: ${relative}`);
     }
+    await checkProcessTreeIgnoresReusedPids();
     await checkBackupCapacityAndFailure(userData);
     await checkCopyAccounting();
     await checkFailedBackupStopsInstaller(userData);
