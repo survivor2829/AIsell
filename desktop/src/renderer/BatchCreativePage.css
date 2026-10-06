@@ -308,3 +308,9 @@
 .batch-copy-actions { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 16px; margin: 12px 0; }
 .batch-copy-actions small { grid-column: 1 / -1; color: #596373; }
 .batch-header-actions { display: flex; align-items: center; gap: 10px; }
+.batch-page .batch-strict-review { display: flex; flex-direction: row; justify-content: flex-start; align-items: flex-start; gap: 8px; margin: 0 0 18px; }
+.batch-page .batch-strict-review input { width: auto; margin-top: 3px; }
+.batch-strict-review small { display: block; color: #707988; font-size: 12px; margin-top: 3px; }
+.batch-ad-law-hint { border: 1px solid #ebd4b4; padding: 10px 13px; margin: 10px 0; background: #fffaf2; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
+.batch-ad-law-hint p { margin: 0 0 6px; color: #707988; }
+.batch-ad-law-hint ul { margin: 0; padding-left: 18px; }

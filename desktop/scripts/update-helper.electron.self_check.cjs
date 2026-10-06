@@ -177,8 +177,11 @@ if (!process.versions.electron) {
     const stages = [];
     await helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), 0);
     assert.deepEqual(stages, [], "an unrelated process with a reused parent PID must not hold back the update");
+    // A short positive timeout: the first round reports "waiting" before a later round gives up
+    // (with 0 a fast machine gives up in the first round, before any stage is reported).
+    const briefWait = 1500;
     snapshot = [self, { ProcessId: orphan.pid, ParentProcessId: orphan.parent, CreationDate: orphan.created }];
-    await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), 0),
+    await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, worker] }, (...stage) => stages.push(stage), briefWait),
       { message: "update_workers_still_running" });
     assert.equal(stages[0][0], "waiting", "a running child of an exited worker holds back the update");
     // The helper itself may get the PID of an exited app process: the app's recorded child of that
@@ -188,7 +191,7 @@ if (!process.versions.electron) {
     snapshot = [self, { ProcessId: recordedChild.pid, ParentProcessId: recordedChild.parent, CreationDate: recordedChild.created }];
     stages.length = 0;
     await assert.rejects(helperModule.exports.waitForExit({ parentPid: app.pid, processes: [app, exitedUnderHelperPid, recordedChild] },
-      (...stage) => stages.push(stage), 0), { message: "update_workers_still_running" });
+      (...stage) => stages.push(stage), briefWait), { message: "update_workers_still_running" });
     assert.equal(stages[0][0], "waiting", "an app process recorded before the helper started is never the helper's own");
   }
 

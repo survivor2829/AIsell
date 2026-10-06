@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AssetPicker, AssetPreview, AssetThumb } from "./BatchAssets";
 import { Asset, Batch, Candidate, Collection, Group, Groups, batchStatus, callBatch, groupNames, videoUrl } from "./batch-studio-api";
 import "./BatchCreativePage.css";
-import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
+import { AdLawHint, BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
 import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
@@ -30,6 +30,12 @@ function batchLabel(b: Batch) {
   const when = Number.isNaN(date.getTime()) ? "日期未知" : date.toLocaleString("zh-CN", { hour12: false });
   return `${when} · #${b.batch_id.slice(-6).toUpperCase()} · ${b.title}`;
 }
+// Follow-script shots carry no frame description; name the material by its order instead.
+function materialLabel(batch: Batch | null | undefined, assetId: string) {
+  const ids = Array.from(new Set((batch?.available_shots || []).map((shot) => shot.asset_id)));
+  const index = ids.indexOf(assetId);
+  return index >= 0 ? `素材 ${index + 1}` : "素材";
+}
 function scriptBody(candidate: Candidate) {
   const paragraphs = candidate.phrases?.map((phrase) => phrase.text).join("\n\n") || "";
   return paragraphs.replace(/\s/g, "") === candidate.narration.replace(/\s/g, "") ? paragraphs : candidate.narration;
@@ -52,6 +58,8 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   const [settings, setSettings] = useState<Batch["settings"]>(() => {
     let saved: Batch["settings"] = {};
     try { saved = JSON.parse(localStorage.getItem("batch-studio-settings") || "{}"); } catch { /* Use defaults if stored settings are unavailable. */ }
+    // The strict switch is per batch: it also governs the paid draft review, before the switch is on screen.
+    delete saved.strict_visual_review;
     return { minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: [], ...saved, voice_persona_id: preferredVoice(saved?.voice_persona_id), workflow_version: 2 };
   });
   const [voices, setVoices] = useState<{ voicePersonaId: string; displayName: string; approvalStatus?: string; provider?: string }[]>([]);
@@ -402,7 +410,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   // (the engine refuses it before creating a task).
   const voiceBlocked = voiceRecovery(batch, catalog) !== null;
   const continueHint = voiceBlocked ? VOICE_RECOVERY_BLOCKS : batch?.production_retry_available
-    ? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。"
+    ? settings.strict_visual_review ? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。" : "继续会按文案顺序重新安排未完成作品的镜头；已完成作品会保留。"
     : "继续会从未完成的步骤接着做；已完成的分析、审核和成片会保留。";
   const continueAction = batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown"
     ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty || voiceBlocked} onClick={() => void start("continue")}>继续未完成作品</button></div>
@@ -555,7 +563,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       {modern ? <BatchTopicChoices options={options} selected={chosen[0]?.candidate_id} locked={locked || dirty} selectionLocked={!!batch?.script_confirmation} onSelect={(id) => { setSelectedCounts({ [id]: "1" }); setFlowView(visualFlow ? 2 : null); }} onEdit={setEditing} assets={assets.filter((asset) => materialIds.includes(asset.assetId))} mode={visualFlow && options.length === 1 ? "review" : "both"} /> : <div className="batch-script-options" role="group" aria-label="可用文案方向">{options.map((option, index) => <article key={option.candidate_id} className={`batch-script-option${selectedCounts[option.candidate_id] !== undefined ? " is-selected" : ""}`}>
         <label className="batch-script-heading"><input type="checkbox" checked={selectedCounts[option.candidate_id] !== undefined} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(e) => { const next = { ...selectedCounts }; if (e.target.checked) next[option.candidate_id] = "1"; else delete next[option.candidate_id]; setSelectedCounts(next); }} /><span>方向 {index + 1} · {option.angle || option.title}</span></label>
         <dl><div><dt>受众</dt><dd>{option.audience || "素材中的使用者"}</dd></div><div><dt>痛点</dt><dd>{option.pain_point || "请阅读正文中的问题"}</dd></div></dl>
-        <h3>{option.title}</h3><p className="batch-script-body">{scriptBody(option)}</p>
+        <h3>{option.title}</h3><p className="batch-script-body">{scriptBody(option)}</p><AdLawHint text={option.narration} />
         <label className="batch-direction-count">这个方向做几条<input type="number" min={1} max={300} step={1} aria-label={`方向 ${index + 1} 生成数量`} value={selectedCounts[option.candidate_id] ?? ""} placeholder="先勾选方向" disabled={locked || !!batch?.script_confirmation || dirty || selectedCounts[option.candidate_id] === undefined} onChange={(e) => setSelectedCounts({ ...selectedCounts, [option.candidate_id]: e.target.value })} /><span>条</span></label>
         <footer><small>预计 {Math.round((option.estimated_duration_ms || option.duration_ms || 0) / 1000)} 秒 · 第 {option.revision} 版</small><button disabled={locked} onClick={() => setEditing(option)}>修改正文</button></footer>
       </article>)}</div>}
@@ -564,6 +572,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={voiceApproved} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
       <VideoTemplatePicker value={settings.video_template || "topic_fixed"} disabled={locked || !!batch?.script_confirmation} onChange={(video_template) => changeSoundSettings({ ...settings, video_template })} />
+      <label className="batch-strict-review"><input type="checkbox" checked={settings.strict_visual_review === true} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, strict_visual_review: event.target.checked })} /><span><b>严格核对画面事实</b><small>开启后逐句核对口播与画面，与画面不符的说法会被拦下，耗时更长、云端识别会计费。默认关闭：按你确认的文案直接配音剪辑。</small></span></label>
       {soundDirty && <p className="batch-hint">制作设置已更新。</p>}
       <div className="batch-script-confirm"><div><p>{chosen.length ? modern ? `制作 ${chosenTotal} 条视频` : `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : modern ? "请先选定一个方案。" : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
         {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid || !settings.voice_persona_id} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
@@ -574,7 +583,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     {showResults && batch && completed > 0 && <div className="batch-output-row"><p>{batch.export_ready ? `已自动保存 ${batch.exported_count} 条成片` : "已完成的作品可以保存到成片文件夹"}</p><button disabled={busy} onClick={() => void run(async () => { await callBatch("open-output", { batch_id: batch.batch_id }); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); })}>打开成片文件夹</button>{batch.export_error && <p className="batch-notice" role="status">视频已制作完成，但保存遇到问题。点击上方按钮可重新保存，无需重新制作。</p>}</div>}
     {showResults && !!skippedJobs.length && <section className="batch-skipped" aria-label="未完成的作品"><h2>有 {skippedJobs.length} 条未能完成</h2><p>其他作品已继续制作。下面保留每条的原因。</p><ul>{skippedJobs.map((job) => <li key={job.production_index}>第 {job.production_index} 条：{job.error || "当前素材未能支持这条作品。"}</li>)}</ul></section>}
     {showResults && !!shownCandidates.length && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty || voiceBlocked} title={voiceBlocked ? VOICE_RECOVERY_BLOCKS : undefined} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
-      <div className="batch-result-grid">{shownCandidates.slice(0, visibleCandidates).map((c, index) => <article className="batch-result" key={c.candidate_id}>{c.generated_video_id ? <video controls preload="none" poster={videoUrl(c.generated_video_id, "thumbnail")} src={videoUrl(c.generated_video_id)} /> : <div className="batch-result-placeholder"><span>{String(index + 1).padStart(2, "0")}</span><p>{batchStatus[c.status] || "待制作"}</p></div>}<div className="batch-result-body"><h3>{c.title}</h3><p>{c.angle}</p><small>使用 {new Set((c.actual_shots || c.shots).map((s) => s.asset_id)).size} 个原素材 · {(c.actual_shots || c.shots).length} 个镜头 · {c.generated_video_id ? "成片" : "预计"} {((c.duration_ms || c.shots.reduce((n, s) => n + s.source_end_ms - s.source_start_ms, 0)) / 1000).toFixed(1)} 秒</small>{c.music_track_id && <p>配乐：{batch?.music_selections?.find((item) => item.candidate_id === c.candidate_id)?.display_name || "本批已选曲目"}</p>}{c.error && c.status !== "rendering" && <p className="batch-notice">{c.error}</p>}<details open={!visualFlow && !c.generated_video_id}><summary>完整口播与镜头安排</summary><p>{c.narration}</p><ol>{(c.actual_shots || c.shots).map((s) => <li key={s.segment_id}>{s.description}（{(s.source_start_ms / 1000).toFixed(1)}–{(s.source_end_ms / 1000).toFixed(1)} 秒）</li>)}</ol></details>{!scriptFlow && <button disabled={locked} onClick={() => setEditing(c)}>调整这一条</button>}{c.generated_video_id && <button onClick={() => void run(async () => {
+      <div className="batch-result-grid">{shownCandidates.slice(0, visibleCandidates).map((c, index) => <article className="batch-result" key={c.candidate_id}>{c.generated_video_id ? <video controls preload="none" poster={videoUrl(c.generated_video_id, "thumbnail")} src={videoUrl(c.generated_video_id)} /> : <div className="batch-result-placeholder"><span>{String(index + 1).padStart(2, "0")}</span><p>{batchStatus[c.status] || "待制作"}</p></div>}<div className="batch-result-body"><h3>{c.title}</h3><p>{c.angle}</p><small>使用 {new Set((c.actual_shots || c.shots).map((s) => s.asset_id)).size} 个原素材 · {(c.actual_shots || c.shots).length} 个镜头 · {c.generated_video_id ? "成片" : "预计"} {((c.duration_ms || c.shots.reduce((n, s) => n + s.source_end_ms - s.source_start_ms, 0)) / 1000).toFixed(1)} 秒</small>{c.music_track_id && <p>配乐：{batch?.music_selections?.find((item) => item.candidate_id === c.candidate_id)?.display_name || "本批已选曲目"}</p>}{c.error && c.status !== "rendering" && <p className="batch-notice">{c.error}</p>}<details open={!visualFlow && !c.generated_video_id}><summary>完整口播与镜头安排</summary>{c.review_mode === "follow_script" && <p className="batch-hint">按文案生成，未做画面事实核对</p>}<p>{c.narration}</p><AdLawHint text={c.narration} /><ol>{(c.actual_shots || c.shots).map((s) => <li key={s.segment_id}>{s.description || materialLabel(batch, s.asset_id)}（{(s.source_start_ms / 1000).toFixed(1)}–{(s.source_end_ms / 1000).toFixed(1)} 秒）</li>)}</ol></details>{!scriptFlow && <button disabled={locked} onClick={() => setEditing(c)}>调整这一条</button>}{c.generated_video_id && <button onClick={() => void run(async () => {
           const creative = (window.xiaoxiContent as unknown as { creative: { downloadCandidate: (p: { candidateId: string }) => Promise<{ ok: boolean; error?: string }> } }).creative;
           const r = await creative.downloadCandidate({ candidateId: c.generated_video_id! }); if (!r.ok) throw new Error(r.error);
         })}>导出视频</button>}{c.generated_video_id && <VideoCoverDetails generatedId={c.generated_video_id} />}</div></article>)}</div>{shownCandidates.length > visibleCandidates && <button onClick={() => setVisibleCandidates(visibleCandidates + 12)}>显示更多作品</button>}
