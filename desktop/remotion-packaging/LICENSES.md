@@ -20,11 +20,6 @@
 当前仓库没有安装程序代码签名基础，`signed` 字段继续为 `false`。installer 必须在 delivery 便携包生成后、安装程序生成前，在 `release/` 之外取得独立签名的信任记录，并通过 `XIAOXI_RELEASE_TRUST_RECORD`、`XIAOXI_RELEASE_TRUST_PUBLIC_KEY` 和 `XIAOXI_RELEASE_TRUST_PUBLIC_KEY_SHA256` 指定记录、公钥和受信公钥摘要。记录同时约束便携包清单、完整目录树、Remotion runtime descriptor 和 runtime manifest 摘要；所以 `release:installer` 只消费已经签名确认的 delivery 便携包，不会在验签前重新构建它。构建脚本只验签，不生成签名，也不接触私钥；该信任记录不能描述成安装程序代码签名。
 
 
-## 口播字体
-
-口播标题和字幕另复用内容引擎已随包提供的 `NotoSansSC-Variable.ttf`，使用实际 900 字重。
-字体和原有 SIL Open Font License 1.1 文本一起进入本地渲染资源，分别为 `public/narration-font.ttf` 与 `public/narration-font-OFL.txt`，不依赖在线字体服务或用户系统安装的字重。
-
 ## 本地 Noto Emoji 图像
 
 Copyright Google LLC. Source: https://github.com/googlefonts/noto-emoji
