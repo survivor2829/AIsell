@@ -150,3 +150,28 @@
 
 - 按用户追加要求（"AI改写的也不用核对"），变体只做格式校验，不做事实核对。保留数字、承诺等只写在提示词里，程序不比对，模型仍可能改动事实；广告法提示会在成片的口播旁列出绝对化用语，供用户自查。
 - 旧版单稿确认路径（不带 `selections`）的续作仍调用 `_plan`。当前界面不走这条路径，本卡没有改。
+
+## 第 4 轮（修复第 3 轮审查；会话两次中断后由 Claude 直接完成）
+
+提交：`f54cd5b`（分素材分配、错开起点、兜底排法、默认模式一切重跑按文案排）、`879dcad`（复核戳、严格模式重新取证、迁移保留 review_mode、开关不继承、镜头按素材命名、自检补充）。逐项对应见 `2026-10-01-CE3-narrated-follow-script-review.md`。
+
+### 验证（`C:/Users/Scott/xiaoxi-review/ce3/desktop`）
+
+```
+python -m unittest discover -s tests -p 'test_narrated*.py'   → Ran 142 tests, OK（第 3 轮 129）
+node src/renderer/ad-law-terms.self_check.cjs                 → passed
+node src/main/narrated-batch-ipc.self_check.cjs               → passed
+```
+
+修复前源码上的新测试（源码换回 f54cd5b 之前的文件，测试不变）：
+
+- `test_default_mode_drafts_carry_no_review_stamp_so_strict_mode_reviews_them`：`'_brief_review_hash' unexpectedly found`；
+- `test_strict_mode_after_a_default_production_grounds_the_representative_frames`：`1 != 0`（严格模式没有重新取证）；
+- `test_provider_migration_keeps_the_follow_script_mark`：`KeyError: 'review_mode'`。
+
+### 用户批次回放（第 3 轮审查员的 `ce3-review/r3/flow/flow_replay.py frozen 245.8`，新副本）
+
+- 提供方/审核调用：0；进度 45 → 60；口播逐字节不变；`review_mode=follow_script`。
+- 镜头池 48 个/223.5 秒，选用 19 个，顺序不变、不重复，**5/5 个素材都用到**（第 3 轮为 4/5）。每段容量均满足，例如 P10 57 字需 14.2 秒、给 15.0 秒。
+- 真实的 `_auto_mix_voice_bundle`（静音 WAV）+ `validate_actual_timeline`：通过，`moved: 0`，成片 72.1 秒。
+- 实时数据库前后未变。
