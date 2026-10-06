@@ -166,7 +166,10 @@ def prepare(domain, task_id, batch):
             options.append({**{field: script[field].strip() for field in ('title', 'audience', 'pain_point', 'angle', 'narration')},
                 **({'framework': script['framework'], 'summary': script['summary'].strip(),
                     'opening_example': narrated_brief.sentences(script['narration'])[0],
-                    '_brief_review_hash': narrated_brief.stamp(script, batch)} if modern else {}),
+                    # Only a reviewed draft carries the review stamp: a default-mode draft
+                    # must still be reviewed if strict mode is turned on afterwards.
+                    **({'_brief_review_hash': narrated_brief.stamp(script, batch)} if decision is not None else {})}
+                   if modern else {}),
                 'candidate_id': domain.d._new_id('narrated_candidate'), 'revision': 1,
                 'shots': [copy.deepcopy(source_index[ref]) for ref in dict.fromkeys(script['source_ids'])],
                 'phrases': [], 'status': 'needs_review', 'generated_video_id': None,

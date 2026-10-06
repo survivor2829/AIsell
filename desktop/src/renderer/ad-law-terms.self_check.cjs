@@ -77,5 +77,15 @@ for (const handler of ["async function start(", "async function confirmScript("]
 assert.match(page, /JSON\.parse\(localStorage\.getItem\("batch-studio-settings"\) \|\| "\{\}"\)/u);
 assert.match(page, /callBatch<Batch>\("confirm", \{ batch_id: batch\.batch_id, settings,/u, "confirmation sends the switch");
 assert.match(page, /c\.review_mode === "follow_script" && <p className="batch-hint">按文案生成，未做画面事实核对<\/p>/u);
+// Round 4: the switch is per batch (not inherited into a new batch, where it would silently govern the
+// paid draft review), the draft and the confirmation both carry the settings, saved settings still seed
+// the page, and follow-script shots without a frame description are named by material.
+assert.match(page, /delete saved\.strict_visual_review;\s*return \{ minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: \[\], \.\.\.saved, voice_persona_id/u,
+  "a new batch starts with the strict switch off; the other saved settings still seed the page");
+assert.match(page, /material_context: materialContext, cta, target_count: target, settings,/u, "the draft sends the settings");
+assert.match(page, /\{s\.description \|\| materialLabel\(batch, s\.asset_id\)\}/u, "shots without a description are named by material");
+assert.match(page, /function materialLabel\(batch: Batch \| null \| undefined, assetId: string\)/u);
+assert.match(page, /settings\.strict_visual_review \? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。" : "继续会按文案顺序重新安排未完成作品的镜头；已完成作品会保留。"/u,
+  "the 继续 hint tells the user which mode will run");
 
 console.log("ad-law hint and strict review switch self-check passed");

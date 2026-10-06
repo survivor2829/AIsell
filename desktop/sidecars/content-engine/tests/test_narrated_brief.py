@@ -189,6 +189,36 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual([legacy_items[0]], narrated_brief.renderable_visual_items(legacy_items))
         self.assertEqual('欢迎咨询。', narrated_brief.ending_overlay('前言。欢迎咨询。'))
 
+    def test_default_mode_drafts_carry_no_review_stamp_so_strict_mode_reviews_them(self):
+        """Round 4 (F7): a draft that skipped the fact review must not look reviewed later."""
+        batch = copy.deepcopy(self.batch)
+        batch['settings']['strict_visual_review'] = False
+        batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '现场设备试用', 'visual_facts': {'observation': '设备试用'}, 'target_duration_ms': 60000}]
+        domain = self.domain
+        script = dict(self.candidate(narrated_brief.FRAMEWORK), title='选题', angle='切入点', source_ids=['S1'])
+        def cloud(payload, instruction, **kwargs):
+            self.assertIn('count', payload, 'default mode never sends the draft fact review')
+            result = {'scripts': [script]}
+            self.assertIsNone(kwargs['validation_error'](result))
+            return result
+        with patch.object(domain, '_initialize_speech_budget'), patch.object(domain, '_minimum_spoken_chars', return_value=10), \
+             patch.object(domain, '_source_evidence_for', return_value={}), patch.object(domain, '_cloud', side_effect=cloud), \
+             patch.object(domain.d, '_should_stop', return_value=False):
+            narrated_script_drafts.prepare(domain, 'test-task', batch)
+        option = batch['script_options'][0]
+        self.assertNotIn('_brief_review_hash', option)
+        self.assertIsNone(option['_draft_review'])
+        # Strict mode turned on afterwards: the brief review runs instead of trusting a stamp.
+        batch['settings']['strict_visual_review'] = True
+        reviewed = []
+        def review_cloud(payload, instruction, **kwargs):
+            reviewed.append(payload['narration'])
+            return {'accepted': True, 'reason': '通过'}
+        with patch.object(domain, '_cloud', side_effect=review_cloud), patch.object(domain, '_source_evidence_for', return_value={}):
+            narrated_brief.review(domain, option, batch)
+        self.assertEqual([option['narration']], reviewed)
+        self.assertIn('_brief_review_hash', option)
+
     def test_default_one_draft_repairs_once_and_add_direction_preserves_existing(self):
         batch = copy.deepcopy(self.batch)
         batch['settings']['strict_visual_review'] = True

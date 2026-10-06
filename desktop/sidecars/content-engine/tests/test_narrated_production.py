@@ -1579,6 +1579,57 @@ class NarratedProductionTests(unittest.TestCase):
                     self.assertEqual([], grounded)
                     self.assertTrue(all(shot['evidence_scope'] == 'not_observed' for shot in state['available_shots']))
 
+    def test_strict_mode_after_a_default_production_grounds_the_representative_frames(self):
+        """Round 4 (F3/F8): the unobserved analysis of a default-mode run does not satisfy strict mode."""
+        state = self.provided_batch(PROVIDED_COPY)
+        state['settings']['strict_visual_review'] = False
+        state['available_shots'] = []
+        grounded = []
+        def ground(task_id, batch, shots, *_args):
+            grounded.append(len(shots))
+            return shots
+        with patch.object(NarratedBatchDomain, '_ground_shots', side_effect=ground), \
+             patch.object(self.s.creative_domain, '_analyze_asset', side_effect=AssertionError('cached analysis')):
+            self.assertTrue(self.domain._refresh_provider_analysis(state['task_id'], state))
+            self.assertEqual([], grounded)
+            default_key = state['_analysis_key']
+            self.assertTrue(all(shot['evidence_scope'] == 'not_observed' for shot in state['available_shots']))
+            # The user turns strict mode on afterwards: the frames are looked at, as from the start.
+            state['settings']['strict_visual_review'] = True
+            self.assertTrue(self.domain._refresh_provider_analysis(state['task_id'], state))
+            self.assertEqual(1, len(grounded))
+            self.assertNotEqual(default_key, state['_analysis_key'])
+            # A further strict run reuses that observed analysis.
+            self.assertTrue(self.domain._refresh_provider_analysis(state['task_id'], state))
+            self.assertEqual(1, len(grounded))
+
+    def test_provider_migration_keeps_the_follow_script_mark(self):
+        """Round 4 (F9): a rebuilt candidate stays a follow-script work, so it never enters the paid review."""
+        state = self.provided_batch(PROVIDED_COPY)
+        option = state['script_options'][0]
+        def render(domain, task_id, batch, candidate, index, total):
+            pass  # leaves the arranged, unrendered work behind (no run, no video)
+        with self.paid_calls(), patch.object(NarratedBatchDomain, '_render_candidate', render):
+            task = self.s.confirm_narrated_script({'batch_id': state['batch_id'], 'selections': [
+                {'script_id': option['candidate_id'], 'revision': option['revision'], 'count': 1}]})
+            self.s.run_creative_task(task['task_id'])
+        state = self.domain._load(state['batch_id'])
+        candidate = state['candidates'][0]
+        self.assertEqual('follow_script', candidate['review_mode'])
+        self.assertFalse(candidate.get('_run_id') or candidate.get('generated_video_id'))
+        state['_analysis_provider'] = 'legacy-provider'
+        with self.paid_calls() as mocks, \
+             patch.object(NarratedBatchDomain, '_analysis', return_value=True), \
+             patch.object(self.s.creative_domain, '_auto_mix_asset_snapshots', return_value=state['_snapshots']):
+            self.assertTrue(self.domain._refresh_provider_analysis(state['task_id'], state))
+        for name, mock in mocks.items():
+            self.assertEqual(0, mock.call_count, name)
+        migrated = state['candidates'][0]
+        self.assertEqual(candidate['candidate_id'], migrated['candidate_id'])
+        self.assertEqual('follow_script', migrated['review_mode'])
+        self.assertEqual(candidate['narration'], migrated['narration'])
+        self.assertEqual(1, len(state['_provider_migrations']))
+
     # CE3 round 4: arrangement across materials, staggering, retries and the rewrite request.
     def test_every_material_contributes_with_the_app_speech_budget(self):
         """The 2026-10-01 batch's frozen 245.8 ms/char budget: a short file between long ones is not skipped."""

@@ -4860,7 +4860,12 @@ class NarratedBatchDomain:
         self._store(b)
 
     def _refresh_provider_analysis(self, task_id, b):
-        if not b.get('available_shots'):
+        strict = narrated_production.strict_visual_review(b)
+        # A default-mode production leaves every shot unobserved; strict mode must then
+        # still look at the representative frames, as it would have from the start.
+        unobserved = bool(b.get('available_shots')) and all(
+            shot.get('evidence_scope') == 'not_observed' for shot in b['available_shots'])
+        if not b.get('available_shots') or (strict and unobserved):
             preserved = {key: copy.deepcopy(b.get(key)) for key in
                          ('candidates', 'script_options', 'approved', 'script_confirmation',
                           'selected_script_id', 'script_selections', 'production_jobs')}
@@ -4868,7 +4873,7 @@ class NarratedBatchDomain:
             try:
                 # Default mode orders footage by time; the representative frames
                 # are only looked at for the strict visual fact review.
-                if not self._analysis(task_id, b, observe=narrated_production.strict_visual_review(b)):
+                if not self._analysis(task_id, b, observe=strict):
                     return False
             finally:
                 b.update(preserved)
@@ -4909,7 +4914,9 @@ class NarratedBatchDomain:
                 candidate = self._normalize_candidate(raw, b, self._history(b["batch_id"]))
                 candidate.update(candidate_id=old["candidate_id"], revision=old["revision"],
                                  narration=old["narration"], status="needs_review",
-                                 _confirmed_script=copy.deepcopy(old.get("_confirmed_script")))
+                                 _confirmed_script=copy.deepcopy(old.get("_confirmed_script")),
+                                 # A follow-script work stays one after the provider changes.
+                                 **({"review_mode": old["review_mode"]} if old.get("review_mode") else {}))
                 self._verify_confirmed_script(b, candidate)
                 refreshed.append(candidate)
             b.setdefault("_provider_migrations", []).append({"from": previous.get("_analysis_provider", "bailian"),
