@@ -2546,7 +2546,8 @@ class FFmpegCreativeRenderer:
         if style.get("preset") == "none":
             return []
         if recipe.get("caption_presentation") == "reference_narration":
-            return cls._single_caption_lane(reference_caption_cues(captions, base, max_width=22 if recipe.get("presentation") else 26))
+            return cls._single_caption_lane(reference_caption_cues(captions, base,
+                sentence_pages=bool(recipe.get("presentation"))))
         max_chars = max(8, min(18, int(style.get("max_chars") or 12)))
         word_timed = (
             (

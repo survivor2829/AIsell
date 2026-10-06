@@ -272,10 +272,21 @@ async function verifyCompositionBuild() {
     });
     const {
       findActiveCaptionIndex,
+      outlineTitleLines,
       REGISTERED_RENDERER_IDS,
       RegisteredEventEffect,
       resolveRegisteredEffect
     } = require(serverBundle);
+    const titleWidth = (value) => Array.from(value).length * 82;
+    const shortTitle = "项目快成交，却被备案卡住";
+    const singleLine = outlineTitleLines(shortTitle, titleWidth);
+    assert.deepEqual(singleLine.lines, [shortTitle], "a readable title must fit one line before wrapping");
+    assert.ok(singleLine.fontSize >= 60);
+    const longTitle = "项目快成交却被品牌备案卡住，现场如何选择合适的清洁机器人";
+    const wrappedTitle = outlineTitleLines(longTitle, titleWidth);
+    assert.equal(wrappedTitle.lines.length, 2, "long titles should wrap without becoming tiny single lines");
+    assert.equal(wrappedTitle.lines.join(""), longTitle, "wrapping must retain the complete title");
+    assert.throws(() => outlineTitleLines("完整展示实际场景和产品功能".repeat(4), titleWidth), /请缩短标题/u, "oversized titles must not become unreadable or silently truncate");
     assert.equal(typeof RegisteredEventEffect, "function");
     const timedCaptions = [
       { text: "第一句", startMs: 100, endMs: 500 },

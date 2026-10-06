@@ -2,6 +2,9 @@ import React from "react";
 import {
   AbsoluteFill,
   Audio,
+  cancelRender,
+  continueRender,
+  delayRender,
   Easing,
   Img,
   OffthreadVideo,
@@ -31,6 +34,20 @@ import type {
 const stylePacks = stylePackData as Record<MotionManifest["styleId"], StylePack>;
 const layoutGrid = layoutGridData as Record<MotionLayoutZone, { x: number; y: number; width: number; height: number }>;
 const baseFont = '"Microsoft YaHei", "Noto Sans SC", sans-serif';
+const narrationFontFamily = '"Narration Sans", sans-serif';
+let narrationFontReady: Promise<void> | undefined;
+
+const NarrationTypeface: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const [ready, setReady] = React.useState(false);
+  const [handle] = React.useState(() => delayRender("Loading the bundled narration typeface"));
+  React.useEffect(() => {
+    narrationFontReady ??= new FontFace("Narration Sans", `url(${staticFile("narration-font.ttf")})`, {
+      weight: "100 900"
+    }).load().then((font) => { document.fonts.add(font); });
+    narrationFontReady.then(() => { setReady(true); continueRender(handle); }).catch(cancelRender);
+  }, [handle]);
+  return ready ? <>{children}</> : null;
+};
 
 type RegistryVariant = { id: string; styles: string[]; motion: string; surface: string };
 type RegistryComponent = {
@@ -351,15 +368,15 @@ const captionWidth = (text: string) => Array.from(text).reduce((sum, char) => su
 // Linguistic word boundaries protect numbers, names and two-character words.
 // Long untimed fallback paragraphs remain a single caption; shrinking the
 // typography never implies that a guessed reading position is ASR evidence.
-export const referenceCaptionLines = (text: string): { lines: string[]; fontSize: number } => {
+export const referenceCaptionLines = (text: string, { maximumFontSize = 64, lineWidth = 14.6, availableWidth = 920 } = {}): { lines: string[]; fontSize: number } => {
   const clean = text.replace(/\s+/gu, " ").trim()
     .replace(/(\p{Script=Han}) +(?=\p{Script=Han})/gu, "$1");
-  if (captionWidth(clean) <= 14.6) return { lines: [clean], fontSize: 64 };
+  if (captionWidth(clean) <= lineWidth) return { lines: [clean], fontSize: maximumFontSize };
   const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
   const breaks = Array.from(segmenter.segment(clean)).slice(1).map((segment) => segment.index)
     .filter((index) => !/^[，。！？、；：,.!?;:\uFFFC]/u.test(clean.slice(index))
       && captionWidth(clean.slice(0, index)) >= 2 && captionWidth(clean.slice(index)) >= 2);
-  if (!breaks.length) return { lines: [clean], fontSize: Math.min(64, 920 / Math.max(1, captionWidth(clean))) };
+  if (!breaks.length) return { lines: [clean], fontSize: Math.min(maximumFontSize, availableWidth / Math.max(1, captionWidth(clean))) };
   const score = (index: number) => {
     const left = captionWidth(clean.slice(0, index));
     const right = captionWidth(clean.slice(index));
@@ -368,7 +385,7 @@ export const referenceCaptionLines = (text: string): { lines: string[]; fontSize
   };
   const at = breaks.reduce((best, next) => score(next) < score(best) ? next : best);
   const lines = [clean.slice(0, at).trim(), clean.slice(at).trim()];
-  return { lines, fontSize: Math.min(64, 920 / Math.max(...lines.map(captionWidth))) };
+  return { lines, fontSize: Math.min(maximumFontSize, availableWidth / Math.max(...lines.map(captionWidth))) };
 };
 
 type NarrationEmoji = { id: string; keywords: string[]; dataUri: string };
@@ -417,49 +434,89 @@ const ReferenceCaptionTrack: React.FC<{ captions: TimedWord[]; nowMs: number; du
   );
 };
 
-const ReferenceEndingCta: React.FC<{ event: MotionEvent }> = ({ event }) => {
-  const { lines, fontSize } = referenceCaptionLines(event.text);
-  return (
-    <div style={{ position: "absolute", left: 80, right: 80, top: "52%", transform: "translateY(-50%)",
-      textAlign: "center", fontFamily: baseFont, fontSize: Math.min(52, fontSize), fontWeight: 800,
-      lineHeight: 1.35, color: "#ffe88d", WebkitTextStroke: "3px #141414", paintOrder: "stroke fill",
-      textShadow: "0 2px 2px rgba(0,0,0,.4)" }}>
-      {lines.map((line, index) => <div key={index} style={{ whiteSpace: "pre" }}>{line}</div>)}
-    </div>
-  );
-};
-
-// Keep measured ASR words inside their sentence page. With sentence-only timing
-// the complete phrase pulses once; we never invent individual word timing.
+// Each semantic page stays within two lines. Colour follows measured words;
+// phrase-only timing animates the page without inventing word timing.
 const BoldNarration: React.FC<{ captions: TimedWord[]; nowMs: number; frame: number; fps: number }> = ({ captions, nowMs, frame, fps }) => {
   const index = findActiveCaptionIndex(captions, nowMs);
   if (index < 0) return null;
   const cue = captions[index];
-  const words = cue.words?.length ? cue.words : [cue];
-  return <div style={{ position: "absolute", left: 78, right: 96, top: "72%", transform: "translateY(-50%)",
-    textAlign: "center", fontFamily: baseFont, fontSize: 72, fontWeight: 950, lineHeight: 1.32,
-    WebkitTextStroke: "6px #111", paintOrder: "stroke fill", textShadow: "0 5px 5px #0009" }}>
-    {words.map((word, wordIndex) => {
-      const active = activeAt(word.startMs, word.endMs, nowMs);
-      const pop = spring({ frame: Math.max(0, frame - msToFrame(word.startMs, fps)), fps, config: { damping: 15, stiffness: 230, mass: .5 } });
-      return <span key={`${word.startMs}-${wordIndex}`} style={{ display: "inline-block", whiteSpace: "pre-wrap",
-        maxWidth: "100%", color: active ? "#FFE24A" : "#FFFFFF", transformOrigin: "center bottom",
-        transform: active ? `translateY(${-5 * Math.sin(Math.min(1, pop) * Math.PI)}px) scale(${1 + .07 * Math.sin(Math.min(1, pop) * Math.PI)})` : "none" }}>{word.text}</span>;
-    })}
+  const displayText = cue.text;
+  const { lines, fontSize } = referenceCaptionLines(displayText, { maximumFontSize: 88, lineWidth: 10.5, availableWidth: 880 });
+  const pop = spring({ frame: frame - msToFrame(cue.startMs, fps), fps, config: { damping: 14, stiffness: 250, mass: .55 } });
+  let offset = 0;
+  const words = (cue.words?.length ? cue.words : [cue]).map((word) => {
+    const text = word.text;
+    const start = text ? displayText.indexOf(text, offset) : -1;
+    offset = start < 0 ? offset : start + text.length;
+    return { ...word, start, end: offset };
+  });
+  let lineOffset = 0;
+  return <div style={{ position: "absolute", left: 84, right: 84, top: "72%", transform: "translateY(-50%)",
+    textAlign: "center", fontFamily: narrationFontFamily, fontSize, fontWeight: 900, lineHeight: 1.15,
+    color: "#FFE13B", WebkitTextStroke: "8px #101010", paintOrder: "stroke fill", textShadow: "0 5px 3px #0009" }}>
+    <div style={{ transform: `translateY(${(1 - pop) * 12}px) scale(${.96 + pop * .04})` }}>
+      {lines.map((line, lineIndex) => {
+        const start = displayText.indexOf(line, lineOffset);
+        lineOffset = start < 0 ? lineOffset : start + line.length;
+        let characterOffset = start;
+        return <div key={lineIndex} style={{ whiteSpace: "pre" }}>{start < 0 ? line : Array.from(line).map((character, index) => {
+          const word = words.find((item) => characterOffset >= item.start && characterOffset < item.end);
+          characterOffset += character.length;
+          return <span key={index} style={{ color: word && nowMs < word.startMs ? "#FFFFFF" : "#FFE13B" }}>{character}</span>;
+        })}</div>;
+      })}
+    </div>
   </div>;
+};
+
+// Measure the loaded title typeface, including italic overhang. Short titles
+// fit one line before semantic wrapping is considered; no character-count cap.
+export const outlineTitleLines = (text: string, measure: (value: string) => number) => {
+  const clean = text.replace(/\s+/gu, " ").trim();
+  const maximumFontSize = 82;
+  const minimumFontSize = 60;
+  const availableWidth = 840;
+  const fit = (lines: string[]) => Math.min(maximumFontSize,
+    maximumFontSize * availableWidth / Math.max(1, ...lines.map(measure)));
+  const singleLineSize = fit([clean]);
+  if (singleLineSize >= minimumFontSize) return { lines: [clean], fontSize: singleLineSize };
+  const boundaries = Array.from(new Intl.Segmenter("zh-CN", { granularity: "word" }).segment(clean))
+    .slice(1).map(({ index }) => index)
+    .filter((index) => !/^[，。！？、；：,.!?;:」”]/u.test(clean.slice(index)));
+  if (!boundaries.length) throw new Error("顶部标题过长，请缩短标题后重新制作；正文未被截断。");
+  const score = (index: number) => {
+    const left = measure(clean.slice(0, index));
+    const right = measure(clean.slice(index));
+    const semanticBreak = /[，。！？、；：,.!?;:]\s*$/u.test(clean.slice(0, index));
+    return Math.max(left, right) + Math.abs(left - right) * .2 - (semanticBreak ? maximumFontSize : 0);
+  };
+  const at = boundaries.reduce((best, next) => score(next) < score(best) ? next : best);
+  const lines = [clean.slice(0, at).trim(), clean.slice(at).trim()];
+  const fontSize = fit(lines);
+  if (fontSize < minimumFontSize) throw new Error("顶部标题无法在可读字号下排成两行，请缩短标题后重新制作；正文未被截断。");
+  return { lines, fontSize };
 };
 
 const VideoOutline: React.FC<{ manifest: MotionManifest; nowMs: number }> = ({ manifest, nowMs }) => {
   const presentation = manifest.presentation;
-  if (!presentation) return null;
-  const point = presentation.points.find((item) => activeAt(item.startMs, item.endMs, nowMs));
-  const text = presentation.templateId === "key_points" ? point?.text || presentation.topic : presentation.topic;
+  const point = presentation?.points.find((item) => activeAt(item.startMs, item.endMs, nowMs));
+  const text = (presentation?.templateId === "key_points" ? point?.text || presentation.topic : presentation?.topic) || "";
+  const { lines, fontSize } = React.useMemo(() => {
+    if (!text) return { lines: [], fontSize: 82 };
+    const context = document.createElement("canvas").getContext("2d")!;
+    context.font = `italic 900 82px ${narrationFontFamily}`;
+    return outlineTitleLines(text, (value) => {
+      const metrics = context.measureText(value);
+      return Math.max(metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight);
+    });
+  }, [text]);
   if (!text) return null;
-  return <div style={{ position: "absolute", top: 156, left: 78, right: 104, fontFamily: baseFont,
-    fontSize: text.length > 18 ? 54 : 64, fontWeight: 950, lineHeight: 1.22, color: "#fff",
-    WebkitTextStroke: "5px #151318", paintOrder: "stroke fill", textShadow: "0 5px 12px #0009" }}>
-    <div style={{ width: 58, height: 8, borderRadius: 4, background: "#FFE24A", marginBottom: 16 }} />
-    {text}
+  return <div style={{ position: "absolute", top: 140, left: 84, right: 84, fontFamily: narrationFontFamily,
+    fontSize, fontWeight: 900, fontStyle: "italic", lineHeight: 1.2, color: "#fff", textAlign: "center",
+    WebkitTextStroke: "5px #151318", paintOrder: "stroke fill", textShadow: "0 3px 2px #0008" }}>
+    {lines.map((line, index) => <div key={index} style={{ marginTop: index ? 4 : 0 }}>
+      <span style={{ display: "inline-block", padding: "4px 22px 8px", background: "#ED1538", transform: "skewX(-5deg)", whiteSpace: "pre" }}>{line}</span>
+    </div>)}
   </div>;
 };
 
@@ -495,19 +552,17 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
   );
   const activeEvents = registeredEvents.filter(({ event }) =>
     activeAt(event.startMs, event.endMs, nowMs) &&
-    (manifest.captionPresentation !== "reference_narration" || event.reason === "narrated_ending_cta"));
+    manifest.captionPresentation !== "reference_narration");
   const activeFocus = manifest.captionPresentation === "reference_narration" ? null : registeredFocusRects.find(({ focus }) => activeAt(focus.startMs, focus.endMs, nowMs));
   const zoomEvent = activeEvents.find(({ event }) => event.effect.renderer === "zoomTransition");
   const zoomProgress = zoomEvent ? eventProgress(zoomEvent.event, frame, fps) : 0;
   return (
     <AbsoluteFill style={{ background: pack.palette.ink, overflow: "hidden" }}>
       <VideoBase manifest={manifest} pack={pack} frame={frame} zoomProgress={zoomProgress} />
-      <VideoOutline manifest={manifest} nowMs={nowMs} />
+      {manifest.presentation ? <NarrationTypeface><VideoOutline manifest={manifest} nowMs={nowMs} /></NarrationTypeface> : null}
       {activeFocus ? <RegisteredFocusEffect focus={activeFocus.focus} definition={activeFocus.definition} pack={pack} frame={frame} /> : null}
       {activeEvents.map(({ event, definition }, index) => (
-        manifest.captionPresentation === "reference_narration"
-          ? <ReferenceEndingCta key={`${event.startMs}-${index}`} event={event} />
-          : <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
+        <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
       ))}
       {manifest.presentation
         ? <BoldNarration captions={manifest.captions} nowMs={nowMs} frame={frame} fps={fps} />

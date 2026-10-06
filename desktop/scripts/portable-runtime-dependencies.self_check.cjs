@@ -159,6 +159,9 @@ async function main() {
     for (const name of Object.keys(build.manifest.packagingAssets.files)) {
       fs.copyFileSync(path.join(desktopDir, "remotion-packaging", name), path.join(sourceFixture, "remotion-packaging", name));
     }
+    const fontSource = path.join("sidecars", "content-engine", "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf");
+    fs.mkdirSync(path.dirname(path.join(sourceFixture, fontSource)), { recursive: true });
+    fs.copyFileSync(path.join(desktopDir, fontSource), path.join(sourceFixture, fontSource));
     assert.doesNotThrow(() => verifyCurrentRuntimeSources(build.manifest, sourceFixture));
     fs.appendFileSync(path.join(sourceFixture, "remotion-packaging", "root.tsx"), "// source drift\n", "utf8");
     assert.throws(() => verifyCurrentRuntimeSources(build.manifest, sourceFixture), /source drift.*rebuild/u);

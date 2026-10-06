@@ -4,7 +4,7 @@ import type { Asset, Batch, Candidate } from "./batch-studio-api";
 import { adLawSentences } from "./ad-law-terms";
 
 export type CreativeBrief = { target_audience: string; expression: string; script_source: "ideas" | "provided" };
-export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "", script_source: "ideas" });
+export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "", script_source: "provided" });
 export function expressionText(value?: { expression?: string; advantages?: string; customer_pain_points?: string; description?: string; material_context?: string }): string {
   const expression = value?.expression !== undefined ? value.expression : [value?.advantages && `产品／服务优势：${value.advantages}`, value?.customer_pain_points && `客户痛点：${value.customer_pain_points}`].filter(Boolean).join("\n\n");
   return [expression, value?.description, value?.material_context].filter((text, index, all) => text && all.indexOf(text) === index).join("\n\n");
@@ -22,15 +22,15 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
     </label>
     <div className="batch-brief-field"><label><span>想讲什么？ <span className="batch-field-note">选填</span></span>
       <textarea aria-label="你想表达什么" value={value.expression} maxLength={14000} rows={4}
-        placeholder="写下想法，或粘贴完整文案"
+        placeholder="粘贴文案将保留原文；留空则根据素材和目标客户生成"
         onChange={(event) => onChange({ ...value, expression: event.target.value })} /></label>
-      <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "provided"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "provided" : "ideas" })} /><span>这是完整文案，保留原文</span></label>
-      {value.script_source === "provided" && <small className="batch-hint">完整文案最多 2400 字。</small>}
+      <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "ideas"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "ideas" : "provided" })} /><span>让 AI 根据这些想法改写或扩写</span></label>
+      {value.script_source === "provided" && value.expression.trim() && <small className="batch-hint">保留原文，按实际长度制作，最多 2400 字。</small>}
       {!value.expression.trim() && expressionText(suggestions) && <details className="batch-inline-suggestion"><summary>查看 AI 建议</summary>
-        <p>{expressionText(suggestions)}</p><button type="button" onClick={() => onChange({ ...value, expression: expressionText(suggestions) })}>采用并修改</button>
+        <p>{expressionText(suggestions)}</p><button type="button" onClick={() => onChange({ ...value, expression: expressionText(suggestions), script_source: "ideas" })}>采用并修改</button>
       </details>}
     </div>
-    <details className="batch-brief-optional" hidden={value.script_source === "provided"}><summary>结尾引导{cta ? " · 已填写" : " · 选填"}</summary>
+    <details className="batch-brief-optional" hidden={value.script_source === "provided" && !!value.expression.trim()}><summary>结尾引导{cta ? " · 已填写" : " · 选填"}</summary>
       <label><span>希望观众做什么？</span><input aria-label="结尾引导" value={cta} maxLength={300} placeholder="例如：留言聊聊你关心的问题"
         onChange={(event) => onCtaChange(event.target.value)} />
     </label></details>

@@ -1183,7 +1183,9 @@ class NarratedBatchDomain:
         material_context = material_context.strip()
         brief_version = request.get('brief_version', b.get('brief_version') if b else None)
         require(brief_version in (None, 1), 'invalid_narrated_settings', '创作需求版本无效。')
-        script_source = request.get('script_source', (b or {}).get('script_source', 'ideas'))
+        input_text = request.get('expression', '')
+        default_source = 'provided' if brief_version == 1 and isinstance(input_text, str) and input_text.strip() else 'ideas'
+        script_source = request.get('script_source', (b or {}).get('script_source', default_source))
         require(script_source in ('ideas', 'provided'), 'invalid_narrated_settings', '文案输入方式无效。')
         brief = {}
         for key, limit in narrated_brief.FIELDS.items():
@@ -1227,7 +1229,9 @@ class NarratedBatchDomain:
         require(type(minimum) is int and minimum >= 0,
                 "invalid_narrated_settings", "最短时长须为非负整数秒。")
         if brief_version == 1:
-            minimum = max(30, minimum)
+            # A supplied script determines its own length; never pad or rewrite it
+            # to satisfy a duration inherited from an AI draft.
+            minimum = 0 if script_source == 'provided' else max(30, minimum)
             settings = {**settings, 'minimum_duration_seconds': minimum}
         if settings.get("voice_persona_id"):
             require(self.d._approved_auto_mix_voice_persona(selected_id=settings["voice_persona_id"]) is not None,

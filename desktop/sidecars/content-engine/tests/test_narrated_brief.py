@@ -295,6 +295,33 @@ class NarratedBriefTests(unittest.TestCase):
         cloud.assert_not_called()
         self.assertEqual(state['script_options'][0]['narration'], body)
         self.assertEqual(state['status'], 'scripts_ready')
+        self.assertEqual(state['settings']['minimum_duration_seconds'], 0)
+        self.domain.db.execute("UPDATE content_tasks SET status='completed' WHERE id=?", (task['task_id'],))
+        option = state['script_options'][0]
+        queued = self.domain.confirm_script({'batch_id': state['batch_id'], 'settings': state['settings'],
+            'selections': [{'script_id': option['candidate_id'], 'revision': option['revision'], 'count': 1}]})
+        self.assertTrue(queued['task_id'])
+
+    def test_new_brief_defaults_to_supplied_copy_but_preserves_legacy_input_mode(self):
+        request = {'groups': self.batch['groups'], 'brief_version': 1, 'target_audience': '渠道商',
+                   'expression': '周末带孩子去公园走走。', 'settings': {'minimum_duration_seconds': 30}}
+        saved = self.domain.save(request)
+        self.assertEqual(saved['script_source'], 'provided')
+        self.assertEqual(saved['settings']['minimum_duration_seconds'], 0)
+        generated = self.domain.save({**request, 'expression': ''})
+        self.assertEqual(generated['script_source'], 'ideas')
+        self.assertEqual(generated['settings']['minimum_duration_seconds'], 30)
+        legacy = self.domain.save({**request, 'batch_id': self.batch['batch_id']})
+        self.assertEqual(legacy['script_source'], 'ideas')
+
+    def test_ai_length_fallback_keeps_whole_sentences_and_requested_ending(self):
+        sentences = ['先把现场的问题记下来。', '再看看设备的实际操作。', '带着具体需求咨询方案。', '留言告诉我。']
+        script = {'narration': ''.join(sentences), 'title': '先了解现场'}
+        fitted = narrated_script_drafts._fit_generated_sentences(self.domain, script, {'cta': '留言'}, 15, 30)
+        self.assertEqual(fitted['narration'], ''.join(sentences[:2]) + sentences[-1])
+        self.assertEqual(script['narration'], ''.join(sentences))
+        unbroken = {'narration': '没有句子边界的原文' * 8}
+        self.assertIs(narrated_script_drafts._fit_generated_sentences(self.domain, unbroken, {}, 15, 30), unbroken)
 
     def test_one_or_two_legacy_drafts_are_confirmable_without_framework_gate(self):
         for count in (1, 2):

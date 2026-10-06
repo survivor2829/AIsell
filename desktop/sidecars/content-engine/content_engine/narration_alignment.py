@@ -235,6 +235,10 @@ def _audio_proportional_caption_units(text, start_ms, end_ms, max_width):
         chunks.append(current)
     if not chunks or "".join(chunks) != text:
         return []
+    return _proportional_caption_units(chunks, start_ms, end_ms)
+
+
+def _proportional_caption_units(chunks, start_ms, end_ms):
     start_ms, end_ms = int(start_ms), int(end_ms)
     duration = end_ms - start_ms
     if duration < len(chunks):
@@ -252,8 +256,106 @@ def _audio_proportional_caption_units(text, start_ms, end_ms, max_width):
     return units
 
 
-def reference_caption_cues(captions, base=0, max_width=26):
-    """Pages change at observed word/sentence boundaries, never guessed fractions."""
+def _semantic_caption_parts(text, max_width=28):
+    """Keep short sentences and quoted phrases intact; split long ones at clauses."""
+    if _caption_width(text) <= max_width:
+        return [text]
+    clauses, start, quotes = [], 0, []
+    pairs = {"「": "」", "“": "”", "『": "』", "‘": "’"}
+    for index, char in enumerate(text):
+        if char == '"':
+            if quotes and quotes[-1] == char:
+                quotes.pop()
+            else:
+                quotes.append(char)
+        elif char in pairs:
+            quotes.append(pairs[char])
+        elif quotes and char == quotes[-1]:
+            quotes.pop()
+        if not quotes and (char in "，。！？；：,!?;:" or
+                           (char == "—" and text[index:index + 2] != "——")):
+            clauses.append(text[start:index + 1])
+            start = index + 1
+    if start < len(text):
+        clauses.append(text[start:])
+    parts, current = [], ""
+    for clause in clauses:
+        if current and _caption_width(current + clause) > max_width:
+            parts.append(current)
+            current = ""
+        current += clause
+    if current:
+        if parts and len(spoken_key(current)) <= 3 and _caption_width(parts[-1] + current) <= max_width + 3:
+            parts[-1] += current
+        else:
+            parts.append(current)
+    balanced = []
+    for part in parts:
+        if balanced and ((len(spoken_key(part)) <= 3 and _caption_width(balanced[-1] + part) <= 42)
+                         or len(spoken_key(balanced[-1])) <= 3):
+            balanced[-1] += part
+        else:
+            balanced.append(part)
+    return balanced or [text]
+
+
+def _semantic_caption_pages(unit):
+    parts = _semantic_caption_parts(unit["text"])
+    if len(parts) == 1 and _caption_width(parts[0]) <= 42:
+        return [unit]
+    words = unit.get("words") or []
+    if not words:
+        pages = _proportional_caption_units(parts, unit["start_ms"], unit["end_ms"]) or [unit]
+        return [part for page in pages for part in (
+            _audio_proportional_caption_units(page["text"], page["start_ms"], page["end_ms"], 28)
+            if _caption_width(page["text"]) > 42 else [page])]
+    # A semantic cut must coincide with a real ASR word end; never split a token.
+    boundaries, oversized, position = set(), [], 0
+    for part in parts:
+        if _caption_width(part) > 42:
+            oversized.append((position, position + len(part)))
+        position += len(part)
+        boundaries.add(position)
+    pages, current, position, width = [], [], 0, 0
+    for word in words:
+        word_width = _caption_width(word["text"])
+        # When punctuation supplies no usable boundary, retain real ASR tokens
+        # and their timestamps rather than rejecting a valid confirmed script.
+        if current and width + word_width > 28 and any(start <= position < end for start, end in oversized):
+            pages.append({"text": "".join(item["text"] for item in current),
+                          "start_ms": current[0]["start_ms"], "end_ms": current[-1]["end_ms"],
+                          "timing_source": "asr_words", "words": current})
+            current, width = [], 0
+        current.append(word)
+        width += word_width
+        position += len(word["text"])
+        if position in boundaries:
+            pages.append({"text": "".join(item["text"] for item in current),
+                          "start_ms": current[0]["start_ms"], "end_ms": current[-1]["end_ms"],
+                          "timing_source": "asr_words", "words": current})
+            current, width = [], 0
+    if current:
+        return [unit]  # Inconsistent text must not lose the final words.
+    balanced = []
+    for page in pages:
+        if (balanced and len(spoken_key(page["text"])) <= 3
+                and _caption_width(balanced[-1]["text"] + page["text"]) <= 42):
+            balanced[-1]["text"] += page["text"]
+            balanced[-1]["words"].extend(page["words"])
+            balanced[-1]["end_ms"] = page["end_ms"]
+        else:
+            balanced.append(page)
+    pages = [part for page in balanced for part in (
+        _audio_proportional_caption_units(page["text"], page["start_ms"], page["end_ms"], 28)
+        if _caption_width(page["text"]) > 42 else [page])]
+    for previous, following in zip(pages, pages[1:]):
+        if 0 <= following["start_ms"] - previous["end_ms"] <= 350:
+            previous["end_ms"] = following["start_ms"]
+    return pages
+
+
+def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=False):
+    """Keep short sentences whole and paginate long ones at semantic boundaries."""
     cues = []
     for caption in captions:
         alignment = caption.get("alignment") or {}
@@ -262,12 +364,12 @@ def reference_caption_cues(captions, base=0, max_width=26):
             groups, current, width = [], [], 0.0
             for word in words:
                 word_width = sum(0.55 if ord(char) < 128 else 1 for char in word["text"])
-                if current and width + word_width > max_width:
+                if current and not sentence_pages and width + word_width > max_width:
                     groups.append(current)
                     current, width = [], 0.0
                 current.append(word)
                 width += word_width
-                if re.search(r"[，。！？；,!?;]\s*$", word["text"]):
+                if re.search(r"[。！？!?][」”\"]?\s*$" if sentence_pages else r"[，。！？；,!?;]\s*$", word["text"]):
                     groups.append(current)
                     current, width = [], 0.0
             if current:
@@ -296,10 +398,20 @@ def reference_caption_cues(captions, base=0, max_width=26):
         else:
             units = [{**unit, "timing_source": alignment.get("source") or "phrase"}
                      for unit in alignment.get("sentences") or [caption]]
-            if any(_caption_width(unit["text"]) > 42 for unit in units):
+            if sentence_pages:
+                sentences = []
+                for unit in units:
+                    parts = re.findall(r'.+?[。！？!?][」”"]*|.+$', unit["text"], re.S)
+                    if len(parts) < 2:
+                        sentences.append(unit)
+                        continue
+                    sentences.extend(_proportional_caption_units(parts, unit["start_ms"], unit["end_ms"]) or [unit])
+                units = sentences
+            sentence_limit = 42
+            if not sentence_pages and any(_caption_width(unit["text"]) > sentence_limit for unit in units):
                 split_units = []
                 for unit in units:
-                    if _caption_width(unit["text"]) <= 42:
+                    if _caption_width(unit["text"]) <= sentence_limit:
                         split_units.append(unit)
                         continue
                     split_units.extend(_audio_proportional_caption_units(
@@ -307,6 +419,8 @@ def reference_caption_cues(captions, base=0, max_width=26):
                 if split_units and "".join(unit["text"] for unit in split_units) == "".join(
                         unit["text"] for unit in units):
                     units = split_units
+        if sentence_pages:
+            units = [page for unit in units for page in _semantic_caption_pages(unit)]
         for unit in units:
             width = _caption_width(unit["text"])
             if width > 42:
