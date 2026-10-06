@@ -177,12 +177,14 @@ function contacts(count) {
 // disk latency must not turn a state-correctness check into a speed benchmark.
 async function waitFor(read, predicate, timeoutMs = 60_000) {
   const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  while (true) {
     const value = await read();
     if (predicate(value)) return value;
+    if (Date.now() - started >= timeoutMs) {
+      throw new Error(`timed out waiting for task state: ${JSON.stringify(value)}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error(`timed out waiting for task state: ${JSON.stringify(await read())}`);
 }
 
 (async () => {
