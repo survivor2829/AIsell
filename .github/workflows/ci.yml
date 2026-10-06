@@ -42,9 +42,20 @@ jobs:
       - name: Align Windows and Node clocks for local-time fixtures
         run: tzutil /s "China Standard Time"
       - name: Source self-checks (isolated; no live WeChat operations)
-        run: npm run check:self
+        run: |
+          # A newly pushed branch has no previous SHA. Compare all its commits
+          # with the default branch, rather than treating the whole repo as new.
+          if ($env:XIAOXI_FAILURE_POLICY_BASE -match '^0{40}$') {
+            $base = git merge-base HEAD "origin/$env:XIAOXI_DEFAULT_BRANCH"
+            if ($LASTEXITCODE -ne 0 -or $base -notmatch '^[a-f0-9]{40}$') {
+              throw 'Cannot resolve the new branch comparison base'
+            }
+            $env:XIAOXI_FAILURE_POLICY_BASE = $base
+          }
+          npm run check:self
         env:
           XIAOXI_FAILURE_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          XIAOXI_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       - name: Runtime and secret boundaries
         run: npm run check:clean-runtime
       - name: Build test renderer
