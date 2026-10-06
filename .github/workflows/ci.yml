@@ -86,6 +86,9 @@ jobs:
       - name: Production summaries
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_production_summary.py'
+      - name: Video captions and presentation
+        working-directory: desktop/sidecars/content-engine
+        run: python -m unittest discover -s tests -p 'test_video_presentation.py'
       - name: Provider accounting
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_provider_usage.py'

@@ -39,6 +39,7 @@ const WORKER_CONTRACT_FILES = Object.freeze([
   "style-packs.json"
 ]);
 const SOUND_FILES = Object.freeze(["sfx-click.wav", "sfx-pop.wav", "sfx-whoosh.wav"]);
+const NARRATION_FONT_SOURCE = "sidecars/content-engine/content_engine/assets/fonts/NotoSansSC-Variable.ttf";
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const URL_PATTERN = /^https:\/\/\S+$/u;
@@ -675,6 +676,10 @@ async function buildRemotionRuntime({
     const bundleDir = path.join(staging, "remotion-bundle");
     fs.mkdirSync(publicDir);
     generateSounds(publicDir);
+    const narrationFont = assertFile(path.join(root, NARRATION_FONT_SOURCE), "Bundled narration font");
+    fs.copyFileSync(narrationFont, path.join(publicDir, "narration-font.ttf"));
+    fs.copyFileSync(path.join(root, "sidecars/content-engine/content_engine/assets/licenses/OFL-1.1.txt"),
+      path.join(publicDir, "narration-font-OFL.txt"));
     const { bundle } = require("@remotion/bundler");
     const serveUrl = await bundle({
       entryPoint: path.join(packagingSource, "index.ts"),
@@ -730,7 +735,8 @@ async function buildRemotionRuntime({
       artifactType,
       browser,
       buildClosure: builderClosure,
-      bundle: { path: "remotion-bundle", sha256: treeSha256(bundleDir), sounds: soundFiles },
+      bundle: { path: "remotion-bundle", sha256: treeSha256(bundleDir), sounds: soundFiles,
+        narrationFont: { path: "public/narration-font.ttf", sha256: sha256(narrationFont) } },
       compositionSmoke: smoke,
       licenseRecord: summary,
       packages: {
@@ -815,6 +821,9 @@ function verifyCurrentRuntimeSources(manifest, desktopDir) {
     throw new Error("Remotion runtime source package metadata hash drift; rebuild the runtime");
   }
   const currentWorker = assertFile(path.join(root, "src", "main", "remotion-render-worker.mjs"), "Current Remotion worker source");
+  if (manifest.bundle.narrationFont?.sha256 !== sha256(assertFile(path.join(root, NARRATION_FONT_SOURCE), "Current narration font"))) {
+    throw new Error("Remotion narration font source drift; rebuild the runtime");
+  }
   if (sha256(currentWorker) !== manifest.worker.sha256) throw new Error("Remotion worker source drift; rebuild the runtime");
   const declaredAssets = Object.keys(manifest.packagingAssets?.files || {}).sort();
   if (JSON.stringify(declaredAssets) !== JSON.stringify([...PACKAGING_FILES].sort())) {

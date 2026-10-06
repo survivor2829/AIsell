@@ -194,7 +194,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     // can make the context look like spoken narration.
     setBrief({ target_audience: b.target_audience || "",
       expression: b.brief_version === 1 ? (b.expression || "") : expressionText(b),
-      script_source: b.script_source || "ideas" });
+      script_source: b.brief_version === 1 && !b.expression?.trim() ? "provided" : b.script_source || "ideas" });
     selectedId.current = b.batch_id; setBatch(b); setGroups(b.groups); setTitle(b.title); setDescription(b.description); setMaterialContext(b.material_context || ""); setCta(b.cta); setCollectionId(b.collection_id || ""); setSettings(b.settings || {});
     setSelectedCounts(b.script_selections ? Object.fromEntries(b.script_selections.map((item) => [item.script_id, String(item.count)]))
       : b.selected_script_id ? { [b.selected_script_id]: String(b.target_count || 1) }
@@ -255,7 +255,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       let loaded: Batch | null = null;
       if (initial?.batchId) load(loaded = await callBatch<Batch>("get", { batch_id: initial.batchId }));
       else if (initial?.assetIds) {
-        setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: "ideas" });
+        setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: initial.collection?.description?.trim() ? "ideas" : "provided" });
         // Saving the carried-in materials at once would push a kept edit into the backup unseen.
         if (carriedAssetsAutosave(restore)) setDirty(true); else notices.push(CARRIED_ASSETS_WAIT);
       }
@@ -318,8 +318,10 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
   function draft() {
     const target = scriptFlow ? 1 : count.trim() ? Number(count) : null;
     if (target !== null && (!Number.isInteger(target) || target < 1 || target > 300)) throw new Error("请填写 1 到 300 的整数。");
-    return { ...(selectedId.current ? { batch_id: selectedId.current } : {}), collection_id: collectionId || null, groups, title: title.trim() || "批量创作", description: modern ? "" : description, material_context: materialContext, cta, target_count: target, settings, ...(modern ? { brief_version: 1, ...brief } : {}) };
+    return { ...(selectedId.current ? { batch_id: selectedId.current } : {}), collection_id: collectionId || null, groups, title: title.trim() || "批量创作", description: modern ? "" : description, material_context: materialContext, cta, target_count: target, settings: productionSettings, ...(modern ? { brief_version: 1, ...brief, script_source: suppliedScript ? "provided" : "ideas" } : {}) };
   }
+  const suppliedScript = modern && brief.script_source === "provided" && !!brief.expression.trim();
+  const productionSettings = modern ? { ...settings, minimum_duration_seconds: suppliedScript ? 0 : Math.max(30, settings.minimum_duration_seconds || 30) } : settings;
   const draftFingerprint = JSON.stringify([groups, title, description, brief, materialContext, cta, count, collectionId, settings]);
   latestFingerprint.current = draftFingerprint;
   useEffect(() => {
@@ -356,7 +358,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     if (!batch || !countsValid) return;
     setSubmitting(true);
     try { await run(async () => {
-      const b = await callBatch<Batch>("confirm", { batch_id: batch.batch_id, settings,
+      const b = await callBatch<Batch>("confirm", { batch_id: batch.batch_id, settings: productionSettings,
         selections: chosen.map((option) => ({ script_id: option.candidate_id, revision: option.revision, count: Number(selectedCounts[option.candidate_id]) })) });
       setBatch(b); setDirty(false); setSoundDirty(false);
       setFlowView(null);
@@ -496,14 +498,14 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     </section>}
     {visualFlow && flowStep === 0 && <fieldset disabled={locked} className="batch-form batch-visual-start">
       <div className="batch-start-layout">
-        <div><details className="batch-collection-picker"><summary>使用素材集</summary><select aria-label="从素材集选材" value={collectionId} onChange={(event) => { const collection = collections.find((item) => item.collection_id === event.target.value); setCollectionId(event.target.value); if (collection) { changeGroups({ opening: [], middle: collection.asset_ids, ending: [] }); setBrief({ ...brief, expression: brief.expression || collection.description }); } }}><option value="">自由选材</option>{collections.map((item) => <option key={item.collection_id} value={item.collection_id}>{item.name}</option>)}</select></details>
+        <div><details className="batch-collection-picker"><summary>使用素材集</summary><select aria-label="从素材集选材" value={collectionId} onChange={(event) => { const collection = collections.find((item) => item.collection_id === event.target.value); setCollectionId(event.target.value); if (collection) { changeGroups({ opening: [], middle: collection.asset_ids, ending: [] }); setBrief({ ...brief, expression: brief.expression || collection.description, script_source: brief.expression ? brief.script_source : collection.description?.trim() ? "ideas" : "provided" }); } }}><option value="">自由选材</option>{collections.map((item) => <option key={item.collection_id} value={item.collection_id}>{item.name}</option>)}</select></details>
         <BatchMaterialBoard assets={assets} selected={materialIds} onChange={(ids) => changeGroups({ opening: [], middle: ids, ending: [] })} onImport={(folder) => void importTo("middle", folder)} onBrowse={() => setPicker("middle")} onPreview={setPreview} /></div>
         <div className="batch-brief-rail"><BatchCreativeBrief value={brief} onChange={(value) => { setBrief(value); setDirty(true); }} cta={cta} onCtaChange={(value) => { setCta(value); setDirty(true); }} suggestions={batch?.brief_suggestions} />
-          <label className="batch-minimum-duration">最短时长（秒）<input aria-label="每条最短时长" type="number" min={30} step={1} value={settings.minimum_duration_seconds || 30} onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label>
+          {suppliedScript ? <p className="batch-hint">视频时长按原文决定，不补写、不凑时长。</p> : <label className="batch-minimum-duration">最短时长（秒）<input aria-label="每条最短时长" type="number" min={30} step={1} value={settings.minimum_duration_seconds || 30} onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label>}
           <p className="batch-hint" role="status">{saving ? "正在保存…" : dirty ? "修改待保存" : batch ? "草稿已保存" : "填写后自动保存"}</p>
         </div>
       </div>
-      <footer className="batch-step-action"><span>{!total ? "先选素材，再填写目标客户" : !brief.target_audience.trim() ? "再填写一下，这条视频给谁看" : "已选 " + total + " 个素材 · 先准备一份文案"}</span><button type="button" data-batch-action="scripts" className="batch-primary" disabled={saving || !total || !brief.target_audience.trim()} onClick={() => void start("scripts")}>{brief.script_source === "provided" ? "使用这份文案" : options.length && !dirty ? "换个方向" : "生成文案"}<ArrowRight size={17} /></button></footer>
+      <footer className="batch-step-action"><span>{!total ? "先选素材，再填写目标客户" : !brief.target_audience.trim() ? "再填写一下，这条视频给谁看" : "已选 " + total + " 个素材 · 先准备一份文案"}</span><button type="button" data-batch-action="scripts" className="batch-primary" disabled={saving || !total || !brief.target_audience.trim()} onClick={() => void start("scripts")}>{suppliedScript ? "使用这份文案" : options.length && !dirty ? "换个方向" : "生成文案"}<ArrowRight size={17} /></button></footer>
     </fieldset>}
     {visualFlow && flowStep === 1 && !options.length && <section className="batch-flow-empty"><LayoutTemplate size={44} strokeWidth={1.3} /><h2>{running ? "正在准备文案" : "方案暂未生成"}</h2><p>{running ? "准备好后，会自动出现在这里。" : "返回素材，查看并补充创作需求。"}</p>{!running && <button onClick={() => setFlowView(0)}>返回素材</button>}</section>}
     {!visualFlow && <details className="batch-source-details" open={(!shownCandidates.length && !options.length) || dirty}>
@@ -552,7 +554,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
         <div className="batch-brief">{!scriptFlow && <label>AI 解说声音<select value={settings.voice_persona_id || ""} onChange={(e) => changeSoundSettings({ ...settings, voice_persona_id: e.target.value || undefined })}><option value="">自动选择已批准声音</option>{voices.map((v) => <option key={v.voicePersonaId} value={v.voicePersonaId}>{v.displayName || v.voicePersonaId}</option>)}</select></label>}<label>品牌<select value={settings.brand_profile_id || ""} onChange={(e) => { setSettings({ ...settings, brand_profile_id: e.target.value || undefined }); setDirty(true); }}><option value="">默认品牌</option>{brands.map((b) => <option key={b.brandProfileId} value={b.brandProfileId}>{b.name}</option>)}</select></label></div>
         <p>原视频声音静音，自动选用授权音乐。封面使用真实画面加标题。</p><button onClick={() => void run(async () => { const b = await callBatch<Batch>("save", draft()); load(b); localStorage.setItem("batch-studio-settings", JSON.stringify(settings)); await refreshBatches(); setNotice("批次草稿已保存。"); })}>保存草稿</button>
       </div></details>
-      <div className="batch-count-bar">{!scriptFlow && <label>本批生成数量<input aria-label="本批生成数量" type="number" min={1} max={300} step={1} value={count} placeholder="AI 分析后推荐" onChange={(e) => { manualCount.current = true; setCount(e.target.value); setDirty(true); }} /></label>}<details className="batch-duration-settings"><summary>视频时长 · 至少 {settings.minimum_duration_seconds || 30} 秒</summary><label>每条最短时长（秒）<input aria-label="每条最短时长" type="number" min={modern ? 30 : 0} step={1} value={settings.minimum_duration_seconds || ""} placeholder="AI 决定" onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label></details>{scriptFlow ? <button data-batch-action="scripts" className="batch-primary" disabled={!total || (modern && !brief.target_audience.trim())} onClick={() => void start("scripts")}>{options.length ? "换个方向" : "生成一份文案"}</button> : <><button data-batch-action="recommend" disabled={!total} onClick={() => void start("recommend")}>AI 推荐数量</button><button data-batch-action="samples" className="batch-primary" disabled={!total} onClick={() => void start("samples")}>生成／继续样片</button></>}</div>
+      <div className="batch-count-bar">{!scriptFlow && <label>本批生成数量<input aria-label="本批生成数量" type="number" min={1} max={300} step={1} value={count} placeholder="AI 分析后推荐" onChange={(e) => { manualCount.current = true; setCount(e.target.value); setDirty(true); }} /></label>}{suppliedScript ? <span className="batch-hint">视频时长按原文决定</span> : <details className="batch-duration-settings"><summary>视频时长 · 至少 {settings.minimum_duration_seconds || 30} 秒</summary><label>每条最短时长（秒）<input aria-label="每条最短时长" type="number" min={modern ? 30 : 0} step={1} value={settings.minimum_duration_seconds || ""} placeholder="AI 决定" onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label></details>}{scriptFlow ? <button data-batch-action="scripts" className="batch-primary" disabled={!total || (modern && !brief.target_audience.trim())} onClick={() => void start("scripts")}>{options.length ? "换个方向" : "生成一份文案"}</button> : <><button data-batch-action="recommend" disabled={!total} onClick={() => void start("recommend")}>AI 推荐数量</button><button data-batch-action="samples" className="batch-primary" disabled={!total} onClick={() => void start("samples")}>生成／继续样片</button></>}</div>
       <p className="batch-hint">{scriptFlow ? "先比较选题，选中后查看全文。此步骤不会生成配音或视频。" : "当前为旧批次：先做最多 3 条样片，确认后继续整批。"}</p>
     </fieldset>
     </details>}

@@ -15,6 +15,26 @@ from content_engine.database import Database
 
 
 class VideoPresentationTests(unittest.TestCase):
+    def test_narration_opener_uses_complete_quoted_heading(self):
+        title = '有人问：「学完了觉得没用怎么办」——这问题我每期都答，今天再答一遍。'
+        self.assertEqual('学完了觉得没用怎么办', presentation([], title)['topic'])
+        unbroken = '产品功能和适用环境需要结合实际现场条件以及完整产品资料进行判断'
+        self.assertEqual(unbroken, presentation([], unbroken)['topic'])
+
+    def test_sentence_page_preserves_every_observed_word_and_time(self):
+        words = [{"text": text, "start_ms": index * 200, "end_ms": (index + 1) * 200}
+                 for index, text in enumerate(['清洁', '机器人', '现场', '培训', '需要', '结合', '实际', '场景'])]
+        text = ''.join(word['text'] for word in words)
+        recipe = {"voice_segment": {"end_ms": 1600}, "caption_presentation": "reference_narration",
+                  "presentation": presentation([], '现场培训'), "packaging": {},
+                  "captions": [{"text": text, "start_ms": 0, "end_ms": 1600,
+                                "alignment": {"source": "asr_words", "words": words}}]}
+        cues = HybridCreativeRenderer._public_props(recipe, {})['captions']
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(text, ''.join(cue['text'] for cue in cues))
+        self.assertEqual([(w['text'], w['start_ms'], w['end_ms']) for w in words],
+                         [(w['text'], w['startMs'], w['endMs']) for cue in cues for w in cue['words']])
+
     def test_observed_words_survive_grouping_and_remotion_manifest(self):
         words = [{"text": "看清", "start_ms": 100, "end_ms": 400}, {"text": "细节。", "start_ms": 450, "end_ms": 950}]
         captions = [{"text": "看清细节。", "start_ms": 100, "end_ms": 950,
@@ -29,6 +49,59 @@ class VideoPresentationTests(unittest.TestCase):
         self.assertEqual("topic_fixed", props["presentation"]["templateId"])
         recipe.pop("presentation")
         self.assertNotIn("words", HybridCreativeRenderer._public_props(recipe, {})["captions"][0])
+
+    def test_phrase_timing_paginates_long_sentences_without_inventing_word_times(self):
+        text = '我们已经办了4期了，这次第5期，课程新增了机器人二开定制化服务；'
+        pages = reference_caption_cues([{'text': text, 'start_ms': 100, 'end_ms': 6500}],
+                                       sentence_pages=True)
+        self.assertEqual(len(pages), 2)
+        self.assertEqual(text, ''.join(page['text'] for page in pages))
+        self.assertEqual((100, 6500), (pages[0]['start_ms'], pages[-1]['end_ms']))
+        self.assertTrue(all(page['timing_source'] == 'audio_measured_proportional' and 'words' not in page for page in pages))
+
+    def test_long_opener_uses_semantic_pages_with_original_word_times(self):
+        parts = ["干清洁设备这行久一点的老板，应该都吃过这种亏——",
+                 "一个项目跟了半年，临到成交，",
+                 "被一句「这个品牌本地已经有人备案了」给卡死，"]
+        text = "".join(parts)
+        words = [{"text": char, "start_ms": index * 180, "end_ms": index * 180 + 120}
+                 for index, char in enumerate(text)]
+        caption = {"text": text, "start_ms": 0, "end_ms": len(text) * 180,
+                   "alignment": {"source": "asr_words", "words": words}}
+        pages = reference_caption_cues([caption], sentence_pages=True)
+        self.assertEqual(parts, [p["text"] for p in pages])
+        self.assertEqual(words, [w for p in pages for w in p["words"]])
+        self.assertEqual([p["start_ms"] for p in pages[1:]], [p["end_ms"] for p in pages[:-1]])
+        internal_short_clause = "这个项目已经经过多次现场沟通并且马上就要进入合同签订阶段，好，我们还需要继续跟进客户的现场需求以及采购计划才能完成交付，"
+        no_flash = reference_caption_cues([{"text": internal_short_clause, "start_ms": 0, "end_ms": 9000}], sentence_pages=True)
+        self.assertEqual(internal_short_clause, "".join(p["text"] for p in no_flash))
+        self.assertTrue(all(len(p["text"]) > 3 for p in no_flash))
+
+
+    def test_sentence_pages_split_at_full_stop_not_comma(self):
+        words = [{"text": text, "start_ms": index * 600, "end_ms": (index + 1) * 600}
+                 for index, text in enumerate(["先看现场，", "再做判断。", "需要时，", "回来复训。"])]
+        text = "".join(word["text"] for word in words)
+        for alignment in ({"source": "asr_words", "words": words}, {}):
+            cues = reference_caption_cues([{"text": text, "start_ms": 0, "end_ms": 2400,
+                                            "alignment": alignment}], sentence_pages=True)
+            self.assertEqual(["先看现场，再做判断。", "需要时，回来复训。"], [c["text"] for c in cues])
+            self.assertEqual((0, 2400), (cues[0]["start_ms"], cues[-1]["end_ms"]))
+
+    def test_unpunctuated_long_copy_paginates_without_changing_text_or_word_times(self):
+        tokens = ['选择', '清洁机器人', '需要', '结合', '实际', '场地', '条件', '仔细', '判断'] * 3
+        text = ''.join(tokens)
+        words = [{'text': token, 'start_ms': index * 500, 'end_ms': (index + 1) * 500}
+                 for index, token in enumerate(tokens)]
+        for alignment in ({'source': 'asr_words', 'words': words}, {}):
+            pages = reference_caption_cues([{'text': text, 'start_ms': 0, 'end_ms': len(words) * 500,
+                                            'alignment': alignment}], sentence_pages=True)
+            self.assertEqual(text, ''.join(page['text'] for page in pages))
+            self.assertTrue(all(3 < len(page['text']) <= 42 for page in pages))
+            if alignment:
+                self.assertEqual(words, [word for page in pages for word in page['words']])
+            else:
+                self.assertTrue(all(page['timing_source'] == 'audio_measured_proportional' for page in pages))
 
     def test_outline_uses_observed_sentence_boundaries(self):
         captions = [{"text": "先看外观。再看细节。", "start_ms": 0, "end_ms": 3000, "alignment": {"sentences": [

@@ -11,6 +11,16 @@ from .narration_alignment import align_narration, spoken_key
 TEMPLATES = {"topic_fixed", "key_points"}
 
 
+def display_topic(title):
+    """Prefer an intact short phrase over a cut-off narration opener."""
+    text = re.sub(r"\s+", " ", str(title or "")).strip()
+    if len(text) <= 24:
+        return text
+    quoted = re.findall(r'[「“\"]([^」”\"]+)[」”\"]', text)
+    phrases = [*quoted, *re.split(r"[，。！？；—,!?;]", text)]
+    return next((phrase.strip() for phrase in phrases if 4 <= len(phrase.strip()) <= 24), text)
+
+
 def presentation(captions, title, template_id="topic_fixed"):
     if template_id not in TEMPLATES:
         raise ContentEngineError("invalid_video_template", "请选择有效的视频模板。")
@@ -22,13 +32,13 @@ def presentation(captions, title, template_id="topic_fixed"):
         text = re.split(r"[，。！？；,!?;]", str(sentence.get("text") or ""))[0].strip()
         if not text or text in {item["text"] for item in points}:
             continue
-        points.append({"text": text[:24], "startMs": int(sentence["start_ms"]),
+        points.append({"text": display_topic(text), "startMs": int(sentence["start_ms"]),
                        "endMs": int(sentence["end_ms"])})
     if len(points) > 6:
         points = [points[round(index * (len(points) - 1) / 5)] for index in range(6)]
     for index in range(len(points) - 1):
         points[index]["endMs"] = points[index + 1]["startMs"]
-    topic = str(title or "").strip()[:32] or (points[0]["text"] if points else "")
+    topic = display_topic(title) or (points[0]["text"] if points else "")
     return {"templateId": template_id, "topic": topic, "points": points}
 
 

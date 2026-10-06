@@ -88,6 +88,8 @@ fs.mkdirSync(outputDir, { recursive: true });
 try {
   fs.copyFileSync(source, path.join(publicDir, publicSourceFile));
   prepareSounds(ffmpeg, publicDir);
+  fs.copyFileSync(path.join(desktopDir, "sidecars/content-engine/content_engine/assets/fonts/NotoSansSC-Variable.ttf"),
+    path.join(publicDir, "narration-font.ttf"));
   const serveUrl = await bundle({
     entryPoint: path.join(desktopDir, "remotion-packaging", "index.ts"),
     publicDir,
