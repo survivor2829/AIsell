@@ -3,7 +3,7 @@ const { createProductVideoService } = require("./product-video-service.cjs");
 const { cleanMessage, fail } = require("./digital-human-provider.cjs");
 
 const CHANNELS = Object.freeze(Object.fromEntries(
-  ["capabilities", "import-image", "create", "list", "get", "start", "retry-shot", "refresh", "media", "export"]
+  ["capabilities", "import-image", "import-facts", "create", "list", "get", "start", "retry-shot", "refresh", "media", "export", "export-source"]
     .map((name) => [name, `product-video:${name}`])
 ));
 const ID = /^pv_[a-f0-9-]{36}$/u;
@@ -22,6 +22,12 @@ function registerProductVideoIpc(options = {}) {
       const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
       return result.canceled || !result.filePaths?.[0] ? null : service.importImage(result.filePaths[0]);
     },
+    "import-facts": async () => {
+      const window = getMainWindow();
+      const settings = { title: "选择产品卖点和参数资料", properties: ["openFile"], filters: [{ name: "UTF-8产品资料", extensions: ["txt"] }] };
+      const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
+      return result.canceled || !result.filePaths?.[0] ? null : service.importFacts(result.filePaths[0]);
+    },
     create: (payload) => service.create(payload),
     list: () => service.list(),
     get: (payload) => service.get(idOf(payload)),
@@ -31,10 +37,16 @@ function registerProductVideoIpc(options = {}) {
     media: (payload) => service.media(idOf(payload)),
     export: async (payload) => {
       const id = idOf(payload), window = getMainWindow();
-      const settings = { title: "导出产品视频", defaultPath: path.join(options.defaultExportDir || "", `AI获客-${id}.mp4`),
+      const settings = { title: "导出产品视频", defaultPath: path.join(options.defaultExportDir || "", `AI短视频获客-${id}.mp4`),
         filters: [{ name: "MP4 视频", extensions: ["mp4"] }] };
       const result = await (window ? dialog.showSaveDialog(window, settings) : dialog.showSaveDialog(settings));
       return result.canceled || !result.filePath ? null : service.exportVideo(id, result.filePath);
+    },
+    "export-source": async (payload) => {
+      const id = idOf(payload), window = getMainWindow();
+      const settings = { title: "导出480p原片", defaultPath: path.join(options.defaultExportDir || "", `产品效果-${id}-480p.mp4`), filters: [{ name: "MP4视频", extensions: ["mp4"] }] };
+      const result = await (window ? dialog.showSaveDialog(window, settings) : dialog.showSaveDialog(settings));
+      return result.canceled || !result.filePath ? null : service.exportSource(id, result.filePath);
     }
   };
   for (const [name, handler] of Object.entries(handlers)) {
@@ -45,7 +57,7 @@ function registerProductVideoIpc(options = {}) {
           throw fail("product_video_untrusted_sender", "请在应用主窗口操作。");
         }
         if (["start", "retry-shot"].includes(name)) await options.requireTrustedClick(event, payload, name);
-        if (!["create", "import-image"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken"].includes(key))) {
+        if (!["create", "import-image", "import-facts"].includes(name) && Object.keys(payload).some((key) => !["id", "clickToken"].includes(key))) {
           throw fail("product_video_invalid_input", "请刷新页面后重试。");
         }
         return { ok: true, data: await handler(payload) };

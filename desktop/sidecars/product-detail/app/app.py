@@ -5106,6 +5106,42 @@ def ai_refine_v2_execute():
     if not isinstance(data, dict):
         return _input_error("AI_REFINE_REQUEST_INVALID", "请求体必须是 JSON 对象")
 
+    if "source_task_id" in data:
+        from ai_refine_v2 import pipeline_runner
+        source_task_id = data.get("source_task_id")
+        if not isinstance(source_task_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_task_id):
+            return _input_error("AI_REFINE_SOURCE_INVALID", "原任务编号无效")
+        source = pipeline_runner.get_task_status(source_task_id)
+        if not source:
+            return _input_error("AI_REFINE_SOURCE_INVALID", "原任务不存在")
+        if source.get("user_id") != current_user.id and not current_user.is_admin:
+            abort(403)
+        # Legacy tasks did not persist the original reference. Only accept a
+        # freshly uploaded image belonging to this user as their fallback.
+        reference_path = ""
+        reference_url = data.get("product_image_url")
+        if reference_url:
+            prefix = f"/static/uploads/{current_user.id}/"
+            if not isinstance(reference_url, str) or not reference_url.startswith(prefix):
+                return _input_error("AI_REFINE_PRODUCT_IMAGE_INVALID", "请重新上传同一产品的原图")
+            owner_root = (Path(app.static_folder) / "uploads" / str(current_user.id)).resolve()
+            candidate = (owner_root / reference_url[len(prefix):]).resolve()
+            if not candidate.is_relative_to(owner_root) or not candidate.is_file():
+                return _input_error("AI_REFINE_PRODUCT_IMAGE_INVALID", "产品图不存在，请重新上传")
+            reference_path = str(candidate)
+        try:
+            gpt_image_key, _ = _get_gpt_image_key(current_user)
+            task_id = pipeline_runner.start_screen_reroll(
+                source_task_id, data.get("block_index"), current_user.id,
+                gpt_image_key, reference_path,
+            )
+        except ValueError as exc:
+            return _input_error("AI_REFINE_REROLL_INVALID", str(exc))
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        return jsonify({"ok": True, "task_id": task_id, "mode": "real",
+                        "poll_url": f"/api/ai-refine-v2/status/{task_id}"})
+
     try:
         product_text, product_title = validate_product_inputs(
             data.get("product_text"), data.get("product_title", ""),

@@ -40,6 +40,17 @@ function createDigitalHumanService(options = {}) {
   const root = path.resolve(options.rootDir), provider = options.provider || createDigitalHumanProvider(options);
   const active = new Map();
   let closed = false;
+  let admissions = 0;
+  function assertCanWork() {
+    if (closed || global.__xiaoxiUpdateHold) throw fail('UPDATE_IN_PROGRESS', '软件正在更新，请稍后继续制作。');
+  }
+  const admit = (action) => async (...args) => {
+    assertCanWork(); admissions += 1;
+    try { return await action(...args); } finally { admissions -= 1; }
+  };
+  function isBusy() {
+    return admissions > 0 || active.size > 0 || list().items.some((task) => POLLING_STATES.has(task.status) || task.status === 'outcome_unknown');
+  }
   function file(id) { if (!ID.test(String(id || ''))) throw fail('digital_human_not_found', '没有找到这条数字人任务。'); return contained(root, `${id}/task.json`); }
   function read(id) {
     let data;
@@ -240,7 +251,7 @@ function createDigitalHumanService(options = {}) {
     }
   }
   function schedule(id) {
-    if (closed || active.has(id)) return active.get(id);
+    if (closed || global.__xiaoxiUpdateHold || active.has(id)) return active.get(id);
     const promise = Promise.resolve().then(async () => {
       const task = read(id);
       if (!POLLING_STATES.has(task.status)) return;
@@ -267,6 +278,7 @@ function createDigitalHumanService(options = {}) {
     return result;
   }
   function importImage(source) {
+    assertCanWork();
     const stat = fs.statSync(source);
     if (!stat.isFile() || stat.size <= 0 || stat.size > 20 * 1024 * 1024) throw fail('digital_human_image_size', '请选择不超过20MB的图片。');
     const bytes = fs.readFileSync(source), mime = imageMime(bytes);
@@ -282,6 +294,7 @@ function createDigitalHumanService(options = {}) {
     return imagePreview({ id, name: path.basename(source) }, bytes);
   }
   function create(input) {
+    assertCanWork();
     assertKeys(input, ['id', 'personAssetId', 'productAssetId', 'sceneId', 'voiceStyle', 'durationSeconds', 'script', 'title', 'templateId', 'musicTrackId']);
     if (input.personAssetId) asset(input.personAssetId);
     if (input.productAssetId) asset(input.productAssetId);
@@ -360,7 +373,7 @@ function createDigitalHumanService(options = {}) {
     }
   }, 15000);
   timer.unref?.();
-  return { capabilities, importImage, create, preview, confirm, refresh, resume, media, images, list,
+  return { capabilities, importImage, create, preview: admit(preview), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), media, images, list, isBusy,
     get: (id) => publicTask(read(id)),
     close: async () => { closed = true; clearInterval(timer); await Promise.allSettled(active.values()); },
   };

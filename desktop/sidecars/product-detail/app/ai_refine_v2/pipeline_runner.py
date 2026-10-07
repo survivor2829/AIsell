@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import concurrent.futures
 import threading
@@ -79,6 +80,7 @@ class TaskState:
     failed_count: int = 0
     # 错误
     error: str = ""
+    code: str = ""
     error_trace: str = ""
 
     def to_dict(self) -> dict:
@@ -272,6 +274,7 @@ def get_task_status(task_id: str) -> dict | None:
     summary_data = _read_json(task_dir / "_summary.json")
     if summary_data is not None:
         result = _status_from_record(task_id, summary_data, terminal=True)
+        result["planning"] = _read_json(task_dir / "_planning.json")
         try:
             _validate_assembled_png(task_dir / "assembled.png")
         except Exception as exc:
@@ -875,7 +878,7 @@ def _validate_assembled_png(
     if not path.is_file():
         raise RuntimeError(f"assembled.png 不存在: {path}")
     size = path.stat().st_size
-    if size < min_bytes:
+    if size < 100:
         raise RuntimeError(
             f"assembled.png 太小 ({size} 字节 < {min_bytes}), "
             f"疑源图缺失导致纯白 PNG. 请查上游 block 下载."
@@ -888,11 +891,15 @@ def _validate_assembled_png(
                 raise RuntimeError(f"格式不是 PNG: {image.format!r}")
             image.load()
             width, height = image.size
+            # A single valid cover can compress below the old eight-screen
+            # byte threshold. Reject blank images, not low-entropy designs.
+            if size < min_bytes and all(lo == hi for lo, hi in image.convert("RGB").getextrema()):
+                raise RuntimeError(f"assembled.png 太小且为纯色空图 ({size} 字节)")
     except Exception as exc:
         raise RuntimeError(f"assembled.png 无法完整解码: {exc}") from exc
     if width < min_width or height < min_height:
         raise RuntimeError(
-            f"assembled.png 尺寸异常 ({width}x{height}), "
+            f"assembled.png 尺寸太小 ({width}x{height}), "
             f"至少需要 {min_width}x{min_height}"
         )
     return width, height
@@ -987,6 +994,7 @@ def _record_worker_exception(
         task_id,
         status=terminal_status,
         error=str(exc),
+        code=str(getattr(exc, "code", "")),
         error_trace=tb,
         progress_msg=progress_msg,
     )
@@ -1268,6 +1276,11 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
     try:
         # ── Stage 1: Planner (plan_v2) ──
+        _atomic_write_json(task_dir / "_input.json", {
+            "product_text": product_text, "product_title": product_title,
+            "product_image_url": product_image_url,
+            "product_category": product_category,
+        })
         if deepseek_key:
             _set(task_id, progress_msg="DeepSeek (v2) 分析产品文案...", progress_pct=10)
             from ai_refine_v2 import refine_planner
@@ -1284,12 +1297,13 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
         # PR A (2026-05-07): 耗材类/配件类 lifestyle_demo 强制提到 idx=2
         from ai_refine_v2 import refine_planner
-        planning = refine_planner._reorder_lifestyle_to_second(planning, product_category)
+        if planning.get("planning_version") != refine_planner.PLANNING_VERSION:
+            planning = refine_planner._reorder_lifestyle_to_second(planning, product_category)
         # PR B (2026-05-07): 耗材类/配件类 + DeepSeek 输出 materials 时注入 material_origin 屏
-        planning = refine_planner._inject_material_origin(planning, product_category)
+            planning = refine_planner._inject_material_origin(planning, product_category)
 
         _set(task_id, planning=planning, progress_pct=20,
-             progress_msg="planning_v2 已生成")
+            progress_msg="产品风格与卖点分图方案已生成")
         (task_dir / "_planning.json").write_text(
             json.dumps(planning, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1376,6 +1390,95 @@ def _valid_local_image(path: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _merge_reroll_blocks(task_dir: Path, generated: list[dict]) -> list[dict]:
+    """A redo has its own provider receipt; copy unchanged local assets only."""
+    reroll = _read_json(task_dir / "_reroll.json")
+    if not reroll or len(generated) != 1:
+        return generated
+    blocks = reroll["base_blocks"]
+    replacement = {**generated[0]}
+    replacement["is_hero"] = reroll["block_index"] == 0
+    blocks[reroll["block_index"]] = replacement
+    return blocks
+
+
+def _reroll_worker(task_id: str, planning: dict, image_path: str, block_index: int, key: str) -> None:
+    task_dir = _OUTPUT_BASE / task_id
+    try:
+        _set(task_id, mode="real", status="running_generator", planning=planning,
+             progress_msg=f"只重做第 {block_index + 1} 张，其余图片沿用", progress_pct=20)
+        selected = {**planning, "screens": [planning["screens"][block_index]], "screen_count": 1}
+        blocks, cost = _run_real_generator_v2(
+            selected, image_path, key, task_dir,
+            lambda pct, msg: _set(task_id, progress_pct=pct, progress_msg=msg),
+        )
+        blocks = _merge_reroll_blocks(task_dir, blocks)
+        _persist_recovery(task_dir, blocks, cost, len(blocks), status="ready_for_assembly", schema_mode="v2")
+        _set(task_id, status="running_assembler", progress_pct=90)
+        assembled = _run_assembler_v2(task_dir, blocks)
+        status, planned, success, failed = _write_terminal_summary(
+            task_id, task_dir, planning, "real", blocks, cost, len(blocks), assembled, schema_mode="v2",
+        )
+        _set(task_id, status=status, blocks=blocks, assembled_url=assembled,
+             cost_rmb=cost, planned_count=planned, success_count=success,
+             failed_count=failed, progress_pct=100, progress_msg="指定图片已重做，原版本仍保留")
+    except Exception as exc:
+        _record_worker_exception(task_id, task_dir, exc, log_prefix="pipeline_reroll")
+
+
+def start_screen_reroll(source_task_id: str, block_index: int, user_id: int, gpt_image_key: str,
+                        reference_path: str = "") -> str:
+    """Use stored prompts in a separate task, without replanning or overwriting."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_task_id):
+        raise ValueError("原任务编号无效")
+    source = get_task_status(source_task_id)
+    if not source or source.get("status") not in {"success", "partial_success"}:
+        raise ValueError("原任务尚未完成或结果不明，不能重做；请先核对原任务")
+    source_dir = _OUTPUT_BASE / source_task_id
+    planning = _read_json(source_dir / "_planning.json") or {}
+    screens = planning.get("screens") or []
+    if type(block_index) is not int or not 0 <= block_index < len(screens):
+        raise ValueError("指定图片不在原方案中")
+    original_input = _read_json(source_dir / "_input.json") or {}
+    image_path = str(original_input.get("product_image_url") or "")
+    if not image_path or not Path(image_path).is_file():
+        # The endpoint has already checked the fallback upload's owner and
+        # path boundary. An obsolete stored path must not prevent recovery.
+        image_path = reference_path
+    if not image_path or not Path(image_path).is_file():
+        raise ValueError("历史任务的原产品图不可用，请先上传同一产品原图再重做")
+    if not _apply_safety_valve("", gpt_image_key)[1]:
+        raise ValueError("真实生图未启用，未创建重做任务")
+    original_blocks = source.get("blocks") or []
+    if len(original_blocks) != len(screens):
+        raise ValueError("历史任务图片与方案不一致，不能自动重做")
+    task_id = f"v2_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+    task_dir = _OUTPUT_BASE / task_id
+    task_dir.mkdir(parents=True, exist_ok=False)
+    base_blocks = []
+    for i, block in enumerate(original_blocks):
+        clone = {**block}
+        if i != block_index and block.get("success"):
+            filename = Path(str(block.get("file") or "")).name
+            src = source_dir / filename
+            if not filename or not _valid_local_image(src):
+                raise ValueError(f"第 {i + 1} 张原图不可用，请先恢复原任务")
+            # Prefix prevents collision with the regenerated block's filename.
+            clone["file"] = f"retained_{i + 1:02d}.jpg"
+            shutil.copyfile(src, task_dir / clone["file"])
+            clone["image_url"] = f"/static/ai_refine_v2/{task_id}/{clone['file']}"
+        base_blocks.append(clone)
+    _atomic_write_json(task_dir / "_planning.json", planning)
+    _atomic_write_json(task_dir / "_input.json", {**original_input, "product_image_url": image_path})
+    _atomic_write_json(task_dir / "_reroll.json", {
+        "source_task_id": source_task_id, "block_index": block_index, "base_blocks": base_blocks,
+    })
+    with _TASKS_LOCK:
+        _TASKS[task_id] = TaskState(task_id=task_id, user_id=user_id)
+    threading.Thread(target=_reroll_worker, args=(task_id, planning, image_path, block_index, gpt_image_key), daemon=True).start()
+    return task_id
 
 
 def _recover_task(task_id: str, gpt_image_key: str) -> dict:
@@ -1549,6 +1652,9 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
     if not successful or not blocks[0].get("success"):
         return persist("failed", "原任务没有可拼装的 Hero 结果")
     try:
+        blocks = _merge_reroll_blocks(task_dir, blocks)
+        planned_count = max(planned_count, len(blocks))
+        persist("running_recovery")
         if schema_mode == "v2":
             assembled_url = _run_assembler_v2(task_dir, blocks)
         else:

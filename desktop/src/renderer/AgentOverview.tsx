@@ -2,10 +2,11 @@ import type { CSSProperties } from "react";
 import { ArrowRight, Folder } from "lucide-react";
 import { appearanceFor, characterAsset, type AgentRoleKey, type RolePreferences } from "./role-appearance";
 import "./AgentOverview.css";
+import productBrand from "../../product-brand.json";
 
 const LEADERS: { key: AgentRoleKey; action: string; description: string }[] = [
   { key: "production", action: "制作获客短片", description: "把产品做成能引发咨询的短视频。" },
-  { key: "operations", action: "寻找客户需求", description: "从关键词发现需求，再准备对应的产品资料。" },
+  { key: "operations", action: "制作产品详情图", description: "上传产品图片和卖点，制作清楚易读的详情图。" },
   { key: "agent", action: "承接微信咨询", description: "核对身份和任务状态，礼貌跟进客户。" }
 ];
 
@@ -17,7 +18,7 @@ export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
   return <div className="agent-overview">
     <header className="agent-overview-head">
       <span className="agent-overview-guide" aria-hidden="true">AI</span>
-      <div><span>玺联惠 · AI获客</span><h1>做内容、找客户、接咨询</h1><p>选择一位负责人，查看他负责的工作。</p></div>
+      <div><h1>生素材 · 引客户 · 变成交</h1><p>{productBrand.displayName}，从今天要完成的工作开始。</p></div>
     </header>
     <div className="agent-overview-leaders">
       {LEADERS.map(({ key, action, description }) => {
@@ -25,7 +26,7 @@ export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
         const style = { "--overview-surface": appearance.surface, "--overview-accent": appearance.strong } as CSSProperties;
         return <button className="agent-overview-leader" style={style} key={key} onClick={() => onOpenRole(key)}>
           <img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" />
-          <span className="agent-overview-leader-copy"><strong>{preferences[key].name}</strong><em>{key === "operations" ? "精准获客" : key === "production" ? "短视频获客" : "微信拓客"}</em><small>{description}</small><b>{action}<ArrowRight size={15} /></b></span>
+          <span className="agent-overview-leader-copy"><strong>{key === "operations" ? "产品详情图" : key === "production" ? "短视频获客" : "微信拓客"}</strong><em>{preferences[key].name}</em><small>{description}</small><b>{action}<ArrowRight size={15} /></b></span>
         </button>;
       })}
     </div>

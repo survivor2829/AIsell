@@ -10,12 +10,10 @@ import {
   Images,
   ListTodo,
   LogOut,
-  MapPin,
   MessageCircle,
   Pause,
   Play,
   RefreshCw,
-  Search,
   Send,
   Square,
   ThumbsUp,
@@ -33,7 +31,6 @@ import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
-import { CloudMaintenance } from "./CloudMaintenance";
 import { CustomerTools } from "./CustomerTools";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
 import { appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
@@ -411,14 +408,12 @@ const productionChildren: NavItem[] = [
 ];
 
 const operationsChildren: NavItem[] = [
-  { key: "local-acquisition", label: "同城精准获客", icon: MapPin },
-  { key: "keyword-acquisition", label: "关键词获客", icon: Search },
   { key: "product-detail", label: "产品详情图", icon: Images }
 ];
 
 const navGroups: NavGroup[] = [
   { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
-  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Search, children: operationsChildren },
+  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren },
   { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren }
 ];
 
@@ -552,6 +547,8 @@ export default function App() {
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext | null>(null);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { contentScrollRef.current?.scrollTo({ top: 0, left: 0 }); }, [active]);
   const [guideOpen, setGuideOpen] = useState(false);
   const [workflowView, setWorkflowView] = useState<WorkflowView>("tasks");
   const [workflowEditor, setWorkflowEditor] = useState<EditorRequest | null>(null);
@@ -607,7 +604,7 @@ export default function App() {
 
   const selectGroup = (groupKey: GroupKey) => {
     setOpenGroups({ agent: groupKey === "agent", production: groupKey === "production", operations: groupKey === "operations" });
-    setActive(groupKey);
+    setActive(groupKey === "operations" ? "product-detail" : groupKey);
   };
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
@@ -779,11 +776,11 @@ export default function App() {
   return (
     <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
       <aside className="sidebar">
-        <button className="brand brand-home" type="button" onClick={() => setActive("overview")} aria-label="打开AI获客首页">
+        <button className="brand brand-home" type="button" onClick={() => setActive("overview")} aria-label={`打开${productBrand.displayName}首页`}>
           <img className="brand-mark" src="./app-icon.png" alt="" />
           <div className="brand-copy">
             <span>{productBrand.displayName}</span>
-            <small>做内容 · 找客户 · 接咨询</small>
+            <small>生素材 · 引客户 · 变成交</small>
           </div>
         </button>
         <nav className="nav-list">
@@ -797,9 +794,9 @@ export default function App() {
                 <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)}>
                   <span className={`nav-role-avatar is-${group.key}`} style={{ background: appearance.surface }} aria-hidden="true"><img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" /></span>
                   <span className="nav-role-copy"><strong>{group.label}</strong><small title={visiblePreference(group.key).name}>{visiblePreference(group.key).name}</small></span>
-                  <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+                  {group.key !== "operations" && <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>}
                 </button>
-                {expanded && (
+                {expanded && group.key !== "operations" && (
                   <div className="sub-nav-list">
                     {group.children.map((item) => {
                       const ChildIcon = item.icon;
@@ -834,7 +831,7 @@ export default function App() {
 
       <section className={`workspace${roleThemeClass}`} style={activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
         <header className="topbar">
-          <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? "AI获客" : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
+          <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productBrand.displayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
             <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
               <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
@@ -855,8 +852,7 @@ export default function App() {
           onPreview={(value) => setRolePreview({ role: personalizingRole, value })}
           onSave={(value) => rolePreferences.save(personalizingRole, value)} onClose={closePersonalization} />}
 
-        <div className="content-card">
-          {active !== "diagnostics" && <CloudMaintenance compact />}
+        <div className="content-card" ref={contentScrollRef}>
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectGroup} onOpenModule={openAgentTarget} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
@@ -960,7 +956,7 @@ export default function App() {
 }
 
 function WindowChrome() {
-  return <div className="window-chrome" aria-label="玺联惠 AI获客 窗口标题栏"><img src="./app-icon.png" alt="" /><span>玺联惠 · AI获客</span></div>;
+  return <div className="window-chrome" aria-label={`${productBrand.displayName} 窗口标题栏`}><img src="./app-icon.png" alt="" /><span>玺联惠 · {productBrand.displayName}</span></div>;
 }
 
 function ContactSyncPage({

@@ -275,12 +275,14 @@ function assertBuildPreconditions(edition, {
 
 function buildPortableStaging(edition, paths, sourceState) {
   const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
+  const executableName = edition === "test" ? `${productBrand.executableName}-测试版` : productBrand.executableName;
   const { target, zip, archiveBaseDir } = paths;
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.cpSync(electronDir, target, { recursive: true });
   const electronExe = path.join(target, "electron.exe");
   // The bundled resource editor cannot open Chinese absolute paths. Use short
-  // relative filenames before applying the customer-facing executable name.
+  // relative filenames before applying the stable executable name. Existing
+  // update helpers restart this path after the installer finishes.
   const stagingIcon = path.join(target, "app-icon.ico");
   fs.copyFileSync(path.join(desktopDir, "public", "app-icon.ico"), stagingIcon);
   const iconResult = spawnSync(require.resolve("electron-winstaller/vendor/rcedit.exe"), [
@@ -290,7 +292,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   if (iconResult.status !== 0) {
     throw new Error(iconResult.error?.message || iconResult.stderr || "Failed to embed application icon");
   }
-  fs.renameSync(electronExe, path.join(target, `${productName}.exe`));
+  fs.renameSync(electronExe, path.join(target, `${executableName}.exe`));
   const appDir = path.join(target, "resources", "app");
   fs.rmSync(appDir, { recursive: true, force: true });
   copyAppSource(appDir, edition);

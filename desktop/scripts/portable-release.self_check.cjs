@@ -186,7 +186,8 @@ const parsedArguments = { ...parsePortableArguments(argv.filter(arg => arg !== "
 const { edition, productName, target, zip } = resolvePortablePaths(parsedArguments);
 const resourcesDir = path.join(target, "resources");
 const appDir = path.join(resourcesDir, "app");
-const executable = path.join(target, `${productName}.exe`);
+const executableName = edition === "test" ? `${productBrand.executableName}-测试版` : productBrand.executableName;
+const executable = path.join(target, `${executableName}.exe`);
 const helper = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
 const CONTACT_HELPER_SHA256 = "cbe4e98cace5d69cc395e0af21af9bd72aa59cc2a170772ac344e169e8bd3550";
 const nativeLibDir = path.join(appDir, "rpa", "contact_sync", "libs");

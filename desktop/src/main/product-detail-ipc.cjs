@@ -20,6 +20,7 @@ const PUBLIC_ERRORS = Object.freeze({
   PRODUCT_DETAIL_DATA_DIR_INVALID: "产品详情图数据目录配置无效。",
   PRODUCT_DETAIL_DATA_DIR_FAILED: "产品详情图数据目录无法创建。",
   PRODUCT_DETAIL_PROVIDER_CONFIG_FAILED: "云端图片服务暂不可用，请稍后重试。",
+  PRODUCT_DETAIL_RUNTIME_LINK_FAILED: "本地运行目录无法准备，请检查软件数据目录的访问权限后重试。",
   PROVIDER_GATEWAY_UNAVAILABLE: "云端图片服务暂不可用，请稍后重试。",
   PRODUCT_DETAIL_SPAWN_FAILED: "产品详情图服务启动失败，请重试。",
   PRODUCT_DETAIL_READY_INVALID: "产品详情图服务返回了无效的启动信息。",
@@ -39,6 +40,14 @@ function publicStatus(value = {}) {
     }
   }
   const code = Object.hasOwn(PUBLIC_ERRORS, value.code) ? value.code : "";
+  const rawDiagnostics = value.diagnostics;
+  const diagnostics = rawDiagnostics && typeof rawDiagnostics === "object" ? {
+    phase: /^[a-z_]{1,32}$/.test(rawDiagnostics.phase) ? rawDiagnostics.phase : "",
+    elapsedMs: Number.isFinite(rawDiagnostics.elapsedMs) ? Math.max(0, Math.round(rawDiagnostics.elapsedMs)) : 0,
+    exitCode: Number.isInteger(rawDiagnostics.exitCode) ? rawDiagnostics.exitCode : null,
+    signal: /^[A-Z0-9]{1,16}$/.test(rawDiagnostics.signal) ? rawDiagnostics.signal : "",
+    stderrType: /^[A-Za-z]{1,64}$/.test(rawDiagnostics.stderrType) ? rawDiagnostics.stderrType : ""
+  } : null;
   return {
     state,
     available: value.available === true,
@@ -46,7 +55,8 @@ function publicStatus(value = {}) {
     bootstrapUrl: state === "ready" ? String(value.bootstrapUrl || "") : "",
     version: String(value.version || "").slice(0, 64),
     capabilities,
-    code
+    code,
+    ...(diagnostics ? { diagnostics } : {})
   };
 }
 

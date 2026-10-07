@@ -49,6 +49,7 @@ assert.equal(
 assert.match(packageMetadata.scripts["release:installer"], /build-installer-release\.cjs/);
 assert.match(config, /^appId: com\.aihuoke\.desktop$/m);
 assert.match(config, new RegExp(`^productName: ${productBrand.displayName.replace(".", "\\.")}$`, "m"));
+assert.ok(config.split(/\r?\n/u).includes(`  executableName: ${productBrand.executableName}`));
 assert.match(config, /^\s+perMachine: false$/m);
 assert.match(config, /^\s+include: build\/installer\.nsh$/m);
 assert.match(config, /^\s+deleteAppDataOnUninstall: false$/m);
@@ -112,6 +113,7 @@ assert.doesNotMatch(builder, /"--prepackaged",\s+portableDir/);
 assert.match(builder, /productBrand\.stableDeliveryDataDirectoryName/);
 assert.equal(productBrand.stableDeliveryDataDirectoryName, "xiaoxi-active-touch-delivery");
 assert.equal(productBrand.stableInstallDirectoryName, "AI获客");
+assert.equal(productBrand.executableName, "AI获客 V1.0版本", "existing update helpers restart the stable executable path");
 assert.deepEqual(installerTargets.test, {
   appId: "com.aihuoke.desktop.test",
   installDirectoryName: "AI获客-测试版",
@@ -132,13 +134,15 @@ assert.throws(
   "ordinary delivery must not inherit the internal upgrade mode"
 );
 assert.match(testConfig, /^appId: com\.aihuoke\.desktop\.test$/m);
-assert.match(testConfig, /^productName: AI获客 V1\.0版本-测试版$/m);
-assert.match(testConfig, /^  artifactName: AI获客 V1\.0版本-测试版-安装程序\.\$\{ext\}$/m);
+assert.ok(testConfig.split(/\r?\n/u).includes(`productName: ${productBrand.displayName}-测试版`));
+assert.ok(testConfig.split(/\r?\n/u).includes(`  executableName: ${productBrand.executableName}-测试版`));
+assert.ok(testConfig.split(/\r?\n/u).includes(`  artifactName: ${productBrand.displayName}-测试版-安装程序.\${ext}`));
 assert.match(testNsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客-测试版"/);
 assert.deepEqual(resolveInstallerTarget("test"), {
   edition: "test",
   artifactType: "internal-evaluation",
   productName: `${productBrand.displayName}-测试版`,
+  executableName: `${productBrand.executableName}-测试版`,
   installerName: `${productBrand.displayName}-测试版-安装程序.exe`,
   installerManifestName: `${productBrand.displayName}-测试版-安装程序-版本清单.json`,
   configFile: "electron-builder-test-installer.yml",
@@ -180,7 +184,7 @@ try {
   assert.equal(calls[0].releaseTarget, portableFixture);
   assert.equal(calls[0].resourcesDir, resourcesFixture);
   assert.equal(calls[0].descriptor, descriptor);
-  assert.equal(calls[0].electronExecutable, path.join(portableFixture, `${productBrand.displayName}.exe`));
+  assert.equal(calls[0].electronExecutable, path.join(portableFixture, `${productBrand.executableName}.exe`));
   assert.match(calls[0].dataDir, /product-detail-gate$/);
 
   let releaseGateCalled = false;
@@ -215,7 +219,7 @@ try {
     /does not match its manifest/
   );
   fs.writeFileSync(path.join(appFixture, "main.cjs"), "fixture-app", "utf8");
-  fs.writeFileSync(path.join(portableFixture, `${productBrand.displayName}.exe`), "fixture-electron", "utf8");
+  fs.writeFileSync(path.join(portableFixture, `${productBrand.executableName}.exe`), "fixture-electron", "utf8");
   const portableManifest = {
     sourceTreeSha256: treeSha256(appFixture),
     productDetailSidecar: descriptor
@@ -263,7 +267,7 @@ try {
     /differs from the verified portable application/
   );
   fs.writeFileSync(path.join(installerInputFixture, "resources", "app", "main.cjs"), "fixture-app", "utf8");
-  fs.rmSync(path.join(installerInputFixture, `${productBrand.displayName}.exe`));
+  fs.rmSync(path.join(installerInputFixture, `${productBrand.executableName}.exe`));
   assert.throws(
     () => assertInstallerInputMatchesPortable({
       portableTarget: portableFixture,
@@ -271,7 +275,7 @@ try {
     }),
     /differs from the verified portable application/
   );
-  fs.writeFileSync(path.join(installerInputFixture, `${productBrand.displayName}.exe`), "fixture-electron", "utf8");
+  fs.writeFileSync(path.join(installerInputFixture, `${productBrand.executableName}.exe`), "fixture-electron", "utf8");
   const expectedPayloadTreeHash = treeSha256(installerInputFixture);
   const extractionCalls = [];
   const releaseGateCalls = [];
@@ -297,6 +301,7 @@ try {
   assert.equal(extractionCalls.length, 2);
   assert.equal(releaseGateCalls.length, 1);
   assert.deepEqual(releaseGateCalls[0].descriptor, descriptor);
+  assert.equal(path.basename(releaseGateCalls[0].electronExecutable), `${productBrand.executableName}.exe`);
 
   assert.throws(
     () => verifyInstallerPayload({

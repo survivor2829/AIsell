@@ -3,9 +3,51 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const { diagnostics } = require("./diagnostics.cjs");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MAX_READY_LINE_BYTES = 64 * 1024;
+const STARTUP_STAGES = new Set(["prepare_data", "browser_check", "load_app", "install_contract", "listen"]);
+
+// A component generation adds a 64-character directory to every dependency.
+// Python's package resources still hit MAX_PATH when Windows long paths are off.
+// Keep both the frozen application and its shared Chromium below one short,
+// version-specific junction; never relocate or overwrite the verified runtime.
+function prepareRuntimeLaunch(runtimePath, dataDir, trustedEnvironment) {
+  if (process.platform !== "win32" || path.basename(path.dirname(runtimePath)) !== "product-detail") {
+    return { runtimePath, environment: trustedEnvironment };
+  }
+  const resources = path.dirname(path.dirname(runtimePath));
+  const realResources = fs.realpathSync(resources);
+  const id = crypto.createHash("sha256").update(realResources.toLowerCase()).digest("hex").slice(0, 16);
+  const linkRoot = path.join(dataDir, ".runtime-links");
+  const link = path.join(linkRoot, id);
+  fs.mkdirSync(linkRoot, { recursive: true });
+  if (fs.lstatSync(linkRoot).isSymbolicLink()) throw new Error("runtime link directory must be local");
+  let stat;
+  try { stat = fs.lstatSync(link); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (!stat) {
+    try { fs.symlinkSync(realResources, link, "junction"); } catch (error) { if (error.code !== "EEXIST") throw error; }
+    stat = fs.lstatSync(link);
+  }
+  if (!stat.isSymbolicLink() || fs.realpathSync(link).toLowerCase() !== realResources.toLowerCase()) {
+    throw Object.assign(new Error("runtime link target mismatch"), { code: "PRODUCT_DETAIL_RUNTIME_LINK_FAILED" });
+  }
+  const environment = { ...trustedEnvironment };
+  for (const [key, value] of Object.entries(environment)) {
+    const relative = path.relative(realResources, fs.realpathSync(value));
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) environment[key] = path.join(link, relative);
+  }
+  return { runtimePath: path.join(link, path.relative(resources, runtimePath)), environment };
+}
+
+function summarizeStderr(stderr) {
+  const lines = String(stderr).slice(-16_384);
+  const types = [...lines.matchAll(/^([A-Za-z][A-Za-z0-9]*(?:Error|Exception))(?::|\b)/gm)];
+  const frames = [...lines.matchAll(/File "([A-Za-z0-9_./\\-]+\.py)", line (\d+)/g)]
+    .slice(-4).map(match => ({ stage: match[1].replace(/\.py$/, "").replace(/[\\/]/g, "."), line: Number(match[2]) }));
+  return { stderrType: types.at(-1)?.[1] || "", stderrFrames: frames };
+}
 const DESKTOP_PROVIDER_ENV_KEYS = Object.freeze([
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_API_URL",
@@ -126,6 +168,7 @@ function createProductDetailSidecar(options = {}) {
   const spawnProcess = options.spawnProcess || spawn;
   const randomBytes = options.randomBytes || crypto.randomBytes;
   const requestShutdown = options.requestShutdown || defaultShutdownRequest;
+  const logger = options.logger || diagnostics();
   const getProviderEnvironment = typeof options.getProviderEnvironment === "function"
     ? options.getProviderEnvironment
     : () => options.providerEnvironment;
@@ -140,6 +183,8 @@ function createProductDetailSidecar(options = {}) {
   let startPromise = null;
   let stopPromise = null;
   let disposed = false;
+  let startupDiagnostics = null;
+  let startedAt = 0;
   let snapshot = {
     state: runtimePath && existsSync(runtimePath) ? "stopped" : "unavailable",
     available: Boolean(runtimePath && existsSync(runtimePath)),
@@ -158,7 +203,8 @@ function createProductDetailSidecar(options = {}) {
       bootstrapUrl: snapshot.bootstrapUrl,
       version: snapshot.version,
       capabilities: { ...snapshot.capabilities },
-      code: snapshot.code
+      code: snapshot.code,
+      ...(startupDiagnostics ? { diagnostics: { ...startupDiagnostics, elapsedMs: Math.max(0, Date.now() - startedAt) } } : {})
     };
   }
 
@@ -193,6 +239,21 @@ function createProductDetailSidecar(options = {}) {
       capabilities: {},
       code
     });
+  }
+
+  function record(event, run, extra = {}) {
+    try {
+      logger.event("product_detail", event, {
+        stage: startupDiagnostics?.phase || "idle", elapsed_ms: startedAt ? Date.now() - startedAt : 0,
+        stderr_bytes: run?.stderrBytes || 0, stderr_type: startupDiagnostics?.stderrType || "",
+        frames: startupDiagnostics?.stderrFrames || [], ...extra
+      }, { level: event === "failed" ? "error" : "info", code: snapshot.code || event });
+    } catch { /* Diagnostic storage must not break local startup or shutdown. */ }
+  }
+
+  function setStage(phase) {
+    startupDiagnostics = { ...startupDiagnostics, phase };
+    notify();
   }
 
   function runtimeIsAvailable() {
@@ -267,6 +328,8 @@ function createProductDetailSidecar(options = {}) {
       "--control-token", controlToken
     ];
 
+    startedAt = Date.now();
+    startupDiagnostics = { phase: "provider_config", exitCode: null, signal: "", stderrType: "", stderrFrames: [] };
     update({
       state: "starting",
       available: true,
@@ -294,7 +357,19 @@ function createProductDetailSidecar(options = {}) {
         }
       }
     } catch {
-      return setTerminalState("failed", "PRODUCT_DETAIL_PROVIDER_CONFIG_FAILED");
+      const result = setTerminalState("failed", "PRODUCT_DETAIL_PROVIDER_CONFIG_FAILED");
+      record("failed");
+      return result;
+    }
+
+    let launch;
+    try {
+      setStage("prepare_runtime");
+      launch = prepareRuntimeLaunch(runtimePath, dataDir, trustedRuntimeEnvironment);
+    } catch {
+      const result = setTerminalState("failed", "PRODUCT_DETAIL_RUNTIME_LINK_FAILED");
+      record("failed");
+      return result;
     }
 
     return new Promise((resolve) => {
@@ -307,8 +382,9 @@ function createProductDetailSidecar(options = {}) {
         for (const key of TRUSTED_RUNTIME_ENV_KEYS) {
           childEnvironment[key] = "";
         }
-        Object.assign(childEnvironment, providerEnvironment, trustedRuntimeEnvironment);
-        child = spawnProcess(runtimePath, args, {
+        Object.assign(childEnvironment, providerEnvironment, launch.environment);
+        setStage("spawn");
+        child = spawnProcess(launch.runtimePath, args, {
           windowsHide: true,
           shell: false,
           stdio: ["ignore", "pipe", "pipe"],
@@ -316,6 +392,7 @@ function createProductDetailSidecar(options = {}) {
         });
       } catch {
         resolve(setTerminalState("failed", "PRODUCT_DETAIL_SPAWN_FAILED"));
+        record("failed");
         return;
       }
 
@@ -331,6 +408,8 @@ function createProductDetailSidecar(options = {}) {
         settled: false,
         startupTimer: null,
         stderrBytes: 0,
+        stderrTail: "",
+        stderrLine: "",
         stdoutBuffer: "",
         stopping: false
       };
@@ -348,6 +427,7 @@ function createProductDetailSidecar(options = {}) {
         if (run.ready || run.closed) return;
         run.failureCode = code;
         const result = setTerminalState("failed", code);
+        record("failed", run);
         killRun(run);
         settleStart(result);
       }
@@ -373,6 +453,7 @@ function createProductDetailSidecar(options = {}) {
           return;
         }
         run.ready = true;
+        startupDiagnostics.phase = "ready";
         clearTimeout(run.startupTimer);
         const origin = `http://localhost:${readyPayload.port}`;
         settleStart(update({
@@ -384,10 +465,24 @@ function createProductDetailSidecar(options = {}) {
           capabilities: readyPayload.capabilities,
           code: ""
         }));
+        record("ready", run);
       });
 
       child.stderr?.on("data", (chunk) => {
+        if (run.closed || currentRun !== run) return;
         run.stderrBytes += Buffer.byteLength(chunk);
+        run.stderrTail = (run.stderrTail + chunk.toString("utf8")).slice(-16_384);
+        run.stderrLine = (run.stderrLine + chunk.toString("utf8")).slice(-8192);
+        Object.assign(startupDiagnostics, summarizeStderr(run.stderrTail));
+        const lines = run.stderrLine.split("\n");
+        run.stderrLine = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('{"event": "product_detail_startup"')) continue;
+          try {
+            const value = JSON.parse(line);
+            if (!run.ready && value.event === "product_detail_startup" && STARTUP_STAGES.has(value.stage)) setStage(value.stage);
+          } catch { /* stderr is not the readiness protocol. */ }
+        }
       });
 
       child.once("error", () => {
@@ -398,8 +493,11 @@ function createProductDetailSidecar(options = {}) {
         run.failureCode = "PRODUCT_DETAIL_EXITED";
       });
 
-      child.once("close", () => {
+      child.once("close", (exitCode, signal) => {
         run.closed = true;
+        startupDiagnostics = { ...startupDiagnostics, ...summarizeStderr(run.stderrTail),
+          exitCode: Number.isInteger(exitCode) ? exitCode : null,
+          signal: typeof signal === "string" && /^[A-Z0-9]{1,16}$/.test(signal) ? signal : "" };
         clearTimeout(run.startupTimer);
         settleCloseWaiters(run);
         if (currentRun !== run) {
@@ -408,6 +506,7 @@ function createProductDetailSidecar(options = {}) {
         }
         currentRun = null;
         if (run.stopping || disposed) {
+          record("stopped", run, { exit_code: startupDiagnostics.exitCode, signal_type: startupDiagnostics.signal });
           const result = setTerminalState("stopped");
           settleStart(result);
           return;
@@ -416,6 +515,7 @@ function createProductDetailSidecar(options = {}) {
           "failed",
           run.failureCode || "PRODUCT_DETAIL_EXITED"
         );
+        record("failed", run, { exit_code: startupDiagnostics.exitCode, signal_type: startupDiagnostics.signal });
         settleStart(result);
       });
 
@@ -544,5 +644,7 @@ module.exports = {
   createProductDetailSidecar,
   defaultShutdownRequest,
   parseReadyLine,
-  sanitizeProviderEnvironment
+  sanitizeProviderEnvironment,
+  prepareRuntimeLaunch,
+  summarizeStderr
 };

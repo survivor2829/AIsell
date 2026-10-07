@@ -178,7 +178,7 @@ class TestWorkspaceFrontendPersistenceHooks:
         assert "container.style.zoom = scale.toFixed(4)" in content
         assert "new ResizeObserver(queuePreviewFit)" in content
         assert "if (tab === 'detail') queuePreviewFit()" in content
-        assert "const defaultLayout = window.innerWidth >= 1024 ? 'preview' : 'balance'" in content
+        assert "const defaultLayout = DESKTOP_MODE ? 'edit' : (window.innerWidth >= 1024 ? 'preview' : 'balance')" in content
         assert "name === 'preview' && window.innerWidth < 1280" not in content
         assert "initPreviewFit()" in content
 
@@ -254,7 +254,8 @@ class TestWorkspaceFrontendPaidTaskSafety:
 
     def test_paid_generation_requires_a_cost_and_retry_confirmation(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
-        assert "预计生成 8–15 屏" in content
+        assert "每个独立卖点一张图" in content
+        assert "最多15张" in content
         assert "实际费用以 APIMart 账单为准" in content
         assert "失败或结果不明时不会自动重提" in content
         assert "await confirmInWorkspace(" in content

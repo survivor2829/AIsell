@@ -521,7 +521,7 @@ class TestAssembledSizeGuard(unittest.TestCase):
             p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 11000)
             with self.assertRaises(RuntimeError) as ctx:
                 pipeline_runner._validate_assembled_png(p)
-            self.assertIn("太小", str(ctx.exception))
+            self.assertIn("无法完整解码", str(ctx.exception))
 
     def test_missing_png_raises(self):
         with tempfile.TemporaryDirectory() as td:
@@ -591,7 +591,7 @@ class TestAssembledSizeGuard(unittest.TestCase):
             state = pipeline_runner._TASKS[task_id]
             self.assertEqual(state.status, "recovery_required",
                              f"付费 checkpoint 存在时应可恢复, 实际 {state.status}; error={state.error}")
-            self.assertIn("太小", state.error)
+            self.assertIn("无法完整解码", state.error)
             self.assertFalse(
                 (Path(td) / task_id / "_summary.json").exists(),
                 "assembled.png 校验失败前不能留下会被磁盘 fallback 当成功的 summary",

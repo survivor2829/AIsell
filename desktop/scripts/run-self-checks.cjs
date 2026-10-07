@@ -7,6 +7,7 @@ const checks = [
   "scripts/artifact-retention.self_check.cjs",
   "scripts/build-renderer.self_check.cjs",
   "scripts/dev-electron.self_check.cjs",
+  "src/main/window-layout.self_check.cjs",
   "scripts/wechat-failure-policy-review.self_check.cjs",
   "scripts/wechat-failure-policy-review.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",
@@ -33,6 +34,7 @@ const checks = [
   "src/main/contact-sync-ipc.self_check.cjs",
   "src/main/ai-expert.self_check.cjs",
   "src/main/product-video.self_check.cjs",
+  "src/main/product-video-media.self_check.cjs",
   "src/main/digital-human.self_check.cjs",
   "src/main/keyword-acquisition.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
@@ -148,7 +150,8 @@ function runParallelGroup(group) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [__filename, `--group=${group.name}`], {
       cwd: desktopDir,
-      env: process.env,
+      // These isolated business fixtures use China calendar dates, as in CI.
+      env: { ...process.env, TZ: "Asia/Shanghai" },
       stdio: "inherit",
       windowsHide: true
     });

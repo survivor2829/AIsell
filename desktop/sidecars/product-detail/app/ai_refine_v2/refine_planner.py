@@ -60,6 +60,7 @@ _VALID_VISUAL_TYPES = ("product_in_scene", "product_closeup", "concept_visual")
 _VALID_PRIORITIES = ("high", "medium", "low")
 MAX_PRODUCT_TEXT_CHARS = 20_000
 MAX_PRODUCT_TITLE_CHARS = 120
+PLANNING_VERSION = "selling-points-v1"
 
 
 # ── 异常 ────────────────────────────────────────────────────────
@@ -600,6 +601,8 @@ def _validate_schema_v2(
     w: list[str] = []
     if not isinstance(parsed, dict):
         return ["data 不是 dict"]
+    product_driven = parsed.get("planning_version") == PLANNING_VERSION
+    min_screens = 1 if product_driven else _MIN_SCREEN_COUNT_V2
 
     # product_meta
     pm = parsed.get("product_meta")
@@ -610,7 +613,8 @@ def _validate_schema_v2(
             if not pm.get(k) or not isinstance(pm.get(k), str):
                 w.append(f"product_meta.{k} 缺失或非字符串")
         cat = pm.get("category")
-        if cat not in _VALID_CATEGORIES:
+        valid_category = isinstance(cat, str) and bool(cat.strip()) if product_driven else cat in _VALID_CATEGORIES
+        if not valid_category:
             w.append(f"product_meta.category 非法 (必须 设备类/耗材类/配件类/工具类): {cat!r}")
         kvp = pm.get("key_visual_parts")
         if not isinstance(kvp, list) or not kvp:
@@ -642,9 +646,9 @@ def _validate_schema_v2(
 
     # screen_count
     sc = parsed.get("screen_count")
-    if not isinstance(sc, int) or not (_MIN_SCREEN_COUNT_V2 <= sc <= _MAX_SCREEN_COUNT_V2):
+    if not isinstance(sc, int) or not (min_screens <= sc <= _MAX_SCREEN_COUNT_V2):
         w.append(
-            f"screen_count 必须为 [{_MIN_SCREEN_COUNT_V2},{_MAX_SCREEN_COUNT_V2}] 整数, "
+            f"screen_count 必须为 [{min_screens},{_MAX_SCREEN_COUNT_V2}] 整数, "
             f"实际 {sc!r}"
         )
 
@@ -655,10 +659,10 @@ def _validate_schema_v2(
     else:
         if isinstance(sc, int) and len(screens) != sc:
             w.append(f"screens 长度 ({len(screens)}) 与 screen_count ({sc}) 不一致")
-        if not (_MIN_SCREEN_COUNT_V2 <= len(screens) <= _MAX_SCREEN_COUNT_V2):
+        if not (min_screens <= len(screens) <= _MAX_SCREEN_COUNT_V2):
             w.append(
                 f"screens 长度 {len(screens)} 不在 "
-                f"[{_MIN_SCREEN_COUNT_V2},{_MAX_SCREEN_COUNT_V2}]"
+                f"[{min_screens},{_MAX_SCREEN_COUNT_V2}]"
             )
         for i, s in enumerate(screens):
             if not isinstance(s, dict):
@@ -710,7 +714,7 @@ def _validate_schema_v2(
                     )
 
                 layout_hints = _LAYOUT_HINTS_V2.get(role, ())
-                if layout_hints and not any(
+                if not product_driven and layout_hints and not any(
                     hint.lower() in prompt_lower for hint in layout_hints
                 ):
                     w.append(
@@ -728,7 +732,7 @@ def _validate_schema_v2(
                         )
 
             # v3: SCOTT_OVERRIDE 屏型 (spec_table / FAQ) 必须显式 deliberate_dna_divergence=true
-            if role in _SCOTT_OVERRIDE_ROLES_V2:
+            if not product_driven and role in _SCOTT_OVERRIDE_ROLES_V2:
                 if s.get("deliberate_dna_divergence") is not True:
                     w.append(
                         f"screens[{i}] role={role!r} 是 SCOTT_OVERRIDE 屏型, "
@@ -740,7 +744,7 @@ def _validate_schema_v2(
             s.get("role") for s in screens if isinstance(s, dict)
         ]
         present_roles = set(present_roles_list)
-        missing = _REQUIRED_ROLES_V2 - present_roles
+        missing = ({"hero"} if product_driven else _REQUIRED_ROLES_V2) - present_roles
         if missing:
             w.append(
                 f"必出屏型缺失: {sorted(missing)}. "
@@ -753,7 +757,7 @@ def _validate_schema_v2(
             r for r in present_roles_list
             if isinstance(r, str) and r in _VALID_ROLES_V2
         ]
-        if len(set(valid_roles_list)) != len(valid_roles_list):
+        if not product_driven and len(set(valid_roles_list)) != len(valid_roles_list):
             dup = sorted(
                 role for role, n in Counter(valid_roles_list).items() if n > 1
             )
@@ -763,7 +767,94 @@ def _validate_schema_v2(
                 f"如需多个细节屏请用不同屏型 (detail_zoom + icon_grid_radial)."
             )
 
+    if product_driven:
+        w.extend(_validate_selling_point_mapping(parsed, product_text))
     return w
+
+
+def _validate_selling_point_mapping(parsed: dict, product_text: str | None) -> list[str]:
+    """Validate cardinality and quoted evidence before the first image charge."""
+    warnings = []
+    source = _normalize_claim_text(product_text or "")
+
+    def evidence_ok(value):
+        return isinstance(value, list) and bool(value) and all(
+            isinstance(item, str) and bool(item.strip())
+            and (product_text is None or _normalize_claim_text(item) in source)
+            for item in value
+        )
+
+    points = parsed.get("selling_points")
+    specs = parsed.get("specifications")
+    if not isinstance(points, list) or not isinstance(specs, list):
+        return ["selling_points 和 specifications 必须为数组，无内容时用空数组"]
+    ids = []
+    texts = []
+    point_sources = {}
+    for i, point in enumerate(points):
+        if not isinstance(point, dict):
+            warnings.append(f"selling_points[{i}] 无效")
+            continue
+        pid, content = point.get("id"), point.get("text")
+        if not isinstance(pid, str) or not re.fullmatch(r"p[1-9]\d*", pid):
+            warnings.append(f"selling_points[{i}].id 无效")
+        else:
+            ids.append(pid)
+            point_sources[pid] = point.get("evidence")
+        if not isinstance(content, str) or not content.strip():
+            warnings.append(f"selling_points[{i}].text 为空")
+        else:
+            texts.append(_normalize_claim_text(content))
+        if not evidence_ok(point.get("evidence")):
+            warnings.append(f"selling_points[{i}] 缺产品原文逐字依据")
+    if len(set(ids)) != len(ids) or len(set(texts)) != len(texts):
+        warnings.append("卖点 id 或内容重复，请合并同义卖点")
+    for i, spec in enumerate(specs):
+        if not isinstance(spec, dict) or not all(
+            isinstance(spec.get(key), str) and spec[key].strip()
+            for key in ("name", "value", "evidence")
+        ):
+            warnings.append(f"specifications[{i}] 参数不完整")
+        elif not evidence_ok([spec["evidence"]]) or _normalize_claim_text(spec["value"]) not in _normalize_claim_text(spec["evidence"]):
+            warnings.append(f"specifications[{i}] 参数值必须来自原文依据")
+    screens = parsed.get("screens") or []
+    required = 1 + len(points) + bool(specs)
+    if len(screens) != required:
+        warnings.append(f"必须封面1张＋每卖点1张＋有参数1张，实际应为 {required} 张")
+    if not screens or not isinstance(screens[0], dict) or screens[0].get("role") != "hero":
+        warnings.append("第一张必须为封面 hero")
+    refs = []
+    for i, screen in enumerate(screens):
+        if not isinstance(screen, dict):
+            continue
+        role, ref = screen.get("role"), screen.get("selling_point_id")
+        if role in {"hero", "spec_table"}:
+            if ref is not None:
+                warnings.append(f"screens[{i}] 封面/参数不关联独立卖点")
+        elif ref not in ids:
+            warnings.append(f"screens[{i}] 必须且只能关联一个存在的 selling_point_id")
+        else:
+            refs.append(ref)
+            if screen.get("evidence") != point_sources.get(ref):
+                warnings.append(f"screens[{i}] 必须使用对应卖点的原文依据")
+        if not evidence_ok(screen.get("evidence")):
+            warnings.append(f"screens[{i}] 缺产品原文逐字依据")
+        if len(str(screen.get("title") or "")) > 16 or len(str(screen.get("subtitle") or "")) > 32:
+            warnings.append(f"screens[{i}] 标题最多16字，解释最多32字")
+        if product_text is not None:
+            visible = f"{screen.get('title', '')} {screen.get('subtitle', '')}"
+            if _find_unbacked_commercial_claims(visible, product_text):
+                warnings.append(f"screens[{i}] 标题/解释含无依据承诺")
+    if Counter(refs) != Counter(ids):
+        warnings.append("每个独立卖点必须恰好对应一张图，不能重复或遗漏")
+    roles = [s.get("role") for s in screens if isinstance(s, dict)]
+    if roles.count("hero") != 1 or roles.count("spec_table") != int(bool(specs)):
+        warnings.append("只能一张封面；有参数恰好一张参数图，没有参数不出参数图")
+    if specs and roles and roles[-1] != "spec_table":
+        warnings.append("参数图放在最后")
+    if not str((parsed.get("style_dna") or {}).get("rationale") or "").strip():
+        warnings.append("style_dna.rationale 必须解释产品与风格的关系")
+    return warnings
 
 
 def _repair_duplicate_roles_v2(parsed: dict) -> dict:
@@ -776,6 +867,8 @@ def _repair_duplicate_roles_v2(parsed: dict) -> dict:
     """
     if not isinstance(parsed, dict):
         return parsed
+    if parsed.get("planning_version") == PLANNING_VERSION:
+        return parsed  # 同构图不同卖点合法；禁止静默删图。
 
     screens = parsed.get("screens")
     if not isinstance(screens, list):
@@ -865,6 +958,13 @@ def plan_v2(
             else "未提供产品参考图"
         ),
     )
+    color_sample = None
+    if product_image_url:
+        from ai_refine_v2.color_extractor import extract_color_anchor
+        anchor = extract_color_anchor(product_image_url)
+        if anchor:
+            color_sample = {"palette_hex": anchor.palette_hex, "confidence": anchor.confidence}
+    user_prompt += "\n本地像素采样（非视觉识别，背景或阴影可能影响结果）：" + json.dumps(color_sample, ensure_ascii=False)
 
     payload = {
         "model": model,
@@ -889,7 +989,7 @@ def plan_v2(
                 feedback_section = (
                     "\n\n⚠️ 上次规划违反了以下硬约束, 请这次务必避免:\n"
                     + "\n".join(f"  - {w}" for w in last_schema_warnings)
-                    + "\n特别注意: 每个 role 在一份详情页里**最多出现 1 次**, 严禁同 role 重复。"
+                    + "\n同 role 可以重复；每个独立卖点必须且只能对应一张图，不得静默丢弃卖点。"
                 )
                 current_payload = {
                     **payload,
@@ -904,11 +1004,16 @@ def plan_v2(
             resp = post_fn(current_payload, use_key)
             raw_content = resp["choices"][0]["message"]["content"]
             parsed = _extract_json(raw_content)
-            parsed = _repair_duplicate_roles_v2(parsed)
+            points = parsed.get("selling_points") or []
+            required_count = 1 + len(points) + bool(parsed.get("specifications"))
+            if parsed.get("capacity_exceeded") is True or max(len(parsed.get("screens") or []), required_count) > _MAX_SCREEN_COUNT_V2:
+                raise ProductInputError("AI_REFINE_TOO_MANY_SCREENS", "独立卖点加封面和参数图超过15张，请精简或分批提供资料；尚未提交生图")
             schema_warnings = _validate_schema_v2(
                 parsed,
                 product_text=clean_product_text,
             )
+            if parsed.get("planning_version") != PLANNING_VERSION:
+                schema_warnings.append(f"planning_version 必须为 {PLANNING_VERSION}")
             if schema_warnings:
                 last_err = f"v2 schema 不合规: {schema_warnings}"
                 last_schema_warnings = schema_warnings
@@ -918,6 +1023,7 @@ def plan_v2(
                     continue
                 raise PlannerError(last_err)
 
+            parsed["input_evidence"] = {"product_text": clean_product_text, "product_title": clean_product_title, "color_sample": color_sample}
             return parsed
 
         except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError,

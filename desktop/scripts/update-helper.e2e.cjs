@@ -39,7 +39,7 @@ async function main() {
       else if (item.name === "locales") await fs.cp(path.join(electronRoot, item.name), path.join(installed, item.name), { recursive: true });
     }
     for (const directory of ["src/main", "src/shared"]) await fs.mkdir(path.join(application, directory), { recursive: true });
-    const modules = ["src/main/update-helper.cjs", "src/main/atomic-file.cjs", "src/main/component-paths.cjs",
+    const modules = ["product-brand.json", "src/main/update-helper.cjs", "src/main/atomic-file.cjs", "src/main/component-paths.cjs",
       "src/shared/cloud-contract.cjs", "src/shared/component-contract.cjs"];
     for (const file of modules) await fs.copyFile(path.join(source, file), path.join(application, file));
     try { await fs.copyFile(path.join(source, "src/main/update-storage.cjs"), path.join(application, "src/main/update-storage.cjs")); }

@@ -185,6 +185,13 @@ async function main() {
       }
       assert.equal(posts.length, providerPosts, 'Packaging recovery must never regenerate the provider video.');
     }
+    global.__xiaoxiUpdateHold = true;
+    try {
+      assert.throws(() => service.create(draft), /正在更新/);
+      await assert.rejects(service.preview(task.id), /正在更新/);
+      await assert.rejects(service.refresh(task.id), /正在更新/);
+    } finally { global.__xiaoxiUpdateHold = false; }
+    assert.equal(service.isBusy(), true, 'Unresolved provider work must block app updates.');
     assert.throws(() => service.create({ ...draft, localPath: input }), /刷新/);
     assert.throws(() => service.get('../task'), /数字人/);
     assert.throws(() => remoteUrl('https://127.0.0.1/test'), /素材地址/);

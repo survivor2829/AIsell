@@ -654,13 +654,16 @@ def create_desktop_application(
     *,
     shutdown_callback: Callable[[], None],
 ):
+    _startup_stage("prepare_data")
     config = _validate_config(config)
     paths = prepare_runtime_paths(config.data_dir)
     _configure_environment(paths)
     # A packaged sidecar must prove the shared Chromium can start before it
     # advertises browser features. Merely finding chrome.exe lets a partial
     # portable extraction fail later during an export.
+    _startup_stage("browser_check")
     capabilities = detect_capabilities(verify_browser=True)
+    _startup_stage("load_app")
     with contextlib.redirect_stdout(sys.stderr):
         app_module = importlib.import_module("app")
     app_module.app.config.update(
@@ -673,6 +676,7 @@ def create_desktop_application(
         SESSION_COOKIE_SECURE=True,
         SESSION_COOKIE_PARTITIONED=True,
     )
+    _startup_stage("install_contract")
     contract = _install_desktop_contract(
         app_module.app,
         config=config,
@@ -729,6 +733,12 @@ def _parse_args(argv: list[str] | None = None):
     return args
 
 
+def _startup_stage(stage: str) -> None:
+    # A bounded, public stage identifier only; stdout remains ready JSON only.
+    sys.stderr.write(json.dumps({"event": "product_detail_startup", "stage": stage}) + "\n")
+    sys.stderr.flush()
+
+
 def _run_server(config: DesktopConfig, protocol_stdout) -> int:
     holder: dict[str, object] = {}
 
@@ -742,6 +752,7 @@ def _run_server(config: DesktopConfig, protocol_stdout) -> int:
         config,
         shutdown_callback=request_shutdown,
     )
+    _startup_stage("listen")
     server = make_server(
         config.host,
         config.port,

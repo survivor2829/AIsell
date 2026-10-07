@@ -224,8 +224,10 @@ function assertRendererContract() {
   ]) {
     assert.equal(page.includes(copy), true, `product-detail page must explain state/action: ${copy}`);
   }
+  // IPC permits only the bounded exception class in stderrType, never raw stderr.
+  const pageWithoutSafeErrorType = page.replace(/\bstderrType\b/g, "");
   for (const forbidden of ["stderr", "runtimePath", "controlToken"]) {
-    assert.equal(page.includes(forbidden), false, `product-detail page must not expose ${forbidden}`);
+    assert.equal(pageWithoutSafeErrorType.includes(forbidden), false, `product-detail page must not expose ${forbidden}`);
   }
 }
 

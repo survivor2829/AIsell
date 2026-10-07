@@ -7,6 +7,7 @@ function createProductVideoApi(ipcRenderer) {
   return {
     capabilities: () => invoke("capabilities"),
     importImage: () => invoke("import-image"),
+    importFacts: () => invoke("import-facts"),
     create: (payload) => invoke("create", payload),
     list: () => invoke("list"),
     get: (id) => invoke("get", { id }),
@@ -14,7 +15,8 @@ function createProductVideoApi(ipcRenderer) {
     retryShot: (id) => invoke("retry-shot", { id, clickToken: retryClick() }),
     refresh: (id) => invoke("refresh", { id }),
     media: (id) => invoke("media", { id }),
-    export: (id) => invoke("export", { id })
+    export: (id) => invoke("export", { id }),
+    exportSource: (id) => invoke("export-source", { id })
   };
 }
 module.exports = { createProductVideoApi };

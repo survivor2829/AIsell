@@ -690,7 +690,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">DeepSeek 与 APIMart 已配置。开始前会确认预计 8–15 屏；实际费用以 APIMart 账单为准，失败或结果不明时不会自动重提。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，一卖点一张图，另含封面与资料支持的参数图。最多15张，可下载单张和长图；点击会调用 APIMart，实际费用以账单为准。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -705,7 +705,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px;">DeepSeek 分析文案 + GPT-image-2 生成预计 8–15 屏，再自动拼装长图。开始前会确认；实际费用以账单为准，失败或结果不明时不会自动重提。</p>
+      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，一卖点一张图，另含封面与资料支持的参数图。最多15张，可下载单张和长图；实际费用以账单为准，结果不明不会自动重提。</p>
       <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
@@ -1023,6 +1023,12 @@
   function aiRefineUserMessage(error) {
     const code = String(error?.code || '');
     const status = Number(error?.httpStatus || 0);
+    if (code === 'AI_REFINE_TOO_MANY_SCREENS') {
+      return '独立卖点加封面和参数图超过15张，请精简或分批提供资料；尚未提交生图。';
+    }
+    if (code === 'AI_REFINE_REROLL_INVALID') {
+      return String(error.message || '原任务或原图不可用，请先恢复原任务再重做指定图片。');
+    }
     if (code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
       return '付费任务结果暂时无法确认。系统已停止新建任务，避免重复扣费。';
     }
@@ -1932,7 +1938,7 @@
     return div.innerHTML;
   }
 
-  async function downloadAiRefineResult(downloadUrl, button) {
+  async function downloadAiRefineResult(downloadUrl, button, filename = `${currentProductType}_AI精修详情图.png`) {
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = '下载中...';
@@ -1940,7 +1946,7 @@
       const response = await fetch(downloadUrl, { credentials: 'include' });
       if (!response.ok) throw new Error(`下载失败 (${response.status})`);
       const blob = await response.blob();
-      triggerBlobDownload(blob, `${currentProductType}_AI精修详情图.png`);
+      triggerBlobDownload(blob, filename);
       button.textContent = '已提交保存';
     } catch (error) {
       showError('下载详情图失败：' + error.message);
@@ -1981,6 +1987,18 @@
     const partialHint = isPartial
       ? '<div style="margin:8px 0 0; color:#92400e; font-size:13px;">部分屏生成成功，未成功屏不会自动补单。</div>'
       : '';
+    const screens = result.planning?.screens || [];
+    const tiles = blocks.map((block, index) => {
+      const title = screens[index]?.title || `第 ${index + 1} 张`;
+      const ready = block.success && block.image_url;
+      return `<article style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;min-width:0;background:#fff;">
+        ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" style="display:block;width:100%;aspect-ratio:3/4;object-fit:contain;" />` : '<p style="min-height:120px;display:grid;place-items:center;">这张尚未完成</p>'}
+        <h4 style="font-size:17px;margin:12px 0 8px;overflow-wrap:anywhere;">${escapeHtml(title)}</h4>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${ready ? `<button type="button" data-ai-single-download="${index}" class="btn btn-ghost">下载这张</button>` : ''}
+          ${result.task_id ? `<button type="button" data-ai-single-redo="${index}" class="btn btn-ghost">重做这张 · 计费</button>` : ''}
+        </div></article>`;
+    }).join('');
 
     results.innerHTML = `
       <div style="text-align:center; margin-bottom:16px;">
@@ -1988,16 +2006,28 @@
         <button type="button" data-ai-refine-download
           style="padding:6px 16px; background:#10b981; color:#fff;
           border:none; border-radius:6px; font-size:13px; cursor:pointer;">
-          下载详情图
+          下载完整长图
         </button>
         ${partialHint}
       </div>
-      <div style="position:relative; width:375px; border-radius:8px; overflow:hidden;
+      ${tiles ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr));gap:14px;width:100%;max-width:960px;margin:0 auto 24px;">${tiles}</div>` : ''}
+      <div style="position:relative; width:375px; max-width:100%; margin:0 auto; border-radius:8px; overflow:hidden;
         box-shadow:0 4px 18px rgba(0,0,0,0.12);">
         <img src="${escapeHtml(displayUrl)}" alt="AI 精修详情长图预览" style="width:100%; display:block;" />
       </div>`;
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
       downloadAiRefineResult(downloadUrl, event.currentTarget);
+    });
+    results.querySelectorAll('[data-ai-single-download]').forEach(button => {
+      button.addEventListener('click', () => {
+        const index = Number(button.dataset.aiSingleDownload);
+        downloadAiRefineResult(blocks[index].image_url, button, `${currentProductType}_详情图_${index + 1}.jpg`);
+      });
+    });
+    results.querySelectorAll('[data-ai-single-redo]').forEach(button => {
+      button.addEventListener('click', () => generateAiHtmlV2({ reroll: {
+        source_task_id: result.task_id, block_index: Number(button.dataset.aiSingleRedo),
+      }}));
     });
   }
 
@@ -2046,7 +2076,12 @@
       if (loading) loading.style.display = 'none';
       document.getElementById('empty_state').style.display = 'none';
       switchCenterTab('ai_img');
-      renderAiRefineResult(data.result, { restored: true });
+      let result = data.result;
+      if (result.task_id) {
+        const status = await fetch(`/api/ai-refine-v2/status/${encodeURIComponent(result.task_id)}`);
+        if (status.ok) result = { ...result, ...await status.json() };
+      }
+      renderAiRefineResult(result, { restored: true });
     } catch (err) {
       console.warn('[workspace-results] restore failed', err);
     }
@@ -2212,7 +2247,14 @@
     let productText = '';
     let productTitle = '';
     let inputMeta = null;
-    if (!taskRecord?.task_id) {
+    const reroll = options.reroll;
+    if (reroll && !taskRecord?.task_id) {
+      const confirmed = await confirmInWorkspace(
+        `只重新生成第 ${reroll.block_index + 1} 张，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
+        { title: '重做指定图片', confirmLabel: '重做这张' },
+      );
+      if (!confirmed) return;
+    } else if (!taskRecord?.task_id) {
       if (!productImageUrl) {
         showError('请先上传产品主图');
         return;
@@ -2225,7 +2267,8 @@
       }
       inputMeta = buildAiRefineTaskMeta(productText, productTitle);
       const confirmed = await confirmInWorkspace(
-        `预计生成 8–15 屏，可能产生多次 APIMart 计费。\n` +
+        `按资料生成一张封面、每个独立卖点一张图，有参数再加一张参数图，最多15张。\n` +
+        `每张由 APIMart 生成并计费，不为了凑数量加图。\n` +
         `实际费用以 APIMart 账单为准。\n` +
         `失败或结果不明时不会自动重提。\n\n` +
         `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
@@ -2241,7 +2284,9 @@
     try {
       if (!taskRecord) {
         try {
-          const startResp = await postJson('/api/ai-refine-v2/execute', {
+          const startResp = await postJson('/api/ai-refine-v2/execute', reroll ? {
+            ...reroll, ...(productImageUrl ? { product_image_url: productImageUrl } : {}),
+          } : {
             product_text: productText,
             product_image_url: productImageUrl,
             product_title: productTitle,

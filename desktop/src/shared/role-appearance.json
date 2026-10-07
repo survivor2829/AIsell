@@ -16,7 +16,7 @@
     ]
   },
   "operations": {
-    "name": "周联客", "responsibility": "精准获客",
+    "name": "周联客", "responsibility": "产品详情图",
     "appearances": [
       { "id": "original", "label": "经典周联客", "portraitKey": "xiaolian-integrated", "position": "50% 31%", "accent": "#4878e8", "strong": "#2852b8", "surface": "#e3eafb", "soft": "#edf2fe", "pattern": "operations-original.svg", "motifs": ["send", "link", "radio", "chart", "user", "phone"], "layout": "routes" },
       { "id": "growth", "label": "增长伙伴", "portraitKey": "xiaolian-growth", "position": "50% 27%", "accent": "#7976de", "strong": "#514fa8", "surface": "#f8f7f7", "soft": "#f9f9ff", "pattern": "operations-growth.svg", "motifs": ["cart", "message", "users", "chart", "trend", "users"], "layout": "growth" },

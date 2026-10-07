@@ -10,6 +10,7 @@ const { verifyManifest, VERSION } = require("../shared/cloud-contract.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
 const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const productBrand = require("../../product-brand.json");
 async function processSnapshot() {
   const result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
     "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress"],
@@ -146,9 +147,9 @@ async function runHelper({ jobFile, userData }) {
       || !VERSION.test(job.currentVersion) || !VERSION.test(job.targetVersion)) throw Error("update_job_invalid");
   app.setPath("userData", path.join(userData, "update-helper-profile"));
   await app.whenReady();
-  const window = new BrowserWindow({ width: 560, height: 320, resizable: false, autoHideMenuBar: true, title: "AI获客 · 软件更新",
+  const window = new BrowserWindow({ width: 560, height: 320, resizable: false, autoHideMenuBar: true, title: `${productBrand.displayName} · 软件更新`,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: "xiaoxi-update-helper" } });
-  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{width:100%;accent-color:#e83458}</style><small>AI获客　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy"></progress></html>`));
+  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{width:100%;accent-color:#e83458}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy"></progress></html>`));
   let finished = false, currentPhase = "ready";
   window.on("close", event => { if (!finished) event.preventDefault(); });
   const stage = (phase, title, detail = "", failure) => {

@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 import base64
+import json
 import concurrent.futures
 import mimetypes
 import os
@@ -33,7 +34,7 @@ from typing import Any, Callable, Optional, Union
 
 from ai_refine_v2.color_extractor import ColorAnchor, extract_color_anchor  # v3.2.2
 from ai_refine_v2.prompts.generator import render
-from ai_refine_v2.refine_planner import _VALID_ROLES_V2
+from ai_refine_v2.refine_planner import _VALID_ROLES_V2, PLANNING_VERSION
 
 
 def _resolve_refine_api_key(api_key: str | None = None) -> str:
@@ -698,6 +699,12 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             "is_hero": (idx == 1),       # 第 1 屏 (idx=1) 严格视为 hero
             "prompt": s.get("prompt") or "",
             "title": s.get("title") or "",
+            "planning_version": planning_v2.get("planning_version"),
+            "style_dna": planning_v2.get("style_dna") or {},
+            "subtitle": s.get("subtitle") or "",
+            "selling_point_id": s.get("selling_point_id"),
+            "evidence": s.get("evidence") or [],
+            "specifications": planning_v2.get("specifications") if role == "spec_table" else [],
         })
     return blocks
 
@@ -745,7 +752,24 @@ def _generate_one_block_v2(
     effective_prompt = prompt
     effective_image_urls: Optional[Union[str, list[str]]] = image_data_url
 
-    if image_data_url:
+    if block.get("planning_version") == PLANNING_VERSION:
+        if not image_data_url:
+            raise ValueError("产品参考图缺失，停止生图；请重新上传原图")
+        # Only original product reference, with shared design rules; no preset
+        # grayscale treatment or swatch that could repaint the actual product.
+        effective_prompt = _INJECTION_PREFIX_V3_LEGACY + (
+            "Apply the following shared visual direction to the environment and typography only; "
+            "never repaint or redesign Image 1. Use a 3:4 portrait composition. "
+            "Large bold Chinese headline, short explanation, generous spacing, readable on a phone. "
+            "Do not create hidden/internal structures or unsupported performance demonstrations. "
+            "Shared direction: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
+            + "\nOnly these supplied overlay words/specifications may appear (product labels in Image 1 stay unchanged): "
+            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or []}, ensure_ascii=False)
+            + "\nOne image, one selling point. Source evidence: "
+            + json.dumps(block.get("evidence") or [], ensure_ascii=False)
+            + "\n" + prompt
+        )
+    elif image_data_url:
         env_mode = os.getenv("COLOR_ANCHOR_DUAL_IMAGE", "on").strip().lower()
         if color_anchor and env_mode != "off":
             palette_str = ", ".join(color_anchor.palette_hex)
@@ -912,6 +936,8 @@ def generate_v2(
             base_image_data_url = _to_data_url(product_cutout_url)
         except Exception as e:
             raise ValueError(f"产品参考图读取/转换失败: {e}") from e
+    if planning_v2.get("planning_version") == PLANNING_VERSION and not base_image_data_url:
+        raise ValueError("产品参考图缺失，停止生图；请重新上传原图")
 
     # v3.2.2: PIL 抽 cutout 主色 → hex 锚 + 色卡 PNG bytes (12 屏共享一次)
     # 失败返 None, 调用方走 v3.2.1 fallback (单图 + LEGACY prefix).
@@ -934,7 +960,10 @@ def generate_v2(
         """v3: 根据 block role 决定该屏是否喂 cutout. 返回已转好的 data URL 或 None."""
         if base_image_data_url is None:
             return None
-        return base_image_data_url if block.get("visual_type", "") in effective_whitelist else None
+        return base_image_data_url if (
+            planning_v2.get("planning_version") == PLANNING_VERSION
+            or block.get("visual_type", "") in effective_whitelist
+        ) else None
 
     result = GenerationResult()
     t_start = time.time()

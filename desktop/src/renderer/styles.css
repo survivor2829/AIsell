@@ -358,9 +358,11 @@ button:focus-visible {
 .desktop-window { height: 100vh; padding-top: 36px; }
 .desktop-window .app-shell { height: 100%; }
 .desktop-window .sidebar, .desktop-window .workspace { height: 100%; }
+.desktop-window .workspace { min-height: 0; }
 .desktop-window .topbar { top: 36px; }
-.desktop-window .content-card { height: calc(100vh - 104px); }
-.desktop-window-login { background: #241a1e; }
+.desktop-window .content-card { height: 100%; min-height: 0; }
+.desktop-window-login { background: #f8f4f0; }
+.desktop-window-login .window-chrome { color: #302a2b; }
 .desktop-window-workspace { background: #c91739; }
 .window-chrome {
   position: absolute;
