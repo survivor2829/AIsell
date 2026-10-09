@@ -598,7 +598,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(content_type, str) or not SAFE_HEADER_VALUE.fullmatch(content_type):
             content_type = "application/octet-stream"
         self.send_header("Content-Type", content_type)
-        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "Retry-After", "Cache-Control"):
+        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin",
+                     "X-Xiaoxi-Transport-Phase", "X-Xiaoxi-Transport-Error", "Retry-After", "Cache-Control"):
             value = headers.get(name)
             if isinstance(value, str) and SAFE_HEADER_VALUE.fullmatch(value):
                 self.send_header(name, value)
