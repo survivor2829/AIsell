@@ -610,9 +610,10 @@ def run():
                 confirmation_message = workspace.locator(
                     "#ai_refine_confirm_message"
                 ).inner_text()
-                if "8–15" not in confirmation_message or "APIMart" not in confirmation_message:
+                if (not all(text in confirmation_message for text in ["每个独立卖点一张图", "最多15张", "APIMart", "先核对策划与生图报价"])
+                    or "8–15" in confirmation_message):
                     raise AssertionError(
-                        "AI refine preflight must disclose screen count and APIMart billing"
+                        "AI refine preflight must disclose product-driven image count, quote checks and APIMart billing"
                     )
                 confirm_button = workspace.locator("#ai_refine_confirm_submit")
                 if confirm_button.inner_text().strip() != "开始付费生成":
