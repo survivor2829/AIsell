@@ -33,7 +33,7 @@ import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
 import { CustomerTools } from "./CustomerTools";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
-import { appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
+import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
@@ -411,11 +411,12 @@ const operationsChildren: NavItem[] = [
   { key: "product-detail", label: "产品详情图", icon: Images }
 ];
 
-const navGroups: NavGroup[] = [
-  { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
-  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren },
-  { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren }
-];
+const navGroupByRole: Record<GroupKey, NavGroup> = {
+  production: { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
+  agent: { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
+  operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren }
+};
+const navGroups = AGENT_ROLE_ORDER.map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
 const materialsNavItem: NavItem = { key: "materials", label: "素材仓库", icon: Folder };

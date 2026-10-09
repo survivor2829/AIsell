@@ -304,6 +304,32 @@ def run():
                 )
             result["viewport"] = config.get("viewport")
             result["layout_state"] = layout_state
+            workspace.locator(".xx-ann-bell").click()
+            workspace.locator(".xx-ann-panel.xx-ann-open").wait_for(state="visible")
+            embedded_frame.wait_for_timeout(200)
+            announcement = embedded_frame.evaluate(
+                """() => {
+                  const panel = document.querySelector('.xx-ann-panel');
+                  const bell = document.querySelector('.xx-ann-bell').getBoundingClientRect();
+                  const body = panel.querySelector('.xx-ann-panel-body');
+                  body.scrollTop = body.scrollHeight;
+                  const targets = [panel, panel.querySelector('.xx-ann-close'),
+                    panel.querySelector('.xx-ann-ack'), body.lastElementChild];
+                  return {
+                    bellOnRight: bell.left > innerWidth / 2,
+                    allVisible: targets.every(el => {
+                      const r = el.getBoundingClientRect();
+                      return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+                    }),
+                    scrolledToEnd: body.scrollHeight - body.clientHeight - body.scrollTop < 2
+                  };
+                }"""
+            )
+            if not all(announcement.values()):
+                raise AssertionError(f"embedded announcement is clipped: {announcement}")
+            result["announcement"] = announcement
+            workspace.locator(".xx-ann-close").click()
+            workspace.locator(".xx-ann-panel").wait_for(state="hidden")
             if phase == "produce":
                 workspace.locator("#upload_product input[type=file]").set_input_files(
                     config["fixture_path"]

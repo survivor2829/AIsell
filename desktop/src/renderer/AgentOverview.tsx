@@ -1,14 +1,14 @@
 import type { CSSProperties } from "react";
 import { ArrowRight, Folder } from "lucide-react";
-import { appearanceFor, characterAsset, type AgentRoleKey, type RolePreferences } from "./role-appearance";
+import { AGENT_ROLE_ORDER, appearanceFor, characterAsset, type AgentRoleKey, type RolePreferences } from "./role-appearance";
 import "./AgentOverview.css";
 import productBrand from "../../product-brand.json";
 
-const LEADERS: { key: AgentRoleKey; action: string; description: string }[] = [
-  { key: "production", action: "制作获客短片", description: "把产品做成能引发咨询的短视频。" },
-  { key: "operations", action: "制作产品详情图", description: "上传产品图片和卖点，制作清楚易读的详情图。" },
-  { key: "agent", action: "承接微信咨询", description: "核对身份和任务状态，礼貌跟进客户。" }
-];
+const LEADERS: Record<AgentRoleKey, { action: string; description: string }> = {
+  production: { action: "制作获客短片", description: "把产品做成能引发咨询的短视频。" },
+  agent: { action: "承接微信咨询", description: "核对身份和任务状态，礼貌跟进客户。" },
+  operations: { action: "制作产品详情图", description: "上传产品图片和卖点，制作清楚易读的详情图。" }
+};
 
 export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
   preferences: RolePreferences;
@@ -21,7 +21,8 @@ export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
       <div><h1>生素材 · 引客户 · 变成交</h1><p>{productBrand.displayName}，从今天要完成的工作开始。</p></div>
     </header>
     <div className="agent-overview-leaders">
-      {LEADERS.map(({ key, action, description }) => {
+      {AGENT_ROLE_ORDER.map((key) => {
+        const { action, description } = LEADERS[key];
         const appearance = appearanceFor(key, preferences[key].appearanceId);
         const style = { "--overview-surface": appearance.surface, "--overview-accent": appearance.strong } as CSSProperties;
         return <button className="agent-overview-leader" style={style} key={key} onClick={() => onOpenRole(key)}>
