@@ -709,6 +709,11 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             "visual_brief": s.get("visual_brief") or {},
             "subtitle": s.get("subtitle") or "",
             "selling_point_id": s.get("selling_point_id"),
+            "primary_cleaning_demonstration": bool(
+                s.get("selling_point_id")
+                and s.get("selling_point_id") == planning_v2.get("primary_demonstration_id")
+                and any(word in str(planning_v2.get("product_meta") or {}) for word in ("清洁", "洗地", "扫地"))
+            ),
             "evidence": s.get("evidence") or [],
             "specifications": planning_v2.get("specifications") if role == "spec_table" else [],
         })
@@ -786,6 +791,16 @@ def _generate_one_block_v2(
             + json.dumps(block.get("visual_brief") or {}, ensure_ascii=False)
             + "\n" + prompt
         )
+        if block.get("primary_cleaning_demonstration"):
+            effective_prompt += (
+                "\nPRIMARY CLEANING DEMONSTRATION OVERRIDE: Main scene must show one continuous floor "
+                "material with unchanged joints and texture, visible dirt ahead of the machine, and a "
+                "cleaned trail only behind the area it has already passed. Keep untreated dirt beside "
+                "the trail as a comparison. A boundary between carpet and tile is NOT cleaning evidence. "
+                "Never use split flooring or a pristine floor alone to stand in for the cleaning result. "
+                "Other supported materials may appear only as separate small sample insets, never an "
+                "implied automatic mode switch. Preserve the visible part count and asymmetry of Image 1."
+            )
     elif image_data_url:
         env_mode = os.getenv("COLOR_ANCHOR_DUAL_IMAGE", "on").strip().lower()
         if color_anchor and env_mode != "off":
