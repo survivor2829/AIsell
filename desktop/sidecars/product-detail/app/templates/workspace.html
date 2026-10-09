@@ -1998,14 +1998,14 @@
   }
 
   function renderAiRefineResult(result, options = {}) {
-    const results = document.getElementById('ai_img_results');
+    const results = options.target || document.getElementById('ai_img_results');
     const imageUrl = result.image_url || result.assembled_url;
-    if (!results || !imageUrl) return;
+    const blocks = Array.isArray(result.blocks) ? result.blocks : [];
+    if (!results || (!imageUrl && !blocks.some(block => block?.success && block.image_url))) return;
 
     const downloadUrl = result.assembled_url || imageUrl;
-    const sep = imageUrl.includes('?') ? '&' : '?';
-    const displayUrl = `${imageUrl}${sep}t=${Date.now()}`;
-    const blocks = Array.isArray(result.blocks) ? result.blocks : [];
+    const sep = imageUrl?.includes('?') ? '&' : '?';
+    const displayUrl = imageUrl ? `${imageUrl}${sep}t=${Date.now()}` : '';
     const successCount = Number(
       result.success_count ?? result.blocks_count ??
       blocks.filter(block => block && block.success !== false).length
@@ -2032,30 +2032,31 @@
     const tiles = blocks.map((block, index) => {
       const title = screens[index]?.title || `第 ${index + 1} 张`;
       const ready = block.success && block.image_url;
+      if (options.recovery && !ready) return '';
       return `<article style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;min-width:0;background:#fff;">
         ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" style="display:block;width:100%;aspect-ratio:3/4;object-fit:contain;" />` : '<p style="min-height:120px;display:grid;place-items:center;">这张尚未完成</p>'}
         <h4 style="font-size:17px;margin:12px 0 8px;overflow-wrap:anywhere;">${escapeHtml(title)}</h4>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${ready ? `<button type="button" data-ai-single-download="${index}" class="btn btn-ghost">下载这张</button>` : ''}
-          ${result.task_id ? `<button type="button" data-ai-single-redo="${index}" class="btn btn-ghost">重做这张 · 计费</button>` : ''}
+          ${result.task_id && !options.recovery ? `<button type="button" data-ai-single-redo="${index}" class="btn btn-ghost">重做这张 · 计费</button>` : ''}
         </div></article>`;
     }).join('');
 
     results.innerHTML = `
       <div style="text-align:center; margin-bottom:16px;">
         <span style="font-size:14px; color:#555; margin-right:12px;">${escapeHtml(info)}</span>
-        <button type="button" data-ai-refine-download
+        ${downloadUrl ? `<button type="button" data-ai-refine-download
           style="padding:6px 16px; background:#10b981; color:#fff;
           border:none; border-radius:6px; font-size:13px; cursor:pointer;">
           下载完整长图
-        </button>
+        </button>` : ''}
         ${partialHint}
       </div>
       ${tiles ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr));gap:14px;width:100%;max-width:960px;margin:0 auto 24px;">${tiles}</div>` : ''}
-      <div style="position:relative; width:375px; max-width:100%; margin:0 auto; border-radius:8px; overflow:hidden;
+      ${displayUrl ? `<div style="position:relative; width:375px; max-width:100%; margin:0 auto; border-radius:8px; overflow:hidden;
         box-shadow:0 4px 18px rgba(0,0,0,0.12);">
         <img src="${escapeHtml(displayUrl)}" alt="AI 精修详情长图预览" style="width:100%; display:block;" />
-      </div>`;
+      </div>` : ''}`;
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
       downloadAiRefineResult(downloadUrl, event.currentTarget);
     });
@@ -2092,6 +2093,13 @@
       </button>
       <span style="align-self:center; color:#6b7280; font-size:12px;">如仍无法恢复，请返回桌面软件“日志诊断”导出报告。</span>`;
     results.appendChild(actions);
+    if (Array.isArray(state.blocks) && state.blocks.some(block => block?.success && block.image_url)) {
+      const available = document.createElement('section');
+      available.setAttribute('aria-label', '已保存的精修图片');
+      available.style.marginTop = '20px';
+      results.appendChild(available);
+      renderAiRefineResult(state, { target: available, recovery: true });
+    }
     actions.querySelector('[data-ai-refine-resume]')?.addEventListener('click', () => {
       resumeAiRefineTask(taskRecord, true);
     });
