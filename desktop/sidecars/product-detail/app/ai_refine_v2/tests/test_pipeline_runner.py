@@ -174,13 +174,21 @@ class TestProviderResultDownloadRoute(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(
             adapter, "_open_apimart", side_effect=fake_open,
         ), mock.patch.object(adapter, "_http_post_json") as submit:
-            dst = Path(td) / "result.png"
+            # Match the installed Windows failure: the destination fits MAX_PATH,
+            # but appending its whole name plus a UUID made the temporary path fail.
+            parent = Path(td)
+            padding = 216 - len(str(parent.resolve())) - 1
+            if padding > 0:
+                parent = parent / ("d" * padding)
+                parent.mkdir()
+            dst = parent / "block_04_screen_04_icon_grid_radial.jpg"
             selected = adapter.download_result_image(
                 "https://cdn.invalid/result.png",
                 dst,
                 preferred_route="direct",
                 retries=0,
             )
+            self.assertEqual(dst.read_bytes(), b"\x89PNG\r\n" + (b"x" * 2048))
 
         self.assertEqual(selected, "direct")
         self.assertEqual(calls, [(60, True)])

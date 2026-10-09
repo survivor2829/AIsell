@@ -252,7 +252,7 @@ def download_result_image(
     for direct in _result_download_routes(preferred_route):
         for attempt in range(max(0, int(retries)) + 1):
             temp_path = destination.with_name(
-                f".{destination.name}.{uuid.uuid4().hex}.tmp"
+                f".pd-{uuid.uuid4().hex[:12]}.tmp"
             )
             try:
                 request = urllib.request.Request(url, headers={"User-Agent": _UA})
