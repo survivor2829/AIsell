@@ -14,6 +14,7 @@ except (TypeError, ValueError):
 def compute_estimate(product_count: int) -> dict:
     from ai_refine_v2.pricing import PricingRequired, money, read_quote
     from ai_refine_v2 import refine_planner
+    from ai_refine_v2.image_profile import DEFAULT_PROFILE
     from ai_refine_v2.prompts.planner import SYSTEM_PROMPT_V2, USER_PROMPT_TEMPLATE_V2
     count = max(0, int(product_count))
     result = {"count": count, "api_calls": None, "est_cost_yuan": None,
@@ -23,7 +24,7 @@ def compute_estimate(product_count: int) -> dict:
     if not count:
         return {**result, "ready": True, "est_cost_yuan": 0, "maximum_cost_yuan": 0}
     try:
-        quote = read_quote()
+        quote = read_quote(image_profile=DEFAULT_PROFILE)
     except PricingRequired as exc:
         return {**result, "error": str(exc)}
     input_bound = 4 * (refine_planner.MAX_PRODUCT_TEXT_CHARS + refine_planner.MAX_PRODUCT_TITLE_CHARS)

@@ -60,6 +60,15 @@ def test_actual_screen_count_and_missing_quote_stop_before_image_post(tmp_path, 
     assert costs["reserved_cny"] == 0
 
 
+def test_batch_estimate_uses_the_new_task_profile(monkeypatch):
+    import pricing_config
+    from ai_refine_v2.image_profile import DEFAULT_PROFILE
+    fetch = Mock(return_value=quote())
+    monkeypatch.setattr(pricing, "read_quote", fetch)
+    assert pricing_config.compute_estimate(1)["ready"] is True
+    fetch.assert_called_once_with(image_profile=DEFAULT_PROFILE)
+
+
 def test_planner_timeout_cannot_be_reposted_after_restart(tmp_path, monkeypatch):
     remote = Mock(side_effect=TimeoutError())
     monkeypatch.setattr(refine_planner, "_http_post_deepseek", remote)
