@@ -769,6 +769,8 @@ def _generate_one_block_v2(
             "Image 1 anchors product identity, not a frozen pose or a cutout pasted onto every background. "
             "Shared direction unifies color, lighting and typography; this screen's visual brief determines "
             "framing, product scale, action and layout. Preserve known visible parts when adjusting the view. "
+            "Preserve the count and side of visible parts. Keep one-sided parts asymmetric; "
+            "never add a mirrored duplicate for visual balance or invent parts revealed by a new angle. "
             "Large bold Chinese headline, short explanation, generous spacing, readable on a phone. "
             "Do not create hidden/internal structures or unsupported performance demonstrations. "
             "Demonstrate one operating mode on one continuous surface. Other supported surfaces or modes "
