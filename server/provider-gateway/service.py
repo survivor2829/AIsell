@@ -116,12 +116,15 @@ def validate_license(code: str, now: datetime | None = None) -> dict[str, str] |
         return None
 
 
-def _official_origin(value: str, default: str, hostname: str) -> str:
+def _official_origin(value: str, default: str, hostname: str, *, allowed_suffix: str = "") -> str:
     raw = str(value or default).strip().rstrip("/")
     parsed = urlsplit(raw)
     if (
         parsed.scheme != "https"
-        or parsed.hostname != hostname
+        or not (parsed.hostname == hostname or (
+            allowed_suffix and parsed.hostname and parsed.hostname.endswith(allowed_suffix)
+            and len(parsed.hostname) > len(allowed_suffix)
+        ))
         or parsed.username
         or parsed.password
         or parsed.query
@@ -130,7 +133,7 @@ def _official_origin(value: str, default: str, hostname: str) -> str:
         or parsed.path not in ("", "/")
     ):
         return default
-    return f"https://{hostname}"
+    return f"https://{parsed.hostname}"
 
 
 def _bounded_timeout(value, default=DEFAULT_UPSTREAM_TIMEOUT_SECONDS) -> int:
@@ -280,7 +283,7 @@ class GatewayConfig:
             asr_access_token=str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN", "")).strip(),
             origins={
                 "deepseek": _official_origin(env.get("XIAOXI_GATEWAY_DEEPSEEK_ORIGIN", ""), "https://api.deepseek.com", "api.deepseek.com"),
-                "bailian": _official_origin(env.get("XIAOXI_GATEWAY_BAILIAN_ORIGIN", ""), "https://dashscope.aliyuncs.com", "dashscope.aliyuncs.com"),
+                "bailian": _official_origin(env.get("XIAOXI_GATEWAY_BAILIAN_ORIGIN", ""), "https://dashscope.aliyuncs.com", "dashscope.aliyuncs.com", allowed_suffix=".maas.aliyuncs.com"),
                 "ark": _official_origin(env.get("XIAOXI_GATEWAY_VOLCENGINE_ORIGIN", ""), "https://ark.cn-beijing.volces.com", "ark.cn-beijing.volces.com"),
                 "speech": _official_origin(env.get("XIAOXI_GATEWAY_VOLCENGINE_SPEECH_ORIGIN", ""), "https://openspeech.bytedance.com", "openspeech.bytedance.com"),
                 "apimart": _official_origin(env.get("XIAOXI_GATEWAY_APIMART_ORIGIN", ""), "https://api.apimart.ai", "api.apimart.ai"),

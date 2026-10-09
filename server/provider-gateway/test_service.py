@@ -300,6 +300,19 @@ class GatewayTest(unittest.TestCase):
             urllib.request.urlopen(request)
         self.assertEqual(error.exception.code, 404)
 
+    def test_bailian_workspace_origin_keeps_its_host_and_rejects_nonofficial_targets(self):
+        host = "https://llm-fixture.cn-beijing.maas.aliyuncs.com"
+        config = GatewayConfig.from_environment({"XIAOXI_GATEWAY_BAILIAN_ORIGIN": host})
+        self.assertEqual(config.origins["bailian"], host)
+        for invalid in ("http://llm-fixture.cn-beijing.maas.aliyuncs.com",
+                        host + ".evil.example", host + "/api/v1", host + ":8443",
+                        "https://user:password@llm-fixture.cn-beijing.maas.aliyuncs.com"):
+            with self.subTest(origin=invalid):
+                config = GatewayConfig.from_environment({"XIAOXI_GATEWAY_BAILIAN_ORIGIN": invalid})
+                self.assertEqual(config.origins["bailian"], "https://dashscope.aliyuncs.com")
+        config = GatewayConfig.from_environment({"XIAOXI_GATEWAY_DEEPSEEK_ORIGIN": host})
+        self.assertEqual(config.origins["deepseek"], "https://api.deepseek.com")
+
     def test_apimart_proxy_is_isolated_verified_and_does_not_inherit_bypass(self):
         proxy_calls = []
 

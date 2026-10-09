@@ -25,7 +25,11 @@
 
 网关只接受上述固定路径，绝不把客户端提供的 URL 当作上游地址。客户端的
 `Authorization`、`X-Api-Key` 等凭据不会转发；服务端从
-`/etc/ai-maintenance/provider-gateway.env` 注入供应商凭据。请求体、授权码和
+`/etc/ai-maintenance/provider-gateway.env` 注入供应商凭据。
+百炼工作区密钥须同时配置其配套的 `XIAOXI_GATEWAY_BAILIAN_ORIGIN`；支持通用
+`https://dashscope.aliyuncs.com` 与阿里提供的 `https://<业务空间>.maas.aliyuncs.com`
+官方地址；工作区密钥不应使用通用地址。禁止 HTTP、非443端口、用户信息及附加路径；
+不要把密钥或业务空间地址写入安装包。请求体、授权码和
 供应商响应不写入服务日志，响应大小和并发均有上限。带 operation ID 的
 POST 响应会短期保存在仅网关服务账号可读的本地回执库中，用于断线恢复；
 响应正文最多保留 24 小时，之后只保留防重复提交的标记至第 90 天。
