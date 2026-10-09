@@ -474,6 +474,15 @@ _NUMERIC_CLAIM_SEMANTICS = (
 _CLAIM_CONTEXT_BOUNDARIES = ",，。.;；!?！？\r\n、"
 _NUMERIC_UNIT_ALIASES = {"％": "%", "个月": "月", "售后网点": "网点"}
 
+_LAYOUT_PERCENT = r"\d+(?:\.\d+)?\s*[%％](?:\s*[-–—~～至到]\s*\d+(?:\.\d+)?\s*[%％])?"
+_LAYOUT_PERCENT_RE = re.compile(
+    r"(?:占(?:整个)?(?:画面|画幅|版面)(?:面积|宽度|高度)?|(?:画面|画幅|版面|留白)占比)"
+    r"\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
+    + r"|(?:occup(?:y|ies|ying)|takes?\s+up)\s*(?:(?:about|approximately|roughly)\s+)?"
+    + _LAYOUT_PERCENT + r"\s+(?:of\s+)?(?:the\s+)?(?:frame|canvas|layout)\b",
+    re.IGNORECASE,
+)
+
 _FIXED_COMMERCIAL_CLAIMS = (
     "行业领先",
     "国家专利",
@@ -487,7 +496,10 @@ _FIXED_COMMERCIAL_CLAIMS = (
 
 
 def _normalize_claim_text(value: str) -> str:
-    return re.sub(r"[\s,，。.;；:：'\"「」()（）\-_/]", "", value).lower()
+    compact = re.sub(r"\s+", "", value).lower()
+    compact = re.sub(r"(?<=\d)[–—~～](?=\d)", "-", compact)
+    # Ignore typography, but keep decimal points/ranges: 3.5 != 35, 3-4 != 34.
+    return re.sub(r"(?<!\d)\.|\.(?!\d)|[,，。;；:：'\"「」()（）_/]", "", compact)
 
 
 def _claim_semantic_category(text: str, match: re.Match) -> str:
@@ -549,7 +561,7 @@ def _numeric_claim_key(text: str, match: re.Match) -> tuple[str, str, bool, str]
     )
 
 
-def _find_unbacked_commercial_claims(prompt: str, product_text: str) -> list[str]:
+def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_layout: bool = False) -> list[str]:
     """返回 prompt 中出现、但产品原文没有的可验证商业承诺。"""
     source_normalized = _normalize_claim_text(product_text)
     source_numeric_claims = {
@@ -557,8 +569,11 @@ def _find_unbacked_commercial_claims(prompt: str, product_text: str) -> list[str
         for match in _NUMERIC_COMMERCIAL_CLAIM_RE.finditer(product_text)
     }
 
+    layout_spans = list(_LAYOUT_PERCENT_RE.finditer(prompt)) if allow_layout else []
     unbacked: list[str] = []
     for match in _NUMERIC_COMMERCIAL_CLAIM_RE.finditer(prompt):
+        if any(layout.start() <= match.start() and match.end() <= layout.end() for layout in layout_spans):
+            continue
         claim = match.group(0)
         normalized = _normalize_claim_text(claim)
         is_backed = normalized in source_normalized or (
@@ -587,6 +602,7 @@ def _find_unbacked_commercial_claims(prompt: str, product_text: str) -> list[str
 def _validate_schema_v2(
     parsed: dict,
     product_text: Optional[str] = None,
+    product_title: Optional[str] = None,
 ) -> list[str]:
     """v2 schema 校验. 返回 warning list (空 = 合规, 非空 = 触发重试).
 
@@ -723,7 +739,7 @@ def _validate_schema_v2(
 
                 if isinstance(product_text, str):
                     unbacked_claims = _find_unbacked_commercial_claims(
-                        p, product_text
+                        p, product_text, allow_layout=True
                     )
                     if unbacked_claims:
                         w.append(
@@ -768,19 +784,21 @@ def _validate_schema_v2(
             )
 
     if product_driven:
-        w.extend(_validate_selling_point_mapping(parsed, product_text))
+        w.extend(_validate_selling_point_mapping(parsed, product_text, product_title))
     return w
 
 
-def _validate_selling_point_mapping(parsed: dict, product_text: str | None) -> list[str]:
+def _validate_selling_point_mapping(parsed: dict, product_text: str | None, product_title: str | None = None) -> list[str]:
     """Validate cardinality and quoted evidence before the first image charge."""
     warnings = []
     source = _normalize_claim_text(product_text or "")
+    supplied_title = _normalize_claim_text(product_title or "")
 
-    def evidence_ok(value):
+    def evidence_ok(value, *, cover=False):
         return isinstance(value, list) and bool(value) and all(
             isinstance(item, str) and bool(item.strip())
-            and (product_text is None or _normalize_claim_text(item) in source)
+            and (product_text is None or _normalize_claim_text(item) in source
+                 or (cover and supplied_title and _normalize_claim_text(item) == supplied_title))
             for item in value
         )
 
@@ -837,7 +855,7 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None) -> l
             refs.append(ref)
             if screen.get("evidence") != point_sources.get(ref):
                 warnings.append(f"screens[{i}] 必须使用对应卖点的原文依据")
-        if not evidence_ok(screen.get("evidence")):
+        if not evidence_ok(screen.get("evidence"), cover=role == "hero"):
             warnings.append(f"screens[{i}] 缺产品原文逐字依据")
         if len(str(screen.get("title") or "")) > 16 or len(str(screen.get("subtitle") or "")) > 32:
             warnings.append(f"screens[{i}] 标题最多16字，解释最多32字")
@@ -1011,6 +1029,7 @@ def plan_v2(
             schema_warnings = _validate_schema_v2(
                 parsed,
                 product_text=clean_product_text,
+                product_title=clean_product_title,
             )
             if parsed.get("planning_version") != PLANNING_VERSION:
                 schema_warnings.append(f"planning_version 必须为 {PLANNING_VERSION}")

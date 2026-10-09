@@ -55,6 +55,36 @@ def test_new_plan_allows_same_role_preserves_points_and_optional_specs():
     assert any("参数值" in warning for warning in planner._validate_schema_v2(plan, TEXT))
 
 
+def test_layout_percentages_are_not_performance_claims():
+    plan = sample()
+    plan["screens"][0]["prompt"] = "产品置于画面中央，占画面约55%，左右留白协调。" + plan["screens"][0]["prompt"]
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    plan["screens"][0]["prompt"] += "清洁效率提升55%，除菌率99%，ISO 9001认证。"
+    warnings = planner._validate_schema_v2(plan, TEXT)
+    assert any("55%" in warning and "99%" in warning and "ISO 9001" in warning for warning in warnings)
+
+
+def test_user_product_title_is_cover_evidence_only():
+    plan = sample()
+    title = "普渡清洁机器人 CC1 Pro"
+    plan["screens"][0]["evidence"] = [title]
+    assert planner._validate_schema_v2(plan, TEXT, product_title=title) == []
+    assert any("逐字依据" in w for w in planner._validate_schema_v2(plan, TEXT))
+    plan["selling_points"][0]["evidence"] = [title]
+    assert any("selling_points[0]" in w for w in planner._validate_schema_v2(plan, TEXT, product_title=title))
+
+
+@pytest.mark.parametrize("value,allowed", [("3–4H", True), ("3—4H", True), ("34H", False), ("35H", False)])
+def test_parameter_typography_preserves_numeric_meaning(value, allowed):
+    plan = sample()
+    source = TEXT + "续航时间3-4H。充电时间3.5H。"
+    plan["specifications"] = [{"name": "续航时间", "value": value, "evidence": "续航时间3-4H"}]
+    plan["screens"][-1]["evidence"] = ["续航时间3-4H"]
+    warnings = planner._validate_schema_v2(plan, source)
+    assert (not any("参数值" in w for w in warnings)) is allowed
+    assert planner._normalize_claim_text("3.5H") != planner._normalize_claim_text("35H")
+
+
 def test_local_colors_are_hints_and_unsupported_evidence_retries(tmp_path, monkeypatch):
     reference = tmp_path / "product.png"
     Image.new("RGB", (80, 80), "#4ab125").save(reference)
