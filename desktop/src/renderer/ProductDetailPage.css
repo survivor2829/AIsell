@@ -72,6 +72,22 @@
   animation: product-detail-spin 0.9s linear infinite;
 }
 
+.product-detail-state .product-detail-failure-code {
+  overflow-wrap: anywhere;
+  color: #9a3412;
+  font-size: 12px;
+}
+
+.product-detail-diagnostics { margin-top: 10px; font-size: 13px; color: #7c2d12; }
+.product-detail-diagnostics summary { cursor: pointer; }
+.product-detail-diagnostics pre {
+  user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.6;
+}
+
 .product-detail-setup {
   max-width: 760px;
   margin-top: 18px;

@@ -174,13 +174,21 @@ class TestProviderResultDownloadRoute(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(
             adapter, "_open_apimart", side_effect=fake_open,
         ), mock.patch.object(adapter, "_http_post_json") as submit:
-            dst = Path(td) / "result.png"
+            # Match the installed Windows failure: the destination fits MAX_PATH,
+            # but appending its whole name plus a UUID made the temporary path fail.
+            parent = Path(td)
+            padding = 216 - len(str(parent.resolve())) - 1
+            if padding > 0:
+                parent = parent / ("d" * padding)
+                parent.mkdir()
+            dst = parent / "block_04_screen_04_icon_grid_radial.jpg"
             selected = adapter.download_result_image(
                 "https://cdn.invalid/result.png",
                 dst,
                 preferred_route="direct",
                 retries=0,
             )
+            self.assertEqual(dst.read_bytes(), b"\x89PNG\r\n" + (b"x" * 2048))
 
         self.assertEqual(selected, "direct")
         self.assertEqual(calls, [(60, True)])
@@ -321,8 +329,9 @@ class TestProviderCheckpointAndRecovery(unittest.TestCase):
                 self.assertEqual(recovered["status"], "partial_success")
                 self.assertEqual(recovered["failed_count"], 1)
                 poll.assert_called_once_with(
-                    "provider-feature", "secret", direct=True,
+                    "provider-feature", "secret", direct=True, receipt_callback=mock.ANY,
                 )
+                self.assertTrue(callable(poll.call_args.kwargs["receipt_callback"]))
                 generate.assert_not_called()
                 submit.assert_not_called()
                 checkpoint = json.loads(
@@ -521,7 +530,7 @@ class TestAssembledSizeGuard(unittest.TestCase):
             p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 11000)
             with self.assertRaises(RuntimeError) as ctx:
                 pipeline_runner._validate_assembled_png(p)
-            self.assertIn("太小", str(ctx.exception))
+            self.assertIn("无法完整解码", str(ctx.exception))
 
     def test_missing_png_raises(self):
         with tempfile.TemporaryDirectory() as td:
@@ -591,7 +600,7 @@ class TestAssembledSizeGuard(unittest.TestCase):
             state = pipeline_runner._TASKS[task_id]
             self.assertEqual(state.status, "recovery_required",
                              f"付费 checkpoint 存在时应可恢复, 实际 {state.status}; error={state.error}")
-            self.assertIn("太小", state.error)
+            self.assertIn("无法完整解码", state.error)
             self.assertFalse(
                 (Path(td) / task_id / "_summary.json").exists(),
                 "assembled.png 校验失败前不能留下会被磁盘 fallback 当成功的 summary",

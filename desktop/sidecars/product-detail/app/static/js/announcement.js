@@ -77,7 +77,7 @@
     if (!mount) return;
 
     var bell = buildBell();
-    mount.insertBefore(bell, mount.firstChild);
+    mount.insertBefore(bell, mount.querySelector('.workspace-menu'));
 
     fetch(SOURCE_URL + '?t=' + Date.now(), { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -93,8 +93,9 @@
 
         function place() {
           var rect = bell.getBoundingClientRect();
-          panel.style.top = (rect.bottom + 8) + 'px';
-          panel.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
+          var top = rect.bottom + 8;
+          panel.style.top = top + 'px';
+          panel.style.maxHeight = Math.max(0, window.innerHeight - top - 8) + 'px';
         }
         function open() {
           place();
@@ -103,7 +104,7 @@
         }
         function close() {
           panel.classList.remove('xx-ann-open');
-          setTimeout(function () { panel.hidden = true; }, 180);
+          panel.hidden = true;
           if (latest) markSeen(latest);
           dot.hidden = true;
         }

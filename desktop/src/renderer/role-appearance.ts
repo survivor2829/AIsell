@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import catalog from "../shared/role-appearance.json";
 
 export type AgentRoleKey = "agent" | "production" | "operations";
+export const AGENT_ROLE_ORDER: readonly AgentRoleKey[] = ["production", "agent", "operations"];
 export type RolePreference = { name: string; appearanceId: string };
 export type RolePreferences = Record<AgentRoleKey, RolePreference>;
 export type RoleAppearance = typeof catalog.agent.appearances[number];

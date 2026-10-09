@@ -7,6 +7,7 @@ const { cloudConfig } = require("../src/main/cloud-config.cjs");
 const { fileHash } = require("../src/main/cloud-maintenance.cjs");
 const { verifyManifest, VERSION } = require("../src/shared/cloud-contract.cjs");
 const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
+const { verifyPublishedRelease } = require("./release-readback.cjs");
 
 async function publish({ installer, manifestFile, notesFile, smoke = false }) {
   const config = cloudConfig({ developmentEdition: true });
@@ -53,7 +54,9 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     run("scp.exe", [...flags, document, `${host}:${remote}/latest.json`]);
     const incoming = `/var/lib/ai-maintenance/incoming-${manifest.sequence}`;
     run("ssh.exe", [...flags, host, `sudo -n install -d -o ai-maintenance -g ai-maintenance -m 700 ${incoming} && sudo -n install -o ai-maintenance -g ai-maintenance -m 600 ${remote}/latest.json ${remote}/installer.exe ${incoming}/ && sudo -n -u ai-maintenance python3 /opt/ai-maintenance/promote.py ${incoming}/latest.json ${incoming}/installer.exe`]);
-    console.log(`Published ${manifest.channel} ${manifest.version}. Previous signed manifests retained on server.`);
+    const readback = await verifyPublishedRelease({ config: { ...config, appId, channel: manifest.channel }, envelope, schema: 1 });
+    console.log(`Published and readback verified: ${manifest.channel} ${manifest.version}, sequence ${manifest.sequence}, SHA-256 ${sha256}. Previous signed manifests retained on server.`);
+    return { published: true, readback };
   } finally {
     fs.rmSync(document, { force: true }); fs.rmdirSync(temporary);
   }

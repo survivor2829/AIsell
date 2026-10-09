@@ -1,7 +1,7 @@
 import { BookOpen, Bell, RefreshCw, ArrowRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CustomerPanel } from "./CustomerPanel";
-import { CloudMaintenance, type CloudStatus } from "./CloudMaintenance";
+import type { CloudStatus } from "./CloudMaintenance";
 import type { AgentHomeTarget } from "./AgentHome";
 
 type TutorialTarget = AgentHomeTarget | "diagnostics";
@@ -14,7 +14,7 @@ const GUIDES: { title: string; heading: string; intro: string; steps: string[]; 
     links: [{ title: "同步联系人", target: "contact-sync" }, { title: "查看今日计划", target: "workflow" }], note: "微信任务运行时尽量保持窗口可用，避免同时手动切换会话或修改正在发送的内容。" },
   { title: "内容创作", heading: "把真实素材做成视频", intro: "先给素材和背景，再选文案。已经完成的步骤会保留在制作任务中。",
     steps: ["在素材仓库选择图片、视频，进入创作工作台。", "填写目标客户；在「你想表达什么」说明实际背景、人物与素材的关系，可补充结尾引导。", "阅读三个文案方向，选择一份并确认完整正文、数量、声音和配乐。", "开始制作，等待画面、配音、字幕和视频合成完成。需要确认或资料不足时，按具体提示处理。", "在成片中心完整播放检查，再导出使用；修改文字后注意重新检查声画和字幕。"],
-    links: [{ title: "进入创作工作台", target: "workspace" }, { title: "查看成片", target: "finished" }], note: "这里介绍的是使用真实素材制作视频。独立的文生视频、图生视频入口尚未开放。" },
+    links: [{ title: "进入创作工作台", target: "workspace" }, { title: "产品效果视频", target: "product-video" }, { title: "查看成片", target: "finished" }], note: "以上是用已有素材制作视频。要生成产品在不同场景中的效果，可进入「产品效果视频」，上传产品图并填写卖点、参数和场景要求。" },
   { title: "素材与成片", heading: "素材和作品各有位置", intro: "素材仓库存原料，创作工作台存制作进度，成片中心看完成的作品。",
     steps: ["将同一活动或同一商品的素材整理到素材集，并补充必要的事实说明。", "原文件留在原来的磁盘位置。移动或删除原文件后，需要重新定位才能继续使用。", "首页「待处理制作」按业务批次统计，分析和审核等处理步骤可在详情查看。", "旧制作可在历史记录中查看；归档批次会退出待处理列表，素材和已有成片继续保留。"],
     links: [{ title: "管理素材", target: "materials" }, { title: "打开成片中心", target: "finished" }], note: "成片仍需要完整播放检查。后台某个步骤完成，不代表整条视频已经制作成功。" },
@@ -24,12 +24,14 @@ const GUIDES: { title: string; heading: string; intro: string; steps: string[]; 
 ];
 
 export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTarget) => void }) {
-  const [panel, setPanel] = useState<"announcements" | "update" | "tutorial" | null>(null);
+  const [panel, setPanel] = useState<"announcements" | "tutorial" | null>(null);
   const [state, setState] = useState<CloudStatus>();
   const [error, setError] = useState("");
   const [guideIndex, setGuideIndex] = useState(0);
   const [announcementId, setAnnouncementId] = useState("");
-  useEffect(() => { if (state?.lastUpdate?.unread) setPanel("update"); }, [state?.lastUpdate?.completedAt, state?.lastUpdate?.unread]);
+  const [updateError, setUpdateError] = useState("");
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const updateInFlight = useRef(false);
   useEffect(() => {
     const api = window.xiaoxiCloudMaintenance;
     if (!api) return;
@@ -65,15 +67,37 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
     } catch { setError("公告暂时刷新失败，本机记录仍可查看。"); }
   };
   const guide = GUIDES[guideIndex];
+  const updateWorking = updateBusy || ["checking", "downloading", "preparing", "verifying", "waiting"].includes(state?.stage || "");
+  const updateReady = state?.stage === "ready" && state.canInstall;
+  const updateLabel = state?.stage === "downloading" ? `下载 ${state.progress}%`
+    : state?.stage === "checking" ? "检查中…" : ["preparing", "verifying", "waiting"].includes(state?.stage || "") ? "正在更新…"
+    : updateBusy ? "正在处理…" : updateReady ? "立即更新" : state?.stage === "error" ? "重试更新" : "检查更新";
+  const updateMessage = updateError || state?.error || state?.updateFailure
+    || (state?.stage === "ready" ? state.canInstall ? `有更新 ${state.nextVersion}` : "更新已准备好，请使用安装版更新。"
+      : state?.stage === "current" ? "已是最新版本"
+      : state?.lastUpdate?.unread ? `已更新至 ${state.lastUpdate.version}` : "");
+  const update = async () => {
+    const api = window.xiaoxiCloudMaintenance;
+    if (!api || updateInFlight.current || updateWorking) return;
+    updateInFlight.current = true; setUpdateBusy(true); setUpdateError("");
+    try { setState(await (updateReady ? api.restart() : api.check())); }
+    catch { setUpdateError("更新暂未完成，请重试。"); }
+    finally { updateInFlight.current = false; setUpdateBusy(false); }
+  };
   const selectedAnnouncement = state?.announcements?.find((entry) => String(entry.id || entry.sequence) === announcementId)
     || state?.announcements?.[0];
   return <div className="topbar-tools">
     <button type="button" className="topbar-tool" aria-label={`更新公告${state?.unreadAnnouncements ? `，${state.unreadAnnouncements} 条未读` : ""}`} title="更新公告" aria-expanded={panel === "announcements"}
       onClick={() => void openAnnouncements()}><Bell size={17} /><span>更新公告</span>{Boolean(state?.unreadAnnouncements) && <span className="topbar-unread" aria-hidden="true" />}</button>
-    <button type="button" className="topbar-tool" aria-label="检查更新" title="检查更新" aria-expanded={panel === "update"}
-      onClick={() => { setPanel("update"); void window.xiaoxiCloudMaintenance?.check().catch(() => setError("更新检查暂未完成，请重试。")); }}><RefreshCw size={17} /><span>检查更新</span></button>
+    <div className={`topbar-update${updateReady ? " is-ready" : ""}`}>
+      {updateMessage && !(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-caption" role="status">{updateMessage}</span>}
+      <button type="button" className="topbar-tool topbar-update-action" aria-label={updateLabel}
+        title={updateReady ? "立即更新，软件将自动重启" : updateLabel} disabled={!state?.enabled || updateWorking} onClick={() => void update()}>
+        <RefreshCw size={17} /><span>{updateLabel}</span>
+      </button>
+      {(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-notice is-error" role="status">{updateMessage}</span>}
+    </div>
     <button type="button" className="topbar-tool" aria-label="使用教程" title="使用教程" aria-expanded={panel === "tutorial"} onClick={() => setPanel("tutorial")}><BookOpen size={17} /><span>使用教程</span></button>
-    {panel === "update" && <CustomerPanel title="软件更新" description="查看当前版本和更新进度。" onClose={() => { setPanel(null); void window.xiaoxiCloudMaintenance?.acknowledgeUpdate().catch(() => {}); }}><CloudMaintenance updateOnly /></CustomerPanel>}
     {panel === "announcements" && <CustomerPanel title="更新公告" description="看看这次有哪些改进。" onClose={() => setPanel(null)}>
       <div className="announcement-toolbar"><span>当前版本 {state?.version || "—"}</span><button type="button" className="customer-text-button" disabled={!state?.enabled || state.announcementsChecking} onClick={() => void refresh()}><RefreshCw size={14} />{state?.announcementsChecking ? "正在刷新…" : "刷新公告"}</button></div>
       {state?.announcements?.length && selectedAnnouncement ? <div className="announcement-list">

@@ -1,146 +1,134 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Download, ImagePlus, LoaderCircle, RefreshCw } from "lucide-react";
+import { ArrowRight, Download, FileText, ImagePlus, LoaderCircle, RefreshCw } from "lucide-react";
 import "./ProductVideoPage.css";
 
 type Choice = { id: string; name: string };
+type Quote = { ready?: boolean; estimatedCny?: number | null; maximumCny?: number; actualCny?: number; pendingCny?: number; reservedCny?: number; budgetCny?: number; note?: string; message?: string; checkedAt?: string };
 type Plan = {
-  version: string; director: string; scene: string; surface: string; dirt: string; goal: string;
+  version: string; pipelineVersion?: number; director: string; scene: string; surface?: string; dirt?: string; goal?: string;
   evidenceStatus: string; concept?: string; photography?: string; visualDirection?: string; lighting?: string;
   soundDesign?: string; negativeConstraints?: string; sourceResolution?: string; outputSize?: string;
-  shots: { index: number; seconds: number; startSecond?: number; endSecond?: number; title: string; narration: string; prompt: string }[];
-  sendText: string; estimatedVideoUsd: number; estimateNote: string;
+  shots: { index: number; seconds: number; startSecond?: number; endSecond?: number; title: string; narration: string; prompt: string; firstFramePrompt?: string; camera?: string; startState?: string; endState?: string }[];
+  sendText: string; estimatedVideoUsd?: number; estimateNote?: string;
 };
 type VideoTask = {
   id: string; mode: "product" | "social"; status: string; statusLabel: string; createdAt: string;
-  durationSeconds: number; sceneId: string; surfaceId: string; dirtId: string; goalId: string;
-  expression: string; facts: string; imageId: string; plan: Plan; currentShot: number;
-  completedShots: number; error: string; resumeStatus?: string; canRetry: boolean; canExport: boolean; canPreview: boolean;
+  durationSeconds: number; sceneIds?: string[]; productName?: string; facts: string; imageId: string; plan: Plan; currentShot: number;
+  completedShots: number; error: string; resumeStatus?: string; retryLabel?: string; canRetry: boolean; canExport: boolean; canExportSource?: boolean; canPreview: boolean; canRefresh?: boolean; quote?: Quote;
+  preparation?: { audioReady?: boolean; music?: { status?: string; source?: string; message?: string } | null };
 };
 type Result<T> = { ok: boolean; data?: T; error?: string };
+type Capabilities = { ready: boolean; message: string; scenes: Choice[]; surfaces?: Choice[] };
 type VideoApi = {
-  capabilities(): Promise<Result<{ ready: boolean; message: string; scenes: Choice[]; surfaces: Choice[]; dirt: Choice[]; goals: Choice[]; videoPricePerSecondUsd: number }>>;
+  capabilities(): Promise<Result<Capabilities>>;
   importImage(): Promise<Result<{ id: string; name: string; previewDataUrl: string } | null>>;
-  create(input: Record<string, string | number>): Promise<Result<VideoTask>>;
-  list(): Promise<Result<{ items: VideoTask[] }>>;
-  get(id: string): Promise<Result<VideoTask>>;
-  start(id: string): Promise<Result<VideoTask>>;
-  retryShot(id: string): Promise<Result<VideoTask>>;
-  refresh(id: string): Promise<Result<VideoTask>>;
-  media(id: string): Promise<Result<{ dataUrl: string }>>;
-  export(id: string): Promise<Result<{ path: string; subtitlePath: string; sendText: string } | null>>;
+  importFacts(): Promise<Result<{ name: string; text: string } | null>>;
+  create(input: Record<string, string | number | string[]>): Promise<Result<VideoTask>>;
+  list(): Promise<Result<{ items: VideoTask[] }>>; get(id: string): Promise<Result<VideoTask>>;
+  start(id: string): Promise<Result<VideoTask>>; retryShot(id: string): Promise<Result<VideoTask>>;
+  refresh(id: string): Promise<Result<VideoTask>>; media(id: string): Promise<Result<{ dataUrl: string }>>;
+  export(id: string): Promise<Result<{ path: string; subtitlePath?: string; sendText: string } | null>>;
+  exportSource(id: string): Promise<Result<{ path: string } | null>>;
 };
 declare global { interface Window { xiaoxiProductVideo?: VideoApi } }
-const ACTIVE = new Set(["uploading", "submitting", "generating", "assembling", "enhancing"]);
-const fallbackChoices = {
-  scenes: [{ id: "community", name: "小区外围" }, { id: "school", name: "学校" }, { id: "hospital", name: "医院" }, { id: "office", name: "办公楼" }, { id: "factory", name: "厂区" }],
-  surfaces: [{ id: "marble", name: "大理石" }, { id: "terrazzo", name: "水磨石" }, { id: "tile", name: "瓷砖" }, { id: "concrete", name: "水泥地" }, { id: "epoxy", name: "环氧地坪" }, { id: "asphalt", name: "沥青路面" }],
-  dirt: [{ id: "none", name: "不指定污渍" }, { id: "dust", name: "灰尘" }, { id: "leaves", name: "落叶" }, { id: "water", name: "积水" }, { id: "footprints", name: "脚印" }],
-  goals: [{ id: "appearance", name: "展示产品外观" }, { id: "operation", name: "展示作业过程" }, { id: "result", name: "展示清洁前后" }]
-};
-const initial = { sceneId: "community", surfaceId: "marble", dirtId: "none", goalId: "appearance", durationSeconds: 30, facts: "", expression: "", imageId: "" };
+const ACTIVE = new Set(["uploading", "preparing_frames", "frame_generating", "locking_frames", "preparing_audio", "audio_preparing", "submitting", "generating", "assembling", "enhancing", "transcribing", "packaging"]);
+const initial = { productName: "", sceneIds: [] as string[], surfaceId: "", durationSeconds: 30, facts: "", imageId: "" };
 async function unwrap<T>(result: Promise<Result<T>>): Promise<T> {
   const value = await result;
   if (!value.ok || value.data === undefined) throw new Error(value.error || "操作未完成，请稍后重试。");
   return value.data;
 }
-
 export function ProductVideoPage() {
   const api = window.xiaoxiProductVideo;
-  const [choices, setChoices] = useState(fallbackChoices);
-  const [ready, setReady] = useState(false);
-  const [videoPricePerSecondUsd, setVideoPricePerSecondUsd] = useState<number | null>(null);
-  const [capabilityMessage, setCapabilityMessage] = useState("");
+  const [capability, setCapability] = useState<Capabilities | null>(null);
   const [draft, setDraft] = useState({ ...initial });
   const [image, setImage] = useState<{ id: string; name: string; previewDataUrl: string } | null>(null);
+  const [factsFile, setFactsFile] = useState("");
   const [selected, setSelected] = useState<VideoTask | null>(null);
   const [items, setItems] = useState<VideoTask[]>([]);
   const [video, setVideo] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [exportResult, setExportResult] = useState("");
-
+  const updateTask = (task: VideoTask) => { setSelected(task); setItems(current => [task, ...current.filter(item => item.id !== task.id)]); };
   useEffect(() => {
     if (!api) { setError("视频工作台尚未连接，请重新启动应用。"); return; }
     let disposed = false;
-    void Promise.all([api.capabilities(), api.list()]).then(([capability, tasks]) => {
+    void Promise.all([api.capabilities(), api.list()]).then(([caps, tasks]) => {
       if (disposed) return;
-      if (capability.ok && capability.data) {
-        setReady(capability.data.ready);
-        setVideoPricePerSecondUsd(capability.data.videoPricePerSecondUsd);
-        setCapabilityMessage(capability.data.message);
-        setChoices({ scenes: capability.data.scenes, surfaces: capability.data.surfaces, dirt: capability.data.dirt, goals: capability.data.goals });
-      }
-      if (tasks.ok && tasks.data) setItems(tasks.data.items.filter((task) => task.mode === "product"));
-    }).catch((cause) => { if (!disposed) setError(String(cause)); });
+      if (caps.ok && caps.data) setCapability(caps.data);
+      else if (caps.error) setError(caps.error);
+      if (tasks.ok && tasks.data) setItems(tasks.data.items.filter(task => task.mode === "product"));
+    }).catch(cause => { if (!disposed) setError(String(cause)); });
     return () => { disposed = true; };
   }, [api]);
   useEffect(() => {
     if (!api || !selected || !ACTIVE.has(selected.status)) return;
+    let disposed = false, pending = false;
     const timer = window.setInterval(() => {
-      void api.refresh(selected.id).then((result) => {
-        if (result.ok && result.data) setSelected(result.data);
-      });
-    }, 8_000);
-    return () => window.clearInterval(timer);
+      if (pending) return; pending = true;
+      void api.refresh(selected.id).then(result => { if (!disposed && result.ok && result.data) updateTask(result.data); }).catch(() => {}).finally(() => { pending = false; });
+    }, 8000);
+    return () => { disposed = true; window.clearInterval(timer); };
   }, [api, selected?.id, selected?.status]);
-
   async function perform<T>(name: string, action: () => Promise<T>, done: (value: T) => void) {
+    if (busy) return;
     setBusy(name); setError("");
     try { done(await action()); } catch (cause) { setError(cause instanceof Error ? cause.message : "操作未完成。"); }
     finally { setBusy(""); }
   }
-  const selectTask = (task: VideoTask) => {
-    setSelected(task); setVideo(""); setExportResult("");
-  };
-  const savePlan = () => {
-    if (!api) return;
-    void perform("plan", () => unwrap(api.create({ ...draft, mode: "product" })), (task) => {
-      selectTask(task); setItems((current) => [task, ...current]);
-    });
+  const selectTask = (task: VideoTask) => { setSelected(task); setVideo(""); setExportResult(""); };
+  const savePlan = () => api && void perform("plan", () => unwrap(api.create({ ...draft, mode: "product" })), task => { setVideo(""); setExportResult(""); updateTask(task); });
+  const toggleScene = (id: string) => {
+    setError("");
+    if (!draft.sceneIds.includes(id) && draft.sceneIds.length === 3) { setError("最多选择三个场景，或取消选择让系统按资料安排。"); return; }
+    setDraft(old => ({ ...old, sceneIds: old.sceneIds.includes(id) ? old.sceneIds.filter(value => value !== id) : [...old.sceneIds, id] }));
   };
   const canPlan = Boolean(draft.imageId && !busy);
+  const quote = selected?.quote;
+  const withinBudget = quote?.ready && Number(quote.maximumCny) <= Number(quote.budgetCny);
   return <div className="product-video-page">
-    <header className="pv-header"><div><h1>产品效果视频</h1>
-      <p>选场景、上传产品图、说出重点。先确认分镜，再生成视频。</p>
-      <p className="pv-quality">默认 480p 生成，本地放大为 1080p 尺寸</p></div></header>
+    <header className="pv-header"><div><h1>产品效果视频</h1><p>上传产品图和卖点参数，把适用场景做成看得见的效果。</p><p className="pv-quality">720p 多场景 · 统一讲解与大字字幕 · 默认30秒</p></div></header>
     <div className="pv-layout"><section className="pv-panel">
-      <h2>1 · 准备视频内容</h2>
-      <div className="pv-scene-grid">{choices.scenes.map((scene) => <button key={scene.id} type="button" className={draft.sceneId === scene.id ? "is-selected" : ""} onClick={() => setDraft({ ...draft, sceneId: scene.id })}>{scene.name}</button>)}</div>
-      <button type="button" className="pv-upload" onClick={() => api && void perform("image", () => unwrap(api.importImage()), (item) => {
-        if (item) { setImage(item); setDraft((old) => ({ ...old, imageId: item.id })); }
-      })}>{image ? <img src={image.previewDataUrl} alt="已上传的产品" /> : <ImagePlus size={30} />}
-        <span>{image ? image.name : "上传一张产品图片"}<small>JPG、PNG 或 WebP，最多 20MB</small></span></button>
-      <details className="pv-details"><summary>细化现场与设备信息</summary>
-        <div className="pv-fields"><label>地面材质<select value={draft.surfaceId} onChange={(event) => setDraft({ ...draft, surfaceId: event.target.value })}>{choices.surfaces.map((row) => <option value={row.id} key={row.id}>{row.name}</option>)}</select></label>
-          <label>地面状况<select value={draft.dirtId} onChange={(event) => setDraft({ ...draft, dirtId: event.target.value })}>{choices.dirt.map((row) => <option value={row.id} key={row.id}>{row.name}</option>)}</select></label>
-          <label>演示目标<select value={draft.goalId} onChange={(event) => setDraft({ ...draft, goalId: event.target.value })}>{choices.goals.map((row) => <option value={row.id} key={row.id}>{row.name}</option>)}</select></label>
-          <label>成片时长<select value={draft.durationSeconds} onChange={(event) => setDraft({ ...draft, durationSeconds: Number(event.target.value) })}>{[30, 45, 60].map((seconds) => <option value={seconds} key={seconds}>{seconds} 秒</option>)}</select></label></div>
-        <label className="pv-text-label">已确认的产品资料<textarea maxLength={400} rows={3} value={draft.facts} onChange={(event) => setDraft({ ...draft, facts: event.target.value })} placeholder="例如厂家资料中的设备类型、适用地面和作业方式。没有资料时只展示外观。" /></label>
-      </details>
-      <label className="pv-text-label">还想表达什么<textarea maxLength={400} rows={3} value={draft.expression} onChange={(event) => setDraft({ ...draft, expression: event.target.value })} placeholder="写下希望客户记住的观点或现场问题。" /></label>
-      <div className="pv-estimate"><strong>预计视频 API 费用：{videoPricePerSecondUsd === null ? '正在读取价格' : `约 $${(draft.durationSeconds * videoPricePerSecondUsd).toFixed(2)}`}</strong><small>按 480p 单价估算；本地放大不收视频 API 费，但需要电脑处理时间。实际以账单为准。</small></div>
-      <button className="pv-primary" type="button" disabled={!canPlan} onClick={savePlan}>{busy === "plan" ? <LoaderCircle size={18} /> : <ArrowRight size={18} />}先看视频方案</button>
-      {!ready && capabilityMessage && <p className="pv-note">{capabilityMessage}</p>}
+      <h2>1 · 准备产品资料</h2>
+      <button type="button" className="pv-upload" disabled={!!busy} onClick={() => api && void perform("image", () => unwrap(api.importImage()), item => {
+        if (item) { setImage(item); setDraft(old => ({ ...old, imageId: item.id })); }
+      })}>{image ? <img src={image.previewDataUrl} alt="已上传的产品" /> : <ImagePlus size={30} />}<span>{image ? image.name : "上传一张产品图片"}<small>JPG、PNG 或 WebP，最多20MB</small></span></button>
+      <label className="pv-text-label">产品名称<input maxLength={80} value={draft.productName} onChange={event => setDraft({ ...draft, productName: event.target.value })} placeholder="例如：普渡 CC1 Pro" /></label>
+      <div className="pv-facts-heading"><label htmlFor="pv-facts">卖点与参数</label><button className="pv-text-action" type="button" disabled={!!busy} onClick={() => api && void perform("facts", () => unwrap(api.importFacts()), file => { if (file) { setFactsFile(file.name); setDraft(old => ({ ...old, facts: old.facts ? `${old.facts}\n\n${file.text}` : file.text })); } })}><FileText size={16} />导入TXT资料</button></div>
+      <textarea id="pv-facts" className="pv-facts" maxLength={12000} rows={7} value={draft.facts} onChange={event => setDraft({ ...draft, facts: event.target.value })} placeholder="粘贴产品卖点、参数、适用场地、能处理的问题。系统依据资料安排镜头；没有能力资料时只展示外观。" />
+      <div className="pv-field-meta"><span>{factsFile || "支持直接粘贴，或导入UTF-8文本"}</span><span>{draft.facts.length.toLocaleString()} / 12,000字</span></div>
+      {draft.facts.length > 12000 && <p className="pv-error">合并资料超过12,000字，请精简后再生成方案；已保留完整导入内容。</p>}
+      <div className="pv-details"><h3>使用场景与地面材质</h3>
+        <p className="pv-note">可选择最多三个使用场景；不选时按产品资料安排。</p>
+        <div className="pv-scene-grid">{(capability?.scenes || []).map(scene => <button key={scene.id} type="button" aria-pressed={draft.sceneIds.includes(scene.id)} className={draft.sceneIds.includes(scene.id) ? "is-selected" : ""} onClick={() => toggleScene(scene.id)}>{scene.name}</button>)}</div>
+        {draft.sceneIds.length > 0 && <button type="button" className="pv-text-action" onClick={() => setDraft({ ...draft, sceneIds: [] })}>恢复按资料自动安排</button>}
+        <label className="pv-text-label">地面材质<select value={draft.surfaceId} onChange={event => setDraft({ ...draft, surfaceId: event.target.value })}><option value="">按产品资料安排</option>{capability?.surfaces?.map(surface => <option value={surface.id} key={surface.id}>{surface.name}</option>)}</select></label>
+      </div>
+      <button className="pv-primary" type="button" disabled={!canPlan || draft.facts.length > 12000} onClick={savePlan}>{busy === "plan" ? <LoaderCircle size={18} className="spin" /> : <ArrowRight size={18} />}先看视频方案</button>
+      {!capability?.ready && capability?.message && <p className="pv-note">{capability.message}</p>}
       {error && <p className="pv-error" role="alert">{error}</p>}
-    </section>
-    <section className="pv-panel pv-output"><h2>2 · 确认分镜与成片</h2>
-      {selected ? <><div className="pv-task-head"><strong>视频方案 · {selected.durationSeconds} 秒</strong><span>{selected.statusLabel}</span></div>
-        <p className="pv-evidence">{selected.plan.evidenceStatus === "appearance_only" ? "尚无产品能力资料：镜头只展示外观与场景。" : "产品事实来自您填写的资料，请在生成前确认准确性。"}</p>
-        {selected.plan.concept && <div className="pv-director-brief"><strong>视频会怎么拍</strong><p>{selected.plan.concept}</p><small>{selected.plan.photography} {selected.plan.lighting}</small><details><summary>查看画面、声音和限制</summary><p>{selected.plan.visualDirection} {selected.plan.soundDesign}</p><p>{selected.plan.negativeConstraints}</p></details></div>}
-        <ol className="pv-shots">{selected.plan.shots.map((shot) => <li key={shot.index}><strong>{shot.index + 1}. {shot.title}</strong><span>{shot.startSecond ?? shot.index * 15}–{shot.endSecond ?? (shot.index + 1) * 15} 秒 · 旁白：{shot.narration}</span><details><summary>查看生成提示词</summary><p>{shot.prompt}</p></details></li>)}</ol>
-        <p className="pv-evidence">{selected.plan.sourceResolution === '480p' ? '画面将以 480p 生成，再本地放大为 1080p 尺寸；放大不能补回原片没有的细节。' : '这条旧任务沿用创建时的画质设置。'} {selected.plan.estimateNote}</p>
-        <p className="pv-progress">镜头进度：{selected.completedShots} / {selected.plan.shots.length}</p>
+    </section><section className="pv-panel pv-output"><h2>2 · 确认方案，生成成片</h2>
+      {selected ? <><div className="pv-task-head"><strong>{selected.productName || "视频方案"} · {selected.durationSeconds}秒</strong><span role="status">{selected.statusLabel}</span></div>
+        <p className="pv-evidence">{selected.plan.evidenceStatus === "appearance_only" ? "资料尚不足以支撑作业效果：本方案只展示产品外观与场景。" : "镜头依据你提供的资料安排，请确认场景、动作和口播准确。"}</p>
+        {selected.plan.concept && <div className="pv-director-brief"><strong>视频会怎么拍</strong><p>{selected.plan.concept}</p><small>{selected.plan.photography}</small></div>}
+        <ol className="pv-shots">{selected.plan.shots.map((shot, index) => { const start = shot.startSecond ?? selected.plan.shots.slice(0, index).reduce((sum, row) => sum + row.seconds, 0); return <li key={shot.index}><strong>{shot.title}</strong><span>{start}–{shot.endSecond ?? start + shot.seconds}秒 · {shot.camera || "按方案拍摄"}</span><p className="pv-narration">讲解：{shot.narration}</p><details><summary>查看完整分镜与提示词</summary>{shot.startState && <p>开始：{shot.startState}<br />结束：{shot.endState}</p>}{shot.firstFramePrompt && <p>场景首帧：{shot.firstFramePrompt}</p>}<p>视频：{shot.prompt}</p></details></li>; })}</ol>
+        <p className="pv-evidence">{["480p", "720p"].includes(selected.plan.sourceResolution || '') ? `${selected.plan.sourceResolution}生成后普通放大至1080×1920，再渲染字幕；不是AI增强或原生1080p。` : "旧任务沿用创建时的画质与方案。"}</p>
+        <p className="pv-progress">镜头完成 {selected.completedShots} / {selected.plan.shots.length}</p>
+        {selected.preparation?.audioReady && <p className="pv-note" role="status">{selected.preparation.music?.status === 'ready' ? '讲解已准备；整片使用一条连续配乐。' : selected.preparation.music?.message || '讲解已准备，暂无可用的整片配乐。'}</p>}
         {selected.error && <p className="pv-error" role="alert">{selected.error}</p>}
-        {selected.status === "draft" && <button type="button" className="pv-primary" data-product-video-action="start" disabled={!ready || !!busy} onClick={() => api && void perform("start", () => unwrap(api.start(selected.id)), setSelected)}>确认分镜，开始生成 · 约 ${selected.plan.estimatedVideoUsd}<ArrowRight size={18} /></button>}
-        {selected.canRetry && <button type="button" className="pv-primary" data-product-video-action="retry-shot" disabled={!!busy} onClick={() => api && void perform("retry", () => unwrap(api.retryShot(selected.id)), setSelected)}>{selected.resumeStatus === 'enhancing' ? '继续本地放大画面' : selected.resumeStatus === 'assembling' ? '重新合成视频' : selected.resumeStatus === 'generating' ? '重做当前失败镜头' : '继续制作'}</button>}
-        {ACTIVE.has(selected.status) && <button type="button" className="pv-secondary" disabled={!!busy} onClick={() => api && void perform("refresh", () => unwrap(api.refresh(selected.id)), setSelected)}><RefreshCw size={16} />刷新进度</button>}
-        {selected.canPreview && <button type="button" className="pv-secondary" disabled={!!busy} onClick={() => api && void perform("media", () => unwrap(api.media(selected.id)), (data) => setVideo(data.dataUrl))}>预览成片</button>}
+        {selected.status === "draft" && Number(selected.plan.pipelineVersion) >= 2 && !withinBudget && <p className="pv-note" role="status">{quote?.ready ? '本次制作额度不足，请联系管理员；原方案已保留。' : '生成服务暂未就绪，请点击重新检查生成服务。'}</p>}
+        {selected.status === "draft" && <button type="button" className="pv-primary" data-product-video-action="start" disabled={!!busy || (Number(selected.plan.pipelineVersion) >= 2 && !withinBudget)} onClick={() => api && void perform("start", () => unwrap(api.start(selected.id)), updateTask)}>确认方案，开始生成<ArrowRight size={18} /></button>}
+        {selected.canRetry && <button type="button" className="pv-primary" data-product-video-action="retry-shot" disabled={!!busy} onClick={() => api && void perform("retry", () => unwrap(api.retryShot(selected.id)), updateTask)}>{selected.retryLabel || (["assembling", "enhancing", "packaging"].includes(selected.resumeStatus || "") ? "继续后期处理" : "继续当前未完成步骤")}</button>}
+        {(selected.canRefresh || selected.status === "draft" || selected.status === "outcome_unknown" || ACTIVE.has(selected.status)) && <button type="button" className="pv-secondary" disabled={!!busy} onClick={() => api && void perform("refresh", () => unwrap(api.refresh(selected.id)), updateTask)}><RefreshCw size={16} />{selected.status === "outcome_unknown" ? "核对原请求" : selected.status === "draft" ? "重新检查生成服务" : "刷新进度"}</button>}
+        {selected.canPreview && <button type="button" className="pv-secondary" disabled={!!busy} onClick={() => api && void perform("media", () => unwrap(api.media(selected.id)), data => setVideo(data.dataUrl))}>预览成片</button>}
         {video && <video controls preload="metadata" src={video} />}
-        {selected.canExport && <><button type="button" className="pv-primary" disabled={!!busy} onClick={() => api && void perform("export", () => unwrap(api.export(selected.id)), (result) => {
-          if (result) setExportResult(`视频：${result.path} · 字幕：${result.subtitlePath}`);
-        })}><Download size={17} />一键导出成片</button><div className="pv-send-text"><strong>发给客户时可用</strong><p>{selected.plan.sendText}</p></div>{exportResult && <p className="pv-note">{exportResult}</p>}</>}
-      </> : <p className="pv-empty">上传产品图后，先查看镜头方案，再决定是否付费生成。</p>}
+        {selected.canExport && <button type="button" className="pv-primary" disabled={!!busy} onClick={() => api && void perform("export", () => unwrap(api.export(selected.id)), result => { if (result) setExportResult(`已导出：${result.path}${result.subtitlePath ? ` · 字幕：${result.subtitlePath}` : ""}`); })}><Download size={17} />导出成片</button>}
+        {selected.canExportSource && <button type="button" className="pv-secondary" disabled={!!busy} onClick={() => api && void perform("source", () => unwrap(api.exportSource(selected.id)), result => { if (result) setExportResult(`已导出原片：${result.path}`); })}>导出{selected.plan.sourceResolution || ''}母版</button>}
+        {selected.canExport && <div className="pv-send-text"><strong>发给客户时可用</strong><p>{selected.plan.sendText}</p></div>}
+        {exportResult && <p className="pv-note" role="status">{exportResult}</p>}
+      </> : <div className="pv-empty"><p>从你的产品资料出发</p><ol><li>生成适用场景与不同机位的分镜</li><li>先固定各场景首帧、讲解与字幕，再生成视频</li><li>合成完整音轨、渲染大字字幕并导出</li></ol><p>上传产品图和资料，就能查看视频方案。</p></div>}
     </section></div>
-    {items.length > 0 && <section className="pv-history"><h2>制作记录</h2><div>{items.map((task) => <button type="button" key={task.id} onClick={() => selectTask(task)}><span>{task.plan.scene} · {task.durationSeconds} 秒</span><small>{task.statusLabel}</small></button>)}</div></section>}
+    {items.length > 0 && <section className="pv-history"><h2>制作记录</h2><div>{items.map(task => <button type="button" key={task.id} onClick={() => selectTask(task)}><span>{task.productName || task.plan.scene} · {task.durationSeconds}秒</span><small>{task.statusLabel}</small></button>)}</div></section>}
   </div>;
 }

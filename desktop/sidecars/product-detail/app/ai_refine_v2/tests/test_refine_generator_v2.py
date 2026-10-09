@@ -832,7 +832,7 @@ class TestProviderLifecycle(unittest.TestCase):
         def lifecycle(block_id, event):
             events.append((block_id, dict(event)))
 
-        def api_call(prompt, _image, _key, _thinking, _size, *, lifecycle_callback):
+        def api_call(prompt, _image, _key, _thinking, _size, *, lifecycle_callback, block_id):
             screen = "1" if "Screen 1" in prompt else ("2" if "Screen 2" in prompt else "3")
             task_id = f"provider-{screen}"
             lifecycle_callback({"event": "submitted", "provider_task_id": task_id})

@@ -279,7 +279,7 @@ def _install_desktop_contract(
     update_lock = threading.RLock()
     update_state = {"hold": False, "requests": 0}
     refine_terminal_states = {"success", "partial_success", "failed"}
-    refine_blocking_states = {"outcome_unknown", "recovery_required"}
+    refine_blocking_states = {"outcome_unknown", "recovery_required", "pricing_required"}
     def unreadable_refine_ledger() -> dict:
         return {
             "state": "outcome_unknown",
@@ -316,11 +316,14 @@ def _install_desktop_contract(
         with ledger_lock:
             ledger = read_refine_ledger()
             if ledger.get("state") not in {
-                "pending", "outcome_unknown", "recovery_required",
+                "pending", "outcome_unknown", "recovery_required", "pricing_required",
             }:
                 return ledger
             current = task_state(str(ledger.get("task_id") or ""))
-            if current and current.get("status") in {
+            if current and str(current.get("status") or "").startswith("running_"):
+                ledger["state"] = "pending"
+                write_refine_ledger(ledger)
+            elif current and current.get("status") in {
                 *refine_terminal_states,
                 *refine_blocking_states,
             }:
@@ -429,12 +432,12 @@ def _install_desktop_contract(
                             "task_id": ledger.get("task_id") or "",
                         }
                     ), 409
-                if ledger.get("state") == "recovery_required":
+                if ledger.get("state") in {"recovery_required", "pricing_required"}:
                     return jsonify(
                         {
                             "ok": False,
                             "code": "DESKTOP_AI_REFINE_RECOVERY_REQUIRED",
-                            "error": "上次付费任务已有结果，但本地下载或拼装尚未完成。请恢复原任务，不要重复提交。",
+                            "error": "已有任务待继续，请恢复原任务，避免重复策划或生图。",
                             "task_id": ledger.get("task_id") or "",
                         }
                     ), 409
@@ -654,13 +657,16 @@ def create_desktop_application(
     *,
     shutdown_callback: Callable[[], None],
 ):
+    _startup_stage("prepare_data")
     config = _validate_config(config)
     paths = prepare_runtime_paths(config.data_dir)
     _configure_environment(paths)
     # A packaged sidecar must prove the shared Chromium can start before it
     # advertises browser features. Merely finding chrome.exe lets a partial
     # portable extraction fail later during an export.
+    _startup_stage("browser_check")
     capabilities = detect_capabilities(verify_browser=True)
+    _startup_stage("load_app")
     with contextlib.redirect_stdout(sys.stderr):
         app_module = importlib.import_module("app")
     app_module.app.config.update(
@@ -673,6 +679,7 @@ def create_desktop_application(
         SESSION_COOKIE_SECURE=True,
         SESSION_COOKIE_PARTITIONED=True,
     )
+    _startup_stage("install_contract")
     contract = _install_desktop_contract(
         app_module.app,
         config=config,
@@ -729,6 +736,12 @@ def _parse_args(argv: list[str] | None = None):
     return args
 
 
+def _startup_stage(stage: str) -> None:
+    # A bounded, public stage identifier only; stdout remains ready JSON only.
+    sys.stderr.write(json.dumps({"event": "product_detail_startup", "stage": stage}) + "\n")
+    sys.stderr.flush()
+
+
 def _run_server(config: DesktopConfig, protocol_stdout) -> int:
     holder: dict[str, object] = {}
 
@@ -742,6 +755,7 @@ def _run_server(config: DesktopConfig, protocol_stdout) -> int:
         config,
         shutdown_callback=request_shutdown,
     )
+    _startup_stage("listen")
     server = make_server(
         config.host,
         config.port,

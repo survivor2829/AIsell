@@ -6,7 +6,6 @@ import {
   Clapperboard,
   Folder,
   ListTodo,
-  MapPin,
   MessageCircle,
   Palette,
   RadioTower,
@@ -108,12 +107,10 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     key: "operations",
     ...AGENT_ROLE_IDENTITIES.operations,
     portraitKey: "xiaolian-integrated",
-    intro: "先找客户在问什么，再准备能回答问题的产品图片。",
-    primaryLabel: "查找客户需求",
-    primaryTarget: "keyword-acquisition",
+    intro: "上传产品图片、卖点和参数，制作可以发给客户的产品详情图。",
+    primaryLabel: "制作产品详情图",
+    primaryTarget: "product-detail",
     capabilities: [
-      { key: "local-acquisition", label: "同城精准获客", description: "按城市和区域找附近的客户", icon: MapPin, available: false },
-      { key: "keyword-acquisition", label: "关键词获客", description: "查看客户在搜索什么", icon: Sparkles },
       { key: "product-detail", label: "产品详情图", description: "制作可以发给客户的产品图片", icon: Sparkles }
     ]
   }
@@ -521,15 +518,14 @@ function buildProductionView(snapshot: ProductionSnapshot) {
 
 function buildOperationsView() {
   const metrics: Metric[] = [
-    { label: "关键词获客", value: "可进入", detail: "打开现有关键词任务", icon: Sparkles },
     { label: "产品详情图", value: "可进入", detail: "打开现有详情图制作", icon: Sparkles }
   ];
   const importantTask: ImportantTask = {
-    title: "从客户需求开始",
-    detail: "先看看客户在找什么，再准备适合的产品图片。",
+    title: "把产品介绍清楚",
+    detail: "准备产品图、卖点和参数，进入详情图工作台。",
     status: "待开始",
-    target: "keyword-acquisition",
-    action: "查看关键词获客"
+    target: "product-detail",
+    action: "制作产品详情图"
   };
   return { metrics, importantTask };
 }

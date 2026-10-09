@@ -415,6 +415,14 @@ class CreativeDomain:
             raise ContentEngineError("invalid_video_import", "找不到可用的数字人视频文件。")
         if source.stat().st_size > 500 * 1024 * 1024:
             raise ContentEngineError("invalid_video_import", "视频超过500MB，请缩短后再试。")
+        prepared = request.get("prepared_transcript")
+        if prepared is not None:
+            if (not isinstance(prepared, dict) or prepared.get("time_unit") != "ms"
+                    or not isinstance(prepared.get("utterances"), list)
+                    or not 1 <= len(prepared["utterances"]) <= 1000
+                    or len(json.dumps(prepared, ensure_ascii=False)) > 500_000
+                    or prepared.get("source_sha256") != self._sha256_file(source)):
+                raise ContentEngineError("invalid_video_transcript", "字幕依据与当前视频不匹配，未重新调用识别。")
         # Admission is internal IPC only. Copy once into the engine-owned tree;
         # subsequent task execution never follows a renderer-controlled path.
         existing = self.connection.execute("SELECT id, payload_json FROM content_tasks WHERE task_type='import_base_video' ORDER BY created_at DESC").fetchall()
@@ -427,12 +435,16 @@ class CreativeDomain:
         managed = self.data_dir / "video-imports" / source_id / "base.mp4"
         managed.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, managed)
+        if prepared is not None and prepared["source_sha256"] != self._sha256_file(managed):
+            raise ContentEngineError("invalid_video_transcript", "视频在导入时发生变化，请核对源文件。")
         now = self._now()
         self.connection.execute("INSERT INTO creative_projects(id,mode,name,theme,settings_json,created_at,updated_at) VALUES (?,'course',?,?,?, ?,?)",
             (project_id, title, title, self._json({"workflow": "digital_human", "internal_only": False}), now, now))
         payload = {"source_id": source_id, "project_id": project_id, "managed_path": str(managed), "title": title,
                    "confirmed_script": script, "template_id": template, "cover_mode": request.get("cover_mode", "apimart"),
                    "music_track_id": str(request.get("music_track_id") or "")}
+        if prepared is not None:
+            payload["prepared_transcript"] = prepared
         return {**self._create_task("import_base_video", payload), "project_id": project_id}
 
     def update_cover_title(self, generated_video_id, headline_lines):
@@ -5805,6 +5817,25 @@ class CreativeDomain:
             "SELECT * FROM music_catalog_tracks_v1 ORDER BY updated_at DESC, id"
         ).fetchall()
         return {"items": [self._public_music_catalog_row(row) for row in rows]}
+
+    def select_video_music(self, duration_seconds):
+        """Main-process-only media preparation; no provider call or new catalogue."""
+        if not isinstance(duration_seconds, (int, float)) or not 2 <= duration_seconds <= 120:
+            raise ContentEngineError("invalid_music_duration", "配乐时长无效。")
+        duration_ms = int(duration_seconds * 1000)
+        full_tracks = [row["id"] for row in self.connection.execute(
+            "SELECT id FROM music_catalog_tracks_v1 WHERE duration_ms >= ?", (duration_ms,)).fetchall()]
+        selected = self._select_auto_mix_music(
+            {"bpmRange": [80, 125], "targetEnergy": 0.45, "moods": []},
+            required_duration_ms=duration_ms, allowed_track_ids=full_tracks,
+        )
+        # Reuse an uninterrupted recording. Do not substitute the 20s audition
+        # file or repeat a short track without a verified musical loop.
+        if not selected or int(selected.get("duration_ms") or 0) < duration_ms:
+            return {"status": "unavailable", "message": "音乐库没有足够时长的可用配乐，本片保留讲解。"}
+        return {"status": "ready", "file": str((self.data_dir / selected["managed_relative_path"]).resolve()),
+                "sha256": self._sha256_file(self.data_dir / selected["managed_relative_path"]), "trackId": selected["track_id"],
+                "source": selected.get("source") or "已授权音乐库"}
 
     def _public_music_catalog_row(self, row):
         managed_audio_valid = self._managed_file_digest_matches(

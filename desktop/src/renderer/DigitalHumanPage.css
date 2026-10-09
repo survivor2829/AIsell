@@ -32,6 +32,8 @@
 .dh-field textarea, .dh-field select { width: 100%; box-sizing: border-box; color: #303849; font: inherit; font-size: 14px; line-height: 1.6; border: 1px solid #d7dce4; border-radius: 8px; background: #fff; padding: 10px 12px; }
 .dh-field textarea { min-height: 104px; resize: vertical; }
 .dh-field textarea:disabled, .dh-field select:disabled { background: #fafbfc; color: #596374; }
+.dh-form > .dh-field { margin-top: 20px; }
+.dh-form > .dh-quality { color: #596374; font-size: 13px; line-height: 1.6; margin: 9px 0 16px; }
 .dh-options { display: grid; grid-template-columns: 1fr 110px; gap: 14px; margin-top: 21px; }
 .dh-create { width: 100%; margin-top: 24px; }
 .dh-draft-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }

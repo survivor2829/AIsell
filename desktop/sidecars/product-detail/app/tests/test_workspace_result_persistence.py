@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+import json
+import os
 import shutil
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
@@ -39,6 +42,60 @@ class TestWorkspaceAiResultPersistence(unittest.TestCase):
     def setUp(self):
         app.config["TESTING"] = True
         app.config["WTF_CSRF_ENABLED"] = False
+
+    def test_workspace_bootstraps_only_latest_current_owner_unfinished_task(self):
+        from ai_refine_v2 import pipeline_runner as runner
+        client, uid = _make_authed_client(self)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_OUTPUT_BASE", Path(directory)), mock.patch.object(runner, "_TASKS", {}), mock.patch.dict(app.jinja_env.globals, {"desktop_capabilities": {}}):
+            for index, (task_id, owner, state_owner) in enumerate((("older", uid, uid), ("latest", uid, uid),
+                                                 ("foreign", uid + 1, uid + 1), ("mismatch", uid, uid + 1),
+                                                 ("legacy", None, uid))):
+                task_dir = Path(directory) / task_id
+                runner._atomic_write_json(task_dir / "_input.json", {
+                    "user_id": owner, "product_title": "title-" + task_id,
+                    "product_text": "copy-" + task_id, "product_category": "设备类",
+                    "product_image_url": str(BASE_DIR / "static/uploads" / str(uid + 1) / "foreign.png"),
+                })
+                runner._atomic_write_json(task_dir / "_recovery.json", {
+                    "user_id": state_owner, "status": "outcome_unknown", "mode": "real", "blocks": [],
+                })
+                os.utime(task_dir / "_input.json", (1000 + index, 1000 + index))
+            for route in ("/", "/workspace/设备类"):
+                page = client.get(route)
+                self.assertEqual(page.status_code, 200)
+                content = page.get_data(as_text=True)
+                bootstrap = json.loads(re.search(r"const SERVER_AI_REFINE_BOOTSTRAP = (.*?);", content)[1])
+                self.assertEqual(bootstrap["task"]["task_id"], "latest")
+                self.assertEqual(bootstrap["inputs"]["product_text"], "copy-latest")
+                self.assertEqual(bootstrap["inputs"]["product_image_url"], "")
+                self.assertNotIn("title-foreign", content)
+                self.assertNotIn("copy-mismatch", content)
+                self.assertNotIn("copy-legacy", content)
+            runner._atomic_write_json(Path(directory) / "completed" / "_input.json", {"user_id": uid})
+            runner._TASKS["completed"] = runner.TaskState(task_id="completed", user_id=uid, status="success")
+            content = client.get("/").get_data(as_text=True)
+            self.assertIn("const SERVER_AI_REFINE_BOOTSTRAP = null;", content)
+
+    def test_workspace_restores_failed_plan_only_with_server_replay_eligibility(self):
+        from ai_refine_v2 import pipeline_runner as runner
+        client, uid = _make_authed_client(self)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_OUTPUT_BASE", Path(directory)), mock.patch.dict(app.jinja_env.globals, {"desktop_capabilities": {}}):
+            runner._atomic_write_json(Path(directory) / "saved-plan" / "_input.json", {
+                "user_id": uid, "product_text": "saved product facts",
+            })
+            for eligible in (True, False, "true"):
+                with self.subTest(eligible=eligible), mock.patch.object(runner, "get_task_status", return_value={
+                    "task_id": "saved-plan", "user_id": uid, "status": "failed",
+                    "can_replay_planner": eligible,
+                }):
+                    content = client.get("/").get_data(as_text=True)
+                    bootstrap = json.loads(re.search(r"const SERVER_AI_REFINE_BOOTSTRAP = (.*?);", content)[1])
+                    if eligible is True:
+                        self.assertEqual(bootstrap["task"]["task_id"], "saved-plan")
+                        self.assertIs(bootstrap["task"]["can_replay_planner"], True)
+                        self.assertEqual(bootstrap["inputs"]["product_text"], "saved product facts")
+                    else:
+                        self.assertIsNone(bootstrap)
 
     def test_save_completed_ai_refine_result_and_restore_latest(self):
         client, uid = _make_authed_client(self)
@@ -178,7 +235,7 @@ class TestWorkspaceFrontendPersistenceHooks:
         assert "container.style.zoom = scale.toFixed(4)" in content
         assert "new ResizeObserver(queuePreviewFit)" in content
         assert "if (tab === 'detail') queuePreviewFit()" in content
-        assert "const defaultLayout = window.innerWidth >= 1024 ? 'preview' : 'balance'" in content
+        assert "const defaultLayout = DESKTOP_MODE ? 'edit' : (window.innerWidth >= 1024 ? 'preview' : 'balance')" in content
         assert "name === 'preview' && window.innerWidth < 1280" not in content
         assert "initPreviewFit()" in content
 
@@ -254,7 +311,8 @@ class TestWorkspaceFrontendPaidTaskSafety:
 
     def test_paid_generation_requires_a_cost_and_retry_confirmation(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
-        assert "预计生成 8–15 屏" in content
+        assert "每个独立卖点一张图" in content
+        assert "最多15张" in content
         assert "实际费用以 APIMart 账单为准" in content
         assert "失败或结果不明时不会自动重提" in content
         assert "await confirmInWorkspace(" in content

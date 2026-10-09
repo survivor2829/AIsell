@@ -690,7 +690,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">DeepSeek 与 APIMart 已配置。开始前会确认预计 8–15 屏；实际费用以 APIMart 账单为准，失败或结果不明时不会自动重提。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，一卖点一张图，另含封面与资料支持的参数图。最多15张，可下载单张和长图；点击会调用 APIMart，实际费用以账单为准。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -705,7 +705,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px;">DeepSeek 分析文案 + GPT-image-2 生成预计 8–15 屏，再自动拼装长图。开始前会确认；实际费用以账单为准，失败或结果不明时不会自动重提。</p>
+      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，一卖点一张图，另含封面与资料支持的参数图。最多15张，可下载单张和长图；实际费用以账单为准，结果不明不会自动重提。</p>
       <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
@@ -943,9 +943,14 @@
   const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
   const desktopMode = {{ desktop_mode|tojson }};
   const AI_REFINE_ACTIVE_TASK_KEY = 'xiaoxi.ai-refine-v2.active-task.v1';
+  const SERVER_AI_REFINE_BOOTSTRAP = {{ ai_refine_bootstrap|default(none)|tojson }};
+  let aiRefineInputEdited = false;
+  document.addEventListener('input', event => {
+    if (['product_title_input', 'text_input'].includes(event.target.id)) aiRefineInputEdited = true;
+  });
   const AI_REFINE_NON_RETRYABLE_POLL_STATUSES = new Set([400, 401, 403, 409, 429]);
   const AI_REFINE_TERMINAL_STATUSES = new Set([
-    'success', 'partial_success', 'failed', 'recovery_required', 'outcome_unknown'
+    'success', 'partial_success', 'failed', 'recovery_required', 'outcome_unknown', 'pricing_required'
   ]);
 
   function buildAiRefineTaskMeta(productText, productTitle) {
@@ -1006,6 +1011,33 @@
     return null;
   }
 
+
+  function restoreServerAiRefineTask() {
+    const saved = SERVER_AI_REFINE_BOOTSTRAP;
+    const local = loadPersistedAiRefineTask();
+    if (!saved?.task?.task_id || (local && local.task_id !== saved.task.task_id)) return false;
+    const title = document.getElementById('product_title_input');
+    const text = document.getElementById('text_input');
+    const box = document.getElementById('upload_product');
+    if (aiRefineInputEdited || title.value || text.value || productImageUrl ||
+        box.querySelector('input[type="file"]').files.length) return false;
+    const inputs = saved.inputs || {};
+    title.value = inputs.product_title || '';
+    text.value = inputs.product_text || '';
+    if (Array.from(document.querySelectorAll('.cat-pill')).some(pill => pill.dataset.type === inputs.product_category)) {
+      currentProductType = inputs.product_category;
+    }
+    if (inputs.product_image_url) {
+      productImageUrl = inputs.product_image_url;
+      const preview = box.querySelector('.upload-preview');
+      preview.innerHTML = `<img src="${escapeHtml(productImageUrl)}" alt="已保存的产品原图"><button class="upload-remove" onclick="removeUpload(event, 'upload_product')">&times;</button>`;
+      preview.style.display = 'block';
+      box.querySelector('.upload-placeholder').style.display = 'none';
+    }
+    persistAiRefineTask({ ...local, ...saved.task, ...buildAiRefineTaskMeta(text.value, title.value) });
+    return true;
+  }
+
   function clearPersistedAiRefineTask() {
     for (const storage of aiRefineStorages()) {
       try { storage.removeItem(AI_REFINE_ACTIVE_TASK_KEY); } catch (_) {}
@@ -1023,6 +1055,18 @@
   function aiRefineUserMessage(error) {
     const code = String(error?.code || '');
     const status = Number(error?.httpStatus || 0);
+    if (code === 'AI_REFINE_SAVED_PLAN_READY') {
+      return '已保存的策划可以继续使用，无需再次购买策划。后续生图仍按原任务额度计费。';
+    }
+    if (code === 'AI_REFINE_PRICING_REQUIRED') {
+      return String(error.message || '报价待核实，资料和已有方案已保留。');
+    }
+    if (code === 'AI_REFINE_TOO_MANY_SCREENS') {
+      return '独立卖点加封面和参数图超过15张，请精简或分批提供资料；尚未提交生图。';
+    }
+    if (code === 'AI_REFINE_REROLL_INVALID') {
+      return String(error.message || '原任务或原图不可用，请先恢复原任务再重做指定图片。');
+    }
     if (code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
       return '付费任务结果暂时无法确认。系统已停止新建任务，避免重复扣费。';
     }
@@ -1932,7 +1976,7 @@
     return div.innerHTML;
   }
 
-  async function downloadAiRefineResult(downloadUrl, button) {
+  async function downloadAiRefineResult(downloadUrl, button, filename = `${currentProductType}_AI精修详情图.png`) {
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = '下载中...';
@@ -1940,7 +1984,7 @@
       const response = await fetch(downloadUrl, { credentials: 'include' });
       if (!response.ok) throw new Error(`下载失败 (${response.status})`);
       const blob = await response.blob();
-      triggerBlobDownload(blob, `${currentProductType}_AI精修详情图.png`);
+      triggerBlobDownload(blob, filename);
       button.textContent = '已提交保存';
     } catch (error) {
       showError('下载详情图失败：' + error.message);
@@ -1954,14 +1998,14 @@
   }
 
   function renderAiRefineResult(result, options = {}) {
-    const results = document.getElementById('ai_img_results');
+    const results = options.target || document.getElementById('ai_img_results');
     const imageUrl = result.image_url || result.assembled_url;
-    if (!results || !imageUrl) return;
+    const blocks = Array.isArray(result.blocks) ? result.blocks : [];
+    if (!results || (!imageUrl && !blocks.some(block => block?.success && block.image_url))) return;
 
     const downloadUrl = result.assembled_url || imageUrl;
-    const sep = imageUrl.includes('?') ? '&' : '?';
-    const displayUrl = `${imageUrl}${sep}t=${Date.now()}`;
-    const blocks = Array.isArray(result.blocks) ? result.blocks : [];
+    const sep = imageUrl?.includes('?') ? '&' : '?';
+    const displayUrl = imageUrl ? `${imageUrl}${sep}t=${Date.now()}` : '';
     const successCount = Number(
       result.success_count ?? result.blocks_count ??
       blocks.filter(block => block && block.success !== false).length
@@ -1972,7 +2016,10 @@
     const elapsed = Number(result.elapsed_s || 0);
     const cost = Number(result.cost_rmb || 0);
     const restored = options.restored ? '上次生成 · ' : '';
-    const billedInfo = desktopMode ? '实际费用以 APIMart 账单为准' : `¥${cost.toFixed(2)}`;
+    const costs = result.costs;
+    const billedInfo = costs?.version === 1
+      ? `${Number.isFinite(costs.estimated_cny) ? `预计 ¥${costs.estimated_cny.toFixed(2)} · ` : ''}实际账单待核对`
+      : `历史估算 ¥${cost.toFixed(2)} · 非实际扣款`;
     const isPartial = result.status === 'partial_success' || Number(result.failed_count || 0) > 0;
     const screenInfo = isPartial
       ? `成功 ${successCount}/${totalCount} 屏`
@@ -1981,29 +2028,57 @@
     const partialHint = isPartial
       ? '<div style="margin:8px 0 0; color:#92400e; font-size:13px;">部分屏生成成功，未成功屏不会自动补单。</div>'
       : '';
+    const screens = result.planning?.screens || [];
+    const tiles = blocks.map((block, index) => {
+      const title = screens[index]?.title || `第 ${index + 1} 张`;
+      const ready = block.success && block.image_url;
+      if (options.recovery && !ready) return '';
+      return `<article style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;min-width:0;background:#fff;">
+        ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" style="display:block;width:100%;aspect-ratio:3/4;object-fit:contain;" />` : '<p style="min-height:120px;display:grid;place-items:center;">这张尚未完成</p>'}
+        <h4 style="font-size:17px;margin:12px 0 8px;overflow-wrap:anywhere;">${escapeHtml(title)}</h4>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${ready ? `<button type="button" data-ai-single-download="${index}" class="btn btn-ghost">下载这张</button>` : ''}
+          ${result.task_id && !options.recovery ? `<button type="button" data-ai-single-redo="${index}" class="btn btn-ghost">重做这张 · 计费</button>` : ''}
+        </div></article>`;
+    }).join('');
 
     results.innerHTML = `
       <div style="text-align:center; margin-bottom:16px;">
         <span style="font-size:14px; color:#555; margin-right:12px;">${escapeHtml(info)}</span>
-        <button type="button" data-ai-refine-download
+        ${downloadUrl ? `<button type="button" data-ai-refine-download
           style="padding:6px 16px; background:#10b981; color:#fff;
           border:none; border-radius:6px; font-size:13px; cursor:pointer;">
-          下载详情图
-        </button>
+          下载完整长图
+        </button>` : ''}
         ${partialHint}
       </div>
-      <div style="position:relative; width:375px; border-radius:8px; overflow:hidden;
+      ${tiles ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr));gap:14px;width:100%;max-width:960px;margin:0 auto 24px;">${tiles}</div>` : ''}
+      ${displayUrl ? `<div style="position:relative; width:375px; max-width:100%; margin:0 auto; border-radius:8px; overflow:hidden;
         box-shadow:0 4px 18px rgba(0,0,0,0.12);">
         <img src="${escapeHtml(displayUrl)}" alt="AI 精修详情长图预览" style="width:100%; display:block;" />
-      </div>`;
+      </div>` : ''}`;
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
       downloadAiRefineResult(downloadUrl, event.currentTarget);
+    });
+    results.querySelectorAll('[data-ai-single-download]').forEach(button => {
+      button.addEventListener('click', () => {
+        const index = Number(button.dataset.aiSingleDownload);
+        downloadAiRefineResult(blocks[index].image_url, button, `${currentProductType}_详情图_${index + 1}.jpg`);
+      });
+    });
+    results.querySelectorAll('[data-ai-single-redo]').forEach(button => {
+      button.addEventListener('click', () => generateAiHtmlV2({ reroll: {
+        source_task_id: result.task_id, block_index: Number(button.dataset.aiSingleRedo),
+      }}));
     });
   }
 
   function renderAiRefineRecoveryRequired(state, taskRecord) {
     const recoveryError = new Error(state.error || state.progress_msg || 'local recovery required');
-    recoveryError.code = 'AI_REFINE_RECOVERY_REQUIRED';
+    const pricingRequired = state.status === 'pricing_required';
+    const replayPlanner = state.can_replay_planner === true;
+    recoveryError.code = replayPlanner ? 'AI_REFINE_SAVED_PLAN_READY' : pricingRequired ? 'AI_REFINE_PRICING_REQUIRED' :
+      (state.status === 'outcome_unknown' ? 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN' : 'AI_REFINE_RECOVERY_REQUIRED');
     recoveryError.taskId = state.task_id || taskRecord.task_id;
     recoveryError.technicalDetail = state.technical_detail || state.error || '';
     renderAiRefineError(recoveryError);
@@ -2013,11 +2088,18 @@
     actions.style.cssText = 'display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:12px;';
     actions.innerHTML = `
       <button type="button" data-ai-refine-resume
-        style="padding:8px 16px; border:none; border-radius:7px; background:#059669; color:#fff; cursor:pointer;">
-        继续检查原任务
+        style="padding:8px 16px; border:none; border-radius:7px; background:#047857; color:#fff; cursor:pointer;">
+        ${replayPlanner ? '使用已保存方案继续' : pricingRequired ? '重新核价并继续' : '继续检查原任务'}
       </button>
       <span style="align-self:center; color:#6b7280; font-size:12px;">如仍无法恢复，请返回桌面软件“日志诊断”导出报告。</span>`;
     results.appendChild(actions);
+    if (Array.isArray(state.blocks) && state.blocks.some(block => block?.success && block.image_url)) {
+      const available = document.createElement('section');
+      available.setAttribute('aria-label', '已保存的精修图片');
+      available.style.marginTop = '20px';
+      results.appendChild(available);
+      renderAiRefineResult(state, { target: available, recovery: true });
+    }
     actions.querySelector('[data-ai-refine-resume]')?.addEventListener('click', () => {
       resumeAiRefineTask(taskRecord, true);
     });
@@ -2046,7 +2128,12 @@
       if (loading) loading.style.display = 'none';
       document.getElementById('empty_state').style.display = 'none';
       switchCenterTab('ai_img');
-      renderAiRefineResult(data.result, { restored: true });
+      let result = data.result;
+      if (result.task_id) {
+        const status = await fetch(`/api/ai-refine-v2/status/${encodeURIComponent(result.task_id)}`);
+        if (status.ok) result = { ...result, ...await status.json() };
+      }
+      renderAiRefineResult(result, { restored: true });
     } catch (err) {
       console.warn('[workspace-results] restore failed', err);
     }
@@ -2149,13 +2236,15 @@
       throw deferred;
     }
 
-    taskRecord = persistAiRefineTask({ ...taskRecord, status: finalState.status }) || taskRecord;
+    taskRecord = persistAiRefineTask({ ...taskRecord, status: finalState.status,
+      can_replay_planner: finalState.can_replay_planner === true }) || taskRecord;
     if (finalState.status === 'outcome_unknown') {
       if (ui.loading) ui.loading.style.display = 'none';
       renderAiRefineRecoveryRequired(finalState, taskRecord);
       return finalState;
     }
-    if (finalState.status === 'recovery_required') {
+    if (finalState.status === 'recovery_required' || finalState.status === 'pricing_required' ||
+        finalState.can_replay_planner === true) {
       if (ui.loading) ui.loading.style.display = 'none';
       renderAiRefineRecoveryRequired(finalState, taskRecord);
       return finalState;
@@ -2212,7 +2301,14 @@
     let productText = '';
     let productTitle = '';
     let inputMeta = null;
-    if (!taskRecord?.task_id) {
+    const reroll = options.reroll;
+    if (reroll && !taskRecord?.task_id) {
+      const confirmed = await confirmInWorkspace(
+        `只重新生成第 ${reroll.block_index + 1} 张，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
+        { title: '重做指定图片', confirmLabel: '重做这张' },
+      );
+      if (!confirmed) return;
+    } else if (!taskRecord?.task_id) {
       if (!productImageUrl) {
         showError('请先上传产品主图');
         return;
@@ -2225,8 +2321,9 @@
       }
       inputMeta = buildAiRefineTaskMeta(productText, productTitle);
       const confirmed = await confirmInWorkspace(
-        `预计生成 8–15 屏，可能产生多次 APIMart 计费。\n` +
-        `实际费用以 APIMart 账单为准。\n` +
+        `按资料生成一张封面、每个独立卖点一张图，有参数再加一张参数图，最多15张。\n` +
+        `每张由 APIMart 生成并计费，不为了凑数量加图。\n` +
+        `先核对策划与生图报价，超出后台上限时保留方案。实际费用以供应商账单为准。\n` +
         `失败或结果不明时不会自动重提。\n\n` +
         `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
         { title: '确认 AI 精修任务', confirmLabel: '开始付费生成' },
@@ -2235,13 +2332,17 @@
     }
 
     const ui = prepareAiRefineWorkspace(
-      taskRecord ? '正在接管上次付费任务，不会创建新订单…' : '提交中…'
+      taskRecord?.status === 'pricing_required' ? '正在核价，已有方案会保留…' :
+      (taskRecord?.can_replay_planner ? '正在读取已保存的策划…' :
+      (taskRecord ? '正在接管上次付费任务，不会创建新订单…' : '提交中…'))
     );
 
     try {
       if (!taskRecord) {
         try {
-          const startResp = await postJson('/api/ai-refine-v2/execute', {
+          const startResp = await postJson('/api/ai-refine-v2/execute', reroll ? {
+            ...reroll, ...(productImageUrl ? { product_image_url: productImageUrl } : {}),
+          } : {
             product_text: productText,
             product_image_url: productImageUrl,
             product_title: productTitle,
@@ -2289,7 +2390,9 @@
         throw missingTask;
       }
       if (options.recoverOriginal) {
-        if (ui.subText) ui.subText.textContent = '正在继续检查原任务，不会创建新订单…';
+        if (ui.subText) ui.subText.textContent = taskRecord.status === 'pricing_required'
+          ? '核价后继续原方案，已完成步骤会保留…' : taskRecord.can_replay_planner
+            ? '复用已保存的策划，核价后继续生图…' : '正在继续检查原任务，不会创建新订单…';
         const recovered = await postJson(
           `/api/ai-refine-v2/recover/${encodeURIComponent(taskRecord.task_id)}`,
           {},
@@ -2311,8 +2414,8 @@
     if (activeError.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
       const confirmed = await confirmInWorkspace(
         `付费任务结果暂时无法确认，系统已经停止新建任务。\n\n` +
-        `只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除锁定。`,
-        { title: '核对 APIMart 任务', confirmLabel: '我已核对，解除锁定' },
+        `只有在你已核对供应商任务与账单、确认没有正在生成或待扣费任务时，才能解除锁定。`,
+        { title: '核对原任务与账单', confirmLabel: '我已核对，解除锁定' },
       );
       if (confirmed) {
         try {
@@ -2552,6 +2655,7 @@
   document.addEventListener('DOMContentLoaded', async () => {
     initAnnouncementAccessibility();
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
+    restoreServerAiRefineTask(); // 新端口没有 browser storage 时，只读接管原任务。
     await loadThemes();
     initPreviewFit();
     renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)

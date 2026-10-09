@@ -35,6 +35,7 @@ function resolveInstallerTarget(edition = "delivery") {
       edition,
       artifactType: internalUpgrade ? "internal-evaluation" : "delivery",
       productName: PRODUCT_NAME,
+      executableName: productBrand.executableName,
       installerName,
       installerManifestName,
       configFile: "electron-builder-installer.yml",
@@ -54,6 +55,7 @@ function resolveInstallerTarget(edition = "delivery") {
       edition,
       artifactType: "internal-evaluation",
       productName,
+      executableName: `${productBrand.executableName}-测试版`,
       installerName: `${productName}-安装程序.exe`,
       installerManifestName: `${productName}-安装程序-版本清单.json`,
       configFile: "electron-builder-test-installer.yml",
@@ -190,7 +192,7 @@ function verifyInstallerPayload({
   installerFile,
   portableManifest,
   expectedPayloadTreeHash,
-  productName = PRODUCT_NAME,
+  executableName = productBrand.executableName,
   releaseGate = runPackagedProductDetailReleaseGate,
   archiveTool = installerArchiveTool(),
   spawn = spawnSync
@@ -242,7 +244,7 @@ function verifyInstallerPayload({
       releaseTarget: extractedTarget,
       resourcesDir: path.join(extractedTarget, "resources"),
       descriptor: portableManifest.productDetailSidecar,
-      electronExecutable: path.join(extractedTarget, `${productName}.exe`),
+      electronExecutable: path.join(extractedTarget, `${executableName}.exe`),
       dataDir: path.join(tempDir, "product-detail-gate")
     });
   } finally {
@@ -253,7 +255,7 @@ function verifyInstallerPayload({
 function verifyPortableProductDetailRuntime({
   portableManifest,
   releaseTarget,
-  productName = PRODUCT_NAME,
+  executableName = productBrand.executableName,
   runReleaseGate = runPackagedProductDetailReleaseGate
 } = {}) {
   const descriptor = portableManifest?.productDetailSidecar;
@@ -261,7 +263,7 @@ function verifyPortableProductDetailRuntime({
     throw new Error("Verified portable product-detail descriptor is missing");
   }
   const resourcesDir = path.join(releaseTarget, "resources");
-  const electronExecutable = path.join(releaseTarget, `${productName}.exe`);
+  const electronExecutable = path.join(releaseTarget, `${executableName}.exe`);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-installer-product-detail-"));
   try {
     runReleaseGate({
@@ -286,7 +288,7 @@ function assertInstallerSource(edition = "delivery", environment = process.env, 
   if (gitText(["status", "--porcelain"])) {
     throw new Error("Refusing to build an installer from a dirty worktree");
   }
-  if (!fs.existsSync(path.join(portableDir, `${target.productName}.exe`))) {
+  if (!fs.existsSync(path.join(portableDir, `${target.executableName}.exe`))) {
     throw new Error("Verified portable application is missing; build it first");
   }
   if (!fs.existsSync(portableManifestFile)) {
@@ -326,7 +328,7 @@ function assertInstallerSource(edition = "delivery", environment = process.env, 
   verifyProductDetailRuntime({
     portableManifest,
     releaseTarget: portableDir,
-    productName: target.productName
+    executableName: target.executableName
   });
   return { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust };
 }
@@ -429,7 +431,7 @@ function buildInstaller(edition = "delivery", options = {}) {
       installerFile: stagedInstaller,
       portableManifest,
       expectedPayloadTreeHash: treeSha256(installerInputDir),
-      productName: target.productName
+      executableName: target.executableName
     });
 
     const installerManifest = {

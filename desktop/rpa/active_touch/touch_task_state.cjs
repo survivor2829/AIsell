@@ -181,7 +181,7 @@ function alignBatchWindow(task) {
 }
 
 function skipCategory(status) {
-  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", pre_send_skipped: "pre_send", outcome_unknown_skipped: "outcome_unknown" })[String(status || "")] || "";
+  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", pre_send_skipped: "pre_send", outcome_unknown_skipped: "outcome_unknown", partial_sent_skipped: "partial_sent" })[String(status || "")] || "";
 }
 
 function recordSkippedResult(result, index, details = {}) {
@@ -215,6 +215,7 @@ function skippedRetryBlockedReason(result) {
   const status = String(result?.status || "");
   if (RETRYABLE_SKIPPED_STATUSES.has(status)) return "";
   if (["outcome_unknown", "outcome_unknown_skipped"].includes(status)) return "retry_skipped_outcome_unknown_forbidden";
+  if (status === "partial_sent_skipped") return "retry_skipped_partial_sent_forbidden";
   return "retry_skipped_status_forbidden";
 }
 
@@ -224,7 +225,7 @@ function skippedTaskSummary(task) {
   for (const [index, result] of (task?.results || []).entries()) {
     const category = skipCategory(result?.status);
     if (!category) continue;
-    breakdown[category] += 1;
+    breakdown[category] = Number(breakdown[category] || 0) + 1;
     const record = result.skip_record || recordSkippedResult({ ...result }, index).skip_record;
     const retryBlockedReason = skippedRetryBlockedReason(result);
     records.push({

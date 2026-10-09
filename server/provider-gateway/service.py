@@ -116,12 +116,15 @@ def validate_license(code: str, now: datetime | None = None) -> dict[str, str] |
         return None
 
 
-def _official_origin(value: str, default: str, hostname: str) -> str:
+def _official_origin(value: str, default: str, hostname: str, *, allowed_suffix: str = "") -> str:
     raw = str(value or default).strip().rstrip("/")
     parsed = urlsplit(raw)
     if (
         parsed.scheme != "https"
-        or parsed.hostname != hostname
+        or not (parsed.hostname == hostname or (
+            allowed_suffix and parsed.hostname and parsed.hostname.endswith(allowed_suffix)
+            and len(parsed.hostname) > len(allowed_suffix)
+        ))
         or parsed.username
         or parsed.password
         or parsed.query
@@ -130,7 +133,7 @@ def _official_origin(value: str, default: str, hostname: str) -> str:
         or parsed.path not in ("", "/")
     ):
         return default
-    return f"https://{hostname}"
+    return f"https://{parsed.hostname}"
 
 
 def _bounded_timeout(value, default=DEFAULT_UPSTREAM_TIMEOUT_SECONDS) -> int:
@@ -280,7 +283,7 @@ class GatewayConfig:
             asr_access_token=str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN", "")).strip(),
             origins={
                 "deepseek": _official_origin(env.get("XIAOXI_GATEWAY_DEEPSEEK_ORIGIN", ""), "https://api.deepseek.com", "api.deepseek.com"),
-                "bailian": _official_origin(env.get("XIAOXI_GATEWAY_BAILIAN_ORIGIN", ""), "https://dashscope.aliyuncs.com", "dashscope.aliyuncs.com"),
+                "bailian": _official_origin(env.get("XIAOXI_GATEWAY_BAILIAN_ORIGIN", ""), "https://dashscope.aliyuncs.com", "dashscope.aliyuncs.com", allowed_suffix=".maas.aliyuncs.com"),
                 "ark": _official_origin(env.get("XIAOXI_GATEWAY_VOLCENGINE_ORIGIN", ""), "https://ark.cn-beijing.volces.com", "ark.cn-beijing.volces.com"),
                 "speech": _official_origin(env.get("XIAOXI_GATEWAY_VOLCENGINE_SPEECH_ORIGIN", ""), "https://openspeech.bytedance.com", "openspeech.bytedance.com"),
                 "apimart": _official_origin(env.get("XIAOXI_GATEWAY_APIMART_ORIGIN", ""), "https://api.apimart.ai", "api.apimart.ai"),
@@ -312,6 +315,8 @@ class GatewayConfig:
         return {
             "deepseek": bool(self.keys.get("deepseek")),
             "bailian": bool(self.keys.get("bailian")),
+            # Confirms installed async/OSS transport, not upstream model access.
+            "bailian_video": bool(self.keys.get("bailian")),
             "volcengine_ark": bool(self.keys.get("volcengine_ark")),
             "volcengine_tts": bool(self.keys.get("volcengine_tts")),
             "volcengine_asr": bool(self.keys.get("volcengine_asr") or (self.asr_app_id and self.asr_access_token)),
@@ -443,8 +448,42 @@ class GatewayServer(ThreadingHTTPServer):
         self.rates = collections.OrderedDict()
         self.inflight_lock = threading.Lock()
         self.inflight = {}
+        self.price_lock = threading.Lock()
+        self.price_cache = {}
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
+
+    def apimart_public_price(self, model):
+        # Anonymous, fixed supplier metadata. Never forward the session or API key.
+        source = "https://apimart.ai/api/pricing/model?model=" + model
+        with self.price_lock:
+            cached = self.price_cache.get(model)
+            if cached and cached.get("unavailable") and 0 <= time.time() - cached["checked_at"] < 5:
+                raise ValueError("price_unavailable")
+            if cached and 0 <= time.time() - cached["checked_at"] < 120:
+                if not cached.get("unavailable"):
+                    return cached
+            opener = self.config.apimart_open or build_opener(
+                ProxyHandler({}), _NoProviderRedirect()).open
+            request = Request(source, headers={"User-Agent": "xiaoxi-price-check/1.0", "Accept": "application/json"})
+            try:
+                with opener(request, timeout=15) as response:
+                    if response.status != 200:
+                        raise ValueError("price_status")
+                    raw = response.read(1_000_001)
+                if len(raw) > 1_000_000:
+                    raise ValueError("price_response_too_large")
+                payload = json.loads(raw)
+                if (not isinstance(payload, dict) or payload.get("success") is not True
+                        or not isinstance(payload.get("data"), dict)
+                        or payload["data"].get("model_name") != model):
+                    raise ValueError("price_model_mismatch")
+            except Exception:
+                self.price_cache[model] = {"unavailable": True, "checked_at": time.time()}
+                raise
+            result = {"source": source, "checked_at": time.time(), "payload": payload}
+            self.price_cache[model] = result
+            return result
 
     def server_close(self):
         try:
@@ -562,7 +601,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(content_type, str) or not SAFE_HEADER_VALUE.fullmatch(content_type):
             content_type = "application/octet-stream"
         self.send_header("Content-Type", content_type)
-        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "Retry-After", "Cache-Control"):
+        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin",
+                     "X-Xiaoxi-Transport-Phase", "X-Xiaoxi-Transport-Error", "Retry-After", "Cache-Control"):
             value = headers.get(name)
             if isinstance(value, str) and SAFE_HEADER_VALUE.fullmatch(value):
                 self.send_header(name, value)
@@ -611,6 +651,8 @@ class Handler(BaseHTTPRequestHandler):
             return "deepseek", self.config.origins["deepseek"] + "/v1/chat/completions"
         if suffix.startswith("/bailian/") and len(suffix) > len("/bailian/"):
             rest = suffix[len("/bailian"):]
+            if parsed.query:
+                rest += "?" + parsed.query
             return "bailian", self.config.origins["bailian"] + rest
         if suffix in ("/volcengine/ark/chat/completions", "/volcengine/ark/images/generations"):
             return "volcengine_ark", self.config.origins["ark"] + "/api/v3" + suffix[len("/volcengine/ark"):]
@@ -649,11 +691,30 @@ class Handler(BaseHTTPRequestHandler):
                 headers["X-Api-Access-Key"] = self.config.asr_access_token
             else:
                 headers["X-Api-Key"] = self.config.keys[provider]
+        if provider == "bailian":
+            for name in ("X-DashScope-Async", "X-DashScope-OssResourceResolve"):
+                if self.headers.get(name) == "enable":
+                    headers[name] = "enable"
         return headers
 
     def _proxy_upstream(self, method, provider, target, body):
         operation = Request(target, data=body, headers=self._upstream_headers(provider), method=method)
         response = None
+        phase = "awaiting_headers"
+
+        def transport_failure(status, code, error):
+            # Keep bounded diagnostics in the durable receipt, never exception
+            # text: URLError.reason can contain proxy passwords or signed URLs.
+            kind = type(error).__name__
+            reason = getattr(error, "reason", None)
+            if isinstance(reason, BaseException):
+                kind += "." + type(reason).__name__
+            return self._json_result(status, {"error": code}, {
+                "X-Xiaoxi-Error-Origin": "gateway_transport",
+                "X-Xiaoxi-Transport-Phase": phase,
+                "X-Xiaoxi-Transport-Error": kind[:64],
+            })
+
         try:
             upstream_open = self.config.upstream_open
             if provider == "apimart" and self.config.apimart_open is not None:
@@ -664,6 +725,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             status = int(getattr(response, "status", getattr(response, "code", 200)))
             response_headers = getattr(response, "headers", {}) or {}
+            phase = "reading_body"
             raw = response.read(self.config.max_response_bytes + 1)
         except HTTPError as error:
             status = int(error.code or 502)
@@ -672,21 +734,10 @@ class Handler(BaseHTTPRequestHandler):
                 raw = error.read(self.config.max_response_bytes + 1)
             except Exception:
                 raw = b""
-        except (TimeoutError, socket.timeout):
-            return self._json_result(
-                504, {"error": "provider_timeout"},
-                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
-            )
-        except (URLError, OSError):
-            return self._json_result(
-                503, {"error": "provider_unavailable"},
-                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
-            )
-        except Exception:
-            return self._json_result(
-                503, {"error": "provider_unavailable"},
-                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
-            )
+        except (TimeoutError, socket.timeout) as error:
+            return transport_failure(504, "provider_timeout", error)
+        except Exception as error:
+            return transport_failure(503, "provider_unavailable", error)
         finally:
             try:
                 if response is not None:
@@ -901,7 +952,17 @@ class Handler(BaseHTTPRequestHandler):
         if route == PREFIX + "/capabilities":
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
-            return self._reply_json(200, {"ok": True, "schema": 1, "capabilities": self.config.capabilities()})
+            payload = {"ok": True, "schema": 1, "capabilities": self.config.capabilities()}
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            if "price_model" in query:
+                values = query["price_model"]
+                if len(values) != 1 or values[0] not in {"gpt-image-2", "gpt-image-2.5-ext"}:
+                    return self._reply_json(400, {"error": "price_model_invalid"})
+                try:
+                    payload["apimart_pricing"] = self.server.apimart_public_price(values[0])
+                except Exception:
+                    return self._reply_json(503, {"error": "price_unavailable"})
+            return self._reply_json(200, payload)
         operation = route.removeprefix(PREFIX + "/operations/") if route.startswith(PREFIX + "/operations/") else ""
         if operation:
             if not OPERATION_ID.fullmatch(operation):

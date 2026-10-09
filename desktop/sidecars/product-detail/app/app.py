@@ -1307,7 +1307,8 @@ def get_themes():
 @app.route("/")
 @login_required
 def index():
-    return render_template("workspace.html", desktop_mode=_DESKTOP_MODE)
+    return render_template("workspace.html", desktop_mode=_DESKTOP_MODE,
+                           ai_refine_bootstrap=_workspace_active_refine_task())
 
 
 @app.route("/workspace/<product_type>")
@@ -1318,7 +1319,54 @@ def build_redirect(product_type):
         "workspace.html",
         initial_product_type=product_type,
         desktop_mode=_DESKTOP_MODE,
+        ai_refine_bootstrap=_workspace_active_refine_task(),
     )
+
+
+def _workspace_active_refine_task():
+    """Read the current owner's unfinished task independently of the sidecar port."""
+    from ai_refine_v2 import pipeline_runner
+
+    owner = current_user.id
+    candidates = []
+    for path in pipeline_runner._OUTPUT_BASE.glob("*/_input.json"):
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    for modified, path in sorted(candidates, key=lambda item: item[0], reverse=True):
+        inputs = pipeline_runner._read_json(path)
+        if not isinstance(inputs, dict) or inputs.get("user_id") != owner:
+            continue
+        state = pipeline_runner.get_task_status(path.parent.name)
+        if not state or state.get("user_id") != owner:
+            continue
+        if state.get("status") not in {
+            "pending", "running_planner", "running_generator", "running_assembler", "running_recovery",
+            "outcome_unknown", "recovery_required", "pricing_required",
+        } and state.get("can_replay_planner") is not True:
+            return None
+        image_url = ""
+        original_image = str(inputs.get("product_image_url") or "")
+        static_root = Path(app.static_folder).resolve()
+        owner_root = (static_root / "uploads" / str(owner)).resolve()
+        try:
+            image_path = (static_root / original_image[len("/static/"):]
+                          if original_image.startswith("/static/") else Path(original_image)).resolve()
+            if original_image and image_path.is_relative_to(owner_root) and image_path.is_file():
+                image_url = url_for("static", filename=image_path.relative_to(static_root).as_posix())
+        except (OSError, ValueError):
+            pass
+        return {
+            "task": {"task_id": path.parent.name, "status": state["status"],
+                     "can_replay_planner": state.get("can_replay_planner") is True,
+                     "mode": state.get("mode", "unknown"), "started_at": int(modified * 1000)},
+            "inputs": {"product_title": str(inputs.get("product_title") or "")[:120],
+                       "product_text": str(inputs.get("product_text") or "")[:20000],
+                       "product_category": str(inputs.get("product_category") or ""),
+                       "product_image_url": image_url},
+        }
+    return None
 
 
 # ── 用户设置页 (P3 砍刀流后仅展示账号信息, 不再有 API Key 配置) ──
@@ -2024,12 +2072,14 @@ def batch_ai_refine_start(batch_id):
     # 前端即使被绕过、按钮锁失效、用户手工 POST, 这里都能兜住.
     from pricing_config import compute_estimate, MAX_REFINE_COST_PER_RUN
     est = compute_estimate(len(candidates))
+    if not est.get("ready"):
+        return jsonify({"error": est.get("error", "报价尚未核实，未提交付费请求。"),
+                        "action": "pricing_required"}), 503
     if est["est_cost_yuan"] > MAX_REFINE_COST_PER_RUN:
         return jsonify({
             "error": (
-                f"预估 ¥{est['est_cost_yuan']:.2f} 超过单次保护上限 "
-                f"¥{MAX_REFINE_COST_PER_RUN:.2f} — 请减少勾选或调大 "
-                f"环境变量 MAX_REFINE_COST_PER_RUN 后重试"
+                f"策划前保守预留 ¥{est['est_cost_yuan']:.2f} 超过单次保护上限 "
+                f"¥{MAX_REFINE_COST_PER_RUN:.2f}；未提交付费请求。请减少勾选，或联系管理员核实可用额度。"
             ),
             "action": "cost_exceeds_cap",
             "estimated_cost_yuan": est["est_cost_yuan"],
@@ -2269,6 +2319,7 @@ def batch_item_regenerate_screen(batch_id, item_pk):
             "new_block_url": new_block_url,
             "new_assembled_url": new_assembled_url,
             "cost_rmb": regen.cost_rmb,
+            "costs": regen.costs,
             "ts": cache_bust,
         })
 
@@ -2278,6 +2329,7 @@ def batch_item_regenerate_screen(batch_id, item_pk):
             "new_block_url": new_block_url,
             "new_assembled_url": new_assembled_url,
             "cost_rmb": regen.cost_rmb,
+            "costs": regen.costs,
         }), 200
     finally:
         lock.release()
@@ -5106,6 +5158,42 @@ def ai_refine_v2_execute():
     if not isinstance(data, dict):
         return _input_error("AI_REFINE_REQUEST_INVALID", "请求体必须是 JSON 对象")
 
+    if "source_task_id" in data:
+        from ai_refine_v2 import pipeline_runner
+        source_task_id = data.get("source_task_id")
+        if not isinstance(source_task_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_task_id):
+            return _input_error("AI_REFINE_SOURCE_INVALID", "原任务编号无效")
+        source = pipeline_runner.get_task_status(source_task_id)
+        if not source:
+            return _input_error("AI_REFINE_SOURCE_INVALID", "原任务不存在")
+        if source.get("user_id") != current_user.id and not current_user.is_admin:
+            abort(403)
+        # Legacy tasks did not persist the original reference. Only accept a
+        # freshly uploaded image belonging to this user as their fallback.
+        reference_path = ""
+        reference_url = data.get("product_image_url")
+        if reference_url:
+            prefix = f"/static/uploads/{current_user.id}/"
+            if not isinstance(reference_url, str) or not reference_url.startswith(prefix):
+                return _input_error("AI_REFINE_PRODUCT_IMAGE_INVALID", "请重新上传同一产品的原图")
+            owner_root = (Path(app.static_folder) / "uploads" / str(current_user.id)).resolve()
+            candidate = (owner_root / reference_url[len(prefix):]).resolve()
+            if not candidate.is_relative_to(owner_root) or not candidate.is_file():
+                return _input_error("AI_REFINE_PRODUCT_IMAGE_INVALID", "产品图不存在，请重新上传")
+            reference_path = str(candidate)
+        try:
+            gpt_image_key, _ = _get_gpt_image_key(current_user)
+            task_id = pipeline_runner.start_screen_reroll(
+                source_task_id, data.get("block_index"), current_user.id,
+                gpt_image_key, reference_path,
+            )
+        except ValueError as exc:
+            return _input_error("AI_REFINE_REROLL_INVALID", str(exc))
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        return jsonify({"ok": True, "task_id": task_id, "mode": "real",
+                        "poll_url": f"/api/ai-refine-v2/status/{task_id}"})
+
     try:
         product_text, product_title = validate_product_inputs(
             data.get("product_text"), data.get("product_title", ""),
@@ -5244,7 +5332,11 @@ def ai_refine_v2_recover(task_id: str):
         return jsonify({"ok": True, **state})
     try:
         gpt_image_key, _ = _get_gpt_image_key(current_user)
-        recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
+        if state.get("status") == "pricing_required":
+            deepseek_key, _ = _get_deepseek_key(current_user)
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, deepseek_key)
+        else:
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 409
     except RuntimeError as exc:
@@ -5307,6 +5399,7 @@ def workspace_result_save_ai_refine_v2(task_id: str):
         "failed_count": failed_count,
         "elapsed_s": state.get("elapsed_s") or 0,
         "cost_rmb": state.get("cost_rmb") or 0,
+        "costs": state.get("costs"),
     }
     try:
         saved = save_workspace_result(STATIC_OUTPUTS, current_user.id, record)

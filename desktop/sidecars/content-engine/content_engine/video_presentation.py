@@ -113,15 +113,23 @@ def run_imported_video(domain, task_id, payload):
     duration = int(probe["duration_ms"])
     if not 1000 <= duration <= 180000:
         raise ContentEngineError("invalid_video_duration", "视频时长须为1至180秒。")
-    cloud = getattr(analyzer, "cloud_client", None)
-    if cloud is None or not cloud.configured:
-        raise ContentEngineError("voice_verification_unavailable", "请先配置语音识别，以核对数字人口播。")
-    audio = source.with_suffix(".wav")
-    analyzer._command([analyzer.ffmpeg_path, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
-    try:
-        segments = cloud.transcribe(audio, lambda: domain._should_stop(task_id))
-    finally:
-        audio.unlink(missing_ok=True)
+    prepared = payload.get("prepared_transcript")
+    if prepared is not None:
+        from .volcengine_media import VolcengineMediaClient
+        if (prepared.get("time_unit") != "ms"
+                or prepared.get("source_sha256") != domain._sha256_file(source)):
+            raise ContentEngineError("invalid_video_transcript", "已准备字幕与视频不匹配，未重新调用识别。")
+        segments = VolcengineMediaClient.asr_sentences({"result": {"utterances": prepared["utterances"]}})
+    else:
+        cloud = getattr(analyzer, "cloud_client", None)
+        if cloud is None or not cloud.configured:
+            raise ContentEngineError("voice_verification_unavailable", "请先配置语音识别，以核对数字人口播。")
+        audio = source.with_suffix(".wav")
+        analyzer._command([analyzer.ffmpeg_path, "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", str(audio)])
+        try:
+            segments = cloud.transcribe(audio, lambda: domain._should_stop(task_id))
+        finally:
+            audio.unlink(missing_ok=True)
     script = payload["confirmed_script"]
     alignment = align_narration(script, segments, duration)
     if not alignment.get("matched") or alignment.get("source") not in {"asr_words", "asr_sentences"}:

@@ -6,6 +6,22 @@ from __future__ import annotations
 
 from app import app, db
 from models import Batch, User
+import pytest
+import time
+
+
+@pytest.fixture(autouse=True)
+def offline_supplier_quote(monkeypatch):
+    """Existing pipeline tests mock generation; price lookups must be offline too."""
+    from ai_refine_v2 import pricing
+    from ai_refine_v2.image_profile import normalize_profile
+    monkeypatch.setattr(pricing, "read_quote", lambda **kwargs: {
+        "version": 1, "checked_at": time.time(), "image_unit_cny": .70,
+        **{f"image_{key}": value for key, value in normalize_profile(kwargs.get("image_profile")).items()},
+        "planner_per_million_cny": {"input": 2, "cache": .04, "output": 8},
+        "sources": ["test-fixture-no-network"],
+    })
+    monkeypatch.setattr("pricing_config.MAX_REFINE_COST_PER_RUN", 100)
 
 
 def cleanup_user(username: str) -> None:

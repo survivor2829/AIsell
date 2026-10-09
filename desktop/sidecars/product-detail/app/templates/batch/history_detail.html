@@ -728,24 +728,8 @@
             aiImg.src = msg.new_assembled_url;
             aiImg.setAttribute('onclick', `openLightbox(${JSON.stringify(msg.new_assembled_url)}, 'AI 精修 · ${msg.item_pk}')`);
           }
-          showToast(`第 ${Number(msg.block_index) + 1} 屏已重生，费用 ¥${msg.cost_rmb}`, 'success');
+          showToast(`第 ${Number(msg.block_index) + 1} 张已重做，实际账单待核对`, 'success');
           return;
-          // 替换该屏 img
-          const card = document.querySelector(
-            `.hd-screen-card[data-index="${msg.block_index}"]`
-          );
-          if (card) {
-            const img = card.querySelector('.hd-screen-img');
-            if (img) img.src = msg.new_block_url; // 已带 ?v=ts
-          }
-          // 同时刷长图 (cache-bust)
-          document.querySelectorAll('.hd-ai-img').forEach(el => {
-            el.src = msg.new_assembled_url;
-          });
-          // toast (如果存在 _showToast helper)
-          if (window._showToast) {
-            window._showToast(`第 ${msg.block_index + 1} 屏已重生 (¥${msg.cost_rmb})`, 'success');
-          }
         }
       };
       ws.onclose = () => {

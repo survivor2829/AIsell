@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const { cloudConfig } = require("../src/main/cloud-config.cjs");
 const { COMPONENTS, hashFile, validateManifest, verifyComponentManifest } = require("../src/shared/component-contract.cjs");
 const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
+const { verifyPublishedRelease } = require("./release-readback.cjs");
 async function publishComponentRelease({ metadataFile, notesFile }) {
   const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
   const config = cloudConfig({ developmentEdition: true });
@@ -53,7 +54,8 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
     run("scp.exe", [...flags, document, `${host}:${remote}/latest-components.json`]);
     const uploads = ["latest-components.json", ...missing.map(c => `${c.sha256}.zip`)].map(name => `${remote}/${name}`).join(" ");
     run("ssh.exe", [...flags, host, `sudo -n install -d -o ai-maintenance -g ai-maintenance -m 700 ${incoming} && sudo -n install -o ai-maintenance -g ai-maintenance -m 600 ${uploads} ${incoming}/ && sudo -n -u ai-maintenance python3 /opt/ai-maintenance/promote_components.py ${incoming}/latest-components.json ${incoming}`]);
-    return { published: true, version: manifest.version, channel: manifest.channel, uploadedArchives: missing.length };
+    const readback = await verifyPublishedRelease({ config, envelope, schema: 2 });
+    return { published: true, version: manifest.version, channel: manifest.channel, uploadedArchives: missing.length, readback };
   } finally {
     fs.unlinkSync(document); fs.rmdirSync(temporary);
   }

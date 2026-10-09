@@ -50,6 +50,7 @@ const workflowPolicies = Object.freeze({
   contact_snapshot_changed: { classification: "blocker", attentionScope: "task" },
   batch_authorization_missing: { classification: "blocker", attentionScope: "task" },
   touch_sequence_changed: { classification: "blocker", attentionScope: "task" },
+  task_edited_after_partial_send: { classification: "blocker", attentionScope: "task" },
   touch_image_unavailable: { classification: "recoverable", attentionScope: "task" },
   task_passport_screenshot_failed: { classification: "recoverable", attentionScope: "task" },
   touch_part_exception: { classification: "blocker", attentionScope: "global" },

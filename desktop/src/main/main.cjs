@@ -4,6 +4,7 @@ const path = require("node:path");
 const components = require("./component-paths.cjs");
 const productBrand = require("../../product-brand.json");
 const installerTargets = require("../../installer-targets.json");
+const { windowLayout, keepWindowInWorkArea } = require("./window-layout.cjs");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
 const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
 const { createAiExpertStore } = require("./ai-expert.cjs");
@@ -46,6 +47,8 @@ const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
+const { createPriceReader, createBailianPriceReader } = require("./product-video-pricing.cjs");
+const { createProductAudioPreparer } = require("./product-video-audio.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
 const {
@@ -228,25 +231,22 @@ function productDetailWebPreferences() {
 
 ipcMain.on("window-chrome:set-mode", (event, mode) => {
   if (event.sender !== mainWindow?.webContents || !["login", "workspace"].includes(mode)) return;
-  mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#241a1e" : "#c91739", symbolColor: "#ffffff", height: 36 });
+  mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#f8f4f0" : "#c91739", symbolColor: mode === "login" ? "#302a2b" : "#ffffff", height: 36 });
 });
 
 function createWindow() {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   mainWindow = new BrowserWindow({
-    x: 0,
-    y: 0,
-    width: 1440,
-    height: 900,
-    minWidth: 1180,
-    minHeight: 760,
+    ...windowLayout(display.workArea),
     autoHideMenuBar: true,
-    backgroundColor: "#f8d9df",
+    backgroundColor: "#f8f4f0",
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#241a1e", symbolColor: "#ffffff", height: 36 },
+    titleBarOverlay: { color: "#f8f4f0", symbolColor: "#302a2b", height: 36 },
     icon: path.join(__dirname, `../../${rendererDir}/app-icon.ico`),
     title: [productBrand.displayName, editionLabel].filter(Boolean).join(" "),
     webPreferences: productDetailWebPreferences()
   });
+  keepWindowInWorkArea(mainWindow, screen);
 
   mainWindow.setMenu(null);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -646,15 +646,28 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       expertStore: aiExpertStore, deepSeekClient
     });
     const usedDigitalHumanClicks = new Set();
+    const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
+    const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
     digitalHumanRegistration = registerDigitalHumanIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
+      readPrices: readOfficialVideoPrices,
+      readPreviewPrices: () => readVideoPrices(),
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       imageSize: (bytes) => nativeImage.createFromBuffer(bytes).getSize(),
       imageThumbnail: (bytes) => nativeImage.createFromBuffer(bytes).resize({ width: 320 }).toDataURL(),
+      uploadPreparedAudio: async (payload) => {
+        await beforeContentProviderWork(["bailian"]);
+        return contentEngineController.uploadDigitalHumanAudio(payload);
+      },
+      requireAudioUploadCapability: async () => {
+        await beforeContentProviderWork(["bailian"]);
+        await contentEngineController.start();
+        return contentEngineController.status().capabilities?.digital_human_audio_upload === true;
+      },
       requireTrustedClick: (event, payload, action) => {
         const token = String(payload?.clickToken || "");
         const prefix = `digital-human:${action}:`;
@@ -670,7 +683,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       packageVideo: async (payload) => {
         // Cover generation is independently recoverable; a missing image
         // provider must not prevent a verified video entering the library.
-        await beforeContentProviderWork(["volcengine_asr", "volcengine_ark"]);
+        if (!payload.prepared_transcript) await beforeContentProviderWork(["volcengine_asr"]);
+        else await contentEngineController.start();
         return contentEngineController.importBaseVideo(payload);
       },
       queryPackaging: (id) => contentEngineController.getTask(id)
@@ -681,6 +695,18 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       rootDir: path.join(runtime.rootDir, "product_video"),
       defaultExportDir: app.getPath("downloads"),
       gatewayClient: providerGatewayClient,
+      readPrices: readVideoPrices,
+      prepareAudio: createProductAudioPreparer({ gatewayClient: providerGatewayClient,
+        selectMusic: async ({ durationSeconds }) => {
+          try {
+            await contentEngineController.start();
+            return await contentEngineController.selectVideoMusic(durationSeconds);
+          } catch {
+            // Music is optional. Preserve the verified narration; do not buy
+            // another video just because the local catalogue is unavailable.
+            return { status: "unavailable", message: "音乐库暂不可用，本片保留讲解。" };
+          }
+        } }),
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
@@ -791,30 +817,37 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,
         restart: async () => {
           if (global.__xiaoxiUpdateHold) return cloudMaintenance.status();
-          if (!await cloudMaintenance.prepareInstall()) return cloudMaintenance.status();
-          const response = await dialog.showMessageBox(mainWindow, {
-            type: "question", title: "安装更新", buttons: ["稍后", "退出并更新"], defaultId: 0, cancelId: 0,
-            message: "退出软件并安装已下载的更新？", detail: "请先保存编辑内容，并结束微信和视频制作任务。"
-          });
-          if (response.response !== 1) return cloudMaintenance.status();
           global.__xiaoxiUpdateHold = true;
           let leaving = false;
           try {
+            if (!await cloudMaintenance.prepareInstall()) return cloudMaintenance.status();
             const workflow = workflowController?.status();
             if (workflow?.enabled || workflow?.contactSync?.running || coordinator.status().lock) {
-              return cloudMaintenance.setInstallBlocked("微信任务仍在运行，请先暂停或完成任务，再点击退出并更新。");
+              return cloudMaintenance.setInstallBlocked("微信任务仍在运行，请先暂停或完成任务，再点击立即更新。");
+            }
+            const mediaStates = await Promise.all([
+              productVideoRegistration?.service?.prepareForUpdate(),
+              digitalHumanRegistration?.service?.prepareForUpdate()
+            ]);
+            if (mediaStates.some(state => state?.busy)) {
+              return cloudMaintenance.setInstallBlocked("视频任务正在保存或处理本地文件，已保留更新，请稍后点击立即更新。");
             }
             const content = contentEngineController?.updateStatus();
             if (content?.pending || (content?.alive && content.state !== "ready")) return cloudMaintenance.setInstallBlocked("内容任务尚未结束，请完成当前操作后再更新。");
             const summary = content?.state === "ready" ? await contentEngineController.productionSummary() : { active: 0 };
             const product = await productDetailController?.prepareUpdate(true);
-            if (summary.active > 0 || product?.busy) return cloudMaintenance.setInstallBlocked("还有视频或图片正在制作。已保留更新，制作完成后再点击退出并更新。");
+            if (summary.active > 0 || product?.busy) return cloudMaintenance.setInstallBlocked("还有视频或图片正在制作。已保留更新，制作完成后再点击立即更新。");
             leaving = await cloudMaintenance.beginInstall();
             if (leaving) app.quit();
           } catch {
             cloudMaintenance.setInstallBlocked("暂时无法确认任务是否结束，尚未退出。请稍后重试更新。");
           } finally {
-            if (!leaving) { global.__xiaoxiUpdateHold = false; await productDetailController?.prepareUpdate(false).catch(() => {}); }
+            if (!leaving) {
+              global.__xiaoxiUpdateHold = false;
+              productVideoRegistration?.service?.resumeAfterUpdate();
+              digitalHumanRegistration?.service?.resumeAfterUpdate();
+              await productDetailController?.prepareUpdate(false).catch(() => {});
+            }
           }
           return cloudMaintenance.status();
         }

@@ -48,7 +48,7 @@ async function checkTouchMessageSequence() {
   for (const reason of literalReasons) assert.equal(classifiedReasons.has(reason), true, `${reason} must be classified in wechat-rule-catalog`);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
-  const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
+  const contact = { id: "selected", name: "测试客户", remark: "陈东海", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const thirdContact = { id: "selected-three", name: "第三位测试客户", nickname: "第三位测试客户", wechatId: "test_customer_three", wechatAccountId: "test_account", allowed: true };
   const fourthContact = { id: "selected-four", name: "第四位测试客户", nickname: "第四位测试客户", wechatId: "test_customer_four", wechatAccountId: "test_account", allowed: true };
@@ -66,7 +66,7 @@ async function checkTouchMessageSequence() {
       assert.equal(selected.ok, true, JSON.stringify(selected));
       assert.equal(selected.state.selected_customer.id, options.contactId);
       const kind = options.image ? "image" : options.message === "https://example.com/product" ? "link" : "text";
-      calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId });
+      calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId, imageId: options.image?.sha256, message: options.message });
       if (kind === "text" && loginRequired) {
         return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required", error: "微信需要重新登录" };
       }
@@ -116,6 +116,7 @@ async function checkTouchMessageSequence() {
   assert.equal(result.progress.done, 0, "A sent text must not complete a contact with an unsent image");
   assert.equal(workflow.canRetryWorkflowTask(record, payload), false, "automatic recovery is already scheduled");
   assert.deepEqual(calls.map(call => call.kind), ["text", "image"]);
+  assert.match(calls[0].message, /^陈总，/, "the frozen remark must reach the actual text-send boundary");
   failImage = false;
   workflow = createTouchWorkflow(config);
   result = await workflow.runWorkflowStep(record, context);
@@ -136,6 +137,8 @@ async function checkTouchMessageSequence() {
   const count = calls.length;
   await createTouchWorkflow(config).runWorkflowStep(uncertain, context);
   assert.equal(calls.length, count, "Unknown image sends never retry after restart");
+  assert.equal(workflow.describeUnknownWorkflowTask(uncertain)?.partKind, "image");
+  assert.throws(() => workflow.updateWorkflowTask(uncertain.id, { ...payload, script: "新内容" }, payload), /尚未确认/, "editing must not downgrade an unknown image result to a partial skip");
   assert.equal(workflow.describeUnknownWorkflowTask(uncertain)?.partKind, "image");
   const sentResolution = workflow.resolveUnknownWorkflowTask(uncertain, "sent");
   assert.equal(sentResolution.completed, false, "confirming one multipart segment must retain later unsent segments");
@@ -222,7 +225,7 @@ async function checkTouchMessageSequence() {
   }
 
   failImage = false; unknown = false; pauseAfterText = true;
-  const paused = { ...record, id: crypto.randomUUID() };
+  const paused = { ...record, id: crypto.randomUUID(), payload: workflow.prepareWorkflowTask({ script: "旧介绍", contactIds: [contact.id, secondContact.id], imageIds: [imageId], link: "https://example.com/product" }) };
   result = await workflow.runWorkflowStep(paused, context);
   assert.equal(result.status, "pending");
   const pausedDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(paused.id).digest("hex"));
@@ -230,9 +233,44 @@ async function checkTouchMessageSequence() {
     undefined, "workflow_paused must not start an environment failure clock");
   enabled = true; pauseAfterText = false;
   const pausedCount = calls.length;
+  let previous = paused.payload;
+  paused.payload = workflow.updateWorkflowTask(paused.id, { ...previous, script: "新介绍", imageIds: [], link: "" }, previous);
+  const editedState = JSON.parse(fs.readFileSync(path.join(pausedDir, "touch_task.json"), "utf8"));
+  assert.equal(editedState.results[0].status, "partial_sent_skipped", "editing a paused partial delivery passes its remaining parts instead of continuing old content");
+  assert.equal(editedState.results[0].message_parts[0].status, "sent_verified", "the verified text receipt is retained");
+  assert.equal(editedState.results[0].skip_record.reasonCode, "task_edited_after_partial_send");
+  assert.equal(workflow.describeSkippedWorkflowTask(paused).skipped_records[0].retryable, false, "an edited partial delivery must never be resent by retry-skipped");
+  assert.equal(workflow.describeSkippedWorkflowTask(paused).skipped_breakdown.partial_sent, 1);
+  assert.equal(workflow.canRetryWorkflowTask(paused, paused.payload), true, "passing a partial sequence leaves the task resumable");
+  previous = paused.payload;
+  const replacementImage = "b".repeat(64);
+  paused.payload = workflow.updateWorkflowTask(paused.id, { ...previous, imageIds: [replacementImage] }, previous);
+  result = await createTouchWorkflow(config).runWorkflowStep(paused, context);
+  assert.equal(result.status, "pending");
+  assert.equal(calls.length, pausedCount, "restart passes the edited partial recipient without sending old or new media");
+  clock.setTime(clock.getTime() + 8000);
   result = await createTouchWorkflow(config).runWorkflowStep(paused, context);
   assert.equal(result.status, "completed");
-  assert.deepEqual(calls.slice(pausedCount).map(call => call.kind), ["image", "link"]);
+  assert.deepEqual(calls.slice(pausedCount).map(call => call.kind), ["text", "image"]);
+  assert.match(calls[pausedCount].message, /新介绍/);
+  assert.equal(calls[pausedCount + 1].imageId, replacementImage, "the next recipient uses the replacement without the old link");
+  const finalEditedState = JSON.parse(fs.readFileSync(path.join(pausedDir, "touch_task.json"), "utf8"));
+  assert.equal(finalEditedState.results[0].status, "partial_sent_skipped", "multiple edits and restart retain the partial skip, not a false full-send result");
+  assert.equal(retrySkippedResults(finalEditedState, [contact.id]).ok, false, "direct retry cannot override the partial skip");
+
+  pauseAfterText = true;
+  const allReceipts = { ...record, id: crypto.randomUUID(), payload };
+  await workflow.runWorkflowStep(allReceipts, context);
+  const allReceiptsFile = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(allReceipts.id).digest("hex"), "touch_task.json");
+  const allReceiptsState = JSON.parse(fs.readFileSync(allReceiptsFile, "utf8"));
+  for (const part of allReceiptsState.results[0].message_parts) part.status = "sent_verified";
+  fs.writeFileSync(allReceiptsFile, JSON.stringify(allReceiptsState));
+  allReceipts.payload = workflow.updateWorkflowTask(allReceipts.id, { ...payload, script: "更新后的介绍" }, payload);
+  assert.equal(JSON.parse(fs.readFileSync(allReceiptsFile, "utf8")).results[0].status, "sent_verified", "a full set of verified receipts cannot be mislabeled as a partial skip after an interrupted index update");
+  enabled = true; pauseAfterText = false;
+  const beforeCompletedResume = calls.length;
+  assert.equal((await createTouchWorkflow(config).runWorkflowStep(allReceipts, context)).status, "completed");
+  assert.equal(calls.length, beforeCompletedResume, "fully verified contacts do not resend after editing and restart");
 
   const intervalPayload = createTouchWorkflow(config).prepareWorkflowTask({ script: "这是一条间隔测试话术", contactIds: [contact.id, secondContact.id] });
   const intervalRecord = { id: crypto.randomUUID(), payload: intervalPayload, progress: { done: 0 }, status: "running" };

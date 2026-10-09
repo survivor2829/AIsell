@@ -5,7 +5,9 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
-  createProductDetailSidecar
+  createProductDetailSidecar,
+  prepareRuntimeLaunch,
+  summarizeStderr
 } = require("./product-detail-sidecar.cjs");
 
 class FakeChild extends EventEmitter {
@@ -56,6 +58,45 @@ async function main() {
   fs.writeFileSync(browserPath, "");
 
   try {
+    if (process.platform === "win32") {
+      const resources = path.join(root, "generation", "resources");
+      const executable = path.join(resources, "product-detail", "product-detail-server.exe");
+      const chrome = path.join(resources, "content-engine", "browser", "chrome.exe");
+      for (const file of [executable, chrome]) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, ""); }
+      const launch = prepareRuntimeLaunch(executable, dataDir, { XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: chrome });
+      assert.notEqual(launch.runtimePath, executable);
+      assert.equal(fs.realpathSync(launch.runtimePath), fs.realpathSync(executable));
+      assert.equal(fs.realpathSync(launch.environment.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH), fs.realpathSync(chrome));
+      assert.equal(prepareRuntimeLaunch(executable, dataDir, {}).runtimePath, launch.runtimePath, "same generation reuses its verified link");
+      const link = path.dirname(path.dirname(launch.runtimePath));
+      fs.rmdirSync(link);
+      fs.mkdirSync(link);
+      assert.throws(() => prepareRuntimeLaunch(executable, dataDir, {}), /target mismatch/, "an unknown ordinary directory is never overwritten");
+      assert.equal(fs.statSync(link).isDirectory(), true);
+    }
+    {
+      const privateStderr = 'File "limits\\\\storage\\\\redis.py", line 48\nFileNotFoundError: [Errno 2] C:\\private\\database token=secret-value customer text';
+      const summary = summarizeStderr(privateStderr);
+      assert.equal(summary.stderrType, "FileNotFoundError");
+      assert.equal(JSON.stringify(summary).includes("private"), false);
+      assert.equal(JSON.stringify(summary).includes("secret-value"), false);
+      let child;
+      const events = [];
+      const controller = createProductDetailSidecar({ runtimePath, dataDir, logger: { event: (...args) => events.push(args) }, spawnProcess: () => (child = new FakeChild()), startupTimeoutMs: 100 });
+      const started = controller.start();
+      await waitFor(() => Boolean(child));
+      child.stderr.emit("data", Buffer.from('{"event": "product_detail_startup", "stage": "load_app"}\n' + privateStderr));
+      child.emit("close", 1, null);
+      const result = await started;
+      assert.equal(result.code, "PRODUCT_DETAIL_EXITED");
+      assert.equal(result.diagnostics.phase, "load_app");
+      assert.equal(result.diagnostics.exitCode, 1);
+      assert.equal(result.diagnostics.stderrType, "FileNotFoundError");
+      assert.equal(JSON.stringify(events).includes("secret-value"), false);
+      assert.equal(JSON.stringify(events).includes("customer text"), false);
+      assert.equal(events.at(-1)[1], "failed");
+      await controller.dispose();
+    }
     {
       let spawnCount = 0;
       const controller = createProductDetailSidecar({

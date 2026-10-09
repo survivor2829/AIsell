@@ -25,7 +25,11 @@
 
 网关只接受上述固定路径，绝不把客户端提供的 URL 当作上游地址。客户端的
 `Authorization`、`X-Api-Key` 等凭据不会转发；服务端从
-`/etc/ai-maintenance/provider-gateway.env` 注入供应商凭据。请求体、授权码和
+`/etc/ai-maintenance/provider-gateway.env` 注入供应商凭据。
+百炼工作区密钥须同时配置其配套的 `XIAOXI_GATEWAY_BAILIAN_ORIGIN`；支持通用
+`https://dashscope.aliyuncs.com` 与阿里提供的 `https://<业务空间>.maas.aliyuncs.com`
+官方地址；工作区密钥不应使用通用地址。禁止 HTTP、非443端口、用户信息及附加路径；
+不要把密钥或业务空间地址写入安装包。请求体、授权码和
 供应商响应不写入服务日志，响应大小和并发均有上限。带 operation ID 的
 POST 响应会短期保存在仅网关服务账号可读的本地回执库中，用于断线恢复；
 响应正文最多保留 24 小时，之后只保留防重复提交的标记至第 90 天。
@@ -49,6 +53,12 @@ APIMart 请求内容仍在 CONNECT 内通过 TLS 加密。`https://` 代理需�
 不要将工作站临时 SSH 转发或诊断 IP 配置为长期服务依赖。部署此代码不会自动启用代理，
 需先确认长期可用的受控出站，再通过免费只读请求验收；不得以付费重试测试网络。
 
+当前服务器于2026-10-09按用户授权部署独立`apimart-egress`服务：只监听回环47892，
+仅放行APImart的TCP443，节点配置不随客户端分发。开机启动已启用，服务重启、
+免费上传、真实单张生成及结果无代理下载已验证；详见
+[验收与回滚记录](../../docs/handoff/2026-10-08-installed-closeout.md)。节点及订阅仍需
+服务器侧维护，不把本次成功当作永久可用保证，也不替代安装版完整功能验收。
+
 相同 operation ID 只在同一认证主体、目标、请求正文及相关请求头都一致时
 共用持久回执；`GET /v1/provider-gateway/operations/<operation-id>` 可在断线后
 查询原结果（处理中返回 202）。没有回执或回执状态不明时仍禁止自动重提；
@@ -61,6 +71,12 @@ APIMart 请求内容仍在 CONNECT 内通过 TLS 加密。`https://` 代理需�
 （旧版控制台）。ASR 资源 `volc.bigasr.auc_turbo` 也必须在火山语音控制台开通。
 
 ## 初次部署和更新
+
+客户端通过已认证的 `/v1/provider-gateway/capabilities?price_model=gpt-image-2.5-ext`
+核实公开单价，历史任务可查询 `gpt-image-2`。网关匿名读取固定 APImart 价格地址，
+不转发会话或供应商凭据；成功缓存120秒、失败冷却5秒，普通能力查询不依赖核价。
+专用出口仅额外允许 `apimart.ai:443` 价格站，客户不直连境外核价站。
+报价失败保留任务并停止付费提交，不使用陈旧价格自动兜底。
 
 在服务器上以 root 执行本目录的 `install.sh`。已存在的维护服务用其自身的
 `server/maintenance/upgrade.sh` 更新 443 转发代码；网关代码用本目录的

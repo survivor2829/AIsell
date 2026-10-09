@@ -3,9 +3,25 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const { randomUUID } = require('node:crypto');
 const { createRequire } = require('node:module');
-const { createDigitalHumanService } = require('./digital-human-service.cjs');
+const { createDigitalHumanService: createService } = require('./digital-human-service.cjs');
 const { createDigitalHumanProvider, nodeOf, taskIdOf, resultUrl, videoPayload, isPublicAddress, remoteUrl } = require('./digital-human-provider.cjs');
+
+// These fixtures are persisted pre-upgrade v1 drafts. New task behavior is
+// checked separately in digital-human-audio.self_check.cjs.
+function createDigitalHumanService(options) {
+  const service = createService(options), create = service.create;
+  service.create = (input) => {
+    if (input.id || global.__xiaoxiUpdateHold) return create(input);
+    const id = `dh_${randomUUID()}`, folder = path.join(options.rootDir, id);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'task.json'), JSON.stringify({ id, version: 1, status: 'draft',
+      videoResolution: '480p', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), operations: {} }));
+    return create({ ...input, id });
+  };
+  return service;
+}
 
 async function checkSlowDraftClick() {
   const listeners = [], expirations = [], calls = [];
@@ -185,6 +201,13 @@ async function main() {
       }
       assert.equal(posts.length, providerPosts, 'Packaging recovery must never regenerate the provider video.');
     }
+    global.__xiaoxiUpdateHold = true;
+    try {
+      assert.throws(() => service.create(draft), /正在更新/);
+      await assert.rejects(service.preview(task.id), /正在更新/);
+      await assert.rejects(service.refresh(task.id), /正在更新/);
+    } finally { global.__xiaoxiUpdateHold = false; }
+    assert.equal(service.isBusy(), false, 'Persisted cloud wait/unknown receipts must survive updates without blocking them forever.');
     assert.throws(() => service.create({ ...draft, localPath: input }), /刷新/);
     assert.throws(() => service.get('../task'), /数字人/);
     assert.throws(() => remoteUrl('https://127.0.0.1/test'), /素材地址/);

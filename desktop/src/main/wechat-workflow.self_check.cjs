@@ -1679,20 +1679,33 @@ async function checkInProgressTouchEdit() {
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
     autoSchedule: false, getAccount: () => "edit-account",
     executors: { touch: {
-      prepareWorkflowTask: (_id, payload) => ({ script: payload.script, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }),
+      prepareWorkflowTask: (_id, payload) => ({ ...payload, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }),
       updateWorkflowTask: async (_id, payload) => { updateInput = payload; return { ...payload, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }; },
       hasStartedWorkflowTask: () => calls > 0,
       runWorkflowStep: async () => { calls += 1; return { status: calls === 1 ? "pending" : "completed", progress: { done: calls === 1 ? 0 : 2, total: 2 } }; }
     } }
   });
-  const added = await control.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "旧话术" } });
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "旧话术", link: "https://example.com/legacy" } });
+  await control.updateTask({ id: added.task.id, type: "touch", title: "改名称", payload: {} });
+  const renamed = await control.getTask(added.task.id);
+  assert.equal(renamed.task.payload.script, "旧话术", "renaming an unstarted task keeps the body");
+  assert.equal(renamed.task.payload.link, "https://example.com/legacy", "the removed URL input must not erase an existing URL when renaming");
   await control.start();
   await control.tick();
   await control.pause();
-  const edited = await control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["a", "b"], script: "新话术", imageIds: [], link: "" } });
+  assert.equal((await control.getTask(added.task.id)).task.startedTouch, true, "the editor must lock the audience once a receipt exists even at zero completed contacts");
+  await assert.rejects(control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["b"], script: "新话术" } }), /不能修改联系人范围/);
+  const edited = await control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["a", "b"], script: "新话术", imageIds: ["b".repeat(64)] } });
   assert.equal(edited.ok, true, "a paused touch task can edit after partial progress");
   assert.equal(edited.task.progress.done, 0, "a bound task is routed through the edit path even before aggregate progress advances");
   assert.equal(updateInput.script, "新话术");
+  assert.deepEqual(updateInput.imageIds, ["b".repeat(64)]);
+  assert.equal(updateInput.link, "https://example.com/legacy", "editing text and images keeps the hidden historical URL");
+  assert.equal(edited.task.title, "改名称", "an omitted title must retain the saved task name");
+  await control.updateTask({ id: added.task.id, type: "touch", title: "再次改名称", payload: {} });
+  assert.equal(updateInput.script, "新话术", "a second name-only edit retains the updated text");
+  assert.deepEqual(updateInput.imageIds, ["b".repeat(64)]);
+  assert.equal(updateInput.link, "https://example.com/legacy");
   await control.dispose();
 }
 

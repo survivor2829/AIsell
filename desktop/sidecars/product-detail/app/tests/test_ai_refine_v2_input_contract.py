@@ -78,6 +78,22 @@ def test_missing_static_reference_has_stable_error_code(authed_client):
     assert response.get_json()["code"] == "AI_REFINE_PRODUCT_IMAGE_NOT_FOUND"
 
 
+def test_single_screen_redo_checks_owner_and_uses_existing_execute(authed_client):
+    with authed_client.session_transaction() as session:
+        owner_id = int(session["_user_id"])
+    with mock.patch("ai_refine_v2.pipeline_runner.get_task_status", return_value={"user_id": owner_id + 1}), \
+         mock.patch("ai_refine_v2.pipeline_runner.start_screen_reroll") as redo:
+        denied = authed_client.post("/api/ai-refine-v2/execute", json={"source_task_id": "v2_existing", "block_index": 1})
+        assert denied.status_code == 403
+        redo.assert_not_called()
+    with mock.patch("ai_refine_v2.pipeline_runner.get_task_status", return_value={"user_id": owner_id}), \
+         mock.patch("ai_refine_v2.pipeline_runner.start_screen_reroll", return_value="v2_new") as redo:
+        result = authed_client.post("/api/ai-refine-v2/execute", json={"source_task_id": "v2_existing", "block_index": 1})
+        assert result.status_code == 200
+        assert result.get_json()["task_id"] == "v2_new"
+        assert redo.call_args.args[:3] == ("v2_existing", 1, owner_id)
+
+
 def test_static_reference_cannot_escape_static_root(authed_client):
     with mock.patch("ai_refine_v2.pipeline_runner.start_task") as start_task:
         response = _post(

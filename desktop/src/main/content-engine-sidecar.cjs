@@ -847,6 +847,12 @@ function createContentEngineSidecar(options = {}) {
       }
     ),
     listMusicCatalogTracks: () => request("list_music_catalog_tracks", {}),
+    selectVideoMusic: (durationSeconds) => request("select_video_music", { duration_seconds: durationSeconds }),
+    uploadDigitalHumanAudio: ({ source, sha256 }) => {
+      const bytes = fs.readFileSync(source);
+      if (!bytes.length || bytes.length > 1024 * 1024) throw new Error("原音轨大小无效，尚未上传。");
+      return request("digital_human_upload_audio", { audio_base64: bytes.toString("base64"), sha256 }, { timeoutMs: 120_000 });
+    },
     listAutoMixVoicePersonas: () => request(
       "list_auto_mix_voice_personas", {}
     ),

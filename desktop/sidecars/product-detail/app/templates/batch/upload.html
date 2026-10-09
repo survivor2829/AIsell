@@ -1711,7 +1711,11 @@
           body.innerHTML = `<div class="err">还没有勾选任何已完成产品。请先勾选要精修的产品。</div>`;
           return;
         }
-        const yuan = data.est_cost_yuan.toFixed(2);
+        if (!data.ready) {
+          body.innerHTML = `<div class="err">${escapeHtml(data.error || '报价尚未核实，请稍后重试。')}</div>`;
+          return;
+        }
+        const yuan = data.maximum_cost_yuan.toFixed(2);
         // 任务11: 拼装 already_done / skipped 警告块
         const alreadyDone = data.already_done_count || 0;
         const skipped = Array.isArray(data.skipped) ? data.skipped : [];
@@ -1728,16 +1732,14 @@
         body.innerHTML = `
           <div class="row"><span class="k">即将精修产品</span>
             <span class="v">${data.count} 个</span></div>
-          <div class="row"><span class="k">预估调用</span>
-            <span class="v">${data.count} × ${data.zones_per_product} = ${data.api_calls} 次 Seedream</span></div>
-          <div class="row"><span class="k">预估费用</span>
-            <span class="v cost">约 ¥${yuan}</span></div>
-          <div class="row"><span class="k">预估耗时</span>
-            <span class="v">约 ${data.est_minutes} 分钟</span></div>
+          <div class="row"><span class="k">图片张数</span>
+            <span class="v">按卖点策划，每个产品最多15张</span></div>
+          <div class="row"><span class="k">策划前保守预留</span>
+            <span class="v cost">最多约 ¥${yuan}</span></div>
           ${warnBlock}
           <div class="hint">
-            按豆包 Seedream 当前单价 ¥${data.unit_price_yuan.toFixed(2)}/次 计算。
-            实际耗时受网络、并发、失败重试影响,可能略有出入。
+            包含策划与生图。策划后按实际张数核算，不凑数生成。
+            生图公开标价折算约 ¥${data.unit_price_yuan.toFixed(2)}/张，实际扣款以供应商账单为准。
           </div>
         `;
         ok.disabled = false;

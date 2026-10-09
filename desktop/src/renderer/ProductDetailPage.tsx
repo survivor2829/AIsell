@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, LoaderCircle, Play, RefreshCw, Square } from "lucide-react";
+import { CircleAlert, CircleCheck, Copy, LoaderCircle, Play, RefreshCw, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import "./ProductDetailPage.css";
 
@@ -12,6 +12,7 @@ type ProductDetailStatus = {
   version: string;
   capabilities: Record<string, boolean>;
   code: string;
+  diagnostics?: { phase: string; elapsedMs: number; exitCode: number | null; signal: string; stderrType: string };
 };
 
 type ProductDetailResult = {
@@ -82,6 +83,19 @@ const STATE_COPY: Record<ProductDetailState, { title: string; description: strin
     title: "服务已就绪",
     description: "下方工作台仅连接本机回环服务，关闭软件时服务会一并停止。"
   }
+};
+
+const STARTUP_PHASE: Record<string, string> = {
+  provider_config: "读取服务配置", prepare_runtime: "准备本地组件", spawn: "启动本地组件",
+  prepare_data: "准备工作目录", browser_check: "检查导出组件", load_app: "加载工作台",
+  install_contract: "连接工作台", listen: "等待本地连接", ready: "服务就绪"
+};
+const FAILURE_COPY: Record<string, string> = {
+  PRODUCT_DETAIL_START_TIMEOUT: "本地组件准备超时。可点击重试；若仍失败，请导出日志，日志会保留卡住的阶段。",
+  PRODUCT_DETAIL_EXITED: "本地组件启动时意外退出。请重试；若仍失败，请将下方故障信息和诊断日志交给技术人员。",
+  PRODUCT_DETAIL_SPAWN_FAILED: "未能运行本地组件。请检查安全软件是否拦截，以及安装目录是否允许访问。",
+  PRODUCT_DETAIL_RUNTIME_LINK_FAILED: "无法准备本地运行目录。请检查软件数据目录是否可写，然后重试。",
+  PRODUCT_DETAIL_STOP_TIMEOUT: "上一次本地组件尚未退出。请稍后重试，软件会等待旧组件关闭后再启动。"
 };
 
 export function ProductDetailPage() {
@@ -188,6 +202,22 @@ export function ProductDetailPage() {
       }
     : STATE_COPY[displayState];
   const canShowWorkspace = status.state === "ready" && Boolean(status.bootstrapUrl);
+  const diagnosticText = [
+    "产品详情图启动诊断", `状态：${status.state}`, `故障码：${status.code || "无"}`,
+    `阶段：${status.diagnostics?.phase || "未知"}`, `组件版本：${status.version || "未就绪"}`,
+    ...(status.diagnostics ? [
+      `耗时：${status.diagnostics.elapsedMs}ms`, `退出码：${status.diagnostics.exitCode ?? "未知"}`,
+      `信号：${status.diagnostics.signal || "无"}`, `异常类型：${status.diagnostics.stderrType || "无"}`
+    ] : [])
+  ].join("\n");
+  const copyDiagnostics = async () => {
+    try {
+      await navigator.clipboard.writeText(diagnosticText);
+      setNotice("已复制故障信息，可发送给技术人员。");
+    } catch {
+      setNotice("无法自动复制，请选中下方故障信息手动复制。");
+    }
+  };
 
   return (
     <section className={`page product-detail-page${canShowWorkspace ? " has-workspace" : ""}`}>
@@ -246,7 +276,21 @@ export function ProductDetailPage() {
         </div>
         <div>
           <strong>{copy.title}</strong>
-          <p>{copy.description}</p>
+          <p>{displayState === "failed" ? FAILURE_COPY[status.code] || copy.description
+            : displayState === "starting" && status.diagnostics?.phase ? STARTUP_PHASE[status.diagnostics.phase] || copy.description : copy.description}</p>
+          {displayState === "failed" && status.code && <p className="product-detail-failure-code">
+            故障码：{status.code}
+            {status.diagnostics?.phase && <> · {STARTUP_PHASE[status.diagnostics.phase] || "本地启动"}</>}
+            {status.diagnostics?.exitCode != null && <> · 退出码 {status.diagnostics.exitCode}</>}
+            {status.diagnostics?.stderrType && <> · {status.diagnostics.stderrType}</>}
+          </p>}
+          {(displayState === "failed" || displayState === "unavailable") && <details className="product-detail-diagnostics">
+            <summary>故障信息</summary>
+            <pre>{diagnosticText}</pre>
+            <button className="secondary-button" type="button" onClick={() => void copyDiagnostics()}>
+              <Copy size={15} />复制故障信息
+            </button>
+          </details>}
         </div>
       </div>}
 

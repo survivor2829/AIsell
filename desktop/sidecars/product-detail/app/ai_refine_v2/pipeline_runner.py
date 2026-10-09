@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import concurrent.futures
 import threading
@@ -36,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from browser_runtime import launch_chromium
+from ai_refine_v2.image_profile import DEFAULT_PROFILE, normalize_profile
 
 _RESOURCE_ROOT = Path(
     os.environ.get(
@@ -79,15 +81,71 @@ class TaskState:
     failed_count: int = 0
     # 错误
     error: str = ""
+    code: str = ""
     error_trace: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        result = asdict(self)
+        return _with_costs(self.task_id, result)
 
 
 _TASKS: dict[str, TaskState] = {}
 _TASKS_LOCK = threading.Lock()
 _RECOVERY_TASK_IDS: set[str] = set()
+
+
+def _with_costs(task_id: str, result: dict) -> dict:
+    from ai_refine_v2.pricing import CostJournal
+    journal = CostJournal(_OUTPUT_BASE / task_id)
+    if journal.path.exists():
+        try:
+            result["costs"] = journal.summary()
+        except RuntimeError:
+            result.update(status="outcome_unknown", error="费用记录无法读取，请先核对原任务。")
+            result["costs"] = {"version": 1, "actual_cny": None, "bill_status": "unknown"}
+    else:
+        result["costs"] = {"version": 0, "actual_cny": None,
+                           "historical_estimate_cny": result.get("cost_rmb", 0),
+                           "note": "历史记录中的费用为旧估算，非供应商实际账单"}
+    result["can_replay_planner"] = (
+        result.get("status") == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, result)
+    )
+    return result
+
+
+def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
+    """Offer the existing recovery action only for a locally repairable paid reply."""
+    if state.get("status") != "failed":
+        return False
+    format_error = state.get("code") == "AI_REFINE_PLANNER_FORMAT_ERROR" or re.match(
+        r"^v2 API/解析失败 \(重试 \d+ 次后\): JSONDecodeError:", str(state.get("error") or ""),
+    )
+    schema_error = str(state.get("error") or "").startswith("v2 schema 不合规: [")
+    if not (format_error or schema_error):
+        return False
+    from ai_refine_v2.pricing import CostJournal
+    from ai_refine_v2 import refine_planner
+    try:
+        operations = CostJournal(task_dir).load()["operations"]
+        if set(operations) != {"planner"} or operations["planner"]["status"] != "completed":
+            return False
+        response_path = task_dir / "_planner_response.json"
+        if response_path.stat().st_size > 1_000_000:
+            return False
+        response = _read_json(response_path) or {}
+        choice = response["choices"][0]
+        if choice.get("finish_reason") != "stop":
+            return False
+        planning = refine_planner._extract_json(choice["message"]["content"])
+        refine_planner._restore_specification_qualifiers(planning)
+        inputs = _read_json(task_dir / "_input.json") or {}
+        return (planning.get("planning_version") == refine_planner.PLANNING_VERSION
+                and isinstance(inputs.get("product_text"), str)
+                and not refine_planner._validate_schema_v2(
+                    planning, inputs["product_text"], inputs.get("product_title"),
+                    require_visual_strategy=planning.get("visual_strategy_version") is not None))
+    except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 class PaidResultRecoveryRequired(RuntimeError):
@@ -149,6 +207,7 @@ def _persist_recovery(
     status: str,
     error: str = "",
     schema_mode: str = "",
+    code: str = "",
 ) -> dict:
     """Persist provider URLs and local download state before terminal assembly."""
     planned, success, failed = _result_counts(blocks, planned_count)
@@ -167,6 +226,7 @@ def _persist_recovery(
         "raw_urls": [str(block.get("raw_url") or "") for block in blocks],
         "blocks": blocks,
         "error": str(error or ""),
+        "code": str(code or ""),
         "updated_at": time.time(),
     }
     _atomic_write_json(task_dir / "_recovery.json", payload)
@@ -246,6 +306,7 @@ def _status_from_record(task_id: str, data: dict, *, terminal: bool) -> dict:
         "success_count": success,
         "failed_count": failed,
         "error": str(data.get("error") or ""),
+        "code": str(data.get("code") or ""),
         "error_trace": "",
     }
 
@@ -272,6 +333,7 @@ def get_task_status(task_id: str) -> dict | None:
     summary_data = _read_json(task_dir / "_summary.json")
     if summary_data is not None:
         result = _status_from_record(task_id, summary_data, terminal=True)
+        result["planning"] = _read_json(task_dir / "_planning.json")
         try:
             _validate_assembled_png(task_dir / "assembled.png")
         except Exception as exc:
@@ -283,7 +345,7 @@ def get_task_status(task_id: str) -> dict | None:
             result["error"] = f"assembled.png 校验失败: {exc}"
             return result
         result["assembled_url"] = f"/static/ai_refine_v2/{task_id}/assembled.png"
-        return result
+        return _with_costs(task_id, result)
 
     recovery_data = _read_json(task_dir / "_recovery.json")
     if recovery_data is not None and (
@@ -297,7 +359,19 @@ def get_task_status(task_id: str) -> dict | None:
             if isinstance(block, dict)
         )
     ):
-        return _status_from_record(task_id, recovery_data, terminal=False)
+        return _with_costs(task_id, _status_from_record(task_id, recovery_data, terminal=False))
+    pricing_state = _read_json(task_dir / "_pricing_required.json")
+    if pricing_state:
+        return _with_costs(task_id, {**pricing_state, "task_id": task_id,
+            "status": "pricing_required", "planning": _read_json(task_dir / "_planning.json"),
+            "progress_msg": pricing_state.get("error", "报价待核实，资料已保留"), "progress_pct": 20})
+    costs = _read_json(task_dir / "_costs.json")
+    if costs and costs.get("operations"):
+        # A process died after recording a POST but before its normal checkpoint.
+        saved_input = _read_json(task_dir / "_input.json") or {}
+        return _with_costs(task_id, {"task_id": task_id, "user_id": saved_input.get("user_id"),
+            "status": "outcome_unknown", "planning": _read_json(task_dir / "_planning.json"),
+            "progress_msg": "原付费请求结果待核对，禁止重提", "progress_pct": 20})
     return None
 
 
@@ -325,7 +399,7 @@ def _apply_safety_valve(deepseek_key: str, gpt_image_key: str) -> tuple[str, str
     return "", ""
 
 
-def _detect_mode(deepseek_key: str, gpt_image_key: str) -> str:
+def _detect_mode(deepseek_key: str, gpt_image_key: str, *, planner_is_real: bool | None = None) -> str:
     # 安全阀关 + 任意真 key 在 → 强制 mock + 打提示日志, 防 UI 误点烧钱
     if not _is_real_api_allowed():
         if deepseek_key or gpt_image_key:
@@ -334,10 +408,11 @@ def _detect_mode(deepseek_key: str, gpt_image_key: str) -> str:
                 "(set V2_ALLOW_REAL_API=true to unlock for stage-5 real test)"
             )
         return "mock"
-    if deepseek_key and gpt_image_key:
+    planner_available = bool(deepseek_key) if planner_is_real is None else planner_is_real
+    if planner_available and gpt_image_key:
         return "real"
-    if gpt_image_key and not deepseek_key:
-        return "partial-mock"  # 真 planner 得不到, 只有图能真
+    if gpt_image_key:
+        return "partial-mock"  # 真实生图可用，但未确认真实策划来源
     return "mock"  # planner 和 generator 全占位
 
 
@@ -731,12 +806,17 @@ def _run_real_generator(planning: dict, product_image_url: str,
     每个 block 输出 dict 里保留 `raw_url` 字段 — 原始 APIMart CDN URL, 供救图.
     """
     from ai_refine_v2 import refine_generator
+    from ai_refine_v2.pricing import CostJournal, read_quote
 
     task_dir.mkdir(parents=True, exist_ok=True)
 
     # 真实 block 总数以 planning.block_order 为准, 不硬编码 6
     plan_section = planning.get("planning") or {}
     total = len(plan_section.get("block_order") or []) or 6
+    image_profile = _task_image_profile(task_dir)
+    quote = read_quote(include_planner=False, image_profile=image_profile)
+    journal = CostJournal(task_dir)
+    journal.set_plan(quote, total)
     provider_checkpoint = _make_provider_checkpoint(
         task_dir,
         refine_generator._build_blocks(planning),
@@ -747,15 +827,18 @@ def _run_real_generator(planning: dict, product_image_url: str,
     completed = {"count": 0}
 
     def wrapped_api_call(
-        prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None,
+        prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None, block_id="",
     ):
-        url = refine_generator._default_api_call(
+        url = journal.image_call(
+            quote, refine_generator._default_api_call,
             prompt,
             image_data_url,
             api_key,
             thinking=thinking,
             size=size,
+            image_profile=image_profile,
             lifecycle_callback=lifecycle_callback,
+            block_id=block_id,
         )
         completed["count"] += 1
         # 进度窗口 20-80 (前 20 给 planner, 后 20 给 assembler), 均摊到 total 张
@@ -770,8 +853,9 @@ def _run_real_generator(planning: dict, product_image_url: str,
         api_key=gpt_image_key,
         api_call_fn=wrapped_api_call,
         concurrency=3,
-        max_retries_hero=2,
-        max_retries_sp=1,
+        max_retries_hero=0,
+        max_retries_sp=0,
+        cost_per_call_rmb=quote["image_unit_cny"],
         lifecycle_callback=provider_checkpoint,
     )
 
@@ -802,12 +886,17 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
     E 刀 (assembled.png 太小) 在 _run_assembler_v2 里独立守门.
     """
     from ai_refine_v2 import refine_generator
+    from ai_refine_v2.pricing import CostJournal, read_quote
 
     task_dir.mkdir(parents=True, exist_ok=True)
 
     # v2 总屏数从 screens 数组算 (跟 _run_real_generator 用 block_order 等价)
     screens = planning_v2.get("screens") or []
-    total = len(screens) or 6
+    total = len(screens)
+    image_profile = _task_image_profile(task_dir)
+    quote = read_quote(include_planner=False, image_profile=image_profile)
+    journal = CostJournal(task_dir)
+    journal.set_plan(quote, total)
     provider_checkpoint = _make_provider_checkpoint(
         task_dir,
         refine_generator._build_blocks_v2(planning_v2),
@@ -818,15 +907,18 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
     completed = {"count": 0}
 
     def wrapped_api_call(
-        prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None,
+        prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None, block_id="",
     ):
-        url = refine_generator._default_api_call(
+        url = journal.image_call(
+            quote, refine_generator._default_api_call,
             prompt,
             image_data_url,
             api_key,
             thinking=thinking,
             size=size,
+            image_profile=image_profile,
             lifecycle_callback=lifecycle_callback,
+            block_id=block_id,
         )
         completed["count"] += 1
         # 进度窗口 20-80 (前 20 给 planner, 后 20 给 assembler)
@@ -841,8 +933,9 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
         api_key=gpt_image_key,
         api_call_fn=wrapped_api_call,
         concurrency=3,
-        max_retries_hero=2,
-        max_retries_sp=1,
+        max_retries_hero=0,
+        max_retries_sp=0,
+        cost_per_call_rmb=quote["image_unit_cny"],
         lifecycle_callback=provider_checkpoint,
     )
 
@@ -875,7 +968,7 @@ def _validate_assembled_png(
     if not path.is_file():
         raise RuntimeError(f"assembled.png 不存在: {path}")
     size = path.stat().st_size
-    if size < min_bytes:
+    if size < 100:
         raise RuntimeError(
             f"assembled.png 太小 ({size} 字节 < {min_bytes}), "
             f"疑源图缺失导致纯白 PNG. 请查上游 block 下载."
@@ -888,11 +981,15 @@ def _validate_assembled_png(
                 raise RuntimeError(f"格式不是 PNG: {image.format!r}")
             image.load()
             width, height = image.size
+            # A single valid cover can compress below the old eight-screen
+            # byte threshold. Reject blank images, not low-entropy designs.
+            if size < min_bytes and all(lo == hi for lo, hi in image.convert("RGB").getextrema()):
+                raise RuntimeError(f"assembled.png 太小且为纯色空图 ({size} 字节)")
     except Exception as exc:
         raise RuntimeError(f"assembled.png 无法完整解码: {exc}") from exc
     if width < min_width or height < min_height:
         raise RuntimeError(
-            f"assembled.png 尺寸异常 ({width}x{height}), "
+            f"assembled.png 尺寸太小 ({width}x{height}), "
             f"至少需要 {min_width}x{min_height}"
         )
     return width, height
@@ -945,8 +1042,25 @@ def _record_worker_exception(
     *,
     log_prefix: str,
 ) -> None:
+    from ai_refine_v2.pricing import PricingRequired
+    if isinstance(exc, PricingRequired):
+        state = {"user_id": _task_identity(task_id)[0], "mode": _task_identity(task_id)[1],
+                 "error": str(exc), "code": exc.code}
+        _atomic_write_json(task_dir / "_pricing_required.json", state)
+        _set(task_id, status="pricing_required", progress_msg=str(exc), error=str(exc), code=exc.code)
+        return
     tb = traceback.format_exc()
     outcome_unknown = bool(getattr(exc, "outcome_unknown", False))
+    from ai_refine_v2.pricing import CostJournal
+    operations = {}
+    try:
+        operations = CostJournal(task_dir).load()["operations"]
+        outcome_unknown = outcome_unknown or any(
+            operation["status"] in {"submitting", "outcome_unknown"}
+            for operation in operations.values()
+        )
+    except RuntimeError:
+        outcome_unknown = True
     recovery = _read_json(task_dir / "_recovery.json")
     provider_evidence = bool(
         recovery
@@ -956,10 +1070,31 @@ def _record_worker_exception(
             if isinstance(block, dict)
         )
     )
-    if recovery is not None and (outcome_unknown or provider_evidence):
+    # A missing/empty checkpoint cannot turn a paid image receipt into a known
+    # failure. This includes repeated recovery after the first attempt persisted
+    # an empty unknown record; retain the original journal for investigation.
+    if not provider_evidence and any(
+        name.startswith("image:") and not operation.get("not_submitted")
+        and operation["status"] in {"completed", "submitting", "outcome_unknown"}
+        for name, operation in operations.items()
+    ):
+        outcome_unknown = True
+    recoverable = bool(recovery and provider_evidence)
+    if outcome_unknown:
+        terminal_status = "outcome_unknown"
+        progress_msg = f"结果不明，已停止自动重提: {exc}"
+    elif recoverable:
+        terminal_status = "recovery_required"
+        progress_msg = f"付费结果已保存，禁止重新生图，等待恢复: {exc}"
+    else:
+        terminal_status = "failed"
+        progress_msg = f"失败: {exc}"
+    error_code = str(getattr(exc, "code", ""))
+    if recovery is not None:
         recovery.update(
-            status="outcome_unknown" if outcome_unknown else "recovery_required",
+            status=terminal_status,
             error=str(exc),
+            code=error_code,
             updated_at=time.time(),
         )
         _atomic_write_json(task_dir / "_recovery.json", recovery)
@@ -972,21 +1107,20 @@ def _record_worker_exception(
             success_count=int(recovery.get("success_count", 0) or 0),
             failed_count=int(recovery.get("failed_count", 0) or 0),
         )
-    recoverable = bool(recovery and provider_evidence)
-    if outcome_unknown:
-        terminal_status = "outcome_unknown"
-        progress_msg = f"结果不明，已停止自动重提: {exc}"
-    elif recoverable:
-        terminal_status = "recovery_required"
-        progress_msg = f"付费结果已保存，禁止重新生图，等待恢复: {exc}"
     else:
-        terminal_status = "failed"
-        progress_msg = f"失败: {exc}"
+        # Planner/schema failures precede the first image checkpoint. Persist
+        # their known outcome too, so a restart cannot mistake the completed
+        # planner receipt for an uncertain POST and block every new task.
+        inputs = _read_json(task_dir / "_input.json") or {}
+        _persist_recovery(task_dir, [], 0.0, 0, status=terminal_status,
+                          error=str(exc), code=error_code,
+                          schema_mode=str(inputs.get("schema_mode") or ""))
     print(f"[{log_prefix}] task {task_id} {terminal_status}:\n{tb}")
     _set(
         task_id,
         status=terminal_status,
         error=str(exc),
+        code=error_code,
         error_trace=tb,
         progress_msg=progress_msg,
     )
@@ -1137,6 +1271,48 @@ def _worker(task_id: str, product_text: str, product_image_url: str,
                product_title, deepseek_key, gpt_image_key)
 
 
+def _task_image_profile(task_dir: Path) -> dict:
+    return normalize_profile((_read_json(task_dir / "_input.json") or {}).get("image_profile"))
+
+
+def _freeze_task_input(task_dir: Path, inputs: dict) -> dict:
+    path = task_dir / "_input.json"
+    previous = _read_json(path) or {}
+    # A task with any prior persisted work predates the new default if no profile
+    # was saved. Never upgrade its model simply because the application updated.
+    existing = any((task_dir / name).exists() for name in ("_input.json", "_planning.json", "_costs.json"))
+    selected = normalize_profile(previous.get("image_profile") if existing else DEFAULT_PROFILE)
+    _atomic_write_json(path, {**previous, **inputs, "image_profile": selected})
+    return selected
+
+
+def _preflight_before_paid_planner(task_dir: Path, product_image_url: str, image_key: str,
+                                   *, saved_response, journal) -> None:
+    """Exercise a new task's upload route before buying planning; never touch recovery."""
+    inputs = _read_json(task_dir / "_input.json") or {}
+    if (inputs.get("reference_preflight_required") is not True or not image_key
+            or saved_response is not None or journal.load()["operations"]):
+        return
+    import ai_image_apimart
+    from ai_refine_v2.refine_generator import _to_data_url
+    from ai_refine_v2.pricing import _image_failure_diagnostic
+    _set(task_dir.name, progress_msg="正在检查产品参考图上传通道...")
+    try:
+        reference = _to_data_url(product_image_url)
+        if not reference.startswith("data:image/"):
+            raise ai_image_apimart.APIMartNotSubmitted("预检需要已保存的原产品图")
+        # A 71-hour cached URL cannot prove today's network; refresh only this image.
+        ai_image_apimart.upload_data_url(reference, image_key, force_refresh=True)
+        inputs.pop("reference_preflight_required", None)
+        _atomic_write_json(task_dir / "_input.json", inputs)
+    except Exception as exc:
+        message = "生图通道未连通，未购买策划。产品资料已保留，请恢复通道后再生成。"
+        record = _persist_recovery(task_dir, [], 0.0, 0, status="failed", error=message)
+        record["diagnostic"] = _image_failure_diagnostic(exc)
+        _atomic_write_json(task_dir / "_recovery.json", record)
+        raise ai_image_apimart.APIMartNotSubmitted(message, stage="reference_upload") from None
+
+
 def _worker_v1(task_id: str, product_text: str, product_image_url: str,
                product_title: str, deepseek_key: str, gpt_image_key: str):
     """v1 路径 (一字不动的老逻辑, 60 单测保护)."""
@@ -1146,19 +1322,39 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
 
     task_dir = _OUTPUT_BASE / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
+    preflight_required = (
+        not (task_dir / "_input.json").exists() and bool(deepseek_key and gpt_image_key)
+    ) or (_read_json(task_dir / "_input.json") or {}).get("reference_preflight_required") is True
 
     try:
         # ── Stage 1: Planner ──
-        if deepseek_key:
+        image_profile = _freeze_task_input(task_dir, {
+            "product_text": product_text, "product_title": product_title,
+            "product_image_url": product_image_url, "schema_mode": "v1",
+            "user_id": _task_identity(task_id)[0],
+            **({"reference_preflight_required": True} if preflight_required else {}),
+        })
+        existing_planning = _read_json(task_dir / "_planning.json")
+        from ai_refine_v2.pricing import CostJournal, read_quote
+        journal = CostJournal(task_dir)
+        saved_response = journal.saved_planner_response()
+        if existing_planning:
+            planning = existing_planning
+        elif deepseek_key or saved_response is not None:
             _set(task_id, progress_msg="DeepSeek 分析产品文案...", progress_pct=10)
             from ai_refine_v2 import refine_planner
+            quote = read_quote(image_profile=image_profile) if saved_response is None else None
+            _preflight_before_paid_planner(task_dir, product_image_url, gpt_image_key,
+                                          saved_response=saved_response, journal=journal)
             # plan() 签名不含 product_name_hint (它从 product_text 自己抽 name).
             # 若用户另外在表单填了"产品标题",按下面 _load_mock_planning 的同款模式
             # 后置覆盖 product_meta.name,让 UI 显示用户写的标题,不动 planner 内部逻辑.
             planning = refine_planner.plan(
                 product_text=product_text,
                 product_image_url=product_image_url,
-                api_key=deepseek_key,
+                api_key=deepseek_key or "saved-response-local-replay",
+                max_retries=0,
+                http_fn=lambda body, key: saved_response if saved_response is not None else journal.planner_call(quote, body, key),
             )
             if product_title:
                 planning.setdefault("product_meta", {})["name"] = product_title
@@ -1167,9 +1363,14 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
             planning = _load_mock_planning(product_text, product_title)
             time.sleep(0.5)
 
-        _set(task_id, planning=planning, progress_pct=20, progress_msg="planning 已生成")
-        (task_dir / "_planning.json").write_text(
-            json.dumps(planning, ensure_ascii=False, indent=2), encoding="utf-8")
+        # A cached plan's paid receipt, not today's credentials, identifies its source.
+        mode = _detect_mode(deepseek_key, gpt_image_key, planner_is_real=(
+            journal.load()["operations"].get("planner", {}).get("status") == "completed"
+            if existing_planning else bool(deepseek_key or saved_response is not None)
+        ))
+        _set(task_id, mode=mode, planning=planning, progress_pct=20, progress_msg="planning 已生成")
+        _atomic_write_json(task_dir / "_planning.json", planning)
+        (task_dir / "_pricing_required.json").unlink(missing_ok=True)
 
         # ── Stage 2: Generator ──
         _set(task_id, status="running_generator", progress_pct=25,
@@ -1265,17 +1466,40 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
     task_dir = _OUTPUT_BASE / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
+    preflight_required = (
+        not (task_dir / "_input.json").exists() and bool(deepseek_key and gpt_image_key)
+    ) or (_read_json(task_dir / "_input.json") or {}).get("reference_preflight_required") is True
 
     try:
         # ── Stage 1: Planner (plan_v2) ──
-        if deepseek_key:
+        image_profile = _freeze_task_input(task_dir, {
+            "product_text": product_text, "product_title": product_title,
+            "product_image_url": product_image_url,
+            "product_category": product_category,
+            "schema_mode": "v2",
+            "user_id": _task_identity(task_id)[0],
+            **({"reference_preflight_required": True} if preflight_required else {}),
+        })
+        existing_planning = _read_json(task_dir / "_planning.json")
+        from ai_refine_v2.pricing import CostJournal, read_quote
+        journal = CostJournal(task_dir)
+        saved_response = journal.saved_planner_response()
+        if existing_planning:
+            planning = existing_planning
+        elif deepseek_key or saved_response is not None:
             _set(task_id, progress_msg="DeepSeek (v2) 分析产品文案...", progress_pct=10)
             from ai_refine_v2 import refine_planner
+            quote = read_quote(image_profile=image_profile) if saved_response is None else None
+            _preflight_before_paid_planner(task_dir, product_image_url, gpt_image_key,
+                                          saved_response=saved_response, journal=journal)
             planning = refine_planner.plan_v2(
                 product_text=product_text,
                 product_image_url=product_image_url,
                 product_title=product_title,
-                api_key=deepseek_key,
+                api_key=deepseek_key or "saved-response-local-replay",
+                max_retries=0,
+                http_fn=lambda body, key: saved_response if saved_response is not None else journal.planner_call(quote, body, key),
+                require_visual_strategy=saved_response is None,
             )
         else:
             _set(task_id, progress_msg="[v2 mock] 加载预置 planning_v2", progress_pct=10)
@@ -1284,14 +1508,19 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
         # PR A (2026-05-07): 耗材类/配件类 lifestyle_demo 强制提到 idx=2
         from ai_refine_v2 import refine_planner
-        planning = refine_planner._reorder_lifestyle_to_second(planning, product_category)
+        if planning.get("planning_version") != refine_planner.PLANNING_VERSION:
+            planning = refine_planner._reorder_lifestyle_to_second(planning, product_category)
         # PR B (2026-05-07): 耗材类/配件类 + DeepSeek 输出 materials 时注入 material_origin 屏
-        planning = refine_planner._inject_material_origin(planning, product_category)
+            planning = refine_planner._inject_material_origin(planning, product_category)
 
-        _set(task_id, planning=planning, progress_pct=20,
-             progress_msg="planning_v2 已生成")
-        (task_dir / "_planning.json").write_text(
-            json.dumps(planning, ensure_ascii=False, indent=2), encoding="utf-8")
+        actual_mode = _detect_mode(deepseek_key, gpt_image_key, planner_is_real=(
+            journal.load()["operations"].get("planner", {}).get("status") == "completed"
+            if existing_planning else bool(deepseek_key or saved_response is not None)
+        ))
+        _set(task_id, mode=actual_mode, planning=planning, progress_pct=20,
+            progress_msg="产品风格与卖点分图方案已生成")
+        _atomic_write_json(task_dir / "_planning.json", planning)
+        (task_dir / "_pricing_required.json").unlink(missing_ok=True)
 
         # ── Stage 2: Generator (generate_v2) ──
         n_screens = len(planning.get("screens") or [])
@@ -1378,6 +1607,98 @@ def _valid_local_image(path: Path) -> bool:
         return False
 
 
+def _merge_reroll_blocks(task_dir: Path, generated: list[dict]) -> list[dict]:
+    """A redo has its own provider receipt; copy unchanged local assets only."""
+    reroll = _read_json(task_dir / "_reroll.json")
+    if not reroll or len(generated) != 1:
+        return generated
+    blocks = reroll["base_blocks"]
+    replacement = {**generated[0]}
+    replacement["is_hero"] = reroll["block_index"] == 0
+    blocks[reroll["block_index"]] = replacement
+    return blocks
+
+
+def _reroll_worker(task_id: str, planning: dict, image_path: str, block_index: int, key: str) -> None:
+    task_dir = _OUTPUT_BASE / task_id
+    try:
+        _set(task_id, mode="real", status="running_generator", planning=planning,
+             progress_msg=f"只重做第 {block_index + 1} 张，其余图片沿用", progress_pct=20)
+        selected = {**planning, "screens": [planning["screens"][block_index]], "screen_count": 1}
+        blocks, cost = _run_real_generator_v2(
+            selected, image_path, key, task_dir,
+            lambda pct, msg: _set(task_id, progress_pct=pct, progress_msg=msg),
+        )
+        blocks = _merge_reroll_blocks(task_dir, blocks)
+        _persist_recovery(task_dir, blocks, cost, len(blocks), status="ready_for_assembly", schema_mode="v2")
+        _set(task_id, status="running_assembler", progress_pct=90)
+        assembled = _run_assembler_v2(task_dir, blocks)
+        status, planned, success, failed = _write_terminal_summary(
+            task_id, task_dir, planning, "real", blocks, cost, len(blocks), assembled, schema_mode="v2",
+        )
+        _set(task_id, status=status, blocks=blocks, assembled_url=assembled,
+             cost_rmb=cost, planned_count=planned, success_count=success,
+             failed_count=failed, progress_pct=100, progress_msg="指定图片已重做，原版本仍保留")
+    except Exception as exc:
+        _record_worker_exception(task_id, task_dir, exc, log_prefix="pipeline_reroll")
+
+
+def start_screen_reroll(source_task_id: str, block_index: int, user_id: int, gpt_image_key: str,
+                        reference_path: str = "") -> str:
+    """Use stored prompts in a separate task, without replanning or overwriting."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", source_task_id):
+        raise ValueError("原任务编号无效")
+    source = get_task_status(source_task_id)
+    if not source or source.get("status") not in {"success", "partial_success"}:
+        raise ValueError("原任务尚未完成或结果不明，不能重做；请先核对原任务")
+    source_dir = _OUTPUT_BASE / source_task_id
+    planning = _read_json(source_dir / "_planning.json") or {}
+    screens = planning.get("screens") or []
+    if type(block_index) is not int or not 0 <= block_index < len(screens):
+        raise ValueError("指定图片不在原方案中")
+    original_input = _read_json(source_dir / "_input.json") or {}
+    image_path = str(original_input.get("product_image_url") or "")
+    if not image_path or not Path(image_path).is_file():
+        # The endpoint has already checked the fallback upload's owner and
+        # path boundary. An obsolete stored path must not prevent recovery.
+        image_path = reference_path
+    if not image_path or not Path(image_path).is_file():
+        raise ValueError("历史任务的原产品图不可用，请先上传同一产品原图再重做")
+    if not _apply_safety_valve("", gpt_image_key)[1]:
+        raise ValueError("真实生图未启用，未创建重做任务")
+    original_blocks = source.get("blocks") or []
+    if len(original_blocks) != len(screens):
+        raise ValueError("历史任务图片与方案不一致，不能自动重做")
+    task_id = f"v2_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+    task_dir = _OUTPUT_BASE / task_id
+    task_dir.mkdir(parents=True, exist_ok=False)
+    base_blocks = []
+    for i, block in enumerate(original_blocks):
+        clone = {**block}
+        if i != block_index and block.get("success"):
+            filename = Path(str(block.get("file") or "")).name
+            src = source_dir / filename
+            if not filename or not _valid_local_image(src):
+                raise ValueError(f"第 {i + 1} 张原图不可用，请先恢复原任务")
+            # Prefix prevents collision with the regenerated block's filename.
+            clone["file"] = f"retained_{i + 1:02d}.jpg"
+            shutil.copyfile(src, task_dir / clone["file"])
+            clone["image_url"] = f"/static/ai_refine_v2/{task_id}/{clone['file']}"
+        base_blocks.append(clone)
+    _atomic_write_json(task_dir / "_planning.json", planning)
+    _atomic_write_json(task_dir / "_input.json", {
+        **original_input, "product_image_url": image_path,
+        "image_profile": normalize_profile(original_input.get("image_profile")),
+    })
+    _atomic_write_json(task_dir / "_reroll.json", {
+        "source_task_id": source_task_id, "block_index": block_index, "base_blocks": base_blocks,
+    })
+    with _TASKS_LOCK:
+        _TASKS[task_id] = TaskState(task_id=task_id, user_id=user_id)
+    threading.Thread(target=_reroll_worker, args=(task_id, planning, image_path, block_index, gpt_image_key), daemon=True).start()
+    return task_id
+
+
 def _recover_task(task_id: str, gpt_image_key: str) -> dict:
     """Resume only known provider tasks/URLs; never submit or generate again."""
     import ai_image_apimart
@@ -1394,10 +1715,15 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
         state = get_task_status(task_id)
         if state and state.get("status") in {"success", "partial_success"}:
             return state
+        from ai_refine_v2.pricing import CostJournal, RequestOutcomeUnknown
+        if CostJournal(task_dir).load()["operations"]:
+            raise RequestOutcomeUnknown("原付费请求尚无可用断点，已保留回执，禁止重新提交。")
         raise ValueError(f"任务 {task_id} 没有可恢复断点")
     blocks = record.get("blocks", []) or []
     if not isinstance(blocks, list) or not blocks:
         raise ValueError(f"任务 {task_id} 的恢复断点无效")
+    from ai_refine_v2.pricing import CostJournal
+    unknown_errors = CostJournal(task_dir).restore_receipts(blocks, gpt_image_key)
     planning = _read_json(task_dir / "_planning.json") or {}
     planned_count = int(record.get("planned_count", 0) or len(blocks))
     schema_mode = str(record.get("schema_mode") or "v2")
@@ -1417,6 +1743,8 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
         state.planning = planning
 
     def persist(status: str, error: str = "") -> dict:
+        from ai_refine_v2.pricing import CostJournal
+        CostJournal(task_dir).reconcile(blocks)
         snapshot = _persist_recovery(
             task_dir,
             blocks,
@@ -1451,16 +1779,16 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
         return get_task_status(task_id) or {}
 
     persist("running_recovery")
-    unknown_errors: list[str] = []
     poll_candidates: list[dict] = []
     for block in blocks:
         if str(block.get("raw_url") or "").strip():
             continue
         provider_task_id = str(block.get("provider_task_id") or "").strip()
         provider_status = str(block.get("provider_status") or "").strip()
-        if provider_status == "cancelled":
+        if provider_status in {"cancelled", "failed"}:
             block["placeholder"] = True
-            block["error"] = "结果不明后已在提交前取消，未创建该屏任务"
+            block["error"] = ("结果不明后已在提交前取消，未创建该屏任务"
+                              if provider_status == "cancelled" else "原任务已明确失败，未自动重提")
             persist("running_recovery")
             continue
         if not provider_task_id:
@@ -1482,6 +1810,7 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
                 provider_task_id,
                 gpt_image_key,
                 direct=str(block.get("download_route") or "") == "direct",
+                receipt_callback=lambda receipt: CostJournal(task_dir).record_provider_receipt(provider_task_id, receipt),
             )
             return block, raw_url, None
         except Exception as exc:
@@ -1549,6 +1878,9 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
     if not successful or not blocks[0].get("success"):
         return persist("failed", "原任务没有可拼装的 Hero 结果")
     try:
+        blocks = _merge_reroll_blocks(task_dir, blocks)
+        planned_count = max(planned_count, len(blocks))
+        persist("running_recovery")
         if schema_mode == "v2":
             assembled_url = _run_assembler_v2(task_dir, blocks)
         else:
@@ -1602,14 +1934,22 @@ def _recovery_worker(task_id: str, gpt_image_key: str) -> None:
             _RECOVERY_TASK_IDS.discard(task_id)
 
 
-def start_task_recovery(task_id: str, gpt_image_key: str) -> dict:
-    """Start one idempotent non-billable recovery worker for a blocked task."""
+def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = "") -> dict:
+    """Recover receipts, or reprice and continue work that was never submitted."""
     state = get_task_status(task_id)
     if state is None:
         raise ValueError(f"任务不存在或已过期: {task_id}")
     status = str(state.get("status") or "")
-    if status not in {"outcome_unknown", "recovery_required", "running_recovery"}:
+    replay_failed = status == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, state)
+    if not replay_failed and status not in {"outcome_unknown", "recovery_required", "running_recovery", "pricing_required"}:
         raise ValueError(f"任务 {task_id} 当前状态不可恢复: {status}")
+    from ai_refine_v2.pricing import CostJournal
+    directory = _OUTPUT_BASE / task_id
+    operations = CostJournal(directory).load()["operations"]
+    resume_planning = replay_failed or status == "pricing_required" or (
+        not any(name.startswith("image:") for name in operations)
+        and bool(_read_json(directory / "_planning.json") or _read_json(directory / "_planner_response.json"))
+    )
     with _TASKS_LOCK:
         if task_id in _RECOVERY_TASK_IDS:
             return _TASKS[task_id].to_dict()
@@ -1630,11 +1970,37 @@ def start_task_recovery(task_id: str, gpt_image_key: str) -> dict:
         _RECOVERY_TASK_IDS.add(task_id)
         response = current.to_dict()
     threading.Thread(
-        target=_recovery_worker,
-        args=(task_id, gpt_image_key),
+        target=_pricing_resume_worker if resume_planning else _recovery_worker,
+        args=(task_id, gpt_image_key, deepseek_key) if resume_planning else (task_id, gpt_image_key),
         daemon=True,
     ).start()
     return response
+
+
+def _pricing_resume_worker(task_id: str, gpt_image_key: str, deepseek_key: str):
+    """Continue only work never submitted; a saved plan avoids another planner bill."""
+    directory = _OUTPUT_BASE / task_id
+    try:
+        from ai_refine_v2.pricing import CostJournal, PricingRequired, RequestOutcomeUnknown
+        if not _is_real_api_allowed():
+            raise PricingRequired("当前环境未启用付费生成，原方案已保留。")
+        journal = CostJournal(directory)
+        journal.saved_planner_response()
+        operations = journal.load()["operations"]
+        if any(name.startswith("image:") or op["status"] != "completed" for name, op in operations.items()):
+            raise RequestOutcomeUnknown("已有付费请求待核对，不能从核价步骤重新提交。")
+        reroll = _read_json(directory / "_reroll.json")
+        inputs = _read_json(directory / "_input.json") or {}
+        if reroll:
+            _reroll_worker(task_id, _read_json(directory / "_planning.json"), inputs["product_image_url"], reroll["block_index"], gpt_image_key)
+        else:
+            _worker(task_id, inputs["product_text"], inputs["product_image_url"], inputs["product_title"],
+                    deepseek_key, gpt_image_key, mode=inputs.get("schema_mode", "v2"), product_category=inputs.get("product_category"))
+    except Exception as exc:
+        _record_worker_exception(task_id, directory, exc, log_prefix="pricing_resume")
+    finally:
+        with _TASKS_LOCK:
+            _RECOVERY_TASK_IDS.discard(task_id)
 
 
 # ─────────────────────────────────────────────────────────────

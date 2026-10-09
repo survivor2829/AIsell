@@ -2,14 +2,17 @@ export type DigitalHumanResult<T> = { ok: boolean; data?: T; error?: string; cod
 export type DigitalHumanAsset = { id: string; name: string; previewDataUrl?: string };
 export type DigitalHumanDraft = {
   personAssetId: string; productAssetId: string; sceneId: string; voiceStyle: string;
-  durationSeconds: number; script: string; title?: string;
+  durationSeconds: number; script: string; title?: string; budgetCny?: number;
   templateId?: 'topic_fixed' | 'key_points'; musicTrackId?: string;
 };
 export type DigitalHumanTask = DigitalHumanDraft & {
-  id: string; title: string; status: string; statusLabel: string; createdAt: string; updatedAt: string;
+  actualDurationSeconds?: number; narrationPolicy?: 'original_script';
+  id: string; pipelineVersion?: number; title: string; status: string; statusLabel: string; createdAt: string; updatedAt: string;
   previewReady: boolean; previewRevision: string; progress: number; error: string; errorCode: string;
   generatedVideoId: string; packagingTaskId: string; canResume: boolean; canRefresh: boolean;
   videoResolution?: string; outputQuality?: string; directorSkillVersion?: string;
+  quote?: { ready?: boolean; estimatedCny?: number; maximumCny?: number; budgetCny?: number; reservedCny?: number; actualCny?: number | null; pendingCny?: number; remainingCny?: number; note?: string };
+  audio?: { prepared?: boolean; seconds?: number; speechSeconds?: number; coverage?: number; segmentCount?: number };
 };
 export type DigitalHumanCapabilities = {
   ready: boolean; code: string; message: string; scenes: { id: string; name: string }[]; voices: { id: string; name: string }[];

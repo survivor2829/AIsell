@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 import base64
+import json
 import concurrent.futures
 import mimetypes
 import os
@@ -33,7 +34,8 @@ from typing import Any, Callable, Optional, Union
 
 from ai_refine_v2.color_extractor import ColorAnchor, extract_color_anchor  # v3.2.2
 from ai_refine_v2.prompts.generator import render
-from ai_refine_v2.refine_planner import _VALID_ROLES_V2
+from ai_refine_v2.prompts.planner import PRODUCT_PRESENTATIONS
+from ai_refine_v2.refine_planner import _VALID_ROLES_V2, PLANNING_VERSION
 
 
 def _resolve_refine_api_key(api_key: str | None = None) -> str:
@@ -121,6 +123,8 @@ def _default_api_call(
     size: str = _APIMART_SIZE_DEFAULT,
     *,
     lifecycle_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    block_id: str = "",
+    image_profile: Optional[dict] = None,
 ) -> str:
     """生产默认: 委托给 ai_image_router 找当前 engine 的实现.
 
@@ -135,6 +139,7 @@ def _default_api_call(
     """
     import ai_image_router  # 延迟 import 避免冷启动循环依赖
     call_fn = ai_image_router.get_refine_call_fn()
+    options = {"image_profile": image_profile} if image_profile is not None else {}
     if lifecycle_callback is not None:
         return call_fn(
             prompt,
@@ -143,8 +148,9 @@ def _default_api_call(
             thinking=thinking,
             size=size,
             lifecycle_callback=lifecycle_callback,
+            **options,
         )
-    return call_fn(prompt, image_data_url, api_key, thinking=thinking, size=size)
+    return call_fn(prompt, image_data_url, api_key, thinking=thinking, size=size, **options)
 
 
 ApiCallFn = Callable[..., str]
@@ -351,6 +357,7 @@ def _generate_one_block(
                     thinking,
                     size,
                     lifecycle_callback=lambda event: lifecycle_callback(bid, event),
+                    block_id=bid,
                 )
             return (
                 BlockResult(
@@ -698,6 +705,18 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             "is_hero": (idx == 1),       # 第 1 屏 (idx=1) 严格视为 hero
             "prompt": s.get("prompt") or "",
             "title": s.get("title") or "",
+            "planning_version": planning_v2.get("planning_version"),
+            "style_dna": planning_v2.get("style_dna") or {},
+            "visual_brief": s.get("visual_brief") or {},
+            "subtitle": s.get("subtitle") or "",
+            "selling_point_id": s.get("selling_point_id"),
+            "primary_cleaning_demonstration": bool(
+                s.get("selling_point_id")
+                and s.get("selling_point_id") == planning_v2.get("primary_demonstration_id")
+                and any(word in str(planning_v2.get("product_meta") or {}) for word in ("清洁", "洗地", "扫地"))
+            ),
+            "evidence": s.get("evidence") or [],
+            "specifications": planning_v2.get("specifications") if role == "spec_table" else [],
         })
     return blocks
 
@@ -745,7 +764,53 @@ def _generate_one_block_v2(
     effective_prompt = prompt
     effective_image_urls: Optional[Union[str, list[str]]] = image_data_url
 
-    if image_data_url:
+    if block.get("planning_version") == PLANNING_VERSION:
+        if not image_data_url:
+            raise ValueError("产品参考图缺失，停止生图；请重新上传原图")
+        # Only original product reference, with shared design rules; no preset
+        # grayscale treatment or swatch that could repaint the actual product.
+        effective_prompt = _INJECTION_PREFIX_V3_LEGACY + (
+            "Apply the following shared visual direction to the environment and typography only; "
+            "never repaint or redesign Image 1. Use a 3:4 portrait composition. "
+            "Image 1 anchors product identity, not a frozen pose or a cutout pasted onto every background. "
+            "Shared direction unifies color, lighting and typography; this screen's visual brief determines "
+            "framing, product scale, action and layout. Preserve known visible parts when adjusting the view. "
+            "Preserve the count and side of visible parts. Keep one-sided parts asymmetric; "
+            "never add a mirrored duplicate for visual balance or invent parts revealed by a new angle. "
+            "Large bold Chinese headline, short explanation, generous spacing, readable on a phone. "
+            "Do not create hidden/internal structures or unsupported performance demonstrations. "
+            "Demonstrate one operating mode on one continuous surface. Other supported surfaces or modes "
+            "may be separate labeled insets; never imply automatic switching between them. "
+            "Use full specification names, including maximum, minimum or rated qualifiers; "
+            "do not present movement speed as cleaning speed. "
+            "Shared direction: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
+            + "\nOnly these supplied overlay words/specifications may appear (product labels in Image 1 stay unchanged): "
+            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or [], "comparison_labels": ["清洁前", "作业后"] if block.get("primary_cleaning_demonstration") else []}, ensure_ascii=False)
+            + "\nOne image, one selling point. Source evidence: "
+            + json.dumps(block.get("evidence") or [], ensure_ascii=False)
+            + "\nScreen-specific visual brief (instructions, not additional printed words): "
+            + json.dumps(block.get("visual_brief") or {}, ensure_ascii=False)
+            + "\n" + prompt
+        )
+        presentation = (block.get("visual_brief") or {}).get("product_presentation")
+        if presentation:
+            if not isinstance(presentation, str) or presentation not in PRODUCT_PRESENTATIONS:
+                raise ValueError("未知产品呈现方式，停止生图；请检查制作方案")
+            effective_prompt += "\nSCREEN SUBJECT PRIORITY: " + PRODUCT_PRESENTATIONS[presentation]
+        if block.get("primary_cleaning_demonstration"):
+            effective_prompt += (
+                "\nPRIMARY CLEANING DEMONSTRATION OVERRIDE (supersedes conflicting trail/layout directions): "
+                "Use a matched BEFORE/AFTER comparison of the SAME location, floor material, camera view, "
+                "joints and lighting. The BEFORE panel shows visible everyday dirt without the product. "
+                "The AFTER panel shows the same floor after cleaning, with the reference product only "
+                "in this panel at a believable scale. Two distinct labeled panels, not two flooring materials. "
+                "Use only the supplied captions 清洁前 and 作业后. Preserve wear and texture; no floor renovation. "
+                "Do NOT draw a live clean stripe extending from the front bumper toward the viewer; "
+                "do NOT put a supposedly already-cleaned trail ahead of the product. This still-image "
+                "comparison does not claim one-pass perfection, tested speed, or simultaneous operating modes. "
+                "Keep the Image 1 viewing side, visible part count and asymmetry; no mirrored extra brush."
+            )
+    elif image_data_url:
         env_mode = os.getenv("COLOR_ANCHOR_DUAL_IMAGE", "on").strip().lower()
         if color_anchor and env_mode != "off":
             palette_str = ", ".join(color_anchor.palette_hex)
@@ -791,6 +856,7 @@ def _generate_one_block_v2(
                     thinking,
                     size,
                     lifecycle_callback=lambda event: lifecycle_callback(bid, event),
+                    block_id=bid,
                 )
             return (
                 BlockResult(
@@ -912,6 +978,8 @@ def generate_v2(
             base_image_data_url = _to_data_url(product_cutout_url)
         except Exception as e:
             raise ValueError(f"产品参考图读取/转换失败: {e}") from e
+    if planning_v2.get("planning_version") == PLANNING_VERSION and not base_image_data_url:
+        raise ValueError("产品参考图缺失，停止生图；请重新上传原图")
 
     # v3.2.2: PIL 抽 cutout 主色 → hex 锚 + 色卡 PNG bytes (12 屏共享一次)
     # 失败返 None, 调用方走 v3.2.1 fallback (单图 + LEGACY prefix).
@@ -934,7 +1002,10 @@ def generate_v2(
         """v3: 根据 block role 决定该屏是否喂 cutout. 返回已转好的 data URL 或 None."""
         if base_image_data_url is None:
             return None
-        return base_image_data_url if block.get("visual_type", "") in effective_whitelist else None
+        return base_image_data_url if (
+            planning_v2.get("planning_version") == PLANNING_VERSION
+            or block.get("visual_type", "") in effective_whitelist
+        ) else None
 
     result = GenerationResult()
     t_start = time.time()
