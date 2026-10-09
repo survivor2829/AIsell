@@ -99,7 +99,7 @@ def test_negative_logo_and_graphic_occupancy_are_not_commercial_claims():
     assert planner._validate_schema_v2(plan, TEXT) == []
     plan["screens"][0]["prompt"] += "添加新品牌logo。"
     assert any("主动新增" in w for w in planner._validate_schema_v2(plan, TEXT))
-    text = "产品居左占约45%，右侧信息面板占约40%，表格占约80%，产品缩放在角落占约12%，清洁效率提升45%。"
+    text = "产品居左占约45%，右侧信息面板占约40%，表格占约80%，产品缩放在角落占约12%，产品与路径占画面中下部约60%，清洁效率提升45%。"
     assert planner._find_unbacked_commercial_claims(text, TEXT, allow_layout=True) == ["45%"]
 
 
