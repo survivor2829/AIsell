@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional, Union
 
 from ai_refine_v2.color_extractor import ColorAnchor, extract_color_anchor  # v3.2.2
 from ai_refine_v2.prompts.generator import render
+from ai_refine_v2.prompts.planner import PRODUCT_PRESENTATIONS
 from ai_refine_v2.refine_planner import _VALID_ROLES_V2, PLANNING_VERSION
 
 
@@ -791,6 +792,11 @@ def _generate_one_block_v2(
             + json.dumps(block.get("visual_brief") or {}, ensure_ascii=False)
             + "\n" + prompt
         )
+        presentation = (block.get("visual_brief") or {}).get("product_presentation")
+        if presentation:
+            if not isinstance(presentation, str) or presentation not in PRODUCT_PRESENTATIONS:
+                raise ValueError("未知产品呈现方式，停止生图；请检查制作方案")
+            effective_prompt += "\nSCREEN SUBJECT PRIORITY: " + PRODUCT_PRESENTATIONS[presentation]
         if block.get("primary_cleaning_demonstration"):
             effective_prompt += (
                 "\nPRIMARY CLEANING DEMONSTRATION OVERRIDE: Main scene must show one continuous floor "

@@ -39,6 +39,7 @@ from collections import Counter
 from typing import Callable, Optional
 
 from ai_refine_v2.prompts.planner import (
+    PRODUCT_PRESENTATIONS,
     SYSTEM_PROMPT,
     SYSTEM_PROMPT_V2,
     USER_PROMPT_TEMPLATE,
@@ -681,6 +682,18 @@ def _validate_schema_v2(
             w.append("visual_strategy_version 必须为 selling-point-evidence-v1；新策划不能省略逐屏视觉设计")
         if "primary_demonstration_id" not in parsed:
             w.append("新策划必须声明 primary_demonstration_id，有实际用途时指定对应卖点，无演示依据时用null")
+        presentations = []
+        for i, screen in enumerate(parsed.get("screens") or []):
+            if not isinstance(screen, dict):
+                continue
+            brief = screen.get("visual_brief")
+            presentation = brief.get("product_presentation") if isinstance(brief, dict) else None
+            if not isinstance(presentation, str) or presentation not in PRODUCT_PRESENTATIONS:
+                w.append(f"screens[{i}] 缺合法 product_presentation；先决定卖点如何配图，不能默认整机")
+            if screen.get("selling_point_id"):
+                presentations.append(presentation)
+        if len(presentations) > 1 and all(p == "whole_product" for p in presentations):
+            w.append("卖点屏全部为整机主视觉；须按实际证据设计作业、局部、空间或图解，不能只换背景")
     min_screens = 1 if product_driven else _MIN_SCREEN_COUNT_V2
 
     # product_meta

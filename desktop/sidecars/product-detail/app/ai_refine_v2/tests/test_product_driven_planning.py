@@ -48,6 +48,7 @@ def response(plan, *, fresh=False):
                 "scene": "办公楼", "framing": f"取景{i}", "product_action": "依照参考图展示",
                 "visual_evidence": screen.get("title", ""), "layout": f"布局{i}",
             })
+            screen["visual_brief"].setdefault("product_presentation", "whole_product" if i == 0 else "working_scene")
     return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
 
@@ -111,6 +112,11 @@ def test_fresh_plans_require_visual_strategy_and_primary_demonstration_first():
     assert any("作业效果" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
     plan["primary_demonstration_id"] = "p1"
     assert planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True) == []
+    for screen in plan["screens"]:
+        screen["visual_brief"]["product_presentation"] = "whole_product"
+    assert any("全部为整机" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
+    # Saved paid plans predate presentation choices: do not invalidate or rebuy them.
+    assert planner._validate_schema_v2(plan, TEXT) == []
 
 
 def test_spec_list_typography_preserves_facts():
@@ -242,11 +248,14 @@ def test_visual_briefs_reject_repeated_composition_before_image_charges():
     assert planner._validate_schema_v2(sample(), TEXT) == []
 
 
-def test_visual_brief_reaches_image_model_without_freezing_reference_pose(tmp_path):
+@pytest.mark.parametrize("presentation", [None, "diagram_only", "visible_detail"])
+def test_visual_brief_reaches_image_model_without_freezing_reference_pose(tmp_path, presentation):
     plan = sample()
     brief = {"scene": "办公楼", "framing": "贴地广角中景",
              "product_action": "向前洗地", "visual_evidence": "身后轨迹与两侧污物同框",
              "layout": "上部标题，下部清洁过程"}
+    if presentation:
+        brief["product_presentation"] = presentation
     plan["screens"][1]["visual_brief"] = brief
     reference = tmp_path / "reference.png"
     Image.new("RGB", (40, 40), "#ab28c4").save(reference)
@@ -257,6 +266,8 @@ def test_visual_brief_reaches_image_model_without_freezing_reference_pose(tmp_pa
     generator.generate_v2(plan, str(reference), api_key="fake", api_call_fn=image_call, concurrency=1)
     assert json.dumps(brief, ensure_ascii=False) in calls[1]
     assert "not a frozen pose" in calls[1]
+    if presentation:
+        assert generator.PRODUCT_PRESENTATIONS[presentation] in calls[1]
 
 
 def make_parent(tmp_path, monkeypatch):
