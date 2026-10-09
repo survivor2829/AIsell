@@ -64,6 +64,43 @@ def test_layout_percentages_are_not_performance_claims():
     assert any("55%" in warning and "99%" in warning and "ISO 9001" in warning for warning in warnings)
 
 
+def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
+    prompt = "画面上方约25%区域放标题，顶部约15%区域留空，留白约8%，清洁效率提升28%。"
+    assert planner._find_unbacked_commercial_claims(prompt, TEXT, allow_layout=True) == ["28%"]
+    assert set(planner._find_unbacked_commercial_claims(prompt, TEXT)) == {"25%", "15%", "8%", "28%"}
+
+
+def test_spec_list_typography_preserves_facts():
+    plan = sample()
+    source = TEXT + "自主加排水。适用地面：瓷砖，水磨石，PVC。"
+    plan["specifications"] += [
+        {"name": "自主加排水", "value": "自主加排水", "evidence": "自主加排水"},
+        {"name": "适用地面", "value": "瓷砖、水磨石、PVC", "evidence": "适用地面：瓷砖，水磨石，PVC"},
+    ]
+    assert planner._validate_schema_v2(plan, source) == []
+    plan["specifications"][1]["value"] = "自动清洗"
+    plan["specifications"][2]["value"] = "瓷砖、水磨石、PVC、实木"
+    warnings = planner._validate_schema_v2(plan, source)
+    assert any("specifications[1]" in warning for warning in warnings)
+    assert any("specifications[2]" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize("source,evidence,allowed", [
+    ("自主加排水", "自主加排水", False),
+    ("不支持自主加排水", "自主加排水", False),
+    ("自主加排水：支持但需配件", "自主加排水：支持", False),
+    ("自主加排水：支持，但需配件", "自主加排水：支持", False),
+    ("自主加排水：支持", "自主加排水：支持", True),
+    ("自主加排水: 支持；其他参数", "自主加排水: 支持", True),
+    ("自主加排水：支持，电压：24V", "自主加排水：支持", True),
+])
+def test_support_value_requires_an_explicit_complete_source_field(source, evidence, allowed):
+    plan = sample()
+    plan["specifications"].append({"name": "自主加排水", "value": "支持", "evidence": evidence})
+    warnings = planner._validate_schema_v2(plan, TEXT + "\n" + source)
+    assert (not any("specifications[1]" in warning for warning in warnings)) is allowed
+
+
 def test_user_product_title_is_cover_evidence_only():
     plan = sample()
     title = "普渡清洁机器人 CC1 Pro"
@@ -83,6 +120,22 @@ def test_parameter_typography_preserves_numeric_meaning(value, allowed):
     warnings = planner._validate_schema_v2(plan, source)
     assert (not any("参数值" in w for w in warnings)) is allowed
     assert planner._normalize_claim_text("3.5H") != planner._normalize_claim_text("35H")
+
+
+@pytest.mark.parametrize("original,value,allowed", [
+    ("12、24V", "1224V", False),
+    ("12,24V", "1224V", False),
+    ("12、24V", "12,24V", True),
+    ("12,24V", "12、24V", True),
+    ("1,000V", "1000V", False),
+])
+def test_parameter_numeric_enumerations_keep_value_boundaries(original, value, allowed):
+    plan = sample()
+    evidence = "额定电压：" + original
+    plan["specifications"] = [{"name": "额定电压", "value": value, "evidence": evidence}]
+    plan["screens"][-1]["evidence"] = [evidence]
+    warnings = planner._validate_schema_v2(plan, TEXT + evidence)
+    assert (not any("参数值" in warning for warning in warnings)) is allowed
 
 
 def test_local_colors_are_hints_and_unsupported_evidence_retries(tmp_path, monkeypatch):

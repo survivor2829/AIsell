@@ -478,6 +478,9 @@ _LAYOUT_PERCENT = r"\d+(?:\.\d+)?\s*[%％](?:\s*[-–—~～至到]\s*\d+(?:\.\d
 _LAYOUT_PERCENT_RE = re.compile(
     r"(?:占(?:整个)?(?:画面|画幅|版面)(?:面积|宽度|高度)?|(?:画面|画幅|版面|留白)占比)"
     r"\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
+    + r"|(?:画面|画幅|版面)?(?:上方|下方|左侧|右侧|顶部|底部)\s*(?:约|大约)?\s*"
+    + _LAYOUT_PERCENT + r"\s*区域"
+    + r"|(?:四周|左右|上下)?留白\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
     + r"|(?:occup(?:y|ies|ying)|takes?\s+up)\s*(?:(?:about|approximately|roughly)\s+)?"
     + _LAYOUT_PERCENT + r"\s+(?:of\s+)?(?:the\s+)?(?:frame|canvas|layout)\b",
     re.IGNORECASE,
@@ -498,8 +501,11 @@ _FIXED_COMMERCIAL_CLAIMS = (
 def _normalize_claim_text(value: str) -> str:
     compact = re.sub(r"\s+", "", value).lower()
     compact = re.sub(r"(?<=\d)[–—~～](?=\d)", "-", compact)
+    # Enumerated numbers must not join into a different value. Treat numeric
+    # commas conservatively, including ambiguous thousands separators.
+    compact = re.sub(r"(?<=\d)[,，、](?=\d)", "|", compact)
     # Ignore typography, but keep decimal points/ranges: 3.5 != 35, 3-4 != 34.
-    return re.sub(r"(?<!\d)\.|\.(?!\d)|[,，。;；:：'\"「」()（）_/]", "", compact)
+    return re.sub(r"(?<!\d)\.|\.(?!\d)|[,，、。;；:：'\"「」()（）_/]", "", compact)
 
 
 def _claim_semantic_category(text: str, match: re.Match) -> str:
@@ -788,6 +794,17 @@ def _validate_schema_v2(
     return w
 
 
+def _spec_value_matches_evidence(spec: dict, product_text: str | None) -> bool:
+    value, evidence = (_normalize_claim_text(spec[key]) for key in ("value", "evidence"))
+    if value == "支持":
+        # Only an explicit source field may use this standalone value. A bare
+        # feature, negated sentence or truncated conditional is not equivalent.
+        field = (r"(?:^|[\s，,;；。])" + re.escape(spec["name"].strip())
+                 + r"\s*[:：]\s*支持[ \t]*(?=$|[;；。\r\n]|[,，][ \t]*[^:：,，;；。\r\n]+[:：])")
+        return bool(re.search(field, product_text or "")) and value in evidence
+    return value in evidence
+
+
 def _validate_selling_point_mapping(parsed: dict, product_text: str | None, product_title: str | None = None) -> list[str]:
     """Validate cardinality and quoted evidence before the first image charge."""
     warnings = []
@@ -833,7 +850,7 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
             for key in ("name", "value", "evidence")
         ):
             warnings.append(f"specifications[{i}] 参数不完整")
-        elif not evidence_ok([spec["evidence"]]) or _normalize_claim_text(spec["value"]) not in _normalize_claim_text(spec["evidence"]):
+        elif not evidence_ok([spec["evidence"]]) or not _spec_value_matches_evidence(spec, product_text):
             warnings.append(f"specifications[{i}] 参数值必须来自原文依据")
     screens = parsed.get("screens") or []
     required = 1 + len(points) + bool(specs)
