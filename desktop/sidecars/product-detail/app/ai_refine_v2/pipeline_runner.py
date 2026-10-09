@@ -357,7 +357,7 @@ def _apply_safety_valve(deepseek_key: str, gpt_image_key: str) -> tuple[str, str
     return "", ""
 
 
-def _detect_mode(deepseek_key: str, gpt_image_key: str) -> str:
+def _detect_mode(deepseek_key: str, gpt_image_key: str, *, planner_is_real: bool | None = None) -> str:
     # 安全阀关 + 任意真 key 在 → 强制 mock + 打提示日志, 防 UI 误点烧钱
     if not _is_real_api_allowed():
         if deepseek_key or gpt_image_key:
@@ -366,10 +366,11 @@ def _detect_mode(deepseek_key: str, gpt_image_key: str) -> str:
                 "(set V2_ALLOW_REAL_API=true to unlock for stage-5 real test)"
             )
         return "mock"
-    if deepseek_key and gpt_image_key:
+    planner_available = bool(deepseek_key) if planner_is_real is None else planner_is_real
+    if planner_available and gpt_image_key:
         return "real"
-    if gpt_image_key and not deepseek_key:
-        return "partial-mock"  # 真 planner 得不到, 只有图能真
+    if gpt_image_key:
+        return "partial-mock"  # 真实生图可用，但未确认真实策划来源
     return "mock"  # planner 和 generator 全占位
 
 
@@ -1022,9 +1023,9 @@ def _record_worker_exception(
             if isinstance(block, dict)
         )
     )
-    if recovery is not None and (outcome_unknown or provider_evidence):
+    if recovery is not None:
         recovery.update(
-            status="outcome_unknown" if outcome_unknown else "recovery_required",
+            status="outcome_unknown" if outcome_unknown else ("recovery_required" if provider_evidence else "failed"),
             error=str(exc),
             updated_at=time.time(),
         )
@@ -1248,7 +1249,12 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
             planning = _load_mock_planning(product_text, product_title)
             time.sleep(0.5)
 
-        _set(task_id, planning=planning, progress_pct=20, progress_msg="planning 已生成")
+        # A cached plan's paid receipt, not today's credentials, identifies its source.
+        mode = _detect_mode(deepseek_key, gpt_image_key, planner_is_real=(
+            journal.load()["operations"].get("planner", {}).get("status") == "completed"
+            if existing_planning else bool(deepseek_key or saved_response is not None)
+        ))
+        _set(task_id, mode=mode, planning=planning, progress_pct=20, progress_msg="planning 已生成")
         _atomic_write_json(task_dir / "_planning.json", planning)
         (task_dir / "_pricing_required.json").unlink(missing_ok=True)
 
@@ -1386,7 +1392,11 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
         # PR B (2026-05-07): 耗材类/配件类 + DeepSeek 输出 materials 时注入 material_origin 屏
             planning = refine_planner._inject_material_origin(planning, product_category)
 
-        _set(task_id, planning=planning, progress_pct=20,
+        actual_mode = _detect_mode(deepseek_key, gpt_image_key, planner_is_real=(
+            journal.load()["operations"].get("planner", {}).get("status") == "completed"
+            if existing_planning else bool(deepseek_key or saved_response is not None)
+        ))
+        _set(task_id, mode=actual_mode, planning=planning, progress_pct=20,
             progress_msg="产品风格与卖点分图方案已生成")
         _atomic_write_json(task_dir / "_planning.json", planning)
         (task_dir / "_pricing_required.json").unlink(missing_ok=True)

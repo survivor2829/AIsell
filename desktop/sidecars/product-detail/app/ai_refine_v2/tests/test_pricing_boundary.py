@@ -56,6 +56,72 @@ def test_planner_usage_and_images_are_estimates_not_bills(tmp_path, monkeypatch)
     assert ledger.load()["operations"]["planner"]["usage"]["completion_tokens"] == 500
 
 
+@pytest.mark.parametrize("case,stage,http_status", [
+    ("invalid_reference", "reference_prepare", None),
+    ("upload_rejected", "reference_upload", 401),
+    ("upload_unavailable", "reference_upload", 503),
+    ("submit_rejected", "submit", 403),
+    ("submit_unavailable", "submit", 503),
+    ("submit_timeout", "submit", None),
+    ("poll_timeout", "poll", None),
+])
+def test_image_journal_preserves_submission_boundary_and_safe_diagnostic(tmp_path, monkeypatch, case, stage, http_status):
+    import ai_image_apimart as adapter
+    secret = "never-log-this-key-or-response"
+    with adapter._UPLOAD_CACHE_LOCK:
+        adapter._UPLOAD_CACHE.clear()
+    monkeypatch.setenv("REFINE_API_BASE_URL", "https://provider.invalid/v1")
+    monkeypatch.setattr(adapter, "_MAX_CONSECUTIVE_POLL_ERRORS", 1)
+    monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
+    monkeypatch.setattr(adapter, "_http_post_image_upload", lambda *a, **kw:
+                        (401 if case == "upload_rejected" else 503, {"message": secret}) if case.startswith("upload_") else (200, {"url": "https://cdn.invalid/ref"}))
+    def submit(*a, **kw):
+        if case == "submit_timeout":
+            raise TimeoutError(secret)
+        if case == "submit_unavailable":
+            return 503, {"message": secret}
+        return (403, {"message": secret}) if case == "submit_rejected" else (200, {"data": [{"task_id": "original-task"}]})
+    post = Mock(side_effect=submit)
+    monkeypatch.setattr(adapter, "_http_post_json", post)
+    monkeypatch.setattr(adapter, "_http_get_json", Mock(side_effect=TimeoutError(secret)))
+    reference = "data:image/png;base64,YQ==" if case.startswith("upload_") else "https://cdn.invalid/ref"
+    if case == "invalid_reference":
+        reference = "data:image/png;base64,invalid!"
+    ledger = pricing.CostJournal(tmp_path)
+    ledger.set_plan(quote(), 2)
+    with pytest.raises(Exception):
+        ledger.image_call(quote(), adapter.default_api_call, "prompt", reference, secret, block_id="hero")
+    operation = ledger.load()["operations"]["image:1"]
+    known_unsubmitted = case in {"invalid_reference", "upload_rejected", "upload_unavailable", "submit_rejected"}
+    assert operation["status"] == ("failed" if known_unsubmitted else "outcome_unknown")
+    assert operation.get("not_submitted", False) is known_unsubmitted
+    assert operation["diagnostic"]["stage"] == stage
+    assert operation["diagnostic"].get("http_status") == http_status
+    assert ledger.summary()["reserved_cny"] == (0 if known_unsubmitted else quote()["image_unit_cny"])
+    assert ledger.summary()["pending_bill_cny"] == 0
+    assert secret not in ledger.path.read_text(encoding="utf-8")
+    assert "https://cdn.invalid" not in json.dumps(operation.get("diagnostic"))
+    assert bool(operation.get("provider_task_id")) is (case == "poll_timeout")
+    assert post.call_count == (0 if case in {"invalid_reference", "upload_rejected", "upload_unavailable"} else 1)
+    # Reopening the journal must not silently buy another image after either outcome.
+    again = Mock()
+    with pytest.raises(Exception):
+        pricing.CostJournal(tmp_path).image_call(quote(), again, "prompt")
+    again.assert_not_called()
+
+
+def test_untyped_local_exception_is_not_assumed_free(tmp_path):
+    ledger = pricing.CostJournal(tmp_path)
+    ledger.set_plan(quote(), 1)
+    with pytest.raises(pricing.RequestOutcomeUnknown):
+        ledger.image_call(quote(), Mock(side_effect=TypeError("sensitive request content")))
+    operation = ledger.load()["operations"]["image:1"]
+    assert operation["status"] == "outcome_unknown"
+    assert operation.get("not_submitted") is not True
+    assert operation["diagnostic"] == {"error_type": "TypeError", "stage": "unknown"}
+    assert "sensitive request content" not in ledger.path.read_text(encoding="utf-8")
+
+
 def test_missing_quote_preserves_input_and_stops_planner(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_OUTPUT_BASE", tmp_path)
     task = "noquote"

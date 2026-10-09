@@ -89,13 +89,27 @@ class APIMartError(RuntimeError):
     outcome_unknown = False
 
 
+class APIMartNotSubmitted(APIMartError):
+    """Reference preparation failed or the provider explicitly rejected submission."""
+
+    not_submitted = True
+    stage = "reference_prepare"
+
+    def __init__(self, message: str, *, stage: Optional[str] = None, http_status: Optional[int] = None):
+        self.stage = stage or self.stage
+        self.http_status = http_status
+        super().__init__(message)
+
+
 class APIMartOutcomeUnknown(APIMartError):
     """A generation was submitted, but its final billable outcome is unknown."""
 
     outcome_unknown = True
 
-    def __init__(self, task_id: str, message: str):
+    def __init__(self, task_id: str, message: str, *, stage: Optional[str] = None, http_status: Optional[int] = None):
         self.task_id = task_id
+        self.stage = stage or ("poll" if task_id else "submit")
+        self.http_status = http_status
         suffix = f" task_id={task_id}" if task_id else ""
         super().__init__(f"{message}.{suffix} 请先核对 APIMart 任务，禁止自动重提")
 
@@ -103,9 +117,13 @@ class APIMartOutcomeUnknown(APIMartError):
 class APIMartTaskFailed(APIMartError):
     """APIMart explicitly reported a terminal failed/cancelled task."""
 
+    stage = "poll"
 
-class APIMartReferenceUploadTransportError(APIMartError):
+
+class APIMartReferenceUploadTransportError(APIMartNotSubmitted):
     """The reference image never reached a confirmed upload response."""
+
+    stage = "reference_upload"
 
 
 class APIMartResultDownloadError(APIMartError):
@@ -368,7 +386,7 @@ def _upload_reference_with_transport_fallback(
 def _decode_data_url(value: str) -> tuple[bytes, str, str]:
     header, separator, encoded = value.partition(",")
     if not separator or not header.startswith("data:image/") or ";base64" not in header:
-        raise APIMartError("APIMart 参考图必须是受支持的图片 data URL")
+        raise APIMartNotSubmitted("APIMart 参考图必须是受支持的图片 data URL")
     mime = header[5:].split(";", 1)[0].lower()
     extension_by_mime = {
         "image/jpeg": "jpg",
@@ -378,13 +396,13 @@ def _decode_data_url(value: str) -> tuple[bytes, str, str]:
     }
     extension = extension_by_mime.get(mime)
     if not extension:
-        raise APIMartError(f"APIMart 不支持参考图类型: {mime}")
+        raise APIMartNotSubmitted("APIMart 不支持参考图类型")
     try:
         raw = base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError) as exc:
-        raise APIMartError("参考图 base64 数据无效") from exc
+        raise APIMartNotSubmitted("参考图 base64 数据无效") from exc
     if not raw or len(raw) > _MAX_UPLOAD_BYTES:
-        raise APIMartError("参考图为空或超过 APIMart 20MB 上传上限")
+        raise APIMartNotSubmitted("参考图为空或超过 APIMart 20MB 上传上限")
     return raw, mime, f"reference.{extension}"
 
 
@@ -411,10 +429,11 @@ def _upload_data_url_for_route(
             if code == 503 and attempt == 0:
                 time.sleep(1)
                 continue
-            raise APIMartError(
-                f"APIMart 参考图上传失败 HTTP {code}: {_safe_error_detail(body)}"
+            raise APIMartNotSubmitted(
+                f"APIMart 参考图上传失败 HTTP {code}，未提交生图任务。",
+                stage="reference_upload", http_status=code,
             )
-    raise APIMartError("APIMart 参考图上传失败")
+    raise APIMartNotSubmitted("APIMart 参考图上传失败，未提交生图任务。", stage="reference_upload")
 
 
 def upload_data_url(value: str, api_key: str) -> str:
@@ -441,7 +460,7 @@ def _prepare_reference_urls_for_route(
         elif value.startswith(("https://", "http://")):
             prepared.append(value)
         else:
-            raise APIMartError("APIMart 参考图必须是图片 data URL 或公开 URL")
+            raise APIMartNotSubmitted("APIMart 参考图必须是图片 data URL 或公开 URL")
     return prepared, selected_direct
 
 
@@ -490,11 +509,12 @@ def _submit_image_task_for_route(prompt: str,
     if task_id:
         return task_id, selected_direct
     if 400 <= code < 500:
-        raise APIMartError(
-            f"APIMart 明确拒绝提交 HTTP {code}: {_safe_error_detail(body)}"
+        raise APIMartNotSubmitted(
+            f"APIMart 明确拒绝提交 HTTP {code}，未创建生图任务。",
+            stage="submit", http_status=code,
         )
     raise APIMartOutcomeUnknown(
-        "", f"APIMart 提交结果不明 HTTP {code}: {_safe_error_detail(body)}"
+        "", f"APIMart 提交结果不明 HTTP {code}", http_status=code,
     )
 
 
@@ -591,7 +611,7 @@ def default_api_call(prompt: str,
             })
         except Exception as exc:
             raise APIMartOutcomeUnknown(
-                task_id, "APIMart 任务已提交但本地断点保存失败",
+                task_id, "APIMart 任务已提交但本地断点保存失败", stage="checkpoint",
             ) from exc
     result_url = poll_image_task(task_id, api_key, direct=selected_direct)
     _remember_result_route(result_url, selected_direct)
@@ -605,7 +625,7 @@ def default_api_call(prompt: str,
             })
         except Exception as exc:
             raise APIMartOutcomeUnknown(
-                task_id, "APIMart 已返回结果但本地断点保存失败",
+                task_id, "APIMart 已返回结果但本地断点保存失败", stage="checkpoint",
             ) from exc
     return result_url
 

@@ -52,11 +52,40 @@ def test_resume_paid_planner_without_rebuying_or_losing_owner(task, monkeypatch,
     planner_key.assert_not_called()
     state = runner.get_task_status(task.name)
     assert state["status"] == "pricing_required"
+    assert state["mode"] == "real"
     assert state["user_id"] == 73
     assert images.call_count == 1
     assert images.call_args.args[0]["screens"] == sample()["screens"]
     remote.assert_not_called()
     assert list(ledger.load()["operations"]) == ["planner"]
+
+
+@pytest.mark.parametrize("schema", ["v1", "v2"])
+@pytest.mark.parametrize("paid", [True, False])
+def test_saved_plan_mode_tracks_receipt_not_current_planner_key(task, monkeypatch, schema, paid):
+    plan = sample() if schema == "v2" else {"product_meta": {"name": "产品"}, "planning": {"block_order": ["hero"]}}
+    runner._atomic_write_json(task / "_planning.json", plan)
+    if paid:
+        ledger = pricing.CostJournal(task)
+        ledger.begin("planner", quote(), .03)
+        ledger.finish("planner", "completed")
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    remote = Mock(side_effect=AssertionError("saved plan must not repurchase planner"))
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", remote)
+    count = len(plan.get("screens") or ["hero"])
+    blocks = [{"block_id": str(i), "success": True, "raw_url": "https://example.invalid/image.jpg"} for i in range(count)]
+    def assemble(directory, *_):
+        Image.effect_noise((600, 800), 40).convert("RGB").save(directory / "assembled.png")
+        return "/static/ai_refine_v2/interrupted/assembled.png"
+    monkeypatch.setattr(runner, "_run_real_generator_v2" if schema == "v2" else "_run_real_generator", lambda *_: (blocks, .3))
+    monkeypatch.setattr(runner, "_run_assembler_v2" if schema == "v2" else "_run_assembler", assemble)
+    # A cached mock plan remains mock even if a planner key becomes available later.
+    runner._worker(task.name, TEXT, "", "产品", "" if paid else "planner-key", "image-key", mode=schema)
+    state = runner.get_task_status(task.name)
+    assert state["status"] == "success", state.get("error")
+    assert state["mode"] == ("real" if paid else "partial-mock")
+    assert runner._read_json(task / "_summary.json")["mode"] == state["mode"]
+    remote.assert_not_called()
 
 
 def test_recover_endpoint_still_rejects_another_owner(task, monkeypatch):
@@ -70,6 +99,35 @@ def test_recover_endpoint_still_rejects_another_owner(task, monkeypatch):
     with application.app.test_request_context(method="POST"), pytest.raises(Forbidden):
         application.ai_refine_v2_recover.__wrapped__(task.name)
     recover.assert_not_called()
+
+
+def test_reference_upload_503_stays_known_unsubmitted_after_restart(task, monkeypatch):
+    import ai_image_apimart as adapter
+    monkeypatch.setattr("pricing_config.MAX_REFINE_COST_PER_RUN", 30)
+    monkeypatch.setattr(pricing, "read_quote", lambda **kw: quote())
+    monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
+    monkeypatch.setattr(adapter, "_http_post_image_upload", lambda *a, **kw: (503, {"error": "provider_unavailable"}))
+    post = Mock(side_effect=AssertionError("upload failed: generation must never be submitted"))
+    monkeypatch.setattr(adapter, "_http_post_json", post)
+    with adapter._UPLOAD_CACHE_LOCK:
+        adapter._UPLOAD_CACHE.clear()
+    runner._atomic_write_json(task / "_planning.json", sample())
+    ledger = pricing.CostJournal(task)
+    ledger.begin("planner", quote(), .03)
+    ledger.finish("planner", "completed")
+    reference = task / "reference.png"
+    Image.new("RGB", (80, 80), "#78ab12").save(reference)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    runner._worker_v2(task.name, TEXT, str(reference), "产品", "", "image-key")
+    assert runner.get_task_status(task.name)["status"] == "failed"
+    runner._TASKS.clear()
+    assert runner.get_task_status(task.name)["status"] == "failed"
+    with pytest.raises(ValueError):
+        runner.start_task_recovery(task.name, "image-key")
+    post.assert_not_called()
+    assert ledger.load()["operations"]["image:1"]["not_submitted"] is True
+    assert ledger.summary()["reserved_cny"] == 0
+    assert ledger.summary()["pending_bill_cny"] == .03
 
 
 def checkpoint(task):

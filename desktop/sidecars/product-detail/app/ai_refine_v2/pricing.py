@@ -35,6 +35,21 @@ class RequestOutcomeUnknown(RuntimeError):
     outcome_unknown = True
 
 
+def _image_failure_diagnostic(exc):
+    """Keep bounded metadata only; exception messages can contain keys or bodies."""
+    allowed_types = {"APIMartError", "APIMartNotSubmitted", "APIMartOutcomeUnknown",
+                     "APIMartTaskFailed", "APIMartReferenceUploadTransportError",
+                     "TypeError", "ValueError", "RuntimeError", "TimeoutError", "URLError", "OSError"}
+    error_type = type(exc).__name__
+    stage = getattr(exc, "stage", "unknown")
+    diagnostic = {"error_type": error_type if error_type in allowed_types else "Exception",
+                  "stage": stage if stage in {"reference_prepare", "reference_upload", "submit", "poll", "checkpoint"} else "unknown"}
+    status = getattr(exc, "http_status", None)
+    if type(status) is int and 100 <= status <= 599:
+        diagnostic["http_status"] = status
+    return diagnostic
+
+
 def money(value):
     return math.ceil((float(value) - 1e-10) * 10000) / 10000
 
@@ -173,16 +188,16 @@ class CostJournal:
         data = self.load()
         operations = list(data["operations"].values())
         in_flight = sum(op["reserved_cny"] for op in operations if op["status"] in {"submitting", "outcome_unknown"})
-        pending_bill = sum(op["reserved_cny"] for op in operations if op["status"] in {"completed", "failed"})
+        pending_bill = sum(op["reserved_cny"] for op in operations if op["status"] in {"completed", "failed"} and not op.get("not_submitted"))
         return {"version": 1, "estimated_cny": data.get("estimated_cny"),
                 "reserved_cny": money(in_flight), "pending_bill_cny": money(pending_bill),
-                "actual_cny": None, "bill_status": "pending" if operations else "not_submitted",
+                "actual_cny": None, "bill_status": "pending" if any(not op.get("not_submitted") for op in operations) else "not_submitted",
                 "quote": data.get("quote"), "note": "预留和估算不是实际扣款，账单待核对"}
 
     def _ensure_room(self, data, addition):
         from pricing_config import MAX_REFINE_COST_PER_RUN
         cap = _positive(MAX_REFINE_COST_PER_RUN)
-        committed = sum(op["reserved_cny"] for op in data["operations"].values())
+        committed = sum(op["reserved_cny"] for op in data["operations"].values() if not op.get("not_submitted"))
         if money(committed + addition) > cap:
             raise PricingRequired(f"当前方案保守预留约 ¥{committed + addition:.2f}，超过后台单任务上限 ¥{cap:.2f}；方案已保留，尚未提交后续生图。")
 
@@ -266,6 +281,8 @@ class CostJournal:
             previous = [op for name, op in data["operations"].items() if name.startswith("image:")]
             if any(op["status"] == "outcome_unknown" for op in previous):
                 raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。")
+            if any(op.get("not_submitted") for op in previous):
+                raise PricingRequired("原生图步骤在提交前失败，已停止后续请求；不会自动重新购买。")
             if len(previous) >= data.get("image_count", 0):
                 raise PricingRequired("生成张数超出已核价方案，已停止新增请求。")
             operation = f"image:{len(previous) + 1}"
@@ -279,11 +296,18 @@ class CostJournal:
         try:
             result = function(*args, lifecycle_callback=checkpoint, **kwargs)
         except Exception as exc:
-            from ai_image_apimart import APIMartTaskFailed
-            self.finish(operation, "failed" if isinstance(exc, APIMartTaskFailed) else "outcome_unknown", **receipt)
-            if isinstance(exc, APIMartTaskFailed):
+            from ai_image_apimart import APIMartNotSubmitted, APIMartTaskFailed
+            if getattr(exc, "task_id", ""):
+                receipt.setdefault("provider_task_id", exc.task_id)
+            not_submitted = isinstance(exc, APIMartNotSubmitted) and not receipt
+            known_failure = not_submitted or isinstance(exc, APIMartTaskFailed)
+            diagnostic = _image_failure_diagnostic(exc)
+            self.finish(operation, "failed" if known_failure else "outcome_unknown",
+                        not_submitted=not_submitted, diagnostic=diagnostic, **receipt)
+            if known_failure:
                 raise
-            raise RequestOutcomeUnknown("生图请求结果尚未确认，已保留原回执与预留费用，禁止重提。") from None
+            detail = "/".join(str(value) for value in diagnostic.values())
+            raise RequestOutcomeUnknown(f"生图请求结果尚未确认（{detail}），已保留原回执与预留费用，禁止重提。") from None
         receipt.setdefault("raw_url", result)
         self.finish(operation, "completed", **receipt)
         return result
