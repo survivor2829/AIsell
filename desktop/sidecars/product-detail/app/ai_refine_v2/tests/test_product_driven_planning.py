@@ -39,6 +39,14 @@ def sample(with_specs=True):
 
 
 def response(plan):
+    plan = copy.deepcopy(plan)
+    plan.setdefault("visual_strategy_version", "selling-point-evidence-v1")
+    plan.setdefault("primary_demonstration_id", None)
+    for i, screen in enumerate(plan.get("screens", [])):
+        screen.setdefault("visual_brief", {
+            "scene": "办公楼", "framing": f"取景{i}", "product_action": "依照参考图展示",
+            "visual_evidence": screen.get("title", ""), "layout": f"布局{i}",
+        })
     return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
 
@@ -68,6 +76,27 @@ def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
     prompt = "画面上方约25%区域放标题，顶部约15%区域留空，留白约8%，清洁效率提升28%。"
     assert planner._find_unbacked_commercial_claims(prompt, TEXT, allow_layout=True) == ["28%"]
     assert set(planner._find_unbacked_commercial_claims(prompt, TEXT)) == {"25%", "15%", "8%", "28%"}
+
+
+def test_negative_logo_and_graphic_occupancy_are_not_commercial_claims():
+    plan = sample()
+    plan["screens"][0]["prompt"] += "不添加品牌logo。Do not add a logo."
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    plan["screens"][0]["prompt"] += "添加新品牌logo。"
+    assert any("主动新增" in w for w in planner._validate_schema_v2(plan, TEXT))
+    text = "产品居左占约45%，右侧信息面板占约40%，表格占约80%，产品缩放在角落占约12%，清洁效率提升45%。"
+    assert planner._find_unbacked_commercial_claims(text, TEXT, allow_layout=True) == ["45%"]
+
+
+def test_fresh_plans_require_visual_strategy_and_primary_demonstration_first():
+    plan = sample()
+    assert any("visual_strategy_version" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
+    fresh = response(plan)["choices"][0]["message"]["content"]
+    plan = json.loads(fresh)
+    plan["primary_demonstration_id"] = "p2"
+    assert any("作业效果" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
+    plan["primary_demonstration_id"] = "p1"
+    assert planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True) == []
 
 
 def test_spec_list_typography_preserves_facts():

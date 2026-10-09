@@ -476,10 +476,18 @@ _LAYOUT_HINTS_V2: dict[str, tuple[str, ...]] = {
 }
 
 _POSITIVE_LOGO_INSTRUCTION_RE = re.compile(
-    r"(?:\b(?:add|invent|create|design|draw)\b.{0,80}\b(?:logo|trademark)\b"
-    r"|(?:添加|生成|设计|绘制|编造).{0,40}(?:logo|商标|品牌标识))",
+    r"(?:\b(?:add|invent|create|design|draw)\b[^。；;\n,，.]{0,80}?\b(?:logos?|trademarks?)\b"
+    r"|(?:添加|生成|设计|绘制|编造)[^。；;\n,，.]{0,40}?(?:logo|商标|品牌标识))",
     re.IGNORECASE | re.DOTALL,
 )
+
+
+def _has_positive_logo_instruction(prompt: str) -> bool:
+    for match in _POSITIVE_LOGO_INSTRUCTION_RE.finditer(prompt):
+        prefix = prompt[max(0, match.start() - 30):match.start()]
+        if not re.search(r"(?:\bdo\s+not|\bdon't|\bnever|不要|不得|不可|禁止|严禁|切勿|不)\s*$", prefix, re.I):
+            return True
+    return False
 
 _NUMERIC_COMMERCIAL_CLAIM_RE = re.compile(
     r"(?:全国\s*)?(?P<value>\d+(?:\.\d+)?)\s*(?P<plus>\+?)\s*"
@@ -522,7 +530,9 @@ _LAYOUT_PERCENT_RE = re.compile(
     + _LAYOUT_PERCENT + r"\s*区域"
     + r"|(?:四周|左右|上下)?留白\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
     + r"|(?:occup(?:y|ies|ying)|takes?\s+up)\s*(?:(?:about|approximately|roughly)\s+)?"
-    + _LAYOUT_PERCENT + r"\s+(?:of\s+)?(?:the\s+)?(?:frame|canvas|layout)\b",
+    + _LAYOUT_PERCENT + r"\s+(?:of\s+)?(?:the\s+)?(?:frame|canvas|layout)\b"
+    + r"|(?:产品|主体|表格|信息面板|图标|样本)(?:居左|居右|居中|居中央|局部|缩放在角落)?"
+    + r"占\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT,
     re.IGNORECASE,
 )
 
@@ -649,6 +659,7 @@ def _validate_schema_v2(
     parsed: dict,
     product_text: Optional[str] = None,
     product_title: Optional[str] = None,
+    *, require_visual_strategy: bool = False,
 ) -> list[str]:
     """v2 schema 校验. 返回 warning list (空 = 合规, 非空 = 触发重试).
 
@@ -664,6 +675,11 @@ def _validate_schema_v2(
     if not isinstance(parsed, dict):
         return ["data 不是 dict"]
     product_driven = parsed.get("planning_version") == PLANNING_VERSION
+    if require_visual_strategy:
+        if parsed.get("visual_strategy_version") != "selling-point-evidence-v1":
+            w.append("visual_strategy_version 必须为 selling-point-evidence-v1；新策划不能省略逐屏视觉设计")
+        if "primary_demonstration_id" not in parsed:
+            w.append("新策划必须声明 primary_demonstration_id，有实际用途时指定对应卖点，无演示依据时用null")
     min_screens = 1 if product_driven else _MIN_SCREEN_COUNT_V2
 
     # product_meta
@@ -770,7 +786,7 @@ def _validate_schema_v2(
                         f"({len(missing_negative_parts)} 段未出现在末尾)"
                     )
 
-                if _POSITIVE_LOGO_INSTRUCTION_RE.search(p):
+                if _has_positive_logo_instruction(p):
                     w.append(
                         f"screens[{i}].prompt 含主动新增 logo/商标的指令"
                     )
@@ -945,6 +961,13 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
         warnings.append("只能一张封面；有参数恰好一张参数图，没有参数不出参数图")
     if specs and roles and roles[-1] != "spec_table":
         warnings.append("参数图放在最后")
+    demonstration = parsed.get("primary_demonstration_id")
+    if demonstration is not None and (
+        demonstration not in ids or len(screens) < 2
+        or not isinstance(screens[1], dict)
+        or screens[1].get("selling_point_id") != demonstration
+    ):
+        warnings.append("核心用途/作业效果对应卖点必须紧接封面，不能被参数图解挤到后面")
     if not str((parsed.get("style_dna") or {}).get("rationale") or "").strip():
         warnings.append("style_dna.rationale 必须解释产品与风格的关系")
     return warnings
@@ -1105,6 +1128,7 @@ def plan_v2(
                 parsed,
                 product_text=clean_product_text,
                 product_title=clean_product_title,
+                require_visual_strategy=True,
             )
             if parsed.get("planning_version") != PLANNING_VERSION:
                 schema_warnings.append(f"planning_version 必须为 {PLANNING_VERSION}")
