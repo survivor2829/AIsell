@@ -169,6 +169,7 @@ def _persist_recovery(
     status: str,
     error: str = "",
     schema_mode: str = "",
+    code: str = "",
 ) -> dict:
     """Persist provider URLs and local download state before terminal assembly."""
     planned, success, failed = _result_counts(blocks, planned_count)
@@ -187,6 +188,7 @@ def _persist_recovery(
         "raw_urls": [str(block.get("raw_url") or "") for block in blocks],
         "blocks": blocks,
         "error": str(error or ""),
+        "code": str(code or ""),
         "updated_at": time.time(),
     }
     _atomic_write_json(task_dir / "_recovery.json", payload)
@@ -266,6 +268,7 @@ def _status_from_record(task_id: str, data: dict, *, terminal: bool) -> dict:
         "success_count": success,
         "failed_count": failed,
         "error": str(data.get("error") or ""),
+        "code": str(data.get("code") or ""),
         "error_trace": "",
     }
 
@@ -1011,6 +1014,7 @@ def _record_worker_exception(
     tb = traceback.format_exc()
     outcome_unknown = bool(getattr(exc, "outcome_unknown", False))
     from ai_refine_v2.pricing import CostJournal
+    operations = {}
     try:
         operations = CostJournal(task_dir).load()["operations"]
         outcome_unknown = outcome_unknown or any(
@@ -1028,10 +1032,31 @@ def _record_worker_exception(
             if isinstance(block, dict)
         )
     )
+    # A missing/empty checkpoint cannot turn a paid image receipt into a known
+    # failure. This includes repeated recovery after the first attempt persisted
+    # an empty unknown record; retain the original journal for investigation.
+    if not provider_evidence and any(
+        name.startswith("image:") and not operation.get("not_submitted")
+        and operation["status"] in {"completed", "submitting", "outcome_unknown"}
+        for name, operation in operations.items()
+    ):
+        outcome_unknown = True
+    recoverable = bool(recovery and provider_evidence)
+    if outcome_unknown:
+        terminal_status = "outcome_unknown"
+        progress_msg = f"结果不明，已停止自动重提: {exc}"
+    elif recoverable:
+        terminal_status = "recovery_required"
+        progress_msg = f"付费结果已保存，禁止重新生图，等待恢复: {exc}"
+    else:
+        terminal_status = "failed"
+        progress_msg = f"失败: {exc}"
+    error_code = str(getattr(exc, "code", ""))
     if recovery is not None:
         recovery.update(
-            status="outcome_unknown" if outcome_unknown else ("recovery_required" if provider_evidence else "failed"),
+            status=terminal_status,
             error=str(exc),
+            code=error_code,
             updated_at=time.time(),
         )
         _atomic_write_json(task_dir / "_recovery.json", recovery)
@@ -1044,22 +1069,20 @@ def _record_worker_exception(
             success_count=int(recovery.get("success_count", 0) or 0),
             failed_count=int(recovery.get("failed_count", 0) or 0),
         )
-    recoverable = bool(recovery and provider_evidence)
-    if outcome_unknown:
-        terminal_status = "outcome_unknown"
-        progress_msg = f"结果不明，已停止自动重提: {exc}"
-    elif recoverable:
-        terminal_status = "recovery_required"
-        progress_msg = f"付费结果已保存，禁止重新生图，等待恢复: {exc}"
     else:
-        terminal_status = "failed"
-        progress_msg = f"失败: {exc}"
+        # Planner/schema failures precede the first image checkpoint. Persist
+        # their known outcome too, so a restart cannot mistake the completed
+        # planner receipt for an uncertain POST and block every new task.
+        inputs = _read_json(task_dir / "_input.json") or {}
+        _persist_recovery(task_dir, [], 0.0, 0, status=terminal_status,
+                          error=str(exc), code=error_code,
+                          schema_mode=str(inputs.get("schema_mode") or ""))
     print(f"[{log_prefix}] task {task_id} {terminal_status}:\n{tb}")
     _set(
         task_id,
         status=terminal_status,
         error=str(exc),
-        code=str(getattr(exc, "code", "")),
+        code=error_code,
         error_trace=tb,
         progress_msg=progress_msg,
     )

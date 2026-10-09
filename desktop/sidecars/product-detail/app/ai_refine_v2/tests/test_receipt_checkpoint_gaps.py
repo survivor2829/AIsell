@@ -422,3 +422,80 @@ def test_repricing_new_task_still_uploads_reference_before_buying_planner(task, 
     assert events == ["quote", "quote", "upload", "planner"]
     assert not runner._read_json(task / "_input.json").get("reference_preflight_required")
     assert pricing.CostJournal(task).load()["operations"] == {}
+
+
+@pytest.mark.parametrize("legacy_restart", [False, True])
+def test_planner_validation_failure_remains_failed_after_restart_without_rebuying(task, monkeypatch, legacy_restart):
+    rejected = response({"planning_version": refine_planner.PLANNING_VERSION,
+                         "capacity_exceeded": True, "required_screen_count": 18})
+    remote = Mock(return_value=rejected)
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", remote)
+    images = Mock(side_effect=AssertionError("planner rejected: no image purchase allowed"))
+    monkeypatch.setattr(runner, "_run_real_generator_v2", images)
+    ledger = pricing.CostJournal(task)
+    if legacy_restart:
+        # Historical software saved the paid response but lost its schema error
+        # on restart. The supported recovery action replays that response only.
+        ledger.begin("planner", quote(), .03)
+        ledger.finish("planner", "completed")
+        runner._atomic_write_json(task / "_planner_response.json", rejected)
+        assert runner.get_task_status(task.name)["status"] == "outcome_unknown"
+        monkeypatch.setattr(runner.threading, "Thread", lambda *, target, args, **kw:
+                            SimpleNamespace(start=lambda: target(*args)))
+        runner.start_task_recovery(task.name, "image-key")
+    else:
+        runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+        runner._worker_v2(task.name, TEXT, "", "产品", "planner-key", "image-key")
+    state = runner.get_task_status(task.name)
+    assert state["status"] == "failed", state
+    assert state["code"] == "AI_REFINE_TOO_MANY_SCREENS"
+    assert remote.call_count == (0 if legacy_restart else 1)
+    assert ledger.load()["operations"]["planner"]["status"] == "completed"
+    assert list(ledger.load()["operations"]) == ["planner"]
+    runner._TASKS.clear()
+    restarted = runner.get_task_status(task.name)
+    assert restarted["status"] == "failed"
+    assert restarted["code"] == "AI_REFINE_TOO_MANY_SCREENS"
+    assert restarted["user_id"] == 73
+    assert "超过15张" in restarted["error"]
+    assert restarted["costs"]["reserved_cny"] == 0
+    assert restarted["costs"]["actual_cny"] is None
+    with pytest.raises(ValueError, match="不可恢复"):
+        runner.start_task_recovery(task.name, "image-key")
+    images.assert_not_called()
+
+
+def test_local_validation_error_cannot_clear_an_uncertain_paid_request(task):
+    ledger = pricing.CostJournal(task)
+    ledger.begin("planner", quote(), .03)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    runner._record_worker_exception(task.name, task,
+        refine_planner.ProductInputError("AI_REFINE_TOO_MANY_SCREENS", "资料需要精简"),
+        log_prefix="test")
+    runner._TASKS.clear()
+    state = runner.get_task_status(task.name)
+    assert state["status"] == "outcome_unknown"
+    assert state["costs"]["reserved_cny"] == .03
+    assert ledger.load()["operations"]["planner"]["status"] == "submitting"
+
+
+def test_repeated_recovery_without_checkpoint_never_downgrades_paid_image(task, monkeypatch):
+    import ai_image_apimart as adapter
+    ledger = pricing.CostJournal(task)
+    ledger.set_plan(quote(), 1)
+    ledger.begin("image:1", quote(), quote()["image_unit_cny"], block_id="hero")
+    ledger.finish("image:1", "completed", provider_task_id="original-paid",
+                  raw_url="https://example.invalid/paid.png")
+    before = ledger.path.read_bytes()
+    submit = Mock(side_effect=AssertionError("must never buy another image"))
+    monkeypatch.setattr(adapter, "_http_post_json", submit)
+    monkeypatch.setattr(runner.threading, "Thread", lambda *, target, args, **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    for _ in range(2):
+        assert runner.get_task_status(task.name)["status"] == "outcome_unknown"
+        runner.start_task_recovery(task.name, "image-key")
+        runner._TASKS.clear()
+        assert runner.get_task_status(task.name)["status"] == "outcome_unknown"
+        assert ledger.path.read_bytes() == before
+    assert runner._read_json(task / "_recovery.json")["blocks"] == []
+    submit.assert_not_called()
