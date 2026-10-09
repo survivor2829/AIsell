@@ -335,24 +335,26 @@ class GatewayTest(unittest.TestCase):
         self.assertIsNone(GatewayConfig.from_environment({}).apimart_open)
 
     def test_apimart_proxy_failure_never_falls_back_or_reposts(self):
-        calls = []
-
-        def failed_proxy(operation, timeout):
-            calls.append(operation)
-            raise urllib.error.URLError("http://user:fixture-password@proxy.invalid")
-
-        self.config.apimart_open = failed_proxy
         token = self.session()
-        headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": "apimart-proxy-failure"}
-        for _ in range(2):
-            with self.assertRaises(urllib.error.HTTPError) as error:
-                self.post_json("/v1/provider-gateway/apimart/images/generations", {}, headers)
-            self.assertEqual(error.exception.code, 503)
-            self.assertEqual(error.exception.headers.get("X-Xiaoxi-Transport-Phase"), "awaiting_headers")
-            self.assertEqual(error.exception.headers.get("X-Xiaoxi-Transport-Error"), "URLError")
-            self.assertNotIn("fixture-password", str(error.exception.headers))
-            self.assertEqual(json.load(error.exception), {"error": "provider_unavailable"})
-        self.assertEqual(len(calls), 1)
+        for index, (reason, kind) in enumerate((
+            ("http://user:fixture-password@proxy.invalid", "URLError"),
+            (ssl.SSLEOFError("fixture-password"), "URLError.SSLEOFError"),
+        )):
+            calls = []
+            def failed_proxy(operation, timeout):
+                calls.append(operation)
+                raise urllib.error.URLError(reason)
+            self.config.apimart_open = failed_proxy
+            headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": f"apimart-proxy-failure-{index}"}
+            for _ in range(2):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    self.post_json("/v1/provider-gateway/apimart/images/generations", {}, headers)
+                self.assertEqual(error.exception.code, 503)
+                self.assertEqual(error.exception.headers.get("X-Xiaoxi-Transport-Phase"), "awaiting_headers")
+                self.assertEqual(error.exception.headers.get("X-Xiaoxi-Transport-Error"), kind)
+                self.assertNotIn("fixture-password", str(error.exception.headers))
+                self.assertEqual(json.load(error.exception), {"error": "provider_unavailable"})
+            self.assertEqual(len(calls), 1)
         self.assertEqual(self.upstream_requests, [])
 
     def test_invalid_apimart_proxy_configuration_does_not_echo_the_url(self):

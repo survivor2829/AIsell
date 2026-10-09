@@ -702,10 +702,14 @@ class Handler(BaseHTTPRequestHandler):
         def transport_failure(status, code, error):
             # Keep bounded diagnostics in the durable receipt, never exception
             # text: URLError.reason can contain proxy passwords or signed URLs.
+            kind = type(error).__name__
+            reason = getattr(error, "reason", None)
+            if isinstance(reason, BaseException):
+                kind += "." + type(reason).__name__
             return self._json_result(status, {"error": code}, {
                 "X-Xiaoxi-Error-Origin": "gateway_transport",
                 "X-Xiaoxi-Transport-Phase": phase,
-                "X-Xiaoxi-Transport-Error": type(error).__name__[:64],
+                "X-Xiaoxi-Transport-Error": kind[:64],
             })
 
         try:
