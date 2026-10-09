@@ -706,6 +706,7 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             "title": s.get("title") or "",
             "planning_version": planning_v2.get("planning_version"),
             "style_dna": planning_v2.get("style_dna") or {},
+            "visual_brief": s.get("visual_brief") or {},
             "subtitle": s.get("subtitle") or "",
             "selling_point_id": s.get("selling_point_id"),
             "evidence": s.get("evidence") or [],
@@ -765,6 +766,9 @@ def _generate_one_block_v2(
         effective_prompt = _INJECTION_PREFIX_V3_LEGACY + (
             "Apply the following shared visual direction to the environment and typography only; "
             "never repaint or redesign Image 1. Use a 3:4 portrait composition. "
+            "Image 1 anchors product identity, not a frozen pose or a cutout pasted onto every background. "
+            "Shared direction unifies color, lighting and typography; this screen's visual brief determines "
+            "framing, product scale, action and layout. Preserve known visible parts when adjusting the view. "
             "Large bold Chinese headline, short explanation, generous spacing, readable on a phone. "
             "Do not create hidden/internal structures or unsupported performance demonstrations. "
             "Shared direction: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
@@ -772,6 +776,8 @@ def _generate_one_block_v2(
             + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or []}, ensure_ascii=False)
             + "\nOne image, one selling point. Source evidence: "
             + json.dumps(block.get("evidence") or [], ensure_ascii=False)
+            + "\nScreen-specific visual brief (instructions, not additional printed words): "
+            + json.dumps(block.get("visual_brief") or {}, ensure_ascii=False)
             + "\n" + prompt
         )
     elif image_data_url:

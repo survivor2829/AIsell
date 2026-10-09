@@ -181,6 +181,41 @@ def test_every_new_image_gets_original_reference_and_shared_style(tmp_path):
         generator.generate_v2(sample(), api_key="fake", api_call_fn=image_call)
 
 
+def test_visual_briefs_reject_repeated_composition_before_image_charges():
+    plan = sample()
+    plan["visual_strategy_version"] = "selling-point-evidence-v1"
+    for i, screen in enumerate(plan["screens"]):
+        screen["visual_brief"] = {
+            "scene": "办公楼通道", "framing": f"画面{i}的取景",
+            "product_action": "按原图外形展示", "visual_evidence": screen["title"],
+            "layout": f"画面{i}的图文层级",
+        }
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    plan["screens"][2]["visual_brief"] = copy.deepcopy(plan["screens"][1]["visual_brief"])
+    assert any("重复构图" in w for w in planner._validate_schema_v2(plan, TEXT))
+    plan["screens"][2]["visual_brief"] = {}
+    assert any("visual_brief" in w for w in planner._validate_schema_v2(plan, TEXT))
+    # Saved plans remain readable/replayable under their original contract.
+    assert planner._validate_schema_v2(sample(), TEXT) == []
+
+
+def test_visual_brief_reaches_image_model_without_freezing_reference_pose(tmp_path):
+    plan = sample()
+    brief = {"scene": "办公楼", "framing": "贴地广角中景",
+             "product_action": "向前洗地", "visual_evidence": "身后轨迹与两侧污物同框",
+             "layout": "上部标题，下部清洁过程"}
+    plan["screens"][1]["visual_brief"] = brief
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (40, 40), "#ab28c4").save(reference)
+    calls = []
+    def image_call(prompt, images, *args, **kwargs):
+        calls.append(prompt)
+        return "https://example.invalid/generated.png"
+    generator.generate_v2(plan, str(reference), api_key="fake", api_call_fn=image_call, concurrency=1)
+    assert json.dumps(brief, ensure_ascii=False) in calls[1]
+    assert "not a frozen pose" in calls[1]
+
+
 def make_parent(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_OUTPUT_BASE", tmp_path)
     monkeypatch.setattr(runner, "_TASKS", {})

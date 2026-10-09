@@ -696,6 +696,17 @@ class Handler(BaseHTTPRequestHandler):
     def _proxy_upstream(self, method, provider, target, body):
         operation = Request(target, data=body, headers=self._upstream_headers(provider), method=method)
         response = None
+        phase = "awaiting_headers"
+
+        def transport_failure(status, code, error):
+            # Keep bounded diagnostics in the durable receipt, never exception
+            # text: URLError.reason can contain proxy passwords or signed URLs.
+            return self._json_result(status, {"error": code}, {
+                "X-Xiaoxi-Error-Origin": "gateway_transport",
+                "X-Xiaoxi-Transport-Phase": phase,
+                "X-Xiaoxi-Transport-Error": type(error).__name__[:64],
+            })
+
         try:
             upstream_open = self.config.upstream_open
             if provider == "apimart" and self.config.apimart_open is not None:
@@ -706,6 +717,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             status = int(getattr(response, "status", getattr(response, "code", 200)))
             response_headers = getattr(response, "headers", {}) or {}
+            phase = "reading_body"
             raw = response.read(self.config.max_response_bytes + 1)
         except HTTPError as error:
             status = int(error.code or 502)
@@ -714,21 +726,10 @@ class Handler(BaseHTTPRequestHandler):
                 raw = error.read(self.config.max_response_bytes + 1)
             except Exception:
                 raw = b""
-        except (TimeoutError, socket.timeout):
-            return self._json_result(
-                504, {"error": "provider_timeout"},
-                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
-            )
-        except (URLError, OSError):
-            return self._json_result(
-                503, {"error": "provider_unavailable"},
-                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
-            )
-        except Exception:
-            return self._json_result(
-                503, {"error": "provider_unavailable"},
-                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
-            )
+        except (TimeoutError, socket.timeout) as error:
+            return transport_failure(504, "provider_timeout", error)
+        except Exception as error:
+            return transport_failure(503, "provider_unavailable", error)
         finally:
             try:
                 if response is not None:

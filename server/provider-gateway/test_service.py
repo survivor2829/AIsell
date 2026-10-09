@@ -348,6 +348,9 @@ class GatewayTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as error:
                 self.post_json("/v1/provider-gateway/apimart/images/generations", {}, headers)
             self.assertEqual(error.exception.code, 503)
+            self.assertEqual(error.exception.headers.get("X-Xiaoxi-Transport-Phase"), "awaiting_headers")
+            self.assertEqual(error.exception.headers.get("X-Xiaoxi-Transport-Error"), "URLError")
+            self.assertNotIn("fixture-password", str(error.exception.headers))
             self.assertEqual(json.load(error.exception), {"error": "provider_unavailable"})
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.upstream_requests, [])

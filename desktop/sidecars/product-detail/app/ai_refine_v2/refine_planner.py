@@ -899,9 +899,27 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
     if not screens or not isinstance(screens[0], dict) or screens[0].get("role") != "hero":
         warnings.append("第一张必须为封面 hero")
     refs = []
+    visual_layouts = set()
+    require_visual_brief = parsed.get("visual_strategy_version") == "selling-point-evidence-v1"
     for i, screen in enumerate(screens):
         if not isinstance(screen, dict):
             continue
+        if require_visual_brief:
+            brief = screen.get("visual_brief")
+            fields = ("scene", "framing", "product_action", "visual_evidence", "layout")
+            if not isinstance(brief, dict) or not all(
+                isinstance(brief.get(key), str) and brief[key].strip() for key in fields
+            ):
+                warnings.append(f"screens[{i}].visual_brief 缺具体场景、景别、动作、卖点画面证据或布局")
+            else:
+                signature = tuple(_normalize_claim_text(brief[key]) for key in ("framing", "layout"))
+                if signature in visual_layouts:
+                    warnings.append(f"screens[{i}] 重复构图：不能只换标题或背景，应按卖点设计画面")
+                visual_layouts.add(signature)
+                if product_text is not None and _find_unbacked_commercial_claims(
+                    " ".join(brief[key] for key in fields), product_text, allow_layout=True
+                ):
+                    warnings.append(f"screens[{i}].visual_brief 含无依据承诺")
         role, ref = screen.get("role"), screen.get("selling_point_id")
         if role in {"hero", "spec_table"}:
             if ref is not None:
