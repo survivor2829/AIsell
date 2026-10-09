@@ -1307,7 +1307,8 @@ def get_themes():
 @app.route("/")
 @login_required
 def index():
-    return render_template("workspace.html", desktop_mode=_DESKTOP_MODE)
+    return render_template("workspace.html", desktop_mode=_DESKTOP_MODE,
+                           ai_refine_bootstrap=_workspace_active_refine_task())
 
 
 @app.route("/workspace/<product_type>")
@@ -1318,7 +1319,53 @@ def build_redirect(product_type):
         "workspace.html",
         initial_product_type=product_type,
         desktop_mode=_DESKTOP_MODE,
+        ai_refine_bootstrap=_workspace_active_refine_task(),
     )
+
+
+def _workspace_active_refine_task():
+    """Read the current owner's unfinished task independently of the sidecar port."""
+    from ai_refine_v2 import pipeline_runner
+
+    owner = current_user.id
+    candidates = []
+    for path in pipeline_runner._OUTPUT_BASE.glob("*/_input.json"):
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    for modified, path in sorted(candidates, key=lambda item: item[0], reverse=True):
+        inputs = pipeline_runner._read_json(path)
+        if not isinstance(inputs, dict) or inputs.get("user_id") != owner:
+            continue
+        state = pipeline_runner.get_task_status(path.parent.name)
+        if not state or state.get("user_id") != owner:
+            continue
+        if state.get("status") not in {
+            "pending", "running_planner", "running_generator", "running_assembler", "running_recovery",
+            "outcome_unknown", "recovery_required", "pricing_required",
+        }:
+            return None
+        image_url = ""
+        original_image = str(inputs.get("product_image_url") or "")
+        static_root = Path(app.static_folder).resolve()
+        owner_root = (static_root / "uploads" / str(owner)).resolve()
+        try:
+            image_path = (static_root / original_image[len("/static/"):]
+                          if original_image.startswith("/static/") else Path(original_image)).resolve()
+            if original_image and image_path.is_relative_to(owner_root) and image_path.is_file():
+                image_url = url_for("static", filename=image_path.relative_to(static_root).as_posix())
+        except (OSError, ValueError):
+            pass
+        return {
+            "task": {"task_id": path.parent.name, "status": state["status"],
+                     "mode": state.get("mode", "unknown"), "started_at": int(modified * 1000)},
+            "inputs": {"product_title": str(inputs.get("product_title") or "")[:120],
+                       "product_text": str(inputs.get("product_text") or "")[:20000],
+                       "product_category": str(inputs.get("product_category") or ""),
+                       "product_image_url": image_url},
+        }
+    return None
 
 
 # ── 用户设置页 (P3 砍刀流后仅展示账号信息, 不再有 API Key 配置) ──

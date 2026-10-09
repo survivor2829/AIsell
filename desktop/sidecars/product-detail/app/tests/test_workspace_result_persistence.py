@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+import json
+import os
 import shutil
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
@@ -39,6 +42,39 @@ class TestWorkspaceAiResultPersistence(unittest.TestCase):
     def setUp(self):
         app.config["TESTING"] = True
         app.config["WTF_CSRF_ENABLED"] = False
+
+    def test_workspace_bootstraps_only_latest_current_owner_unfinished_task(self):
+        from ai_refine_v2 import pipeline_runner as runner
+        client, uid = _make_authed_client(self)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_OUTPUT_BASE", Path(directory)), mock.patch.object(runner, "_TASKS", {}), mock.patch.dict(app.jinja_env.globals, {"desktop_capabilities": {}}):
+            for index, (task_id, owner, state_owner) in enumerate((("older", uid, uid), ("latest", uid, uid),
+                                                 ("foreign", uid + 1, uid + 1), ("mismatch", uid, uid + 1),
+                                                 ("legacy", None, uid))):
+                task_dir = Path(directory) / task_id
+                runner._atomic_write_json(task_dir / "_input.json", {
+                    "user_id": owner, "product_title": "title-" + task_id,
+                    "product_text": "copy-" + task_id, "product_category": "设备类",
+                    "product_image_url": str(BASE_DIR / "static/uploads" / str(uid + 1) / "foreign.png"),
+                })
+                runner._atomic_write_json(task_dir / "_recovery.json", {
+                    "user_id": state_owner, "status": "outcome_unknown", "mode": "real", "blocks": [],
+                })
+                os.utime(task_dir / "_input.json", (1000 + index, 1000 + index))
+            for route in ("/", "/workspace/设备类"):
+                page = client.get(route)
+                self.assertEqual(page.status_code, 200)
+                content = page.get_data(as_text=True)
+                bootstrap = json.loads(re.search(r"const SERVER_AI_REFINE_BOOTSTRAP = (.*?);", content)[1])
+                self.assertEqual(bootstrap["task"]["task_id"], "latest")
+                self.assertEqual(bootstrap["inputs"]["product_text"], "copy-latest")
+                self.assertEqual(bootstrap["inputs"]["product_image_url"], "")
+                self.assertNotIn("title-foreign", content)
+                self.assertNotIn("copy-mismatch", content)
+                self.assertNotIn("copy-legacy", content)
+            runner._atomic_write_json(Path(directory) / "completed" / "_input.json", {"user_id": uid})
+            runner._TASKS["completed"] = runner.TaskState(task_id="completed", user_id=uid, status="success")
+            content = client.get("/").get_data(as_text=True)
+            self.assertIn("const SERVER_AI_REFINE_BOOTSTRAP = null;", content)
 
     def test_save_completed_ai_refine_result_and_restore_latest(self):
         client, uid = _make_authed_client(self)

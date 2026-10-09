@@ -943,6 +943,11 @@
   const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
   const desktopMode = {{ desktop_mode|tojson }};
   const AI_REFINE_ACTIVE_TASK_KEY = 'xiaoxi.ai-refine-v2.active-task.v1';
+  const SERVER_AI_REFINE_BOOTSTRAP = {{ ai_refine_bootstrap|default(none)|tojson }};
+  let aiRefineInputEdited = false;
+  document.addEventListener('input', event => {
+    if (['product_title_input', 'text_input'].includes(event.target.id)) aiRefineInputEdited = true;
+  });
   const AI_REFINE_NON_RETRYABLE_POLL_STATUSES = new Set([400, 401, 403, 409, 429]);
   const AI_REFINE_TERMINAL_STATUSES = new Set([
     'success', 'partial_success', 'failed', 'recovery_required', 'outcome_unknown', 'pricing_required'
@@ -1004,6 +1009,33 @@
       } catch (_) {}
     }
     return null;
+  }
+
+
+  function restoreServerAiRefineTask() {
+    const saved = SERVER_AI_REFINE_BOOTSTRAP;
+    const local = loadPersistedAiRefineTask();
+    if (!saved?.task?.task_id || (local && local.task_id !== saved.task.task_id)) return false;
+    const title = document.getElementById('product_title_input');
+    const text = document.getElementById('text_input');
+    const box = document.getElementById('upload_product');
+    if (aiRefineInputEdited || title.value || text.value || productImageUrl ||
+        box.querySelector('input[type="file"]').files.length) return false;
+    const inputs = saved.inputs || {};
+    title.value = inputs.product_title || '';
+    text.value = inputs.product_text || '';
+    if (Array.from(document.querySelectorAll('.cat-pill')).some(pill => pill.dataset.type === inputs.product_category)) {
+      currentProductType = inputs.product_category;
+    }
+    if (inputs.product_image_url) {
+      productImageUrl = inputs.product_image_url;
+      const preview = box.querySelector('.upload-preview');
+      preview.innerHTML = `<img src="${escapeHtml(productImageUrl)}" alt="已保存的产品原图"><button class="upload-remove" onclick="removeUpload(event, 'upload_product')">&times;</button>`;
+      preview.style.display = 'block';
+      box.querySelector('.upload-placeholder').style.display = 'none';
+    }
+    persistAiRefineTask({ ...local, ...saved.task, ...buildAiRefineTaskMeta(text.value, title.value) });
+    return true;
   }
 
   function clearPersistedAiRefineTask() {
@@ -2607,6 +2639,7 @@
   document.addEventListener('DOMContentLoaded', async () => {
     initAnnouncementAccessibility();
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
+    restoreServerAiRefineTask(); // 新端口没有 browser storage 时，只读接管原任务。
     await loadThemes();
     initPreviewFit();
     renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)

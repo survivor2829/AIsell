@@ -88,3 +88,7 @@
 - 稳定安装路径仍为`b15f16c`。新UI及后端通过独立组件候选EXE验收，不等于已覆盖稳定安装程序。没有推送或远程CI，没有合入main、发布。
 - 窄窗口下顶部“已是最新版本”会竖向换行，已记录为剩余界面项，未扩展本次通知修复范围。
 - 证据在`desktop/.build/cc1pro-refine-20261009/`：`prepared.json`、`submission-receipt.json`、`recovery-receipt.json`、`recovery-integrity.json`、`budget-record.json`、`reference-upload-probe.json`及`ui/candidate-ui-evidence.json`。个人素材与回执留本机，不提交Git。
+- `9f23d0d`完整源码检查、详情图本地E2E、界面构建、运行组件及组件候选组包通过；候选`candidate-26416-1791532671116-945h9t4as`保留本机，未发布。第一次封包因构建中补写本记录形成dirty tree而停止；保存文档后重新构建，未触发模型。
+- 该候选真实重开发现额外缺口：原5个任务文件SHA256全不变，GET原任务为outcome_unknown/13图/0成功，旧10模块历史不变，但浏览器任务指针为null，原标题/资料/参考图未自动回填。服务端以port 0启动、前端任务指针仅存origin关联浏览器storage，是代码中可复核的断点；未保存旧新端口数字，不将9228调试端口当作工作台端口。该项验收明确未通过，需补任务服务端只读恢复。
+- 验收后已正常退出调试实例，9228关闭，无30元临时环境变量；同一候选已普通模式打开。`ui/final-candidate-reopen-evidence.json`与`ui/final-candidate-lifecycle.json`记录结果。数据在盘不等于用户在界面能找回任务。
+- 已补服务端只读任务bootstrap，不增加公共API/数据库结构：当前owner输入与状态双重核验、图片仅限本owner上传目录；换端口或同端口刷新时回填空白资料，不覆盖编辑内容或另一任务；最新任务终结后不复活更旧unknown。20项定向检查及隔离Flask/Chromium双端口实际恢复通过，零POST、零页面错误、fixture文件哈希不变；隔离验证不代替后续候选包内重开复验。
