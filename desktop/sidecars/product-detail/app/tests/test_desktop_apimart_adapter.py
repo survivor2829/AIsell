@@ -75,6 +75,11 @@ def test_data_url_upload_is_reused_and_generation_uses_provider_url(monkeypatch)
     assert "thinking" not in payload
     assert "reasoning_effort" not in payload
     assert value not in str(payload)
+    # A new-task preflight must exercise today's upload route, not a 71h cache hit.
+    assert adapter.upload_data_url(value, "secret", force_refresh=True) == "https://cdn.invalid/reference.png"
+    assert len(upload_calls) == 2
+    assert adapter.upload_data_url(value, "secret") == "https://cdn.invalid/reference.png"
+    assert len(upload_calls) == 2
 
 
 def test_reference_upload_keeps_saved_proxy_route_then_falls_back_to_direct(monkeypatch):

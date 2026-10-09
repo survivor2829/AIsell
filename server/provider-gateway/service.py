@@ -445,8 +445,42 @@ class GatewayServer(ThreadingHTTPServer):
         self.rates = collections.OrderedDict()
         self.inflight_lock = threading.Lock()
         self.inflight = {}
+        self.price_lock = threading.Lock()
+        self.price_cache = {}
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
+
+    def apimart_public_price(self, model):
+        # Anonymous, fixed supplier metadata. Never forward the session or API key.
+        source = "https://apimart.ai/api/pricing/model?model=" + model
+        with self.price_lock:
+            cached = self.price_cache.get(model)
+            if cached and cached.get("unavailable") and 0 <= time.time() - cached["checked_at"] < 5:
+                raise ValueError("price_unavailable")
+            if cached and 0 <= time.time() - cached["checked_at"] < 120:
+                if not cached.get("unavailable"):
+                    return cached
+            opener = self.config.apimart_open or build_opener(
+                ProxyHandler({}), _NoProviderRedirect()).open
+            request = Request(source, headers={"User-Agent": "xiaoxi-price-check/1.0", "Accept": "application/json"})
+            try:
+                with opener(request, timeout=15) as response:
+                    if response.status != 200:
+                        raise ValueError("price_status")
+                    raw = response.read(1_000_001)
+                if len(raw) > 1_000_000:
+                    raise ValueError("price_response_too_large")
+                payload = json.loads(raw)
+                if (not isinstance(payload, dict) or payload.get("success") is not True
+                        or not isinstance(payload.get("data"), dict)
+                        or payload["data"].get("model_name") != model):
+                    raise ValueError("price_model_mismatch")
+            except Exception:
+                self.price_cache[model] = {"unavailable": True, "checked_at": time.time()}
+                raise
+            result = {"source": source, "checked_at": time.time(), "payload": payload}
+            self.price_cache[model] = result
+            return result
 
     def server_close(self):
         try:
@@ -909,7 +943,17 @@ class Handler(BaseHTTPRequestHandler):
         if route == PREFIX + "/capabilities":
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
-            return self._reply_json(200, {"ok": True, "schema": 1, "capabilities": self.config.capabilities()})
+            payload = {"ok": True, "schema": 1, "capabilities": self.config.capabilities()}
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            if "price_model" in query:
+                values = query["price_model"]
+                if len(values) != 1 or values[0] not in {"gpt-image-2", "gpt-image-2.5-ext"}:
+                    return self._reply_json(400, {"error": "price_model_invalid"})
+                try:
+                    payload["apimart_pricing"] = self.server.apimart_public_price(values[0])
+                except Exception:
+                    return self._reply_json(503, {"error": "price_unavailable"})
+            return self._reply_json(200, payload)
         operation = route.removeprefix(PREFIX + "/operations/") if route.startswith(PREFIX + "/operations/") else ""
         if operation:
             if not OPERATION_ID.fullmatch(operation):

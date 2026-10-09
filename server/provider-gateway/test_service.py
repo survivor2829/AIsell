@@ -160,6 +160,66 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(payload["capabilities"]["apimart"])
         self.assertNotIn("server-secret", json.dumps(payload))
 
+    def test_capabilities_public_price_uses_dedicated_route_without_credentials(self):
+        token = self.session()
+        calls = []
+        model = "gpt-image-2.5-ext"
+        price = {"success": True, "data": {"model_name": model,
+                 "billing_type": "version_resolution",
+                 "version_resolution_prices": {"sunburst": {"2K": 0.0175}}}}
+        def read_price(request, timeout):
+            calls.append((request, timeout))
+            return FakeResponse(body=json.dumps(price).encode())
+        self.config.apimart_open = read_price
+        url = self.origin + "/v1/provider-gateway/capabilities?price_model=" + model
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        for _ in range(2):
+            with urllib.request.urlopen(request) as response:
+                value = json.load(response)
+            self.assertEqual(value["apimart_pricing"]["payload"], price)
+            self.assertEqual(value["apimart_pricing"]["source"],
+                             "https://apimart.ai/api/pricing/model?model=" + model)
+            self.assertGreater(value["apimart_pricing"]["checked_at"], time.time() - 5)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0].get_method(), "GET")
+        self.assertIsNone(calls[0][0].get_header("Authorization"))
+        self.assertNotIn("server-secret", json.dumps(value))
+        self.assertEqual(self.upstream_requests, [])
+
+    def test_price_query_cannot_select_untrusted_targets_or_skip_session(self):
+        token = self.session()
+        for query, auth, status in [
+            ("gpt-image-2.5-ext", "", 401),
+            ("https://example.com/", token, 400),
+            ("gpt-image-2&price_model=gpt-image-2.5-ext", token, 400),
+        ]:
+            request = urllib.request.Request(
+                self.origin + "/v1/provider-gateway/capabilities?price_model=" + query,
+                headers={"Authorization": f"Bearer {auth}"})
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(request)
+            self.assertEqual(rejected.exception.code, status)
+        self.assertEqual(self.upstream_requests, [])
+
+    def test_unavailable_price_does_not_disable_ordinary_capabilities(self):
+        token = self.session()
+        self.config.apimart_open = mock.Mock(side_effect=urllib.error.URLError("offline"))
+        headers = {"Authorization": f"Bearer {token}"}
+        request = urllib.request.Request(self.origin +
+            "/v1/provider-gateway/capabilities?price_model=gpt-image-2.5-ext", headers=headers)
+        with self.assertRaises(urllib.error.HTTPError) as unavailable:
+            urllib.request.urlopen(request)
+        self.assertEqual(unavailable.exception.code, 503)
+        with self.assertRaises(urllib.error.HTTPError) as repeated:
+            urllib.request.urlopen(request)
+        self.assertEqual(repeated.exception.code, 503)
+        self.config.apimart_open.assert_called_once()
+        with urllib.request.urlopen(urllib.request.Request(
+                self.origin + "/v1/provider-gateway/capabilities", headers=headers)) as response:
+            ordinary = json.load(response)
+        self.assertTrue(ordinary["capabilities"]["apimart"])
+        self.assertNotIn("apimart_pricing", ordinary)
+
     def test_provider_route_requires_session_and_injects_only_server_credential(self):
         body = {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hello"}]}
         request = urllib.request.Request(

@@ -1,6 +1,9 @@
 """Process exits between journal and pipeline writes must not lose paid work."""
 from types import SimpleNamespace
 from unittest.mock import Mock
+import io
+import json
+import urllib.error
 
 import pytest
 from PIL import Image
@@ -27,6 +30,9 @@ def task(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("saved", ["response", "response_before_finish", "plan"])
 def test_resume_paid_planner_without_rebuying_or_losing_owner(task, monkeypatch, saved):
+    import ai_image_apimart as adapter
+    upload = Mock(side_effect=AssertionError("existing paid task must not preflight/upload again"))
+    monkeypatch.setattr(adapter, "upload_data_url", upload)
     monkeypatch.setattr(runner.threading, "Thread", lambda *, target, args, **kw:
                         SimpleNamespace(start=lambda: target(*args)))
     ledger = pricing.CostJournal(task)
@@ -58,6 +64,7 @@ def test_resume_paid_planner_without_rebuying_or_losing_owner(task, monkeypatch,
     assert images.call_args.args[0]["screens"] == sample()["screens"]
     remote.assert_not_called()
     assert list(ledger.load()["operations"]) == ["planner"]
+    upload.assert_not_called()
 
 
 @pytest.mark.parametrize("schema", ["v1", "v2"])
@@ -103,6 +110,8 @@ def test_recover_endpoint_still_rejects_another_owner(task, monkeypatch):
 
 def test_reference_upload_503_stays_known_unsubmitted_after_restart(task, monkeypatch):
     import ai_image_apimart as adapter
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
+    monkeypatch.setenv("REFINE_API_BASE_URL", "https://gateway.invalid/v1/provider-gateway/apimart")
     monkeypatch.setattr("pricing_config.MAX_REFINE_COST_PER_RUN", 30)
     monkeypatch.setattr(pricing, "read_quote", lambda **kw: quote())
     monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
@@ -126,6 +135,7 @@ def test_reference_upload_503_stays_known_unsubmitted_after_restart(task, monkey
         runner.start_task_recovery(task.name, "image-key")
     post.assert_not_called()
     assert ledger.load()["operations"]["image:1"]["not_submitted"] is True
+    assert ledger.load()["operations"]["image:1"]["gateway_operation_id"]
     assert ledger.summary()["reserved_cny"] == 0
     assert ledger.summary()["pending_bill_cny"] == .03
 
@@ -151,8 +161,12 @@ def test_image_receipt_survives_exit_before_pipeline_checkpoint(task, monkeypatc
     with pytest.raises(ProcessExit):
         ledger.image_call(quote(), post, block_id="hero", lifecycle_callback=crash)
     assert runner._read_json(task / "_recovery.json")["blocks"][0]["provider_task_id"] == ""
-    poll = Mock(return_value="https://example.invalid/paid-image.jpg")
-    monkeypatch.setattr(ai_image_apimart, "poll_image_task", poll)
+    poll = Mock(return_value={"data": {
+        "status": "completed", "cost": .014, "credits_cost": .14,
+        "usage": {"output_tokens": 123},
+        "result": {"images": [{"url": ["https://example.invalid/paid-image.jpg"]}]},
+    }})
+    monkeypatch.setattr(ai_image_apimart, "_http_get_json", poll)
     def download(url, destination, **kwargs):
         Image.effect_noise((600, 800), 40).convert("RGB").save(destination)
         return "system"
@@ -164,8 +178,13 @@ def test_image_receipt_survives_exit_before_pipeline_checkpoint(task, monkeypatc
     state = runner._recover_task(task.name, "image-key")
     assert state["status"] == "success", state.get("error")
     assert state["user_id"] == 73
-    assert poll.call_args.args[0] == "paid-original" and poll.call_count == 1
-    assert ledger.load()["operations"]["image:1"]["status"] == "completed"
+    assert "/tasks/paid-original?" in poll.call_args.args[0] and poll.call_count == 1
+    operation = ledger.load()["operations"]["image:1"]
+    assert operation["status"] == "completed"
+    assert operation["provider_receipt"]["cost"] == .014
+    assert operation["provider_receipt"]["credits_cost"] == .14
+    assert operation["provider_receipt"]["usage"]["output_tokens"] == 123
+    assert ledger.summary()["actual_cny"] is None
 
 
 @pytest.mark.parametrize("block_id,provider_id", [("hero", ""), ("", "unmatched-paid-id"), ("wrong-block", "paid-id")])
@@ -178,10 +197,14 @@ def test_unmatched_or_missing_receipt_never_becomes_terminal(task, monkeypatch, 
     ledger.finish("image:1", "submitting", block_id=block_id, provider_task_id=provider_id)
     poll = Mock(side_effect=AssertionError("no reliable receipt mapping"))
     monkeypatch.setattr(ai_image_apimart, "poll_image_task", poll)
+    lookup = Mock(side_effect=AssertionError("legacy receipts have no gateway operation ID"))
+    monkeypatch.setattr(ai_image_apimart, "recover_gateway_task_id", lookup)
     state = runner._recover_task(task.name, "image-key")
     assert state["status"] == "outcome_unknown"
     assert state["user_id"] == 73
     poll.assert_not_called()
+    lookup.assert_not_called()
+    assert "gateway_operation_id" not in ledger.load()["operations"]["image:1"]
 
 
 def test_legacy_receipt_matches_provider_id_without_guessing_order(task):
@@ -211,3 +234,191 @@ def test_generator_journals_stable_block_identity_before_post(task, monkeypatch)
     assert {op["block_id"] for op in operations.values()} == {
         block["block_id"] for block in refine_generator._build_blocks_v2(sample())
     }
+
+
+@pytest.mark.parametrize("receipt_status", [200, 202, 404, 409, 503])
+def test_restart_finds_gateway_receipt_without_reupload_or_resubmit(task, monkeypatch, receipt_status):
+    import ai_image_apimart as adapter
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
+    monkeypatch.setenv("REFINE_API_BASE_URL", "https://gateway.invalid/v1/provider-gateway/apimart")
+    checkpoint(task)
+    ledger = pricing.CostJournal(task)
+    ledger.set_plan(quote(), 1)
+    requests = []
+    class ProcessExit(BaseException):
+        pass
+    def crash_after_submit(request, **kwargs):
+        requests.append(request)
+        assert request.method == "POST"
+        operation = pricing.CostJournal(task).load()["operations"]["image:1"]
+        assert request.get_header("X-xiaoxi-operation-id") == operation["gateway_operation_id"]
+        raise ProcessExit()
+    monkeypatch.setattr(adapter, "_open_apimart", crash_after_submit)
+    upload = Mock(return_value=("https://example.invalid/reference.png", False))
+    monkeypatch.setattr(adapter, "_upload_data_url_for_route", upload)
+    with pytest.raises(ProcessExit):
+        ledger.image_call(quote(), adapter.default_api_call, "prompt", "data:image/png;base64,YQ==", "secret", block_id="hero")
+    original_id = ledger.load()["operations"]["image:1"]["gateway_operation_id"]
+    runner._TASKS.clear()
+    def receipt(request, **kwargs):
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.full_url == f"https://gateway.invalid/v1/provider-gateway/operations/{original_id}"
+        if receipt_status >= 400:
+            raise urllib.error.HTTPError(request.full_url, receipt_status, "fixture", {}, io.BytesIO(b'{}'))
+        body = {"data": [{"task_id": "paid-original"}]} if receipt_status == 200 else {"status": "pending"}
+        result = io.BytesIO(json.dumps(body).encode())
+        result.status = receipt_status
+        return result
+    monkeypatch.setattr(adapter, "_open_apimart", receipt)
+    poll = Mock(return_value="https://example.invalid/paid.jpg")
+    monkeypatch.setattr(adapter, "poll_image_task", poll)
+    def download(url, destination, **kwargs):
+        Image.effect_noise((600, 800), 40).convert("RGB").save(destination)
+        return "system"
+    monkeypatch.setattr(runner, "_download_image", download)
+    def assemble(directory, blocks):
+        download("", directory / "assembled.png")
+        return "/static/assembled.png"
+    monkeypatch.setattr(runner, "_run_assembler_v2", assemble)
+    state = runner._recover_task(task.name, "secret")
+    assert state["status"] == ("success" if receipt_status == 200 else "outcome_unknown")
+    assert [request.method for request in requests] == ["POST", "GET"]
+    assert upload.call_count == 1
+    operation = ledger.load()["operations"]["image:1"]
+    assert operation["gateway_operation_id"] == original_id
+    assert poll.call_count == (1 if receipt_status == 200 else 0)
+    assert ledger.summary()["reserved_cny"] == (0 if receipt_status == 200 else quote()["image_unit_cny"])
+
+
+@pytest.mark.parametrize("gateway", [False, True])
+def test_submit_disconnect_looks_up_only_its_durable_gateway_operation(task, monkeypatch, gateway):
+    import ai_image_apimart as adapter
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
+    monkeypatch.setenv("REFINE_API_BASE_URL", "https://gateway.invalid/v1/provider-gateway/apimart" if gateway else "https://api.apimart.ai/v1")
+    ledger = pricing.CostJournal(task)
+    ledger.set_plan(quote(), 1)
+    requests = []
+    def transport(request, **kwargs):
+        requests.append(request)
+        operation = ledger.load()["operations"]["image:1"]
+        if request.method == "POST":
+            assert bool(request.get_header("X-xiaoxi-operation-id")) is gateway
+            assert bool(operation.get("gateway_operation_id")) is gateway
+            raise TimeoutError("response lost")
+        result = io.BytesIO(b'{"data":[{"task_id":"paid-original"}]}')
+        result.status = 200
+        return result
+    monkeypatch.setattr(adapter, "_open_apimart", transport)
+    monkeypatch.setattr(adapter, "poll_image_task", lambda task_id, *_a, **_k: "https://example.invalid/paid.jpg")
+    if gateway:
+        assert ledger.image_call(quote(), adapter.default_api_call, "prompt", None, "secret", block_id="hero").endswith("paid.jpg")
+    else:
+        with pytest.raises(pricing.RequestOutcomeUnknown):
+            ledger.image_call(quote(), adapter.default_api_call, "prompt", None, "secret", block_id="hero")
+    assert [request.method for request in requests] == (["POST", "GET"] if gateway else ["POST"])
+
+
+def test_bad_system_proxy_cannot_strand_original_gateway_receipt_and_poll(task, monkeypatch):
+    import ai_image_apimart as adapter
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
+    monkeypatch.setenv("REFINE_API_BASE_URL", "https://gateway.invalid/v1/provider-gateway/apimart")
+    monkeypatch.setattr(adapter, "_APIMART_PROXY_SETTINGS", {"https": "http://broken.invalid:7890"})
+    monkeypatch.setattr(adapter, "_MAX_CONSECUTIVE_POLL_ERRORS", 1)
+    upload = Mock(return_value=("https://example.invalid/reference.png", True))
+    monkeypatch.setattr(adapter, "_upload_data_url_for_route", upload)
+    requests = []
+    def transport(request, *, timeout, direct=False):
+        requests.append((request.method, request.full_url, direct))
+        if request.method == "POST":
+            assert direct is True
+            raise TimeoutError("original POST response lost")
+        if not direct:
+            raise urllib.error.URLError("system proxy unavailable")
+        body = ({"data": [{"task_id": "paid-original"}]} if "/operations/" in request.full_url
+                else {"data": {"status": "completed", "result": {"images": [{"url": "https://example.invalid/paid.jpg"}]}}})
+        result = io.BytesIO(json.dumps(body).encode())
+        result.status = 200
+        return result
+    monkeypatch.setattr(adapter, "_open_apimart", transport)
+    ledger = pricing.CostJournal(task)
+    ledger.set_plan(quote(), 1)
+    assert ledger.image_call(quote(), adapter.default_api_call, "prompt", "data:image/png;base64,YQ==", "secret", block_id="hero").endswith("paid.jpg")
+    assert sum(method == "POST" for method, _, _ in requests) == 1
+    assert upload.call_count == 1
+    for route in ("/operations/", "/tasks/paid-original"):
+        assert [direct for method, url, direct in requests if route in url] == [False, True]
+    assert ledger.load()["operations"]["image:1"]["status"] == "completed"
+
+
+@pytest.mark.parametrize("schema", ["v1", "v2"])
+@pytest.mark.parametrize("connected", [False, True])
+def test_new_paid_planner_requires_fresh_reference_upload_first(task, monkeypatch, schema, connected):
+    import ai_image_apimart as adapter
+    # start_task creates only in-memory state; worker owns the first saved input.
+    (task / "_input.json").unlink()
+    reference = task / "reference.png"
+    Image.new("RGB", (80, 80), "#7bad12").save(reference)
+    events = []
+    def read_quote(**kwargs):
+        events.append("quote")
+        return quote()
+    monkeypatch.setattr(pricing, "read_quote", read_quote)
+    def upload(data_url, key, *, force_refresh=False):
+        assert data_url.startswith("data:image/png;base64,")
+        assert force_refresh is True
+        events.append("upload")
+        if not connected:
+            raise adapter.APIMartNotSubmitted("secret upstream body", stage="reference_upload", http_status=503)
+        return "https://example.invalid/reference.png"
+    monkeypatch.setattr(adapter, "upload_data_url", upload)
+    def planner(*args, **kwargs):
+        events.append("planner")
+        raise pricing.PricingRequired("fixture stops before any real purchase")
+    monkeypatch.setattr(refine_planner, "plan" if schema == "v1" else "plan_v2", planner)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    runner._worker(task.name, TEXT, str(reference), "产品", "planner-key", "image-key", mode=schema)
+    assert events == (["quote", "upload", "planner"] if connected else ["quote", "upload"])
+    assert pricing.CostJournal(task).load()["operations"] == {}
+    runner._TASKS.clear()
+    state = runner.get_task_status(task.name)
+    assert state["user_id"] == 73
+    if not connected:
+        assert state["status"] == "failed"
+        assert "生图通道未连通，未购买策划" in state["error"]
+        saved = (task / "_recovery.json").read_text(encoding="utf-8")
+        assert "secret upstream body" not in saved
+        assert json.loads(saved)["diagnostic"]["http_status"] == 503
+
+
+def test_repricing_new_task_still_uploads_reference_before_buying_planner(task, monkeypatch):
+    import ai_image_apimart as adapter
+    (task / "_input.json").unlink()
+    reference = task / "reference.png"
+    Image.new("RGB", (80, 80), "#7bad12").save(reference)
+    events = []
+    def read_quote(**kwargs):
+        events.append("quote")
+        if len(events) == 1:
+            raise pricing.PricingRequired("temporary quote failure")
+        return quote()
+    def upload(*args, force_refresh=False):
+        assert force_refresh is True
+        events.append("upload")
+        return "https://example.invalid/reference.png"
+    def planner(*args, **kwargs):
+        events.append("planner")
+        raise pricing.PricingRequired("fixture stops before purchase")
+    monkeypatch.setattr(pricing, "read_quote", read_quote)
+    monkeypatch.setattr(adapter, "upload_data_url", upload)
+    monkeypatch.setattr(refine_planner, "plan_v2", planner)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    runner._worker(task.name, TEXT, str(reference), "产品", "planner-key", "image-key", mode="v2")
+    assert runner.get_task_status(task.name)["status"] == "pricing_required"
+    runner._TASKS.clear()
+    monkeypatch.setattr(runner.threading, "Thread", lambda *, target, args, **kwargs:
+                        SimpleNamespace(start=lambda: target(*args)))
+    runner.start_task_recovery(task.name, "image-key", "planner-key")
+    assert events == ["quote", "quote", "upload", "planner"]
+    assert not runner._read_json(task / "_input.json").get("reference_preflight_required")
+    assert pricing.CostJournal(task).load()["operations"] == {}

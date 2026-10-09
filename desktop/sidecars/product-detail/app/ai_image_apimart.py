@@ -23,6 +23,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -136,6 +137,36 @@ class APIMartResultDownloadError(APIMartError):
 def _apimart_base() -> str:
     """读 REFINE_API_BASE_URL. 启动时 app.py:_REQUIRED_PLATFORM_KEYS 已保证非空."""
     return os.environ["REFINE_API_BASE_URL"].rstrip("/")
+
+
+def _gateway_receipt_base() -> str:
+    origin = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
+    root = f"{origin}/v1/provider-gateway"
+    return root if origin.startswith("https://") and _apimart_base() == f"{root}/apimart" else ""
+
+
+def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
+    """Read the original submit response; missing/pending receipts never permit POST."""
+    root = _gateway_receipt_base()
+    try:
+        valid_id = str(uuid.UUID(operation_id)) == operation_id
+    except (ValueError, TypeError, AttributeError):
+        valid_id = False
+    if not root or not valid_id:
+        raise APIMartOutcomeUnknown("", "原请求缺少可核对的网关回执", stage="receipt")
+    try:
+        code, body = _http_get_json_response(f"{root}/operations/{operation_id}", api_key)
+    except Exception as exc:
+        raise APIMartOutcomeUnknown(
+            "", "原提交回执暂不可确认，未重新上传或提交", stage="receipt",
+            http_status=getattr(exc, "code", None),
+        ) from None
+    task_id = _submit_task_id(body) if code in (200, 201) else ""
+    if not task_id:
+        raise APIMartOutcomeUnknown(
+            "", "原提交回执尚无供应商任务编号，未重新提交", stage="receipt", http_status=code,
+        )
+    return task_id
 
 
 def _resolve_api_key(api_key: str = "") -> str:
@@ -252,7 +283,8 @@ def download_result_image(
     ) from last_error
 
 def _http_post_json(url: str, payload: dict, api_key: str,
-                    timeout: int = 30, *, direct: bool = False) -> tuple[int, Any]:
+                    timeout: int = 30, *, direct: bool = False,
+                    gateway_operation_id: str = "") -> tuple[int, Any]:
     """POST JSON, 返回 (status_code, parsed_body | raw_text). HTTPError 不 raise."""
     req = urllib.request.Request(
         url, method="POST",
@@ -263,6 +295,9 @@ def _http_post_json(url: str, payload: dict, api_key: str,
             "User-Agent": _UA,
         },
     )
+    root = _gateway_receipt_base()
+    if gateway_operation_id and root and url == f"{root}/apimart/images/generations":
+        req.add_header("X-Xiaoxi-Operation-Id", gateway_operation_id)
     try:
         with _open_apimart(req, timeout=timeout, direct=direct) as r:
             body = r.read().decode("utf-8")
@@ -278,14 +313,29 @@ def _http_post_json(url: str, payload: dict, api_key: str,
             return e.code, body
 
 
-def _http_get_json(url: str, api_key: str, timeout: int = 30,
-                   *, direct: bool = False) -> dict:
+def _http_get_json_response(url: str, api_key: str, timeout: int = 30,
+                            *, direct: bool = False) -> tuple[int, Any]:
+    """Only free GETs may try the other route after a connection failure."""
     req = urllib.request.Request(
         url, method="GET",
         headers={"Authorization": f"Bearer {api_key}", "User-Agent": _UA},
     )
-    with _open_apimart(req, timeout=timeout, direct=direct) as r:
-        return json.loads(r.read().decode("utf-8"))
+    routes = _result_download_routes("direct" if direct else "system")
+    for index, selected_direct in enumerate(routes):
+        try:
+            with _open_apimart(req, timeout=timeout, direct=selected_direct) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            # An actual 404/409/503 response is not a reason to change routes.
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if index == len(routes) - 1:
+                raise
+
+
+def _http_get_json(url: str, api_key: str, timeout: int = 30,
+                   *, direct: bool = False) -> dict:
+    return _http_get_json_response(url, api_key, timeout, direct=direct)[1]
 
 
 # ── APIMart submit / poll ──────────────────────────────────────
@@ -407,7 +457,7 @@ def _decode_data_url(value: str) -> tuple[bytes, str, str]:
 
 
 def _upload_data_url_for_route(
-    value: str, api_key: str, *, direct: bool = False,
+    value: str, api_key: str, *, direct: bool = False, force_refresh: bool = False,
 ) -> tuple[str, bool]:
     """Upload one reference while retaining the route for the enclosing task."""
     raw, mime, filename = _decode_data_url(value)
@@ -415,7 +465,7 @@ def _upload_data_url_for_route(
     now = time.time()
     with _UPLOAD_CACHE_LOCK:
         cached = _UPLOAD_CACHE.get(digest)
-        if cached and cached[0] > now:
+        if not force_refresh and cached and cached[0] > now:
             return cached[1], direct or cached[2]
         for attempt in range(2):
             code, body, selected_direct = _upload_reference_with_transport_fallback(
@@ -436,9 +486,9 @@ def _upload_data_url_for_route(
     raise APIMartNotSubmitted("APIMart 参考图上传失败，未提交生图任务。", stage="reference_upload")
 
 
-def upload_data_url(value: str, api_key: str) -> str:
+def upload_data_url(value: str, api_key: str, *, force_refresh: bool = False) -> str:
     """Upload a data URL once and cache the provider URL for its 72-hour lifetime."""
-    url, _selected_direct = _upload_data_url_for_route(value, api_key)
+    url, _selected_direct = _upload_data_url_for_route(value, api_key, force_refresh=force_refresh)
     return url
 
 
@@ -481,27 +531,34 @@ def _submit_image_task_for_route(prompt: str,
                                  image_data_url: Optional[str | list[str]],
                                  api_key: str,
                                  thinking: str = "medium",
-                                 size: str = _SIZE_DEFAULT) -> tuple[str, bool]:
+                                 size: str = _SIZE_DEFAULT, *,
+                                 gateway_operation_id: str = "",
+                                 image_profile: Optional[dict] = None) -> tuple[str, bool]:
     """Submit once and retain the proven route for polling the same task."""
+    from ai_refine_v2.image_profile import submission_fields
+    try:
+        profile_fields = submission_fields(image_profile)
+    except ValueError as exc:
+        raise APIMartNotSubmitted(str(exc), stage="reference_prepare") from None
     payload: dict[str, Any] = {
-        "model": T2I_MODEL,
+        **profile_fields,
         "prompt": prompt,
         "n": 1,
         "size": size,
-        "resolution": "1k",
     }
     reference_urls, selected_direct = _prepare_reference_urls_for_route(image_data_url, api_key)
     if reference_urls:
         payload["image_urls"] = reference_urls
 
+    receipt_options = {"gateway_operation_id": gateway_operation_id} if gateway_operation_id else {}
     try:
         if selected_direct:
             code, body = _http_post_json(
-                f"{_apimart_base()}/images/generations", payload, api_key, direct=True,
+                f"{_apimart_base()}/images/generations", payload, api_key, direct=True, **receipt_options,
             )
         else:
             code, body = _http_post_json(
-                f"{_apimart_base()}/images/generations", payload, api_key,
+                f"{_apimart_base()}/images/generations", payload, api_key, **receipt_options,
             )
     except Exception as exc:
         raise APIMartOutcomeUnknown("", "APIMart 提交响应未确认") from exc
@@ -530,10 +587,29 @@ def submit_image_task(prompt: str,
     return task_id
 
 
+def provider_cost_receipt(node: dict) -> dict:
+    """Retain bounded numeric supplier fields, without inferring their currency."""
+    import math
+    def numeric(value, depth=0):
+        if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+            return value
+        if isinstance(value, dict) and depth < 3:
+            return {key: parsed for key, child in list(value.items())[:40]
+                    if isinstance(key, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,64}", key)
+                    and (parsed := numeric(child, depth + 1)) is not None}
+        return None
+    receipt = {key: parsed for key in ("cost", "credits_cost", "usage")
+               if (parsed := numeric(node.get(key))) is not None}
+    if receipt:
+        receipt["unit_status"] = "provider_units_unverified"
+    return receipt
+
+
 def poll_image_task(task_id: str, api_key: str,
                     poll_interval: int = _POLL_INTERVAL_S,
                     poll_timeout: int = _POLL_TIMEOUT_S,
-                    *, direct: bool = False) -> str:
+                    *, direct: bool = False,
+                    receipt_callback: Optional[Callable[[dict[str, Any]], None]] = None) -> str:
     """Poll the existing task only; any uncertain result stops without resubmission."""
     started_at = time.time()
     consecutive_poll_errors = 0
@@ -564,6 +640,13 @@ def poll_image_task(task_id: str, api_key: str,
         if not isinstance(node, dict):
             raise APIMartOutcomeUnknown(task_id, "APIMart 状态响应无效，结果不明")
         status = str(node.get("status") or "").lower()
+        if receipt_callback is not None and status in {"completed", "failed", "cancelled"}:
+            receipt = provider_cost_receipt(node)
+            if receipt:
+                try:
+                    receipt_callback(receipt)
+                except Exception as exc:
+                    raise APIMartOutcomeUnknown(task_id, "费用回执保存失败，需查询原任务", stage="checkpoint") from exc
         if status == "completed":
             result = node.get("result") or {}
             if not isinstance(result, dict):
@@ -596,11 +679,27 @@ def default_api_call(prompt: str,
                      size: str = _SIZE_DEFAULT,
                      *,
                      lifecycle_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+                     image_profile: Optional[dict] = None,
                      ) -> str:
     """Upload references, submit once, then poll that same task to completion."""
-    task_id, selected_direct = _submit_image_task_for_route(
-        prompt, image_data_url, api_key, thinking=thinking, size=size,
-    )
+    operation_id = ""
+    if lifecycle_callback is not None and _gateway_receipt_base():
+        operation_id = str(uuid.uuid4())
+        try:
+            lifecycle_callback({"event": "prepared", "gateway_operation_id": operation_id})
+        except Exception:
+            raise APIMartNotSubmitted("提交前回执保存失败，尚未提交生图。", stage="checkpoint") from None
+    receipt_options = {"gateway_operation_id": operation_id} if operation_id else {}
+    try:
+        task_id, selected_direct = _submit_image_task_for_route(
+            prompt, image_data_url, api_key, thinking=thinking, size=size,
+            image_profile=image_profile, **receipt_options,
+        )
+    except APIMartOutcomeUnknown as exc:
+        if not operation_id or exc.task_id:
+            raise
+        task_id = recover_gateway_task_id(operation_id, api_key)
+        selected_direct = False
     route = "direct" if selected_direct else "system"
     if lifecycle_callback is not None:
         try:
@@ -613,7 +712,12 @@ def default_api_call(prompt: str,
             raise APIMartOutcomeUnknown(
                 task_id, "APIMart 任务已提交但本地断点保存失败", stage="checkpoint",
             ) from exc
-    result_url = poll_image_task(task_id, api_key, direct=selected_direct)
+    poll_options = {}
+    if lifecycle_callback is not None:
+        poll_options["receipt_callback"] = lambda receipt: lifecycle_callback({
+            "event": "receipt", "provider_task_id": task_id, "provider_receipt": receipt,
+        })
+    result_url = poll_image_task(task_id, api_key, direct=selected_direct, **poll_options)
     _remember_result_route(result_url, selected_direct)
     if lifecycle_callback is not None:
         try:

@@ -10,7 +10,38 @@ from ai_refine_v2 import pipeline_runner as runner, pricing, refine_planner
 
 def quote():
     return {"version": 1, "checked_at": time.time(), "image_unit_cny": 1.6872,
+            "image_model": "gpt-image-2", "image_resolution": "1K",
             "planner_per_million_cny": {"input": 2, "cache": .04, "output": 8}}
+
+
+@pytest.mark.parametrize("age,valid", [(0, True), (-10, True), (3601, False), (-301, False), (None, False)])
+def test_gateway_price_requires_current_quote_without_customer_proxy(monkeypatch, age, valid):
+    import provider_transport
+    from unittest.mock import MagicMock
+    gateway = "https://gateway.invalid"
+    source = "https://apimart.ai/api/pricing/model?model=gpt-image-2.5-ext"
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", gateway)
+    monkeypatch.setenv("REFINE_API_BASE_URL", gateway + "/v1/provider-gateway/apimart")
+    monkeypatch.setenv("REFINE_API_KEY", "session-test")
+    payload = {"success": True, "data": {"model_name": "gpt-image-2.5-ext"}}
+    result = {"ok": True, "apimart_pricing": {"source": source, "checked_at": time.time() - age, "payload": payload}} if age is not None else {"ok": True, "capabilities": {"apimart": True}}
+    response = MagicMock(status=200)
+    response.read.return_value = json.dumps(result).encode()
+    response.__enter__.return_value = response
+    opener = Mock()
+    opener.open.return_value = response
+    factory = Mock(return_value=opener)
+    monkeypatch.setattr(provider_transport, "build_provider_opener", factory)
+    if valid:
+        assert json.loads(pricing._read(source)) == payload
+    else:
+        with pytest.raises(ValueError, match="unavailable"):
+            pricing._read(source)
+    target = gateway + "/v1/provider-gateway/capabilities?price_model=gpt-image-2.5-ext"
+    factory.assert_called_once_with(target, proxies={})
+    request = opener.open.call_args.args[0]
+    assert request.full_url == target
+    assert request.get_header("Authorization") == "Bearer session-test"
 
 
 def test_actual_screen_count_and_missing_quote_stop_before_image_post(tmp_path, monkeypatch):

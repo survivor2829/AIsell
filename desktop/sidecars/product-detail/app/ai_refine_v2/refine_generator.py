@@ -123,6 +123,7 @@ def _default_api_call(
     *,
     lifecycle_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     block_id: str = "",
+    image_profile: Optional[dict] = None,
 ) -> str:
     """生产默认: 委托给 ai_image_router 找当前 engine 的实现.
 
@@ -137,6 +138,7 @@ def _default_api_call(
     """
     import ai_image_router  # 延迟 import 避免冷启动循环依赖
     call_fn = ai_image_router.get_refine_call_fn()
+    options = {"image_profile": image_profile} if image_profile is not None else {}
     if lifecycle_callback is not None:
         return call_fn(
             prompt,
@@ -145,8 +147,9 @@ def _default_api_call(
             thinking=thinking,
             size=size,
             lifecycle_callback=lifecycle_callback,
+            **options,
         )
-    return call_fn(prompt, image_data_url, api_key, thinking=thinking, size=size)
+    return call_fn(prompt, image_data_url, api_key, thinking=thinking, size=size, **options)
 
 
 ApiCallFn = Callable[..., str]

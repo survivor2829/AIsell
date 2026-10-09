@@ -16,7 +16,8 @@ import time
 import urllib.request
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
+from ai_refine_v2.image_profile import normalize_profile
 
 IMAGE_PRICE_URL = "https://apimart.ai/api/pricing/model?model=gpt-image-2"
 PLANNER_PRICE_URL = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing"
@@ -43,7 +44,7 @@ def _image_failure_diagnostic(exc):
     error_type = type(exc).__name__
     stage = getattr(exc, "stage", "unknown")
     diagnostic = {"error_type": error_type if error_type in allowed_types else "Exception",
-                  "stage": stage if stage in {"reference_prepare", "reference_upload", "submit", "poll", "checkpoint"} else "unknown"}
+                  "stage": stage if stage in {"reference_prepare", "reference_upload", "submit", "poll", "checkpoint", "receipt"} else "unknown"}
     status = getattr(exc, "http_status", None)
     if type(status) is int and 100 <= status <= 599:
         diagnostic["http_status"] = status
@@ -63,14 +64,38 @@ def _positive(value):
 
 def _read(url):
     from provider_transport import build_provider_opener
-    request = urllib.request.Request(url, headers={"User-Agent": "xiaoxi-price-check/1.0"})
-    with build_provider_opener(url).open(request, timeout=15) as response:
+    gateway = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
+    base = os.environ.get("REFINE_API_BASE_URL", "").strip().rstrip("/")
+    parsed = urlsplit(url)
+    via_gateway = (gateway and base == gateway + "/v1/provider-gateway/apimart"
+                   and parsed.scheme == "https" and parsed.netloc == "apimart.ai"
+                   and parsed.path == "/api/pricing/model")
+    headers = {"User-Agent": "xiaoxi-price-check/1.0"}
+    target = url
+    if via_gateway:
+        models = parse_qs(parsed.query).get("model", [])
+        token = os.environ.get("REFINE_API_KEY", "").strip()
+        if len(models) != 1 or models[0] not in {"gpt-image-2", "gpt-image-2.5-ext"} or not token:
+            raise ValueError("invalid gateway price request")
+        target = gateway + "/v1/provider-gateway/capabilities?price_model=" + models[0]
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(target, headers=headers)
+    with build_provider_opener(target, proxies={}).open(request, timeout=20) as response:
         if response.status != 200:
             raise ValueError("price status")
         content = response.read(1_000_001)
     if len(content) > 1_000_000:
         raise ValueError("price response too large")
-    return content.decode("utf-8")
+    document = content.decode("utf-8")
+    if via_gateway:
+        result = json.loads(document)
+        price = result.get("apimart_pricing", {})
+        if (result.get("ok") is not True or price.get("source") != url
+                or not isinstance(price.get("payload"), dict)
+                or not -300 <= time.time() - float(price.get("checked_at", 0)) <= MAX_QUOTE_AGE):
+            raise ValueError("gateway price unavailable or stale")
+        return json.dumps(price["payload"], ensure_ascii=False)
+    return document
 
 
 def parse_planner_prices(document, model):
@@ -111,9 +136,10 @@ def parse_planner_prices(document, model):
     return rates
 
 
-def read_quote(*, include_planner=True, read=_read):
+def read_quote(*, include_planner=True, image_profile=None, read=_read):
     from ai_refine_v2 import refine_planner
     try:
+        profile = normalize_profile(image_profile)
         # A quote from a different supplier is not a quote for this connection.
         image = urlsplit(os.environ.get("REFINE_API_BASE_URL", ""))
         planner = urlsplit(refine_planner._API_URL)
@@ -127,17 +153,22 @@ def read_quote(*, include_planner=True, read=_read):
             raise ValueError("unsupported image supplier")
         if include_planner and not official_or_gateway(planner, "api.deepseek.com", "/deepseek/v1/chat/completions"):
             raise ValueError("unsupported planner supplier")
-        image_text = read(IMAGE_PRICE_URL)
+        image_price_url = f"https://apimart.ai/api/pricing/model?model={profile['model']}"
+        image_text = read(image_price_url)
         image_payload = json.loads(image_text)
         data = image_payload["data"]
-        if image_payload.get("success") is not True or data.get("model_name") != "gpt-image-2":
+        if image_payload.get("success") is not True or data.get("model_name") != profile["model"]:
             raise ValueError("image model mismatch")
-        usd = _positive(data["resolution_prices"]["1K"])
+        if profile.get("version") and data.get("billing_type") != "version_resolution":
+            raise ValueError("image billing type changed")
+        prices = data["version_resolution_prices"][profile["version"]] if profile.get("version") else data["resolution_prices"]
+        usd = _positive(prices[profile["resolution"]])
         fx = _positive(os.environ.get("REFINE_BUDGET_CNY_PER_USD", "8"))
-        quote = {"version": 1, "checked_at": time.time(), "image_model": "gpt-image-2",
-                 "image_resolution": "1K", "image_unit_usd": usd,
+        quote = {"version": 1, "checked_at": time.time(), "image_model": profile["model"],
+                 "image_resolution": profile["resolution"], "image_unit_usd": usd,
+                 **({"image_version": profile["version"]} if profile.get("version") else {}),
                  "fx_cny_per_usd": fx, "image_unit_cny": money(usd * fx),
-                 "sources": [IMAGE_PRICE_URL], "image_price_hash": hashlib.sha256(image_text.encode()).hexdigest(),
+                 "sources": [image_price_url], "image_price_hash": hashlib.sha256(image_text.encode()).hexdigest(),
                  "note": "公开标价保守估算；美元采用预算汇率折算，优惠和实际扣款以供应商账单为准"}
         if include_planner:
             document = read(PLANNER_PRICE_URL)
@@ -276,6 +307,12 @@ class CostJournal:
         return response
 
     def image_call(self, quote, function, *args, block_id="", lifecycle_callback=None, **kwargs):
+        if "image_profile" in kwargs:
+            profile = normalize_profile(kwargs["image_profile"])
+            if (quote.get("image_model") != profile["model"]
+                    or quote.get("image_resolution") != profile["resolution"]
+                    or quote.get("image_version") != profile.get("version")):
+                raise PricingRequired("生图配置与核价不一致，未提交新的付费请求。")
         with _LOCK:
             data = self.load()
             previous = [op for name, op in data["operations"].items() if name.startswith("image:")]
@@ -289,7 +326,9 @@ class CostJournal:
             self.begin(operation, quote, quote["image_unit_cny"], block_id=str(block_id))
         receipt = {}
         def checkpoint(event):
-            receipt.update({key: event[key] for key in ("provider_task_id", "raw_url") if event.get(key)})
+            receipt.update({key: event[key] for key in ("provider_task_id", "raw_url", "gateway_operation_id") if event.get(key)})
+            if event.get("provider_receipt"):
+                receipt["provider_receipt"] = event["provider_receipt"]
             self.finish(operation, "submitting", **receipt)
             if lifecycle_callback:
                 lifecycle_callback(event)
@@ -299,7 +338,7 @@ class CostJournal:
             from ai_image_apimart import APIMartNotSubmitted, APIMartTaskFailed
             if getattr(exc, "task_id", ""):
                 receipt.setdefault("provider_task_id", exc.task_id)
-            not_submitted = isinstance(exc, APIMartNotSubmitted) and not receipt
+            not_submitted = isinstance(exc, APIMartNotSubmitted) and not any(receipt.get(key) for key in ("provider_task_id", "raw_url"))
             known_failure = not_submitted or isinstance(exc, APIMartTaskFailed)
             diagnostic = _image_failure_diagnostic(exc)
             self.finish(operation, "failed" if known_failure else "outcome_unknown",
@@ -312,7 +351,16 @@ class CostJournal:
         self.finish(operation, "completed", **receipt)
         return result
 
-    def restore_receipts(self, blocks):
+    def record_provider_receipt(self, provider_task_id, receipt):
+        """Recovery writes the same original task's accounting fields, not a bill."""
+        with _LOCK:
+            data = self.load()
+            for operation in data["operations"].values():
+                if operation.get("provider_task_id") == provider_task_id:
+                    operation["provider_receipt"] = receipt
+            _write(self.path, data)
+
+    def restore_receipts(self, blocks, api_key=""):
         """Merge journal-first receipts into the older pipeline checkpoint."""
         by_block = {str(b.get("block_id") or ""): b for b in blocks}
         by_provider = {str(b["provider_task_id"]): b for b in blocks if b.get("provider_task_id")}
@@ -326,6 +374,19 @@ class CostJournal:
             if block is None or (provider_id and block.get("provider_task_id") not in (None, "", provider_id)):
                 unknown.append(f"{name}: 原付费回执无法对应图片，需核对原任务")
                 continue
+            if not provider_id and block.get("provider_task_id"):
+                provider_id = str(block["provider_task_id"])
+                self.finish(name, operation["status"], provider_task_id=provider_id)
+            if (not provider_id and not operation.get("raw_url") and operation["status"] != "failed"
+                    and operation.get("gateway_operation_id") and api_key):
+                from ai_image_apimart import recover_gateway_task_id, APIMartOutcomeUnknown
+                try:
+                    provider_id = recover_gateway_task_id(operation["gateway_operation_id"], api_key)
+                    # Journal first again: a second process exit must retain the recovered ID.
+                    self.finish(name, "submitting", provider_task_id=provider_id)
+                except APIMartOutcomeUnknown:
+                    block["provider_status"] = "outcome_unknown"
+                    unknown.append(f"{name}: 原网关回执尚不可确认，未重新提交")
             if provider_id:
                 block["provider_task_id"] = provider_id
             if operation.get("raw_url"):
@@ -346,4 +407,6 @@ class CostJournal:
                 block = by_id.get(operation.get("provider_task_id"))
                 if block and (block.get("raw_url") or block.get("provider_status") == "failed"):
                     operation["status"] = "completed" if block.get("raw_url") else "failed"
+                    if block.get("raw_url"):
+                        operation["raw_url"] = block["raw_url"]
             _write(self.path, data)
