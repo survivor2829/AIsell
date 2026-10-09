@@ -107,7 +107,41 @@ def _with_costs(task_id: str, result: dict) -> dict:
         result["costs"] = {"version": 0, "actual_cny": None,
                            "historical_estimate_cny": result.get("cost_rmb", 0),
                            "note": "历史记录中的费用为旧估算，非供应商实际账单"}
+    result["can_replay_planner"] = (
+        result.get("status") == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, result)
+    )
     return result
+
+
+def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
+    """Offer the existing recovery action only for a locally repairable paid reply."""
+    if state.get("status") != "failed":
+        return False
+    format_error = state.get("code") == "AI_REFINE_PLANNER_FORMAT_ERROR" or re.match(
+        r"^v2 API/解析失败 \(重试 \d+ 次后\): JSONDecodeError:", str(state.get("error") or ""),
+    )
+    if not format_error:
+        return False
+    from ai_refine_v2.pricing import CostJournal
+    from ai_refine_v2 import refine_planner
+    try:
+        operations = CostJournal(task_dir).load()["operations"]
+        if set(operations) != {"planner"} or operations["planner"]["status"] != "completed":
+            return False
+        response_path = task_dir / "_planner_response.json"
+        if response_path.stat().st_size > 1_000_000:
+            return False
+        response = _read_json(response_path) or {}
+        choice = response["choices"][0]
+        if choice.get("finish_reason") != "stop":
+            return False
+        planning = refine_planner._extract_json(choice["message"]["content"])
+        inputs = _read_json(task_dir / "_input.json") or {}
+        return (planning.get("planning_version") == refine_planner.PLANNING_VERSION
+                and isinstance(inputs.get("product_text"), str)
+                and not refine_planner._validate_schema_v2(planning, inputs["product_text"], inputs.get("product_title")))
+    except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 class PaidResultRecoveryRequired(RuntimeError):
@@ -1901,12 +1935,13 @@ def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = ""
     if state is None:
         raise ValueError(f"任务不存在或已过期: {task_id}")
     status = str(state.get("status") or "")
-    if status not in {"outcome_unknown", "recovery_required", "running_recovery", "pricing_required"}:
+    replay_failed = status == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, state)
+    if not replay_failed and status not in {"outcome_unknown", "recovery_required", "running_recovery", "pricing_required"}:
         raise ValueError(f"任务 {task_id} 当前状态不可恢复: {status}")
     from ai_refine_v2.pricing import CostJournal
     directory = _OUTPUT_BASE / task_id
     operations = CostJournal(directory).load()["operations"]
-    resume_planning = status == "pricing_required" or (
+    resume_planning = replay_failed or status == "pricing_required" or (
         not any(name.startswith("image:") for name in operations)
         and bool(_read_json(directory / "_planning.json") or _read_json(directory / "_planner_response.json"))
     )

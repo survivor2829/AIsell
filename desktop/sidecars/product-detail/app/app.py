@@ -1344,7 +1344,7 @@ def _workspace_active_refine_task():
         if state.get("status") not in {
             "pending", "running_planner", "running_generator", "running_assembler", "running_recovery",
             "outcome_unknown", "recovery_required", "pricing_required",
-        }:
+        } and state.get("can_replay_planner") is not True:
             return None
         image_url = ""
         original_image = str(inputs.get("product_image_url") or "")
@@ -1359,6 +1359,7 @@ def _workspace_active_refine_task():
             pass
         return {
             "task": {"task_id": path.parent.name, "status": state["status"],
+                     "can_replay_planner": state.get("can_replay_planner") is True,
                      "mode": state.get("mode", "unknown"), "started_at": int(modified * 1000)},
             "inputs": {"product_title": str(inputs.get("product_title") or "")[:120],
                        "product_text": str(inputs.get("product_text") or "")[:20000],

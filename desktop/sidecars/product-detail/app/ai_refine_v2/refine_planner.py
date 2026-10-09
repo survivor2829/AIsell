@@ -68,6 +68,10 @@ class PlannerError(RuntimeError):
     """规划层失败 (API / 解析 / schema 验证 超过重试次数)."""
 
 
+class PlannerResponseFormatError(PlannerError):
+    code = "AI_REFINE_PLANNER_FORMAT_ERROR"
+
+
 class ProductInputError(PlannerError):
     """Code-bearing input error shared by HTTP and planner boundaries."""
 
@@ -143,6 +147,36 @@ def _http_post_deepseek(body: dict, api_key: str) -> dict:
 
 
 # ── LLM 响应解析 ────────────────────────────────────────────────
+def _without_trailing_json_commas(raw: str) -> str:
+    """Remove only commas after a value and immediately before ]/}, outside strings."""
+    output = []
+    in_string = escaped = False
+    previous = ""
+    for index, char in enumerate(raw):
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+                previous = char
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "," and previous and previous not in "{[,:":
+            following = index + 1
+            while following < len(raw) and raw[following].isspace():
+                following += 1
+            if following < len(raw) and raw[following] in "}]":
+                continue
+        output.append(char)
+        if not char.isspace():
+            previous = char
+    return "".join(output)
+
+
 def _extract_json(raw: str) -> dict:
     """从 LLM 文本响应中剥离 ```json``` + 从首个 { 截取, 再 json.loads."""
     raw = raw.strip()
@@ -154,7 +188,13 @@ def _extract_json(raw: str) -> dict:
         i = raw.find("{")
         if i >= 0:
             raw = raw[i:]
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = _without_trailing_json_commas(raw)
+        if cleaned == raw:
+            raise
+        return json.loads(cleaned)
 
 
 def _validate_schema(parsed: dict) -> list[str]:
@@ -1069,7 +1109,8 @@ def plan_v2(
                 print(f"[planner_v2] attempt {attempt + 1} 失败, 重试: {last_err}")
                 time.sleep(1)
                 continue
-            raise PlannerError(
+            error_type = PlannerResponseFormatError if isinstance(e, json.JSONDecodeError) else PlannerError
+            raise error_type(
                 f"v2 API/解析失败 (重试 {max_retries} 次后): {last_err}"
             ) from e
 

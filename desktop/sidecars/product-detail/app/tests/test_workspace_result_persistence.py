@@ -76,6 +76,27 @@ class TestWorkspaceAiResultPersistence(unittest.TestCase):
             content = client.get("/").get_data(as_text=True)
             self.assertIn("const SERVER_AI_REFINE_BOOTSTRAP = null;", content)
 
+    def test_workspace_restores_failed_plan_only_with_server_replay_eligibility(self):
+        from ai_refine_v2 import pipeline_runner as runner
+        client, uid = _make_authed_client(self)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(runner, "_OUTPUT_BASE", Path(directory)), mock.patch.dict(app.jinja_env.globals, {"desktop_capabilities": {}}):
+            runner._atomic_write_json(Path(directory) / "saved-plan" / "_input.json", {
+                "user_id": uid, "product_text": "saved product facts",
+            })
+            for eligible in (True, False, "true"):
+                with self.subTest(eligible=eligible), mock.patch.object(runner, "get_task_status", return_value={
+                    "task_id": "saved-plan", "user_id": uid, "status": "failed",
+                    "can_replay_planner": eligible,
+                }):
+                    content = client.get("/").get_data(as_text=True)
+                    bootstrap = json.loads(re.search(r"const SERVER_AI_REFINE_BOOTSTRAP = (.*?);", content)[1])
+                    if eligible is True:
+                        self.assertEqual(bootstrap["task"]["task_id"], "saved-plan")
+                        self.assertIs(bootstrap["task"]["can_replay_planner"], True)
+                        self.assertEqual(bootstrap["inputs"]["product_text"], "saved product facts")
+                    else:
+                        self.assertIsNone(bootstrap)
+
     def test_save_completed_ai_refine_result_and_restore_latest(self):
         client, uid = _make_authed_client(self)
         task_id = f"v2_{uuid.uuid4().hex[:10]}"
