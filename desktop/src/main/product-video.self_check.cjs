@@ -26,6 +26,25 @@ async function run() {
   assert.equal(validBailianPrices(parseBailianPrices(videoPriceDoc,ttsPriceDoc)),true);
   assert.throws(()=>parseBailianPrices(videoPriceDoc.replace('720P 无声','未知规格'),ttsPriceDoc),/计费项不完整/u);
   assert.equal(validBailianPrices({...parseBailianPrices(videoPriceDoc,ttsPriceDoc),checkedAt:'2020-01-01'}),false);
+  let gatewayPriceReads = 0;
+  const gatewayPrices = { isEnabled: () => true, url: (route) => `https://fixture.invalid${route}`,
+    fetch: async (url, options) => {
+      gatewayPriceReads += 1;
+      assert.equal(url, 'https://fixture.invalid/capabilities?price_model=gpt-image-2');
+      assert.equal(options.method, 'GET');
+      return { ok: true, json: async () => ({ ok: true, apimart_pricing: {
+        source: 'https://apimart.ai/api/pricing/model?model=gpt-image-2', checked_at: Date.now()/1000,
+        payload: { success: true, data: { model_name:'gpt-image-2', resolution_prices:{'1K':.2109} } }
+      } }) };
+    } };
+  const routedPrices = { gatewayClient: gatewayPrices,
+    fetchText: async (url) => url.includes('wan2-6') ? videoPriceDoc : ttsPriceDoc,
+    fetchJson: async () => { throw new Error('customer_must_not_fetch_foreign_image_price'); } };
+  assert.equal((await createPriceReader(routedPrices)()).imageUsd, .2109);
+  assert.equal(gatewayPriceReads, 1, 'official product-video prices reuse the authenticated server route');
+  await assert.rejects(createPriceReader({ ...routedPrices, gatewayClient: { ...gatewayPrices,
+    fetch: async () => ({ok:false,status:503}) } })(), /场景首帧报价/u,
+  'failed server pricing must stop instead of switching to direct foreign requests');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-product-video-'));
   const posts = [], tasks = new Map(), receipts = new Map();
   let unknownOnce = false, receiptsPending = false, failedOnce = false, failedVideoCount = 0, malformedOnce = false, offlinePrices = false, localFailure = false, badCaptionsOnce = false, badMediaOnce = false, tamperAudioOnce = false;

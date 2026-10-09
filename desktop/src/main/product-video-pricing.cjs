@@ -121,15 +121,29 @@ function validPrices(prices, now = Date.now()) {
   return prices?.ready === true && [prices.videoUsdPerSecond, prices.imageUsd, prices.fxCnyPerUsd, prices.asrReserveCny].every((n) => Number.isFinite(n) && n > 0)
     && recentPrices(prices, now);
 }
-function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl } = {}) {
+function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClient } = {}) {
   const read = fetchJson || (fetchImpl ? (url) => readFetchJson(url, fetchImpl) : readJson);
   const bailianPrices = createBailianPriceReader({ fetchText, fetch: fetchImpl });
+  async function readImagePrice() {
+    const source = PRICE_ORIGIN + 'gpt-image-2';
+    if (!gatewayClient?.isEnabled?.()) return read(source);
+    const response = await gatewayClient.fetch(gatewayClient.url('/capabilities?price_model=gpt-image-2'),
+      { method: 'GET', timeoutMs: 20000, maxBytes: MAX_PRICE_BYTES });
+    if (!response.ok) throw fail('product_video_price_unavailable', '场景首帧报价暂不可用，未提交付费请求。');
+    const result = await response.json(), price = result?.apimart_pricing;
+    const age = Date.now() - Number(price?.checked_at) * 1000;
+    if (result?.ok !== true || price?.source !== source || price?.payload?.data?.model_name !== 'gpt-image-2'
+      || !Number.isFinite(age) || age < -300000 || age >= MAX_AGE) {
+      throw fail('product_video_price_unavailable', '场景首帧报价来源或有效期无法核实，未提交付费请求。');
+    }
+    return price.payload;
+  }
   const cache = new Map(), pending = new Map();
   return async function prices(plan = { pipelineVersion: 3 }) {
     const official = plan.pipelineVersion >= 3, key = official ? 'bailian' : 'legacy';
     if (validPrices(cache.get(key))) return cache.get(key);
     if (!pending.has(key)) pending.set(key, (official
-      ? Promise.all([bailianPrices(), read(PRICE_ORIGIN + 'gpt-image-2')]).then(([video, image]) => {
+      ? Promise.all([bailianPrices(), readImagePrice()]).then(([video, image]) => {
         const imageUsd = Number(image?.data?.resolution_prices?.['1K']);
         if (!image?.success || !(imageUsd > 0)) throw fail('product_video_price_unavailable', '场景首帧报价无法核实，暂不提交付费请求。');
         const discounted = Number(image.data.resolution_paid_prices?.['1K']);
@@ -139,7 +153,7 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl } = {}) {
           audioReserveCny: 2, asrReserveCny: 1, asrCnyPerMinute: ASR_REFERENCE.cnyPerHour / 60, asrReference: ASR_REFERENCE,
           source: [...video.source, PRICE_ORIGIN + 'gpt-image-2', ASR_REFERENCE.source] };
       })
-      : Promise.all([read(PRICE_ORIGIN + 'seedance-2.5'), read(PRICE_ORIGIN + 'gpt-image-2')]).then(([video, image]) => parsePrices(video, image)))
+      : Promise.all([read(PRICE_ORIGIN + 'seedance-2.5'), readImagePrice()]).then(([video, image]) => parsePrices(video, image)))
       .then((value) => { cache.set(key, value); return value; }).finally(() => { pending.delete(key); }));
     return pending.get(key);
   };

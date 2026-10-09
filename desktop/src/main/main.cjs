@@ -646,7 +646,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       expertStore: aiExpertStore, deepSeekClient
     });
     const usedDigitalHumanClicks = new Set();
-    const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net) });
+    const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
     const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
     digitalHumanRegistration = registerDigitalHumanIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
