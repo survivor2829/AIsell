@@ -3,7 +3,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { normalizeAndAssemble, extractAudio, buildCaptions, renderCaptioned } = require('./product-video-media.cjs');
+const { normalizeAndAssemble, extractAudio, buildCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
 
 async function main() {
   assert.throws(() => buildCaptions({ utterances: [{ text: '计划台词不是字幕' }] }), { code: 'product_video_caption_timing_missing' });
@@ -30,10 +30,11 @@ async function main() {
 
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'xiaoxi-product-media-'));
   try {
+    const encoder = await videoEncoderArgs(ffmpegPath);
     const clipA = path.join(temp, "输入'a.mp4"), clipB = path.join(temp, '输入b.mp4');
     for (const [file, shape, tone] of [[clipA, '360x640', 440], [clipB, '480x852', 660]]) {
       execFileSync(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=size=${shape}:rate=30:duration=0.5`,
-        '-f', 'lavfi', '-i', `sine=frequency=${tone}:sample_rate=44100:duration=0.5`, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', file], { windowsHide: true });
+        '-f', 'lavfi', '-i', `sine=frequency=${tone}:sample_rate=44100:duration=0.5`, ...encoder, '-pix_fmt', 'yuv420p', '-c:a', 'aac', file], { windowsHide: true });
     }
     const source = path.join(temp, '母版.mp4'), output = path.join(temp, '成片.mp4');
     const info = await normalizeAndAssemble({ shots: [{ path: clipA, seconds: 0.5 }, { path: clipB, seconds: 0.5 }], destination: source, ffmpegPath });
