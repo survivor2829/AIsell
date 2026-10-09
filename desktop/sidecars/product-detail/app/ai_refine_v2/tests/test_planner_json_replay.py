@@ -50,6 +50,16 @@ def saved_format_failure(tmp_path, monkeypatch):
     return directory
 
 
+def test_now_valid_schema_reply_can_replay_without_modifying_paid_reply(saved_format_failure):
+    directory = saved_format_failure
+    state = runner.get_task_status(directory.name)
+    state["code"] = ""
+    state["error"] = "v2 schema 不合规: ['screens[1] 标题最多16字，解释最多32字']"
+    before = (directory / "_planner_response.json").read_bytes()
+    assert runner._can_replay_failed_planner(directory, state)
+    assert (directory / "_planner_response.json").read_bytes() == before
+
+
 def test_failed_format_reply_replays_locally_and_reaches_only_unsubmitted_images(saved_format_failure, monkeypatch):
     directory = saved_format_failure
     original = (directory / "_planner_response.json").read_bytes()

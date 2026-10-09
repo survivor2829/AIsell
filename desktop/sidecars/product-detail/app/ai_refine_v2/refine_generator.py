@@ -771,6 +771,10 @@ def _generate_one_block_v2(
             "framing, product scale, action and layout. Preserve known visible parts when adjusting the view. "
             "Large bold Chinese headline, short explanation, generous spacing, readable on a phone. "
             "Do not create hidden/internal structures or unsupported performance demonstrations. "
+            "Demonstrate one operating mode on one continuous surface. Other supported surfaces or modes "
+            "may be separate labeled insets; never imply automatic switching between them. "
+            "Use full specification names, including maximum, minimum or rated qualifiers; "
+            "do not present movement speed as cleaning speed. "
             "Shared direction: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
             + "\nOnly these supplied overlay words/specifications may appear (product labels in Image 1 stay unchanged): "
             + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or []}, ensure_ascii=False)

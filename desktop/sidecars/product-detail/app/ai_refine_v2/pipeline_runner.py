@@ -120,7 +120,8 @@ def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
     format_error = state.get("code") == "AI_REFINE_PLANNER_FORMAT_ERROR" or re.match(
         r"^v2 API/解析失败 \(重试 \d+ 次后\): JSONDecodeError:", str(state.get("error") or ""),
     )
-    if not format_error:
+    schema_error = str(state.get("error") or "").startswith("v2 schema 不合规: [")
+    if not (format_error or schema_error):
         return False
     from ai_refine_v2.pricing import CostJournal
     from ai_refine_v2 import refine_planner
@@ -136,10 +137,13 @@ def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
         if choice.get("finish_reason") != "stop":
             return False
         planning = refine_planner._extract_json(choice["message"]["content"])
+        refine_planner._restore_specification_qualifiers(planning)
         inputs = _read_json(task_dir / "_input.json") or {}
         return (planning.get("planning_version") == refine_planner.PLANNING_VERSION
                 and isinstance(inputs.get("product_text"), str)
-                and not refine_planner._validate_schema_v2(planning, inputs["product_text"], inputs.get("product_title")))
+                and not refine_planner._validate_schema_v2(
+                    planning, inputs["product_text"], inputs.get("product_title"),
+                    require_visual_strategy=planning.get("visual_strategy_version") is not None))
     except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError, AttributeError):
         return False
 

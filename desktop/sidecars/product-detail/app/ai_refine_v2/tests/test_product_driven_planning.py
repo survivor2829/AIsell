@@ -51,6 +51,19 @@ def response(plan, *, fresh=False):
     return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
 
+def test_numeric_captions_use_display_width_and_restore_source_qualifiers():
+    plan = sample()
+    caption = "清洁宽度500mm，效率700-1000m²/h，速度1.2m/s"
+    source = TEXT + "清洁效率700-1000m²/h。最大移动速度1.2m/s。"
+    plan["specifications"].append({"name": "最大移动速度", "value": "1.2m/s", "evidence": "最大移动速度1.2m/s"})
+    plan["screens"][1]["subtitle"] = caption
+    planner._restore_specification_qualifiers(plan)
+    assert "最大移动速度1.2m/s" in plan["screens"][1]["subtitle"]
+    assert planner._validate_schema_v2(plan, source) == []
+    plan["screens"][1]["subtitle"] = "字" * 33
+    assert any("最多32字" in w for w in planner._validate_schema_v2(plan, source))
+
+
 def test_new_plan_allows_same_role_preserves_points_and_optional_specs():
     for specs in (True, False):
         plan = sample(specs)

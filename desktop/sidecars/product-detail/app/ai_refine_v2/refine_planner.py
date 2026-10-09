@@ -31,6 +31,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from provider_transport import build_provider_opener
@@ -861,6 +862,36 @@ def _spec_value_matches_evidence(spec: dict, product_text: str | None) -> bool:
     return value in evidence
 
 
+def _display_width(text: str) -> int:
+    """Count full-width glyphs as two cells; numeric specifications stay readable."""
+    return sum(0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def _restore_specification_qualifiers(parsed: dict) -> None:
+    """Expand unambiguous source labels next to exact values in the working plan."""
+    labels: dict[tuple[str, str], set[str]] = {}
+    for spec in parsed.get("specifications") or []:
+        if not isinstance(spec, dict):
+            continue
+        name, value = str(spec.get("name") or ""), str(spec.get("value") or "")
+        if not value or not name.startswith(("最大", "最小", "额定")):
+            continue
+        for start in range(2, len(name) - 1):
+            labels.setdefault((name[start:], value), set()).add(name)
+    for screen in parsed.get("screens") or []:
+        if not isinstance(screen, dict):
+            continue
+        for field in ("title", "subtitle", "prompt"):
+            text = screen.get(field)
+            if not isinstance(text, str):
+                continue
+            for (short, value), names in labels.items():
+                if len(names) == 1:
+                    pattern = r"(?<![\w])" + re.escape(short) + r"(?=\s*[:：]?\s*" + re.escape(value) + r"(?![\w.]))"
+                    text = re.sub(pattern, lambda _: next(iter(names)), text)
+            screen[field] = text
+
+
 def _validate_selling_point_mapping(parsed: dict, product_text: str | None, product_title: str | None = None) -> list[str]:
     """Validate cardinality and quoted evidence before the first image charge."""
     warnings = []
@@ -948,7 +979,7 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
                 warnings.append(f"screens[{i}] 必须使用对应卖点的原文依据")
         if not evidence_ok(screen.get("evidence"), cover=role == "hero"):
             warnings.append(f"screens[{i}] 缺产品原文逐字依据")
-        if len(str(screen.get("title") or "")) > 16 or len(str(screen.get("subtitle") or "")) > 32:
+        if _display_width(str(screen.get("title") or "")) > 32 or _display_width(str(screen.get("subtitle") or "")) > 64:
             warnings.append(f"screens[{i}] 标题最多16字，解释最多32字")
         if product_text is not None:
             visible = f"{screen.get('title', '')} {screen.get('subtitle', '')}"
@@ -1121,6 +1152,7 @@ def plan_v2(
             resp = post_fn(current_payload, use_key)
             raw_content = resp["choices"][0]["message"]["content"]
             parsed = _extract_json(raw_content)
+            _restore_specification_qualifiers(parsed)
             points = parsed.get("selling_points") or []
             required_count = 1 + len(points) + bool(parsed.get("specifications"))
             if parsed.get("capacity_exceeded") is True or max(len(parsed.get("screens") or []), required_count) > _MAX_SCREEN_COUNT_V2:
