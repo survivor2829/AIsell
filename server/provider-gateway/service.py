@@ -312,6 +312,8 @@ class GatewayConfig:
         return {
             "deepseek": bool(self.keys.get("deepseek")),
             "bailian": bool(self.keys.get("bailian")),
+            # Confirms installed async/OSS transport, not upstream model access.
+            "bailian_video": bool(self.keys.get("bailian")),
             "volcengine_ark": bool(self.keys.get("volcengine_ark")),
             "volcengine_tts": bool(self.keys.get("volcengine_tts")),
             "volcengine_asr": bool(self.keys.get("volcengine_asr") or (self.asr_app_id and self.asr_access_token)),
@@ -611,6 +613,8 @@ class Handler(BaseHTTPRequestHandler):
             return "deepseek", self.config.origins["deepseek"] + "/v1/chat/completions"
         if suffix.startswith("/bailian/") and len(suffix) > len("/bailian/"):
             rest = suffix[len("/bailian"):]
+            if parsed.query:
+                rest += "?" + parsed.query
             return "bailian", self.config.origins["bailian"] + rest
         if suffix in ("/volcengine/ark/chat/completions", "/volcengine/ark/images/generations"):
             return "volcengine_ark", self.config.origins["ark"] + "/api/v3" + suffix[len("/volcengine/ark"):]
@@ -649,6 +653,10 @@ class Handler(BaseHTTPRequestHandler):
                 headers["X-Api-Access-Key"] = self.config.asr_access_token
             else:
                 headers["X-Api-Key"] = self.config.keys[provider]
+        if provider == "bailian":
+            for name in ("X-DashScope-Async", "X-DashScope-OssResourceResolve"):
+                if self.headers.get(name) == "enable":
+                    headers[name] = "enable"
         return headers
 
     def _proxy_upstream(self, method, provider, target, body):

@@ -709,15 +709,14 @@ function createWechatWorkflowController(options) {
       const saved = readPayload(existing);
       const selectedIds = Array.isArray(input.payload?.contactIds) ? input.payload.contactIds.map(String) : [];
       const savedIds = (Array.isArray(saved.contacts) ? saved.contacts : []).map((contact) => String(contact?.id || ""));
-      if (JSON.stringify(selectedIds) !== JSON.stringify(savedIds)) throw new Error("任务已经开始，只能修改话术，不能修改联系人范围。");
-      if (JSON.stringify(input.payload?.imageIds || []) !== JSON.stringify(saved.imageIds || []) || String(input.payload?.link || "") !== String(saved.link || "")) {
-        throw new Error("任务已经开始，只能修改话术；图片和网址请保持不变。");
-      }
+      if (JSON.stringify(selectedIds) !== JSON.stringify(savedIds)) throw new Error("任务已经开始，不能修改联系人范围。");
       if (typeof executor.updateWorkflowTask !== "function") throw new Error("当前版本不支持编辑进行中的触达任务，请重新添加任务。");
       payload = await executor.updateWorkflowTask(existing.id, {
         ...saved,
-        script: String(input.payload?.script || "").trim()
-      });
+        script: String(input.payload?.script || "").trim(),
+        imageIds: input.payload?.imageIds ?? saved.imageIds ?? [],
+        link: ""
+      }, saved);
     } else {
       payload = unwrap(await executor.prepareWorkflowTask(taskId, input.payload || {}));
     }

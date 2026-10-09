@@ -48,6 +48,7 @@ const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
 const { createPriceReader } = require("./product-video-pricing.cjs");
+const { createProductAudioPreparer } = require("./product-video-audio.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
 const {
@@ -645,10 +646,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       expertStore: aiExpertStore, deepSeekClient
     });
     const usedDigitalHumanClicks = new Set();
+    const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net) });
     digitalHumanRegistration = registerDigitalHumanIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
+      readPrices: () => readVideoPrices(),
+      readPreviewPrices: () => readVideoPrices(),
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
@@ -669,7 +673,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       packageVideo: async (payload) => {
         // Cover generation is independently recoverable; a missing image
         // provider must not prevent a verified video entering the library.
-        await beforeContentProviderWork(["volcengine_asr", "volcengine_ark"]);
+        if (!payload.prepared_transcript) await beforeContentProviderWork(["volcengine_asr"]);
+        else await contentEngineController.start();
         return contentEngineController.importBaseVideo(payload);
       },
       queryPackaging: (id) => contentEngineController.getTask(id)
@@ -680,7 +685,18 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       rootDir: path.join(runtime.rootDir, "product_video"),
       defaultExportDir: app.getPath("downloads"),
       gatewayClient: providerGatewayClient,
-      readPrices: createPriceReader({ fetch: net.fetch.bind(net) }),
+      readPrices: readVideoPrices,
+      prepareAudio: createProductAudioPreparer({ gatewayClient: providerGatewayClient,
+        selectMusic: async ({ durationSeconds }) => {
+          try {
+            await contentEngineController.start();
+            return await contentEngineController.selectVideoMusic(durationSeconds);
+          } catch {
+            // Music is optional. Preserve the verified narration; do not buy
+            // another video just because the local catalogue is unavailable.
+            return { status: "unavailable", message: "音乐库暂不可用，本片保留讲解。" };
+          }
+        } }),
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",

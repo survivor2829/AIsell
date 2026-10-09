@@ -870,6 +870,9 @@ class ContentEngineService:
     def list_music_catalog_tracks(self):
         return self.creative_domain.list_music_catalog_tracks()
 
+    def select_video_music(self, duration_seconds):
+        return self.creative_domain.select_video_music(duration_seconds)
+
     def preview_music_catalog_track(self, track_id):
         return self.creative_domain.preview_music_catalog_track(track_id)
 

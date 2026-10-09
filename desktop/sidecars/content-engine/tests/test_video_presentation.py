@@ -168,6 +168,42 @@ class VideoPresentationTests(unittest.TestCase):
             finally:
                 database.close()
 
+    def test_prepared_transcript_reuses_paid_result_and_rejects_changed_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source = root / "source.mp4"
+            source.write_bytes(b"frozen-video-fixture")
+            database = Database(root / "engine").open()
+            def render(**request):
+                target = request["output_dir"]
+                target.mkdir(parents=True)
+                (target / "video.mp4").write_bytes(source.read_bytes())
+                (target / "cover.jpg").write_bytes(b"local-cover")
+                return {"video_path": target / "video.mp4", "thumbnail_path": target / "cover.jpg"}
+            analyzer = SimpleNamespace(cloud_client=None, ffmpeg_path="not-needed",
+                _command=lambda *_args: self.fail("Prepared speech must not be transcribed again"))
+            renderer = SimpleNamespace(_probe_rendered_media=lambda _: {"duration_ms": 3000}, render=render)
+            try:
+                with mock.patch.object(CreativeDomain, "_sync_configured_voice_persona"):
+                    domain = CreativeDomain(database, new_id=lambda prefix: prefix + "_" + uuid.uuid4().hex,
+                        now=lambda: "2026-10-08T12:00:00Z", analyzer=analyzer, renderer=renderer,
+                        cover_client=SimpleNamespace(configured=False))
+                request = {"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "看清细节", "confirmed_script": "看清细节。", "cover_mode": "local_frame",
+                    "prepared_transcript": {"source_sha256": domain._sha256_file(source), "time_unit": "ms",
+                        "utterances": [{"text": "看清细节。", "start_time": 100, "end_time": 2800,
+                            "words": [{"text": "看清", "start_time": 100, "end_time": 1000},
+                                      {"text": "细节", "start_time": 1100, "end_time": 2800}]}]}}
+                task = domain.import_base_video(request)
+                result = domain.run_task(task["task_id"])
+                self.assertEqual("completed", result["status"], result)
+                source.write_bytes(b"changed-video")
+                with self.assertRaises(ContentEngineError) as caught:
+                    domain.import_base_video({**request, "source_id": "digital_human_" + uuid.uuid4().hex})
+                self.assertEqual("invalid_video_transcript", caught.exception.code)
+            finally:
+                database.close()
+
 
 if __name__ == "__main__":
     unittest.main()

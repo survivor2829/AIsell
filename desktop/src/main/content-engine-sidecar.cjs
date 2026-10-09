@@ -847,6 +847,7 @@ function createContentEngineSidecar(options = {}) {
       }
     ),
     listMusicCatalogTracks: () => request("list_music_catalog_tracks", {}),
+    selectVideoMusic: (durationSeconds) => request("select_video_music", { duration_seconds: durationSeconds }),
     listAutoMixVoicePersonas: () => request(
       "list_auto_mix_voice_personas", {}
     ),

@@ -6,6 +6,7 @@ const {
 
 async function main() {
   const strictTitles = [
+    ["陈东海", "陈总"], ["张三", "张总"], ["刘国强总", "刘总"], ["王建国经理", "王经理"], ["欧阳娜娜", "欧阳总"], ["万科物业-陈东海", "陈总"],
     ["王总", "王总"], ["李经理", "李经理"], ["曾总", "曾总"], ["王总经理", "王总"],
     ["王总13800138000", "王总"], ["王总 138 0013 8000", "王总"],
     ["万科物业-李总", "李总"], ["万科物业 李总", "李总"], ["保洁部 陈主任", "陈主任"],
@@ -29,7 +30,7 @@ async function main() {
     "学生 王老师", "家长 王老师", "李经理 上级:王总", "张总 跟进人:李经理",
     "来源：王总", "父亲:王总", "王总 by 李经理", "Assistant: 王总", "批发市场 米老板",
     "🐟 鱼老板", "㊎老板", "VIP-㊎老板", "河北 南宫经理", "王总(李经理)",
-    "刘国强总", "王建国经理", "苏州陈总", "万科李总", "苏州聂总", "郑州翟总经理",
+    "苏州陈总", "万科李总", "苏州聂总", "郑州翟总经理",
     "关小龙总", "白酒老板", "高校老师", "万达经理", "李总-财务小刘", "王总 媳妇",
     "东方证券经理", "项目经理", "车间主任", "班主任", "居委会主任", "常务副总",
     "大老板", "Tony王总", "王总(华东)", "介绍人：王总", "王总的助理", "李副总",
@@ -40,7 +41,7 @@ async function main() {
   }
   for (const contact of [
     { remark: "", nickname: "王总" }, { remark: "客户A", nickname: "王总" },
-    { name: "黄佳佳" }, { remark: "欧阳娜娜" },
+    { name: "黄佳佳" },
     { nickname: "产品服务顾问森妮19101706971" }, { remark: "上海星辰科技13800138000" }
   ]) {
     assert.deepEqual(contactSalutation(contact), { type: "generic", value: "" });
@@ -48,6 +49,7 @@ async function main() {
   for (const [hour, expected] of [[4, "您好"], [8, "早上好"], [12, "中午好"], [16, "下午好"], [20, "晚上好"], [23, "您好"]]) {
     assert.equal(timeGreeting(new Date(2026, 8, 23, hour)), expected);
   }
+  assert.equal(fillRespectfulTemplate("给您介绍设备。", { remark: "陈东海" }, new Date(2026, 9, 8, 9)), "陈总，早上好，给您介绍设备。");
   const morning = new Date(2026, 8, 23, 8);
   assert.equal(greetingForContact({ remark: "张总" }, morning), "张总，早上好");
   assert.equal(fillRespectfulTemplate("{称呼}，您好，请问近期是否需要设备支持？", { remark: "张总" }, morning),

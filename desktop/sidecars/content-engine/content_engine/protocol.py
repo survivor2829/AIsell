@@ -197,6 +197,7 @@ METHODS = {
         params
     ),
     "list_music_catalog_tracks": lambda service, params: service.list_music_catalog_tracks(),
+    "select_video_music": lambda service, params: service.select_video_music(params.get("duration_seconds")),
     "list_auto_mix_voice_personas": lambda service, params: service.list_auto_mix_voice_personas(),
     "design_auto_mix_voice_persona": lambda service, params: service.design_auto_mix_voice_persona(
         params.get("voice_persona_id")

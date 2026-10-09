@@ -48,7 +48,7 @@ async function checkTouchMessageSequence() {
   for (const reason of literalReasons) assert.equal(classifiedReasons.has(reason), true, `${reason} must be classified in wechat-rule-catalog`);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
-  const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
+  const contact = { id: "selected", name: "测试客户", remark: "陈东海", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const thirdContact = { id: "selected-three", name: "第三位测试客户", nickname: "第三位测试客户", wechatId: "test_customer_three", wechatAccountId: "test_account", allowed: true };
   const fourthContact = { id: "selected-four", name: "第四位测试客户", nickname: "第四位测试客户", wechatId: "test_customer_four", wechatAccountId: "test_account", allowed: true };
@@ -66,7 +66,7 @@ async function checkTouchMessageSequence() {
       assert.equal(selected.ok, true, JSON.stringify(selected));
       assert.equal(selected.state.selected_customer.id, options.contactId);
       const kind = options.image ? "image" : options.message === "https://example.com/product" ? "link" : "text";
-      calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId });
+      calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId, imageId: options.image?.sha256, message: options.message });
       if (kind === "text" && loginRequired) {
         return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required", error: "微信需要重新登录" };
       }
@@ -116,6 +116,7 @@ async function checkTouchMessageSequence() {
   assert.equal(result.progress.done, 0, "A sent text must not complete a contact with an unsent image");
   assert.equal(workflow.canRetryWorkflowTask(record, payload), false, "automatic recovery is already scheduled");
   assert.deepEqual(calls.map(call => call.kind), ["text", "image"]);
+  assert.match(calls[0].message, /^陈总，/, "the frozen remark must reach the actual text-send boundary");
   failImage = false;
   workflow = createTouchWorkflow(config);
   result = await workflow.runWorkflowStep(record, context);
@@ -222,7 +223,7 @@ async function checkTouchMessageSequence() {
   }
 
   failImage = false; unknown = false; pauseAfterText = true;
-  const paused = { ...record, id: crypto.randomUUID() };
+  const paused = { ...record, id: crypto.randomUUID(), payload: workflow.prepareWorkflowTask({ script: "旧介绍", contactIds: [contact.id, secondContact.id], imageIds: [imageId], link: "https://example.com/product" }) };
   result = await workflow.runWorkflowStep(paused, context);
   assert.equal(result.status, "pending");
   const pausedDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(paused.id).digest("hex"));
@@ -230,9 +231,22 @@ async function checkTouchMessageSequence() {
     undefined, "workflow_paused must not start an environment failure clock");
   enabled = true; pauseAfterText = false;
   const pausedCount = calls.length;
+  let previous = paused.payload;
+  paused.payload = workflow.updateWorkflowTask(paused.id, { ...previous, script: "新介绍", imageIds: [], link: "" }, previous);
+  assert.equal(workflow.canRetryWorkflowTask(paused, paused.payload), true, "the frozen partial sequence survives removing all images");
+  previous = paused.payload;
+  const replacementImage = "b".repeat(64);
+  paused.payload = workflow.updateWorkflowTask(paused.id, { ...previous, imageIds: [replacementImage] }, previous);
+  result = await createTouchWorkflow(config).runWorkflowStep(paused, context);
+  assert.equal(result.status, "pending");
+  assert.deepEqual(calls.slice(pausedCount).map(call => call.kind), ["image", "link"]);
+  assert.equal(calls[pausedCount].imageId, imageId, "a second edit preserves the first recipient's original image");
+  clock.setTime(clock.getTime() + 8000);
   result = await createTouchWorkflow(config).runWorkflowStep(paused, context);
   assert.equal(result.status, "completed");
-  assert.deepEqual(calls.slice(pausedCount).map(call => call.kind), ["image", "link"]);
+  assert.deepEqual(calls.slice(pausedCount + 2).map(call => call.kind), ["text", "image"]);
+  assert.match(calls[pausedCount + 2].message, /新介绍/);
+  assert.equal(calls[pausedCount + 3].imageId, replacementImage, "the next recipient uses the replacement without the old link");
 
   const intervalPayload = createTouchWorkflow(config).prepareWorkflowTask({ script: "这是一条间隔测试话术", contactIds: [contact.id, secondContact.id] });
   const intervalRecord = { id: crypto.randomUUID(), payload: intervalPayload, progress: { done: 0 }, status: "running" };

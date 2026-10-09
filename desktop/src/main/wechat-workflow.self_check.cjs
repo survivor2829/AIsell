@@ -1689,10 +1689,12 @@ async function checkInProgressTouchEdit() {
   await control.start();
   await control.tick();
   await control.pause();
-  const edited = await control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["a", "b"], script: "新话术", imageIds: [], link: "" } });
+  const edited = await control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["a", "b"], script: "新话术", imageIds: ["b".repeat(64)], link: "" } });
   assert.equal(edited.ok, true, "a paused touch task can edit after partial progress");
   assert.equal(edited.task.progress.done, 0, "a bound task is routed through the edit path even before aggregate progress advances");
   assert.equal(updateInput.script, "新话术");
+  assert.deepEqual(updateInput.imageIds, ["b".repeat(64)]);
+  assert.equal(updateInput.link, "");
   await control.dispose();
 }
 

@@ -44,7 +44,8 @@ function registerProductVideoIpc(options = {}) {
     },
     "export-source": async (payload) => {
       const id = idOf(payload), window = getMainWindow();
-      const settings = { title: "导出480p原片", defaultPath: path.join(options.defaultExportDir || "", `产品效果-${id}-480p.mp4`), filters: [{ name: "MP4视频", extensions: ["mp4"] }] };
+      const resolution = service.get(id).plan?.sourceResolution || 'source';
+      const settings = { title: "导出生成母版", defaultPath: path.join(options.defaultExportDir || "", `产品效果-${id}-${resolution}.mp4`), filters: [{ name: "MP4视频", extensions: ["mp4"] }] };
       const result = await (window ? dialog.showSaveDialog(window, settings) : dialog.showSaveDialog(settings));
       return result.canceled || !result.filePath ? null : service.exportSource(id, result.filePath);
     }

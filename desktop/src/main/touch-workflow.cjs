@@ -218,9 +218,9 @@ function createTouchWorkflow(options = {}) {
     let owner = "";
     let task;
     const taskDir = workflowDirectory(id);
-    const imageIds = Array.isArray(payload?.imageIds) ? payload.imageIds : [];
-    const link = String(payload?.link || "");
-    const multipart = imageIds.length > 0 || Boolean(link);
+    let imageIds = Array.isArray(payload?.imageIds) ? payload.imageIds : [];
+    let link = String(payload?.link || "");
+    let multipart = imageIds.length > 0 || Boolean(link);
     const signature = workflowSignature({ script, contacts, imageIds, link });
     let searchCaptureBytes = null;
     const bindingFile = path.join(taskDir, "workflow-binding.json");
@@ -289,6 +289,14 @@ function createTouchWorkflow(options = {}) {
         recoveredTaskIds.add(id);
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
+      // A recipient who already received part of a message finishes their frozen
+      // sequence. Edits apply to recipients whose delivery has not started.
+      const deliveryMedia = task.results[task.current_index]?.delivery_media;
+      if (deliveryMedia) {
+        imageIds = deliveryMedia.imageIds;
+        link = deliveryMedia.link;
+        multipart = imageIds.length > 0 || Boolean(link);
+      }
       if (task.manual_resolution_pending && taskRecord?.status !== "needs_attention") {
         delete task.manual_resolution_pending;
         persist();
@@ -738,7 +746,8 @@ function createTouchWorkflow(options = {}) {
 
   function canRetryWorkflowTask(record, payload) {
     const task = loadWorkflowTask(record.id);
-    const multipart = payload ? (Array.isArray(payload.imageIds) && payload.imageIds.length > 0 || Boolean(payload.link)) : undefined;
+    const media = task.results[task.current_index]?.delivery_media || payload;
+    const multipart = media ? (Array.isArray(media.imageIds) && media.imageIds.length > 0 || Boolean(media.link)) : undefined;
     return !task.integrity_error && task.status === "paused"
       && (resumableFreshEdit(task, multipart) || canContinueTouchResult(task.results[task.current_index], multipart));
   }
@@ -869,7 +878,8 @@ function createTouchWorkflow(options = {}) {
     return true;
   }
 
-  function updateWorkflowTask(id, payload = {}) {
+  function updateWorkflowTask(id, payload = {}, previousPayload = payload) {
+    if (activeStep) throw new Error("正在暂停触达，请等待当前操作结束后再保存。");
     const taskId = String(id || "").trim();
     const taskDir = workflowDirectory(taskId);
     const bindingFile = path.join(taskDir, "workflow-binding.json");
@@ -884,13 +894,22 @@ function createTouchWorkflow(options = {}) {
     const expectedIds = task.results.map((result) => String(result?.id || ""));
     const nextContacts = Array.isArray(payload.contacts) ? payload.contacts : [];
     if (JSON.stringify(expectedIds) !== JSON.stringify(nextContacts.map((contact) => String(contact?.id || "")))) {
-      throw new Error("任务已经开始，只能修改话术，不能修改已冻结的联系人范围。");
+      throw new Error("任务已经开始，不能修改已冻结的联系人范围。");
     }
     const script = String(payload.script || "").trim();
     if (!script) throw new Error("请填写触达话术");
-    const imageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
-    const link = String(payload.link || "");
+    const imageIds = options.mediaStore ? options.mediaStore.validateIds(payload.imageIds || []) : [];
+    if (!options.mediaStore && payload.imageIds?.length) throw new Error("图片服务未连接，请重新打开程序。");
+    const link = normalizeTouchLink(payload.link);
+    const binding = JSON.parse(fs.readFileSync(bindingFile, "utf8"));
+    if (binding.taskId !== taskId || binding.signature !== workflowSignature(previousPayload)) {
+      throw new Error("触达任务内容与执行记录不一致，请重新打开任务后再编辑。");
+    }
     for (const result of task.results.slice(task.current_index)) {
+      if (result?.message_parts?.some((part) => part.status === "sent_verified") && canContinueTouchResult(result, true)) {
+        result.delivery_media ||= { imageIds: [...(previousPayload.imageIds || [])], link: String(previousPayload.link || "") };
+        continue;
+      }
       if (!result || !["pending", "generated", "not_attempted"].includes(result.status)
         || result.send_attempted !== false
         || result.retry_blocked
@@ -908,6 +927,7 @@ function createTouchWorkflow(options = {}) {
       result.retry_blocked = false;
       result.send_attempted = false;
       delete result.message_parts;
+      delete result.delivery_media;
       result.updated_at = now().toISOString();
     }
     task.script = script;
@@ -915,7 +935,7 @@ function createTouchWorkflow(options = {}) {
     delete task.pre_send_skip_streak;
     task.status = "paused";
     task.phase = "preparing_batch";
-    task.pause_reason = "话术已修改，点击启动程序继续未发送联系人";
+    task.pause_reason = "触达内容已修改，点击启动程序继续；部分已发送的联系人沿用原内容。";
     task.snapshot_hash = taskSnapshotHash(task);
     task = authorizeTask(task, now().toISOString());
     saveTaskState(taskDir, task);
