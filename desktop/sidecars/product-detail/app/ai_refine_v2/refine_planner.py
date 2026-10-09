@@ -1031,6 +1031,7 @@ def plan_v2(
     max_retries: int = 2,
     http_fn: Optional[Callable[[dict, str], dict]] = None,
     temperature: float = _TEMPERATURE_V2,
+    require_visual_strategy: bool = True,
 ) -> dict:
     """v2 schema: 产品文案 → DeepSeek 规划 (style_dna + N 屏导演 prompt).
 
@@ -1128,7 +1129,7 @@ def plan_v2(
                 parsed,
                 product_text=clean_product_text,
                 product_title=clean_product_title,
-                require_visual_strategy=True,
+                require_visual_strategy=require_visual_strategy,
             )
             if parsed.get("planning_version") != PLANNING_VERSION:
                 schema_warnings.append(f"planning_version 必须为 {PLANNING_VERSION}")

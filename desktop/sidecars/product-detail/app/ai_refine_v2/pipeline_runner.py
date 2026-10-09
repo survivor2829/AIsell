@@ -1495,6 +1495,7 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
                 api_key=deepseek_key or "saved-response-local-replay",
                 max_retries=0,
                 http_fn=lambda body, key: saved_response if saved_response is not None else journal.planner_call(quote, body, key),
+                require_visual_strategy=saved_response is None,
             )
         else:
             _set(task_id, progress_msg="[v2 mock] 加载预置 planning_v2", progress_pct=10)

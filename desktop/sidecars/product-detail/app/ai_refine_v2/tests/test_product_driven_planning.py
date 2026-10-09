@@ -38,15 +38,16 @@ def sample(with_specs=True):
     }
 
 
-def response(plan):
+def response(plan, *, fresh=False):
     plan = copy.deepcopy(plan)
-    plan.setdefault("visual_strategy_version", "selling-point-evidence-v1")
-    plan.setdefault("primary_demonstration_id", None)
-    for i, screen in enumerate(plan.get("screens", [])):
-        screen.setdefault("visual_brief", {
-            "scene": "办公楼", "framing": f"取景{i}", "product_action": "依照参考图展示",
-            "visual_evidence": screen.get("title", ""), "layout": f"布局{i}",
-        })
+    if fresh:
+        plan.setdefault("visual_strategy_version", "selling-point-evidence-v1")
+        plan.setdefault("primary_demonstration_id", None)
+        for i, screen in enumerate(plan.get("screens", [])):
+            screen.setdefault("visual_brief", {
+                "scene": "办公楼", "framing": f"取景{i}", "product_action": "依照参考图展示",
+                "visual_evidence": screen.get("title", ""), "layout": f"布局{i}",
+            })
     return {"choices": [{"message": {"content": json.dumps(plan, ensure_ascii=False)}}]}
 
 
@@ -91,7 +92,7 @@ def test_negative_logo_and_graphic_occupancy_are_not_commercial_claims():
 def test_fresh_plans_require_visual_strategy_and_primary_demonstration_first():
     plan = sample()
     assert any("visual_strategy_version" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
-    fresh = response(plan)["choices"][0]["message"]["content"]
+    fresh = response(plan, fresh=True)["choices"][0]["message"]["content"]
     plan = json.loads(fresh)
     plan["primary_demonstration_id"] = "p2"
     assert any("作业效果" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
@@ -175,7 +176,7 @@ def test_local_colors_are_hints_and_unsupported_evidence_retries(tmp_path, monke
     calls = []
     def post(payload, key):
         calls.append(payload)
-        return response(bad if len(calls) == 1 else sample())
+        return response(bad if len(calls) == 1 else sample(), fresh=True)
     monkeypatch.setattr(planner.time, "sleep", lambda _: None)
     result = planner.plan_v2(TEXT, str(reference), api_key="fake", http_fn=post)
     assert len(calls) == 2
