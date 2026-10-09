@@ -321,8 +321,9 @@ class TestProviderCheckpointAndRecovery(unittest.TestCase):
                 self.assertEqual(recovered["status"], "partial_success")
                 self.assertEqual(recovered["failed_count"], 1)
                 poll.assert_called_once_with(
-                    "provider-feature", "secret", direct=True,
+                    "provider-feature", "secret", direct=True, receipt_callback=mock.ANY,
                 )
+                self.assertTrue(callable(poll.call_args.kwargs["receipt_callback"]))
                 generate.assert_not_called()
                 submit.assert_not_called()
                 checkpoint = json.loads(
