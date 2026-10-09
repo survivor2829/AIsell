@@ -188,7 +188,7 @@ PRODUCT_PRESENTATIONS = {
     "whole_product": "Show the whole product as the main subject; reserve this for product recognition, not as a default for every selling point.",
     "working_scene": "Make the real use scene and visible result the main subject. Integrate the product at a believable working scale, not as a large pasted catalogue cutout.",
     "visible_detail": "Crop tightly to a relevant part actually visible in Image 1. Do not add a second whole-product portrait, reveal hidden parts, or invent internal structure.",
-    "diagram_only": "Use a selling-point-specific explanatory graphic and supplied facts. Do NOT draw the whole product, a product silhouette, or fictitious realistic components. Image 1 is a reference, not mandatory visible content.",
+    "diagram_only": "Use flat schematic pictograms, labeled outlines or data graphics with supplied facts. Do NOT draw the whole product, a product silhouette, photorealistic tanks or invented hardware. For dry-collection capacity use dry particles or an abstract volume outline, NEVER liquid or a water-fill effect. Match the actual medium in the source; if unspecified keep the graphic abstract. Image 1 is a reference, not mandatory visible content.",
     "small_reference": "Make the information or spatial comparison dominant. Show the product only as a small supporting reference; do not enlarge it into another hero portrait.",
 }
 

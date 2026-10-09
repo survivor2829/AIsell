@@ -785,7 +785,7 @@ def _generate_one_block_v2(
             "do not present movement speed as cleaning speed. "
             "Shared direction: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
             + "\nOnly these supplied overlay words/specifications may appear (product labels in Image 1 stay unchanged): "
-            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or []}, ensure_ascii=False)
+            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or [], "comparison_labels": ["清洁前", "作业后"] if block.get("primary_cleaning_demonstration") else []}, ensure_ascii=False)
             + "\nOne image, one selling point. Source evidence: "
             + json.dumps(block.get("evidence") or [], ensure_ascii=False)
             + "\nScreen-specific visual brief (instructions, not additional printed words): "
@@ -799,13 +799,16 @@ def _generate_one_block_v2(
             effective_prompt += "\nSCREEN SUBJECT PRIORITY: " + PRODUCT_PRESENTATIONS[presentation]
         if block.get("primary_cleaning_demonstration"):
             effective_prompt += (
-                "\nPRIMARY CLEANING DEMONSTRATION OVERRIDE: Main scene must show one continuous floor "
-                "material with unchanged joints and texture, visible dirt ahead of the machine, and a "
-                "cleaned trail only behind the area it has already passed. Keep untreated dirt beside "
-                "the trail as a comparison. A boundary between carpet and tile is NOT cleaning evidence. "
-                "Never use split flooring or a pristine floor alone to stand in for the cleaning result. "
-                "Other supported materials may appear only as separate small sample insets, never an "
-                "implied automatic mode switch. Preserve the visible part count and asymmetry of Image 1."
+                "\nPRIMARY CLEANING DEMONSTRATION OVERRIDE (supersedes conflicting trail/layout directions): "
+                "Use a matched BEFORE/AFTER comparison of the SAME location, floor material, camera view, "
+                "joints and lighting. The BEFORE panel shows visible everyday dirt without the product. "
+                "The AFTER panel shows the same floor after cleaning, with the reference product only "
+                "in this panel at a believable scale. Two distinct labeled panels, not two flooring materials. "
+                "Use only the supplied captions 清洁前 and 作业后. Preserve wear and texture; no floor renovation. "
+                "Do NOT draw a live clean stripe extending from the front bumper toward the viewer; "
+                "do NOT put a supposedly already-cleaned trail ahead of the product. This still-image "
+                "comparison does not claim one-pass perfection, tested speed, or simultaneous operating modes. "
+                "Keep the Image 1 viewing side, visible part count and asymmetry; no mirrored extra brush."
             )
     elif image_data_url:
         env_mode = os.getenv("COLOR_ANCHOR_DUAL_IMAGE", "on").strip().lower()
