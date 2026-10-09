@@ -38,7 +38,12 @@ function createProductVideoService(options = {}) {
   const media = { ...mediaTools, ...options.mediaTools };
   const ffmpegPath = options.ffmpegPath || process.env.XIAOXI_FFMPEG_PATH || 'ffmpeg';
   const active = new Map(), timers = new Map(), admissionsByTask = new Set();
-  let closed = false, admissions = 0;
+  let closed = false, updatePaused = false, admissions = 0;
+  const runnable = (task) => RUNNING.has(task.status) || task.status === 'outcome_unknown';
+  function ensureRunning() {
+    hold();
+    if (updatePaused || closed) throw fail('product_video_update_pending', '正在保存任务，请稍后继续制作。');
+  }
   const file = (id) => {
     if (!TASK_ID.test(String(id || ''))) throw fail('product_video_not_found', '没有找到这条视频任务。');
     return contained(root, `${id}/task.json`);
@@ -70,7 +75,7 @@ function createProductVideoService(options = {}) {
       plan: task.plan, currentShot: task.currentShot, completedShots: task.shots.filter((shot) => shot.file).length,
       preparation: task.plan.pipelineVersion >= 3 ? { framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
-      error: cleanMessage(task.error || ''), errorCode: task.errorCode || '', resumeStatus: task.resumeStatus || '', canRetry: task.status === 'needs_attention',
+      error: cleanMessage(task.error || ''), errorCode: task.errorCode || '', resumeStatus: task.resumeStatus || '', canRetry: task.status === 'needs_attention' && !((task.videoRetryCount || 0) >= 1 && (Number.isInteger(task.failedShotIndex) || ['product_video_video_failed','product_video_shot_failed'].includes(task.errorCode))),
       retryLabel: Number.isInteger(task.failedShotIndex) ? `重新生成第 ${task.failedShotIndex + 1} 段` : ASR_RETRY_ERRORS.has(task.errorCode) ? '重新识别字幕' : '',
       canRefresh: RUNNING.has(task.status) || ['outcome_unknown', 'draft'].includes(task.status), canExport: task.status === 'completed', canExportSource: Boolean(task.sourceFile), canPreview: task.status === 'completed' && Boolean(task.finalFile) };
   }
@@ -108,7 +113,7 @@ function createProductVideoService(options = {}) {
     if (!value || value.length > FACT_LIMIT) throw fail('product_video_facts_invalid', `产品资料须为1至${FACT_LIMIT}字，导入不会截断原文。`);
     return { name: path.basename(source), text: value };
   }
-  async function admit(action) { hold(); admissions += 1; try { return await action(); } finally { admissions -= 1; } }
+  async function admit(action) { ensureRunning(); admissions += 1; try { return await action(); } finally { admissions -= 1; } }
   async function admitTask(id, action) {
     return admit(async () => {
       if (admissionsByTask.has(id) || active.has(id)) throw fail('product_video_busy', '当前任务正在处理，请稍后刷新。');
@@ -120,7 +125,7 @@ function createProductVideoService(options = {}) {
     return admit(async () => {
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['mode','durationSeconds','sceneId','sceneIds','surfaceId','dirtId','goalId','expression','facts','imageId','productName','budgetCny'].includes(key))) throw fail('product_video_invalid_input', '请重新填写视频需求。');
       asset(input.imageId);
-      const plan = planVideo(input), automaticBudget = input.budgetCny === undefined;
+      const plan = { ...planVideo(input), retryPolicy: 'one_failed_video' }, automaticBudget = input.budgetCny === undefined;
       let budgetCny = automaticBudget ? 0 : Number(input.budgetCny);
       if (!automaticBudget && (!Number.isFinite(budgetCny) || budgetCny <= 0 || budgetCny > 10000)) throw fail('product_video_budget_invalid', '本次制作额度无效，请联系管理员。');
       let prices; try { prices = await readPrices(plan); } catch { /* Drafting remains usable offline. */ }
@@ -128,7 +133,7 @@ function createProductVideoService(options = {}) {
       hold();
       const id = `pv_${randomUUID()}`, createdAt = new Date().toISOString();
       const task = { ...input, productName: String(input.productName || '').trim(), facts: String(input.facts || '').trim(), expression: String(input.expression || '').trim(),
-        id, createdAt, updatedAt: createdAt, version: 3, status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [] };
+        id, createdAt, updatedAt: createdAt, version: 3, status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
       save(task); return publicTask(task);
     });
   }
@@ -173,7 +178,7 @@ function createProductVideoService(options = {}) {
       if (receipt?.status === 'pending') throw fail('product_video_submission_unknown', '原请求仍在处理中，请稍后核对。', { outcomeUnknown: true });
       prior.response = receipt; save(task); return receipt;
     }
-    hold();
+    ensureRunning();
     if (reserveCny && round(quote(task).reservedCny + reserveCny + futureReserve(task, name, reserveCny)) > task.budgetCny) throw fail('product_video_budget_exceeded', '剩余额度不足以覆盖本次调用和后续制作，已有成果已保留。');
     const entry = { id: randomUUID(), name, submittedAt: new Date().toISOString(), reserveCny,
       priceSnapshot: { source: task.prices?.source, checkedAt: task.prices?.checkedAt, fxCnyPerUsd: task.prices?.fxCnyPerUsd,
@@ -300,7 +305,7 @@ function createProductVideoService(options = {}) {
     save(task);
   }
   async function advance(task) {
-    hold();
+    ensureRunning();
     const official = task.plan.pipelineVersion >= 3;
     if (task.status === 'uploading') { await upload(task); task.status = task.plan.pipelineVersion >= 2 ? 'preparing_frames' : 'submitting'; save(task); }
     if (task.status === 'preparing_frames') {
@@ -380,10 +385,63 @@ function createProductVideoService(options = {}) {
       && Number.isInteger(error.shotIndex) && error.shotIndex >= 0 && error.shotIndex < task.shots.length) task.failedShotIndex = error.shotIndex;
     save(task);
   }
+  async function recoverReceipt(task) {
+    const stageKey = { preparing_frames: `frame_${task.currentShot}`, submitting: `shot_${task.currentShot}`, transcribing: 'asr', uploading: 'upload_image' }[task.resumeStatus];
+    const entry = task.operations[stageKey] || Object.values(task.operations).find((op) => !op.response && !op.rejected);
+    if (!entry) return;
+    try {
+      const result = await provider.request(`/operations/${entry.id}`);
+      if (result && result.status !== 'pending') {
+        entry.response = result; task.status = task.resumeStatus; task.error = ''; task.errorCode = ''; save(task);
+      }
+    } catch { /* Preserve the receipt and allowance until its result is known. */ }
+  }
+  async function prepareVideoRetry(task) {
+    if ((task.videoRetryCount || 0) >= 1) throw fail('product_video_retry_limit', '这条作品已重做过一次，已有成果已保留，请先检查失败原因。');
+    const index = Number.isInteger(task.failedShotIndex) ? task.failedShotIndex : task.currentShot;
+    if (!Number.isInteger(index) || index < 0 || index >= task.shots.length) throw fail('product_video_data_invalid', '待重做镜头编号无效，原任务已保留。');
+    const candidate = structuredClone(task), name = `shot_${index}`;
+    if (candidate.operations[name]) {
+      (candidate.archivedOperations ||= []).push(candidate.operations[name]); delete candidate.operations[name];
+    }
+    delete candidate.shots[index].file; delete candidate.shots[index].providerTaskId;
+    candidate.currentShot = index; candidate.resumeStatus = 'submitting';
+    candidate.prices = await readPrices(candidate.plan);
+    if (!validPrices(candidate.prices)) throw fail('product_video_price_unavailable', '完整报价不可用，未提交重做请求。');
+    if (round(quote(candidate).reservedCny + futureReserve(candidate)) > candidate.budgetCny)
+      throw fail('product_video_budget_exceeded', '剩余额度不足以重做该镜头并完成后续制作，已有成果已保留。');
+    ensureRunning();
+    candidate.videoRetryCount = (task.videoRetryCount || 0) + 1;
+    candidate.status = 'submitting'; candidate.error = ''; candidate.errorCode = ''; delete candidate.failedShotIndex;
+    Object.assign(task, candidate); delete task.failedShotIndex;
+    save(task); // Archive the old receipt and consume the allowance before any POST.
+  }
   function schedule(id) {
-    if (closed || active.has(id) || global.__xiaoxiUpdateHold) return;
-    const promise = Promise.resolve().then(async () => { const task = read(id); if (!RUNNING.has(task.status)) return; try { await advance(task); } catch (error) { pause(task, error); } })
-      .finally(() => { active.delete(id); if (!closed) { const task = read(id); if (RUNNING.has(task.status) && !global.__xiaoxiUpdateHold) timers.set(id, setTimeout(() => { timers.delete(id); schedule(id); }, options.pollMs ?? 8000)); } });
+    if (closed || updatePaused || active.has(id) || global.__xiaoxiUpdateHold) return;
+    if (timers.has(id)) { clearTimeout(timers.get(id)); timers.delete(id); }
+    const promise = Promise.resolve().then(async () => {
+      const task = read(id); if (!runnable(task)) return;
+      try {
+        if (task.status === 'outcome_unknown') await recoverReceipt(task);
+        if (RUNNING.has(task.status)) await advance(task);
+      } catch (error) {
+        if (error.code === 'product_video_update_pending') return;
+        if (task.autoRetryFailedVideo && error.code === 'product_video_video_failed' && (task.videoRetryCount || 0) < 1) {
+          try { await prepareVideoRetry(task); return; }
+          catch (retryError) {
+            if (retryError.code === 'product_video_update_pending') return;
+            error.message = `${error.message} ${retryError.message}`;
+          }
+        }
+        pause(task, error);
+      }
+    }).finally(() => {
+      active.delete(id);
+      if (!closed && !updatePaused && !global.__xiaoxiUpdateHold) {
+        const task = read(id);
+        if (runnable(task)) timers.set(id, setTimeout(() => { timers.delete(id); schedule(id); }, options.pollMs ?? 8000));
+      }
+    });
     active.set(id, promise); void promise.catch(() => {});
   }
   async function verifyQuote(task) {
@@ -412,15 +470,12 @@ function createProductVideoService(options = {}) {
       if (active.has(id)) throw fail('product_video_busy', '当前任务正在处理。');
       const task = read(id);
       if (task.status !== 'needs_attention') throw fail('product_video_retry_unavailable', '当前任务不能重试。');
-      const index = Number.isInteger(task.failedShotIndex) ? task.failedShotIndex : task.currentShot;
-      let name;
-      if (Number.isInteger(task.failedShotIndex)) {
-        if (index < 0 || index >= task.shots.length) throw fail('product_video_data_invalid', '待重做镜头编号无效，原任务已保留。');
-        name = `shot_${index}`; task.currentShot = index; task.resumeStatus = 'submitting';
-        delete task.shots[index].file; delete task.shots[index].providerTaskId;
+      if (Number.isInteger(task.failedShotIndex) || ['product_video_video_failed', 'product_video_shot_failed'].includes(task.errorCode)) {
+        await prepareVideoRetry(task); schedule(id); return publicTask(task);
       }
-      else if (task.errorCode === 'product_video_frame_failed') { name = `frame_${index}`; task.resumeStatus = 'preparing_frames'; }
-      else if (task.errorCode === 'product_video_video_failed' || task.errorCode === 'product_video_shot_failed') { name = `shot_${index}`; task.resumeStatus = 'submitting'; }
+      const index = task.currentShot;
+      let name;
+      if (task.errorCode === 'product_video_frame_failed') { name = `frame_${index}`; task.resumeStatus = 'preparing_frames'; }
       else if (ASR_RETRY_ERRORS.has(task.errorCode)) { name = 'asr'; task.resumeStatus = 'transcribing'; delete task.captions; }
       else name = Object.keys(task.operations).find((key) => task.operations[key].rejected);
       if (name && task.operations[name]) { (task.archivedOperations ||= []).push(task.operations[name]); delete task.operations[name]; }
@@ -438,16 +493,9 @@ function createProductVideoService(options = {}) {
         save(task);
       } catch { /* Keep draft available offline. */ } }
       if (task.status === 'outcome_unknown' && !active.has(id)) {
-        const stageKey = { preparing_frames: `frame_${task.currentShot}`, submitting: `shot_${task.currentShot}`, transcribing: 'asr', uploading: 'upload_image' }[task.resumeStatus];
-        const entry = task.operations[stageKey] || Object.values(task.operations).find((op) => !op.response && !op.rejected);
-        if (entry) {
-          try {
-            const result = await provider.request(`/operations/${entry.id}`);
-            if (result?.status !== 'pending') { entry.response = result; task.status = task.resumeStatus; task.error = ''; task.errorCode = ''; save(task); }
-          } catch { /* Unknown means query again later, never create a replacement paid request. */ }
-        }
+        await recoverReceipt(task);
       }
-      if (RUNNING.has(task.status)) schedule(id);
+      if (runnable(task)) schedule(id);
       return publicTask(task);
     });
   }
@@ -479,10 +527,21 @@ function createProductVideoService(options = {}) {
     return { path: destination, subtitlePath, recordPath, sendText: task.plan.sendText };
   }
   function isBusy() {
-    if (admissions || active.size) return true;
-    return taskIds().some((id) => { try { const t = read(id); return RUNNING.has(t.status) || t.status === 'outcome_unknown'; } catch { return false; } });
+    return Boolean(admissions || active.size);
   }
-  function close() { closed = true; for (const timer of timers.values()) clearTimeout(timer); timers.clear(); }
-  return { capabilities, importImage, importFacts, create, list, get: (id) => publicTask(read(id)), start, retryShot, refresh, media: preview, exportVideo, exportSource: (id, destination) => exportVideo(id, destination, true), isBusy, close };
+  function prepareForUpdate() {
+    updatePaused = true;
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+    return { busy: isBusy() };
+  }
+  function resumeAfterUpdate() {
+    if (closed) return;
+    updatePaused = false;
+    for (const id of taskIds()) { try { if (runnable(read(id))) schedule(id); } catch { /* Retain unreadable tasks for diagnosis. */ } }
+  }
+  async function close() { closed = true; prepareForUpdate(); await Promise.allSettled([...active.values()]); }
+  queueMicrotask(resumeAfterUpdate);
+  return { capabilities, importImage, importFacts, create, list, get: (id) => publicTask(read(id)), start, retryShot, refresh, media: preview, exportVideo, exportSource: (id, destination) => exportVideo(id, destination, true), isBusy, prepareForUpdate, resumeAfterUpdate, close };
 }
 module.exports = { createProductVideoService };

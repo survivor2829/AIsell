@@ -25,6 +25,7 @@ def _validate_json_numbers(value):
 
 
 METHODS = {
+    "digital_human_upload_audio": lambda service, params: service.digital_human_upload_audio(params),
     "import_base_video": lambda service, params: service.import_base_video(params),
     "update_cover_title": lambda service, params: service.update_cover_title(
         params.get("candidate_id"), params.get("headline_lines")
@@ -410,6 +411,7 @@ def serve_jsonl(
                 "auto_mix_v2": True,
                 "licensed_music_catalog_v1": True,
                 "voice_preview_cache_only": True,
+                "digital_human_audio_upload": True,
             },
         },
     )

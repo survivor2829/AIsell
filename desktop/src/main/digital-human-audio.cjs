@@ -8,11 +8,11 @@ const { videoEncoderArgs } = require('./product-video-media.cjs');
 const VOICE_IDS = Object.freeze({ natural_female: 'Cherry', steady_male: 'Ethan', lively: 'Serena' });
 const MAX_TAIL_SECONDS = .9;
 const RATE = 16000;
-function run(binary, args, { binaryOutput = false, cwd } = {}) {
+function run(binary, args, { binaryOutput = false, cwd, maxOutputBytes = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20 * 60_000 });
     const buffers = []; let bytes = 0, error = '';
-    child.stdout.on('data', (chunk) => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) child.kill(); else buffers.push(chunk); });
+    child.stdout.on('data', (chunk) => { bytes += chunk.length; if (bytes > maxOutputBytes) child.kill(); else buffers.push(chunk); });
     child.stderr.on('data', (chunk) => { error = (error + chunk).slice(-3000); });
     child.once('error', reject);
     child.once('close', (code) => code === 0 ? resolve(binaryOutput ? Buffer.concat(buffers) : Buffer.concat(buffers).toString('utf8'))
@@ -46,6 +46,57 @@ function splitScript(script, durationSeconds) {
   }
   return segments;
 }
+// Split only for the TTS text limit. A requested duration must never delete,
+// rewrite or force a speaking rate onto the customer's original script.
+function speechChunks(script) {
+  const chars = Array.from(String(script || '').trim()), result = [];
+  if (!chars.length) throw fail('digital_human_script_required', '请先填写完整口播文案。');
+  let start = 0;
+  while (start < chars.length) {
+    let end = Math.min(start + 600, chars.length);
+    if (end < chars.length) {
+      for (let i = end; i > start + 300; i -= 1) {
+        if (/[。！？；，,.!?;\s]/u.test(chars[i - 1])) { end = i; break; }
+      }
+    }
+    result.push({ id: `speech_${result.length + 1}`, text: chars.slice(start, end).join(''), status: 'planned' });
+    start = end;
+  }
+  return result;
+}
+function splitMeasuredSpeech(utterances, seconds) {
+  if (!Number.isFinite(seconds) || seconds < 2) throw fail('digital_human_audio_too_short', '完整口播不足2秒，请补充完整表达；原音轨已保存。');
+  const words = utterances.flatMap((item) => Array.isArray(item.words) && item.words.length ? item.words : [item]);
+  const boundaries = new Map([[0, 0], [seconds, 0]]), sentenceEnds = new Set(utterances.map((item) => item.end_time));
+  for (let i = 0; i < words.length - 1; i += 1) {
+    const end = Number(words[i].end_time) / 1000, next = Number(words[i + 1].start_time) / 1000;
+    if (Number.isFinite(end) && Number.isFinite(next) && next >= end) {
+      const natural = sentenceEnds.has(words[i].end_time) || /[。！？；，,.!?;]$/u.test(String(words[i].text || ''));
+      boundaries.set(Math.round((end + next) * 500) / 1000, natural ? 0 : next - end >= .12 ? .2 : 1);
+    }
+  }
+  const candidates = [...boundaries.keys()].sort((a, b) => a - b), route = new Map([[seconds, { ends: [], penalty: 0 }]]);
+  // Work backwards so a short last fragment cannot be stranded. Boundaries
+  // come from timed words/sentences, never an arbitrary cut through speech.
+  for (let i = candidates.length - 2; i >= 0; i -= 1) {
+    const start = candidates[i]; let best;
+    for (let j = i + 1; j < candidates.length && candidates[j] - start <= 15.001; j += 1) {
+      const end = candidates[j], tail = route.get(end);
+      if (end - start < 2 || !tail) continue;
+      const proposed = { ends: [end, ...tail.ends], penalty: boundaries.get(end) + tail.penalty };
+      if (!best || proposed.ends.length < best.ends.length || (proposed.ends.length === best.ends.length && proposed.penalty <= best.penalty)) best = proposed;
+    }
+    if (best) route.set(start, best);
+  }
+  if (!route.has(0)) throw fail('digital_human_audio_boundary_missing', '口播缺少可用的自然分段时间，请先核对声音；尚未提交视频。');
+  let start = 0;
+  return route.get(0).ends.map((end, index) => {
+    const segment = { id: `clip_${index + 1}`, startSeconds: start, seconds: Math.round((end - start) * 1000) / 1000,
+      generationSeconds: Math.min(15, Math.ceil(end - start - .001)),
+      text: words.filter((word) => Number(word.end_time) > start * 1000 && Number(word.start_time) < end * 1000).map((word) => word.text || '').join(''), status: 'planned' };
+    start = end; return segment;
+  });
+}
 function analyzePcm(pcm) {
   if (!Buffer.isBuffer(pcm) || pcm.length < RATE) throw fail('digital_human_audio_invalid', '配音结果过短或无法读取。');
   const samples = Math.floor(pcm.length / 2), block = Math.round(RATE * .02), frames = [];
@@ -54,7 +105,7 @@ function analyzePcm(pcm) {
     for (let j = 0; j < size; j += 1) { const v = pcm.readInt16LE((i + j) * 2) / 32768; sum += v * v; }
     frames.push(Math.sqrt(sum / size));
   }
-  const peak = Math.max(...frames), threshold = Math.max(.001, peak * .025);
+  const peak = frames.reduce((highest, value) => Math.max(highest, value), 0), threshold = Math.max(.001, peak * .025);
   const active = frames.map((value) => value >= threshold);
   const first = active.indexOf(true), last = active.lastIndexOf(true);
   if (peak < .003 || first < 0) throw fail('digital_human_audio_silent', '配音结果没有可用的人声，尚未提交视频。');
@@ -64,11 +115,12 @@ function analyzePcm(pcm) {
     speechSeconds: active.filter(Boolean).length * .02, maxGapSeconds: maxGap };
 }
 async function measureAudio({ source, ffmpegPath = 'ffmpeg' }) {
-  const pcm = await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', path.resolve(source), '-vn', '-ac', '1', '-ar', String(RATE), '-f', 's16le', '-'], { binaryOutput: true });
+  // Full original scripts may exceed the old 262-second PCM buffer limit.
+  const pcm = await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', path.resolve(source), '-vn', '-ac', '1', '-ar', String(RATE), '-f', 's16le', '-'], { binaryOutput: true, maxOutputBytes: 64 * 1024 * 1024 });
   return { ...analyzePcm(pcm), sha256: createHash('sha256').update(fs.readFileSync(source)).digest('hex') };
 }
 function assertSpeechCoverage(audio, seconds, index = 0) {
-  if (!audio || !Number.isFinite(audio.seconds) || audio.seconds < 3 || audio.seconds > seconds + .08
+  if (!audio || !Number.isFinite(audio.seconds) || audio.seconds < 1.99 || audio.seconds > seconds + .08
     || audio.speechStart > .8 || audio.speechEnd < seconds - MAX_TAIL_SECONDS || audio.maxGapSeconds > 1.5) {
     const actual = Number.isFinite(audio?.speechEnd) ? audio.speechEnd.toFixed(1) : '未知';
     throw fail('digital_human_audio_duration_mismatch', `第${index + 1}段实际讲到${actual}秒，目标${seconds}秒。请调整该段文案后新建；原音轨已保存，尚未提交视频。`);
@@ -110,12 +162,17 @@ async function freezeAudio({ segments, destination, ffmpegPath = 'ffmpeg' }) {
     const bytes = fs.readFileSync(segment.audioPath);
     if (segment.audioSha256 && createHash('sha256').update(bytes).digest('hex') !== segment.audioSha256) throw fail('digital_human_audio_changed', '冻结配音文件发生变化。');
     args.push('-i', segment.audioPath);
-    filters.push(`[${index}:a]asetpts=PTS-STARTPTS,aresample=${RATE},aformat=sample_fmts=s16:channel_layouts=mono,apad,atrim=duration=${segment.seconds}[a${index}]`);
+    filters.push(`[${index}:a]asetpts=PTS-STARTPTS,aresample=${RATE},aformat=sample_fmts=s16:channel_layouts=mono${segment.preserveDuration ? '' : `,apad,atrim=duration=${segment.seconds}`}[a${index}]`);
   }
   filters.push(`${segments.map((_, index) => `[a${index}]`).join('')}concat=n=${segments.length}:v=0:a=1[all]`);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   await run(ffmpegPath, [...args, '-filter_complex', filters.join(';'), '-map', '[all]', '-c:a', 'pcm_s16le', destination]);
   return { sha256: createHash('sha256').update(fs.readFileSync(destination)).digest('hex') };
+}
+async function cutAudio({ source, destination, startSeconds, seconds, ffmpegPath = 'ffmpeg' }) {
+  await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', source,
+    '-af', `atrim=start=${startSeconds}:duration=${seconds},asetpts=PTS-STARTPTS`, '-ar', String(RATE), '-ac', '1', '-c:a', 'pcm_s16le', destination]);
+  return measureAudio({ source: destination, ffmpegPath });
 }
 async function assemble({ segments, destination, audioDestination, ffmpegPath = 'ffmpeg' }) {
   if (!segments?.length || segments.some((segment) => !segment.videoPath || !segment.audioPath)) throw fail('digital_human_segments_missing', '口播音画分段尚未完整。');
@@ -153,4 +210,4 @@ function segmentPrompt(task, segment, index) {
   const expressions = ['开口时轻微前倾、眉眼带好奇；解释时回稳，单手自然摊开。', '平稳解释，手势与语气有轻重，适当点头，手势收回。', '收尾时自然微笑、轻点头，仍保持眨眼和呼吸。'];
   return `竖屏写实人物口播，稳定平视大半身构图，保持参考人物身份、服装、场景和产品外形。使用传入音轨作为唯一对白，嘴型、表情、肩膀和手势与该音轨节奏对应；不另读一份文案，不生成额外人声或配乐。${expressions[Math.min(index, expressions.length - 1)]}两手自然完整，不机械循环挥手；大型产品继续落地，不改变产品结构。语音结束后只保留短暂自然呼吸，不定格。不生成字幕或画内文字。本段语义仅供表演理解：${segment.text}`;
 }
-module.exports = { VOICE_IDS, splitScript, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, freezeAudio, assemble, segmentPrompt };
+module.exports = { VOICE_IDS, splitScript, speechChunks, splitMeasuredSpeech, cutAudio, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, freezeAudio, assemble, segmentPrompt };

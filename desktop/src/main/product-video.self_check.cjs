@@ -28,13 +28,13 @@ async function run() {
   assert.equal(validBailianPrices({...parseBailianPrices(videoPriceDoc,ttsPriceDoc),checkedAt:'2020-01-01'}),false);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-product-video-'));
   const posts = [], tasks = new Map(), receipts = new Map();
-  let unknownOnce = false, failedOnce = false, malformedOnce = false, offlinePrices = false, localFailure = false, badCaptionsOnce = false, badMediaOnce = false, tamperAudioOnce = false;
+  let unknownOnce = false, receiptsPending = false, failedOnce = false, failedVideoCount = 0, malformedOnce = false, offlinePrices = false, localFailure = false, badCaptionsOnce = false, badMediaOnce = false, tamperAudioOnce = false;
   const provider = {
     imageUploadBody: (file) => ({ body: Buffer.from(path.basename(file)), headers: {} }), nodeOf: (p) => p, taskIdOf,
     resultUrl: (p, kind) => `https://fixture.example/${p.task_id}.${kind === 'images' ? 'png' : 'mp4'}`,
     download: async (url, dest) => fs.writeFileSync(dest, url.endsWith('.png') ? image : clip),
     request: async (route, request = {}) => {
-      if (route.startsWith('/operations/')) return receipts.get(route.split('/').pop());
+      if (route.startsWith('/operations/')) return receiptsPending ? {status:'pending'} : receipts.get(route.split('/').pop());
       if (request.method === 'POST') {
         posts.push({ route, body: request.body, id: request.operationId, headers: request.headers });
         if (route.endsWith('/uploads/images')) return { url: 'https://fixture.example/' + request.body.toString('utf8') };
@@ -44,7 +44,8 @@ async function run() {
           return { result: { utterances: [{ text, start_time: 1000, end_time: 2000 }] } };
         }
         const kind = route.includes('/images/') ? 'frame' : 'video', task_id = `${kind}_${tasks.size}`;
-        tasks.set(task_id, { kind, fail: kind === 'video' && failedOnce });
+        tasks.set(task_id, { kind, fail: kind === 'video' && (failedOnce || failedVideoCount > 0) });
+        if (kind === 'video' && failedVideoCount > 0) failedVideoCount -= 1;
         if (kind === 'video') failedOnce = false;
         const result = route === VIDEO_ROUTE ? { output:{ task_id } } : { task_id }; receipts.set(request.operationId, result);
         if (kind === 'video' && unknownOnce) { unknownOnce = false; throw Object.assign(new Error('disconnected'), { outcomeUnknown: true }); }
@@ -56,7 +57,7 @@ async function run() {
       return { task_id, status: task.fail ? 'failed' : 'completed', cost: task.kind === 'frame' ? .01 : .9, credits_cost: task.kind === 'frame' ? .1 : 9 };
     }
   };
-  const service = createProductVideoService({ rootDir: root, provider, readPrices: async (plan) => { if (offlinePrices) throw new Error('offline'); return prices(plan); }, pollMs: 1,
+  const serviceOptions = { rootDir: root, provider, readPrices: async (plan) => { if (offlinePrices) throw new Error('offline'); return prices(plan); }, pollMs: 1,
     gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true, apimart_video: true, bailian:true,bailian_video:true,volcengine_asr: true } }) },
     prepareAudio: async ({task,directory,operation}) => {
       assert.equal(task.shots.filter(s=>s.frameFile).length,3,'all scene frames must be ready before audio and video');
@@ -76,7 +77,8 @@ async function run() {
       extractAudio: async ({ destination }) => fs.writeFileSync(destination, 'wav'),
       renderCaptioned: async ({ destination, captions }) => { if (localFailure) { localFailure=false; throw new Error('local render failed'); } assert.match(captions.ass, /96/u); fs.writeFileSync(destination, clip); fs.writeFileSync(destination.replace('.mp4', '.srt'), captions.srt); }
     }
-  });
+  };
+  let service = createProductVideoService(serviceOptions);
   try {
     const imagePath = path.join(root, 'input.png'); fs.writeFileSync(imagePath, image);
     const asset = service.importImage(imagePath);
@@ -106,24 +108,32 @@ async function run() {
     const before=posts.length; await service.refresh(task.id); assert.equal(posts.length,before);
     const out=await service.exportVideo(task.id,path.join(root,'output.mp4')); assert.match(fs.readFileSync(out.subtitlePath,'utf8'),/现场清洁/u);
     assert.ok((await service.exportSource(task.id,path.join(root,'source.mp4'))).path);
-    unknownOnce = true;
+    unknownOnce = true; receiptsPending = true;
     const uncertain=await service.create(input); await service.start(uncertain.id);
     await until(service,uncertain.id,(t)=>t.status==='outcome_unknown');
     const paidBefore=posts.filter((p)=>p.route===VIDEO_ROUTE).length;
+    global.__xiaoxiUpdateHold=true;
+    assert.equal(service.prepareForUpdate().busy,false,'unknown cloud receipt must not permanently block updates');
+    global.__xiaoxiUpdateHold=false;
+    receiptsPending=false; service.resumeAfterUpdate();
     await service.refresh(uncertain.id);
     await until(service,uncertain.id,(t)=>t.status==='completed');
     assert.equal(posts.filter((p)=>p.route===VIDEO_ROUTE).length,paidBefore+2,'unknown submission must query original receipt');
     failedOnce=true;
-    const broken=await service.create(input); await service.start(broken.id);
-    await until(service,broken.id,(t)=>t.status==='needs_attention');
-    const videoCount=posts.filter((p)=>p.route===VIDEO_ROUTE).length;
-    await service.refresh(broken.id); assert.equal(posts.filter((p)=>p.route===VIDEO_ROUTE).length,videoCount);
-    await service.retryShot(broken.id); await until(service,broken.id,(t)=>t.status==='completed');
-    assert.equal(posts.filter((p)=>p.route===VIDEO_ROUTE).length,videoCount+3);
-    malformedOnce=true;
+    const broken=await service.create(input), beforeAuto=posts.filter((p)=>p.route===VIDEO_ROUTE).length; await service.start(broken.id);
+    await until(service,broken.id,(t)=>t.status==='completed');
+    assert.equal(posts.filter((p)=>p.route===VIDEO_ROUTE).length,beforeAuto+4,'one explicit failure replaces only its failed shot');
+    failedVideoCount=2;
+    const twice=await service.create(input); await service.start(twice.id);
+    await until(service,twice.id,t=>t.status==='needs_attention');
+    const afterTwice=posts.length;
+    await assert.rejects(service.retryShot(twice.id),e=>e.code==='product_video_retry_limit');
+    assert.equal(posts.length,afterTwice,'refresh or retry cannot reset the one-redo allowance');
+    malformedOnce=true; receiptsPending=true;
     const malformed=await service.create(input); await service.start(malformed.id);
     await until(service,malformed.id,(t)=>t.status==='outcome_unknown');
     const malformedBefore=posts.filter((p)=>p.route===VIDEO_ROUTE).length;
+    receiptsPending=false;
     await until(service,malformed.id,(t)=>t.status==='completed');
     assert.equal(posts.filter((p)=>p.route===VIDEO_ROUTE).length,malformedBefore+2);
     localFailure=true;
@@ -181,6 +191,20 @@ async function run() {
     await assert.rejects(service.create(input),(e)=>e.code==='product_video_update_pending');
     global.__xiaoxiUpdateHold=false;
     assert.equal(service.isBusy(),false);
+    const recoveryPath=path.join(root,finished.id,'task.json');
+    const recovery=JSON.parse(fs.readFileSync(recoveryPath,'utf8'));
+    recovery.status='packaging'; fs.writeFileSync(recoveryPath,JSON.stringify(recovery));
+    await service.close();
+    global.__xiaoxiUpdateHold=true;
+    service=createProductVideoService(serviceOptions);
+    assert.equal(service.prepareForUpdate().busy,false,'saved cloud states alone do not prevent updating');
+    const beforeRestartPosts=posts.length;
+    global.__xiaoxiUpdateHold=false;
+    service.resumeAfterUpdate();
+    for(let i=0;i<200 && service.get(finished.id).status!=='completed';i++) await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(service.get(finished.id).status,'completed','reopening and aborted update resume without opening the task page');
+    assert.equal(posts.length,beforeRestartPosts,'recovery reuses successful paid work');
+    await assert.rejects(service.retryShot(twice.id),e=>e.code==='product_video_retry_limit');
     console.log('product-video self-check passed');
   } finally { global.__xiaoxiUpdateHold=false; service.close(); fs.rmSync(root,{recursive:true,force:true}); }
 }

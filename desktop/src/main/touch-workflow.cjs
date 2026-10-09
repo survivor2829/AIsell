@@ -29,7 +29,7 @@ const {
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
-const COMPLETED_ROW_STATES = new Set(["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped"]);
+const COMPLETED_ROW_STATES = new Set(["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped", "partial_sent_skipped"]);
 const PRE_SEND_RECOVERY_ATTEMPTS = 2;
 const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
@@ -289,8 +289,8 @@ function createTouchWorkflow(options = {}) {
         recoveredTaskIds.add(id);
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
-      // A recipient who already received part of a message finishes their frozen
-      // sequence. Edits apply to recipients whose delivery has not started.
+      // Preserve older task snapshots until an explicit edit applies the current
+      // partial-delivery skip rule. Never silently swap an in-flight sequence.
       const deliveryMedia = task.results[task.current_index]?.delivery_media;
       if (deliveryMedia) {
         imageIds = deliveryMedia.imageIds;
@@ -299,13 +299,6 @@ function createTouchWorkflow(options = {}) {
       }
       if (task.manual_resolution_pending && taskRecord?.status !== "needs_attention") {
         delete task.manual_resolution_pending;
-        persist();
-      }
-      if (task.status === "paused") {
-        if (!resumableFreshEdit(task, multipart) && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
-        task.status = "running";
-        task.pause_reason = "";
-        if (multipart) task.results[task.current_index].status = "generated";
         persist();
       }
       let current = task.results[task.current_index];
@@ -318,6 +311,14 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending");
       }
       if (!current || task.current_index >= task.total) return response("completed");
+      if (task.status === "paused") {
+        if (!resumableFreshEdit(task, multipart) && !canContinueTouchResult(current, multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        task.status = "running";
+        task.pause_reason = "";
+        if (multipart) current.status = "generated";
+        persist();
+        current = task.results[task.current_index];
+      }
       if (!isBatchAuthorized(task)) return attention("本次任务授权无效，已阻断真实发送", null, "batch_authorization_missing");
       if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current, multipart)) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
@@ -749,7 +750,8 @@ function createTouchWorkflow(options = {}) {
     const media = task.results[task.current_index]?.delivery_media || payload;
     const multipart = media ? (Array.isArray(media.imageIds) && media.imageIds.length > 0 || Boolean(media.link)) : undefined;
     return !task.integrity_error && task.status === "paused"
-      && (resumableFreshEdit(task, multipart) || canContinueTouchResult(task.results[task.current_index], multipart));
+      && (COMPLETED_ROW_STATES.has(task.results[task.current_index]?.status)
+        || resumableFreshEdit(task, multipart) || canContinueTouchResult(task.results[task.current_index], multipart));
   }
 
   function describeUnknownWorkflowTask(record) {
@@ -888,7 +890,8 @@ function createTouchWorkflow(options = {}) {
     const current = task.results[task.current_index];
     if (task.integrity_error) throw new Error("触达任务进度校验失败，暂不能编辑。");
     if (task.current_index >= task.total || ["completed", "stopped"].includes(task.status)) throw new Error("这项触达任务已经结束，不能继续编辑。");
-    if (current && (current.status === "sent_verified" || [...UNCERTAIN_SEND_STATES].includes(current.status) || current.retry_blocked)) {
+    if (current && !COMPLETED_ROW_STATES.has(current.status)
+      && (UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked)) {
       throw new Error("当前联系人发送结果尚未确认，请先核对微信后再编辑。");
     }
     const expectedIds = task.results.map((result) => String(result?.id || ""));
@@ -905,9 +908,22 @@ function createTouchWorkflow(options = {}) {
     if (binding.taskId !== taskId || binding.signature !== workflowSignature(previousPayload)) {
       throw new Error("触达任务内容与执行记录不一致，请重新打开任务后再编辑。");
     }
-    for (const result of task.results.slice(task.current_index)) {
+    for (const [index, result] of task.results.entries()) {
+      if (index < task.current_index || COMPLETED_ROW_STATES.has(result?.status)) continue;
       if (result?.message_parts?.some((part) => part.status === "sent_verified") && canContinueTouchResult(result, true)) {
-        result.delivery_media ||= { imageIds: [...(previousPayload.imageIds || [])], link: String(previousPayload.link || "") };
+        const fullySent = result.message_parts.every((part) => part.status === "sent_verified");
+        result.status = fullySent ? "sent_verified" : "partial_sent_skipped";
+        result.reason = fullySent ? "发送成功并已核验" : "部分内容已发送，编辑任务后已跳过剩余内容；已发送内容不会重发";
+        result.retry_blocked = true;
+        result.send_attempted = true;
+        result.awaiting_resolution = false;
+        result.updated_at = now().toISOString();
+        delete result.delivery_media;
+        if (fullySent) { delete result.skip_record; delete result.blocked_reason; }
+        else {
+          result.blocked_reason = "task_edited_after_partial_send";
+          recordSkippedResult(result, index, { reasonCode: result.blocked_reason, at: result.updated_at });
+        }
         continue;
       }
       if (!result || !["pending", "generated", "not_attempted"].includes(result.status)
@@ -935,7 +951,7 @@ function createTouchWorkflow(options = {}) {
     delete task.pre_send_skip_streak;
     task.status = "paused";
     task.phase = "preparing_batch";
-    task.pause_reason = "触达内容已修改，点击启动程序继续；部分已发送的联系人沿用原内容。";
+    task.pause_reason = "触达内容已修改，点击启动程序继续；部分已发送的联系人已跳过剩余内容。";
     task.snapshot_hash = taskSnapshotHash(task);
     task = authorizeTask(task, now().toISOString());
     saveTaskState(taskDir, task);

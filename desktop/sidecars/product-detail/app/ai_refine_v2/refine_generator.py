@@ -122,6 +122,7 @@ def _default_api_call(
     size: str = _APIMART_SIZE_DEFAULT,
     *,
     lifecycle_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+    block_id: str = "",
 ) -> str:
     """生产默认: 委托给 ai_image_router 找当前 engine 的实现.
 
@@ -352,6 +353,7 @@ def _generate_one_block(
                     thinking,
                     size,
                     lifecycle_callback=lambda event: lifecycle_callback(bid, event),
+                    block_id=bid,
                 )
             return (
                 BlockResult(
@@ -815,6 +817,7 @@ def _generate_one_block_v2(
                     thinking,
                     size,
                     lifecycle_callback=lambda event: lifecycle_callback(bid, event),
+                    block_id=bid,
                 )
             return (
                 BlockResult(

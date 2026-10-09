@@ -150,8 +150,10 @@ function quotePlan(plan, prices, budgetCny) {
   if (plan.pipelineVersion >= 3) {
     if (prices.provider !== 'bailian') return { ready: false, budgetCny, message: '当前报价与阿里官方制作方案不匹配，请重新核价。' };
     const videoCny = round(seconds * prices.videoCnyPerSecond), soundReserveCny = prices.audioReserveCny + prices.asrReserveCny;
+    const retryReserveCny = plan.retryPolicy === 'one_failed_video' ? round(Math.max(0, ...plan.shots.map(shot => shot.seconds)) * prices.videoCnyPerSecond) : 0;
     return { ready: true, estimatedCny: round(videoCny + count * prices.estimatedImageUsd * prices.fxCnyPerUsd + soundReserveCny),
-      maximumCny: round(videoCny + count * round(prices.imageUsd * prices.fxCnyPerUsd) + soundReserveCny),
+      maximumCny: round(videoCny + count * round(prices.imageUsd * prices.fxCnyPerUsd) + soundReserveCny + retryReserveCny),
+      retryReserveCny,
       reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, audioReserveCny: prices.audioReserveCny,
       videoModel: prices.model, videoResolution: prices.resolution, videoAudio: false, videoCnyPerSecond: prices.videoCnyPerSecond,
       source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd,

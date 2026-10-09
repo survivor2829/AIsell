@@ -152,10 +152,10 @@ export function DigitalHumanPage() {
           <img src={SCENE_IMAGES[scene.id]} alt="" /><span>{scene.name}{draft.sceneId === scene.id && <Check size={14} />}</span></button>)}</div></fieldset>
         <label className="dh-field"><span>完整口播文案</span><textarea disabled={locked || !!busy} maxLength={legacyTask ? 160 : 1800} rows={5} value={draft.script}
           placeholder="写出整条视频实际要讲的话，包含介绍、解释和收尾。" aria-describedby="dh-script-help" onChange={(event) => setDraft({ ...draft, script: event.target.value })} /></label>
-        <p className="dh-quality" id="dh-script-help">{legacyTask ? '旧任务沿用原方案，口播文案最多160字。' : `${draft.durationSeconds}秒可先按约${draft.durationSeconds * 4}字准备；这里只是写稿参考。系统会在生成视频前测量真实声音，文案不足或过长时会说明具体差距。`}</p>
+        <p className="dh-quality" id="dh-script-help">{legacyTask ? '旧任务沿用原方案，口播文案最多160字。' : selected && selected.pipelineVersion === 2 && selected.narrationPolicy !== 'original_script' ? '这条旧任务沿用原有固定分段方案；按原稿自然时长制作请新建任务。' : `目标${draft.durationSeconds}秒，可按约${draft.durationSeconds * 4}字准备。保留完整原稿和自然语速，成片时长以实际讲话为准。`}</p>
         <div className="dh-options"><label className="dh-field"><span>声音风格</span><select disabled={locked || !!busy} value={draft.voiceStyle} onChange={(event) => setDraft({ ...draft, voiceStyle: event.target.value })}>
           {capabilities?.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
-          <label className="dh-field"><span>样片时长</span><select disabled={locked || !!busy} value={draft.durationSeconds} onChange={(event) => setDraft({ ...draft, durationSeconds: Number(event.target.value) })}>
+          <label className="dh-field"><span>{legacyTask ? '样片时长' : '目标时长'}</span><select disabled={locked || !!busy} value={draft.durationSeconds} onChange={(event) => setDraft({ ...draft, durationSeconds: Number(event.target.value) })}>
             {(legacyTask ? [10, 11, 12, 13, 14, 15] : [15, 30, 45]).map((seconds) => <option key={seconds} value={seconds}>{seconds}秒</option>)}</select></label></div>
         {!locked && <div className="dh-draft-actions"><button type="button" className="dh-button" disabled={!!busy} onClick={() => void saveDraft()}>保存草稿</button>
           <button type="button" className="dh-button is-primary" data-xiaoxi-digital-human-action="preview" disabled={!canPreview} onClick={() => void makePreview()}>
@@ -183,6 +183,6 @@ export function DigitalHumanPage() {
       </section>
     </div>
     {!!items.length && <section className="dh-history"><h2>最近样片</h2><div>{items.map((task) => <button type="button" key={task.id} disabled={!!busy} className={selected?.id === task.id ? 'is-selected' : ''} onClick={() => selectTask(task)}>
-      <span><strong>{task.title}</strong><small>{new Date(task.createdAt).toLocaleDateString('zh-CN')} · {task.durationSeconds}秒</small></span><span>{task.statusLabel}</span></button>)}</div></section>}
+      <span><strong>{task.title}</strong><small>{new Date(task.createdAt).toLocaleDateString('zh-CN')} · {task.actualDurationSeconds ? `${task.actualDurationSeconds.toFixed(1)}秒` : `${task.narrationPolicy === 'original_script' ? '目标' : ''}${task.durationSeconds}秒`}</small></span><span>{task.statusLabel}</span></button>)}</div></section>}
   </div>;
 }

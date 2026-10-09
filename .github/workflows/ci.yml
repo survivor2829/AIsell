@@ -2,6 +2,7 @@ name: Windows CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -79,6 +80,9 @@ jobs:
       - name: Maintenance HTTP and feedback contracts
         working-directory: server/maintenance
         run: python -m unittest discover -s . -p 'test_*.py'
+      - name: Official video gateway protocol
+        working-directory: server/provider-gateway
+        run: python -m unittest discover -s . -p 'test_bailian_video_routes.py'
       - name: Confirmed production, task summaries and provider accounting
         working-directory: desktop/sidecars/content-engine
         run: >-
@@ -92,6 +96,9 @@ jobs:
       - name: Provider accounting
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_provider_usage.py'
+      - name: Reuse frozen avatar audio
+        working-directory: desktop/sidecars/content-engine
+        run: python -m unittest discover -s tests -p 'test_digital_human_audio_upload.py'
       - name: Voice approvals and saved previews
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_auto_mix_voice_resources.py'

@@ -47,7 +47,7 @@ const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
-const { createPriceReader } = require("./product-video-pricing.cjs");
+const { createPriceReader, createBailianPriceReader } = require("./product-video-pricing.cjs");
 const { createProductAudioPreparer } = require("./product-video-audio.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
@@ -647,17 +647,27 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const usedDigitalHumanClicks = new Set();
     const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net) });
+    const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
     digitalHumanRegistration = registerDigitalHumanIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
-      readPrices: () => readVideoPrices(),
+      readPrices: readOfficialVideoPrices,
       readPreviewPrices: () => readVideoPrices(),
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       imageSize: (bytes) => nativeImage.createFromBuffer(bytes).getSize(),
       imageThumbnail: (bytes) => nativeImage.createFromBuffer(bytes).resize({ width: 320 }).toDataURL(),
+      uploadPreparedAudio: async (payload) => {
+        await beforeContentProviderWork(["bailian"]);
+        return contentEngineController.uploadDigitalHumanAudio(payload);
+      },
+      requireAudioUploadCapability: async () => {
+        await beforeContentProviderWork(["bailian"]);
+        await contentEngineController.start();
+        return contentEngineController.status().capabilities?.digital_human_audio_upload === true;
+      },
       requireTrustedClick: (event, payload, action) => {
         const token = String(payload?.clickToken || "");
         const prefix = `digital-human:${action}:`;
@@ -815,8 +825,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
             if (workflow?.enabled || workflow?.contactSync?.running || coordinator.status().lock) {
               return cloudMaintenance.setInstallBlocked("微信任务仍在运行，请先暂停或完成任务，再点击立即更新。");
             }
-            if (productVideoRegistration?.service?.isBusy() || digitalHumanRegistration?.service?.isBusy()) {
-              return cloudMaintenance.setInstallBlocked("产品视频或数字人任务尚未结束，请先完成制作或核对请求，再点击立即更新。");
+            const mediaStates = await Promise.all([
+              productVideoRegistration?.service?.prepareForUpdate(),
+              digitalHumanRegistration?.service?.prepareForUpdate()
+            ]);
+            if (mediaStates.some(state => state?.busy)) {
+              return cloudMaintenance.setInstallBlocked("视频任务正在保存或处理本地文件，已保留更新，请稍后点击立即更新。");
             }
             const content = contentEngineController?.updateStatus();
             if (content?.pending || (content?.alive && content.state !== "ready")) return cloudMaintenance.setInstallBlocked("内容任务尚未结束，请完成当前操作后再更新。");
@@ -828,7 +842,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           } catch {
             cloudMaintenance.setInstallBlocked("暂时无法确认任务是否结束，尚未退出。请稍后重试更新。");
           } finally {
-            if (!leaving) { global.__xiaoxiUpdateHold = false; await productDetailController?.prepareUpdate(false).catch(() => {}); }
+            if (!leaving) {
+              global.__xiaoxiUpdateHold = false;
+              productVideoRegistration?.service?.resumeAfterUpdate();
+              digitalHumanRegistration?.service?.resumeAfterUpdate();
+              await productDetailController?.prepareUpdate(false).catch(() => {});
+            }
           }
           return cloudMaintenance.status();
         }

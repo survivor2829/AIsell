@@ -704,28 +704,36 @@ function createWechatWorkflowController(options) {
     if (!accountName) throw new Error("请先同步当前微信联系人，确认本次使用的微信账号。");
     const taskId = existing?.id || randomUUID();
     let payload;
+    const savedTouch = existing?.type === "touch" ? readPayload(existing) : null;
+    const touchInput = savedTouch ? {
+      contactIds: savedTouch.contacts.map((contact) => String(contact.id)),
+      script: savedTouch.script,
+      imageIds: savedTouch.imageIds || [],
+      link: savedTouch.link || "",
+      ...input.payload
+    } : input.payload;
     if (startedTouch) {
       if (existing.accountName && existing.accountName !== accountName) throw new Error("微信账号已切换，请切回原账号后再编辑这项任务。");
-      const saved = readPayload(existing);
-      const selectedIds = Array.isArray(input.payload?.contactIds) ? input.payload.contactIds.map(String) : [];
+      const saved = savedTouch;
+      const selectedIds = Array.isArray(touchInput?.contactIds) ? touchInput.contactIds.map(String) : [];
       const savedIds = (Array.isArray(saved.contacts) ? saved.contacts : []).map((contact) => String(contact?.id || ""));
       if (JSON.stringify(selectedIds) !== JSON.stringify(savedIds)) throw new Error("任务已经开始，不能修改联系人范围。");
       if (typeof executor.updateWorkflowTask !== "function") throw new Error("当前版本不支持编辑进行中的触达任务，请重新添加任务。");
       payload = await executor.updateWorkflowTask(existing.id, {
         ...saved,
-        script: String(input.payload?.script || "").trim(),
-        imageIds: input.payload?.imageIds ?? saved.imageIds ?? [],
-        link: ""
+        script: String(touchInput?.script || "").trim(),
+        imageIds: touchInput?.imageIds ?? [],
+        link: touchInput?.link ?? ""
       }, saved);
     } else {
-      payload = unwrap(await executor.prepareWorkflowTask(taskId, input.payload || {}));
+      payload = unwrap(await executor.prepareWorkflowTask(taskId, (input.type === "touch" ? touchInput : input.payload) || {}));
     }
     const task = {
       id: taskId, type: input.type,
-      title: String(input.title || TITLES[input.type]).trim().slice(0, 100),
+      title: String(input.title ?? existing?.title ?? TITLES[input.type]).trim().slice(0, 100) || TITLES[input.type],
       createdAt: existing?.createdAt || new Date(now()).toISOString(),
       sequence: existing?.sequence ?? Math.max(0, ...store.tasks.map((entry) => entry.sequence || 0)) + 1,
-      ...normalizedSchedule(input), accountName, status: "pending", error: "",
+      ...normalizedSchedule({ ...existing, ...input }), accountName, status: "pending", error: "",
       progress: { done: 0, total: 1 }, occurrenceDate: localDate(now()), enrolled: false
     };
     task.progress.total = input.type === "touch" ? payload.contacts.length : input.type === "interact" ? payload.maxPosts : 1;
@@ -946,7 +954,9 @@ function createWechatWorkflowController(options) {
         try { images = executors.touch.describeImages(saved.imageIds); }
         catch { imageError = "已保存的图片无法读取，请移除后重新添加。"; images = saved.imageIds.map((id) => ({ id, name: "图片无法读取", preview: "" })); }
       }
-      return { ok: true, task: { ...task, payload, ...(media ? { media } : {}), ...(task.type === "touch" ? { images, imageError } : {}) } };
+      return { ok: true, task: { ...task, payload, ...(media ? { media } : {}), ...(task.type === "touch" ? {
+        images, imageError, startedTouch: executors.touch?.hasStartedWorkflowTask?.(task.id) === true
+      } : {}) } };
     },
     cancelTask: (id) => serialize(() => {
       assertPlanEditable();

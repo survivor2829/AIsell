@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ class RegenResult:
     new_block_path: Path
     new_assembled_path: Path
     cost_rmb: float
+    costs: dict | None = None
 
 
 def _download_block_to_disk(url: str, dst: Path) -> None:
@@ -110,12 +112,44 @@ def regenerate_screen(
         except Exception:
             image_data_url = None
 
-    block_result, cost = _generate_one_block_v2(
+    from ai_refine_v2.pricing import CostJournal, RequestOutcomeUnknown, read_quote, _write
+    import uuid
+    pointer = task_dir / "rerolls" / f"block_{block_index}.json"
+    if pointer.exists():
+        try:
+            previous = json.loads(pointer.read_text(encoding="utf-8"))
+            if not re.fullmatch(r"[a-f0-9]{32}", str(previous.get("attempt_id") or "")):
+                raise ValueError("invalid attempt")
+            old_dir = task_dir / "rerolls" / previous["attempt_id"]
+            old_journal = CostJournal(old_dir)
+            old = old_journal.load()
+        except Exception:
+            raise RequestOutcomeUnknown("原重做记录无法读取，请先核对原请求。") from None
+        if not (old_dir / "_assembled.json").is_file() and old["operations"]:
+            operation = next(iter(old["operations"].values()))
+            raw_url = operation.get("raw_url")
+            if not raw_url and operation.get("provider_task_id"):
+                from ai_image_apimart import poll_image_task
+                raw_url = poll_image_task(operation["provider_task_id"], gpt_image_key)
+            if not raw_url:
+                raise RequestOutcomeUnknown("原重做请求结果不明，禁止再次下单。")
+            block_jpg = task_dir / f"block_{block_index}.jpg"
+            _download_block_to_disk(raw_url, block_jpg)
+            assembled = _assemble_long_image(task_dir)
+            old_journal.finish(next(iter(old["operations"])), "completed", raw_url=raw_url)
+            _write(old_dir / "_assembled.json", {"completed": True})
+            return RegenResult(block_jpg, assembled, old["quote"]["image_unit_cny"], old_journal.summary())
+    quote = read_quote(include_planner=False)
+    attempt_id = uuid.uuid4().hex
+    journal = CostJournal(task_dir / "rerolls" / attempt_id)
+    journal.set_plan(quote, 1)
+    _write(pointer, {"attempt_id": attempt_id})
+    block_result, _ = _generate_one_block_v2(
         block=block,
         image_data_url=image_data_url,
         api_key=gpt_image_key,
-        api_call_fn=_default_api_call,
-        max_retries=2,
+        api_call_fn=lambda *args, **kwargs: journal.image_call(quote, _default_api_call, *args, block_id=block["block_id"], **kwargs),
+        max_retries=0,
         thinking="medium",
         size="3:4",
         color_anchor=color_anchor,
@@ -128,8 +162,10 @@ def regenerate_screen(
     block_jpg = task_dir / f"block_{block_index}.jpg"
     _download_block_to_disk(block_result.image_url, block_jpg)
     new_assembled = _assemble_long_image(task_dir)
+    _write(journal.path.parent / "_assembled.json", {"completed": True})
     return RegenResult(
         new_block_path=block_jpg,
         new_assembled_path=new_assembled,
-        cost_rmb=cost,
+        cost_rmb=quote["image_unit_cny"],
+        costs=journal.summary(),
     )

@@ -207,7 +207,7 @@ async function main() {
       await assert.rejects(service.preview(task.id), /正在更新/);
       await assert.rejects(service.refresh(task.id), /正在更新/);
     } finally { global.__xiaoxiUpdateHold = false; }
-    assert.equal(service.isBusy(), true, 'Unresolved provider work must block app updates.');
+    assert.equal(service.isBusy(), false, 'Persisted cloud wait/unknown receipts must survive updates without blocking them forever.');
     assert.throws(() => service.create({ ...draft, localPath: input }), /刷新/);
     assert.throws(() => service.get('../task'), /数字人/);
     assert.throws(() => remoteUrl('https://127.0.0.1/test'), /素材地址/);

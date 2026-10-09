@@ -278,6 +278,28 @@ assert blocked_recovery.status_code == 409, blocked_recovery.data
 assert blocked_recovery.get_json()["task_id"] == "task-recovery-4"
 assert len(start_calls) == 4
 
+# A preserved unpriced plan blocks replacement orders; its existing recovery
+# endpoint resumes the same task. Once resumed, update quiescence sees it busy.
+current_pricing_state = {"task_id": "task-recovery-4", "user_id": user_id,
+                         "status": "pricing_required", "error": "quote unavailable"}
+pipeline_runner.get_task_status = lambda task_id: dict(current_pricing_state)
+pricing_poll = client_one.get("/api/ai-refine-v2/status/task-recovery-4")
+assert pricing_poll.status_code == 200 and pricing_poll.get_json()["status"] == "pricing_required"
+blocked_pricing = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
+assert blocked_pricing.status_code == 409
+assert len(start_calls) == 4
+resumes = []
+def resume_pricing(task_id, image_key, planner_key):
+    resumes.append(task_id)
+    current_pricing_state["status"] = "running_generator"
+    return dict(current_pricing_state)
+pipeline_runner.start_task_recovery = resume_pricing
+continued = post(client_one, csrf_one, "/api/ai-refine-v2/recover/task-recovery-4", {})
+assert continued.status_code == 202 and resumes == ["task-recovery-4"]
+updating = client_one.post("/internal/update-state", json={"hold": False},
+                          headers={"x-xiaoxi-control-token": config.control_token})
+assert updating.status_code == 200 and updating.get_json()["busy"] is True
+
 print(json.dumps({
     "corrupt": corrupt.status_code,
     "concurrent": second.status_code,

@@ -153,7 +153,7 @@ def refine_one_product(scope_id: str, payload: dict, *, ark_api_key: str) -> dic
             "在生产 .env 加这两个 key 后 docker compose up -d --force-recreate web."
         )
 
-    print(f"[refine-v3.2] {scope_id}/{name} → 启动 v2 pipeline (12 屏大疆风, ~4-5min, ~¥8.4)",
+    print(f"[refine-v3.2] {scope_id}/{name} → 按产品资料策划，每个卖点一张图，先核价后生成",
           flush=True)
     t0 = time.time()
     task_id = pipeline_runner.start_task(
@@ -190,7 +190,7 @@ def refine_one_product(scope_id: str, payload: dict, *, ark_api_key: str) -> dic
             last_msg = msg
         if state.get("status") == "success":
             break
-        if state.get("status") == "failed":
+        if state.get("status") in {"failed", "pricing_required", "outcome_unknown", "recovery_required"}:
             raise RuntimeError(
                 f"v2 task 失败: {state.get('error','')} | trace: {state.get('error_trace','')[:500]}"
             )
@@ -235,6 +235,7 @@ def refine_one_product(scope_id: str, payload: dict, *, ark_api_key: str) -> dic
         "task_id":         task_id,
         "mode":            final_state.get("mode", "real"),
         "cost_rmb":        final_state.get("cost_rmb", 0.0),
+        "costs":           final_state.get("costs"),
     }
     print(f"[refine-v3.2] {scope_id}/{name} → 完成 {ai_refined_url} "
           f"({out['total_elapsed']}s, {out['segments_count']} 屏, ¥{out['cost_rmb']:.2f})",

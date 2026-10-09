@@ -15,6 +15,7 @@ import socket
 import sqlite3
 import subprocess
 import threading
+import tempfile
 import time
 from typing import Any, Callable
 from urllib import parse, request
@@ -1998,6 +1999,34 @@ class FFmpegCreativeAnalyzer:
             cloud_client = VolcengineMediaClient()
         self.cloud_client = cloud_client or DashScopeMediaClient()
         self._run_process = command_runner
+
+    def upload_digital_human_audio(self, payload):
+        """Refresh a prepared voice URL without invoking any synthesis model."""
+        try:
+            raw = base64.b64decode(str(payload.get("audio_base64") or ""), validate=True)
+        except (ValueError, TypeError) as error:
+            raise ContentEngineError("digital_human_audio_invalid", "原音轨数据无效。") from error
+        digest = hashlib.sha256(raw).hexdigest()
+        if not raw or len(raw) > 1024 * 1024 or digest != payload.get("sha256"):
+            raise ContentEngineError("digital_human_audio_changed", "原音轨大小或摘要无法核对。")
+        try:
+            with wave.open(io.BytesIO(raw), "rb") as sound:
+                seconds = sound.getnframes() / sound.getframerate()
+                if not 1.9 <= seconds <= 15.1:
+                    raise ValueError("duration")
+        except (ValueError, wave.Error, EOFError, ZeroDivisionError) as error:
+            raise ContentEngineError("digital_human_audio_invalid", "待上传口播必须是2至15秒的原始WAV音轨。") from error
+        cloud = self.cloud_client if isinstance(self.cloud_client, DashScopeMediaClient) else DashScopeMediaClient()
+        if not cloud.configured:
+            raise ContentEngineError("digital_human_audio_upload_unavailable", "阿里音频上传服务尚未连接，原音轨已保留。")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="avatar-audio-upload-", dir=self.data_dir) as directory:
+            source = Path(directory) / f"{digest}.wav"
+            source.write_bytes(raw)
+            url = cloud._temporary_upload(source, "wan2.6-i2v-flash")
+        from datetime import datetime, timedelta, timezone
+        return {"url": url, "sha256": digest,
+                "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=23)).isoformat()}
 
     @property
     def capability(self):

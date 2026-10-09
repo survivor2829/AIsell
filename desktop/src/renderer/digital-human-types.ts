@@ -6,6 +6,7 @@ export type DigitalHumanDraft = {
   templateId?: 'topic_fixed' | 'key_points'; musicTrackId?: string;
 };
 export type DigitalHumanTask = DigitalHumanDraft & {
+  actualDurationSeconds?: number; narrationPolicy?: 'original_script';
   id: string; pipelineVersion?: number; title: string; status: string; statusLabel: string; createdAt: string; updatedAt: string;
   previewReady: boolean; previewRevision: string; progress: number; error: string; errorCode: string;
   generatedVideoId: string; packagingTaskId: string; canResume: boolean; canRefresh: boolean;

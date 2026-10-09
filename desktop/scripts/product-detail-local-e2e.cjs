@@ -8,7 +8,7 @@ const { pathToFileURL } = require("node:url");
 
 const desktopDir = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(desktopDir, "..");
-const pythonPath = path.join(
+const pythonPath = process.env.XIAOXI_BUILD_PYTHON || path.join(
   desktopDir,
   ".build",
   "product-detail-venv",

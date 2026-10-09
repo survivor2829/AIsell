@@ -2024,12 +2024,14 @@ def batch_ai_refine_start(batch_id):
     # 前端即使被绕过、按钮锁失效、用户手工 POST, 这里都能兜住.
     from pricing_config import compute_estimate, MAX_REFINE_COST_PER_RUN
     est = compute_estimate(len(candidates))
+    if not est.get("ready"):
+        return jsonify({"error": est.get("error", "报价尚未核实，未提交付费请求。"),
+                        "action": "pricing_required"}), 503
     if est["est_cost_yuan"] > MAX_REFINE_COST_PER_RUN:
         return jsonify({
             "error": (
-                f"预估 ¥{est['est_cost_yuan']:.2f} 超过单次保护上限 "
-                f"¥{MAX_REFINE_COST_PER_RUN:.2f} — 请减少勾选或调大 "
-                f"环境变量 MAX_REFINE_COST_PER_RUN 后重试"
+                f"策划前保守预留 ¥{est['est_cost_yuan']:.2f} 超过单次保护上限 "
+                f"¥{MAX_REFINE_COST_PER_RUN:.2f}；未提交付费请求。请减少勾选，或联系管理员核实可用额度。"
             ),
             "action": "cost_exceeds_cap",
             "estimated_cost_yuan": est["est_cost_yuan"],
@@ -2269,6 +2271,7 @@ def batch_item_regenerate_screen(batch_id, item_pk):
             "new_block_url": new_block_url,
             "new_assembled_url": new_assembled_url,
             "cost_rmb": regen.cost_rmb,
+            "costs": regen.costs,
             "ts": cache_bust,
         })
 
@@ -2278,6 +2281,7 @@ def batch_item_regenerate_screen(batch_id, item_pk):
             "new_block_url": new_block_url,
             "new_assembled_url": new_assembled_url,
             "cost_rmb": regen.cost_rmb,
+            "costs": regen.costs,
         }), 200
     finally:
         lock.release()
@@ -5280,7 +5284,11 @@ def ai_refine_v2_recover(task_id: str):
         return jsonify({"ok": True, **state})
     try:
         gpt_image_key, _ = _get_gpt_image_key(current_user)
-        recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
+        if state.get("status") == "pricing_required":
+            deepseek_key, _ = _get_deepseek_key(current_user)
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, deepseek_key)
+        else:
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 409
     except RuntimeError as exc:
@@ -5343,6 +5351,7 @@ def workspace_result_save_ai_refine_v2(task_id: str):
         "failed_count": failed_count,
         "elapsed_s": state.get("elapsed_s") or 0,
         "cost_rmb": state.get("cost_rmb") or 0,
+        "costs": state.get("costs"),
     }
     try:
         saved = save_workspace_result(STATIC_OUTPUTS, current_user.id, record)

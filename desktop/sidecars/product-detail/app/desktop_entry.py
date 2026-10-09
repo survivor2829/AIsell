@@ -279,7 +279,7 @@ def _install_desktop_contract(
     update_lock = threading.RLock()
     update_state = {"hold": False, "requests": 0}
     refine_terminal_states = {"success", "partial_success", "failed"}
-    refine_blocking_states = {"outcome_unknown", "recovery_required"}
+    refine_blocking_states = {"outcome_unknown", "recovery_required", "pricing_required"}
     def unreadable_refine_ledger() -> dict:
         return {
             "state": "outcome_unknown",
@@ -316,11 +316,14 @@ def _install_desktop_contract(
         with ledger_lock:
             ledger = read_refine_ledger()
             if ledger.get("state") not in {
-                "pending", "outcome_unknown", "recovery_required",
+                "pending", "outcome_unknown", "recovery_required", "pricing_required",
             }:
                 return ledger
             current = task_state(str(ledger.get("task_id") or ""))
-            if current and current.get("status") in {
+            if current and str(current.get("status") or "").startswith("running_"):
+                ledger["state"] = "pending"
+                write_refine_ledger(ledger)
+            elif current and current.get("status") in {
                 *refine_terminal_states,
                 *refine_blocking_states,
             }:
@@ -429,12 +432,12 @@ def _install_desktop_contract(
                             "task_id": ledger.get("task_id") or "",
                         }
                     ), 409
-                if ledger.get("state") == "recovery_required":
+                if ledger.get("state") in {"recovery_required", "pricing_required"}:
                     return jsonify(
                         {
                             "ok": False,
                             "code": "DESKTOP_AI_REFINE_RECOVERY_REQUIRED",
-                            "error": "上次付费任务已有结果，但本地下载或拼装尚未完成。请恢复原任务，不要重复提交。",
+                            "error": "已有任务待继续，请恢复原任务，避免重复策划或生图。",
                             "task_id": ledger.get("task_id") or "",
                         }
                     ), 409
