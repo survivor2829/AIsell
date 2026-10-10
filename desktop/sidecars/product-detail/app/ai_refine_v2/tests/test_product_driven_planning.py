@@ -88,7 +88,7 @@ def test_layout_percentages_are_not_performance_claims():
 
 
 def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
-    prompt = "画面上方约25%区域放标题，顶部约15%区域留空，留白约8%，清洁效率提升28%。"
+    prompt = "画面上方约25%区域放标题，顶部约15%区域留空，留白约8%，手机竖屏3:4，留白边距约8%，四周留白边距约8%，页边距约8%，清洁效率提升28%。"
     assert planner._find_unbacked_commercial_claims(prompt, TEXT, allow_layout=True) == ["28%"]
     assert set(planner._find_unbacked_commercial_claims(prompt, TEXT)) == {"25%", "15%", "8%", "28%"}
 

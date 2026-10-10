@@ -530,7 +530,7 @@ _LAYOUT_PERCENT_RE = re.compile(
     r"\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
     + r"|(?:画面|画幅|版面)?(?:上方|下方|左侧|右侧|顶部|底部)\s*(?:约|大约)?\s*"
     + _LAYOUT_PERCENT + r"\s*区域"
-    + r"|(?:四周|左右|上下)?留白\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
+    + r"|(?:四周|左右|上下)?(?:留白(?:边距)?|页边距)\s*(?:约|大约)?\s*" + _LAYOUT_PERCENT
     + r"|(?:occup(?:y|ies|ying)|takes?\s+up)\s*(?:(?:about|approximately|roughly)\s+)?"
     + _LAYOUT_PERCENT + r"\s+(?:of\s+)?(?:the\s+)?(?:frame|canvas|layout)\b"
     + r"|(?:产品|主体|表格|信息面板|图标|样本)(?:居左|居右|居中|居中央|局部|缩放在角落)?"
