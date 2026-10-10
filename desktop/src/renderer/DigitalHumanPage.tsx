@@ -14,7 +14,7 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
   if (!value.ok || value.data === undefined) throw new Error(value.error || '操作未完成，请稍后重试。');
   return value.data;
 }
-const EMPTY: DigitalHumanDraft = { personAssetId: '', productAssetId: '', sceneId: 'studio', voiceStyle: 'natural_female', durationSeconds: 15, script: '' };
+const EMPTY: DigitalHumanDraft = { personAssetId: '', productAssetId: '', sceneId: 'studio', voiceStyle: 'workbench', durationSeconds: 15, script: '' };
 const ACTIVE = new Set(['audio_preparing', 'audio_transcribing', 'preview_preparing', 'preview_generating', 'registering', 'reviewing', 'video_submitting', 'video_generating', 'official_submitting', 'official_generating', 'audio_assembling', 'assembling', 'enhancing', 'packaging']);
 const SCENE_IMAGES: Record<string, string> = Object.fromEntries(['studio', 'store', 'display'].map((id) => [id, `${import.meta.env.BASE_URL}digital-human-scenes/${id}.png`]));
 

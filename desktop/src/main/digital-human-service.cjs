@@ -132,7 +132,9 @@ function createDigitalHumanService(options = {}) {
     if (name === 'preview') return round(task.previewPrices.imageUsd * task.previewPrices.fxCnyPerUsd);
     if (name === 'asr') return task.previewPrices.asrReserveCny;
     const segment = (name.startsWith('tts_') ? task.speechChunks || task.segments : task.segments)?.find((item) => name === `${name.startsWith('tts_') ? 'tts' : 'wan'}_${item.id}` || name.startsWith(`wan_${item.id}_retry_`));
-    if (name.startsWith('tts_')) return round(segment.text.length * task.prices.ttsCnyPer10kChars / 10000);
+    // Conservative allowance for the workbench catalogue, rather than using a
+    // different provider's advertised price as the approved voice's actual bill.
+    if (name.startsWith('tts_')) return round([...segment.text].length * (task.voiceStyle === 'workbench' ? Math.max(20, task.prices.ttsCnyPer10kChars) : task.prices.ttsCnyPer10kChars) / 10000);
     if (name === 'wan_estimate') return round(task.durationSeconds * task.prices.rates['720p'].audio);
     if (name.startsWith('wan_')) return round((segment.generationSeconds || segment.seconds) * task.prices.rates['720p'].audio);
     return 0;
@@ -173,7 +175,7 @@ function createDigitalHumanService(options = {}) {
     }
     if (quote(task).estimatedCny > task.budgetCny) throw fail('digital_human_budget_exceeded', '本次制作额度不足，请联系管理员；已有声音和画面已保留。');
   }
-  async function operation(task, name, route, body, headers = {}) {
+  async function operation(task, name, route, body, headers = {}, execute = null) {
     assertCanWork();
     task.operations ||= {};
     const transport = route.startsWith('/bailian/') ? official : provider;
@@ -182,6 +184,10 @@ function createDigitalHumanService(options = {}) {
     // A persisted pending operation is only recovered through its gateway receipt.
     // Reposting after an app crash would risk a second paid generation.
     if (previous) {
+      if (execute) {
+        const response = await execute(previous.id);
+        previous.response = response; save(task); return response;
+      }
       let receipt;
       try { receipt = await transport.request(`/operations/${previous.id}`); }
       catch (error) { throw fail('digital_human_submission_unknown', '上次请求尚未核对成功，请稍后刷新；不会自动重复提交。', { outcomeUnknown: true }); }
@@ -192,11 +198,12 @@ function createDigitalHumanService(options = {}) {
     const entry = { id: randomUUID(), submittedAt: new Date().toISOString(), ...(task.version === 2 ? { reserveCny: costFor(task, name) } : {}) };
     task.operations[name] = entry; save(task);
     try {
-      const response = await transport.request(route, { method: 'POST', body,
+      const response = execute ? await execute(entry.id) : await transport.request(route, { method: 'POST', body,
         headers: route.startsWith('/volcengine/asr/') ? { ...headers, 'X-Api-Request-Id': entry.id } : headers,
         operationId: entry.id });
       entry.response = response; save(task); return response;
     } catch (error) {
+      if (/(?:outcome|submission)_unknown/u.test(error.code || '')) error.outcomeUnknown = true;
       if (!error.outcomeUnknown) { entry.rejected = true; entry.error = cleanMessage(error.message); save(task); }
       throw error;
     }
@@ -270,6 +277,22 @@ function createDigitalHumanService(options = {}) {
   async function prepareOriginalSpeech(task) {
     await requireCapabilities(task); await ensurePrices(task);
     for (const chunk of task.speechChunks) {
+      if (task.voiceStyle === 'workbench') {
+        if (typeof options.prepareNarration !== 'function') throw fail('digital_human_voice_unavailable', '创作工作台配音服务尚未就绪。');
+        const prepared = await operation(task, `tts_${chunk.id}`, 'internal:workbench-narration', {}, {},
+          (sourceId) => options.prepareNarration({ source_id: sourceId, text: chunk.text,
+            ...(task.voicePersonaId ? { voice_persona_id: task.voicePersonaId } : {}) }));
+        const relative = `${task.id}/${chunk.id}.audio`;
+        if (!chunk.audioFile) {
+          const bytes = fs.readFileSync(prepared.file);
+          if (digest(bytes) !== prepared.audio_digest) throw fail('digital_human_audio_changed', '创作工作台口播文件完整性检查未通过。');
+          fs.writeFileSync(contained(root, relative), bytes);
+          chunk.audioFile = relative; chunk.voicePersonaId = prepared.voice_persona_id;
+          task.voicePersonaId = prepared.voice_persona_id;
+          chunk.voiceName = prepared.voice_name; save(task);
+        }
+      }
+      if (task.voiceStyle !== 'workbench') {
       if (!chunk.audioUrl) {
         const payload = await operation(task, `tts_${chunk.id}`, ROUTES.tts, official.ttsPayload({ text: chunk.text, voice: audioTools.VOICE_IDS[task.voiceStyle] }));
         chunk.audioUrl = official.ttsAudioUrl(payload);
@@ -280,6 +303,7 @@ function createDigitalHumanService(options = {}) {
         if (Date.parse(chunk.audioExpiresAt) <= Date.now()) throw fail('digital_human_audio_url_expired', '已付费配音尚未下载且地址已过期，已保留回执，不会重新购买配音。');
         await official.download(chunk.audioUrl, contained(root, relative), { maxBytes: 15 * 1024 * 1024 });
         chunk.audioFile = relative; save(task);
+      }
       }
       const measured = await audioMedia.measureAudio({ source: contained(root, chunk.audioFile), ffmpegPath: options.ffmpegPath || 'ffmpeg' });
       if (chunk.audio?.sha256 && chunk.audio.sha256 !== measured.sha256) throw fail('digital_human_audio_changed', '原口播音轨发生变化。');

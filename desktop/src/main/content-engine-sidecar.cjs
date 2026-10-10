@@ -1016,6 +1016,7 @@ function createContentEngineSidecar(options = {}) {
     }),
     // Internal main-process integration only: paths are never accepted from renderer IPC.
     importBaseVideo: (payload) => request("import_base_video", payload, { timeoutMs: renderTimeoutMs }),
+    prepareVideoNarration: (payload) => request("prepare_video_narration", payload, { timeoutMs: renderTimeoutMs }),
     listMediaSegments: (optionsForList = {}) => request(
       "list_media_segments",
       {

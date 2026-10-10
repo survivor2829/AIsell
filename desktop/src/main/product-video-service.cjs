@@ -133,7 +133,7 @@ function createProductVideoService(options = {}) {
       hold();
       const id = `pv_${randomUUID()}`, createdAt = new Date().toISOString();
       const task = { ...input, productName: String(input.productName || '').trim(), facts: String(input.facts || '').trim(), expression: String(input.expression || '').trim(),
-        id, createdAt, updatedAt: createdAt, version: 3, status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
+        id, createdAt, updatedAt: createdAt, version: 3, audioVoicePolicy: 'workbench', presentationPolicy: 'reference_narration', status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
       save(task); return publicTask(task);
     });
   }
@@ -168,11 +168,14 @@ function createProductVideoService(options = {}) {
   function videoReserve(task, shot) {
     return round(shot.seconds * (task.plan.pipelineVersion >= 3 ? task.prices.videoCnyPerSecond : task.prices.videoUsdPerSecond * task.prices.fxCnyPerUsd));
   }
-  async function operation(task, name, route, body, reserveCny = 0, headers = {}) {
+  async function operation(task, name, route, body, reserveCny = 0, headers = {}, execute = null) {
     const prior = task.operations[name];
     if (prior?.response) return prior.response;
     if (prior) {
       if (prior.rejected) throw fail('product_video_request_rejected', '上次请求已明确失败，请点击重试后再提交。');
+      if (execute) {
+        prior.response = await execute(prior.id); save(task); return prior.response;
+      }
       let receipt;
       try { receipt = await provider.request(`/operations/${prior.id}`); } catch { throw fail('product_video_submission_unknown', '原请求尚未核实，保留费用预留，不重复提交。', { outcomeUnknown: true }); }
       if (receipt?.status === 'pending') throw fail('product_video_submission_unknown', '原请求仍在处理中，请稍后核对。', { outcomeUnknown: true });
@@ -185,8 +188,8 @@ function createProductVideoService(options = {}) {
         videoCnyPerSecond: task.prices?.videoCnyPerSecond, ttsCnyPer10kChars: task.prices?.ttsCnyPer10kChars } };
     task.operations[name] = entry; save(task);
     const requestHeaders = name === 'asr' ? { ...headers, 'X-Api-Request-Id': entry.id } : headers;
-    try { entry.response = await provider.request(route, { method: 'POST', body, headers: requestHeaders, operationId: entry.id }); save(task); return entry.response; }
-    catch (error) { if (!error.outcomeUnknown) entry.rejected = true; save(task); throw error; }
+    try { entry.response = execute ? await execute(entry.id) : await provider.request(route, { method: 'POST', body, headers: requestHeaders, operationId: entry.id }); save(task); return entry.response; }
+    catch (error) { if (/(?:outcome|submission)_unknown/u.test(error.code || '')) error.outcomeUnknown = true; if (!error.outcomeUnknown) entry.rejected = true; save(task); throw error; }
   }
   function receiptCost(task, name, node) {
     const op = task.operations[name];
@@ -286,10 +289,10 @@ function createProductVideoService(options = {}) {
     if (typeof options.prepareAudio !== 'function') throw fail('product_video_audio_unavailable', '整片声音准备组件尚未就绪，未提交视频。');
     const directory = path.dirname(file(task.id));
     const result = await options.prepareAudio({ task, directory, ffmpegPath,
-      operation: (name, route, body, reserveCny, headers) => {
+      operation: (name, route, body, reserveCny, headers, execute) => {
         if (!/^audio_[a-z0-9_]+$/u.test(name) || !Number.isFinite(reserveCny) || reserveCny <= 0)
           throw fail('product_video_audio_price_missing', '声音准备缺少明确计价或回执编号，未提交请求。');
-        return operation(task, name, route, body, reserveCny, headers);
+        return operation(task, name, route, body, reserveCny, headers, execute);
       } });
     if (!result?.file || !result.voiceFile || !Number.isFinite(result.durationSeconds) || Math.abs(result.durationSeconds - task.durationSeconds) > 0.15)
       throw fail('product_video_audio_duration_invalid', '整片音轨时长与计划不一致，未提交视频。');
@@ -360,16 +363,36 @@ function createProductVideoService(options = {}) {
     if (task.status === 'transcribing') {
       const audio = contained(root, `${task.id}/voices.wav`);
       await media.extractAudio({ source: contained(root, official ? task.audio.voiceFile : task.sourceFile), destination: audio, ffmpegPath });
-      const response = await operation(task, 'asr', '/volcengine/asr/recognize/flash', { user: { uid: 'xiaoxi-product-video' }, audio: { data: fs.readFileSync(audio).toString('base64') }, request: { model_name: 'bigmodel', show_utterances: true, enable_punc: true } }, task.prices.asrReserveCny,
+      const response = await operation(task, 'asr', '/volcengine/asr/recognize/flash', { user: { uid: 'xiaoxi-product-video' }, audio: { data: fs.readFileSync(audio).toString('base64') }, request: { model_name: 'bigmodel', show_utterances: true, show_words: true, enable_punc: true } }, task.prices.asrReserveCny,
         { 'X-Api-Resource-Id': 'volc.bigasr.auc_turbo', 'X-Api-Sequence': '-1' });
       const result = response.result || response.data?.result || response.data || response;
       if (!Array.isArray(result.utterances) || !result.utterances.length) throw fail('product_video_asr_failed', '未识别到有时间信息的对白，原声视频已保留。请检查原声后再决定是否重试识别。');
-      task.captions = media.buildCaptions({ utterances: result.utterances, timeUnit: 'ms', durationSeconds: task.durationSeconds });
+      task.preparedUtterances = result.utterances;
+      task.captions = media.buildCaptions({ utterances: task.preparedUtterances, timeUnit: 'ms', durationSeconds: task.durationSeconds });
       task.status = official && !task.sourceFile ? 'submitting' : 'packaging'; save(task);
     }
     if (task.status === 'packaging') {
       const relative = `${task.id}/final.mp4`;
-      await media.renderCaptioned({ source: contained(root, task.sourceFile), destination: contained(root, relative), captions: task.captions, ffmpegPath });
+      if (task.presentationPolicy === 'reference_narration') {
+        if (!options.packageVideo || !options.queryPackaging || !options.resolvePackagingVideo) throw fail('product_video_packaging_unavailable', '镜头已保存，创作工作台包装服务尚未就绪。');
+        if (!task.packagingTaskId) {
+          const source = contained(root, task.sourceFile);
+          const output = await options.packageVideo({ source_id: `product_video_${task.id.slice(3)}`,
+            input_video_path: source, title: task.productName || '产品现场演示',
+            confirmed_script: task.plan.shots.map(shot => shot.narration || '').join(''),
+            template_id: 'topic_fixed', cover_mode: 'local_frame',
+            prepared_transcript: { time_unit: 'ms', utterances: task.preparedUtterances, source_sha256: digest(fs.readFileSync(source)) } });
+          if (!output?.task_id) throw fail('product_video_packaging_unavailable', '包装服务尚未返回任务编号，原镜头已保留。');
+          task.packagingTaskId = output.task_id; task.projectId = output.project_id; save(task);
+        }
+        const output = await options.queryPackaging(task.packagingTaskId);
+        if (['failed', 'paused', 'cancelled', 'needs_attention', 'outcome_unknown'].includes(output?.status)) throw fail(output.error_code || 'product_video_packaging_failed', output.error_message || '创作工作台包装未完成，已有镜头已保留。', { outcomeUnknown: output.status === 'outcome_unknown' });
+        if (output?.status !== 'completed') return;
+        task.generatedVideoId = output.result?.generated_video_id || output.generated_video_id;
+        const packaged = await options.resolvePackagingVideo(task.generatedVideoId);
+        fs.copyFileSync(packaged.absolute_path, contained(root, relative));
+        fs.writeFileSync(contained(root, `${task.id}/final.srt`), task.captions.srt, 'utf8');
+      } else await media.renderCaptioned({ source: contained(root, task.sourceFile), destination: contained(root, relative), captions: task.captions, ffmpegPath });
       task.finalFile = relative; task.subtitleFile = `${task.id}/final.srt`; task.status = 'completed'; save(task);
     }
     if (task.status === 'enhancing') {

@@ -648,12 +648,26 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     const usedDigitalHumanClicks = new Set();
     const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
     const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
+    const prepareWorkbenchNarration = async (payload) => {
+      await beforeContentProviderWork([]);
+      try { return await contentEngineController.prepareVideoNarration(payload); }
+      catch (error) {
+        if (/CONTENT_ENGINE_.*(?:TIMEOUT|EXIT|STOP|WRITE)/u.test(error.code || '')) error.outcomeUnknown = true;
+        throw error;
+      }
+    };
+    const packageWorkbenchVideo = async (payload) => {
+      if (!payload.prepared_transcript) await beforeContentProviderWork(["volcengine_asr"]);
+      else await contentEngineController.start();
+      return contentEngineController.importBaseVideo(payload);
+    };
     digitalHumanRegistration = registerDigitalHumanIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
       readPrices: readOfficialVideoPrices,
       readPreviewPrices: () => readVideoPrices(),
+      prepareNarration: prepareWorkbenchNarration,
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
@@ -680,13 +694,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         usedDigitalHumanClicks.add(token);
         if (usedDigitalHumanClicks.size > 200) usedDigitalHumanClicks.delete(usedDigitalHumanClicks.values().next().value);
       },
-      packageVideo: async (payload) => {
-        // Cover generation is independently recoverable; a missing image
-        // provider must not prevent a verified video entering the library.
-        if (!payload.prepared_transcript) await beforeContentProviderWork(["volcengine_asr"]);
-        else await contentEngineController.start();
-        return contentEngineController.importBaseVideo(payload);
-      },
+      packageVideo: packageWorkbenchVideo,
       queryPackaging: (id) => contentEngineController.getTask(id)
     });
     const usedProductVideoClicks = new Set();
@@ -696,7 +704,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       defaultExportDir: app.getPath("downloads"),
       gatewayClient: providerGatewayClient,
       readPrices: readVideoPrices,
+      packageVideo: packageWorkbenchVideo,
+      queryPackaging: (id) => contentEngineController.getTask(id),
+      resolvePackagingVideo: (id) => contentEngineController.resolveGeneratedVideoPath(id),
       prepareAudio: createProductAudioPreparer({ gatewayClient: providerGatewayClient,
+        prepareNarration: prepareWorkbenchNarration,
         selectMusic: async ({ durationSeconds }) => {
           try {
             await contentEngineController.start();

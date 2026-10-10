@@ -873,6 +873,9 @@ class ContentEngineService:
     def select_video_music(self, duration_seconds):
         return self.creative_domain.select_video_music(duration_seconds)
 
+    def prepare_video_narration(self, request):
+        return self.creative_domain.prepare_video_narration(request)
+
     def digital_human_upload_audio(self, request):
         return self.creative_analyzer.upload_digital_human_audio(request)
 

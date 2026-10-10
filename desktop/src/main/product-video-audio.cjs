@@ -13,6 +13,8 @@ function createProductAudioPreparer(options = {}) {
   const provider = options.provider || createBailianVideoProvider(options);
   return async function prepareAudio({ task, directory, ffmpegPath = 'ffmpeg', operation }) {
     fs.mkdirSync(directory, { recursive: true });
+    const prepareNarration = task.audioVoicePolicy === 'workbench' ? options.prepareNarration : null;
+    if (task.audioVoicePolicy === 'workbench' && !prepareNarration) throw fail('product_video_audio_unavailable', '创作工作台声音尚未就绪，未提交视频。');
     const manifestPath = path.join(directory, 'soundtrack.json');
     let saved = {};
     if (fs.existsSync(manifestPath)) saved = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -24,13 +26,25 @@ function createProductAudioPreparer(options = {}) {
       const text = String(shot.narration || '').trim();
       if (!text) { cursor += shot.seconds; continue; }
       const file = path.join(directory, `narration-${index}.wav`);
-      const fingerprint = createHash('sha256').update(JSON.stringify({ text, voice: 'Cherry' })).digest('hex');
+      // Completed manifests remain frozen. New narration uses the same approved
+      // voice as the workbench, without naming a product or voice in this path.
+      const fingerprint = createHash('sha256').update(JSON.stringify({ text, voice: prepareNarration ? 'workbench' : 'Cherry' })).digest('hex');
       const existing = saved[index];
       if (!existing || existing.fingerprint !== fingerprint || !fs.existsSync(file) || hash(file) !== existing.sha256) {
-        const amount = Math.ceil([...text].length / 10000 * unit * 10000) / 10000;
-        const result = await operation(`audio_narration_${index}`, ROUTES.tts, ttsPayload({ text, voice: 'Cherry' }), amount);
-        await provider.download(ttsAudioUrl(result), file, { maxBytes: 20 * 1024 * 1024 });
-        saved[index] = { fingerprint, sha256: hash(file) };
+        const amount = Math.ceil([...text].length * (prepareNarration ? Math.max(20, unit) : unit)) / 10000;
+        let narration = {};
+        if (prepareNarration) {
+          narration = await operation(`audio_narration_${index}`, 'internal:workbench-narration', {}, amount, {},
+            (sourceId) => prepareNarration({ source_id: sourceId, text,
+              ...(saved.voicePersonaId ? { voice_persona_id: saved.voicePersonaId } : {}) }));
+          if (hash(narration.file) !== narration.audio_digest) throw fail('product_video_audio_changed', '创作工作台口播完整性检查未通过。');
+          fs.copyFileSync(narration.file, file);
+          saved.voicePersonaId = narration.voice_persona_id;
+        } else {
+          const result = await operation(`audio_narration_${index}`, ROUTES.tts, ttsPayload({ text, voice: 'Cherry' }), amount);
+          await provider.download(ttsAudioUrl(result), file, { maxBytes: 20 * 1024 * 1024 });
+        }
+        saved[index] = { fingerprint, sha256: hash(file), voicePersonaId: narration.voice_persona_id, voiceName: narration.voice_name };
         writeJsonAtomic(manifestPath, saved);
       }
       const info = await probe(file, ffmpegPath);

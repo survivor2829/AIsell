@@ -18,6 +18,7 @@ const SCENES = Object.freeze([
 ]);
 const PRODUCT_INTERACTION = '依据参考产品的类别、结构和文案中的尺寸信息，保持人物与产品的真实比例。只有适合拿取的小件才可自然手持；大型、重型或落地设备保持落地，人物站在旁边指向细节，或轻触图片中可辨认的操作区域。体量不明确时采用站旁讲解，不强行拿起。不得把大型产品缩成手持模型、抬离地面或放在普通桌上；不新增图片中不存在的按钮、零件或操作功能。';
 const VOICES = Object.freeze([
+  { id: 'workbench', name: '沿用创作工作台声音', prompt: '沿用创作工作台已确认的配音声音' },
   { id: 'natural_female', name: '自然女声', prompt: '自然亲切的成年女性普通话，吐字清楚，节奏从容' },
   { id: 'steady_male', name: '沉稳男声', prompt: '沉稳自然的成年男性普通话，吐字清楚，不夸张播报' },
   { id: 'lively', name: '轻快讲解', prompt: '轻快有亲和力的普通话讲解，语气自然，语速适中' },

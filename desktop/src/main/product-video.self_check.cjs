@@ -85,6 +85,21 @@ async function run() {
       if(tamperAudioOnce){tamperAudioOnce=false;task.plan.shots[0].prompt+='临时修改';}
       return {file:audio,voiceFile:audio,durationSeconds:task.durationSeconds,music:{status:'unavailable',source:''}};
     },
+    packageVideo: async (payload) => {
+      assert.match(payload.source_id, /^product_video_/u);
+      assert.equal(payload.cover_mode, 'local_frame');
+      assert.equal(payload.prepared_transcript.source_sha256,
+        require('node:crypto').createHash('sha256').update(fs.readFileSync(payload.input_video_path)).digest('hex'));
+      return { task_id: 'fixture_packaging', project_id: 'fixture_project' };
+    },
+    queryPackaging: async () => {
+      if (localFailure) { localFailure = false; throw new Error('local render failed'); }
+      return { status: 'completed', result: { generated_video_id: 'fixture_video' } };
+    },
+    resolvePackagingVideo: async () => {
+      const output = path.join(root, 'packaged.mp4'); fs.writeFileSync(output, clip);
+      return { absolute_path: output };
+    },
     mediaTools: {
       probe:async()=>({video:{width:576,height:1024}}),
       normalizeAndAssemble:async({destination})=>fs.writeFileSync(destination,clip),
@@ -197,6 +212,7 @@ async function run() {
     assert.equal(posts.filter(p=>p.route===VIDEO_ROUTE).length,priorTamperVideos,'changed locked inputs must be caught before any paid video');
     const oldTask=await service.create(input), oldPath=path.join(root,oldTask.id,'task.json'), oldStored=JSON.parse(fs.readFileSync(oldPath,'utf8'));
     oldStored.version=2;oldStored.plan.pipelineVersion=2;oldStored.plan.sourceResolution='480p';oldStored.prices=legacyPrices();
+    delete oldStored.audioVoicePolicy; delete oldStored.presentationPolicy;
     fs.writeFileSync(oldPath,JSON.stringify(oldStored));
     const oldPosts=posts.length;await service.start(oldTask.id);await until(service,oldTask.id,t=>t.status==='completed');
     assert.equal(posts.slice(oldPosts).filter(p=>p.route==='/apimart/videos/generations').length,3,'existing v2 drafts must retain Seedance and its original billing route');

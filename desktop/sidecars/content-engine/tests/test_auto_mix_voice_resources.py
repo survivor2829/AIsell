@@ -154,6 +154,20 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             (now, now),
         )
 
+    def test_video_narration_reuses_approved_voice_and_receipts(self):
+        self.service.connection.execute("UPDATE voice_personas_v1 SET approved_at='2026-10-09' WHERE id='natural-life@1'")
+        request = {"source_id": "video-operation-1", "text": "完整的产品口播。"}
+        first = self.service.prepare_video_narration(request)
+        second = self.service.prepare_video_narration(request)
+        self.assertEqual(first, second)
+        self.assertEqual(1, len(self.analyzer.calls))
+        self.assertEqual("natural-life@1", first["voice_persona_id"])
+        Path(first["file"]).write_bytes(b"changed")
+        with self.assertRaises(ContentEngineError) as raised:
+            self.service.prepare_video_narration(request)
+        self.assertEqual("auto_mix_voice_cache_changed", raised.exception.code)
+        self.assertEqual(1, len(self.analyzer.calls))
+
     def test_configured_catalog_is_versioned_and_private(self):
         values = configured_voice_personas(
             {

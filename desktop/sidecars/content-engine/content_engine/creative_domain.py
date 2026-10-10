@@ -403,8 +403,8 @@ class CreativeDomain:
         if not isinstance(request, dict):
             raise ContentEngineError("invalid_video_import", "视频导入参数无效。")
         source_id = str(request.get("source_id") or "")
-        if not re.fullmatch(r"digital_human_[a-f0-9-]{32,36}", source_id):
-            raise ContentEngineError("invalid_video_import", "数字人任务编号无效。")
+        if not re.fullmatch(r"(?:digital_human|product_video)_[a-f0-9-]{32,36}", source_id):
+            raise ContentEngineError("invalid_video_import", "生成视频任务编号无效。")
         template = request.get("template_id", "topic_fixed")
         if template not in TEMPLATES or request.get("cover_mode", "apimart") not in {"apimart", "local_frame"}:
             raise ContentEngineError("invalid_video_import", "视频模板或封面方式无效。")
@@ -439,7 +439,7 @@ class CreativeDomain:
             raise ContentEngineError("invalid_video_transcript", "视频在导入时发生变化，请核对源文件。")
         now = self._now()
         self.connection.execute("INSERT INTO creative_projects(id,mode,name,theme,settings_json,created_at,updated_at) VALUES (?,'course',?,?,?, ?,?)",
-            (project_id, title, title, self._json({"workflow": "digital_human", "internal_only": False}), now, now))
+            (project_id, title, title, self._json({"workflow": "product_video" if source_id.startswith("product_video_") else "digital_human", "internal_only": False}), now, now))
         payload = {"source_id": source_id, "project_id": project_id, "managed_path": str(managed), "title": title,
                    "confirmed_script": script, "template_id": template, "cover_mode": request.get("cover_mode", "apimart"),
                    "music_track_id": str(request.get("music_track_id") or "")}
@@ -4986,7 +4986,7 @@ class CreativeDomain:
                 verification["alignment"] = align_narration(text, metadata["recognized_segments"], duration_ms)
 
     def _synthesize_and_verify_auto_mix_phrase(
-        self, task_id, run, persona, phrase, *, critical_terms=()
+        self, task_id, run, persona, phrase, *, critical_terms=(), verify=True
     ):
         synthesize = getattr(self.analyzer, "synthesize_auto_mix_phrase", None)
         cloud = getattr(self.analyzer, "cloud_client", None)
@@ -4996,7 +4996,7 @@ class CreativeDomain:
                 "auto_mix_voice_unavailable",
                 "当前内容引擎不支持 CosyVoice 3.5 Plus 短语配音。",
             )
-        if not callable(transcribe) or not getattr(cloud, "configured", False):
+        if verify and (not callable(transcribe) or not getattr(cloud, "configured", False)):
             raise ContentEngineError(
                 "auto_mix_voice_verification_unavailable",
                 "正式成片需要使用 ASR 回听核对每个配音短语。",
@@ -5106,6 +5106,9 @@ class CreativeDomain:
                     private_metadata=private_metadata,
                     revision=attempt + 1,
                 )
+            if not verify:
+                return {"relative_path": str(relative), "audio_digest": audio_digest,
+                        "duration_ms": duration_ms}
             alignment_input = {
                 "stage": "voice_alignment",
                 "tts": cache_key,
@@ -5817,6 +5820,48 @@ class CreativeDomain:
             "SELECT * FROM music_catalog_tracks_v1 ORDER BY updated_at DESC, id"
         ).fetchall()
         return {"items": [self._public_music_catalog_row(row) for row in rows]}
+
+    def prepare_video_narration(self, request):
+        """Internal video preparation reuses the approved voice and TTS receipts.
+
+        The owning video task handles its budget and ASR. An audio-only run uses
+        the existing artifact ledger, including its unknown-request protection.
+        """
+        source_id = str(request.get("source_id") or "")
+        if not re.fullmatch(r"[a-z0-9_-]{1,120}", source_id):
+            raise ContentEngineError("invalid_video_narration", "口播任务编号无效。")
+        text = self._validate_text(request.get("text"), "narration", 5000)
+        input_hash = auto_mix_canonical_hash({"video_narration": source_id, "text": text})
+        run = self.connection.execute("SELECT * FROM auto_mix_runs_v2 WHERE input_hash=? AND generation=1",
+                                      (input_hash,)).fetchone()
+        if run is not None:
+            result = self._json_object(run["private_state_json"]).get("prepared_audio")
+            if result and self._managed_file_digest_matches(result["relative_path"], result["audio_digest"]):
+                return {**result, "file": str(self.data_dir / result["relative_path"])}
+            if result:
+                raise ContentEngineError("auto_mix_voice_cache_changed", "已付费口播缓存发生变化，原回执已保留，不会自动重新购买。")
+            persona = self._approved_auto_mix_voice_persona(selected_id=run["selected_voice_persona_id"])
+        else:
+            persona = self._approved_auto_mix_voice_persona(selected_id=request.get("voice_persona_id"))
+        if persona is None:
+            raise ContentEngineError("auto_mix_voice_unavailable", "请先在创作工作台确认一个可用的配音声音。")
+        if run is None:
+            now, project_id, run_id = self._now(), self._new_id("creative_project"), self._new_id("auto_mix_run")
+            with self.database.transaction() as connection:
+                connection.execute("INSERT INTO creative_projects(id,mode,name,theme,status,settings_json,created_at,updated_at) VALUES (?,'mix',?,?,'completed',?,?,?)",
+                    (project_id, "视频口播", "视频口播", self._json({"workflow": "video_narration", "internal_only": True}), now, now))
+                connection.execute("""INSERT INTO auto_mix_runs_v2(id,project_id,generation,spec_version,input_hash,status,
+                    asset_ids_json,title,copy_framework,selected_voice_persona_id,created_at,updated_at)
+                    VALUES (?,?,1,?,?,'synthesizing','[]',?,?,?, ?,?)""",
+                    (run_id, project_id, AUTO_MIX_SPEC_VERSION, input_hash, "视频口播", text, persona["id"], now, now))
+            run = self.connection.execute("SELECT * FROM auto_mix_runs_v2 WHERE id=?", (run_id,)).fetchone()
+        result = self._synthesize_and_verify_auto_mix_phrase(None, run, persona,
+            {"phraseId": source_id, "text": text}, verify=False)
+        result.update({"voice_persona_id": persona["id"], "voice_name": persona["display_name"],
+                       "provider_model": persona["provider_model"]})
+        self.connection.execute("UPDATE auto_mix_runs_v2 SET status='completed',private_state_json=?,updated_at=? WHERE id=?",
+                                (self._json({"prepared_audio": result}), self._now(), run["id"]))
+        return {**result, "file": str(self.data_dir / result["relative_path"])}
 
     def select_video_music(self, duration_seconds):
         """Main-process-only media preparation; no provider call or new catalogue."""
@@ -10591,7 +10636,8 @@ class CreativeDomain:
         if not candidates:
             return f"课程观点 {index + 1}"
         clause = max(candidates)[-1]
-        return clause if len(clause) <= 22 else f"{clause[:22]}…"
+        from .video_presentation import display_topic
+        return display_topic(clause)
 
     def _course_recipe(
         self,
@@ -11991,6 +12037,10 @@ class CreativeDomain:
             **packaging["subtitle"],
             **explicit_subtitle_overrides,
         }
+        if not cover_only and not recipe.get("experiment_mode"):
+            from .video_presentation import presentation
+            recipe["caption_presentation"] = "reference_narration"
+            recipe["presentation"] = presentation(recipe.get("captions") or [], title)
         return recipe
 
     def _motion_plans_for_recipes(self, task_id, payload, entries):
