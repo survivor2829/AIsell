@@ -232,6 +232,8 @@ class RemotionWorkerClient:
         # and profile variables that the browser launch pipe needs.
         for key in (
             "SystemRoot",
+            "SystemDrive",
+            "ProgramData",
             "WINDIR",
             "ComSpec",
             "PATHEXT",

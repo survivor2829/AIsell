@@ -1047,6 +1047,8 @@ class RemotionWorkerSecurityTests(unittest.TestCase):
             "APIMART_API_KEY": "image-key-canary",
             "UNRELATED_SECRET": "secret-canary",
             "PATH": " path-canary ",
+            "SystemDrive": " C: ",
+            "ProgramData": " program-data-canary ",
             "USERPROFILE": " user-profile-canary ",
             "APPDATA": " app-data-canary ",
             "LOCALAPPDATA": " local-app-data-canary ",
@@ -1075,6 +1077,8 @@ class RemotionWorkerSecurityTests(unittest.TestCase):
         self.assertEqual(
             "local-app-data-canary", captured["options"]["env"]["LOCALAPPDATA"]
         )
+        self.assertEqual("C:", captured["options"]["env"]["SystemDrive"])
+        self.assertEqual("program-data-canary", captured["options"]["env"]["ProgramData"])
         self.assertIn("TEMP", captured["options"]["env"])
         self.assertIn("TMP", captured["options"]["env"])
         self.assertFalse(captured["options"]["shell"])
