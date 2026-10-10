@@ -561,9 +561,10 @@ export function ProductOneClickPage({
     && candidate.status === "completed"
   );
   const licensedMusicReady = Boolean(
+    plan?.music?.mode === "none" || (
     plan?.music?.licenseSummary?.status === "valid"
     && plan.music.licenseSummary.commercialUseAllowed === true
-    && plan.music.licenseSummary.evidencePresent === true
+    && plan.music.licenseSummary.evidencePresent === true)
   );
   const approvedVoiceReady = plan?.voicePersona?.approvalStatus === "approved";
   const formalEvidenceReady = Boolean(
