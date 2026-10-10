@@ -254,6 +254,11 @@ function createDigitalHumanService(options = {}) {
     return fail(result?.error_code || 'digital_human_packaging_failed', cleanMessage(result?.error_message || fallback), { outcomeUnknown: packagingUnknown(result) });
   }
   async function startPackaging(task) {
+    if (task.musicPolicy === 'workbench' && !task.musicTrackId && options.selectMusic) {
+      const music = await options.selectMusic({ durationSeconds: task.actualDurationSeconds || task.durationSeconds });
+      if (music?.trackId) task.musicTrackId = music.trackId;
+      save(task);
+    }
     const output = await options.packageVideo({ source_id: `digital_human_${task.id.slice(3)}`, input_video_path: contained(root, task.baseVideoFile),
       title: task.title, confirmed_script: task.script, template_id: task.templateId || 'topic_fixed', cover_mode: task.version === 2 ? 'local_frame' : 'apimart',
       ...(task.version === 2 ? { prepared_transcript: { utterances: task.preparedUtterances, time_unit: 'ms', source_sha256: digest(fs.readFileSync(contained(root, task.baseVideoFile))) } } : {}),
@@ -583,6 +588,7 @@ function createDigitalHumanService(options = {}) {
     const task = { ...input, script, title: String(input.title || script.slice(0, 20) || '未命名样片').trim().slice(0, 80),
       videoResolution: previous?.videoResolution || '720p', directorSkillVersion: DIRECTOR_SKILL_VERSION,
       ...(version === 2 ? { narrationPolicy: previous?.narrationPolicy || (!previous ? 'original_script' : undefined) } : {}),
+      ...(version === 2 && input.voiceStyle === 'workbench' ? { musicPolicy: 'workbench' } : {}),
       ...(version === 2 && script ? (previous && previous.narrationPolicy !== 'original_script'
         ? { segments: audioMedia.splitScript(script, input.durationSeconds) }
         : { speechChunks: audioMedia.speechChunks(script), segments: [] }) : {}),

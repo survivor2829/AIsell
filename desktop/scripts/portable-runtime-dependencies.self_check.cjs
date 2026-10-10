@@ -17,7 +17,7 @@ const {
   verifyPackagedRemotionRuntime,
   verifyRemotionRuntime
 } = require("./build-remotion-runtime.cjs");
-const { copyRuntimePackageTree } = require("./build-portable-release.cjs");
+const { copyAppRuntimeDependencies } = require("./build-portable-release.cjs");
 const { treeSha256 } = require("./release-tree-hash.cjs");
 const { verifyPackagedRuntime } = require("../src/main/remotion-runtime-environment.cjs");
 
@@ -64,7 +64,10 @@ function fixtureLicenseRecord(browserHash) {
 
 async function main() {
   try {
-    copyRuntimePackageTree("mammoth", root);
+    copyAppRuntimeDependencies(root);
+    const { pinyin } = require(path.join(root, "node_modules", "pinyin-pro"));
+    assert.equal(pinyin('中文', { toneType: 'none' }), 'zhong wen');
+    assert.equal(fs.existsSync(path.join(root, 'node_modules', '@remotion')), false, 'video dependencies stay in the dedicated runtime');
     const packagedMammoth = path.join(root, "node_modules", "mammoth");
     const mammoth = require(packagedMammoth);
     assert.equal(typeof mammoth.extractRawText, "function");

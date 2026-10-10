@@ -474,6 +474,14 @@ assert.equal(JSON.parse(wxKeyLoad.stdout.trim()).stage, "dll_loaded", "packaged 
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-self-check-"));
 try {
+  const videoRoots = new Set(require('./build-remotion-runtime.cjs').RUNTIME_ROOT_KEYS.map(key => key.slice('node_modules/'.length)));
+  const dependencies = Object.keys(JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).dependencies || {}).filter(name => !videoRoots.has(name));
+  const dependencyLoad = spawnSync(executable, ['-e',
+    "const load=require('node:module').createRequire(process.argv[1]);for(const name of JSON.parse(process.argv[2]))load(name);",
+    path.join(appDir, 'package.json'), JSON.stringify(dependencies)], {
+    encoding: 'utf8', windowsHide: true, timeout: 30000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+  });
+  assert.equal(dependencyLoad.status, 0, dependencyLoad.stderr || 'Packaged production dependencies must load before GUI startup');
   const productDetailGate = runPackagedProductDetailReleaseGate({
     releaseTarget: target,
     resourcesDir,

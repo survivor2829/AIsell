@@ -1026,6 +1026,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  RUNTIME_ROOT_KEYS,
   ARTIFACT_TYPES,
   artifactTypeForEdition,
   buildRemotionRuntime,

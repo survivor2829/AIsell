@@ -16,6 +16,7 @@ const {
   resolveContentEngineBuild
 } = require("./content-engine-release-runtime.cjs");
 const {
+  RUNTIME_ROOT_KEYS,
   artifactTypeForEdition,
   copyRemotionRuntime,
   resolveRemotionRuntimeBuild
@@ -145,10 +146,21 @@ function copyRuntimePackageTree(packageName, appDir, fromDir = desktopDir, copie
   copied.set(packageName, source);
   const target = path.join(appDir, "node_modules", ...packageName.split("/"));
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.cpSync(source, target, { recursive: true });
+  fs.cpSync(source, target, { recursive: true, dereference: true });
   const packageJson = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
   for (const dependency of Object.keys(packageJson.dependencies || {})) {
     copyRuntimePackageTree(dependency, appDir, source, copied);
+  }
+}
+
+function copyAppRuntimeDependencies(appDir) {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
+  const videoRoots = new Set(RUNTIME_ROOT_KEYS.map(key => key.slice('node_modules/'.length)));
+  const copied = new Map();
+  for (const name of Object.keys(packageJson.dependencies || {})) {
+    // Remotion owns its separate, verified runtime. The remaining production
+    // dependencies belong to the app and must follow package.json automatically.
+    if (!videoRoots.has(name)) copyRuntimePackageTree(name, appDir, desktopDir, copied);
   }
 }
 
@@ -167,8 +179,7 @@ function copyAppSource(appDir, edition) {
       filter: (sourcePath) => sourceAllowed(sourcePath, edition)
     });
   }
-  copyRuntimePackageTree("mammoth", appDir);
-  copyRuntimePackageTree("jszip", appDir);
+  copyAppRuntimeDependencies(appDir);
   const helperTarget = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
   fs.copyFileSync(helper, helperTarget);
   if (sha256(helperTarget) !== CONTACT_HELPER_SHA256) throw new Error("Packaged contact helper hash mismatch");
@@ -651,6 +662,7 @@ module.exports = {
   buildPortable,
   cleanupPaths,
   copyRuntimePackageTree,
+  copyAppRuntimeDependencies,
   describeBaseStabilizedRuntime,
   isCommercialDeliveryReady,
   publishStagedRelease,

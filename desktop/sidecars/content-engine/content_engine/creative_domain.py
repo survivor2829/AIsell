@@ -5871,7 +5871,7 @@ class CreativeDomain:
         full_tracks = [row["id"] for row in self.connection.execute(
             "SELECT id FROM music_catalog_tracks_v1 WHERE duration_ms >= ?", (duration_ms,)).fetchall()]
         selected = self._select_auto_mix_music(
-            {"bpmRange": [80, 125], "targetEnergy": 0.45, "moods": []},
+            {"bpmRange": [80, 125], "targetEnergy": 0.45, "moods": ["warm", "lighthearted"]},
             required_duration_ms=duration_ms, allowed_track_ids=full_tracks,
         )
         # Reuse an uninterrupted recording. Do not substitute the 20s audition

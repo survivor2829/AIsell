@@ -661,6 +661,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       else await contentEngineController.start();
       return contentEngineController.importBaseVideo(payload);
     };
+    const selectWorkbenchMusic = async ({ durationSeconds }) => {
+      try {
+        await contentEngineController.start();
+        return await contentEngineController.selectVideoMusic(durationSeconds);
+      } catch { return { status: 'unavailable', message: '音乐库暂不可用，本片保留讲解。' }; }
+    };
     digitalHumanRegistration = registerDigitalHumanIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
@@ -668,6 +674,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       readPrices: readOfficialVideoPrices,
       readPreviewPrices: () => readVideoPrices(),
       prepareNarration: prepareWorkbenchNarration,
+      selectMusic: selectWorkbenchMusic,
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
@@ -709,16 +716,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       resolvePackagingVideo: (id) => contentEngineController.resolveGeneratedVideoPath(id),
       prepareAudio: createProductAudioPreparer({ gatewayClient: providerGatewayClient,
         prepareNarration: prepareWorkbenchNarration,
-        selectMusic: async ({ durationSeconds }) => {
-          try {
-            await contentEngineController.start();
-            return await contentEngineController.selectVideoMusic(durationSeconds);
-          } catch {
-            // Music is optional. Preserve the verified narration; do not buy
-            // another video just because the local catalogue is unavailable.
-            return { status: "unavailable", message: "音乐库暂不可用，本片保留讲解。" };
-          }
-        } }),
+        selectMusic: selectWorkbenchMusic }),
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",

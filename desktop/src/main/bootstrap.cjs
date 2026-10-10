@@ -67,4 +67,8 @@ async function boot() {
   if (!fs.existsSync(path.join(applicationRoot, "src/main/main.cjs"))) throw Error("component_application_missing");
   require(path.join(applicationRoot, "src/main/main.cjs"));
 }
-boot().catch(error => { dialog.showErrorBox("软件未能启动", "更新启动未完成，重新打开后将恢复上一版本。\n" + String(error.message || error)); app.exit(1); });
+boot().catch(error => {
+  if (process.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE === '1') console.error(error.stack || error.message || error);
+  else dialog.showErrorBox("软件未能启动", "更新启动未完成，重新打开后将恢复上一版本。\n" + String(error.message || error));
+  app.exit(1);
+});
