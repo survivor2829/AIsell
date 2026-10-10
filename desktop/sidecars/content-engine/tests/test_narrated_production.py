@@ -229,7 +229,7 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
         self.assertEqual([], self.events)
 
-    def test_empty_auto_music_pool_stops_before_production_is_created(self):
+    def test_empty_auto_music_pool_allows_narration_production(self):
         self.s.save_narrated_batch({
             'batch_id': self.batch['batch_id'],
             'settings': {
@@ -240,11 +240,9 @@ class NarratedProductionTests(unittest.TestCase):
             },
         })
         with patch.object(self.domain.d, '_select_auto_mix_music', return_value=None):
-            with self.assertRaises(ContentEngineError) as error:
-                self.s.confirm_narrated_script(self.request(first_count=1))
-        self.assertEqual('auto_mix_licensed_music_required', error.exception.code)
-        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
-        self.assertEqual([], self.events)
+            task = self.s.confirm_narrated_script(self.request(first_count=1))
+        self.assertEqual('rendering', task['status'])
+        self.assertEqual(2, len(self.domain._load(self.batch['batch_id'])['production_jobs']))
 
     def test_legacy_missing_music_mode_keeps_voice_only_semantics(self):
         with patch.object(self.domain.d, '_select_auto_mix_music', return_value=None) as select_music:
