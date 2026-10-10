@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { pinyin } = require('pinyin-pro');
+const { normalize, reconcileNarrationSpelling } = require('./narration-transcript.cjs');
 const { fail } = require('./digital-human-provider.cjs');
 const { videoEncoderArgs } = require('./product-video-media.cjs');
 
@@ -132,21 +132,15 @@ function verifyTranscript(utterances, script, durationSeconds) {
   // This checks frozen TTS generated from the approved script, not arbitrary
   // uploaded speech. ASR homophones may use the approved spelling while keeping
   // observed timestamps. Missing words, changed tones, numbers and IDs still fail.
-  const normal = (text) => Array.from(String(text || '')).filter(char => /[\p{L}\p{N}]/u.test(char)).map(char => char.toLowerCase()).join('');
-  const expected = normal(script), recognized = normal(utterances.map((u) => u?.text || '').join(''));
-  const expectedChars = Array.from(expected), recognizedChars = Array.from(recognized);
-  const phonemes = (text) => pinyin(text, { type: 'array', toneType: 'num', nonZh: 'spaced' });
-  const wanted = phonemes(expected), heard = phonemes(recognized);
-  if (!expected.length || expectedChars.length !== recognizedChars.length || wanted.length !== expectedChars.length || heard.length !== recognizedChars.length
-    || expectedChars.some((char, index) => char !== recognizedChars[index]
-      && (!/\p{Script=Han}/u.test(char) || !/\p{Script=Han}/u.test(recognizedChars[index]) || wanted[index] !== heard[index]))) {
+  const aligned = reconcileNarrationSpelling(utterances, script);
+  if (!aligned) {
     throw fail('digital_human_transcript_mismatch', '实际配音识别与确认文案不一致，可能漏句或读音需要核对。音轨与识别结果已保留，尚未生成视频。');
   }
   // Use the same millisecond fields consumed by asr_sentences/_aligned_units.
   // Reject malformed or overlapping sentences before a video is purchased.
   let last = 0;
   for (const item of utterances) {
-    if (!normal(item?.text)) continue;
+    if (!normalize(item?.text)) continue;
     if (!Number.isInteger(item.start_time) || !Number.isInteger(item.end_time)
       || item.start_time < last || item.end_time <= item.start_time || item.end_time > durationSeconds * 1000) {
       throw fail('digital_human_transcript_coverage', '口播字幕时间缺失、重叠或超出时长，音轨与识别结果已保留，尚未生成视频。');
@@ -154,24 +148,7 @@ function verifyTranscript(utterances, script, durationSeconds) {
     last = item.end_time;
   }
   if (last < (durationSeconds - MAX_TAIL_SECONDS) * 1000) throw fail('digital_human_transcript_coverage', '口播字幕时间没有覆盖预定结尾，尚未生成视频。');
-  let cursor = 0;
-  const correctedText = (text, start) => {
-    let index = start;
-    return Array.from(String(text || '')).map(char => /[\p{L}\p{N}]/u.test(char)
-      ? (char.toLowerCase() === expectedChars[index] ? (index++, char) : expectedChars[index++]) : char).join('');
-  };
-  const alignedUtterances = utterances.map(item => {
-    const start = cursor; cursor += normal(item.text).length;
-    let wordCursor = start;
-    const words = Array.isArray(item.words) && normal(item.words.map(word => word.text).join('')) === normal(item.text)
-      ? item.words.filter(word => normal(word.text)).map(word => {
-        const text = correctedText(word.text, wordCursor); wordCursor += normal(word.text).length;
-        return { ...word, text };
-      }) : item.words;
-    return { ...item, text: correctedText(item.text, start), ...(words ? { words } : {}) };
-  });
-  return { editDistance: 0, phoneticCorrections: expectedChars.filter((char, index) => char !== recognizedChars[index]).length,
-    matchedCharacters: expectedChars.length, verifiedAt: new Date().toISOString(), alignedUtterances };
+  return { editDistance: 0, ...aligned, verifiedAt: new Date().toISOString() };
 }
 async function probe(source, ffmpegPath) {
   const executable = path.basename(ffmpegPath) === ffmpegPath ? (process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')

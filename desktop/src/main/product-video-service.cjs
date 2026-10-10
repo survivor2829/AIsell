@@ -1,3 +1,4 @@
+const { reconcileNarrationSpelling } = require('./narration-transcript.cjs');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -368,6 +369,10 @@ function createProductVideoService(options = {}) {
       const result = response.result || response.data?.result || response.data || response;
       if (!Array.isArray(result.utterances) || !result.utterances.length) throw fail('product_video_asr_failed', '未识别到有时间信息的对白，原声视频已保留。请检查原声后再决定是否重试识别。');
       task.preparedUtterances = result.utterances;
+      if (task.presentationPolicy === 'reference_narration') {
+        const aligned = reconcileNarrationSpelling(result.utterances, task.plan.shots.map(shot => shot.narration || '').join(''));
+        if (aligned) task.preparedUtterances = aligned.alignedUtterances;
+      }
       task.captions = media.buildCaptions({ utterances: task.preparedUtterances, timeUnit: 'ms', durationSeconds: task.durationSeconds });
       task.status = official && !task.sourceFile ? 'submitting' : 'packaging'; save(task);
     }
