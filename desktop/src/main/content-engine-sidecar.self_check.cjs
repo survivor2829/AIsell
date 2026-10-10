@@ -664,10 +664,11 @@ async function main() {
         }],
         [controller.repackageVideo(generatedVideoId, {
           packagingMode: "preset", packagingPresetId: "slide_teacher",
-          coverMode: "local_frame", reuseCover: true
+          coverMode: "local_frame", reuseCover: true,
+          visualRenderer: { requestedEngine: "remotion", visualStyleId: "social_pop", requestedStyleVersion: 1, allowFallback: true }
         }), "repackage_video", {
           candidate_id: generatedVideoId,
-          options: { packaging_mode: "preset", packaging_preset_id: "slide_teacher", cover_mode: "local_frame", reuse_cover: true }
+          options: { packaging_mode: "preset", packaging_preset_id: "slide_teacher", cover_mode: "local_frame", reuse_cover: true, visual_renderer: { requestedEngine: "remotion", visualStyleId: "social_pop", requestedStyleVersion: 1, allowFallback: true } }
         }],
         [controller.regenerateCover(generatedVideoId), "regenerate_cover", { candidate_id: generatedVideoId }],
         [controller.preflightVisualComparison(generatedVideoId), "preflight_visual_comparison", { candidate_id: generatedVideoId }],

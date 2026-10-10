@@ -143,6 +143,8 @@ def run_imported_video(domain, task_id, payload):
               "packaging": {"preset_id": "knowledge_focus", "title": payload["title"], "events": [],
                   "cover": {"mode": "local_frame", "status": "pending", "auto_generate": payload.get("cover_mode") == "apimart"},
                   "visualRenderer": {"requestedEngine": "remotion", "visualStyleId": "social_pop", "allowFallback": False}}}
+    if payload["source_id"].startswith("digital_human_"):
+        recipe["presentation"]["showTitle"] = False
     if payload.get("music_track_id"):
         music = domain._select_auto_mix_music({}, required_duration_ms=duration, allowed_track_ids=[payload["music_track_id"]])
         if music is None:

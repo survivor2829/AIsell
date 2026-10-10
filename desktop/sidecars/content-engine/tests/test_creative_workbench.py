@@ -2397,7 +2397,9 @@ class CreativeWorkbenchTests(unittest.TestCase):
 
         task = self.service.repackage_video(
             original["generated_video_id"],
-            {"packaging_preset_id": "slide_teacher", "reuse_cover": True},
+            {"packaging_preset_id": "slide_teacher", "reuse_cover": True,
+             "visual_renderer": {"requestedEngine": "remotion", "visualStyleId": "social_pop",
+                                 "requestedStyleVersion": 1, "allowFallback": True}},
         )
         self.assertEqual("completed", self._run(task["task_id"])["status"])
         versions = self.service.list_generated_videos(
@@ -2415,6 +2417,8 @@ class CreativeWorkbenchTests(unittest.TestCase):
             "SELECT recipe_json FROM generated_videos WHERE id = ?", (new["generated_video_id"],)
         ).fetchone()[0])
         self.assertEqual("bailian", new_recipe["packaging"]["director"]["provider"])
+        self.assertEqual("remotion", new_recipe["packaging"]["visualRenderer"]["requestedEngine"])
+        self.assertEqual("social_pop", new_recipe["packaging"]["visualRenderer"]["visualStyleId"])
 
     def test_singleton_auto_repackage_rotates_to_the_next_course_preset(self):
         asset_id = self._insert_asset("rotate-packaging.mp4", duration_ms=180_000)

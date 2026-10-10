@@ -3596,7 +3596,7 @@ function registerContentEngineIpc(options = {}) {
   handle(CONTENT_ENGINE_CHANNELS.repackageVideo, async (payload) => {
     assertKeys(payload, new Set([
       "candidateId", "packagingMode", "packagingPresetId", "brandProfileId",
-      "coverMode", "reuseCover"
+      "coverMode", "reuseCover", "visualRenderer"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
     if (packagingNeedsAiCover(optionsForPackaging)) {

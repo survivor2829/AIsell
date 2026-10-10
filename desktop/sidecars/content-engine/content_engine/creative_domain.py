@@ -8983,6 +8983,7 @@ class CreativeDomain:
                     packaging_preset_id=safe_options.get("packaging_preset_id"),
                     brand_profile_id=safe_options.get("brand_profile_id"),
                     cover_mode="reuse" if reuse_cover else safe_options.get("cover_mode", "auto"),
+                    visual_renderer=safe_options.get("visual_renderer"),
                 )
                 recipe = json.loads(row["recipe_json"])
                 if validated["packaging_mode"] != "none":
@@ -10048,6 +10049,9 @@ class CreativeDomain:
     def create_regeneration_task(self, generated_video_id):
         row = self._generated_row(generated_video_id)
         recipe = json.loads(row["recipe_json"])
+        project = self.connection.execute("SELECT settings_json FROM creative_projects WHERE id = ?", (row["project_id"],)).fetchone()
+        if project and json.loads(project["settings_json"]).get("workflow") == "digital_human" and recipe.get("presentation"):
+            recipe["presentation"]["showTitle"] = False
         if recipe.get("product_workflow") == "one_click_v2":
             raise ContentEngineError(
                 "auto_mix_v2_layer_regeneration_required",
@@ -12045,7 +12049,10 @@ class CreativeDomain:
         if not cover_only and not recipe.get("experiment_mode"):
             from .video_presentation import presentation
             recipe["caption_presentation"] = "reference_narration"
+            show_title = (recipe.get("presentation") or {}).get("showTitle", True)
             recipe["presentation"] = presentation(recipe.get("captions") or [], title)
+            if show_title is False:
+                recipe["presentation"]["showTitle"] = False
         return recipe
 
     def _motion_plans_for_recipes(self, task_id, payload, entries):

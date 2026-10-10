@@ -249,7 +249,7 @@ async function assertPreloadContract() {
   api.creative.saveBrandProfile({ name: "轻品牌", primaryColor: "#5B4BFF", accentColor: "#FFD84D", fontPreset: "microsoft_yahei", outroText: "关注我们", path: "C:\\bad" });
   api.creative.getPackagingCostEstimate({ candidateIds: ["generated_video_one"], coverMode: "ai_generate", path: "C:\\bad" });
   api.creative.packageGeneratedVideos({ candidateIds: ["generated_video_one"], packagingMode: "auto", brandProfileId: "brand_one", path: "C:\\bad" });
-  api.creative.repackageVideo({ candidateId: "generated_video_one", packagingMode: "preset", packagingPresetId: "knowledge_focus", brandProfileId: "brand_one", path: "C:\\bad" });
+  api.creative.repackageVideo({ candidateId: "generated_video_one", packagingMode: "preset", packagingPresetId: "knowledge_focus", brandProfileId: "brand_one", visualRenderer: { requestedEngine: "remotion", visualStyleId: "social_pop", requestedStyleVersion: 1, allowFallback: true, apiKey: "must-not-pass" }, path: "C:\\bad" });
   api.creative.regenerateCover({ candidateId: "generated_video_one", path: "C:\\bad" });
   api.creative.getProject({ projectId: "creative_project_one", path: "C:\\bad" });
   api.creative.listGenerated({ projectId: "creative_project_one", limit: 30, path: "C:\\bad" });
@@ -505,7 +505,7 @@ async function assertPreloadContract() {
     },
     {
       channel: "content-engine:repackage-video",
-      payload: { candidateId: "generated_video_one", packagingMode: "preset", packagingPresetId: "knowledge_focus", brandProfileId: "brand_one", coverMode: "ai_generate", reuseCover: true }
+      payload: { candidateId: "generated_video_one", packagingMode: "preset", packagingPresetId: "knowledge_focus", brandProfileId: "brand_one", coverMode: "ai_generate", reuseCover: true, visualRenderer: { requestedEngine: "remotion", visualStyleId: "social_pop", requestedStyleVersion: 1, allowFallback: true } }
     },
     {
       channel: "content-engine:regenerate-cover",

@@ -399,6 +399,7 @@ function normalizeMotionManifest(input) {
     ...(input.captionPresentation === "reference_narration" ? { captionPresentation: "reference_narration" } : {}),
     ...(["topic_fixed", "key_points"].includes(input.presentation?.templateId) ? { presentation: {
       templateId: input.presentation.templateId,
+      ...(input.presentation.showTitle === false ? { showTitle: false } : {}),
       topic: cleanText(input.presentation.topic, 240),
       points: (Array.isArray(input.presentation.points) ? input.presentation.points : []).slice(0, 6).map((point, index) => ({
         ...normalizeTimedItem(point, durationMs, index, "outline point"), text: cleanText(point.text, 240)

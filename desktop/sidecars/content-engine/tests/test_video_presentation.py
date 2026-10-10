@@ -215,6 +215,12 @@ class VideoPresentationTests(unittest.TestCase):
                 task = domain.import_base_video(request)
                 result = domain.run_task(task["task_id"])
                 self.assertEqual("completed", result["status"], result)
+                recipe = json.loads(database.connection.execute("SELECT recipe_json FROM generated_videos WHERE id = ?", (result["generated_video_id"],)).fetchone()[0])
+                self.assertFalse(recipe["presentation"]["showTitle"])
+                self.assertEqual("reference_narration", recipe["caption_presentation"])
+                props = HybridCreativeRenderer._public_props(recipe, {})
+                self.assertFalse(props["presentation"]["showTitle"])
+                self.assertTrue(props["captions"])
                 source.write_bytes(b"changed-video")
                 with self.assertRaises(ContentEngineError) as caught:
                     domain.import_base_video({**request, "source_id": "digital_human_" + uuid.uuid4().hex})

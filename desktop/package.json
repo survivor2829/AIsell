@@ -2,7 +2,7 @@
   "name": "xiaoxi-active-touch-desktop",
   "productName": "AI短视频获客",
   "description": "AI短视频获客 Windows 内容制作与微信客户运营助手",
-  "version": "1.1.69",
+  "version": "1.1.70",
   "componentBaseVersion": "1.1.58",
   "private": true,
   "main": "src/main/bootstrap.cjs",

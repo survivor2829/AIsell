@@ -95,7 +95,7 @@ export type MotionManifest = {
   };
   captions: TimedWord[];
   captionPresentation?: "reference_narration";
-  presentation?: { templateId: "topic_fixed" | "key_points"; topic: string; points: TimedWord[] };
+  presentation?: { templateId: "topic_fixed" | "key_points"; topic: string; points: TimedWord[]; showTitle?: boolean };
   events: MotionEvent[];
   focusRects: FocusRect[];
   protectedRects: ProtectedRect[];

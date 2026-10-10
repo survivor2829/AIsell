@@ -510,7 +510,7 @@ const VideoOutline: React.FC<{ manifest: MotionManifest; nowMs: number }> = ({ m
       return Math.max(metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight);
     });
   }, [text]);
-  if (!text) return null;
+  if (!text || presentation?.showTitle === false) return null;
   return <div style={{ position: "absolute", top: 140, left: 84, right: 84, fontFamily: narrationFontFamily,
     fontSize, fontWeight: 900, fontStyle: "italic", lineHeight: 1.2, color: "#fff", textAlign: "center",
     WebkitTextStroke: "5px #151318", paintOrder: "stroke fill", textShadow: "0 3px 2px #0008" }}>

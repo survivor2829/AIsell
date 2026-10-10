@@ -742,7 +742,8 @@ function createContentEngineApi(ipcRenderer) {
             ? {}
             : { brandProfileId: String(payload.brandProfileId || "") }),
           coverMode: String(payload?.coverMode || "ai_generate"),
-          reuseCover: true
+          reuseCover: true,
+          ...visualRendererPayload(payload?.visualRenderer)
         }
       ),
       preflightVisualComparison: (payload) => ipcRenderer.invoke(

@@ -310,6 +310,7 @@ type CreativeApi = {
     repackageVideo: (payload: {
       candidateId: string;
       packagingMode: PackagingMode;
+      visualRenderer?: VisualRendererRequest;
       packagingPresetId?: string;
       brandProfileId?: string;
       coverMode: CoverMode;
@@ -479,7 +480,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
   // 不把普通 FFmpeg 回退结果当成验收样片。
   const [highQualityPackaging, setHighQualityPackaging] = useState(true);
   const [generationCostEstimate, setGenerationCostEstimate] = useState<GenerationCostEstimate | null>(null);
-  const [visualStylePreference, setVisualStylePreference] = useState<VisualStylePreference>("auto_disperse");
+  const [visualStylePreference, setVisualStylePreference] = useState<VisualStylePreference>("social_pop");
   const [comparisonPreflight, setComparisonPreflight] = useState<ComparisonPreflightState>(EMPTY_COMPARISON_PREFLIGHT);
   const [comparisonSubmittedTaskId, setComparisonSubmittedTaskId] = useState("");
   const [unqualifiedComparisonGroups, setUnqualifiedComparisonGroups] = useState<string[]>([]);
@@ -1264,6 +1265,14 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
       const result = await api.creative.repackageVideo({
         candidateId: item.generatedVideoId,
         packagingMode,
+        ...(highQualityPackaging && packagingMode !== "none" ? {
+          visualRenderer: {
+            requestedEngine: "remotion" as const,
+            ...(visualStylePreference === "auto_disperse" ? {} : { visualStyleId: visualStylePreference }),
+            requestedStyleVersion: 1 as const,
+            allowFallback: true
+          }
+        } : {}),
         ...(packagingMode === "preset" ? { packagingPresetId } : {}),
         ...(brandProfileId ? { brandProfileId } : {}),
         coverMode: effectiveCoverMode
@@ -1690,7 +1699,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
                 <label className="workspace-field"><span>品牌包</span><select value={brandProfileId} onChange={(event) => setBrandProfileId(event.target.value)} disabled={Boolean(busy)}><option value="">中性模板</option>{brandProfiles.map((item) => <option value={item.brandProfileId} key={item.brandProfileId}>{item.name}</option>)}</select></label>
                 <label className="workspace-field"><span>封面</span><select value={effectiveCoverMode} onChange={(event) => setCoverMode(event.target.value as CoverMode)} disabled={Boolean(busy) || packagingMode === "none"}><option value="local_frame">实拍截帧（免费）</option><option value="ai_generate">AI 封面（付费）</option><option value="none">不生成封面</option></select></label>
                 <label className="workspace-field"><span>高质动态（内测）</span><select value={highQualityPackaging ? "on" : "off"} onChange={(event) => setHighQualityPackaging(event.target.value === "on")} disabled={Boolean(busy)}><option value="off">关闭</option><option value="on" disabled={packagingMode === "none"}>Remotion 优先（失败自动回退）</option></select></label>
-                {highQualityPackaging && <label className="workspace-field"><span>视觉风格（HOW）</span><select value={visualStylePreference} onChange={(event) => setVisualStylePreference(event.target.value as VisualStylePreference)} disabled={Boolean(busy)}><option value="auto_disperse">自动分散（默认）</option><option value="social_pop">社交弹跳（social_pop）</option><option value="neo_editorial">新编辑部（neo_editorial）</option><option value="tech_motion">科技动势（tech_motion）</option></select></label>}
+                {highQualityPackaging && <label className="workspace-field"><span>视觉风格（HOW）</span><select value={visualStylePreference} onChange={(event) => setVisualStylePreference(event.target.value as VisualStylePreference)} disabled={Boolean(busy)}><option value="auto_disperse">自动分散</option><option value="social_pop">参考风格（默认）</option><option value="neo_editorial">新编辑部（neo_editorial）</option><option value="tech_motion">科技动势（tech_motion）</option></select></label>}
               </div>
               <p className={`workspace-cost-note ${effectiveCoverMode === "ai_generate" ? "has-cost" : ""}`}>AI 封面预计调用：<b>{effectiveCoverMode === "ai_generate" ? (mode === "course" ? courseCount : mixCount) : 0}</b> 次 APIMart。每条成片生成 1 张 AI 背景，中文标题与 Logo 仍由本地准确叠加。</p>
               {generationCostEstimate && <p className="workspace-cost-note has-cost">云端预检：云端模型预计 <b>{generationCostEstimate.bailianCalls}</b> 个阶段调用，APIMart <b>{generationCostEstimate.estimatedImageCalls}</b> 次；已缓存的识别阶段不会重复调用。点击生成后会先弹出确认。</p>}

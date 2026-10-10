@@ -996,7 +996,8 @@ function createContentEngineSidecar(options = {}) {
           packaging_preset_id: optionsForPackaging.packagingPresetId,
           brand_profile_id: optionsForPackaging.brandProfileId,
           cover_mode: optionsForPackaging.coverMode,
-          reuse_cover: optionsForPackaging.reuseCover
+          reuse_cover: optionsForPackaging.reuseCover,
+          visual_renderer: optionsForPackaging.visualRenderer
         }
       }
     ),
