@@ -62,7 +62,8 @@ def test_numeric_captions_use_display_width_and_restore_source_qualifiers():
     assert "最大移动速度1.2m/s" in plan["screens"][1]["subtitle"]
     assert planner._validate_schema_v2(plan, source) == []
     plan["screens"][1]["subtitle"] = "字" * 33
-    assert any("最多32字" in w for w in planner._validate_schema_v2(plan, source))
+    assert planner._validate_schema_v2(plan, source) == []
+    assert any("文案偏长" in w for w in planner._planning_advisories(plan, source))
 
 
 def test_new_plan_allows_same_role_preserves_points_and_optional_specs():
@@ -83,7 +84,8 @@ def test_layout_percentages_are_not_performance_claims():
     plan["screens"][0]["prompt"] = "产品置于画面中央，占画面约55%，左右留白协调。" + plan["screens"][0]["prompt"]
     assert planner._validate_schema_v2(plan, TEXT) == []
     plan["screens"][0]["prompt"] += "清洁效率提升55%，除菌率99%，ISO 9001认证。"
-    warnings = planner._validate_schema_v2(plan, TEXT)
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    warnings = planner._planning_advisories(plan, TEXT)
     assert any("55%" in warning and "99%" in warning and "ISO 9001" in warning for warning in warnings)
 
 
@@ -91,6 +93,19 @@ def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
     prompt = "画面上方约25%区域放标题，顶部约15%区域留空，留白约8%，手机竖屏3:4，留白边距约8%，四周留白边距约8%，页边距约8%，清洁效率提升28%。"
     assert planner._find_unbacked_commercial_claims(prompt, TEXT, allow_layout=True) == ["28%"]
     assert set(planner._find_unbacked_commercial_claims(prompt, TEXT)) == {"25%", "15%", "8%", "28%"}
+
+
+def test_creative_directions_do_not_block_valid_structured_product_facts():
+    plan = json.loads(response(sample(), fresh=True)['choices'][0]['message']['content'])
+    plan['screens'][0]['visual_brief']['layout'] = '标题在上方约20%，产品小图在右上角占约12%'
+    plan['screens'][0]['prompt'] = '右上角放产品小图，占约12%。' + GUARD
+    # Word counts, optional guard repetition and composition heuristics are
+    # review advice; only executable structure and actual facts block purchase.
+    plan['style_dna']['lighting'] = '柔光'
+    assert planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True) == []
+    assert planner._planning_advisories(plan, TEXT)
+    plan['screens'][1]['title'] = '除菌率99%'
+    assert any('标题/解释' in w for w in planner._validate_schema_v2(plan, TEXT))
 
 
 @pytest.mark.parametrize('source,prompt,backed', [
@@ -146,7 +161,8 @@ def test_fresh_plans_require_visual_strategy_and_primary_demonstration_first():
     assert planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True) == []
     for screen in plan["screens"]:
         screen["visual_brief"]["product_presentation"] = "whole_product"
-    assert any("全部为整机" in w for w in planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True))
+    assert planner._validate_schema_v2(plan, TEXT, require_visual_strategy=True) == []
+    assert any("全部采用整机" in w for w in planner._planning_advisories(plan, TEXT))
     # Saved paid plans predate presentation choices: do not invalidate or rebuy them.
     assert planner._validate_schema_v2(plan, TEXT) == []
 
@@ -258,11 +274,12 @@ def test_every_new_image_gets_original_reference_and_shared_style(tmp_path):
     assert all(images.startswith("data:image/") for _, images in calls)
     assert all("Large bold" in prompt and "Real office surfaces" in prompt for prompt, _ in calls)
     assert all("grayscale" not in prompt for prompt, _ in calls)
+    assert all('FINAL FACT AND TEXT AUTHORITY' in prompt for prompt, _ in calls)
     with pytest.raises(ValueError, match="参考图缺失"):
         generator.generate_v2(sample(), api_key="fake", api_call_fn=image_call)
 
 
-def test_visual_briefs_reject_repeated_composition_before_image_charges():
+def test_repeated_composition_is_advisory_but_missing_brief_is_structural():
     plan = sample()
     plan["visual_strategy_version"] = "selling-point-evidence-v1"
     for i, screen in enumerate(plan["screens"]):
@@ -273,7 +290,8 @@ def test_visual_briefs_reject_repeated_composition_before_image_charges():
         }
     assert planner._validate_schema_v2(plan, TEXT) == []
     plan["screens"][2]["visual_brief"] = copy.deepcopy(plan["screens"][1]["visual_brief"])
-    assert any("重复构图" in w for w in planner._validate_schema_v2(plan, TEXT))
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    assert any("构图重复" in w for w in planner._planning_advisories(plan, TEXT))
     plan["screens"][2]["visual_brief"] = {}
     assert any("visual_brief" in w for w in planner._validate_schema_v2(plan, TEXT))
     # Saved plans remain readable/replayable under their original contract.

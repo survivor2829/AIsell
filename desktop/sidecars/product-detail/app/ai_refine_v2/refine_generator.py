@@ -840,6 +840,19 @@ def _generate_one_block_v2(
         print(f"[refine] block={bid} vt={vt} mode=NO_IMAGE prompt_only "
               f"anchor_present={bool(color_anchor)}")
 
+    if block.get("planning_version") == PLANNING_VERSION:
+        effective_prompt += (
+            "\nFINAL FACT AND TEXT AUTHORITY: Creative directions above describe composition only. "
+            "Percentages in framing/layout describe image area, never product performance. "
+            "Print only the supplied structured title, subtitle and specification values; "
+            "do not copy extra headlines, numbers, certifications or guarantees from creative directions. "
+            "Any factual demonstration must remain within the source evidence. "
+            "If directions conflict, the following verified content wins: "
+            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"),
+                          "specifications": block.get("specifications") or [],
+                          "source_evidence": block.get("evidence") or []}, ensure_ascii=False)
+        )
+
     last_err = None
     attempts = 0
     while attempts <= max_retries:

@@ -710,7 +710,7 @@ def _validate_schema_v2(
                 w.append(f"screens[{i}] 缺合法 product_presentation；先决定卖点如何配图，不能默认整机")
             if screen.get("selling_point_id"):
                 presentations.append(presentation)
-        if len(presentations) > 1 and all(p == "whole_product" for p in presentations):
+        if not product_driven and len(presentations) > 1 and all(p == "whole_product" for p in presentations):
             w.append("卖点屏全部为整机主视觉；须按实际证据设计作业、局部、空间或图解，不能只换背景")
     min_screens = 1 if product_driven else _MIN_SCREEN_COUNT_V2
 
@@ -749,7 +749,7 @@ def _validate_schema_v2(
             v = dna.get(k)
             if not v or not isinstance(v, str):
                 w.append(f"style_dna.{k} 缺失或非字符串")
-            elif len(v.strip()) < min_len:
+            elif not product_driven and len(v.strip()) < min_len:
                 w.append(
                     f"style_dna.{k} 过短 ({len(v.strip())} < {min_len} 字符), 疑似平庸描述"
                 )
@@ -788,7 +788,7 @@ def _validate_schema_v2(
             p = s.get("prompt")
             if not p or not isinstance(p, str):
                 w.append(f"screens[{i}].prompt 缺失或非字符串")
-            elif len(p) < _MIN_PROMPT_LEN_V2:
+            elif not product_driven and len(p) < _MIN_PROMPT_LEN_V2:
                 w.append(
                     f"screens[{i}].prompt 过短 ({len(p)} < {_MIN_PROMPT_LEN_V2} 字符), "
                     "疑非导演视角"
@@ -812,7 +812,7 @@ def _validate_schema_v2(
                     for part in _NEGATIVE_GUARD_PARTS_V2
                     if part not in prompt_tail
                 ]
-                if missing_negative_parts:
+                if missing_negative_parts and not product_driven:
                     w.append(
                         f"screens[{i}].prompt 缺完整 negative guard "
                         f"({len(missing_negative_parts)} 段未出现在末尾)"
@@ -831,7 +831,7 @@ def _validate_schema_v2(
                         f"screens[{i}].prompt 缺 role={role!r} 对应 layout 关键词"
                     )
 
-                if isinstance(product_text, str):
+                if isinstance(product_text, str) and not product_driven:
                     unbacked_claims = _find_unbacked_commercial_claims(
                         p, product_text, allow_layout=True
                     )
@@ -977,7 +977,6 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
     if not screens or not isinstance(screens[0], dict) or screens[0].get("role") != "hero":
         warnings.append("第一张必须为封面 hero")
     refs = []
-    visual_layouts = set()
     require_visual_brief = parsed.get("visual_strategy_version") == "selling-point-evidence-v1"
     for i, screen in enumerate(screens):
         if not isinstance(screen, dict):
@@ -989,15 +988,6 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
                 isinstance(brief.get(key), str) and brief[key].strip() for key in fields
             ):
                 warnings.append(f"screens[{i}].visual_brief 缺具体场景、景别、动作、卖点画面证据或布局")
-            else:
-                signature = tuple(_normalize_claim_text(brief[key]) for key in ("framing", "layout"))
-                if signature in visual_layouts:
-                    warnings.append(f"screens[{i}] 重复构图：不能只换标题或背景，应按卖点设计画面")
-                visual_layouts.add(signature)
-                if product_text is not None and _find_unbacked_commercial_claims(
-                    " ".join(brief[key] for key in fields), product_text, allow_layout=True
-                ):
-                    warnings.append(f"screens[{i}].visual_brief 含无依据承诺")
         role, ref = screen.get("role"), screen.get("selling_point_id")
         if role in {"hero", "spec_table"}:
             if ref is not None:
@@ -1016,8 +1006,6 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
                 warnings.append(f"screens[{i}] 必须使用对应卖点的原文依据")
         if not evidence_ok(screen.get("evidence"), cover=role == "hero"):
             warnings.append(f"screens[{i}] 缺产品原文逐字依据")
-        if _display_width(str(screen.get("title") or "")) > 32 or _display_width(str(screen.get("subtitle") or "")) > 64:
-            warnings.append(f"screens[{i}] 标题最多16字，解释最多32字")
         if product_text is not None:
             visible = f"{screen.get('title', '')} {screen.get('subtitle', '')}"
             if _find_unbacked_commercial_claims(visible, product_text):
@@ -1039,6 +1027,41 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
     if not str((parsed.get("style_dna") or {}).get("rationale") or "").strip():
         warnings.append("style_dna.rationale 必须解释产品与风格的关系")
     return warnings
+
+
+def _planning_advisories(parsed: dict, product_text: str) -> list[str]:
+    """Creative heuristics inform review; they cannot establish product facts.
+
+    Facts are validated in the structured captions/specifications/evidence.
+    Rechecking unconstrained direction as facts caused repeated paid-plan
+    failures for ordinary composition percentages and nearby time labels.
+    """
+    notes = []
+    layouts = set()
+    presentations = []
+    for i, screen in enumerate(parsed.get("screens") or []):
+        if not isinstance(screen, dict):
+            continue
+        brief = screen.get("visual_brief") or {}
+        if not isinstance(brief, dict):
+            continue
+        signature = tuple(_normalize_claim_text(str(brief.get(k) or "")) for k in ("framing", "layout"))
+        if all(signature):
+            if signature in layouts:
+                notes.append(f"screens[{i}] 构图重复，建议成图复核")
+            layouts.add(signature)
+        if screen.get("selling_point_id"):
+            presentations.append(brief.get("product_presentation"))
+        if _display_width(str(screen.get("title") or "")) > 32 or _display_width(str(screen.get("subtitle") or "")) > 64:
+            notes.append(f"screens[{i}] 文案偏长，建议复核手机可读性")
+        for field, text in (("prompt", screen.get("prompt") or ""),
+                            ("visual_brief", " ".join(str(v) for v in brief.values()))):
+            claims = _find_unbacked_commercial_claims(text, product_text, allow_layout=True)
+            if claims:
+                notes.append(f"screens[{i}].{field} 创作说明需复核，结构化文案为准: {claims}")
+    if len(presentations) > 1 and all(p == "whole_product" for p in presentations):
+        notes.append("卖点屏全部采用整机，建议复核画面变化")
+    return notes
 
 
 def _repair_duplicate_roles_v2(parsed: dict) -> dict:
@@ -1212,6 +1235,7 @@ def plan_v2(
                 raise PlannerError(last_err)
 
             parsed["input_evidence"] = {"product_text": clean_product_text, "product_title": clean_product_title, "color_sample": color_sample}
+            parsed["planning_advisories"] = _planning_advisories(parsed, clean_product_text)
             return parsed
 
         except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError,
