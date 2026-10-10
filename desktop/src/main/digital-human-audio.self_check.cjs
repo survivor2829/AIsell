@@ -29,6 +29,7 @@ async function main() {
   assert.deepEqual(alignedNumbers[0].words.map(word => [word.start_time, word.end_time]), numericSpeech[0].words.map(word => [word.start_time, word.end_time]));
   assert.equal(JSON.stringify(numericSpeech), preserved, 'Retain the original recognition receipt.');
   assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC2 Pro，十五升，五百毫米，三到四小时。', 15), /不一致/);
+  assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC01 Pro，十五升，五百毫米，三到四小时。', 15), /不一致/);
   assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC1 Pro，五十升，五百毫米，三到四小时。', 15), /不一致/);
   const exact = '先看地面是否适合使用清洁机器人，再看现场需要清理什么污物，把现场情况发来一起安排合适的清洁方案。';
   assert.throws(() => audio.verifyTranscript([{ text: exact.replace('地面', '地棉'), start_time: 0, end_time: 14500 }], exact, 15), /不一致/, 'Even one substitution must stop before paid video; packaging needs exact anchors.');

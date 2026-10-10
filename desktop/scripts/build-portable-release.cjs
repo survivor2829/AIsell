@@ -90,19 +90,6 @@ function sourceAllowed(source, edition) {
   return true;
 }
 
-function carryAcceptedRuntimeDescriptor(descriptor, buildCommit) {
-  if (!descriptor?.reuseReceipt) throw new Error("Accepted reusable runtime is missing its provenance receipt");
-  return {
-    ...descriptor,
-    buildCommit,
-    reuseReceipt: {
-      ...descriptor.reuseReceipt,
-      buildCommit,
-      verifiedAt: new Date().toISOString()
-    }
-  };
-}
-
 function describeBaseStabilizedRuntime(descriptor, releaseTarget, stabilizedFiles) {
   const prefix = `${descriptor.path.replace(/\\/gu, "/").replace(/\/$/u, "")}/`;
   const files = stabilizedFiles.filter((file) => file.startsWith(prefix));
@@ -315,31 +302,12 @@ function buildPortableStaging(edition, paths, sourceState) {
     buildCommit: sourceState.commit,
     sourceDirty: false
   }, null, 2)}\n`, "utf8");
-  let acceptedRuntimeManifest = null;
-  if (paths.componentsOnly && sourceState.componentBaseRoot) {
-    const manifestFile = path.join(sourceState.componentBaseRoot, "版本清单.json");
-    if (fs.existsSync(manifestFile)) {
-      const accepted = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
-      const productDetailRoot = path.join(sourceState.componentBaseRoot, "resources", "product-detail");
-      const contentEngineRoot = path.join(sourceState.componentBaseRoot, "resources", "content-engine");
-      const remotionPackagingRoot = path.join(sourceState.componentBaseRoot, "remotion-packaging");
-      if (accepted.productDetailSidecar?.desktopSourceTreeSha256 === sourceState.productDetailRuntime.currentDesktopSourceTreeSha256
-        && accepted.contentEngineSidecar?.sourceTreeSha256 === sourceState.contentEngineRuntime.currentSourceTreeSha256
-        && accepted.remotionRuntime?.manifestSha256 === sourceState.remotionRuntime.manifestSha256
-        && treeSha256(productDetailRoot) === accepted.productDetailSidecar.treeSha256
-        && treeSha256(contentEngineRoot) === accepted.contentEngineSidecar.treeSha256) {
-        fs.cpSync(productDetailRoot, path.join(target, "resources", "product-detail"), { recursive: true, errorOnExist: true, force: false });
-        fs.cpSync(contentEngineRoot, path.join(target, "resources", "content-engine"), { recursive: true, errorOnExist: true, force: false });
-        fs.cpSync(remotionPackagingRoot, path.join(target, "remotion-packaging"), { recursive: true, errorOnExist: true, force: false });
-        acceptedRuntimeManifest = accepted;
-      }
-    }
-  }
-  if (!acceptedRuntimeManifest) {
-    copyProductDetailRuntime(sourceState.productDetailRuntime, target);
-    copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
-  }
-  const remotionRuntime = acceptedRuntimeManifest?.remotionRuntime || copyRemotionRuntime(sourceState.remotionRuntime, target);
+  // Runtime-cache resolution already binds current source, original build and
+  // a verified reuse receipt. Copy through that single provenance path rather
+  // than interpreting an accepted application's descriptor as a cache receipt.
+  copyProductDetailRuntime(sourceState.productDetailRuntime, target);
+  copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
+  const remotionRuntime = copyRemotionRuntime(sourceState.remotionRuntime, target);
   const stabilizedBaseFiles = edition === "test" && paths.componentsOnly && sourceState.componentBaseRoot
     ? require("./component-base-input.cjs").stabilizeEquivalentBaseFiles(target, sourceState.componentBaseRoot)
     : [];
@@ -350,18 +318,14 @@ function buildPortableStaging(edition, paths, sourceState) {
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
-  let contentEngineSidecar = acceptedRuntimeManifest
-    ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.contentEngineSidecar, sourceState.commit)
-    : createContentEngineReleaseDescriptor(
+  let contentEngineSidecar = createContentEngineReleaseDescriptor(
     sourceState.contentEngineRuntime,
     sourceState.commit,
     sourceState.artifactType
   );
-  if (!acceptedRuntimeManifest) contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
+  contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
   contentEngineSidecar = describeBaseStabilizedRuntime(contentEngineSidecar, target, stabilizedBaseFiles);
-  const productDetailSidecar = describeBaseStabilizedRuntime(acceptedRuntimeManifest
-    ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.productDetailSidecar, sourceState.commit)
-    : createReleaseDescriptor(sourceState.productDetailRuntime, sourceState.commit), target, stabilizedBaseFiles);
+  const productDetailSidecar = describeBaseStabilizedRuntime(createReleaseDescriptor(sourceState.productDetailRuntime, sourceState.commit), target, stabilizedBaseFiles);
   const manifest = {
     product: PRODUCT_NAME,
     edition,
