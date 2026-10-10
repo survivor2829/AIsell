@@ -3186,6 +3186,7 @@ class HybridCreativeRenderer:
     @classmethod
     def _public_props(cls, recipe, config):
         duration = cls._duration_ms(recipe)
+        base = int(recipe.get("voice_segment", {}).get("start_ms") or 0)
         packaging = recipe.get("packaging") or {}
         semantic_preset = str(
             packaging.get("semantic_preset_id") or packaging.get("preset_id")
@@ -3331,7 +3332,12 @@ class HybridCreativeRenderer:
                 "model": str(director.get("model") or "")[:64] or None,
             },
             "captions": captions,
-            **({"presentation": recipe["presentation"]} if recipe.get("presentation") else {}),
+            **({"presentation": {**recipe["presentation"], "points": [
+                {**point,
+                 "startMs": max(0, int(point["startMs"]) - base),
+                 "endMs": min(duration, int(point["endMs"]) - base)}
+                for point in recipe["presentation"].get("points", [])]}}
+               if recipe.get("presentation") else {}),
             **({"captionPresentation": "reference_narration"}
                if recipe.get("caption_presentation") == "reference_narration" else {}),
             "events": events,

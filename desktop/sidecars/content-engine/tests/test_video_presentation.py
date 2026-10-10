@@ -28,6 +28,10 @@ class VideoPresentationTests(unittest.TestCase):
         self.assertEqual([(0, 400), (400, 800), (900, 1300), (1400, 1800)],
                          [(word['startMs'], word['endMs']) for cue in cues for word in cue['words']])
         self.assertNotIn('start_ms', captions[0]['words'][0])
+        props = HybridCreativeRenderer._public_props(recipe, {})
+        self.assertEqual((0, 1800), (props['presentation']['points'][0]['startMs'],
+                                    props['presentation']['points'][0]['endMs']))
+        self.assertEqual(1000, recipe['presentation']['points'][0]['startMs'])
 
     def test_narration_opener_uses_complete_quoted_heading(self):
         title = '有人问：「学完了觉得没用怎么办」——这问题我每期都答，今天再答一遍。'
