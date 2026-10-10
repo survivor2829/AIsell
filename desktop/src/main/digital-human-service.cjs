@@ -141,7 +141,7 @@ function createDigitalHumanService(options = {}) {
   }
   const videoOperation = (segment) => segment.videoOperation || `wan_${segment.id}`;
   function remainingStages(task) {
-    if (task.narrationPolicy === 'original_script' && task.budgetPolicy === 'quoted_production' && !task.productionBudgetFrozenAt && task.budgetPhase !== 'production') {
+    if (task.narrationPolicy === 'original_script' && !task.productionBudgetFrozenAt && task.budgetPhase !== 'production') {
       return [...(task.speechChunks || []).map((s) => `tts_${s.id}`), 'asr'];
     }
     return ['preview', ...(task.speechChunks || task.segments || []).map((s) => `tts_${s.id}`),
@@ -151,7 +151,7 @@ function createDigitalHumanService(options = {}) {
     const entries = Object.values(task.operations || {}), reservedCny = round(entries.reduce((sum, op) => sum + (op.rejected ? 0 : op.reserveCny || 0), 0));
     const ready = validBailianPrices(task.prices) && validPrices(task.previewPrices);
     const future = ready ? remainingStages(task).filter((name) => !task.operations?.[name]).reduce((sum, name) => sum + costFor(task, name), 0) : 0;
-    const preparationOnly = task.narrationPolicy === 'original_script' && task.budgetPolicy === 'quoted_production' && !task.productionBudgetFrozenAt && task.budgetPhase !== 'production';
+    const preparationOnly = task.narrationPolicy === 'original_script' && !task.productionBudgetFrozenAt && task.budgetPhase !== 'production';
     const retryReserve = ready && !preparationOnly && !task.videoRetryCount ? round(Math.max(...(task.segments?.length ? task.segments.map((s) => s.generationSeconds || s.seconds) : [Math.min(15, task.durationSeconds)])) * task.prices.rates['720p'].audio) : 0;
     return { ready, budgetCny: task.budgetCny, estimatedCny: ready ? round(reservedCny + future) : null,
       maximumCny: ready ? round(reservedCny + future + retryReserve) : null, pendingCny: reservedCny,
@@ -585,7 +585,7 @@ function createDigitalHumanService(options = {}) {
     if (script.length > (version === 1 ? 160 : 1800)) throw fail('digital_human_script_required', '口播文案过长，请精简后再制作。');
     if (version === 2 && input.budgetCny !== undefined && (!Number.isFinite(input.budgetCny) || input.budgetCny < 0 || input.budgetCny > 10000)) throw fail('digital_human_budget_required', '请设置有效的费用上限（最高10000元）；0元仅保存草稿。');
     if (previous && previous.status !== 'draft') throw fail('digital_human_draft_locked', '这条样片已开始制作，请调整后新建。');
-    const task = { ...input, script, title: String(input.title || script.slice(0, 20) || '未命名样片').trim().slice(0, 80),
+    const task = { ...input, script, title: String(input.title || (previous?.script === script ? previous.title : '') || script.split(/[，。！？\n]/u)[0] || '未命名样片').trim().slice(0, 80),
       videoResolution: previous?.videoResolution || '720p', directorSkillVersion: DIRECTOR_SKILL_VERSION,
       ...(version === 2 ? { narrationPolicy: previous?.narrationPolicy || (!previous ? 'original_script' : undefined) } : {}),
       ...(version === 2 && input.voiceStyle === 'workbench' ? { musicPolicy: 'workbench' } : {}),

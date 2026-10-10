@@ -106,7 +106,8 @@ async function main() {
     await assert.rejects(service.preview(outdatedWorker.id), { code: 'digital_human_audio_upload_unavailable' });
     assert.equal(posts.length, 0, 'An old installed component must fail before paid TTS, not after preparing a voice.');
     uploadReady = true;
-    const short = service.create({ ...draft, durationSeconds: 15, script: '配音太短。' }); audioSeconds = 10;
+    const short = service.create({ ...draft, durationSeconds: 15, script: '配音太短。', budgetCny: 5, title: '完整短标题' }); audioSeconds = 10;
+    assert.equal(service.create({ ...draft, id: short.id, durationSeconds: 15, script: '配音太短。', budgetCny: 5 }).title, '完整短标题');
     await service.preview(short.id); await service.refresh(short.id);
     assert.equal(service.get(short.id).status, 'preview_ready', 'A short original script must proceed at its real duration, without padding to 15 seconds.');
     assert.equal(service.get(short.id).actualDurationSeconds, 10);
