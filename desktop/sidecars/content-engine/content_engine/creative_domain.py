@@ -3209,6 +3209,10 @@ class CreativeDomain:
             )
         public_plan = json.loads(self._json(current_plan))
         private_state = json.loads(self._json(current_private))
+        if layer in {"voice", "music"}:
+            private_state["reuse_cover_generated_video_id"] = current["generated_video_id"] or private_state.get("reuse_cover_generated_video_id") or ""
+        else:
+            private_state.pop("reuse_cover_generated_video_id", None)
         next_voice_persona_id = current["selected_voice_persona_id"]
         next_music_track_id = current["selected_music_track_id"]
         for field in ("qualityReport", "generatedVideoId", "attention"):
@@ -6349,6 +6353,10 @@ class CreativeDomain:
                 run["title"],
                 private_state.get("video_template") or "topic_fixed")
             recipe["packaging"]["cover"]["auto_generate"] = True
+        if "reuse_cover_generated_video_id" in private_state:
+            source_id = private_state["reuse_cover_generated_video_id"]
+            recipe["packaging"]["cover"] = ({"mode": "reuse", "status": "reused", "source_generated_video_id": source_id}
+                if source_id else {"mode": "local_frame", "status": "pending"})
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
         recipe["skeleton_id"] = self._skeleton_id(recipe)
@@ -11089,14 +11097,17 @@ class CreativeDomain:
             rendered = self.renderer.render(**render_args)
             cover = (recipe.get("packaging") or {}).get("cover") or {}
             if cover.get("mode") == "reuse":
-                source_id = str(cover.get("source_generated_video_id") or "")
-                source_row = self._generated_row(source_id)
-                source_thumbnail = self._validate_generated_path(
-                    source_row["thumbnail_path"]
-                )
-                target_thumbnail = Path(rendered["thumbnail_path"]).resolve(strict=True)
-                if source_thumbnail != target_thumbnail:
-                    shutil.copyfile(source_thumbnail, target_thumbnail)
+                try:
+                    source_row = self._generated_row(str(cover.get("source_generated_video_id") or ""))
+                    source_thumbnail = self._validate_generated_path(source_row["thumbnail_path"])
+                    target_thumbnail = Path(rendered["thumbnail_path"]).resolve(strict=True)
+                    if source_thumbnail != target_thumbnail:
+                        shutil.copyfile(source_thumbnail, target_thumbnail)
+                except (ContentEngineError, OSError):
+                    # The renderer already produced a local cover. A missing old
+                    # cover must not purchase another one or invalidate the MP4.
+                    cover.update(mode="local_frame", status="pending")
+                cover.pop("auto_generate", None)
             video_path = self._validate_generated_path(rendered["video_path"])
             thumbnail_path = self._validate_generated_path(rendered["thumbnail_path"])
             if cover.get("mode") == "local_frame":
@@ -11151,7 +11162,7 @@ class CreativeDomain:
             )
             # Cover has its own task and failure state. A finished MP4 stays
             # completed even when analysis, provider or local cover composition fails.
-            if cover.get("auto_generate"):
+            if cover.get("auto_generate") and cover.get("mode") not in {"reuse", "none"}:
                 try:
                     cover_task = self.regenerate_cover(video_id)
                     self.run_task(cover_task["task_id"])
