@@ -10,10 +10,44 @@ import http.client
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 from service import Handler, Server, Store, validate_report, safe_token
 from feedback import validate_feedback
 
 class ServiceTest(unittest.TestCase):
+    def test_bailian_async_headers_survive_public_maintenance_forwarder(self):
+        received = []
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                received.append(dict((k.lower(), v) for k, v in self.headers.items()))
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"output":{"task_id":"fixture"}}')
+            def log_message(self, *args):
+                pass
+        upstream = HTTPServer(('127.0.0.1', 0), Upstream)
+        public = Server(('127.0.0.1', 0), Handler, None)
+        for server in (upstream, public):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with patch('service.PROVIDER_GATEWAY_ORIGIN', f'http://127.0.0.1:{upstream.server_port}'):
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{public.server_port}/v1/provider-gateway/bailian/api/v1/services/aigc/video-generation/video-synthesis',
+                    b'{}', headers={'Content-Type': 'application/json', 'x-dashscope-async': 'enable',
+                        'X-DashScope-OssResourceResolve': 'enable', 'X-Unrelated': 'drop'})
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(json.load(response)['output']['task_id'], 'fixture')
+            self.assertEqual(received[0]['x-dashscope-async'], 'enable')
+            self.assertEqual(received[0]['x-dashscope-ossresourceresolve'], 'enable')
+            self.assertNotIn('x-unrelated', received[0])
+        finally:
+            for server in (public, upstream):
+                server.shutdown()
+                server.server_close()
+
     def test_input_diagnostics_survive_report_and_feedback_without_raw_input(self):
         details = {"input_phase": "search_query_input", "expected_input_tick": 4294967295,
                    "current_input_tick": 4294967296, "required_idle_ms": 450,

@@ -24,6 +24,16 @@ async function main() {
   assert.throws(() => audio.verifyTranscript([{ text: exact.replace('地面', '地棉'), start_time: 0, end_time: 14500 }], exact, 15), /不一致/, 'Even one substitution must stop before paid video; packaging needs exact anchors.');
   assert.throws(() => audio.verifyTranscript([{ text: 'CC1 Pro', start_time: 0, end_time: 14500 }], 'ＣＣ1 Pro', 15), /不一致/, 'Packaging does not normalize compatibility characters.');
   assert.equal(audio.verifyTranscript([{ text: 'CC1 PRO，地面清洁。', start_time: 0, end_time: 14500 }], 'cc1 pro：地面清洁！✨', 15).editDistance, 0);
+  const sameSpeech = [{ text: '普度 CC1PRO洗扫推尘一体。', start_time: 200, end_time: 3240,
+    words: [{ text: '普度', start_time: 200, end_time: 480 }, { text: ' ', start_time: -1, end_time: -1 },
+      { text: 'CC1PRO洗扫推尘一体。', start_time: 720, end_time: 3240 }] }];
+  const aligned = audio.verifyTranscript(sameSpeech, '普渡CC1 Pro，洗扫推尘一体。', 3.36);
+  assert.equal(aligned.phoneticCorrections, 1);
+  assert.equal(aligned.alignedUtterances[0].words[0].text, '普渡');
+  assert.equal(aligned.alignedUtterances[0].words[0].end_time, 480);
+  assert.equal(aligned.alignedUtterances[0].words.length, 2);
+  assert.equal(sameSpeech[0].text, '普度 CC1PRO洗扫推尘一体。', 'Original supplier receipt stays untouched');
+  assert.throws(() => audio.verifyTranscript([{ text: '普度CC2 Pro', start_time: 0, end_time: 3000 }], '普渡CC1 Pro', 3.3), /不一致/);
   assert.throws(() => audio.verifyTranscript([{ text: '先看地面', start_time: 0, end_time: 8000 }, { text: '再看污物', start_time: 7900, end_time: 14500 }], '先看地面，再看污物。', 15), /重叠/);
   const pcm = Buffer.alloc(15 * 16000 * 2);
   for (let i = 1600; i < 14.5 * 16000; i += 1) pcm.writeInt16LE(Math.round(Math.sin(i / 15) * 10000), i * 2);

@@ -262,7 +262,9 @@ function createDigitalHumanService(options = {}) {
       { 'X-Api-Resource-Id': 'volc.bigasr.auc_turbo', 'X-Api-Sequence': '-1' });
     const result = response.result || response.data?.result || response.data || response;
     task.preparedUtterances = result.utterances; save(task);
-    task.audioVerification = audioMedia.verifyTranscript(task.preparedUtterances, task.script, seconds);
+    const { alignedUtterances, ...verification } = audioMedia.verifyTranscript(task.preparedUtterances, task.script, seconds);
+    task.audioVerification = verification;
+    if (alignedUtterances) task.preparedUtterances = alignedUtterances;
     buildCaptions({ utterances: task.preparedUtterances, timeUnit: 'ms', durationSeconds: seconds }); save(task);
   }
   async function prepareOriginalSpeech(task) {

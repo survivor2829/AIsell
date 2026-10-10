@@ -286,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(body) != length:
                 return self.reply(400, {"error": "invalid_body"})
         headers = {}
-        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return", "X-Xiaoxi-Operation-Id"):
+        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return", "X-Xiaoxi-Operation-Id", "X-DashScope-Async", "X-DashScope-OssResourceResolve"):
             value = self.headers.get(name)
             if value and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
                 headers[name] = value
