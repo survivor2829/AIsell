@@ -93,6 +93,23 @@ def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
     assert set(planner._find_unbacked_commercial_claims(prompt, TEXT)) == {"25%", "15%", "8%", "28%"}
 
 
+@pytest.mark.parametrize('source,prompt,backed', [
+    ('清洁效率提升18%', '清洁效率提升8%', False),
+    ('续航24小时', '续航4小时', False),
+    ('续航4-8小时', '续航8小时', False),
+    ('续航4-8小时', '续航3-8小时', False),
+    ('续航4-8小时', '续航4～8小时', True),
+    ('续航4-8小时', '续航4小时到8小时', True),
+    ('清洁效率提升18%-28%', '清洁效率提升28%', False),
+    ('清洁效率提升18%-28%', '清洁效率提升18％至28％', True),
+    ('续航3.5小时', '续航35小时', False),
+    ('续航4-8小时，充电3小时', '续航4-8小时 充电3小时', True),
+    ('续航4-8小时，充电3小时', '充电8小时', False),
+])
+def test_numeric_evidence_matches_whole_quantity_and_range(source, prompt, backed):
+    assert (not planner._find_unbacked_commercial_claims(prompt, source)) == backed
+
+
 def test_negative_logo_and_graphic_occupancy_are_not_commercial_claims():
     plan = sample()
     plan["screens"][0]["prompt"] += "不添加品牌logo。Do not add a logo."

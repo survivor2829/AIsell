@@ -491,9 +491,12 @@ def _has_positive_logo_instruction(prompt: str) -> bool:
             return True
     return False
 
+_NUMERIC_CLAIM_UNIT = r"(?:售后)?网点|万台|万家|个月|小时|分钟|年|月|天|%|％|家|处|客户|企业|用户|台"
 _NUMERIC_COMMERCIAL_CLAIM_RE = re.compile(
-    r"(?:全国\s*)?(?P<value>\d+(?:\.\d+)?)\s*(?P<plus>\+?)\s*"
-    r"(?P<unit>(?:售后)?网点|万台|万家|个月|小时|分钟|年|月|天|%|％|家|处|客户|企业|用户|台)"
+    r"(?:全国\s*)?(?P<value>\d+(?:\.\d+)?)"
+    r"(?:\s*(?P<range_unit>" + _NUMERIC_CLAIM_UNIT + r")?\s*[-–—~～至到]\s*"
+    r"(?P<end_value>\d+(?:\.\d+)?))?\s*(?P<plus>\+?)\s*"
+    r"(?P<unit>" + _NUMERIC_CLAIM_UNIT + r")"
     r"(?:品牌|质保|保修|保证|响应|上门|续航|作业|好评|售后)?",
     re.IGNORECASE,
 )
@@ -505,6 +508,7 @@ _CERTIFICATION_CLAIM_RE = re.compile(
 
 _NUMERIC_CLAIM_SEMANTICS = (
     ("endurance", ("续航",)),
+    ("charging", ("充电",)),
     ("warranty", ("质保", "保修")),
     ("response", ("响应",)),
     ("onsite_service", ("上门",)),
@@ -573,6 +577,7 @@ def _claim_semantic_category(text: str, match: re.Match) -> str:
     ]
     right = min(right_candidates, default=len(text))
     context = text[left:right]
+    quantities = list(_NUMERIC_COMMERCIAL_CLAIM_RE.finditer(text, left, right))
 
     nearest: Optional[tuple[int, int, str]] = None
     for category_index, (category, keywords) in enumerate(_NUMERIC_CLAIM_SEMANTICS):
@@ -586,6 +591,13 @@ def _claim_semantic_category(text: str, match: re.Match) -> str:
                     keyword_start - match.end(),
                     0,
                 )
+                # A label belonging to another quantity must not leak across
+                # the sentence, e.g. "续航4-8小时 充电3小时".
+                if any(max(quantity.start() - keyword_end,
+                           keyword_start - quantity.end(), 0) < distance
+                       for quantity in quantities):
+                    offset = context.find(keyword, offset + 1)
+                    continue
                 candidate = (distance, category_index, category)
                 if nearest is None or candidate < nearest:
                     nearest = candidate
@@ -606,13 +618,21 @@ def _claim_semantic_category(text: str, match: re.Match) -> str:
 
 
 def _numeric_claim_key(text: str, match: re.Match) -> tuple[str, str, bool, str]:
-    whole, separator, fraction = match.group("value").partition(".")
-    whole = whole.lstrip("0") or "0"
-    fraction = fraction.rstrip("0")
-    value = whole + (f".{fraction}" if separator and fraction else "")
+    values = []
+    for number in (match.group("value"), match.group("end_value")):
+        if number is None:
+            continue
+        whole, separator, fraction = number.partition(".")
+        whole = whole.lstrip("0") or "0"
+        fraction = fraction.rstrip("0")
+        values.append(whole + (f".{fraction}" if separator and fraction else ""))
     unit = _NUMERIC_UNIT_ALIASES.get(match.group("unit"), match.group("unit"))
+    range_unit = _NUMERIC_UNIT_ALIASES.get(match.group("range_unit"), match.group("range_unit"))
+    # Mixed units are not interchangeable with a single-unit range.
+    if range_unit and range_unit != unit:
+        values[0] += range_unit
     return (
-        value,
+        "-".join(values),
         unit,
         bool(match.group("plus")),
         _claim_semantic_category(text, match),
@@ -634,9 +654,7 @@ def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_la
             continue
         claim = match.group(0)
         normalized = _normalize_claim_text(claim)
-        is_backed = normalized in source_normalized or (
-            _numeric_claim_key(prompt, match) in source_numeric_claims
-        )
+        is_backed = _numeric_claim_key(prompt, match) in source_numeric_claims
         if normalized and not is_backed and claim not in unbacked:
             unbacked.append(claim)
 
