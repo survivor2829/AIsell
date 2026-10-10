@@ -2006,7 +2006,13 @@
       const response = await fetch(downloadUrl, { credentials: 'include' });
       if (!response.ok) throw new Error(`下载失败 (${response.status})`);
       const blob = await response.blob();
-      triggerBlobDownload(blob, filename);
+      // Suppliers may return PNG/WebP bytes under a legacy .jpg storage path.
+      // Match the exported name to the bytes, without recompressing the image.
+      const header = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+      const extension = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47 ? 'png' :
+        header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff ? 'jpg' :
+        String.fromCharCode(...header.slice(0, 4)) === 'RIFF' && String.fromCharCode(...header.slice(8, 12)) === 'WEBP' ? 'webp' : null;
+      triggerBlobDownload(blob, extension ? filename.replace(/\.[^.]+$/, '.' + extension) : filename);
       button.textContent = '已提交保存';
     } catch (error) {
       showError('下载详情图失败：' + error.message);
@@ -2686,14 +2692,14 @@
     initAnnouncementAccessibility();
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
     restoreServerAiRefineTask(); // 新端口没有 browser storage 时，只读接管原任务。
-    await loadThemes();
-    initPreviewFit();
-    renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)
     // 产品图走自动抠图 — 否则 AI 精修合成时原图背景 + 原图水印文字会穿透到模板
     initUploadBox('upload_product', url => { productImageUrl = url; }, { autoRembg: true });
     initUploadBox('upload_scene', url => { sceneImageUrl = url; });
     initUploadBox('upload_effect', url => { effectImageUrl = url; });
     initUploadBox('upload_qr', url => { qrImageUrl = url; });
+    await loadThemes();
+    initPreviewFit();
+    renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)
     selectCategory(currentProductType);
     await restoreLatestLocalPreview();
     if (!resumePersistedAiRefineTask()) restoreLatestAiResult();
