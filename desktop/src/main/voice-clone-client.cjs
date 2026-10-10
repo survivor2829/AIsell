@@ -47,7 +47,7 @@ function createVoiceCloneClient({ gatewayClient, rootDir, ffmpegPath, execFileIm
   async function capabilities() {
     await gatewayClient.initialize();
     const enabled = gatewayClient.status().capabilities?.volcengine_voice_clone === true;
-    if (!enabled) return { enabled: false, inventoryConfigured: false, reason: 'voice_clone_gateway_unavailable' };
+    if (!enabled) return { enabled: false, inventoryConfigured: false, reason: '专属音色服务未连接。' };
     const inventory = await list();
     return { enabled: true, inventoryConfigured: inventory.inventoryConfigured, reason: inventory.reason, trainableSlots: inventory.items.filter((item) => item.trainable).length };
   }
