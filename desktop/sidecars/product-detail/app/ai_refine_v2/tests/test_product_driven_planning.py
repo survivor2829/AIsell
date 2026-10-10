@@ -105,9 +105,24 @@ def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
     ('续航3.5小时', '续航35小时', False),
     ('续航4-8小时，充电3小时', '续航4-8小时 充电3小时', True),
     ('续航4-8小时，充电3小时', '充电8小时', False),
+    ('充电时长：3 小时\n续航时长：4-8 小时', '4-8 小时续航 3 小时充满', True),
+    ('充电时长：3 小时\n续航时长：4-8 小时', '4-8 小时续航 8 小时充满', False),
 ])
 def test_numeric_evidence_matches_whole_quantity_and_range(source, prompt, backed):
     assert (not planner._find_unbacked_commercial_claims(prompt, source)) == backed
+
+
+def test_screen_evidence_can_select_and_reorder_its_own_point_sources():
+    plan = sample()
+    plan['selling_points'][0]['evidence'] = ['自动洗地', '清洁机器人适用于办公楼']
+    # A screen need not repeat every context quote attached to the buying reason.
+    plan['screens'][1]['evidence'] = ['自动洗地']
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    plan['screens'][1]['evidence'] = ['清洁机器人适用于办公楼', '自动洗地']
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    # Source text belonging to another buying reason cannot prove this screen.
+    plan['screens'][1]['evidence'] = ['自动回充']
+    assert any('对应卖点' in warning for warning in planner._validate_schema_v2(plan, TEXT))
 
 
 def test_negative_logo_and_graphic_occupancy_are_not_commercial_claims():

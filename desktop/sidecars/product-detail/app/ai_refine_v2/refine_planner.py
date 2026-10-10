@@ -508,7 +508,7 @@ _CERTIFICATION_CLAIM_RE = re.compile(
 
 _NUMERIC_CLAIM_SEMANTICS = (
     ("endurance", ("续航",)),
-    ("charging", ("充电",)),
+    ("charging", ("充电", "充满")),
     ("warranty", ("质保", "保修")),
     ("response", ("响应",)),
     ("onsite_service", ("上门",)),
@@ -1006,7 +1006,13 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
             warnings.append(f"screens[{i}] 必须且只能关联一个存在的 selling_point_id")
         else:
             refs.append(ref)
-            if screen.get("evidence") != point_sources.get(ref):
+            # Evidence is a relation to this buying reason, not a duplicate
+            # array that must repeat every scene/context quote in its order.
+            point_evidence = point_sources.get(ref)
+            screen_evidence = screen.get("evidence")
+            if not (evidence_ok(screen_evidence) and evidence_ok(point_evidence)
+                    and {_normalize_claim_text(item) for item in screen_evidence}
+                    <= {_normalize_claim_text(item) for item in point_evidence}):
                 warnings.append(f"screens[{i}] 必须使用对应卖点的原文依据")
         if not evidence_ok(screen.get("evidence"), cover=role == "hero"):
             warnings.append(f"screens[{i}] 缺产品原文逐字依据")
