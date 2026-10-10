@@ -91,9 +91,9 @@ def align_narration(text, segments, duration_ms):
             if not isinstance(word, dict) or not spoken_key(word.get("text")):
                 continue
             word_units.append({"text": word.get("text"),
-                               "start_ms": word.get("begin_time", word.get("start_ms")),
-                               "end_ms": word.get("end_time", word.get("end_ms")),
-                               "confidence": word.get("confidence", 1)})
+                               "start_ms": word.get("begin_time", word.get("start_ms", word.get("start"))),
+                               "end_ms": word.get("end_time", word.get("end_ms", word.get("end"))),
+                               "confidence": word.get("confidence") if word.get("confidence") is not None else 1})
     words = _aligned_units(text, word_units, duration_ms)
     sentences = _aligned_units(text, sentence_units, duration_ms)
     spans = _observed_clause_spans(text, word_units, duration_ms) if not words and not sentences else []
@@ -359,6 +359,10 @@ def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=Fal
     cues = []
     for caption in captions:
         alignment = caption.get("alignment") or {}
+        if not alignment and caption.get("words"):
+            # Persisted course/mix transcripts use start/end milliseconds;
+            # share lexical alignment with generated narration before paging.
+            alignment = align_narration(caption["text"], [caption], caption["end_ms"])
         words = alignment.get("words") or []
         if alignment.get("source") == "asr_words" and words:
             groups, current, width = [], [], 0.0
@@ -396,7 +400,8 @@ def reference_caption_cues(captions, base=0, max_width=26, *, sentence_pages=Fal
                       "start_ms": group[0]["start_ms"], "end_ms": group[-1]["end_ms"],
                       "timing_source": "asr_words", "words": group} for group in groups]
         else:
-            units = [{**unit, "timing_source": alignment.get("source") or "phrase"}
+            units = [{"text": unit["text"], "start_ms": unit["start_ms"], "end_ms": unit["end_ms"],
+                      "timing_source": alignment.get("source") or "phrase"}
                      for unit in alignment.get("sentences") or [caption]]
             if sentence_pages:
                 sentences = []

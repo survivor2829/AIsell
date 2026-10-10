@@ -2026,7 +2026,9 @@ class FFmpegCreativeAnalyzer:
                     raise ValueError("duration")
         except (ValueError, wave.Error, EOFError, ZeroDivisionError) as error:
             raise ContentEngineError("digital_human_audio_invalid", "待上传口播必须是2至15秒的原始WAV音轨。") from error
-        cloud = self.cloud_client if isinstance(self.cloud_client, DashScopeMediaClient) else DashScopeMediaClient()
+        # Wan's temporary OSS upload belongs to DashScope even when editorial,
+        # ASR and TTS use another adapter derived from this client.
+        cloud = self.cloud_client if type(self.cloud_client) is DashScopeMediaClient else DashScopeMediaClient()
         if not cloud.configured:
             raise ContentEngineError("digital_human_audio_upload_unavailable", "阿里音频上传服务尚未连接，原音轨已保留。")
         self.data_dir.mkdir(parents=True, exist_ok=True)

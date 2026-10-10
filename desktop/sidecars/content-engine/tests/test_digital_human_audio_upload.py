@@ -9,6 +9,7 @@ import wave
 
 from content_engine.creative_analysis import DashScopeMediaClient, FFmpegCreativeAnalyzer
 from content_engine.errors import ContentEngineError
+from content_engine.volcengine_media import VolcengineMediaClient
 
 
 class DigitalHumanAudioUploadTests(unittest.TestCase):
@@ -52,6 +53,17 @@ class DigitalHumanAudioUploadTests(unittest.TestCase):
             with self.assertRaises(ContentEngineError):
                 self.analyzer.upload_digital_human_audio({"audio_base64": base64.b64encode(raw).decode(), "sha256": hashlib.sha256(raw).hexdigest()})
             upload.assert_not_called()
+
+    def test_volcengine_editor_does_not_receive_wan_upload(self):
+        self.analyzer.cloud_client = VolcengineMediaClient()
+        with mock.patch('content_engine.creative_analysis.DashScopeMediaClient', wraps=DashScopeMediaClient) as adapter, \
+                mock.patch.dict('os.environ', {'DASHSCOPE_API_KEY': 'fixture-only'}), \
+                mock.patch.object(DashScopeMediaClient, '_temporary_upload', return_value='oss://fixture/voice.wav') as upload, \
+                mock.patch.object(self.analyzer.cloud_client, '_request_json', side_effect=AssertionError('Wrong provider')):
+            result = self.analyzer.upload_digital_human_audio(self.payload)
+        self.assertEqual('oss://fixture/voice.wav', result['url'])
+        adapter.assert_called_once_with()
+        upload.assert_called_once()
 
 
 if __name__ == "__main__":

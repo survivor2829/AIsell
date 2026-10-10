@@ -15,6 +15,20 @@ from content_engine.database import Database
 
 
 class VideoPresentationTests(unittest.TestCase):
+    def test_persisted_course_words_keep_measured_times_in_reference_packaging(self):
+        captions = [{"text": "先看现场，再做判断。", "start_ms": 1000, "end_ms": 2800,
+                     "words": [{"text": text, "start": start, "end": end, "confidence": None}
+                               for text, start, end in [('先看', 1000, 1400), ('现场', 1400, 1800),
+                                                        ('再做', 1900, 2300), ('判断', 2400, 2800)]]}]
+        recipe = {"captions": captions, "voice_segment": {"start_ms": 1000, "end_ms": 2800},
+                  "caption_presentation": "reference_narration", "presentation": presentation(captions, '现场判断'),
+                  "packaging": {}}
+        cues = HybridCreativeRenderer._public_props(recipe, {})['captions']
+        self.assertEqual(captions[0]['text'], ''.join(cue['text'] for cue in cues))
+        self.assertEqual([(0, 400), (400, 800), (900, 1300), (1400, 1800)],
+                         [(word['startMs'], word['endMs']) for cue in cues for word in cue['words']])
+        self.assertNotIn('start_ms', captions[0]['words'][0])
+
     def test_narration_opener_uses_complete_quoted_heading(self):
         title = '有人问：「学完了觉得没用怎么办」——这问题我每期都答，今天再答一遍。'
         self.assertEqual('学完了觉得没用怎么办', presentation([], title)['topic'])
