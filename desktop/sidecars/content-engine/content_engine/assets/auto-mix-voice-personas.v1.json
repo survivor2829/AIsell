@@ -60,6 +60,23 @@
       "digitalHumanDefault": true
     },
     {
+      "voicePersonaId": "volc-yunzhou-2@1",
+      "displayName": "云舟 2.0",
+      "provider": "volcengine",
+      "providerModel": "seed-tts-2.0",
+      "providerVoiceId": "zh_male_m191_uranus_bigtts",
+      "instruction": "",
+      "style": "natural_explainer",
+      "autoSelectPriority": 0,
+      "approvalStatus": "pending",
+      "sourceUrl": "https://www.volcengine.com/docs/6561/1257544",
+      "researchDate": "2026-10-10",
+      "evidenceNote": "当前网关已实际合成语音2.0短句并返回完整音频；各客户仍需试听验证自己的服务权限后使用。",
+      "catalogVersion": "2026.10.10-volcengine-yunzhou-2",
+      "gender": "male",
+      "digitalHumanDefault": true
+    },
+    {
       "voicePersonaId": "volc-monkey-brother-2@1",
       "displayName": "猴哥 2.0",
       "provider": "volcengine",
@@ -122,8 +139,7 @@
       "researchDate": "2026-09-05",
       "evidenceNote": "官方可接入替代候选，未证实近期热门；它不是解说小帅。",
       "catalogVersion": "2026.09.05-volcengine-candidates",
-      "gender": "male",
-      "digitalHumanDefault": true
+      "gender": "male"
     }
   ]
 }

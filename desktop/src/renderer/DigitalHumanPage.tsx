@@ -111,8 +111,12 @@ export function DigitalHumanPage() {
   async function auditionVoice() {
     if (!draft.voicePersonaId) return;
     await perform('voice-preview', async () => {
-      const result = await unwrap(api().previewVoice({ voicePersonaId: draft.voicePersonaId! }));
-      setVoicePreview(result.audioDataUrl); await loadCapabilities();
+      try {
+        const result = await unwrap(api().previewVoice({ voicePersonaId: draft.voicePersonaId! }));
+        setVoicePreview(result.audioDataUrl);
+      } finally {
+        await loadCapabilities().catch(() => {});
+      }
     });
   }
   async function useVoice() {
