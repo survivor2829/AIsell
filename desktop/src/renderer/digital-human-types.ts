@@ -37,7 +37,7 @@ export type DigitalHumanApi = {
   create(payload: DigitalHumanDraft & { id?: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
   saveAndPreview(payload: DigitalHumanDraft & { id?: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
   preview(payload: { id: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
-  confirm(payload: { id: string; previewRevision: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
+  confirm(payload: { id: string; previewRevision: string; transcriptText?: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
   refresh(payload: { id: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
   resume(payload: { id: string }): Promise<DigitalHumanResult<DigitalHumanTask>>;
   media(payload: { id: string }): Promise<DigitalHumanResult<{ dataUrl: string }>>;

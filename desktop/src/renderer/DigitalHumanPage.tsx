@@ -29,6 +29,7 @@ export function DigitalHumanPage() {
   const [audio, setAudio] = useState<DigitalHumanAsset | null>(null);
   const [voicePreview, setVoicePreview] = useState('');
   const [preparedSpeech, setPreparedSpeech] = useState('');
+  const [transcriptText, setTranscriptText] = useState('');
   const [voiceRecommendation, setVoiceRecommendation] = useState('');
   const [clones, setClones] = useState<DigitalHumanVoiceClone[]>([]);
   const cloneSlots = clones.filter((voice) => voice.trainable);
@@ -82,6 +83,10 @@ export function DigitalHumanPage() {
     return () => { cancelled = true; };
   }, [selected?.id, selected?.personAssetId, selected?.productAssetId]);
 
+  useEffect(() => {
+    if (selected?.voiceSource === 'uploaded_audio' && selected.status === 'preview_ready') setTranscriptText(selected.script);
+    else setTranscriptText('');
+  }, [selected?.id, selected?.status]);
   useEffect(() => {
     setPreparedSpeech('');
     if (!selected?.audio?.prepared) return;
@@ -278,11 +283,15 @@ export function DigitalHumanPage() {
         {selected?.error && <div className="dh-message is-error" role="alert"><CircleAlert size={16} /><span>{selected.error}</span></div>}
         {preparedSpeech && <audio className="dh-audio" controls src={preparedSpeech} aria-label="本片完整口播试听" />}
         {selected?.reusedAudioFrom && <p className="dh-quality">已复用原任务的完整口播与字幕，不重新购买配音。</p>}
+        {selected?.voiceSource === 'uploaded_audio' && selected.status === 'preview_ready' && <label className="dh-field"><span>录音字幕校对</span>
+          <textarea rows={4} maxLength={5000} disabled={!!busy} value={transcriptText} onChange={(event) => setTranscriptText(event.target.value)} aria-describedby="dh-transcript-help" />
+          <small className="dh-quality" id="dh-transcript-help">仅修正识别字词或等值数字写法，不改变原音轨；请对照上方录音核对，不要增删句子或改动数字、型号。</small>
+        </label>}
         {selected?.voiceName && <p className="dh-quality">本片声音：{selected.voiceName}</p>}
         {selected?.audio && <p className="dh-quality" role="status">{selected.audio.prepared ? `声音已准备：${Number(selected.audio.seconds || 0).toFixed(1)}秒，${selected.audio.segmentCount || 1}段；口型和字幕使用同一音轨。` : '先核对完整声音与台词，再提交视频。'}</p>}
         <div className="dh-output-actions">
           {selected?.status === 'preview_ready' && <button className="dh-button is-primary" data-xiaoxi-digital-human-action="confirm" disabled={!!busy || !preview || (selected.pipelineVersion === 2 && !capabilities?.ready)}
-            onClick={() => void perform('confirm', async () => apply(await unwrap(api().confirm({ id: selected.id, previewRevision: selected.previewRevision }))))}>确认预览，生成样片<ArrowRight size={16} /></button>}
+            onClick={() => void perform('confirm', async () => apply(await unwrap(api().confirm({ id: selected.id, previewRevision: selected.previewRevision, ...(selected.voiceSource === 'uploaded_audio' ? { transcriptText } : {}) }))))}>确认预览，生成样片<ArrowRight size={16} /></button>}
           {selected?.canResume && <button className="dh-button" data-xiaoxi-digital-human-action="resume" disabled={!!busy} onClick={() => void perform('resume', async () => apply(await unwrap(api().resume({ id: selected.id }))))}>继续处理</button>}
           {selected?.canRefresh && <button className="dh-button" disabled={!!busy} onClick={() => void perform('refresh', async () => apply(await unwrap(api().refresh({ id: selected.id }))))}><RefreshCw size={15} />刷新进度</button>}
           {videoUrl && <button className="dh-button is-primary" disabled={!!busy} onClick={() => void download()}><Download size={16} />保存成片</button>}

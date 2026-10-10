@@ -8,6 +8,7 @@ const { upscaleTo1080Size } = require('./video-upscale.cjs');
 const { createBailianVideoProvider, ROUTES } = require('./bailian-video-provider.cjs');
 const audioTools = require('./digital-human-audio.cjs');
 const { buildCaptions } = require('./product-video-media.cjs');
+const { reconcileNarrationSpelling } = require('./narration-transcript.cjs');
 const { createPriceReader, createBailianPriceReader, validBailianPrices, validPrices, round } = require('./product-video-pricing.cjs');
 
 const ID = /^dh_[a-f0-9-]{36}$/u;
@@ -721,11 +722,27 @@ function createDigitalHumanService(options = {}) {
     if (task.version === 2) await ensurePrices(task);
     update(task, task.version === 2 ? 'audio_preparing' : 'preview_preparing'); void schedule(id); return publicTask(task);
   }
-  async function confirm(id, revision) {
+  async function confirm(id, revision, transcriptText) {
     const task = read(id);
     if (task.status !== 'preview_ready' || !revision || revision !== task.previewRevision) throw fail('digital_human_preview_confirmation_required', '请查看当前场景预览后，再确认生成。');
     if (digest(fs.readFileSync(contained(root, task.previewFile))) !== revision) throw fail('digital_human_preview_changed', '场景预览已变化，请重新查看。');
-    await requireCapabilities(task); update(task, task.version === 2 ? 'official_submitting' : 'registering', { confirmedAt: new Date().toISOString() }); void schedule(id); return publicTask(task);
+    const corrected = {};
+    if (transcriptText !== undefined) {
+      if (task.voiceSource !== 'uploaded_audio' || typeof transcriptText !== 'string' || !transcriptText.trim() || transcriptText.length > 5000) throw fail('digital_human_transcript_invalid', '录音字幕校对须为1到5000字，仅支持已上传录音。');
+      const original = task.originalPreparedUtterances || task.preparedUtterances;
+      const seconds = task.actualDurationSeconds;
+      audioMedia.verifyRecordingTranscript(original, seconds);
+      const aligned = reconcileNarrationSpelling(original, transcriptText.trim());
+      if (!aligned) throw fail('digital_human_transcript_mismatch', '校对内容无法与录音对齐。请只修正同音识别字词或等值数字写法，不要改变数字、型号或增删句子；尚未提交视频。');
+      const frozen = fs.readFileSync(contained(root, task.frozenAudioFile));
+      if (digest(frozen) !== task.frozenAudioSha256) throw fail('digital_human_audio_changed', '原录音音轨发生变化，尚未提交视频。');
+      Object.assign(corrected, { originalPreparedUtterances: original, preparedUtterances: aligned.alignedUtterances,
+        script: transcriptText.trim(), audioVerification: { ...task.audioVerification,
+          phoneticCorrections: aligned.phoneticCorrections, notationCorrections: aligned.notationCorrections,
+          transcriptCorrectedAt: new Date().toISOString() } });
+    }
+    if ((corrected.script || task.script).length > 5000) throw fail('digital_human_transcript_invalid', '录音字幕超过5000字，请使用较短录音；尚未提交视频。');
+    await requireCapabilities(task); update(task, task.version === 2 ? 'official_submitting' : 'registering', { ...corrected, confirmedAt: new Date().toISOString() }); void schedule(id); return publicTask(task);
   }
   async function refresh(id) {
     let task = read(id);
