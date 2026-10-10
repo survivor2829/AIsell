@@ -1328,6 +1328,8 @@ def _workspace_active_refine_task():
     from ai_refine_v2 import pipeline_runner
 
     owner = current_user.id
+    read_archive = app.config.get("DESKTOP_AI_REFINE_ARCHIVED_TASKS", lambda: {})
+    archived = read_archive()
     candidates = []
     for path in pipeline_runner._OUTPUT_BASE.glob("*/_input.json"):
         try:
@@ -1338,6 +1340,8 @@ def _workspace_active_refine_task():
         inputs = pipeline_runner._read_json(path)
         if not isinstance(inputs, dict) or inputs.get("user_id") != owner:
             continue
+        if path.parent.name in archived:
+            return None
         state = pipeline_runner.get_task_status(path.parent.name)
         if not state or state.get("user_id") != owner:
             continue

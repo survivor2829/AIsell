@@ -292,7 +292,7 @@ class TestWorkspaceFrontendPaidTaskSafety:
             re.DOTALL,
         ), "普通 404 必须保持任务缺失；409 unknown 才能携带服务端安全代码退出轮询"
         assert re.search(
-            r"if \(activeError\.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN'\).*?"
+            r"async function resolveAiRefineUnknown\(.*?"
             r"await confirmInWorkspace\(.*?if \(confirmed\).*?"
             r"postJson\('/desktop/ai-refine-v2/resolve-unknown'",
             content,

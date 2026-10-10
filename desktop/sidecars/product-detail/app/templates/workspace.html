@@ -944,6 +944,7 @@
   const desktopMode = {{ desktop_mode|tojson }};
   const AI_REFINE_ACTIVE_TASK_KEY = 'xiaoxi.ai-refine-v2.active-task.v1';
   const SERVER_AI_REFINE_BOOTSTRAP = {{ ai_refine_bootstrap|default(none)|tojson }};
+  const archivedAiRefineTasks = new Set({{ ai_refine_archived_tasks|default([])|tojson }});
   let aiRefineInputEdited = false;
   document.addEventListener('input', event => {
     if (['product_title_input', 'text_input'].includes(event.target.id)) aiRefineInputEdited = true;
@@ -1004,6 +1005,7 @@
       try {
         const record = JSON.parse(storage.getItem(AI_REFINE_ACTIVE_TASK_KEY) || 'null');
         if (record && typeof record.task_id === 'string' && record.task_id.length <= 256) {
+          if (archivedAiRefineTasks.has(record.task_id)) continue;
           return record;
         }
       } catch (_) {}
@@ -1038,9 +1040,12 @@
     return true;
   }
 
-  function clearPersistedAiRefineTask() {
+  function clearPersistedAiRefineTask(taskId = '') {
     for (const storage of aiRefineStorages()) {
-      try { storage.removeItem(AI_REFINE_ACTIVE_TASK_KEY); } catch (_) {}
+      try {
+        const record = JSON.parse(storage.getItem(AI_REFINE_ACTIVE_TASK_KEY) || 'null');
+        if (!taskId || record?.task_id === taskId) storage.removeItem(AI_REFINE_ACTIVE_TASK_KEY);
+      } catch (_) {}
     }
   }
 
@@ -1070,6 +1075,8 @@
     if (code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
       return '付费任务结果暂时无法确认。系统已停止新建任务，避免重复扣费。';
     }
+    if (code === 'DESKTOP_AI_REFINE_ALREADY_RUNNING') return '旧任务仍在运行，新任务尚未提交。请等待旧任务结束。';
+    if (code === 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED') return '旧任务尚待恢复，新任务尚未提交。请先处理旧任务。';
     if (code === 'AI_REFINE_RECOVERY_REQUIRED') {
       return '图片已经生成，但本机下载或拼装尚未完成。请恢复原任务，不要重新下单。';
     }
@@ -1101,6 +1108,9 @@
     const results = target || document.getElementById('ai_img_results');
     if (!results) return;
     const taskId = String(error?.taskId || '');
+    const previous = loadPersistedAiRefineTask();
+    const oldTitle = error?.productTitle || (previous?.task_id === taskId ? previous.input_summary?.product_title : '') ||
+      (SERVER_AI_REFINE_BOOTSTRAP?.task?.task_id === taskId ? SERVER_AI_REFINE_BOOTSTRAP.inputs?.product_title : '') || '未记录产品名';
     const detailParts = [error?.technicalDetail || error?.message || ''];
     if (taskId) detailParts.push(`task_id=${taskId}`);
     const detail = sanitizeAiRefineTechnicalDetail(detailParts.filter(Boolean).join('\n'));
@@ -1110,12 +1120,23 @@
         <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; font:12px/1.6 ui-monospace,monospace;">${escapeHtml(detail)}</pre>
       </details>` : '';
     results.innerHTML = `
-      <div style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7;">
+      <div role="alert" style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7; overflow-wrap:anywhere;">
         <div style="font-weight:700;">${escapeHtml(aiRefineUserMessage(error))}</div>
+        ${error?.newTaskBlocked ? '<div style="margin-top:8px; font-weight:700;">新任务尚未提交。当前上传的图片和文案已保留。</div>' : ''}
+        ${taskId ? `<div style="margin-top:8px;">待处理产品：${escapeHtml(oldTitle)}<br>任务编号：${escapeHtml(taskId)}</div>` : ''}
         <div style="margin-top:6px; color:#7f1d1d; font-size:13px;">失败或结果不明时不会自动重提。</div>
-        <div style="color:#7f1d1d; font-size:13px;">任务已保留时，再次点击“AI 精修”只会继续检查原任务。</div>
+        <div style="color:#7f1d1d; font-size:13px;">旧任务与费用回执保留；新任务需单独确认生成。</div>
         ${technicalDetails}
       </div>`;
+    if (error?.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'btn-generate';
+      action.style.cssText = 'margin-top:16px; width:auto; padding:10px 18px; background:#047857; color:white;';
+      action.textContent = '核对后归档并解除阻塞';
+      action.addEventListener('click', () => resolveAiRefineUnknown(error, results, action));
+      results.appendChild(action);
+    }
   }
 
   async function postJson(url, data) {
@@ -1129,6 +1150,7 @@
       const failure = new Error(err.error || `HTTP ${resp.status}`);
       failure.code = err.code || '';
       failure.taskId = err.task_id || '';
+      failure.productTitle = err.product_title || '';
       failure.httpStatus = resp.status;
       failure.technicalDetail = err.error || `HTTP ${resp.status}`;
       throw failure;
@@ -2206,6 +2228,13 @@
           continue;
         }
         state = await resp.json();
+        if (state.archived || archivedAiRefineTasks.has(taskId)) {
+          archivedAiRefineTasks.add(taskId);
+          clearPersistedAiRefineTask(taskId);
+          if (ui.loading) ui.loading.style.display = 'none';
+          ui.results.textContent = '旧任务已归档。当前资料已保留，可再次点击 AI 精修确认新任务。';
+          return state;
+        }
         consecutiveNotFound = 0;
       } catch (err) {
         if (err.nonRetryable) throw err;
@@ -2360,20 +2389,9 @@
           if ([
             'DESKTOP_AI_REFINE_ALREADY_RUNNING', 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED',
             'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN'
-          ].includes(startError.code) && startError.taskId) {
-            const previous = loadPersistedAiRefineTask();
-            taskRecord = persistAiRefineTask({
-              task_id: startError.taskId,
-              mode: previous?.mode || '',
-              status: previous?.status || 'running',
-              input_digest: previous?.input_digest || '',
-              input_summary: previous?.input_summary || {
-                product_category: currentProductType,
-                recovered_from_server: true,
-              },
-              started_at: previous?.started_at || Date.now(),
-            });
-            if (ui.subText) ui.subText.textContent = '已接管正在运行的原任务，不会创建新订单…';
+          ].includes(startError.code)) {
+            startError.newTaskBlocked = true;
+            throw startError;
           } else {
             if (startError.httpStatus >= 500 && ![
               'DESKTOP_AI_REFINE_NOT_CONFIGURED', 'DESKTOP_PAID_ACTION_DISABLED'
@@ -2410,27 +2428,39 @@
   }
 
   async function handleAiRefineRunError(error, results) {
-    let activeError = error;
-    if (activeError.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
+    renderAiRefineError(error, results);
+  }
+
+  async function resolveAiRefineUnknown(activeError, results, button) {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
       const confirmed = await confirmInWorkspace(
-        `付费任务结果暂时无法确认，系统已经停止新建任务。\n\n` +
-        `只有在你已核对供应商任务与账单、确认没有正在生成或待扣费任务时，才能解除锁定。`,
-        { title: '核对原任务与账单', confirmLabel: '我已核对，解除锁定' },
+        `请先核对 APIMart 的原任务与账单，确认没有正在生成或待处理的付费请求。\n` +
+        `任务编号：${activeError.taskId || '未记录'}\n\n` +
+        `归档只解除新任务阻塞，保留旧任务、回执及费用结果不明记录，不代表成功、退款或未扣费。\n` +
+        `当前图片和文案保留，不会自动重新生成。`,
+        { title: '核对旧付费任务', confirmLabel: '我已核对，归档并解除阻塞' },
       );
       if (confirmed) {
         try {
-          await postJson('/desktop/ai-refine-v2/resolve-unknown', { confirm_new_task: true });
+          await postJson('/desktop/ai-refine-v2/resolve-unknown', {
+            confirm_new_task: true, task_id: activeError.taskId || '',
+          });
+          if (activeError.taskId) archivedAiRefineTasks.add(activeError.taskId);
           clearPersistedAiRefineTask(activeError.taskId || '');
           if (results) {
-            results.innerHTML = '<div style="text-align:center; color:#92400e; padding:40px;">结果不明状态已解除。本次没有自动重提；如需重新生成，请重新核对文案并再次确认。</div>';
+            results.innerHTML = '<div role="status" style="max-width:560px; margin:0 auto; text-align:center; color:#92400e; padding:40px 20px; line-height:1.7;">旧任务已归档，费用结果仍保留为不明。当前图片和文案已保留；本次没有提交新任务，请再次点击“AI 精修”确认生成。</div>';
           }
           return;
         } catch (resolveError) {
           activeError = resolveError;
+          renderAiRefineError(activeError, results);
         }
       }
+    } finally {
+      button.disabled = false;
     }
-    renderAiRefineError(activeError, results);
   }
 
   /* ── Module Main Image Display ─────────────────────────────── */

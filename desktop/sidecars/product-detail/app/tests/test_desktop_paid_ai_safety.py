@@ -11,6 +11,141 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 ENTRY = APP_ROOT / "desktop_entry.py"
 
 
+def test_unknown_archive_preserves_new_inputs_and_survives_process_and_port_change(tmp_path):
+    code = r'''
+import hashlib
+import json
+import os
+import shutil
+import threading
+from pathlib import Path
+from urllib.parse import urlsplit
+from PIL import Image
+from playwright.sync_api import sync_playwright, expect
+from werkzeug.serving import make_server
+import desktop_entry
+
+os.environ["DEEPSEEK_API_KEY"] = "test-only"
+os.environ["REFINE_API_KEY"] = "test-only"
+os.environ["REFINE_API_BASE_URL"] = "https://provider.invalid/v1"
+root = Path(os.environ["TEST_DATA_DIR"])
+config = desktop_entry.DesktopConfig(host="127.0.0.1", port=0, data_dir=root,
+    bootstrap_token="bootstrap-" + "a" * 48, control_token="control-" + "b" * 48)
+app, _ = desktop_entry.create_desktop_application(config, shutdown_callback=lambda: None)
+# This harness visits the workbench directly rather than Electron's file:// iframe.
+app.config.update(SESSION_COOKIE_SECURE=False, SESSION_COOKIE_SAMESITE="Lax",
+                  SESSION_COOKIE_PARTITIONED=False)
+client = app.test_client()
+client.get("/desktop/bootstrap", query_string={"token": config.bootstrap_token})
+from ai_refine_v2 import pipeline_runner
+from app import User
+with app.app_context():
+    uid = User.query.filter_by(username="xiaoxi-desktop").one().id
+task_id = "old-unknown"
+task_dir = pipeline_runner._OUTPUT_BASE / task_id
+ledger = root / "database" / "desktop-ai-refine-ledger.json"
+phase = os.environ["TEST_PHASE"]
+if phase == "archive":
+    task_dir.mkdir(parents=True, exist_ok=True)
+    source = os.environ.get("REFINE_REPRO_TASK_DIR")
+    if source:
+        for name in ("_input.json", "_recovery.json", "_costs.json"):
+            shutil.copyfile(Path(source) / name, task_dir / name)
+    else:
+        (task_dir / "_input.json").write_text(json.dumps({"user_id": uid,
+            "product_title": "旧产品", "product_text": "旧资料"}), encoding="utf-8")
+        (task_dir / "_recovery.json").write_text(json.dumps({"user_id": uid,
+            "status": "outcome_unknown", "error": "提交响应不明且没有 provider_task_id",
+            "blocks": [], "planned_count": 13}), encoding="utf-8")
+        (task_dir / "_costs.json").write_text(json.dumps({"operations": {
+            "image:1": {"status": "outcome_unknown", "reserved_cny": 0.14}}}), encoding="utf-8")
+    ledger.write_text(json.dumps({"state": "outcome_unknown", "task_id": task_id}), encoding="utf-8")
+before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in task_dir.iterdir()}
+starts = []
+pipeline_runner._apply_safety_valve = lambda a, b: (a, b)
+pipeline_runner._detect_mode = lambda a, b: "real"
+pipeline_runner.start_task = lambda **kwargs: starts.append(kwargs) or "new-confirmed-task"
+original_status = pipeline_runner.get_task_status
+pipeline_runner.get_task_status = lambda tid: ({"task_id": tid, "user_id": uid,
+    "status": "failed", "error": "test stops before any provider call"}
+    if tid == "new-confirmed-task" else original_status(tid))
+server = make_server("127.0.0.1", 0, app, threaded=True)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+origin = f"http://127.0.0.1:{server.server_port}"
+with sync_playwright() as pw:
+    browser = pw.chromium.launch(executable_path=os.environ.get("XIAOXI_PRODUCT_DETAIL_BROWSER_PATH") or None)
+    context = browser.new_context(viewport={"width": 1400, "height": 1000})
+    cookie_name = app.config["SESSION_COOKIE_NAME"]
+    context.add_cookies([{"name": cookie_name, "value": client.get_cookie(cookie_name).value,
+                         "url": origin}])
+    context.route("**/*", lambda route: route.continue_() if
+        urlsplit(route.request.url).hostname in ("127.0.0.1", "localhost") else route.abort())
+    if phase == "restart":
+        context.add_init_script("localStorage.setItem('xiaoxi.ai-refine-v2.active-task.v1', "
+            "JSON.stringify({task_id:'old-unknown',status:'outcome_unknown'}));")
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.goto(origin + "/")
+    if phase == "archive":
+        expect(page.get_by_role("button", name="核对后归档并解除阻塞")).to_be_visible()
+    else:
+        assert "new-confirmed-task" not in page.locator("#ai_img_results").inner_text()
+        assert page.evaluate("loadPersistedAiRefineTask()") is None
+        assert not page.get_by_role("button", name="核对后归档并解除阻塞").count()
+    page.locator("#product_title_input").fill("全新产品")
+    page.locator("#text_input").fill("全新产品资料，清洁宽度500mm")
+    image = root / "new-product.png"
+    Image.new("RGB", (40, 40), "green").save(image)
+    page.locator('#upload_product input[type="file"]').set_input_files(str(image))
+    page.wait_for_function("productImageUrl !== ''")
+    image_url = page.evaluate("productImageUrl")
+    page.locator("#btn_ai_html_v2").click()
+    page.get_by_role("button", name="开始付费生成", exact=True).click()
+    if phase == "archive":
+        expect(page.locator("#ai_img_results")).to_contain_text("新任务尚未提交")
+        expect(page.locator("#ai_img_results")).to_contain_text(task_id)
+        old_title = json.loads((task_dir / "_input.json").read_text(encoding="utf-8"))["product_title"]
+        expect(page.locator("#ai_img_results")).to_contain_text(old_title)
+        assert starts == []
+        page.screenshot(path=str(root / "blocked.png"))
+        page.get_by_role("button", name="核对后归档并解除阻塞").click()
+        page.screenshot(path=str(root / "confirmation.png"))
+        page.get_by_role("button", name="我已核对，归档并解除阻塞", exact=True).click()
+        expect(page.locator("#ai_img_results")).to_contain_text("旧任务已归档")
+        assert starts == []
+        assert page.evaluate("productImageUrl") == image_url
+        expect(page.locator("#product_title_input")).to_have_value("全新产品")
+        expect(page.locator("#text_input")).to_have_value("全新产品资料，清洁宽度500mm")
+        page.screenshot(path=str(root / "archived.png"))
+    else:
+        expect(page.locator("#ai_img_results")).to_contain_text("AI 精修没有完成")
+        assert len(starts) == 1
+        assert starts[0]["product_title"] == "全新产品"
+        assert starts[0]["product_text"] == "全新产品资料，清洁宽度500mm"
+    assert not errors, errors
+    browser.close()
+server.shutdown()
+assert before == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in task_dir.iterdir()}
+archive = json.loads(ledger.with_name("desktop-ai-refine-archive.json").read_text(encoding="utf-8"))
+assert archive[task_id]["state"] == "outcome_unknown"
+print(json.dumps({"phase": phase, "port": server.server_port, "starts": len(starts)}))
+'''
+    results = []
+    for phase in ("archive", "restart"):
+        completed = subprocess.run(
+            [sys.executable, "-c", code], cwd=APP_ROOT,
+            env={**os.environ, "TEST_DATA_DIR": str(tmp_path), "TEST_PHASE": phase,
+                 "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True, text=True, encoding="utf-8", timeout=90,
+        )
+        assert completed.returncode == 0, completed.stderr
+        results.append(json.loads(completed.stdout.strip().splitlines()[-1]))
+    assert results[0]["starts"] == 0 and results[1]["starts"] == 1
+    assert results[0]["port"] != results[1]["port"]
+
+
 def test_paid_ai_ledger_is_fail_closed_atomic_and_preserves_poll_shape(tmp_path):
     data_dir = tmp_path / "desktop-paid-ai"
     code = r'''
@@ -180,13 +315,28 @@ blocked_unknown = post(
 assert blocked_unknown.status_code == 409, blocked_unknown.data
 assert blocked_unknown.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
 assert len(start_calls) == 1
+stale_resolve = post(client_one, csrf_one, "/desktop/ai-refine-v2/resolve-unknown",
+                     {"confirm_new_task": True, "task_id": "different-old-task"})
+assert stale_resolve.status_code == 409
 resolved_again = post(
     client_one,
     csrf_one,
     "/desktop/ai-refine-v2/resolve-unknown",
-    {"confirm_new_task": True},
+    {"confirm_new_task": True, "task_id": "task-atomic-1"},
 )
 assert resolved_again.status_code == 200, resolved_again.data
+archive_path = ledger_path.with_name("desktop-ai-refine-archive.json")
+archive = json.loads(archive_path.read_text(encoding="utf-8"))
+assert archive["task-atomic-1"]["state"] == "outcome_unknown"
+assert len(start_calls) == 1  # Archiving never starts a paid request.
+pipeline_runner.get_task_status = lambda task_id: {"task_id": task_id,
+    "user_id": user_id, "status": "outcome_unknown"}
+archived_poll = client_one.get("/api/ai-refine-v2/status/task-atomic-1")
+assert archived_poll.get_json()["archived"] is True
+assert json.loads(ledger_path.read_text(encoding="utf-8"))["state"] == "resolved_unknown"
+archived_recover = post(client_one, csrf_one, "/api/ai-refine-v2/recover/task-atomic-1", {})
+assert archived_recover.status_code == 409
+pipeline_runner.get_task_status = lambda task_id: None
 resolved_missing = client_one.get("/api/ai-refine-v2/status/task-atomic-1")
 assert resolved_missing.status_code == 404, resolved_missing.data
 assert resolved_missing.get_json().get("code") != "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
@@ -209,6 +359,7 @@ pipeline_runner.get_task_status = lambda task_id: {
 closed = client_one.get("/api/ai-refine-v2/status/task-direct-2")
 assert closed.status_code == 200, closed.data
 assert closed.get_json()["status"] == "failed"
+assert json.loads(archive_path.read_text(encoding="utf-8"))["task-direct-2"]["state"] == "failed"
 
 # Partial success is terminal: it closes pending so a later confirmed job is admissible.
 pipeline_runner.start_task = lambda **kwargs: start_calls.append(kwargs) or "task-partial-3"
