@@ -20,6 +20,16 @@ async function main() {
   assert.equal(audio.splitScript('先说第一件事。再说第二件事。最后说第三件事。', 45).length, 3);
   assert.throws(() => audio.assertSpeechCoverage({ seconds: 11, speechStart: .1, speechEnd: 10.9, maxGapSeconds: .2 }, 15), /尚未提交视频/);
   assert.throws(() => audio.verifyTranscript([{ text: '漏了后面', end_time: 14500 }], '漏了后面完整的一句话。', 15), /不一致/);
+  const numericSpeech = [{ text: '浦度CC1 Pro，15升，500毫米，3~4小时。', start_time: 100, end_time: 14500,
+    words: [{ text: '浦度CC1 Pro', start_time: 100, end_time: 3000 }, { text: '15升', start_time: 3000, end_time: 6000 },
+      { text: '500毫米', start_time: 6000, end_time: 9000 }, { text: '3~4小时', start_time: 9000, end_time: 14500 }] }];
+  const preserved = JSON.stringify(numericSpeech);
+  const alignedNumbers = audio.verifyTranscript(numericSpeech, '普渡CC1 Pro，十五升，五百毫米，三到四小时。', 15).alignedUtterances;
+  assert.equal(alignedNumbers[0].text, '普渡CC1 Pro，十五升，五百毫米，三到四小时。');
+  assert.deepEqual(alignedNumbers[0].words.map(word => [word.start_time, word.end_time]), numericSpeech[0].words.map(word => [word.start_time, word.end_time]));
+  assert.equal(JSON.stringify(numericSpeech), preserved, 'Retain the original recognition receipt.');
+  assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC2 Pro，十五升，五百毫米，三到四小时。', 15), /不一致/);
+  assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC1 Pro，五十升，五百毫米，三到四小时。', 15), /不一致/);
   const exact = '先看地面是否适合使用清洁机器人，再看现场需要清理什么污物，把现场情况发来一起安排合适的清洁方案。';
   assert.throws(() => audio.verifyTranscript([{ text: exact.replace('地面', '地棉'), start_time: 0, end_time: 14500 }], exact, 15), /不一致/, 'Even one substitution must stop before paid video; packaging needs exact anchors.');
   assert.throws(() => audio.verifyTranscript([{ text: 'CC1 Pro', start_time: 0, end_time: 14500 }], 'ＣＣ1 Pro', 15), /不一致/, 'Packaging does not normalize compatibility characters.');

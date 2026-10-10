@@ -131,7 +131,8 @@ function verifyTranscript(utterances, script, durationSeconds) {
   if (!Array.isArray(utterances) || !utterances.length) throw fail('digital_human_transcript_missing', '完整配音未识别出带时间的讲话，尚未生成视频。');
   // This checks frozen TTS generated from the approved script, not arbitrary
   // uploaded speech. ASR homophones may use the approved spelling while keeping
-  // observed timestamps. Missing words, changed tones, numbers and IDs still fail.
+  // observed timestamps. Equivalent integer notation is reconciled; missing
+  // words, changed tones, numerical values and IDs still fail.
   const aligned = reconcileNarrationSpelling(utterances, script);
   if (!aligned) {
     throw fail('digital_human_transcript_mismatch', '实际配音识别与确认文案不一致，可能漏句或读音需要核对。音轨与识别结果已保留，尚未生成视频。');
