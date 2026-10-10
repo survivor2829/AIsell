@@ -1625,6 +1625,7 @@ function publicAutoMixLicense(value) {
 
 function publicAutoMixMusic(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.mode === "none") return { mode: "none", displayName: "无配乐", message: safeAutoMixText(value.message, 300) };
   const moods = autoMixField(value, "moods");
   return {
     trackId: publicAutoMixToken(autoMixField(value, "trackId"), 128),

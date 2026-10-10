@@ -153,6 +153,8 @@ type AutoMixPlan = {
     approvalStatus?: "approved" | "pending" | "retired" | null;
   } | null;
   music?: {
+    mode?: "none";
+    message?: string;
     trackId?: string | null;
     displayName?: string | null;
     source?: string | null;
@@ -388,6 +390,7 @@ function personaSummary(plan: AutoMixPlan) {
 }
 
 function licenseSummary(plan: AutoMixPlan) {
+  if (plan.music?.mode === "none") return plan.music.message || "本片无配乐，保留完整配音。";
   const license = plan.music?.licenseSummary;
   if (!plan.music || !license) return "授权音乐尚未选定。";
   const status = license.status === "valid"
@@ -1772,6 +1775,7 @@ export function ProductOneClickPage({
                       )}
                     </div>
 
+                    {plan.music?.mode === "none" && <p role="status" className="product-generate-note">{licenseSummary(plan)}</p>}
                     <details className="product-quality-details">
                       <summary>查看质量信息</summary>
                       {evidenceIssue && <p className="product-fallback"><strong>正式门槛未通过</strong>{evidenceIssue}</p>}
