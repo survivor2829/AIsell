@@ -4481,6 +4481,10 @@ class CreativeDomain:
             "provider_voice_id <> ''",
             "((provider = 'bailian' AND provider_model = ?) OR (provider = 'volcengine' AND provider_model IN ('seed-tts-1.0', 'seed-tts-2.0')))",
         ]
+        supported = getattr(getattr(self.analyzer, "cloud_client", None), "voice_providers", None)
+        if not selected_id and supported:
+            clauses.append("provider IN (" + ",".join("?" for _ in supported) + ")")
+            values.extend(supported)
         if selected_id:
             clauses.append("id = ?")
             values.append(selected_id)

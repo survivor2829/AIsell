@@ -168,6 +168,18 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         self.assertEqual("auto_mix_voice_cache_changed", raised.exception.code)
         self.assertEqual(1, len(self.analyzer.calls))
 
+    def test_default_video_voice_matches_executor_provider(self):
+        self.service.connection.execute("UPDATE voice_personas_v1 SET approved_at='2026-10-09' WHERE id='natural-life@1'")
+        self.service.connection.execute("""INSERT INTO voice_personas_v1(
+            id,version,display_name,style,catalog_version,provider,provider_model,provider_voice_id,
+            instruction,approved_at,active,created_at,updated_at)
+            SELECT 'supported-voice@1',version,'supported-voice',style,catalog_version,'volcengine','seed-tts-2.0',
+            'approved-voice',instruction,approved_at,active,created_at,updated_at FROM voice_personas_v1 WHERE id='natural-life@1'""")
+        self.analyzer.cloud_client = mock.Mock(voice_providers=("volcengine",))
+        result = self.service.prepare_video_narration({"source_id": "provider-choice", "text": "完整的产品口播。"})
+        self.assertEqual("supported-voice@1", result["voice_persona_id"])
+        self.assertEqual("approved-voice", self.analyzer.calls[0]["provider_voice_id"])
+
     def test_configured_catalog_is_versioned_and_private(self):
         values = configured_voice_personas(
             {

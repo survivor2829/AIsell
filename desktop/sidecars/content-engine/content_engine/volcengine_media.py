@@ -42,6 +42,7 @@ class GatewayReplayRetry(Exception):
 
 class VolcengineMediaClient(DashScopeMediaClient):
     provider = "volcengine"
+    voice_providers = ("volcengine",)
 
     @staticmethod
     def _read_response(response, meter, stage):

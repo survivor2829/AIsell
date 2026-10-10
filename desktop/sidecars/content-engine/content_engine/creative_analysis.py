@@ -216,6 +216,7 @@ def _bailian_tts_https_download_url(value: str) -> str:
 
 
 class DashScopeMediaClient:
+    voice_providers = ("bailian", "volcengine")
     def __init__(
         self,
         *,
