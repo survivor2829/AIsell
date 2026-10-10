@@ -10416,18 +10416,12 @@ class CreativeDomain:
                         "editor_reason": ranking.get("reason") or [],
                     }
                 )
-            if experiment_mode == "supoclip_bailian_v1":
-                # Only candidates actually sent through the isolated editor are
-                # eligible for this experiment. If diversity reduces capacity,
-                # returning fewer clips is safer than silently mixing engines.
-                windows = sorted(
-                    shortlist,
-                    key=lambda item: (-item["score"]["total"], item["start_ms"]),
-                )
-            else:
-                windows.sort(
-                    key=lambda item: (-item["score"]["total"], item["start_ms"])
-                )
+            # Local scores only shortlist candidates; they are not comparable
+            # with editor scores. Once ranked, select from that same set.
+            windows = sorted(
+                shortlist,
+                key=lambda item: (-item["score"]["total"], item["start_ms"]),
+            )
         selected = []
         signatures = set()
         for item in windows:

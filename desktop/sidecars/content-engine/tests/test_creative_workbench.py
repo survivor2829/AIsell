@@ -3764,6 +3764,36 @@ class CreativeWorkbenchTests(unittest.TestCase):
             self.service.list_generated_videos(project_id=task["project_id"])["items"],
         )
 
+    def test_standard_course_never_selects_outside_cloud_ranked_shortlist(self):
+        ranked = set()
+
+        def rank(windows, _theme):
+            ranked.update(item["signature"] for item in windows)
+            return [
+                dict(id=item["signature"], opening_hook=0.1, standalone_value=0.1,
+                     content_completeness=0.1, language_quality=0.1,
+                     theme_relevance=0.1)
+                for item in windows
+            ]
+
+        analyzer = FakeCreativeAnalyzer()
+        analyzer.rank_course_windows = rank
+        self.service.creative_domain.analyzer = analyzer
+        segments = [
+            dict(segment_id=f"s{i}", start_ms=i * 30_000,
+                 end_ms=(i + 1) * 30_000, quality_score=0.9,
+                 transcript_text=f"如何完成第{i}次设备操作？先检查现场，再确认清洁模式。",
+                 metadata={"sentence_complete": True})
+            for i in range(60)
+        ]
+        windows = self.service.creative_domain._course_windows(
+            segments, 30_000, 30_000, 1, theme="设备实操"
+        )
+        self.assertEqual(48, len(ranked))
+        self.assertEqual(1, len(windows))
+        self.assertIn(windows[0]["signature"], ranked)
+        self.assertEqual("bailian_editor", windows[0]["score"]["selection_engine"])
+
     def test_supoclip_course_scores_use_four_bounded_cloud_dimensions(self):
         asset_id = self._insert_asset("supoclip-course.mp4", duration_ms=180_000)
         analyzer = SupoClipEvidenceRanker()
