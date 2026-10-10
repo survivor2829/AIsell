@@ -278,7 +278,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   const executableName = edition === "test" ? `${productBrand.executableName}-测试版` : productBrand.executableName;
   const { target, zip, archiveBaseDir } = paths;
   fs.mkdirSync(releaseDir, { recursive: true });
-  fs.cpSync(electronDir, target, { recursive: true });
+  fs.cpSync(electronDir, target, { recursive: true, dereference: true });
   const electronExe = path.join(target, "electron.exe");
   // The bundled resource editor cannot open Chinese absolute paths. Use short
   // relative filenames before applying the stable executable name. Existing
