@@ -3,8 +3,8 @@ import { AssetThumb } from "./BatchAssets";
 import type { Asset, Batch, Candidate } from "./batch-studio-api";
 import { adLawSentences } from "./ad-law-terms";
 
-export type CreativeBrief = { target_audience: string; expression: string; script_source: "ideas" | "provided" };
-export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "", script_source: "provided" });
+export type CreativeBrief = { target_audience: string; expression: string; script_source: "ideas" | "provided"; script_action?: "generate" | "rewrite" | "expand" };
+export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "", script_source: "provided", script_action: "generate" });
 export function expressionText(value?: { expression?: string; advantages?: string; customer_pain_points?: string; description?: string; material_context?: string }): string {
   const expression = value?.expression !== undefined ? value.expression : [value?.advantages && `产品／服务优势：${value.advantages}`, value?.customer_pain_points && `客户痛点：${value.customer_pain_points}`].filter(Boolean).join("\n\n");
   return [expression, value?.description, value?.material_context].filter((text, index, all) => text && all.indexOf(text) === index).join("\n\n");
@@ -24,7 +24,8 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
       <textarea aria-label="你想表达什么" value={value.expression} maxLength={14000} rows={4}
         placeholder="粘贴文案将保留原文；留空则根据素材和目标客户生成"
         onChange={(event) => onChange({ ...value, expression: event.target.value })} /></label>
-      <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "ideas"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "ideas" : "provided" })} /><span>让 AI 根据这些想法改写或扩写</span></label>
+      <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "ideas"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "ideas" : "provided", script_action: value.script_action === "expand" ? "expand" : "rewrite" })} /><span>让 AI 根据这些想法改写或扩写</span></label>
+      {value.script_source === "ideas" && !!value.expression.trim() && <label><span>文案处理</span><select aria-label="文案处理方式" value={value.script_action === "expand" ? "expand" : "rewrite"} onChange={(event) => onChange({ ...value, script_action: event.target.value as "rewrite" | "expand" })}><option value="rewrite">改写 · 保留原意，调整表达</option><option value="expand">扩写 · 补充讲解，保留已有信息</option></select></label>}
       {value.script_source === "provided" && value.expression.trim() && <small className="batch-hint">保留原文，按实际长度制作，最多 2400 字。</small>}
       {!value.expression.trim() && expressionText(suggestions) && <details className="batch-inline-suggestion"><summary>查看 AI 建议</summary>
         <p>{expressionText(suggestions)}</p><button type="button" onClick={() => onChange({ ...value, expression: expressionText(suggestions), script_source: "ideas" })}>采用并修改</button>

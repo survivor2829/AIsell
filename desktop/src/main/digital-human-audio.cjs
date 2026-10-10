@@ -120,9 +120,9 @@ async function measureAudio({ source, ffmpegPath = 'ffmpeg' }) {
   const pcm = await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', path.resolve(source), '-vn', '-ac', '1', '-ar', String(RATE), '-f', 's16le', '-'], { binaryOutput: true, maxOutputBytes: 64 * 1024 * 1024 });
   return { ...analyzePcm(pcm), sha256: createHash('sha256').update(fs.readFileSync(source)).digest('hex') };
 }
-function assertSpeechCoverage(audio, seconds, index = 0) {
+function assertSpeechCoverage(audio, seconds, index = 0, { allowNaturalPauses = false } = {}) {
   if (!audio || !Number.isFinite(audio.seconds) || audio.seconds < 1.99 || audio.seconds > seconds + .08
-    || audio.speechStart > .8 || audio.speechEnd < seconds - MAX_TAIL_SECONDS || audio.maxGapSeconds > 1.5) {
+    || !allowNaturalPauses && (audio.speechStart > .8 || audio.speechEnd < seconds - MAX_TAIL_SECONDS || audio.maxGapSeconds > 1.5)) {
     const actual = Number.isFinite(audio?.speechEnd) ? audio.speechEnd.toFixed(1) : '未知';
     throw fail('digital_human_audio_duration_mismatch', `第${index + 1}段实际讲到${actual}秒，目标${seconds}秒。请调整该段文案后新建；原音轨已保存，尚未提交视频。`);
   }
@@ -150,6 +150,15 @@ function verifyTranscript(utterances, script, durationSeconds) {
   }
   if (last < (durationSeconds - MAX_TAIL_SECONDS) * 1000) throw fail('digital_human_transcript_coverage', '口播字幕时间没有覆盖预定结尾，尚未生成视频。');
   return { editDistance: 0, ...aligned, verifiedAt: new Date().toISOString() };
+}
+function verifyRecordingTranscript(utterances, durationSeconds) {
+  if (!Array.isArray(utterances) || !utterances.length || !utterances.some((item) => normalize(item.text))) throw fail('digital_human_transcript_missing', '录音未识别出讲话，请换一段清晰单人录音。');
+  let last = 0;
+  for (const item of utterances) {
+    if (!Number.isInteger(item.start_time) || !Number.isInteger(item.end_time) || item.start_time < last || item.end_time <= item.start_time || item.end_time > durationSeconds * 1000 + 80) throw fail('digital_human_transcript_coverage', '录音字幕时间无效，原录音已保留，尚未提交视频。');
+    last = item.end_time;
+  }
+  return { source: 'uploaded_audio', verifiedAt: new Date().toISOString() };
 }
 async function probe(source, ffmpegPath) {
   const executable = path.basename(ffmpegPath) === ffmpegPath ? (process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
@@ -183,7 +192,7 @@ async function assemble({ segments, destination, audioDestination, ffmpegPath = 
     const encoder = await videoEncoderArgs(ffmpegPath);
     for (const [index, segment] of segments.entries()) {
       const audio = await measureAudio({ source: segment.audioPath, ffmpegPath });
-      assertSpeechCoverage(audio, segment.seconds, index);
+      assertSpeechCoverage(audio, segment.seconds, index, { allowNaturalPauses: segment.allowNaturalPauses === true });
       if (segment.audioSha256 && audio.sha256 !== segment.audioSha256) throw fail('digital_human_audio_changed', '已冻结的配音文件发生变化，不能继续合成。');
       const info = await probe(segment.videoPath, ffmpegPath), video = info.streams?.find((s) => s.codec_type === 'video');
       if (!video || Number(video.duration || info.format?.duration) < segment.seconds - .08) throw fail('digital_human_video_short', `第${index + 1}段画面不足${segment.seconds}秒，不能以静帧补足。`);
@@ -211,4 +220,4 @@ function segmentPrompt(task, segment, index) {
   const expressions = ['开口时轻微前倾、眉眼带好奇；解释时回稳，单手自然摊开。', '平稳解释，手势与语气有轻重，适当点头，手势收回。', '收尾时自然微笑、轻点头，仍保持眨眼和呼吸。'];
   return `竖屏写实人物口播，稳定平视大半身构图，保持参考人物身份、服装、场景和产品外形。使用传入音轨作为唯一对白，嘴型、表情、肩膀和手势与该音轨节奏对应；不另读一份文案，不生成额外人声或配乐。${expressions[Math.min(index, expressions.length - 1)]}两手自然完整，不机械循环挥手；大型产品继续落地，不改变产品结构。语音结束后只保留短暂自然呼吸，不定格。不生成字幕或画内文字。本段语义仅供表演理解：${segment.text}`;
 }
-module.exports = { VOICE_IDS, splitScript, speechChunks, splitMeasuredSpeech, cutAudio, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, freezeAudio, assemble, segmentPrompt };
+module.exports = { VOICE_IDS, splitScript, speechChunks, splitMeasuredSpeech, cutAudio, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, verifyRecordingTranscript, freezeAudio, assemble, segmentPrompt };

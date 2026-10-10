@@ -48,6 +48,18 @@ function createDigitalHumanService(options = {}) {
   const readPreviewPrices = options.readPreviewPrices || createPriceReader(options);
   const audioMedia = { ...audioTools, ...options.audioTools };
   const active = new Map();
+  const voicePreferencesFile = path.join(root, 'voice-preferences.json');
+  function voicePreferences() { try { return JSON.parse(fs.readFileSync(voicePreferencesFile, 'utf8')); } catch { return {}; } }
+  async function voices() {
+    const catalog = await options.listVoices?.() || { items: [] };
+    return (catalog.items || []).filter((v) => v.provider === 'volcengine').map((v) => ({
+      id: v.voicePersonaId, name: v.displayName, gender: v.gender || 'unknown',
+      available: v.availability === 'available', availability: v.availability || 'needs_preview',
+      digitalHumanDefault: v.digitalHumanDefault === true,
+    }));
+  }
+  function imageAsset(id) { const item = asset(id); imageMime(item.bytes); return item; }
+  function audioAsset(id) { const item = asset(id); if (item.kind !== 'audio') throw fail('digital_human_audio_missing', '请重新选择录音。'); return item; }
   let closed = false;
   let updateHold = false;
   let admissions = 0;
@@ -80,6 +92,8 @@ function createDigitalHumanService(options = {}) {
   }
   function publicTask(task) {
     return { id: task.id, title: task.title, script: task.script, sceneId: task.sceneId, voiceStyle: task.voiceStyle,
+      reusedAudioFrom: task.reusedAudioFrom, voiceSource: task.voiceSource, voicePersonaId: task.voicePersonaId, voiceName: task.voiceName,
+      characterVoice: task.characterVoice, audioAssetId: task.audioAssetId, audioName: task.audioName,
       durationSeconds: task.durationSeconds, personAssetId: task.personAssetId, productAssetId: task.productAssetId,
       actualDurationSeconds: task.actualDurationSeconds, narrationPolicy: task.narrationPolicy,
       templateId: task.templateId || 'topic_fixed', musicTrackId: task.musicTrackId || '',
@@ -134,6 +148,7 @@ function createDigitalHumanService(options = {}) {
     const segment = (name.startsWith('tts_') ? task.speechChunks || task.segments : task.segments)?.find((item) => name === `${name.startsWith('tts_') ? 'tts' : 'wan'}_${item.id}` || name.startsWith(`wan_${item.id}_retry_`));
     // Conservative allowance for the workbench catalogue, rather than using a
     // different provider's advertised price as the approved voice's actual bill.
+    if (name.startsWith('tts_') && task.voiceSource === 'uploaded_audio') return 0;
     if (name.startsWith('tts_')) return round([...segment.text].length * (task.voiceStyle === 'workbench' ? Math.max(20, task.prices.ttsCnyPer10kChars) : task.prices.ttsCnyPer10kChars) / 10000);
     if (name === 'wan_estimate') return round(task.durationSeconds * task.prices.rates['720p'].audio);
     if (name.startsWith('wan_')) return round((segment.generationSeconds || segment.seconds) * task.prices.rates['720p'].audio);
@@ -162,7 +177,7 @@ function createDigitalHumanService(options = {}) {
     const prices = await readPrices(), previewPrices = await readPreviewPrices();
     if (!validBailianPrices(prices) || !validPrices(previewPrices)) throw fail('digital_human_price_unavailable', '未取得有效完整报价，尚未提交新付费请求。');
     task.prices = prices; task.previewPrices = previewPrices;
-    if (task.narrationPolicy === 'original_script') task.speechChunks ||= audioMedia.speechChunks(task.script);
+    if (task.narrationPolicy === 'original_script') task.speechChunks ||= task.voiceSource === 'uploaded_audio' ? [] : audioMedia.speechChunks(task.script);
     else task.segments ||= audioMedia.splitScript(task.script, task.durationSeconds);
     save(task);
     if (task.budgetPolicy === 'quoted_production' && task.status === 'draft' && !Object.keys(task.operations || {}).length) {
@@ -210,7 +225,7 @@ function createDigitalHumanService(options = {}) {
   }
   async function upload(task, role) {
     if (task[`${role}Url`]) return task[`${role}Url`];
-    const input = asset(task[`${role}AssetId`]);
+    const input = imageAsset(task[`${role}AssetId`]);
     const request = provider.imageUploadBody(input.path);
     const payload = await operation(task, `upload_${role}`, '/apimart/uploads/images', request.body, request.headers);
     const url = remoteUrl(provider.nodeOf(payload).url || payload.url);
@@ -274,19 +289,36 @@ function createDigitalHumanService(options = {}) {
       { 'X-Api-Resource-Id': 'volc.bigasr.auc_turbo', 'X-Api-Sequence': '-1' });
     const result = response.result || response.data?.result || response.data || response;
     task.preparedUtterances = result.utterances; save(task);
-    const { alignedUtterances, ...verification } = audioMedia.verifyTranscript(task.preparedUtterances, task.script, seconds);
+    const { alignedUtterances, ...verification } = task.voiceSource === 'uploaded_audio'
+      ? audioMedia.verifyRecordingTranscript(task.preparedUtterances, seconds)
+      : audioMedia.verifyTranscript(task.preparedUtterances, task.script, seconds);
+    if (task.voiceSource === 'uploaded_audio') task.script = task.preparedUtterances.map((item) => item.text || '').join('');
     task.audioVerification = verification;
     if (alignedUtterances) task.preparedUtterances = alignedUtterances;
     buildCaptions({ utterances: task.preparedUtterances, timeUnit: 'ms', durationSeconds: seconds }); save(task);
   }
   async function prepareOriginalSpeech(task) {
     await requireCapabilities(task); await ensurePrices(task);
+    if (task.voiceSource === 'official' && !task.reusedAudioFrom) {
+      const selected = (await voices()).find((voice) => voice.id === task.voicePersonaId);
+      if (!selected?.available) throw fail('digital_human_voice_unavailable', '所选声音尚未完成试听或账号不可用，请先试听该声音；不会替换成其他声音。');
+      if (selected.gender !== task.characterVoice) throw fail('digital_human_voice_mismatch', '所选音色与人物声音类型不一致，请选择对应男声或女声。');
+      const preferences = voicePreferences(); preferences[task.characterVoice] = selected.id; writeJsonAtomic(voicePreferencesFile, preferences);
+      task.voiceName = selected.name; save(task);
+    }
+    if (task.voiceSource === 'uploaded_audio' && !task.frozenAudioFile) {
+      const input = audioAsset(task.audioAssetId), relative = `${task.id}/frozen-full-speech.wav`;
+      const result = await audioMedia.freezeAudio({ segments: [{ audioPath: input.path, audioSha256: input.sha256, preserveDuration: true }], destination: contained(root, relative), ffmpegPath: options.ffmpegPath || 'ffmpeg' });
+      task.frozenAudioFile = relative; task.frozenAudioSha256 = result.sha256; save(task);
+    }
     for (const chunk of task.speechChunks) {
       if (task.voiceStyle === 'workbench') {
         if (typeof options.prepareNarration !== 'function') throw fail('digital_human_voice_unavailable', '创作工作台配音服务尚未就绪。');
         const prepared = await operation(task, `tts_${chunk.id}`, 'internal:workbench-narration', {}, {},
-          (sourceId) => options.prepareNarration({ source_id: sourceId, text: chunk.text,
-            ...(task.voicePersonaId ? { voice_persona_id: task.voicePersonaId } : {}) }));
+          (sourceId) => task.voiceSource === 'cloned_voice'
+            ? options.voiceCloneClient.synthesize({ speakerId: task.voicePersonaId, text: chunk.text, operationId: sourceId })
+            : options.prepareNarration({ source_id: sourceId, text: chunk.text,
+              ...(task.voicePersonaId ? { voice_persona_id: task.voicePersonaId } : {}) }));
         const relative = `${task.id}/${chunk.id}.audio`;
         if (!chunk.audioFile) {
           const bytes = fs.readFileSync(prepared.file);
@@ -322,7 +354,7 @@ function createDigitalHumanService(options = {}) {
     }
     const measured = await audioMedia.measureAudio({ source: contained(root, task.frozenAudioFile), ffmpegPath: options.ffmpegPath || 'ffmpeg' });
     if (measured.sha256 !== task.frozenAudioSha256) throw fail('digital_human_audio_changed', '冻结的完整口播音轨发生变化。');
-    audioMedia.assertSpeechCoverage(measured, measured.seconds);
+    audioMedia.assertSpeechCoverage(measured, measured.seconds, 0, { allowNaturalPauses: task.voiceSource === 'uploaded_audio' });
     task.actualDurationSeconds = measured.seconds; save(task);
     await recognizeFrozen(task, measured.seconds);
     if (!task.segments?.length) { task.segments = audioMedia.splitMeasuredSpeech(task.preparedUtterances, measured.seconds); save(task); }
@@ -334,7 +366,7 @@ function createDigitalHumanService(options = {}) {
       const relative = `${task.id}/${segment.id}.wav`;
       segment.audio = await audioMedia.cutAudio({ source: contained(root, task.frozenAudioFile), destination: contained(root, relative),
         startSeconds: segment.startSeconds, seconds: segment.seconds, ffmpegPath: options.ffmpegPath || 'ffmpeg' });
-      audioMedia.assertSpeechCoverage(segment.audio, segment.seconds, task.segments.indexOf(segment));
+      audioMedia.assertSpeechCoverage(segment.audio, segment.seconds, task.segments.indexOf(segment), { allowNaturalPauses: task.voiceSource === 'uploaded_audio' });
       segment.audioFile = relative; segment.status = 'audio_ready'; save(task);
     }
     task.budgetPhase = 'production'; save(task);
@@ -444,7 +476,7 @@ function createDigitalHumanService(options = {}) {
       const baseVideoFile = `${task.id}/base.mp4`, frozenAudioFile = task.frozenAudioFile;
       if (digest(fs.readFileSync(contained(root, frozenAudioFile))) !== task.frozenAudioSha256) throw fail('digital_human_audio_changed', '冻结的完整口播音轨发生变化，不能替换为模型声音。');
       const result = await audioMedia.assemble({ segments: task.segments.map((segment) => ({ seconds: segment.seconds,
-        videoPath: contained(root, segment.videoFile), audioPath: contained(root, segment.audioFile), audioSha256: segment.audio.sha256 })),
+        videoPath: contained(root, segment.videoFile), audioPath: contained(root, segment.audioFile), audioSha256: segment.audio.sha256, allowNaturalPauses: task.voiceSource === 'uploaded_audio' })),
         destination: contained(root, baseVideoFile), audioDestination: contained(root, frozenAudioFile), ffmpegPath: options.ffmpegPath || 'ffmpeg' });
       update(task, 'packaging', { baseVideoFile, frozenAudioFile, frozenAudioSha256: result.audioSha256, progress: 0 });
     }
@@ -539,7 +571,8 @@ function createDigitalHumanService(options = {}) {
   async function capabilities() {
     const status = await official.capabilities();
     return { ...status, pipelineVersion: 2, durations: [15, 30, 45], resolution: '720p', audioFirst: true,
-      scenes: SCENES.map(({ id, name }) => ({ id, name })), voices: VOICES.map(({ id, name }) => ({ id, name })) };
+      scenes: SCENES.map(({ id, name }) => ({ id, name })), voices: await voices(), voicePreferences: voicePreferences(),
+      voiceClone: options.voiceCloneClient ? await options.voiceCloneClient.capabilities().catch(() => ({ ready: false, message: '专属音色暂不可用。' })) : { ready: false } };
   }
   function imagePreview(item, bytes) {
     return { id: item.id, name: item.name, previewDataUrl: options.imageThumbnail
@@ -570,13 +603,69 @@ function createDigitalHumanService(options = {}) {
     writeJsonAtomic(contained(root, `assets/${id}.json`), { id, relativePath, sha256: digest(bytes), name: path.basename(source), mime });
     return imagePreview({ id, name: path.basename(source) }, bytes);
   }
+  async function recommendVoice(personAssetId) {
+    const input = imageAsset(personAssetId);
+    let result;
+    try { result = await options.recommendVoice?.({ image_data_url: options.imageThumbnail ? options.imageThumbnail(input.bytes) : `data:${input.mime};base64,${input.bytes.toString('base64')}` }); }
+    catch { result = null; }
+    const characterVoice = ['male', 'female'].includes(result?.characterVoice) ? result.characterVoice : 'unknown';
+    const catalog = await voices(), preference = voicePreferences()[characterVoice];
+    const voice = catalog.find((v) => v.gender === characterVoice && v.id === preference && v.available)
+      || catalog.find((v) => v.gender === characterVoice && v.digitalHumanDefault);
+    return { characterVoice, voicePersonaId: voice?.id || '', reason: result?.reason || '未能确定声音建议，请手动选择男声或女声。' };
+  }
+  async function previewVoice(voicePersonaId) {
+    if (!(await voices()).some((v) => v.id === voicePersonaId)) throw fail('digital_human_voice_invalid', '请选择声音目录中的音色。');
+    if (!options.previewVoice) throw fail('digital_human_voice_unavailable', '声音试听服务暂不可用。');
+    const result = await options.previewVoice(voicePersonaId);
+    return { audioDataUrl: result.audioDataUrl, cacheHit: result.cacheHit === true };
+  }
+  async function selectVoice(voicePersonaId, characterVoice) {
+    const voice = (await voices()).find((v) => v.id === voicePersonaId);
+    if (!voice || !['male', 'female'].includes(characterVoice) || voice.gender !== characterVoice) throw fail('digital_human_voice_invalid', '请选择与人物声音类型一致的音色。');
+    await options.approveVoice?.(voicePersonaId);
+    const preferences = voicePreferences(); preferences[characterVoice] = voicePersonaId;
+    writeJsonAtomic(voicePreferencesFile, preferences);
+    return { voicePersonaId, characterVoice };
+  }
+  async function importAudio(source) {
+    assertCanWork();
+    const ext = path.extname(source).toLowerCase(), stat = fs.statSync(source);
+    if (!['.wav', '.mp3', '.m4a'].includes(ext) || !stat.isFile() || stat.size <= 0 || stat.size > 50 * 1024 * 1024) throw fail('digital_human_audio_invalid', '请选择50MB以内的 WAV、MP3 或 M4A 录音。');
+    const measured = await audioMedia.measureAudio({ source, ffmpegPath: options.ffmpegPath || 'ffmpeg' });
+    if (measured.seconds < 2 || measured.seconds > 600) throw fail('digital_human_audio_duration_invalid', '请选择2秒到10分钟的清晰单人录音。');
+    const bytes = fs.readFileSync(source), id = `dha_${randomUUID()}`, relativePath = `assets/${id}${ext}`;
+    fs.mkdirSync(contained(root, 'assets'), { recursive: true }); fs.writeFileSync(contained(root, relativePath), bytes, { flag: 'wx' });
+    const item = { id, kind: 'audio', relativePath, sha256: digest(bytes), name: path.basename(source), seconds: measured.seconds };
+    writeJsonAtomic(contained(root, `assets/${id}.json`), item);
+    return { id, name: item.name, seconds: item.seconds };
+  }
+  async function voiceClones() {
+    if (!options.voiceCloneClient) return { items: [], message: '专属音色服务未连接。' };
+    const result = await options.voiceCloneClient.list();
+    return { ...result,
+      message: result.inventoryConfigured ? '' : '尚未核实并分配免费或已购复刻槽位，不会自动购买；可先使用自己的录音。' };
+  }
+  async function trainVoice({ speakerId, audioAssetId, customerConsent }) {
+    if (!options.voiceCloneClient) throw fail('digital_human_clone_unavailable', '专属音色服务未连接。');
+    const input = audioAsset(audioAssetId);
+    return options.voiceCloneClient.train({ speakerId, audioFile: input.path, customerConsent });
+  }
+  async function cloneStatus(payload) { if (!options.voiceCloneClient) throw fail('digital_human_clone_unavailable', '专属音色服务未连接。'); return options.voiceCloneClient.status(payload); }
   function create(input) {
     assertCanWork();
-    assertKeys(input, ['id', 'personAssetId', 'productAssetId', 'sceneId', 'voiceStyle', 'durationSeconds', 'script', 'title', 'templateId', 'musicTrackId', 'budgetCny']);
+    assertKeys(input, ['id', 'personAssetId', 'productAssetId', 'sceneId', 'voiceStyle', 'durationSeconds', 'script', 'title', 'templateId', 'musicTrackId', 'budgetCny', 'voiceSource', 'voicePersonaId', 'audioAssetId', 'characterVoice', 'sourceTaskId']);
     const previous = input.id ? read(input.id) : null;
+    if (input.voiceSource !== undefined) {
+      if (!['official', 'uploaded_audio', 'cloned_voice'].includes(input.voiceSource)) throw fail('digital_human_voice_invalid', '请选择有效的声音来源。');
+      if (!['male', 'female', 'unknown'].includes(input.characterVoice || 'unknown')) throw fail('digital_human_voice_invalid', '人物声音类型无效。');
+      if (input.voiceSource === 'uploaded_audio' && input.audioAssetId) audioAsset(input.audioAssetId);
+      if (input.voiceSource !== 'uploaded_audio' && input.voicePersonaId && !/^[A-Za-z0-9_@-]{1,160}$/u.test(input.voicePersonaId)) throw fail('digital_human_voice_invalid', '所选音色无效。');
+      input = { ...input, voiceStyle: 'workbench' };
+    }
     const version = previous?.version || 2;
-    if (input.personAssetId) asset(input.personAssetId);
-    if (input.productAssetId) asset(input.productAssetId);
+    if (input.personAssetId) imageAsset(input.personAssetId);
+    if (input.productAssetId) imageAsset(input.productAssetId);
     if (!SCENES.some((s) => s.id === input.sceneId) || !VOICES.some((s) => s.id === input.voiceStyle)
       || !Number.isInteger(input.durationSeconds) || (version === 1 ? input.durationSeconds < 10 || input.durationSeconds > 15 : ![15, 30, 45].includes(input.durationSeconds))) throw fail('digital_human_invalid_options', version === 1 ? '请选择有效场景、声音和10–15秒时长。' : '请选择有效场景、声音和15、30或45秒时长。');
     if (input.templateId && !['topic_fixed', 'key_points'].includes(input.templateId)) throw fail('digital_human_invalid_template', '请选择有效的视频样式。');
@@ -585,24 +674,48 @@ function createDigitalHumanService(options = {}) {
     if (script.length > (version === 1 ? 160 : 1800)) throw fail('digital_human_script_required', '口播文案过长，请精简后再制作。');
     if (version === 2 && input.budgetCny !== undefined && (!Number.isFinite(input.budgetCny) || input.budgetCny < 0 || input.budgetCny > 10000)) throw fail('digital_human_budget_required', '请设置有效的费用上限（最高10000元）；0元仅保存草稿。');
     if (previous && previous.status !== 'draft') throw fail('digital_human_draft_locked', '这条样片已开始制作，请调整后新建。');
-    const task = { ...input, script, title: String(input.title || (previous?.script === script ? previous.title : '') || script.split(/[，。！？\n]/u)[0] || '未命名样片').trim().slice(0, 80),
+    const task = { ...input, ...(input.voiceSource === 'uploaded_audio' && input.audioAssetId ? { audioName: audioAsset(input.audioAssetId).name } : {}), script, title: String(input.title || (previous?.script === script ? previous.title : '') || script.split(/[，。！？\n]/u)[0] || '未命名样片').trim().slice(0, 80),
       videoResolution: previous?.videoResolution || '720p', directorSkillVersion: DIRECTOR_SKILL_VERSION,
       ...(version === 2 ? { narrationPolicy: previous?.narrationPolicy || (!previous ? 'original_script' : undefined) } : {}),
       ...(version === 2 && input.voiceStyle === 'workbench' ? { musicPolicy: 'workbench' } : {}),
-      ...(version === 2 && script ? (previous && previous.narrationPolicy !== 'original_script'
+      ...(version === 2 && input.voiceSource === 'uploaded_audio' ? { speechChunks: [], segments: [] } : {}),
+      ...(version === 2 && script && input.voiceSource !== 'uploaded_audio' ? (previous && previous.narrationPolicy !== 'original_script'
         ? { segments: audioMedia.splitScript(script, input.durationSeconds) }
         : { speechChunks: audioMedia.speechChunks(script), segments: [] }) : {}),
       ...(version === 2 ? { budgetCny: input.budgetCny ?? previous?.budgetCny ?? 0,
         budgetPolicy: input.budgetCny === undefined ? previous?.budgetPolicy || (previous && Number.isFinite(previous.budgetCny) ? 'explicit' : 'quoted_production') : 'explicit' } : {}),
       version, id: previous?.id || `dh_${randomUUID()}`, status: 'draft', createdAt: previous?.createdAt || new Date().toISOString(), operations: {} };
+    const sourceTaskId = input.sourceTaskId || previous?.reusedAudioFrom;
+    if (sourceTaskId && ID.test(sourceTaskId)) {
+      const source = read(sourceTaskId), sameVoice = input.voiceSource === 'uploaded_audio'
+        ? source.voiceSource === 'uploaded_audio' && source.audioAssetId === input.audioAssetId
+        : source.script === script && source.voicePersonaId === input.voicePersonaId && source.voiceStyle === task.voiceStyle
+          && (source.voiceSource || 'official') === input.voiceSource;
+      if (sameVoice && source.audioPreparedAt && source.frozenAudioFile && source.frozenAudioSha256
+        && source.preparedUtterances?.length && source.narrationPolicy === 'original_script') {
+        const bytes = fs.readFileSync(contained(root, source.frozenAudioFile));
+        if (digest(bytes) !== source.frozenAudioSha256) throw fail('digital_human_audio_changed', '原任务口播音轨发生变化，不能复用；原回执已保留。');
+        fs.mkdirSync(path.dirname(file(task.id)), { recursive: true });
+        const relative = `${task.id}/frozen-full-speech.wav`; fs.writeFileSync(contained(root, relative), bytes);
+        Object.assign(task, { frozenAudioFile: relative, frozenAudioSha256: source.frozenAudioSha256,
+          actualDurationSeconds: source.actualDurationSeconds, speechChunks: [], segments: [], voiceName: source.voiceName,
+          reusedAudioFrom: source.id, audioVerification: source.audioVerification });
+        task.operations.asr = { ...(source.operations?.asr || {}), reusedFromTaskId: source.id, reserveCny: 0,
+          response: source.operations?.asr?.response || { result: { utterances: source.preparedUtterances } } };
+      }
+    }
+    delete task.sourceTaskId;
     save(task); return publicTask(task);
   }
   async function preview(id) {
     if (active.has(id)) return publicTask(read(id));
     const task = read(id);
     if (task.status !== 'draft') throw fail('digital_human_preview_already_started', '这条任务已生成预览，请查看现有进度。');
-    asset(task.personAssetId); asset(task.productAssetId);
-    if (!task.script.trim()) throw fail('digital_human_script_required', '请先填写样片文案。');
+    imageAsset(task.personAssetId); imageAsset(task.productAssetId);
+    if (task.voiceSource === 'official' && (!task.voicePersonaId || !['male', 'female'].includes(task.characterVoice))) throw fail('digital_human_voice_required', '请先选择人物的男声或女声，以及具体音色。');
+    if (task.voiceSource === 'cloned_voice' && (!task.voicePersonaId || !options.voiceCloneClient)) throw fail('digital_human_voice_required', '请先选择已训练完成的专属音色。');
+    if (task.voiceSource === 'uploaded_audio' && !task.audioAssetId) throw fail('digital_human_audio_missing', '请先上传口播录音。');
+    if (task.voiceSource !== 'uploaded_audio' && !task.script.trim()) throw fail('digital_human_script_required', '请先填写样片文案。');
     if (task.version === 2 && task.budgetPolicy !== 'quoted_production' && task.budgetCny < 1) throw fail('digital_human_budget_required', '本次制作额度尚未设置，请联系管理员。');
     await requireCapabilities(task);
     if (task.version === 2) await ensurePrices(task);
@@ -656,6 +769,13 @@ function createDigitalHumanService(options = {}) {
     if (bytes.length > 20 * 1024 * 1024) throw fail('digital_human_image_size', '预览图片过大。');
     return { dataUrl: `data:${imageMime(bytes)};base64,${bytes.toString('base64')}` };
   }
+  function speechMedia(id) {
+    const task = read(id);
+    if (!task.frozenAudioFile || !task.audioPreparedAt) throw fail('digital_human_audio_missing', '口播音轨尚未准备完成。');
+    const bytes = fs.readFileSync(contained(root, task.frozenAudioFile));
+    if (digest(bytes) !== task.frozenAudioSha256 || bytes.length > 50 * 1024 * 1024) throw fail('digital_human_audio_changed', '口播音轨无法核对，原任务已保留。');
+    return { audioDataUrl: `data:audio/wav;base64,${bytes.toString('base64')}` };
+  }
   function resumePending() {
     if (closed || updateHold || global.__xiaoxiUpdateHold || !fs.existsSync(root)) return;
     for (const id of fs.readdirSync(root).filter((name) => ID.test(name))) {
@@ -674,7 +794,7 @@ function createDigitalHumanService(options = {}) {
     return { busy: isBusy() };
   }
   function resumeAfterUpdate() { updateHold = false; resumePending(); }
-  return { capabilities, importImage, create, preview: admit(preview), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), media, images, list, isBusy,
+  return { capabilities, importImage, importAudio: admit(importAudio), recommendVoice: admit(recommendVoice), previewVoice: admit(previewVoice), selectVoice: admit(selectVoice), voiceClones, trainVoice: admit(trainVoice), cloneStatus, create, preview: admit(preview), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), media, speechMedia, images, list, isBusy,
     prepareForUpdate, resumeAfterUpdate,
     get: (id) => publicTask(read(id)),
     close: async () => {

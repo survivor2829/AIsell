@@ -29,6 +29,10 @@ const ERRORS = {
   narrated_caption_timing_insufficient: "语音识别未返回足够细的时间，整句过长，无法清楚排成两行；请改短该段并重新确认。",
   narrated_edit_invalid: "修改后的方案无法通过质量检查，请查看批次详情。",
   cloud_not_configured: "云端素材理解服务暂不可用，当前任务未提交，请稍后重试。",
+  deepseek_not_configured: "DeepSeek 文案导演尚未连接，已有文案和素材已保留。",
+  deepseek_endpoint_invalid: "DeepSeek 文案导演连接配置无效，已有资料已保留，请前往日志诊断查看原因。",
+  deepseek_operation_unsupported: "DeepSeek 文案导演请求类型无效，已有资料已保留。",
+  deepseek_text_only: "图片理解应由素材分析服务处理，文案导演请求已停止。",
   volcengine_tts_not_configured: "云端配音服务暂不可用，当前任务未提交，请稍后重试。",
   PROVIDER_GATEWAY_UNAVAILABLE: "云端智能服务暂不可用，当前任务未提交，请稍后重试。",
   narrated_assets_missing: "请先添加素材。",
@@ -69,7 +73,7 @@ const PUBLIC_FIELDS = new Set(("activity message started_at completed total coll
 for (const field of "phase phase_label overall_percent phase_percent item_index item_total item_name heartbeat_at".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "workflow_version music_mode script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
-for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
+for (const field of "brief_version script_source script_action target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
 PUBLIC_FIELDS.add("video_template");
 // The strict visual review switch, and the mark on works made without it.
@@ -98,7 +102,7 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return [...new Set(values.map((v) => id(v, "asset")))];
   };
   function draft(p) {
-    keys(p, ["batch_id", "collection_id", "groups", "title", "description", "material_context", "cta", "target_count", "settings", "brief_version", "script_source", "target_audience", "expression", "advantages", "customer_pain_points"]);
+    keys(p, ["batch_id", "collection_id", "groups", "title", "description", "material_context", "cta", "target_count", "settings", "brief_version", "script_source", "script_action", "target_audience", "expression", "advantages", "customer_pain_points"]);
     const result = { ...p };
     if (p.batch_id) result.batch_id = id(p.batch_id, "narrated_batch");
     if (p.collection_id) result.collection_id = id(p.collection_id, "asset_collection");
@@ -107,6 +111,7 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     result.title = text(p.title, 100);
     result.description = text(p.description, 6000);
     if (p.script_source !== undefined && !["ideas", "provided"].includes(p.script_source)) invalid();
+    if (p.script_action !== undefined && !["generate", "rewrite", "expand"].includes(p.script_action)) invalid();
     if (p.brief_version !== undefined && p.brief_version !== 1) invalid();
     for (const [field, limit] of [["target_audience", 150], ["expression", 14000], ["advantages", 1500], ["customer_pain_points", 1500]]) {
       if (p[field] !== undefined) result[field] = text(p[field], limit);

@@ -190,7 +190,64 @@ async function main() {
     await assert.rejects(service.resume(retry.id), { code: 'digital_human_retry_exhausted' });
     assert.equal(service.isBusy(), false, 'Stopped cloud tasks cannot block updates forever.');
     await service.prepareForUpdate(); await assert.rejects(service.refresh(retry.id), { code: 'UPDATE_IN_PROGRESS' }); service.resumeAfterUpdate();
-    console.log('digital-human audio self-check passed: original script duration, natural boundaries, frozen voice, expired URL reupload, receipt recovery, one persisted paid retry, update lifecycle');
+    // These cases exercise the shared admission and frozen-audio chain, not a
+    // product-specific voice exception. No fixture can submit a real API call.
+    let maleApproved = false, narrationCalls = 0;
+    const maleId = 'volc-explainer-xiaoming@1', femaleId = 'volc-xiaohe-2@1';
+    options.listVoices = async () => ({ items: [
+      { voicePersonaId: maleId, provider: 'volcengine', displayName: '解说小明', gender: 'male', digitalHumanDefault: true, availability: maleApproved ? 'available' : 'needs_preview' },
+      { voicePersonaId: femaleId, provider: 'volcengine', displayName: '小何2.0', gender: 'female', digitalHumanDefault: true, availability: 'available' },
+    ] });
+    options.recommendVoice = async () => ({ characterVoice: 'male', reason: '建议男声' });
+    options.previewVoice = async (id) => { assert.equal(id, maleId); return { audioDataUrl: 'data:audio/wav;base64,ZmFrZQ==', cacheHit: false }; };
+    options.approveVoice = async (id) => { assert.equal(id, maleId); maleApproved = true; };
+    options.prepareNarration = async ({ text, voice_persona_id }) => {
+      assert.equal(voice_persona_id, maleId); narrationCalls += 1; lastText = [text];
+      const file = path.join(directory, 'male-speech.wav'); fs.writeFileSync(file, 'male frozen fixture');
+      return { file, audio_digest: hash(fs.readFileSync(file)), voice_persona_id, voice_name: '解说小明' };
+    };
+    const maleOptions = { ...draft, voiceSource: 'official', characterVoice: 'male', voicePersonaId: maleId, script: '男声按这份文案讲解。', durationSeconds: 15 };
+    assert.equal((await service.recommendVoice(person.id)).voicePersonaId, maleId);
+    const unavailable = service.create(maleOptions), beforeUnavailable = posts.length;
+    await service.preview(unavailable.id); await service.refresh(unavailable.id);
+    assert.equal(service.get(unavailable.id).errorCode, 'digital_human_voice_unavailable');
+    assert.equal(posts.length, beforeUnavailable, 'Unavailable male voice never buys a female replacement or a preview image.');
+    await service.previewVoice(maleId); await service.selectVoice(maleId, 'male');
+    await assert.rejects(service.selectVoice(femaleId, 'male'), { code: 'digital_human_voice_invalid' });
+    assert.equal((await service.capabilities()).voicePreferences.male, maleId);
+    const mismatched = service.create({ ...maleOptions, voicePersonaId: femaleId });
+    await service.preview(mismatched.id); await service.refresh(mismatched.id);
+    assert.equal(service.get(mismatched.id).errorCode, 'digital_human_voice_mismatch');
+    const maleTask = service.create(maleOptions);
+    await service.preview(maleTask.id); await service.refresh(maleTask.id);
+    assert.equal(service.get(maleTask.id).voicePersonaId, maleId); assert.equal(narrationCalls, 1);
+    assert.equal(service.get(maleTask.id).status, 'preview_ready');
+    const sameMale = service.create({ ...maleOptions, sourceTaskId: maleTask.id, sceneId: 'store' }), asrBeforeReuse = posts.filter((p) => p.route.includes('/asr/')).length;
+    service.create({ ...maleOptions, id: sameMale.id, sceneId: 'store' });
+    assert.equal(service.get(sameMale.id).reusedAudioFrom, maleTask.id, 'Saving and reopening an unchanged adjusted draft retains its frozen audio.');
+    await service.preview(sameMale.id); await service.refresh(sameMale.id);
+    assert.equal(narrationCalls, 1); assert.equal(service.get(sameMale.id).reusedAudioFrom, maleTask.id);
+    assert.equal(posts.filter((p) => p.route.includes('/asr/')).length, asrBeforeReuse, 'Changing scene does not buy the identical voice or ASR again.');
+    const changedMale = service.create({ ...maleOptions, sourceTaskId: maleTask.id, script: '更换文案后使用独立音轨。' });
+    assert.equal(service.get(changedMale.id).reusedAudioFrom, undefined);
+    const recording = path.join(directory, '客户原录音.m4a'); fs.writeFileSync(recording, 'original customer recording');
+    const originalHash = hash(fs.readFileSync(recording)), recordingAsset = await service.importAudio(recording);
+    lastText = ['这是录音真实讲到的内容。'];
+    const uploadTask = service.create({ ...draft, durationSeconds: 15, voiceSource: 'uploaded_audio', audioAssetId: recordingAsset.id, script: '不同的产品说明，不能拿来覆盖录音。' });
+    const ttsBeforeRecording = posts.filter((p) => p.route === officialSchema.ROUTES.tts).length;
+    await service.preview(uploadTask.id); await service.refresh(uploadTask.id);
+    assert.equal(service.get(uploadTask.id).status, 'preview_ready');
+    assert.equal(service.get(uploadTask.id).script, '这是录音真实讲到的内容。');
+    assert.equal(hash(fs.readFileSync(recording)), originalHash, 'Imported source stays unchanged.');
+    assert.equal(posts.filter((p) => p.route === officialSchema.ROUTES.tts).length, ttsBeforeRecording);
+    assert.equal(narrationCalls, 1, 'Uploaded recording never requires a voice slot or TTS.');
+    const uploadedRecord = JSON.parse(fs.readFileSync(path.join(options.rootDir, uploadTask.id, 'task.json'), 'utf8'));
+    assert.ok(!Object.keys(uploadedRecord.operations).some((name) => name.startsWith('tts_')));
+    audio.verifyRecordingTranscript([{ text: '实际录音', start_time: 3000, end_time: 7000 }], 15);
+    audio.assertSpeechCoverage({ seconds: 15, speechStart: 3, speechEnd: 7, maxGapSeconds: 2 }, 15, 0, { allowNaturalPauses: true });
+    await service.close(); service = createDigitalHumanService(options); services.push(service);
+    assert.equal((await service.capabilities()).voicePreferences.male, maleId, 'Digital preference survives restart independently of workbench.');
+    console.log('digital-human audio self-check passed: original script duration, natural boundaries, frozen voice, expired URL reupload, receipt recovery, one persisted paid retry, update lifecycle, explicit male selection, no opposite-gender fallback, uploaded actual speech, unchanged-source audio reuse');
   } finally {
     await Promise.allSettled(services.map((service) => service.close()));
     const resolved = path.resolve(directory);

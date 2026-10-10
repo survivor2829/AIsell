@@ -1998,6 +1998,7 @@ class FFmpegCreativeAnalyzer:
         *,
         ffmpeg_path: str | None = None,
         cloud_client: DashScopeMediaClient | None = None,
+        director_client=None,
         command_runner=subprocess.run,
     ):
         self.data_dir = Path(data_dir).resolve()
@@ -2008,6 +2009,8 @@ class FFmpegCreativeAnalyzer:
             from .volcengine_media import VolcengineMediaClient
             cloud_client = VolcengineMediaClient()
         self.cloud_client = cloud_client or DashScopeMediaClient()
+        from .deepseek_text import DeepSeekTextClient
+        self.director_client = director_client if director_client is not None else DeepSeekTextClient()
         self._run_process = command_runner
 
     def upload_digital_human_audio(self, payload):

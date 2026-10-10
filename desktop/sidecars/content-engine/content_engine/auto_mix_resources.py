@@ -64,6 +64,8 @@ def _configured_persona(value: Mapping[str, Any]) -> dict[str, Any] | None:
         "provider": provider,
         "provider_model": model,
         "display_name": _clean(value.get("displayName"), 80) or "自然生活",
+        "gender": value.get("gender") if value.get("gender") in {"male", "female"} else "unknown",
+        "digital_human_default": value.get("digitalHumanDefault") is True,
         "style": _clean(value.get("style") or value.get("category"), 80)
         or "natural_life",
         "catalog_version": _clean(value.get("catalogVersion"), 80)

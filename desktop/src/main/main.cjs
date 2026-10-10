@@ -46,6 +46,7 @@ const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
+const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
 const { createPriceReader, createBailianPriceReader } = require("./product-video-pricing.cjs");
 const { createProductAudioPreparer } = require("./product-video-audio.cjs");
@@ -560,12 +561,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         contentEngineDataDir
       ),
       getProviderEnvironment: () => {
-        const providerEnvironment = {};
+        const providerEnvironment = { DEEPSEEK_MODEL };
         const gatewayToken = providerGatewayClient?.token() || "";
         contentProviderConfiguration = providerConfiguration();
         const gatewayStatus = providerGatewayClient?.status();
         if (gatewayStatus?.ready && maintenanceConfig.caPem) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
+        }
+        if (providerGatewaySupports("deepseek")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.DEEPSEEK_API_KEY = gatewayToken;
+          providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/chat/completions");
         }
         if (providerGatewaySupports("bailian")) {
           providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
@@ -674,6 +680,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       readPrices: readOfficialVideoPrices,
       readPreviewPrices: () => readVideoPrices(),
       prepareNarration: prepareWorkbenchNarration,
+      listVoices: async () => { await contentEngineController.start(); return contentEngineController.listAutoMixVoicePersonas(); },
+      recommendVoice: async (payload) => { await beforeContentProviderWork(["bailian"]); return contentEngineController.recommendDigitalHumanVoice(payload); },
+      previewVoice: async (id) => { await beforeContentProviderWork(["volcengine_tts"]); return contentEngineController.previewAutoMixVoicePersona(id); },
+      approveVoice: (id) => contentEngineController.approveAutoMixVoicePersona(id),
+      voiceCloneClient: createVoiceCloneClient({ gatewayClient: providerGatewayClient, rootDir: path.join(runtime.rootDir, "digital_human", "voice-clones"),
+        ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg" }),
       selectMusic: selectWorkbenchMusic,
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")

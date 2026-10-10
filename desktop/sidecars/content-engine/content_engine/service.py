@@ -876,6 +876,9 @@ class ContentEngineService:
     def prepare_video_narration(self, request):
         return self.creative_domain.prepare_video_narration(request)
 
+    def recommend_digital_human_voice(self, request):
+        return self.creative_domain.recommend_digital_human_voice(request.get('image_data_url'))
+
     def digital_human_upload_audio(self, request):
         return self.creative_analyzer.upload_digital_human_audio(request)
 

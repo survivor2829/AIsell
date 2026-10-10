@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import io
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,8 @@ import ssl
 import sqlite3
 import threading
 import time
+import uuid
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -260,6 +263,8 @@ class GatewayConfig:
     upstream_timeout_seconds: int = DEFAULT_UPSTREAM_TIMEOUT_SECONDS
     runtime_revision: str = ""
     receipt_db_path: str = ""
+    # Operator-verified existing slots; never create pay-as-you-go speaker IDs.
+    voice_clone_slots: dict = field(default_factory=dict)
 
     @classmethod
     def from_environment(cls, environ=None):
@@ -279,6 +284,7 @@ class GatewayConfig:
         }
         return cls(
             keys=keys,
+            voice_clone_slots=json.loads(env.get("XIAOXI_GATEWAY_VOICE_CLONE_SLOTS_JSON", "{}")),
             asr_app_id=str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_APP_ID", "")).strip(),
             asr_access_token=str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN", "")).strip(),
             origins={
@@ -309,6 +315,18 @@ class GatewayConfig:
                 "speech": "https://openspeech.bytedance.com",
                 "apimart": "https://api.apimart.ai",
             }
+        assigned = set()
+        if not isinstance(self.voice_clone_slots, dict):
+            raise ValueError("voice_clone_slots_config")
+        for subject, slots in self.voice_clone_slots.items():
+            if not isinstance(subject, str) or not isinstance(slots, list):
+                raise ValueError("voice_clone_slots_config")
+            for slot in slots:
+                speaker = slot.get("speaker_id") if isinstance(slot, dict) else None
+                if (not isinstance(speaker, str) or not re.fullmatch(r"S_[A-Za-z0-9_-]{1,128}", speaker)
+                        or slot.get("billing") not in {"free", "prepaid"} or speaker in assigned):
+                    raise ValueError("voice_clone_slots_config")
+                assigned.add(speaker)
         self.sessions = SessionStore(self.session_secret, self.session_ttl_seconds)
 
     def capabilities(self) -> dict[str, bool]:
@@ -319,6 +337,7 @@ class GatewayConfig:
             "bailian_video": bool(self.keys.get("bailian")),
             "volcengine_ark": bool(self.keys.get("volcengine_ark")),
             "volcengine_tts": bool(self.keys.get("volcengine_tts")),
+            "volcengine_voice_clone": bool(self.keys.get("volcengine_tts")),
             "volcengine_asr": bool(self.keys.get("volcengine_asr") or (self.asr_app_id and self.asr_access_token)),
             "apimart": bool(self.keys.get("apimart")),
             # These advertise installed fixed routes, not a guarantee that an
@@ -347,7 +366,26 @@ class ReceiptStore:
         self.db.execute("""CREATE TABLE IF NOT EXISTS gateway_sessions (
             token_digest BLOB PRIMARY KEY, expires_at REAL NOT NULL,
             subject TEXT NOT NULL)""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS voice_clone_claims (
+            speaker_id TEXT PRIMARY KEY, subject_hash TEXT NOT NULL,
+            operation_id TEXT NOT NULL, created_at REAL NOT NULL)""")
         self.db.commit()
+
+    def claim_voice(self, subject, speaker, operation_id):
+        with self.lock:
+            try:
+                self.db.execute("INSERT INTO voice_clone_claims VALUES (?,?,?,?)",
+                                (speaker, self._subject(subject), operation_id, time.time()))
+                self.db.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def voice_claim(self, subject, speaker):
+        with self.lock:
+            row = self.db.execute("SELECT operation_id FROM voice_clone_claims WHERE speaker_id=? AND subject_hash=?",
+                                  (speaker, self._subject(subject))).fetchone()
+            return row[0] if row else None
 
     def store_session(self, digest, expiry, subject):
         with self.lock:
@@ -446,7 +484,7 @@ class GatewayServer(ThreadingHTTPServer):
         self.slots = threading.BoundedSemaphore(16)
         self.rate_lock = threading.Lock()
         self.rates = collections.OrderedDict()
-        self.inflight_lock = threading.Lock()
+        self.inflight_lock = threading.RLock()
         self.inflight = {}
         self.price_lock = threading.Lock()
         self.price_cache = {}
@@ -641,6 +679,126 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"Bearer\s+(.+)", value, re.I)
         return bool(match and self.config.sessions.validate(match.group(1).strip()))
 
+    def _clone_subject_slot(self, speaker):
+        token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        subject = self.config.sessions.subject(token)
+        slots = self.config.voice_clone_slots.get(subject, [])
+        slot = next((item for item in slots if item["speaker_id"] == speaker), None)
+        return subject, slot
+
+    def _clone_status(self, speaker):
+        body = json.dumps({"speaker_id": speaker}).encode()
+        result = self._proxy_upstream("POST", "volcengine_tts",
+                    self.config.origins["speech"] + "/api/v3/tts/get_voice", body)
+        if not 200 <= result["status"] < 300:
+            raise RuntimeError("voice_clone_status_unavailable")
+        try:
+            payload = json.loads(result["raw"])
+        except (ValueError, UnicodeError):
+            raise RuntimeError("voice_clone_status_invalid") from None
+        if (not isinstance(payload, dict) or payload.get("speaker_id") != speaker
+                or type(payload.get("status")) is not int or payload["status"] not in range(5)
+                or payload.get("code", 0) not in (0, 20000000)):
+            raise RuntimeError("voice_clone_status_invalid")
+        return payload
+
+    def _voice_clone(self, action):
+        if urlsplit(self.path).query:
+            return self._reply_json(400, {"error": "invalid_query"})
+        if not self._session():
+            return self._reply_json(401, {"error": "session_required"})
+        if not self.config.configured("volcengine_tts"):
+            return self._reply_json(503, {"error": "provider_not_configured"})
+        try:
+            payload = self._read_json(15 * 1024 * 1024)
+            if action == "list":
+                if payload:
+                    raise ValueError("fields")
+                subject, _ = self._clone_subject_slot(None)
+                items = []
+                for slot in self.config.voice_clone_slots.get(subject, []):
+                    state = self._clone_status(slot["speaker_id"])
+                    state.update({"billing": slot["billing"], "operation_id": self.server.receipts.voice_claim(subject, slot["speaker_id"])})
+                    state["trainable"] = state["status"] == 0 and state.get("available_training_times") != 0 and not state["operation_id"]
+                    items.append(state)
+                configured = subject in self.config.voice_clone_slots
+                return self._reply_json(200, {"items": items, "inventory_configured": configured,
+                    "reason": "" if configured else "voice_clone_inventory_not_configured"})
+            speaker = payload.get("speaker_id")
+            subject, slot = self._clone_subject_slot(speaker)
+            if slot is None:
+                return self._reply_json(403, {"error": "voice_clone_slot_not_owned"})
+            if action == "status":
+                if set(payload) != {"speaker_id"}:
+                    raise ValueError("fields")
+                state = self._clone_status(speaker)
+                state["billing"] = slot["billing"]
+                state["operation_id"] = self.server.receipts.voice_claim(subject, speaker)
+                return self._reply_json(200, state)
+            if action == "train":
+                if set(payload) != {"speaker_id", "audio", "consent"} or payload["consent"] is not True:
+                    raise ValueError("fields")
+                audio = payload["audio"]
+                if not isinstance(audio, dict) or set(audio) != {"data", "format"} or audio["format"] != "wav":
+                    raise ValueError("audio")
+                decoded = base64.b64decode(audio["data"], validate=True)
+                with wave.open(io.BytesIO(decoded)) as recording:
+                    duration = recording.getnframes() / recording.getframerate()
+                    if (recording.getnchannels() != 1 or recording.getframerate() != 24000
+                            or recording.getsampwidth() != 2 or not 14 <= duration <= 30):
+                        raise ValueError("sample_duration")
+                    if not any(recording.readframes(recording.getnframes())):
+                        raise ValueError("sample_silent")
+                if len(decoded) > 10 * 1024 * 1024:
+                    raise ValueError("audio_size")
+                target = self.config.origins["speech"] + "/api/v3/tts/voice_clone"
+                body = json.dumps({"speaker_id": speaker, "audio": audio, "language": 0}).encode()
+            elif action == "synthesize":
+                if set(payload) != {"speaker_id", "text"} or not isinstance(payload["text"], str) or not 1 <= len(payload["text"].strip()) <= 10000:
+                    raise ValueError("text")
+                target = self.config.origins["speech"] + "/api/v3/tts/unidirectional/sse"
+                body = json.dumps({"user": {"uid": self.server.receipts._subject(subject)[:24]},
+                    "req_params": {"text": payload["text"], "speaker": speaker,
+                    "audio_params": {"format": "mp3", "sample_rate": 24000}}}).encode()
+            else:
+                return self._reply_json(404, {"error": "not_found"})
+        except RuntimeError:
+            return self._reply_json(503, {"error": "voice_clone_status_unavailable"})
+        except (ValueError, TypeError, KeyError, UnicodeError, EOFError, wave.Error):
+            return self._reply_json(400, {"error": "invalid_voice_clone_request"})
+        operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "")
+        if not OPERATION_ID.fullmatch(operation_id):
+            return self._reply_json(400, {"error": "operation_id_required"})
+        fingerprint = hashlib.sha256(json.dumps([subject, action, speaker, hashlib.sha256(body).hexdigest()]).encode()).hexdigest()
+        # Bind the operation ID to one payload atomically before any paid work.
+        with self.server.inflight_lock:
+            prior_state, _prior_result, prior_fingerprint = self.server.receipts.lookup(subject, operation_id)
+            if prior_state != "missing" and prior_fingerprint != fingerprint:
+                return self._reply_json(409, {"error": "voice_clone_operation_conflict"})
+            state, entry, stored = self.server.begin_operation(subject, operation_id, fingerprint)
+        if state == "completed":
+            return self._send_result(stored)
+        if state != "new":
+            return self._reply_json(409, {"error": "operation_outcome_unknown"})
+        result = self._json_result(503, {"error": "voice_clone_status_unavailable"})
+        try:
+            status = self._clone_status(speaker)
+            if action == "train":
+                if status["status"] != 0 or status.get("available_training_times") == 0 or not self.server.receipts.claim_voice(subject, speaker, operation_id):
+                    result = self._json_result(409, {"error": "voice_clone_slot_already_used"})
+                else:
+                    result = self._proxy_upstream("POST", "volcengine_tts", target, body)
+            elif status["status"] not in (2, 4):
+                result = self._json_result(409, {"error": "voice_clone_not_ready"})
+            else:
+                result = self._proxy_upstream("POST", "volcengine_tts", target, body)
+        except (ValueError, TypeError, KeyError, UnicodeError, RuntimeError):
+            pass
+        finally:
+            self.server.receipts.finish(subject, operation_id, fingerprint, result)
+            self.server.finish_inflight(fingerprint, entry, result)
+        return self._send_result(result)
+
     def _route(self):
         parsed = urlsplit(self.path)
         route = parsed.path
@@ -685,6 +843,10 @@ class Handler(BaseHTTPRequestHandler):
             headers["Authorization"] = f"Bearer {self.config.keys[provider]}"
         elif provider == "volcengine_tts":
             headers["X-Api-Key"] = self.config.keys[provider]
+            if "/volcengine/voice-clone/" in self.path:
+                headers["Content-Type"] = "application/json"
+                headers["X-Api-Request-Id"] = str(uuid.uuid4())
+                headers["X-Api-Resource-Id"] = "seed-icl-2.0"
         elif provider == "volcengine_asr":
             if self.config.asr_app_id and self.config.asr_access_token:
                 headers["X-Api-App-Key"] = self.config.asr_app_id
@@ -806,6 +968,17 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_body()
             except (ValueError, UnicodeError):
                 return self._reply_json(400, {"error": "invalid_body"})
+            if provider == "volcengine_tts":
+                if self.headers.get("X-Api-Resource-Id", "").startswith("seed-icl"):
+                    return self._reply_json(403, {"error": "use_scoped_voice_clone_route"})
+                try:
+                    speaker = json.loads(body).get("req_params", {}).get("speaker", "")
+                    if isinstance(speaker, str) and speaker.upper().startswith("S_"):
+                        return self._reply_json(403, {"error": "use_scoped_voice_clone_route"})
+                except (ValueError, TypeError, AttributeError):
+                    # Preserve the existing opaque transport contract. Invalid
+                    # JSON is rejected by the supplier and cannot select a voice.
+                    pass
             if avatar_library:
                 try:
                     payload = json.loads(body)
@@ -1028,6 +1201,8 @@ class Handler(BaseHTTPRequestHandler):
                 "expiresAt": session_expiry.isoformat(),
                 "capabilities": self.config.capabilities(),
             })
+        if route.startswith(PREFIX + "/volcengine/voice-clone/"):
+            return self._voice_clone(route.removeprefix(PREFIX + "/volcengine/voice-clone/"))
         if route.startswith(PREFIX + "/"):
             return self._proxy("POST")
         return self._reply_json(404, {"error": "not_found"})

@@ -70,3 +70,9 @@
 @media (max-width: 1000px) { .digital-human-page { padding: 20px; } .dh-header{flex-wrap:wrap}.dh-workspace { gap: 16px; grid-template-columns: minmax(290px, 1fr) minmax(250px, .85fr); } .dh-form, .dh-output { padding: 18px; } }
 @media (max-width: 760px) { .dh-workspace { grid-template-columns: 1fr; } .dh-header { align-items: flex-start; } .dh-header h1 { font-size: 23px; } .dh-preview { width: min(100%, 280px); } .dh-message { flex-wrap: wrap; } }
 @media (prefers-reduced-motion: reduce) { .dh-spinning { animation: none; } }
+
+.dh-voice { display: grid; gap: 12px; margin: 20px 0; padding: 16px 0; border-top: 1px solid #e4e6ef; border-bottom: 1px solid #e4e6ef; }
+.dh-voice .dh-quality { margin: 0; }
+.dh-voice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.dh-audio { width: 100%; max-width: 100%; margin: 8px 0; }
+.dh-consent { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.6; color: #46506b; }

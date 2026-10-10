@@ -8,7 +8,7 @@ export type ScriptSelection = { script_id: string; revision: number; count: numb
 export type ProductionJob = { script_id: string; ordinal: number; production_index: number; candidate_id?: string; status: string; error?: string };
 export type Batch = {
   archived?: boolean;
-  script_source?: "ideas" | "provided"; brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
+  script_source?: "ideas" | "provided"; script_action?: "generate" | "rewrite" | "expand"; brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
   brief_suggestions?: { expression?: string; advantages?: string; customer_pain_points?: string };
   batch_id: string; title: string; description: string; cta: string; collection_id?: string;
   groups: Groups; target_count: number | null; recommended_count: number; feasible_count: number;

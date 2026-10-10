@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Check, CircleAlert, Download, ImagePlus, LoaderCircle, Plus, RefreshCw, UserRound } from 'lucide-react';
-import type { DigitalHumanApi, DigitalHumanAsset, DigitalHumanCapabilities, DigitalHumanDraft, DigitalHumanResult, DigitalHumanTask } from './digital-human-types';
+import type { DigitalHumanApi, DigitalHumanAsset, DigitalHumanCapabilities, DigitalHumanDraft, DigitalHumanResult, DigitalHumanTask, DigitalHumanVoiceClone } from './digital-human-types';
 import './DigitalHumanPage.css';
 import { VideoCoverDetails } from './VideoPresentation';
 
@@ -14,7 +14,7 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
   if (!value.ok || value.data === undefined) throw new Error(value.error || '操作未完成，请稍后重试。');
   return value.data;
 }
-const EMPTY: DigitalHumanDraft = { personAssetId: '', productAssetId: '', sceneId: 'studio', voiceStyle: 'workbench', durationSeconds: 15, script: '' };
+const EMPTY: DigitalHumanDraft = { personAssetId: '', productAssetId: '', sceneId: 'studio', voiceStyle: 'workbench', voiceSource: 'official', characterVoice: 'unknown', voicePersonaId: '', durationSeconds: 15, script: '' };
 const ACTIVE = new Set(['audio_preparing', 'audio_transcribing', 'preview_preparing', 'preview_generating', 'registering', 'reviewing', 'video_submitting', 'video_generating', 'official_submitting', 'official_generating', 'audio_assembling', 'assembling', 'enhancing', 'packaging']);
 const SCENE_IMAGES: Record<string, string> = Object.fromEntries(['studio', 'store', 'display'].map((id) => [id, `${import.meta.env.BASE_URL}digital-human-scenes/${id}.png`]));
 
@@ -26,6 +26,16 @@ export function DigitalHumanPage() {
   const [selected, setSelected] = useState<DigitalHumanTask | null>(null);
   const [preview, setPreview] = useState('');
   const [busy, setBusy] = useState('');
+  const [audio, setAudio] = useState<DigitalHumanAsset | null>(null);
+  const [voicePreview, setVoicePreview] = useState('');
+  const [preparedSpeech, setPreparedSpeech] = useState('');
+  const [voiceRecommendation, setVoiceRecommendation] = useState('');
+  const [clones, setClones] = useState<DigitalHumanVoiceClone[]>([]);
+  const cloneSlots = clones.filter((voice) => voice.trainable);
+  const [cloneSlot, setCloneSlot] = useState('');
+  const [cloneNotice, setCloneNotice] = useState('');
+  const [cloneConsent, setCloneConsent] = useState(false);
+  const [cloneSubmission, setCloneSubmission] = useState<{ speakerId: string; operationId: string } | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const selection = useRef('');
   const loadedPreview = useRef('');
@@ -72,6 +82,61 @@ export function DigitalHumanPage() {
     return () => { cancelled = true; };
   }, [selected?.id, selected?.personAssetId, selected?.productAssetId]);
 
+  useEffect(() => {
+    setPreparedSpeech('');
+    if (!selected?.audio?.prepared) return;
+    let cancelled = false;
+    void unwrap(api().speechMedia({ id: selected.id })).then((result) => { if (!cancelled) setPreparedSpeech(result.audioDataUrl); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [selected?.id, selected?.audio?.prepared]);
+  useEffect(() => {
+    if (draft.voiceSource !== 'cloned_voice') return;
+    void unwrap(api().voiceClones()).then((result) => {
+      setClones(result.items || []); setCloneNotice(result.message || '');
+    }).catch((error) => setCloneNotice(error.message));
+  }, [draft.voiceSource]);
+  function chooseCharacterVoice(characterVoice: 'male' | 'female' | 'unknown') {
+    const catalog = capabilities?.voices || [], preference = capabilities?.voicePreferences?.[characterVoice];
+    const voice = catalog.find((v) => v.gender === characterVoice && v.available && v.id === preference)
+      || catalog.find((v) => v.gender === characterVoice && v.digitalHumanDefault);
+    setDraft((current) => ({ ...current, characterVoice, voicePersonaId: voice?.id || '' }));
+    setVoicePreview('');
+  }
+  async function importAudio() {
+    await perform('audio', async () => {
+      const item = await unwrap(api().importAudio()); if (!item) return;
+      setAudio(item); setVoicePreview(''); setDraft((current) => ({ ...current, audioAssetId: item.id }));
+    });
+  }
+  async function auditionVoice() {
+    if (!draft.voicePersonaId) return;
+    await perform('voice-preview', async () => {
+      const result = await unwrap(api().previewVoice({ voicePersonaId: draft.voicePersonaId! }));
+      setVoicePreview(result.audioDataUrl); await loadCapabilities();
+    });
+  }
+  async function useVoice() {
+    if (!draft.voicePersonaId || !draft.characterVoice || draft.characterVoice === 'unknown') return;
+    await perform('voice-select', async () => {
+      await unwrap(api().selectVoice({ voicePersonaId: draft.voicePersonaId!, characterVoice: draft.characterVoice as 'male' | 'female' }));
+      await loadCapabilities(); setNotice({ kind: 'success', message: '数字人的声音已保存，创作工作台默认声音保持独立。' });
+    });
+  }
+  async function trainVoice() {
+    if (!cloneSlot || !draft.audioAssetId || !cloneConsent) return;
+    await perform('voice-train', async () => {
+      const response = await api().trainVoice({ speakerId: cloneSlot, audioAssetId: draft.audioAssetId!, customerConsent: true });
+      const operationId = response.data?.operationId || response.operationId;
+      if (operationId) setCloneSubmission({ speakerId: cloneSlot, operationId });
+      if (!response.ok || !response.data) { setCloneNotice('训练请求已保留，请查询原任务进度，不会重新购买槽位。'); throw new Error(response.error || '训练结果待核对。'); }
+      setCloneNotice(response.data.message || '训练已提交，请查询原任务进度。');
+    });
+  }
+  async function refreshClone() {
+    await perform('clone-status', async () => {
+      const result = await unwrap(api().voiceClones()); setClones(result.items || []); setCloneNotice(result.message || '');
+    });
+  }
   function apply(task: DigitalHumanTask) {
     selection.current = task.id; setSelected(task);
     setItems((current) => [task, ...current.filter((item) => item.id !== task.id)]);
@@ -83,8 +148,8 @@ export function DigitalHumanPage() {
     finally { if (mounted.current) setBusy(''); }
   }
   function newSample() {
-    selection.current = ''; setSelected(null); setPreview(''); loadedPreview.current = ''; setNotice(null);
-    setDraft(current => ({ ...current, durationSeconds: [15, 30, 45].includes(current.durationSeconds) ? current.durationSeconds : 15 }));
+    selection.current = ''; setSelected(null); setPreview(''); setPreparedSpeech(''); setVoicePreview(''); loadedPreview.current = ''; setNotice(null);
+    setDraft(current => ({ ...current, sourceTaskId: selected?.id, voiceSource: current.voiceSource || 'official', voiceStyle: 'workbench', durationSeconds: [15, 30, 45].includes(current.durationSeconds) ? current.durationSeconds : 15 }));
   }
   async function importImage(role: 'person' | 'product') {
     await perform(role, async () => {
@@ -92,6 +157,11 @@ export function DigitalHumanPage() {
       if (!image) return;
       setImages((current) => ({ ...current, [role]: image }));
       setDraft((current) => ({ ...current, [`${role}AssetId`]: image.id }));
+      if (role === 'person') {
+        const recommendation = await unwrap(api().recommendVoice({ personAssetId: image.id }));
+        setVoiceRecommendation(recommendation.reason); setVoicePreview('');
+        setDraft((current) => ({ ...current, characterVoice: recommendation.characterVoice, ...(current.voiceSource === 'official' ? { voicePersonaId: recommendation.voicePersonaId } : {}) }));
+      }
     });
   }
   async function makePreview() {
@@ -110,8 +180,8 @@ export function DigitalHumanPage() {
   function selectTask(task: DigitalHumanTask) {
     if (selection.current === task.id) return;
     apply(task); setDraft({ personAssetId: task.personAssetId, productAssetId: task.productAssetId, sceneId: task.sceneId,
-      voiceStyle: task.voiceStyle, durationSeconds: task.durationSeconds, script: task.script });
-    setImages({}); setPreview(''); loadedPreview.current = ''; setNotice(null);
+      voiceStyle: task.voiceStyle, voiceSource: task.voiceSource, voicePersonaId: task.voicePersonaId, audioAssetId: task.audioAssetId, characterVoice: task.characterVoice, durationSeconds: task.durationSeconds, script: task.script });
+    setImages({}); setAudio(task.audioAssetId ? { id: task.audioAssetId, name: task.audioName || '已保存录音' } : null); setVoicePreview(''); setVoiceRecommendation(''); setPreview(''); loadedPreview.current = ''; setNotice(null);
   }
   async function download() {
     if (!selected?.generatedVideoId) return;
@@ -126,11 +196,12 @@ export function DigitalHumanPage() {
   const videoUrl = selected?.status === 'completed' && /^generated_video_[A-Za-z0-9_-]+$/u.test(selected.generatedVideoId)
     ? `xiaoxi-content://generated/${selected.generatedVideoId}/video` : '';
   const serviceUnavailable = !legacyTask && capabilities && !capabilities.ready;
-  const canPreview = Boolean((legacyTask || capabilities?.ready) && draft.personAssetId && draft.productAssetId && draft.script.trim() && !locked && !busy);
+  const canPreview = Boolean((legacyTask || capabilities?.ready) && draft.personAssetId && draft.productAssetId && (draft.voiceSource === 'uploaded_audio' ? draft.audioAssetId : draft.script.trim()) && (draft.voiceSource !== 'official' || (draft.characterVoice !== 'unknown' && capabilities?.voices.some((voice) => voice.id === draft.voicePersonaId && voice.available))) && (draft.voiceSource !== 'cloned_voice' || !!draft.voicePersonaId) && !locked && !busy);
   const scene = capabilities?.scenes.find((item) => item.id === draft.sceneId);
   const previewHelp = legacyTask ? '旧任务沿用原制作方式，开始时检查对应生成服务。' : !capabilities ? '正在检查生成服务…' : !capabilities.ready ? capabilities.message
     : preview ? '确认人物、产品和比例后，再生成视频。'
     : !draft.personAssetId || !draft.productAssetId ? '选择形象和产品图片后，生成人物预览。'
+    : draft.voiceSource === 'uploaded_audio' ? draft.audioAssetId ? '已选择录音，准备声音与人物预览。' : '选择自己的口播录音，再生成人物预览。'
     : !draft.script.trim() ? '写下想讲的话，再生成人物预览。' : '生成人物预览后，确认形象与产品再制作视频。';
 
   return <div className="digital-human-page">
@@ -150,11 +221,42 @@ export function DigitalHumanPage() {
         <fieldset className="dh-scenes" disabled={locked || !!busy}><legend>出镜场景</legend><div>{capabilities?.scenes.map((scene) => <button type="button" key={scene.id}
           aria-pressed={draft.sceneId === scene.id} className={draft.sceneId === scene.id ? 'is-selected' : ''} onClick={() => setDraft({ ...draft, sceneId: scene.id })}>
           <img src={SCENE_IMAGES[scene.id]} alt="" /><span>{scene.name}{draft.sceneId === scene.id && <Check size={14} />}</span></button>)}</div></fieldset>
-        <label className="dh-field"><span>完整口播文案</span><textarea disabled={locked || !!busy} maxLength={legacyTask ? 160 : 1800} rows={5} value={draft.script}
-          placeholder="写出整条视频实际要讲的话，包含介绍、解释和收尾。" aria-describedby="dh-script-help" onChange={(event) => setDraft({ ...draft, script: event.target.value })} /></label>
-        <p className="dh-quality" id="dh-script-help">{legacyTask ? '旧任务沿用原方案，口播文案最多160字。' : selected && selected.pipelineVersion === 2 && selected.narrationPolicy !== 'original_script' ? '这条旧任务沿用原有固定分段方案；按原稿自然时长制作请新建任务。' : `目标${draft.durationSeconds}秒，可按约${draft.durationSeconds * 4}字准备。保留完整原稿和自然语速，成片时长以实际讲话为准。`}</p>
-        <div className="dh-options"><label className="dh-field"><span>声音风格</span><select disabled={locked || !!busy} value={draft.voiceStyle} onChange={(event) => setDraft({ ...draft, voiceStyle: event.target.value })}>
-          {capabilities?.voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label>
+        <label className="dh-field"><span>{draft.voiceSource === 'uploaded_audio' ? '场景与产品说明（可选）' : '完整口播文案'}</span><textarea disabled={locked || !!busy} maxLength={legacyTask ? 160 : 1800} rows={5} value={draft.script}
+          placeholder={draft.voiceSource === 'uploaded_audio' ? '录音决定实际讲解内容；这里可补充产品与画面说明。' : '写出整条视频实际要讲的话，包含介绍、解释和收尾。'} aria-describedby="dh-script-help" onChange={(event) => { setDraft({ ...draft, script: event.target.value }); setVoicePreview(''); }} /></label>
+        <p className="dh-quality" id="dh-script-help">{draft.voiceSource === 'uploaded_audio' ? '使用录音中的实际讲话和原声音，字幕根据录音识别，不改读这里的文字。' : legacyTask ? '旧任务沿用原方案，口播文案最多160字。' : selected && selected.pipelineVersion === 2 && selected.narrationPolicy !== 'original_script' ? '这条旧任务沿用原有固定分段方案；按原稿自然时长制作请新建任务。' : `目标${draft.durationSeconds}秒，可按约${draft.durationSeconds * 4}字准备。保留完整原稿和自然语速，成片时长以实际讲话为准。`}</p>
+        <div className="dh-voice" aria-label="数字人声音">
+          <label className="dh-field"><span>声音来源</span><select disabled={locked || !!busy} value={draft.voiceSource || 'legacy'} onChange={(event) => {
+            const source = event.target.value as DigitalHumanDraft['voiceSource'];
+            const voice = capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.id === capabilities.voicePreferences?.[draft.characterVoice || 'unknown']) || capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.digitalHumanDefault);
+            setDraft({ ...draft, voiceSource: source, voicePersonaId: source === 'official' ? voice?.id || '' : '' }); setVoicePreview('');
+          }}>
+            {!draft.voiceSource && <option value="legacy">沿用原任务声音</option>}
+            <option value="official">火山音色，朗读文案</option><option value="uploaded_audio">自己的录音，按原音讲解</option><option value="cloned_voice">专属音色，朗读新文案</option>
+          </select></label>
+          {draft.voiceSource === 'official' && <>
+            <div className="dh-options"><label className="dh-field"><span>人物声音</span><select disabled={locked || !!busy} value={draft.characterVoice || 'unknown'} onChange={(event) => chooseCharacterVoice(event.target.value as 'male' | 'female' | 'unknown')}>
+              <option value="unknown">请选择男声或女声</option><option value="male">男声</option><option value="female">女声</option></select></label>
+              <label className="dh-field"><span>配音音色</span><select disabled={locked || !!busy} value={draft.voicePersonaId || ''} onChange={(event) => { setDraft({ ...draft, voicePersonaId: event.target.value }); setVoicePreview(''); }}>
+                <option value="">请选择音色</option>{capabilities?.voices.filter((voice) => voice.gender === draft.characterVoice).map((voice) => <option key={voice.id} value={voice.id}>{voice.name}{voice.available ? '' : ' · 待试听'}</option>)}
+              </select></label></div>
+            {voiceRecommendation && <p className="dh-quality">{voiceRecommendation} 可手动调整。</p>}
+            <div className="dh-voice-actions"><button type="button" className="dh-button" data-xiaoxi-digital-human-action="voice-preview" disabled={locked || !!busy || !draft.voicePersonaId} onClick={() => void auditionVoice()}>{busy === 'voice-preview' ? '正在准备试听…' : '试听所选音色'}</button>
+              {voicePreview && !capabilities?.voices.find((v) => v.id === draft.voicePersonaId)?.available && <button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void useVoice()}>采用试听声音</button>}
+            </div>{voicePreview && <audio className="dh-audio" controls src={voicePreview} aria-label="所选音色试听" />}
+          </>}
+          {(draft.voiceSource === 'uploaded_audio' || draft.voiceSource === 'cloned_voice') && <><button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void importAudio()}>{audio?.name || '选择自己的录音（WAV / MP3 / M4A）'}</button>
+            <p className="dh-quality">{draft.voiceSource === 'uploaded_audio' ? '直接使用录音不需要复刻音色；保留完整讲话，按实际时长制作。' : '复刻样本建议14—30秒单人清晰录音。已有音色可以直接选择；新训练仅使用已分配的免费或已购槽位。'}</p></>}
+          {draft.voiceSource === 'cloned_voice' && <>
+            <label className="dh-field"><span>我的专属音色</span><select disabled={locked || !!busy} value={draft.voicePersonaId || ''} onChange={(event) => setDraft({ ...draft, voicePersonaId: event.target.value })}><option value="">请选择训练完成的音色</option>
+              {clones.filter((voice) => voice.usable || voice.status === 'ready').map((voice) => <option key={voice.speakerId} value={voice.speakerId}>{voice.name || voice.speakerId}</option>)}</select></label>
+            {!!cloneSlots.length && <><label className="dh-field"><span>可用复刻槽位</span><select disabled={locked || !!busy} value={cloneSlot} onChange={(event) => setCloneSlot(event.target.value)}><option value="">请选择已分配槽位</option>{cloneSlots.map((slot) => <option key={slot.speakerId} value={slot.speakerId}>{slot.name || slot.speakerId}</option>)}</select></label>
+              <label className="dh-consent"><input type="checkbox" checked={cloneConsent} disabled={locked || !!busy} onChange={(event) => setCloneConsent(event.target.checked)} />录音属于本人，或已获得声音使用与复刻授权</label>
+              <button type="button" className="dh-button" data-xiaoxi-digital-human-action="voice-train" disabled={locked || !!busy || !cloneConsent || !cloneSlot || !draft.audioAssetId || cloneSubmission?.speakerId === cloneSlot} onClick={() => void trainVoice()}>训练专属音色</button></>}
+            <p className="dh-quality">{cloneNotice || capabilities?.voiceClone?.message || '尚未确认可用复刻槽位，不会自动购买。'}</p>
+            <button type="button" className="dh-text-button" disabled={!!busy} onClick={() => void refreshClone()}>查询音色与原训练进度</button>
+          </>}
+        </div>
+        <div className="dh-options">
           <label className="dh-field"><span>{legacyTask ? '样片时长' : '目标时长'}</span><select disabled={locked || !!busy} value={draft.durationSeconds} onChange={(event) => setDraft({ ...draft, durationSeconds: Number(event.target.value) })}>
             {(legacyTask ? [10, 11, 12, 13, 14, 15] : [15, 30, 45]).map((seconds) => <option key={seconds} value={seconds}>{seconds}秒</option>)}</select></label></div>
         {!locked && <div className="dh-draft-actions"><button type="button" className="dh-button" disabled={!!busy} onClick={() => void saveDraft()}>保存草稿</button>
@@ -170,6 +272,9 @@ export function DigitalHumanPage() {
         {!working && !videoUrl && <div className={`dh-preview-help${serviceUnavailable ? ' is-unavailable' : ''}`} role="status"><span>{previewHelp}</span>
           {serviceUnavailable && <button className="dh-text-button" disabled={!!busy} onClick={() => void perform('capability', loadCapabilities)}>重新检查</button>}</div>}
         {selected?.error && <div className="dh-message is-error" role="alert"><CircleAlert size={16} /><span>{selected.error}</span></div>}
+        {preparedSpeech && <audio className="dh-audio" controls src={preparedSpeech} aria-label="本片完整口播试听" />}
+        {selected?.reusedAudioFrom && <p className="dh-quality">已复用原任务的完整口播与字幕，不重新购买配音。</p>}
+        {selected?.voiceName && <p className="dh-quality">本片声音：{selected.voiceName}</p>}
         {selected?.audio && <p className="dh-quality" role="status">{selected.audio.prepared ? `声音已准备：${Number(selected.audio.seconds || 0).toFixed(1)}秒，${selected.audio.segmentCount || 1}段；口型和字幕使用同一音轨。` : '先核对完整声音与台词，再提交视频。'}</p>}
         <div className="dh-output-actions">
           {selected?.status === 'preview_ready' && <button className="dh-button is-primary" data-xiaoxi-digital-human-action="confirm" disabled={!!busy || !preview || (selected.pipelineVersion === 2 && !capabilities?.ready)}

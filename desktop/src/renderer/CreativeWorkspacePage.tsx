@@ -1612,7 +1612,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
         <div>
           <span className="workspace-eyebrow">AI CREATIVE STUDIO</span>
           <h1>创作工作台</h1>
-          <p>选择素材与目标，AI 自动理解、选段、混剪和渲染，不需要手工时间线。</p>
+          <p>原声剪辑工具：保留素材中的讲解。使用文案配音制作，请返回创作工作台。</p>
         </div>
         <div className="workspace-header-actions">
           {onBackToProduct && <button className="workspace-legacy-back" onClick={onBackToProduct}>返回批量创作</button>}
@@ -1633,10 +1633,10 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
 
       <div className="workspace-mode-grid">
         <button className={`workspace-mode-card ${mode === "course" ? "is-active" : ""}`} onClick={() => setMode("course")} disabled={Boolean(busy)}>
-          <FileVideo2 size={24} /><span><strong>长课程精剪</strong><small>从口播、播客或课程中找出完整观点，生成 30～90 秒竖屏成片。</small></span>
+          <FileVideo2 size={24} /><span><strong>原声课程拆条</strong><small>保留原讲解，从口播、播客或课程中找出完整观点，生成 30～90 秒竖屏成片。</small></span>
         </button>
         <button className={`workspace-mode-card ${mode === "mix" ? "is-active" : ""}`} onClick={() => setMode("mix")} disabled={Boolean(busy)}>
-          <Layers3 size={24} /><span><strong>AI 批量混剪</strong><small>把杂素材交给 AI 自动尝试组合；“开场—过程—结果”只是成片结构，不要求你提前分类上传。</small></span>
+          <Layers3 size={24} /><span><strong>原声素材混剪</strong><small>保留素材原声，由 AI 安排画面组合。需要按新文案配音时，请使用创作工作台主流程。</small></span>
         </button>
       </div>
 

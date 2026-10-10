@@ -46,7 +46,10 @@ def supplied(batch):
 
 
 def context(batch):
-    return {key: batch.get(key, '') for key in ('target_audience', 'description', 'cta')} | {'expression': expression(batch)}
+    result = {key: batch.get(key, '') for key in ('target_audience', 'description', 'cta')} | {'expression': expression(batch)}
+    if batch.get('script_action') in {'rewrite', 'expand'} and not supplied(batch):
+        result['script_action'] = batch['script_action']
+    return result
 
 
 def expression(batch):

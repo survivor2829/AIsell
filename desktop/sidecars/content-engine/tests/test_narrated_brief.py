@@ -285,7 +285,8 @@ class NarratedBriefTests(unittest.TestCase):
     def test_supplied_script_skips_paid_analysis_and_preserves_body(self):
         body = '我自己写好的文案。\n第二段保持原来的说法。'
         saved = self.domain.save({'batch_id': self.batch['batch_id'], 'expression': body,
-                                  'script_source': 'provided'})
+                                  'script_source': 'provided', 'script_action': 'rewrite'})
+        self.assertNotIn('script_action', narrated_brief.context(saved))
         task = self.domain.start(saved['batch_id'], 'scripts')
         with patch.object(self.domain, '_analysis') as analysis, patch.object(self.domain, '_cloud') as cloud, \
              patch.object(self.domain.d.analyzer.cloud_client, 'configured', False):
@@ -301,6 +302,36 @@ class NarratedBriefTests(unittest.TestCase):
         queued = self.domain.confirm_script({'batch_id': state['batch_id'], 'settings': state['settings'],
             'selections': [{'script_id': option['candidate_id'], 'revision': option['revision'], 'count': 1}]})
         self.assertTrue(queued['task_id'])
+
+    def test_ai_action_is_explicit_and_change_invalidates_confirmed_copy(self):
+        saved = self.domain.save({'batch_id': self.batch['batch_id'], 'expression': '保留真实经历与产品参数。',
+                                  'script_source': 'ideas', 'script_action': 'rewrite'})
+        self.assertEqual('rewrite', narrated_brief.context(saved)['script_action'])
+        state = self.domain._load(saved['batch_id'])
+        state['script_confirmation'] = {'narration': '已确认原稿'}
+        self.domain._store(state)
+        expanded = self.domain.save({'batch_id': saved['batch_id'], 'script_action': 'expand'})
+        self.assertEqual('expand', narrated_brief.context(expanded)['script_action'])
+        self.assertIsNone(expanded['script_confirmation'])
+        with self.assertRaises(ContentEngineError):
+            self.domain.save({'batch_id': saved['batch_id'], 'expression': '', 'script_action': 'rewrite'})
+
+    def test_long_rewrite_uses_material_capacity_instead_of_short_video_ceiling(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state.update(script_action='rewrite', expression='保留完整型号与参数。' * 30,
+                     available_shots=[{'target_duration_ms': 18000}] * 7)
+        with patch.object(self.domain, '_initialize_speech_budget'), \
+             patch.object(self.domain, '_minimum_spoken_chars', return_value=100), \
+             patch.object(self.domain, '_max_narration_chars', return_value=80), \
+             patch.object(self.domain.d, '_should_stop', return_value=False), \
+             patch('content_engine.narrated_sources.source_index', return_value=([], {})), \
+             patch.object(self.domain, '_cloud', side_effect=ContentEngineError('probe', 'stop before provider')) as cloud:
+            with self.assertRaises(ContentEngineError):
+                narrated_script_drafts.prepare(self.domain, 'task-test', state)
+        payload, instruction = cloud.call_args.args
+        self.assertEqual(560, payload['maximum_chars'])
+        self.assertEqual('rewrite', payload['creative_brief']['script_action'])
+        self.assertIn('完整要点', instruction)
 
     def test_new_brief_defaults_to_supplied_copy_but_preserves_legacy_input_mode(self):
         request = {'groups': self.batch['groups'], 'brief_version': 1, 'target_audience': '渠道商',
@@ -322,6 +353,10 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual(script['narration'], ''.join(sentences))
         unbroken = {'narration': '没有句子边界的原文' * 8}
         self.assertIs(narrated_script_drafts._fit_generated_sentences(self.domain, unbroken, {}, 15, 30), unbroken)
+        for action in ('rewrite', 'expand'):
+            edited = narrated_script_drafts._fit_generated_sentences(self.domain, script, {'script_action': action}, 15, 30)
+            self.assertIs(script, edited)
+            self.assertEqual(''.join(sentences), edited['narration'])
 
     def test_one_or_two_legacy_drafts_are_confirmable_without_framework_gate(self):
         for count in (1, 2):

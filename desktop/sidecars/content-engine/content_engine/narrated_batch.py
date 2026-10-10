@@ -1187,6 +1187,10 @@ class NarratedBatchDomain:
         default_source = 'provided' if brief_version == 1 and isinstance(input_text, str) and input_text.strip() else 'ideas'
         script_source = request.get('script_source', (b or {}).get('script_source', default_source))
         require(script_source in ('ideas', 'provided'), 'invalid_narrated_settings', '文案输入方式无效。')
+        script_action = request.get('script_action', (b or {}).get('script_action', 'generate'))
+        require(script_action in ('generate', 'rewrite', 'expand'), 'invalid_narrated_settings', '文案操作无效。')
+        if script_source == 'provided':
+            script_action = 'generate'  # Supplied text is copied, never rewritten by this setting.
         brief = {}
         for key, limit in narrated_brief.FIELDS.items():
             if key == 'expression' and key not in request and key not in (b or {}):
@@ -1195,6 +1199,8 @@ class NarratedBatchDomain:
             require(isinstance(value, str) and len(value) <= limit,
                     'invalid_narrated_settings', f'{key}须为{limit}字以内的文字。')
             brief[key] = value if key == 'expression' else value.strip()
+        require(script_action == 'generate' or bool(brief.get('expression', '').strip()),
+                'invalid_narrated_settings', '改写或扩写前请先填写原文。')
         if 'expression' in request:
             # The unified text is authoritative; cleared text must not resurrect legacy claims.
             brief.update(advantages='', customer_pain_points='')
@@ -1257,6 +1263,7 @@ class NarratedBatchDomain:
         changed = (source_changed
                    or b.get('brief_version') != brief_version
                    or b.get('script_source', 'ideas') != script_source
+                   or b.get('script_action', 'generate') != script_action
                    or b.get('target_audience', '') != brief.get('target_audience', '')
                    or content_input(b) != content_input({**brief, 'description': description, 'material_context': material_context})
                    or (b.get('settings') or {}).get('minimum_duration_seconds', 0) != minimum
@@ -1304,7 +1311,7 @@ class NarratedBatchDomain:
             target = b.get("target_count") or target
         b.update(groups=groups, title=title, description=description, cta=cta, material_context=material_context,
                  target_count=target, collection_id=collection_id, settings=settings,
-                 brief_version=brief_version, script_source=script_source, **brief)
+                 brief_version=brief_version, script_source=script_source, script_action=script_action, **brief)
         b["_story_planning_version"] = 2
         self.db.execute("UPDATE creative_projects SET name=?,theme=?,updated_at=? WHERE id=?",
                         (title, title, self.d._now(), b["project_id"]))
@@ -1431,8 +1438,10 @@ class NarratedBatchDomain:
     def _cloud(self, payload, instruction, frames=None, validate=None, validation_error=None,
                timeout_seconds=None, on_success=None, generation_rules=True, max_tokens=None, purpose=None,
                parse_code="cloud_response_invalid", parse_message="百炼返回了无法解析的结果。"):
-        cloud = getattr(self.d.analyzer, "cloud_client", None)
-        require(cloud and getattr(cloud, "configured", False), "provider_gateway_unavailable", "云端素材理解服务暂不可用；当前进度已保留，请稍后重试。")
+        cloud = getattr(self.d.analyzer, "cloud_client" if frames else "director_client", None)
+        require(cloud and getattr(cloud, "configured", False), "provider_gateway_unavailable",
+                "云端素材理解服务暂不可用；当前进度已保留，请稍后重试。" if frames else
+                "DeepSeek 导演服务暂不可用；已有文案和素材已保留，不会切换模型。")
         b = getattr(self, "_active_batch", None)
         if generation_rules and not frames and b is not None and (b.get("settings") or {}).get("workflow_version") == 2:
             payload = {**payload, "approved_direction": b.get("direction")}
@@ -5054,6 +5063,10 @@ class NarratedBatchDomain:
         if not (action == 'scripts' and narrated_brief.supplied(b)):
             try:
                 require(cloud and getattr(cloud, "configured", False), "provider_gateway_unavailable", "云端素材理解服务暂不可用；当前进度已保留，请稍后重试。")
+                if action in {'scripts', 'recommend'}:
+                    director = getattr(self.d.analyzer, "director_client", None)
+                    require(director and getattr(director, "configured", False), "provider_gateway_unavailable",
+                            "DeepSeek 导演服务暂不可用；已有文案和素材已保留，不会先购买素材分析或切换模型。")
             except ContentEngineError as error:
                 if error.code == "provider_gateway_unavailable":
                     b["status"] = "needs_attention"

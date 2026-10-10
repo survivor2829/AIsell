@@ -25,6 +25,9 @@ const TRUSTED_RUNTIME_ENV_KEYS = new Set([
 ]);
 const PROVIDER_ENV_KEYS = new Set([
   "DASHSCOPE_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_API_URL",
+  "DEEPSEEK_MODEL",
   "APIMART_API_KEY",
   "XIAOXI_BAILIAN_API_HOST",
   "XIAOXI_PROVIDER_GATEWAY_CA_PEM",
@@ -1018,6 +1021,7 @@ function createContentEngineSidecar(options = {}) {
     // Internal main-process integration only: paths are never accepted from renderer IPC.
     importBaseVideo: (payload) => request("import_base_video", payload, { timeoutMs: renderTimeoutMs }),
     prepareVideoNarration: (payload) => request("prepare_video_narration", payload, { timeoutMs: renderTimeoutMs }),
+    recommendDigitalHumanVoice: (payload) => request("recommend_digital_human_voice", payload, { timeoutMs: renderTimeoutMs }),
     listMediaSegments: (optionsForList = {}) => request(
       "list_media_segments",
       {

@@ -3,6 +3,7 @@ import itertools
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 
@@ -37,6 +38,7 @@ class NarratedBatchTests(unittest.TestCase):
         self.fixture._use_pipeline(self.analyzer, self.renderer)
         self.analyzer.cloud_client.selection_model = "fake"
         self.analyzer.cloud_client._structured_completion = self.complete
+        self.analyzer.director_client = self.analyzer.cloud_client
         db = self.s.connection
         db.execute("UPDATE media_segments SET provider='bailian'")
         self.ids = ["asset-v2"]
@@ -99,6 +101,27 @@ class NarratedBatchTests(unittest.TestCase):
         state.pop("_story_planning_version", None)
         self.s.connection.execute("UPDATE narrated_batches_v1 SET state_json=? WHERE id=?", (json.dumps(state), b["batch_id"]))
         return b
+
+    def test_director_routes_text_to_deepseek_and_images_to_vision(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        calls = []
+        director = SimpleNamespace(configured=True, selection_model='deepseek-test', timeout_seconds=90,
+            last_completion_requests=[], _structured_completion=lambda **kwargs: calls.append(('text', kwargs)) or {'ok': True})
+        vision = SimpleNamespace(configured=True, vision_model='vision-test', timeout_seconds=90,
+            last_completion_requests=[], _structured_completion=lambda **kwargs: calls.append(('vision', kwargs)) or {'ok': True})
+        self.analyzer.director_client, self.analyzer.cloud_client = director, vision
+        domain._cloud({'text': '完整文案'}, '只规划文字')
+        frame = self.fixture.root / 'director-frame.jpg'
+        frame.write_bytes(b'fake-image')
+        domain._cloud({'frames': [0]}, '读取画面事实', frames=[frame])
+        self.assertEqual(['text', 'vision'], [kind for kind, _ in calls])
+        self.assertEqual(['deepseek-test', 'vision-test'], [kwargs['model'] for _, kwargs in calls])
+        self.assertIsInstance(calls[0][1]['messages'][-1]['content'], str)
+        self.assertEqual('image_url', calls[1][1]['messages'][-1]['content'][-1]['type'])
+        director.configured = False
+        with self.assertRaises(ContentEngineError):
+            domain._cloud({'text': '不允许回落'}, '文字导演离线')
+        self.assertEqual(2, len(calls))
 
     def test_story_paragraph_can_span_multiple_shots_and_render(self):
         original = self.complete
