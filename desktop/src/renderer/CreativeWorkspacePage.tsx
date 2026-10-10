@@ -470,6 +470,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
   const [subtitleFontSize, setSubtitleFontSize] = useState(48);
   const [subtitleMarginBottom, setSubtitleMarginBottom] = useState(170);
   const [packagingMode, setPackagingMode] = useState<PackagingMode>("auto");
+  const [coverMode, setCoverMode] = useState<CoverMode>("local_frame");
   const [packagingPresetId, setPackagingPresetId] = useState("");
   const [packagingPresets, setPackagingPresets] = useState<PackagingPreset[]>([]);
   const [brandProfiles, setBrandProfiles] = useState<BrandProfile[]>([]);
@@ -540,7 +541,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
   const selectedAssetIds = mode === "course"
     ? (courseAssetId ? [courseAssetId] : [])
     : mixAssetIds;
-  const effectiveCoverMode: CoverMode = packagingMode === "none" ? "none" : "ai_generate";
+  const effectiveCoverMode: CoverMode = packagingMode === "none" ? "none" : coverMode;
   const visualComparisonCapable = engine?.capabilities?.visual_comparison_v1 === true;
   const remotionPackagingCapable = engine?.capabilities?.remotion_packaging_v1 === true;
 
@@ -1605,7 +1606,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
           <p>选择素材与目标，AI 自动理解、选段、混剪和渲染，不需要手工时间线。</p>
         </div>
         <div className="workspace-header-actions">
-          {onBackToProduct && <button className="workspace-legacy-back" onClick={onBackToProduct}>返回商品一键成片</button>}
+          {onBackToProduct && <button className="workspace-legacy-back" onClick={onBackToProduct}>返回批量创作</button>}
           <div className={`workspace-engine-badge ${engineReady ? "is-ready" : "is-failed"}`}>
             <span />{engineReady ? "内容引擎已就绪" : "内容引擎未就绪"}
           </div>
@@ -1687,7 +1688,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
                 <label className="workspace-field"><span>包装方式</span><select value={packagingMode} onChange={(event) => handlePackagingModeChange(event.target.value as PackagingMode)} disabled={Boolean(busy)}><option value="auto">智能分散模板</option><option value="preset">指定模板</option><option value="none">不加包装</option></select></label>
                 {packagingMode === "preset" && <label className="workspace-field"><span>模板</span><select value={packagingPresetId} onChange={(event) => setPackagingPresetId(event.target.value)} disabled={Boolean(busy)}>{compatiblePresets.map((item) => <option value={item.presetId} key={item.presetId}>{item.displayName}</option>)}</select></label>}
                 <label className="workspace-field"><span>品牌包</span><select value={brandProfileId} onChange={(event) => setBrandProfileId(event.target.value)} disabled={Boolean(busy)}><option value="">中性模板</option>{brandProfiles.map((item) => <option value={item.brandProfileId} key={item.brandProfileId}>{item.name}</option>)}</select></label>
-                <label className="workspace-field"><span>封面</span><select value={effectiveCoverMode} disabled><option value="ai_generate">AI 封面（固定）</option><option value="none">不加包装时无封面</option></select></label>
+                <label className="workspace-field"><span>封面</span><select value={effectiveCoverMode} onChange={(event) => setCoverMode(event.target.value as CoverMode)} disabled={Boolean(busy) || packagingMode === "none"}><option value="local_frame">实拍截帧（免费）</option><option value="ai_generate">AI 封面（付费）</option><option value="none">不生成封面</option></select></label>
                 <label className="workspace-field"><span>高质动态（内测）</span><select value={highQualityPackaging ? "on" : "off"} onChange={(event) => setHighQualityPackaging(event.target.value === "on")} disabled={Boolean(busy)}><option value="off">关闭</option><option value="on" disabled={packagingMode === "none"}>Remotion 优先（失败自动回退）</option></select></label>
                 {highQualityPackaging && <label className="workspace-field"><span>视觉风格（HOW）</span><select value={visualStylePreference} onChange={(event) => setVisualStylePreference(event.target.value as VisualStylePreference)} disabled={Boolean(busy)}><option value="auto_disperse">自动分散（默认）</option><option value="social_pop">社交弹跳（social_pop）</option><option value="neo_editorial">新编辑部（neo_editorial）</option><option value="tech_motion">科技动势（tech_motion）</option></select></label>}
               </div>

@@ -15,7 +15,7 @@ import creativeThinkingStill from "./assets/creative-thinking-still.webp";
 import creativeMaking from "./assets/creative-making.webp";
 import creativeMakingStill from "./assets/creative-making-still.webp";
 
-type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
+type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenLegacy?: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
 const emptyGroups = (): Groups => ({ opening: [], middle: [], ending: [] });
 const activeStatuses = new Set(["queued", "analyzing", "rendering", "ready_for_review"]);
 const preferredVoiceStorageKey = "batch-studio-preferred-voice";
@@ -42,7 +42,7 @@ function scriptBody(candidate: Candidate) {
 }
 
 
-export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onOpenDiagnostics }: Props) {
+export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onOpenLegacy, onOpenDiagnostics }: Props) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -444,7 +444,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     : null;
   const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
-    <header className="batch-page-header"><div><h1>创作工作台</h1></div><div className="batch-header-actions"><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}>新建视频</button></div></header>
+    <header className="batch-page-header"><div><h1>创作工作台</h1></div><div className="batch-header-actions">{onOpenLegacy && <button type="button" disabled={busy || saving || running || paused} onClick={onOpenLegacy}>长片拆条与混剪</button>}<button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}>新建视频</button></div></header>
     {visualFlow && <nav className="batch-flow-steps" aria-label="视频创作步骤">{flowSteps.map(({ step, label, icon: Icon, enabled }, index) => <button key={label} type="button" aria-current={(flowStep === 1 ? 2 : flowStep) === step ? "step" : undefined} disabled={!enabled || submitting} onClick={() => setFlowView(step)}><span className="batch-flow-icon"><Icon size={21} strokeWidth={1.7} /></span><span><small>0{index + 1}</small>{label}</span></button>)}</nav>}
     <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); load(await callBatch<Batch>("get", { batch_id: id })); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {

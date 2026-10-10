@@ -935,6 +935,7 @@ export default function App() {
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={openFeedback}
               /></> : <BatchCreativePage initial={batchInitial}
+                onOpenLegacy={() => openLegacy()}
                 onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}
                 onOpenMaterials={() => setActive("materials")} />)}

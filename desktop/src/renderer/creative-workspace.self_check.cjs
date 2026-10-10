@@ -34,7 +34,7 @@ for (const contract of [
   /字幕位置/u,
   /一键网感包装/u,
   /智能分散模板/u,
-  /AI 封面（固定）/u,
+  /实拍截帧（免费）/u,
   /高质动态（内测）/u,
   /自动分散/u,
   /social_pop/u,
@@ -85,7 +85,7 @@ assert.match(source, /snapshot\.visualRenderer[\s\S]*?visualRenderer: snapshot\.
 assert.match(source, /requestedEngine: "remotion"/u);
 assert.match(source, /allowFallback: true/u);
 assert.match(source, /coverMode: effectiveCoverMode/u);
-assert.match(source, /packagingMode === "none" \? "none" : "ai_generate"/u);
+assert.match(source, /packagingMode === "none" \? "none" : coverMode/u);
 assert.doesNotMatch(source, /本地真实画面（零调用）/u);
 assert.match(source, /packagingMode: snapshot\.packagingMode/u);
 assert.match(source, /const taskGeneration = taskGenerationRef\.current/u);
