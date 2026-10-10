@@ -390,6 +390,9 @@ class CreativeDomain:
         self.cover_client = cover_client
         self._visual_capability_snapshot = self._unavailable_visual_capability()
         self._sync_configured_voice_persona()
+        policy = json.loads((Path(__file__).parent / "assets" / "music-catalog-policy.v1.json").read_text(encoding="utf-8"))
+        self._retired_music_fingerprints = tuple(policy["retired_fingerprints"])
+        self._sync_music_catalog_policy()
 
     def create_analysis_task(self, asset_ids, profile=None):
         safe_ids = self._validate_asset_ids(asset_ids)
@@ -3237,6 +3240,7 @@ class CreativeDomain:
             next_state = "synthesizing"
         else:
             public_plan.pop("music", None)
+            self.normalize_music_settings(private_state)
             for field in ("music_track", "licensed_music_relative_path"):
                 private_state.pop(field, None)
             private_state["excluded_music_track_id"] = str(
@@ -3782,6 +3786,7 @@ class CreativeDomain:
         )
         no_music = music_mode == "none" or legacy_no_music
         allowed_track_ids = None if music_mode == "auto" else private_state.get("music_track_ids")
+        automatic_music = music_mode == "auto" or (music_mode is None and not allowed_track_ids)
         music = None
         if no_music:
             private_state.pop('music_track', None)
@@ -3791,6 +3796,7 @@ class CreativeDomain:
                 private_state,
                 public_plan.get("musicBrief") or {},
                 required_duration_ms=voice_bundle["duration_ms"],
+                include_inactive=bool(private_state.get("music_track")) and not row["parent_run_id"],
             )
             music_reused = music is not None
             if music is None:
@@ -3801,7 +3807,7 @@ class CreativeDomain:
                     allowed_track_ids=allowed_track_ids,
                     prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
                 )
-            if music is None:
+            if music is None and not automatic_music:
                 selected_pool_empty = music_mode == "selected" and not private_state.get("music_track_ids")
                 return self._pause_auto_mix(
                     task_id,
@@ -3812,44 +3818,49 @@ class CreativeDomain:
                     public_plan=public_plan,
                     private_state=private_state,
                 )
-            public_plan["music"] = music["public"]
-            private_state["music_track"] = {
-                "track_id": music["track_id"],
-                "managed_relative_path": music["managed_relative_path"],
-                "integrated_lufs": music.get("integrated_lufs"),
-                "true_peak_dbtp": music.get("true_peak_dbtp"),
-                "loop_start_ms": music.get("loop_start_ms"),
-                "loop_end_ms": music.get("loop_end_ms"),
-            }
-            selection_key = auto_mix_canonical_hash(
-                {
-                    "stage": "music_selection",
-                    "brief": public_plan.get("musicBrief") or {},
-                    "required_duration_ms": voice_bundle["duration_ms"],
+            if music is None:
+                no_music = True
+                private_state.pop("music_track", None)
+                public_plan["music"] = {"mode": "none", "display_name": "无配乐", "message": "当前没有适配本片的可用配乐，已保留完整配音继续制作。"}
+            else:
+                public_plan["music"] = music["public"]
+                private_state["music_track"] = {
                     "track_id": music["track_id"],
+                    "managed_relative_path": music["managed_relative_path"],
+                    "integrated_lufs": music.get("integrated_lufs"),
+                    "true_peak_dbtp": music.get("true_peak_dbtp"),
+                    "loop_start_ms": music.get("loop_start_ms"),
+                    "loop_end_ms": music.get("loop_end_ms"),
                 }
-            )
-            self._record_auto_mix_artifact(
-                run_id,
-                "music_selection",
-                selection_key,
-                "completed",
-                public_metadata={
-                    "track": music["public"],
-                    "cacheHit": music_reused,
-                },
-                private_metadata={
-                    "managed_relative_path": music["managed_relative_path"]
-                },
-            )
-            public_plan["cache"] = {
-                **(
-                    public_plan.get("cache")
-                    if isinstance(public_plan.get("cache"), dict)
-                    else {}
-                ),
-                "musicReused": music_reused,
-            }
+                selection_key = auto_mix_canonical_hash(
+                    {
+                        "stage": "music_selection",
+                        "brief": public_plan.get("musicBrief") or {},
+                        "required_duration_ms": voice_bundle["duration_ms"],
+                        "track_id": music["track_id"],
+                    }
+                )
+                self._record_auto_mix_artifact(
+                    run_id,
+                    "music_selection",
+                    selection_key,
+                    "completed",
+                    public_metadata={
+                        "track": music["public"],
+                        "cacheHit": music_reused,
+                    },
+                    private_metadata={
+                        "managed_relative_path": music["managed_relative_path"]
+                    },
+                )
+                public_plan["cache"] = {
+                    **(
+                        public_plan.get("cache")
+                        if isinstance(public_plan.get("cache"), dict)
+                        else {}
+                    ),
+                    "musicReused": music_reused,
+                }
         recipe = self._auto_mix_recipe(
             row,
             public_plan,
@@ -3961,6 +3972,7 @@ class CreativeDomain:
             private_state,
             public_plan.get("musicBrief") or {},
             required_duration_ms=voice_bundle["duration_ms"],
+            include_inactive=True,
         )
         if not no_music and (current_music is None or current_music["track_id"] != music["track_id"]):
             self.connection.execute(
@@ -5448,7 +5460,7 @@ class CreativeDomain:
                     "auto_mix_music_authorization_changed",
                     "授权音乐已撤权、过期或摘要不一致，请使用 music 音乐层重做。",
                 )
-            matching = self._music_catalog_rows(track_id=track_id)
+            matching = self._music_catalog_rows(track_id=track_id, include_inactive=True)
             current = select_licensed_music(
                 matching,
                 {"bpmRange": [0, 999]},
@@ -5593,13 +5605,33 @@ class CreativeDomain:
         )
         return str(relative)
 
-    def _music_catalog_rows(self, *, track_id=None):
+    def _sync_music_catalog_policy(self):
+        self.connection.executemany(
+            "UPDATE music_catalog_tracks_v1 SET active=0 WHERE fingerprint=? AND active!=0",
+            ((fingerprint,) for fingerprint in self._retired_music_fingerprints),
+        )
+
+    def normalize_music_settings(self, settings):
+        """Only retire editorial selections; licensing and frozen jobs are separate."""
+        ids = list(settings.get("music_track_ids") or [])
+        retired = {row[0] for row in self.connection.execute("SELECT id FROM music_catalog_tracks_v1 WHERE active=0")}
+        remaining = [track_id for track_id in ids if track_id not in retired]
+        if remaining == ids:
+            return False
+        settings["music_track_ids"] = remaining
+        if settings.get("music_mode") in (None, "selected"):
+            settings["music_mode"] = "selected" if remaining else "auto"
+        return True
+
+    def _music_catalog_rows(self, *, track_id=None, include_inactive=False):
         output = []
-        query = "SELECT * FROM music_catalog_tracks_v1"
+        query = "SELECT * FROM music_catalog_tracks_v1 WHERE 1=1"
         values = ()
         if track_id is not None:
-            query += " WHERE id = ?"
+            query += " AND id = ?"
             values = (str(track_id),)
+        if not include_inactive:
+            query += " AND active=1"
         query += " ORDER BY updated_at DESC, id"
         for row in self.connection.execute(query, values).fetchall():
             managed_audio_valid = self._managed_file_digest_matches(
@@ -5691,6 +5723,8 @@ class CreativeDomain:
                 "music_license_evidence_too_large", "授权证据超过 32 MB。"
             )
         fingerprint = self._sha256_file(source)
+        if fingerprint in self._retired_music_fingerprints:
+            raise ContentEngineError("music_track_retired", "该版本配乐已从曲库移除，请选择其他曲目。")
         evidence_digest = self._sha256_file(evidence) if evidence else ""
         relative = Path("music-catalog") / f"{fingerprint}{source.suffix.casefold()}"
         managed = (self.data_dir / relative).resolve()
@@ -5830,6 +5864,7 @@ class CreativeDomain:
                 now,
             ),
         )
+        self._sync_music_catalog_policy()
         row = self.connection.execute(
             "SELECT * FROM music_catalog_tracks_v1 WHERE fingerprint = ?",
             (fingerprint,),
@@ -5842,7 +5877,7 @@ class CreativeDomain:
 
     def list_music_catalog_tracks(self):
         rows = self.connection.execute(
-            "SELECT * FROM music_catalog_tracks_v1 ORDER BY updated_at DESC, id"
+            "SELECT * FROM music_catalog_tracks_v1 WHERE active=1 ORDER BY updated_at DESC, id"
         ).fetchall()
         return {"items": [self._public_music_catalog_row(row) for row in rows]}
 
@@ -5893,11 +5928,10 @@ class CreativeDomain:
         if not isinstance(duration_seconds, (int, float)) or not 2 <= duration_seconds <= 120:
             raise ContentEngineError("invalid_music_duration", "配乐时长无效。")
         duration_ms = int(duration_seconds * 1000)
-        full_tracks = [row["id"] for row in self.connection.execute(
-            "SELECT id FROM music_catalog_tracks_v1 WHERE duration_ms >= ?", (duration_ms,)).fetchall()]
-        selected = self._select_auto_mix_music(
+        selected = select_licensed_music(
+            [track for track in self._music_catalog_rows() if track["duration_ms"] >= duration_ms],
             {"bpmRange": [80, 125], "targetEnergy": 0.45, "moods": ["warm", "lighthearted"]},
-            required_duration_ms=duration_ms, allowed_track_ids=full_tracks,
+            required_duration_ms=duration_ms,
         )
         # Reuse an uninterrupted recording. Do not substitute the 20s audition
         # file or repeat a short track without a verified musical loop.
@@ -5980,7 +6014,7 @@ class CreativeDomain:
             return None
         return selected
 
-    def _reusable_auto_mix_music(self, private_state, brief, *, required_duration_ms):
+    def _reusable_auto_mix_music(self, private_state, brief, *, required_duration_ms, include_inactive=False):
         previous = private_state.get("music_track")
         if not isinstance(previous, dict):
             return None
@@ -5990,7 +6024,7 @@ class CreativeDomain:
                 or (allowed_ids is not None and track_id not in allowed_ids)):
             return None
         matching = [
-            item for item in self._music_catalog_rows() if item["track_id"] == track_id
+            item for item in self._music_catalog_rows(include_inactive=include_inactive) if item["track_id"] == track_id
         ]
         selected = select_licensed_music(
             matching, brief, required_duration_ms=required_duration_ms,

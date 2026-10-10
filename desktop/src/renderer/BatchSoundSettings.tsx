@@ -126,8 +126,8 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
         }} /><span><strong>{track.displayName}</strong><small>{track.source}{!selectable(track) ? " · 暂不能用于导出" : ""}</small></span></label>
         <button type="button" disabled={!!loading || track.analysisStatus !== "ready"} onClick={() => void auditionMusic(track.trackId, track.displayName)}>{loading === track.trackId ? "准备试听…" : "试听"}</button>
       </div>)}</div>
-      {!tracks.length && <p className="batch-hint">还没有可用配乐，可导入已取得使用授权的具体版本。</p>}
-      {musicMode === "auto" && tracks.length > 0 && availableTrackCount === 0 && <p role="status" className="batch-notice">自动配乐当前没有可导出的授权曲目；请导入已核验曲目，或明确选择“无配乐”后再开始。</p>}
+      {!tracks.length && <p className="batch-hint">还没有可用配乐，可导入已取得使用授权的曲目；自动配乐会保留配音继续制作。</p>}
+      {musicMode === "auto" && tracks.length > 0 && availableTrackCount === 0 && <p role="status" className="batch-notice">当前没有可导出的配乐；本片将保留完整配音继续制作。</p>}
       {pool.some((id) => !tracks.some((track) => track.trackId === id && selectable(track))) && <p role="status" className="batch-notice">已选配乐中有曲目暂不可用，请换曲后制作。</p>}
       <button type="button" disabled={resourceLocked} onClick={() => setResourceSection("music")}>管理配乐／导入曲目</button>
     </details>

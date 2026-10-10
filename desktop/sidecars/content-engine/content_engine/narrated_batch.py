@@ -752,6 +752,10 @@ class NarratedBatchDomain:
 
     def get(self, batch_id):
         b = self._load(batch_id)
+        if not b.get("production_jobs") and not b.get("candidates"):
+            if self.d.normalize_music_settings(b.get("settings") or {}):
+                b["music_notice"] = "已移除下架配乐；保留其他已选曲目，无剩余曲目时改为自动配乐。"
+                self._store(b)
         if b.get("task_id"):
             task = self.d._task_row(b["task_id"])
             b["task_status"] = task["status"]
@@ -4834,6 +4838,8 @@ class NarratedBatchDomain:
                 c["actual_shots"] = (private.get("material_timeline") or {}).get("selected_segments") or c["shots"]
                 public = self.d._json_object(run["public_plan_json"])
                 selection = public.get("music") or public.get("musicSelection") or private.get("music_selection") or {}
+                if selection.get("mode") == "none" and selection.get("message"):
+                    b["music_notice"] = selection["message"]
                 track_id = (selection.get("trackId") or selection.get("track_id")
                             or selection.get("musicTrackId") or private.get("music_track", {}).get("track_id")
                             or private.get("selected_music_track_id"))

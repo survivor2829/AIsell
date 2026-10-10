@@ -14,6 +14,7 @@ if str(SIDECAR_ROOT) not in sys.path:
 
 
 from content_engine.service import ContentEngineService
+from content_engine.errors import ContentEngineError
 
 
 class _Analyzer:
@@ -188,6 +189,29 @@ class AutoMixMusicCatalogResourceTests(unittest.TestCase):
                 required_duration_ms=5_000,
             )
         )
+
+    def test_retired_recording_stays_out_of_new_selection_without_revoking_history(self):
+        item = self.service.import_music_catalog_track(self._request())
+        row = self._private_row()
+        domain = self.service.creative_domain
+        domain._retired_music_fingerprints = (row["fingerprint"],)
+        domain._sync_music_catalog_policy()
+        self.assertEqual([], self.service.list_music_catalog_tracks()["items"])
+        self.assertIsNone(domain._select_auto_mix_music(self._brief(), required_duration_ms=5000))
+        state = {"music_track": {"track_id": item["trackId"]}}
+        self.assertIsNone(domain._reusable_auto_mix_music(state, self._brief(), required_duration_ms=5000))
+        self.assertIsNotNone(domain._reusable_auto_mix_music(state, self._brief(), required_duration_ms=5000, include_inactive=True))
+        self.assertEqual("valid", self._private_row()["license_status"])
+        self.assertTrue((self.root / row["managed_relative_path"]).is_file())
+        with self.assertRaises(ContentEngineError) as error:
+            self.service.import_music_catalog_track(self._request())
+        self.assertEqual("music_track_retired", error.exception.code)
+        settings = {"music_mode": "selected", "music_track_ids": [item["trackId"]]}
+        self.assertTrue(domain.normalize_music_settings(settings))
+        self.assertEqual({"music_mode": "auto", "music_track_ids": []}, settings)
+        self.service.close()
+        self.service = ContentEngineService(self.root, creative_analyzer=_Analyzer(), creative_renderer=_Renderer(), start_background_jobs=False)
+        self.assertEqual([], self.service.list_music_catalog_tracks()["items"])
 
     def test_reimport_is_idempotent_and_repairs_managed_copies(self):
         first = self.service.import_music_catalog_track(self._request())

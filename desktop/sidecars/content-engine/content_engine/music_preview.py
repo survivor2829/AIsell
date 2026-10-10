@@ -10,7 +10,7 @@ from .errors import ContentEngineError
 
 def preview_music_catalog_track(domain, track_id):
     row = domain.connection.execute("SELECT * FROM music_catalog_tracks_v1 WHERE id=?", (track_id,)).fetchone()
-    if row is None or not domain._managed_file_digest_matches(row["managed_relative_path"], row["fingerprint"]):
+    if row is None or not row["active"] or not domain._managed_file_digest_matches(row["managed_relative_path"], row["fingerprint"]):
         raise ContentEngineError("music_preview_unavailable", "配乐试听文件不可用，请重新导入这个版本。")
     source = (domain.data_dir / row["managed_relative_path"]).resolve()
     if domain.data_dir not in source.parents:

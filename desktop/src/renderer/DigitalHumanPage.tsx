@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Check, CircleAlert, Download, ImagePlus, LoaderCircle, Plus, RefreshCw, UserRound } from 'lucide-react';
-import type { DigitalHumanApi, DigitalHumanAsset, DigitalHumanCapabilities, DigitalHumanDraft, DigitalHumanResult, DigitalHumanTask, DigitalHumanVoiceClone } from './digital-human-types';
+import type { DigitalHumanApi, DigitalHumanAsset, DigitalHumanCapabilities, DigitalHumanDraft, DigitalHumanResult, DigitalHumanTask } from './digital-human-types';
 import './DigitalHumanPage.css';
 import { VideoCoverDetails } from './VideoPresentation';
 
@@ -31,12 +31,6 @@ export function DigitalHumanPage() {
   const [preparedSpeech, setPreparedSpeech] = useState('');
   const [transcriptText, setTranscriptText] = useState('');
   const [voiceRecommendation, setVoiceRecommendation] = useState('');
-  const [clones, setClones] = useState<DigitalHumanVoiceClone[]>([]);
-  const cloneSlots = clones.filter((voice) => voice.trainable);
-  const [cloneSlot, setCloneSlot] = useState('');
-  const [cloneNotice, setCloneNotice] = useState('');
-  const [cloneConsent, setCloneConsent] = useState(false);
-  const [cloneSubmission, setCloneSubmission] = useState<{ speakerId: string; operationId: string } | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
   const selection = useRef('');
   const loadedPreview = useRef('');
@@ -94,12 +88,6 @@ export function DigitalHumanPage() {
     void unwrap(api().speechMedia({ id: selected.id })).then((result) => { if (!cancelled) setPreparedSpeech(result.audioDataUrl); }).catch(() => {});
     return () => { cancelled = true; };
   }, [selected?.id, selected?.audio?.prepared]);
-  useEffect(() => {
-    if (draft.voiceSource !== 'cloned_voice') return;
-    void unwrap(api().voiceClones()).then((result) => {
-      setClones(result.items || []); setCloneNotice(result.message || '');
-    }).catch((error) => setCloneNotice(error.message));
-  }, [draft.voiceSource]);
   function chooseCharacterVoice(characterVoice: 'male' | 'female' | 'unknown') {
     const catalog = capabilities?.voices || [], preference = capabilities?.voicePreferences?.[characterVoice];
     const voice = catalog.find((v) => v.gender === characterVoice && v.available && v.id === preference)
@@ -131,21 +119,6 @@ export function DigitalHumanPage() {
       await loadCapabilities(); setNotice({ kind: 'success', message: '数字人的声音已保存，创作工作台默认声音保持独立。' });
     });
   }
-  async function trainVoice() {
-    if (!cloneSlot || !draft.audioAssetId || !cloneConsent) return;
-    await perform('voice-train', async () => {
-      const response = await api().trainVoice({ speakerId: cloneSlot, audioAssetId: draft.audioAssetId!, customerConsent: true });
-      const operationId = response.data?.operationId || response.operationId;
-      if (operationId) setCloneSubmission({ speakerId: cloneSlot, operationId });
-      if (!response.ok || !response.data) { setCloneNotice('训练请求已保留，请查询原任务进度，不会重新购买槽位。'); throw new Error(response.error || '训练结果待核对。'); }
-      setCloneNotice(response.data.message || '训练已提交，请查询原任务进度。');
-    });
-  }
-  async function refreshClone() {
-    await perform('clone-status', async () => {
-      const result = await unwrap(api().voiceClones()); setClones(result.items || []); setCloneNotice(result.message || '');
-    });
-  }
   function apply(task: DigitalHumanTask) {
     selection.current = task.id; setSelected(task);
     setItems((current) => [task, ...current.filter((item) => item.id !== task.id)]);
@@ -158,7 +131,7 @@ export function DigitalHumanPage() {
   }
   function newSample() {
     selection.current = ''; setSelected(null); setPreview(''); setPreparedSpeech(''); setVoicePreview(''); loadedPreview.current = ''; setNotice(null);
-    setDraft(current => ({ ...current, sourceTaskId: selected?.id, voiceSource: current.voiceSource || 'official', voiceStyle: 'workbench', durationSeconds: [15, 30, 45].includes(current.durationSeconds) ? current.durationSeconds : 15 }));
+    setDraft(current => ({ ...current, sourceTaskId: selected?.id, ...(current.voiceSource === 'cloned_voice' ? { voicePersonaId: capabilities?.voices.find((v) => v.gender === current.characterVoice && v.digitalHumanDefault)?.id || '' } : {}), voiceSource: current.voiceSource === 'uploaded_audio' ? 'uploaded_audio' : 'official', voiceStyle: 'workbench', durationSeconds: [15, 30, 45].includes(current.durationSeconds) ? current.durationSeconds : 15 }));
   }
   async function importImage(role: 'person' | 'product') {
     await perform(role, async () => {
@@ -240,7 +213,7 @@ export function DigitalHumanPage() {
             setDraft({ ...draft, voiceSource: source, voicePersonaId: source === 'official' ? voice?.id || '' : '' }); setVoicePreview('');
           }}>
             {!draft.voiceSource && <option value="legacy">沿用原任务声音</option>}
-            <option value="official">火山音色，朗读文案</option><option value="uploaded_audio">自己的录音，按原音讲解</option><option value="cloned_voice">专属音色，朗读新文案</option>
+            <option value="official">火山音色，朗读文案</option><option value="uploaded_audio">自己的录音，按原音讲解</option>{draft.voiceSource === 'cloned_voice' && <option value="cloned_voice">专属音色（历史任务）</option>}
           </select></label>
           {draft.voiceSource === 'official' && <>
             <div className="dh-options"><label className="dh-field"><span>人物声音</span><select disabled={locked || !!busy} value={draft.characterVoice || 'unknown'} onChange={(event) => chooseCharacterVoice(event.target.value as 'male' | 'female' | 'unknown')}>
@@ -253,17 +226,9 @@ export function DigitalHumanPage() {
               {voicePreview && !capabilities?.voices.find((v) => v.id === draft.voicePersonaId)?.available && <button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void useVoice()}>采用试听声音</button>}
             </div>{voicePreview && <audio className="dh-audio" controls src={voicePreview} aria-label="所选音色试听" />}
           </>}
-          {(draft.voiceSource === 'uploaded_audio' || draft.voiceSource === 'cloned_voice') && <><button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void importAudio()}>{audio?.name || '选择自己的录音（WAV / MP3 / M4A）'}</button>
-            <p className="dh-quality">{draft.voiceSource === 'uploaded_audio' ? '直接使用录音不需要复刻音色；保留完整讲话，按实际时长制作。' : '复刻样本建议14—30秒单人清晰录音。已有音色可以直接选择；新训练仅使用已分配的免费或已购槽位。'}</p></>}
-          {draft.voiceSource === 'cloned_voice' && <>
-            <label className="dh-field"><span>我的专属音色</span><select disabled={locked || !!busy} value={draft.voicePersonaId || ''} onChange={(event) => setDraft({ ...draft, voicePersonaId: event.target.value })}><option value="">请选择训练完成的音色</option>
-              {clones.filter((voice) => voice.usable || voice.status === 'ready').map((voice) => <option key={voice.speakerId} value={voice.speakerId}>{voice.name || voice.speakerId}</option>)}</select></label>
-            {!!cloneSlots.length && <><label className="dh-field"><span>可用复刻槽位</span><select disabled={locked || !!busy} value={cloneSlot} onChange={(event) => setCloneSlot(event.target.value)}><option value="">请选择已分配槽位</option>{cloneSlots.map((slot) => <option key={slot.speakerId} value={slot.speakerId}>{slot.name || slot.speakerId}</option>)}</select></label>
-              <label className="dh-consent"><input type="checkbox" checked={cloneConsent} disabled={locked || !!busy} onChange={(event) => setCloneConsent(event.target.checked)} />录音属于本人，或已获得声音使用与复刻授权</label>
-              <button type="button" className="dh-button" data-xiaoxi-digital-human-action="voice-train" disabled={locked || !!busy || !cloneConsent || !cloneSlot || !draft.audioAssetId || cloneSubmission?.speakerId === cloneSlot} onClick={() => void trainVoice()}>训练专属音色</button></>}
-            <p className="dh-quality">{cloneNotice || capabilities?.voiceClone?.message || '尚未确认可用复刻槽位，不会自动购买。'}</p>
-            <button type="button" className="dh-text-button" disabled={!!busy} onClick={() => void refreshClone()}>查询音色与原训练进度</button>
-          </>}
+          {draft.voiceSource === 'uploaded_audio' && <><button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void importAudio()}>{audio?.name || '选择自己的录音（WAV / MP3 / M4A）'}</button>
+            <p className="dh-quality">保留录音中的完整讲话和本人原声，不用录音朗读另一份文案；成片按实际讲话时长制作。</p></>}
+
         </div>
         <div className="dh-options">
           <label className="dh-field"><span>{legacyTask ? '样片时长' : '目标时长'}</span><select disabled={locked || !!busy} value={draft.durationSeconds} onChange={(event) => setDraft({ ...draft, durationSeconds: Number(event.target.value) })}>

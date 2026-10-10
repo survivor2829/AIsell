@@ -7,6 +7,7 @@ export type Candidate = { framework?: string; summary?: string; opening_example?
 export type ScriptSelection = { script_id: string; revision: number; count: number; title: string; narration: string; confirmed_at: string };
 export type ProductionJob = { script_id: string; ordinal: number; production_index: number; candidate_id?: string; status: string; error?: string };
 export type Batch = {
+  music_notice?: string;
   archived?: boolean;
   script_source?: "ideas" | "provided"; script_action?: "generate" | "rewrite" | "expand"; brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
   brief_suggestions?: { expression?: string; advantages?: string; customer_pain_points?: string };

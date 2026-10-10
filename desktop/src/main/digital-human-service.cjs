@@ -573,7 +573,7 @@ function createDigitalHumanService(options = {}) {
     const status = await official.capabilities();
     return { ...status, pipelineVersion: 2, durations: [15, 30, 45], resolution: '720p', audioFirst: true,
       scenes: SCENES.map(({ id, name }) => ({ id, name })), voices: await voices(), voicePreferences: voicePreferences(),
-      voiceClone: options.voiceCloneClient ? await options.voiceCloneClient.capabilities().catch(() => ({ ready: false, message: '专属音色暂不可用。' })) : { ready: false } };
+      voiceClone: { ready: false, message: '新建视频使用官方配音或上传录音；历史专属音色任务保留。' } };
   }
   function imagePreview(item, bytes) {
     return { id: item.id, name: item.name, previewDataUrl: options.imageThumbnail

@@ -37,6 +37,13 @@
       "file": "auto-mix-voice-personas.v1.json",
       "source": "original voice-design prompts",
       "license": "LicenseRef-Xiaoxi-Original"
+    },
+    {
+      "id": "xiaoxi_music_catalog_policy_v1",
+      "type": "music_catalog_policy",
+      "file": "music-catalog-policy.v1.json",
+      "source": "original editorial catalogue policy",
+      "license": "LicenseRef-Xiaoxi-Original"
     }
   ]
 }

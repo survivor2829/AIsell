@@ -152,6 +152,7 @@ def _require_source_duration_upper_bound(domain, batch, requested_count):
 
 def _validate_music_capacity(domain, batch, settings, narrations):
     """Reject an unusable music policy before any paid voice request starts."""
+    domain.d.normalize_music_settings(settings)
     mode = settings.get('music_mode')
     # Batches created before explicit music modes existed used an empty track
     # list to mean voice-only. Preserve that persisted meaning; new batches
@@ -180,10 +181,8 @@ def _validate_music_capacity(domain, batch, settings, narrations):
             'narrated_music_pool_empty',
             '已选配乐当前不可用、授权证据缺失或时长不足，请更换曲目后再开始制作。',
         )
-    raise ContentEngineError(
-        'auto_mix_licensed_music_required',
-        '授权曲库中没有能覆盖这条口播的可用配乐，请补充曲目或明确选择无配乐。',
-    )
+    # Automatic music is optional. Actual voice duration can differ from the
+    # estimate; production selects again and records a voice-only fallback.
 
 
 def _validate_render_capacity(domain):

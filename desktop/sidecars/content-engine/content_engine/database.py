@@ -865,6 +865,10 @@ def _migration_018_narrated_visual_facts(connection):
     connection.execute("CREATE TABLE narrated_visual_facts (cache_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
 
 
+def _migration_019_music_catalog_active(connection):
+    connection.execute("ALTER TABLE music_catalog_tracks_v1 ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))")
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "initial_content_engine_schema", _migration_001_initial_schema),
     (2, "asset_probe_metadata", _migration_002_asset_probe_metadata),
@@ -884,6 +888,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (16, "guided_auto_mix_supplemental_images", _migration_016_guided_auto_mix_supplemental_images),
     (17, "narrated_batches", _migration_017_narrated_batches),
     (18, "narrated_visual_facts", _migration_018_narrated_visual_facts),
+    (19, "music_catalog_active", _migration_019_music_catalog_active),
 )
 
 def _retry_when_locked(operation, timeout_seconds: float = 5):

@@ -215,6 +215,30 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertTrue(recipe.get("music_track_id"))
         self.assertTrue(recipe.get("licensed_music_relative_path"))
 
+    def test_unavailable_automatic_music_preserves_narration_and_finishes(self):
+        domain = self.s.creative_domain
+        row = self.s.connection.execute("SELECT * FROM music_catalog_tracks_v1").fetchone()
+        for condition in ("empty", "damaged", "too_short"):
+            with self.subTest(condition=condition):
+                self.s.connection.execute("UPDATE music_catalog_tracks_v1 SET active=1, duration_ms=?, loop_start_ms=NULL, loop_end_ms=NULL", (row["duration_ms"],))
+                original = domain._managed_file_digest_matches
+                if condition == "empty":
+                    self.s.connection.execute("UPDATE music_catalog_tracks_v1 SET active=0")
+                elif condition == "damaged":
+                    domain._managed_file_digest_matches = lambda path, digest: False if path == row["managed_relative_path"] else original(path, digest)
+                else:
+                    self.s.connection.execute("UPDATE music_catalog_tracks_v1 SET duration_ms=1")
+                try:
+                    batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]}, "title": "自动配乐降级" + condition, "target_count": 1, "settings": {"voice_persona_id": "natural-life@1", "music_mode": "auto", "music_track_ids": []}})
+                    result = self.run_samples(batch)
+                    recipe = json.loads(self.s.connection.execute("SELECT recipe_json FROM generated_videos WHERE id=?", (result["candidates"][0]["generated_video_id"],)).fetchone()[0])
+                    self.assertEqual("none", recipe["music_mode"])
+                    self.assertEqual("tts_only", recipe["audio_mode"])
+                    self.assertTrue(recipe["voice_audio_path"])
+                    self.assertIn("保留完整配音", result["music_notice"])
+                finally:
+                    domain._managed_file_digest_matches = original
+
     def test_explicit_none_music_mode_remains_voice_only(self):
         batch = self.s.save_narrated_batch({
             "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},

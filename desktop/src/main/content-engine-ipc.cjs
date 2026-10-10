@@ -485,6 +485,7 @@ const PUBLIC_ERRORS = Object.freeze({
   music_energy_invalid: "音乐能量值必须在 0 到 1 之间。",
   music_loop_invalid: "音乐循环点无效。",
   music_import_file_unavailable: "音乐文件或授权证据不可用。",
+  music_track_retired: "该版本配乐已从曲库移除，请选择其他曲目。",
   music_import_format_unsupported: "请选择受支持的真实音频文件。",
   music_import_digest_mismatch: "音乐导入校验失败。",
   music_analysis_unavailable: "授权音乐分析运行时不可用。",
