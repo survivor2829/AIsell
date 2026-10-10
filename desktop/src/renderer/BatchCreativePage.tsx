@@ -460,6 +460,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
     </div>
     </details>
     {notice && <p className="batch-notice" role="alert">{notice}</p>}
+    {batch?.music_notice && <p role="status" className="batch-notice">{batch.music_notice}</p>}
     {batch?.archived && <p className="batch-notice" role="status">这是已归档的批次，可查看记录、预览与导出已有成片。</p>}
     {submitting && !batch && <section className="batch-progress" role="status">正在提交素材并启动任务…</section>}
     {batch && (!visualFlow || running || paused || submitting || failedState || voiceBlocked) && <section className={`batch-progress${failedState || voiceBlocked ? " is-attention" : ""}`}>
@@ -572,7 +573,6 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       {(!visualFlow || flowStep === 2) && <>
       {modern && chosen.length === 1 && <details className="batch-advanced"><summary>批量制作 · {chosenTotal || 1} 条</summary><label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label><p className="batch-hint">第一条使用确认正文，其余沿用这个方向创作不同内容，最多300条。</p></details>}
       <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={voiceApproved} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
-      {batch?.music_notice && <p role="status" className="batch-notice">{batch.music_notice}</p>}
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
       <VideoTemplatePicker value={settings.video_template || "topic_fixed"} disabled={locked || !!batch?.script_confirmation} onChange={(video_template) => changeSoundSettings({ ...settings, video_template })} />
       <label className="batch-strict-review"><input type="checkbox" checked={settings.strict_visual_review === true} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, strict_visual_review: event.target.checked })} /><span><b>严格核对画面事实</b><small>开启后逐句核对口播与画面，与画面不符的说法会被拦下，耗时更长、云端识别会计费。默认关闭：按你确认的文案直接配音剪辑。</small></span></label>
