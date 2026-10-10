@@ -118,7 +118,7 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
         {pool.length > 0 && <option value="selected">仅使用我勾选的曲目</option>}
         <option value="none">明确不加配乐</option>
       </select></label>
-      <p className="batch-hint">默认会从已核验授权曲库自动选一首合适的轻音乐；只有选择“明确不加配乐”时才会静音。勾选曲目后可限制本批使用范围。</p>
+      <p className="batch-hint">默认从已核验授权曲库选曲；没有适配曲目时保留完整配音继续制作。也可明确不加配乐，或勾选曲目限制本批使用范围。</p>
       <div className="batch-music-list">{tracks.map((track) => <div className="batch-music-row" key={track.trackId}>
         <label><input type="checkbox" disabled={locked || !selectable(track)} checked={musicMode === "selected" && pool.includes(track.trackId)} onChange={(event) => {
           const nextPool = event.target.checked ? [...pool, track.trackId] : pool.filter((id) => id !== track.trackId);
