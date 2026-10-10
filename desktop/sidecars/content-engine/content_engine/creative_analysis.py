@@ -47,6 +47,8 @@ DEFAULT_ANALYSIS_VERSION = "creative-v6-sparse-visual-evidence"
 DEFAULT_ASR_MODEL = "paraformer-v2"
 DEFAULT_VISION_MODEL = "qwen-vl-plus"
 DEFAULT_SELECTION_MODEL = "qwen-plus"
+COURSE_RANKING_CANDIDATE_LIMIT = 48
+COURSE_RANKING_BATCH_SIZE = 12
 DEFAULT_DASHSCOPE_ORIGIN = "https://dashscope.aliyuncs.com"
 DEFAULT_CLOUD_TIMEOUT_SECONDS = 90
 MAX_CLOUD_TIMEOUT_SECONDS = 300
@@ -1845,12 +1847,19 @@ class DashScopeMediaClient:
     ) -> list[dict[str, Any]]:
         if not self.configured or not candidates:
             return []
+        # Score the entire shortlist in bounded JSON responses. Asking for all
+        # 48 detailed rows at once exhausted the model's output limit repeatedly.
+        if experiment_mode != "supoclip_bailian_v1" and len(candidates) > COURSE_RANKING_BATCH_SIZE:
+            ranked = []
+            for start in range(0, min(COURSE_RANKING_CANDIDATE_LIMIT, len(candidates)), COURSE_RANKING_BATCH_SIZE):
+                ranked.extend(self.rank_course_candidates(candidates[start:start + COURSE_RANKING_BATCH_SIZE], theme))
+            return ranked
         is_supoclip_experiment = experiment_mode == "supoclip_bailian_v1"
         safe_candidates = []
         # Four-dimension output for 48 windows is large enough to be truncated by
         # the editor model. Twelve locally shortlisted windows leave ample choice
         # for five diverse clips while keeping request cost and JSON output bounded.
-        candidate_limit = 12 if is_supoclip_experiment else 48
+        candidate_limit = COURSE_RANKING_BATCH_SIZE if is_supoclip_experiment else COURSE_RANKING_CANDIDATE_LIMIT
         candidate_id_map = {}
         for index, item in enumerate(candidates[:candidate_limit]):
             source_id = str(item.get("id") or "")

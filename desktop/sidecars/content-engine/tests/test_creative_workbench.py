@@ -1093,6 +1093,24 @@ class DashScopeCourseSelectionTests(unittest.TestCase):
         self.assertEqual("cloud_response_invalid", raised.exception.code)
         self.assertEqual(2, len(calls))
 
+    def test_standard_ranking_bounds_json_output_without_losing_candidates(self):
+        client = DashScopeMediaClient(api_key="test-key")
+        sizes = []
+        def request_json(_url, **kwargs):
+            rows = json.JSONDecoder().raw_decode(kwargs["payload"]["messages"][0]["content"].split("候选数据：", 1)[1])[0]
+            sizes.append(len(rows))
+            if len(rows) > 12:
+                return {"choices": [{"finish_reason": "length", "message": {"content": '{"candidates":['}}]}
+            scores = [{"id": row["id"], "opening_hook": .8, "standalone_value": .8,
+                "content_completeness": .8, "language_quality": .8, "theme_relevance": .8,
+                "reason": ["完整独立观点"]} for row in rows]
+            return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"candidates": scores})}}]}
+        client._request_json = request_json
+        candidates = [{"id": f"source-{i}", "duration_ms": 30000, "transcript": "完整观点"} for i in range(48)]
+        result = client.rank_course_candidates(candidates, "培训")
+        self.assertEqual({row["id"] for row in candidates}, {row["id"] for row in result})
+        self.assertEqual([12] * 4, sizes)
+
     def test_supoclip_selection_sends_visual_evidence_and_clamps_four_scores(self):
         client = DashScopeMediaClient(api_key="test-key")
         captured = {}
@@ -2606,7 +2624,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
             generation_kind="course",
         )
 
-        self.assertEqual(4, estimate["bailian_calls"])
+        self.assertEqual(7, estimate["bailian_calls"])
         self.assertTrue(estimate["bailian_provider_configured"])
         self.assertTrue(estimate["confirmation_required"])
         self.assertEqual(

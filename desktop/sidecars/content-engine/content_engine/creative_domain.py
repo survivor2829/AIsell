@@ -58,6 +58,7 @@ from .auto_mix_resources import (
 )
 from .narration_alignment import align_narration, attach_narration_alignment, sentence_shot_budgets, aligned_binding_spans
 from .database import Database
+from .creative_analysis import COURSE_RANKING_BATCH_SIZE, COURSE_RANKING_CANDIDATE_LIMIT
 from .errors import ContentEngineError
 from .provider_usage import usage_scope, provider_usage_summary
 from .hashing import canonical_json_sha256
@@ -9133,8 +9134,8 @@ class CreativeDomain:
                     {
                         "operation": "selection_scoring",
                         "label": "课程观点选段与评分",
-                        "estimated_calls": 1,
-                        "maximum_calls": 1,
+                        "estimated_calls": math.ceil(COURSE_RANKING_CANDIDATE_LIMIT / COURSE_RANKING_BATCH_SIZE),
+                        "maximum_calls": math.ceil(COURSE_RANKING_CANDIDATE_LIMIT / COURSE_RANKING_BATCH_SIZE),
                         "cacheable": False,
                         "status": "estimated",
                     }
