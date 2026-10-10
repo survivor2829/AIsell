@@ -4,6 +4,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { publicError, registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { CHANNELS, publicBatch } = require("./narrated-batch-ipc.cjs");
+assert.deepEqual(publicBatch({ music_notice: "已保留完整配音继续制作。", private_path: "hidden" }), { music_notice: "已保留完整配音继续制作。" });
 
 // Static guard: every code the engine can raise while saving or starting a batch
 // must reach the page as its own message. An unmapped code turns into the generic

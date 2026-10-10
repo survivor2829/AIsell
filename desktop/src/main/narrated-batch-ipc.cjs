@@ -75,6 +75,7 @@ for (const field of "workflow_version music_mode script_options selected_script_
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "brief_version script_source script_action target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
+PUBLIC_FIELDS.add("music_notice");
 PUBLIC_FIELDS.add("video_template");
 // The strict visual review switch, and the mark on works made without it.
 for (const field of ["strict_visual_review", "review_mode"]) PUBLIC_FIELDS.add(field);
