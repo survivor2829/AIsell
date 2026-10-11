@@ -1,0 +1,55 @@
+const fs = process.versions.electron ? require("original-fs") : require("node:fs");
+const path = require("node:path");
+const { Worker, isMainThread, workerData } = require("node:worker_threads");
+const { digest, COMPONENTS, HEX } = require("../shared/component-contract.cjs");
+const { retainArtifacts } = require("../shared/artifact-retention.cjs");
+
+function generationRefs(root, id, envelope) {
+  if (!HEX.test(id)) throw Error("component_retention_identity_invalid");
+  const generation = path.join(root, "generations", id);
+  envelope ||= JSON.parse(fs.readFileSync(path.join(generation, "component-complete.json"), "utf8"));
+  if (digest(envelope.payload) !== id) throw Error("component_retention_identity_invalid");
+  const manifest = JSON.parse(envelope.payload);
+  const archives = COMPONENTS.map(name => {
+    const hash = manifest.components?.[name]?.sha256;
+    if (!HEX.test(hash)) throw Error("component_retention_identity_invalid");
+    const archive = path.join(root, "archives", hash + ".zip");
+    return [archive, archive + ".part"];
+  });
+  return [generation, ...archives.flat()];
+}
+
+// Register only artifacts created by this version. Historical directories
+// without ownership records are never swept; business data is outside this root.
+function collect(root, preparedEnvelope, { created = [], ready = false, staging } = {}) {
+  try {
+    root = fs.realpathSync(root);
+    let selection = {};
+    try { selection = JSON.parse(fs.readFileSync(path.join(root, "selection.json"), "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const selected = [...new Set([selection.active, selection.previous].filter(Boolean))]
+      .flatMap(id => generationRefs(root, id));
+    retainArtifacts(root, "selected-components", selected, 1, []);
+    if (preparedEnvelope) {
+      const refs = generationRefs(root, digest(preparedEnvelope.payload), preparedEnvelope);
+      if (staging) refs.push(staging);
+      // A failed replacement must leave the last complete candidate installable.
+      retainArtifacts(root, ready ? "prepared-components" : "downloading-components", refs, 1, created);
+    }
+  } catch (error) { console.warn(`Update retention deferred: ${error.message}`); }
+}
+
+async function retainComponentArtifacts(root, envelope, options) {
+  // Removing complete runtime trees must not block Electron's main thread.
+  try {
+    await new Promise((resolve, reject) => {
+      const worker = new Worker(__filename, { workerData: { componentRetention: true, root, envelope, options } });
+      worker.once("error", reject);
+      worker.once("exit", code => code === 0 ? resolve() : reject(Error(`retention_worker_exit_${code}`)));
+    });
+  } catch (error) { console.warn(`Update retention deferred: ${error.message}`); }
+}
+
+if (!isMainThread && workerData?.componentRetention) collect(workerData.root, workerData.envelope, workerData.options);
+
+module.exports = { retainComponentArtifacts };

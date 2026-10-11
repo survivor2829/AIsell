@@ -42,6 +42,63 @@ async function fixture(t) {
   await fs.writeFile(path.join(source, "component-base.json"), JSON.stringify(base.baseline));
   return { root, source, base };
 }
+
+test("superseded prepared updates do not accumulate complete programs and archives", async t => {
+  const { root, source, base } = await fixture(t);
+  const rootDir = path.join(root, "bounded-store");
+  const store = createComponentStore({ rootDir, baseRoot: source, config,
+    transport: { request() { assert.fail("unchanged components must not download"); } } });
+  const ids = [];
+  for (let index = 1; index <= 4; index++) {
+    const result = await store.prepare(sign({ ...base.manifest, version: `1.1.${index}`, sequence: index }));
+    ids.push(path.basename(result.generationRoot));
+    if (index === 1) await fs.writeFile(path.join(rootDir, "selection.json"), JSON.stringify({ active: ids[0], previous: null }));
+  }
+  const names = await fs.readdir(path.join(rootDir, "generations"));
+  assert.deepEqual(names.sort(), [ids[0], ids[3]].sort(), "keep active and latest candidate; superseded uninstalled programs must be retired");
+  await fs.writeFile(path.join(rootDir, "selection.json"), JSON.stringify({ active: ids[3], previous: ids[0], pending: null }));
+  await require("../src/main/update-retention.cjs").retainComponentArtifacts(rootDir);
+  assert.equal((await fs.readdir(path.join(rootDir, "generations"))).length, 2, "activation retains both working generations");
+  const interrupted = path.join(rootDir, "generations", ".prepare-owned-interruption");
+  await fs.mkdir(interrupted);
+  await require("../src/main/update-retention.cjs").retainComponentArtifacts(rootDir,
+    sign({ ...base.manifest, version: "1.1.4", sequence: 4 }), { staging: interrupted, created: [interrupted] });
+  // A racing helper completion must not clear a newer prepared candidate.
+  const next = await store.prepare(sign({ ...base.manifest, version: "1.1.5", sequence: 5 }));
+  await assert.rejects(fs.stat(interrupted), { code: "ENOENT" });
+  await require("../src/main/update-retention.cjs").retainComponentArtifacts(rootDir);
+  assert.equal((await fs.readdir(path.join(rootDir, "generations"))).length, 3);
+  await fs.access(next.generationRoot);
+  assert.equal(await hashFile(path.join(source, "electron.exe")), base.baseline.files.find(f => f.path === "electron.exe").sha256);
+  const inflight = store.prepare(sign({ ...base.manifest, version: "1.1.6", sequence: 6 }));
+  const duplicate = createComponentStore({ rootDir, baseRoot: source, config, transport: {} });
+  await assert.rejects(duplicate.prepare(sign(base.manifest)), /component_prepare_busy/);
+  await inflight;
+});
+
+test("local acceptance backs up the active application and business data without historical runtime copies", async t => {
+  const { root, source, base } = await fixture(t);
+  const profile = path.join(root, "中文日常数据"), outputRoot = path.join(root, "本机备份");
+  const envelope = sign(base.manifest), id = digest(envelope.payload);
+  const components = path.join(profile, "data/cloud-maintenance/components");
+  await fs.mkdir(components, { recursive: true });
+  await fs.cp(source, path.join(components, "generations", id), { recursive: true });
+  await fs.writeFile(path.join(components, "generations", id, "component-complete.json"), JSON.stringify(envelope));
+  await fs.writeFile(path.join(components, "selection.json"), JSON.stringify({ active: id, previous: null }));
+  await fs.writeFile(path.join(profile, "费用回执.json"), "retained receipt bytes");
+  await fs.mkdir(path.join(outputRoot, "unmanaged-history"), { recursive: true });
+  const { backupLocalInstall } = require("./backup-local-install.cjs");
+  const snapshots = [];
+  for (let index = 0; index < 3; index++) snapshots.push(await backupLocalInstall({ program: source, profile, outputRoot }));
+  await assert.rejects(fs.stat(snapshots[0].directory), { code: "ENOENT" });
+  for (const snapshot of snapshots.slice(1)) {
+    assert.equal(await fs.readFile(path.join(snapshot.directory, "userData/费用回执.json"), "utf8"), "retained receipt bytes");
+    await assert.rejects(fs.stat(path.join(snapshot.directory, "userData/data/cloud-maintenance")), { code: "ENOENT" });
+    assert.equal(JSON.parse(await fs.readFile(path.join(snapshot.directory, "backup.json"), "utf8")).programSource, await fs.realpath(path.join(components, "generations", id)));
+  }
+  await fs.access(path.join(outputRoot, "unmanaged-history"));
+  await fs.access(path.join(components, "generations", id));
+});
 test("signed composition rejects tampering, omitted components, incompatible base and schema", async t => {
   const { root, source, base } = await fixture(t);
   const envelope = sign(base.manifest);
@@ -93,6 +150,11 @@ test("full generation matches signed target, reuses base and unchanged component
   const corrupt = createComponentStore({ rootDir: path.join(root, "corrupt"), baseRoot: source, config,
     transport: { async request(_route, options) { await fs.writeFile(options.destination, "corrupt archive"); } } });
   await assert.rejects(corrupt.prepare(sign(target.manifest)), /archive_corrupt/);
+  assert.deepEqual(await fs.readdir(path.join(root, "corrupt/generations")), [], "a failed download must remove its own extracted staging directory");
+  const failedParts = await fs.readdir(path.join(root, "corrupt/archives"));
+  assert.equal(failedParts.length, 1);
+  await corrupt.prepare(sign(base.manifest));
+  assert.deepEqual(await fs.readdir(path.join(root, "corrupt/archives")), [], "superseded failed partial downloads must be retired");
   const zip = new (require("jszip"))();
   zip.file("component.json", "{}"); zip.file("../escaped.js", "unsafe", { createFolders: false });
   const unsafe = await zip.generateAsync({ type: "nodebuffer" });
@@ -102,6 +164,31 @@ test("full generation matches signed target, reuses base and unchanged component
   const escaped = createComponentStore({ rootDir: path.join(root, "escaped"), baseRoot: source, config,
     transport: { async request(_route, options) { await fs.writeFile(options.destination, unsafe); } } });
   await assert.rejects(escaped.prepare(sign(poisoned)), /component_path_invalid/);
+  await escaped.prepare(sign(base.manifest));
+  assert.deepEqual(await fs.readdir(path.join(root, "escaped/archives")), [], "a downloaded ZIP is retired even when extraction failed");
+
+  // Keep an installable candidate if its replacement fails, then retire it only
+  // after the replacement is complete. Cached historical files remain unowned.
+  const recoveryRoot = path.join(root, "replacement"), legacyRoot = path.join(root, "legacy");
+  let failDownload = true;
+  const recovery = createComponentStore({ rootDir: recoveryRoot, baseRoot: source, config,
+    transport: { async request(route, options) {
+      if (failDownload) { await fs.writeFile(options.destination, "partial"); throw Error("interrupted_fixture"); }
+      await fs.copyFile(target.artifacts.find(a => route === `/components/${a.sha256}.zip`).path, options.destination);
+    } } });
+  const previous = await recovery.prepare(sign(base.manifest));
+  await assert.rejects(recovery.prepare(sign(target.manifest)), /interrupted_fixture/);
+  await fs.access(previous.generationRoot);
+  failDownload = false;
+  const replacement = await recovery.prepare(sign(target.manifest));
+  await assert.rejects(fs.stat(previous.generationRoot), { code: "ENOENT" });
+  await fs.cp(recoveryRoot, legacyRoot, { recursive: true });
+  await fs.rm(path.join(legacyRoot, ".artifact-retention.json"));
+  const legacy = createComponentStore({ rootDir: legacyRoot, baseRoot: source, config, transport: {} });
+  await legacy.prepare(sign(target.manifest));
+  await legacy.prepare(sign(base.manifest));
+  await fs.access(path.join(legacyRoot, "generations", path.basename(replacement.generationRoot)));
+  for (const archive of await fs.readdir(path.join(recoveryRoot, "archives"))) await fs.access(path.join(legacyRoot, "archives", archive));
 });
 test("new component metadata invalidates ready and in-flight older updates", async t => {
   const { root, source, base } = await fixture(t);

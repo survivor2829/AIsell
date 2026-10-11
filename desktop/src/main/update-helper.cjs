@@ -172,6 +172,7 @@ async function runHelper({ jobFile, userData }) {
     currentPhase = "waiting";
     await waitForExit(job, stage);
     const prepared = job.prepared;
+    let dataBackup;
     stage("verifying", "正在校验更新", "正在核对签名和完整版本文件。");
     if (prepared.kind === "components") {
       const expected = path.join(paths.generations, path.basename(prepared.generationRoot));
@@ -186,7 +187,7 @@ async function runHelper({ jobFile, userData }) {
       const manifest = verifyManifest(prepared.envelope, config);
       if (manifest.version !== job.targetVersion || await hashFile(prepared.file) !== manifest.sha256 || fs.statSync(prepared.file).size !== manifest.size) throw Error("cloud_download_invalid");
       stage("backup", "正在备份本机数据", "保留配置、授权和业务记录，备份完成后开始完整升级。");
-      await backupUserData(userData, job.id);
+      dataBackup = await backupUserData(userData, job.id);
       stage("installing", "正在安装完整更新", "安装程序正在替换运行底座，请勿关闭电脑。");
       await new Promise((resolve, reject) => {
         const child = spawn(prepared.file, ["/S"], { stdio: "ignore", windowsHide: true });
@@ -215,6 +216,11 @@ async function runHelper({ jobFile, userData }) {
       throw Error(prepared.kind === "components" ? "update_start_rolled_back" : "update_start_failed_repair_required");
     }
     stage("complete", `已更新至 ${job.targetVersion}`, "新版本已成功启动，你的配置和业务数据已保留。");
+    // Housekeeping cannot turn a successful update into a failed update.
+    try {
+      await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
+      if (dataBackup) require("../shared/artifact-retention.cjs").retainArtifacts(path.dirname(dataBackup), "successful-full-upgrades", [dataBackup], 1);
+    } catch (error) { console.warn(`Post-update cleanup deferred: ${error.code || error.message}`); }
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {
     const messages = { update_workers_still_running: "仍有工作进程占用，更新尚未安装。退出相关任务后重新检查更新。", update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed_repair_required: "完整更新已安装，但启动未完成。请重新打开软件；仍失败时使用完整安装包修复。" };

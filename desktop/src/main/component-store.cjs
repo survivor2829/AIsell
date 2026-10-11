@@ -8,7 +8,11 @@ const { pipeline } = require("node:stream/promises");
 const { Transform, Writable } = require("node:stream");
 const JSZip = require("jszip");
 const { fail } = require("../shared/cloud-contract.cjs");
+const { retainComponentArtifacts } = require("./update-retention.cjs");
 const { COMPONENTS, safePath, hashFile, treeHash, validateFiles, verifyComponentManifest, assertCompatible, digest } = require("../shared/component-contract.cjs");
+// The application already holds its single-instance lock; also reject two stores
+// preparing the same root concurrently within that process.
+const preparingRoots = new Set();
 async function readJson(file) { return JSON.parse(await fsp.readFile(file, "utf8")); }
 async function regularFile(root, relative) {
   safePath(relative);
@@ -138,10 +142,10 @@ async function unpack(archive, root, component) {
 function createComponentStore({ rootDir, baseRoot, config, transport, onProgress }) {
   rootDir = path.resolve(rootDir); baseRoot = path.resolve(baseRoot);
   if (rootDir === baseRoot || rootDir.startsWith(baseRoot + path.sep)) fail("component_store_inside_base");
-  let preparing = false;
+  const prepareKey = process.platform === "win32" ? rootDir.toLowerCase() : rootDir;
   async function prepare(envelope) {
-    if (preparing) fail("component_prepare_busy");
-    preparing = true;
+    if (preparingRoots.has(prepareKey)) fail("component_prepare_busy");
+    preparingRoots.add(prepareKey);
     try {
       const manifest = verifyComponentManifest(envelope, config);
       let baseline;
@@ -155,6 +159,8 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
       await fsp.mkdir(archives, { recursive: true }); await fsp.mkdir(generations, { recursive: true });
       for (const directory of [archives, generations]) if ((await fsp.lstat(directory)).isSymbolicLink()) fail("component_symlink_forbidden");
       const targetId = digest(envelope.payload), finalRoot = path.join(generations, targetId);
+      // Retire superseded failed downloads, keeping the last ready candidate.
+      await retainComponentArtifacts(rootDir, envelope);
       const baseFiles = baseline.files.filter(f => f.component === "base");
       let existing;
       try { existing = await readJson(path.join(finalRoot, "component-complete.json")); } catch { /* no complete target */ }
@@ -165,12 +171,15 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
         if (full.files.some(f => !["base", ...COMPONENTS].includes(f.component))) fail("component_generation_invalid");
         for (const name of COMPONENTS) if (treeHash(full.files.filter(f => f.component === name)) !== manifest.components[name].treeSha256) fail("component_generation_invalid");
         await verifyGeneration(finalRoot, full.files);
+        await retainComponentArtifacts(rootDir, envelope, { ready: true });
         return { generationRoot: finalRoot, version: manifest.version, envelope, downloadedBytes: 0, totalBytes: 0 };
       }
       const disk = await fsp.statfs(rootDir);
       const required = validateFiles(baseFiles) + COMPONENTS.reduce((n, name) => n + manifest.components[name].expandedSize + manifest.components[name].size, 0) + 128 * 1024 ** 2;
       if (Number(disk.bavail) * Number(disk.bsize) < required) fail("component_disk_space_insufficient");
       const staging = await fsp.mkdtemp(path.join(generations, ".prepare-"));
+      try {
+      await retainComponentArtifacts(rootDir, envelope, { created: [staging], staging });
       let downloadedBytes = 0, totalBytes = 0, copiedBytes = 0;
       const reused = new Set(), cached = new Set();
       for (const name of COMPONENTS) {
@@ -202,11 +211,17 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
             // Corrupt complete archives never become trusted by existence alone.
             const partial = archive + ".part";
             try { if ((await fsp.lstat(partial)).isSymbolicLink()) fail("component_symlink_forbidden"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+            try {
+              const handle = await fsp.open(partial, "wx");
+              await handle.close();
+              await retainComponentArtifacts(rootDir, envelope, { created: [partial], staging });
+            } catch (e) { if (e.code !== "EEXIST") throw e; }
             const before = downloadedBytes;
             await downloadArchive(transport, component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
               onProgress: bytes => { downloadedBytes = before + bytes; progress("download"); } });
             if ((await fsp.stat(partial)).size !== component.size || await hashFile(partial) !== component.sha256) fail("component_archive_corrupt");
             await fsp.rename(partial, archive);
+            await retainComponentArtifacts(rootDir, envelope, { created: [archive], staging });
           }
           descriptor = await unpack(archive, staging, component);
         }
@@ -220,9 +235,14 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
       await fsp.writeFile(path.join(staging, "component-complete.json.tmp"), JSON.stringify(envelope), { flag: "wx" });
       await fsp.rename(path.join(staging, "component-complete.json.tmp"), path.join(staging, "component-complete.json"));
       await fsp.rename(staging, finalRoot);
+      await retainComponentArtifacts(rootDir, envelope, { created: [finalRoot], ready: true });
       progress("ready");
       return { generationRoot: finalRoot, version: manifest.version, envelope, downloadedBytes, totalBytes };
-    } finally { preparing = false; }
+      } finally {
+        // Keep resumable downloads, but never leave another partial program copy.
+        await fsp.rm(staging, { recursive: true, force: true }).catch(error => console.warn(`Component staging cleanup deferred: ${error.code}`));
+      }
+    } finally { preparingRoots.delete(prepareKey); }
   }
   return { prepare };
 }

@@ -538,6 +538,23 @@ function runPortableSelfCheck(edition, target, zip, componentsOnly = false) {
   }
 }
 
+function retainValidatedComponents(componentRoot, metadata, candidateRoot, baseRoot) {
+  const artifacts = Object.entries(metadata.manifest.components).flatMap(([name, value]) => [
+    path.join(componentRoot, `${value.sha256}.zip`), path.join(componentRoot, `${name}-${value.treeSha256}.json`)
+  ]);
+  const inside = target => {
+    if (!target) return false;
+    const relative = path.relative(componentRoot, target);
+    return relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+  };
+  const owned = [...(metadata.retentionOwned || [])];
+  if (inside(candidateRoot)) { artifacts.push(candidateRoot); owned.push(candidateRoot); }
+  // A configured incremental base may itself be an older candidate. Pin it.
+  if (inside(baseRoot)) artifacts.push(baseRoot);
+  require("./artifact-retention.cjs").retainArtifacts(componentRoot, "validated-components", artifacts, 2, owned);
+  metadata.retentionOwned = owned.filter(target => fs.existsSync(target));
+}
+
 function buildPortable(edition = "delivery", {
   environment = process.env,
   componentsOnly = false,
@@ -560,12 +577,7 @@ function buildPortable(edition = "delivery", {
       completedAt: new Date().toISOString(), candidateRoot };
     fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
     const componentRoot = path.dirname(file);
-    const artifacts = Object.entries(metadata.manifest.components).flatMap(([name, value]) => [
-      path.join(componentRoot, `${value.sha256}.zip`),
-      path.join(componentRoot, `${name}-${value.treeSha256}.json`)
-    ]);
-    require("./artifact-retention.cjs").retainArtifacts(componentRoot, "validated-components", artifacts, 2, metadata.retentionOwned || []);
-    metadata.retentionOwned = (metadata.retentionOwned || []).filter(target => fs.existsSync(target));
+    retainValidatedComponents(componentRoot, metadata, candidateRoot, environment.XIAOXI_COMPONENT_BASE_ROOT || canonicalTarget);
     fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
   }
   if (componentsOnly) {
@@ -630,6 +642,7 @@ module.exports = {
   describeBaseStabilizedRuntime,
   isCommercialDeliveryReady,
   publishStagedRelease,
+  retainValidatedComponents,
   runTransactionalRelease,
   resolveRemotionRuntimeRoot,
   resolveSidecarBuildRoot,

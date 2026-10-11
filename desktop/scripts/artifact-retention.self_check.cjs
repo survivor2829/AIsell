@@ -14,6 +14,18 @@ try {
     retainArtifacts(root, "test", [directory]);
   }
   assert(fs.existsSync(historical));
+  const candidates = path.join(root, "candidates");
+  fs.mkdirSync(candidates);
+  const base = path.join(candidates, "candidate-0");
+  let metadata = { manifest: { components: {} }, retentionOwned: [] };
+  for (let version = 0; version < 4; version++) {
+    const candidate = path.join(candidates, `candidate-${version}`);
+    fs.mkdirSync(candidate);
+    fs.writeFileSync(path.join(candidate, "program.asar"), "physical program bytes");
+    require("./build-portable-release.cjs").retainValidatedComponents(candidates, metadata, candidate, base);
+  }
+  assert(!fs.existsSync(path.join(candidates, "candidate-1")), "old validated candidate directories must retire alongside their archives");
+  for (const version of [0, 2, 3]) assert(fs.existsSync(path.join(candidates, `candidate-${version}`)), "keep current, previous and pinned incremental base");
   const abandonedLock = path.join(root, ".artifact-retention.json.lock");
   fs.writeFileSync(abandonedLock, "");
   fs.utimesSync(abandonedLock, new Date(0), new Date(0));

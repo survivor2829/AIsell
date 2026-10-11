@@ -44,6 +44,10 @@ async function main() {
     for (const file of modules) await fs.copyFile(path.join(source, file), path.join(application, file));
     try { await fs.copyFile(path.join(source, "src/main/update-storage.cjs"), path.join(application, "src/main/update-storage.cjs")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
+    for (const file of ["src/main/update-retention.cjs", "src/shared/artifact-retention.cjs"]) {
+      try { await fs.copyFile(path.join(source, file), path.join(application, file)); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
     const helperBytes = await fs.readFile(path.join(source, "src/main/update-helper.cjs"));
     assert.deepEqual(await fs.readFile(path.join(application, "src/main/update-helper.cjs")), helperBytes, "the starting updater must be byte-identical to the selected source");
     const helperSha256 = crypto.createHash("sha256").update(helperBytes).digest("hex");
@@ -108,6 +112,7 @@ class FixtureInstaller { static int Main(string[] args) {
       const backup = path.join(root, "profile-update-backups", parentReceipt.id);
       for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(backup, file)), value);
       await assert.rejects(fs.stat(path.join(backup, "data/cloud-maintenance")), { code: "ENOENT" });
+      await waitFor(async () => readJson(path.join(root, "profile-update-backups/.artifact-retention.json")), "successful upgrade registers its bounded data backup");
     }
     for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(userData, file)), value);
     const result = { ok: true, source, helperSha256, initialVersion, targetVersion, observedPhase: status.phase,
