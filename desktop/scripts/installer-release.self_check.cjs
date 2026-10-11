@@ -28,6 +28,10 @@ const packageMetadata = JSON.parse(fs.readFileSync(path.join(desktopDir, "packag
 const config = fs.readFileSync(path.join(desktopDir, "electron-builder-installer.yml"), "utf8");
 const nsis = fs.readFileSync(path.join(desktopDir, "build", "installer.nsh"), "utf8");
 const testConfig = fs.readFileSync(path.join(desktopDir, "electron-builder-test-installer.yml"), "utf8");
+for (const installerConfig of [config, testConfig]) {
+  assert.match(installerConfig, /preCompressedFileExtensions:\s*\[\]/u,
+    "Seed videos must remain inside the hash-verified application archive");
+}
 const testNsis = fs.readFileSync(path.join(desktopDir, "build", "installer-test.nsh"), "utf8");
 const builder = fs.readFileSync(path.join(desktopDir, "scripts", "build-installer-release.cjs"), "utf8");
 const trustVerifier = fs.readFileSync(path.join(desktopDir, "scripts", "release-trust-record.cjs"), "utf8");

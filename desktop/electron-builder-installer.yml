@@ -12,6 +12,8 @@ win:
   executableName: AI获客 V1.0版本
   artifactName: AI短视频获客 V1.0版本-安装程序.${ext}
 nsis:
+  # Keep seed videos in the same archive covered by the full payload hash.
+  preCompressedFileExtensions: []
   installerIcon: public/app-icon.ico
   uninstallerIcon: public/app-icon.ico
   include: build/installer.nsh

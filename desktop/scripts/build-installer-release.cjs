@@ -21,6 +21,7 @@ const installerManifestName = `${PRODUCT_NAME}-安装程序-版本清单.json`;
 const TEST_PORTABLE_REUSE_PATHS = new Set([
   "desktop/build/installer-test.nsh",
   "desktop/electron-builder-test-installer.yml",
+  "desktop/electron-builder-installer.yml",
   "desktop/installer-targets.json",
   "desktop/scripts/build-installer-release.cjs",
   "desktop/scripts/installer-release.self_check.cjs"
