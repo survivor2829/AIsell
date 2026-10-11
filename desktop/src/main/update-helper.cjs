@@ -219,7 +219,8 @@ async function runHelper({ jobFile, userData }) {
     // Housekeeping cannot turn a successful update into a failed update.
     try {
       await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
-      if (dataBackup) require("../shared/artifact-retention.cjs").retainArtifacts(path.dirname(dataBackup), "successful-full-upgrades", [dataBackup], 1);
+      // Retire old ledger ownership, not the business-data snapshots themselves.
+      if (dataBackup) require("../shared/artifact-retention.cjs").retainArtifacts(path.dirname(dataBackup), "successful-full-upgrades", [], 1, []);
     } catch (error) { console.warn(`Post-update cleanup deferred: ${error.code || error.message}`); }
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {

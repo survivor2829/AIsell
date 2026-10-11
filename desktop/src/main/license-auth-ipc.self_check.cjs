@@ -2,6 +2,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
+const vm = require("node:vm");
 const { createLicenseStore } = require("./license-auth-ipc.cjs");
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-license-recovery-"));
@@ -36,6 +38,37 @@ try {
   fs.writeFileSync(path.join(profile, "Local State"), "malformed original key state");
   assert.equal(createLicenseStore({ rootDir, safeStorage }).status().code, "license_recovery_backup_failed");
   assert.deepEqual(fs.readFileSync(file), original, "Unreadable key snapshots must never allow replacing the existing authorization");
+
+  // Isolated trust key, with real RSA verification; never read customer codes.
+  const keys = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const isolated = { exports: {} };
+  const source = fs.readFileSync(require.resolve("./license-auth-ipc.cjs"), "utf8");
+  vm.runInNewContext(source, { module: isolated, Buffer, require: name => name === "node:crypto"
+    ? { ...crypto, createPublicKey: () => keys.publicKey } : require(name) });
+  const payload = Buffer.from(JSON.stringify({ product: "ai-huoke-desktop", license_id: "isolated-recovery", expires_at: "2099-01-01T00:00:00Z" })).toString("base64url");
+  const code = `${payload}.${crypto.sign("RSA-SHA256", Buffer.from(payload), keys.privateKey).toString("base64url")}`;
+  const replacement = Buffer.from("new encrypted authorization fixture");
+  safeStorage.encryptString = () => replacement;
+  safeStorage.decryptString = bytes => {
+    if (bytes.equals(replacement)) return code;
+    throw Error("old key unavailable");
+  };
+  const isolatedStore = () => isolated.exports.createLicenseStore({ rootDir, safeStorage });
+  assert.equal(isolatedStore().activate(code).code, "license_recovery_backup_failed");
+  assert.deepEqual(fs.readFileSync(file), original);
+  fs.writeFileSync(path.join(profile, "Local State"), JSON.stringify({ os_crypt: osCrypt }));
+  const recovering = isolatedStore();
+  const decrypt = safeStorage.decryptString;
+  safeStorage.decryptString = () => "readback mismatch";
+  assert.equal(recovering.activate(code).code, "secure_storage_unavailable");
+  assert.deepEqual(fs.readFileSync(file), original, "Failed encryption readback cannot replace the original");
+  safeStorage.decryptString = decrypt;
+  assert.equal(recovering.activate(code).authorized, true);
+  assert.deepEqual(fs.readFileSync(file), replacement);
+  assert.equal(isolatedStore().status().authorized, true, "Recovered authorization survives a new store instance");
+  assert.equal(isolatedStore().readCode(), code);
+  assert.deepEqual(fs.readFileSync(path.join(recovery, backups.find(x => x.endsWith(".bin")))), original);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(recovery, backups.find(x => x.endsWith(".json"))))).os_crypt, osCrypt);
   console.log("license authorization recovery self-check passed");
 } finally {
   fs.rmSync(profile, { recursive: true, force: true });

@@ -38,7 +38,7 @@ async function backupLocalInstall({ program, profile, outputRoot }) {
     await fs.promises.cp(program, path.join(owned.directory, "program"), { recursive: true, errorOnExist: true, force: false });
     await fs.promises.cp(profile, path.join(owned.directory, "userData"), { recursive: true, errorOnExist: true, force: false, filter });
     fs.writeFileSync(path.join(owned.directory, "backup.json"), JSON.stringify({ version, createdAt: new Date().toISOString(), programSource: program, profileSource: profile, updateCachesExcluded: true }, null, 2));
-    retainArtifacts(owned.parent, "local-install-backups", [owned.directory], 2);
+    retainArtifacts(owned.parent, "local-install-backups", [path.join(owned.directory, "program")], 2);
     return { directory: owned.directory, version };
   } catch (error) {
     await removeOwnedDirectory(owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; });

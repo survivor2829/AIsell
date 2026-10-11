@@ -62,6 +62,11 @@ async function main() {
       await fs.mkdir(path.dirname(path.join(userData, file)), { recursive: true });
       await fs.writeFile(path.join(userData, file), bytes);
     }
+    const backupsRoot = path.join(root, "profile-update-backups");
+    const oldestBackup = path.join(backupsRoot, "old-success");
+    await fs.mkdir(oldestBackup, { recursive: true });
+    await fs.writeFile(path.join(oldestBackup, "unique-receipt.json"), "old receipt absent from live data");
+    await fs.writeFile(path.join(backupsRoot, ".artifact-retention.json"), JSON.stringify({ "successful-full-upgrades": { generations: [["old-success"]], owned: ["old-success"] } }));
     const cache = path.join(userData, "data/cloud-maintenance/components/generations/old/resources");
     await fs.mkdir(cache, { recursive: true });
     await fs.copyFile(path.join(electronRoot, "resources/default_app.asar"), path.join(cache, "default_app.asar"));
@@ -112,7 +117,11 @@ class FixtureInstaller { static int Main(string[] args) {
       const backup = path.join(root, "profile-update-backups", parentReceipt.id);
       for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(backup, file)), value);
       await assert.rejects(fs.stat(path.join(backup, "data/cloud-maintenance")), { code: "ENOENT" });
-      await waitFor(async () => readJson(path.join(root, "profile-update-backups/.artifact-retention.json")), "successful upgrade registers its bounded data backup");
+      await waitFor(async () => {
+        const ledger = await readJson(path.join(backupsRoot, ".artifact-retention.json"));
+        return ledger && !ledger["successful-full-upgrades"];
+      }, "successful upgrade relinquishes old business-backup deletion ownership");
+      assert.equal(await fs.readFile(path.join(oldestBackup, "unique-receipt.json"), "utf8"), "old receipt absent from live data");
     }
     for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(userData, file)), value);
     const result = { ok: true, source, helperSha256, initialVersion, targetVersion, observedPhase: status.phase,

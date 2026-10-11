@@ -71,11 +71,25 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
     }
     if (fd === undefined) throw new Error("Retention busy; ownership request saved for next run");
     const data = fs.existsSync(ledger) ? JSON.parse(fs.readFileSync(ledger, "utf8")) : {};
+    // Earlier ledgers owned complete backups. Normalize both saved state and
+    // interrupted requests before deduplication, so replay cannot lose a slot.
+    const normalize = (category, values) => category === "local-install-backups"
+      ? [...new Set(values.map(relative => path.basename(relative) === "program" ? relative : path.join(relative, "program")))] : values;
+    const backups = data["local-install-backups"];
+    if (backups) {
+      const generations = backups.generations.map(generation => normalize("local-install-backups", generation));
+      backups.generations = generations.filter((generation, index) => !generations.slice(index + 1).some(next => JSON.stringify(next) === JSON.stringify(generation)));
+      backups.owned = normalize("local-install-backups", backups.owned);
+    }
+    delete data["successful-full-upgrades"];
     const requests = fs.readdirSync(inbox).filter(name => name.endsWith(".json")).sort();
     for (const name of requests) {
       const request = JSON.parse(fs.readFileSync(safePath(root, path.join(inbox, name)), "utf8"));
       if (!/^[a-z0-9-]+$/i.test(request.category) || !Number.isInteger(request.keep) || request.keep < 1) throw new Error("Invalid saved retention request");
       for (const item of [...request.refs, ...request.owned]) safePath(root, item);
+      if (request.category === "successful-full-upgrades") continue;
+      request.refs = normalize(request.category, request.refs);
+      request.owned = normalize(request.category, request.owned);
       const state = data[request.category] || { generations: [], owned: [] };
       state.generations = [...state.generations.filter(g => JSON.stringify(g) !== JSON.stringify(request.refs)), request.refs].slice(-request.keep);
       state.owned = [...new Set([...state.owned, ...request.owned])];

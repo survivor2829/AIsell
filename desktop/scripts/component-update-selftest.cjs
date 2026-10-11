@@ -89,10 +89,14 @@ test("local acceptance backs up the active application and business data without
   await fs.mkdir(path.join(outputRoot, "unmanaged-history"), { recursive: true });
   const { backupLocalInstall } = require("./backup-local-install.cjs");
   const snapshots = [];
-  for (let index = 0; index < 3; index++) snapshots.push(await backupLocalInstall({ program: source, profile, outputRoot }));
-  await assert.rejects(fs.stat(snapshots[0].directory), { code: "ENOENT" });
+  for (let index = 0; index < 3; index++) {
+    snapshots.push(await backupLocalInstall({ program: source, profile, outputRoot }));
+    if (index === 0) await fs.unlink(path.join(profile, "费用回执.json"));
+  }
+  await assert.rejects(fs.stat(path.join(snapshots[0].directory, "program")), { code: "ENOENT" });
+  assert.equal(await fs.readFile(path.join(snapshots[0].directory, "userData/费用回执.json"), "utf8"), "retained receipt bytes", "Program rotation must preserve a receipt found only in the oldest snapshot");
   for (const snapshot of snapshots.slice(1)) {
-    assert.equal(await fs.readFile(path.join(snapshot.directory, "userData/费用回执.json"), "utf8"), "retained receipt bytes");
+    await fs.access(path.join(snapshot.directory, "program"));
     await assert.rejects(fs.stat(path.join(snapshot.directory, "userData/data/cloud-maintenance")), { code: "ENOENT" });
     assert.equal(JSON.parse(await fs.readFile(path.join(snapshot.directory, "backup.json"), "utf8")).programSource, await fs.realpath(path.join(components, "generations", id)));
   }
