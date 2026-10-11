@@ -8,6 +8,7 @@ const checks = [
   "scripts/build-renderer.self_check.cjs",
   "scripts/dev-electron.self_check.cjs",
   "src/main/window-layout.self_check.cjs",
+  "src/main/license-auth-ipc.self_check.cjs",
   "scripts/wechat-failure-policy-review.self_check.cjs",
   "scripts/wechat-failure-policy-review.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",

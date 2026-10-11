@@ -833,6 +833,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         rootDir: runtime.rootDir, config: maintenanceConfig,
         version: components.businessVersion(app), buildId: build.buildId, logger,
         componentBaseRoot: app.isPackaged ? components.currentRoot() : null, userData: app.getPath("userData"),
+        getLicenseStatus: () => licenseStore.status(),
         canInstall: () => app.isPackaged && process.platform === "win32" && developmentEdition
           && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets.test.installDirectoryName).toLowerCase()
       });

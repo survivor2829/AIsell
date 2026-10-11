@@ -1,4 +1,4 @@
-const { createPublicKey, verify } = require("node:crypto");
+const { createHash, createPublicKey, verify } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { writeFileAtomic } = require("./atomic-file.cjs");
@@ -40,25 +40,53 @@ function validateLicense(code, now = Date.now()) {
 
 function createLicenseStore({ rootDir, safeStorage }) {
   const file = path.join(rootDir, "license", "session.bin");
-  const read = () => {
+  // Capture before the first safeStorage call: Chromium may replace an unreadable Windows key.
+  let keySnapshot = null;
+  let snapshotFailed = false;
+  try {
+    const state = JSON.parse(fs.readFileSync(path.join(rootDir, "..", "Local State"), "utf8"));
+    if (state.os_crypt) keySnapshot = Buffer.from(JSON.stringify({ os_crypt: state.os_crypt }));
+  } catch (error) { snapshotFailed = error.code !== "ENOENT"; }
+  const errors = {
+    license_required: "请输入原授权码登录。",
+    license_read_failed: "无法读取已保存的授权。原文件仍保留，请检查目录访问权限。",
+    secure_storage_unavailable: "Windows 安全存储暂不可用。原授权仍保留，请恢复当前 Windows 用户的安全存储后重试。",
+    license_decryption_failed: "已保存的授权无法解密，可能与 Windows 密码重置有关。原授权及恢复资料已保留，请重新输入原授权码恢复登录；无需清除数据。",
+    license_recovery_backup_failed: "旧授权的恢复资料暂时无法保存。尚未替换授权，请检查磁盘空间和目录访问权限。"
+  };
+  const licenseError = code => Object.assign(new Error(errors[code]), { code });
+  const preserve = ciphertext => {
     try {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("secure_storage_unavailable");
-      const code = safeStorage.decryptString(fs.readFileSync(file));
-      return validateLicense(code);
-    } catch {
-      return { authorized: false, code: "license_required" };
+      if (snapshotFailed) throw Error("original_key_snapshot_unreadable");
+      const digest = createHash("sha256").update(ciphertext).update(keySnapshot || "").digest("hex");
+      const directory = path.join(rootDir, "license", "recovery");
+      fs.mkdirSync(directory, { recursive: true });
+      for (const [suffix, bytes] of [["session.bin", ciphertext], ["Local State.json", keySnapshot]]) {
+        if (!bytes) continue;
+        const target = path.join(directory, `${digest}.${suffix}`);
+        try {
+          if (!fs.readFileSync(target).equals(bytes)) throw Error("recovery_copy_mismatch");
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+          writeFileAtomic(target, bytes, { mode: 0o600 });
+        }
+        if (!fs.readFileSync(target).equals(bytes)) throw Error("recovery_copy_mismatch");
+      }
+    } catch { throw licenseError("license_recovery_backup_failed"); }
+  };
+  const readStored = () => {
+    let bytes;
+    try { bytes = fs.readFileSync(file); }
+    catch (error) { throw licenseError(error.code === "ENOENT" ? "license_required" : "license_read_failed"); }
+    if (!safeStorage.isEncryptionAvailable()) throw licenseError("secure_storage_unavailable");
+    try { return safeStorage.decryptString(bytes).trim(); }
+    catch {
+      preserve(bytes);
+      throw licenseError("license_decryption_failed");
     }
   };
   const readCode = () => {
-    if (!safeStorage.isEncryptionAvailable()) throw new Error("secure_storage_unavailable");
-    let code;
-    try {
-      code = safeStorage.decryptString(fs.readFileSync(file)).trim();
-    } catch (error) {
-      const mapped = new Error(error?.code === "ENOENT" ? "license_required" : "secure_storage_unavailable");
-      mapped.code = error?.code === "ENOENT" ? "license_required" : "secure_storage_unavailable";
-      throw mapped;
-    }
+    const code = readStored();
     const result = validateLicense(code);
     if (!result.authorized) {
       const error = new Error(result.error || "授权码无效");
@@ -68,15 +96,28 @@ function createLicenseStore({ rootDir, safeStorage }) {
     return code;
   };
   return {
-    status: read,
+    status() {
+      try { return validateLicense(readStored()); }
+      catch (error) { return { authorized: false, code: error.code, ...(error.code === "license_required" ? {} : { error: error.message }) }; }
+    },
     readCode,
     activate(code) {
       const result = validateLicense(code);
       if (!result.authorized) return result;
       if (!safeStorage.isEncryptionAvailable()) return { authorized: false, code: "secure_storage_unavailable", error: "当前系统无法安全保存授权状态" };
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      writeFileAtomic(file, safeStorage.encryptString(String(code).trim()));
-      return result;
+      try {
+        let original = null;
+        try { original = fs.readFileSync(file); }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        if (original) preserve(original);
+        const encrypted = safeStorage.encryptString(String(code).trim());
+        if (safeStorage.decryptString(encrypted).trim() !== String(code).trim()) throw licenseError("secure_storage_unavailable");
+        writeFileAtomic(file, encrypted, { mode: 0o600 });
+        return result;
+      } catch (error) {
+        const mapped = errors[error.code] ? error : licenseError("license_read_failed");
+        return { authorized: false, code: mapped.code, error: mapped.message };
+      }
     },
     logout() {
       fs.rmSync(file, { force: true });

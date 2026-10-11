@@ -16,7 +16,7 @@ const { updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
 function createCloudMaintenance({ rootDir, config, version, buildId, logger, canInstall = () => false, transport, launch = spawn,
-  componentBaseRoot, userData }) {
+  componentBaseRoot, userData, getLicenseStatus = () => null }) {
   const dir = path.join(rootDir, "cloud-maintenance");
   fs.mkdirSync(dir, { recursive: true });
   const stateFile = path.join(dir, "state.json");
@@ -281,6 +281,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   }
   async function prepareInstall() {
     if (!state.pending || !canInstall()) return null;
+    const authorization = getLicenseStatus();
+    if (["license_decryption_failed", "license_read_failed", "secure_storage_unavailable", "license_recovery_backup_failed"].includes(authorization?.code)) {
+      notify({ stage: "blocked", error: authorization.error || "请先恢复本机授权读取，再安装更新。原数据仍保留。" });
+      return null;
+    }
     if (state.pending.kind === "components") {
       const manifest = verifyComponentManifest(state.pending.envelope, config);
       if (manifest.sequence < state.componentSequence || compareVersions(manifest.version, version) <= 0) return null;

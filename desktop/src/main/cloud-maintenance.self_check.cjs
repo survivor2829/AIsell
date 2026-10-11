@@ -197,13 +197,14 @@ async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
 async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
   const helper = require("./update-helper.cjs"), originalCreate = helper.createUpdateJob, originalNow = Date.now;
   const privatePath = path.join(rootDir, "private-profile", "helper-runtime"), events = [];
-  let creates = 0, launches = 0, mode, pendingHelper, loggerThrows = false;
+  let creates = 0, launches = 0, mode, pendingHelper, loggerThrows = false, licenseStatus = null;
   const dir = path.join(rootDir, "install-failures"), cache = path.join(dir, "cloud-maintenance");
   fs.mkdirSync(cache, { recursive: true });
   fs.writeFileSync(path.join(cache, "state.json"), JSON.stringify({ pending: sign(manifest), sequence: manifest.sequence }));
   const installer = path.join(cache, `${manifest.sha256}.exe`);
   fs.writeFileSync(installer, bytes);
   const controller = createCloudMaintenance({ rootDir: dir, userData: dir, config, version: "1.0.0", canInstall: () => true,
+    getLicenseStatus: () => licenseStatus,
     transport: { close() {} }, logger: { event(...args) { events.push(args); if (loggerThrows) throw Error("diagnostic disk write failed"); } },
     launch() {
       launches++;
@@ -226,6 +227,13 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
     return { file: path.join(cache, "fixture.json"), job: { id: "fixture", helperExecutable: "never-executed.exe" } };
   };
   try {
+    licenseStatus = { authorized: false, code: "license_decryption_failed", error: "原授权无法解密，请输入原授权恢复。" };
+    assert.equal(await controller.beginInstall(), false);
+    assert.equal(controller.status().stage, "blocked");
+    assert.match(controller.status().error, /原授权无法解密/);
+    assert.equal(creates, 0, "Unreadable existing credentials must be reported before exit or helper creation");
+    assert.equal(launches, 0);
+    licenseStatus = null;
     for (const [code, phase] of [["ENOSPC", "helper"], ["update_disk_space_insufficient", "helper"], ["EACCES", "helper"], ["EBUSY", "launch"], ["update_helper_not_ready", "ready"], ["cloud_download_invalid", "prepare"]]) {
       const beforeLaunch = launches, beforeEvents = events.length;
       mode = phase === "launch" || phase === "ready" ? phase : Object.assign(Error("private error detail"), {
