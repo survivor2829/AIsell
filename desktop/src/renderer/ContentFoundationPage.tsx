@@ -389,7 +389,7 @@ export function MaterialsLibraryPage() {
   };
 
   const archiveAsset = async (item: AssetItem) => {
-    if (!window.confirm(`仅从素材仓库归档“${item.displayName}”？原始文件不会被删除。`)) return;
+    if (!window.confirm(`仅从我的素材归档“${item.displayName}”？原始文件不会被删除。`)) return;
     const result = await window.xiaoxiContent?.library.archive({ assetId: item.assetId });
     if (result?.ok) {
       setNotice("素材已从当前列表归档，硬盘原文件保持不变。");
@@ -519,7 +519,7 @@ export function MaterialsLibraryPage() {
     <section className="page content-foundation-page">
       <div className="page-head content-page-head">
         <div>
-          <h1>素材仓库</h1>
+          <h1>我的素材</h1>
           <p>登记视频和图片的位置，建立可恢复索引；不重复复制几十 GB 原片。</p>
         </div>
         <div className="actions content-page-actions">

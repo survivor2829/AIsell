@@ -30,17 +30,30 @@ class ComponentsTest(unittest.TestCase):
             releases = root / "releases" / "test"
             releases.mkdir(parents=True)
             (releases / "latest.json").write_text('{"legacy":true}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "full_fallback_missing"):
+                promote(envelope, incoming, root)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / (digest + ".exe")).write_bytes(data)
+            def write_full():
+                full = {**manifest, "schema": 1, "sha256": digest, "size": len(data), "file": f"/artifacts/{digest}.exe"}
+                (releases / "latest.json").write_text(json.dumps({"payload": json.dumps(full), "signature": "SSH-only-fixture"}), encoding="utf-8")
+            write_full()
             self.assertTrue(promote(envelope, incoming, root)["published"])
             with self.assertRaisesRegex(ValueError, "advance"):
                 promote(envelope, incoming, root)
             (incoming / (digest + ".zip")).unlink()
             manifest.update(sequence=2, version="1.1.2")
             write_manifest()
+            with self.assertRaisesRegex(ValueError, "full_fallback_mismatch"):
+                promote(envelope, incoming, root)
+            write_full()
             self.assertTrue(promote(envelope, incoming, root)["published"], "Already stored immutable archives are reusable")
             before = (releases / "latest-components.json").read_bytes()
             (root / "components" / (digest + ".zip")).write_bytes(b"corrupt")
             manifest.update(sequence=3, version="1.1.3")
             write_manifest()
+            write_full()
             with self.assertRaisesRegex(ValueError, "hash"):
                 promote(envelope, incoming, root)
             self.assertEqual((releases / "latest-components.json").read_bytes(), before)
@@ -50,11 +63,11 @@ class ComponentsTest(unittest.TestCase):
             origin = f"http://127.0.0.1:{server.server_port}"
             try:
                 with urllib.request.urlopen(origin + "/v1/releases/test/latest") as response:
-                    self.assertTrue(json.load(response)["legacy"])
+                    self.assertEqual(json.loads(json.load(response)["payload"])["version"], "1.1.3")
                 with urllib.request.urlopen(origin + "/v2/releases/test/latest") as response:
                     self.assertEqual(json.loads(json.load(response)["payload"])["version"], "1.1.2")
                 artifacts = root / "artifacts"
-                artifacts.mkdir()
+                artifacts.mkdir(exist_ok=True)
                 (artifacts / (digest + ".exe")).write_bytes(data)
                 for route in (f"/components/{digest}.zip", f"/artifacts/{digest}.exe"):
                     request = urllib.request.Request(origin + route, headers={"Range": "bytes=4-"})

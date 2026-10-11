@@ -1611,8 +1611,8 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
       <header className="page-header workspace-page-head">
         <div>
           <span className="workspace-eyebrow">AI CREATIVE STUDIO</span>
-          <h1>创作工作台</h1>
-          <p>原声剪辑工具：保留素材中的讲解。使用文案配音制作，请返回创作工作台。</p>
+          <h1>AI混剪</h1>
+          <p>原声剪辑工具：保留素材中的讲解。使用文案配音制作，请返回AI混剪。</p>
         </div>
         <div className="workspace-header-actions">
           {onBackToProduct && <button className="workspace-legacy-back" onClick={onBackToProduct}>返回批量创作</button>}
@@ -1636,7 +1636,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
           <FileVideo2 size={24} /><span><strong>原声课程拆条</strong><small>保留原讲解，从口播、播客或课程中找出完整观点，生成 30～90 秒竖屏成片。</small></span>
         </button>
         <button className={`workspace-mode-card ${mode === "mix" ? "is-active" : ""}`} onClick={() => setMode("mix")} disabled={Boolean(busy)}>
-          <Layers3 size={24} /><span><strong>原声素材混剪</strong><small>保留素材原声，由 AI 安排画面组合。需要按新文案配音时，请使用创作工作台主流程。</small></span>
+          <Layers3 size={24} /><span><strong>原声素材混剪</strong><small>保留素材原声，由 AI 安排画面组合。需要按新文案配音时，请使用AI混剪主流程。</small></span>
         </button>
       </div>
 

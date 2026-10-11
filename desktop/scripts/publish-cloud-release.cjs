@@ -8,6 +8,7 @@ const { fileHash } = require("../src/main/cloud-maintenance.cjs");
 const { verifyManifest, VERSION } = require("../src/shared/cloud-contract.cjs");
 const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
 const { verifyPublishedRelease } = require("./release-readback.cjs");
+const { assertUpgradePaths } = require("./release-upgrade-path.cjs");
 
 async function publish({ installer, manifestFile, notesFile, smoke = false }) {
   const config = cloudConfig({ developmentEdition: true });
@@ -35,6 +36,7 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     publishedAt: new Date().toISOString(), notes
   };
   const payload = JSON.stringify(manifest);
+  if (!smoke) assertUpgradePaths(manifest, manifest);
   const envelope = { payload, signature: crypto.sign(null, Buffer.from(payload), fs.readFileSync(keyFile)).toString("base64") };
   verifyManifest(envelope, { ...config, appId, channel: manifest.channel });
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "ai-cloud-publish-"));

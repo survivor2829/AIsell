@@ -1,6 +1,7 @@
-import { CircleAlert, CircleCheck, Copy, LoaderCircle, Play, RefreshCw, Square } from "lucide-react";
+import { CircleAlert, CircleCheck, Copy, LoaderCircle, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import "./ProductDetailPage.css";
+import { appearanceFor, characterAsset, type RolePreference } from "./role-appearance";
 
 type ProductDetailState = "unavailable" | "stopped" | "starting" | "failed" | "ready";
 
@@ -53,27 +54,15 @@ const EMPTY_STATUS: ProductDetailStatus = {
   code: "PRODUCT_DETAIL_RUNTIME_UNAVAILABLE"
 };
 
-const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === "development";
-
-const UNAVAILABLE_COPY = DEVELOPMENT_EDITION
-  ? {
-    title: "运行组件未配置",
-    description: "当前桌面版没有找到产品详情图运行组件，因此不会启动任何本地服务。"
-  }
-  : {
-    title: "产品详情图组件不可用",
-    description: "安装文件可能不完整，或运行组件已被安全软件隔离。请按下方方式恢复。"
-  };
-
 const STATE_COPY: Record<ProductDetailState, { title: string; description: string }> = {
-  unavailable: UNAVAILABLE_COPY,
+  unavailable: { title: "工作台暂不可用", description: "请重试打开工作台。如果仍无法打开，可复制下方故障信息联系支持。" },
   stopped: {
-    title: "服务未启动",
-    description: "产品详情图已安装。点击启动后才会打开本地工作台，不会在进入页面时自动运行。"
+    title: "正在准备工作台",
+    description: "正在打开产品详情图工作台，请稍候。"
   },
   starting: {
-    title: "正在启动",
-    description: "正在准备本地隔离工作台，请稍候。"
+    title: "正在准备工作台",
+    description: "正在准备工作台，请稍候。"
   },
   failed: {
     title: "启动失败",
@@ -85,11 +74,6 @@ const STATE_COPY: Record<ProductDetailState, { title: string; description: strin
   }
 };
 
-const STARTUP_PHASE: Record<string, string> = {
-  provider_config: "读取服务配置", prepare_runtime: "准备本地组件", spawn: "启动本地组件",
-  prepare_data: "准备工作目录", browser_check: "检查导出组件", load_app: "加载工作台",
-  install_contract: "连接工作台", listen: "等待本地连接", ready: "服务就绪"
-};
 const FAILURE_COPY: Record<string, string> = {
   PRODUCT_DETAIL_START_TIMEOUT: "本地组件准备超时。可点击重试；若仍失败，请导出日志，日志会保留卡住的阶段。",
   PRODUCT_DETAIL_EXITED: "本地组件启动时意外退出。请重试；若仍失败，请将下方故障信息和诊断日志交给技术人员。",
@@ -98,7 +82,8 @@ const FAILURE_COPY: Record<string, string> = {
   PRODUCT_DETAIL_STOP_TIMEOUT: "上一次本地组件尚未退出。请稍后重试，软件会等待旧组件关闭后再启动。"
 };
 
-export function ProductDetailPage() {
+export function ProductDetailPage({ preference, onPersonalize }: { preference: RolePreference; onPersonalize: () => void }) {
+  const appearance = appearanceFor("operations", preference.appearanceId);
   const [status, setStatus] = useState<ProductDetailStatus>(EMPTY_STATUS);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -155,7 +140,7 @@ export function ProductDetailPage() {
       setNotice("当前版本未连接产品详情图桌面服务。");
       return undefined;
     }
-    void api.status()
+    void api.start()
       .then((result) => {
         if (active) applyResult(result);
       })
@@ -189,18 +174,7 @@ export function ProductDetailPage() {
   }, []);
 
   const displayState = loadingStatus ? "starting" : status.state;
-  const paidAiReady = status.capabilities.paid_ai_ready === true;
-  const copy = displayState === "ready"
-    ? paidAiReady
-      ? {
-        title: "服务已就绪，AI 精修已配置",
-        description: "DeepSeek 与 APIMart 配置已经接入下方工作台；实际生图前仍会由工作台显示任务并确认。"
-      }
-      : {
-        title: "服务已就绪，AI 精修尚未配置",
-        description: "普通上传、排版和导出可以使用；云端智能服务暂不可用时，AI 精修会保留当前工作并提示稍后重试。"
-      }
-    : STATE_COPY[displayState];
+  const copy = STATE_COPY[displayState];
   const canShowWorkspace = status.state === "ready" && Boolean(status.bootstrapUrl);
   const diagnosticText = [
     "产品详情图启动诊断", `状态：${status.state}`, `故障码：${status.code || "无"}`,
@@ -221,50 +195,12 @@ export function ProductDetailPage() {
 
   return (
     <section className={`page product-detail-page${canShowWorkspace ? " has-workspace" : ""}`}>
-      <div className="page-head product-detail-head">
-        <div>
-          <h1>产品详情图</h1>
-          {!canShowWorkspace && <p>上传产品图片，编辑资料，预览并导出详情图。</p>}
-        </div>
-        <div className="actions product-detail-actions">
-          {status.state === "unavailable" && DEVELOPMENT_EDITION && (
-            <button className="secondary-button" onClick={() => run("status")} disabled={busy}>
-              <RefreshCw size={17} />
-              重新检测
-            </button>
-          )}
-          {status.state === "stopped" && (
-            <button className="primary-button" onClick={() => run("start")} disabled={busy}>
-              <Play size={17} />
-              启动产品详情图
-            </button>
-          )}
-          {status.state === "failed" && (
-            <button className="primary-button" onClick={() => run("restart")} disabled={busy}>
-              <RefreshCw size={17} />
-              重试启动
-            </button>
-          )}
-          {status.state === "ready" && (
-            <>
-              <button className="secondary-button" onClick={() => run("restart")} disabled={busy}>
-                <RefreshCw size={17} />
-                重新启动
-              </button>
-              <button className="danger-button" onClick={() => run("stop")} disabled={busy}>
-                <Square size={16} />
-                停止服务
-              </button>
-            </>
-          )}
-          {status.state === "starting" && (
-            <button className="danger-button" onClick={() => run("stop")} disabled={busy}>
-              <Square size={16} />
-              停止启动
-            </button>
-          )}
-        </div>
-      </div>
+      <header className="product-detail-guide">
+        <button type="button" className="product-detail-persona" onClick={onPersonalize} aria-label="设置产品详情图伙伴的形象与名字"><img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" style={{ objectPosition: appearance.position }} /></button>
+        <div><h1>产品详情图</h1><p><strong>{preference.name}</strong> · 上传产品图片和卖点，在下方制作详情图。</p></div>
+        <button type="button" className="secondary-button" onClick={onPersonalize}>形象与名字</button>
+        {!loadingStatus && ["failed", "unavailable", "stopped"].includes(status.state) && <button type="button" className="primary-button" onClick={() => run(status.state === "failed" ? "restart" : "start")} disabled={busy}><RefreshCw size={16} />重试</button>}
+      </header>
 
       {!canShowWorkspace && <div className={`product-detail-state is-${displayState}`} aria-live="polite">
         <div className="product-detail-state-icon">
@@ -277,13 +213,8 @@ export function ProductDetailPage() {
         <div>
           <strong>{copy.title}</strong>
           <p>{displayState === "failed" ? FAILURE_COPY[status.code] || copy.description
-            : displayState === "starting" && status.diagnostics?.phase ? STARTUP_PHASE[status.diagnostics.phase] || copy.description : copy.description}</p>
-          {displayState === "failed" && status.code && <p className="product-detail-failure-code">
-            故障码：{status.code}
-            {status.diagnostics?.phase && <> · {STARTUP_PHASE[status.diagnostics.phase] || "本地启动"}</>}
-            {status.diagnostics?.exitCode != null && <> · 退出码 {status.diagnostics.exitCode}</>}
-            {status.diagnostics?.stderrType && <> · {status.diagnostics.stderrType}</>}
-          </p>}
+            : copy.description}</p>
+
           {(displayState === "failed" || displayState === "unavailable") && <details className="product-detail-diagnostics">
             <summary>故障信息</summary>
             <pre>{diagnosticText}</pre>
@@ -295,27 +226,6 @@ export function ProductDetailPage() {
       </div>}
 
       {notice && <div className="touch-notice" role="alert">{notice}</div>}
-
-      {status.state === "unavailable" && !loadingStatus && (
-        <div className="product-detail-setup">
-          {DEVELOPMENT_EDITION ? (
-            <>
-              <h2>开发接入说明</h2>
-              <p>
-                开发调试时，请设置环境变量 <code>XIAOXI_PRODUCT_DETAIL_SIDECAR</code>
-                指向已打包的运行程序；正式安装包需要由交付流程内置该组件。
-              </p>
-              <p>当前状态只代表桌面入口已经接通，不代表原有项目已经完成净机打包或测试恢复。</p>
-            </>
-          ) : (
-            <>
-              <h2>恢复方式</h2>
-              <p>请关闭软件后使用完整安装程序重新安装；如果使用压缩包，请完整解压后再运行，不要只复制主程序。</p>
-              <p>仍无法恢复时，请在“日志诊断”导出报告并联系支持。</p>
-            </>
-          )}
-        </div>
-      )}
 
       {canShowWorkspace && (
         <div className="product-detail-workspace">

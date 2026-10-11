@@ -7,6 +7,7 @@ const { cloudConfig } = require("../src/main/cloud-config.cjs");
 const { COMPONENTS, hashFile, validateManifest, verifyComponentManifest } = require("../src/shared/component-contract.cjs");
 const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
 const { verifyPublishedRelease } = require("./release-readback.cjs");
+const { verifyUpgradePaths } = require("./release-upgrade-path.cjs");
 async function publishComponentRelease({ metadataFile, notesFile }) {
   const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
   const config = cloudConfig({ developmentEdition: true });
@@ -27,6 +28,8 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
     if (fs.statSync(archive).size !== component.size || await hashFile(archive) !== component.sha256) throw Error("Component archive does not match metadata.");
     archives.push({ ...component, path: archive });
   }
+  // Verify the legacy entry point and the actual full artifact before signing/uploading.
+  const upgradePaths = await verifyUpgradePaths({ config, target: manifest });
   manifest.sequence = Date.now(); manifest.publishedAt = new Date().toISOString();
   const payload = JSON.stringify(manifest);
   const envelope = { payload, signature: crypto.sign(null, Buffer.from(payload), fs.readFileSync(path.join(os.homedir(), ".ssh", "ai-release-signing.pem"))).toString("base64") };
@@ -53,6 +56,7 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
     for (const archive of missing) run("scp.exe", [...flags, archive.path, `${host}:${remote}/${archive.sha256}.zip`]);
     run("scp.exe", [...flags, document, `${host}:${remote}/latest-components.json`]);
     const uploads = ["latest-components.json", ...missing.map(c => `${c.sha256}.zip`)].map(name => `${remote}/${name}`).join(" ");
+    await verifyUpgradePaths({ config, target: manifest, expectedPayload: upgradePaths.payload, verifyArtifact: false });
     run("ssh.exe", [...flags, host, `sudo -n install -d -o ai-maintenance -g ai-maintenance -m 700 ${incoming} && sudo -n install -o ai-maintenance -g ai-maintenance -m 600 ${uploads} ${incoming}/ && sudo -n -u ai-maintenance python3 /opt/ai-maintenance/promote_components.py ${incoming}/latest-components.json ${incoming}`]);
     const readback = await verifyPublishedRelease({ config, envelope, schema: 2 });
     return { published: true, version: manifest.version, channel: manifest.channel, uploadedArchives: missing.length, readback };

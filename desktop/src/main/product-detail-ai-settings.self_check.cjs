@@ -224,11 +224,7 @@ async function main() {
       "utf8"
     );
     assert.doesNotMatch(rendererSource, /active === "api-key"/u);
-    const productPage = fs.readFileSync(
-      path.join(__dirname, "../renderer/ProductDetailPage.tsx"),
-      "utf8"
-    );
-    assert.match(productPage, /capabilities\.paid_ai_ready === true/u);
+    // Readiness badges are presentation only; saving settings must still make no paid calls.
     assert.equal(paidCalls, 0);
     console.log("product detail AI settings self-check passed");
   } finally {

@@ -68,6 +68,12 @@ async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
       }, close() {} } });
     try {
       await controller.check();
+      if (componentVersion === "1.3.0") {
+        assert.equal(controller.status().stage, "error", "An older full installer cannot fulfill the selected component target");
+        assert.match(controller.status().error, /full_upgrade_required/);
+        assert.equal(await controller.prepareInstall(), null);
+        continue;
+      }
       assert.equal(controller.status().stage, "ready", `Component ${componentVersion} must allow the newer full base`);
       assert.equal((await controller.prepareInstall()).version, "1.2.0");
       assert.ok(requests.includes("/v1/releases/test/latest"));
@@ -206,7 +212,8 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
   const controller = createCloudMaintenance({ rootDir: dir, userData: dir, config, version: "1.0.0", canInstall: () => true,
     getLicenseStatus: () => licenseStatus,
     transport: { close() {} }, logger: { event(...args) { events.push(args); if (loggerThrows) throw Error("diagnostic disk write failed"); } },
-    launch() {
+    launch(executable, args, options) {
+      assert.equal(options.cwd, path.dirname(executable), "Independent updater must not inherit a working directory inside the installation being restored");
       launches++;
       const child = new EventEmitter(); child.unref = () => {};
       queueMicrotask(() => {
@@ -293,6 +300,29 @@ async function checkFailureDiagnostics(rootDir, config) {
   }
 }
 
+async function checkPinnedRequest(rootDir, config, manifest, sign, bytes) {
+  let latest = sign(manifest), requests = 0;
+  const controller = createCloudMaintenance({ rootDir: path.join(rootDir, "pinned-request"), config, version: "1.0.0", canInstall: () => true,
+    transport: { async request(route, options = {}) {
+      requests++;
+      if (route.endsWith("latest")) return latest;
+      fs.writeFileSync(options.destination, bytes); options.onProgress(bytes.length);
+    }, close() {} } });
+  try {
+    await controller.check();
+    controller.setUpdateRequest(true, "saving");
+    latest = sign({ ...manifest, sequence: manifest.sequence + 1, version: "1.0.2" });
+    await controller.refreshAnnouncements();
+    const before = requests;
+    await controller.check();
+    assert.equal(requests, before, "Automatic check cannot replace a waiting update target");
+    assert.equal((await controller.prepareInstall()).version, manifest.version, "New announcement sequence does not invalidate the confirmed version");
+    controller.setUpdateRequest(false);
+    assert.equal(controller.status().stage, "idle", "Cancellation exposes a fresh check rather than an unusable update button");
+    assert.equal(await controller.prepareInstall(), null, "After cancellation a superseded candidate needs a fresh check");
+  } finally { controller.stop(); }
+}
+
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-maintenance-check-"));
   assert.equal(path.dirname(dir), path.resolve(os.tmpdir()));
@@ -353,6 +383,7 @@ async function main() {
     await checkReleaseSelection(dir, config, manifest, sign, bytes);
     await checkInstallFailures(dir, config, manifest, sign, bytes);
     await checkFailureDiagnostics(dir, config);
+    await checkPinnedRequest(dir, config, manifest, sign, bytes);
     console.log("cloud maintenance: announcements, signatures, rollback/conflict, download race, IPC, consent, staged install failures, safe diagnostics and concurrent retry boundaries passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 }

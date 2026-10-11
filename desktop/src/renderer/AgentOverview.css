@@ -1,6 +1,6 @@
 .agent-overview{min-height:100%;padding:30px 32px 36px;background:#fff9fa;color:#172033}
 .agent-overview-head{display:flex;align-items:center;gap:18px;padding:20px 24px;border:1px solid #f1dce0;border-radius:15px;background:#fff}
-.agent-overview-guide{width:62px;height:62px;flex:0 0 62px;display:grid;place-items:center;border-radius:18px;background:#e60000;color:#fff;font-size:18px;font-weight:800}
+.agent-overview-guide{width:62px;height:62px;flex:0 0 62px;display:grid;place-items:center;border-radius:18px;background:#e60000;color:#fff;font-size:34px;font-weight:800}
 .agent-overview-head span:not(.agent-overview-guide){color:#a44657;font-size:12px;font-weight:700}
 .agent-overview-head h1{margin:4px 0 6px;font-size:24px}
 .agent-overview-head p{margin:0;color:#687181;font-size:13px}

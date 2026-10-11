@@ -1,0 +1,12 @@
+{
+  "sources": [
+    { "version": "1.1.57", "channel": "test", "appId": "com.aihuoke.desktop.test", "protocols": [1, 2], "supported": true, "sourceCommit": "5c44723", "runtimeVerified": false },
+    { "version": "1.1.75", "channel": "test", "appId": "com.aihuoke.desktop.test", "protocols": [1, 2], "supported": true, "sourceCommit": "6ce9e8a", "runtimeVerified": false },
+    { "version": "1.1.77", "channel": "test", "appId": "com.aihuoke.desktop.test", "protocols": [1, 2], "supported": true, "sourceCommit": "e19ccd6", "runtimeVerified": false }
+  ],
+  "excluded": [
+    { "edition": "historical non-development editions", "reason": "cloudConfig returns enabled:false; no remotely activatable update path" },
+    { "edition": "portable or source builds", "reason": "canInstall requires packaged Windows installation at the configured stable installer directory" },
+    { "edition": "unlisted historical versions", "reason": "protocol and installed artifact not yet audited" }
+  ]
+}

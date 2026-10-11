@@ -46,6 +46,25 @@ def promote(envelope_path, incoming_dir, root="/var/lib/ai-maintenance"):
     artifacts.mkdir(exist_ok=True)
     releases.mkdir(parents=True, exist_ok=True)
     with publication_lock(root / "publish.lock"):
+        # Both v1 and v2 publishers use this lock. Keep legacy installations able
+        # to reach this exact target, even when an upload overlaps another release.
+        try:
+            full = json.loads(json.loads((releases / "latest.json").read_text(encoding="utf-8"))["payload"])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ValueError("full_fallback_missing") from error
+        digest = full.get("sha256", "")
+        if (full.get("schema") != 1 or full.get("version") != manifest["version"]
+                or full.get("appId") != manifest["appId"] or full.get("channel") != channel
+                or full.get("platform") != "win32" or full.get("arch") != "x64"
+                or not HEX.fullmatch(digest) or full.get("file") != f"/artifacts/{digest}.exe"):
+            raise ValueError("full_fallback_mismatch")
+        installer = root / "artifacts" / (digest + ".exe")
+        if installer.is_symlink() or not installer.is_file():
+            raise ValueError("full_fallback_missing")
+        with installer.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if actual != digest or installer.stat().st_size != full.get("size"):
+            raise ValueError("full_fallback_hash")
         latest = releases / "latest-components.json"
         if latest.exists():
             previous = json.loads(json.loads(latest.read_text(encoding="utf-8"))["payload"])

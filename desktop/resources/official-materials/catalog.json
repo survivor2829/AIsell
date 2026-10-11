@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "categories": [
+    {
+      "id": "factory",
+      "label": "工厂"
+    },
+    {
+      "id": "community",
+      "label": "小区"
+    },
+    {
+      "id": "robot",
+      "label": "机器人"
+    },
+    {
+      "id": "cleaning",
+      "label": "保洁作业"
+    }
+  ],
+  "items": [
+    {
+      "id": "factory-conveyor",
+      "title": "工厂输送线通用场景",
+      "category": "factory",
+      "kind": "image",
+      "description": "工厂车间与输送设备的通用场景示例，不代表客户工厂或具体设备。",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Conveyor_system_in_a_factory.jpg",
+      "author": "falco",
+      "license": "CC0 1.0",
+      "sha256": "900830d7976d2e1a58f94116fd9b1ab65d030805835561cbac015117ecfedaa6",
+      "sizeBytes": 172171,
+      "file": "factory-conveyor.jpg",
+      "thumbnailFile": "factory-conveyor-thumb.jpg"
+    },
+    {
+      "id": "community-residential",
+      "title": "小区楼宇通用场景",
+      "category": "community",
+      "kind": "image",
+      "description": "柏林住宅楼实景，用于展示楼宇与社区环境，不代表客户服务项目。",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Residential_building_Angerburger_Allee_seen_from_Drachenberg_Berlin_2020-09-14_01.jpg",
+      "author": "Leonhard Lenz",
+      "license": "CC0 1.0",
+      "sha256": "16ac543238702fea3804fd0fef3f2cfcdce90e35c64e633525b3d75275fc9a2b",
+      "sizeBytes": 165505,
+      "file": "community-residential.jpg",
+      "thumbnailFile": "community-residential-thumb.jpg"
+    },
+    {
+      "id": "robot-ilife",
+      "title": "家用清洁机器人示例",
+      "category": "robot",
+      "kind": "image",
+      "description": "ILIFE清洁机器人公开实拍，仅作设备类别示例，不用于证明客户产品性能。",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:ILIFE_cleaning_robot.jpg",
+      "author": "Ziongarage",
+      "license": "CC0 1.0",
+      "sha256": "f6a489b391f472266a11b9ac3f98c9eac671607f79a615e000d8a5ceeb68fd22",
+      "sizeBytes": 169584,
+      "file": "robot-ilife.jpg",
+      "thumbnailFile": "robot-ilife-thumb.jpg"
+    },
+    {
+      "id": "cleaning-softbank",
+      "title": "商用清洁机器人示例",
+      "category": "cleaning",
+      "kind": "image",
+      "description": "搭载BrainOS的SoftBank清洁机器人公开实拍，仅作保洁设备示例，不代表客户设备。",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:BrainOS-powered_Softbank_cleaning_robot.jpg",
+      "author": "Syced",
+      "license": "CC0 1.0",
+      "sha256": "5439df39e768aa2d107c9b2d891a433c764e73c890ebd5dff2eec807b79fa363",
+      "sizeBytes": 102326,
+      "file": "cleaning-softbank.jpg",
+      "thumbnailFile": "cleaning-softbank-thumb.jpg"
+    },
+    {
+      "id": "robot-quadruped",
+      "title": "四足机器人运动演示",
+      "category": "robot",
+      "kind": "video",
+      "description": "公开四足机器人运动演示，已转为静音MP4；通用机器人示例，不代表客户设备能力。",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:4n_robot.webm",
+      "author": "Palapa",
+      "license": "Public domain",
+      "sha256": "4f4ce5b2e0b050572984f776f80e522b9eeef0670f95df41442935f0338f3acb",
+      "sizeBytes": 1843567,
+      "file": "robot-quadruped.mp4",
+      "thumbnailFile": "robot-quadruped-thumb.jpg"
+    },
+    {
+      "id": "robot-rescue",
+      "title": "移动机器人越障演示",
+      "category": "robot",
+      "kind": "video",
+      "description": "2009年RoboCup救援机器人比赛公开实拍，截取开头12秒并静音；通用运动示例，不代表清洁性能。",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:WMR_RoboCupRescue_robot_navigates_red_step_fields_2009_German_Open.ogv",
+      "author": "Mike1024",
+      "license": "Public domain",
+      "sha256": "bf05bdd177f7f762dcf6bbf706b1962dbc8b8f9c7dd533724a37fe6b7fa138ee",
+      "sizeBytes": 299568,
+      "file": "robot-rescue.mp4",
+      "thumbnailFile": "robot-rescue-thumb.jpg"
+    }
+  ]
+}

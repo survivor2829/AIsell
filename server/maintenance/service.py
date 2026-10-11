@@ -17,6 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import urllib.request
 from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
+from materials import MaterialsStore, MAX_FILE
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -202,9 +203,14 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, handler, store, admin=False):
         super().__init__(address, handler)
         self.store, self.admin = store, admin
+        self.materials = MaterialsStore(store.root) if store is not None else None
         self.slots = threading.BoundedSemaphore(24)
         self.rate_lock = threading.Lock()
         self.rates = collections.OrderedDict()
+    def server_close(self):
+        super().server_close()
+        if self.materials is not None:
+            self.materials.db.close()
     def process_request(self, request, address):
         if not self.slots.acquire(False):
             request.close()
@@ -343,6 +349,16 @@ class Handler(BaseHTTPRequestHandler):
             if self.server.admin:
                 if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")) or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
                     return self.reply(403, {"error": "origin"})
+                if self.path == "/api/materials":
+                    if self.server.materials is None:
+                        return self.reply(503, {"error": "materials_unavailable"})
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= MAX_FILE * 2 or self.headers.get("Content-Type") != "application/json":
+                        raise ValueError("body")
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        raise ValueError("body")
+                    return self.reply(200, self.server.materials.change(json.loads(raw)))
                 if self.path == "/api/feedback/status":
                     updated = self.server.store.update_feedback(self.body())
                     return self.reply(200 if updated else 404, {"ok": updated})
@@ -394,6 +410,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {"error": "host"})
             if route == "/api/overview":
                 return self.reply(200, self.server.store.overview())
+            if route == "/api/materials":
+                if self.server.materials is None:
+                    return self.reply(503, {"error": "materials_unavailable"})
+                return self.reply(200, self.server.materials.catalog(admin=True))
             if route == "/api/feedback":
                 query = parse_qs(urlsplit(self.path).query)
                 raw_offset = query.get("offset", ["0"])[0]
@@ -415,6 +435,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "not_found"})
         if route == "/health":
             return self.reply(200, {"ok": True, "service": "maintenance", "schema": 1})
+        if route == "/v1/materials/catalog":
+            if self.server.materials is None:
+                return self.reply(503, {"error": "materials_unavailable"})
+            return self.reply(200, self.server.materials.catalog())
+        if route.startswith("/v1/materials/files/"):
+            if self.server.materials is None:
+                return self.reply(503, {"error": "materials_unavailable"})
+            target = self.server.materials.public_file(route.removeprefix("/v1/materials/files/"))
+            if not target:
+                return self.reply(404, {"error": "not_found"})
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4" if target.suffix == ".mp4" else "image/png" if target.suffix == ".png" else "image/jpeg")
+            self.send_header("Content-Length", str(target.stat().st_size))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            with target.open("rb") as stream:
+                while chunk := stream.read(65536):
+                    self.wfile.write(chunk)
+            return
         if route == "/v1/feedback/public":
             limit = self.server.rate_limit(self.client_address[0])
             if not limit["allowed"]:

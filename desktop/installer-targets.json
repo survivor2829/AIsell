@@ -3,5 +3,10 @@
     "appId": "com.aihuoke.desktop.test",
     "installDirectoryName": "AI获客-测试版",
     "dataDirectoryName": "xiaoxi-active-touch-test"
+  },
+  "production": {
+    "appId": "com.aihuoke.desktop",
+    "installDirectoryName": "AI获客",
+    "dataDirectoryName": "xiaoxi-active-touch-delivery"
   }
 }

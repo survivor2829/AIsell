@@ -26,8 +26,8 @@ export function AssetPicker({ assets, selected, onChange, onClose }: { assets: A
   const [preview, setPreview] = useState<Asset | null>(null);
   const [visible, setVisible] = useState(60);
   const filtered = assets.filter((a) => a.displayName.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-  return <div className="batch-modal-backdrop"><section role="dialog" aria-modal="true" aria-label="从素材仓库选择" className="batch-modal batch-picker">
-    <header><h2>从素材仓库选择</h2><button autoFocus onClick={onClose}>完成选择（{selected.length}）</button></header>
+  return <div className="batch-modal-backdrop"><section role="dialog" aria-modal="true" aria-label="从我的素材选择" className="batch-modal batch-picker">
+    <header><h2>从我的素材选择</h2><button autoFocus onClick={onClose}>完成选择（{selected.length}）</button></header>
     <input aria-label="搜索素材" placeholder="搜索素材名称" value={query} onChange={(e) => { setQuery(e.target.value); setVisible(60); }} />
     <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}`} key={a.assetId}>
       <button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button>
@@ -80,7 +80,7 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
       setAssets((items) => items.filter((a) => !removed.has(a.assetId)));
       setSelected((items) => items.filter((id) => !removed.has(id)));
       setPreview((a) => a && removed.has(a.assetId) ? null : a);
-      setNotice(`已从素材仓库移除 ${removed.size} 个素材，本地原文件保留。${failed.length ? `另有 ${failed.length} 个未移除：${failed[0]}` : ""}`);
+      setNotice(`已从我的素材移除 ${removed.size} 个素材，本地原文件保留。${failed.length ? `另有 ${failed.length} 个未移除：${failed[0]}` : ""}`);
     });
   }
   useEffect(() => { void refresh().catch((e) => setNotice(e.message)); }, []);
@@ -88,7 +88,7 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
   const filtered = assets.filter((a) => (!collectionId || collections.find((c) => c.collection_id === collectionId)?.asset_ids.includes(a.assetId)) && a.displayName.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   const savedCollection = collections.find((c) => c.collection_id === collectionId);
   const collection = savedCollection && { ...savedCollection, asset_ids: savedCollection.asset_ids.filter((id) => assets.some((a) => a.assetId === id)) };
-  return <div className="page batch-page"><header className="batch-page-header"><div><h1>素材仓库</h1><p>把同一产品的图片、实拍视频和说明放在一起，反复用于创作。</p></div><button disabled={busy} className="batch-primary" onClick={() => void run(async () => {
+  return <div className="page batch-page"><header className="batch-page-header"><div><h1>我的素材</h1><p>把同一产品的图片、实拍视频和说明放在一起，反复用于创作。</p></div><button disabled={busy} className="batch-primary" onClick={() => void run(async () => {
     const r = await window.xiaoxiContent?.library.chooseFiles(); if (!r?.ok && r?.code !== "CONTENT_DIALOG_CANCELLED") throw new Error(r?.error); await refresh();
   })}>添加素材</button></header>
     {notice && <p role="status" className="batch-notice">{notice}</p>}
@@ -106,8 +106,8 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
       {collection && <div className="batch-collection-members">{collection.asset_ids.map((id) => <button key={id} disabled={busy} onClick={() => void run(async () => { await callBatch("save-collection", { ...collection, asset_ids: collection.asset_ids.filter((v) => v !== id) }); await refresh(); })}>移出 {assets.find((a) => a.assetId === id)?.displayName || "素材"}</button>)}</div>}
     </section>}
     <div className="batch-toolbar"><label><input type="checkbox" checked={filtered.length > 0 && filtered.every((a) => selected.includes(a.assetId))} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...filtered.map((a) => a.assetId)])] : selected.filter((id) => !filtered.some((a) => a.assetId === id)))} />全选当前结果</label><span>已选 {selected.length} 个</span><button disabled={!selected.length && !collection?.asset_ids.length} className="batch-primary" onClick={() => onCreate(selected.length ? selected : collection?.asset_ids || [], collection)}>用于批量创作</button></div>
-    <div className="batch-toolbar"><button disabled={busy || !selected.length} onClick={() => void removeAssets(selected)}>移除所选{selected.length ? `（${selected.length}）` : ""}</button><span className="batch-remove-hint">仅从素材仓库移除，不删除本地原文件。</span></div>
-    <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article key={a.assetId} className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}`}><button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button><label><input type="checkbox" disabled={!a.availableLocationCount} checked={selected.includes(a.assetId)} onChange={(e) => setSelected(e.target.checked ? [...selected, a.assetId] : selected.filter((id) => id !== a.assetId))} />{a.displayName}</label><button className="batch-remove-asset" disabled={busy} aria-label={`从素材仓库移除 ${a.displayName}`} onClick={() => void removeAssets([a.assetId])}>移除</button></article>)}</div>
+    <div className="batch-toolbar"><button disabled={busy || !selected.length} onClick={() => void removeAssets(selected)}>移除所选{selected.length ? `（${selected.length}）` : ""}</button><span className="batch-remove-hint">仅从我的素材移除，不删除本地原文件。</span></div>
+    <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article key={a.assetId} className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}`}><button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button><label><input type="checkbox" disabled={!a.availableLocationCount} checked={selected.includes(a.assetId)} onChange={(e) => setSelected(e.target.checked ? [...selected, a.assetId] : selected.filter((id) => id !== a.assetId))} />{a.displayName}</label><button className="batch-remove-asset" disabled={busy} aria-label={`从我的素材移除 ${a.displayName}`} onClick={() => void removeAssets([a.assetId])}>移除</button></article>)}</div>
     {!filtered.length && <div className="batch-empty">{query ? "没有找到匹配素材。" : "添加图片或实拍视频，开始积累你的内容素材。"}</div>}
     {filtered.length > visible && <button onClick={() => setVisible(visible + 60)}>显示更多素材</button>}
     {preview && <AssetPreview asset={preview} onClose={() => setPreview(null)} />}

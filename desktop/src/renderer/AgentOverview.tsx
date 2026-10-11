@@ -18,7 +18,7 @@ export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
   return <div className="agent-overview">
     <header className="agent-overview-head">
       <span className="agent-overview-guide" aria-hidden="true">AI</span>
-      <div><h1>生素材 · 引客户 · 变成交</h1><p>{productBrand.displayName}，从今天要完成的工作开始。</p></div>
+      <div><h1>生素材 · 引客户 · 促成交</h1><p>{productBrand.displayName}，从今天要完成的工作开始。</p></div>
     </header>
     <div className="agent-overview-leaders">
       {AGENT_ROLE_ORDER.map((key) => {
@@ -33,7 +33,7 @@ export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
     </div>
     <button className="agent-overview-materials" type="button" onClick={() => onOpenModule("materials")}>
       <span className="agent-overview-materials-icon"><Folder size={21} /></span>
-      <span><strong>素材仓库</strong><small>产品图片、实拍视频和说明放在这里，制作短片时可以直接选用。</small></span>
+      <span><strong>物业保洁素材仓库</strong><small>我们为你准备的行业图片与视频，可直接用于AI混剪。</small></span>
       <ArrowRight size={17} />
     </button>
   </div>;

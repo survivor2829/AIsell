@@ -14,7 +14,7 @@ install -d -o ai-gateway -g ai-gateway -m 750 "$data_dir"
 # certificate/key and provider env files remain protected by their file modes
 # and service-specific groups.
 install -d -m 751 -o root -g ai-gateway /etc/ai-maintenance
-install -m 644 "$source_dir/service.py" "$app_dir/service.py"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
 
 if [ ! -f "$config_file" ]; then
   umask 077
@@ -35,6 +35,12 @@ if [ ! -f "$config_file" ]; then
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_ASR_APP_ID='
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN='
     printf '%s\n' '# XIAOXI_GATEWAY_APIMART_API_KEY='
+    printf '%s\n' 'XIAOXI_MATERIAL_SEARCH_ENABLED=0'
+    printf '%s\n' 'XIAOXI_MATERIAL_SEARCH_BUDGET_MICROS=0'
+    printf '%s\n' 'XIAOXI_MATERIAL_SEARCH_COST_MICROS=0'
+    printf '%s\n' 'XIAOXI_MATERIAL_SEARCH_DAILY_LIMIT=20'
+    printf '%s\n' '# Search is off until enabled, key configured, and verified per-call cost/budget set (millionths of CNY).'
+    printf '%s\n' '# XIAOXI_BOCHA_API_KEY='
   } > "$config_file"
 fi
 chown root:ai-gateway "$config_file"

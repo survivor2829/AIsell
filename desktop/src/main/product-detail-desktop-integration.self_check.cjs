@@ -146,18 +146,14 @@ function assertRendererContract() {
   );
   assert.match(
     app,
-    /active === "product-detail" && <ProductDetailPage \/>/,
-    "product-detail navigation must render a real page"
+    /productDetailVisited \|\| active === "product-detail"[\s\S]*?hidden=\{active !== "product-detail"\}[\s\S]*?<ProductDetailPage/,
+    "product-detail navigation must retain the mounted workspace across module switches"
   );
   const moduleAvailability = app.match(/function moduleIsAvailable\(key: ModuleKey\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
   assert.match(moduleAvailability, /"product-detail"/, "product-detail must not render the placeholder");
 
-  assert.match(page, /const api = window\.xiaoxiProductDetail[\s\S]*?api\.status\(\)/, "mounting may inspect status only");
-  assert.equal(
-    /useEffect\([\s\S]{0,800}window\.xiaoxiProductDetail\.(?:start|restart)\(\)/.test(page),
-    false,
-    "mounting the page must never start or restart the sidecar"
-  );
+  assert.match(page, /useEffect\([\s\S]*?void api\.start\(\)/, "mounting must prepare the workspace through the idempotent main-process start API");
+  assert.doesNotMatch(page, /停止服务|启动产品详情图/, "routine service controls must not be exposed to customers");
   assert.match(
     page,
     /sandbox="allow-forms allow-scripts allow-same-origin allow-downloads"/,
@@ -189,13 +185,9 @@ function assertRendererContract() {
     "AI result download must not re-request a protected static URL through DownloadManager"
   );
   assert.match(page, /referrerPolicy="no-referrer"/);
-  assert.match(
-    page,
-    /const DEVELOPMENT_EDITION = import\.meta\.env\.VITE_XIAOXI_EDITION === "development"/,
-    "product-detail recovery copy must distinguish development from formal builds"
-  );
-  assert.match(page, /title: "产品详情图组件不可用"/);
-  assert.match(page, /完整安装程序重新安装/);
+  assert.match(page, /工作台暂不可用/, "unavailable workspaces must offer a customer-readable recovery state");
+  assert.match(page, /onClick=\{\(\) => run\(status.state === "failed" \? "restart" : "start"\)\}/, "failed preparation must retain a retry action");
+  assert.match(page, /<summary>故障信息<\/summary>/, "technical details must remain available in a collapsed diagnostic panel");
   assert.match(
     styles,
     /\.product-detail-page\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
@@ -211,17 +203,7 @@ function assertRendererContract() {
     /\.product-detail-workspace iframe\s*\{[^}]*height:\s*100%;[^}]*position:\s*absolute;[^}]*inset:\s*0;/s,
     "embedded workspace must fill its bounded host"
   );
-  for (const copy of [
-    "运行组件未配置",
-    "服务未启动",
-    "正在启动",
-    "启动失败",
-    "服务已就绪",
-    "重新启动",
-    "停止服务",
-    "XIAOXI_PRODUCT_DETAIL_SIDECAR",
-    "产品详情图组件不可用"
-  ]) {
+  for (const copy of ["工作台暂不可用", "正在准备工作台", "启动失败", "重试", "故障信息", "形象与名字"]) {
     assert.equal(page.includes(copy), true, `product-detail page must explain state/action: ${copy}`);
   }
   // IPC permits only the bounded exception class in stderrType, never raw stderr.

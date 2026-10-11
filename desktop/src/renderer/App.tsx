@@ -35,6 +35,7 @@ import { CustomerTools } from "./CustomerTools";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
 import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
+import { OfficialMaterialsPage } from "./OfficialMaterialsPage";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
@@ -401,9 +402,8 @@ const agentSecondary: NavItem[] = [
 ];
 
 const productionChildren: NavItem[] = [
-  { key: "workspace", label: "创作工作台", icon: Clapperboard },
+  { key: "workspace", label: "AI混剪", icon: Clapperboard },
   { key: "product-video", label: "产品效果视频", icon: Video },
-  { key: "finished", label: "成片中心", icon: Video },
   { key: "ai-video", label: "数字人视频", icon: UserRound }
 ];
 
@@ -419,8 +419,9 @@ const navGroupByRole: Record<GroupKey, NavGroup> = {
 const navGroups = AGENT_ROLE_ORDER.map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const materialsNavItem: NavItem = { key: "materials", label: "素材仓库", icon: Folder };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), materialsNavItem, ...agentSecondary, diagnosticsNavItem];
+const materialsNavItem: NavItem = { key: "materials", label: "物业保洁素材仓库", icon: Folder };
+const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), materialsNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -548,6 +549,8 @@ export default function App() {
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext | null>(null);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
+  const [productDetailVisited, setProductDetailVisited] = useState(false);
+  useEffect(() => { if (active === "product-detail") setProductDetailVisited(true); }, [active]);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { contentScrollRef.current?.scrollTo({ top: 0, left: 0 }); }, [active]);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -559,7 +562,7 @@ export default function App() {
   useEffect(() => window.xiaoxiWorkflow?.onNavigate?.(({ view }) => navigateWorkflow(view)), []);
   const [legacyWorkspace, setLegacyWorkspace] = useState(false);
   const [legacyResumeTarget, setLegacyResumeTarget] = useState<{ taskId?: string; projectId?: string | null } | null>(null);
-  const [creativeView, setCreativeView] = useState<"studio" | "product" | "history">("studio");
+  const [creativeView, setCreativeView] = useState<"studio" | "product" | "history" | "materials">("studio");
   const [batchInitial, setBatchInitial] = useState<{ assetIds?: string[]; collection?: Collection; batchId?: string }>();
   const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
     taskId: string;
@@ -569,8 +572,7 @@ export default function App() {
   useEffect(() => {
     const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || item.key === "agent" && agentSecondary.some((child) => child.key === active));
     if (!group) return;
-    setOpenGroups((current) => current[group.key] && Object.entries(current).every(([key, open]) => key === group.key || !open)
-      ? current : { agent: group.key === "agent", production: group.key === "production", operations: group.key === "operations" });
+    setOpenGroups((current) => current[group.key] ? current : { ...current, [group.key]: true });
   }, [active]);
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactSyncBusy, setContactSyncBusy] = useState(false);
@@ -604,12 +606,16 @@ export default function App() {
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
 
   const selectGroup = (groupKey: GroupKey) => {
-    setOpenGroups({ agent: groupKey === "agent", production: groupKey === "production", operations: groupKey === "operations" });
+    if (active === groupKey) {
+      setOpenGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
+      return;
+    }
+    setOpenGroups((current) => ({ ...current, [groupKey]: true }));
     setActive(groupKey === "operations" ? "product-detail" : groupKey);
   };
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
-    setOpenGroups({ agent: groupKey === "agent", production: groupKey === "production", operations: groupKey === "operations" });
+    setOpenGroups((current) => ({ ...current, [groupKey]: true }));
     if (key === "workspace") {
       setLegacyWorkspace(false);
       setCreativeView("studio");
@@ -780,8 +786,8 @@ export default function App() {
         <button className="brand brand-home" type="button" onClick={() => setActive("overview")} aria-label={`打开${productBrand.displayName}首页`}>
           <img className="brand-mark" src="./app-icon.png" alt="" />
           <div className="brand-copy">
-            <span>{productBrand.displayName}</span>
-            <small>生素材 · 引客户 · 变成交</small>
+            <span>{productBrand.displayName.split(" ").map((part, index) => <span className="brand-name-part" key={index}>{part}{" "}</span>)}</span>
+            <small>生素材 · 引客户 · 促成交</small>
           </div>
         </button>
         <nav className="nav-list">
@@ -792,7 +798,7 @@ export default function App() {
 
             return (
               <div className="nav-group" key={group.key}>
-                <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)}>
+                <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)} aria-expanded={group.key === "operations" ? undefined : expanded}>
                   <span className={`nav-role-avatar is-${group.key}`} style={{ background: appearance.surface }} aria-hidden="true"><img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" /></span>
                   <span className="nav-role-copy"><strong>{group.label}</strong><small title={visiblePreference(group.key).name}>{visiblePreference(group.key).name}</small></span>
                   {group.key !== "operations" && <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>}
@@ -821,6 +827,7 @@ export default function App() {
             <Folder size={20} strokeWidth={2.5} />
             <span>{materialsNavItem.label}</span>
           </button>
+          <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
         </nav>
         <div className="sidebar-system-nav">
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
@@ -901,16 +908,18 @@ export default function App() {
           {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} contacts={contactRows} />}
           {active === "expert" && <AiExpert />}
           {active === "accounts" && <AccountManagement />}
-          {active === "product-detail" && <ProductDetailPage />}
+          {(productDetailVisited || active === "product-detail") && <div className="product-detail-retained" hidden={active !== "product-detail"}><ProductDetailPage preference={visiblePreference("operations")} onPersonalize={() => setPersonalizingRole("operations")} /></div>}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
           {active === "product-video" && <ProductVideoPage />}
-          {active === "materials" && <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
-            setBatchInitial({ assetIds, collection }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
+          {active === "materials" && <OfficialMaterialsPage onUseMaterial={(assetIds) => {
+            setBatchInitial({ assetIds }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} />}
           {active === "workspace" && (legacyWorkspace
             ? <CreativeWorkspacePage initialTaskId={legacyResumeTarget?.taskId} initialProjectId={legacyResumeTarget?.projectId} onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
-            : creativeView === "product"
+            : creativeView === "materials" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回AI混剪</button><MaterialsCollectionsPage onCreate={(assetIds, collection) => {
+                setBatchInitial({ assetIds, collection }); setCreativeView("studio");
+              }} /></> : creativeView === "product"
               ? <ProductOneClickPage
                 initialTaskId={creativeResumeTarget?.taskId}
                 initialProjectId={creativeResumeTarget?.projectId}
@@ -931,14 +940,14 @@ export default function App() {
                 }}
                 onOpenLegacy={openLegacy}
                 onOpenBatch={(batchId) => { setBatchInitial({ batchId }); setCreativeView("studio"); setLegacyWorkspace(false); }}
-                onOpenMaterials={() => setActive("materials")}
+                onOpenMaterials={() => setCreativeView("materials")}
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={openFeedback}
               /></> : <BatchCreativePage initial={batchInitial}
                 onOpenLegacy={() => openLegacy()}
                 onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}
-                onOpenMaterials={() => setActive("materials")} />)}
+                onOpenMaterials={() => setCreativeView("materials")} />)}
           {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
             setLegacyWorkspace(false); setCreativeView("history"); setActive("workspace");
           }} />}

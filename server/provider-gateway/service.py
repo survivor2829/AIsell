@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener, urlopen
+from material_search import MaterialSearch
 
 
 PREFIX = "/v1/provider-gateway"
@@ -490,6 +491,7 @@ class GatewayServer(ThreadingHTTPServer):
         self.price_cache = {}
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
+        self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
 
     def apimart_public_price(self, model):
         # Anonymous, fixed supplier metadata. Never forward the session or API key.
@@ -524,6 +526,7 @@ class GatewayServer(ThreadingHTTPServer):
             return result
 
     def server_close(self):
+        self.material_search.db.close()
         try:
             self.receipts.close()
         finally:
@@ -1203,6 +1206,19 @@ class Handler(BaseHTTPRequestHandler):
             })
         if route.startswith(PREFIX + "/volcengine/voice-clone/"):
             return self._voice_clone(route.removeprefix(PREFIX + "/volcengine/voice-clone/"))
+        if route in (PREFIX + "/materials/search", PREFIX + "/materials/cancel", PREFIX + "/materials/status"):
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            subject = self.config.sessions.subject(token)
+            if not subject:
+                return self._reply_json(401, {"error": "session_required"})
+            try:
+                body = self._read_json(4096)
+                if route.endswith("/status"):
+                    return self._reply_json(200, self.server.material_search.status())
+                result = self.server.material_search.cancel_request(subject, body.get("taskId")) if route.endswith("/cancel") else self.server.material_search.search(subject, body)
+                return self._reply_json(200, result)
+            except (ValueError, TypeError, KeyError):
+                return self._reply_json(400, {"error": "invalid_search_request"})
         if route.startswith(PREFIX + "/"):
             return self._proxy("POST")
         return self._reply_json(404, {"error": "not_found"})

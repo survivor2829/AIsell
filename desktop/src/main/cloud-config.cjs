@@ -1,15 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
-
-function cloudConfig({ developmentEdition }) {
-  // Test channel only until the production domain and release are approved.
-  if (!developmentEdition) return { enabled: false };
-  return {
-    enabled: true, origin: "https://115.159.88.100", channel: "test",
-    appId: "com.aihuoke.desktop.test",
-    caPem: fs.readFileSync(path.join(__dirname, "cloud-test-ca.crt"), "utf8"),
-    signingPublicKey: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAABmbBe5UEjA9gNGTstlnk/kzNsHPAunbCg2VftSynhE=\n-----END PUBLIC KEY-----\n"
-  };
+const profiles = require("./cloud-release-config.json");
+function cloudConfig({ developmentEdition = false, channel } = {}) {
+  const selected = channel || (developmentEdition ? "test" : "production");
+  const profile = profiles[selected];
+  if (!profile || profile.enabled !== true) return { enabled: false, channel: selected, appId: profile?.appId };
+  if (!/^https:\/\//.test(profile.origin) || !profile.signingPublicKey || !profile.appId) throw Error("cloud_release_config_invalid");
+  return { ...profile, channel: selected, caPem: profile.caFile ? fs.readFileSync(path.join(__dirname, profile.caFile), "utf8") : undefined };
 }
 module.exports = { cloudConfig };
-

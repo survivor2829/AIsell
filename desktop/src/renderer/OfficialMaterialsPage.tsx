@@ -1,0 +1,130 @@
+import { useEffect, useRef, useState } from "react";
+import { ArrowRight, ExternalLink, RefreshCw, Search, X } from "lucide-react";
+import { characterAsset } from "./role-appearance";
+import type { OfficialCatalog, OfficialMaterial, SearchUpdate } from "./official-materials-types";
+import "./OfficialMaterialsPage.css";
+
+export function OfficialMaterialsPage({ onUseMaterial }: { onUseMaterial: (ids: string[]) => void }) {
+  const [catalog, setCatalog] = useState<OfficialCatalog | null>(null);
+  const [category, setCategory] = useState("");
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+  const [importing, setImporting] = useState("");
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [searchedPrompt, setSearchedPrompt] = useState("");
+  const [search, setSearch] = useState<SearchUpdate | null>(null);
+  const [preview, setPreview] = useState<OfficialMaterial | null>(null);
+  const [previewError, setPreviewError] = useState(false);
+  const [preparingPreview, setPreparingPreview] = useState(false);
+  const previewRequest = useRef(0);
+  const [visible, setVisible] = useState(24);
+  const taskId = useRef("");
+  const disposed = useRef(false);
+  const busySearch = search?.status === "searching";
+  const refresh = async (remote = false) => {
+    setLoading(true); setNotice("");
+    try {
+      const result = await window.xiaoxiOfficialMaterials?.list({ refresh: remote });
+      if (disposed.current) return;
+      if (!result?.ok || !result.data) throw new Error(result?.error || "素材仓库暂不可用，请重试。");
+      setCatalog(result.data);
+    } catch (error) { if (!disposed.current) setNotice(error instanceof Error ? error.message : "读取素材失败，请重试。"); }
+    finally { if (!disposed.current) setLoading(false); }
+  };
+  useEffect(() => {
+    disposed.current = false;
+    void refresh().then(() => { if (!disposed.current) void refresh(true); });
+    const unsubscribe = window.xiaoxiOfficialMaterials?.onSearchUpdate((update) => {
+      if (update.taskId === taskId.current) setSearch(update);
+    });
+    return () => { disposed.current = true; unsubscribe?.(); if (taskId.current) void window.xiaoxiOfficialMaterials?.cancelSearch(taskId.current); };
+  }, []);
+  useEffect(() => {
+    if (!preview) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setPreview(null); };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [preview]);
+  const useMaterial = async (id: string) => {
+    if (importing) return;
+    setImporting(id); setNotice("");
+    try {
+      const result = await window.xiaoxiOfficialMaterials?.importMaterial(id);
+      if (!result?.ok || !result.data?.assetIds.length) throw new Error(result?.error || "素材尚未准备好，请重试。");
+      if (!disposed.current) onUseMaterial(result.data.assetIds);
+    } catch (error) { if (!disposed.current) setNotice(error instanceof Error ? error.message : "添加素材失败，请重试。"); }
+    finally { if (!disposed.current) setImporting(""); }
+  };
+  const showPreview = async (item: OfficialMaterial) => {
+    const request = ++previewRequest.current;
+    setPreview(item); setPreviewError(false); setPreparingPreview(!item.previewUrl);
+    if (item.previewUrl) return;
+    try {
+      const result = await window.xiaoxiOfficialMaterials?.previewMaterial(item.id);
+      if (!result?.ok || !result.data?.previewUrl) throw new Error('preview_unavailable');
+      if (!disposed.current && request === previewRequest.current) setPreview(current => current?.id === item.id ? result.data! : current);
+    } catch { if (!disposed.current && request === previewRequest.current) setPreviewError(true); }
+    finally { if (!disposed.current && request === previewRequest.current) setPreparingPreview(false); }
+  };
+  const openSource = async (url: string) => {
+    try {
+      const result = await window.xiaoxiOfficialMaterials?.openSource(url);
+      if (!result?.ok) setNotice(result?.error || "链接暂时无法打开。");
+    } catch { setNotice("链接暂时无法打开，请稍后重试。"); }
+  };
+  const startSearch = async () => {
+    if (!prompt.trim() || busySearch) return;
+    const value = prompt.trim();
+    setSearchedPrompt(value); setQuery(""); setCategory(""); setVisible(24);
+    const id = crypto.randomUUID(); taskId.current = id;
+    setSearch({ taskId: id, status: "searching", round: 1, items: [], message: "正在寻找相关素材…" });
+    try {
+      const result = await window.xiaoxiOfficialMaterials?.search({ taskId: id, query: value, localOnly: !catalog?.searchEnabled });
+      if (disposed.current || taskId.current !== id) return;
+      if (!result?.ok || !result.data) throw new Error(result?.error || "查找失败，请重试。");
+      setSearch((current) => current?.status !== "searching" && result.data?.status === "searching" ? current : result.data!);
+    } catch (error) {
+      if (!disposed.current && taskId.current === id) setSearch((current) => ({ taskId: id, round: current?.round || 1, items: current?.items || [], status: "failed", message: error instanceof Error ? error.message : "查找失败，请重试。" }));
+    }
+  };
+  const cancelSearch = async () => {
+    const id = taskId.current;
+    try {
+      const result = await window.xiaoxiOfficialMaterials?.cancelSearch(id);
+      if (!result?.ok) throw new Error("暂时未能取消，请稍后重试。");
+      if (taskId.current === id) { taskId.current = ""; setSearch((current) => current ? { ...current, status: "cancelled", message: "已停止查找，已找到的结果保留。" } : null); }
+    } catch { setNotice("暂时未能取消，请稍后重试。"); }
+  };
+  const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const items = (catalog?.items || []).filter((item) => (!category || item.category === category) && (!words.length || words.some((word) => `${item.title} ${item.description}`.toLocaleLowerCase().includes(word))));
+  const results = search?.items || [];
+  return <section className="page official-materials-page">
+    <header className="official-materials-head"><div><h1>物业保洁素材仓库</h1><p>我们为你准备的行业图片与视频。自己的素材请在AI混剪中管理。</p></div><button className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button></header>
+    <div className="materials-assistant">
+      <button className="materials-assistant-trigger" onClick={() => setAssistantOpen((value) => !value)} aria-expanded={assistantOpen} aria-controls="materials-assistant-dialog">
+        <img src={characterAsset("materials-assistant.png")} alt="素材小助理" />
+        <span><strong>素材小助理</strong><span>想找什么场景？告诉我，帮你找素材。</span></span><ArrowRight size={20} />
+      </button>
+      {assistantOpen && <div id="materials-assistant-dialog" className="materials-assistant-dialog">
+        <p>可以输入“工厂里的清洁机器人”或具体机器型号。先找仓库，再找公开网页。</p>
+        {!catalog?.searchEnabled && <p className="materials-assistant-hint">联网查找尚未开放，目前可查找仓库已有素材。</p>}
+        <form onSubmit={(event) => { event.preventDefault(); void startSearch(); }}><label className="sr-only" htmlFor="materials-prompt">描述想找的素材</label><input id="materials-prompt" value={prompt} maxLength={300} onChange={(event) => setPrompt(event.target.value)} placeholder="描述场景、设备或想找的画面" /><button className="primary-button" disabled={!prompt.trim() || busySearch}><Search size={16} />{busySearch ? "正在查找" : searchedPrompt ? "继续查找" : "找素材"}</button>{busySearch && <button type="button" className="secondary-button" onClick={() => void cancelSearch()}>停止查找</button>}</form>
+        {searchedPrompt && <p className="materials-search-query">你的需求：{searchedPrompt}</p>}
+        {search && <p role="status">{search.message || (busySearch ? "正在寻找相关素材…" : search.status === "completed" ? "查找完成" : "查找已结束")}</p>}
+      </div>}
+    </div>
+    {notice && <p className="touch-notice" role="status">{notice}</p>}
+    <div className="official-materials-toolbar"><div className="official-material-categories" aria-label="素材分类"><button aria-pressed={!category} onClick={() => { setCategory(""); setVisible(24); }}>全部</button>{catalog?.categories.map((item) => <button key={item.id} aria-pressed={category === item.id} onClick={() => { setCategory(item.id); setVisible(24); }}>{item.label}</button>)}</div><input aria-label="搜索仓库素材" placeholder="搜索仓库素材" value={query} onChange={(event) => { setQuery(event.target.value); setVisible(24); }} /></div>
+    <h2 className="official-section-title">{searchedPrompt ? "仓库中的素材" : "行业素材"}<small>{items.length} 项</small></h2>
+    <div className="official-material-grid">{items.slice(0, visible).map((item) => <article className="official-material" key={item.id}>
+      <button className="official-material-cover" onClick={() => void showPreview(item)} aria-label={`预览${item.title}`}><img loading="lazy" src={item.thumbnailUrl} alt="" /><span>{item.kind === "video" ? "视频" : "图片"}</span></button>
+      <div className="official-material-copy"><h3>{item.title}</h3><p>{item.description}</p><small>{item.license} · {item.author}</small><div><button className="primary-button" disabled={Boolean(importing)} onClick={() => void useMaterial(item.id)}>{importing === item.id ? "正在准备素材…" : "用于AI混剪"}</button><button className="official-source-link" onClick={() => void openSource(item.sourceUrl)}>来源<ExternalLink size={13} /></button></div></div>
+    </article>)}</div>
+    {!loading && !items.length && <p className="official-materials-empty">{query || category ? "没有找到匹配素材，换个关键词或分类试试。" : "素材暂未加载，请点击刷新重试。"}</p>}
+    {items.length > visible && <button className="secondary-button" onClick={() => setVisible((value) => value + 24)}>显示更多素材</button>}
+    {results.length > 0 && <section className="official-reference-results"><h2>查找到的相关内容</h2><p>参考网页可在原网站查看，使用前请确认素材的使用条件。</p>{results.map((item) => <article key={item.id}>{item.thumbnailUrl && <img loading="lazy" src={item.thumbnailUrl} alt="" />}<div><h3>{item.title}</h3><p>{item.description}</p><small>{item.source} · {item.usage === "usable" && item.materialId ? "可用于制作" : "参考链接"}</small></div>{item.usage === "usable" && item.materialId ? <button className="primary-button" disabled={Boolean(importing)} onClick={() => void useMaterial(item.materialId!)}>用于AI混剪</button> : <button className="secondary-button" onClick={() => void openSource(item.url)}>去原网站查看<ExternalLink size={14} /></button>}</article>)}</section>}
+    {preview && <div className="official-preview-backdrop" onClick={() => setPreview(null)}><section className="official-preview" role="dialog" aria-modal="true" aria-label={preview.title} onClick={(event) => event.stopPropagation()}><header><h2>{preview.title}</h2><button autoFocus className="secondary-button" onClick={() => setPreview(null)} aria-label="关闭预览"><X size={20} /></button></header>{preparingPreview ? <p role="status">正在准备预览…</p> : previewError ? <p role="alert">暂时无法预览，可刷新素材后重试。</p> : preview.kind === "video" ? <video controls preload="metadata" src={preview.previewUrl || preview.thumbnailUrl} onError={() => setPreviewError(true)} /> : <img src={preview.previewUrl || preview.thumbnailUrl} alt={preview.title} onError={() => setPreviewError(true)} />}<p>{preview.description}</p><small>作者：{preview.author} · 使用条件：{preview.license}</small><footer><button className="secondary-button" onClick={() => void openSource(preview.sourceUrl)}>查看来源与使用条件<ExternalLink size={14} /></button><button className="primary-button" disabled={Boolean(importing)} onClick={() => void useMaterial(preview.id)}>{importing === preview.id ? "正在准备素材…" : "用于AI混剪"}</button></footer></section></div>}
+  </section>;
+}

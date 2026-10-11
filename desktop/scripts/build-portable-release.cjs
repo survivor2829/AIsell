@@ -156,6 +156,7 @@ function copyAppSource(appDir, edition) {
   fs.copyFileSync(path.join(desktopDir, "package.json"), path.join(appDir, "package.json"));
   fs.copyFileSync(path.join(desktopDir, "product-brand.json"), path.join(appDir, "product-brand.json"));
   fs.copyFileSync(path.join(desktopDir, "installer-targets.json"), path.join(appDir, "installer-targets.json"));
+  fs.cpSync(path.join(desktopDir, 'resources', 'official-materials'), path.join(appDir, 'resources', 'official-materials'), { recursive: true });
   const rendererSource = path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot");
   if (!fs.existsSync(path.join(rendererSource, "build-edition.json"))) throw new Error(`Missing renderer build: ${rendererSource}`);
   fs.cpSync(rendererSource, path.join(appDir, "dist"), { recursive: true });

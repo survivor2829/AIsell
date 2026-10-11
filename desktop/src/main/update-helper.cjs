@@ -71,6 +71,34 @@ async function waitForExit(job, onStage, timeoutMs = 120000) {
     await sleep(1000);
   }
 }
+function trackLaunch(rows, pid, started, tracked = []) {
+  if (!tracked.length) {
+    const root = rows.find(row => row.pid === pid && createdAt(row) !== null && createdAt(row) >= started - CLOCK_SLACK_MS);
+    tracked = [root || { pid, parent: 0, created: new Date(started).toISOString(), launchAnchor: true }];
+  }
+  return descendants(rows, pid, tracked);
+}
+async function stopLaunch(pid, tracked, onStage) {
+  // A launcher may exit while workers survive. Match the recorded creation time,
+  // never assume that its now-reused PID still names a process we own.
+  const until = Date.now() + 15000;
+  while (true) {
+    const rows = await processSnapshot();
+    if (tracked.some(row => row.launchAnchor && rows.some(current => current.pid === row.pid))) throw Error("update_launch_identity_unknown");
+    tracked = descendants(rows, pid, tracked);
+    const alive = tracked.filter(row => rows.some(current => identity(current) === identity(row)));
+    if (!alive.length) return;
+    if (Date.now() > until) throw Error("update_workers_still_running");
+    for (const row of alive) {
+      const current = (await processSnapshot()).find(value => identity(value) === identity(row));
+      if (!current) continue;
+      try { await promisify(execFile)("taskkill.exe", ["/PID", String(row.pid), "/F"], { windowsHide: true }); }
+      catch { /* Recheck: a process may have exited between the snapshot and taskkill. */ }
+    }
+    onStage("waiting", "正在结束新版进程", "正在等待本次启动的工作进程退出，然后恢复上一版本。");
+    await sleep(250);
+  }
+}
 async function backupUserData(userData, id) {
   const parent = path.join(path.dirname(userData), path.basename(userData) + "-update-backups");
   const source = await fs.promises.realpath(userData), filter = backupFilter(source);
@@ -101,7 +129,7 @@ async function reclaimFinishedHelpers(paths, processes) {
     try { await removeOwnedDirectory({ parent: realParent, directory, identity: job.helperIdentity }); } catch { /* In use or uncertain: preserve it. */ }
   }
 }
-async function createUpdateJob({ userData, prepared, currentVersion }) {
+async function createUpdateJob({ userData, prepared, currentVersion, channel = "test" }) {
   const paths = updatePaths(userData); fs.mkdirSync(paths.jobs, { recursive: true });
   const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid);
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
@@ -128,7 +156,8 @@ async function createUpdateJob({ userData, prepared, currentVersion }) {
   try {
     for (const copy of copies) await fs.promises.cp(copy.source, path.join(owned.directory, copy.target), { recursive: true, errorOnExist: true, force: false });
     const helperExecutable = path.join(owned.directory, "ai-update-helper.exe");
-    const job = { id, parentPid: process.pid, processes, currentVersion, targetVersion: prepared.version, prepared,
+    const programBackup = prepared.kind === "components" ? null : await require("./update-program-backup.cjs").backupProgram(installedRoot, path.join(paths.directory, "program-backups"), id, readJson(paths.selection, {}));
+    const job = { channel, programBackup, id, parentPid: process.pid, processes, currentVersion, targetVersion: prepared.version, prepared,
       installedRoot, executable: process.execPath, helperExecutable, helperCopyVersion: 1, helperIdentity: owned.identity, copyBudget };
     const file = path.join(paths.jobs, id + ".json"); writeJsonAtomic(file, job);
     return { file, job };
@@ -164,11 +193,12 @@ async function runHelper({ jobFile, userData }) {
     if (persistenceError && phase !== "error") throw persistenceError;
   };
   const activeJobFile = path.join(paths.directory, "active-job.json");
+  let installationStarted = false, candidate = null;
   try {
     // Publish ready last: the parent stays open if either startup receipt cannot be written.
     writeJsonAtomic(activeJobFile, { id: job.id, pid: process.pid });
     writeJsonAtomic(path.join(paths.jobs, job.id + ".ready.json"), { pid: process.pid });
-    const config = require("./cloud-config.cjs").cloudConfig({ developmentEdition: true });
+    const config = require("./cloud-config.cjs").cloudConfig({ channel: job.channel || "test" });
     currentPhase = "waiting";
     await waitForExit(job, stage);
     const prepared = job.prepared;
@@ -188,33 +218,40 @@ async function runHelper({ jobFile, userData }) {
       if (manifest.version !== job.targetVersion || await hashFile(prepared.file) !== manifest.sha256 || fs.statSync(prepared.file).size !== manifest.size) throw Error("cloud_download_invalid");
       stage("backup", "正在备份本机数据", "保留配置、授权和业务记录，备份完成后开始完整升级。");
       dataBackup = await backupUserData(userData, job.id);
-      stage("installing", "正在安装完整更新", "安装程序正在替换运行底座，请勿关闭电脑。");
+      stage("installing", "正在安装完整更新", "正在安装，请勿关闭电脑。");
+      if (!job.programBackup) throw Error("update_backup_missing");
+      installationStarted = true;
       await new Promise((resolve, reject) => {
-        const child = spawn(prepared.file, ["/S"], { stdio: "ignore", windowsHide: true });
+        const child = spawn(prepared.file, ["/S"], { stdio: "ignore", windowsHide: true, cwd: path.dirname(job.helperExecutable) });
         child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(Error("full_installer_failed")));
       });
       saveSelection(paths, { active: null, previous: null, pending: { jobId: job.id, attempted: false, notes: manifest.notes }, lastUpdate: null });
     }
     stage("starting", "正在启动新版本", "等待软件完成启动检查。");
-    const child = spawn(job.executable, ["--xiaoxi-updated-launch", job.id], { detached: true, stdio: "ignore", windowsHide: false });
+    const launchStarted = Date.now();
+    const child = spawn(job.executable, ["--xiaoxi-updated-launch", job.id], { detached: true, stdio: "ignore", windowsHide: false, cwd: path.dirname(job.helperExecutable) });
     let exited = false; child.once("error", () => { exited = true; }); child.once("exit", () => { exited = true; }); child.unref();
     const ack = path.join(paths.jobs, job.id + ".ack.json"), until = Date.now() + 90000;
-    while (!fs.existsSync(ack) && !exited && Date.now() < until) await sleep(500);
-    if (!readJson(ack)?.ok) {
+    candidate = { pid: child.pid, processes: child.pid ? trackLaunch([], child.pid, launchStarted) : [] };
+    let launchedProcesses = child.pid ? trackLaunch(await processSnapshot(), child.pid, launchStarted) : [];
+    candidate.processes = launchedProcesses;
+    while (!fs.existsSync(ack) && !exited && Date.now() < until) {
+      if (child.pid) launchedProcesses = trackLaunch(await processSnapshot(), child.pid, launchStarted, launchedProcesses);
+      candidate.processes = launchedProcesses;
+      await sleep(500);
+    }
+    if (!readJson(ack)?.ok || readJson(ack)?.version !== job.targetVersion) {
       // Stop only the process created by this update before restoring the pointer.
-      if (child.pid && !exited) {
-        const owned = descendants(await processSnapshot(), child.pid);
-        await promisify(execFile)("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
-        await waitForExit({ parentPid: child.pid, processes: owned }, stage, 15000);
-      }
+      if (child.pid) await stopLaunch(child.pid, launchedProcesses, stage);
       if (prepared.kind === "components") {
         // Bootstrap may already have recovered a damaged/interrupted candidate.
         // Do not roll back again and discard that last working generation.
         if (readJson(paths.selection)?.pending?.jobId === job.id) rollbackSelection(paths, "新版未能启动，已恢复上一版本。");
-        const restored = spawn(job.executable, ["--xiaoxi-updated-launch", job.id], { detached: true, stdio: "ignore", windowsHide: false }); restored.on("error", () => {}); restored.unref();
+        const restored = spawn(job.executable, ["--xiaoxi-updated-launch", job.id], { detached: true, stdio: "ignore", windowsHide: false, cwd: path.dirname(job.helperExecutable) }); restored.on("error", () => {}); restored.unref();
       }
-      throw Error(prepared.kind === "components" ? "update_start_rolled_back" : "update_start_failed_repair_required");
+      throw Error(prepared.kind === "components" ? "update_start_rolled_back" : "update_start_failed");
     }
+    installationStarted = false;
     stage("complete", `已更新至 ${job.targetVersion}`, "新版本已成功启动，你的配置和业务数据已保留。");
     // Housekeeping cannot turn a successful update into a failed update.
     try {
@@ -224,7 +261,19 @@ async function runHelper({ jobFile, userData }) {
     } catch (error) { console.warn(`Post-update cleanup deferred: ${error.code || error.message}`); }
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {
-    const messages = { update_workers_still_running: "仍有工作进程占用，更新尚未安装。退出相关任务后重新检查更新。", update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed_repair_required: "完整更新已安装，但启动未完成。请重新打开软件；仍失败时使用完整安装包修复。" };
+    if (installationStarted && job.programBackup) {
+      try {
+        try { stage("backup", "正在恢复上一版本", "新版未能完成更新，正在恢复原程序。你的业务数据保持原样。"); } catch { /* Receipt failure cannot prevent recovery. */ }
+        if (candidate?.pid) await stopLaunch(candidate.pid, candidate.processes, () => {});
+        if (path.resolve(job.programBackup.installedRoot).toLowerCase() !== path.resolve(job.installedRoot).toLowerCase()) throw Error("update_backup_path_invalid");
+        await require("./update-program-backup.cjs").restoreProgram(job.programBackup);
+        saveSelection(paths, { ...job.programBackup.selection, pending: null, failure: "更新未完成，已恢复上一版本。", lastUpdate: null });
+        const restored = spawn(job.executable, ["--xiaoxi-updated-launch", job.id], { detached: true, stdio: "ignore", windowsHide: false, cwd: path.dirname(job.helperExecutable) });
+        restored.on("error", () => {}); restored.unref();
+        error = Error("update_start_rolled_back");
+      } catch (restoreError) { error = Object.assign(Error("update_restore_failed"), { cause: restoreError }); }
+    }
+    const messages = { update_workers_still_running: "仍有工作进程占用，更新尚未安装。退出相关任务后重新检查更新。", update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed: "更新启动未完成，请重试。" };
     const failure = updateFailure(error, currentPhase);
     finished = true;
     stage("error", "更新未完成", messages[failure.code] || formatUpdateFailure(failure), failure);
@@ -234,4 +283,4 @@ async function runHelper({ jobFile, userData }) {
   }
   app.on("window-all-closed", () => app.quit());
 }
-module.exports = { processSnapshot, descendants, waitForExit, backupUserData, createUpdateJob, runHelper };
+module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, runHelper };

@@ -26,6 +26,9 @@ function parseContentMediaUrl(value) {
     && ["thumbnail", "preview"].includes(parts[1])) {
     return { assetId: parts[0], variant: parts[1] };
   }
+  if (url.hostname === "official" && /^[a-f0-9]{64}$/.test(parts[0]) && parts[1] === "preview") {
+    return { officialId: parts[0], variant: parts[1] };
+  }
   if (url.hostname === "supplemental"
     && GUIDED_SUPPLEMENTAL_IMAGE_ID.test(parts[0])
     && parts[1] === "image") {
@@ -70,7 +73,7 @@ function mediaHeaders({ mimeType, size, start, end, partial }) {
   return headers;
 }
 
-function registerContentMediaProtocol({ protocol, net, controller }) {
+function registerContentMediaProtocol({ protocol, net, controller, resolveOfficialMedia }) {
   if (!protocol || !net || !controller) {
     throw new TypeError("content media protocol dependencies are required");
   }
@@ -79,12 +82,16 @@ function registerContentMediaProtocol({ protocol, net, controller }) {
     if (!target) return new Response("Not found", { status: 404 });
     try {
       const supplemental = Boolean(target.operationId);
-      const result = target.assetId
+      const result = target.officialId
+        ? await resolveOfficialMedia?.(target.officialId)
+        : target.assetId
         ? await controller.resolveAssetPreview(target.assetId, target.variant)
         : supplemental
         ? await controller.resolveGuidedAutoMixSupplementalImagePath(target.operationId)
         : await controller.resolveGeneratedVideoPath(target.candidateId, target.variant);
-      if (target.assetId) {
+      if (target.officialId) {
+        if (result?.officialId !== target.officialId) return new Response("Not found", { status: 404 });
+      } else if (target.assetId) {
         if (result?.asset_id !== target.assetId || result?.variant !== target.variant) {
           return new Response("Not found", { status: 404 });
         }
@@ -120,7 +127,7 @@ function registerContentMediaProtocol({ protocol, net, controller }) {
       }
       const start = range ? range.start : 0;
       const end = range ? range.end : Math.max(0, size - 1);
-      const mimeType = target.assetId
+      const mimeType = target.assetId || target.officialId
         ? ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"].includes(result?.mime_type)
           ? result.mime_type : "application/octet-stream"
         : supplemental

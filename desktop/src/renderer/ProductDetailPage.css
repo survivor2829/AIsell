@@ -146,3 +146,14 @@
     transform: rotate(360deg);
   }
 }
+
+.product-detail-retained { height: 100%; min-height: 0; }
+.product-detail-retained[hidden] { display: none; }
+.product-detail-guide { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; margin-bottom: 12px; }
+.product-detail-guide h1 { margin: 0 0 5px; font-size: 22px; }
+.product-detail-guide p { margin: 0; font-size: 13px; color: #526078; line-height: 1.6; }
+.product-detail-guide > div { flex: 1; min-width: 0; }
+.product-detail-persona { width: 76px; height: 86px; border: 0; padding: 0; background: transparent; cursor: pointer; flex-shrink: 0; }
+.product-detail-persona img { width: 100%; height: 100%; object-fit: contain; }
+@media(max-width: 1050px) { .product-detail-guide { flex-wrap: wrap; gap: 10px; } .product-detail-guide > div { min-width: 210px; } }
+@media(prefers-reduced-motion: reduce) { .product-detail-spinner { animation: none; } }

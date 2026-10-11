@@ -97,7 +97,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryLabel: "制作短视频",
     primaryTarget: "workspace",
     capabilities: [
-      { key: "workspace", label: "创作工作台", description: "用现有素材制作视频", icon: Clapperboard },
+      { key: "workspace", label: "AI混剪", description: "用现有素材制作视频", icon: Clapperboard },
       { key: "product-video", label: "产品效果视频", description: "展示设备在场景中的样子", icon: Video },
       { key: "finished", label: "成片中心", description: "查看成片，导出给客户", icon: Folder },
       { key: "ai-video", label: "数字人视频", description: "制作本人出镜的数字人视频", icon: UserRound }
@@ -493,7 +493,7 @@ function buildWechatView(
 function buildProductionView(snapshot: ProductionSnapshot) {
   const value = (count: string | null) => snapshot.loading ? "—" : count === null ? "—" : count;
   const metrics: Metric[] = [
-    { label: "素材仓库", value: value(snapshot.assets), unit: snapshot.assets === null ? undefined : "份", detail: "当前可用图片与视频素材", icon: Folder },
+    { label: "我的素材", value: value(snapshot.assets), unit: snapshot.assets === null ? undefined : "份", detail: "当前可用图片与视频素材", icon: Folder },
     { label: "待完成视频", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要你确认或处理`, icon: Clapperboard },
     { label: "可用成片", value: value(snapshot.finished), unit: snapshot.finished === null ? undefined : "条", detail: "本地文件仍可访问的成片", icon: Video }
   ];
@@ -508,10 +508,10 @@ function buildProductionView(snapshot: ProductionSnapshot) {
     }
     : {
       title: "开始一项新的内容制作",
-      detail: snapshot.error || "从素材仓库选择内容，进入创作工作台开始制作。",
+      detail: snapshot.error || "从我的素材选择内容，进入AI混剪开始制作。",
       status: snapshot.error ? "暂未连接" : "待开始",
       target: "workspace",
-      action: "打开创作工作台"
+      action: "打开AI混剪"
     };
   return { metrics, importantTask };
 }

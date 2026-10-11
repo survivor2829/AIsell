@@ -205,7 +205,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     return status();
   }
   async function check() {
-    if (!network || checking || stopped) return status();
+    if (!network || checking || stopped || view.updateRequested) return status();
     checking = true; notify({ stage: "checking", error: "" });
     let temporary, fullUpgradeRequired = false;
     try {
@@ -239,6 +239,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       }
       if (!release) { if (fullUpgradeRequired) fail("full_upgrade_required"); commit({ pending: null }); notify({ stage: "current", nextVersion: "" }); return status(); }
       const { envelope, manifest } = release;
+      if (fullUpgradeRequired && componentRelease && compareVersions(manifest.version, componentRelease.manifest.version) < 0) fail("full_upgrade_required");
       if (compareVersions(manifest.version, version) <= 0) {
         if (fullUpgradeRequired) fail("full_upgrade_required");
         state.pending = null; save(); notify({ stage: "current", nextVersion: "" }); return status();
@@ -270,7 +271,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
       const message = ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
-        : error?.code === "full_upgrade_required" ? "新版需要完整升级包，当前频道尚未提供。请稍后检查更新或联系开发者获取完整安装包。"
+        : error?.code === "full_upgrade_required" ? "新版正在准备，请稍后重试。故障编号：full_upgrade_required"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
       notify({ stage: "error", error: message });
     } finally {
@@ -280,7 +281,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     return status();
   }
   async function prepareInstall() {
-    if (!state.pending || !canInstall()) return null;
+    if (stopped || checking || !state.pending || !canInstall()) return null;
     const authorization = getLicenseStatus();
     if (["license_decryption_failed", "license_read_failed", "secure_storage_unavailable", "license_recovery_backup_failed"].includes(authorization?.code)) {
       notify({ stage: "blocked", error: authorization.error || "请先恢复本机授权读取，再安装更新。原数据仍保留。" });
@@ -288,11 +289,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     }
     if (state.pending.kind === "components") {
       const manifest = verifyComponentManifest(state.pending.envelope, config);
-      if (manifest.sequence < state.componentSequence || compareVersions(manifest.version, version) <= 0) return null;
+      if ((!view.updateRequested && manifest.sequence < state.componentSequence) || compareVersions(manifest.version, version) <= 0) return null;
       return { ...state.pending, version: manifest.version };
     }
     const m = verifyManifest(state.pending, config);
-    if (m.sequence < state.sequence || compareVersions(m.version, version) <= 0) return null;
+    if ((!view.updateRequested && m.sequence < state.sequence) || compareVersions(m.version, version) <= 0) return null;
     const file = path.join(dir, `${m.sha256}.exe`);
     if (fs.statSync(file).size !== m.size || await fileHash(file) !== m.sha256) fail("cloud_download_invalid");
     return { kind: "full", file, version: m.version, envelope: state.pending };
@@ -306,11 +307,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       if (!prepared) return false;
       notify({ stage: "preparing", error: "" });
       phase = "helper";
-      const { file, job } = await require("./update-helper.cjs").createUpdateJob({ userData, prepared, currentVersion: version });
+      const { file, job } = await require("./update-helper.cjs").createUpdateJob({ userData, prepared, currentVersion: version, channel: config.channel });
       phase = "launch";
       await new Promise((resolve, reject) => {
         // This Electron helper owns the user-visible update progress window.
-        const child = launch(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: false });
+        const child = launch(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: false, cwd: path.dirname(job.helperExecutable) });
         child.once("error", reject);
         child.once("spawn", () => { child.unref(); resolve(); });
       });
@@ -332,6 +333,14 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     finally { updateLaunching = false; }
   }
   function installOnExit() { return false; }
+  function setUpdateRequest(requested, waitingReason = "") {
+    let stage = requested ? "waiting" : view.stage === "waiting" ? "ready" : view.stage;
+    if (!requested && stage === "ready" && state.pending) {
+      const pending = JSON.parse((state.pending.envelope || state.pending).payload);
+      if (pending.sequence < (state.pending.kind === "components" ? state.componentSequence : state.sequence)) stage = "idle";
+    }
+    notify({ updateRequested: requested, waitingReason, stage }); return status();
+  }
   function setInstallBlocked(message) { notify({ stage: "ready", error: message }); return status(); }
   function acknowledgeUpdate() {
     if (userData) { const paths = componentPaths.updatePaths(userData), selected = readJson(paths.selection, {});
@@ -355,7 +364,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
+  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

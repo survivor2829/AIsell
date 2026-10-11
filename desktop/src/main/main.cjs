@@ -609,9 +609,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return providerEnvironment;
       }
     });
+    const officialMaterials = require('./official-materials-ipc.cjs').registerOfficialMaterials({
+      ipcMain, getMainWindow: () => mainWindow, rootDir: runtime.rootDir,
+      appDir: path.resolve(__dirname, '../..'), config: maintenanceConfig,
+      gatewayClient: providerGatewayClient, contentEngine: contentEngineController, shell
+    });
     registerContentMediaProtocol({
       protocol,
       net,
+      resolveOfficialMedia: officialMaterials.resolveMedia,
       controller: contentEngineController
     });
     const beforeContentProviderWork = async (capabilities = ["volcengine_ark", "volcengine_asr", "volcengine_tts"]) => {
@@ -834,47 +840,38 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         version: components.businessVersion(app), buildId: build.buildId, logger,
         componentBaseRoot: app.isPackaged ? components.currentRoot() : null, userData: app.getPath("userData"),
         getLicenseStatus: () => licenseStore.status(),
-        canInstall: () => app.isPackaged && process.platform === "win32" && developmentEdition
-          && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets.test.installDirectoryName).toLowerCase()
+        canInstall: () => app.isPackaged && process.platform === "win32" && maintenanceConfig.enabled === true
+          && Boolean(installerTargets[maintenanceConfig.channel])
+          && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets[maintenanceConfig.channel].installDirectoryName).toLowerCase()
+      });
+      let workflowPause = null;
+      const updater = require("./update-coordinator.cjs").createUpdateCoordinator({
+        controller: cloudMaintenance, setHold: value => { global.__xiaoxiUpdateHold = value; },
+        prepare: async () => {
+          const workflow = workflowController?.status();
+          if (workflow?.enabled && !workflowPause) {
+            workflowPause = workflowController.pause("update");
+            workflowPause.catch(() => {});
+          }
+          if (workflow?.enabled || workflow?.phase === "pausing" || workflow?.contactSync?.running || coordinator.status().lock) return "正在等待微信操作完成并保存结果。";
+          if (workflowPause) await workflowPause;
+          const states = await Promise.all([productVideoRegistration?.service?.prepareForUpdate(), digitalHumanRegistration?.service?.prepareForUpdate()]);
+          if (states.some(state => state?.busy)) return "正在等待视频任务保存。";
+          const content = contentEngineController?.updateStatus();
+          if (content?.pending || (content?.alive && content.state !== "ready")) return "正在等待当前内容任务完成。";
+          const summary = content?.state === "ready" ? await contentEngineController.productionSummary() : { active: 0 };
+          const product = await productDetailController?.prepareUpdate(true);
+          return summary.active > 0 || product?.busy ? "正在等待图片和视频制作完成。" : "";
+        },
+        release: async () => {
+          workflowPause = null;
+          productVideoRegistration?.service?.resumeAfterUpdate();
+          digitalHumanRegistration?.service?.resumeAfterUpdate();
+          await productDetailController?.prepareUpdate(false).catch(() => {});
+        }, quit: () => app.quit()
       });
       registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,
-        restart: async () => {
-          if (global.__xiaoxiUpdateHold) return cloudMaintenance.status();
-          global.__xiaoxiUpdateHold = true;
-          let leaving = false;
-          try {
-            if (!await cloudMaintenance.prepareInstall()) return cloudMaintenance.status();
-            const workflow = workflowController?.status();
-            if (workflow?.enabled || workflow?.contactSync?.running || coordinator.status().lock) {
-              return cloudMaintenance.setInstallBlocked("微信任务仍在运行，请先暂停或完成任务，再点击立即更新。");
-            }
-            const mediaStates = await Promise.all([
-              productVideoRegistration?.service?.prepareForUpdate(),
-              digitalHumanRegistration?.service?.prepareForUpdate()
-            ]);
-            if (mediaStates.some(state => state?.busy)) {
-              return cloudMaintenance.setInstallBlocked("视频任务正在保存或处理本地文件，已保留更新，请稍后点击立即更新。");
-            }
-            const content = contentEngineController?.updateStatus();
-            if (content?.pending || (content?.alive && content.state !== "ready")) return cloudMaintenance.setInstallBlocked("内容任务尚未结束，请完成当前操作后再更新。");
-            const summary = content?.state === "ready" ? await contentEngineController.productionSummary() : { active: 0 };
-            const product = await productDetailController?.prepareUpdate(true);
-            if (summary.active > 0 || product?.busy) return cloudMaintenance.setInstallBlocked("还有视频或图片正在制作。已保留更新，制作完成后再点击立即更新。");
-            leaving = await cloudMaintenance.beginInstall();
-            if (leaving) app.quit();
-          } catch {
-            cloudMaintenance.setInstallBlocked("暂时无法确认任务是否结束，尚未退出。请稍后重试更新。");
-          } finally {
-            if (!leaving) {
-              global.__xiaoxiUpdateHold = false;
-              productVideoRegistration?.service?.resumeAfterUpdate();
-              digitalHumanRegistration?.service?.resumeAfterUpdate();
-              await productDetailController?.prepareUpdate(false).catch(() => {});
-            }
-          }
-          return cloudMaintenance.status();
-        }
-      });
+        restart: updater.request, cancelUpdate: updater.cancel });
       cloudMaintenance.start();
     }
     productDetailDownloadRegistration = registerProductDetailDownloads({

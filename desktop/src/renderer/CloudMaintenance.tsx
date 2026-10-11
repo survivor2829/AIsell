@@ -5,7 +5,7 @@ type CloudStage = "disabled" | "idle" | "checking" | "downloading" | "preparing"
 export type CloudAnnouncement = { id?: string; sequence: number; version: string; notes: string; publishedAt: string; read: boolean };
 export type CloudStatus = {
   enabled: boolean; stage: CloudStage; version: string; nextVersion: string; progress: number;
-  error: string; uploadError: string; consent: boolean; queued: number; lastUpload: string; canInstall: boolean;
+  error: string; uploadError: string; consent: boolean; queued: number; lastUpload: string; canInstall: boolean; updateRequested?: boolean; waitingReason?: string;
   announcements: CloudAnnouncement[]; unreadAnnouncements: number; lastAnnouncementsCheck: string;
   announcementError: string; announcementsChecking: boolean;
   downloadedBytes?: number; totalBytes?: number; updateFailure?: string;
@@ -18,7 +18,7 @@ declare global {
       consent(enabled: boolean): Promise<CloudStatus>; restart(): Promise<CloudStatus>;
       announcements(): Promise<CloudStatus>; readAnnouncement(id: string | number): Promise<CloudStatus>;
       readAnnouncements(): Promise<CloudStatus>;
-      acknowledgeUpdate(): Promise<CloudStatus>;
+      acknowledgeUpdate(): Promise<CloudStatus>; cancelUpdate(): Promise<CloudStatus>;
       onUpdate(callback: (state: CloudStatus) => void): () => void;
     };
   }

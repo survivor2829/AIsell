@@ -27,13 +27,13 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
             </span>
             <span className="batch-material-name" title={asset.displayName}>{asset.displayName}</span>
           </label>
-          {checked && <button className="batch-material-remove" type="button" aria-label={`从本次创作移除 ${asset.displayName}`} title="仅从本次创作移除，不删除素材仓库原文件" onClick={() => onChange(selected.filter((id) => id !== asset.assetId))}><X size={14} aria-hidden="true" /><span>移除</span></button>}
+          {checked && <button className="batch-material-remove" type="button" aria-label={`从本次创作移除 ${asset.displayName}`} title="仅从本次创作移除，不删除我的素材原文件" onClick={() => onChange(selected.filter((id) => id !== asset.assetId))}><X size={14} aria-hidden="true" /><span>移除</span></button>}
           <button className="batch-material-preview" type="button" aria-label={`预览 ${asset.displayName}`} onClick={() => onPreview(asset)}><Eye size={15} /></button>
         </article>;
       })}
       <button type="button" className="batch-upload-tile" onClick={() => onImport()}><Plus size={28} /><span>添加素材</span></button>
     </div>}
-    <footer><button type="button" onClick={onBrowse}><Images size={15} />素材仓库{assets.length > 0 ? ` · ${assets.length}` : ""}</button>
+    <footer><button type="button" onClick={onBrowse}><Images size={15} />我的素材{assets.length > 0 ? ` · ${assets.length}` : ""}</button>
       <button type="button" onClick={() => onImport(true)}><FolderPlus size={15} />导入文件夹</button>
     </footer>
   </section>;

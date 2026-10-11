@@ -92,8 +92,11 @@ button:focus-visible {
 }
 
 .brand-copy span {
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 15px;
 }
+.brand-copy .brand-name-part { display: inline-block; white-space: nowrap; }
 
 .brand-mark {
   width: 38px;

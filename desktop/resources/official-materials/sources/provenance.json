@@ -1,0 +1,72 @@
+{
+  "verifiedAt": "2026-10-11",
+  "verification": "Read each file description and Licensing section on Wikimedia Commons via Jina Reader. Licenses apply to the media itself, not only page metadata.",
+  "items": [
+    {
+      "id": "factory-conveyor",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Conveyor_system_in_a_factory.jpg",
+      "author": "falco",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "downloadUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1e/Conveyor_system_in_a_factory.jpg/960px-Conveyor_system_in_a_factory.jpg",
+      "processing": "JPEG resized to at most 1600 px wide; 480 px thumbnail.",
+      "file": "factory-conveyor.jpg",
+      "thumbnailFile": "factory-conveyor-thumb.jpg"
+    },
+    {
+      "id": "community-residential",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Residential_building_Angerburger_Allee_seen_from_Drachenberg_Berlin_2020-09-14_01.jpg",
+      "author": "Leonhard Lenz",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "downloadUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6d/Residential_building_Angerburger_Allee_seen_from_Drachenberg_Berlin_2020-09-14_01.jpg/960px-Residential_building_Angerburger_Allee_seen_from_Drachenberg_Berlin_2020-09-14_01.jpg",
+      "processing": "JPEG resized to at most 1600 px wide; 480 px thumbnail.",
+      "file": "community-residential.jpg",
+      "thumbnailFile": "community-residential-thumb.jpg"
+    },
+    {
+      "id": "robot-ilife",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:ILIFE_cleaning_robot.jpg",
+      "author": "Ziongarage",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/f/f3/ILIFE_cleaning_robot.jpg",
+      "processing": "JPEG resized to at most 1600 px wide; 480 px thumbnail.",
+      "file": "robot-ilife.jpg",
+      "thumbnailFile": "robot-ilife-thumb.jpg"
+    },
+    {
+      "id": "cleaning-softbank",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:BrainOS-powered_Softbank_cleaning_robot.jpg",
+      "author": "Syced",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "downloadUrl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e8/BrainOS-powered_Softbank_cleaning_robot.jpg/500px-BrainOS-powered_Softbank_cleaning_robot.jpg",
+      "processing": "JPEG resized to at most 1600 px wide; 480 px thumbnail.",
+      "file": "cleaning-softbank.jpg",
+      "thumbnailFile": "cleaning-softbank-thumb.jpg"
+    },
+    {
+      "id": "robot-quadruped",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:4n_robot.webm",
+      "author": "Palapa",
+      "license": "Public domain",
+      "licenseUrl": "https://commons.wikimedia.org/wiki/File:4n_robot.webm#Licensing",
+      "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/transcoded/8/89/4n_robot.webm/4n_robot.webm.480p.vp9.webm",
+      "processing": "Transcoded to H.264 MP4, audio removed; thumbnail at 1 second.",
+      "file": "robot-quadruped.mp4",
+      "thumbnailFile": "robot-quadruped-thumb.jpg"
+    },
+    {
+      "id": "robot-rescue",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:WMR_RoboCupRescue_robot_navigates_red_step_fields_2009_German_Open.ogv",
+      "author": "Mike1024",
+      "license": "Public domain",
+      "licenseUrl": "https://commons.wikimedia.org/wiki/File:WMR_RoboCupRescue_robot_navigates_red_step_fields_2009_German_Open.ogv#Licensing",
+      "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/transcoded/1/17/WMR_RoboCupRescue_robot_navigates_red_step_fields_2009_German_Open.ogv/WMR_RoboCupRescue_robot_navigates_red_step_fields_2009_German_Open.ogv.360p.vp9.webm",
+      "processing": "First 12 seconds transcoded to H.264 MP4, audio removed; thumbnail at 1 second.",
+      "file": "robot-rescue.mp4",
+      "thumbnailFile": "robot-rescue-thumb.jpg"
+    }
+  ]
+}

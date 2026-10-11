@@ -1,0 +1,15 @@
+{
+  "test": {
+    "enabled": true,
+    "origin": "https://115.159.88.100",
+    "appId": "com.aihuoke.desktop.test",
+    "caFile": "cloud-test-ca.crt",
+    "signingPublicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAABmbBe5UEjA9gNGTstlnk/kzNsHPAunbCg2VftSynhE=\n-----END PUBLIC KEY-----\n"
+  },
+  "production": {
+    "enabled": false,
+    "appId": "com.aihuoke.desktop",
+    "origin": "",
+    "signingPublicKey": ""
+  }
+}

@@ -10,16 +10,19 @@ data_dir=/var/lib/ai-provider-gateway
   exit 1
 }
 [ -s "$source_dir/service.py" ] || { echo 'Missing deployment file: service.py' >&2; exit 1; }
+[ -s "$source_dir/material_search.py" ] || { echo 'Missing deployment file: material_search.py' >&2; exit 1; }
 
-python3 - "$source_dir/service.py" <<'PY'
+python3 - "$source_dir/service.py" "$source_dir/material_search.py" <<'PY'
 from pathlib import Path
 import sys
-compile(Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")
+for filename in sys.argv[1:]:
+    compile(Path(filename).read_text(encoding="utf-8"), filename, "exec")
 PY
 
 backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup"
 cp -p "$app_dir/service.py" "$backup/service.py"
+if [ -f "$app_dir/material_search.py" ]; then cp -p "$app_dir/material_search.py" "$backup/material_search.py"; fi
 override_dir=/etc/systemd/system/ai-provider-gateway.service.d
 override_file="$override_dir/20-operation-receipts.conf"
 if [ -e "$override_file" ]; then
@@ -29,6 +32,7 @@ fi
 rollback() {
   echo 'Provider gateway update failed; restoring previous code.' >&2
   install -m 644 "$backup/service.py" "$app_dir/service.py"
+  if [ -f "$backup/material_search.py" ]; then install -m 644 "$backup/material_search.py" "$app_dir/material_search.py"; fi
   if [ -e "$backup/20-operation-receipts.conf" ]; then
     install -m 644 "$backup/20-operation-receipts.conf" "$override_file"
   else
@@ -40,7 +44,7 @@ rollback() {
 
 systemctl stop ai-provider-gateway
 trap rollback EXIT
-install -m 644 "$source_dir/service.py" "$app_dir/service.py"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
 install -d -m 755 "$override_dir"
 printf '%s\n' '[Service]' 'ReadWritePaths=/var/lib/ai-provider-gateway' > "$override_file"
 chmod 644 "$override_file"
@@ -66,4 +70,4 @@ PY
 systemctl is-active --quiet ai-provider-gateway
 trap - EXIT
 echo "Provider gateway updated; previous code retained: $backup"
-sha256sum "$app_dir/service.py"
+sha256sum "$app_dir/service.py" "$app_dir/material_search.py"
