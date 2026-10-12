@@ -10,6 +10,36 @@ from materials import MaterialsStore
 
 
 class MaterialsTest(unittest.TestCase):
+    def test_invalid_source_rejected_on_upload_and_existing_draft_publish(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = MaterialsStore(folder)
+            try:
+                item = dict(action="upload", id="source-check", title="工厂", category="factory", kind="image", description="示例",
+                            sourceUrl="https://example.com/source", author="Author", license="CC0", extension=".png",
+                            data=base64.b64encode(b"\x89PNG\r\n\x1a\nfixture").decode(), thumbnailExtension=".png",
+                            thumbnailData=base64.b64encode(b"\x89PNG\r\n\x1a\nthumbnail").decode())
+                store.change(item)
+                valid = json.loads(store.db.execute("SELECT body FROM items WHERE id=?", (item["id"],)).fetchone()[0])
+                revision = store.catalog()["revision"]
+                for url in ("https://example.com:8443/source", "https://127.0.0.1/a", "https://[::1]/a",
+                            "https://machine.local/a", "https://site.internal/a", "http://127.1/a",
+                            "http://0x7f.0.0.1/a", "https://%31%32%37.0.0.1/a", "https://bad^host.com/a"):
+                    with self.subTest(url=url):
+                        with self.assertRaisesRegex(ValueError, "source"):
+                            store.change({**item, "sourceUrl": url})
+                        # Reproduce an old draft that bypassed today's upload validation.
+                        store.db.execute("UPDATE items SET body=? WHERE id=?", (json.dumps({**valid, "sourceUrl": url}), item["id"]))
+                        store.db.commit()
+                        with self.assertRaisesRegex(ValueError, "source"):
+                            store.change(dict(action="publish", id=item["id"]))
+                        self.assertEqual(store.catalog()["items"], [])
+                        self.assertEqual(store.catalog()["revision"], revision)
+                store.change(item)
+                store.change(dict(action="publish", id=item["id"]))
+                self.assertEqual(store.catalog()["items"][0]["sourceUrl"], item["sourceUrl"])
+            finally:
+                store.db.close()
+
     def test_admin_origin_and_public_catalog_http(self):
         with tempfile.TemporaryDirectory() as folder:
             store = Store(folder)

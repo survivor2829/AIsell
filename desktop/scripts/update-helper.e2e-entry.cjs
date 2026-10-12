@@ -13,7 +13,15 @@ async function main() {
   if (flag >= 0) return require("./src/main/update-helper.cjs").runHelper({ jobFile: process.argv[flag + 1], userData: spec.userData });
   await app.whenReady();
   if (process.argv.includes("--xiaoxi-updated-launch")) {
+    if (spec.failureMode && app.getVersion() === spec.initialVersion) {
+      save("restored-boot.json", { version: app.getVersion(), pid: process.pid });
+      app.quit(); return;
+    }
     if (app.getVersion() !== spec.targetVersion) throw Error("fixture_version_not_installed");
+    if (spec.failureMode === "startup") {
+      save("failed-boot.json", { version: app.getVersion(), pid: process.pid });
+      app.exit(23); return;
+    }
     const components = require("./src/main/component-paths.cjs");
     global.__xiaoxiComponents = { paths: components.updatePaths(spec.userData), id: null, version: app.getVersion(), healthy: false };
     components.markHealthy();
@@ -28,6 +36,7 @@ async function main() {
   const deadline = Date.now() + 30000;
   while (!fs.existsSync(file.replace(/\.json$/, ".ready.json")) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
   if (!fs.existsSync(file.replace(/\.json$/, ".ready.json"))) throw Error("fixture_helper_not_ready");
+  require("./src/main/update-helper.cjs").authorizeUpdateJob(file, job);
   app.quit();
 }
 main().catch(error => { save("entry-error.json", { message: error.message, code: error.code }); app.exit(1); });

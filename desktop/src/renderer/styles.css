@@ -312,6 +312,7 @@ button:focus-visible {
   background: rgba(255, 255, 255, 0.14);
   overflow: hidden;
 }
+.nav-role-avatar.is-materials { background: var(--agent-surface); }
 .nav-role-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 21%; }
 
 .nav-role-avatar.is-agent {
@@ -506,7 +507,7 @@ button:focus-visible {
 .workspace[class*="role-theme-"] .content-card {
   background-image:
     var(--role-pattern),
-    radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--brand-red) 13%, transparent), transparent 62%),
+    radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--agent-accent, var(--brand-red)) 13%, transparent), transparent 62%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.62), color-mix(in srgb, var(--workspace-role-surface) 74%, transparent));
 }
 

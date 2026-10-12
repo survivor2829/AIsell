@@ -22,7 +22,9 @@ async function main() {
   const desktop = path.resolve(__dirname, ".."), parent = path.join(desktop, ".build/update-process-tests");
   await fs.mkdir(parent, { recursive: true });
   const root = await fs.mkdtemp(path.join(parent, "run-"));
-  const source = path.resolve(process.argv[2] || desktop), legacy = process.argv.includes("--expect-legacy-failure");
+  const source = path.resolve(process.argv.slice(2).find(value => !value.startsWith("--")) || desktop), legacy = process.argv.includes("--expect-legacy-failure");
+  const failureMode = process.argv.find(value => value.startsWith("--failure="))?.split("=")[1] || "";
+  assert.ok(["", "install", "startup"].includes(failureMode));
   const installed = path.join(root, "installed"), application = path.join(installed, "resources/app"), userData = path.join(root, "profile");
   const electronRoot = path.dirname(require("electron"));
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
@@ -44,7 +46,7 @@ async function main() {
     for (const file of modules) await fs.copyFile(path.join(source, file), path.join(application, file));
     try { await fs.copyFile(path.join(source, "src/main/update-storage.cjs"), path.join(application, "src/main/update-storage.cjs")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
-    for (const file of ["src/main/update-retention.cjs", "src/main/update-program-backup.cjs", "src/main/cloud-release-config.json", "src/shared/artifact-retention.cjs"]) {
+    for (const file of ["src/main/update-retention.cjs", "src/main/update-program-backup.cjs", "src/main/update-backups.cjs", "src/main/cloud-release-config.json", "src/shared/artifact-retention.cjs"]) {
       try { await fs.copyFile(path.join(source, file), path.join(application, file)); }
       catch (error) { if (error.code !== "ENOENT") throw error; }
     }
@@ -57,6 +59,7 @@ async function main() {
     await fs.copyFile(path.join(__dirname, "update-helper.e2e-entry.cjs"), path.join(application, "entry.cjs"));
     const packageJson = { name: "xiaoxi-update-fixture", version: initialVersion, main: "entry.cjs" };
     await fs.writeFile(path.join(application, "package.json"), JSON.stringify(packageJson));
+    await fs.writeFile(path.join(application, "rollback-sentinel.txt"), "original program bytes");
     await fs.writeFile(path.join(root, "fixture-marker"), "isolated-update-e2e");
     for (const [file, bytes] of Object.entries(fixtureFiles)) {
       await fs.mkdir(path.dirname(path.join(userData, file)), { recursive: true });
@@ -70,6 +73,8 @@ async function main() {
     const cache = path.join(userData, "data/cloud-maintenance/components/generations/old/resources");
     await fs.mkdir(cache, { recursive: true });
     await fs.copyFile(path.join(electronRoot, "resources/default_app.asar"), path.join(cache, "default_app.asar"));
+    const savedSelection = { active: null, previous: null, pending: null, fixturePrior: "preserved selection record" };
+    if (failureMode) await fs.writeFile(path.join(userData, "data/cloud-maintenance/components/selection.json"), JSON.stringify(savedSelection));
     await fs.mkdir(path.join(root, "payload"));
     await fs.writeFile(path.join(root, "payload/package.json"), JSON.stringify({ ...packageJson, version: targetVersion }));
     const installerSource = `using System; using System.IO; using System.Reflection;
@@ -78,8 +83,9 @@ class FixtureInstaller { static int Main(string[] args) {
   if (args.Length != 1 || args[0] != "/S" || File.ReadAllText(Path.Combine(root, "fixture-marker")) != "isolated-update-e2e") return 10;
   string app = Path.Combine(root, "installed", "resources", "app");
   File.Copy(Path.Combine(root, "payload", "package.json"), Path.Combine(app, "package.json"), true);
+  File.WriteAllText(Path.Combine(app, "rollback-sentinel.txt"), "replacement program bytes");
   File.WriteAllText(Path.Combine(root, "installer-ran.json"), "{\\"ok\\":true}");
-  return 0;
+  return ${failureMode === "install" ? 13 : 0};
 } }`;
     const cs = path.join(root, "FixtureInstaller.cs"), installer = path.join(root, "FixtureInstaller.exe");
     await fs.writeFile(cs, installerSource);
@@ -89,7 +95,7 @@ class FixtureInstaller { static int Main(string[] args) {
       version: targetVersion, sequence: 1, sha256, size: bytes.length, file: `/artifacts/${sha256}.exe`, notes: "isolated process fixture only" });
     const prepared = { kind: "full", version: targetVersion, file: installer,
       envelope: { payload, signature: crypto.sign(null, Buffer.from(payload), privateKey).toString("base64") } };
-    await fs.writeFile(path.join(root, "spec.json"), JSON.stringify({ prepared, initialVersion, targetVersion, userData }));
+    await fs.writeFile(path.join(root, "spec.json"), JSON.stringify({ prepared, initialVersion, targetVersion, userData, failureMode }));
     const env = { ...process.env, XIAOXI_UPDATE_E2E_ROOT: root }; delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(path.join(installed, "UpdateFixture.exe"), ["--no-sandbox", "--disable-gpu"], { env, windowsHide: true, stdio: "ignore" });
     children.add(child.pid);
@@ -107,6 +113,25 @@ class FixtureInstaller { static int Main(string[] args) {
       assert.equal(status.phase, "error");
       assert.match(status.detail, /Invalid package/);
       assert.equal(await readJson(path.join(root, "installer-ran.json")), null, "the unchanged legacy updater must not be misreported as a successful upgrade");
+    } else if (failureMode) {
+      assert.equal(status.phase, "error", JSON.stringify(status));
+      assert.equal(status.failure.code, "update_start_rolled_back", JSON.stringify(status));
+      assert.equal((await readJson(path.join(root, "installer-ran.json"))).ok, true, "installer must first replace real fixture program bytes");
+      const restored = await waitFor(() => readJson(path.join(root, "restored-boot.json")), "restored application starts");
+      children.add(restored.pid);
+      assert.equal(restored.version, initialVersion);
+      assert.equal(await readJson(parentReceipt.file.replace(/\.json$/, ".ack.json")), null, "failed target never produces successful startup acknowledgement");
+      if (failureMode === "startup") assert.equal((await readJson(path.join(root, "failed-boot.json"))).version, targetVersion);
+      const job = await readJson(parentReceipt.file);
+      const { inventory } = require("../src/main/update-program-backup.cjs");
+      assert.deepEqual(await inventory(installed), job.programBackup.files, "restoration recovers every original program byte");
+      assert.deepEqual(await inventory(job.programBackup.program), job.programBackup.files, "verified rollback program remains available");
+      const selection = await readJson(path.join(userData, "data/cloud-maintenance/components/selection.json"));
+      for (const [key, value] of Object.entries(savedSelection)) assert.deepEqual(selection[key], value, "saved selection restored");
+      const registry = await readJson(path.join(userData, "data/cloud-maintenance/components/backup-registry.json"));
+      const backup = registry.sets.find(set => set.id === parentReceipt.id);
+      assert.equal(backup.state, "prepared", "failed update keeps its recovery evidence instead of confirming cleanup");
+      for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(backup.data.directory, file)), value);
     } else {
       assert.equal(status.phase, "complete", JSON.stringify(status));
       assert.equal((await readJson(path.join(root, "installer-ran.json"))).ok, true);
@@ -118,14 +143,14 @@ class FixtureInstaller { static int Main(string[] args) {
       for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(backup, file)), value);
       await assert.rejects(fs.stat(path.join(backup, "data/cloud-maintenance")), { code: "ENOENT" });
       await waitFor(async () => {
-        const ledger = await readJson(path.join(backupsRoot, ".artifact-retention.json"));
-        return ledger && !ledger["successful-full-upgrades"];
-      }, "successful upgrade relinquishes old business-backup deletion ownership");
+        const ledger = await readJson(path.join(userData, "data/cloud-maintenance/components/backup-registry.json"));
+        return ledger?.sets.some(set => set.id === parentReceipt.id && set.state === "confirmed");
+      }, "successful upgrade confirms a verified complete rollback set after startup acknowledgement");
       assert.equal(await fs.readFile(path.join(oldestBackup, "unique-receipt.json"), "utf8"), "old receipt absent from live data");
     }
     for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(userData, file)), value);
     const result = { ok: true, source, helperSha256, initialVersion, targetVersion, observedPhase: status.phase,
-      legacyBlocked: legacy, fixtureInstaller: true, productionInstallerVerified: false, dataUnchanged: true };
+      legacyBlocked: legacy, failureMode, programRollbackVerified: Boolean(failureMode), fixtureInstaller: true, productionInstallerVerified: false, dataUnchanged: true };
     await fs.writeFile(path.join(root, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, evidence: path.join(root, "result.json") }));
     passed = true;
@@ -153,7 +178,8 @@ class FixtureInstaller { static int Main(string[] args) {
     }
     // Successful runs retain receipts, logs and data, not two disposable Electron distributions.
     if (passed) {
-      for (const directory of [installed, path.join(userData, "data/cloud-maintenance/components/helper-runtime")]) {
+      const failedPrograms = (await fs.readdir(root)).filter(name => /^installed\.failed-update-[a-f0-9-]{36}$/.test(name)).map(name => path.join(root, name));
+      for (const directory of [installed, ...failedPrograms, path.join(userData, "data/cloud-maintenance/components/helper-runtime")]) {
         try {
           const realRoot = await fs.realpath(root), realDirectory = await fs.realpath(directory);
           assert.equal(path.dirname(root), parent);

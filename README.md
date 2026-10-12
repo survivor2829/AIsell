@@ -1,6 +1,6 @@
 # AI获客 V1.0版本
 
-Windows Electron 桌面应用。验收优先覆盖当前安装的主流个人微信，再用至少一个不同版本做兼容回归；具体实测版本、能力是否可用及是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。客户交付只使用 `release/AI获客 V1.0版本-安装程序.exe` 及对应版本清单；便携 ZIP 不作为交付物。
+Windows Electron 桌面应用。涉及微信适配时，验收优先覆盖当前安装的主流个人微信，并按风险用至少一个不同版本做兼容回归；日常内部发布采用本机定向验收 → CI → 合并 main → 内部 CD，不强制异机或虚拟机验收；具体实测版本、能力是否可用及是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。客户交付只使用 `release/AI获客 V1.0版本-安装程序.exe` 及对应版本清单；便携 ZIP 不作为交付物。
 
 ## 本地运行
 

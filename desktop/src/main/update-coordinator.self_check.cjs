@@ -30,6 +30,15 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   assert.deepEqual(processes.map(row => row.pid), [20, 21, 22], "Workers remain owned after the launched parent exits; older PID-reuse descendants are excluded");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "update-recovery-check-"));
   try {
+    const helper = require("./update-helper.cjs"), jobFile = path.join(root, "handoff.json");
+    const job = { id: "handoff", targetVersion: "1.1.79", parentPid: process.pid };
+    await fs.writeFile(jobFile.replace(/\.json$/, ".ready.json"), JSON.stringify({ pid: process.pid }));
+    await assert.rejects(helper.waitForAuthorization(jobFile, job, 0), /not_committed/, "A late ready helper cannot install when the parent timed out");
+    helper.authorizeUpdateJob(jobFile, job);
+    await helper.waitForAuthorization(jobFile, job, 0);
+    helper.revokeUpdateJob(jobFile);
+    await assert.rejects(helper.waitForAuthorization(jobFile, job, 0), /cancelled/, "Revocation wins over an existing commit");
+    assert.throws(() => helper.authorizeUpdateJob(jobFile, job), /not_ready/);
     const installed = path.join(root, "app"), data = path.join(root, "customer-data");
     await fs.mkdir(installed); await fs.mkdir(data);
     await fs.writeFile(path.join(installed, "app.exe"), "old");

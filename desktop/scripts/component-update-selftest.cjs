@@ -93,8 +93,9 @@ test("local acceptance backs up the active application and business data without
     snapshots.push(await backupLocalInstall({ program: source, profile, outputRoot }));
     if (index === 0) await fs.unlink(path.join(profile, "费用回执.json"));
   }
-  await assert.rejects(fs.stat(path.join(snapshots[0].directory, "program")), { code: "ENOENT" });
-  assert.equal(await fs.readFile(path.join(snapshots[0].directory, "userData/费用回执.json"), "utf8"), "retained receipt bytes", "Program rotation must preserve a receipt found only in the oldest snapshot");
+  await fs.access(path.join(snapshots[0].directory, "program"));
+  assert.equal(await fs.readFile(path.join(snapshots[0].directory, "userData/费用回执.json"), "utf8"), "retained receipt bytes", "Unconfirmed installation cannot retire any complete rollback set");
+  assert.equal(snapshots[2].directory, snapshots[1].directory, "identical verified manual backup is reused");
   for (const snapshot of snapshots.slice(1)) {
     await fs.access(path.join(snapshot.directory, "program"));
     await assert.rejects(fs.stat(path.join(snapshot.directory, "userData/data/cloud-maintenance")), { code: "ENOENT" });

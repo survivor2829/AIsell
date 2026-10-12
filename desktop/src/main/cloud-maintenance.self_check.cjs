@@ -220,7 +220,7 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
         if (mode === "launch") child.emit("error", Object.assign(Error("private launch detail"), { code: "EBUSY", path: privatePath }));
         else {
           if (mode === "ready") { let ticks = 0; Date.now = () => originalNow() + ticks++ * 31000; }
-          else fs.writeFileSync(path.join(cache, "fixture.ready.json"), "{}");
+          else fs.writeFileSync(path.join(cache, "fixture.ready.json"), JSON.stringify({ pid: process.pid }));
           child.emit("spawn");
         }
       });
@@ -229,9 +229,11 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
   });
   helper.createUpdateJob = async () => {
     creates++;
+    fs.rmSync(path.join(cache, "fixture.cancel.json"), { force: true });
+    fs.rmSync(path.join(cache, "fixture.commit.json"), { force: true });
     if (mode instanceof Error) throw mode;
     if (mode === "pending") await new Promise((resolve, reject) => { pendingHelper = { resolve, reject }; });
-    return { file: path.join(cache, "fixture.json"), job: { id: "fixture", helperExecutable: "never-executed.exe" } };
+    return { file: path.join(cache, "fixture.json"), job: { id: "fixture", targetVersion: manifest.version, parentPid: process.pid, helperExecutable: "never-executed.exe" } };
   };
   try {
     licenseStatus = { authorized: false, code: "license_decryption_failed", error: "原授权无法解密，请输入原授权恢复。" };

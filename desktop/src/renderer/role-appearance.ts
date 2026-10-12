@@ -26,6 +26,13 @@ export function characterAsset(file: string) {
 export function appearanceFor(role: AgentRoleKey, id: string): RoleAppearance {
   return ROLE_CATALOG[role].appearances.find((item) => item.id === id) || ROLE_CATALOG[role].appearances[0];
 }
+export const MATERIALS_THEME = {
+  "--workspace-role-surface": "#eaf5e9",
+  "--agent-surface": "var(--workspace-role-surface)",
+  "--agent-accent": "#4f815c",
+  "--agent-accent-strong": "#31543b",
+  "--role-pattern": "none"
+} as CSSProperties;
 export function appearanceStyle(appearance: RoleAppearance): CSSProperties {
   return {
     "--workspace-role-surface": appearance.surface,

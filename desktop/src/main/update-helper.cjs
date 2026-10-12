@@ -57,6 +57,7 @@ async function waitForExit(job, onStage, timeoutMs = 120000) {
   let tracked = job.processes, until = Date.now() + timeoutMs;
   const recorded = new Set(job.processes.map(identity));
   while (true) {
+    if (job.authorizationFile && readJson(job.authorizationFile.replace(/\.json$/, ".cancel.json"))) throw Error("update_request_cancelled");
     const rows = await processSnapshot();
     // The app recorded its processes before starting the helper: if the helper now holds the PID of
     // an exited parent, those processes and their children still belong to the app, not the helper.
@@ -70,6 +71,24 @@ async function waitForExit(job, onStage, timeoutMs = 120000) {
     onStage("waiting", "等待软件和工作进程退出", `仍有 ${alive.length} 个相关进程正在退出，请保留此窗口。`);
     await sleep(1000);
   }
+}
+function authorizeUpdateJob(file, job) {
+  const ready = readJson(file.replace(/\.json$/, ".ready.json"));
+  if (!Number.isInteger(ready?.pid) || ready.pid <= 0 || readJson(file.replace(/\.json$/, ".cancel.json"))) throw Error("update_helper_not_ready");
+  writeJsonAtomic(file.replace(/\.json$/, ".commit.json"), { id: job.id, targetVersion: job.targetVersion, parentPid: job.parentPid, helperPid: ready.pid });
+}
+function revokeUpdateJob(file) {
+  writeJsonAtomic(file.replace(/\.json$/, ".cancel.json"), { cancelled: true });
+}
+async function waitForAuthorization(file, job, timeoutMs = 35000) {
+  const until = performance.now() + timeoutMs;
+  do {
+    if (readJson(file.replace(/\.json$/, ".cancel.json"))) throw Error("update_request_cancelled");
+    const commit = readJson(file.replace(/\.json$/, ".commit.json"));
+    if (commit?.id === job.id && commit.targetVersion === job.targetVersion && commit.parentPid === job.parentPid && commit.helperPid === process.pid) return;
+    if (performance.now() >= until) throw Error("update_request_not_committed");
+    await sleep(100);
+  } while (true);
 }
 function trackLaunch(rows, pid, started, tracked = []) {
   if (!tracked.length) {
@@ -100,18 +119,7 @@ async function stopLaunch(pid, tracked, onStage) {
   }
 }
 async function backupUserData(userData, id) {
-  const parent = path.join(path.dirname(userData), path.basename(userData) + "-update-backups");
-  const source = await fs.promises.realpath(userData), filter = backupFilter(source);
-  await checkCopySpace([{ path: parent, bytes: await copyBytes(source, filter) }]);
-  const owned = await createOwnedDirectory(parent, id);
-  try {
-    await fs.promises.cp(source, owned.directory, { recursive: true, errorOnExist: true, force: false, filter });
-    writeJsonAtomic(path.join(owned.directory, "update-backup.json"), { createdAt: new Date().toISOString(), kind: "before-full-upgrade" });
-    return owned.directory;
-  } catch (error) {
-    try { await removeOwnedDirectory(owned); } catch (cleanupError) { error.cleanupCode = cleanupError.code || cleanupError.message; }
-    throw error;
-  }
+  return (await require("./update-backups.cjs").captureData(userData, id)).directory;
 }
 async function reclaimFinishedHelpers(paths, processes) {
   const parent = path.join(paths.directory, "helper-runtime");
@@ -153,15 +161,19 @@ async function createUpdateJob({ userData, prepared, currentVersion, channel = "
   }
   // Budget our own copies before the parent exits; the signed v1 manifest has no NSIS expanded size.
   const copyBudget = await checkCopySpace(parts), owned = await createOwnedDirectory(parent, id);
+  let createdProgramBackup;
   try {
     for (const copy of copies) await fs.promises.cp(copy.source, path.join(owned.directory, copy.target), { recursive: true, errorOnExist: true, force: false });
     const helperExecutable = path.join(owned.directory, "ai-update-helper.exe");
-    const programBackup = prepared.kind === "components" ? null : await require("./update-program-backup.cjs").backupProgram(installedRoot, path.join(paths.directory, "program-backups"), id, readJson(paths.selection, {}));
+    const selection = readJson(paths.selection, {});
+    let programBackup = prepared.kind === "components" ? null : await require("./update-backups.cjs").reusableProgram(userData, installedRoot, selection);
+    if (prepared.kind !== "components" && !programBackup) programBackup = createdProgramBackup = await require("./update-program-backup.cjs").backupProgram(installedRoot, path.join(paths.directory, "program-backups"), id, selection);
     const job = { channel, programBackup, id, parentPid: process.pid, processes, currentVersion, targetVersion: prepared.version, prepared,
       installedRoot, executable: process.execPath, helperExecutable, helperCopyVersion: 1, helperIdentity: owned.identity, copyBudget };
     const file = path.join(paths.jobs, id + ".json"); writeJsonAtomic(file, job);
     return { file, job };
   } catch (error) {
+    if (createdProgramBackup?.owned) await removeOwnedDirectory(createdProgramBackup.owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; });
     try { await removeOwnedDirectory(owned); } catch (cleanupError) { error.cleanupCode = cleanupError.code || cleanupError.message; }
     throw error;
   }
@@ -198,6 +210,8 @@ async function runHelper({ jobFile, userData }) {
     // Publish ready last: the parent stays open if either startup receipt cannot be written.
     writeJsonAtomic(activeJobFile, { id: job.id, pid: process.pid });
     writeJsonAtomic(path.join(paths.jobs, job.id + ".ready.json"), { pid: process.pid });
+    await waitForAuthorization(full, job);
+    job.authorizationFile = full;
     const config = require("./cloud-config.cjs").cloudConfig({ channel: job.channel || "test" });
     currentPhase = "waiting";
     await waitForExit(job, stage);
@@ -217,7 +231,9 @@ async function runHelper({ jobFile, userData }) {
       const manifest = verifyManifest(prepared.envelope, config);
       if (manifest.version !== job.targetVersion || await hashFile(prepared.file) !== manifest.sha256 || fs.statSync(prepared.file).size !== manifest.size) throw Error("cloud_download_invalid");
       stage("backup", "正在备份本机数据", "保留配置、授权和业务记录，备份完成后开始完整升级。");
-      dataBackup = await backupUserData(userData, job.id);
+      const backups = require("./update-backups.cjs");
+      dataBackup = await backups.captureData(userData, job.id);
+      await backups.registerSet(userData, { id: job.id, version: job.currentVersion, programBackup: job.programBackup, data: dataBackup });
       stage("installing", "正在安装完整更新", "正在安装，请勿关闭电脑。");
       if (!job.programBackup) throw Error("update_backup_missing");
       installationStarted = true;
@@ -256,8 +272,11 @@ async function runHelper({ jobFile, userData }) {
     // Housekeeping cannot turn a successful update into a failed update.
     try {
       await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
-      // Retire old ledger ownership, not the business-data snapshots themselves.
-      if (dataBackup) require("../shared/artifact-retention.cjs").retainArtifacts(path.dirname(dataBackup), "successful-full-upgrades", [], 1, []);
+      if (dataBackup) {
+        const backups = require("./update-backups.cjs");
+        await backups.confirmSet(userData, job.id, { targetVersion: job.targetVersion, ack: readJson(ack),
+          dataCheck: await backups.checkPreservedData(userData, dataBackup) });
+      }
     } catch (error) { console.warn(`Post-update cleanup deferred: ${error.code || error.message}`); }
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {
@@ -283,4 +302,4 @@ async function runHelper({ jobFile, userData }) {
   }
   app.on("window-all-closed", () => app.quit());
 }
-module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, runHelper };
+module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper };

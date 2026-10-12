@@ -15,7 +15,7 @@ import creativeThinkingStill from "./assets/creative-thinking-still.webp";
 import creativeMaking from "./assets/creative-making.webp";
 import creativeMakingStill from "./assets/creative-making-still.webp";
 
-type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenLegacy?: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
+type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onInitialConsumed?: (initial: NonNullable<Props["initial"]>) => void; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenLegacy?: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
 const emptyGroups = (): Groups => ({ opening: [], middle: [], ending: [] });
 const activeStatuses = new Set(["queued", "analyzing", "rendering", "ready_for_review"]);
 const preferredVoiceStorageKey = "batch-studio-preferred-voice";
@@ -42,7 +42,7 @@ function scriptBody(candidate: Candidate) {
 }
 
 
-export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onOpenLegacy, onOpenDiagnostics }: Props) {
+export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, onOpenMaterials, onOpenLegacy, onOpenDiagnostics }: Props) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -249,6 +249,7 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
         localStorage.setItem("batch-studio-draft-id", restore.batch.batch_id);
         load(restore.batch);
         if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
+        if (initial && mounted.current) onInitialConsumed?.(initial);
         return;
       }
       const notices = [restoreNotice(restore)];
@@ -268,6 +269,9 @@ export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onO
       }
       notices.push((loaded && voiceWarning(loaded)) || (incompatibleVoice ? "上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。" : ""));
       if (notices.some(Boolean)) setNotice(notices.filter(Boolean).join(" "));
+      // The mounted editor owns this request now. A later visit must restore its
+      // saved edits instead of replaying the original material selection.
+      if (initial && mounted.current) onInitialConsumed?.(initial);
     });
   }, []);
   useEffect(() => {

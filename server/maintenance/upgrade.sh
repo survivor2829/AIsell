@@ -26,6 +26,9 @@ install -d -m 700 "$backup" "$backup/code"
 for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
   if [ -f "$app_dir/$file" ]; then cp -p "$app_dir/$file" "$backup/code/$file"; fi
 done
+systemctl stop ai-maintenance
+restart_on_backup_failure() { systemctl start ai-maintenance || true; }
+trap restart_on_backup_failure EXIT
 python3 - "$data_dir/reports.sqlite3" "$backup/reports.sqlite3" <<'PY'
 import sqlite3, sys
 source = sqlite3.connect(sys.argv[1])
@@ -38,15 +41,25 @@ finally:
     source.close()
 PY
 chmod 600 "$backup/reports.sqlite3"
+if [ -d "$data_dir/official-materials" ]; then
+  cp -a "$data_dir/official-materials" "$backup/official-materials"
+  python3 - "$backup/official-materials/catalog.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+PY
+fi
 
 rollback() {
-  echo "Deployment failed; restoring previous code. Database backup: $backup" >&2
+  echo "Deployment failed; restoring previous code; keeping live data and diagnostic backup: $backup" >&2
+  systemctl stop ai-maintenance || { echo 'Cannot stop service; preserving live data and backup for recovery.' >&2; return 1; }
   for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
-    if [ -f "$backup/code/$file" ]; then install -m 644 "$backup/code/$file" "$app_dir/$file"; fi
+    if [ -f "$backup/code/$file" ]; then install -m 644 "$backup/code/$file" "$app_dir/$file"; else rm -f "$app_dir/$file"; fi
   done
+  # No destructive migrations: new code may have accepted writes before health failed.
+  # Never replace live reports/catalog/files with the pre-start snapshot.
   systemctl restart ai-maintenance || true
 }
-systemctl stop ai-maintenance
 trap rollback EXIT
 for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
   install -m 644 "$source_dir/$file" "$app_dir/$file"

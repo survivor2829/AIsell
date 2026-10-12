@@ -18,7 +18,7 @@
   "operations": {
     "name": "周联客", "responsibility": "产品详情图",
     "appearances": [
-      { "id": "original", "label": "经典周联客", "portraitKey": "xiaolian-integrated", "position": "50% 31%", "accent": "#4878e8", "strong": "#2852b8", "surface": "#e3eafb", "soft": "#edf2fe", "pattern": "operations-original.svg", "motifs": ["send", "link", "radio", "chart", "user", "phone"], "layout": "routes" },
+      { "id": "original", "label": "经典周联客", "portraitKey": "xiaolian-integrated", "position": "50% 31%", "accent": "#7976de", "strong": "#514fa8", "surface": "#eeebfa", "soft": "#f6f3fd", "pattern": "operations-original.svg", "motifs": ["send", "link", "radio", "chart", "user", "phone"], "layout": "routes" },
       { "id": "growth", "label": "增长伙伴", "portraitKey": "xiaolian-growth", "position": "50% 27%", "accent": "#7976de", "strong": "#514fa8", "surface": "#f8f7f7", "soft": "#f9f9ff", "pattern": "operations-growth.svg", "motifs": ["cart", "message", "users", "chart", "trend", "users"], "layout": "growth" },
       { "id": "channels", "label": "连接更多", "portraitKey": "xiaolian-channels", "position": "50% 27%", "accent": "#8c82d8", "strong": "#5f549f", "surface": "#f6f7fc", "soft": "#faf9ff", "pattern": "operations-channels.svg", "motifs": ["mail", "send", "users", "chart", "megaphone", "message"], "layout": "orbits" }
     ]

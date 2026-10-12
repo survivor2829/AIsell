@@ -33,7 +33,7 @@ export function AgentOverview({ preferences, onOpenRole, onOpenModule }: {
     </div>
     <button className="agent-overview-materials" type="button" onClick={() => onOpenModule("materials")}>
       <span className="agent-overview-materials-icon"><Folder size={21} /></span>
-      <span><strong>物业保洁素材仓库</strong><small>我们为你准备的行业图片与视频，可直接用于AI混剪。</small></span>
+      <span><strong>物保素材库</strong><small>我们为你准备的行业图片与视频，可直接用于AI混剪。</small></span>
       <ArrowRight size={17} />
     </button>
   </div>;

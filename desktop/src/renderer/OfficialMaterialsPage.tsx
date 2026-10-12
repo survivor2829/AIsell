@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, ExternalLink, RefreshCw, Search, X } from "lucide-react";
+import { ExternalLink, RefreshCw, Search, X } from "lucide-react";
 import { characterAsset } from "./role-appearance";
 import type { OfficialCatalog, OfficialMaterial, SearchUpdate } from "./official-materials-types";
 import "./OfficialMaterialsPage.css";
@@ -11,7 +11,7 @@ export function OfficialMaterialsPage({ onUseMaterial }: { onUseMaterial: (ids: 
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [importing, setImporting] = useState("");
-  const [assistantOpen, setAssistantOpen] = useState(false);
+  const promptInput = useRef<HTMLInputElement>(null);
   const [prompt, setPrompt] = useState("");
   const [searchedPrompt, setSearchedPrompt] = useState("");
   const [search, setSearch] = useState<SearchUpdate | null>(null);
@@ -101,19 +101,19 @@ export function OfficialMaterialsPage({ onUseMaterial }: { onUseMaterial: (ids: 
   const items = (catalog?.items || []).filter((item) => (!category || item.category === category) && (!words.length || words.some((word) => `${item.title} ${item.description}`.toLocaleLowerCase().includes(word))));
   const results = search?.items || [];
   return <section className="page official-materials-page">
-    <header className="official-materials-head"><div><h1>物业保洁素材仓库</h1><p>我们为你准备的行业图片与视频。自己的素材请在AI混剪中管理。</p></div><button className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button></header>
+    <header className="official-materials-head"><div><h1>物保素材库</h1><p>我们为你准备的行业图片与视频。自己的素材请在AI混剪中管理。</p></div><button className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button></header>
     <div className="materials-assistant">
-      <button className="materials-assistant-trigger" onClick={() => setAssistantOpen((value) => !value)} aria-expanded={assistantOpen} aria-controls="materials-assistant-dialog">
+      <button type="button" className="materials-assistant-trigger" onClick={() => promptInput.current?.focus()} aria-label="向素材小助理描述想找的素材">
         <img src={characterAsset("materials-assistant.png")} alt="素材小助理" />
-        <span><strong>素材小助理</strong><span>想找什么场景？告诉我，帮你找素材。</span></span><ArrowRight size={20} />
       </button>
-      {assistantOpen && <div id="materials-assistant-dialog" className="materials-assistant-dialog">
-        <p>可以输入“工厂里的清洁机器人”或具体机器型号。先找仓库，再找公开网页。</p>
-        {!catalog?.searchEnabled && <p className="materials-assistant-hint">联网查找尚未开放，目前可查找仓库已有素材。</p>}
-        <form onSubmit={(event) => { event.preventDefault(); void startSearch(); }}><label className="sr-only" htmlFor="materials-prompt">描述想找的素材</label><input id="materials-prompt" value={prompt} maxLength={300} onChange={(event) => setPrompt(event.target.value)} placeholder="描述场景、设备或想找的画面" /><button className="primary-button" disabled={!prompt.trim() || busySearch}><Search size={16} />{busySearch ? "正在查找" : searchedPrompt ? "继续查找" : "找素材"}</button>{busySearch && <button type="button" className="secondary-button" onClick={() => void cancelSearch()}>停止查找</button>}</form>
+      <div className="materials-assistant-dialog">
+        <h2>素材小助理</h2>
+        <p>想找什么画面？告诉我场景或设备名称。</p>
+        <p className="materials-assistant-hint" id="materials-search-scope">{catalog?.searchEnabled ? "先查官方素材，再查公开网页；网页结果仅供参考。" : "当前只查官方素材，联网查找尚未开放。"}</p>
+        <form onSubmit={(event) => { event.preventDefault(); void startSearch(); }}><label className="sr-only" htmlFor="materials-prompt">描述想找的素材</label><input ref={promptInput} id="materials-prompt" aria-describedby="materials-search-scope" value={prompt} maxLength={300} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：工厂里的清洁机器人" /><button className="primary-button" disabled={!prompt.trim() || busySearch}><Search size={16} />{busySearch ? "正在查找" : searchedPrompt ? "继续查找" : "找素材"}</button>{busySearch && <button type="button" className="secondary-button" onClick={() => void cancelSearch()}>停止查找</button>}</form>
         {searchedPrompt && <p className="materials-search-query">你的需求：{searchedPrompt}</p>}
         {search && <p role="status">{search.message || (busySearch ? "正在寻找相关素材…" : search.status === "completed" ? "查找完成" : "查找已结束")}</p>}
-      </div>}
+      </div>
     </div>
     {notice && <p className="touch-notice" role="status">{notice}</p>}
     <div className="official-materials-toolbar"><div className="official-material-categories" aria-label="素材分类"><button aria-pressed={!category} onClick={() => { setCategory(""); setVisible(24); }}>全部</button>{catalog?.categories.map((item) => <button key={item.id} aria-pressed={category === item.id} onClick={() => { setCategory(item.id); setVisible(24); }}>{item.label}</button>)}</div><input aria-label="搜索仓库素材" placeholder="搜索仓库素材" value={query} onChange={(event) => { setQuery(event.target.value); setVisible(24); }} /></div>

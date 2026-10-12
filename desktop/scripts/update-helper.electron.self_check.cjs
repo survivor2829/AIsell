@@ -236,6 +236,9 @@ if (!process.versions.electron) {
       } }
     };
     if (failureMode !== "existing-backup") {
+      mocks["./update-backups.cjs"] = { ...load("./update-backups.cjs"), captureData: async () => {
+        throw Object.assign(Error("fixture disk write failed"), { code: "ENOSPC", path: path.join(destination, "settings.json"), syscall: "copyfile" });
+      } };
       mocks["original-fs"] = { ...fs, promises: { ...fs.promises, cp: async () => {
         throw Object.assign(Error("fixture disk write failed"), { code: "ENOSPC", path: path.join(destination, "settings.json"), syscall: "copyfile" });
       } } };

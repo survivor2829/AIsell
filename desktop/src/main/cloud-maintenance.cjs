@@ -302,12 +302,14 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     if (updateLaunching || !userData) return false;
     updateLaunching = true;
     let phase = "prepare";
+    let launchedJobFile;
     try {
       const prepared = await prepareInstall();
       if (!prepared) return false;
       notify({ stage: "preparing", error: "" });
       phase = "helper";
       const { file, job } = await require("./update-helper.cjs").createUpdateJob({ userData, prepared, currentVersion: version, channel: config.channel });
+      launchedJobFile = file;
       phase = "launch";
       await new Promise((resolve, reject) => {
         // This Electron helper owns the user-visible update progress window.
@@ -320,8 +322,12 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
       if (!fs.existsSync(ready)) fail("update_helper_not_ready");
       notify({ stage: "waiting", error: "" });
+      require("./update-helper.cjs").authorizeUpdateJob(file, job);
       return true;
     } catch (error) {
+      if (launchedJobFile) {
+        try { require("./update-helper.cjs").revokeUpdateJob(launchedJobFile); } catch { /* Without a commit, a late helper cannot install. */ }
+      }
       const failure = updateFailure(error, phase);
       // Diagnostics may share the failing disk. Never let their write hide the cause or permit app exit.
       try { logger?.event?.("maintenance", "update.failed", { stage: failure.phase }, {

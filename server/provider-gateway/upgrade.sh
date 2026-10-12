@@ -30,9 +30,12 @@ if [ -e "$override_file" ]; then
 fi
 
 rollback() {
-  echo 'Provider gateway update failed; restoring previous code.' >&2
+  echo "Provider gateway update failed; restoring previous code; keeping live receipts and diagnostic backup: $backup" >&2
+  systemctl stop ai-provider-gateway || { echo 'Cannot stop service; preserving live data and backup for recovery.' >&2; return 1; }
   install -m 644 "$backup/service.py" "$app_dir/service.py"
-  if [ -f "$backup/material_search.py" ]; then install -m 644 "$backup/material_search.py" "$app_dir/material_search.py"; fi
+  if [ -f "$backup/material_search.py" ]; then install -m 644 "$backup/material_search.py" "$app_dir/material_search.py"; else rm -f "$app_dir/material_search.py"; fi
+  # Preserve post-start receipts and fee reservations, including unknown outcomes.
+  # This deployment has no destructive migrations; backups are diagnostic only.
   if [ -e "$backup/20-operation-receipts.conf" ]; then
     install -m 644 "$backup/20-operation-receipts.conf" "$override_file"
   else
@@ -43,6 +46,26 @@ rollback() {
 }
 
 systemctl stop ai-provider-gateway
+restart_on_backup_failure() { systemctl start ai-provider-gateway || true; }
+trap restart_on_backup_failure EXIT
+for file in operation-receipts.sqlite3 operation-receipts.sqlite3.materials; do
+  if [ -f "$data_dir/$file" ]; then
+    python3 - "$data_dir/$file" "$backup/$file" <<'PY'
+import os, sqlite3, sys
+source = sqlite3.connect(sys.argv[1])
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+    assert destination.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+finally:
+    destination.close()
+    source.close()
+metadata = os.stat(sys.argv[1])
+os.chown(sys.argv[2], metadata.st_uid, metadata.st_gid)
+os.chmod(sys.argv[2], 0o600)
+PY
+  fi
+done
 trap rollback EXIT
 install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
 install -d -m 755 "$override_dir"

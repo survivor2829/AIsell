@@ -1,7 +1,7 @@
 // ASARs are physical files here; budgets count copied bytes, not source disk allocation.
 const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHash } = require("node:crypto");
 const PHASES = { prepare: "校验更新文件", helper: "准备更新助手", launch: "启动更新助手", ready: "等待更新助手就绪",
   waiting: "等待程序退出", verifying: "校验更新文件", backup: "备份业务数据", installing: "安装更新", starting: "启动新版本", complete: "保存更新完成记录" };
 const normalize = file => {
@@ -11,8 +11,12 @@ const normalize = file => {
 function backupFilter(userData) {
   const root = normalize(userData);
   return file => {
-    const relative = path.relative(root, normalize(file)).replaceAll("\\", "/");
-    return !["data/cloud-maintenance", "update-helper-profile"].some(dir => relative === dir || relative.startsWith(dir + "/"));
+    const relative = path.relative(root, normalize(file)).replaceAll("\\", "/").toLowerCase();
+    // Only named, regenerable Electron caches. Never match arbitrary nested
+    // folders called Cache: customer assets and production outputs are data.
+    return !["data/cloud-maintenance", "update-helper-profile", "cache", "code cache", "gpucache",
+      "dawncache", "dawngraphitecache", "dawnwebgpucache", "shadercache", "grshadercache",
+      "crashpad", "crash reports"].some(dir => relative === dir || relative.startsWith(dir + "/"));
   };
 }
 async function copyBytes(file, filter = () => true) {
@@ -71,12 +75,20 @@ async function removeOwnedDirectory(owned) {
       || normalize(await fs.promises.realpath(parent)) !== normalize(parent)) throw Error("update_copy_path_invalid");
   const matches = info => info.isDirectory() && !info.isSymbolicLink()
     && String(info.dev) === owned.identity?.dev && String(info.ino) === owned.identity?.ino;
-  if (!matches(await fs.promises.lstat(directory, { bigint: true }))
-      || normalize(await fs.promises.realpath(directory)) !== normalize(directory)) throw Error("update_copy_path_invalid");
-  // Move to an unpredictable sibling and recheck identity before recursive removal.
-  // If the source was replaced during the rename, preserve it instead of deleting it.
-  const discarded = path.join(parent, ".discard-" + randomUUID());
-  await fs.promises.rename(directory, discarded);
+  // A stable quarantine name survives a crash or a sharing violation after
+  // rename. Retrying the original ownership receipt finds the exact same inode.
+  const token = createHash("sha256").update(JSON.stringify([normalize(directory), owned.identity])).digest("hex");
+  const discarded = path.join(parent, ".discard-" + token);
+  let quarantined = false;
+  try {
+    if (!matches(await fs.promises.lstat(discarded, { bigint: true }))) throw Error("update_copy_path_invalid");
+    quarantined = true;
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (!quarantined) {
+    if (!matches(await fs.promises.lstat(directory, { bigint: true }))
+        || normalize(await fs.promises.realpath(directory)) !== normalize(directory)) throw Error("update_copy_path_invalid");
+    await fs.promises.rename(directory, discarded);
+  }
   if (!matches(await fs.promises.lstat(discarded, { bigint: true }))
       || normalize(await fs.promises.realpath(parent)) !== normalize(parent)
       || normalize(await fs.promises.realpath(discarded)) !== normalize(discarded)) throw Error("update_copy_path_invalid");

@@ -2,15 +2,18 @@
 .official-materials-head { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:22px; }
 .official-materials-head h1 { margin:0 0 8px; font-size:25px; }
 .official-materials-head p,.official-reference-results>p { color:#526078; font-size:13px; line-height:1.6; margin:0; }
-.materials-assistant { background:#fff3ed; border-radius:14px; margin-bottom:22px; }
-.materials-assistant-trigger { display:flex; align-items:center; gap:18px; width:100%; padding:8px 22px; background:transparent; border:0; text-align:left; color:#59382c; cursor:pointer; }
-.materials-assistant-trigger img { width:82px; height:100px; object-fit:contain; flex-shrink:0; }
-.materials-assistant-trigger>span { display:grid; gap:8px; flex:1; }
-.materials-assistant-trigger strong { font-size:19px; }.materials-assistant-trigger span span { font-size:13px; }
-.materials-assistant-dialog { padding:0 22px 22px; }.materials-assistant-dialog p { font-size:13px; line-height:1.7; color:#59382c; }
-.materials-assistant-dialog form { display:flex; gap:8px; flex-wrap:wrap; }.materials-assistant-dialog input { flex:1; min-width:200px; }
-.materials-assistant-dialog input,.official-materials-toolbar input { background:white; border:1px solid #c6cbd2; border-radius:8px; padding:10px 12px; color:#172033; font:inherit; font-size:13px; }
-.materials-assistant-hint { color:#714b3a!important; }.materials-search-query { font-weight:600; }
+.materials-assistant { display:flex; align-items:center; gap:24px; min-height:210px; margin-bottom:22px; padding:0 24px 0 0; background:var(--agent-surface); border-radius:14px; }
+.materials-assistant-trigger { display:block; width:190px; height:210px; padding:0; flex-shrink:0; border:0; border-radius:14px 0 0 14px; background:transparent; overflow:hidden; cursor:pointer; }
+.materials-assistant-trigger img { width:100%; height:100%; object-fit:cover; object-position:center 28%; mix-blend-mode:multiply; mask-image:linear-gradient(to right, black 75%, transparent); }
+.materials-assistant-dialog { flex:1; min-width:0; padding:20px 0; color:var(--agent-accent-strong); }
+.materials-assistant-dialog h2 { margin:0 0 7px; font-size:23px; }
+.materials-assistant-dialog p { margin:6px 0; font-size:13px; line-height:1.7; }
+.materials-assistant-dialog form { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+.materials-assistant-dialog input { flex:1; min-width:180px; }
+.materials-assistant-dialog input,.official-materials-toolbar input { background:white; border:1px solid #aebcb1; border-radius:8px; padding:10px 12px; color:#172033; font:inherit; font-size:13px; }
+.materials-assistant-dialog input::placeholder { color:#566c5d; }
+.materials-assistant-dialog .materials-assistant-hint { font-size:12px; }
+.materials-search-query { font-weight:600; overflow-wrap:anywhere; }
 .official-materials-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
 .official-material-categories { display:flex; flex-wrap:wrap; gap:6px; }.official-material-categories button { padding:8px 13px; border:1px solid transparent; border-radius:8px; background:transparent; color:#526078; cursor:pointer; }.official-material-categories button[aria-pressed=true] { background:#fff0f1; color:#a41b2d; border-color:#edc4cb; font-weight:700; }
 .official-section-title { margin:24px 0 14px; display:flex; align-items:baseline; gap:10px; font-size:18px; }.official-section-title small { color:#526078; font-size:12px; font-weight:400; }
@@ -20,6 +23,8 @@
 .official-materials-empty { padding:40px 0; text-align:center; color:#526078; }.official-reference-results { margin-top:32px; }.official-reference-results h2 { font-size:18px; }.official-reference-results article { display:flex; align-items:center; gap:16px; padding:18px 0; border-bottom:1px solid #e4e7ec; }.official-reference-results article>img { width:96px; height:72px; object-fit:cover; border-radius:8px; }.official-reference-results article>div { flex:1; min-width:0; }.official-reference-results h3 { margin:0 0 7px; font-size:15px; }.official-reference-results article p { margin:0 0 7px; color:#526078; font-size:12px; line-height:1.65; }.official-reference-results small { color:#526078; font-size:11px; }.official-reference-results article>button { flex-shrink:0; }
 .official-preview-backdrop { position:fixed; inset:0; z-index:110; background:#172033a8; display:flex; align-items:center; justify-content:center; padding:24px; }.official-preview { background:white; border-radius:14px; padding:22px; max-height:90vh; overflow:auto; width:min(900px,92vw); box-shadow:0 20px 70px #10182840; }.official-preview header,.official-preview footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }.official-preview header { margin-bottom:16px; }.official-preview h2 { font-size:19px; margin:0; }.official-preview>img,.official-preview>video { width:100%; max-height:55vh; object-fit:contain; background:#f4f5f6; }.official-preview p { font-size:13px; line-height:1.65; }.official-preview small { color:#526078; }.official-preview footer { margin-top:20px; }
 .official-materials-page button:focus-visible,.official-materials-page input:focus-visible { outline:2px solid #a41b2d; outline-offset:3px; }.official-materials-page button:disabled { opacity:.55; cursor:wait; }.official-material-cover:hover img { opacity:.9; }.official-source-link:hover { color:#a41b2d; text-decoration:underline; }
-@media(max-width:1050px) { .official-materials-head { align-items:flex-start; }.official-materials-head h1 { font-size:22px; }.official-reference-results article { flex-wrap:wrap; }.official-reference-results article>button { margin-left:auto; }.materials-assistant-trigger { padding:8px 14px; }.materials-assistant-trigger img { width:66px; height:86px; } }
+@media(max-width:1050px) { .official-materials-head { align-items:flex-start; }.official-materials-head h1 { font-size:22px; }.official-reference-results article { flex-wrap:wrap; }.official-reference-results article>button { margin-left:auto; }.materials-assistant { gap:14px; padding-right:16px; }.materials-assistant-trigger { width:145px; height:190px; } }
 
 .official-materials-page .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+
+@media(max-width:760px) { .materials-assistant { gap:10px; }.materials-assistant-trigger { width:110px; height:170px; }.materials-assistant-dialog h2 { font-size:20px; }.materials-assistant-dialog input { min-width:140px; width:100%; }.official-materials-head { flex-wrap:wrap; } }

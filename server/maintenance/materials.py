@@ -1,6 +1,7 @@
 """Official media catalog; administrator writes, immutable content-addressed files."""
 import base64
 import hashlib
+import ipaddress
 import json
 import re
 import sqlite3
@@ -12,6 +13,31 @@ ID = re.compile(r"[a-zA-Z0-9_-]{1,80}\Z")
 MAX_FILE = 24 * 1024 * 1024
 DEFAULT_CATEGORIES = [{"id": key, "label": label} for key, label in
                       (("factory", "工厂"), ("community", "小区"), ("robot", "机器人"), ("cleaning", "保洁作业"))]
+
+
+def validate_source_url(value):
+    """Match the desktop publicUrl contract; never publish an unreadable catalog."""
+    if not isinstance(value, str) or re.search(r"[\s\\]", value):
+        raise ValueError("source")
+    try:
+        source = urlsplit(value)
+        host = (source.hostname or "").lower()
+        if not re.fullmatch(r"[a-z0-9_.-]+", host.encode("idna").decode("ascii")):
+            raise ValueError("source")
+        if (source.scheme not in ("http", "https") or not host or source.username or source.password
+                or source.port not in (None, 80, 443) or "." not in host or "%" in host
+                or re.search(r"(?:^|\.)(?:localhost|local|internal)$", host)):
+            raise ValueError("source")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            # WHATWG URL also normalizes short, integer, octal and hexadecimal IPv4.
+            if re.fullmatch(r"(?:0x[0-9a-f]+|[0-9]+)", host.rstrip(".").split(".")[-1]):
+                raise ValueError("source")
+        else:
+            raise ValueError("source")
+    except (ValueError, UnicodeError) as error:
+        raise ValueError("source") from error
 
 
 class MaterialsStore:
@@ -56,6 +82,11 @@ class MaterialsStore:
                     raise ValueError("category_in_use")
                 self.db.execute("UPDATE config SET value=? WHERE key='categories'", (json.dumps(clean),))
             elif action in ("publish", "unpublish"):
+                if action == "publish":
+                    existing = self.db.execute("SELECT body FROM items WHERE id=?", (body.get("id"),)).fetchone()
+                    if existing is None:
+                        raise ValueError("missing_item")
+                    validate_source_url(json.loads(existing[0]).get("sourceUrl"))
                 if not self.db.execute("UPDATE items SET published=? WHERE id=?", (int(action == "publish"), body.get("id"))).rowcount:
                     raise ValueError("missing_item")
             elif action == "upload":
@@ -63,9 +94,7 @@ class MaterialsStore:
                         (("id", 80), ("title", 150), ("category", 80), ("kind", 10), ("description", 1500), ("sourceUrl", 2000), ("author", 200), ("license", 2000))}
                 if not ID.fullmatch(item["id"]) or item["kind"] not in ("image", "video"):
                     raise ValueError("item")
-                source = urlsplit(item["sourceUrl"])
-                if source.scheme not in ("http", "https") or not source.hostname or source.username or source.password:
-                    raise ValueError("source")
+                validate_source_url(item["sourceUrl"])
                 if item["category"] not in {row["id"] for row in self.catalog()["categories"]}:
                     raise ValueError("category")
                 raw = base64.b64decode(body.get("data", ""), validate=True)

@@ -33,7 +33,7 @@ import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
 import { CustomerTools } from "./CustomerTools";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
-import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
+import { AGENT_ROLE_ORDER, MATERIALS_THEME, appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { OfficialMaterialsPage } from "./OfficialMaterialsPage";
 import { ProductDetailPage } from "./ProductDetailPage";
@@ -419,7 +419,7 @@ const navGroupByRole: Record<GroupKey, NavGroup> = {
 const navGroups = AGENT_ROLE_ORDER.map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const materialsNavItem: NavItem = { key: "materials", label: "物业保洁素材仓库", icon: Folder };
+const materialsNavItem: NavItem = { key: "materials", label: "物保素材库", icon: Folder };
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
 const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), materialsNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
@@ -778,7 +778,7 @@ export default function App() {
     (group) => group.key === active || group.children.some((item) => item.key === active) || group.key === "agent" && agentSecondary.some((item) => item.key === active)
   );
   const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
-  const roleThemeClass = activeGroup ? ` role-theme-${activeGroup.key}` : "";
+  const roleThemeClass = active === "materials" ? " role-theme-materials" : activeGroup ? ` role-theme-${activeGroup.key}` : "";
 
   return (
     <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
@@ -824,8 +824,8 @@ export default function App() {
             );
           })}
           <button className={`nav-item ${active === materialsNavItem.key ? "active" : ""}`} onClick={() => setActive("materials")}>
-            <Folder size={20} strokeWidth={2.5} />
-            <span>{materialsNavItem.label}</span>
+            <span className="nav-role-avatar is-materials" style={MATERIALS_THEME} aria-hidden="true"><img src={characterAsset("materials-assistant.png")} alt="" /></span>
+            <span className="nav-role-copy"><strong>{materialsNavItem.label}</strong><small>素材小助理</small></span>
           </button>
           <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
         </nav>
@@ -837,7 +837,7 @@ export default function App() {
         </div>
       </aside>
 
-      <section className={`workspace${roleThemeClass}`} style={activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
+      <section className={`workspace${roleThemeClass}`} style={active === "materials" ? MATERIALS_THEME : activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
         <header className="topbar">
           <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productBrand.displayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
@@ -944,6 +944,7 @@ export default function App() {
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={openFeedback}
               /></> : <BatchCreativePage initial={batchInitial}
+                onInitialConsumed={(consumed) => setBatchInitial((current) => current === consumed ? undefined : current)}
                 onOpenLegacy={() => openLegacy()}
                 onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}

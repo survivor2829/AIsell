@@ -27,9 +27,18 @@ function collect(root, preparedEnvelope, { created = [], ready = false, staging 
     let selection = {};
     try { selection = JSON.parse(fs.readFileSync(path.join(root, "selection.json"), "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
-    const selected = [...new Set([selection.active, selection.previous].filter(Boolean))]
-      .flatMap(id => generationRefs(root, id));
-    retainArtifacts(root, "selected-components", selected, 1, []);
+    const selectedIds = new Set([selection.active, selection.previous].filter(Boolean));
+    // A full-upgrade rollback restores its saved selection, so those immutable
+    // generations remain referenced even after the live selection is cleared.
+    const registryFile = path.join(root, "backup-registry.json");
+    if (fs.existsSync(registryFile)) {
+      const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+      if (registry.schema !== 1 || !Array.isArray(registry.sets)) throw Error("update_backup_registry_invalid");
+      for (const set of registry.sets) {
+        for (const id of new Set([set.programBackup?.selection?.active, set.programBackup?.selection?.previous].filter(Boolean))) selectedIds.add(id);
+      }
+    }
+    retainArtifacts(root, "selected-components", [...selectedIds].flatMap(id => generationRefs(root, id)), 1, []);
     if (preparedEnvelope) {
       const refs = generationRefs(root, digest(preparedEnvelope.payload), preparedEnvelope);
       if (staging) refs.push(staging);

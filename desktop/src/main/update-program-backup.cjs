@@ -28,7 +28,7 @@ async function backupProgram(installedRoot, parent, id, selection) {
     const program = path.join(owned.directory, "program");
     await fs.promises.cp(root, program, { recursive: true, force: false, errorOnExist: true });
     if (JSON.stringify(before) !== JSON.stringify(await inventory(program))) throw Error("update_backup_verification_failed");
-    const record = { installedRoot: root, program, selection, files: before };
+    const record = { installedRoot: root, program, selection, files: before, owned };
     writeJsonAtomic(path.join(owned.directory, "program-backup.json"), record);
     return record;
   } catch (error) { await removeOwnedDirectory(owned).catch(() => {}); throw error; }
