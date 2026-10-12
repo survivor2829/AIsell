@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      install_acceptance:
+        description: 'Only run isolated real installer acceptance; never publish'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,7 +24,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  real-installer-acceptance:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_acceptance }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Fetch immutable original artifacts from unpublished acceptance draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path C:/Inputs -Force | Out-Null
+          gh release download acceptance-original-64-20261012 --pattern original-1.1.64.exe --pattern official-update-assistant.exe --dir C:/Inputs
+          if ($LASTEXITCODE -ne 0) { throw 'Original acceptance artifacts unavailable' }
+          $assistant = Get-FileHash C:/Inputs/official-update-assistant.exe -Algorithm SHA256
+          if ($assistant.Hash.ToLowerInvariant() -ne '9f113fc437afad04712e62f0bf5a321cdb53f922c9dce902258fc154480e175d') { throw 'Acceptance assistant changed' }
+      - name: Fetch published target through pinned official CA
+        shell: pwsh
+        run: |
+          curl.exe --fail --cacert desktop/src/main/cloud-test-ca.crt --retry 2 --max-time 600 https://115.159.88.100/artifacts/c7b3c4b51e09276dbe1602a71e2fb35b225c4e2c991022b96671927db308a8ff.exe -o C:/Inputs/latest-1.1.86.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Official installer unavailable' }
+      - name: Original 64 real NSIS to current real NSIS and startup acknowledgement
+        shell: pwsh
+        run: ./desktop/scripts/update-install-acceptance.ps1
+      - name: Preserve isolated installation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: real-installer-acceptance
+          path: C:/Evidence/sandbox-real-upgrade
+          if-no-files-found: warn
+          retention-days: 7
+
   source-and-renderer:
+    if: ${{ !inputs.install_acceptance }}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -65,6 +106,7 @@ jobs:
         run: npm run build:delivery
 
   service-and-content:
+    if: ${{ !inputs.install_acceptance }}
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
