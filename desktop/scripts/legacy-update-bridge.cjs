@@ -1,4 +1,4 @@
-// Produce an unsigned, reviewable patch for the original 1.1.64 application.
+// Produce an unsigned, reviewable patch for a verified 1.1.64 application.
 // This is not a publisher. A release still needs the original/rebuilt application,
 // verified base58, signed component envelope and the acceptance gates in the docs.
 const fs = require("node:fs");
@@ -12,6 +12,15 @@ const SOURCE_HASHES = Object.freeze({
   "src/main/update-storage.cjs": "d3006906347abe98b8c5906eb75c614c13f74d1d79d6aa81eadcff963781adf3",
   "src/main/update-helper.cjs": "d24410fd607093c632c4991c10d3417858d46eaa2570a70c00341a201d7e3682"
 });
+const SOURCE_PROFILES = Object.freeze([
+  Object.freeze({ commit: SOURCE_COMMIT, hashes: SOURCE_HASHES }),
+  Object.freeze({
+    commit: "c3b7a4c4e2984e29ace4eb6711f455587457b599",
+    hashes: Object.freeze({ ...SOURCE_HASHES,
+      "src/main/main.cjs": "e39f97dd4204f370a5eb49dff8a10c3d0a172f577405f47e66a54d4f78b42d90"
+    })
+  })
+]);
 function replaceOnce(source, before, after) {
   if (source.split(before).length !== 2) throw Error("legacy_bridge_patch_context_mismatch");
   return source.replace(before, after);
@@ -43,9 +52,13 @@ function buildLegacyBridgePatch({ sourceApplicationRoot, targetEnvelope, bridgeV
   if (compareVersions(bridgeVersion, "1.1.64") <= 0 || compareVersions(full.version, bridgeVersion) <= 0) {
     throw Error("legacy_bridge_version_order_invalid");
   }
-  const sources = {};
-  for (const [relative, expected] of Object.entries(SOURCE_HASHES)) {
-    const source = fs.readFileSync(path.join(sourceApplicationRoot, relative), "utf8").replaceAll("\r\n", "\n");
+  const readSource = relative => fs.readFileSync(path.join(sourceApplicationRoot, relative), "utf8").replaceAll("\r\n", "\n");
+  const sources = { "src/main/main.cjs": readSource("src/main/main.cjs") };
+  const mainHash = sha256(sources["src/main/main.cjs"]);
+  const profile = SOURCE_PROFILES.find(candidate => candidate.hashes["src/main/main.cjs"] === mainHash);
+  if (!profile) throw Error("legacy_bridge_source_mismatch:src/main/main.cjs");
+  for (const [relative, expected] of Object.entries(profile.hashes)) {
+    const source = sources[relative] ?? readSource(relative);
     if (sha256(source) !== expected) throw Error(`legacy_bridge_source_mismatch:${relative}`);
     sources[relative] = source;
   }
@@ -88,13 +101,13 @@ function buildLegacyBridgePatch({ sourceApplicationRoot, targetEnvelope, bridgeV
   ].join("\n") + main.slice(start);
   const recovery = recoveryFiles();
   const dedicated = name => fs.readFileSync(path.join(__dirname, "../src/main", name), "utf8");
-  return { sourceCommit: SOURCE_COMMIT, bridgeVersion, targetVersion: full.version, targetSha256: full.sha256,
+  return { sourceCommit: profile.commit, bridgeVersion, targetVersion: full.version, targetSha256: full.sha256,
     files: { ...recovery.files, "src/main/main.cjs": main, "src/main/cloud-maintenance.cjs": maintenance, "src/main/update-storage.cjs": storage,
       "src/main/legacy-update-helper.cjs": dedicated("legacy-update-recovery.cjs"),
       "src/main/legacy-update-continuation.cjs": dedicated("legacy-update-continuation.cjs"),
       "src/main/legacy-update-target.json": JSON.stringify(targetEnvelope) },
-    sourceHashes: SOURCE_HASHES, recoverySourceHashes: recovery.hashes, implementationReady: true, deliveryReady: false,
+    sourceHashes: profile.hashes, recoverySourceHashes: recovery.hashes, implementationReady: true, deliveryReady: false,
     remainingGates: ["original-installation-artifact", "signed-component-package", "ordinary-user-two-stage-upgrade", "real-installer-failure-and-startup-rollback"] };
 
 }
-module.exports = { buildLegacyBridgePatch, SOURCE_COMMIT, SOURCE_HASHES };
+module.exports = { buildLegacyBridgePatch, SOURCE_COMMIT, SOURCE_HASHES, SOURCE_PROFILES };

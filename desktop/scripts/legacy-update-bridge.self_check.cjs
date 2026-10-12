@@ -6,7 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const JSZip = require("jszip");
-const { buildLegacyBridgePatch, SOURCE_COMMIT } = require("./legacy-update-bridge.cjs");
+const { buildLegacyBridgePatch, SOURCE_COMMIT, SOURCE_HASHES, SOURCE_PROFILES } = require("./legacy-update-bridge.cjs");
 const { treeHash, digest, hashFile } = require("../src/shared/component-contract.cjs");
 const desktop = path.resolve(__dirname, "..");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -104,7 +104,36 @@ async function main() {
     file: `/artifacts/${fullSha}.exe`, notes: "隔离协议夹具，未发布" };
   const targetEnvelope = sign(fullManifest);
   const patch = buildLegacyBridgePatch({ sourceApplicationRoot: sourceApp, targetEnvelope, bridgeVersion: "1.1.80", config });
+  assert.equal(patch.sourceCommit, SOURCE_COMMIT);
+  assert.deepEqual(patch.sourceHashes, SOURCE_HASHES);
   for (const [relative, source] of Object.entries(patch.files)) if (relative.endsWith(".cjs")) new (require("node:vm").Script)(source, { filename: relative });
+  // The customer's installed 1.1.64 has a later, independently fingerprinted
+  // main module. Reconstruct its four inputs without touching collected files.
+  const customerProfile = SOURCE_PROFILES.find(profile => profile.commit === "c3b7a4c4e2984e29ace4eb6711f455587457b599");
+  assert.ok(customerProfile);
+  const customerApp = path.join(root, "customer-source64");
+  for (const relative of Object.keys(customerProfile.hashes)) {
+    const file = path.join(customerApp, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, execFileSync("git", ["show", customerProfile.commit + ":desktop/" + relative], { cwd: desktop }));
+  }
+  const customerOptions = { sourceApplicationRoot: customerApp, targetEnvelope, bridgeVersion: "1.1.80", config };
+  const customerPatch = buildLegacyBridgePatch(customerOptions);
+  assert.equal(customerPatch.sourceCommit, customerProfile.commit);
+  assert.deepEqual(customerPatch.sourceHashes, customerProfile.hashes);
+  const customerMainFile = path.join(customerApp, "src/main/main.cjs");
+  const customerMain = fs.readFileSync(customerMainFile, "utf8").replaceAll("\r\n", "\n");
+  const patchedMain = customerPatch.files["src/main/main.cjs"];
+  new (require("node:vm").Script)(patchedMain);
+  assert.match(customerMain, /prepareNarration: prepareWorkbenchNarration/);
+  const registration = customerMain.indexOf('      registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,');
+  assert.ok(registration > 0);
+  assert.equal(patchedMain.slice(0, registration), customerMain.slice(0, registration), "shared narration and all business registration before the update patch must be preserved");
+  const start = customerMain.indexOf('      cloudMaintenance.start();', registration);
+  assert.ok(start > registration);
+  assert.ok(patchedMain.endsWith(customerMain.slice(start)), "business source after the update registration must also be preserved");
+  fs.appendFileSync(customerMainFile, "\n// Unrecognized source must not be patched by context alone.\n");
+  assert.throws(() => buildLegacyBridgePatch(customerOptions), /legacy_bridge_source_mismatch:src\/main\/main\.cjs/);
   assert.throws(() => buildLegacyBridgePatch({ sourceApplicationRoot: sourceApp,
     targetEnvelope: { ...targetEnvelope, signature: "invalid" }, bridgeVersion: "1.1.80", config }), /signature/);
   assert.throws(() => buildLegacyBridgePatch({ sourceApplicationRoot: sourceApp, targetEnvelope, bridgeVersion: "1.1.81", config }), /version_order/);
@@ -194,6 +223,8 @@ async function main() {
   assert.equal(await next.installOnExit(), false); next.stop();
   assert.deepEqual(fs.readFileSync(customer), customerBytes);
   const evidence = { sourceCommit: SOURCE_COMMIT, base: baseline.base, bridgeVersion: "1.1.80", targetVersion: "1.1.81",
+    customerSourceCommit: customerPatch.sourceCommit, customerSourceHashes: customerPatch.sourceHashes,
+    customerSourcePatchPreservesBusinessCode: true, unknownMainSourceRejected: true,
     signedComponentPreparedByOriginal64Protocol: true, originalVerifierAcceptedGeneration: true,
     patchedHelperBackupExcludedRuntimeJunction: true, businessBytesPreserved: true, secondLegSignedTargetFixed: true,
     helperCommitAndCancellationPassed: true, ordinaryExitDoesNotInstall: true,
