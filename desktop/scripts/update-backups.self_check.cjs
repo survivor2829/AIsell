@@ -81,10 +81,35 @@ if (process.argv[2] === "--hold-registry") {
     await fs.unlink(businessLink);
     await fs.symlink(outside, businessLink, "junction");
     const legacyMutable = ["DevToolsActivePort", path.join("Network", "Network Persistent State")];
+    const database = path.join("content-engine", "content.db"), sharedIndex = database + "-shm";
+    const sqliteSnapshot = { ...first.data, files: [...first.data.files.filter(file => file.path === database), { path: sharedIndex, size: 32768, sha256: "old" }] };
+    assert.equal(await checkPreservedData(profile, sqliteSnapshot), true, "clean close may remove SQLite shared-memory index");
+    await fs.writeFile(path.join(profile, sharedIndex), "");
+    assert.equal(await checkPreservedData(profile, sqliteSnapshot), true, "startup may rebuild an empty shared-memory index");
+    await fs.unlink(path.join(profile, sharedIndex));
+    await fs.rename(path.join(profile, database), path.join(profile, database + ".held"));
+    assert.equal(await checkPreservedData(profile, sqliteSnapshot), false, "shared-memory exemption cannot hide a missing database");
+    await fs.rename(path.join(profile, database + ".held"), path.join(profile, database));
+    const emptyWalSnapshot = { ...first.data, files: [...sqliteSnapshot.files.slice(0, 1), { path: database + "-wal", size: 0, sha256: "empty" }] };
+    assert.equal(await checkPreservedData(profile, emptyWalSnapshot), true, "clean close may remove an already empty WAL");
+    emptyWalSnapshot.files[1].size = 1;
+    assert.equal(await checkPreservedData(profile, emptyWalSnapshot), false, "a missing nonempty WAL must keep recovery evidence");
     for (const relative of legacyMutable) {
       assert.equal(await checkPreservedData(profile, { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] }), true,
         "older snapshots may include disposable Chromium state");
     }
+    const catalogPath = path.join("data", "official-materials", "catalog.json");
+    const cachedCatalog = { schema: 1, revision: 1, categories: [], items: [] };
+    for (const directory of [profile, first.data.directory]) {
+      await fs.mkdir(path.join(directory, path.dirname(catalogPath)), { recursive: true });
+      await fs.writeFile(path.join(directory, catalogPath), JSON.stringify(cachedCatalog));
+    }
+    const directorySnapshot = { ...first.data, files: [{ path: catalogPath, size: 1, sha256: "old" }] };
+    await fs.writeFile(path.join(profile, catalogPath), JSON.stringify({ ...cachedCatalog, revision: 2, withdrawnIds: ["retired-official-item"] }));
+    assert.equal(await checkPreservedData(profile, directorySnapshot), true, "official catalog refresh is not customer-data loss");
+    await fs.writeFile(path.join(profile, catalogPath), JSON.stringify({ schema: 1, revision: 2 }));
+    assert.equal(await checkPreservedData(profile, directorySnapshot), false, "broken directory must retain recovery evidence");
+    await fs.unlink(path.join(profile, catalogPath)); await fs.unlink(path.join(first.data.directory, catalogPath));
     for (const relative of ["data/active_touch/touch_task.json.bak", "product-detail/database/desktop-ai-refine-ledger.json"]) {
       const old = path.join(first.data.directory, relative), live = path.join(profile, relative);
       await fs.mkdir(path.dirname(old), { recursive: true }); await fs.mkdir(path.dirname(live), { recursive: true });
