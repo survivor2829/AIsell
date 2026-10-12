@@ -35,8 +35,8 @@ public class SandboxClose {
   Assert-True ($install.ExitCode -eq 0) 'Original real NSIS install failed'
   $program=Join-Path $env:LOCALAPPDATA 'Programs/AI获客-测试版'
   $profile=Join-Path $env:APPDATA 'xiaoxi-active-touch-test'
-  $until=(Get-Date).AddSeconds(90)
-  do { $oldProcesses=Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $program 'AI获客 V1.0版本-测试版.exe') }; if($oldProcesses){break}; Start-Sleep -Milliseconds 500 } while((Get-Date) -lt $until)
+  # NSIS /S does not auto-run unless explicitly passed --force-run.
+  $oldProcesses=Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $program 'AI获客 V1.0版本-测试版.exe') }
   foreach($p in $oldProcesses){if($p.MainWindowHandle){[void][SandboxClose]::PostMessage($p.MainWindowHandle,0x10,[IntPtr]::Zero,[IntPtr]::Zero)}}
   $until=(Get-Date).AddSeconds(30)
   do { $live=Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($program+'\',[StringComparison]::OrdinalIgnoreCase) }; if(!$live){break}; Start-Sleep -Milliseconds 500 } while((Get-Date) -lt $until)
@@ -102,7 +102,7 @@ public class SandboxClose {
     if(Test-Path $jobs){$statusFile=Get-ChildItem $jobs -Filter '*.status.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if($statusFile){$status=Read-Json $statusFile.FullName}}
     if($status.phase -in @('complete','error')){break}
     if(!$statusFile) {
-      if([SandboxClose]::Inspect($assistant.Id) -match '更新已安全停止'){throw 'Official assistant stopped before installation; see native-window.json'}
+      if([SandboxClose]::Inspect($assistant.Id) -match '更新已安全停止|暂时无法开始更新|更新助手文件不完整'){throw 'Official assistant stopped before installation; see native-window.json'}
     }
     Start-Sleep -Milliseconds 500
   }while((Get-Date) -lt $until)
