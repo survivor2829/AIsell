@@ -194,6 +194,18 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
       : { ready: true, code: '', message: '' };
   }
   async function request(route, { method = 'GET', body, operationId, headers = {} } = {}) {
+    // Queries reuse an existing order; paid submissions must remain one-shot.
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await requestOnce(route, { method, body, operationId, headers }); }
+      catch (error) {
+        const transient = error.code === 'digital_human_request_unconfirmed'
+          || (error.code === 'digital_human_provider_error' && (error.status === 408 || error.status === 429 || error.status >= 500));
+        if (method !== 'GET' || !transient || attempt >= 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
+      }
+    }
+  }
+  async function requestOnce(route, { method, body, operationId, headers }) {
     let response;
     try {
       response = await gatewayClient.fetch(gatewayClient.url(route), { method, body: body instanceof Buffer ? body : body == null ? undefined : JSON.stringify(body),

@@ -1285,6 +1285,11 @@ $script:composerAbsent = $false
 $composerPresent = Test-PublishVerified $base @{} "editor" $anchor $manifest $media ("a" * 64)
 $script:composerAbsent = $true
 $uiaWithoutPost = Test-PublishVerified $base @{} "editor" $anchor $manifest @{ proofMode = "uia_one_to_one" } ("a" * 64)
+function Get-MomentsScaledOcrObservation($frame, $rect, $scale) { return @{ok=$true;text=$(if($scale -eq 2){"验收测试:软件任务顺序与图片发布正,"}else{"验收测试:软件亻務川与图片发布正,"})} }
+function Get-MomentsHighContrastOcrObservation($frame, $rect) { return @{ok=$true;text="验收测试:软件亻務川与图片发布验证,"} }
+$splitCaptionPost = @{identityText="验收氵则试";contentText="验收氵则试软件任务顺序与图片发布验证非产品宣传";bounds=@{left=100;top=100;width=650;height=467};avatarBounds=@{left=106;top=106;width=52;height=52};menuBounds=@{top=491};ocrLines=@(@{bounds=@{left=72;top=39;width=316;height=18}},@{bounds=@{left=405;top=40;width=93;height=17}})}
+$splitCaptionMatched = Test-PublishPostAnchor @{width=1000;height=800} $splitCaptionPost "验收测试软件任务顺序与图片发布验证非产品宣传"
+if(-not $splitCaptionMatched){throw "real 125-percent caption: 3x OCR corrupts task glyphs which 2x OCR reads exactly"}
 @{ fragmentMatch=$fragmentMatch;missingFragment=$missingFragment;outOfOrder=$outOfOrder;fusedReceipt=$fusedReceipt;bodyTimeReceipt=$bodyTimeReceipt;croppedVerified = $croppedVerified; scaledDuplicateVerified = $scaledDuplicateVerified; accepted = $accepted; clientError = $clientError; receiptUnchanged = $receiptUnchanged; receiptComposerPresent = $receiptComposerPresent; receiptWrongSurface = $receiptWrongSurface; positive = $positive; duplicate = $duplicate; unchanged = $unchanged; missingMedia = $missingMedia; composerPresent = $composerPresent; uiaWithoutPost = $uiaWithoutPost } | ConvertTo-Json -Compress -Depth 8
 `, "utf8").toString("base64"),
   encoding: "utf8",

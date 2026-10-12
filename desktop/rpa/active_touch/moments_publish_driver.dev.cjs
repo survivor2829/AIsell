@@ -1806,9 +1806,12 @@ function Test-PublishPostAnchor($frame, $post, [string]$anchor) {
   $scaled = Get-MomentsScaledOcrObservation $frame $captionBounds 3
   $contrast = Get-MomentsHighContrastOcrObservation $frame $captionBounds 3
   if (-not $scaled.ok -or -not $contrast.ok) { return $false }
+  # At fractional Windows scaling, enlarging thin glyphs further can merge
+  # strokes. Read the same caption at 2x as complementary exact evidence.
+  $double = Get-MomentsScaledOcrObservation $frame $captionBounds 2
   # Every part must be read exactly, uniquely and in the same order from the
   # same caption pixels. Never combine fragments from different posts.
-  return Test-PublishAnchorFragments @([string]$post.contentText, [string]$scaled.text, [string]$contrast.text) $anchor
+  return Test-PublishAnchorFragments @([string]$post.contentText, [string]$scaled.text, [string]$contrast.text, $(if ($double.ok) { [string]$double.text } else { "" })) $anchor
 }
 
 function Test-PublishClientAccepted(
