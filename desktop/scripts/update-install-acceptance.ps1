@@ -124,9 +124,10 @@ public class SandboxClose {
     Assert-True ($selection.active -eq $job.programBackup.selection.active -and $selection.previous -eq $job.programBackup.selection.previous -and !$selection.pending) 'Previous version selection not restored'
     Assert-True ((Get-FileHash "$profile/data/acceptance-preserve.json").Hash -eq $receiptHash) 'Original receipt changed during rollback'
     $until=(Get-Date).AddSeconds(30)
-    do {$restoredProcess=Get-Process -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq (Join-Path $program 'AI获客 V1.0版本-测试版.exe')};if($restoredProcess){break};Start-Sleep -Milliseconds 500} while((Get-Date) -lt $until)
-    Assert-True ($null -ne $restoredProcess) 'Previous application was not reopened'
-    [pscustomobject]@{ok=$true;scenario=$Scenario;realPublishedInstaller=$true;controlledProcessFailure=$true;restoredVersion='1.1.64';verifiedProgramFiles=$job.programBackup.files.Count;originalReceiptPreserved=$true;previousProgramReopened=$true} | ConvertTo-Json | Set-Content "$report/result.json"
+    do {$restoredProcess=Get-Process -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq (Join-Path $program 'AI获客 V1.0版本-测试版.exe') -and $_.MainWindowHandle -ne 0 -and $_.Responding};if($restoredProcess){break};Start-Sleep -Milliseconds 500} while((Get-Date) -lt $until)
+    Assert-True ($null -ne $restoredProcess) 'Previous application window did not reopen and respond'
+    [SandboxClose]::Inspect(($restoredProcess | Select-Object -First 1).Id) | ConvertTo-Json | Set-Content "$report/restored-window.json"
+    [pscustomobject]@{ok=$true;scenario=$Scenario;realPublishedInstaller=$true;controlledProcessFailure=$true;restoredVersion='1.1.64';verifiedProgramFiles=$job.programBackup.files.Count;originalReceiptPreserved=$true;previousProgramReopened=$true;previousProgramWindowResponding=$true} | ConvertTo-Json | Set-Content "$report/result.json"
     return
   }
   Assert-True ($status.phase -eq 'complete') ('Real upgrade did not complete: '+($status|ConvertTo-Json -Compress))
