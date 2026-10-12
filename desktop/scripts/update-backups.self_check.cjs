@@ -4,7 +4,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { backupProgram } = require("../src/main/update-program-backup.cjs");
 const { captureData, registerSet, confirmSet, readRegistry, checkPreservedData, reusableProgram } = require("../src/main/update-backups.cjs");
-const { createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
+const { backupFilter, copyBytes, updateFailure, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
 const { fork } = require("node:child_process");
 
 if (process.argv[2] === "--hold-registry") {
@@ -26,8 +26,12 @@ if (process.argv[2] === "--hold-registry") {
     await fs.writeFile(path.join(program, "app.asar"), "physical application archive");
     await fs.writeFile(path.join(outside, "source.mp4"), "unique source material");
     await fs.symlink(outside, path.join(profile, "material-link"), "junction");
+    const runtimeLink = path.join(profile, "product-detail/.runtime-links/installed"), businessLink = path.join(profile, "material-link");
+    await fs.mkdir(path.dirname(runtimeLink), { recursive: true });
+    await fs.symlink(program, runtimeLink, "junction");
     for (const [relative, content] of Object.entries({ "Cache/browser.bin": "regenerable", "Code Cache/js.bin": "regenerable",
       "content-engine/generated/result.mp4": "finished production", "content-engine/batch-exports/output.mp4": "export",
+      "product-detail/.runtime-links-notes/receipt.json": "business notes", "data/.runtime-links/customer.txt": "customer folder",
       "data/Cache/receipt.json": "customer-named folder", "license.enc": "encrypted authorization", "content-engine/content.db": "business database" })) {
       const file = path.join(profile, relative); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content);
     }
@@ -38,7 +42,43 @@ if (process.argv[2] === "--hold-registry") {
       const set = await registerSet(profile, { id, version: "1.1.78", kind, programBackup, data });
       return set;
     };
-    const first = await make("manual");
+    // This developer PC permits symlinks. Model the ordinary-user failure at
+    // Node cp's onLink boundary, while actually creating Windows junctions.
+    const copy = fs.cp, symlink = fs.symlink;
+    const permissionError = () => Object.assign(Error("ordinary user cannot create a directory symlink"), { code: "EPERM", syscall: "symlink", path: program });
+    let junctions = 0, first;
+    fs.cp = async (source, target, options) => {
+      if (source === profile) return copy(source, target, { ...options, filter: async (file, destination) => {
+        const allowed = !options.filter || await options.filter(file, destination);
+        if (allowed && [runtimeLink, businessLink].some(link => path.resolve(link).toLowerCase() === path.resolve(file).toLowerCase())) throw permissionError();
+        return allowed;
+      } });
+      return copy(source, target, options);
+    };
+    fs.symlink = async (source, target, type) => {
+      if (process.platform === "win32" && type !== "junction") throw permissionError();
+      junctions++; return symlink(source, target, type);
+    };
+    try {
+      await assert.rejects(fs.cp(profile, path.join(root, "old-copy"), { recursive: true }), error => {
+        const failure = updateFailure(error, "backup");
+        return failure.code === "EPERM" && failure.syscall === "symlink" && failure.phase === "backup";
+      });
+      first = await make("manual");
+    } finally { fs.cp = copy; fs.symlink = symlink; }
+    assert.equal(junctions, 1, "only the business directory link is recreated");
+    assert.equal((await fs.lstat(path.join(first.data.directory, "material-link"))).isSymbolicLink(), true, "external materials remain a link, never a copied tree");
+    assert.equal(first.data.files.some(file => file.path.startsWith(path.join("product-detail", ".runtime-links") + path.sep)), false);
+    await assert.rejects(fs.lstat(path.join(first.data.directory, "product-detail/.runtime-links")), { code: "ENOENT" });
+    assert.equal(await fs.readFile(path.join(first.data.directory, "product-detail/.runtime-links-notes/receipt.json"), "utf8"), "business notes");
+    assert.equal(await fs.readFile(path.join(first.data.directory, "data/.runtime-links/customer.txt"), "utf8"), "customer folder");
+    assert.equal(await copyBytes(profile, backupFilter(profile)), first.data.files.reduce((sum, file) => sum + (file.size || 0), 0), "external tree bytes never enter the backup budget");
+    assert.equal(first.data.files.filter(file => file.link).length, 1);
+    await fs.unlink(businessLink);
+    await fs.symlink(program, businessLink, "junction");
+    assert.equal(await checkPreservedData(profile, first.data), false, "a changed material link cannot retire the previous backup");
+    await fs.unlink(businessLink);
+    await fs.symlink(outside, businessLink, "junction");
     const legacyMutable = ["DevToolsActivePort", path.join("Network", "Network Persistent State")];
     for (const relative of legacyMutable) {
       assert.equal(await checkPreservedData(profile, { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] }), true,

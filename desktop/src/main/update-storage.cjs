@@ -8,8 +8,11 @@ const normalize = file => {
   const value = path.toNamespacedPath(path.resolve(file));
   return process.platform === "win32" ? value.toLowerCase() : value;
 };
-const isRegenerableProfileFile = relative => ["devtoolsactiveport", "network/network persistent state"]
-  .includes(relative.replaceAll("\\", "/").toLowerCase());
+const isRegenerableProfileFile = relative => {
+  const name = relative.replaceAll("\\", "/").toLowerCase();
+  return ["devtoolsactiveport", "network/network persistent state", "product-detail/.runtime-links"].includes(name)
+    || name.startsWith("product-detail/.runtime-links/");
+};
 function backupFilter(userData) {
   const root = normalize(userData);
   return file => {
@@ -20,6 +23,26 @@ function backupFilter(userData) {
       "dawncache", "dawngraphitecache", "dawnwebgpucache", "shadercache", "grshadercache",
       "crashpad", "crash reports"].some(dir => relative === dir || relative.startsWith(dir + "/"));
   };
+}
+async function copyProfile(source, destination, filter = backupFilter(source)) {
+  const links = [];
+  // Node cp recreates a Windows junction as a privileged directory symlink.
+  // Copy regular data first, then preserve directory links without traversing
+  // customer-owned external materials or requiring Developer Mode.
+  await fs.promises.cp(source, destination, { recursive: true, force: false, filter: async (file, target) => {
+    if (!filter(file)) return false;
+    if (!(await fs.promises.lstat(file)).isSymbolicLink()) return true;
+    links.push({ file, target }); return false;
+  } });
+  for (const { file, target } of links) {
+    const link = path.resolve(path.dirname(file), await fs.promises.readlink(file));
+    let type;
+    if (process.platform === "win32") {
+      try { if ((await fs.promises.stat(file)).isDirectory()) type = "junction"; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+    await fs.promises.symlink(link, target, type);
+  }
 }
 async function copyBytes(file, filter = () => true) {
   if (!filter(file)) return 0;
@@ -126,4 +149,4 @@ function formatUpdateFailure(failure) {
   }
   return `${stage}失败。${detail}${failure.path ? `\n位置：${failure.path}` : ""}${failure.cleanupCode ? `\n本次临时副本未能回收（${failure.cleanupCode}）。` : ""}`;
 }
-module.exports = { backupFilter, isRegenerableProfileFile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure };
+module.exports = { backupFilter, isRegenerableProfileFile, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure };
