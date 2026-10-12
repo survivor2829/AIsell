@@ -140,7 +140,7 @@ public class SandboxClose {
   $_ | Out-String | Set-Content "$report/error.txt"
   Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3 | Set-Content "$report/processes.json"
   if($assistant){[SandboxClose]::Inspect($assistant.Id) | ConvertTo-Json | Set-Content "$report/native-window.json"}
-  if($jobs -and (Test-Path $jobs)) { Copy-Item -Path (Join-Path $jobs '*.json') -Destination $report }
+  if($jobs -and (Test-Path $jobs)) { Get-ChildItem -LiteralPath $jobs -Filter '*.json' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $report } }
   $assistantRoot=Join-Path $env:LOCALAPPDATA 'AI获客更新助手'
   Get-ChildItem -LiteralPath $assistantRoot -Filter 'failure-diagnostic.json' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $report ($_.Directory.Name+'-failure.json')) }
   Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free | ConvertTo-Json | Set-Content "$report/space.json"
