@@ -1,4 +1,4 @@
-// Real Electron processes exercise the updater; the inert installer touches only this fixture.
+// Real Electron processes exercise the updater; installers touch only this fixture.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -26,6 +26,7 @@ async function main() {
   const bridgeRecovery = process.argv.includes("--legacy-bridge-source");
   assert.ok(!(legacy && bridgeRecovery), "Select either unchanged legacy failure or a bridge recovery source");
   const failureMode = process.argv.find(value => value.startsWith("--failure="))?.split("=")[1] || "";
+  const nsisCompiler = process.argv.find(value => value.startsWith("--nsis="))?.slice("--nsis=".length);
   assert.ok(["", "install", "startup"].includes(failureMode));
   const installed = path.join(root, "installed"), application = path.join(installed, "resources/app"), userData = path.join(root, "profile");
   const electronRoot = path.dirname(require("electron"));
@@ -98,8 +99,31 @@ class FixtureInstaller { static int Main(string[] args) {
   return ${failureMode === "install" ? 13 : 0};
 } }`;
     const cs = path.join(root, "FixtureInstaller.cs"), installer = path.join(root, "FixtureInstaller.exe");
-    await fs.writeFile(cs, installerSource);
-    await run(path.join(process.env.WINDIR, "Microsoft.NET/Framework64/v4.0.30319/csc.exe"), ["/nologo", "/target:winexe", `/out:${installer}`, cs], { windowsHide: true, timeout: 30000 });
+    if (nsisCompiler) {
+      // Exercise the Windows installer engine without registry, shortcuts or a real profile.
+      // This is deliberately not represented as the published production installer.
+      assert.ok(path.isAbsolute(nsisCompiler), "--nsis requires an absolute compiler path");
+      const quote = value => '"' + String(value).replaceAll('$', '$$').replaceAll('"', '$\\"') + '"';
+      await fs.writeFile(path.join(root, "payload/installer-ran.json"), '{"ok":true}');
+      await fs.writeFile(path.join(root, "payload/rollback-sentinel.txt"), "replacement program bytes");
+      await fs.writeFile(path.join(root, "payload/new-receipt.txt"), "new business receipt after snapshot");
+      const script = [
+        'Unicode true', 'RequestExecutionLevel user', 'SilentInstall silent', 'AutoCloseWindow true',
+        `OutFile ${quote(installer)}`, 'Section',
+        `SetOutPath ${quote(application)}`,
+        `File ${quote(path.join(root, "payload/package.json"))}`,
+        `File ${quote(path.join(root, "payload/rollback-sentinel.txt"))}`,
+        ...(failureMode ? [`SetOutPath ${quote(path.join(userData, "data"))}`, `File ${quote(path.join(root, "payload/new-receipt.txt"))}`] : []),
+        `SetOutPath ${quote(root)}`, `File ${quote(path.join(root, "payload/installer-ran.json"))}`,
+        `SetErrorLevel ${failureMode === "install" ? 13 : 0}`, 'SectionEnd'
+      ].join('\r\n');
+      const scriptFile = path.join(root, "FixtureInstaller.nsi");
+      await fs.writeFile(scriptFile, '\ufeff' + script);
+      await run(nsisCompiler, ["/V2", scriptFile], { windowsHide: true, timeout: 30000 });
+    } else {
+      await fs.writeFile(cs, installerSource);
+      await run(path.join(process.env.WINDIR, "Microsoft.NET/Framework64/v4.0.30319/csc.exe"), ["/nologo", "/target:winexe", `/out:${installer}`, cs], { windowsHide: true, timeout: 30000 });
+    }
     const bytes = await fs.readFile(installer), sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
     const payload = JSON.stringify({ schema: 1, ...{ appId: config.appId, channel: config.channel }, platform: "win32", arch: "x64",
       version: targetVersion, sequence: 1, sha256, size: bytes.length, file: `/artifacts/${sha256}.exe`, notes: "isolated process fixture only" });
@@ -166,7 +190,7 @@ class FixtureInstaller { static int Main(string[] args) {
       await assert.rejects(fs.stat(path.join(root, "profile-update-backups", parentReceipt.id, "product-detail/.runtime-links")), { code: "ENOENT" });
     }
     const result = { ok: true, source, helperSha256, initialVersion, targetVersion, observedPhase: status.phase,
-      legacyBlocked: legacy, bridgeRecovery, failureMode, programRollbackVerified: Boolean(failureMode), fixtureInstaller: true, productionInstallerVerified: false, dataUnchanged: true };
+      legacyBlocked: legacy, bridgeRecovery, failureMode, installerEngine: nsisCompiler ? "NSIS" : "CSharp", programRollbackVerified: Boolean(failureMode), fixtureInstaller: true, productionInstallerVerified: false, dataUnchanged: true };
     await fs.writeFile(path.join(root, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, evidence: path.join(root, "result.json") }));
     passed = true;
