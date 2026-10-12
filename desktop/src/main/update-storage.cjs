@@ -8,13 +8,15 @@ const normalize = file => {
   const value = path.toNamespacedPath(path.resolve(file));
   return process.platform === "win32" ? value.toLowerCase() : value;
 };
+const isRegenerableProfileFile = relative => ["devtoolsactiveport", "network/network persistent state"]
+  .includes(relative.replaceAll("\\", "/").toLowerCase());
 function backupFilter(userData) {
   const root = normalize(userData);
   return file => {
     const relative = path.relative(root, normalize(file)).replaceAll("\\", "/").toLowerCase();
     // Only named, regenerable Electron caches. Never match arbitrary nested
     // folders called Cache: customer assets and production outputs are data.
-    return !["data/cloud-maintenance", "update-helper-profile", "cache", "code cache", "gpucache",
+    return !isRegenerableProfileFile(relative) && !["data/cloud-maintenance", "update-helper-profile", "cache", "code cache", "gpucache",
       "dawncache", "dawngraphitecache", "dawnwebgpucache", "shadercache", "grshadercache",
       "crashpad", "crash reports"].some(dir => relative === dir || relative.startsWith(dir + "/"));
   };
@@ -124,4 +126,4 @@ function formatUpdateFailure(failure) {
   }
   return `${stage}失败。${detail}${failure.path ? `\n位置：${failure.path}` : ""}${failure.cleanupCode ? `\n本次临时副本未能回收（${failure.cleanupCode}）。` : ""}`;
 }
-module.exports = { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure };
+module.exports = { backupFilter, isRegenerableProfileFile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure };

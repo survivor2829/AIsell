@@ -4,7 +4,7 @@ const fs = process.versions.electron ? require("original-fs") : require("node:fs
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
-const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("./update-storage.cjs");
+const { backupFilter, isRegenerableProfileFile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("./update-storage.cjs");
 const { inventory } = require("./update-program-backup.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -140,7 +140,7 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
 // backed-up business file to remain present, instead of comparing mutable bytes.
 async function checkPreservedData(profile, data) {
   for (const file of data.files) {
-    if (file.link || /(^|[\\/])(logs?|diagnostics)([\\/]|$)/i.test(file.path)) continue;
+    if (file.link || isRegenerableProfileFile(file.path) || /(^|[\\/])(logs?|diagnostics)([\\/]|$)/i.test(file.path)) continue;
     try {
       const live = path.join(profile, file.path), stat = await fs.promises.lstat(live);
       if (!stat.isFile()) return false;
@@ -153,13 +153,20 @@ async function checkPreservedData(profile, data) {
       if (/^(?:Local Storage|Session Storage|Partitions)[\\/]/i.test(file.path)
           || /(?:^|[\\/])(?:Preferences|Local State|run-bill\.txt|.*\.jsonl)$/.test(file.path)) continue;
       if (await hashFile(live) === file.sha256) continue;
-      if (/\.json$/i.test(file.path)) {
+      if (/\.json(?:\.bak)?$/i.test(file.path)) {
         const stable = value => {
           if (Array.isArray(value)) return value.map(stable);
           if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([key]) => !["updated_at", "updatedAt", "generated_at", "generatedAt"].includes(key)).map(([key, item]) => [key, stable(item)]));
           return value;
         };
-        if (same(stable(JSON.parse(await fs.promises.readFile(live, "utf8"))), stable(JSON.parse(await fs.promises.readFile(path.join(data.directory, file.path), "utf8"))))) continue;
+        const current = JSON.parse(await fs.promises.readFile(live, "utf8"));
+        const previous = JSON.parse(await fs.promises.readFile(path.join(data.directory, file.path), "utf8"));
+        // The detail service refreshes this ledger's finish timestamp at startup.
+        // All receipt fields and task outcomes must still compare exactly.
+        if (file.path.replaceAll("\\", "/") === "product-detail/database/desktop-ai-refine-ledger.json") {
+          delete current.finished_at; delete previous.finished_at;
+        }
+        if (same(stable(current), stable(previous))) continue;
       }
       return false;
     }

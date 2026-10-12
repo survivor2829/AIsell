@@ -39,6 +39,23 @@ if (process.argv[2] === "--hold-registry") {
       return set;
     };
     const first = await make("manual");
+    const legacyMutable = ["DevToolsActivePort", path.join("Network", "Network Persistent State")];
+    for (const relative of legacyMutable) {
+      assert.equal(await checkPreservedData(profile, { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] }), true,
+        "older snapshots may include disposable Chromium state");
+    }
+    for (const relative of ["data/active_touch/touch_task.json.bak", "product-detail/database/desktop-ai-refine-ledger.json"]) {
+      const old = path.join(first.data.directory, relative), live = path.join(profile, relative);
+      await fs.mkdir(path.dirname(old), { recursive: true }); await fs.mkdir(path.dirname(live), { recursive: true });
+      await fs.writeFile(old, JSON.stringify({ updated_at: 1, finished_at: 1, outcome: "outcome_unknown" }));
+      const next = { updated_at: 2, finished_at: relative.includes("ledger") ? 2 : 1, outcome: "outcome_unknown" };
+      await fs.writeFile(live, JSON.stringify(next));
+      const data = { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] };
+      assert.equal(await checkPreservedData(profile, data), true);
+      await fs.writeFile(live, JSON.stringify({ ...next, outcome: "sent" }));
+      assert.equal(await checkPreservedData(profile, data), false, "receipt changes cannot masquerade as refreshed timestamps");
+      await fs.unlink(old); await fs.unlink(live);
+    }
     assert.equal(first.data.files.some(file => file.path.startsWith("Cache")), false);
     assert.ok(first.data.files.some(file => file.path === path.join("data", "Cache", "receipt.json")));
     assert.ok(first.data.files.some(file => file.path === path.join("content-engine", "generated", "result.mp4")));
