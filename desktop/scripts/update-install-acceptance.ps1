@@ -9,9 +9,23 @@ Start-Transcript -LiteralPath "$report/run.log" -Force
 function Read-Json($file) { Get-Content -LiteralPath $file -Raw | ConvertFrom-Json }
 function Assert-True($value,$message) { if (!$value) { throw $message } }
 try {
-  Add-Type -AssemblyName UIAutomationClient
-  Add-Type -AssemblyName UIAutomationTypes
-  Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class SandboxClose{[DllImport("user32.dll")]public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);}'
+  Add-Type -TypeDefinition @'
+using System;using System.Text;using System.Collections.Generic;using System.Runtime.InteropServices;
+public class SandboxClose {
+ public delegate bool Visit(IntPtr h,IntPtr p);
+ [DllImport("user32.dll")]public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+ [DllImport("user32.dll")]static extern bool EnumWindows(Visit f,IntPtr p);
+ [DllImport("user32.dll")]static extern bool EnumChildWindows(IntPtr h,Visit f,IntPtr p);
+ [DllImport("user32.dll")]static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+ [DllImport("user32.dll")]static extern bool IsWindowEnabled(IntPtr h);
+ static string Text(IntPtr h){var s=new StringBuilder(2048);GetWindowText(h,s,s.Capacity);return s.ToString();}
+ static string Class(IntPtr h){var s=new StringBuilder(256);GetClassName(h,s,s.Capacity);return s.ToString();}
+ public static IntPtr UpdateButton(uint pid){var found=IntPtr.Zero;EnumWindows((h,p)=>{uint id;GetWindowThreadProcessId(h,out id);if(id==pid)EnumChildWindows(h,(c,q)=>{if(Text(c)=="立即更新" && Class(c).StartsWith("WindowsForms10.BUTTON.") && IsWindowEnabled(c))found=c;return true;},IntPtr.Zero);return true;},IntPtr.Zero);return found;}
+ public static string[] Inspect(uint pid){var a=new List<string>();EnumWindows((h,p)=>{uint id;GetWindowThreadProcessId(h,out id);if(id==pid){a.Add(Class(h)+" "+Text(h));EnumChildWindows(h,(c,q)=>{a.Add(Class(c)+" "+Text(c));return true;},IntPtr.Zero);}return true;},IntPtr.Zero);return a.ToArray();}
+}
+'@
   $oldHash=(Get-FileHash 'C:/Inputs/original-1.1.64.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
   $newHash=(Get-FileHash 'C:/Inputs/latest-1.1.86.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
   Assert-True ($oldHash -eq 'df85caee5c47cd4eb1ccc6bcbac3d844b737aa653b6ab9c488f4fb973bb8209a') 'Original installer changed'
@@ -74,25 +88,20 @@ try {
     }
   }
   $assistant=Start-Process 'C:/Inputs/official-update-assistant.exe' -PassThru
-  $until=(Get-Date).AddSeconds(30); $button=$null
+  $until=(Get-Date).AddSeconds(30); $button=[IntPtr]::Zero
   do {
-    $window=[Windows.Automation.AutomationElement]::RootElement.FindFirst([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$assistant.Id))
-    if($window){$button=$window.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'立即更新'),[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button)))}
-    if(!$button){Start-Sleep -Milliseconds 200}
-  }while(!$button -and (Get-Date) -lt $until)
-  Assert-True ($null -ne $button) 'Native update action unavailable'
-  $invoke=$null
-  if($button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) { $invoke.Invoke() }
-  elseif($button.Current.NativeWindowHandle) { [void][SandboxClose]::PostMessage([IntPtr]$button.Current.NativeWindowHandle,0xF5,[IntPtr]::Zero,[IntPtr]::Zero) }
-  else { throw 'Native update button has neither InvokePattern nor HWND' }
+    $button=[SandboxClose]::UpdateButton($assistant.Id)
+    if($button -eq [IntPtr]::Zero){Start-Sleep -Milliseconds 200}
+  }while($button -eq [IntPtr]::Zero -and (Get-Date) -lt $until)
+  Assert-True ($button -ne [IntPtr]::Zero) 'Native update action unavailable'
+  Assert-True ([SandboxClose]::PostMessage($button,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)) 'Native button click could not be posted'
   $status=$null;$statusFile=$null
   $until=(Get-Date).AddMinutes(8)
   do {
     if(Test-Path $jobs){$statusFile=Get-ChildItem $jobs -Filter '*.status.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if($statusFile){$status=Read-Json $statusFile.FullName}}
     if($status.phase -in @('complete','error')){break}
-    if(!$statusFile -and $window) {
-      $stopped=$window.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'更新已安全停止'))
-      if($stopped){throw 'Official assistant stopped before installation; see native-window.json'}
+    if(!$statusFile) {
+      if([SandboxClose]::Inspect($assistant.Id) -match '更新已安全停止'){throw 'Official assistant stopped before installation; see native-window.json'}
     }
     Start-Sleep -Milliseconds 500
   }while((Get-Date) -lt $until)
@@ -126,6 +135,6 @@ try {
 } catch {
   $_ | Out-String | Set-Content "$report/error.txt"
   Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3 | Set-Content "$report/processes.json"
-  if($window){@($window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition) | ForEach-Object {[pscustomobject]@{name=$_.Current.Name;value=$(try{$_.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value}catch{''});type=$_.Current.ControlType.ProgrammaticName}}) | ConvertTo-Json -Depth 3 | Set-Content "$report/native-window.json"}
+  if($assistant){[SandboxClose]::Inspect($assistant.Id) | ConvertTo-Json | Set-Content "$report/native-window.json"}
   throw
 } finally { if($fault){Stop-Job $fault -ErrorAction SilentlyContinue;Remove-Job $fault -Force -ErrorAction SilentlyContinue};Stop-Transcript }
