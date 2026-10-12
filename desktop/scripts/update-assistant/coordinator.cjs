@@ -273,4 +273,17 @@ async function main(contextFile) {
   }
 }
 module.exports = { child, plain, checkFiles, inside, safeCode, installationMetadata };
-if (require.main === module) main(process.argv[2]).catch(error => { send('error', 0, safeCode(error)); process.exitCode = 1; });
+if (require.main === module) main(process.argv[2]).catch(error => {
+  // Keep actionable locations without persisting raw error messages, URLs,
+  // credentials, customer paths or business payloads.
+  try {
+    const parent = plain(path.join(process.env.LOCALAPPDATA, 'AI获客更新助手'));
+    if (same(path.dirname(plain(__dirname)), parent) && /^[a-f0-9-]{36}$/.test(path.basename(__dirname))) {
+      const frames = [...String(error?.stack || '').matchAll(/[\\/]([a-zA-Z0-9_.-]+\.(?:cjs|js)):(\d+):(\d+)/g)]
+        .slice(0, 12).map(match => ({ file: match[1], line: Number(match[2]), column: Number(match[3]) }));
+      fs.writeFileSync(child(__dirname, 'failure-diagnostic.json'), JSON.stringify({ schema: 1, code: safeCode(error),
+        type: ['Error', 'TypeError', 'SyntaxError', 'RangeError'].includes(error?.name) ? error.name : 'Error', frames }));
+    }
+  } catch { /* Diagnostic failure must not replace the original failure. */ }
+  send('error', 0, safeCode(error)); process.exitCode = 1;
+});
