@@ -55,7 +55,8 @@ function safeCode(error) {
   const value = String(error?.code || error?.message || 'update_failed');
   return /^[a-zA-Z][a-zA-Z0-9_]{0,95}$/.test(value) ? value : 'update_failed';
 }
-function send(phase, percent = 0, code) { process.stdout.write(JSON.stringify({ phase, percent, ...(code ? { code: safeCode({ code }) } : {}) }) + '\n'); }
+let lastPhase = 'initialize';
+function send(phase, percent = 0, code) { lastPhase = phase; process.stdout.write(JSON.stringify({ phase, percent, ...(code ? { code: safeCode({ code }) } : {}) }) + '\n'); }
 function installationMetadata(installed, contract, componentContract) {
   const baseline = read(child(installed, 'component-base.json'));
   const pkg = read(child(installed, 'resources/app/package.json'));
@@ -281,8 +282,11 @@ if (require.main === module) main(process.argv[2]).catch(error => {
     if (same(path.dirname(plain(__dirname)), parent) && /^[a-f0-9-]{36}$/.test(path.basename(__dirname))) {
       const frames = [...String(error?.stack || '').matchAll(/[\\/]([a-zA-Z0-9_.-]+\.(?:cjs|js)):(\d+):(\d+)/g)]
         .slice(0, 12).map(match => ({ file: match[1], line: Number(match[2]), column: Number(match[3]) }));
-      fs.writeFileSync(child(__dirname, 'failure-diagnostic.json'), JSON.stringify({ schema: 1, code: safeCode(error),
-        type: ['Error', 'TypeError', 'SyntaxError', 'RangeError'].includes(error?.name) ? error.name : 'Error', frames }));
+      const commandError = /FullyQualifiedErrorId\s*:\s*([a-zA-Z0-9_.,\[\]-]{1,240})/.exec(String(error?.stderr || ''))?.[1];
+      fs.writeFileSync(child(__dirname, 'failure-diagnostic.json'), JSON.stringify({ schema: 1, code: safeCode(error), phase: lastPhase,
+        type: ['Error', 'TypeError', 'SyntaxError', 'RangeError', 'AggregateError'].includes(error?.name) ? error.name : 'Error', frames,
+        ...(Number.isInteger(error?.code) ? { childExit: error.code } : {}), ...(commandError ? { commandError } : {}),
+        ...(error?.killed === true ? { childKilled: true } : {}), ...(['SIGTERM', 'SIGKILL'].includes(error?.signal) ? { signal: error.signal } : {}) }));
     }
   } catch { /* Diagnostic failure must not replace the original failure. */ }
   send('error', 0, safeCode(error)); process.exitCode = 1;

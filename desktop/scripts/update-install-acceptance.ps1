@@ -51,15 +51,17 @@ public class SandboxClose {
   New-Item -ItemType Directory -Path $downloads -Force | Out-Null
   Copy-Item -LiteralPath 'C:/Inputs/latest-1.1.86.exe' -Destination (Join-Path $downloads ($newHash+'.exe'))
   $jobs=Join-Path $profile 'data/cloud-maintenance/components/jobs'
-  $originalExeHash=(Get-FileHash (Join-Path $program 'AI获客 V1.0版本-测试版.exe')).Hash
+  # The Electron EXE is identical in 64 and 86; the versioned package changes.
+  $originalPackageHash=(Get-FileHash (Join-Path $program 'resources/app/package.json')).Hash
   $fault=$null
   if($Scenario -ne 'success') {
     # Interrupt only this disposable runner's real installer or its new startup.
     # No altered installer, mocked exit code, or production profile is involved.
-    $fault=Start-Job -ArgumentList $Scenario,$program,$jobs,$downloads,$newHash,$originalExeHash -ScriptBlock {
+    $fault=Start-Job -ArgumentList $Scenario,$program,$jobs,$downloads,$newHash,$originalPackageHash -ScriptBlock {
       param($mode,$root,$jobRoot,$cache,$digest,$originalHash)
       $ErrorActionPreference='Stop';$until=(Get-Date).AddMinutes(8)
       $exe=Join-Path $root 'AI获客 V1.0版本-测试版.exe'
+      $package=Join-Path $root 'resources/app/package.json'
       while((Get-Date) -lt $until) {
         $statusFile=Get-ChildItem $jobRoot -Filter '*.status.json' -ErrorAction SilentlyContinue | Select-Object -First 1
         if($statusFile) {
@@ -68,7 +70,7 @@ public class SandboxClose {
           if($mode -eq 'installer-interruption' -and $state.phase -eq 'installing') {
             $target=Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -eq (Join-Path $cache ($digest+'.exe'))} | Select-Object -First 1
             if($target) {
-              try {$changed=!(Test-Path $exe) -or (Get-FileHash $exe).Hash -ne $originalHash} catch {$changed=$false}
+              try {$changed=!(Test-Path $package) -or (Get-FileHash $package).Hash -ne $originalHash} catch {$changed=$false}
               if(!$changed){$target=$null}
             }
           } elseif($mode -eq 'startup-interruption' -and $state.phase -eq 'starting') {
