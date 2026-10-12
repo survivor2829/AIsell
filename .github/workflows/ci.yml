@@ -26,6 +26,10 @@ concurrency:
 jobs:
   real-installer-acceptance:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_acceptance }}
+    # GitHub requires write access to read unpublished draft release assets.
+    # This opt-in job only downloads artifacts; it has no publishing step.
+    permissions:
+      contents: write
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
