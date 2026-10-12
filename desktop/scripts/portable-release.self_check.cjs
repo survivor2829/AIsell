@@ -553,6 +553,7 @@ try {
         "moments_window_not_found",
         "moments_window_ambiguous",
         "moments_window_identity_mismatch",
+        "moments_integrated_surface_not_proven",
         "moments_feed_not_found",
         "moments_post_not_found",
         "moments_post_ambiguous",
@@ -569,7 +570,8 @@ try {
         "moments_visual_ocr_unavailable",
         "moments_visual_ocr_failed"
       ];
-      assert.equal(safeBlockedReasons.includes(momentsPayload.blocked_reason), true, "packaged Moments probe must not hide execution failures");
+      assert.equal(safeBlockedReasons.includes(momentsPayload.blocked_reason), true,
+        `packaged Moments probe must not hide execution failures: ${momentsPayload.blocked_reason}`);
     }
     assert.equal(fs.existsSync(path.join(momentsDataDir, "state.json")), true, "packaged Moments dry-run must persist its result");
 
