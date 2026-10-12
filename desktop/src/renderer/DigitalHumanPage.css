@@ -13,8 +13,8 @@
 .dh-upload-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .dh-upload { min-width: 0; min-height: 240px; padding: 0 0 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: #6d597c; background: #faf8fc; border: 1px dashed #cbd0db; border-radius: 12px; font: inherit; cursor: pointer; overflow: hidden; }
 .dh-upload:hover:not(:disabled) { border-color: var(--dh-accent); background: #f8f5ff; }
-.dh-upload-art { height: 154px; width: 100%; display: grid; place-items: center; position: relative; background: #f3eff8; overflow: hidden; }
-.dh-upload-art img { height: 100%; width: 100%; object-fit: contain; }
+.dh-upload-art { height: 154px; width: 100%; flex-shrink: 0; display: grid; place-items: center; position: relative; background: #f3eff8; overflow: hidden; }
+.dh-upload-art img { position: absolute; inset: 0; display: block; height: 100%; width: 100%; object-fit: contain; }
 .dh-upload-art .dh-example-person { object-fit: contain; object-position: center 15%; mix-blend-mode: multiply; }
 .dh-upload-art .dh-example-label { position: absolute; top: 9px; left: 9px; color: #5c4b6d; background: #fffffff0; padding: 3px 7px; border-radius: 5px; }
 .dh-upload em { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--dh-accent); font-size: 13px; font-weight: 600; font-style: normal; margin-top: 5px; }

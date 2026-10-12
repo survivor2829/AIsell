@@ -2739,7 +2739,8 @@ class NarratedBatchDomain:
         require(isinstance(raw, dict), "narrated_candidate_invalid", "方案格式不正确。")
         index = {s["segment_id"]: s for s in b["available_shots"]}
         keys = raw.get("shot_ids") or []
-        require(isinstance(keys, list) and 1 <= len(keys) <= 40 and len(set(keys)) == len(keys)
+        shot_limit = 40 if narrated_production.strict_visual_review(b) else len(index)
+        require(isinstance(keys, list) and 1 <= len(keys) <= shot_limit and len(set(keys)) == len(keys)
                 and all(k in index for k in keys), "narrated_candidate_invalid", "方案必须使用已分析且不重复的镜头。")
         shots = [copy.deepcopy(index[k]) for k in keys]
         # Analysis splits a continuous evidence interval into short planning

@@ -3881,6 +3881,9 @@ function createAutoReplyController(options = {}) {
   }
 
   function resumeWorkflow() {
+    // Finite work owns WeChat immediately; do not leave the standalone reply
+    // timer running until the first reply step after the queue drains.
+    if (!workflowMode) pause("workflow_takeover");
     workflowStartPending = true;
     resetWorkflowBackoff();
     appendDiagnostic("workflow_resume_requested", { phase: "control", code: "workflow_resume_requested" });

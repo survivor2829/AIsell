@@ -296,7 +296,7 @@ export function WorkflowToggle({ workflow, compact = false, onNavigate }: { work
     disabled={busy || loading || state.phase === "pausing" || !api}
     onClick={() => { if (!api) return; if (entry !== "active" && entry !== "ready") { navigate(); return; } void run(() => state.contactSync?.running ? api.showFloating() : state.enabled ? api.pause() : api.start()); }}>
     {state.enabled ? <Pause size={16} /> : entry === "ready" ? <Play size={16} /> : <ChevronRight size={16} />}
-    {busy || state.phase === "pausing" ? "处理中…" : state.contactSync?.running ? "查看同步进度" : state.enabled ? (compact ? "暂停" : "暂停程序") : ENTRY_LABEL[entry]}
+    {busy || state.phase === "pausing" ? "处理中…" : state.contactSync?.running ? "查看同步进度" : state.enabled ? (["listening", "replying"].includes(state.phase) ? "停止自动回复" : compact ? "暂停" : "暂停程序") : ENTRY_LABEL[entry]}
   </button>;
 }
 
@@ -347,6 +347,15 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const waitingForSchedule = state.tasks.some((task) => task.status === "pending" && !task.accountMismatch && (task.repeat === "daily" || Boolean(task.scheduledAt && Date.parse(task.scheduledAt) > Date.now())));
   const title = mode === "home" ? "今日计划" : mode === "touch" ? "精准触达" : "朋友圈运营";
   const planLocked = state.enabled || state.phase === "pausing";
+  const replyOnlyActive = state.enabled && ["listening", "replying"].includes(state.phase) && !state.currentTaskId;
+  const addPlannedTask = async (type: WorkflowTaskType) => {
+    if (replyOnlyActive) {
+      const stopped = api && await run(() => api.pause());
+      if (!stopped?.ok) return;
+      setNotice("已停止自动回复。安排好新任务后，启动计划；全部任务结束后再开启自动回复。");
+    } else setNotice("");
+    setEditor({ type });
+  };
   const savedPlannedTask = savedTask
     ? state.tasks.find((task) => task.id === savedTask.id && task.status === "pending" && !task.accountMismatch) || null
     : null;
@@ -510,10 +519,10 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
 
     <div className="workflow-add-row">
       <span>添加任务</span>
-      {availableTypes.map((type) => <button type="button" className="secondary-button" key={type} onClick={() => { setNotice(""); setEditor({ type }); }} disabled={busy || planLocked}><Plus size={15} />{TASK_LABELS[type]}</button>)}
+      {availableTypes.map((type) => <button type="button" className="secondary-button" key={type} onClick={() => void addPlannedTask(type)} disabled={busy || (planLocked && !replyOnlyActive)}><Plus size={15} />{TASK_LABELS[type]}</button>)}
     </div>
-    <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || planLocked} onChange={(event) => api && void run(() => api.setReplyEnabled(event.target.checked))} />同时开启自动回复（监听接待范围内的新消息）</label>
-    {planLocked && <p className="workflow-small-note">运行中不能增删任务或修改接待范围；需要调整精准触达话术或图片时，可在对应任务上点击“暂停并编辑”。</p>}
+    <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || planLocked} onChange={(event) => api && void run(() => api.setReplyEnabled(event.target.checked))} />全部任务完成或跳过后，开启自动回复</label>
+    {planLocked && !replyOnlyActive && <p className="workflow-small-note">运行中不能增删任务或修改接待范围；需要调整精准触达话术或图片时，可在对应任务上点击“暂停并编辑”。</p>}
 
     <div ref={editorAnchor} className="workflow-editor-anchor">
       {editor && <WorkflowTaskEditor
@@ -733,7 +742,7 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
   const choices = available.filter((contact) => contactLabel(contact).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0, 100);
   const locked = busy || state.enabled || state.phase === "pausing";
   return <section className="workflow-recipients">
-    <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />开启自动回复（启动程序后监听新消息）</label>
+    <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />全部任务完成或跳过后，开启自动回复</label>
     <div className="workflow-list-head"><h2>接待范围</h2><span>{state.recipients.length} 位客户</span></div>
     {!!state.replyExcludedCount && <p className="workflow-small-note">{state.replyExcludedCount} 位因重名、资料变化或账号不一致暂不自动回复。</p>}
     {!!state.replyEnrollAmbiguousCount && <p className="workflow-small-note">最近一次从触达自动加入时，{state.replyEnrollAmbiguousCount} 位因重名未加入。</p>}

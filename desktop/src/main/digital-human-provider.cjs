@@ -46,18 +46,71 @@ function isPublicAddress(address) {
       && !(a === 100 && b >= 64 && b <= 127) && !(a === 198 && (b === 18 || b === 19));
   }
   // Public unicast IPv6 only; excludes loopback, link-local and mapped IPv4.
-  return net.isIPv6(address) && /^[23]/u.test(address);
+  return net.isIPv6(address) && /^[23]/u.test(address) && !/^2001:0*2:/iu.test(address);
 }
-function safeLookup(hostname, options, callback) {
-  dns.lookup(hostname, { all: true }, (error, records) => {
-    if (error) return callback(error);
-    const safe = records.filter(({ address }) => isPublicAddress(address));
-    if (!safe.length || safe.length !== records.length) return callback(fail('digital_human_media_host_invalid', '素材下载地址无法安全连接。'));
-    if (options?.all) callback(null, safe);
-    else callback(null, safe[0].address, safe[0].family);
+function isSyntheticAddress(address) {
+  return net.isIPv4(address) && /^198\.(18|19)\./u.test(address)
+    || net.isIPv6(address) && /^2001:0*2:/iu.test(address);
+}
+// Some Windows VPNs synthesize benchmark addresses. Resolve those over HTTPS
+// instead of trusting the synthetic address or disabling the private-IP guard.
+function resolvePublicMediaAddressAt(hostname, origin) {
+  return new Promise((resolve, reject) => {
+    const endpoint = new URL('/resolve', origin);
+    endpoint.searchParams.set('name', hostname);
+    endpoint.searchParams.set('type', 'A');
+    const request = https.get(endpoint, { timeout: 8000, headers: { Accept: 'application/dns-json' } }, (response) => {
+      const chunks = [];
+      let size = 0;
+      response.on('error', reject);
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > 65536) response.destroy(fail('digital_human_media_dns_failed', '素材地址查询失败，云端结果已保留，可稍后继续。'));
+        else chunks.push(chunk);
+      });
+      response.on('end', () => {
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const records = (payload.Answer || []).filter((item) => item.type === 1)
+            .map((item) => ({ address: item.data, family: 4 }));
+          if (response.statusCode !== 200 || payload.Status !== 0 || !records.length
+            || records.some(({ address }) => !net.isIPv4(address) || !isPublicAddress(address))) throw new Error('invalid DNS result');
+          resolve(records);
+        } catch (cause) { reject(fail('digital_human_media_dns_failed', '素材地址查询失败，云端结果已保留，可稍后继续。', { cause })); }
+      });
+    });
+    request.on('error', reject);
+    request.on('timeout', () => request.destroy(fail('digital_human_media_dns_timeout', '素材地址查询超时，云端结果已保留，可稍后继续。')));
   });
 }
-async function downloadMedia(rawUrl, destination, { maxBytes = 160 * 1024 * 1024, redirects = 0 } = {}) {
+async function resolvePublicMediaAddress(hostname) {
+  let failure;
+  for (const origin of ['https://dns.alidns.com', 'https://dns.google']) {
+    try { return await resolvePublicMediaAddressAt(hostname, origin); }
+    catch (error) { failure = error; }
+  }
+  throw failure;
+}
+function safeLookup(hostname, options, callback, { lookup = dns.lookup, resolvePublic = resolvePublicMediaAddress } = {}) {
+  lookup(hostname, { all: true }, (error, records) => {
+    if (error) return callback(error);
+    const complete = (resolved) => options?.all ? callback(null, resolved) : callback(null, resolved[0].address, resolved[0].family);
+    if (records.length && records.some(({ address }) => isSyntheticAddress(address))
+      && records.every(({ address }) => isPublicAddress(address) || isSyntheticAddress(address))) {
+      Promise.resolve().then(() => resolvePublic(hostname)).then((resolved) => {
+        if (!resolved.length || resolved.some(({ address }) => !isPublicAddress(address))) {
+          return callback(fail('digital_human_media_host_invalid', '素材下载地址无法安全连接。'));
+        }
+        complete(resolved);
+      }, callback);
+      return;
+    }
+    const safe = records.filter(({ address }) => isPublicAddress(address));
+    if (!safe.length || safe.length !== records.length) return callback(fail('digital_human_media_host_invalid', '素材下载地址无法安全连接。'));
+    complete(safe);
+  });
+}
+async function downloadMediaOnce(rawUrl, destination, { maxBytes = 160 * 1024 * 1024, redirects = 0 } = {}) {
   const url = remoteUrl(rawUrl);
   if (redirects > 3) throw fail('digital_human_download_redirects', '素材下载跳转过多。');
   const response = await new Promise((resolve, reject) => {
@@ -68,10 +121,10 @@ async function downloadMedia(rawUrl, destination, { maxBytes = 160 * 1024 * 1024
   if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
     const next = new URL(response.headers.location || '', url).href;
     response.resume();
-    return downloadMedia(next, destination, { maxBytes, redirects: redirects + 1 });
+    return downloadMediaOnce(next, destination, { maxBytes, redirects: redirects + 1 });
   }
   if (response.statusCode !== 200 || Number(response.headers['content-length'] || 0) > maxBytes) {
-    response.resume(); throw fail('digital_human_download_failed', '素材下载失败或文件过大，已保留云端任务。');
+    response.resume(); throw fail('digital_human_download_failed', '素材下载失败或文件过大，已保留云端任务。', { status: response.statusCode });
   }
   await fsp.mkdir(path.dirname(destination), { recursive: true });
   const temporary = `${destination}.${randomUUID()}.part`;
@@ -85,6 +138,20 @@ async function downloadMedia(rawUrl, destination, { maxBytes = 160 * 1024 * 1024
     await fsp.rename(temporary, destination);
   } finally { await fsp.rm(temporary, { force: true }).catch(() => {}); }
   return destination;
+}
+async function downloadMedia(rawUrl, destination, options = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await downloadMediaOnce(rawUrl, destination, options); }
+    catch (error) {
+      const transient = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND',
+        'ERR_STREAM_PREMATURE_CLOSE', 'digital_human_download_timeout',
+        'digital_human_media_dns_failed', 'digital_human_media_dns_timeout'].includes(error.code)
+        || error.code === 'digital_human_download_failed' && (error.status === 429 || error.status >= 500);
+      if (attempt >= 2 || !transient) throw error;
+      // Retry only the read of the already-created result, never generation.
+      await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
+  }
 }
 function nodeOf(payload) { return Array.isArray(payload?.data) ? payload.data[0] || {} : payload?.data || payload || {}; }
 function taskIdOf(payload) {
@@ -159,4 +226,4 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
     videoPayload,
   };
 }
-module.exports = { createDigitalHumanProvider, downloadMedia, isPublicAddress, remoteUrl, fail, cleanMessage, nodeOf, taskIdOf, resultUrl, videoPayload, SCENES, VOICES, MODEL, SAFE_ID };
+module.exports = { createDigitalHumanProvider, downloadMedia, isPublicAddress, safeLookup, remoteUrl, fail, cleanMessage, nodeOf, taskIdOf, resultUrl, videoPayload, SCENES, VOICES, MODEL, SAFE_ID };

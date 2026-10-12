@@ -1101,6 +1101,12 @@
     if (code === 'AI_REFINE_TASK_NOT_FOUND') {
       return '暂时找不到原任务。系统已保留任务编号，请重启服务或前往日志诊断排查。';
     }
+    if (code === 'AI_REFINE_PLANNER_TRUNCATED') {
+      return '制作方案返回不完整，尚未开始生成图片。你的资料已保留；系统不会自动重新提交。';
+    }
+    if (code === 'AI_REFINE_PLANNER_FORMAT_ERROR') {
+      return '制作方案格式异常，尚未开始生成图片。你的资料和费用记录已保留；系统不会自动重新提交。';
+    }
     return 'AI 精修没有完成。系统没有自动重提，请前往日志诊断查看原因。';
   }
 
@@ -2289,6 +2295,7 @@
       const failed = new Error(finalState.error || 'pipeline failed');
       failed.code = finalState.code || 'AI_REFINE_FAILED';
       failed.taskId = finalState.task_id || taskId;
+      failed.productTitle = taskRecord.input_summary?.product_title || finalState.product_title || '';
       failed.technicalDetail = finalState.technical_detail || finalState.error || '';
       throw failed;
     }

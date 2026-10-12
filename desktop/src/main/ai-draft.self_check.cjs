@@ -51,6 +51,10 @@ async function main() {
   }
   assert.equal(fillRespectfulTemplate("给您介绍设备。", { remark: "陈东海" }, new Date(2026, 9, 8, 9)), "陈总，早上好，给您介绍设备。");
   const morning = new Date(2026, 8, 23, 8);
+  assert.equal(greetingForContact({ remark: 'A测试客户' }, morning), 'A测试客户，早上好');
+  assert.equal(greetingForContact({ remark: '星辰客户经理炎燃19946167505' }, morning), '星辰客户经理炎燃，早上好');
+  assert.equal(greetingForContact({ remark: 'wxid_customer' }, morning), '早上好');
+  assert.equal(greetingForContact({ remark: '13800138000' }, morning), '早上好');
   assert.equal(greetingForContact({ remark: "张总" }, morning), "张总，早上好");
   assert.equal(fillRespectfulTemplate("{称呼}，您好，请问近期是否需要设备支持？", { remark: "张总" }, morning),
     "张总，早上好，请问近期是否需要设备支持？");

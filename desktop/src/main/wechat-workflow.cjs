@@ -491,11 +491,13 @@ function createWechatWorkflowController(options) {
       throw failure;
     }
     if (!enabled || mutating) return;
-    const readyTask = nextTask();
+    const finiteWorkPending = store.tasks.some((task) => task.status === "pending"
+      && (!task.accountName || task.accountName === getAccount()));
     const people = store.replyEnabled === false ? [] : accountRecipients();
     // Finite work has absolute priority. Automatic reply is checked only after
-    // every task that is due now has completed or been safely isolated.
-    if (!readyTask && people.length && options.reply?.runWorkflowStep && !replyError) {
+    // every planned task has completed or been safely isolated. A send cooldown
+    // or a future appointment is still unfinished work, not an empty queue.
+    if (!finiteWorkPending && people.length && options.reply?.runWorkflowStep && !replyError) {
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
@@ -533,12 +535,12 @@ function createWechatWorkflowController(options) {
       lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
-    } else if (!readyTask && replyError) {
+    } else if (!finiteWorkPending && replyError) {
       if (lastReplySkippedReason !== "reply_error_sticky") {
         log("reply.step_skipped", { reason: "reply_error_sticky" }, { level: "warn", code: "reply_error_sticky" });
         lastReplySkippedReason = "reply_error_sticky";
       }
-    } else if (!readyTask && !replyError) {
+    } else if (!finiteWorkPending && !replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
       if (people.length) log("reply.blocked", { stage: "reply_step", reason: "executor_unavailable" }, { level: "warn", code: "executor_unavailable" });
@@ -626,11 +628,13 @@ function createWechatWorkflowController(options) {
       const transitionKey = JSON.stringify([task.id, task.status, task.progress?.done, following?.id || ""]);
       if (transitionKey !== lastQueueTransitionKey) {
         lastQueueTransitionKey = transitionKey;
+        const pendingWork = store.tasks.some((item) => item.status === "pending"
+          && (!item.accountName || item.accountName === getAccount()));
         log("queue.transition", {
           stage: "task_settled", task_kind: task.type, task_id: task.id, task_status: task.status,
           next_task_kind: following?.type || "", next_task_id: following?.id || "",
-          continue_to_next_task: Boolean(following), reply_eligible: !following && store.replyEnabled !== false && accountRecipients().length > 0
-        }, { level: "info", code: following ? "next_finite_task_ready" : "finite_tasks_drained" });
+          continue_to_next_task: Boolean(following), reply_eligible: !pendingWork && store.replyEnabled !== false && accountRecipients().length > 0
+        }, { level: "info", code: following ? "next_finite_task_ready" : pendingWork ? "finite_tasks_waiting" : "finite_tasks_drained" });
       }
       emit();
     }
@@ -647,8 +651,8 @@ function createWechatWorkflowController(options) {
     finally {
       inFlight = null;
       const waiting = waitingSafetyTask();
-      // Reply checks may continue during the short safety interval, but the
-      // final timer lands on the exact known deadline rather than polling past it.
+      // The final timer lands on the known deadline; reply still waits for
+      // all finite work to finish.
       const poll = options.pollIntervalMs ?? 2500;
       const waitDelay = waiting ? Math.max(0, Number(waiting.notBefore) - new Date(now()).getTime()) : null;
       schedule(nextTask() ? 0 : waitDelay === null ? poll : Math.min(poll, waitDelay));
