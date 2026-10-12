@@ -77,7 +77,14 @@ function installationMetadata(installed, contract, componentContract) {
 async function processRows() {
   const shell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
   const script = '[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name | ConvertTo-Json -Compress';
-  const result = await run(shell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: 15000 });
+  let result;
+  try {
+    // WMI initialization on a cold Windows session can exceed 15 seconds.
+    result = await run(shell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: 60000 });
+  } catch (error) {
+    if (error.killed) throw Object.assign(Error('update_process_snapshot_timeout'), { cause: error });
+    throw error;
+  }
   const value = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
   return (Array.isArray(value) ? value : [value]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name }));
 }

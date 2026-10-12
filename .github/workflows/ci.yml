@@ -50,11 +50,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Path C:/Inputs -Force | Out-Null
-          gh release download acceptance-original-64-20261012 --pattern original-1.1.64.exe --pattern diagnostic-update-assistant-2.exe --dir C:/Inputs
+          gh release download acceptance-original-64-20261012 --pattern original-1.1.64.exe --pattern fixed-update-assistant.exe --dir C:/Inputs
           if ($LASTEXITCODE -ne 0) { throw 'Original acceptance artifacts unavailable' }
-          Move-Item -LiteralPath C:/Inputs/diagnostic-update-assistant-2.exe -Destination C:/Inputs/official-update-assistant.exe
+          Move-Item -LiteralPath C:/Inputs/fixed-update-assistant.exe -Destination C:/Inputs/official-update-assistant.exe
           $assistant = Get-FileHash C:/Inputs/official-update-assistant.exe -Algorithm SHA256
-          if ($assistant.Hash.ToLowerInvariant() -ne '4aaab0f384adadad24b083c273ce760d44c3991dc049e911760fd6919642b5f3') { throw 'Acceptance assistant changed' }
+          if ($assistant.Hash.ToLowerInvariant() -ne 'fdc4abd9417739bab56d3ae21137a3dd4b9cd19496bc719c62bc6e88c39928aa') { throw 'Acceptance assistant changed' }
       - name: Fetch published target through pinned official CA
         shell: pwsh
         run: |

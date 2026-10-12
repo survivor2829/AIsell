@@ -12,9 +12,14 @@ const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwn
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const productBrand = require("../../product-brand.json");
 async function processSnapshot() {
-  const result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+  let result;
+  try { result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
     "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress"],
-    { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: 15000 });
+    { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: 60000 }); }
+  catch (error) {
+    if (error.killed) throw Object.assign(Error("update_process_snapshot_timeout"), { cause: error });
+    throw error;
+  }
   const rows = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
   return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate }));
 }
