@@ -252,6 +252,11 @@ if (!process.versions.electron) {
     }
     new Function("require", "module", fs.readFileSync(helperFile, "utf8"))(
       request => Object.hasOwn(mocks, request) ? mocks[request] : load(request), helperModule);
+    // This fixture already represents explicit parent consent. Handshake failure
+    // has its own coordinator checks; let these cases reach their backup fault.
+    fs.writeFileSync(jobFile.replace(/\.json$/, ".commit.json"), JSON.stringify({
+      id, targetVersion: "1.1.27", parentPid: process.pid, helperPid: process.pid
+    }));
     await helperModule.exports.runHelper({ jobFile, userData });
     const status = readJson(path.join(paths.jobs, id + ".status.json"));
     if (failureMode !== "existing-backup") {
