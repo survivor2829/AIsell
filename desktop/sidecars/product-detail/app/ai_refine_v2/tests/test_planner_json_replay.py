@@ -10,6 +10,26 @@ from ai_refine_v2.tests.test_pricing_boundary import quote
 from ai_refine_v2.tests.test_product_driven_planning import TEXT, sample
 
 
+def test_complete_plan_has_room_beyond_old_8192_token_limit():
+    from ai_refine_v2.tests.test_product_driven_planning import response
+    reply = response(sample(), fresh=True)
+    http = Mock(return_value=reply)
+    result = planner.plan_v2(TEXT, api_key="test", http_fn=http, max_retries=0)
+    payload = http.call_args.args[0]
+    assert payload["max_tokens"] >= 32768
+    assert payload["response_format"] == {"type": "json_object"}
+    assert len(result["screens"]) == len(sample()["screens"])
+
+
+@pytest.mark.parametrize("content", ['{"screens":[{"visual_brief":', '{"capacity_exceeded":true}'])
+def test_length_stop_is_explicit_and_never_retried_even_if_json_is_closed(content):
+    http = Mock(return_value={"choices": [{"finish_reason": "length", "message": {"content": content}}]})
+    with pytest.raises(planner.PlannerError) as failure:
+        planner.plan_v2(TEXT, api_key="test", http_fn=http, max_retries=2)
+    assert getattr(failure.value, "code", "") == "AI_REFINE_PLANNER_TRUNCATED"
+    http.assert_called_once()
+
+
 def test_trailing_commas_preserve_strings_escapes_and_values():
     text = '原样逗号,} 和 ,]、引号 "、反斜杠 \\ 和大括号 {nested}'
     raw = '{"text":' + json.dumps(text, ensure_ascii=False) + ',"items":[1,{"v":"x",},3,],}'
@@ -79,6 +99,31 @@ def test_failed_format_reply_replays_locally_and_reaches_only_unsubmitted_images
     assert list(pricing.CostJournal(directory).load()["operations"]) == ["planner"]
     assert (directory / "_planner_response.json").read_bytes() == original
     http.assert_not_called()
+
+
+def test_saved_truncated_reply_stops_before_images_and_retains_paid_receipt(saved_format_failure, monkeypatch):
+    directory = saved_format_failure
+    path = directory / "_planner_response.json"
+    reply = runner._read_json(path)
+    reply["choices"][0].update(finish_reason="length", message={"content": '{"screens":['})
+    reply["usage"] = {"completion_tokens": 8192}
+    runner._atomic_write_json(path, reply)
+    original = path.read_bytes()
+    http = Mock(side_effect=AssertionError("do not purchase another plan"))
+    images = Mock(side_effect=AssertionError("do not generate from a partial plan"))
+    monkeypatch.setattr(planner, "_http_post_deepseek", http)
+    monkeypatch.setattr(runner, "_run_real_generator_v2", images)
+    runner._worker_v2(directory.name, TEXT, "", "清洁机器人", "test", "test")
+    state = runner.get_task_status(directory.name)
+    assert state["status"] == "failed"
+    assert state["code"] == "AI_REFINE_PLANNER_TRUNCATED"
+    assert state["can_replay_planner"] is False
+    assert path.read_bytes() == original
+    operations = pricing.CostJournal(directory).load()["operations"]
+    assert list(operations) == ["planner"]
+    assert operations["planner"]["usage"]["completion_tokens"] == 8192
+    http.assert_not_called()
+    images.assert_not_called()
 
 
 @pytest.mark.parametrize("case", ["truncated", "invalid_schema", "image_receipt", "uncertain_planner", "other_failure"])

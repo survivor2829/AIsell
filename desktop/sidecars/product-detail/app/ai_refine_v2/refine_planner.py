@@ -74,6 +74,14 @@ class PlannerResponseFormatError(PlannerError):
     code = "AI_REFINE_PLANNER_FORMAT_ERROR"
 
 
+class PlannerResponseTruncated(PlannerError):
+    code = "AI_REFINE_PLANNER_TRUNCATED"
+    do_not_retry = True
+
+    def __init__(self):
+        super().__init__("制作方案返回不完整，已停止，尚未提交生图。原任务与费用记录已保留，不会自动重新提交。")
+
+
 class ProductInputError(PlannerError):
     """Code-bearing input error shared by HTTP and planner boundaries."""
 
@@ -402,7 +410,10 @@ def plan(
 # pipeline_runner 阶段一不切, 不动其他下游, mock 模式仍能跑.
 
 _TEMPERATURE_V2 = 0.7  # 比 v1 的 0.1 高, 让 style_dna 有创意 (不再是抽取任务)
-_MAX_TOKENS_V2 = 8192  # 6-10 屏 × 800-2000 字符 prompt → 估 6000-15000 token
+# Up to 15 screens, each with a visual brief and a complete image prompt, plus
+# all source specifications. The old 8K allowance truncated ordinary real plans.
+# This is an output ceiling, not a target; CostJournal reserves this same bound.
+_MAX_TOKENS_V2 = 65536
 _MIN_PROMPT_LEN_V2 = 200  # screens[i].prompt 短于此即"SEO 列表非导演视角"
 _MIN_SCREEN_COUNT_V2 = 8   # v3 (PRD AI_refine_v3.1): 6 → 8
 _MAX_SCREEN_COUNT_V2 = 15  # v3 (PRD AI_refine_v3.1): 10 → 15
@@ -1183,6 +1194,7 @@ def plan_v2(
         ],
         "temperature": temperature,
         "max_tokens": _MAX_TOKENS_V2,
+        "response_format": {"type": "json_object"},
     }
 
     post_fn = http_fn or _http_post_deepseek
@@ -1210,6 +1222,10 @@ def plan_v2(
                 current_payload = payload
 
             resp = post_fn(current_payload, use_key)
+            if resp["choices"][0].get("finish_reason") == "length":
+                # Even closed JSON may omit facts/screens when output is cut off.
+                # Never repair it into a purchasable plan or buy another response.
+                raise PlannerResponseTruncated()
             raw_content = resp["choices"][0]["message"]["content"]
             parsed = _extract_json(raw_content)
             _restore_specification_qualifiers(parsed)

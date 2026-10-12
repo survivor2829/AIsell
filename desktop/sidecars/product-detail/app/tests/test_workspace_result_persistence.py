@@ -264,10 +264,11 @@ class TestWorkspaceFrontendPaidTaskSafety:
         assert "const remembered = await rememberAiRefineResult(taskId)" in content
         assert "if (remembered) clearPersistedAiRefineTask" in content
 
-    def test_already_running_response_reconnects_instead_of_starting_again(self):
+    def test_already_running_response_blocks_new_purchase_and_preserves_inputs(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert "DESKTOP_AI_REFINE_ALREADY_RUNNING" in content
-        assert "startError.taskId" in content
+        assert re.search(r"includes\(startError.code\)\).*?startError.newTaskBlocked = true;\s*throw startError;",
+                         content, re.DOTALL)
         assert "resumeAiRefineTask" in content
         assert "服务未返回可接管的 task_id" in content
 
