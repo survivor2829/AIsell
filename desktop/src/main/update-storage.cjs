@@ -10,7 +10,9 @@ const normalize = file => {
 };
 const isRegenerableProfileFile = relative => {
   const name = relative.replaceAll("\\", "/").toLowerCase();
-  return ["devtoolsactiveport", "network/network persistent state", "network/transportsecurity", "product-detail/.runtime-links"].includes(name)
+  // InstanceLock holds this one-byte OS lock while the worker is alive. It
+  // contains no business state and must not be read after the new worker starts.
+  return ["devtoolsactiveport", "network/network persistent state", "network/transportsecurity", "content-engine/content-engine.lock", "product-detail/.runtime-links"].includes(name)
     || name.startsWith("product-detail/.runtime-links/");
 };
 function backupFilter(userData) {
