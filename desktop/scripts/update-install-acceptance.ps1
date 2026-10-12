@@ -19,8 +19,9 @@ public class SandboxClose {
  [DllImport("user32.dll")]static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr w,StringBuilder s,uint flags,uint timeout,out UIntPtr result);
  [DllImport("user32.dll")]static extern bool IsWindowEnabled(IntPtr h);
- static string Text(IntPtr h){var s=new StringBuilder(2048);GetWindowText(h,s,s.Capacity);return s.ToString();}
+ static string Text(IntPtr h){var s=new StringBuilder(2048);if(Class(h).StartsWith("WindowsForms10.EDIT.")){UIntPtr result;SendMessageTimeout(h,0xD,(UIntPtr)s.Capacity,s,2,2000,out result);}else GetWindowText(h,s,s.Capacity);return s.ToString();}
  static string Class(IntPtr h){var s=new StringBuilder(256);GetClassName(h,s,s.Capacity);return s.ToString();}
  public static IntPtr UpdateButton(uint pid){var found=IntPtr.Zero;EnumWindows((h,p)=>{uint id;GetWindowThreadProcessId(h,out id);if(id==pid)EnumChildWindows(h,(c,q)=>{if(Text(c)=="立即更新" && Class(c).StartsWith("WindowsForms10.BUTTON.") && IsWindowEnabled(c))found=c;return true;},IntPtr.Zero);return true;},IntPtr.Zero);return found;}
  public static string[] Inspect(uint pid){var a=new List<string>();EnumWindows((h,p)=>{uint id;GetWindowThreadProcessId(h,out id);if(id==pid){a.Add(Class(h)+" "+Text(h));EnumChildWindows(h,(c,q)=>{a.Add(Class(c)+" "+Text(c));return true;},IntPtr.Zero);}return true;},IntPtr.Zero);return a.ToArray();}
@@ -136,5 +137,6 @@ public class SandboxClose {
   $_ | Out-String | Set-Content "$report/error.txt"
   Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3 | Set-Content "$report/processes.json"
   if($assistant){[SandboxClose]::Inspect($assistant.Id) | ConvertTo-Json | Set-Content "$report/native-window.json"}
+  Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free | ConvertTo-Json | Set-Content "$report/space.json"
   throw
 } finally { if($fault){Stop-Job $fault -ErrorAction SilentlyContinue;Remove-Job $fault -Force -ErrorAction SilentlyContinue};Stop-Transcript }
