@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { randomUUID } = require('node:crypto');
 const { createRequire } = require('node:module');
 const { createDigitalHumanService: createService } = require('./digital-human-service.cjs');
-const { createDigitalHumanProvider, nodeOf, taskIdOf, resultUrl, videoPayload, isPublicAddress, remoteUrl } = require('./digital-human-provider.cjs');
+const { createDigitalHumanProvider, nodeOf, taskIdOf, resultUrl, videoPayload, isPublicAddress, safeLookup, remoteUrl } = require('./digital-human-provider.cjs');
 
 // These fixtures are persisted pre-upgrade v1 drafts. New task behavior is
 // checked separately in digital-human-audio.self_check.cjs.
@@ -213,6 +213,47 @@ async function main() {
     assert.throws(() => remoteUrl('https://127.0.0.1/test'), /素材地址/);
     assert.equal(isPublicAddress('192.168.0.1'), false);
     assert.equal(isPublicAddress('8.8.8.8'), true);
+    assert.equal(isPublicAddress('2001:2::5c'), false);
+    const resolveHost = (records, resolved) => new Promise((resolve, reject) => safeLookup('media.example.com', { all: true },
+      (error, addresses) => error ? reject(error) : resolve(addresses), {
+        lookup: (_host, _options, callback) => callback(null, records),
+        resolvePublic: async () => resolved
+      }));
+    assert.deepEqual(await resolveHost([{ address: '198.18.0.109', family: 4 }, { address: '2001:2::5c', family: 6 }],
+      [{ address: '8.8.8.8', family: 4 }]), [{ address: '8.8.8.8', family: 4 }]);
+    await assert.rejects(resolveHost([{ address: '198.18.0.109', family: 4 }], [{ address: '127.0.0.1', family: 4 }]),
+      { code: 'digital_human_media_host_invalid' });
+    await assert.rejects(resolveHost([{ address: '192.168.0.1', family: 4 }], [{ address: '8.8.8.8', family: 4 }]),
+      { code: 'digital_human_media_host_invalid' });
+    const providerFile = path.join(__dirname, 'digital-human-provider.cjs');
+    const realRequire = createRequire(providerFile), isolatedModule = { exports: {} };
+    let downloadAttempts = 0, permanentFailure = false;
+    const httpsMock = { get: (_url, _options, receive) => {
+      const request = new (realRequire('node:events').EventEmitter)();
+      process.nextTick(() => {
+        downloadAttempts += 1;
+        if (permanentFailure || downloadAttempts === 1) {
+          request.emit('error', Object.assign(new Error('fixture'), { code: permanentFailure ? 'CERT_HAS_EXPIRED' : 'ECONNRESET' }));
+        } else {
+          const response = realRequire('node:stream').Readable.from([Buffer.from('existing cloud result')]);
+          response.statusCode = 200; response.headers = {};
+          receive(response);
+        }
+      });
+      return request;
+    } };
+    vm.runInNewContext(fs.readFileSync(providerFile, 'utf8'), {
+      module: isolatedModule, exports: isolatedModule.exports, Buffer, URL,
+      require: (id) => id === 'node:https' ? httpsMock : realRequire(id),
+      setTimeout: (callback) => setTimeout(callback, 0)
+    }, { filename: providerFile });
+    const downloaded = path.join(directory, 'recovered-preview.png');
+    await isolatedModule.exports.downloadMedia('https://media.example.com/result', downloaded);
+    assert.equal(downloadAttempts, 2, 'a temporary reset must recover the existing result automatically');
+    assert.equal(fs.readFileSync(downloaded, 'utf8'), 'existing cloud result');
+    downloadAttempts = 0; permanentFailure = true;
+    await assert.rejects(isolatedModule.exports.downloadMedia('https://media.example.com/result', downloaded), { code: 'CERT_HAS_EXPIRED' });
+    assert.equal(downloadAttempts, 1, 'certificate failures must not be bypassed or retried');
     const unavailable = createDigitalHumanProvider({ gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true } }) } });
     assert.equal((await unavailable.capabilities()).ready, false, 'Image capability alone must never imply video capability.');
     console.log('digital-human self-check passed: slow-save click, preview gate, approved assets, native voice, packaging resume, unknown guard, restart receipts, protected paths');

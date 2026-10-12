@@ -1952,15 +1952,16 @@ async function checkReplyFailureDiagnosticsAcrossRuns() {
   const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-reply-diagnostic-dedupe-"));
   const contact = { id: "private-contact", name: "private-name", allowed: true, wechatAccountId: "wx-a" };
   const events = [];
+  let clock = new Date("2026-07-15T10:00:00+08:00");
   const controller = createWechatWorkflowController({
     rootDir, activeTouchDir: path.join(rootDir, "touch"), autoReplyDir: path.join(rootDir, "reply"),
     momentsDir: path.join(rootDir, "moments"), autoSchedule: false,
-    now: () => new Date("2026-07-15T10:00:00+08:00"), getAccount: () => "wx-a",
+    now: () => clock, getAccount: () => "wx-a",
     logger: { event: (_module, name, details) => events.push({ name, ...details }) },
     reply: { runWorkflowStep: async () => ({ handled: false, status: "needs_attention",
       reasonCode: "workflow_window_changed", error: "窗口已变化" }) },
     executors: { touch: { prepareWorkflowTask: () => ({ contacts: [contact], script: "private-script" }),
-      runWorkflowStep: async () => { throw new Error("future task must not run"); } } }
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 1, total: 1 } }) } }
   });
   try {
     await controller.addTask({ type: "touch", scheduledAt: "2026-07-15T11:00:00+08:00",
@@ -1969,15 +1970,20 @@ async function checkReplyFailureDiagnosticsAcrossRuns() {
     await controller.tick();
     await controller.tick();
     await controller.tick();
-    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 1,
-      "a sticky reply error must be diagnosed once while unchanged");
+    assert.equal(events.filter((entry) => entry.name === "reply.result").length, 0,
+      "future planned tasks must finish before reply can start");
+    assert.equal(controller.status().phase, "scheduled");
+    clock = new Date("2026-07-15T11:00:00+08:00");
+    await controller.tick();
+    await controller.tick();
+    assert.equal(controller.status().phase, "needs_attention");
     await controller.pause();
     await controller.start();
     await controller.tick();
     assert.equal(events.filter((entry) => entry.name === "reply.result" && entry.reason === "workflow_window_changed").length, 2,
       "the same failure must be logged again after restart without an idle result between runs");
     await controller.tick();
-    assert.equal(events.filter((entry) => entry.name === "reply.step_skipped" && entry.reason === "reply_error_sticky").length, 2);
+    assert.equal(events.filter((entry) => entry.name === "reply.result").length, 2, "a stopped reply must not loop on its error");
     assert.doesNotMatch(JSON.stringify(events), /private-contact|private-name|private-script/u);
   } finally { await controller.dispose(); }
 }
@@ -2177,16 +2183,16 @@ async function main() {
   assert.deepEqual(calls, ["touch", "touch", "due", "daily", "undated"], "finite tasks must chain without an ordinary reply poll between them");
   assert.equal(customerWaiting, true, "automatic reply must remain deferred until all due finite work finishes");
   await control.tick();
-  assert.deepEqual(calls, ["touch", "touch", "due", "daily", "undated", "reply"], "automatic reply starts only after due finite work drains");
-  assert.equal(customerWaiting, false, "reply resumes after runnable work completes");
+  assert.deepEqual(calls, ["touch", "touch", "due", "daily", "undated"], "automatic reply must also wait for future planned work");
+  assert.equal(customerWaiting, true, "reply remains deferred while a future task is unfinished");
   await control.tick();
-  assert.equal(calls.length, 6, "future work must not block automatic reply or loop early");
+  assert.equal(calls.length, 5, "future work must neither start early nor let reply interrupt the plan");
   await assert.rejects(control.updateTask({ id: daily.task.id, type: "interact", payload: { maxPosts: 2 } }), /先暂停/);
   await control.pause();
   await control.updateTask({ id: daily.task.id, type: "interact", title: "daily", repeat: "daily", payload: { maxPosts: 2, commentGuidance: "new preference" } });
   await control.start();
   await control.tick();
-  assert.equal(calls.length, 6, "editing tomorrow's daily arrangement must not repeat today's completed work");
+  assert.equal(calls.length, 5, "editing tomorrow's daily arrangement must not repeat today's completed work");
   assert.equal(control.status().phase, "scheduled");
   await control.pause();
   await control.removeRecipient("a");
@@ -2274,15 +2280,14 @@ async function main() {
   await scheduled.addRecipients(["reply-contact"]);
   await scheduled.addTask({ type: "publish", scheduledAt: new Date(2026, 8, 4, 11, 0).toISOString(), payload: { content: "future" } });
   await scheduled.start(); await scheduled.tick();
-  assert.equal(scheduledReplyCalls, 1, "a future finite task must not block automatic reply");
+  assert.equal(scheduledReplyCalls, 0, "a future planned task must finish before automatic reply");
   scheduledClock = new Date(2026, 8, 4, 11, 0);
   await scheduled.tick();
   assert.equal(scheduledTaskCalls, 1, "a finite task must preempt automatic reply as soon as it becomes due");
-  assert.equal(scheduledReplyCalls, 1);
+  assert.equal(scheduledReplyCalls, 0);
   await scheduled.tick();
-  assert.equal(scheduledReplyCalls, 2, "automatic reply resumes after the due task completes");
-  assert.equal(scheduledReplyInputs[0].afterMoments, false);
-  assert.equal(scheduledReplyInputs[1].afterMoments, true, "publish must request chat restoration");
+  assert.equal(scheduledReplyCalls, 1, "automatic reply begins after the planned task completes");
+  assert.equal(scheduledReplyInputs[0].afterMoments, true, "publish must request chat restoration");
   await scheduled.pause();
   await scheduled.addTask({ type: "interact", payload: { maxPosts: 1 } });
   await scheduled.start();
@@ -2523,10 +2528,12 @@ async function main() {
   assert.equal(cooldown.status().waitUntil, cooldownClock.getTime() + 10_000);
   await cooldown.tick();
   assert.equal(touchCalls, 1, "a contact must not be retried while its safety interval is still active");
-  assert.equal(replyCalls, 1, "reply checks can run during a deferred touch interval without preceding finite work");
+  assert.equal(replyCalls, 0, "a deferred contact is unfinished finite work; reply must wait");
   cooldownClock = new Date(cooldownClock.getTime() + 10_000);
   await cooldown.tick();
   assert.equal(touchCalls, 2, "the deferred task resumes when its known interval ends");
+  await cooldown.tick();
+  assert.equal(replyCalls, 1, "reply begins only after the last contact finishes");
   assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");
   await cooldown.dispose();
 

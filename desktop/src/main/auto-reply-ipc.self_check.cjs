@@ -4948,6 +4948,9 @@ async function main() {
   });
   const legacyTakeover = takeoverPauseController.start();
   await Promise.race([takeoverPrimeEntered, new Promise((_, reject) => setTimeout(() => reject(new Error("takeover fixture did not reach prime")), 1000))]);
+  takeoverPauseController.resumeWorkflow();
+  assert.equal(takeoverPauseController.status().status, "paused", "starting finite work must stop standalone replies before its first reply step");
+  assert.equal(takeoverPauseController.status().last_event, "workflow_takeover");
   const takeoverStep = takeoverPauseController.runWorkflowStep(workflowInput);
   takeoverPauseController.pause();
   releaseTakeoverPrime();

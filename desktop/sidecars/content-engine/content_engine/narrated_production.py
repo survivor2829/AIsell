@@ -398,7 +398,8 @@ def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), hea
     the start of its first file. ``offset`` moves every start by that fraction of the
     spare footage, so the works of one batch differ; ``avoid`` (this batch's other works)
     tries further offsets for a variation; ``history`` (published works) still refuses one.
-    A layout that needs more than 40 shots falls back to the plain tight packing.
+    Analysis windows are not an editorial shot limit: a long confirmed script
+    can use as many unique windows as its source materials actually provide.
     """
     from .narrated_batch import near_duplicate
     texts = []
@@ -407,10 +408,6 @@ def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), hea
             texts[-1] += unit['text']
         else:
             texts.append(unit['text'])
-    while len(texts) > 40:
-        size, number = min((len((texts[index] + texts[index + 1]).strip()), index) for index in range(len(texts) - 1))
-        require(size <= 80, 'narrated_copy_too_long', '文案句子过多，单条作品最多 40 段口播；请缩短文案后重新确认。')
-        texts[number:number + 2] = [texts[number] + texts[number + 1]]
     required = [math.ceil(domain._phrase_budget_ms(batch, text) * headroom) for text in texts]
     pool = follow_script_footage(batch)
     prefix = [0]
@@ -481,9 +478,12 @@ def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), hea
     options = []
     for groups in [spread(round(fraction, 6)) for fraction in dict.fromkeys(round(f, 6) for f in fractions)] + [tight]:
         shots = [pool[index] for start, end in groups for index in range(start, end)]
-        if len(shots) <= 40 and groups not in [option[0] for option in options]:
+        if groups not in [option[0] for option in options]:
             options.append((groups, shots))
-    require(options, 'narrated_copy_too_long', '这段口播需要超过 40 个镜头，单条作品放不下；请缩短文案后重新确认。')
+    # Prefer a compact layout when one exists; short analysis windows must not
+    # make an otherwise feasible script fail solely because all layouts exceed 40.
+    compact = [option for option in options if len(option[1]) <= 40]
+    options = compact or options
     fresh = [option for option in options if not any(near_duplicate(option[1], old) for old in history)]
     require(fresh, 'narrated_duplicate', '镜头组合与已有作品过于相似，请补充素材。')
     distinct = [option for option in fresh if not any(near_duplicate(option[1], old) for old in avoid)]

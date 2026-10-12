@@ -40,7 +40,16 @@ function timeGreeting(at = new Date()) {
 function greetingForContact(contact, at = new Date()) {
   const title = contactSalutation(contact);
   const greeting = timeGreeting(at);
-  return title.type === "title" ? `${title.value}，${greeting}` : greeting;
+  if (title.type === "title") return `${title.value}，${greeting}`;
+  // A remark can identify a customer without being a person's legal name.
+  // Keep that explicit label rather than guessing a surname/title or dropping
+  // personalization altogether. Never read a phone number or account ID aloud.
+  const remark = String(contact?.remark || '').normalize('NFKC').trim()
+    .replace(/(?:\+?\d[\d\s-]{5,}\d)\s*$/u, '').replace(/[\s,，、;；:：_·/|\p{Pd}]+$/gu, '').trim();
+  const label = remark && remark.length <= 32 && /[\p{L}]/u.test(remark)
+    && !/[\d@\r\n{}<>]/u.test(remark) && !/^(?:wxid_|gh_)/iu.test(remark)
+    && !RELATION_RE.test(remark) ? remark : '';
+  return label ? `${label}，${greeting}` : greeting;
 }
 
 function fillRespectfulTemplate(template, contact, at = new Date()) {
@@ -75,6 +84,7 @@ async function generatePersonalizedDraft({ client, task, result }) {
   if (!message.startsWith(greeting)
     || (result.contact?.name && String(result.contact.name).length >= 2
       && message.includes(String(result.contact.name))
+      && !greeting.startsWith(`${result.contact.name}，`)
       && String(result.contact.name) !== salutation.value)) {
     const error = new Error("DeepSeek 未按已确认称呼开场。");
     error.code = "AI_RESPONSE_INVALID";

@@ -1357,6 +1357,21 @@ class NarratedProductionTests(unittest.TestCase):
                          (result['production_jobs'][0]['status'], result['production_jobs'][0]['error_code']))
         self.assertFalse(any(kind == 'render' for kind, _ in self.events))
 
+    def test_long_confirmed_copy_uses_more_than_forty_unique_windows(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.footage(state, durations=(5000,) * 30)
+        text = '这段介绍保持完整原稿，画面按素材顺序衔接。' * 30
+        candidate = follow_script_candidate(self.domain, state, text, '完整长稿', {})
+        self.assertGreater(len(candidate['shots']), 40)
+        self.assertEqual(text, candidate['narration'])
+        refs = [shot['segment_id'] for shot in candidate['shots']]
+        self.assertEqual(len(refs), len(set(refs)))
+        self.assertLessEqual(len(refs), len(state['available_shots']))
+        state['settings']['strict_visual_review'] = True
+        with self.assertRaises(ContentEngineError):
+            self.domain._normalize_candidate({'title': '严格模式', 'shot_ids': refs,
+                                               'phrases': candidate['phrases']}, state, [])
+
     def test_default_mode_lets_one_paragraph_continue_into_the_next_material(self):
         state = self.domain._load(self.batch['batch_id'])
         self.footage(state, durations=(3000,))
@@ -1666,12 +1681,15 @@ class NarratedProductionTests(unittest.TestCase):
             phrases = follow_script_phrases(self.domain, batch, '甲甲甲甲甲甲甲甲甲。' * 35)
         refs = [ref for phrase in phrases for ref in phrase['shot_ids']]
         self.assertEqual([f's{number}' for number in range(35)], refs, 'the tight layout, not narrated_copy_too_long')
-        # 21 paragraphs of two long shots each need 42 shots even packed tight.
+        # A script requiring more than 40 windows must still retain all words.
         with patch.object(self.domain, '_phrase_budget_ms', side_effect=lambda batch, text: len(text.strip()) * 1000), \
-             patch.object(self.domain, '_max_narration_chars', return_value=80), \
-             self.assertRaises(ContentEngineError) as too_long:
-            follow_script_phrases(self.domain, batch, ('甲' * 14 + '。') * 21)
-        self.assertEqual('narrated_copy_too_long', too_long.exception.code)
+             patch.object(self.domain, '_max_narration_chars', return_value=80):
+            text = ('甲' * 14 + '。') * 21
+            phrases = follow_script_phrases(self.domain, batch, text)
+        self.assertEqual(text, ''.join(phrase['text'] for phrase in phrases))
+        refs = [ref for phrase in phrases for ref in phrase['shot_ids']]
+        self.assertGreater(len(refs), 40)
+        self.assertEqual(len(refs), len(set(refs)))
 
     def test_works_of_one_batch_start_at_different_places(self):
         """Two directions with the same words no longer get the same shots; offsets are per position."""

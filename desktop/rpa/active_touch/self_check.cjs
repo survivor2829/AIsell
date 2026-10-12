@@ -804,7 +804,7 @@ try {
   );
   assert.equal(task.total, 2);
   assert.equal(task.results[0].contact.source, "微信通讯录");
-  assert.match(fillTouchTemplate(task.script, task.results[0].contact), /^(您好|早上好|中午好|下午好|晚上好)，$/u);
+  assert.match(fillTouchTemplate(task.script, task.results[0].contact), /^备注名，(您好|早上好|中午好|下午好|晚上好)，$/u);
   assert.match(fillTouchTemplate(task.script, task.results[1].contact), /^(您好|早上好|中午好|下午好|晚上好)，$/u);
   task.status = "paused";
   task.results[0].status = "blocked";
