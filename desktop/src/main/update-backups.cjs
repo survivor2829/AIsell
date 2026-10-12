@@ -4,7 +4,7 @@ const fs = process.versions.electron ? require("original-fs") : require("node:fs
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
-const { backupFilter, isRegenerableProfileFile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("./update-storage.cjs");
+const { backupFilter, isRegenerableProfileFile, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("./update-storage.cjs");
 const { inventory } = require("./update-program-backup.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -74,9 +74,7 @@ async function captureData(profile, id, destination) {
     await checkCopySpace([{ path: parent, bytes: await copyBytes(profile, filter) }]);
     const owned = await createOwnedDirectory(parent, id);
     try {
-      // The root was exclusively created above; Node 24 rejects errorOnExist
-      // for that empty root while Electron's Node accepts it.
-      await fs.promises.cp(profile, owned.directory, { recursive: true, force: false, filter });
+      await copyProfile(profile, owned.directory, filter);
       const data = { directory: owned.directory, files };
       await verifyData(data);
       if (!same(files, await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
@@ -140,9 +138,13 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
 // backed-up business file to remain present, instead of comparing mutable bytes.
 async function checkPreservedData(profile, data) {
   for (const file of data.files) {
-    if (file.link || isRegenerableProfileFile(file.path) || /(^|[\\/])(logs?|diagnostics)([\\/]|$)/i.test(file.path)) continue;
+    if (isRegenerableProfileFile(file.path) || /(^|[\\/])(logs?|diagnostics)([\\/]|$)/i.test(file.path)) continue;
     try {
       const live = path.join(profile, file.path), stat = await fs.promises.lstat(live);
+      if (file.link) {
+        if (!stat.isSymbolicLink() || path.resolve(path.dirname(live), await fs.promises.readlink(live)).replace(/[\\/]+$/, "") !== file.link) return false;
+        continue;
+      }
       if (!stat.isFile()) return false;
       // Media, customer originals, licensing and other immutable files must keep
       // their exact bytes. Only known mutable storage formats bypass byte equality.
@@ -161,6 +163,20 @@ async function checkPreservedData(profile, data) {
         };
         const current = JSON.parse(await fs.promises.readFile(live, "utf8"));
         const previous = JSON.parse(await fs.promises.readFile(path.join(data.directory, file.path), "utf8"));
+        if (file.path.replaceAll("\\", "/") === "data/auto_reply/auto-reply-state.json"
+            && current.daily_date !== previous.daily_date) {
+          // normalizeState resets only the daily counter when starting on a new
+          // local day. Preserve every other field, especially unknown sends.
+          const validDay = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+            && Number.isFinite(Date.parse(value + "T00:00:00.000Z"))
+            && new Date(value + "T00:00:00.000Z").toISOString().slice(0, 10) === value;
+          const now = new Date(), today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+          if (!validDay(previous.daily_date) || !validDay(current.daily_date)
+              || current.daily_date <= previous.daily_date || current.daily_date !== today
+              || !Number.isSafeInteger(previous.reply_count) || previous.reply_count < 0 || current.reply_count !== 0) return false;
+          previous.daily_date = current.daily_date;
+          previous.reply_count = 0;
+        }
         // The detail service refreshes this ledger's finish timestamp at startup.
         // All receipt fields and task outcomes must still compare exactly.
         if (file.path.replaceAll("\\", "/") === "product-detail/database/desktop-ai-refine-ledger.json") {

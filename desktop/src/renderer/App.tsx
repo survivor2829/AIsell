@@ -32,8 +32,11 @@ import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
 import { CustomerTools } from "./CustomerTools";
+import { CustomerPanel } from "./CustomerPanel";
+import { TutorialsPage } from "./TutorialsPage";
+import type { TutorialCategory, TutorialTopic } from "./tutorials-types";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
-import { AGENT_ROLE_ORDER, MATERIALS_THEME, appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
+import { WORKSPACE_ROLE_ORDER, appearanceFor, appearanceStyle, portraitAsset, useRolePreferences, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { OfficialMaterialsPage } from "./OfficialMaterialsPage";
 import { ProductDetailPage } from "./ProductDetailPage";
@@ -53,7 +56,7 @@ import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget, type AgentRoleK
 import { AgentOverview } from "./AgentOverview";
 
 type ModuleKey = AgentRoleKey | AgentHomeTarget | "diagnostics" | "overview";
-type GroupKey = AgentRoleKey;
+type GroupKey = WorkspaceRoleKey;
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
 type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
@@ -416,12 +419,13 @@ const navGroupByRole: Record<GroupKey, NavGroup> = {
   agent: { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
   operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren }
 };
-const navGroups = AGENT_ROLE_ORDER.map((key) => navGroupByRole[key]);
+const navGroups = WORKSPACE_ROLE_ORDER.map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const materialsNavItem: NavItem = { key: "materials", label: "物保素材库", icon: Folder };
+const supportRoles = ["materials", "tutorials"] as const;
+const supportNavItems: NavItem[] = supportRoles.map(key => ({ key, label: AGENT_ROLE_IDENTITIES[key].responsibility, icon: key === "materials" ? Folder : CircleHelp }));
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), materialsNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -493,7 +497,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "tutorials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -549,6 +553,21 @@ export default function App() {
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext | null>(null);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
+  const [tutorialContext, setTutorialContext] = useState<{ category: TutorialCategory; topic?: TutorialTopic } | null>(null);
+  useEffect(() => {
+    const show = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      const category = ["short-video", "wechat", "product-detail", "materials"].includes(detail.category) ? detail.category : "short-video";
+      const topic = ["digital-human", "ai-editing", "product-video"].includes(detail.topic) ? detail.topic : undefined;
+      setTutorialContext({ category, topic });
+    };
+    window.addEventListener("xiaoxi:open-tutorials", show);
+    return () => window.removeEventListener("xiaoxi:open-tutorials", show);
+  }, []);
+  const openTextGuide = (category: TutorialCategory) => {
+    setTutorialContext(null);
+    window.dispatchEvent(new CustomEvent("xiaoxi:open-text-guide", { detail: { category } }));
+  };
   const [productDetailVisited, setProductDetailVisited] = useState(false);
   useEffect(() => { if (active === "product-detail") setProductDetailVisited(true); }, [active]);
   const contentScrollRef = useRef<HTMLDivElement>(null);
@@ -612,6 +631,11 @@ export default function App() {
     }
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
     setActive(groupKey === "operations" ? "product-detail" : groupKey);
+  };
+
+  const selectRole = (role: AgentRoleKey) => {
+    if (role === "materials" || role === "tutorials") setActive(role);
+    else selectGroup(role);
   };
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
@@ -778,7 +802,8 @@ export default function App() {
     (group) => group.key === active || group.children.some((item) => item.key === active) || group.key === "agent" && agentSecondary.some((item) => item.key === active)
   );
   const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
-  const roleThemeClass = active === "materials" ? " role-theme-materials" : activeGroup ? ` role-theme-${activeGroup.key}` : "";
+  const themedRole = active === "materials" || active === "tutorials" ? active : activeGroup?.key;
+  const roleThemeClass = themedRole ? ` role-theme-${themedRole}` : "";
 
   return (
     <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
@@ -799,7 +824,7 @@ export default function App() {
             return (
               <div className="nav-group" key={group.key}>
                 <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)} aria-expanded={group.key === "operations" ? undefined : expanded}>
-                  <span className={`nav-role-avatar is-${group.key}`} style={{ background: appearance.surface }} aria-hidden="true"><img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" /></span>
+                  <span className={`nav-role-avatar is-${group.key}`} style={{ background: appearance.surface }} aria-hidden="true"><img src={portraitAsset(appearance)} alt="" /></span>
                   <span className="nav-role-copy"><strong>{group.label}</strong><small title={visiblePreference(group.key).name}>{visiblePreference(group.key).name}</small></span>
                   {group.key !== "operations" && <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>}
                 </button>
@@ -823,13 +848,16 @@ export default function App() {
               </div>
             );
           })}
-          <button className={`nav-item ${active === materialsNavItem.key ? "active" : ""}`} onClick={() => setActive("materials")}>
-            <span className="nav-role-avatar is-materials" style={MATERIALS_THEME} aria-hidden="true"><img src={characterAsset("materials-assistant.png")} alt="" /></span>
-            <span className="nav-role-copy"><strong>{materialsNavItem.label}</strong><small>素材小助理</small></span>
-          </button>
-          <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
+          {supportRoles.map(role => {
+            const appearance = appearanceFor(role, visiblePreference(role).appearanceId);
+            return <div className="nav-group" key={role}><button className={`nav-item ${active === role ? "active" : ""}`} onClick={() => setActive(role)}>
+              <span className={`nav-role-avatar is-${role}`} style={{ background: appearance.surface }} aria-hidden="true"><img src={portraitAsset(appearance)} alt="" /></span>
+              <span className="nav-role-copy"><strong>{AGENT_ROLE_IDENTITIES[role].responsibility}</strong><small>{visiblePreference(role).name}</small></span>
+            </button></div>;
+          })}
         </nav>
         <div className="sidebar-system-nav">
+          <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
             <span>{diagnosticsNavItem.label}</span>
@@ -837,7 +865,7 @@ export default function App() {
         </div>
       </aside>
 
-      <section className={`workspace${roleThemeClass}`} style={active === "materials" ? MATERIALS_THEME : activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
+      <section className={`workspace${roleThemeClass}`} style={themedRole ? appearanceStyle(appearanceFor(themedRole, visiblePreference(themedRole).appearanceId), themedRole === "materials" || themedRole === "tutorials") : undefined}>
         <header className="topbar">
           <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productBrand.displayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
@@ -860,9 +888,12 @@ export default function App() {
           onPreview={(value) => setRolePreview({ role: personalizingRole, value })}
           onSave={(value) => rolePreferences.save(personalizingRole, value)} onClose={closePersonalization} />}
 
+        {tutorialContext && <CustomerPanel title="看操作演示" description="可以暂停、重看；关掉教程即可接着制作。" onClose={() => setTutorialContext(null)}>
+          <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact onOpenGuide={openTextGuide} />
+        </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
-          {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectGroup} onOpenModule={openAgentTarget} />}
+          {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
@@ -912,7 +943,8 @@ export default function App() {
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
           {active === "product-video" && <ProductVideoPage />}
-          {active === "materials" && <OfficialMaterialsPage onUseMaterial={(assetIds) => {
+          {active === "tutorials" && <TutorialsPage preference={visiblePreference("tutorials")} appearance={appearanceFor("tutorials", visiblePreference("tutorials").appearanceId)} onPersonalize={() => setPersonalizingRole("tutorials")} onOpenGuide={openTextGuide} />}
+          {active === "materials" && <OfficialMaterialsPage preference={visiblePreference("materials")} appearance={appearanceFor("materials", visiblePreference("materials").appearanceId)} onPersonalize={() => setPersonalizingRole("materials")} onUseMaterial={(assetIds) => {
             setBatchInitial({ assetIds }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} />}
           {active === "workspace" && (legacyWorkspace

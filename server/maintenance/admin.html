@@ -19,7 +19,15 @@
 <div class="toolbar"><label>说明 <input name="description" required maxlength="1500"></label><label>文件 <input name="file" type="file" accept=".jpg,.jpeg,.png,.mp4" required></label><label>独立小封面（必填） <input name="thumbnail" type="file" accept=".jpg,.jpeg,.png" required></label><button type="submit">保存草稿</button></div></form>
 <details><summary>管理分类</summary><p>每行填写“分类编号,显示名称”，已有素材使用的分类必须保留。</p><textarea id="material-categories" rows="5" style="width:100%" aria-label="素材分类"></textarea><button id="material-save-categories">保存分类</button></details>
 <p id="material-notice" role="status"></p><div class="table-wrap"><table><thead><tr><th>素材</th><th>分类</th><th>使用条件</th><th>状态</th><th>操作</th></tr></thead><tbody id="material-items"></tbody></table></div>
-</main><script>
+<h2>视频操作教程</h2><p>每段只讲一个操作，建议 1—5 分钟。上传 MP4（H.264，最多 256 MiB）和 PNG / JPG 封面（最多 2 MiB），保存草稿并预览后发布。客户刷新教程即可看到，无需升级软件。</p>
+<form id="tutorial-form">
+<input name="id" type="hidden"><input name="existingVideo" type="hidden"><input name="existingCover" type="hidden">
+<div class="toolbar"><label>标题 <input name="title" required maxlength="120" placeholder="例如：上传本人形象"></label><label>分类 <select name="category" id="tutorial-category"></select></label><label id="tutorial-topic-label">操作类型 <select name="topic" id="tutorial-topic"></select></label></div>
+<div class="toolbar"><label>操作录屏 <input name="video" type="file" accept="video/mp4,.mp4"></label><label>封面 <input name="cover" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></label><button type="submit">上传并保存草稿</button><button type="button" id="tutorial-reset">新建教程</button><button type="button" id="tutorial-cancel" hidden>取消上传</button></div>
+</form><progress id="tutorial-progress" max="100" value="0" hidden style="width:100%"></progress><p id="tutorial-notice" role="status" aria-live="polite"></p>
+<div id="tutorial-preview" hidden><h3 id="tutorial-preview-title"></h3><video id="tutorial-preview-video" controls preload="metadata" style="width:100%;max-height:480px;background:#172535"></video><button type="button" id="tutorial-close-preview">关闭预览</button></div>
+<div class="table-wrap"><table><thead><tr><th>教程</th><th>分类 / 操作</th><th>时长</th><th>状态</th><th>操作</th></tr></thead><tbody id="tutorial-items"></tbody></table></div>
+</main><script src="/tutorials-admin.js" defer></script><script>
 let data={issues:[],reports:[],versions:[]};
 let feedback={items:[],total:0},feedbackOffset=0;
 const $=id=>document.getElementById(id);

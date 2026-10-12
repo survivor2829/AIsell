@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Check, CircleAlert, Download, ImagePlus, LoaderCircle, Plus, RefreshCw, UserRound } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, CircleAlert, Download, ImagePlus, LoaderCircle, Mic, Plus, RefreshCw, Volume2 } from 'lucide-react';
 import type { DigitalHumanApi, DigitalHumanAsset, DigitalHumanCapabilities, DigitalHumanDraft, DigitalHumanResult, DigitalHumanTask } from './digital-human-types';
 import './DigitalHumanPage.css';
 import { VideoCoverDetails } from './VideoPresentation';
+import { CreationSteps, CreationStepTitle, TutorialHelp } from './CreationGuide';
 
 function api(): DigitalHumanApi {
   const value = (window as unknown as { xiaoxiDigitalHuman?: DigitalHumanApi }).xiaoxiDigitalHuman;
@@ -32,6 +33,7 @@ export function DigitalHumanPage() {
   const [transcriptText, setTranscriptText] = useState('');
   const [voiceRecommendation, setVoiceRecommendation] = useState('');
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [step, setStep] = useState(0);
   const selection = useRef('');
   const loadedPreview = useRef('');
   const mounted = useRef(true);
@@ -130,6 +132,7 @@ export function DigitalHumanPage() {
     finally { if (mounted.current) setBusy(''); }
   }
   function newSample() {
+    setStep(0);
     selection.current = ''; setSelected(null); setPreview(''); setPreparedSpeech(''); setVoicePreview(''); loadedPreview.current = ''; setNotice(null);
     setDraft(current => ({ ...current, sourceTaskId: selected?.id, ...(current.voiceSource === 'cloned_voice' ? { voicePersonaId: capabilities?.voices.find((v) => v.gender === current.characterVoice && v.digitalHumanDefault)?.id || '' } : {}), voiceSource: current.voiceSource === 'uploaded_audio' ? 'uploaded_audio' : 'official', voiceStyle: 'workbench', durationSeconds: [15, 30, 45].includes(current.durationSeconds) ? current.durationSeconds : 15 }));
   }
@@ -151,6 +154,7 @@ export function DigitalHumanPage() {
       const result = await api().saveAndPreview({ ...draft, ...(selected?.status === 'draft' ? { id: selected.id } : {}) });
       if (result.data) apply(result.data);
       if (!result.ok) throw new Error(result.error || '预览未开始，草稿已保留。');
+      setStep(2);
     });
   }
   async function saveDraft() {
@@ -161,6 +165,7 @@ export function DigitalHumanPage() {
   }
   function selectTask(task: DigitalHumanTask) {
     if (selection.current === task.id) return;
+    setStep(task.status === 'draft' ? 0 : 2);
     apply(task); setDraft({ personAssetId: task.personAssetId, productAssetId: task.productAssetId, sceneId: task.sceneId,
       voiceStyle: task.voiceStyle, voiceSource: task.voiceSource, voicePersonaId: task.voicePersonaId, audioAssetId: task.audioAssetId, characterVoice: task.characterVoice, durationSeconds: task.durationSeconds, script: task.script });
     setImages({}); setAudio(task.audioAssetId ? { id: task.audioAssetId, name: task.audioName || '已保存录音' } : null); setVoicePreview(''); setVoiceRecommendation(''); setPreview(''); loadedPreview.current = ''; setNotice(null);
@@ -187,34 +192,39 @@ export function DigitalHumanPage() {
     : !draft.script.trim() ? '写下想讲的话，再生成人物预览。' : '生成人物预览后，确认形象与产品再制作视频。';
 
   return <div className="digital-human-page">
-    <header className="dh-header"><div className="dh-heading"><h1>数字人视频</h1><p>上传形象和产品，写好完整口播。</p><p className="dh-quality">先准备声音与字幕，再生成 720p 视频；成片普通放大至 1080p 尺寸。</p>
+    <header className="dh-header"><div className="dh-heading"><h1>数字人视频</h1><p>选一张你的照片，让你出镜讲产品。</p></div><div className="dh-header-actions"><TutorialHelp topic="digital-human" />
       <button className="dh-button" onClick={newSample} disabled={!!busy}><Plus size={16} />新建样片</button></div></header>
+    <CreationSteps labels={['上传素材', '选择画面与声音', '确认制作']} current={step} onChange={setStep} disabled={[!!busy, !draft.personAssetId || !draft.productAssetId || !!busy, !selected || selected.status === 'draft' || !!busy]} />
     {notice && <div className={`dh-message is-${notice.kind}`} role={notice.kind === 'success' ? 'status' : 'alert'}>
       {notice.kind === 'success' ? <Check size={17} /> : <CircleAlert size={17} />}<span>{notice.message}</span></div>}
-    <div className="dh-workspace">
-      <section className="dh-form" aria-label="制作设置">
+    <div className={`dh-workspace${step === 2 ? ' is-confirming' : ''}`}>
+      <section className="dh-form" aria-label="制作设置" hidden={step === 2}>
+        <div hidden={step !== 0}>
+        <CreationStepTitle number={1}>上传本人形象和产品</CreationStepTitle>
         <div className="dh-upload-pair">{(['person', 'product'] as const).map((role) => {
           const image = images[role], assetId = role === 'person' ? draft.personAssetId : draft.productAssetId;
           return <button type="button" className={`dh-upload ${assetId ? 'has-image' : ''}`} key={role} disabled={locked || !!busy} onClick={() => void importImage(role)}>
-            {image?.previewDataUrl ? <img src={image.previewDataUrl} alt={role === 'person' ? '本人形象' : '产品图片'} /> : role === 'person' ? <UserRound size={26} /> : <ImagePlus size={26} />}
-            <span><strong>{role === 'person' ? '本人形象' : '产品图片'}</strong><small>{busy === role ? '正在读取…' : assetId ? image?.name || '已选择图片' : '选择图片'}</small></span>
+            <div className="dh-upload-art">{image?.previewDataUrl ? <img src={image.previewDataUrl} alt={role === 'person' ? '本人形象' : '产品图片'} /> : role === 'person' ? <><img className="dh-example-person" src={`${import.meta.env.BASE_URL}agent-characters/xiaoxi-integrated-idle.png`} alt="" /><small className="dh-example-label">示例形象</small></> : <ImagePlus size={52} strokeWidth={1.3} />}</div>
+            <span><strong>{role === 'person' ? '本人形象' : '产品图片'}</strong><small>{busy === role ? '正在读取…' : assetId ? image?.name || '已选择图片' : role === 'person' ? '清晰正脸，五官无遮挡' : '产品完整，背景干净'}</small><em><Plus size={15} />{assetId ? '更换图片' : '选择图片'}</em></span>
           </button>;
         })}</div>
+        <div className="dh-step-footer"><span>两张图片准备好，就可以选场景。</span><div>{!locked && <button type="button" className="dh-button" disabled={!!busy} onClick={() => void saveDraft()}>保存草稿</button>}<button type="button" className="dh-button is-primary" disabled={!draft.personAssetId || !draft.productAssetId || !!busy} onClick={() => setStep(1)}>下一步：选画面<ArrowRight size={17} /></button></div></div>
+        </div>
+        <div hidden={step !== 1}>
+        <CreationStepTitle number={2}>你想在哪里出镜？</CreationStepTitle>
         <fieldset className="dh-scenes" disabled={locked || !!busy}><legend>出镜场景</legend><div>{capabilities?.scenes.map((scene) => <button type="button" key={scene.id}
           aria-pressed={draft.sceneId === scene.id} className={draft.sceneId === scene.id ? 'is-selected' : ''} onClick={() => setDraft({ ...draft, sceneId: scene.id })}>
           <img src={SCENE_IMAGES[scene.id]} alt="" /><span>{scene.name}{draft.sceneId === scene.id && <Check size={14} />}</span></button>)}</div></fieldset>
-        <label className="dh-field"><span>{draft.voiceSource === 'uploaded_audio' ? '场景与产品说明（可选）' : '完整口播文案'}</span><textarea disabled={locked || !!busy} maxLength={legacyTask ? 160 : 1800} rows={5} value={draft.script}
+        <div className="dh-voice-choice" role="group" aria-label="选择讲解方式">{([{ id: 'official', label: '读我的文案', icon: Volume2 }, { id: 'uploaded_audio', label: '用我的录音', icon: Mic }] as const).map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={draft.voiceSource === id} disabled={locked || !!busy} onClick={() => {
+          if (draft.voiceSource === id) return;
+          const voice = capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.id === capabilities.voicePreferences?.[draft.characterVoice || 'unknown']) || capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.digitalHumanDefault);
+          setDraft({ ...draft, voiceSource: id, voicePersonaId: id === 'official' ? voice?.id || '' : '' }); setVoicePreview('');
+        }}><Icon size={24} /><span>{label}</span>{draft.voiceSource === id && <Check size={16} />}</button>)}</div>
+        <label className="dh-field"><span>{draft.voiceSource === 'uploaded_audio' ? '场景与产品说明（可选）' : '想讲什么？'}</span><textarea disabled={locked || !!busy} maxLength={legacyTask ? 160 : 1800} rows={4} value={draft.script}
           placeholder={draft.voiceSource === 'uploaded_audio' ? '录音决定实际讲解内容；这里可补充产品与画面说明。' : '写出整条视频实际要讲的话，包含介绍、解释和收尾。'} aria-describedby="dh-script-help" onChange={(event) => { setDraft({ ...draft, script: event.target.value }); setVoicePreview(''); }} /></label>
         <p className="dh-quality" id="dh-script-help">{draft.voiceSource === 'uploaded_audio' ? '使用录音中的实际讲话和原声音，字幕根据录音识别，不改读这里的文字。' : legacyTask ? '旧任务沿用原方案，口播文案最多160字。' : selected && selected.pipelineVersion === 2 && selected.narrationPolicy !== 'original_script' ? '这条旧任务沿用原有固定分段方案；按原稿自然时长制作请新建任务。' : `目标${draft.durationSeconds}秒，可按约${draft.durationSeconds * 4}字准备。保留完整原稿和自然语速，成片时长以实际讲话为准。`}</p>
         <div className="dh-voice" aria-label="数字人声音">
-          <label className="dh-field"><span>声音来源</span><select disabled={locked || !!busy} value={draft.voiceSource || 'legacy'} onChange={(event) => {
-            const source = event.target.value as DigitalHumanDraft['voiceSource'];
-            const voice = capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.id === capabilities.voicePreferences?.[draft.characterVoice || 'unknown']) || capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.digitalHumanDefault);
-            setDraft({ ...draft, voiceSource: source, voicePersonaId: source === 'official' ? voice?.id || '' : '' }); setVoicePreview('');
-          }}>
-            {!draft.voiceSource && <option value="legacy">沿用原任务声音</option>}
-            <option value="official">火山音色，朗读文案</option><option value="uploaded_audio">自己的录音，按原音讲解</option>{draft.voiceSource === 'cloned_voice' && <option value="cloned_voice">专属音色（历史任务）</option>}
-          </select></label>
+          {(!draft.voiceSource || draft.voiceSource === 'cloned_voice') && <p className="dh-quality">{draft.voiceSource === 'cloned_voice' ? '专属音色（历史任务）' : '沿用原任务声音'}</p>}
           {draft.voiceSource === 'official' && <>
             <div className="dh-options"><label className="dh-field"><span>人物声音</span><select disabled={locked || !!busy} value={draft.characterVoice || 'unknown'} onChange={(event) => chooseCharacterVoice(event.target.value as 'male' | 'female' | 'unknown')}>
               <option value="unknown">请选择男声或女声</option><option value="male">男声</option><option value="female">女声</option></select></label>
@@ -237,8 +247,10 @@ export function DigitalHumanPage() {
           <button type="button" className="dh-button is-primary" data-xiaoxi-digital-human-action="preview" disabled={!canPreview} onClick={() => void makePreview()}>
           {busy === 'preview' ? <LoaderCircle className="dh-spinning" size={17} /> : <ArrowRight size={17} />}{legacyTask ? '生成人物预览' : '准备声音与人物预览'}</button></div>}
         {locked && !working && <button type="button" className="dh-button dh-create" disabled={!!busy} onClick={newSample}>调整后新建样片</button>}
+        </div>
       </section>
       <section className="dh-output" aria-label="场景预览与成片">
+        {step === 2 && <div className="dh-confirm-heading"><CreationStepTitle number={3}>确认画面，再制作</CreationStepTitle><button type="button" className="dh-text-button" disabled={!!busy} onClick={() => setStep(1)}><ArrowLeft size={15} />查看制作设置</button></div>}
         <div className="dh-output-head"><h2>{videoUrl ? '样片' : preview ? '人物与产品预览' : '场景示意'}</h2>{selected && <span className="dh-status">{working && <LoaderCircle className="dh-spinning" size={14} />}{selected.statusLabel}</span>}</div>
         <div className={`dh-preview${!preview && !videoUrl ? ' is-scene' : ''}`}>{videoUrl ? <video controls src={videoUrl} preload="metadata" aria-label="数字人样片" /> : preview ? <img src={preview} alt="人物与产品在所选场景中的生成预览" />
           : <><img src={SCENE_IMAGES[draft.sceneId]} alt={`${scene?.name || '所选场景'}环境示意`} />{working && <div className="dh-preview-progress" role="status"><LoaderCircle className="dh-spinning" size={22} /><span>{selected?.statusLabel}</span></div>}</>}</div>
@@ -262,6 +274,7 @@ export function DigitalHumanPage() {
           {videoUrl && <button className="dh-button is-primary" disabled={!!busy} onClick={() => void download()}><Download size={16} />保存成片</button>}
         </div>
         {selected && <p className="dh-quality">{selected.outputQuality || '沿用原任务画质'}；请核对肤色、口型和产品细节。</p>}
+        {!selected && <details className="dh-quality-details"><summary>画质与制作说明</summary><p>先准备声音与字幕，再生成 720p 视频；成片普通放大至 1080p 尺寸。</p></details>}
         {videoUrl && <div className="dh-cover"><VideoCoverDetails generatedId={selected!.generatedVideoId} /></div>}
       </section>
     </div>

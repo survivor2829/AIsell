@@ -23,7 +23,7 @@ function createRolePreferences({ rootDir }) {
       const value = saved[role];
       if (!value || typeof value.name !== "string") continue;
       const name = validName(value.name);
-      if (name) preferences[role].name = name;
+      if (name && !catalog[role].legacyNames.includes(name)) preferences[role].name = name;
       if (catalog[role].appearances.some((item) => item.id === value.appearanceId)) preferences[role].appearanceId = value.appearanceId;
     }
   } catch {}

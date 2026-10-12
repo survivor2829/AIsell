@@ -7,6 +7,7 @@ const {
 
 const apis = createPreloadApis(ipcRenderer);
 contextBridge.exposeInMainWorld("xiaoxiOfficialMaterials", require("./official-materials-preload.cjs").createOfficialMaterialsApi(ipcRenderer));
+contextBridge.exposeInMainWorld("xiaoxiTutorials", require("./tutorials-preload.cjs").createTutorialsApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiDigitalHuman", require("./digital-human-preload.cjs").createDigitalHumanApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiProductVideo", require("./product-video-preload.cjs").createProductVideoApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiKeywordAcquisition", require("./keyword-acquisition-preload.cjs").createKeywordAcquisitionApi(ipcRenderer));

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Check, RotateCcw } from "lucide-react";
 import { CustomerPanel } from "./CustomerPanel";
-import { ROLE_CATALOG, characterAsset, type AgentRoleKey, type RolePreference } from "./role-appearance";
+import { ROLE_CATALOG, portraitAsset, type AgentRoleKey, type RolePreference } from "./role-appearance";
 
 export function RoleAppearancePanel({ role, value, onPreview, onSave, onClose }: {
   role: AgentRoleKey; value: RolePreference; onPreview: (value: RolePreference) => void;
@@ -32,7 +32,7 @@ export function RoleAppearancePanel({ role, value, onPreview, onSave, onClose }:
       {definition.appearances.map((appearance) => <label key={appearance.id} className={`role-appearance-option ${draft.appearanceId === appearance.id ? "is-selected" : ""}`}>
         <input type="radio" name={`appearance-${role}`} value={appearance.id} checked={draft.appearanceId === appearance.id} disabled={busy}
           onChange={() => update({ ...draft, appearanceId: appearance.id })} />
-        <img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt={`${appearance.label}形象`} style={{ objectPosition: appearance.position }} />
+        <img src={portraitAsset(appearance)} alt={`${appearance.label}形象`} style={{ objectPosition: appearance.position }} />
         <span>{appearance.id === "original" ? "原版形象" : appearance.label}{draft.appearanceId === appearance.id && <Check size={15} aria-hidden="true" />}</span>
       </label>)}
     </div></fieldset>

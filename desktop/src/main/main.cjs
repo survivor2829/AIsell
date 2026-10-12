@@ -614,10 +614,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       appDir: path.resolve(__dirname, '../..'), config: maintenanceConfig,
       gatewayClient: providerGatewayClient, contentEngine: contentEngineController, shell
     });
+    const tutorials = require('./tutorials-ipc.cjs').registerTutorials({
+      ipcMain, getMainWindow: () => mainWindow, rootDir: runtime.rootDir, config: maintenanceConfig
+    });
     registerContentMediaProtocol({
       protocol,
       net,
-      resolveOfficialMedia: officialMaterials.resolveMedia,
+      resolveOfficialMedia: id => officialMaterials.resolveMedia(id) || tutorials.resolveMedia(id),
       controller: contentEngineController
     });
     const beforeContentProviderWork = async (capabilities = ["volcengine_ark", "volcengine_asr", "volcengine_tts"]) => {

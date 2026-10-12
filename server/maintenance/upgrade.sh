@@ -10,20 +10,20 @@ data_dir=/var/lib/ai-maintenance
   echo 'Existing maintenance installation is required; use install.sh for first installation.' >&2
   exit 1
 }
-for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
+for file in service.py feedback.py materials.py tutorials.py tutorials-admin.js admin.html promote.py promote_components.py legacy_releases.py; do
   [ -s "$source_dir/$file" ] || { echo "Missing deployment file: $file" >&2; exit 1; }
 done
 python3 - "$source_dir" <<'PY'
 from pathlib import Path
 import sys
-for name in ('service.py', 'feedback.py', 'materials.py', 'promote.py', 'promote_components.py'):
+for name in ('service.py', 'feedback.py', 'materials.py', 'tutorials.py', 'promote.py', 'promote_components.py', 'legacy_releases.py'):
     file = Path(sys.argv[1]) / name
     compile(file.read_text(), str(file), 'exec')
 PY
 
 backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup" "$backup/code"
-for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
+for file in service.py feedback.py materials.py tutorials.py tutorials-admin.js admin.html promote.py promote_components.py legacy_releases.py; do
   if [ -f "$app_dir/$file" ]; then cp -p "$app_dir/$file" "$backup/code/$file"; fi
 done
 systemctl stop ai-maintenance
@@ -50,10 +50,21 @@ with sqlite3.connect(sys.argv[1]) as db:
 PY
 fi
 
+if [ -f "$data_dir/tutorials/catalog.sqlite3" ]; then
+  python3 - "$data_dir/tutorials/catalog.sqlite3" "$backup/tutorials.sqlite3" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as source, sqlite3.connect(sys.argv[2]) as destination:
+    source.backup(destination)
+    assert destination.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+PY
+  chmod 600 "$backup/tutorials.sqlite3"
+  # Recordings are immutable, content-addressed and untouched by deployment.
+fi
+
 rollback() {
   echo "Deployment failed; restoring previous code; keeping live data and diagnostic backup: $backup" >&2
   systemctl stop ai-maintenance || { echo 'Cannot stop service; preserving live data and backup for recovery.' >&2; return 1; }
-  for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
+  for file in service.py feedback.py materials.py tutorials.py tutorials-admin.js admin.html promote.py promote_components.py legacy_releases.py; do
     if [ -f "$backup/code/$file" ]; then install -m 644 "$backup/code/$file" "$app_dir/$file"; else rm -f "$app_dir/$file"; fi
   done
   # No destructive migrations: new code may have accepted writes before health failed.
@@ -61,7 +72,7 @@ rollback() {
   systemctl restart ai-maintenance || true
 }
 trap rollback EXIT
-for file in service.py feedback.py materials.py admin.html promote.py promote_components.py; do
+for file in service.py feedback.py materials.py tutorials.py tutorials-admin.js admin.html promote.py promote_components.py legacy_releases.py; do
   install -m 644 "$source_dir/$file" "$app_dir/$file"
 done
 systemctl start ai-maintenance
@@ -71,6 +82,8 @@ for attempt in range(20):
     try:
         with urllib.request.urlopen('http://127.0.0.1:8081/api/overview', timeout=3) as response:
             assert isinstance(json.load(response), dict)
+        with urllib.request.urlopen('http://127.0.0.1:8081/api/tutorials', timeout=3) as response:
+            assert json.load(response)['schema'] == 1
         break
     except Exception:
         if attempt == 19:
@@ -80,4 +93,4 @@ PY
 systemctl is-active --quiet ai-maintenance
 trap - EXIT
 echo "Maintenance service updated; database and previous code retained: $backup"
-sha256sum "$app_dir/service.py" "$app_dir/feedback.py" "$app_dir/materials.py" "$app_dir/admin.html" "$app_dir/promote.py"
+sha256sum "$app_dir/service.py" "$app_dir/feedback.py" "$app_dir/materials.py" "$app_dir/tutorials.py" "$app_dir/tutorials-admin.js" "$app_dir/admin.html" "$app_dir/promote.py"

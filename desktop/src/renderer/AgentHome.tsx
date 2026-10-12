@@ -25,7 +25,7 @@ import {
   type ComponentType
 } from "react";
 import type { WorkflowController, WorkflowTask } from "./WechatWorkflow";
-import { AGENT_ROLE_IDENTITIES, appearanceFor, appearanceStyle, type AgentRoleKey, type RolePreference } from "./role-appearance";
+import { AGENT_ROLE_IDENTITIES, appearanceFor, appearanceStyle, type WorkspaceRoleKey as AgentRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import "./AgentHome.css";
 

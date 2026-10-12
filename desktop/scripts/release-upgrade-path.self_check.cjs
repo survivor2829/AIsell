@@ -12,17 +12,26 @@ const { assertUpgradePaths, verifyUpgradePaths } = require("./release-upgrade-pa
   delete manifest.signingPublicKey;
   const payload = JSON.stringify(manifest);
   const envelope = { payload, signature: crypto.sign(null, Buffer.from(payload), keys.privateKey).toString("base64") };
+  const legacyPayload = JSON.stringify({ ...manifest, version: "1.1.77" });
+  const legacyEnvelope = { payload: legacyPayload, signature: crypto.sign(null, Buffer.from(legacyPayload), keys.privateKey).toString("base64") };
   assert.equal(assertUpgradePaths(manifest, manifest).length, 3);
   assert.throws(() => assertUpgradePaths(manifest, { ...manifest, version: "1.1.77" }), /fallback_missing/);
   assert.throws(() => assertUpgradePaths(manifest, manifest, [{ supported: true, channel: "test", appId: config.appId, version: "1.1.57", protocols: [2] }]), /path_missing/);
   let corrupt = false;
-  const request = async (route, options) => {
-    if (route.endsWith("latest")) return envelope;
+  const request = async (route, options = {}) => {
+    if (route.endsWith("latest")) {
+      if (options.headers?.["X-Xiaoxi-Update-Protocol"] !== "3") return legacyEnvelope;
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": manifest.version });
+      return envelope;
+    }
+    assert.equal(options.headers, undefined, "artifact download must not advertise release capabilities");
     fs.writeFileSync(options.destination, corrupt ? Buffer.alloc(bytes.length) : bytes);
   };
+  assert.equal(await request(`/v1/releases/test/latest`), legacyEnvelope);
+  await assert.rejects(verifyUpgradePaths({ config, target: manifest, request: (route, options) => request(route, { ...options, headers: undefined }) }), /fallback_missing/);
   assert.equal((await verifyUpgradePaths({ config, target: manifest, request })).paths.length, 3);
   corrupt = true;
   await assert.rejects(verifyUpgradePaths({ config, target: manifest, request }), /fallback_invalid/);
   await assert.rejects(verifyUpgradePaths({ config, target: manifest, request, expectedPayload: "changed", verifyArtifact: false }), /fallback_changed/);
-  console.log("release upgrade paths: supported legacy protocols, target matching, artifact integrity and publication race checks passed");
+  console.log("release upgrade paths: modern/legacy routing, supported legacy protocols, target matching, artifact integrity and publication race checks passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

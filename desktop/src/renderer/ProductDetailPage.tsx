@@ -1,7 +1,7 @@
-import { CircleAlert, CircleCheck, Copy, LoaderCircle, RefreshCw } from "lucide-react";
+import { CircleAlert, CircleCheck, Copy, LoaderCircle, PlayCircle, RefreshCw, Settings2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import "./ProductDetailPage.css";
-import { appearanceFor, characterAsset, type RolePreference } from "./role-appearance";
+import { appearanceFor, portraitAsset, type RolePreference } from "./role-appearance";
 
 type ProductDetailState = "unavailable" | "stopped" | "starting" | "failed" | "ready";
 
@@ -196,10 +196,17 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
   return (
     <section className={`page product-detail-page${canShowWorkspace ? " has-workspace" : ""}`}>
       <header className="product-detail-guide">
-        <button type="button" className="product-detail-persona" onClick={onPersonalize} aria-label="设置产品详情图伙伴的形象与名字"><img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" style={{ objectPosition: appearance.position }} /></button>
-        <div className="product-detail-guide-copy"><h1>产品详情图</h1><p className="product-detail-promise">上传产品图和卖点，制作详情图、参数图</p><p><strong>{preference.name}</strong>，陪你把产品介绍清楚。</p></div>
-        <button type="button" className="secondary-button" onClick={onPersonalize}>形象与名字</button>
-        {!loadingStatus && ["failed", "unavailable", "stopped"].includes(status.state) && <button type="button" className="primary-button" onClick={() => run(status.state === "failed" ? "restart" : "start")} disabled={busy}><RefreshCw size={16} />重试</button>}
+        <button type="button" className="product-detail-persona" onClick={onPersonalize} aria-label="设置产品详情图伙伴的形象与名字"><img src={portraitAsset(appearance)} alt="" /></button>
+        <div className="product-detail-guide-copy">
+          <h1>产品详情图</h1>
+          <p className="product-detail-promise">上传产品图和卖点，制作详情图、参数图</p>
+          <p><strong>{preference.name}</strong>，陪你把产品介绍清楚。</p>
+          <div className="product-detail-guide-actions">
+            <button type="button" className="secondary-button" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials", { detail: { category: "product-detail" } }))}><PlayCircle size={18} />看操作演示</button>
+            {!loadingStatus && ["failed", "unavailable", "stopped"].includes(status.state) && <button type="button" className="primary-button" onClick={() => run(status.state === "failed" ? "restart" : "start")} disabled={busy}><RefreshCw size={16} />重试</button>}
+          </div>
+        </div>
+        <button type="button" className="product-detail-personalize" onClick={onPersonalize}><Settings2 size={16} />形象与名字</button>
       </header>
 
       {!canShowWorkspace && <div className={`product-detail-state is-${displayState}`} aria-live="polite">

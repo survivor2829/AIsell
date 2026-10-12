@@ -13,7 +13,10 @@ async function verifyPublishedRelease({ config, envelope, schema, request }) {
   let transport;
   try {
     if (!request) transport = createTransport(config);
-    const returned = await (request || transport.request)(route, { maxBytes: 256 * 1024 });
+    const returned = await (request || transport.request)(route, {
+      maxBytes: 256 * 1024,
+      headers: { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": expected.version }
+    });
     const actual = verify(returned, config);
     if (returned.payload !== envelope.payload) {
       throw Object.assign(new Error("Published manifest differs from the submitted manifest."), { code: "release_readback_mismatch" });

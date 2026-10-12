@@ -3,8 +3,8 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { backupProgram } = require("../src/main/update-program-backup.cjs");
-const { captureData, registerSet, confirmSet, readRegistry, checkPreservedData, reusableProgram } = require("../src/main/update-backups.cjs");
-const { createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
+const { captureData, registerSet, confirmSet, readRegistry, checkPreservedData, reusableProgram, dataInventory } = require("../src/main/update-backups.cjs");
+const { backupFilter, copyBytes, updateFailure, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
 const { fork } = require("node:child_process");
 
 if (process.argv[2] === "--hold-registry") {
@@ -26,8 +26,13 @@ if (process.argv[2] === "--hold-registry") {
     await fs.writeFile(path.join(program, "app.asar"), "physical application archive");
     await fs.writeFile(path.join(outside, "source.mp4"), "unique source material");
     await fs.symlink(outside, path.join(profile, "material-link"), "junction");
+    const runtimeLink = path.join(profile, "product-detail/.runtime-links/installed"), businessLink = path.join(profile, "material-link");
+    await fs.mkdir(path.dirname(runtimeLink), { recursive: true });
+    await fs.symlink(program, runtimeLink, "junction");
     for (const [relative, content] of Object.entries({ "Cache/browser.bin": "regenerable", "Code Cache/js.bin": "regenerable",
+      "Network/TransportSecurity": "dynamic browser transport policy", "Network/Cookies": "session state must remain backed up",
       "content-engine/generated/result.mp4": "finished production", "content-engine/batch-exports/output.mp4": "export",
+      "product-detail/.runtime-links-notes/receipt.json": "business notes", "data/.runtime-links/customer.txt": "customer folder",
       "data/Cache/receipt.json": "customer-named folder", "license.enc": "encrypted authorization", "content-engine/content.db": "business database" })) {
       const file = path.join(profile, relative); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content);
     }
@@ -38,7 +43,43 @@ if (process.argv[2] === "--hold-registry") {
       const set = await registerSet(profile, { id, version: "1.1.78", kind, programBackup, data });
       return set;
     };
-    const first = await make("manual");
+    // This developer PC permits symlinks. Model the ordinary-user failure at
+    // Node cp's onLink boundary, while actually creating Windows junctions.
+    const copy = fs.cp, symlink = fs.symlink;
+    const permissionError = () => Object.assign(Error("ordinary user cannot create a directory symlink"), { code: "EPERM", syscall: "symlink", path: program });
+    let junctions = 0, first;
+    fs.cp = async (source, target, options) => {
+      if (source === profile) return copy(source, target, { ...options, filter: async (file, destination) => {
+        const allowed = !options.filter || await options.filter(file, destination);
+        if (allowed && [runtimeLink, businessLink].some(link => path.resolve(link).toLowerCase() === path.resolve(file).toLowerCase())) throw permissionError();
+        return allowed;
+      } });
+      return copy(source, target, options);
+    };
+    fs.symlink = async (source, target, type) => {
+      if (process.platform === "win32" && type !== "junction") throw permissionError();
+      junctions++; return symlink(source, target, type);
+    };
+    try {
+      await assert.rejects(fs.cp(profile, path.join(root, "old-copy"), { recursive: true }), error => {
+        const failure = updateFailure(error, "backup");
+        return failure.code === "EPERM" && failure.syscall === "symlink" && failure.phase === "backup";
+      });
+      first = await make("manual");
+    } finally { fs.cp = copy; fs.symlink = symlink; }
+    assert.equal(junctions, 1, "only the business directory link is recreated");
+    assert.equal((await fs.lstat(path.join(first.data.directory, "material-link"))).isSymbolicLink(), true, "external materials remain a link, never a copied tree");
+    assert.equal(first.data.files.some(file => file.path.startsWith(path.join("product-detail", ".runtime-links") + path.sep)), false);
+    await assert.rejects(fs.lstat(path.join(first.data.directory, "product-detail/.runtime-links")), { code: "ENOENT" });
+    assert.equal(await fs.readFile(path.join(first.data.directory, "product-detail/.runtime-links-notes/receipt.json"), "utf8"), "business notes");
+    assert.equal(await fs.readFile(path.join(first.data.directory, "data/.runtime-links/customer.txt"), "utf8"), "customer folder");
+    assert.equal(await copyBytes(profile, backupFilter(profile)), first.data.files.reduce((sum, file) => sum + (file.size || 0), 0), "external tree bytes never enter the backup budget");
+    assert.equal(first.data.files.filter(file => file.link).length, 1);
+    await fs.unlink(businessLink);
+    await fs.symlink(program, businessLink, "junction");
+    assert.equal(await checkPreservedData(profile, first.data), false, "a changed material link cannot retire the previous backup");
+    await fs.unlink(businessLink);
+    await fs.symlink(outside, businessLink, "junction");
     const legacyMutable = ["DevToolsActivePort", path.join("Network", "Network Persistent State")];
     for (const relative of legacyMutable) {
       assert.equal(await checkPreservedData(profile, { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] }), true,
@@ -57,6 +98,8 @@ if (process.argv[2] === "--hold-registry") {
       await fs.unlink(old); await fs.unlink(live);
     }
     assert.equal(first.data.files.some(file => file.path.startsWith("Cache")), false);
+    assert.equal(first.data.files.some(file => file.path === path.join("Network", "TransportSecurity")), false);
+    assert.ok(first.data.files.some(file => file.path === path.join("Network", "Cookies")), "excluding the exact transport cache must not drop browser authorization state");
     assert.ok(first.data.files.some(file => file.path === path.join("data", "Cache", "receipt.json")));
     assert.ok(first.data.files.some(file => file.path === path.join("content-engine", "generated", "result.mp4")));
     const holder = fork(__filename, ["--hold-registry", profile], { silent: true });
@@ -113,6 +156,26 @@ if (process.argv[2] === "--hold-registry") {
     assert.deepEqual(await fs.readdir(owned.parent), ["owned"], "retry finds and removes the same quarantined inode");
     assert.equal(await fs.readFile(path.join(owned.directory, "unrelated.txt"), "utf8"), "replacement must survive");
     assert.equal(await fs.readFile(path.join(outside, "source.mp4"), "utf8"), "unique source material");
+    const dailyBackup = path.join(root, "daily-backup"), dailyLive = path.join(root, "daily-live"), relative = "data/auto_reply/auto-reply-state.json";
+    for (const directory of [dailyBackup, dailyLive]) await fs.mkdir(path.dirname(path.join(directory, relative)), { recursive: true });
+    const localDay = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const now = new Date(), priorDay = new Date(now); priorDay.setDate(priorDay.getDate() - 1);
+    const prior = { daily_date: localDay(priorDay), reply_count: 7, processed: { fixture: { status: "outcome_unknown" } } };
+    const normalized = { ...prior, daily_date: localDay(now), reply_count: 0 };
+    const cases = [
+      ["normal local-day rollover", prior, normalized, true],
+      ["already-zero daily count", { ...prior, reply_count: 0 }, normalized, true],
+      ["same-day count must not reset", { ...prior, daily_date: localDay(now) }, normalized, false],
+      ["backward day", normalized, { ...normalized, daily_date: localDay(priorDay) }, false],
+      ["invalid calendar day", { ...prior, daily_date: "2026-02-30" }, normalized, false],
+      ["nonzero reset", prior, { ...normalized, reply_count: 1 }, false],
+      ["unknown-send record must survive", prior, { ...normalized, processed: {} }, false],
+    ];
+    for (const [label, before, after, expected] of cases) {
+      await fs.writeFile(path.join(dailyBackup, relative), JSON.stringify(before));
+      await fs.writeFile(path.join(dailyLive, relative), JSON.stringify(after));
+      assert.equal(await checkPreservedData(dailyLive, { directory: dailyBackup, files: await dataInventory(dailyBackup) }), expected, label);
+    }
     console.log("Update backup governance self-check passed.");
   } finally {
     assert.equal(path.dirname(root), parent);

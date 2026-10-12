@@ -18,6 +18,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import urllib.request
 from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
 from materials import MaterialsStore, MAX_FILE
+from tutorials import TutorialsStore, serve_file as serve_tutorial_file
+from legacy_releases import LegacyReleaseRouter
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -203,7 +205,9 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, handler, store, admin=False):
         super().__init__(address, handler)
         self.store, self.admin = store, admin
+        self.release_router = LegacyReleaseRouter(store.root, APP_IDS) if store is not None else None
         self.materials = MaterialsStore(store.root) if store is not None else None
+        self.tutorials = TutorialsStore(store.root) if store is not None else None
         self.slots = threading.BoundedSemaphore(24)
         self.rate_lock = threading.Lock()
         self.rates = collections.OrderedDict()
@@ -211,6 +215,8 @@ class Server(ThreadingHTTPServer):
         super().server_close()
         if self.materials is not None:
             self.materials.db.close()
+        if self.tutorials is not None:
+            self.tutorials.db.close()
     def process_request(self, request, address):
         if not self.slots.acquire(False):
             request.close()
@@ -349,6 +355,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.server.admin:
                 if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")) or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
                     return self.reply(403, {"error": "origin"})
+                if urlsplit(self.path).path == "/api/tutorials/files":
+                    self.connection.settimeout(120)
+                    query = parse_qs(urlsplit(self.path).query)
+                    result = self.server.tutorials.upload(self.rfile, int(self.headers.get("Content-Length", "0")),
+                        query.get("kind", [""])[0], self.headers.get("Content-Type", ""))
+                    return self.reply(200, result)
+                if self.path == "/api/tutorials":
+                    return self.reply(200, self.server.tutorials.change(self.body()))
                 if self.path == "/api/materials":
                     if self.server.materials is None:
                         return self.reply(503, {"error": "materials_unavailable"})
@@ -410,10 +424,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {"error": "host"})
             if route == "/api/overview":
                 return self.reply(200, self.server.store.overview())
+            if route == "/tutorials-admin.js":
+                data = Path(__file__).with_name("tutorials-admin.js").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                return self.wfile.write(data)
             if route == "/api/materials":
                 if self.server.materials is None:
                     return self.reply(503, {"error": "materials_unavailable"})
                 return self.reply(200, self.server.materials.catalog(admin=True))
+            if route == "/api/tutorials":
+                return self.reply(200, self.server.tutorials.catalog(admin=True))
+            if route.startswith("/api/tutorials/files/"):
+                target = self.server.tutorials.public_file(route.removeprefix("/api/tutorials/files/"), admin=True)
+                return serve_tutorial_file(self, target) if target else self.reply(404, {"error": "not_found"})
             if route == "/api/feedback":
                 query = parse_qs(urlsplit(self.path).query)
                 raw_offset = query.get("offset", ["0"])[0]
@@ -435,6 +463,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "not_found"})
         if route == "/health":
             return self.reply(200, {"ok": True, "service": "maintenance", "schema": 1})
+        if route == "/v1/tutorials/catalog":
+            return self.reply(200, self.server.tutorials.catalog())
+        if route.startswith("/v1/tutorials/files/"):
+            target = self.server.tutorials.public_file(route.removeprefix("/v1/tutorials/files/"))
+            return serve_tutorial_file(self, target) if target else self.reply(404, {"error": "not_found"})
         if route == "/v1/materials/catalog":
             if self.server.materials is None:
                 return self.reply(503, {"error": "materials_unavailable"})
@@ -472,10 +505,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(503, {"error": "unavailable"})
         match = re.fullmatch(r"/v([12])/releases/(test|delivery|smoke)/latest", route)
         if match:
-            file = self.server.store.root / "releases" / match[2] / ("latest-components.json" if match[1] == "2" else "latest.json")
-            if not file.exists():
-                return self.reply(200, {"empty": True})
-            return self.reply(200, json.loads(file.read_text()))
+            try:
+                envelope = self.server.release_router.latest(match[2], match[1], self.headers)
+            except ValueError as error:
+                if str(error) == "update_capability_invalid":
+                    return self.reply(400, {"error": "update_capability_invalid"})
+                return self.reply(503, {"error": "release_route_unavailable"})
+            except Exception:
+                return self.reply(503, {"error": "release_route_unavailable"})
+            return self.reply(200, envelope)
         match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip)", route)
         if match:
             if (match[1], match[3]) not in (("artifacts", "exe"), ("components", "zip")):

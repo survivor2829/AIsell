@@ -1,26 +1,38 @@
 {
   "agent": {
-    "name": "许玺达", "responsibility": "微信拓客",
+    "name": "小诚", "legacyNames": ["小玺", "许玺达"], "responsibility": "微信拓客",
     "appearances": [
-      { "id": "original", "label": "经典许玺达", "portraitKey": "xiaoxi-integrated", "position": "50% 27%", "accent": "#ef4452", "strong": "#bf2034", "surface": "#faebef", "soft": "#fff3f4", "pattern": "agent-original.svg", "motifs": ["message", "users", "send", "bot", "thumbs", "list"], "layout": "routes" },
-      { "id": "welcome", "label": "热情相迎", "portraitKey": "xiaoxi-welcome", "position": "50% 29%", "accent": "#dd6457", "strong": "#a13d35", "surface": "#f8f3f1", "soft": "#fff9f6", "pattern": "agent-welcome.svg", "motifs": ["users", "send", "user", "users", "send", "user"], "layout": "orbits" },
-      { "id": "connect", "label": "随时在线", "portraitKey": "xiaoxi-connect", "position": "50% 28%", "accent": "#dc685d", "strong": "#a64038", "surface": "#f4f0ee", "soft": "#fff8f4", "pattern": "agent-connect.svg", "motifs": ["message", "user", "users", "message", "user", "message"], "layout": "network" }
+      {"id": "original", "label": "经典小诚", "portraitKey": "xiaoxi-integrated", "position": "50% 27%", "accent": "#ef4452", "strong": "#bf2034", "surface": "#faebef", "soft": "#fff3f4", "pattern": "agent-original.svg", "motifs": ["message", "users", "send", "bot", "thumbs", "list"], "layout": "routes"},
+      {"id": "welcome", "label": "热情相迎", "portraitKey": "xiaoxi-welcome", "position": "50% 29%", "accent": "#dd6457", "strong": "#a13d35", "surface": "#f8f3f1", "soft": "#fff9f6", "pattern": "agent-welcome.svg", "motifs": ["users", "send", "user", "users", "send", "user"], "layout": "orbits"},
+      {"id": "connect", "label": "随时在线", "portraitKey": "xiaoxi-connect", "position": "50% 28%", "accent": "#dc685d", "strong": "#a64038", "surface": "#f4f0ee", "soft": "#fff8f4", "pattern": "agent-connect.svg", "motifs": ["message", "user", "users", "message", "user", "message"], "layout": "network"}
     ]
   },
   "production": {
-    "name": "叶映客", "responsibility": "短视频获客",
+    "name": "小影", "legacyNames": ["小惠", "叶映客"], "responsibility": "短视频获客",
     "appearances": [
-      { "id": "original", "label": "经典叶映客", "portraitKey": "xiaohui-integrated", "position": "50% 31%", "accent": "#a855f7", "strong": "#7131b7", "surface": "#efdcfb", "soft": "#f5ecfb", "pattern": "production-original.svg", "motifs": ["images", "sparkles", "clapper", "video", "folder", "monitor"], "layout": "routes" },
-      { "id": "studio", "label": "灵感手记", "portraitKey": "xiaohui-studio", "position": "50% 28%", "accent": "#b7759e", "strong": "#864c76", "surface": "#f7f2ef", "soft": "#fff9f8", "pattern": "production-studio.svg", "motifs": ["camera", "image", "sparkles", "image", "camera", "sparkles"], "layout": "frames" },
-      { "id": "create", "label": "创作时刻", "portraitKey": "xiaohui-create", "position": "50% 29%", "accent": "#ad7eae", "strong": "#7b527e", "surface": "#f7f0ee", "soft": "#fffafb", "pattern": "production-create.svg", "motifs": ["aperture", "focus", "sparkles", "focus", "aperture", "sparkles"], "layout": "frames" }
+      {"id": "original", "label": "经典小影", "portraitKey": "xiaohui-integrated", "position": "50% 31%", "accent": "#a855f7", "strong": "#7131b7", "surface": "#efdcfb", "soft": "#f5ecfb", "pattern": "production-original.svg", "motifs": ["images", "sparkles", "clapper", "video", "folder", "monitor"], "layout": "routes"},
+      {"id": "studio", "label": "灵感手记", "portraitKey": "xiaohui-studio", "position": "50% 28%", "accent": "#b7759e", "strong": "#864c76", "surface": "#f7f2ef", "soft": "#fff9f8", "pattern": "production-studio.svg", "motifs": ["camera", "image", "sparkles", "image", "camera", "sparkles"], "layout": "frames"},
+      {"id": "create", "label": "创作时刻", "portraitKey": "xiaohui-create", "position": "50% 29%", "accent": "#ad7eae", "strong": "#7b527e", "surface": "#f7f0ee", "soft": "#fffafb", "pattern": "production-create.svg", "motifs": ["aperture", "focus", "sparkles", "focus", "aperture", "sparkles"], "layout": "frames"}
     ]
   },
   "operations": {
-    "name": "周联客", "responsibility": "产品详情图",
+    "name": "小绘", "legacyNames": ["小联", "周联客"], "responsibility": "产品详情图",
     "appearances": [
-      { "id": "original", "label": "经典周联客", "portraitKey": "xiaolian-integrated", "position": "50% 31%", "accent": "#7976de", "strong": "#514fa8", "surface": "#eeebfa", "soft": "#f6f3fd", "pattern": "operations-original.svg", "motifs": ["send", "link", "radio", "chart", "user", "phone"], "layout": "routes" },
-      { "id": "growth", "label": "增长伙伴", "portraitKey": "xiaolian-growth", "position": "50% 27%", "accent": "#7976de", "strong": "#514fa8", "surface": "#f8f7f7", "soft": "#f9f9ff", "pattern": "operations-growth.svg", "motifs": ["cart", "message", "users", "chart", "trend", "users"], "layout": "growth" },
-      { "id": "channels", "label": "连接更多", "portraitKey": "xiaolian-channels", "position": "50% 27%", "accent": "#8c82d8", "strong": "#5f549f", "surface": "#f6f7fc", "soft": "#faf9ff", "pattern": "operations-channels.svg", "motifs": ["mail", "send", "users", "chart", "megaphone", "message"], "layout": "orbits" }
+      {"id": "original", "label": "经典小绘", "portraitKey": "xiaolian-integrated", "position": "50% 31%", "accent": "#7976de", "strong": "#514fa8", "surface": "#eeebfa", "soft": "#f6f3fd", "pattern": "operations-original.svg", "motifs": ["send", "link", "radio", "chart", "user", "phone"], "layout": "routes"},
+      {"id": "growth", "label": "增长伙伴", "portraitKey": "xiaolian-growth", "position": "50% 27%", "accent": "#7976de", "strong": "#514fa8", "surface": "#f8f7f7", "soft": "#f9f9ff", "pattern": "operations-growth.svg", "motifs": ["cart", "message", "users", "chart", "trend", "users"], "layout": "growth"},
+      {"id": "channels", "label": "连接更多", "portraitKey": "xiaolian-channels", "position": "50% 27%", "accent": "#8c82d8", "strong": "#5f549f", "surface": "#f6f7fc", "soft": "#faf9ff", "pattern": "operations-channels.svg", "motifs": ["mail", "send", "users", "chart", "megaphone", "message"], "layout": "orbits"}
+    ]
+  },
+  "materials": {
+    "name": "小禾", "legacyNames": ["素材小助理"], "responsibility": "物保素材库",
+    "appearances": [
+      {"id": "original", "label": "小禾", "portraitKey": "materials-assistant", "portraitFile": "materials-assistant.png", "position": "50% 24%", "accent": "#4f815c", "strong": "#31543b", "surface": "#eaf5e9", "soft": "#f3faf2", "pattern": "", "motifs": ["images", "folder", "search"], "layout": "frames"}
+    ]
+  },
+  "tutorials": {
+    "name": "小丽", "legacyNames": ["操作小教练"], "responsibility": "操作教程",
+    "appearances": [
+      {"id": "original", "label": "小丽", "portraitKey": "tutorial-assistant", "position": "50% 23%", "accent": "#427b9f", "strong": "#275875", "surface": "#eaf3fa", "soft": "#f3f8fc", "pattern": "", "motifs": ["video", "monitor", "play"], "layout": "frames"}
     ]
   }
 }

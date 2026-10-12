@@ -23,13 +23,17 @@ async function main() {
       })
     };
     const envelope = sign(manifest);
+    const legacyEnvelope = sign({ ...manifest, version: "1.1.57", sequence: manifest.sequence - 1 });
+    const releaseEndpoint = (options = {}) => options.headers?.["X-Xiaoxi-Update-Protocol"] === "3" ? envelope : legacyEnvelope;
+    assert.equal(releaseEndpoint(), legacyEnvelope, "legacy requests must read the retained transition release");
     let calls = 0;
     const request = async (route, options) => {
       calls++;
       assert.equal(route, `/v${schema}/releases/test/latest`);
       assert.equal(options.body, undefined, "readback must remain a GET without publication side effects");
       assert.equal(options.maxBytes, 256 * 1024);
-      return envelope;
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": manifest.version });
+      return releaseEndpoint(options);
     };
     const verified = await verifyPublishedRelease({ config, envelope, schema, request });
     assert.equal(calls, 1);
@@ -38,6 +42,7 @@ async function main() {
     assert.equal(verified.sequence, manifest.sequence);
     assert.equal(verified.manifestSha256, crypto.createHash("sha256").update(envelope.payload).digest("hex"));
     assert.deepEqual(verified.artifactSha256, schema === 1 ? manifest.sha256 : Object.fromEntries(COMPONENTS.map(name => [name, manifest.components[name].sha256])));
+    await assert.rejects(verifyPublishedRelease({ config, envelope, schema, request: (_route, options) => releaseEndpoint({ ...options, headers: undefined }) }), { code: "release_readback_unverified" });
 
     const changedDigest = structuredClone(manifest);
     if (schema === 1) {
@@ -48,7 +53,7 @@ async function main() {
       changedDigest.components.application.file = `/components/${changedDigest.components.application.sha256}.zip`;
     }
     const cases = [
-      ["old signed release", sign({ ...manifest, version: "1.1.57", sequence: manifest.sequence - 1 })],
+      ["old signed release", legacyEnvelope],
       ["same version and different sequence", sign({ ...manifest, sequence: manifest.sequence + 1 })],
       ["valid signature but wrong artifact", sign(changedDigest)],
       ["wrong signing key", sign(manifest, crypto.generateKeyPairSync("ed25519").privateKey)],

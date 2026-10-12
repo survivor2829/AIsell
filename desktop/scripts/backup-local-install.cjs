@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
-const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
+const { backupFilter, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
 const { dataInventory, registerSet, readRegistry, verifySet } = require("../src/main/update-backups.cjs");
 const { inventory } = require("../src/main/update-program-backup.cjs");
 const { HEX, digest } = require("../src/shared/component-contract.cjs");
@@ -50,7 +50,7 @@ async function backupLocalInstall({ program, profile, outputRoot }) {
       execFileSync("icacls.exe", [owned.directory, "/inheritance:r", "/grant:r", `${account}:(OI)(CI)F`, "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"], { stdio: "ignore", windowsHide: true });
     }
     await fs.promises.cp(program, path.join(owned.directory, "program"), { recursive: true, errorOnExist: true, force: false });
-    await fs.promises.cp(profile, path.join(owned.directory, "userData"), { recursive: true, errorOnExist: true, force: false, filter });
+    await copyProfile(profile, path.join(owned.directory, "userData"), filter);
     if (JSON.stringify(dataFiles) !== JSON.stringify(await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
     fs.writeFileSync(path.join(owned.directory, "backup.json"), JSON.stringify({ version, createdAt: new Date().toISOString(), programSource: program, profileSource: profile, updateCachesExcluded: true, selection }, null, 2));
     const id = path.basename(owned.directory);

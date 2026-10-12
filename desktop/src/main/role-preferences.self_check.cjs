@@ -57,6 +57,20 @@ async function main() {
     const unsubscribe = api.onUpdate((value) => { notified = value; });
     events.get("role-preferences:update")(null, controller.status());
     assert.deepEqual(notified, controller.status()); unsubscribe(); assert.equal(events.size, 0);
+    const legacy = Object.fromEntries(Object.entries(catalog).map(([role, definition]) => [role, {
+      name: definition.legacyNames.at(-1), appearanceId: definition.appearances.at(-1).id
+    }]));
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    const legacyBytes = fs.readFileSync(file, "utf8");
+    const renamed = createRolePreferences({ rootDir: dir }).status().data;
+    for (const [role, definition] of Object.entries(catalog)) {
+      assert.equal(renamed[role].name, definition.name);
+      assert.equal(renamed[role].appearanceId, legacy[role].appearanceId);
+    }
+    assert.equal(fs.readFileSync(file, "utf8"), legacyBytes, "Reading old defaults must not rewrite the user's file");
+    legacy.agent.name = "我的客户伙伴";
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    assert.equal(createRolePreferences({ rootDir: dir }).status().data.agent.name, legacy.agent.name);
     console.log("role preferences: defaults, Unicode limits, role/appearance validation, atomic failure, persistence, observer isolation and IPC boundary passed");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
