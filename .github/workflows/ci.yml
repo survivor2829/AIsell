@@ -24,7 +24,7 @@ env:
   PYTHONUTF8: '1'
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.failure_acceptance || false }}
   cancel-in-progress: true
 
 jobs:
