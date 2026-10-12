@@ -10,6 +10,10 @@ on:
         description: 'Only run isolated real installer acceptance; never publish'
         type: boolean
         default: false
+      failure_acceptance:
+        description: 'With install_acceptance: interrupt actual installer and new startup in disposable runners'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +35,10 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(inputs.failure_acceptance && '["installer-interruption","startup-interruption"]' || '["success"]') }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -53,12 +61,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Official installer unavailable' }
       - name: Original 64 real NSIS to current real NSIS and startup acknowledgement
         shell: pwsh
-        run: ./desktop/scripts/update-install-acceptance.ps1
+        run: ./desktop/scripts/update-install-acceptance.ps1 -Scenario '${{ matrix.scenario }}'
       - name: Preserve isolated installation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: real-installer-acceptance
+          name: real-installer-acceptance-${{ matrix.scenario }}
           path: C:/Evidence/sandbox-real-upgrade
           if-no-files-found: warn
           retention-days: 7
