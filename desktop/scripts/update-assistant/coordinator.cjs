@@ -6,10 +6,8 @@ const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
-const { spawn, execFile } = require('node:child_process');
-const { promisify } = require('node:util');
+const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
-const run = promisify(execFile);
 const EXE = 'AI获客 V1.0版本-测试版.exe';
 const APP_ID = 'com.aihuoke.desktop.test';
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -75,18 +73,8 @@ function installationMetadata(installed, contract, componentContract) {
   return { baseline, version: pkg.version };
 }
 async function processRows() {
-  const shell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
-  const script = '[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name | ConvertTo-Json -Compress';
-  let result;
-  try {
-    // WMI initialization on a cold Windows session can exceed 15 seconds.
-    result = await run(shell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: 60000 });
-  } catch (error) {
-    if (error.killed) throw Object.assign(Error('update_process_snapshot_timeout'), { cause: error });
-    throw error;
-  }
-  const value = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
-  return (Array.isArray(value) ? value : [value]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name }));
+  // Called only after the embedded descriptor and complete payload are verified.
+  return require(child(__dirname, 'helper-app/src/main/update-helper.cjs')).processSnapshot();
 }
 async function acquireLease(installed, profile) {
   const key = sha(path.resolve(installed).toLowerCase() + '\n' + path.resolve(profile).toLowerCase());

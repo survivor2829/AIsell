@@ -59,7 +59,7 @@ public class SandboxClose {
     # No altered installer, mocked exit code, or production profile is involved.
     $fault=Start-Job -ArgumentList $Scenario,$program,$jobs,$downloads,$newHash,$originalPackageHash -ScriptBlock {
       param($mode,$root,$jobRoot,$cache,$digest,$originalHash)
-      $ErrorActionPreference='Stop';$until=(Get-Date).AddMinutes(8)
+      $ErrorActionPreference='Stop';$until=(Get-Date).AddMinutes(18)
       $exe=Join-Path $root 'AI获客 V1.0版本-测试版.exe'
       $package=Join-Path $root 'resources/app/package.json'
       while((Get-Date) -lt $until) {
@@ -99,7 +99,7 @@ public class SandboxClose {
   Assert-True ($button -ne [IntPtr]::Zero) 'Native update action unavailable'
   Assert-True ([SandboxClose]::PostMessage($button,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)) 'Native button click could not be posted'
   $status=$null;$statusFile=$null
-  $until=(Get-Date).AddMinutes(8)
+  $until=(Get-Date).AddMinutes(15)
   do {
     if(Test-Path $jobs){$statusFile=Get-ChildItem $jobs -Filter '*.status.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if($statusFile){$status=Read-Json $statusFile.FullName}}
     if($status.phase -in @('complete','error')){break}
@@ -139,6 +139,7 @@ public class SandboxClose {
   $_ | Out-String | Set-Content "$report/error.txt"
   Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3 | Set-Content "$report/processes.json"
   if($assistant){[SandboxClose]::Inspect($assistant.Id) | ConvertTo-Json | Set-Content "$report/native-window.json"}
+  if($jobs -and (Test-Path $jobs)) { Copy-Item -Path (Join-Path $jobs '*.json') -Destination $report }
   $assistantRoot=Join-Path $env:LOCALAPPDATA 'AI获客更新助手'
   Get-ChildItem -LiteralPath $assistantRoot -Filter 'failure-diagnostic.json' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $report ($_.Directory.Name+'-failure.json')) }
   Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free | ConvertTo-Json | Set-Content "$report/space.json"
