@@ -254,6 +254,24 @@ async function main() {
     downloadAttempts = 0; permanentFailure = true;
     await assert.rejects(isolatedModule.exports.downloadMedia('https://media.example.com/result', downloaded), { code: 'CERT_HAS_EXPIRED' });
     assert.equal(downloadAttempts, 1, 'certificate failures must not be bypassed or retried');
+    let queryAttempts = 0, invalidErrorBody = false;
+    const transient = createDigitalHumanProvider({ gatewayClient: {
+      url: route => route,
+      fetch: async () => ++queryAttempts === 1
+        ? { ok: false, status: 503, json: async () => {
+          if (invalidErrorBody) throw new SyntaxError('HTML error page');
+          return { error: 'provider_unavailable' };
+        } }
+        : { ok: true, json: async () => ({ status: 'completed' }) }
+    } });
+    assert.equal((await transient.request('/apimart/tasks/existing-order')).status, 'completed',
+      'temporary polling outage must recover the same paid order without manual intervention');
+    queryAttempts = 0; invalidErrorBody = true;
+    assert.equal((await transient.request('/apimart/tasks/existing-order')).status, 'completed',
+      'a non-JSON 503 must retain its HTTP status and recover the existing order');
+    queryAttempts = 0;
+    await assert.rejects(transient.request('/apimart/images/generations', { method: 'POST' }), { outcomeUnknown: true });
+    assert.equal(queryAttempts, 1, 'an unconfirmed paid POST must never be repeated');
     const unavailable = createDigitalHumanProvider({ gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true } }) } });
     assert.equal((await unavailable.capabilities()).ready, false, 'Image capability alone must never imply video capability.');
     console.log('digital-human self-check passed: slow-save click, preview gate, approved assets, native voice, packaging resume, unknown guard, restart receipts, protected paths');

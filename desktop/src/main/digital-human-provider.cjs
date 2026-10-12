@@ -194,6 +194,19 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
       : { ready: true, code: '', message: '' };
   }
   async function request(route, { method = 'GET', body, operationId, headers = {} } = {}) {
+    // Queries reuse an existing order; paid submissions must remain one-shot.
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await requestOnce(route, { method, body, operationId, headers }); }
+      catch (error) {
+        const transient = error.code === 'digital_human_request_unconfirmed'
+          || (['digital_human_provider_error', 'digital_human_response_invalid'].includes(error.code)
+            && (error.status === 408 || error.status === 429 || error.status >= 500));
+        if (method !== 'GET' || !transient || attempt >= 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
+      }
+    }
+  }
+  async function requestOnce(route, { method, body, operationId, headers }) {
     let response;
     try {
       response = await gatewayClient.fetch(gatewayClient.url(route), { method, body: body instanceof Buffer ? body : body == null ? undefined : JSON.stringify(body),
@@ -203,7 +216,7 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
       throw fail('digital_human_request_unconfirmed', '服务连接中断，请刷新核对进度，当前请求不会自动重复提交。', { outcomeUnknown: method === 'POST' });
     }
     let payload;
-    try { payload = await response.json(); } catch { throw fail('digital_human_response_invalid', '服务返回的数据无法识别。', { outcomeUnknown: method === 'POST' }); }
+    try { payload = await response.json(); } catch { throw fail('digital_human_response_invalid', '服务返回的数据无法识别。', { outcomeUnknown: method === 'POST', status: response.status }); }
     if (!response.ok) {
       const detail = cleanMessage(payload?.error?.message || payload?.error || payload?.message);
       throw fail(response.status === 404 ? 'digital_human_route_unavailable' : 'digital_human_provider_error',

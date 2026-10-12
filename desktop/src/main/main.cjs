@@ -285,6 +285,8 @@ function createWindow() {
   });
   mainWindow.on("closed", () => {
     mainWindow = null;
+    // The hidden workflow window must not keep Windows running after exit.
+    if (process.platform !== "darwin") app.quit();
   });
 
   if (!app.isPackaged && process.env.VITE_DEV_SERVER_URL) {
