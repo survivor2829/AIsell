@@ -80,7 +80,7 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal(await checkPreservedData(profile, first.data), false, "a changed material link cannot retire the previous backup");
     await fs.unlink(businessLink);
     await fs.symlink(outside, businessLink, "junction");
-    const legacyMutable = ["DevToolsActivePort", path.join("Network", "Network Persistent State")];
+    const legacyMutable = ["DevToolsActivePort", path.join("Network", "Network Persistent State"), path.join("content-engine", "content-engine.lock")];
     const database = path.join("content-engine", "content.db"), sharedIndex = database + "-shm";
     const sqliteSnapshot = { ...first.data, files: [...first.data.files.filter(file => file.path === database), { path: sharedIndex, size: 32768, sha256: "old" }] };
     assert.equal(await checkPreservedData(profile, sqliteSnapshot), true, "clean close may remove SQLite shared-memory index");
@@ -96,7 +96,7 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal(await checkPreservedData(profile, emptyWalSnapshot), false, "a missing nonempty WAL must keep recovery evidence");
     for (const relative of legacyMutable) {
       assert.equal(await checkPreservedData(profile, { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] }), true,
-        "older snapshots may include disposable Chromium state");
+        "older snapshots may include regenerable browser state or the worker's OS lock");
     }
     const catalogPath = path.join("data", "official-materials", "catalog.json");
     const cachedCatalog = { schema: 1, revision: 1, categories: [], items: [] };
