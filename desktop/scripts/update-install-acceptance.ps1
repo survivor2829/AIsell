@@ -38,11 +38,14 @@ try {
   $until=(Get-Date).AddSeconds(30); $button=$null
   do {
     $window=[Windows.Automation.AutomationElement]::RootElement.FindFirst([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$assistant.Id))
-    if($window){$button=$window.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'立即更新'))}
+    if($window){$button=$window.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.AndCondition]::new([Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'立即更新'),[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button)))}
     if(!$button){Start-Sleep -Milliseconds 200}
   }while(!$button -and (Get-Date) -lt $until)
   Assert-True ($null -ne $button) 'Native update action unavailable'
-  $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+  $invoke=$null
+  if($button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) { $invoke.Invoke() }
+  elseif($button.Current.NativeWindowHandle) { [void][SandboxClose]::PostMessage([IntPtr]$button.Current.NativeWindowHandle,0xF5,[IntPtr]::Zero,[IntPtr]::Zero) }
+  else { throw 'Native update button has neither InvokePattern nor HWND' }
   $jobs=Join-Path $profile 'data/cloud-maintenance/components/jobs';$status=$null;$statusFile=$null
   $until=(Get-Date).AddMinutes(8)
   do {
