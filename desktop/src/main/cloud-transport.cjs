@@ -10,7 +10,7 @@ function createTransport(config) {
   if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/") fail("cloud_origin_invalid");
   const agent = new https.Agent({ ca: config.caPem || undefined, keepAlive: true, maxSockets: 3 });
   const requests = new Set();
-  async function request(route, { body, maxBytes = 256 * 1024, destination, expected, onProgress, resume = false } = {}) {
+  async function request(route, { body, headers = {}, maxBytes = 256 * 1024, destination, expected, onProgress, resume = false } = {}) {
     const url = new URL(route, origin);
     if (url.origin !== origin.origin || !route.startsWith("/")) fail("cloud_origin_invalid");
     const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
@@ -32,7 +32,7 @@ function createTransport(config) {
       let response;
       const req = https.request(url, {
         agent, method: data ? "POST" : "GET",
-        headers: data ? { "Content-Type": "application/json", "Content-Length": data.length } : offset ? { Range: `bytes=${offset}-` } : {}
+        headers: { ...headers, ...(data ? { "Content-Type": "application/json", "Content-Length": data.length } : offset ? { Range: `bytes=${offset}-` } : {}) }
       });
       requests.add(req);
       const totalTimer = setTimeout(() => req.destroy(new Error("cloud_timeout")), destination ? 30 * 60_000 : 30_000);

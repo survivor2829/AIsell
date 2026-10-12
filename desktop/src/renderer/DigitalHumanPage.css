@@ -1,6 +1,6 @@
-.digital-human-page { --dh-accent: var(--accent, #7c3aed); max-width: 1240px; margin: 0 auto; padding: 28px; color: #202637; }
+.digital-human-page { --dh-accent: var(--brand, #e5484d); max-width: 1240px; margin: 0 auto; padding: 28px; color: #202637; caret-color: var(--dh-accent); }
 .dh-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 24px; }
-.dh-heading{min-width:0;flex:1}.dh-heading .dh-button{margin-top:14px}.dh-header .dh-quality{margin-top:8px;font-size:12px;color:#6d5381}.dh-output>.dh-quality{font-size:12px;color:#687182;line-height:1.5}
+.dh-heading{min-width:0;flex:1}.dh-output>.dh-quality{font-size:13px;color:#596374;line-height:1.6}.dh-header-actions{display:flex;gap:10px;flex-wrap:wrap}
 .dh-header h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.02em; }
 .dh-header p { margin: 0; color: #687182; line-height: 1.5; font-size: 14px; }
 .dh-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 15px; min-height: 42px; border: 1px solid #d9dce3; border-radius: 9px; background: #fff; color: #303849; font: inherit; font-size: 13px; cursor: pointer; }
@@ -11,13 +11,17 @@
 .dh-workspace { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(290px, .9fr); gap: 24px; align-items: start; }
 .dh-form, .dh-output { min-width: 0; padding: 24px; border: 1px solid #e3e5eb; border-radius: 14px; background: #fff; }
 .dh-upload-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.dh-upload { min-width: 0; min-height: 128px; padding: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #697186; background: #fafbfc; border: 1px dashed #cbd0db; border-radius: 10px; font: inherit; cursor: pointer; overflow: hidden; }
+.dh-upload { min-width: 0; min-height: 240px; padding: 0 0 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: #6d597c; background: #faf8fc; border: 1px dashed #cbd0db; border-radius: 12px; font: inherit; cursor: pointer; overflow: hidden; }
 .dh-upload:hover:not(:disabled) { border-color: var(--dh-accent); background: #f8f5ff; }
-.dh-upload img { height: 72px; width: 100%; object-fit: contain; border-radius: 5px; }
+.dh-upload-art { height: 154px; width: 100%; display: grid; place-items: center; position: relative; background: #f3eff8; overflow: hidden; }
+.dh-upload-art img { height: 100%; width: 100%; object-fit: contain; }
+.dh-upload-art .dh-example-person { object-fit: contain; object-position: center 15%; mix-blend-mode: multiply; }
+.dh-upload-art .dh-example-label { position: absolute; top: 9px; left: 9px; color: #5c4b6d; background: #fffffff0; padding: 3px 7px; border-radius: 5px; }
+.dh-upload em { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--dh-accent); font-size: 13px; font-weight: 600; font-style: normal; margin-top: 5px; }
 .dh-upload.has-image { border-style: solid; }
 .dh-upload > span { display: grid; min-width: 0; max-width: 100%; gap: 6px; }
 .dh-upload strong { color: #303849; font-size: 14px; }
-.dh-upload small { color: #737c8c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.dh-upload small { color: #596374; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .dh-scenes { border: 0; padding: 0; margin: 23px 0; min-width: 0; }
 .dh-scenes legend, .dh-field > span { margin-bottom: 9px; font-size: 13px; font-weight: 650; color: #394153; }
 .dh-scenes > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -33,7 +37,7 @@
 .dh-field textarea { min-height: 104px; resize: vertical; }
 .dh-field textarea:disabled, .dh-field select:disabled { background: #fafbfc; color: #596374; }
 .dh-form > .dh-field { margin-top: 20px; }
-.dh-form > .dh-quality { color: #596374; font-size: 13px; line-height: 1.6; margin: 9px 0 16px; }
+.dh-form .dh-quality { color: #596374; font-size: 13px; line-height: 1.6; margin: 9px 0 16px; }
 .dh-options { display: grid; grid-template-columns: 1fr 110px; gap: 14px; margin-top: 21px; }
 .dh-create { width: 100%; margin-top: 24px; }
 .dh-draft-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
@@ -76,3 +80,17 @@
 .dh-voice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .dh-audio { width: 100%; max-width: 100%; margin: 8px 0; }
 .dh-consent { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.6; color: #46506b; }
+.dh-step-footer { display: flex; align-items: stretch; flex-direction: column; gap: 18px; margin-top: 24px; }
+.dh-step-footer > span { font-size: 13px; color: #596374; }
+.dh-step-footer > div { display:flex;flex-wrap:wrap;gap:10px; }.dh-step-footer .is-primary { flex:1; }
+.dh-voice .dh-options { grid-template-columns:1fr 1fr; margin-top:0; }
+.dh-voice-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 24px 0; }
+.dh-voice-choice button { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 64px; padding: 10px; border: 1px solid #dedbe3; border-radius: 10px; background: white; color: #51425e; font: inherit; font-size: 14px; cursor: pointer; }
+.dh-voice-choice button[aria-pressed=true] { background: #faf3f4; color: var(--dh-accent); border-color: var(--dh-accent); }
+.dh-voice-choice button:disabled { cursor: not-allowed; }
+.dh-confirm-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+.dh-confirm-heading h2 { font-size: 19px; margin: 0; }.dh-confirm-heading button { display: inline-flex; align-items: center; gap: 6px; }
+.dh-workspace.is-confirming { display: block; }.dh-workspace.is-confirming .dh-output { max-width: 820px; margin: 0 auto; }
+.dh-quality-details { color: #596374; font-size: 13px; margin-top: 16px; line-height: 1.6; }.dh-quality-details summary { cursor: pointer; }.dh-quality-details p { margin: 8px 0 0; }
+.digital-human-page ::selection { background: color-mix(in srgb, var(--dh-accent) 20%, white); }
+@media (max-width: 760px) { .dh-header { flex-direction: column; } .dh-upload { min-height: 225px; } .dh-upload-art { height: 140px; } }

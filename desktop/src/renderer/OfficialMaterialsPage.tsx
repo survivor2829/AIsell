@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, RefreshCw, Search, X } from "lucide-react";
-import { characterAsset } from "./role-appearance";
+import { ExternalLink, PlayCircle, RefreshCw, Search, Settings2, X } from "lucide-react";
+import { appearanceStyle, portraitAsset, type RoleAppearance, type RolePreference } from "./role-appearance";
 import type { OfficialCatalog, OfficialMaterial, SearchUpdate } from "./official-materials-types";
 import "./OfficialMaterialsPage.css";
 
-export function OfficialMaterialsPage({ onUseMaterial }: { onUseMaterial: (ids: string[]) => void }) {
+export function OfficialMaterialsPage({ onUseMaterial, preference, appearance, onPersonalize }: {
+  onUseMaterial: (ids: string[]) => void;
+  preference: RolePreference;
+  appearance: RoleAppearance;
+  onPersonalize: () => void;
+}) {
   const [catalog, setCatalog] = useState<OfficialCatalog | null>(null);
   const [category, setCategory] = useState("");
   const [query, setQuery] = useState("");
@@ -100,14 +105,20 @@ export function OfficialMaterialsPage({ onUseMaterial }: { onUseMaterial: (ids: 
   const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const items = (catalog?.items || []).filter((item) => (!category || item.category === category) && (!words.length || words.some((word) => `${item.title} ${item.description}`.toLocaleLowerCase().includes(word))));
   const results = search?.items || [];
-  return <section className="page official-materials-page">
-    <header className="official-materials-head"><div><h1>物保素材库</h1><p>我们为你准备的行业图片与视频。自己的素材请在AI混剪中管理。</p></div><button className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button></header>
+  return <section className="page official-materials-page" style={appearanceStyle(appearance, true)}>
+    <header className="official-materials-head">
+      <div><h1>物保素材库</h1><p>我们为你准备的行业图片与视频。自己的素材请在AI混剪中管理。</p></div>
+      <div className="official-materials-head-actions">
+        <button type="button" className="secondary-button" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials", { detail: { category: "materials" } }))}><PlayCircle size={18} />看操作演示</button>
+        <button type="button" className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button>
+      </div>
+    </header>
     <div className="materials-assistant">
-      <button type="button" className="materials-assistant-trigger" onClick={() => promptInput.current?.focus()} aria-label="向素材小助理描述想找的素材">
-        <img src={characterAsset("materials-assistant.png")} alt="素材小助理" />
+      <button type="button" className="materials-assistant-trigger" onClick={() => promptInput.current?.focus()} aria-label={`向${preference.name}描述想找的素材`}>
+        <img src={portraitAsset(appearance)} alt="" />
       </button>
       <div className="materials-assistant-dialog">
-        <h2>素材小助理</h2>
+        <div className="materials-assistant-title"><h2>{preference.name}</h2><button type="button" className="materials-assistant-personalize" onClick={onPersonalize}><Settings2 size={16} />形象与名字</button></div>
         <p>想找什么画面？告诉我场景或设备名称。</p>
         <p className="materials-assistant-hint" id="materials-search-scope">{catalog?.searchEnabled ? "先查官方素材，再查公开网页；网页结果仅供参考。" : "当前只查官方素材，联网查找尚未开放。"}</p>
         <form onSubmit={(event) => { event.preventDefault(); void startSearch(); }}><label className="sr-only" htmlFor="materials-prompt">描述想找的素材</label><input ref={promptInput} id="materials-prompt" aria-describedby="materials-search-scope" value={prompt} maxLength={300} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：工厂里的清洁机器人" /><button className="primary-button" disabled={!prompt.trim() || busySearch}><Search size={16} />{busySearch ? "正在查找" : searchedPrompt ? "继续查找" : "找素材"}</button>{busySearch && <button type="button" className="secondary-button" onClick={() => void cancelSearch()}>停止查找</button>}</form>

@@ -108,15 +108,51 @@
 
 .product-detail-retained { height: 100%; min-height: 0; }
 .product-detail-retained[hidden] { display: none; }
-.product-detail-guide { display:flex; align-items:center; gap:20px; flex:0 0 auto; min-height:160px; margin-bottom:0; padding-right:8px; }
-.product-detail-guide h1 { margin:0 0 8px; font-size:25px; }
-.product-detail-guide p { margin:5px 0 0; font-size:13px; color:var(--agent-accent-strong); line-height:1.6; }
-.product-detail-guide .product-detail-promise { font-size:15px; color:#283047; }
-.product-detail-guide-copy { flex:1; min-width:0; }
-.product-detail-persona { width:180px; height:160px; border:0; padding:0; background:transparent; cursor:pointer; flex-shrink:0; }
-.product-detail-persona img { width:100%; height:100%; object-fit:cover; mix-blend-mode:multiply; mask-image:linear-gradient(to right,transparent,black 12%,black 85%,transparent); }
-.product-detail-persona:focus-visible { outline:2px solid var(--agent-accent-strong); outline-offset:3px; border-radius:8px; }
-.product-detail-guide > button.secondary-button { align-self:flex-start; margin-top:14px; }
-@media(max-width:1050px), (max-height:760px) { .product-detail-guide { gap:12px; min-height:130px; }.product-detail-persona { width:140px; height:130px; }.product-detail-guide h1 { font-size:22px; }.product-detail-guide .product-detail-promise { font-size:13px; }.product-detail-guide > button.secondary-button { font-size:12px; padding:8px; } }
-@media(max-width:760px) { .product-detail-guide { position:relative; padding-right:0; }.product-detail-persona { width:105px; height:145px; }.product-detail-guide-copy { padding-top:25px; }.product-detail-guide > button.secondary-button { position:absolute; right:0; top:0; margin:0; padding:4px 8px; } }
+.product-detail-guide {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex: 0 0 auto;
+  min-height: 228px;
+  margin: 0;
+}
+.product-detail-guide h1 { margin:0 0 10px; font-size:28px; }
+.product-detail-guide p { margin:5px 0 0; font-size:14px; color:var(--agent-accent-strong); line-height:1.6; }
+.product-detail-guide .product-detail-promise { font-size:16px; color:#283047; }
+.product-detail-guide-copy { flex:1; min-width:0; padding:25px 0 16px; }
+.product-detail-persona { width:240px; height:228px; border:0; padding:0; background:transparent; cursor:pointer; flex-shrink:0; }
+.product-detail-persona img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: 100%;
+  margin: 0 auto;
+  object-fit: contain;
+  object-position: center;
+  mix-blend-mode: darken;
+  mask-image: linear-gradient(to right, transparent, black 24%, black 76%, transparent), linear-gradient(to bottom, transparent, black 8%, black 76%, transparent);
+  mask-composite: intersect;
+}
+.product-detail-guide-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:16px; }
+.product-detail-guide-actions .secondary-button { background:transparent; border-color:var(--brand-ring); }
+.product-detail-personalize { position:absolute; top:4px; right:0; display:inline-flex; align-items:center; gap:6px; min-height:36px; padding:8px; color:var(--agent-accent-strong); background:transparent; border:0; cursor:pointer; font:inherit; font-size:12px; }
+.product-detail-personalize:hover { text-decoration:underline; text-underline-offset:3px; }
+.product-detail-persona:focus-visible,.product-detail-personalize:focus-visible { outline:2px solid var(--agent-accent-strong); outline-offset:3px; border-radius:8px; }
+@media(max-width:1050px), (max-height:760px) {
+  .product-detail-guide { gap:16px; min-height:188px; }
+  .product-detail-persona { width:190px; height:188px; }
+  .product-detail-guide h1 { font-size:24px; margin-bottom:6px; }
+  .product-detail-guide .product-detail-promise { font-size:14px; }
+  .product-detail-guide p { font-size:13px; }
+  .product-detail-guide-actions { margin-top:12px; }
+  .product-detail-guide-actions button { padding:8px 12px; }
+}
+@media(max-width:760px) {
+  .product-detail-guide { gap:10px; }
+  .product-detail-persona { width:140px; height:190px; }
+  .product-detail-guide-copy { padding-top:38px; }
+  .product-detail-guide h1 { font-size:22px; }
+  .product-detail-guide-actions { gap:6px; }
+}
 @media(prefers-reduced-motion: reduce) { .product-detail-spinner { animation: none; } }

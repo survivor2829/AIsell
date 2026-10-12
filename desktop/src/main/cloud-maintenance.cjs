@@ -5,7 +5,7 @@ const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { createTransport } = require("./cloud-transport.cjs");
-const { compareVersions, fail, token, UUID, verifyManifest } = require("../shared/cloud-contract.cjs");
+const { compareVersions, fail, token, UUID, VERSION, verifyManifest } = require("../shared/cloud-contract.cjs");
 const { reportEntry } = require("../shared/cloud-report.cjs");
 const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = require("../shared/component-contract.cjs");
 const { createComponentStore } = require("./component-store.cjs");
@@ -46,6 +46,15 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   state.announcements.sort((left, right) => right.sequence - left.sequence);
   state.announcements = state.announcements.slice(0, 20);
   const network = transport || (config?.enabled ? createTransport(config) : null);
+  // Release routing uses only technical capabilities. Do not attach install IDs,
+  // profile paths or account data, and continue verifying every returned envelope.
+  const releaseHeaders = { "X-Xiaoxi-Update-Protocol": "3" };
+  if (VERSION.test(version)) releaseHeaders["X-Xiaoxi-Version"] = version;
+  const baseline = componentBaseRoot && readJson(path.join(componentBaseRoot, "component-base.json"));
+  if (baseline?.schema === 2 && VERSION.test(baseline.base?.version) && /^[a-f0-9]{64}$/.test(baseline.base?.fingerprint)) {
+    releaseHeaders["X-Xiaoxi-Base-Version"] = baseline.base.version;
+    releaseHeaders["X-Xiaoxi-Base-Fingerprint"] = baseline.base.fingerprint;
+  }
   let queue = readJson(queueFile, []);
   if (!Array.isArray(queue)) queue = [];
   queue = queue.filter((item) => item?.report?.appId === config?.appId).slice(-200);
@@ -86,7 +95,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   function readLatest() {
     if (latestRequest) return latestRequest;
     latestRequest = (async () => {
-      const envelope = await network.request(`/v1/releases/${config.channel}/latest`);
+      const envelope = await network.request(`/v1/releases/${config.channel}/latest`, { headers: releaseHeaders });
       if (stopped) fail("cloud_stopped");
       if (envelope.empty === true) {
         commit({ lastAnnouncementsCheck: new Date().toISOString() }); notify({ announcementError: "" }); return null;
@@ -111,7 +120,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     if (latestComponentRequest) return latestComponentRequest;
     latestComponentRequest = (async () => {
       let envelope;
-      try { envelope = await network.request(`/v2/releases/${config.channel}/latest`); }
+      try { envelope = await network.request(`/v2/releases/${config.channel}/latest`, { headers: releaseHeaders }); }
       catch (error) { if (error?.status === 404 || error?.statusCode === 404 || error?.code === "cloud_http_404") return null; throw error; }
       if (stopped) fail("cloud_stopped");
       if (envelope.empty) return null;

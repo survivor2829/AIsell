@@ -47,7 +47,9 @@
 
 JSON 请求上限 64 KiB；当前全局每分钟 300 次、单地址每分钟 60 次限制与既有接收接口共用。客户端正文和后台内容按普通文本显示。服务端只保存回执凭据的 SHA-256 摘要；反馈诊断 30 天到期清理，正文、状态、内容摘要与凭据摘要保留，以便继续查看和幂等重试。备份包含反馈正文，按用户反馈数据管理。
 
-部署时需将 `service.py`、`feedback.py`、`admin.html`、`promote.py`、`promote_components.py` 和安装/升级脚本作为同一版本复制。只更新主脚本会导致启动失败。既有服务器先备份 SQLite，再替换同版本程序文件并重启 `ai-maintenance`；启动会在原库中追加反馈字段及索引，保留旧诊断、issues 和发布文件。初次部署沿用 `install.sh <server-ip>`，不新增公网后台端口。
+部署时需将 `service.py`、`feedback.py`、`materials.py`、`tutorials.py`、`tutorials-admin.js`、`admin.html`、`promote.py`、`promote_components.py` 和安装/升级脚本作为同一版本复制。只更新主脚本会导致启动失败。既有服务器先备份 SQLite，再替换同版本程序文件并重启 `ai-maintenance`；启动会在原库中追加反馈字段及索引，保留旧诊断、issues 和发布文件。初次部署沿用 `install.sh <server-ip>`，不新增公网后台端口。
+
+后台新增“视频操作教程”：支持 5 分钟内 MP4 流式上传、封面、草稿预览、发布和下架。录屏独立存放于 `tutorials/`，不进入官方制作素材目录。上传步骤、接口和验收边界见 [短教程上传说明](../../docs/tutorial-upload.md)。
 
 既有服务更新使用同提交的 `upgrade.sh`：将它与上述服务文件放到同一个上传目录，执行 `sudo sh <上传目录>/upgrade.sh`。脚本先校验 Python 源码、使用 SQLite backup API 备份数据库并保留旧代码，再停止服务、替换文件并检查回环管理接口；失败恢复旧代码。不会重签 TLS 证书、改客户端信任或替换已发布安装包。备份保留在 `/var/lib/ai-maintenance/backups/`，本身包含反馈数据，不作为公开下载内容。
 

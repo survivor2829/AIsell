@@ -23,7 +23,9 @@ async function verifyUpgradePaths({ config, target, request, expectedPayload, ve
   const send = request || transport.request;
   let temporary;
   try {
-    const envelope = await send(`/v1/releases/${config.channel}/latest`);
+    const envelope = await send(`/v1/releases/${config.channel}/latest`, {
+      headers: { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": target.version }
+    });
     const full = verifyManifest(envelope, config);
     const paths = assertUpgradePaths(target, full);
     if (expectedPayload && envelope.payload !== expectedPayload) throw Error("release_full_fallback_changed");

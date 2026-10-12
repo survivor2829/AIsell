@@ -3,24 +3,28 @@ import { useEffect, useRef, useState } from "react";
 import { CustomerPanel } from "./CustomerPanel";
 import type { CloudStatus } from "./CloudMaintenance";
 import type { AgentHomeTarget } from "./AgentHome";
+import type { TutorialCategory } from "./tutorials-types";
 
 type TutorialTarget = AgentHomeTarget | "diagnostics";
-const GUIDES: { title: string; heading: string; intro: string; steps: string[]; links: { title: string; target: TutorialTarget }[]; note: string }[] = [
+const GUIDES: { category?: TutorialCategory; title: string; heading: string; intro: string; steps: string[]; links: { title: string; target: TutorialTarget }[]; note: string }[] = [
   { title: "快速开始", heading: "先完成一件小事", intro: "从你今天最想完成的事情开始：联系客户，或做出一条视频。",
     steps: ["使用授权信息登录软件，云端智能服务会由系统统一提供，不需要另配密钥。", "要运营微信客户，先同步联系人；要制作内容，在AI混剪导入自己的图片和视频，或选用物保素材库提供的素材。", "进入对应工作台，确认客户范围或创作要求后再开始。进度和需要确认的内容会留在任务里。"],
     links: [{ title: "打开素材仓库", target: "materials" }], note: "角色主页的「形象与名字」可以更换伙伴外观和称呼，下次打开仍会保留。" },
-  { title: "微信客户运营", heading: "让客户运营有计划", intro: "先确认当前登录的微信和客户范围，再安排每天要做的事情。",
+  { category: "wechat", title: "微信客户运营", heading: "让客户运营有计划", intro: "先确认当前登录的微信和客户范围，再安排每天要做的事情。",
     steps: ["从「今日计划」进入「同步联系人」，按提示确认微信账号并完成同步。首次同步可能需要重新登录微信。", "在「今日计划」选择要执行的触达或朋友圈任务，确认对象、内容和时间。", "需要客户接待时进入「自动回复」，检查资料和接待范围后开启。", "出现「需要处理」时打开对应任务查看原因；发送结果不确定时，先在微信核对再操作。"],
     links: [{ title: "同步联系人", target: "contact-sync" }, { title: "查看今日计划", target: "workflow" }], note: "微信任务运行时尽量保持窗口可用，避免同时手动切换会话或修改正在发送的内容。" },
-  { title: "内容创作", heading: "把真实素材做成视频", intro: "先给素材和背景，再选文案。已经完成的步骤会保留在制作任务中。",
+  { category: "short-video", title: "内容创作", heading: "把真实素材做成视频", intro: "先给素材和背景，再选文案。已经完成的步骤会保留在制作任务中。",
     steps: ["在物保素材库选用官方素材，或在AI混剪导入自己的图片、视频。", "填写目标客户；在「你想表达什么」说明实际背景、人物与素材的关系，可补充结尾引导。", "阅读三个文案方向，选择一份并确认完整正文、数量、声音和配乐。", "开始制作，等待画面、配音、字幕和视频合成完成。需要确认或资料不足时，按具体提示处理。", "在成片中心完整播放检查，再导出使用；修改文字后注意重新检查声画和字幕。"],
     links: [{ title: "进入AI混剪", target: "workspace" }, { title: "产品效果视频", target: "product-video" }, { title: "查看成片", target: "finished" }], note: "以上是用已有素材制作视频。要生成产品在不同场景中的效果，可进入「产品效果视频」，上传产品图并填写卖点、参数和场景要求。" },
-  { title: "素材与成片", heading: "素材和作品各有位置", intro: "物保素材库提供官方素材，AI混剪管理你的素材和制作进度，成片中心看完成的作品。",
+  { category: "materials", title: "素材与成片", heading: "素材和作品各有位置", intro: "物保素材库提供官方素材，AI混剪管理你的素材和制作进度，成片中心看完成的作品。",
     steps: ["在AI混剪中将同一活动或同一商品的素材整理到素材集，并补充必要的事实说明。", "原文件留在原来的磁盘位置。移动或删除原文件后，需要重新定位才能继续使用。", "首页「待处理制作」按业务批次统计，分析和审核等处理步骤可在详情查看。", "旧制作可在历史记录中查看；归档批次会退出待处理列表，素材和已有成片继续保留。"],
     links: [{ title: "管理我的素材", target: "workspace" }, { title: "打开成片中心", target: "finished" }], note: "成片仍需要完整播放检查。后台某个步骤完成，不代表整条视频已经制作成功。" },
   { title: "常见问题", heading: "遇到问题，直接告诉我们", intro: "不必理解错误码，也可以把问题说清楚。",
     steps: ["云端智能服务暂不可用时，当前制作进度会保留；稍后重试，或在吐槽中心附带脱敏诊断。", "制作提示资料不足时，补充真实素材或调整表达，不必反复点击重新生成。", "打开「吐槽中心」，描述刚才做了什么、哪里不好用。可随本次反馈附带脱敏诊断。", "在「我的反馈」查看待处理、处理中或已解决状态；需要人工协助时，可展开底部日志诊断导出诊断包。"],
-    links: [{ title: "前往吐槽中心", target: "diagnostics" }], note: "渠道发布、线索回流等标注为未开放的功能尚不能执行；教程会随实际功能一起更新。" }
+    links: [{ title: "前往吐槽中心", target: "diagnostics" }], note: "渠道发布、线索回流等标注为未开放的功能尚不能执行；教程会随实际功能一起更新。" },
+  { category: "product-detail", title: "产品详情图", heading: "把产品特点做成图", intro: "准备产品图片和真实卖点，跟着页面完成制作。",
+    steps: ["打开产品详情图，工作台会自动准备好。", "上传产品图片，填写卖点和参数，再确认制作内容。", "查看生成结果，确认产品外观和文字准确后下载使用。"],
+    links: [{ title: "打开产品详情图", target: "product-detail" }], note: "切换到其他模块后，详情图工作台的当前输入仍会保留。" }
 ];
 
 export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTarget) => void }) {
@@ -28,6 +32,15 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
   const [state, setState] = useState<CloudStatus>();
   const [error, setError] = useState("");
   const [guideIndex, setGuideIndex] = useState(0);
+  useEffect(() => {
+    const open = (event: Event) => {
+      const category = (event as CustomEvent).detail?.category;
+      setGuideIndex(Math.max(0, GUIDES.findIndex(guide => guide.category === category)));
+      setPanel('tutorial');
+    };
+    window.addEventListener('xiaoxi:open-text-guide', open);
+    return () => window.removeEventListener('xiaoxi:open-text-guide', open);
+  }, []);
   const [announcementId, setAnnouncementId] = useState("");
   const [updateError, setUpdateError] = useState("");
   const [updateNotice, setUpdateNotice] = useState("");
@@ -99,7 +112,7 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
       {state?.updateRequested && state.stage === "waiting" && <button type="button" className="topbar-tool" onClick={() => void window.xiaoxiCloudMaintenance?.cancelUpdate().then(value => { setState(value); if (!value.updateRequested) setUpdateNotice("更新已取消；已暂停的微信任务可在今日计划中手动继续。"); }).catch(() => setUpdateError("取消未完成，请重试。"))}>取消等待</button>}
       {(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-notice is-error" role="status">{updateMessage}</span>}
     </div>
-    <button type="button" className="topbar-tool" aria-label="使用教程" title="使用教程" aria-expanded={panel === "tutorial"} onClick={() => setPanel("tutorial")}><BookOpen size={17} /><span>使用教程</span></button>
+    <button type="button" className="topbar-tool" aria-label="使用教程" title="使用教程" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials"))}><BookOpen size={17} /><span>使用教程</span></button>
     {panel === "announcements" && <CustomerPanel title="更新公告" description="看看这次有哪些改进。" onClose={() => setPanel(null)}>
       <div className="announcement-toolbar"><span>当前版本 {state?.version || "—"}</span><button type="button" className="customer-text-button" disabled={!state?.enabled || state.announcementsChecking} onClick={() => void refresh()}><RefreshCw size={14} />{state?.announcementsChecking ? "正在刷新…" : "刷新公告"}</button></div>
       {state?.announcements?.length && selectedAnnouncement ? <div className="announcement-list">

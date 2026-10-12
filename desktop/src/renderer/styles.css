@@ -312,7 +312,6 @@ button:focus-visible {
   background: rgba(255, 255, 255, 0.14);
   overflow: hidden;
 }
-.nav-role-avatar.is-materials { background: var(--agent-surface); }
 .nav-role-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 21%; }
 
 .nav-role-avatar.is-agent {

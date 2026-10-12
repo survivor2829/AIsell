@@ -23,6 +23,8 @@ async function main() {
   await fs.mkdir(parent, { recursive: true });
   const root = await fs.mkdtemp(path.join(parent, "run-"));
   const source = path.resolve(process.argv.slice(2).find(value => !value.startsWith("--")) || desktop), legacy = process.argv.includes("--expect-legacy-failure");
+  const bridgeRecovery = process.argv.includes("--legacy-bridge-source");
+  assert.ok(!(legacy && bridgeRecovery), "Select either unchanged legacy failure or a bridge recovery source");
   const failureMode = process.argv.find(value => value.startsWith("--failure="))?.split("=")[1] || "";
   assert.ok(["", "install", "startup"].includes(failureMode));
   const installed = path.join(root, "installed"), application = path.join(installed, "resources/app"), userData = path.join(root, "profile");
@@ -41,7 +43,7 @@ async function main() {
       else if (item.name === "locales") await fs.cp(path.join(electronRoot, item.name), path.join(installed, item.name), { recursive: true });
     }
     for (const directory of ["src/main", "src/shared"]) await fs.mkdir(path.join(application, directory), { recursive: true });
-    const modules = ["product-brand.json", "src/main/update-helper.cjs", "src/main/atomic-file.cjs", "src/main/component-paths.cjs",
+    const modules = ["product-brand.json", "src/main/atomic-file.cjs", "src/main/component-paths.cjs",
       "src/shared/cloud-contract.cjs", "src/shared/component-contract.cjs"];
     for (const file of modules) await fs.copyFile(path.join(source, file), path.join(application, file));
     try { await fs.copyFile(path.join(source, "src/main/update-storage.cjs"), path.join(application, "src/main/update-storage.cjs")); }
@@ -50,7 +52,9 @@ async function main() {
       try { await fs.copyFile(path.join(source, file), path.join(application, file)); }
       catch (error) { if (error.code !== "ENOENT") throw error; }
     }
-    const helperBytes = await fs.readFile(path.join(source, "src/main/update-helper.cjs"));
+    const helperBytes = await fs.readFile(path.join(source, bridgeRecovery ? "src/main/legacy-update-helper.cjs" : "src/main/update-helper.cjs"));
+    await fs.writeFile(path.join(application, "src/main/update-helper.cjs"), helperBytes);
+    if (bridgeRecovery) await fs.cp(path.join(source, "src/main/legacy-recovery"), path.join(application, "src/main/legacy-recovery"), { recursive: true });
     assert.deepEqual(await fs.readFile(path.join(application, "src/main/update-helper.cjs")), helperBytes, "the starting updater must be byte-identical to the selected source");
     const helperSha256 = crypto.createHash("sha256").update(helperBytes).digest("hex");
     const config = { enabled: true, appId: "com.xiaoxi.update.fixture", channel: "test", signingPublicKey: publicKey.export({ type: "spki", format: "pem" }) };
@@ -64,6 +68,11 @@ async function main() {
     for (const [file, bytes] of Object.entries(fixtureFiles)) {
       await fs.mkdir(path.dirname(path.join(userData, file)), { recursive: true });
       await fs.writeFile(path.join(userData, file), bytes);
+    }
+    const runtimeLinks = path.join(userData, "product-detail/.runtime-links");
+    if (bridgeRecovery) {
+      await fs.mkdir(runtimeLinks, { recursive: true });
+      await fs.symlink(path.join(installed, "resources"), path.join(runtimeLinks, "resource-link"), "junction");
     }
     const backupsRoot = path.join(root, "profile-update-backups");
     const oldestBackup = path.join(backupsRoot, "old-success");
@@ -84,6 +93,7 @@ class FixtureInstaller { static int Main(string[] args) {
   string app = Path.Combine(root, "installed", "resources", "app");
   File.Copy(Path.Combine(root, "payload", "package.json"), Path.Combine(app, "package.json"), true);
   File.WriteAllText(Path.Combine(app, "rollback-sentinel.txt"), "replacement program bytes");
+  ${failureMode ? 'File.WriteAllText(Path.Combine(root, "profile", "data", "new-receipt.txt"), "new business receipt after snapshot");' : ''}
   File.WriteAllText(Path.Combine(root, "installer-ran.json"), "{\\"ok\\":true}");
   return ${failureMode === "install" ? 13 : 0};
 } }`;
@@ -132,6 +142,8 @@ class FixtureInstaller { static int Main(string[] args) {
       const backup = registry.sets.find(set => set.id === parentReceipt.id);
       assert.equal(backup.state, "prepared", "failed update keeps its recovery evidence instead of confirming cleanup");
       for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(backup.data.directory, file)), value);
+      assert.equal(await fs.readFile(path.join(userData, "data/new-receipt.txt"), "utf8"), "new business receipt after snapshot", "program rollback must not overwrite newer business data");
+      await assert.rejects(fs.stat(path.join(backup.data.directory, "data/new-receipt.txt")), { code: "ENOENT" });
     } else {
       assert.equal(status.phase, "complete", JSON.stringify(status));
       assert.equal((await readJson(path.join(root, "installer-ran.json"))).ok, true);
@@ -149,8 +161,12 @@ class FixtureInstaller { static int Main(string[] args) {
       assert.equal(await fs.readFile(path.join(oldestBackup, "unique-receipt.json"), "utf8"), "old receipt absent from live data");
     }
     for (const [file, value] of Object.entries(fixtureFiles)) assert.deepEqual(await fs.readFile(path.join(userData, file)), value);
+    if (bridgeRecovery) {
+      assert.equal((await fs.lstat(path.join(runtimeLinks, "resource-link"))).isSymbolicLink(), true);
+      await assert.rejects(fs.stat(path.join(root, "profile-update-backups", parentReceipt.id, "product-detail/.runtime-links")), { code: "ENOENT" });
+    }
     const result = { ok: true, source, helperSha256, initialVersion, targetVersion, observedPhase: status.phase,
-      legacyBlocked: legacy, failureMode, programRollbackVerified: Boolean(failureMode), fixtureInstaller: true, productionInstallerVerified: false, dataUnchanged: true };
+      legacyBlocked: legacy, bridgeRecovery, failureMode, programRollbackVerified: Boolean(failureMode), fixtureInstaller: true, productionInstallerVerified: false, dataUnchanged: true };
     await fs.writeFile(path.join(root, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify({ ...result, evidence: path.join(root, "result.json") }));
     passed = true;

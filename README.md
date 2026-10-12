@@ -27,7 +27,7 @@ npm.cmd run dev
 
 ## 检查与构建
 
-日常内部更新统一优先采用组件增量，按 [内部更新标准](docs/internal-release.md) 执行：提交并通过 CI → `npm.cmd run release:internal` 构建增量候选 → 本机增量切换与数据保留验收 → 部署依赖服务 → `npm.cmd run publish:internal` 发布测试频道。首次安装、底座确实不兼容或需要离线安装器时才显式使用 `--full`。GitHub CI 与客户更新是两个独立阶段；推送代码不会自动给客户安装未经确认的版本。
+日常内部更新统一优先采用组件增量，按 [内部更新标准](docs/internal-release.md) 执行：从干净提交构建候选并完成本机功能与数据保留验收 → CI → 审查通过后合并 main → 部署依赖服务 → 发布同一套已验收制品到测试频道。日常使用 `npm.cmd run release:internal` 和 `npm.cmd run publish:internal`；首次安装、底座确实不兼容或需要离线安装器时才显式使用 `--full`。GitHub CI 与客户更新是两个独立阶段；推送代码不会自动给客户安装未经确认的版本。
 
 以下命令均在 `desktop/` 运行：
 

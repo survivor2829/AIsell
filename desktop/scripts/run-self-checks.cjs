@@ -52,6 +52,7 @@ const checks = [
   "src/main/cloud-maintenance.self_check.cjs",
   "src/main/update-coordinator.self_check.cjs",
   "src/main/official-materials.self_check.cjs",
+  "src/main/tutorials.self_check.cjs",
   "scripts/release-upgrade-path.self_check.cjs",
   "scripts/update-helper.electron.self_check.cjs",
   "scripts/update-backups.self_check.cjs",

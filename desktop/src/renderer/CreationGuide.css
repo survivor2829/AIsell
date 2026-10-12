@@ -1,0 +1,18 @@
+.creation-steps { margin: 0 0 24px; --creation-accent: var(--brand, #e5484d); }
+.creation-steps ol { display: flex; align-items: center; padding: 0; margin: 0; list-style: none; }
+.creation-steps li { display: flex; align-items: center; flex: 1; min-width: 0; }
+.creation-steps li:not(:last-child)::after { content: ''; flex: 1; min-width: 12px; height: 1px; margin: 0 16px; background: #e1dfe5; }
+.creation-steps li > button { display: inline-flex; align-items: center; justify-content: flex-start; gap: 10px; flex-shrink: 0; min-height: 48px; padding: 8px 0; border: 0; border-radius: 8px; background: transparent; color: #5d5967; font: inherit; font-size: 15px; cursor: pointer; text-align: left; }
+.creation-steps button[aria-current=step] { color: var(--creation-accent); font-weight: 650; }
+.creation-steps li > button > span:last-child { white-space: nowrap; }
+.creation-step-number { display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 50%; background: #eeedf1; color: #5d5967; font-variant-numeric: tabular-nums; }
+.creation-steps button[aria-current=step] .creation-step-number { color: white; background: var(--creation-accent); }
+.creation-steps button:disabled { cursor: not-allowed; opacity: .65; }
+.creation-steps button:focus-visible, .creation-tutorial:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand, #e5484d) 45%, white); outline-offset: 3px; }
+button.creation-tutorial { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 9px 13px; background: #fff; border: 1px solid #dedbe3; border-radius: 9px; color: #55465f; font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; }
+button.creation-tutorial:hover { color: var(--brand, #e5484d); border-color: var(--brand, #e5484d); background: #fff; }
+.creation-step-title { display: flex; align-items: center; gap: 9px; font-size: 19px; margin: 0 0 20px; }
+.creation-step-title > span { display: grid; place-items: center; width: 27px; height: 27px; flex-shrink: 0; border-radius: 8px; background: #f3f0f6; color: #6c527d; font-size: 14px; }
+@media (max-width: 680px) { .creation-steps li:not(:last-child)::after { margin: 0 8px; min-width: 4px; } .creation-steps li > button { font-size: 13px; gap: 6px; } .creation-step-number { flex-basis: 25px; height: 25px; } }
+
+@media (max-width: 680px) { .creation-steps li > button > span:last-child { white-space: normal; max-width: 7em; } }

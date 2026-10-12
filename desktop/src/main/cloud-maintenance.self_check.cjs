@@ -60,6 +60,11 @@ async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
       componentBaseRoot: baseRoot, config, version: "1.1.0", buildId: "selection-check", canInstall: () => true,
       transport: { async request(route, options = {}) {
         requests.push(route);
+        if (route.endsWith("/latest")) assert.deepEqual(options.headers, {
+          "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": "1.1.0",
+          "X-Xiaoxi-Base-Version": "1.1.0", "X-Xiaoxi-Base-Fingerprint": "0".repeat(64)
+        }, "Both release routes expose the exact installed base without customer identifiers");
+        else assert.equal(options.headers, undefined, "Release capability headers do not leak to artifact requests");
         if (route.startsWith("/v2/")) return sign(component);
         if (route.startsWith("/v1/")) return sign({ ...manifest, version: "1.2.0", sequence: 20 });
         assert.equal(route, manifest.file);
@@ -337,7 +342,10 @@ async function main() {
   let latest = sign(manifest), posts = [], offline = false, launched = 0;
   const transport = { async request(route, options = {}) {
     if (offline) throw new Error("offline");
-    if (route.endsWith("latest")) return latest;
+    if (route.endsWith("latest")) {
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": "1.0.0" });
+      return latest;
+    }
     if (route === "/v1/reports") { posts.push(options.body); return { accepted: options.body.entries.map((entry) => entry.id) }; }
     fs.writeFileSync(options.destination, bytes); options.onProgress(bytes.length); return { size: bytes.length };
   }, close() {} };

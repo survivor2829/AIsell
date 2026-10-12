@@ -19,7 +19,7 @@ function backupFilter(userData) {
     const relative = path.relative(root, normalize(file)).replaceAll("\\", "/").toLowerCase();
     // Only named, regenerable Electron caches. Never match arbitrary nested
     // folders called Cache: customer assets and production outputs are data.
-    return !isRegenerableProfileFile(relative) && !["data/cloud-maintenance", "update-helper-profile", "cache", "code cache", "gpucache",
+    return !isRegenerableProfileFile(relative) && !["data/cloud-maintenance", "data/tutorials", "update-helper-profile", "cache", "code cache", "gpucache",
       "dawncache", "dawngraphitecache", "dawnwebgpucache", "shadercache", "grshadercache",
       "crashpad", "crash reports"].some(dir => relative === dir || relative.startsWith(dir + "/"));
   };
