@@ -137,8 +137,21 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
 // Startup is allowed to update databases and receipts. Require every previously
 // backed-up business file to remain present, instead of comparing mutable bytes.
 async function checkPreservedData(profile, data) {
+  const databaseFiles = new Set(data.files.filter(file => !file.link && file.size > 0 && /\.(?:db|sqlite|sqlite3)$/i.test(file.path)).map(file => file.path));
   for (const file of data.files) {
     if (isRegenerableProfileFile(file.path) || /(^|[\\/])(logs?|diagnostics)([\\/]|$)/i.test(file.path)) continue;
+    // A clean close may remove SQLite's rebuilt shared-memory index or an
+    // already empty WAL. Keep both in the snapshot; never exempt a nonempty
+    // WAL, and still require the corresponding backed-up database.
+    const transientSqliteFile = /\.(?:db|sqlite|sqlite3)-shm$/i.test(file.path)
+      || (file.size === 0 && /\.(?:db|sqlite|sqlite3)-wal$/i.test(file.path));
+    if (transientSqliteFile && databaseFiles.has(file.path.slice(0, -4))) {
+      try {
+        const database = await fs.promises.lstat(path.join(profile, file.path.slice(0, -4)));
+        if (!database.isFile() || database.size === 0) return false;
+      } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+      continue;
+    }
     try {
       const live = path.join(profile, file.path), stat = await fs.promises.lstat(live);
       if (file.link) {
@@ -163,6 +176,15 @@ async function checkPreservedData(profile, data) {
         };
         const current = JSON.parse(await fs.promises.readFile(live, "utf8"));
         const previous = JSON.parse(await fs.promises.readFile(path.join(data.directory, file.path), "utf8"));
+        // This is the server-synchronized official directory, not the customer's
+        // material index. Keep the snapshot and check every cached file below;
+        // a valid newer directory must not strand all previous rollback sets.
+        if (file.path.replaceAll("\\", "/") === "data/official-materials/catalog.json") {
+          const catalog = value => value?.schema === 1 && Number.isSafeInteger(value.revision) && value.revision > 0
+            && Array.isArray(value.items) && Array.isArray(value.categories);
+          if (!catalog(current) || !catalog(previous) || current.revision < previous.revision) return false;
+          continue;
+        }
         if (file.path.replaceAll("\\", "/") === "data/auto_reply/auto-reply-state.json"
             && current.daily_date !== previous.daily_date) {
           // normalizeState resets only the daily counter when starting on a new
