@@ -10,7 +10,7 @@ const normalize = file => {
 };
 const isRegenerableProfileFile = relative => {
   const name = relative.replaceAll("\\", "/").toLowerCase();
-  return ["devtoolsactiveport", "network/network persistent state", "product-detail/.runtime-links"].includes(name)
+  return ["devtoolsactiveport", "network/network persistent state", "network/transportsecurity", "product-detail/.runtime-links"].includes(name)
     || name.startsWith("product-detail/.runtime-links/");
 };
 function backupFilter(userData) {

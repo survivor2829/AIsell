@@ -60,10 +60,9 @@ export function useRolePreferences() {
     const receive = (result: PreferenceResult) => {
       if (disposed) return;
       if (result.ok && result.data) {
-        const legacyNames: Partial<Record<AgentRoleKey, string>> = { agent: "小玺", production: "小惠", operations: "小联" };
         setPreferences({ ...DEFAULT_ROLE_PREFERENCES, ...Object.fromEntries(Object.entries(result.data).filter(([key]) => key in ROLE_CATALOG).map(([key, value]) => [key, {
           ...value,
-          name: value.name === legacyNames[key as AgentRoleKey] ? ROLE_CATALOG[key as AgentRoleKey].name : value.name
+          name: ROLE_CATALOG[key as AgentRoleKey].legacyNames.includes(value.name) ? ROLE_CATALOG[key as AgentRoleKey].name : value.name
         }])) } as RolePreferences);
         setError("");
       }

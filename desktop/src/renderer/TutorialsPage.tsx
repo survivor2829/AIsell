@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, Clock3, Film, FolderOpen, Image, MessageCircle, Play, RefreshCw, Search, Settings2, X } from 'lucide-react';
-import { appearanceStyle, portraitAsset, type RoleAppearance, type RolePreference } from './role-appearance';
+import { DEFAULT_ROLE_PREFERENCES, appearanceStyle, portraitAsset, type RoleAppearance, type RolePreference } from './role-appearance';
 import type { Tutorial, TutorialCatalog, TutorialCategory, TutorialTopic } from './tutorials-types';
 import './TutorialsPage.css';
 
@@ -77,7 +77,7 @@ export function TutorialsPage({ category: initialCategory = 'short-video', topic
   return <section className={`tutorials-page${compact ? ' tutorials-compact' : ''}`} style={appearance ? appearanceStyle(appearance, true) : undefined}>
     {!compact && <header className="tutorials-hero">
       {appearance && <button type="button" className="tutorials-persona" onClick={onPersonalize} disabled={!onPersonalize} aria-label="设置教程伙伴形象与名字"><img src={portraitAsset(appearance)} alt="" /></button>}
-      <div><h1>操作教程</h1><p className="tutorials-intro">看一小段，跟着做一步</p><p>{preference?.name || '操作小教练'}陪你上手。选一个操作，随时暂停、重看。</p>{onPersonalize && <button type="button" className="tutorials-personalize" onClick={onPersonalize}><Settings2 size={16} />设置我的伙伴</button>}</div>
+      <div><h1>操作教程</h1><p className="tutorials-intro">看一小段，跟着做一步</p><p>{preference?.name || DEFAULT_ROLE_PREFERENCES.tutorials.name}陪你上手。选一个操作，随时暂停、重看。</p>{onPersonalize && <button type="button" className="tutorials-personalize" onClick={onPersonalize}><Settings2 size={16} />设置我的伙伴</button>}</div>
     </header>}
     <div className="tutorials-tools"><nav className="tutorials-categories" aria-label="教程分类">{CATEGORIES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={category === id} onClick={() => { setCategory(id); setTopic(''); setQuery(''); closePlayer(); }}><Icon size={20} /><span>{label}</span></button>)}</nav><button type="button" className="tutorials-refresh" onClick={() => void load()} disabled={loading} aria-label="刷新教程"><RefreshCw size={18} />刷新</button></div>
     <div className="tutorials-filters">{category === 'short-video' && <div className="tutorials-topics" aria-label="短视频教程类型"><button type="button" aria-pressed={!topic} onClick={() => setTopic('')}>全部</button>{TOPICS.map(row => <button type="button" key={row.id} aria-pressed={topic === row.id} onClick={() => setTopic(row.id)}>{row.label}</button>)}</div>}<label className="tutorials-search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="找一个操作" aria-label="搜索教程标题" /></label></div>
