@@ -69,6 +69,7 @@ const workflowPolicies = Object.freeze({
   moments_publish_snapshot_changed: { classification: "blocker", attentionScope: "task" },
   moments_comment_duplicate_visual_state_unknown: { classification: "blocker", attentionScope: "task" },
   moments_render_pane_ambiguous: { classification: "environment", attentionScope: "task" },
+  moments_window_not_ready: { classification: "environment", attentionScope: "task" },
   moments_render_pane_not_found: { classification: "environment", attentionScope: "task" },
   moments_surface_read_failed: { classification: "environment", attentionScope: "task" },
   powershell_failed: { classification: "environment", attentionScope: "global" },
