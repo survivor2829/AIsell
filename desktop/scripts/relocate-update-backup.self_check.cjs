@@ -54,7 +54,7 @@ const { backupProgram, restoreProgram } = require('../src/main/update-program-ba
     await restoreProgram({ ...migrated.programBackup, installedRoot: path.join(root, 'isolated-restore') });
     assert.equal(await fs.readFile(path.join(root, 'isolated-restore/app.asar'), 'utf8'), 'isolated physical archive');
     await relocateBackup({ ...options, apply: true });
-    console.log('Backup relocation: corrupt copy protected, interrupted cleanup resumed, program restored, selection and receipts retained.');
+    console.log('Backup relocation self-check passed: corrupt copy protected, interrupted cleanup resumed, program restored, selection and receipts retained.');
   } finally {
     if (path.dirname(root) !== parent) throw Error('fixture_boundary_invalid');
     await fs.rm(root, { recursive: true, force: true });
