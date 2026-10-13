@@ -15,6 +15,7 @@ const MOMENTS_PUBLISH_FILE_DIALOG_TITLE_PREFIXES = Object.freeze(["打开", "选
 const MOMENTS_PUBLISH_CAMERA_PROFILE = Object.freeze({
   name: "wechat_moments_render_pane_camera_glyph",
   standaloneLogicalRight: 24,
+  standaloneLogicalLeft: 64,
   standaloneLogicalTop: 24,
   integratedLogicalRight: 32,
   integratedLogicalTop: 56,
@@ -857,7 +858,7 @@ function Test-PublishMomentsSurface($lock) {
   }
 }
 
-function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
+function Measure-PublishVisualCameraTarget($frame, $lock, $paneBounds, [bool]$leftToolbar) {
   $paneLeft = [double]$paneBounds.left - [double]$lock.rect.Left
   $paneTop = [double]$paneBounds.top - [double]$lock.rect.Top
   $integrated = [string]$lock.surfaceMode -ceq "integrated"
@@ -874,6 +875,7 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   $centerX = [int][Math]::Round(
     $paneLeft + [double]$paneBounds.width - ($logicalRight * $lock.scale)
   )
+  if ($leftToolbar) { $centerX = [int][Math]::Round($paneLeft + (${MOMENTS_PUBLISH_CAMERA_PROFILE.standaloneLogicalLeft}.0 * $lock.scale)) }
   $centerY = [int][Math]::Round($paneTop + ($logicalTop * $lock.scale))
   $radiusX = [int][Math]::Max(12, [Math]::Round(${MOMENTS_PUBLISH_CAMERA_PROFILE.logicalRadiusX} * $lock.scale))
   $radiusY = [int][Math]::Max(10, [Math]::Round(${MOMENTS_PUBLISH_CAMERA_PROFILE.logicalRadiusY} * $lock.scale))
@@ -921,6 +923,16 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   $count = $(if ($darkOk) { $dark } else { $light })
   $sumX = $(if ($darkOk) { $darkX } else { $lightX })
   $sumY = $(if ($darkOk) { $darkY } else { $lightY })
+  # Use the observed glyph centre, not the approximate header anchor. Camera
+  # lenses have background colour; a close-button X has foreground at centre.
+  $glyphX = [int][Math]::Round([double]$sumX / [double]$count)
+  $glyphY = [int][Math]::Round([double]$sumY / [double]$count)
+  $lens = Get-MomentsPixel $frame $glyphX $glyphY
+  if ($lens -eq $null -or
+    ($darkOk -and [Math]::Max($lens.r, [Math]::Max($lens.g, $lens.b)) -lt 190) -or
+    ($lightOk -and [Math]::Min($lens.r, [Math]::Min($lens.g, $lens.b)) -gt 185)) {
+    return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
+  }
   return @{
     ok = $true
     target = @{
@@ -929,6 +941,19 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
       mode = "${MOMENTS_PUBLISH_CAMERA_PROFILE.name}_$([string]$lock.surfaceMode)_$(if ($darkOk) { 'dark' } else { 'light' })"
     }
   }
+}
+
+function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
+  $candidates = New-Object System.Collections.Generic.List[object]
+  $right = Measure-PublishVisualCameraTarget $frame $lock $paneBounds $false
+  if ($right.ok) { [void]$candidates.Add($right) }
+  if ([string]$lock.surfaceMode -ceq "standalone") {
+    $left = Measure-PublishVisualCameraTarget $frame $lock $paneBounds $true
+    if ($left.ok) { [void]$candidates.Add($left) }
+  }
+  if ($candidates.Count -eq 1) { return $candidates[0] }
+  if ($candidates.Count -gt 1) { return @{ ok = $false; reason = "moments_publish_camera_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r037" "moments_publish_camera_ambiguous") } }
+  return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
 }
 
 function Find-PublishCameraTarget($lock) {
@@ -949,7 +974,7 @@ function Find-PublishCameraTarget($lock) {
       $relativeLeft = [double]$bounds.Left - [double]$paneBounds.left
       $relativeTop = [double]$bounds.Top - [double]$paneBounds.top
       if ($relativeLeft -lt 0 -or $relativeTop -lt 0 -or
-        $relativeLeft -lt ([double]$paneBounds.width - (100.0 * $lock.scale)) -or
+        ($relativeLeft + $bounds.Width) -gt [double]$paneBounds.width -or
         $relativeTop -gt (${MOMENTS_PUBLISH_CAMERA_PROFILE.logicalHeaderHeight}.0 * $lock.scale)) { continue }
       $name = ([string]$element.Current.Name).Trim()
       if ($name -match "(相机|拍照|发表|发布)") {

@@ -29,6 +29,7 @@ const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.d
 assert.deepEqual(MOMENTS_PUBLISH_CAMERA_PROFILE, {
   name: "wechat_moments_render_pane_camera_glyph",
   standaloneLogicalRight: 24,
+  standaloneLogicalLeft: 64,
   standaloneLogicalTop: 24,
   integratedLogicalRight: 32,
   integratedLogicalTop: 56,
@@ -580,7 +581,7 @@ assert.doesNotMatch(
 );
 
 const cameraSource = MOMENTS_PUBLISH_POWERSHELL.slice(
-  MOMENTS_PUBLISH_POWERSHELL.indexOf("function Find-PublishVisualCameraTarget"),
+  MOMENTS_PUBLISH_POWERSHELL.indexOf("function Measure-PublishVisualCameraTarget"),
   MOMENTS_PUBLISH_POWERSHELL.indexOf("function Get-PublishFileDialog")
 );
 assert.match(cameraSource, /\$lock\.scale/u);
@@ -616,7 +617,7 @@ assert.match(
 assert.match(MOMENTS_PUBLISH_POWERSHELL, /\$dpi \/ 96\.0/u);
 assert.doesNotMatch(cameraSource, /\.png|push_icon|moment_person_icon/iu);
 
-const visualCameraStart = MOMENTS_PUBLISH_POWERSHELL.indexOf("function Find-PublishVisualCameraTarget");
+const visualCameraStart = MOMENTS_PUBLISH_POWERSHELL.indexOf("function Measure-PublishVisualCameraTarget");
 const visualCameraEnd = MOMENTS_PUBLISH_POWERSHELL.indexOf("function Find-PublishCameraTarget");
 const visualCameraSource = MOMENTS_PUBLISH_POWERSHELL.slice(visualCameraStart, visualCameraEnd);
 const cameraVisualHarnessProgram = `
@@ -627,7 +628,7 @@ function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   return @{ b = [int]$frame.bytes[$offset]; g = [int]$frame.bytes[$offset + 1]; r = [int]$frame.bytes[$offset + 2] }
 }
 ${visualCameraSource}
-function New-CameraFrame([int]$background, [int]$foreground, [bool]$drawCamera, [bool]$standalone) {
+function New-CameraFrame([int]$background, [int]$foreground, [bool]$drawCamera, [bool]$standalone, [bool]$leftToolbar = $false, [bool]$closeOnly = $false) {
   $width = 1100; $height = 100; $stride = $width * 4
   $bytes = New-Object byte[] ($stride * $height)
   for ($offset = 0; $offset -lt $bytes.Length; $offset += 4) {
@@ -636,9 +637,12 @@ function New-CameraFrame([int]$background, [int]$foreground, [bool]$drawCamera, 
   }
   if ($drawCamera) {
     $centerX = $(if ($standalone) { 1062 } else { 1052 })
+    if ($leftToolbar) { $centerX = 89 }
     $centerY = $(if ($standalone) { 30 } else { 70 })
     for ($y = $centerY - 8; $y -le $centerY + 8; $y++) {
       for ($x = $centerX - 10; $x -le $centerX + 10; $x++) {
+        if (-not $closeOnly -and [Math]::Abs($x - $centerX) -le 3 -and [Math]::Abs($y - $centerY) -le 3) { continue }
+        if ($closeOnly -and [Math]::Abs([Math]::Abs($x - $centerX) - [Math]::Abs($y - $centerY)) -gt 1) { continue }
         $offset = ($y * $stride) + ($x * 4)
         $bytes[$offset] = $foreground; $bytes[$offset + 1] = $foreground; $bytes[$offset + 2] = $foreground
       }
@@ -653,11 +657,15 @@ $darkOnLight = Find-PublishVisualCameraTarget (New-CameraFrame 245 65 $true $fal
 $lightOnDark = Find-PublishVisualCameraTarget (New-CameraFrame 55 245 $true $false) $integratedLock $pane
 $missing = Find-PublishVisualCameraTarget (New-CameraFrame 245 65 $false $false) $integratedLock $pane
 $standalone = Find-PublishVisualCameraTarget (New-CameraFrame 245 65 $true $true) $standaloneLock $pane
+$leftToolbar = Find-PublishVisualCameraTarget (New-CameraFrame 55 245 $true $true $true) $standaloneLock $pane
+$closeOnly = Find-PublishVisualCameraTarget (New-CameraFrame 55 245 $true $true $false $true) $standaloneLock $pane
 @{
   darkOnLight = $darkOnLight
   lightOnDark = $lightOnDark
   missing = $missing
   standalone = $standalone
+  leftToolbar = $leftToolbar
+  closeOnly = $closeOnly
 } | ConvertTo-Json -Compress -Depth 6
 `;
 const cameraVisualHarness = spawnSync("powershell.exe", [
@@ -678,6 +686,9 @@ assert.equal(
   cameraVisualHarness.stderr || cameraVisualHarness.stdout || "camera visual harness must run"
 );
 const cameraVisualResult = JSON.parse(cameraVisualHarness.stdout.trim());
+assert.equal(cameraVisualResult.leftToolbar.ok, true, "WeChat 4.1.15 left toolbar camera must be recognized");
+assert.equal(cameraVisualResult.leftToolbar.target.x, 89);
+assert.equal(cameraVisualResult.closeOnly.ok, false, "the window close X must never be mistaken for the camera");
 assert.deepEqual(cameraVisualResult.darkOnLight, {
   target: { y: 70, x: 1052, mode: "wechat_moments_render_pane_camera_glyph_integrated_dark" },
   ok: true
