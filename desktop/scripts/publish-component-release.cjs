@@ -59,6 +59,8 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
     await verifyUpgradePaths({ config, target: manifest, expectedPayload: upgradePaths.payload, verifyArtifact: false });
     run("ssh.exe", [...flags, host, `sudo -n install -d -o ai-maintenance -g ai-maintenance -m 700 ${incoming} && sudo -n install -o ai-maintenance -g ai-maintenance -m 600 ${uploads} ${incoming}/ && sudo -n -u ai-maintenance python3 /opt/ai-maintenance/promote_components.py ${incoming}/latest-components.json ${incoming}`]);
     const readback = await verifyPublishedRelease({ config, envelope, schema: 2 });
+    try { run("ssh.exe", [...flags, host, `sudo -n rm -rf -- ${incoming} ${remote}`]); }
+    catch { console.warn("Release verified; upload staging cleanup deferred."); }
     return { published: true, version: manifest.version, channel: manifest.channel, uploadedArchives: missing.length, readback };
   } finally {
     fs.unlinkSync(document); fs.rmdirSync(temporary);

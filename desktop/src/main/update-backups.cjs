@@ -199,6 +199,13 @@ async function checkPreservedData(profile, data) {
           previous.daily_date = current.daily_date;
           previous.reply_count = 0;
         }
+        // Startup pauses the workflow after app shutdown. This changes only the
+        // paused-state explanation, never a send receipt or unresolved outcome.
+        if (file.path.replaceAll("\\", "/") === "data/auto_reply/auto-reply-state.json"
+            && current.status === "paused" && previous.status === "paused"
+            && [current.last_event, previous.last_event].every(event => ["app_closed", "workflow_paused"].includes(event))) {
+          delete current.last_event; delete previous.last_event;
+        }
         // The detail service refreshes this ledger's finish timestamp at startup.
         // All receipt fields and task outcomes must still compare exactly.
         if (file.path.replaceAll("\\", "/") === "product-detail/database/desktop-ai-refine-ledger.json") {

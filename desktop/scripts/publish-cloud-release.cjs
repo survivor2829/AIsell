@@ -57,6 +57,10 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     const incoming = `/var/lib/ai-maintenance/incoming-${manifest.sequence}`;
     run("ssh.exe", [...flags, host, `sudo -n install -d -o ai-maintenance -g ai-maintenance -m 700 ${incoming} && sudo -n install -o ai-maintenance -g ai-maintenance -m 600 ${remote}/latest.json ${remote}/installer.exe ${incoming}/ && sudo -n -u ai-maintenance python3 /opt/ai-maintenance/promote.py ${incoming}/latest.json ${incoming}/installer.exe`]);
     const readback = await verifyPublishedRelease({ config: { ...config, appId, channel: manifest.channel }, envelope, schema: 1 });
+    // Only our own completed upload staging is disposable. Signed artifacts and
+    // history remain in their managed stores; failed uploads retain evidence.
+    try { run("ssh.exe", [...flags, host, `sudo -n rm -rf -- ${incoming} ${remote}`]); }
+    catch { console.warn("Release verified; upload staging cleanup deferred."); }
     console.log(`Published and readback verified: ${manifest.channel} ${manifest.version}, sequence ${manifest.sequence}, SHA-256 ${sha256}. Previous signed manifests retained on server.`);
     return { published: true, readback };
   } finally {
