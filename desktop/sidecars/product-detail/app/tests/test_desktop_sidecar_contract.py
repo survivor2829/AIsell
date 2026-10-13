@@ -143,7 +143,8 @@ def test_self_check_reports_isolated_paths_and_optional_capabilities(tmp_path):
         if "__pycache__" not in path.parts
     )
     assert source_listing_after == source_listing_before
-    assert completed.stderr == ""
+    assert report["application_loaded"] is True
+    assert "Traceback" not in completed.stderr
 
 
 @pytest.mark.parametrize(

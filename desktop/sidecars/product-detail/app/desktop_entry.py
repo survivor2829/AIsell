@@ -752,10 +752,18 @@ def create_desktop_application(
 
 
 def self_check(data_dir: Path) -> dict:
+    application, contract = create_desktop_application(
+        DesktopConfig("127.0.0.1", 0, data_dir, secrets.token_hex(32), secrets.token_hex(32)),
+        shutdown_callback=lambda: None,
+    )
+    health = application.test_client().get("/internal/health")
+    if health.status_code != 200 or not health.get_json().get("ok"):
+        raise RuntimeError("packaged application health check failed")
     paths = prepare_runtime_paths(data_dir)
     return {
         "ok": True,
         "mode": "desktop",
+        "application_loaded": True,
         "version": VERSION,
         "resource_dir": str(paths.resource_dir),
         "data_dir": str(paths.data_dir),
@@ -764,7 +772,7 @@ def self_check(data_dir: Path) -> dict:
         "mutable_paths": {
             name: str(path) for name, path in paths.mutable_paths().items()
         },
-        "capabilities": detect_capabilities(verify_browser=True),
+        "capabilities": contract.capabilities,
     }
 
 

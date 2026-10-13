@@ -93,6 +93,7 @@ assert.deepEqual(
   validateSelfCheckPayload({
     ok: true,
     mode: "desktop",
+    application_loaded: true,
     version: "2.0.0-desktop",
     resource_dir: "C:\\runtime\\_internal",
     templates_dir: "C:\\runtime\\_internal\\templates",
@@ -101,6 +102,7 @@ assert.deepEqual(
   {
     ok: true,
     mode: "desktop",
+    application_loaded: true,
     version: "2.0.0-desktop",
     resource_dir: "C:\\runtime\\_internal",
     templates_dir: "C:\\runtime\\_internal\\templates",
@@ -114,6 +116,10 @@ assert.throws(
 assert.throws(
   () => validateSelfCheckPayload({ ok: true, mode: "desktop", version: "" }),
   /version/
+);
+assert.throws(
+  () => validateSelfCheckPayload({ ok: true, mode: "desktop", version: "2.0.0-desktop" }),
+  /load the application/
 );
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-detail-build-"));

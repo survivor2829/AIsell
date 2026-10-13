@@ -267,6 +267,9 @@ function validateSelfCheckPayload(payload) {
   if (!String(payload.version || "").trim()) {
     throw new Error("Product-detail runtime self-check did not report a version");
   }
+  if (payload.application_loaded !== true) {
+    throw new Error("Product-detail runtime self-check did not load the application");
+  }
   return payload;
 }
 
