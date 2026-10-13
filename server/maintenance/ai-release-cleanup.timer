@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily cleanup of verified AI release upload duplicates
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

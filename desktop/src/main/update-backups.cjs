@@ -219,4 +219,4 @@ async function checkPreservedData(profile, data) {
   }
   return true;
 }
-module.exports = { readRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData };
+module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData };

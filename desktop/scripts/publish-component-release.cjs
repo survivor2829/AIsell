@@ -52,6 +52,7 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
     for (const archive of archives) {
       if (run("ssh.exe", [...flags, host, `sudo -n -u ai-maintenance test -f /var/lib/ai-maintenance/components/${archive.sha256}.zip`], true) === 1) missing.push(archive);
     }
+    run("ssh.exe", [...flags, host, require("./release-server-space.cjs").releaseSpaceCommand(missing.reduce((sum, item) => sum + item.size, 0))]);
     run("ssh.exe", [...flags, host, `mkdir -m 755 ${remote}`]);
     for (const archive of missing) run("scp.exe", [...flags, archive.path, `${host}:${remote}/${archive.sha256}.zip`]);
     run("scp.exe", [...flags, document, `${host}:${remote}/latest-components.json`]);

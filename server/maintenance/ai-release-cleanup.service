@@ -1,0 +1,14 @@
+[Unit]
+Description=Verify and reclaim published AI release upload duplicates
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/ai-maintenance/release_cleanup.py --apply --require-free-bytes 5368709120
+User=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ai-maintenance /home/ubuntu
+TimeoutStartSec=30min
