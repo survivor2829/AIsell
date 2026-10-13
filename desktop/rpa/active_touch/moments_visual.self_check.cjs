@@ -17,6 +17,18 @@ const surfaceProfileSource = fs.readFileSync(surfaceProfileFile, "utf8");
 const surfaceEvidenceSource = fs.readFileSync(surfaceEvidenceFile, "utf8");
 const windowDriverSource = fs.readFileSync(windowDriverFile, "utf8");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require(probeFile);
+const scanProfileFunction = probeSource.match(/function Get-MomentsVisualFeedScanProfile\([^\n]+\) \{[\s\S]*?\n\}/u)?.[0];
+assert.ok(scanProfileFunction);
+const scanProfileReplay = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+  Buffer.from(`${scanProfileFunction}
+$narrow = Get-MomentsVisualFeedScanProfile @{left=9;top=0;width=550;height=700}
+$wide = Get-MomentsVisualFeedScanProfile @{left=9;top=0;width=1383;height=941}
+@{ narrowMenu = @($narrow.menuBands | Where-Object { $_.left -le 508 -and $_.right -ge 508 }).Count -eq 1;
+   wideMenu = @($wide.menuBands | Where-Object { $_.left -le 1100 -and $_.right -ge 1100 }).Count -eq 1 } | ConvertTo-Json -Compress`, "utf16le").toString("base64")
+], { encoding: "utf8", windowsHide: true, timeout: 30_000 });
+assert.equal(scanProfileReplay.status, 0, scanProfileReplay.stderr || scanProfileReplay.error?.message);
+assert.deepEqual(JSON.parse(scanProfileReplay.stdout.trim()), { narrowMenu: true, wideMenu: true },
+  "large avatars in narrow WeChat windows must retain the right-edge menu lane; wide feeds keep their centred lane");
 const { MOMENTS_VISUAL_STABILITY_TOLERANCE_PX, MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT } = require(dryRunFile);
 const {
   MOMENTS_SURFACE_PROFILE,

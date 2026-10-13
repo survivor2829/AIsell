@@ -918,7 +918,7 @@ function Measure-PublishVisualCameraTarget($frame, $lock, $paneBounds, [bool]$le
   $lightOk = $light -ge 18 -and $lightRatio -ge 0.018 -and $lightRatio -le 0.38 -and
     @($lightQuadrants | Where-Object { $_ -ge 2 }).Count -ge 3
   if ($darkOk -eq $lightOk) {
-    return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
+    return @{ ok = $false; reason = "moments_publish_camera_not_found" }
   }
   $count = $(if ($darkOk) { $dark } else { $light })
   $sumX = $(if ($darkOk) { $darkX } else { $lightX })
@@ -931,7 +931,7 @@ function Measure-PublishVisualCameraTarget($frame, $lock, $paneBounds, [bool]$le
   if ($lens -eq $null -or
     ($darkOk -and [Math]::Max($lens.r, [Math]::Max($lens.g, $lens.b)) -lt 190) -or
     ($lightOk -and [Math]::Min($lens.r, [Math]::Min($lens.g, $lens.b)) -gt 185)) {
-    return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
+    return @{ ok = $false; reason = "moments_publish_camera_not_found" }
   }
   return @{
     ok = $true

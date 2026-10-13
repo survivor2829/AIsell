@@ -429,7 +429,9 @@ function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $
   }
 
   $menuBands = New-Object System.Collections.Generic.List[object]
-  $expandedLayout = $avatarSize -ge 48
+  # Large avatars also occur in narrow standalone windows at Windows scaling.
+  # The centred wide feed depends on available column width, not avatar size.
+  $expandedLayout = [double]$viewportBounds.width -ge ($avatarSize * 16.0)
   $rightGutterLeftRatio = $(if ($expandedLayout) { 0.74 } else { 0.86 })
   $rightGutterRightRatio = $(if ($expandedLayout) { 0.84 } else { 0.95 })
   $rightGutterLeft = [Math]::Floor([double]$viewportBounds.left + ([double]$viewportBounds.width * $rightGutterLeftRatio))
