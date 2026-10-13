@@ -14,6 +14,9 @@ class CleanupTest(unittest.TestCase):
             root, uploads = Path(temporary) / 'maintenance', Path(temporary) / 'uploads'
             for directory in (root / 'artifacts', root / 'releases/test', uploads):
                 directory.mkdir(parents=True)
+            # Hosted Windows TEMP can be a junction or short-name alias. The
+            # production cleanup intentionally accepts only canonical roots.
+            root, uploads = root.resolve(), uploads.resolve()
             content = b'original formal installer'
             digest = hashlib.sha256(content).hexdigest()
             formal = root / 'artifacts' / (digest + '.exe')
