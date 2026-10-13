@@ -1,6 +1,6 @@
 # 详情图方案编排与时间单位修复
 
-基线 main `f373e45`；分支 `codex/fix-detail-plan-normalization`。当前安装版仍为1.1.89，本次源码尚未发布，不能宣称安装版已修好。
+基线 main `f373e45`；分支 `codex/fix-detail-plan-normalization`。以下为实施阶段记录，保留各阶段当时的验证边界；后续已完成1.1.90内部发布及本机更新，最终状态见[发布记录](2026-10-13-1.1.90-release.md)。
 
 ## 现场原因与修改
 
