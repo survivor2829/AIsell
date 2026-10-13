@@ -51,6 +51,7 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
   }
   const remote = `/home/ubuntu/ai-release-${manifest.sequence}`;
   try {
+    run("ssh.exe", [...flags, host, require("./release-server-space.cjs").releaseSpaceCommand(size)]);
     run("ssh.exe", [...flags, host, `mkdir -m 755 ${remote}`]);
     run("scp.exe", [...flags, path.resolve(installer), `${host}:${remote}/installer.exe`]);
     run("scp.exe", [...flags, document, `${host}:${remote}/latest.json`]);
