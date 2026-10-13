@@ -1745,15 +1745,17 @@ function Find-SearchPopup {
     if ($class.ToString() -notmatch '^Qt.*QWindowToolSaveBits$') { return $true }
     $rect = New-Object Win32WechatWindowSearch+RECT
     if (-not [Win32WechatWindowSearch]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
+    $dpi = [Win32WechatWindowSearch]::GetDpiForWindow($hWnd)
+    if ($dpi -lt 72) { $dpi = [Win32WechatWindowSearch]::GetDpiForWindow([IntPtr]$matched.hWnd) }
+    if ($dpi -lt 72) { return $true }
+    # Qt's dropdown shadow can extend a few physical pixels below the main window.
+    $shadowMargin = [Math]::Ceiling(8 * $dpi / 96)
     $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
     if ($width -lt 120 -or $height -lt 100 -or $rect.Left -lt $matched.x -or
         $rect.Left -gt $matched.x + $matched.width * 0.3 -or
         $rect.Right -gt $matched.x + $matched.width -or
         $rect.Top -lt $matched.y + 40 -or $rect.Top -gt $matched.y + $matched.height * 0.4 -or
-        $rect.Bottom -gt $matched.y + $matched.height) { return $true }
-    $dpi = [Win32WechatWindowSearch]::GetDpiForWindow($hWnd)
-    if ($dpi -lt 72) { $dpi = [Win32WechatWindowSearch]::GetDpiForWindow([IntPtr]$matched.hWnd) }
-    if ($dpi -lt 72) { return $true }
+        $rect.Bottom -gt $matched.y + $matched.height + $shadowMargin) { return $true }
     $script:searchPopupCandidateCount += 1
     $script:searchPopup = @{ left=$rect.Left; top=$rect.Top; right=$rect.Right; bottom=$rect.Bottom;
       dpi=[int]$dpi; hWnd=$hWnd.ToInt64() }

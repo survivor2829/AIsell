@@ -3,6 +3,7 @@ const {
   runPowerShellAsync
 } = require("./wechat_window_driver.cjs");
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL } = require("./wechat_header_title.cjs");
 
 const WECHAT_SEND_BUTTON_OFFSETS = { right: 64, bottom: 42 };
 const CLIPBOARD_TEXT_RETRY_POWERSHELL = `
@@ -25,6 +26,7 @@ function Set-XiaoxiClipboardTextWithRetry([string]$value) {
 // which moves when an image expands the composer. Both token producers share it.
 const WECHAT_HEADER_CAPTURE = { top: 34, bottom: 74 };
 const WECHAT_SEND_OBSERVATION_SCRIPT = `
+${WECHAT_HEADER_TITLE_POWERSHELL}
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
@@ -159,7 +161,8 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
   # The visual hash proves that the same header pixels stayed stable; it cannot
   # identify a contact by itself. Only a visible matching title or an upstream
   # frozen exact-WeChat-ID search transaction may bind the conversation.
-  $visualFallback = -not $titleVisible -and $verificationMode -eq "exact_wechat_id_search"
+  $titleOcrVerified = -not $titleVisible -and $verificationMode -eq "conversation_title" -and (Test-WechatHeaderTitle $freshRect $headerDpi $expectedTitle)
+  $visualFallback = -not $titleVisible -and ($verificationMode -eq "exact_wechat_id_search" -or $titleOcrVerified)
   $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($matched.pid):$($matched.hWnd):visual:$visualHash" })
   $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
   return @{
@@ -505,6 +508,7 @@ Start-Sleep -Milliseconds 300
 `;
 
 const OBSERVE_CONVERSATION_SCRIPT = `
+${WECHAT_HEADER_TITLE_POWERSHELL}
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Drawing
@@ -624,7 +628,8 @@ try {
     $bitmap.Dispose()
   }
 } catch { $visualHash = "" }
-$visualFallback = -not $titleVisible -and $verificationMode -eq "exact_wechat_id_search"
+$titleOcrVerified = -not $titleVisible -and $verificationMode -eq "conversation_title" -and (Test-WechatHeaderTitle $windowRect $headerDpi $expectedConversation)
+$visualFallback = -not $titleVisible -and ($verificationMode -eq "exact_wechat_id_search" -or $titleOcrVerified)
 $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($process.Id):$([int64]$expectedHWnd):visual:$visualHash" })
 $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
 $windowText = New-Object System.Text.StringBuilder 512
@@ -632,7 +637,7 @@ $windowText = New-Object System.Text.StringBuilder 512
 @{
   ok = $verified
   reason = $(if ($verified) { "" } elseif ([string]::IsNullOrWhiteSpace($visualHash)) { "conversation_visual_token_unavailable" } else { "atomic_conversation_changed" })
-  title = $(if ($titleVisible) { $expectedConversation } else { "" })
+  title = $(if ($titleVisible -or $titleOcrVerified) { $expectedConversation } else { "" })
   windowTitle = $windowText.ToString().Trim()
   processName = $process.ProcessName
   pid = $process.Id

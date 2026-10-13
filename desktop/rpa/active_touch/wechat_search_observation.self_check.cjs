@@ -577,14 +577,17 @@ foreach($spec in @(
   @{name='right_after';cls='QtTestQWindowToolSaveBits';x=250;y=210;w=751;h=250;visible=$true},
   @{name='top_before';cls='QtTestQWindowToolSaveBits';x=230;y=139;w=300;h=250;visible=$true},
   @{name='top_after';cls='QtTestQWindowToolSaveBits';x=230;y=341;w=300;h=250;visible=$true},
-  @{name='bottom_after';cls='QtTestQWindowToolSaveBits';x=230;y=300;w=300;h=401;visible=$true}
+  @{name='bottom_after';cls='QtTestQWindowToolSaveBits';x=230;y=300;w=300;h=430;visible=$true}
 )) {
   $edge=[Win32WechatWindowSearch]::Create($spec.cls,$spec.x,$spec.y,$spec.w,$spec.h,$spec.visible)
   $choice=Find-SearchPopup
   $edgeCounts[$spec.name]=@{ count=$script:searchPopupCandidateCount; kept=($choice -ne $null -and [int64]$choice.hWnd -eq $valid.ToInt64()) }
   [void][Win32WechatWindowSearch]::DestroyWindow($edge)
 }
-@{ one=($one -ne $null); oneCount=$oneCount; multiple=($multiple -eq $null); multipleCount=$multipleCount;
+$shadow=[Win32WechatWindowSearch]::Create('QtTestQWindowToolSaveBits',230,300,300,403,$true)
+$shadowChoice=Find-SearchPopup; $shadowCount=$script:searchPopupCandidateCount
+[void][Win32WechatWindowSearch]::DestroyWindow($shadow)
+@{ shadowCount=$shadowCount; shadowAmbiguous=($shadowChoice -eq $null); one=($one -ne $null); oneCount=$oneCount; multiple=($multiple -eq $null); multipleCount=$multipleCount;
   foreign=($foreignChoice -ne $null); foreignCount=$foreignCount;
   filtered=($filtered -ne $null); filteredCount=$filteredCount; dpi=[int]$filtered.dpi;
   mainDpi=[int][Win32WechatWindowSearch]::GetDpiForWindow($main); lowDpi=[int]$lowDpi.dpi;
@@ -596,6 +599,8 @@ foreach($spec in @(
   const popupChecks = JSON.parse(popupResult.stdout.trim().replace(/^\uFEFF/u, ""));
   assert.equal(popupChecks.one, true);
   assert.equal(popupChecks.oneCount, 1);
+  assert.equal(popupChecks.shadowCount, 2, "a three-pixel dropdown shadow must not hide an otherwise valid popup");
+  assert.equal(popupChecks.shadowAmbiguous, true, "shadow tolerance must retain the multiple-popup veto");
   assert.equal(popupChecks.multiple, true, "multiple eligible popups must disable popup recognition");
   assert.equal(popupChecks.multipleCount, 2);
   assert.equal(popupChecks.foreign, true);
