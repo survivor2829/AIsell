@@ -1287,20 +1287,34 @@ try {
   $observedDpi = [Win32WechatRpaSurfaceInspector]::GetDpiForWindow($hWnd)
   if ($observedDpi -ge 72 -and $observedDpi -le 480) { $dpi = $observedDpi }
 } catch {}
+$prepareViewport = $focusExact -and $surfaceMode -ceq "standalone" -and [string]$env:XIAOXI_WECHAT_PREPARE_MOMENTS_VIEWPORT -ceq "1"
 $targetWorkArea = [System.Windows.Forms.Screen]::FromHandle($hWnd).WorkingArea
 $targetDpiScale = [double]$dpi / 96.0
 $targetLayoutMode = if ($surfaceMode -ceq "standalone") { "${WECHAT_MOMENTS_STANDALONE_WINDOW_LAYOUT_MODE}" } else { "${WECHAT_RPA_WINDOW_LAYOUT_MODE}" }
 $targetLeft = if ($surfaceMode -ceq "standalone") { [int]$initialRect.left } else { [int]$targetWorkArea.Left }
-$targetTop = if ($surfaceMode -ceq "standalone") { [int]$initialRect.top } else { [int]$targetWorkArea.Top }
+$targetTop = if ($surfaceMode -ceq "standalone" -and -not $prepareViewport) { [int]$initialRect.top } else { [int]$targetWorkArea.Top }
 $targetWidth = if ($surfaceMode -ceq "standalone") {
   [int]$initialRect.width
 } else {
   [Math]::Min([int]$targetWorkArea.Width, [int][Math]::Round(${WECHAT_STABLE_WINDOW_LAYOUT.width} * $targetDpiScale))
 }
 $targetHeight = if ($surfaceMode -ceq "standalone") {
-  [int]$initialRect.height
+  $(if ($prepareViewport) { [int]$targetWorkArea.Height } else { [int]$initialRect.height })
 } else {
   [Math]::Min([int]$targetWorkArea.Height, [int][Math]::Round(${WECHAT_STABLE_WINDOW_LAYOUT.height} * $targetDpiScale))
+}
+if ($prepareViewport) {
+  # Entry preparation only: use the actual monitor work area, then bind the
+  # resulting geometry. Later action/scroll checks never request this flag.
+  $targetWidth = [Math]::Min($targetWidth, [int]$targetWorkArea.Width)
+  $targetLeft = [Math]::Max([int]$targetWorkArea.Left, [Math]::Min($targetLeft, [int]$targetWorkArea.Right - $targetWidth))
+  if ([Win32WechatRpaSurfaceInspector]::GetForegroundWindow() -ne $hWnd -or
+    [Win32WechatRpaSurfaceInspector]::GetLastInputTick() -ne $inputTick -or
+    -not [Win32WechatRpaSurfaceInspector]::SetWindowPos($hWnd, [IntPtr]::Zero, $targetLeft, $targetTop, $targetWidth, $targetHeight, 0x0014)) {
+    @{ ok=$false; reason="moments_window_changed" } | ConvertTo-Json -Compress
+    exit
+  }
+  Start-Sleep -Milliseconds 200
 }
 if ($focusExact) {
   $finalRect = New-Object Win32WechatRpaSurfaceInspector+RECT
@@ -1312,10 +1326,10 @@ if ($focusExact) {
     [Win32WechatRpaSurfaceInspector]::GetWindowThreadProcessId($hWnd, [ref]$finalPid) -ne 0
   [void][Win32WechatRpaSurfaceInspector]::GetWindowText($hWnd, $finalTitleText, $finalTitleText.Capacity)
   [void][Win32WechatRpaSurfaceInspector]::GetClassName($hWnd, $finalClassText, $finalClassText.Capacity)
-  $expectedFinalLeft = $initialRect.left
-  $expectedFinalTop = $initialRect.top
-  $expectedFinalWidth = $initialRect.width
-  $expectedFinalHeight = $initialRect.height
+  $expectedFinalLeft = $(if ($prepareViewport) { $targetLeft } else { $initialRect.left })
+  $expectedFinalTop = $(if ($prepareViewport) { $targetTop } else { $initialRect.top })
+  $expectedFinalWidth = $(if ($prepareViewport) { $targetWidth } else { $initialRect.width })
+  $expectedFinalHeight = $(if ($prepareViewport) { $targetHeight } else { $initialRect.height })
   if (-not $finalReady -or [int]$finalPid -ne $expectedPid -or
     $finalTitleText.ToString().Trim() -cne $expectedTitle -or $finalClassText.ToString().Trim() -cne $expectedClass -or
     $finalRect.Left -ne $expectedFinalLeft -or $finalRect.Top -ne $expectedFinalTop -or
@@ -1364,7 +1378,8 @@ $finalInputTick = if ($focusExact) { [uint32]$inputTick } else { [Win32WechatRpa
 @{
   ok = $true
   inspectionOnly = -not $focusExact
-  focusOnly = [bool]$focusExact
+  focusOnly = [bool]$focusExact -and -not $prepareViewport
+  viewportPrepared = [bool]$prepareViewport
   surfaceMode = $surfaceMode
   normalized = [bool]$normalized
   layoutMode = $layoutMode
@@ -1429,6 +1444,7 @@ function inspectForegroundWechatRpaSurface(context = {}, runner = runPowerShell)
     XIAOXI_WECHAT_EXPECTED_CLASS: expectedWindowClass,
     XIAOXI_WECHAT_SURFACE_MODE: surfaceMode,
     XIAOXI_WECHAT_FOCUS_EXACT: context.focusExact === true ? "1" : "0",
+    XIAOXI_WECHAT_PREPARE_MOMENTS_VIEWPORT: context.prepareMomentsViewport === true ? "1" : "0",
     XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0),
     XIAOXI_WECHAT_EXPECTED_X: String(context.expectedX ?? context.x ?? context.left ?? ""),
     XIAOXI_WECHAT_EXPECTED_Y: String(context.expectedY ?? context.y ?? context.top ?? ""),
@@ -1454,15 +1470,17 @@ async function focusExactWechatRpaSurfaceAsync(context = {}, runner = runPowerSh
   const expectedLayoutMode = integrated
     ? WECHAT_RPA_WINDOW_LAYOUT_MODE
     : WECHAT_MOMENTS_STANDALONE_WINDOW_LAYOUT_MODE;
-  if (result.focusOnly !== true || result.inspectionOnly !== false || result.focused !== true
+  const preparingViewport = context.prepareMomentsViewport === true && !integrated;
+  if (result.focusOnly !== !preparingViewport || (preparingViewport && result.viewportPrepared !== true)
+    || result.inspectionOnly !== false || result.focused !== true
     || result.normalized !== true || result.layoutMode !== expectedLayoutMode
     || result.surfaceMode !== context.surfaceMode
     || !sameWindowIdentifier(context.pid, result.pid) || !sameWindowIdentifier(context.hWnd, result.hWnd)
     || (context.processName != null && String(context.processName) !== String(result.processName ?? ""))
     || String(context.title ?? "") !== String(result.title ?? "")
     || String(context.windowClass ?? context.className ?? "") !== String(result.windowClass ?? "")
-    || expectedGeometry[0] !== Number(result.x) || expectedGeometry[1] !== Number(result.y)
-    || expectedGeometry[2] !== Number(result.width) || expectedGeometry[3] !== Number(result.height)
+    || (!preparingViewport && (expectedGeometry[0] !== Number(result.x) || expectedGeometry[1] !== Number(result.y)
+      || expectedGeometry[2] !== Number(result.width) || expectedGeometry[3] !== Number(result.height)))
     || ![result.x, result.y, result.width, result.height].map(Number).every(Number.isInteger)
     || Number(result.width) < 300 || Number(result.height) < 300
     || (expectedDpi !== null && expectedDpi !== Number(result.dpi))) {

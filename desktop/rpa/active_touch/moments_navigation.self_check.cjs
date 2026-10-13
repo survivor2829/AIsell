@@ -523,7 +523,7 @@ async function runOpenSurfaceDecisionProbe({
     userInputAfterFinalClick,
     hostChangesAfterClick,
     standaloneAppearsAfterIntegrated,
-    foregroundHWnd: standaloneWindows[0]?.hWnd || host.hWnd
+    foregroundHWnd: standaloneWindows[0]?.minimized ? host.hWnd : standaloneWindows[0]?.hWnd || host.hWnd
   }), "utf8").toString("base64");
   return runRealPowerShellAsync(`
 $script:fixture = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${fixture}")) | ConvertFrom-Json
@@ -584,6 +584,13 @@ function Get-WechatWindows {
   return @($script:fixture.windows)
 }
 function Get-MomentsWindow { return @(Get-WechatWindows | Where-Object { [string]$_.title -ceq "朋友圈" }) }
+function Restore-ExistingMomentsWindow($window, [uint32]$inputTick) {
+  if ($inputTick -ne (Get-SelfCheckInputTick)) { return @{ ok = $false; reason = "moments_user_input_detected" } }
+  $window.minimized = $false
+  $window.width = 550
+  $window.height = 720
+  return @{ ok = $true; window = $window }
+}
 function Get-IntegratedMomentsEntryState($window) {
   $script:entryReadCount += 1
   if ($script:entryReadCount -eq 1) {
@@ -832,6 +839,15 @@ const standaloneWindow = {
     runOpenSurfaceDecisionProbe({ standaloneWindows: [], integratedProven: true, userInputAfterFinalClick: true }),
     runOpenSurfaceDecisionProbe({ standaloneWindows: [], integratedProven: true, userInputBeforeFreshObservation: true })
   ]);
+  const restoredPopup = await runOpenSurfaceDecisionProbe({
+    standaloneWindows: [{ ...narrowStandalone, minimized: true, left: -32000, top: -32000, width: 199, height: 34 }],
+    integratedProven: true
+  });
+  assert.equal(restoredPopup.ok, true);
+  assert.equal(restoredPopup.surfaceMode, "standalone");
+  assert.equal(restoredPopup.entryMode, "restored_existing_moments",
+    "a minimized popup must be restored instead of using the selected empty main pane");
+  assert.equal(restoredPopup.width, 550);
   const summarizeSurfaceDecision = (result) => result?.ok === true
     ? {
         ok: true,

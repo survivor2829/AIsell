@@ -15,8 +15,10 @@ const MOMENTS_PUBLISH_FILE_DIALOG_TITLE_PREFIXES = Object.freeze(["打开", "选
 const MOMENTS_PUBLISH_CAMERA_PROFILE = Object.freeze({
   name: "wechat_moments_render_pane_camera_glyph",
   standaloneLogicalRight: 24,
+  standaloneLogicalLeft: 64,
   standaloneLogicalTop: 24,
   integratedLogicalRight: 32,
+  integratedWithPopoutLogicalRight: 76,
   integratedLogicalTop: 56,
   logicalRadiusX: 17,
   logicalRadiusY: 13,
@@ -403,6 +405,60 @@ function Get-PublishWindowLock($context) {
   }
 }
 
+function Test-PublishPanelPixel($frame, [int]$x, [int]$y) {
+  $p = Get-MomentsPixel $frame $x $y
+  return $p -ne $null -and [Math]::Min($p.r, [Math]::Min($p.g, $p.b)) -ge 232 -and
+    ([Math]::Max($p.r, [Math]::Max($p.g, $p.b)) - [Math]::Min($p.r, [Math]::Min($p.g, $p.b))) -le 16
+}
+
+function Find-PublishOverlayBounds($frame, $ocr, [double]$scale) {
+  if (-not $ocr.ok) { return @{ ok = $false; reason = "moments_publish_overlay_read_failed" } }
+  $audience = @($ocr.lines | Where-Object { (Normalize-PublishText ([string]$_.text)) -ceq "谁可以看" })
+  $reminder = @($ocr.lines | Where-Object { (Normalize-PublishText ([string]$_.text)).Contains("提醒谁看") })
+  if ($audience.Count -ne 1 -or $reminder.Count -ne 1) {
+    return @{ ok = $false; reason = "moments_publish_composer_not_found" }
+  }
+  # Trace the blank margin above the audience row, then the panel's blank
+  # left margin. These are observed edges, not desktop/DPI-specific offsets.
+  [int]$y = [Math]::Round([double]$audience[0].bounds.top - 12 * $scale)
+  [int]$x = [Math]::Floor([double]$frame.width / 2)
+  if (-not (Test-PublishPanelPixel $frame $x $y)) { return @{ ok = $false; reason = "moments_publish_overlay_read_failed" } }
+  $left = $x; $right = $x
+  while ($left -gt 0 -and (Test-PublishPanelPixel $frame ($left - 1) $y)) { $left-- }
+  while ($right -lt $frame.width -and (Test-PublishPanelPixel $frame $right $y)) { $right++ }
+  [int]$edgeX = $left + [int][Math]::Round(10 * $scale)
+  $top = $y; $bottom = $y
+  while ($top -gt 0 -and (Test-PublishPanelPixel $frame $edgeX ($top - 1))) { $top-- }
+  while ($bottom -lt $frame.height -and (Test-PublishPanelPixel $frame $edgeX $bottom)) { $bottom++ }
+  if ($left -lt 8 * $scale -or $right -gt $frame.width - 8 * $scale -or
+    $top -lt 16 * $scale -or $bottom -ge $frame.height -or
+    $right - $left -lt 300 -or $bottom - $top -lt 300 -or
+    [double]$reminder[0].bounds.top -le $top -or [double]$reminder[0].bounds.top -ge $y) {
+    return @{ ok = $false; reason = "moments_publish_overlay_read_failed" }
+  }
+  return @{ ok = $true; left = $left; top = $top; right = $right; bottom = $bottom }
+}
+
+function Get-PublishOverlayLock($mainLock) {
+  $frame = Get-MomentsVisualFrame $mainLock.hWnd $mainLock.rect $mainLock.pid $false $true
+  if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
+  try {
+    $ocr = Get-MomentsOcrObservation $frame @{ left = 0; top = 0; width = $frame.width; height = $frame.height }
+    $bounds = Find-PublishOverlayBounds $frame $ocr ([double]$mainLock.scale)
+    if (-not $bounds.ok) { return $bounds }
+    $rect = New-Object Win32WechatMomentsPublish+RECT
+    $rect.Left = $mainLock.rect.Left + $bounds.left
+    $rect.Top = $mainLock.rect.Top + $bounds.top
+    $rect.Right = $mainLock.rect.Left + $bounds.right
+    $rect.Bottom = $mainLock.rect.Top + $bounds.bottom
+    return @{
+      ok = $true; hWnd = $mainLock.hWnd; pid = $mainLock.pid; rect = $rect
+      dpi = $mainLock.dpi; scale = $mainLock.scale; className = $mainLock.className
+      title = $mainLock.title; surfaceMode = "composer"; presentation = "overlay"
+    }
+  } finally { Close-MomentsVisualFrame $frame }
+}
+
 function Get-PublishComposerWindowLock($context, $mainLock) {
   if (-not $mainLock.ok -or $mainLock.hWnd -eq [IntPtr]::Zero) {
     return @{ ok = $false; reason = "moments_publish_composer_owner_missing"; rule_id = (Write-XiaoxiFailure "wx4-r017" "moments_publish_composer_owner_missing") }
@@ -434,6 +490,11 @@ function Get-PublishComposerWindowLock($context, $mainLock) {
     return $true
   }
   [void][Win32WechatMomentsPublish]::EnumWindows($callback, [IntPtr]::Zero)
+  if ($composerCandidates.Count -eq 0) {
+    $currentMain = Get-PublishWindowLock $context
+    if (-not $currentMain.ok) { return $currentMain }
+    return Get-PublishOverlayLock $currentMain
+  }
   if ($composerCandidates.Count -ne 1) {
     return @{ ok = $false; reason = $(if ($composerCandidates.Count -gt 1) { "moments_publish_composer_ambiguous" } else { "moments_publish_composer_not_found" }) }
   }
@@ -469,7 +530,9 @@ function Wait-PublishComposerWindowLock($context, $mainLock) {
     }
     if (@(
       "moments_publish_composer_not_found",
-      "moments_publish_composer_not_foreground"
+      "moments_publish_composer_not_foreground",
+      "moments_render_pane_not_found",
+      "moments_window_not_foreground"
     ) -notcontains [string]$last.reason) {
       return $last
     }
@@ -543,7 +606,7 @@ function Invoke-PublishOwnedClick(
         }
         $expectedInputTick = [uint32]$postMarkerValidation.inputTick
       } catch {
-        return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r029" "moments_publish_marker_written_target_changed") }
+        return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r029" "moments_publish_marker_written_target_changed"); failureKind = "powershell_exception"; exceptionType = [string]$_.Exception.GetType().FullName; exceptionCategory = [string]$_.CategoryInfo.Category }
       }
     }
     if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
@@ -857,7 +920,7 @@ function Test-PublishMomentsSurface($lock) {
   }
 }
 
-function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
+function Measure-PublishVisualCameraTarget($frame, $lock, $paneBounds, [bool]$leftToolbar, [double]$logicalRightOverride = 0) {
   $paneLeft = [double]$paneBounds.left - [double]$lock.rect.Left
   $paneTop = [double]$paneBounds.top - [double]$lock.rect.Top
   $integrated = [string]$lock.surfaceMode -ceq "integrated"
@@ -866,6 +929,7 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   } else {
     ${MOMENTS_PUBLISH_CAMERA_PROFILE.standaloneLogicalRight}.0
   })
+  if ($logicalRightOverride -gt 0) { $logicalRight = $logicalRightOverride }
   $logicalTop = $(if ($integrated) {
     ${MOMENTS_PUBLISH_CAMERA_PROFILE.integratedLogicalTop}.0
   } else {
@@ -874,6 +938,7 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   $centerX = [int][Math]::Round(
     $paneLeft + [double]$paneBounds.width - ($logicalRight * $lock.scale)
   )
+  if ($leftToolbar) { $centerX = [int][Math]::Round($paneLeft + (${MOMENTS_PUBLISH_CAMERA_PROFILE.standaloneLogicalLeft}.0 * $lock.scale)) }
   $centerY = [int][Math]::Round($paneTop + ($logicalTop * $lock.scale))
   $radiusX = [int][Math]::Max(12, [Math]::Round(${MOMENTS_PUBLISH_CAMERA_PROFILE.logicalRadiusX} * $lock.scale))
   $radiusY = [int][Math]::Max(10, [Math]::Round(${MOMENTS_PUBLISH_CAMERA_PROFILE.logicalRadiusY} * $lock.scale))
@@ -881,10 +946,12 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   $darkX = 0L
   $darkY = 0L
   $darkQuadrants = @(0, 0, 0, 0)
+  $darkBounds = @(2147483647, 2147483647, -1, -1)
   $light = 0
   $lightX = 0L
   $lightY = 0L
   $lightQuadrants = @(0, 0, 0, 0)
+  $lightBounds = @(2147483647, 2147483647, -1, -1)
   $total = 0
   for ($y = $centerY - $radiusY; $y -le $centerY + $radiusY; $y++) {
     for ($x = $centerX - $radiusX; $x -le $centerX + $radiusX; $x++) {
@@ -900,12 +967,16 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
         $darkX += $x
         $darkY += $y
         $darkQuadrants[$quadrant] += 1
+        $darkBounds[0] = [Math]::Min($darkBounds[0], $x); $darkBounds[1] = [Math]::Min($darkBounds[1], $y)
+        $darkBounds[2] = [Math]::Max($darkBounds[2], $x); $darkBounds[3] = [Math]::Max($darkBounds[3], $y)
       }
       if ($minimum -ge 190 -and $spread -le 65) {
         $light += 1
         $lightX += $x
         $lightY += $y
         $lightQuadrants[$quadrant] += 1
+        $lightBounds[0] = [Math]::Min($lightBounds[0], $x); $lightBounds[1] = [Math]::Min($lightBounds[1], $y)
+        $lightBounds[2] = [Math]::Max($lightBounds[2], $x); $lightBounds[3] = [Math]::Max($lightBounds[3], $y)
       }
     }
   }
@@ -916,11 +987,28 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   $lightOk = $light -ge 18 -and $lightRatio -ge 0.018 -and $lightRatio -le 0.38 -and
     @($lightQuadrants | Where-Object { $_ -ge 2 }).Count -ge 3
   if ($darkOk -eq $lightOk) {
-    return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
+    return @{ ok = $false; reason = "moments_publish_camera_not_found" }
   }
   $count = $(if ($darkOk) { $dark } else { $light })
   $sumX = $(if ($darkOk) { $darkX } else { $lightX })
   $sumY = $(if ($darkOk) { $darkY } else { $lightY })
+  # A camera has a filled body around its lens. The new pop-out icon has
+  # two thin outlined squares; a background centre alone cannot distinguish it.
+  $glyphBounds = $(if ($darkOk) { $darkBounds } else { $lightBounds })
+  $glyphArea = ($glyphBounds[2] - $glyphBounds[0] + 1) * ($glyphBounds[3] - $glyphBounds[1] + 1)
+  if ($glyphArea -le 0 -or [double]$count / $glyphArea -lt 0.45) {
+    return @{ ok = $false; reason = "moments_publish_camera_not_found" }
+  }
+  # Use the observed glyph centre, not the approximate header anchor. Camera
+  # lenses have background colour; a close-button X has foreground at centre.
+  $glyphX = [int][Math]::Round([double]$sumX / [double]$count)
+  $glyphY = [int][Math]::Round([double]$sumY / [double]$count)
+  $lens = Get-MomentsPixel $frame $glyphX $glyphY
+  if ($lens -eq $null -or
+    ($darkOk -and [Math]::Max($lens.r, [Math]::Max($lens.g, $lens.b)) -lt 190) -or
+    ($lightOk -and [Math]::Min($lens.r, [Math]::Min($lens.g, $lens.b)) -gt 185)) {
+    return @{ ok = $false; reason = "moments_publish_camera_not_found" }
+  }
   return @{
     ok = $true
     target = @{
@@ -929,6 +1017,23 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
       mode = "${MOMENTS_PUBLISH_CAMERA_PROFILE.name}_$([string]$lock.surfaceMode)_$(if ($darkOk) { 'dark' } else { 'light' })"
     }
   }
+}
+
+function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
+  $candidates = New-Object System.Collections.Generic.List[object]
+  $right = Measure-PublishVisualCameraTarget $frame $lock $paneBounds $false
+  if ($right.ok) { [void]$candidates.Add($right) }
+  if ([string]$lock.surfaceMode -ceq "standalone") {
+    $left = Measure-PublishVisualCameraTarget $frame $lock $paneBounds $true
+    if ($left.ok) { [void]$candidates.Add($left) }
+  }
+  if ([string]$lock.surfaceMode -ceq "integrated") {
+    $withPopout = Measure-PublishVisualCameraTarget $frame $lock $paneBounds $false ${MOMENTS_PUBLISH_CAMERA_PROFILE.integratedWithPopoutLogicalRight}.0
+    if ($withPopout.ok) { [void]$candidates.Add($withPopout) }
+  }
+  if ($candidates.Count -eq 1) { return $candidates[0] }
+  if ($candidates.Count -gt 1) { return @{ ok = $false; reason = "moments_publish_camera_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r037" "moments_publish_camera_ambiguous") } }
+  return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
 }
 
 function Find-PublishCameraTarget($lock) {
@@ -949,7 +1054,7 @@ function Find-PublishCameraTarget($lock) {
       $relativeLeft = [double]$bounds.Left - [double]$paneBounds.left
       $relativeTop = [double]$bounds.Top - [double]$paneBounds.top
       if ($relativeLeft -lt 0 -or $relativeTop -lt 0 -or
-        $relativeLeft -lt ([double]$paneBounds.width - (100.0 * $lock.scale)) -or
+        ($relativeLeft + $bounds.Width) -gt [double]$paneBounds.width -or
         $relativeTop -gt (${MOMENTS_PUBLISH_CAMERA_PROFILE.logicalHeaderHeight}.0 * $lock.scale)) { continue }
       $name = ([string]$element.Current.Name).Trim()
       if ($name -match "(相机|拍照|发表|发布)") {
@@ -1079,8 +1184,8 @@ function Set-PublishDialogFiles($dialog, $mediaPaths) {
   if (-not $lease.ok) { return $lease }
   # The native dialog exposes File name as Alt+N in both the Chinese and English
   # layouts used here. Focus it, replace any existing value, type the exact staged
-  # path, and confirm. This mirrors the proven dt-ai-helper flow without touching
-  # the user's clipboard or depending on the dialog's private descendant tree.
+  # path, and read it back from the owned focused Edit. Do not use Enter: the
+  # native filename autocomplete may consume it without opening the file.
   if (-not [Win32WechatMomentsPublish]::AtomicKeyChord(0x12, 0x4E)) {
     return @{ ok = $false; reason = "moments_publish_file_name_focus_failed"; rule_id = (Write-XiaoxiFailure "wx4-r048" "moments_publish_file_name_focus_failed") }
   }
@@ -1094,11 +1199,40 @@ function Set-PublishDialogFiles($dialog, $mediaPaths) {
   Start-Sleep -Milliseconds 120
   $lease = Test-PublishFileDialogLease $dialog
   if (-not $lease.ok) { return $lease }
-  if (-not [Win32WechatMomentsPublish]::AtomicVirtualKey(0x0D)) {
+  $readbackReady = $false
+  # SendInput acknowledges queuing, not consumption by the dialog's UI thread.
+  # Wait for the entire path instead of acting on a partially typed prefix.
+  for ($attempt=0; $attempt -lt 30; $attempt++) {
+    $lease = Test-PublishFileDialogLease $dialog
+    if (-not $lease.ok) { return $lease }
+    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    $editHWnd = $(if ($focused) { [IntPtr][int64]$focused.Current.NativeWindowHandle } else { [IntPtr]::Zero })
+    $editClass = New-Object System.Text.StringBuilder 128
+    [void][Win32WechatMomentsPublish]::GetClassName($editHWnd, $editClass, $editClass.Capacity)
+    if (-not $focused -or [int]$focused.Current.ProcessId -ne [int]$dialog.pid -or
+      -not [Win32WechatMomentsPublish]::IsChild([IntPtr]$dialog.hWnd, $editHWnd) -or $editClass.ToString() -cne "Edit") {
+      return @{ ok=$false; reason="moments_publish_file_name_readback_failed" }
+    }
+    $valuePattern = $null
+    $readValue = $(if ($focused.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+      [string]$valuePattern.Current.Value
+    } else { [string]$focused.Current.Name })
+    if ($readValue -ceq $fileValue) { $readbackReady=$true; break }
+    Start-Sleep -Milliseconds 100
+  }
+  if (-not $readbackReady) { return @{ ok=$false; reason="moments_publish_file_name_readback_failed" } }
+  [uint32]$readInputTick = [Win32WechatMomentsPublish]::GetLastInputTick()
+  $openResult = Get-PublishOpenButton $root ([IntPtr]$dialog.hWnd)
+  if (-not $openResult.ok) { return $openResult }
+  $lease = Test-PublishFileDialogLease $dialog
+  if (-not $lease.ok) { return $lease }
+  [UIntPtr]$messageResult = [UIntPtr]::Zero
+  if ($readInputTick -eq [uint32]::MaxValue -or [Win32WechatMomentsPublish]::GetLastInputTick() -ne $readInputTick -or
+    [Win32WechatMomentsPublish]::SendMessageTimeout($openResult.target.handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero, 2, 2000, [ref]$messageResult) -eq [IntPtr]::Zero) {
     return @{ ok = $false; reason = "moments_publish_open_button_failed"; rule_id = (Write-XiaoxiFailure "wx4-r050" "moments_publish_open_button_failed") }
   }
-  for ($attempt = 0; $attempt -lt 20; $attempt++) {
-    Start-Sleep -Milliseconds 100
+  for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    Start-Sleep -Milliseconds 200
     if (-not [Win32WechatMomentsPublish]::IsWindow([IntPtr]$dialog.hWnd) -or
       -not [Win32WechatMomentsPublish]::IsWindowVisible([IntPtr]$dialog.hWnd)) {
       return @{ ok = $true }
@@ -1388,7 +1522,7 @@ function Set-PublishComposerContent($lock, [string]$expectedContent, [string]$to
   }
   [void][Win32WechatMomentsPublish]::AtomicVirtualKey(0x27)
   Start-Sleep -Milliseconds 230
-  return @{ ok = $true; runtimeId = "composer:" + [string]$lock.hWnd.ToInt64() }
+  return @{ ok = $true; runtimeId = "composer:" + $(if ($lock.presentation -ceq "overlay") { "overlay:" } else { "" }) + [string]$lock.hWnd.ToInt64() }
 }
 
 function Test-PublishComposerContentFinal($lock, [string]$expectedContent) {
@@ -1609,6 +1743,12 @@ function Get-PublishEditorObservation($lock, $expectedEditor) {
 }
 
 function Test-PublishComposerAbsent($lock, [string]$editorRuntimeId) {
+  if ($editorRuntimeId -match "^composer:overlay:(\d+)$") {
+    if ([int64]$Matches[1] -ne $lock.hWnd.ToInt64()) { return $false }
+    $overlay = Get-PublishOverlayLock $lock
+    # A lost foreground/obscured frame/OCR failure is not evidence of closure.
+    return -not $overlay.ok -and $overlay.reason -ceq "moments_publish_composer_not_found"
+  }
   if ($editorRuntimeId -match "^composer:(\d+)$") {
     [int64]$composerHandle = 0
     if (-not [int64]::TryParse([string]$Matches[1], [ref]$composerHandle) -or $composerHandle -eq 0) { return $false }
@@ -1754,14 +1894,12 @@ function Get-PublishPostCandidateKey($post) {
   return $avatarHash + "|" + $identity + "|" + $geometry
 }
 
-function Test-PublishAnchorFragments($texts, [string]$anchor) {
-  if ($anchor.Length -lt 12) { return $false }
-  $segmentCount = $(if ($anchor.Length -ge 18) { 3 } else { 2 })
-  $segmentLength = [int][Math]::Floor($anchor.Length / $segmentCount)
+function Test-PublishAnchorPartition($texts, [string]$anchor, $cuts) {
+  $segmentCount = $cuts.Count - 1
   $alignments = @()
   for ($segment = 0; $segment -lt $segmentCount; $segment++) {
-    $start = $segment * $segmentLength
-    $length = $(if ($segment -eq $segmentCount - 1) { $anchor.Length - $start } else { $segmentLength })
+    $start = [int]$cuts[$segment]
+    $length = [int]$cuts[$segment + 1] - $start
     $part = $anchor.Substring($start, $length)
     $offsets = @()
     foreach ($text in @($texts)) {
@@ -1784,6 +1922,23 @@ function Test-PublishAnchorFragments($texts, [string]$anchor) {
   return $true
 }
 
+function Test-PublishAnchorFragments($texts, [string]$anchor) {
+  if ($anchor.Length -lt 12) { return $false }
+  $count = $(if ($anchor.Length -ge 18) { 3 } else { 2 })
+  $step = [int][Math]::Floor($anchor.Length / $count)
+  $cuts = @(0..($count - 1) | ForEach-Object { $_ * $step }) + @($anchor.Length)
+  if (Test-PublishAnchorPartition $texts $anchor $cuts) { return $true }
+  # OCR may split a radical across a fixed boundary. Change only the partition:
+  # every character must still match exactly, uniquely and at the same offset.
+  # Keep long outer spans; the middle may bridge a two-character OCR split.
+  for ($first = 4; $first -le $anchor.Length - 6; $first++) {
+    for ($second = $first + 2; $second -le $anchor.Length - 4; $second++) {
+      if (Test-PublishAnchorPartition $texts $anchor @(0, $first, $second, $anchor.Length)) { return $true }
+    }
+  }
+  return $false
+}
+
 function Test-PublishPostAnchor($frame, $post, [string]$anchor) {
   $identity = Normalize-PublishText ([string]$post.identityText)
   if ($identity.IndexOf($anchor, [StringComparison]::Ordinal) -ge 0) { return $true }
@@ -1796,9 +1951,9 @@ function Test-PublishPostAnchor($frame, $post, [string]$anchor) {
   if ($bodyLines.Count -eq 0) { return $false }
   $line = $bodyLines[0].bounds
   $padding = [Math]::Max(4.0, [double]$line.height / 3.0)
-  $left = [Math]::Max([double]$post.bounds.left, [double]$post.bounds.left + [double]$line.left - $padding)
+  $left = [Math]::Max([double]$post.bounds.left, [double]$post.avatarBounds.left + [double]$post.avatarBounds.width)
   $top = [Math]::Max($bodyTop, [double]$post.bounds.top + [double]$line.top - $padding)
-  $right = [Math]::Min([double]$frame.width, [double]$post.bounds.left + [double]$line.left + [double]$line.width + $padding)
+  $right = [Math]::Min([double]$frame.width, [double]$post.bounds.left + [double]$post.bounds.width)
   $bottom = [Math]::Min([double]$post.menuBounds.top, $top + [double]$line.height * 3.0)
   $captionBounds = @{ left=$left; top=$top; width=$right-$left; height=$bottom-$top }
   if ($captionBounds.width -le 0 -or $captionBounds.height -le 0 -or
@@ -1811,7 +1966,11 @@ function Test-PublishPostAnchor($frame, $post, [string]$anchor) {
   $double = Get-MomentsScaledOcrObservation $frame $captionBounds 2
   # Every part must be read exactly, uniquely and in the same order from the
   # same caption pixels. Never combine fragments from different posts.
-  return Test-PublishAnchorFragments @([string]$post.contentText, [string]$scaled.text, [string]$contrast.text, $(if ($double.ok) { [string]$double.text } else { "" })) $anchor
+  $texts = @([string]$post.contentText, [string]$scaled.text, [string]$contrast.text, $(if ($double.ok) { [string]$double.text } else { "" }))
+  if (Test-PublishAnchorFragments $texts $anchor) { return $true }
+  $native = Get-MomentsOcrObservation $frame $captionBounds
+  $light = Get-MomentsHighContrastOcrObservation $frame $captionBounds 2 $true
+  return Test-PublishAnchorFragments ($texts + @($(if ($native.ok) { [string]$native.text } else { "" }), $(if ($light.ok) { [string]$light.text } else { "" }))) $anchor
 }
 
 function Test-PublishClientAccepted(
@@ -1977,20 +2136,6 @@ try {
   if ($fileDialog -eq $null) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = "moments_publish_file_dialog_missing"; verified = $false } }
   $fileSelection = Set-PublishDialogFiles $fileDialog $mediaPaths
   if (-not $fileSelection.ok) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = $fileSelection.reason; verified = $false } }
-  for ($attempt = 0; $attempt -lt 30; $attempt++) {
-    if (-not [Win32WechatMomentsPublish]::IsWindow([IntPtr]$fileDialog.hWnd) -or
-      -not [Win32WechatMomentsPublish]::IsWindowVisible([IntPtr]$fileDialog.hWnd)) { break }
-    $dialogLease = Test-PublishFileDialogLease $fileDialog
-    if (-not $dialogLease.ok) {
-      Write-PublishResult @{ ok = $false; status = "blocked"; reason = $dialogLease.reason; verified = $false }
-    }
-    Start-Sleep -Milliseconds 200
-  }
-  if ([Win32WechatMomentsPublish]::IsWindow([IntPtr]$fileDialog.hWnd) -and
-    [Win32WechatMomentsPublish]::IsWindowVisible([IntPtr]$fileDialog.hWnd)) {
-    Write-PublishResult @{ ok = $false; status = "blocked"; reason = "moments_publish_file_dialog_did_not_close"; verified = $false }
-  }
-
   $lock = Wait-PublishComposerWindowLock $context $mainLock
   if (-not $lock.ok) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = $lock.reason; verified = $false } }
   $script:publishStage = "media_processing"
@@ -2129,6 +2274,10 @@ try {
       ok = $false
       status = $(if ($clickOutcomeUnknown) { "outcome_unknown" } else { "blocked" })
       reason = $publishClick.reason
+      rule_id = $publishClick.rule_id
+      failureKind = $publishClick.failureKind
+      exceptionType = $publishClick.exceptionType
+      exceptionCategory = $publishClick.exceptionCategory
       verified = $false
     }
   }

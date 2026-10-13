@@ -31,6 +31,7 @@ public static class Win32WechatMomentsNavigation {
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
@@ -52,6 +53,16 @@ public static class Win32WechatMomentsNavigation {
     return lastInputTick == UInt32.MaxValue
       ? UInt32.MaxValue
       : unchecked((uint)Environment.TickCount - lastInputTick);
+  }
+  public static bool RestoreOwnedMoments(IntPtr hWnd, uint expectedPid, string title, string className, uint inputTick) {
+    uint pid;
+    StringBuilder actualTitle = new StringBuilder(256), actualClass = new StringBuilder(256);
+    GetWindowThreadProcessId(hWnd, out pid);
+    GetWindowText(hWnd, actualTitle, actualTitle.Capacity);
+    GetClassName(hWnd, actualClass, actualClass.Capacity);
+    if (pid != expectedPid || actualTitle.ToString().Trim() != title || actualClass.ToString().Trim() != className
+        || !IsWindowVisible(hWnd) || !IsIconic(hWnd) || inputTick == UInt32.MaxValue || GetLastInputTick() != inputTick) return false;
+    return ShowWindowAsync(hWnd, 9);
   }
   public static bool GuardedClick(int x, int y, uint expectedInputTick) {
     if (GetLastInputTick() != expectedInputTick || !SetCursorPos(x, y) || GetLastInputTick() != expectedInputTick) return false;
@@ -152,9 +163,13 @@ function Get-WechatWindows {
     if (-not [Win32WechatMomentsNavigation]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
-    if ($width -lt 300 -or $height -lt 300) { return $true }
     $titleText = New-Object System.Text.StringBuilder 256
     [void][Win32WechatMomentsNavigation]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
+    # A minimized Moments popup has the Windows icon rectangle (-32000, ...).
+    # Keep its identity so the selected, empty main pane cannot hide it.
+    $minimized = [Win32WechatMomentsNavigation]::IsIconic($hWnd)
+    if (($width -lt 300 -or $height -lt 300) -and
+      -not ($minimized -and $titleText.ToString().Trim() -ceq "朋友圈")) { return $true }
     $classText = New-Object System.Text.StringBuilder 256
     [void][Win32WechatMomentsNavigation]::GetClassName($hWnd, $classText, $classText.Capacity)
     [void]$windows.Add(@{
@@ -164,7 +179,7 @@ function Get-WechatWindows {
       title = $titleText.ToString().Trim()
       className = $classText.ToString().Trim()
       dpi = [int][Win32WechatMomentsNavigation]::GetDpiForWindow($hWnd)
-      minimized = [Win32WechatMomentsNavigation]::IsIconic($hWnd)
+      minimized = $minimized
       rect = $rect
       left = $rect.Left
       top = $rect.Top
@@ -180,6 +195,27 @@ function Get-WechatWindows {
 
 function Get-MomentsWindow {
   return @(Get-WechatWindows | Where-Object { $_.title -ceq "朋友圈" } | Sort-Object area -Descending)
+}
+
+function Restore-ExistingMomentsWindow($window, [uint32]$inputTick) {
+  if (-not [Win32WechatMomentsNavigation]::RestoreOwnedMoments(
+    [IntPtr]$window.hWnd, [uint32]$window.pid, [string]$window.title, [string]$window.className, $inputTick
+  )) { return @{ ok = $false; reason = "moments_window_changed" } }
+  for ($attempt = 0; $attempt -lt 12; $attempt++) {
+    Start-Sleep -Milliseconds 100
+    if ([Win32WechatMomentsNavigation]::GetLastInputTick() -ne $inputTick) {
+      return @{ ok = $false; reason = "moments_user_input_detected" }
+    }
+    $restored = @(Get-MomentsWindow | Where-Object {
+      [int]$_.pid -eq [int]$window.pid -and [int64]$_.hWnd -eq [int64]$window.hWnd -and
+      [string]$_.className -ceq [string]$window.className -and -not [bool]$_.minimized -and
+      [int]$_.width -ge 300 -and [int]$_.height -ge 300
+    })
+    if ($restored.Count -eq 1 -and (Test-MomentsWindowStable $restored[0] $false)) {
+      return @{ ok = $true; window = $restored[0] }
+    }
+  }
+  return @{ ok = $false; reason = "moments_window_not_ready" }
 }
 
 function Get-ExpectedMomentsHost {
@@ -590,6 +626,12 @@ function Open-Moments {
       Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r022" "moments_window_ambiguous"); count = $initialPopups.Count }
     }
     if ($initialPopups.Count -eq 1) {
+      if ([bool]$initialPopups[0].minimized) {
+        if (-not (Test-MomentsWindowStable $main)) { Write-Result @{ ok = $false; reason = "moments_window_changed" } }
+        $restored = Restore-ExistingMomentsWindow $initialPopups[0] $integratedInputTick
+        if (-not $restored.ok) { Write-Result $restored }
+        Write-MomentsOpenSuccess $restored.window "standalone" $true "restored_existing_moments"
+      }
       [int64]$initialPopupHWnd = [int64]$initialPopups[0].hWnd
       [int]$initialPopupStableCount = 0
       [string]$initialPopupFingerprint = ""
@@ -1402,6 +1444,7 @@ async function openWechatMoments(options = {}) {
     anchored = opened.surfaceMode === "standalone"
       ? await focusExactWechatRpaSurfaceAsync({
           ...opened,
+          prepareMomentsViewport: true,
           windowClass: opened.className,
           signal: options.signal
         }, runPowerShellAsync)
@@ -1425,7 +1468,7 @@ async function openWechatMoments(options = {}) {
     && Number(anchored?.width) >= 300
     && Number(anchored?.height) >= 300;
   const anchoringModeReady = opened.surfaceMode === "standalone"
-    ? anchored?.focusOnly === true && anchored?.inspectionOnly === false
+    ? (anchored?.focusOnly === true || anchored?.viewportPrepared === true) && anchored?.inspectionOnly === false
     : anchored?.inspectionOnly === true;
   if (!anchored?.ok || !anchoringModeReady || anchored.focused !== true
     || (!integratedLayoutReady && !standaloneLayoutReady)) {

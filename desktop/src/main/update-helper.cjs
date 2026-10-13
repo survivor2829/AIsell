@@ -11,12 +11,18 @@ const { hashFile } = require("../shared/component-contract.cjs");
 const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const productBrand = require("../../product-brand.json");
+const PROCESS_QUERY_TIMEOUT_MS = 60000;
 async function processSnapshot() {
-  const result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress"],
-    { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: 15000 });
+  let result;
+  try { result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath,Name | ConvertTo-Json -Compress"],
+    { windowsHide: true, maxBuffer: 8 * 1024 ** 2, timeout: PROCESS_QUERY_TIMEOUT_MS }); }
+  catch (error) {
+    if (error.killed) throw Object.assign(Error("update_process_snapshot_timeout"), { cause: error });
+    throw error;
+  }
   const rows = JSON.parse(result.stdout.replace(/^\uFEFF/, ""));
-  return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate }));
+  return (Array.isArray(rows) ? rows : [rows]).map(row => ({ pid: row.ProcessId, parent: row.ParentProcessId, created: row.CreationDate, executable: row.ExecutablePath, name: row.Name }));
 }
 // CreationDate is "/Date(ms)/" from Windows PowerShell or ISO text; null when unknown.
 function createdAt(row) {
@@ -80,7 +86,9 @@ function authorizeUpdateJob(file, job) {
 function revokeUpdateJob(file) {
   writeJsonAtomic(file.replace(/\.json$/, ".cancel.json"), { cancelled: true });
 }
-async function waitForAuthorization(file, job, timeoutMs = 35000) {
+// The coordinator verifies the spawned identity and rechecks it at commit.
+// Both bounded process queries must fit inside this handoff deadline.
+async function waitForAuthorization(file, job, timeoutMs = 2 * PROCESS_QUERY_TIMEOUT_MS + 35000) {
   const until = performance.now() + timeoutMs;
   do {
     if (readJson(file.replace(/\.json$/, ".cancel.json"))) throw Error("update_request_cancelled");
