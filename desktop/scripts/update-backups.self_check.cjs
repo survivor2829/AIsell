@@ -189,6 +189,9 @@ if (process.argv[2] === "--hold-registry") {
     const normalized = { ...prior, daily_date: localDay(now), reply_count: 0 };
     const cases = [
       ["normal local-day rollover", prior, normalized, true],
+      ["restart keeps paused replies", { ...normalized, status: "paused", last_event: "app_closed" }, { ...normalized, status: "paused", last_event: "workflow_paused" }, true],
+      ["pause explanation cannot hide lost receipts", { ...normalized, status: "paused", last_event: "app_closed" }, { ...normalized, status: "paused", last_event: "workflow_paused", processed: {} }, false],
+      ["running replies cannot retire backup", { ...normalized, status: "paused", last_event: "app_closed" }, { ...normalized, status: "running", last_event: "workflow_paused" }, false],
       ["already-zero daily count", { ...prior, reply_count: 0 }, normalized, true],
       ["same-day count must not reset", { ...prior, daily_date: localDay(now) }, normalized, false],
       ["backward day", normalized, { ...normalized, daily_date: localDay(priorDay) }, false],
