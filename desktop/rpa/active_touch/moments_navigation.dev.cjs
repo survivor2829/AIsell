@@ -1444,6 +1444,7 @@ async function openWechatMoments(options = {}) {
     anchored = opened.surfaceMode === "standalone"
       ? await focusExactWechatRpaSurfaceAsync({
           ...opened,
+          prepareMomentsViewport: true,
           windowClass: opened.className,
           signal: options.signal
         }, runPowerShellAsync)
@@ -1467,7 +1468,7 @@ async function openWechatMoments(options = {}) {
     && Number(anchored?.width) >= 300
     && Number(anchored?.height) >= 300;
   const anchoringModeReady = opened.surfaceMode === "standalone"
-    ? anchored?.focusOnly === true && anchored?.inspectionOnly === false
+    ? (anchored?.focusOnly === true || anchored?.viewportPrepared === true) && anchored?.inspectionOnly === false
     : anchored?.inspectionOnly === true;
   if (!anchored?.ok || !anchoringModeReady || anchored.focused !== true
     || (!integratedLayoutReady && !standaloneLayoutReady)) {

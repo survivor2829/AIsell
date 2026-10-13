@@ -950,7 +950,7 @@ function Get-MomentsScaledOcrObservation($frame, $rect, [int]$scale = 3) {
   }
 }
 
-function Get-MomentsHighContrastOcrObservation($frame, $rect, [int]$scale = 4) {
+function Get-MomentsHighContrastOcrObservation($frame, $rect, [int]$scale = 4, [bool]$lightBackground = $false) {
   $crop = ConvertTo-MomentsOcrBitmap $frame $rect
   if ($crop -eq $null) { return @{ ok = $false; reason = "moments_visual_ocr_region_invalid" } }
   $binary = $null
@@ -965,7 +965,8 @@ function Get-MomentsHighContrastOcrObservation($frame, $rect, [int]$scale = 4) {
         $color = $crop.GetPixel($x, $y)
         $maximum = [Math]::Max([int]$color.R, [Math]::Max([int]$color.G, [int]$color.B))
         $minimum = [Math]::Min([int]$color.R, [Math]::Min([int]$color.G, [int]$color.B))
-        $isLightNeutral = $minimum -ge 138 -and ($maximum - $minimum) -le 72
+        $isLightNeutral = $minimum -ge $(if ($lightBackground) { 128 } else { 138 }) -and ($maximum - $minimum) -le 72
+        if ($lightBackground) { $isLightNeutral = -not $isLightNeutral }
         $binary.SetPixel($x, $y, $(if ($isLightNeutral) { [System.Drawing.Color]::Black } else { [System.Drawing.Color]::White }))
       }
     }

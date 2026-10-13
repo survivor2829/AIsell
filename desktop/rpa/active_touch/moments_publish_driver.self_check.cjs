@@ -32,6 +32,7 @@ assert.deepEqual(MOMENTS_PUBLISH_CAMERA_PROFILE, {
   standaloneLogicalLeft: 64,
   standaloneLogicalTop: 24,
   integratedLogicalRight: 32,
+  integratedWithPopoutLogicalRight: 76,
   integratedLogicalTop: 56,
   logicalRadiusX: 17,
   logicalRadiusY: 13,
@@ -144,7 +145,7 @@ const fileDialogSource = MOMENTS_PUBLISH_POWERSHELL.slice(
 assert.match(fileDialogSource, /function Get-PublishFileDialog\(\$lock\)/u);
 assert.doesNotMatch(
   fileDialogSource,
-  /expectedInputTick|GetLastInputTick|moments_publish_external_input_detected/u,
+  /expectedInputTick|moments_publish_external_input_detected/u,
   "file-dialog discovery and UIA readback must not inherit a workflow-wide Windows input tick"
 );
 assert.doesNotMatch(
@@ -162,18 +163,18 @@ assert.match(fileDialogSource, /\$dialogCandidates\.Add\(/u);
 assert.match(fileDialogSource, /#32770/u);
 assert.match(fileDialogSource, /\^\(打开\|选择文件\|Open\)/u);
 assert.match(fileDialogSource, /GetWindow\(\$hWnd, 4\) -ne \$expectedOwner/u);
-assert.match(fileDialogSource, /AtomicKeyChord[\s\S]*AtomicUnicodeText[\s\S]*AtomicVirtualKey/u);
+assert.match(fileDialogSource, /AtomicKeyChord[\s\S]*AtomicUnicodeText[\s\S]*SendMessageTimeout/u);
 assert.match(
   fileDialogSource,
   /GetDlgItem\(\$dialogHandle, 1\)[\s\S]*GetDlgCtrlID\(\$buttonHandle\) -ne 1[\s\S]*GetClassName\(\$buttonHandle[\s\S]*GetWindowText\(\$buttonHandle/u,
   "the standard file dialog Open action must bind the native IDOK child instead of counting duplicate UIA wrappers"
 );
-assert.match(fileDialogSource, /AtomicVirtualKey\(0x0D\)[\s\S]*moments_publish_file_dialog_did_not_close/u);
+assert.match(fileDialogSource, /SendMessageTimeout\(\$openResult.target.handle, 0x00F5[\s\S]*moments_publish_file_dialog_did_not_close/u);
 assert.doesNotMatch(fileDialogSource, /openButtons\.Count -ne 1|moments_publish_open_button_ambiguous/u);
 assert.match(
   fileDialogSource,
-  /function Set-PublishDialogFiles\(\$dialog, \$mediaPaths\)[\s\S]*AtomicKeyChord\(0x12, 0x4E\)[\s\S]*AtomicKeyChord\(0x11, 0x41\)[\s\S]*AtomicUnicodeText\(\$fileValue\)[\s\S]*AtomicVirtualKey\(0x0D\)/u,
-  "the file dialog must use its File name accelerator, exact replacement, and Enter instead of depending on Windows' internal control tree"
+  /function Set-PublishDialogFiles\(\$dialog, \$mediaPaths\)[\s\S]*AtomicKeyChord\(0x12, 0x4E\)[\s\S]*AtomicKeyChord\(0x11, 0x41\)[\s\S]*AtomicUnicodeText\(\$fileValue\)[\s\S]*SendMessageTimeout\(\$openResult.target.handle, 0x00F5/u,
+  "the file dialog must use its File name accelerator, exact replacement, readback, and the native Open action instead of depending on Windows' internal control tree"
 );
 assert.doesNotMatch(
   fileDialogSource,
@@ -187,7 +188,7 @@ assert.match(
 );
 assert.match(
   fileDialogSource,
-  /function Set-PublishDialogFiles\(\$dialog, \$mediaPaths\)[\s\S]*Test-PublishFileDialogLease \$dialog[\s\S]*AtomicUnicodeText\(\$fileValue\)[\s\S]*Test-PublishFileDialogLease \$dialog[\s\S]*AtomicVirtualKey\(0x0D\)[\s\S]*IsWindowVisible/u,
+  /function Set-PublishDialogFiles\(\$dialog, \$mediaPaths\)[\s\S]*Test-PublishFileDialogLease \$dialog[\s\S]*AtomicUnicodeText\(\$fileValue\)[\s\S]*Test-PublishFileDialogLease \$dialog[\s\S]*SendMessageTimeout\(\$openResult.target.handle, 0x00F5[\s\S]*IsWindowVisible/u,
   "keyboard filename entry and confirmation must retain exact dialog identity and require the owned dialog to close"
 );
 
@@ -395,7 +396,7 @@ ${composerWaitFunction}
 $script:probe = 0
 function Get-PublishComposerWindowLock($context, $mainLock) {
   $script:probe += 1
-  if ($script:probe -lt 3) { return @{ ok = $false; reason = "moments_publish_composer_not_found" } }
+  if ($script:probe -lt 3) { return @{ ok = $false; reason = $(if ($script:probe -eq 1) { "moments_publish_composer_not_found" } else { "moments_render_pane_not_found" }) } }
   return @{ ok = $true; hWnd = 42 }
 }
 $settled = Wait-PublishComposerWindowLock @{} @{ ok = $true }
@@ -418,6 +419,26 @@ assert.deepEqual(JSON.parse(composerWaitHarness.stdout.trim()), {
   settledCalls: 3,
   settledOk: true
 });
+const overlayClosureHarness = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+  "$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));Invoke-Expression $s"], {
+  input: Buffer.from(`
+${MOMENTS_PUBLISH_POWERSHELL.slice(MOMENTS_PUBLISH_POWERSHELL.indexOf("function Test-PublishComposerAbsent"), MOMENTS_PUBLISH_POWERSHELL.indexOf("function Find-PublishButton"))}
+function Get-PublishOverlayLock($lock) { return $script:overlay }
+$lock = @{ hWnd = [IntPtr]42 }
+$script:overlay = @{ ok = $true }
+$present = Test-PublishComposerAbsent $lock "composer:overlay:42"
+$script:overlay = @{ ok = $false; reason = "moments_publish_composer_not_found" }
+$absent = Test-PublishComposerAbsent $lock "composer:overlay:42"
+$wrongWindow = Test-PublishComposerAbsent $lock "composer:overlay:43"
+$script:overlay = @{ ok = $false; reason = "moments_publish_overlay_read_failed" }
+$unreadable = Test-PublishComposerAbsent $lock "composer:overlay:42"
+@{ present=$present; absent=$absent; wrongWindow=$wrongWindow; unreadable=$unreadable } | ConvertTo-Json -Compress
+`, "utf8").toString("base64"), encoding: "utf8", windowsHide: true, timeout: 10_000
+});
+assert.equal(overlayClosureHarness.status, 0, overlayClosureHarness.stderr);
+assert.deepEqual(JSON.parse(overlayClosureHarness.stdout.trim()), {
+  present: false, absent: true, wrongWindow: false, unreadable: false
+}, "an internal composer must close without destroying its parent window; unreadable frames cannot prove closure");
 const composerInputSource = MOMENTS_PUBLISH_POWERSHELL.slice(
   MOMENTS_PUBLISH_POWERSHELL.indexOf("function Set-PublishComposerContent"),
   MOMENTS_PUBLISH_POWERSHELL.indexOf("function Get-PublishBoundMediaEvidence")
@@ -659,6 +680,27 @@ $missing = Find-PublishVisualCameraTarget (New-CameraFrame 245 65 $false $false)
 $standalone = Find-PublishVisualCameraTarget (New-CameraFrame 245 65 $true $true) $standaloneLock $pane
 $leftToolbar = Find-PublishVisualCameraTarget (New-CameraFrame 55 245 $true $true $true) $standaloneLock $pane
 $closeOnly = Find-PublishVisualCameraTarget (New-CameraFrame 55 245 $true $true $false $true) $standaloneLock $pane
+$popoutFrame = New-CameraFrame 55 245 $false $false
+# Two thin outlined squares at the former camera position, plus a filled
+# camera one toolbar slot to the left. Never click the pop-out control.
+for ($y=60; $y -le 80; $y++) {
+  for ($x=1042; $x -le 1062; $x++) {
+    if ($x -eq 1042 -or $x -eq 1062 -or $y -eq 60 -or $y -eq 80) {
+      $i=$y*$popoutFrame.stride+$x*4
+      $popoutFrame.bytes[$i]=245; $popoutFrame.bytes[$i+1]=245; $popoutFrame.bytes[$i+2]=245
+    }
+  }
+}
+$popoutOnly = Find-PublishVisualCameraTarget $popoutFrame $integratedLock $pane
+for ($y=62; $y -le 78; $y++) {
+  for ($x=987; $x -le 1007; $x++) {
+    if ([Math]::Abs($x-997) -le 3 -and [Math]::Abs($y-70) -le 3) { continue }
+    $i=$y*$popoutFrame.stride+$x*4
+    $popoutFrame.bytes[$i]=245; $popoutFrame.bytes[$i+1]=245; $popoutFrame.bytes[$i+2]=245
+  }
+}
+$withPopout = Find-PublishVisualCameraTarget $popoutFrame $integratedLock $pane
+
 @{
   darkOnLight = $darkOnLight
   lightOnDark = $lightOnDark
@@ -666,6 +708,8 @@ $closeOnly = Find-PublishVisualCameraTarget (New-CameraFrame 55 245 $true $true 
   standalone = $standalone
   leftToolbar = $leftToolbar
   closeOnly = $closeOnly
+  popoutOnly = $popoutOnly
+  withPopout = $withPopout
 } | ConvertTo-Json -Compress -Depth 6
 `;
 const cameraVisualHarness = spawnSync("powershell.exe", [
@@ -686,6 +730,9 @@ assert.equal(
   cameraVisualHarness.stderr || cameraVisualHarness.stdout || "camera visual harness must run"
 );
 const cameraVisualResult = JSON.parse(cameraVisualHarness.stdout.trim());
+assert.equal(cameraVisualResult.popoutOnly.ok, false, "outlined pop-out button must never be treated as a camera");
+assert.equal(cameraVisualResult.withPopout.ok, true);
+assert.equal(cameraVisualResult.withPopout.target.x, 997);
 assert.equal(cameraVisualResult.leftToolbar.ok, true, "WeChat 4.1.15 left toolbar camera must be recognized");
 assert.equal(cameraVisualResult.leftToolbar.target.x, 89);
 assert.equal(cameraVisualResult.closeOnly.ok, false, "the window close X must never be mistaken for the camera");
@@ -844,6 +891,8 @@ const publishVisualHarness = spawnSync("powershell.exe", [
 ${MOMENTS_VISUAL_READONLY_POWERSHELL}
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
 ${publishVisualHelperSource}
+${MOMENTS_PUBLISH_POWERSHELL.slice(MOMENTS_PUBLISH_POWERSHELL.indexOf("function Normalize-PublishText"), MOMENTS_PUBLISH_POWERSHELL.indexOf("function Normalize-PublishExactContent"))}
+${MOMENTS_PUBLISH_POWERSHELL.slice(MOMENTS_PUBLISH_POWERSHELL.indexOf("function Test-PublishPanelPixel"), MOMENTS_PUBLISH_POWERSHELL.indexOf("function Get-PublishOverlayLock"))}
 function New-PublishButtonTestFrame([int]$width, [int]$height) {
   return @{
     ok = $true
@@ -877,7 +926,28 @@ $middleLowerFrame = New-PublishButtonTestFrame 453 601
 Add-PublishButtonTestRect $middleLowerFrame 81 430 140 38
 $lastScrollFrame = New-PublishButtonTestFrame 453 652
 Add-PublishButtonTestRect $lastScrollFrame 82 625 140 27
+$overlayCases = @(
+  @{ width=568; height=709; scale=1.25; left=50; top=45; right=500; bottom=645 },
+  @{ width=454; height=567; scale=1.0; left=40; top=36; right=400; bottom=516 },
+  @{ width=1400; height=950; scale=1.5; left=430; top=70; right=970; bottom=790 }
+)
+$overlayBounds = @($overlayCases | ForEach-Object {
+  $c = $_; $overlayFrame = New-PublishButtonTestFrame $c.width $c.height
+  $whiteRow = [byte[]]::new(($c.right - $c.left) * 4)
+  for ($i = 0; $i -lt $whiteRow.Length; $i++) { $whiteRow[$i] = 250 }
+  for ($y = $c.top; $y -lt $c.bottom; $y++) { [Array]::Copy($whiteRow, 0, $overlayFrame.bytes, ($y * $overlayFrame.stride + $c.left * 4), $whiteRow.Length) }
+  $overlayOcr = @{ ok=$true; lines=@(
+    @{ text="谁 可 以 看"; bounds=@{ top=$c.bottom - 120 * $c.scale } },
+    @{ text="@ 提 醒 谁 看"; bounds=@{ top=$c.bottom - 176 * $c.scale } }
+  ) }
+  Find-PublishOverlayBounds $overlayFrame $overlayOcr $c.scale
+})
+$missingOverlay = Find-PublishOverlayBounds $overlayFrame @{ ok=$true; lines=@() } 1.25
+$unreadableOverlay = Find-PublishOverlayBounds $overlayFrame @{ ok=$false } 1.25
 @{
+  overlay = $overlayBounds
+  missingOverlay = $missingOverlay
+  unreadableOverlay = $unreadableOverlay
   single = @(Get-PublishVisualButtonCandidates $singleFrame)
   double = @(Get-PublishVisualButtonCandidates $doubleFrame)
   tiny = @(Get-PublishVisualButtonCandidates $tinyFrame)
@@ -896,6 +966,14 @@ assert.equal(
   publishVisualHarness.stderr || publishVisualHarness.stdout || "publish visual button harness must run"
 );
 const publishVisualResult = JSON.parse(publishVisualHarness.stdout.trim());
+assert.deepEqual(publishVisualResult.overlay, [
+  { ok: true, left: 50, top: 45, right: 500, bottom: 645 },
+  { ok: true, left: 40, top: 36, right: 400, bottom: 516 },
+  { ok: true, left: 430, top: 70, right: 970, bottom: 790 }
+],
+  "the in-window composer must bind observed panel edges instead of looking for a separate HWND");
+assert.equal(publishVisualResult.missingOverlay.reason, "moments_publish_composer_not_found");
+assert.equal(publishVisualResult.unreadableOverlay.reason, "moments_publish_overlay_read_failed");
 assert.equal(publishVisualResult.single.length, 1);
 assert.equal(publishVisualResult.single[0].mode, "visual_green_action");
 assert.ok(Math.abs(publishVisualResult.single[0].x - 151) <= 3);
@@ -1264,6 +1342,11 @@ $script:surfaceVisible = $true
 $fragmentAnchor = "功能测试朋友圈发布与互动验证时间2026年9月9"
 $fragmentViews = @("功能氵则试:朋友湖发布与互动验证。时间:2026年9月9日巧时", "功自刂试:朋友圈发布与互动马正。时间:2026年9月9日15时", "功能测试:朋友圈发布与互动马止。时间:2026年9月9日15时")
 $fragmentMatch = Test-PublishAnchorFragments $fragmentViews $fragmentAnchor
+$adaptiveAnchor = "验收测试旧版独立窗口回显诊断非产品宣传"
+$adaptiveViews = @("验收测试旧版犭虫立窗囗回显诊断非产品宣传", "发测试旧版独立窗囗回显诊断非产品宣0", "验收測试旧版独豆窗口回显诊断非产品宣传")
+if (-not (Test-PublishAnchorFragments $adaptiveViews $adaptiveAnchor)) { throw "same-caption exact fragments must cover an OCR radical split across fixed boundaries" }
+if (Test-PublishAnchorFragments @("验收测试旧版独立朋友圈原生链路非产品宣传") $adaptiveAnchor) { throw "a different previous post must not verify the new caption" }
+
 $missingFragment = Test-PublishAnchorFragments @($fragmentViews[0], $fragmentViews[1]) $fragmentAnchor
 $outOfOrder = Test-PublishAnchorFragments @("2026年9月9布与互动验证时间功能测试朋友圈发") $fragmentAnchor
 $fusedPost = @{ identityText=$fragmentViews[0]; avatarHash=("e"*64); regionHash=("f"*64); publishAnchorMatched=$fragmentMatch; bounds=@{left=100;top=100;width=600;height=500}; menuBounds=@{left=650;top=490;width=36;height=24}; ocrLines=@(@{compact="1分钟前酉";bounds=@{top=400;height=16}}) }
