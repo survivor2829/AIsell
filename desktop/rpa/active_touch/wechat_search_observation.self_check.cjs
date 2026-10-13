@@ -4,6 +4,27 @@ const { openWechatSearchResult, openWechatSearchResultAsync, discardSearchCaptur
 const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 
 {
+  const { resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
+  const fixture = require("./fixtures/2026-10-13-name-only-contact-section.json");
+  const identity = { query: "甲乙客户", expectedName: "甲乙客户", queryType: "name" };
+  const selected = resolveWechatSearchResultObservation(fixture, identity);
+  assert.equal(selected.mode, "exact_name_contact_section_visual");
+    assert.equal(resolveWechatSearchResultObservation(fixture, { ...identity, queryType: "name_fallback" }).mode, "exact_name_contact_section_visual");
+  assert.equal(selected.candidate.top, 160, "click the contact, never the group's Contains row or chat history");
+  for (const change of ["missing_header", "group_only", "duplicate_contact", "longer_name"]) {
+    const input = structuredClone(fixture);
+    if (change === "missing_header") input.visualCandidates = input.visualCandidates.filter(line => line.text !== "联系人");
+    if (change === "group_only") input.visualCandidates = input.visualCandidates.filter(line => line.top !== 160);
+    if (change === "longer_name") input.visualCandidates.find(line => line.top === 160).text += "甲";
+    if (change === "duplicate_contact") {
+      const row = input.visualCandidates.find(line => line.top === 160);
+      input.visualCandidates.push({ ...row, top: 190, bottom: 208, y: 199 });
+    }
+    assert.notEqual(resolveWechatSearchResultObservation(input, identity).status, "selected", change);
+  }
+}
+
+{
   const fs = require("node:fs");
   const path = require("node:path");
   for (const cli of ["active_touch_cli.cjs", "active_touch_cli.dev.cjs"]) {
@@ -131,7 +152,7 @@ async function checkWrongConversationTitleGate() {
     const result = await executeVerifiedContactSend(sendOptions);
     assert.equal(clicks, 1, `the ambiguous local surface must reach the click path: ${JSON.stringify(result)}`);
     assert.equal(loadState(root).conversation_title, opened, "the opened conversation must be the longer name");
-    assert.equal(loadState(root).search_evidence.resolver_mode, "unique_local_surface_visual");
+    assert.equal(loadState(root).search_evidence.resolver_mode, "exact_name_contact_section_visual");
     const evidence = JSON.stringify(loadState(root).search_evidence);
     for (const line of [expected, opened, "搜索网络结果"]) {
       assert.equal(evidence.includes(line), false, "persisted evidence must omit the query and every OCR line");
@@ -234,8 +255,9 @@ if (process.platform === "win32") {
         const initialization = script.split(/\r?\n/u).filter((line) =>
           line.startsWith("$compactQuery =") || line.startsWith("$networkSearchPattern =") || line.startsWith("$ocrScale =")
         ).join("\n");
-        const start = script.indexOf("      foreach ($line in $ocrResult.Lines)");
+        const start = script.indexOf("      foreach ($reading in $ocrReadings)");
         const end = script.indexOf("      $ocrOk = $true", start);
+        const headerFunction = script.slice(script.indexOf("function Test-LocalContactSection"), script.indexOf('$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")'));
         assert.equal(initialization.split("\n").length, 3, "production OCR must upscale small WeChat search text");
         assert.ok(start >= 0 && end > start, "production OCR processing must be replayed");
         const characterWords = (value, x, y, width, height) => [...value.replace(/\s+/gu, "")].map((character, index, all) => ({
@@ -252,6 +274,8 @@ $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $query = "sams_01"
 ${initialization}
 $ocrResult = ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${fixture}")))
+$ocrReadings = @(@{ result=$ocrResult; boundaryOnly=$false })
+${headerFunction}
 $cropLeft = 58; $cropTop = 72
 $visualCandidates = New-Object System.Collections.Generic.List[object]
 $webSearchCandidates = New-Object System.Collections.Generic.List[object]
@@ -293,16 +317,18 @@ ${script.slice(start, end)}
   const bitmapStart = productionSearchScript.indexOf("      $bitmap = [System.Drawing.Bitmap]::new", popupStartInObservation);
   const screenCopy = productionSearchScript.indexOf("$graphics.CopyFromScreen", bitmapStart);
   const captureSave = productionSearchScript.indexOf("$bitmap.Save($captureStream", screenCopy);
-  const ocrRecognize = productionSearchScript.indexOf("$engine.RecognizeAsync($software)", captureSave);
+  const ocrRecognize = productionSearchScript.indexOf("$ocrResult = Read-SearchOcrBitmap", captureSave);
   assert.ok(screenCopy > bitmapStart && captureSave > screenCopy && ocrRecognize > captureSave,
     "the passport image must be copied from the same bitmap before OCR");
-  const ocrLoopStart = productionSearchScript.indexOf("      foreach ($line in $ocrResult.Lines)", bitmapStart);
+  const ocrLoopStart = productionSearchScript.indexOf("      foreach ($reading in $ocrReadings)", bitmapStart);
   const observationEnd = productionSearchScript.indexOf("\n  exit", ocrLoopStart);
   assert.ok(popupStartInObservation > 0 && bitmapStart > popupStartInObservation
     && ocrLoopStart > bitmapStart && observationEnd > ocrLoopStart,
   "the production popup, OCR and output path must be replayed together");
   const replayBody = productionSearchScript.slice(popupStartInObservation, bitmapStart)
     + "      $ocrResult = ConvertFrom-Json $fixtureJson\n"
+    + "$ocrReadings = @(@{ result=$ocrResult; boundaryOnly=$false })\n"
+    + productionSearchScript.slice(productionSearchScript.indexOf("function Test-LocalContactSection"), productionSearchScript.indexOf('$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")'))
     + productionSearchScript.slice(ocrLoopStart, observationEnd);
   const characterWords = (value, x, y) => [...value].map((character, index) => ({
     Text: character, BoundingRect: { X: x + index * 30, Y: y, Width: 30, Height: 42 }

@@ -196,9 +196,9 @@ async function runHelper({ jobFile, userData }) {
       || !VERSION.test(job.currentVersion) || !VERSION.test(job.targetVersion)) throw Error("update_job_invalid");
   app.setPath("userData", path.join(userData, "update-helper-profile"));
   await app.whenReady();
-  const window = new BrowserWindow({ width: 560, height: 320, resizable: false, autoHideMenuBar: true, title: `${productBrand.displayName} · 软件更新`,
+  const window = new BrowserWindow({ width: 640, height: 340, resizable: false, autoHideMenuBar: true, title: `${productBrand.displayName} · 软件更新`,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: "xiaoxi-update-helper" } });
-  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{width:100%;accent-color:#e83458}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy"></progress></html>`));
+  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e83458}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy" max="100"></progress></html>`));
   let finished = false, currentPhase = "ready";
   window.on("close", event => { if (!finished) event.preventDefault(); });
   const stage = (phase, title, detail = "", failure) => {
@@ -209,7 +209,7 @@ async function runHelper({ jobFile, userData }) {
       persistenceError = error;
       detail += `\n更新记录未能保存（${updateFailure(error, currentPhase).code}），请保留此窗口的错误信息。`;
     }
-    if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(title)};document.getElementById('detail').textContent=${JSON.stringify(detail)};document.getElementById('busy').hidden=${JSON.stringify(["error", "complete"].includes(phase))}`).catch(() => {});
+    if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(title)};document.getElementById('detail').textContent=${JSON.stringify(detail)};document.getElementById('busy').hidden=${JSON.stringify(phase === "error")};${phase === "complete" ? "document.getElementById('busy').value=100;document.getElementById('detail').textContent+=' 更新完成 100%。';" : "document.getElementById('busy').removeAttribute('value');"}`).catch(() => {});
     if (persistenceError && phase !== "error") throw persistenceError;
   };
   const activeJobFile = path.join(paths.directory, "active-job.json");

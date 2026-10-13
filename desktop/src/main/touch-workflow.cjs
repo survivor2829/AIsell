@@ -241,7 +241,7 @@ function createTouchWorkflow(options = {}) {
             stage: "workflow_step", reasonCode: reasonCode || "touch_workflow_failure_reason_missing", ruleId,
             traceId: current.last_trace_id || "", rawReading: extra.result || current || extra,
             expected: { status: "sent_verified", progress: progress() },
-            ...(ruleId === "search-r008" ? { screenshotBytes: searchCaptureBytes } : {})
+            ...(/^search-r\d+$/u.test(ruleId) && searchCaptureBytes ? { screenshotBytes: searchCaptureBytes } : {})
           });
         }
       }
@@ -660,7 +660,7 @@ function createTouchWorkflow(options = {}) {
           if (reasonCode === "search_result_identity_unverified") passport?.recordFailure("active_touch", passportTaskId, {
             stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
             rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" },
-            ...(ruleId === "search-r008" ? { screenshotBytes: searchCaptureBytes } : {})
+            ...(/^search-r\d+$/u.test(ruleId) && searchCaptureBytes ? { screenshotBytes: searchCaptureBytes } : {})
           });
           return response(task.status === "completed" ? "completed" : "pending", {
             result: { deliveryStatus, skipped: true, reasonCode }

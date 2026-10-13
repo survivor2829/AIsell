@@ -610,7 +610,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const classified = { ...observation, visualCandidates: visual, webSearchCandidates: web,
     webSearchTop: web.length ? Math.min(...web.map((line) => Number(line.top))) : null };
   if (web.some((line) => line.text === "untrusted_network_boundary")) return withEvidence(reject("search-r011"));
-  const result = resolveBaselineObservation(classified, identity);
+  let result = resolveBaselineObservation(classified, identity);
 
   const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
   if (!headers.length) {
@@ -618,6 +618,24 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
       return withEvidence(reject("search-r015", "exact_search_result_not_found"));
     }
     return withEvidence(result);
+  }
+  // Name searches often show only the remark, without a gray WeChat-ID line.
+  // Prove an exact, unique row inside the actual Contacts section, rather than
+  // treating the matching name as an untrusted echo from web/chat history.
+  if (["name", "name_fallback"].includes(identity.queryType)
+    && (result.status === "selected" || ["search-r008", "search-r014", "search-r015"].includes(result.rule_id))
+    && normalized(identity.query).length >= 2
+    && normalized(identity.query) === normalized(identity.expectedName)
+    && web.length === 1 && web[0].text === POPUP_NETWORK_LABEL) {
+    const firstHeader = [...headers].sort((a, b) => a.top - b.top)[0];
+    const end = Math.min(Number(web[0].top), ...visual.filter(line => isOtherSearchSection(line.text)
+      && Number(line.top) >= Number(firstHeader.bottom)).map(line => Number(line.top)));
+    const rows = distinctCandidates(visual.filter(line => hasValidBounds(line) && isInside(line, popup)
+      && Number(line.top) >= Number(firstHeader.bottom) && Number(line.bottom) <= end
+      && column(line.left) > 60 && normalized(line.text) === normalized(identity.expectedName)));
+    if (rows.length === 1) result = { status: "selected", mode: "exact_name_contact_section_visual", candidate: rows[0] };
+    else return withEvidence(reject(rows.length ? "search-r014" : "search-r015",
+      rows.length ? "search_result_identity_unverified" : "exact_search_result_not_found"));
   }
   if (result.status !== "selected") return withEvidence(result);
   const candidate = result.candidate;
@@ -639,7 +657,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
 }
 
 function isVerifiedWechatSearchResultMode(mode) {
-  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual"].includes(mode);
+  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual", "exact_name_contact_section_visual"].includes(mode);
 }
 
 module.exports = { NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation, searchObservationEvidence };

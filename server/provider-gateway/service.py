@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import io
+import http.client
 import json
 import os
 from pathlib import Path
@@ -171,6 +172,27 @@ class _FixedApimartProxy(ProxyHandler):
         return None
 
 
+class _HandshakeRetryHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        # HTTP headers/body have not been sent here. Never retry request(),
+        # send(), getresponse() or read(): those may have reached the provider.
+        for attempt in range(3):
+            try:
+                return super().connect()
+            except (ssl.SSLEOFError, ConnectionResetError, TimeoutError) as error:
+                self.close()
+                if attempt == 2:
+                    error.provider_request_not_sent = True
+                    raise
+                time.sleep(0.25 * (attempt + 1))
+
+
+class _HandshakeRetryHTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_HandshakeRetryHTTPSConnection, request,
+                            context=self._context)
+
+
 def _apimart_proxy_open(value):
     raw = str(value or "").strip()
     if not raw:
@@ -184,7 +206,7 @@ def _apimart_proxy_open(value):
                 or parsed.port == 0 or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
             raise ValueError()
         return build_opener(_FixedApimartProxy(raw, parsed),
-                            HTTPSHandler(context=ssl.create_default_context()),
+                            _HandshakeRetryHTTPSHandler(context=ssl.create_default_context()),
                             _NoProviderRedirect()).open
     except (ValueError, TypeError):
         raise ValueError("apimart_proxy_config_invalid") from None
@@ -874,10 +896,12 @@ class Handler(BaseHTTPRequestHandler):
             reason = getattr(error, "reason", None)
             if isinstance(reason, BaseException):
                 kind += "." + type(reason).__name__
+            not_sent = bool(getattr(reason or error, "provider_request_not_sent", False))
             return self._json_result(status, {"error": code}, {
                 "X-Xiaoxi-Error-Origin": "gateway_transport",
-                "X-Xiaoxi-Transport-Phase": phase,
+                "X-Xiaoxi-Transport-Phase": "connecting" if not_sent else phase,
                 "X-Xiaoxi-Transport-Error": kind[:64],
+                **({"X-Xiaoxi-Request-Not-Sent": "1"} if not_sent else {}),
             })
 
         try:

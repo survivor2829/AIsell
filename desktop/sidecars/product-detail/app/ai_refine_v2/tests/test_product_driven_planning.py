@@ -89,6 +89,52 @@ def test_layout_percentages_are_not_performance_claims():
     assert any("55%" in warning and "99%" in warning and "ISO 9001" in warning for warning in warnings)
 
 
+def test_normalize_counts_and_evidence_references_without_losing_screens():
+    plan = sample()
+    plan["screen_count"] = 12
+    plan["screens"][2]["selling_point_id"] = "p1"
+    planner._normalize_plan_structure(plan, TEXT)
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    assert plan["screen_count"] == 4
+    assert plan["screens"][2]["selling_point_id"] == "p2"
+
+
+def test_extra_grounded_scene_is_retained_as_a_separate_point():
+    plan = sample()
+    extra = copy.deepcopy(plan["screens"][1])
+    extra.update(title="办公楼适用", evidence=["清洁机器人适用于办公楼"])
+    plan["screens"].insert(-1, extra)
+    planner._normalize_plan_structure(plan, TEXT)
+    assert planner._validate_schema_v2(plan, TEXT) == []
+    assert len(plan["screens"]) == 5
+    assert plan["selling_points"][-1]["evidence"] == extra["evidence"]
+    before = copy.deepcopy(plan)
+    planner._normalize_plan_structure(plan, TEXT)
+    assert plan == before
+
+
+def test_normalization_does_not_accept_fabricated_evidence_or_missing_points():
+    plan = sample()
+    plan["screens"][2].update(selling_point_id="p1", evidence=["终身免费维修"])
+    planner._normalize_plan_structure(plan, TEXT)
+    assert planner._validate_schema_v2(plan, TEXT)
+    assert len(plan["selling_points"]) == 2
+
+
+@pytest.mark.parametrize("source,caption,backed", [
+    ("配套充电桩充满时长2h", "充电桩2小时充满", True),
+    ("充电2H，续航8h", "充电2小时，续航8小时", True),
+    ("续航3h，推尘最长续航8h", "续航3h，推尘最长8h", True),
+    ("充电2h，续航8h", "充电8小时", False),
+    ("充电2h，续航8h", "续航2小时", False),
+    ("充电2h，续航8h", "充电20小时", False),
+    ("充电2min", "充电2分钟", True),
+    ("充电2h", "充电2分钟", False),
+])
+def test_duration_units_preserve_values_and_meaning(source, caption, backed):
+    assert (not planner._find_unbacked_commercial_claims(caption, source)) == backed
+
+
 def test_layout_regions_and_margins_do_not_hide_marketing_percentages():
     prompt = "画面上方约25%区域放标题，顶部约15%区域留空，留白约8%，手机竖屏3:4，留白边距约8%，四周留白边距约8%，页边距约8%，清洁效率提升28%。"
     assert planner._find_unbacked_commercial_claims(prompt, TEXT, allow_layout=True) == ["28%"]

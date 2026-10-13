@@ -77,7 +77,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     key: "agent",
     ...AGENT_ROLE_IDENTITIES.agent,
     portraitKey: "xiaoxi-integrated",
-    intro: "联系已确认的客户，回复微信咨询；需要你判断时会提醒你。",
+    intro: "用真诚沟通，帮你连接更多客户。",
     primaryLabel: "联系客户",
     primaryTarget: "touch",
     capabilities: [
@@ -93,7 +93,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     key: "production",
     ...AGENT_ROLE_IDENTITIES.production,
     portraitKey: "xiaohui-integrated",
-    intro: "上传产品图片或视频，做成可以发给客户的短片。",
+    intro: "用优质视频，帮你吸引精准客户。",
     primaryLabel: "制作短视频",
     primaryTarget: "workspace",
     capabilities: [
@@ -107,7 +107,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     key: "operations",
     ...AGENT_ROLE_IDENTITIES.operations,
     portraitKey: "xiaolian-integrated",
-    intro: "上传产品图片、卖点和参数，制作可以发给客户的产品详情图。",
+    intro: "用精美图片，帮你展示产品、提升转化。",
     primaryLabel: "制作产品详情图",
     primaryTarget: "product-detail",
     capabilities: [

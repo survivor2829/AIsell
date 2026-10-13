@@ -502,7 +502,7 @@ def _has_positive_logo_instruction(prompt: str) -> bool:
             return True
     return False
 
-_NUMERIC_CLAIM_UNIT = r"(?:售后)?网点|万台|万家|个月|小时|分钟|年|月|天|%|％|家|处|客户|企业|用户|台"
+_NUMERIC_CLAIM_UNIT = r"(?:售后)?网点|万台|万家|个月|小时|分钟|h(?![a-zA-Z])|min(?![a-zA-Z])|年|月|天|%|％|家|处|客户|企业|用户|台"
 _NUMERIC_COMMERCIAL_CLAIM_RE = re.compile(
     r"(?:全国\s*)?(?P<value>\d+(?:\.\d+)?)"
     r"(?:\s*(?P<range_unit>" + _NUMERIC_CLAIM_UNIT + r")?\s*[-–—~～至到]\s*"
@@ -537,7 +537,7 @@ _NUMERIC_CLAIM_SEMANTICS = (
 )
 
 _CLAIM_CONTEXT_BOUNDARIES = ",，。.;；!?！？\r\n、"
-_NUMERIC_UNIT_ALIASES = {"％": "%", "个月": "月", "售后网点": "网点"}
+_NUMERIC_UNIT_ALIASES = {"％": "%", "个月": "月", "售后网点": "网点", "h": "小时", "min": "分钟"}
 
 _LAYOUT_PERCENT = r"\d+(?:\.\d+)?\s*[%％](?:\s*[-–—~～至到]\s*\d+(?:\.\d+)?\s*[%％])?"
 _LAYOUT_PERCENT_RE = re.compile(
@@ -616,7 +616,8 @@ def _claim_semantic_category(text: str, match: re.Match) -> str:
     if nearest is not None:
         return nearest[2]
 
-    unit = _NUMERIC_UNIT_ALIASES.get(match.group("unit"), match.group("unit"))
+    raw_unit = match.group("unit").lower()
+    unit = _NUMERIC_UNIT_ALIASES.get(raw_unit, raw_unit)
     if unit in {"年", "月", "天", "小时", "分钟"}:
         return "duration"
     if unit == "%":
@@ -637,8 +638,10 @@ def _numeric_claim_key(text: str, match: re.Match) -> tuple[str, str, bool, str]
         whole = whole.lstrip("0") or "0"
         fraction = fraction.rstrip("0")
         values.append(whole + (f".{fraction}" if separator and fraction else ""))
-    unit = _NUMERIC_UNIT_ALIASES.get(match.group("unit"), match.group("unit"))
-    range_unit = _NUMERIC_UNIT_ALIASES.get(match.group("range_unit"), match.group("range_unit"))
+    raw_unit = match.group("unit").lower()
+    unit = _NUMERIC_UNIT_ALIASES.get(raw_unit, raw_unit)
+    raw_range_unit = (match.group("range_unit") or "").lower()
+    range_unit = _NUMERIC_UNIT_ALIASES.get(raw_range_unit, raw_range_unit)
     # Mixed units are not interchangeable with a single-unit range.
     if range_unit and range_unit != unit:
         values[0] += range_unit
@@ -665,7 +668,14 @@ def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_la
             continue
         claim = match.group(0)
         normalized = _normalize_claim_text(claim)
-        is_backed = _numeric_claim_key(prompt, match) in source_numeric_claims
+        claim_key = _numeric_claim_key(prompt, match)
+        is_backed = claim_key in source_numeric_claims
+        if not is_backed and claim_key[3] == "duration":
+            # A caption may omit a repeated label ("续航3h，最长8h").
+            # Accept only an unambiguous duration already present in the input;
+            # explicit charging/endurance claims still require the same meaning.
+            categories = {key[3] for key in source_numeric_claims if key[:3] == claim_key[:3]}
+            is_backed = len(categories) == 1
         if normalized and not is_backed and claim not in unbacked:
             unbacked.append(claim)
 
@@ -1040,6 +1050,59 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
     return warnings
 
 
+def _normalize_plan_structure(parsed: dict, product_text: str) -> None:
+    """Derive bookkeeping from actual screens without dropping product content.
+
+    Repair references only from verbatim evidence. An extra grounded scene is
+    retained as its own point; incomplete or invented content still fails the
+    existing fact validation. No extra provider request is needed.
+    """
+    if parsed.get("planning_version") != PLANNING_VERSION:
+        return
+    screens, points = parsed.get("screens"), parsed.get("selling_points")
+    if not isinstance(screens, list) or not isinstance(points, list):
+        return
+    source = _normalize_claim_text(product_text)
+
+    def evidence_set(items):
+        if not isinstance(items, list) or not items or not all(
+            isinstance(item, str) and item.strip() for item in items
+        ):
+            return set()
+        return {_normalize_claim_text(item) for item in items}
+
+    used = set()
+    for idx, screen in enumerate(screens, 1):
+        if not isinstance(screen, dict):
+            continue
+        screen["idx"] = idx
+        if screen.get("role") in {"hero", "spec_table"}:
+            screen["selling_point_id"] = None
+            continue
+        evidence = evidence_set(screen.get("evidence"))
+        if not evidence or not all(item in source for item in evidence):
+            continue
+        matches = [point for point in points if isinstance(point, dict)
+                   and evidence <= evidence_set(point.get("evidence"))]
+        ref = screen.get("selling_point_id")
+        available = [point for point in matches if point.get("id") not in used]
+        preferred = [point for point in available if point.get("id") == ref]
+        if preferred or len(available) == 1:
+            ref = (preferred or available)[0].get("id")
+            screen["selling_point_id"] = ref
+        elif not matches and isinstance(screen.get("title"), str) and screen["title"].strip():
+            number = 1
+            ids = {point.get("id") for point in points if isinstance(point, dict)}
+            while f"p{number}" in ids:
+                number += 1
+            ref = f"p{number}"
+            points.append({"id": ref, "text": screen["title"], "evidence": list(screen["evidence"])})
+            screen["selling_point_id"] = ref
+        if isinstance(ref, str):
+            used.add(ref)
+    parsed["screen_count"] = len(screens)
+
+
 def _planning_advisories(parsed: dict, product_text: str) -> list[str]:
     """Creative heuristics inform review; they cannot establish product facts.
 
@@ -1229,6 +1292,7 @@ def plan_v2(
             raw_content = resp["choices"][0]["message"]["content"]
             parsed = _extract_json(raw_content)
             _restore_specification_qualifiers(parsed)
+            _normalize_plan_structure(parsed, clean_product_text)
             points = parsed.get("selling_points") or []
             required_count = 1 + len(points) + bool(parsed.get("specifications"))
             if parsed.get("capacity_exceeded") is True or max(len(parsed.get("screens") or []), required_count) > _MAX_SCREEN_COUNT_V2:

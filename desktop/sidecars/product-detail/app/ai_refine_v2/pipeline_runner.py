@@ -139,6 +139,8 @@ def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
         planning = refine_planner._extract_json(choice["message"]["content"])
         refine_planner._restore_specification_qualifiers(planning)
         inputs = _read_json(task_dir / "_input.json") or {}
+        if isinstance(inputs.get("product_text"), str):
+            refine_planner._normalize_plan_structure(planning, inputs["product_text"])
         return (planning.get("planning_version") == refine_planner.PLANNING_VERSION
                 and isinstance(inputs.get("product_text"), str)
                 and not refine_planner._validate_schema_v2(

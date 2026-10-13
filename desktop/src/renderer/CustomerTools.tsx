@@ -83,7 +83,8 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
   const guide = GUIDES[guideIndex];
   const updateWorking = updateBusy || ["checking", "downloading", "preparing", "verifying", "waiting"].includes(state?.stage || "");
   const updateReady = state?.stage === "ready" && state.canInstall;
-  const updateLabel = state?.stage === "downloading" ? `下载 ${state.progress}%`
+  const downloadPercent = Math.max(0, Math.min(100, Math.floor(state?.progress || 0)));
+  const updateLabel = state?.stage === "downloading" ? `下载 ${downloadPercent}%`
     : state?.stage === "waiting" && state.updateRequested ? "等待任务结束" : state?.stage === "checking" ? "检查中…" : ["preparing", "verifying", "waiting"].includes(state?.stage || "") ? "正在更新…"
     : updateBusy ? "正在处理…" : updateReady ? "立即更新" : state?.stage === "error" ? "重试更新" : "检查更新";
   const updateMessage = updateError || state?.error || state?.updateFailure || state?.waitingReason || updateNotice
@@ -101,6 +102,11 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
   const selectedAnnouncement = state?.announcements?.find((entry) => String(entry.id || entry.sequence) === announcementId)
     || state?.announcements?.[0];
   return <div className="topbar-tools">
+    {updateWorking && <section className="customer-update-progress" aria-label="软件更新进度" role="status">
+      <div><strong>{updateLabel}</strong>{state?.stage === "downloading" && Number(state.totalBytes) > 0 && <span>{((state.downloadedBytes || 0) / 1048576).toFixed(1)} / {((state.totalBytes || 0) / 1048576).toFixed(1)} MB</span>}</div>
+      {state?.stage === "downloading" ? <progress max={100} value={downloadPercent} aria-label={`正在下载 ${downloadPercent}%`} /> : <progress aria-label={updateLabel} />}
+      {state?.waitingReason && <p>{state.waitingReason}</p>}
+    </section>}
     <button type="button" className="topbar-tool" aria-label={`更新公告${state?.unreadAnnouncements ? `，${state.unreadAnnouncements} 条未读` : ""}`} title="更新公告" aria-expanded={panel === "announcements"}
       onClick={() => void openAnnouncements()}><Bell size={17} /><span>更新公告</span>{Boolean(state?.unreadAnnouncements) && <span className="topbar-unread" aria-hidden="true" />}</button>
     <div className={`topbar-update${updateReady ? " is-ready" : ""}`}>

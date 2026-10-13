@@ -5,9 +5,9 @@ import "./AgentOverview.css";
 import productBrand from "../../product-brand.json";
 
 const LEADERS: Record<AgentRoleKey, { action: string; description: string }> = {
-  production: { action: "制作获客短片", description: "上传素材，跟着三步做视频。" },
-  agent: { action: "承接微信咨询", description: "同步客户，有计划地跟进。" },
-  operations: { action: "制作产品详情图", description: "上传产品图，把卖点讲清楚。" },
+  production: { action: "制作获客短片", description: "用优质视频，帮你吸引精准客户。" },
+  agent: { action: "承接微信咨询", description: "用真诚沟通，帮你连接更多客户。" },
+  operations: { action: "制作产品详情图", description: "用精美图片，帮你展示产品、提升转化。" },
   materials: { action: "挑选行业素材", description: "工厂、小区、机器人素材拿来用。" },
   tutorials: { action: "看一段跟着做", description: "一个操作一段视频，随时暂停重看。" }
 };
@@ -19,7 +19,7 @@ export function AgentOverview({ preferences, onOpenRole }: {
   return <div className="agent-overview">
     <header className="agent-overview-head">
       <span className="agent-overview-guide" aria-hidden="true">AI</span>
-      <div><h1>生素材 · 引客户 · 促成交</h1><p>{productBrand.displayName}，从今天要完成的工作开始。</p></div>
+      <div><h1>做视频 · 聊客户 · 出美图</h1><p>{productBrand.displayName} · 玺联惠会员超市出品</p></div>
     </header>
     <div className="agent-overview-leaders">
       {AGENT_ROLE_ORDER.map((key) => {

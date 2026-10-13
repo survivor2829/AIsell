@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import ssl
 import urllib.error
 from pathlib import Path
@@ -9,6 +10,19 @@ import pytest
 
 import ai_image_apimart as adapter
 import provider_transport
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+def test_not_sent_requires_trusted_gateway_transport_receipt(monkeypatch, trusted):
+    root = "https://gateway.invalid/v1/provider-gateway"
+    monkeypatch.setattr(adapter, "_gateway_receipt_base", lambda: root if trusted else "")
+    headers = {"X-Xiaoxi-Error-Origin": "gateway_transport", "X-Xiaoxi-Request-Not-Sent": "1"}
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError(root+"/apimart/images/generations", 503, "unavailable", headers, io.BytesIO(b'{"_gateway_request_not_sent":true}'))
+    monkeypatch.setattr(adapter, "_open_apimart", fail)
+    code, body = adapter._http_post_json(root+"/apimart/images/generations", {}, "test")
+    assert code == 503
+    assert body.get("_gateway_request_not_sent", False) is trusted
 
 
 def test_gateway_tls_is_verified_and_only_applies_to_gateway_requests(monkeypatch):

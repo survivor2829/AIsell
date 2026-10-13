@@ -2,6 +2,7 @@ import { CircleAlert, CircleCheck, Copy, LoaderCircle, PlayCircle, RefreshCw, Se
 import { useEffect, useState } from "react";
 import "./ProductDetailPage.css";
 import { appearanceFor, portraitAsset, type RolePreference } from "./role-appearance";
+import { ProductDetailExamples } from "./ProductDetailExamples";
 
 type ProductDetailState = "unavailable" | "stopped" | "starting" | "failed" | "ready";
 
@@ -208,6 +209,8 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
         </div>
         <button type="button" className="product-detail-personalize" onClick={onPersonalize}><Settings2 size={16} />形象与名字</button>
       </header>
+
+      <ProductDetailExamples />
 
       {!canShowWorkspace && <div className={`product-detail-state is-${displayState}`} aria-live="polite">
         <div className="product-detail-state-icon">

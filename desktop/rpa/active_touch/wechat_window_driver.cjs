@@ -1645,6 +1645,28 @@ function Wait-SearchWinRt($operation, [Type]$resultType, [int]$timeoutMs = 1800)
   if (-not $task.Wait($timeoutMs)) { throw "windows_runtime_task_timeout" }
   return $task.Result
 }
+function Read-SearchOcrBitmap($bitmap, $engine) {
+  $memory = $null; $random = $null; $software = $null; $writer = $null
+  try {
+    $memory = [IO.MemoryStream]::new()
+    $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+    $random = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
+    $writer = [Windows.Storage.Streams.DataWriter]::new($random)
+    $writer.WriteBytes($memory.ToArray())
+    [void](Wait-SearchWinRt ($writer.StoreAsync()) ([uint32]))
+    [void](Wait-SearchWinRt ($writer.FlushAsync()) ([bool]))
+    [void]$writer.DetachStream(); $writer.Dispose(); $writer = $null; $random.Seek(0)
+    $decoder = Wait-SearchWinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($random)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $software = Wait-SearchWinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    return (Wait-SearchWinRt ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult]) 2200)
+  } finally {
+    if ($writer) { $writer.Dispose() }; if ($software) { $software.Dispose() }; if ($random) { $random.Dispose() }; if ($memory) { $memory.Dispose() }
+  }
+}
+function Test-LocalContactSection($value) {
+  $text = [Text.RegularExpressions.Regex]::Replace(([string]$value).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
+  return $text -match '^(?:最)?常.{0,2}用$' -or $text -in @('联系人','最近联系人','好友')
+}
 $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHwnd = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $exactWindowBinding = -not [string]::IsNullOrWhiteSpace($expectedPid) -and -not [string]::IsNullOrWhiteSpace($expectedHwnd)
@@ -1873,22 +1895,34 @@ if ($observeLocalResults) {
       $ocrGraphics = [System.Drawing.Graphics]::FromImage($ocrBitmap)
       $ocrGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
       $ocrGraphics.DrawImage($bitmap, 0, 0, $ocrBitmap.Width, $ocrBitmap.Height)
-      $memory = [IO.MemoryStream]::new()
-      $ocrBitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
-      $random = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
-      $writer = [Windows.Storage.Streams.DataWriter]::new($random)
-      $writer.WriteBytes($memory.ToArray())
-      [void](Wait-SearchWinRt ($writer.StoreAsync()) ([uint32]))
-      [void](Wait-SearchWinRt ($writer.FlushAsync()) ([bool]))
-      [void]$writer.DetachStream(); $writer.Dispose(); $random.Seek(0)
-      $decoder = Wait-SearchWinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($random)) ([Windows.Graphics.Imaging.BitmapDecoder])
-      $software = Wait-SearchWinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
       $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new("zh-Hans-CN")); if ($engine -eq $null) { throw "ocr_unavailable" }
-      $ocrResult = Wait-SearchWinRt ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult]) 2200
-      foreach ($line in $ocrResult.Lines) {
+      $ocrResult = Read-SearchOcrBitmap $ocrBitmap $engine
+      $ocrReadings = @(@{ result=$ocrResult; boundaryOnly=$false })
+      if (@($ocrResult.Lines | Where-Object { Test-LocalContactSection $_.Text }).Count -eq 0) {
+        $contrastBitmap = $null; $contrastGraphics = $null; $attributes = $null
+        try {
+          $contrastBitmap = [System.Drawing.Bitmap]::new($ocrBitmap.Width, $ocrBitmap.Height)
+          $contrastGraphics = [System.Drawing.Graphics]::FromImage($contrastBitmap)
+          $attributes = [System.Drawing.Imaging.ImageAttributes]::new()
+          $matrix = [System.Drawing.Imaging.ColorMatrix]::new([single[][]]@(
+            @(.897,.897,.897,0,0), @(1.761,1.761,1.761,0,0), @(.342,.342,.342,0,0), @(0,0,0,1,0), @(-2,-2,-2,0,1)))
+          $attributes.SetColorMatrix($matrix)
+          $contrastGraphics.DrawImage($ocrBitmap, [System.Drawing.Rectangle]::new(0,0,$ocrBitmap.Width,$ocrBitmap.Height),
+            0,0,$ocrBitmap.Width,$ocrBitmap.Height,[System.Drawing.GraphicsUnit]::Pixel,$attributes)
+          $ocrReadings += @{ result=(Read-SearchOcrBitmap $contrastBitmap $engine); boundaryOnly=$true }
+        } catch {
+          # Optional boundary enhancement must not discard the original OCR reading.
+        } finally {
+          if ($attributes) { $attributes.Dispose() }; if ($contrastGraphics) { $contrastGraphics.Dispose() }; if ($contrastBitmap) { $contrastBitmap.Dispose() }
+        }
+      }
+      foreach ($reading in $ocrReadings) {
+       foreach ($line in $reading.result.Lines) {
         $text = ([string]$line.Text).Normalize([Text.NormalizationForm]::FormKC).Trim()
         if (-not $text) { continue }
         $compactText = [Text.RegularExpressions.Regex]::Replace($text, "\\s+", "").ToLowerInvariant()
+        if ($reading.boundaryOnly -and -not (Test-LocalContactSection $text) -and
+          $compactText -notin @('群聊','聊天记录','公众号','小程序','文件','文件传输')) { continue }
         $words = @($line.Words); if ($words.Count -eq 0) { continue }
         $left = ($words | ForEach-Object { [double]$_.BoundingRect.X } | Measure-Object -Minimum).Minimum
         $top = ($words | ForEach-Object { [double]$_.BoundingRect.Y } | Measure-Object -Minimum).Minimum
@@ -1907,10 +1941,7 @@ if ($observeLocalResults) {
           y = [int]($cropTop + (($top + $bottom) / (2 * $ocrScale)))
         }
         [void]$visualCandidates.Add($candidate)
-      }
-      function Test-LocalContactSection($value) {
-        $text = [Text.RegularExpressions.Regex]::Replace(([string]$value).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
-        return $text -match '^(?:最)?常.{0,2}用$' -or $text -in @('联系人','最近联系人','好友')
+       }
       }
       function Test-NetworkSearchLabel($candidate, $headers) {
         $text = [Text.RegularExpressions.Regex]::Replace(([string]$candidate.text).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()

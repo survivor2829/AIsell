@@ -1,0 +1,138 @@
+{
+  "cropBounds": {
+    "left": 69,
+    "right": 529,
+    "bottom": 762,
+    "top": 79
+  },
+  "webSearchCandidates": [
+    {
+      "y": 350,
+      "bottom": 357,
+      "words": [
+        {
+          "left": 146,
+          "right": 161,
+          "text": "搜"
+        },
+        {
+          "left": 162,
+          "right": 176,
+          "text": "索"
+        },
+        {
+          "left": 178,
+          "right": 190,
+          "text": "网"
+        },
+        {
+          "left": 192,
+          "right": 206,
+          "text": "络"
+        },
+        {
+          "left": 206,
+          "right": 221,
+          "text": "结"
+        },
+        {
+          "left": 222,
+          "right": 236,
+          "text": "果"
+        }
+      ],
+      "x": 191,
+      "top": 344,
+      "text": "搜索网络结果",
+      "left": 146,
+      "right": 236
+    }
+  ],
+  "popupCandidateCount": 1,
+  "webSearchTop": 344,
+  "visualCandidates": [
+    {
+      "y": 230,
+      "bottom": 237,
+      "x": 128,
+      "top": 224,
+      "text": "群聊",
+      "left": 114,
+      "right": 144
+    },
+    {
+      "y": 169,
+      "bottom": 178,
+      "x": 209,
+      "top": 160,
+      "text": "甲乙客户",
+      "left": 168,
+      "right": 250
+    },
+    {
+      "y": 276,
+      "bottom": 285,
+      "x": 325,
+      "top": 266,
+      "text": "示例客户交流群",
+      "left": 168,
+      "right": 481
+    },
+    {
+      "y": 304,
+      "bottom": 312,
+      "x": 220,
+      "top": 298,
+      "text": "包含:甲乙客户",
+      "left": 169,
+      "right": 272
+    },
+    {
+      "y": 602,
+      "bottom": 609,
+      "x": 144,
+      "top": 596,
+      "text": "聊天记录",
+      "left": 114,
+      "right": 174
+    },
+    {
+      "y": 649,
+      "bottom": 658,
+      "x": 209,
+      "top": 640,
+      "text": "甲乙客户",
+      "left": 168,
+      "right": 250
+    },
+    {
+      "y": 110,
+      "bottom": 117,
+      "x": 136,
+      "top": 104,
+      "text": "联系人",
+      "left": 114,
+      "right": 159
+    },
+    {
+      "y": 230,
+      "bottom": 237,
+      "x": 129,
+      "top": 224,
+      "text": "群聊",
+      "left": 114,
+      "right": 144
+    }
+  ],
+  "uiaCandidates": [],
+  "captureSource": "popup",
+  "ocrOk": true,
+  "webSearchVisible": true,
+  "popupBounds": {
+    "left": 69,
+    "right": 529,
+    "bottom": 762,
+    "top": 79
+  },
+  "popupDpi": 120
+}

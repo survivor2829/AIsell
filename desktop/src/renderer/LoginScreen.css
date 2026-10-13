@@ -3,18 +3,18 @@
   --signin-muted: #6b6062;
   position: relative; isolation: isolate; width: 100%; min-height: calc(100dvh - 36px); overflow: auto;
   color: var(--signin-ink); color-scheme: light;
-  background: #f8f4f0 url("/login-hero-light.png") center center / cover no-repeat;
+  background: #fff8f9;
   scrollbar-color: #c69499 #f8f4f0;
 }
 .signin-scene::before { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, transparent 46%, rgba(255, 250, 247, .08) 65%, rgba(255, 250, 247, .2)); }
 .signin-scene ::selection { background: #be4047; color: white; }
-.signin-layout { min-height: calc(100dvh - 36px); display: grid; grid-template-rows: auto 1fr auto; padding: clamp(22px, 3.3vw, 54px) clamp(24px, 3.6vw, 64px) 22px; }
+.signin-layout { min-height: calc(100dvh - 36px); display: flex; flex-direction: column; padding: clamp(22px, 3.3vw, 54px) clamp(24px, 3.6vw, 64px) 22px; }
 .signin-masthead { justify-self: start; padding: 9px 17px 11px; border-radius: 13px; background: #ed101b; box-shadow: 0 12px 32px rgba(106, 45, 49, .15); color: white; font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; font-size: clamp(25px, 2.5vw, 43px); font-weight: 900; line-height: 1; letter-spacing: -.035em; white-space: nowrap; }
 .signin-masthead sup { margin-left: 2px; font-size: 12px; vertical-align: top; letter-spacing: 0; }
-.signin-center { display: flex; justify-content: flex-end; align-items: center; padding: 34px 0 26px; }
-.signin-panel { width: min(480px, 43vw); padding: clamp(31px, 3vw, 48px) clamp(28px, 3vw, 44px) 30px; border: 1px solid #eadcda; border-radius: 23px; background: rgba(255, 253, 251, .98); box-shadow: 0 26px 64px rgba(106, 69, 58, .14); }
-.signin-heading { margin: 15px 0 11px; text-align: center; font-size: clamp(27px, 2.6vw, 39px); line-height: 1.3; font-weight: 700; letter-spacing: .055em; }
-.signin-heading-rule { width: 60px; height: 4px; margin: 0 auto 29px; border-radius: 4px; background: #f44850; }
+.signin-center { display: flex; justify-content: center; align-items: center; padding: 24px 0 16px; }
+.signin-panel { width: min(900px, 100%); padding: 20px 26px; border: 1px solid #eadcda; border-radius: 23px; background: rgba(255, 253, 251, .98); box-shadow: 0 26px 64px rgba(106, 69, 58, .14); }
+.signin-heading { margin: 0 0 18px; text-align: center; font-size: 18px; line-height: 1.3; font-weight: 700; letter-spacing: .055em; }
+.signin-heading-rule { width: 60px; height: 4px; margin: 0 auto 18px; border-radius: 4px; background: #f44850; }
 .signin-form { display: flex; flex-direction: column; gap: 17px; }
 .signin-field { display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: #443a3c; }
 .signin-input-wrap { position: relative; display: flex; align-items: center; }
@@ -34,11 +34,19 @@
 .signin-submit:disabled { opacity: .66; cursor: wait; }
 .signin-scene button:focus-visible { outline: 2px solid #b42c39; outline-offset: 4px; }
 .signin-error { margin: 0; color: #ab2535; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
-.signin-help { margin: 21px 0 0; color: var(--signin-muted); text-align: center; font-size: 12px; }
-.signin-made-by { margin: 34px 0 0; color: #6b6062; text-align: center; font-size: 13px; letter-spacing: .14em; }
+.signin-help { margin: 12px 0 0; color: var(--signin-muted); text-align: center; font-size: 12px; }
+.signin-made-by { margin: 14px 0 0; color: #6b6062; text-align: center; font-size: 13px; letter-spacing: .14em; }
 .signin-footer { display: flex; justify-content: flex-end; align-items: center; gap: 7px; color: #574a4d; font-size: 12px; text-shadow: 0 1px 4px #fffaf7; }
 .signin-loading { margin: 24px 0; color: var(--signin-muted); text-align: center; }
 @media (max-width: 850px) { .signin-scene { background-position: 38% center; } .signin-scene::before { background: rgba(255, 250, 247, .2); } .signin-panel { width: min(480px, 100%); } }
 @media (max-width: 600px) { .signin-layout { padding: 20px 17px 16px; } .signin-masthead { font-size: 27px; } .signin-center { justify-content: center; } .signin-panel { padding: 29px 24px 25px; } .signin-footer { justify-content: center; } }
 @media (max-height: 720px) { .signin-layout { padding-top: 17px; padding-bottom: 14px; } .signin-center { padding: 16px 0; } .signin-panel { padding-top: 23px; padding-bottom: 21px; } .signin-heading { margin-top: 0; } .signin-heading-rule { margin-bottom: 20px; } .signin-made-by { margin-top: 22px; } }
 @media (prefers-reduced-motion: reduce) { .signin-scene *, .signin-scene *::before, .signin-scene *::after { transition: none !important; } }
+
+.signin-masthead{background:none;color:#e8002b;box-shadow:none;padding:0;font-size:25px;display:flex;align-items:center;gap:4px}.signin-masthead>span{font-size:15px;color:#575563;font-weight:500;letter-spacing:0;margin-left:12px;padding-left:16px;border-left:1px solid #dbcbd1}
+.signin-intro{width:min(1240px,100%);align-self:center;text-align:center;margin-top:22px}.signin-intro>h1{font-size:clamp(28px,3.4vw,48px);line-height:1.3;margin:0;color:#20202b;font-weight:800;letter-spacing:-.02em}.signin-intro>h1>span{color:#e8002b}.signin-intro>p{font-size:20px;letter-spacing:.12em;margin:12px 0 22px;color:#575563}
+.signin-partners{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;text-align:left}.signin-partners>article{position:relative;overflow:hidden;border-radius:18px;height:clamp(240px,32vh,370px);border:1px solid #e9dee4}.signin-silhouette{height:100%;display:flex;justify-content:center;overflow:hidden}.signin-silhouette>img{width:100%;height:100%;object-fit:contain;object-position:center bottom;filter:brightness(0);opacity:.9;mask-image:linear-gradient(#000 0%,#000 70%,transparent 100%)}
+.signin-partner-copy{position:absolute;bottom:0;left:0;right:0;padding:16px 18px;background:#ffffffed;border-top:1px solid #fff}.signin-partner-copy strong{font-size:23px;display:flex;align-items:center;gap:14px}.signin-partner-copy strong>span{font-size:16px;color:#c21838;border-left:1px solid #d9c8d0;padding-left:14px}.signin-partner-copy p{font-size:14px;line-height:1.6;margin:6px 0 0;color:#575563}
+.signin-form{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:12px 20px}.signin-field{grid-column:1;grid-row:1}.signin-submit{grid-column:2;grid-row:1;align-self:end;margin:0;border-radius:12px;min-height:55px;box-shadow:none;background:#e8002b}.signin-input-wrap input{border-radius:12px}.signin-options{grid-column:1/-1;grid-row:2}.signin-error{grid-column:1/-1;grid-row:3}.signin-help{font-size:12px}.signin-footer{justify-content:center;margin-top:auto}
+@media(max-width:850px){.signin-panel{width:100%}.signin-partners{gap:10px}.signin-partner-copy{padding:12px}.signin-partner-copy strong{gap:7px;font-size:20px}.signin-partner-copy strong>span{font-size:14px;padding-left:7px}.signin-partner-copy p{font-size:13px}.signin-masthead>span{font-size:13px}}
+@media(max-width:600px){.signin-partners{grid-template-columns:1fr}.signin-partners>article{height:210px}.signin-silhouette>img{object-position:right center}.signin-partner-copy{right:30%;background:transparent;top:60px;bottom:auto;border:0}.signin-form{grid-template-columns:1fr}.signin-submit{grid-column:1;grid-row:3}.signin-error{grid-row:4}.signin-masthead{flex-wrap:wrap}.signin-intro>p{font-size:17px}}

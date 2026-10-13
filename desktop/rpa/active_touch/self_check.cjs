@@ -318,7 +318,8 @@ function checkSearchRecognitionMatrix() {
     assert.match(searchScript, /function Find-SearchPopup/u);
     assert.match(searchScript, /GetDpiForWindow/u);
     assert.match(searchScript, /words = @\(\$words/u);
-    assert.doesNotMatch(searchScript, /Test-LocalRowsAgree|Read-SearchOcr|recognitionRecoveryCount/u);
+    assert.doesNotMatch(searchScript, /Test-LocalRowsAgree|Read-SearchOcr(?:\s|\()|recognitionRecoveryCount/u);
+    assert.match(searchScript, /\$reading\.boundaryOnly/u, "contrast recovery may add section labels, never substitute contact names");
     const matcherStart = searchScript.indexOf("function Test-NetworkSearchLabel");
     const matcherEnd = searchScript.indexOf("$headers = @(", matcherStart);
     assert.ok(matcherStart > 0 && matcherEnd > matcherStart);

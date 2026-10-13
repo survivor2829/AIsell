@@ -1,6 +1,14 @@
 import { ArrowRight, Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import "./LoginScreen.css";
+import { appearanceFor, characterAsset, AGENT_ROLE_IDENTITIES } from "./role-appearance";
+import productBrand from "../../product-brand.json";
+
+const LOGIN_ROLES = [
+  { key: "production", description: "用优质视频，帮你吸引精准客户。" },
+  { key: "agent", description: "用真诚沟通，帮你连接更多客户。" },
+  { key: "operations", description: "用精美图片，帮你展示产品、提升转化。" }
+] as const;
 
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
 
@@ -33,10 +41,22 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
 
   return <main className="signin-scene">
     <div className="signin-layout">
-      <header className="signin-masthead" aria-label="玺联惠">玺联惠<sup>®</sup></header>
+      <header className="signin-masthead" aria-label="玺联惠">玺联惠<sup>®</sup><span>{productBrand.displayName}</span></header>
+      <section className="signin-intro" aria-label="你的获客搭档">
+        <h1>你的<span>获客搭档</span>，已就位</h1>
+        <p>做视频 · 聊客户 · 出美图</p>
+        <div className="signin-partners">{LOGIN_ROLES.map(role => {
+          const appearance = appearanceFor(role.key, "original");
+          const identity = AGENT_ROLE_IDENTITIES[role.key];
+          return <article key={role.key} style={{ backgroundColor: appearance.surface }}>
+            <div className="signin-silhouette" aria-hidden="true"><img src={characterAsset(`login-${role.key}-silhouette.png`)} alt="" /></div>
+            <div className="signin-partner-copy"><strong>{identity.name}<span>{identity.responsibility}</span></strong><p>{role.description}</p></div>
+          </article>;
+        })}</div>
+      </section>
       <div className="signin-center">
         <section className="signin-panel" aria-labelledby="signin-title">
-          <h1 id="signin-title" className="signin-heading">授权码登录</h1>
+          <h2 id="signin-title" className="signin-heading">登录，认识你的获客搭档</h2>
           <div className="signin-heading-rule" aria-hidden="true" />
           {!license ? <p className="signin-loading" role="status">正在读取授权信息…</p> : <form className="signin-form" onSubmit={submit}>
             <label className="signin-field" htmlFor="signin-license">
@@ -57,7 +77,7 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
             <button className="signin-submit" type="submit" disabled={busy} aria-busy={busy}>{busy ? "正在验证…" : "登录"}{!busy && <ArrowRight size={18} aria-hidden="true" />}</button>
           </form>}
           <p className="signin-help">如需获取或续期授权码，请联系管理员</p>
-          <p className="signin-made-by">玺联惠公司出品</p>
+          <p className="signin-made-by">玺联惠会员超市出品</p>
         </section>
       </div>
       <footer className="signin-footer"><ShieldCheck size={14} aria-hidden="true" />授权信息在本机加密保存</footer>

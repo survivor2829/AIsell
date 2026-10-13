@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from service import GatewayConfig, GatewayServer, Handler
+from service import _HandshakeRetryHTTPSConnection, _HandshakeRetryHTTPSHandler
 
 
 class FakeResponse:
@@ -33,6 +34,25 @@ class FakeResponse:
 
 
 class GatewayTest(unittest.TestCase):
+    def test_only_connection_establishment_is_retried_before_request_bytes(self):
+        handler = _HandshakeRetryHTTPSHandler(context=ssl.create_default_context())
+        with mock.patch.object(handler, "do_open") as do_open:
+            handler.https_open(urllib.request.Request("https://api.apimart.ai"))
+        self.assertTrue(do_open.call_args.kwargs["context"].check_hostname)
+        connection = _HandshakeRetryHTTPSConnection("api.apimart.ai")
+        with mock.patch("http.client.HTTPSConnection.connect", side_effect=[ssl.SSLEOFError(), ConnectionResetError(), None]) as connect, mock.patch("service.time.sleep"):
+            connection.connect()
+        self.assertEqual(connect.call_count, 3)
+        with mock.patch("http.client.HTTPSConnection.connect", side_effect=ssl.SSLEOFError()) as connect, mock.patch("service.time.sleep"):
+            with self.assertRaises(ssl.SSLEOFError) as error:
+                connection.connect()
+        self.assertEqual(connect.call_count, 3)
+        self.assertTrue(error.exception.provider_request_not_sent)
+        with mock.patch("http.client.HTTPSConnection.connect", side_effect=ssl.SSLCertVerificationError()) as connect:
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                connection.connect()
+        self.assertEqual(connect.call_count, 1)
+
     def setUp(self):
         self.receipt_dir = tempfile.TemporaryDirectory(dir=os.path.dirname(__file__))
         self.upstream_requests = []

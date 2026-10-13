@@ -308,9 +308,16 @@ def _http_post_json(url: str, payload: dict, api_key: str,
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         try:
-            return e.code, json.loads(body)
+            parsed = json.loads(body)
         except json.JSONDecodeError:
             return e.code, body
+        if isinstance(parsed, dict):
+            parsed.pop("_gateway_request_not_sent", None)
+        if (root and url.startswith(root + "/apimart/") and isinstance(parsed, dict)
+                and e.headers.get("X-Xiaoxi-Error-Origin") == "gateway_transport"
+                and e.headers.get("X-Xiaoxi-Request-Not-Sent") == "1"):
+            parsed["_gateway_request_not_sent"] = True
+        return e.code, parsed
 
 
 def _http_get_json_response(url: str, api_key: str, timeout: int = 30,
@@ -565,6 +572,8 @@ def _submit_image_task_for_route(prompt: str,
     task_id = _submit_task_id(body)
     if task_id:
         return task_id, selected_direct
+    if isinstance(body, dict) and body.get("_gateway_request_not_sent") is True:
+        raise APIMartNotSubmitted("连接暂未建立，未提交生图、未产生本次生图费用。请稍后重试。", stage="submit", http_status=code)
     if 400 <= code < 500:
         raise APIMartNotSubmitted(
             f"APIMart 明确拒绝提交 HTTP {code}，未创建生图任务。",
