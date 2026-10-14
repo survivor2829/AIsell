@@ -1,0 +1,196 @@
+{
+  "status": "complete",
+  "verdict": "Ready with fixes",
+  "verdict_reason": "Fix #1 before merge: stale status polling can reopen paid admission during recovery. Then fix #2 to reject mislabeled duration claims. Both defects were reproduced under controlled inspection; production incidence was not measured.",
+  "scope": {
+    "base": "HEAD",
+    "branch": "codex/refine-reliability-login",
+    "head_sha": "5f7d09a2345cccfaedd8e791b498acd7faac0fc3",
+    "pr_url": null,
+    "files_changed": 11
+  },
+  "intent": "Recover saved paid product-detail plans across arbitrary products without repurchase or receipt loss; preserve unknown-outcome query safety and serialize paid admission. Correct role/presentation confusion and fact-label checking, omit explicitly missing specs, show download progress, use user original login image with app logo and real auth controls.",
+  "intent_confidence": "explicit",
+  "reviewers": [
+    "correctness",
+    "project-standards",
+    "testing",
+    "security",
+    "reliability",
+    "adversarial"
+  ],
+  "findings": [
+    {
+      "#": 1,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "evidence": [
+        "desktop/sidecars/product-detail/app/desktop_entry.py:609 -- ledger.update(state=\"pending\" if status.startswith(\"running_\") else status, ; desktop/sidecars/product-detail/app/desktop_entry.py:623 -- ledger[\"state\"] = str(payload[\"status\"])",
+        "desktop/sidecars/product-detail/app/app.py:5314 -- state = pipeline_runner.get_task_status(task_id); app.py:5320 -- return jsonify(state). The response snapshot is obtained outside ledger_lock.",
+        "desktop/sidecars/product-detail/app/desktop_entry.py:618-629 applies the old payload after acquiring ledger_lock, checks only task identity/resolution/archive, and never rechecks worker state.",
+        "desktop/sidecars/product-detail/app/desktop_entry.py:360-362 returns a failed ledger after archive_refine_task; reopened entries are still omitted by read_refine_archive, so execute's admission checks do not block this failed ledger."
+      ],
+      "file": "desktop/sidecars/product-detail/app/desktop_entry.py",
+      "first_evidence": "desktop/sidecars/product-detail/app/desktop_entry.py:609 -- ledger.update(state=\"pending\" if status.startswith(\"running_\") else status, ; desktop/sidecars/product-detail/app/desktop_entry.py:623 -- ledger[\"state\"] = str(payload[\"status\"])",
+      "independent_reviewers": [
+        "reliability"
+      ],
+      "line": 609,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "reliability"
+      ],
+      "severity": "P1",
+      "suggested_fix": "Inside the status after_request ledger lock, obtain the current task_state for the matching task and derive ledger state from that fresh state, preserving pending when it is running; do not apply an earlier response payload over a newer recovery transition. Add a controlled interleaving regression that captures failed, completes recovery admission, then resumes the stale status hook and verifies a second execute remains blocked.",
+      "title": "Stale status polling can release recovery admission",
+      "why_it_matters": "A status request that captured failed before recovery starts can finish after the recovery response and overwrite its pending admission with failed. For a reopened saved plan, the task remains excluded from the archive, refresh_refine_ledger returns the failed ledger without checking the running worker, and another paid execute is admitted while recovery is generating images. The new recovery lock serializes writes but does not establish freshness of the status snapshot applied after waiting for that lock.",
+      "validation_status": "confirmed",
+      "validation_reason": "For a newly reopened saved plan, a status snapshot of failed captured before recovery can reach desktop_entry.py:618-629 after recovery writes pending at :609; the threaded server (:882), copied task snapshot (pipeline_runner.py:328-331), and reopened archive exclusion (:292-294) permit this ordering, and a read-only execution of the current hook and refresh closure reproduced failed overwriting pending and bypassing the worker refresh at :362-364, thereby allowing execute admission at :478-509; production incidence was not measured.",
+      "protected_subject": "concurrency"
+    },
+    {
+      "#": 2,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "evidence": [
+        "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py:1036 --             if any(_find_unbacked_commercial_claims(str(screen.get(field) or \"\"), product_text)",
+        "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py:1037 --                    for field in (\"title\", \"subtitle\")):",
+        "Read-only Python reproduction using the current helper and source 连续续航3小时；充电8小时: f('连续续航 8小时', source) returns ['8小时']; f('连续续航', source) and f('8小时', source) both return [].",
+        "The duration fallback in _find_unbacked_commercial_claims accepts an unlabeled duration when its numeric value/unit has one source category, even if that category conflicts with the separate title's explicit category."
+      ],
+      "file": "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py",
+      "first_evidence": "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py:1036 --             if any(_find_unbacked_commercial_claims(str(screen.get(field) or \"\"), product_text)",
+      "independent_reviewers": [
+        "correctness"
+      ],
+      "line": 1036,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "correctness"
+      ],
+      "severity": "P2",
+      "suggested_fix": "Keep independent checks for explicitly labeled quantities, but validate a subtitle's unlabeled duration with the title's semantic context when the title unambiguously supplies that label. Preserve the existing 续航8小时 / 充电2小时 acceptance case, and add a targeted regression for title 连续续航, subtitle 8小时 against source 连续续航3小时；充电8小时.",
+      "title": "Preserve caption context for unlabeled quantities",
+      "why_it_matters": "A page titled 连续续航 with subtitle 8小时 now passes when the supplied facts say 连续续航3小时；充电8小时. Checking each field separately removes the title's endurance label, so the subtitle is treated as an unambiguous generic duration and borrows the charging value. The previous combined check rejected this false claim; the new path can authorize paid images containing an incorrect product fact.",
+      "validation_status": "confirmed",
+      "validation_reason": "With source 连续续航3小时；充电8小时 and a hero caption title 连续续航/subtitle 8小时, a read-only Python reproduction of the current helper and _validate_selling_point_mapping returned no warnings while the previous combined caption check returned ['8小时']; the diff at refine_planner.py:1036-1037 newly removes the endurance context and :673-678 accepts the charging duration, with production incidence unmeasured."
+    }
+  ],
+  "actionable_findings": [
+    {
+      "#": 1,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "evidence": [
+        "desktop/sidecars/product-detail/app/desktop_entry.py:609 -- ledger.update(state=\"pending\" if status.startswith(\"running_\") else status, ; desktop/sidecars/product-detail/app/desktop_entry.py:623 -- ledger[\"state\"] = str(payload[\"status\"])",
+        "desktop/sidecars/product-detail/app/app.py:5314 -- state = pipeline_runner.get_task_status(task_id); app.py:5320 -- return jsonify(state). The response snapshot is obtained outside ledger_lock.",
+        "desktop/sidecars/product-detail/app/desktop_entry.py:618-629 applies the old payload after acquiring ledger_lock, checks only task identity/resolution/archive, and never rechecks worker state.",
+        "desktop/sidecars/product-detail/app/desktop_entry.py:360-362 returns a failed ledger after archive_refine_task; reopened entries are still omitted by read_refine_archive, so execute's admission checks do not block this failed ledger."
+      ],
+      "file": "desktop/sidecars/product-detail/app/desktop_entry.py",
+      "first_evidence": "desktop/sidecars/product-detail/app/desktop_entry.py:609 -- ledger.update(state=\"pending\" if status.startswith(\"running_\") else status, ; desktop/sidecars/product-detail/app/desktop_entry.py:623 -- ledger[\"state\"] = str(payload[\"status\"])",
+      "independent_reviewers": [
+        "reliability"
+      ],
+      "line": 609,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "reliability"
+      ],
+      "severity": "P1",
+      "suggested_fix": "Inside the status after_request ledger lock, obtain the current task_state for the matching task and derive ledger state from that fresh state, preserving pending when it is running; do not apply an earlier response payload over a newer recovery transition. Add a controlled interleaving regression that captures failed, completes recovery admission, then resumes the stale status hook and verifies a second execute remains blocked.",
+      "title": "Stale status polling can release recovery admission",
+      "why_it_matters": "A status request that captured failed before recovery starts can finish after the recovery response and overwrite its pending admission with failed. For a reopened saved plan, the task remains excluded from the archive, refresh_refine_ledger returns the failed ledger without checking the running worker, and another paid execute is admitted while recovery is generating images. The new recovery lock serializes writes but does not establish freshness of the status snapshot applied after waiting for that lock.",
+      "validation_status": "confirmed",
+      "validation_reason": "For a newly reopened saved plan, a status snapshot of failed captured before recovery can reach desktop_entry.py:618-629 after recovery writes pending at :609; the threaded server (:882), copied task snapshot (pipeline_runner.py:328-331), and reopened archive exclusion (:292-294) permit this ordering, and a read-only execution of the current hook and refresh closure reproduced failed overwriting pending and bypassing the worker refresh at :362-364, thereby allowing execute admission at :478-509; production incidence was not measured.",
+      "protected_subject": "concurrency"
+    },
+    {
+      "#": 2,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "evidence": [
+        "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py:1036 --             if any(_find_unbacked_commercial_claims(str(screen.get(field) or \"\"), product_text)",
+        "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py:1037 --                    for field in (\"title\", \"subtitle\")):",
+        "Read-only Python reproduction using the current helper and source 连续续航3小时；充电8小时: f('连续续航 8小时', source) returns ['8小时']; f('连续续航', source) and f('8小时', source) both return [].",
+        "The duration fallback in _find_unbacked_commercial_claims accepts an unlabeled duration when its numeric value/unit has one source category, even if that category conflicts with the separate title's explicit category."
+      ],
+      "file": "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py",
+      "first_evidence": "desktop/sidecars/product-detail/app/ai_refine_v2/refine_planner.py:1036 --             if any(_find_unbacked_commercial_claims(str(screen.get(field) or \"\"), product_text)",
+      "independent_reviewers": [
+        "correctness"
+      ],
+      "line": 1036,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "correctness"
+      ],
+      "severity": "P2",
+      "suggested_fix": "Keep independent checks for explicitly labeled quantities, but validate a subtitle's unlabeled duration with the title's semantic context when the title unambiguously supplies that label. Preserve the existing 续航8小时 / 充电2小时 acceptance case, and add a targeted regression for title 连续续航, subtitle 8小时 against source 连续续航3小时；充电8小时.",
+      "title": "Preserve caption context for unlabeled quantities",
+      "why_it_matters": "A page titled 连续续航 with subtitle 8小时 now passes when the supplied facts say 连续续航3小时；充电8小时. Checking each field separately removes the title's endurance label, so the subtitle is treated as an unambiguous generic duration and borrows the charging value. The previous combined check rejected this false claim; the new path can authorize paid images containing an incorrect product fact.",
+      "validation_status": "confirmed",
+      "validation_reason": "With source 连续续航3小时；充电8小时 and a hero caption title 连续续航/subtitle 8小时, a read-only Python reproduction of the current helper and _validate_selling_point_mapping returned no warnings while the previous combined caption check returned ['8小时']; the diff at refine_planner.py:1036-1037 newly removes the endurance context and :673-678 accepts the charging duration, with production incidence unmeasured."
+    }
+  ],
+  "triage_groups": [],
+  "pre_existing_findings": [],
+  "requirements_completeness": null,
+  "learnings": [],
+  "agent_native_gaps": [],
+  "deployment_notes": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Recovery admission concurrency is not exercised by the new regression: test_desktop_paid_ai_safety.py:464-467 completes recover before sending execute. The existing threaded test at lines 242-270 covers execute versus execute only. Add one event-coordinated recover versus execute test, holding start_task_recovery before its response and checking that the second request cannot start another paid task, then release and verify the recovery ledger remains pending. This specifically tests the new lock spanning before_request, after_request and teardown_request in desktop_entry.py:526-528,634-636; the sequential assertion would still pass if that lock were removed.",
+    "The new admitted-recovery 500 branch in desktop_entry.py:596-601 has no corresponding failure-path coverage in the inspected paid-safety tests. Add a recovery stub that raises after admission; assert the ledger retains the recovery task ID as outcome_unknown, a later execute is refused, and a following request can complete after teardown releases the lock. Existing post-admission 500 coverage targets execute, so it cannot detect loss of unknown-outcome protection or a leaked recovery lock."
+  ],
+  "coverage": {
+    "depth": "full",
+    "notes": [
+      "Full depth chosen for money boundary and concurrency semantics.",
+      "Instruction-file fallback: AGENTS.md and app/CLAUDE.md.",
+      "Login-reference.png staged during scope resolution; included before reviewers completed.",
+      "Runtime/test/manual evidence: outputs/refine-login-20261013/验证记录.md.",
+      "No matching plan discovered. No source mutation or test reruns in review.",
+      "Python: C:/Users/Scott/AppData/Roaming/uv/python/cpython-3.12-windows-x86_64-none/python.exe",
+      "Cross-model pass not run: no attested-different provider CLI (claude, grok, cursor-agent) installed. In-process adversarial reviewer covered the lens.",
+      "No plan discovered; settlement suppression not evaluated.",
+      "First-evidence backfilled: 0; quote-gate demotions: 0; malformed findings: 0; malformed returns: 0.",
+      "No semantic duplicates or settled conflicts; mode-aware demotions: 0.",
+      "Validator shortcut skipped: 0; both primary findings require independent batch validation.",
+      "Reused the existing build, frozen-runtime, offline test and Electron acceptance evidence in outputs/refine-login-20261013/验证记录.md; no already-passed tests were rerun. The evidence explicitly covers a local candidate runtime rather than a published installer, and supplier final billing remains unverified.",
+      "Validator verdicts landed in one batch: both findings confirmed; production incidence not measured. No source edits, commits, pushes, or paid calls were made by this review."
+    ],
+    "validator": {
+      "outcome": "verdicts",
+      "confirmed": 2,
+      "rejected": 0,
+      "unresolved": 0,
+      "malformed": 0,
+      "failed": 0,
+      "shortcut_skipped": 0,
+      "protected_subject_reclassifications": 0
+    },
+    "cross_model": "Cross-model pass not run: no attested-different provider CLI (claude, grok, cursor-agent) installed. In-process adversarial reviewer covered the lens.",
+    "suppressed_by_confidence": {},
+    "mode_aware_demotions": 0,
+    "first_evidence_backfilled": 0,
+    "quote_gate_demotions": 0,
+    "failed_reviewers": [],
+    "compound_packs": {
+      "roots": [],
+      "warnings": [],
+      "errors": []
+    }
+  },
+  "artifact_path": "D:/OpenAI/CodexHome/worktrees/0054/xiaoxi-active-touch/docs/reviews/20261013-refine-login",
+  "run_id": "20261013-refine-login"
+}

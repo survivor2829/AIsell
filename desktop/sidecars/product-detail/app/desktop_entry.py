@@ -282,28 +282,37 @@ def _install_desktop_contract(
     refine_terminal_states = {"success", "partial_success", "failed"}
     refine_blocking_states = {"outcome_unknown", "recovery_required", "pricing_required"}
 
-    def read_refine_archive() -> dict:
+    def read_refine_archive(*, include_reopened: bool = False) -> dict:
         try:
             archive = json.loads(archive_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         if not isinstance(archive, dict):
             raise ValueError("invalid AI refine archive")
-        return archive
+        return archive if include_reopened else {
+            key: value for key, value in archive.items()
+            if not value.get("saved_plan_reopened_at") or value.get("rearchived_at")
+        }
 
-    def archive_refine_task(ledger: dict) -> None:
-        task_id = str(ledger.get("task_id") or "")
-        if not task_id:
-            return
-        archive = read_refine_archive()
-        if task_id in archive:
-            return
-        archive[task_id] = {**ledger, "archived_at": int(time.time()),
-                            "user_id": ledger.get("user_id")}
+    def write_refine_archive(archive: dict) -> None:
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = archive_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(archive, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, archive_path)
+
+    def archive_refine_task(ledger: dict, *, explicit: bool = False) -> None:
+        task_id = str(ledger.get("task_id") or "")
+        if not task_id:
+            return
+        archive = read_refine_archive(include_reopened=True)
+        if task_id in archive:
+            if explicit:
+                archive[task_id]["rearchived_at"] = int(time.time())
+                write_refine_archive(archive)
+            return
+        archive[task_id] = {**ledger, "archived_at": int(time.time()),
+                            "user_id": ledger.get("user_id")}
+        write_refine_archive(archive)
 
     flask_app.config["DESKTOP_AI_REFINE_ARCHIVED_TASKS"] = read_refine_archive
 
@@ -378,6 +387,19 @@ def _install_desktop_contract(
             return ledger
 
     startup_ledger = read_refine_ledger()
+    # Older releases automatically archived every failed planner reply. A code
+    # update can make that paid reply locally usable. Reopen only the current
+    # task with completed planning and no image operations; keep its audit entry.
+    startup_id = str(startup_ledger.get("task_id") or "")
+    archived = read_refine_archive(include_reopened=True)
+    entry = archived.get(startup_id, {})
+    if (startup_ledger.get("state") == "failed" and entry.get("state") == "failed"
+            and not entry.get("saved_plan_reopened_at")):
+        current = task_state(startup_id)
+        if (current and current.get("can_replay_planner") is True
+                and current.get("user_id") == startup_ledger.get("user_id") == entry.get("user_id")):
+            entry["saved_plan_reopened_at"] = int(time.time())
+            write_refine_archive(archived)
     if startup_ledger.get("state") in {"failed", "resolved_unknown"}:
         archive_refine_task(startup_ledger)
     if startup_ledger.get("state") == "pending" and not startup_ledger.get("task_id"):
@@ -499,11 +521,21 @@ def _install_desktop_contract(
         if endpoint == "ai_refine_v2_recover":
             if not current_user.is_authenticated:
                 abort(401)
+            # Hold admission through the 202 response. The worker starts inside
+            # the route; a new execute must not race its ledger transition.
+            ledger_lock.acquire()
+            g.xiaoxi_refine_recovery_locked = True
             task_id = str((request.view_args or {}).get("task_id") or "")
             if task_id in read_refine_archive():
                 return jsonify({"ok": False, "code": "DESKTOP_AI_REFINE_TASK_ARCHIVED",
                                 "error": "旧任务已归档，不会重新提交。请使用当前资料确认新任务。",
                                 "task_id": task_id}), 409
+            ledger = refresh_refine_ledger()
+            if (ledger.get("state") == "pending" or
+                    (ledger.get("state") in refine_blocking_states and ledger.get("task_id") != task_id)):
+                return jsonify({"ok": False, "code": "DESKTOP_AI_REFINE_ALREADY_RUNNING",
+                                "error": "请先完成或恢复当前任务。", "task_id": ledger.get("task_id")}), 409
+            g.xiaoxi_refine_recovery_admitted = task_id
         return None
 
     @flask_app.after_request
@@ -561,9 +593,23 @@ def _install_desktop_contract(
                     ledger["state"] = "outcome_unknown"
                     ledger["reason"] = "server_error_after_admission"
                     write_refine_ledger(ledger)
-        elif endpoint in {
-            "ai_refine_v2_status", "ai_refine_v2_recover",
-        } and response.status_code == 200:
+        elif endpoint == "ai_refine_v2_recover" and response.status_code >= 500 and getattr(g, "xiaoxi_refine_recovery_admitted", ""):
+            ledger = read_refine_ledger()
+            ledger.update(task_id=g.xiaoxi_refine_recovery_admitted, user_id=current_user.id,
+                          state="outcome_unknown", reason="recovery_response_failed", updated_at=int(time.time()))
+            write_refine_ledger(ledger)
+        elif endpoint == "ai_refine_v2_recover" and 200 <= response.status_code < 300:
+            payload = response.get_json(silent=True) or {}
+            task_id = str(payload.get("task_id") or "")
+            if task_id:
+                ledger = read_refine_ledger()
+                if ledger.get("task_id") != task_id:
+                    ledger = {"task_id": task_id, "user_id": current_user.id, "started_at": int(time.time())}
+                status = str(payload.get("status") or "")
+                ledger.update(state="pending" if status.startswith("running_") else status,
+                              updated_at=int(time.time()))
+                write_refine_ledger(ledger)
+        elif endpoint == "ai_refine_v2_status" and response.status_code == 200:
             payload = response.get_json(silent=True) or {}
             if payload.get("status") in {
                 *refine_terminal_states,
@@ -574,10 +620,18 @@ def _install_desktop_contract(
                     if (str(ledger.get("task_id") or "") == str(payload.get("task_id") or "")
                             and ledger.get("state") != "resolved_unknown"
                             and ledger.get("task_id") not in read_refine_archive()):
-                        ledger["state"] = str(payload["status"])
+                        # The response snapshot may precede a recovery that held
+                        # this lock. Only current worker state can release admission.
+                        current = task_state(str(ledger["task_id"]))
+                        status = str((current or {}).get("status") or "")
+                        if status.startswith("running_"):
+                            status = "pending"
+                        elif status not in refine_terminal_states | refine_blocking_states:
+                            return response
+                        ledger["state"] = status
                         ledger[
                             "finished_at"
-                            if payload["status"] in refine_terminal_states
+                            if status in refine_terminal_states
                             else "updated_at"
                         ] = int(time.time())
                         write_refine_ledger(ledger)
@@ -585,6 +639,9 @@ def _install_desktop_contract(
 
     @flask_app.teardown_request
     def desktop_complete_update_request(_error):
+        if getattr(g, "xiaoxi_refine_recovery_locked", False):
+            g.xiaoxi_refine_recovery_locked = False
+            ledger_lock.release()
         if getattr(g, "xiaoxi_update_tracked", False):
             with update_lock:
                 update_state["requests"] = max(0, update_state["requests"] - 1)
@@ -673,7 +730,7 @@ def _install_desktop_contract(
                 return jsonify({"ok": False, "error": "当前没有结果不明的任务。"}), 409
             if str(data.get("task_id") or "") != str(ledger.get("task_id") or ""):
                 return jsonify({"ok": False, "error": "待核对任务已变化，请刷新后重新核对。"}), 409
-            archive_refine_task(ledger)
+            archive_refine_task(ledger, explicit=True)
             ledger["state"] = "resolved_unknown"
             ledger["resolved_at"] = int(time.time())
             write_refine_ledger(ledger)

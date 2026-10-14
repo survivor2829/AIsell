@@ -99,6 +99,41 @@ def test_normalize_counts_and_evidence_references_without_losing_screens():
     assert plan["screens"][2]["selling_point_id"] == "p2"
 
 
+def test_presentation_enum_in_role_preserves_visual_intent_and_reaches_planning():
+    plan = sample()
+    screen = plan["screens"][1]
+    screen["role"] = "diagram_only"
+    screen["visual_brief"] = {"product_presentation": "diagram_only"}
+    original_prompt = screen["prompt"]
+    result = planner.plan_v2(TEXT, api_key="test", max_retries=0,
+                             http_fn=lambda *_: response(plan), require_visual_strategy=False)
+    assert result["screens"][1]["role"] == "feature_wall"
+    assert result["screens"][1]["visual_brief"] == screen["visual_brief"]
+    assert result["screens"][1]["prompt"] == original_prompt
+
+
+def test_separate_captions_do_not_turn_endurance_into_charging():
+    plan = sample()
+    source = TEXT + "洗地连续续航3h，推尘最长续航8h。充电桩充满时长2h。"
+    screen = plan["screens"][1]
+    screen.update(title="洗地3小时，推尘预扫8小时", subtitle="充电桩充满2小时")
+    assert planner._validate_schema_v2(plan, source) == []
+    screen["subtitle"] = "充电桩充满8小时"
+    assert any("无依据承诺" in w for w in planner._validate_schema_v2(plan, source))
+
+
+def test_unlabeled_subtitle_inherits_title_without_overriding_explicit_labels():
+    plan = sample()
+    screen = plan["screens"][1]
+    source = TEXT + "连续续航3小时；充电8小时。"
+    screen.update(title="连续续航", subtitle="8小时")
+    assert any("无依据承诺" in w for w in planner._validate_schema_v2(plan, source))
+    screen["subtitle"] = "3小时"
+    assert planner._validate_schema_v2(plan, source) == []
+    screen.update(title="续航8h", subtitle="充电2h")
+    assert planner._validate_schema_v2(plan, TEXT + "续航8小时；充电2小时。") == []
+
+
 def test_extra_grounded_scene_is_retained_as_a_separate_point():
     plan = sample()
     extra = copy.deepcopy(plan["screens"][1])
@@ -450,3 +485,32 @@ def test_single_simple_cover_is_not_rejected_by_old_eight_screen_byte_floor(tmp_
     cover.save(output)
     assert output.stat().st_size < 100_000
     assert runner._validate_assembled_png(output) == (600, 800)
+
+
+def test_missing_global_style_is_advisory_when_screen_prompts_are_complete():
+    plan = sample()
+    plan.pop("style_dna")
+    result = planner.plan_v2(TEXT, api_key="test-only", max_retries=0, require_visual_strategy=False,
+                             http_fn=lambda *args, **kwargs: response(plan))
+    assert result["screens"] == plan["screens"]
+    assert any("全局风格" in note for note in result["planning_advisories"])
+    plan["screens"][0]["prompt"] = ""
+    assert planner._validate_schema_v2(plan, TEXT)
+
+
+def test_missing_spec_values_do_not_become_printed_parameter_rows():
+    plan = sample()
+    plan["specifications"] += [{"name": "容量", "value": "未提供", "evidence": "容量未提供"},
+                               {"name": "尺寸", "value": "未知", "evidence": "尺寸未知"},
+                               {"name": "噪声", "value": "0dB", "evidence": "噪声0dB"},
+                               {"name": "附加费", "value": 0, "evidence": "附加费0"},
+                               {"name": "防水", "value": "否", "evidence": "防水否"}]
+    plan["screens"][-1]["prompt"] = "柔光、大字表格。容量：未提供；尺寸: 未知;清洁宽度：500mm；附加费：0；防水：否。"
+    before = copy.deepcopy(plan)
+    block = generator._build_blocks_v2(plan)[-1]
+    assert [spec["value"] for spec in block["specifications"]] == ["500mm", "0dB", 0, "否"]
+    assert "容量：未提供" not in block["prompt"]
+    assert "尺寸: 未知" not in block["prompt"]
+    assert "柔光、大字表格。" in block["prompt"]
+    assert "清洁宽度：500mm；附加费：0；防水：否。" in block["prompt"]
+    assert plan == before

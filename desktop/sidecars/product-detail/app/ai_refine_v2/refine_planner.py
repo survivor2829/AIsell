@@ -653,7 +653,8 @@ def _numeric_claim_key(text: str, match: re.Match) -> tuple[str, str, bool, str]
     )
 
 
-def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_layout: bool = False) -> list[str]:
+def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_layout: bool = False,
+                                     caption_context: str = "") -> list[str]:
     """返回 prompt 中出现、但产品原文没有的可验证商业承诺。"""
     source_normalized = _normalize_claim_text(product_text)
     source_numeric_claims = {
@@ -662,6 +663,8 @@ def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_la
     }
 
     layout_spans = list(_LAYOUT_PERCENT_RE.finditer(prompt)) if allow_layout else []
+    context_categories = {category for category, keywords in _NUMERIC_CLAIM_SEMANTICS
+                          if any(keyword in caption_context for keyword in keywords)}
     unbacked: list[str] = []
     for match in _NUMERIC_COMMERCIAL_CLAIM_RE.finditer(prompt):
         if any(layout.start() <= match.start() and match.end() <= layout.end() for layout in layout_spans):
@@ -669,6 +672,10 @@ def _find_unbacked_commercial_claims(prompt: str, product_text: str, *, allow_la
         claim = match.group(0)
         normalized = _normalize_claim_text(claim)
         claim_key = _numeric_claim_key(prompt, match)
+        if claim_key[3] == "duration" and len(context_categories) == 1:
+            # An unlabeled subtitle inherits an unambiguous title label;
+            # quantities with their own label retain their independent meaning.
+            claim_key = (*claim_key[:3], next(iter(context_categories)))
         is_backed = claim_key in source_numeric_claims
         if not is_backed and claim_key[3] == "duration":
             # A caption may omit a repeated label ("续航3h，最长8h").
@@ -762,18 +769,21 @@ def _validate_schema_v2(
         "typography_hint": 8,
         "unified_visual_treatment": 30,  # 跨屏视觉处理方式 (准则 2 平衡示范), 长阈值因要"有针对性"
     }
-    dna = parsed.get("style_dna")
-    if not isinstance(dna, dict):
-        w.append("style_dna 缺失或非 dict")
-    else:
-        for k, min_len in dna_min_len.items():
-            v = dna.get(k)
-            if not v or not isinstance(v, str):
-                w.append(f"style_dna.{k} 缺失或非字符串")
-            elif not product_driven and len(v.strip()) < min_len:
-                w.append(
-                    f"style_dna.{k} 过短 ({len(v.strip())} < {min_len} 字符), 疑似平庸描述"
-                )
+    # Per-screen prompts already carry the executable design direction.
+    # Missing global style metadata must not invalidate a product-driven plan.
+    if not product_driven:
+        dna = parsed.get("style_dna")
+        if not isinstance(dna, dict):
+            w.append("style_dna 缺失或非 dict")
+        else:
+            for k, min_len in dna_min_len.items():
+                v = dna.get(k)
+                if not v or not isinstance(v, str):
+                    w.append(f"style_dna.{k} 缺失或非字符串")
+                elif len(v.strip()) < min_len:
+                    w.append(
+                        f"style_dna.{k} 过短 ({len(v.strip())} < {min_len} 字符), 疑似平庸描述"
+                    )
 
     # screen_count
     sc = parsed.get("screen_count")
@@ -1028,8 +1038,12 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
         if not evidence_ok(screen.get("evidence"), cover=role == "hero"):
             warnings.append(f"screens[{i}] 缺产品原文逐字依据")
         if product_text is not None:
-            visible = f"{screen.get('title', '')} {screen.get('subtitle', '')}"
-            if _find_unbacked_commercial_claims(visible, product_text):
+            # Independent captions must not lend their labels to each other:
+            # "续航8小时" followed by "充电2小时" describes two different facts.
+            if any(_find_unbacked_commercial_claims(
+                       str(screen.get(field) or ""), product_text,
+                       caption_context=str(screen.get("title") or "") if field == "subtitle" else "")
+                   for field in ("title", "subtitle")):
                 warnings.append(f"screens[{i}] 标题/解释含无依据承诺")
     if Counter(refs) != Counter(ids):
         warnings.append("每个独立卖点必须恰好对应一张图，不能重复或遗漏")
@@ -1045,8 +1059,6 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
         or screens[1].get("selling_point_id") != demonstration
     ):
         warnings.append("核心用途/作业效果对应卖点必须紧接封面，不能被参数图解挤到后面")
-    if not str((parsed.get("style_dna") or {}).get("rationale") or "").strip():
-        warnings.append("style_dna.rationale 必须解释产品与风格的关系")
     return warnings
 
 
@@ -1076,6 +1088,20 @@ def _normalize_plan_structure(parsed: dict, product_text: str) -> None:
         if not isinstance(screen, dict):
             continue
         screen["idx"] = idx
+        # Presentation describes how the product appears, not the page's role.
+        # Models occasionally copy this neighbouring enum into role. Preserve
+        # the visual brief/prompt and repair only this unambiguous vocabulary mixup.
+        presentation_roles = {
+            "whole_product": "feature_wall", "working_scene": "scenario",
+            "visible_detail": "detail_zoom", "diagram_only": "feature_wall",
+            "small_reference": "feature_wall",
+        }
+        role = screen.get("role")
+        if isinstance(role, str) and role in presentation_roles:
+            brief = screen.get("visual_brief")
+            if isinstance(brief, dict):
+                brief.setdefault("product_presentation", role)
+            screen["role"] = presentation_roles[role]
         if screen.get("role") in {"hero", "spec_table"}:
             screen["selling_point_id"] = None
             continue
@@ -1111,6 +1137,9 @@ def _planning_advisories(parsed: dict, product_text: str) -> list[str]:
     failures for ordinary composition percentages and nearby time labels.
     """
     notes = []
+    dna = parsed.get("style_dna")
+    if not isinstance(dna, dict) or not str(dna.get("rationale") or "").strip():
+        notes.append("全局风格说明不完整；沿用各页已保存的设计提示词")
     layouts = set()
     presentations = []
     for i, screen in enumerate(parsed.get("screens") or []):
