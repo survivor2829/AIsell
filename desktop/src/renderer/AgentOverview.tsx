@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { ArrowRight } from "lucide-react";
-import { AGENT_ROLE_ORDER, AGENT_ROLE_IDENTITIES, appearanceFor, portraitAsset, type AgentRoleKey, type RolePreferences } from "./role-appearance";
+import { AGENT_ROLE_ORDER, AGENT_ROLE_IDENTITIES, appearanceFor, portraitAsset, characterAsset, type AgentRoleKey, type RolePreferences } from "./role-appearance";
 import "./AgentOverview.css";
 import productBrand from "../../product-brand.json";
 
@@ -9,6 +9,7 @@ const LEADERS: Record<AgentRoleKey, { action: string; description: string }> = {
   agent: { action: "承接微信咨询", description: "用真诚沟通，帮你连接更多客户。" },
   operations: { action: "制作产品详情图", description: "用精美图片，帮你展示产品、提升转化。" },
   materials: { action: "挑选行业素材", description: "工厂、小区、机器人素材拿来用。" },
+  business: { action: "查看功能规划", description: "精准获客、企微助手、GEO推广，筹备中。" },
   tutorials: { action: "看一段跟着做", description: "一个操作一段视频，随时暂停重看。" }
 };
 
@@ -25,7 +26,7 @@ export function AgentOverview({ preferences, onOpenRole }: {
       {AGENT_ROLE_ORDER.map((key) => {
         const { action, description } = LEADERS[key];
         const appearance = appearanceFor(key, preferences[key].appearanceId);
-        const style = { "--overview-surface": appearance.surface, "--overview-accent": appearance.strong } as CSSProperties;
+        const style = { "--overview-surface": appearance.surface, "--overview-accent": appearance.strong, "--overview-pattern": key === "business" ? `url("${characterAsset(appearance.pattern)}")` : "none" } as CSSProperties;
         return <button className="agent-overview-leader" style={style} key={key} onClick={() => onOpenRole(key)}>
           <img src={portraitAsset(appearance)} alt="" />
           <span className="agent-overview-leader-copy"><strong>{AGENT_ROLE_IDENTITIES[key].responsibility}</strong><em>{preferences[key].name}</em><small>{description}</small><b>{action}<ArrowRight size={15} /></b></span>

@@ -118,7 +118,7 @@ export function DigitalHumanPage() {
     if (!draft.voicePersonaId || !draft.characterVoice || draft.characterVoice === 'unknown') return;
     await perform('voice-select', async () => {
       await unwrap(api().selectVoice({ voicePersonaId: draft.voicePersonaId!, characterVoice: draft.characterVoice as 'male' | 'female' }));
-      await loadCapabilities(); setNotice({ kind: 'success', message: '数字人的声音已保存，AI混剪默认声音保持独立。' });
+      await loadCapabilities(); setNotice({ kind: 'success', message: '数字人的声音已保存，线索视频混剪默认声音保持独立。' });
     });
   }
   function apply(task: DigitalHumanTask) {

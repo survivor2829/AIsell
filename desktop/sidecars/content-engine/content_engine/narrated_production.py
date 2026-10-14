@@ -387,7 +387,7 @@ def follow_script_footage(batch):
     return pool
 
 
-def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), headroom=1.0, offset=0.0):
+def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), headroom=1.0, offset=0.0, phrase_texts=None):
     """Give each confirmed sentence enough following footage, spread across the materials.
 
     No model or frame is consulted: shots keep material and source-time order, each
@@ -403,7 +403,9 @@ def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), hea
     """
     from .narrated_batch import near_duplicate
     texts = []
-    for unit in confirmed_narration_units(domain, batch, narration):
+    units = ([{'text': text} for text in phrase_texts] if phrase_texts is not None
+             else confirmed_narration_units(domain, batch, narration))
+    for unit in units:
         if texts and (not unit['text'].strip() or not texts[-1].strip()):
             texts[-1] += unit['text']
         else:
@@ -515,9 +517,9 @@ def material_paragraph_counts(footage, paragraphs):
     return counts
 
 
-def follow_script_candidate(domain, batch, narration, title, direction, *, avoid=(), history=(), headroom=1.0, offset=0.0):
+def follow_script_candidate(domain, batch, narration, title, direction, *, avoid=(), history=(), headroom=1.0, offset=0.0, phrase_texts=None):
     """A renderable candidate in the same state as one that passed review, marked follow_script."""
-    phrases = follow_script_phrases(domain, batch, narration, avoid=avoid, history=history, headroom=headroom, offset=offset)
+    phrases = follow_script_phrases(domain, batch, narration, avoid=avoid, history=history, headroom=headroom, offset=offset, phrase_texts=phrase_texts)
     prepared = domain._normalize_candidate({'title': title, 'phrases': phrases,
                                             'shot_ids': [ref for phrase in phrases for ref in phrase['shot_ids']],
                                             **direction}, batch, list(history))
@@ -536,6 +538,12 @@ def arrange_follow_script(domain, batch, candidate):
     index = candidate.get('production_index') or next(
         (number + 1 for number, c in enumerate(batch.get('candidates', []))
          if c is candidate or c.get('candidate_id') == candidate.get('candidate_id')), 1)
+    # A shot-capacity retry changes the pictures, not the words or TTS cache keys.
+    # Retain valid old phrase boundaries only when they still cover the exact copy.
+    previous_texts = [p.get('text', '') for p in candidate.get('phrases', [])]
+    reuse_phrases = (candidate.get('_voice_capacity_retry') and previous_texts
+                     and all(isinstance(text, str) and 0 < len(text.strip()) <= 80 for text in previous_texts)
+                     and re.sub(r'\s+', '', ''.join(previous_texts)) == re.sub(r'\s+', '', candidate['narration']))
     updated = follow_script_candidate(
         domain, batch, candidate['narration'], candidate['title'],
         {key: candidate.get(key, '') for key in ('audience', 'pain_point', 'angle', 'framework', 'summary')},
@@ -544,7 +552,7 @@ def arrange_follow_script(domain, batch, candidate):
         avoid=[] if confirmed else others, history=[] if confirmed else domain._history(batch['batch_id']),
         # A measured voice overflow needs more footage for the same words.
         headroom=1.2 if candidate.get('_voice_capacity_retry') else 1.0,
-        offset=stagger_offset(batch, index))
+        offset=stagger_offset(batch, index), phrase_texts=previous_texts if reuse_phrases else None)
     updated.update({key: copy.deepcopy(candidate[key]) for key in
                     ('candidate_id', 'revision', 'narration', '_confirmed_script', 'source_script_id',
                      'production_index', '_brief_review_hash', '_user_supplied') if key in candidate})

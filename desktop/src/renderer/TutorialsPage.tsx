@@ -10,7 +10,7 @@ const CATEGORIES = [
   { id: 'product-detail' as const, label: '产品详情图', icon: Image },
   { id: 'materials' as const, label: '物保素材库', icon: FolderOpen }
 ];
-const TOPICS: { id: TutorialTopic; label: string }[] = [{ id: 'digital-human', label: '数字人' }, { id: 'ai-editing', label: 'AI混剪' }, { id: 'product-video', label: '产品效果视频' }];
+const TOPICS: { id: TutorialTopic; label: string }[] = [{ id: 'digital-human', label: '数字人' }, { id: 'ai-editing', label: '线索视频混剪' }, { id: 'product-video', label: '产品效果视频' }];
 const duration = (value: number) => `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`;
 
 export function TutorialsPage({ category: initialCategory = 'short-video', topic: initialTopic = '', preference, appearance, onPersonalize, onOpenGuide, compact = false }: {
@@ -75,12 +75,16 @@ export function TutorialsPage({ category: initialCategory = 'short-video', topic
   const categoryLabel = CATEGORIES.find(row => row.id === category)?.label;
   const hasFilters = Boolean(topic || query);
   return <section className={`tutorials-page${compact ? ' tutorials-compact' : ''}`} style={appearance ? appearanceStyle(appearance, true) : undefined}>
+    <div className="tutorials-heading-layout">
     {!compact && <header className="tutorials-hero">
       {appearance && <button type="button" className="tutorials-persona" onClick={onPersonalize} disabled={!onPersonalize} aria-label="设置教程伙伴形象与名字"><img src={portraitAsset(appearance)} alt="" /></button>}
       <div><h1>操作教程</h1><p className="tutorials-intro">看一小段，跟着做一步</p><p>{preference?.name || DEFAULT_ROLE_PREFERENCES.tutorials.name}陪你上手。选一个操作，随时暂停、重看。</p>{onPersonalize && <button type="button" className="tutorials-personalize" onClick={onPersonalize}><Settings2 size={16} />设置我的伙伴</button>}</div>
     </header>}
+    <div className="tutorials-discovery">
     <div className="tutorials-tools"><nav className="tutorials-categories" aria-label="教程分类">{CATEGORIES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={category === id} onClick={() => { setCategory(id); setTopic(''); setQuery(''); closePlayer(); }}><Icon size={20} /><span>{label}</span></button>)}</nav><button type="button" className="tutorials-refresh" onClick={() => void load()} disabled={loading} aria-label="刷新教程"><RefreshCw size={18} />刷新</button></div>
     <div className="tutorials-filters">{category === 'short-video' && <div className="tutorials-topics" aria-label="短视频教程类型"><button type="button" aria-pressed={!topic} onClick={() => setTopic('')}>全部</button>{TOPICS.map(row => <button type="button" key={row.id} aria-pressed={topic === row.id} onClick={() => setTopic(row.id)}>{row.label}</button>)}</div>}<label className="tutorials-search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="找一个操作" aria-label="搜索教程标题" /></label></div>
+    </div>
+    </div>
     {notice && <p role="status" className="tutorials-notice">{notice}</p>}
     {selection && <div className="tutorials-player" ref={player} tabIndex={-1}>
       <header><h2>{selection.title}</h2><button type="button" onClick={closePlayer} aria-label="关闭教程播放器"><X size={20} /></button></header>

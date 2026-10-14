@@ -98,18 +98,23 @@ function main(args = process.argv.slice(2)) {
   assertCleanSource();
   console.log(componentsOnly ? "Internal update: build changed components." : "Explicit full installer build.");
   const resolvedBaseRoot = componentsOnly ? resolveAcceptedBaseRoot(baseRoot, edition) : baseRoot;
-  const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot });
-  if (componentsOnly && baseRoot) {
-    const acceptedRecord = recordAcceptedBaseRoot(resolvedBaseRoot);
-    console.log(`Accepted component base record: ${acceptedRecord}`);
-  }
-  // runRelease(upgrade) already produces the in-place installer.
-  const result = edition === "test" && !componentsOnly ? buildInstaller("test") : null;
-  const record = { edition, componentsOnly, ...roots, ...(result || {}) };
-  const recordFile = path.join(desktopDir, ".build", `internal-release-${edition}${componentsOnly ? "-components" : ""}.json`);
-  fs.mkdirSync(path.dirname(recordFile), { recursive: true });
-  fs.writeFileSync(recordFile, `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`Internal build record: ${recordFile}`);
+  const space = require("./space-usage.cjs").startSpaceRun("internal-release");
+  try {
+    const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot });
+    if (componentsOnly && baseRoot) {
+      const acceptedRecord = recordAcceptedBaseRoot(resolvedBaseRoot);
+      console.log(`Accepted component base record: ${acceptedRecord}`);
+    }
+    // runRelease(upgrade) already produces the in-place installer.
+    const result = edition === "test" && !componentsOnly ? buildInstaller("test") : null;
+    const record = { edition, componentsOnly, ...roots, ...(result || {}) };
+    const recordFile = path.join(desktopDir, ".build", `internal-release-${edition}${componentsOnly ? "-components" : ""}.json`);
+    fs.mkdirSync(path.dirname(recordFile), { recursive: true });
+    fs.writeFileSync(recordFile, `${JSON.stringify(record, null, 2)}\n`);
+    console.log(`Internal build record: ${recordFile}`);
+    space.observe("candidate-validation-complete");
+    space.finish("completed", { candidateRoot: roots.candidateRoot || null });
+  } catch (error) { space.finish("failed"); throw error; }
 }
 
 if (require.main === module) {

@@ -11,6 +11,8 @@ const gitStatusResult = spawnSync("git", ["status", "--porcelain"], { cwd: path.
 const buildCommit = String(process.env.XIAOXI_BUILD_COMMIT || gitCommitResult.stdout || "").trim();
 const sourceDirty = gitStatusResult.status !== 0 || Boolean(String(gitStatusResult.stdout || "").trim());
 const viteCli = path.join(path.dirname(require.resolve("vite")), "bin", "vite.js");
+const outputDir = path.join(__dirname, "..", edition === "development" ? "dist-development" : "dist-pilot");
+const space = require("./space-usage.cjs").startSpaceRun("renderer", [outputDir]);
 const result = spawnSync(process.execPath, [viteCli, "build"], {
   stdio: "inherit",
   env: {
@@ -24,9 +26,12 @@ const result = spawnSync(process.execPath, [viteCli, "build"], {
 
 if (result.status !== 0) {
   console.error(result.error?.message || `Renderer build failed (${result.signal || result.status})`);
+  space.finish("failed");
   process.exit(result.status || 1);
 }
 
-const outputDir = path.join(__dirname, "..", edition === "development" ? "dist-development" : edition === "pilot" ? "dist-pilot" : "dist");
+space.observe("build-complete");
 fs.writeFileSync(path.join(outputDir, "build-edition.json"), `${JSON.stringify({ edition, buildId, buildCommit, sourceDirty }, null, 2)}\n`);
+space.observe("cleanup-complete", { policy: "Vite replaces its own output; no separate staging copy." });
+space.finish("completed");
 console.log(`${requested === "test" ? "test" : "delivery"} renderer build completed`);

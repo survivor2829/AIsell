@@ -1824,6 +1824,37 @@ class NarratedProductionTests(unittest.TestCase):
             plain = follow_script_phrases(self.domain, state, text)
         self.assertEqual([1, 1], [len(phrase['shot_ids']) for phrase in plain], 'without the overflow one window suffices')
 
+    def test_voice_capacity_retry_preserves_phrase_cache_boundaries(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.footage(state, durations=(12000, 12000, 12000))
+        texts = ['第一句。第二句。', '第三句。']
+        candidate = {'candidate_id': 'narrated_candidate_cache_retry', 'revision': 1,
+                     'title': '重排', 'narration': ''.join(texts),
+                     '_confirmed_script': {'narration': ''.join(texts)},
+                     '_voice_capacity_retry': True, 'status': 'needs_review',
+                     'audience': '', 'pain_point': '', 'angle': '', 'production_index': 1,
+                     'phrases': [{'text': text, 'shot_ids': []} for text in texts]}
+        state['candidates'] = [candidate]
+        with patch.object(NarratedBatchDomain, '_phrase_budget_ms', return_value=5500):
+            narrated_production.arrange_follow_script(self.domain, state, candidate)
+        self.assertEqual(texts, [phrase['text'] for phrase in candidate['phrases']])
+        self.assertEqual(''.join(texts), candidate['narration'])
+
+    def test_capacity_retry_creates_new_run_generation_without_erasing_old_run(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.footage(state)
+        candidate = follow_script_candidate(self.domain, state, '第一句。第二句。', '重排',
+                                            {'angle': '', 'audience': '', 'pain_point': ''})
+        candidate.update(revision=1)
+        state['candidates'] = [candidate]
+        first = self.domain._create_run(state['task_id'], state, candidate)
+        original = dict(self.domain.d._auto_mix_run_row(run_id=first))
+        candidate.pop('_run_id')
+        second = self.domain._create_run(state['task_id'], state, candidate)
+        self.assertNotEqual(first, second)
+        self.assertEqual(2, self.domain.d._auto_mix_run_row(run_id=second)['generation'])
+        self.assertEqual(original, dict(self.domain.d._auto_mix_run_row(run_id=first)))
+
     def test_variation_capacity_is_checked_inside_the_rewrite_request(self):
         """An overlong rewrite is corrected in the same request, not queued as needs_attention after the paid call."""
         state = self.domain._load(self.batch['batch_id'])

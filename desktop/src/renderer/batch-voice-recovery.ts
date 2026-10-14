@@ -104,7 +104,7 @@ export function voiceRecovery(batch: RecoveryBatch | null | undefined, voices: R
     return { kind: "retired", voiceId, name, actions: [],
       message: `本批使用的「${name}」已不在当前声音目录中，无法再批准。请点击「新建视频」，选择其他已批准的声音重新制作；已完成的作品仍可查看和导出。` };
   }
-  const lead = `本批使用的「${name}」批准已失效（常见原因：这台电脑运行过不含该声音的旧版本）。`;
+  const lead = `本批使用的「${name}」当前没有有效批准记录，需要试听后确认。`;
   if (voice.previewStatus === "submitted" || voice.previewStatus === "outcome_unknown") {
     return { kind: "unknown", voiceId, name, actions: [],
       message: `${lead}上次试听的结果还无法确认；为避免重复计费，暂不能再次试听。请先核对配音服务记录，稍后再来。` };

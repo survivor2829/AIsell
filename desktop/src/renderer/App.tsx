@@ -36,9 +36,10 @@ import { CustomerPanel } from "./CustomerPanel";
 import { TutorialsPage } from "./TutorialsPage";
 import type { TutorialCategory, TutorialTopic } from "./tutorials-types";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
-import { WORKSPACE_ROLE_ORDER, appearanceFor, appearanceStyle, portraitAsset, useRolePreferences, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
+import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, portraitAsset, useRolePreferences, type AgentRoleKey, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { OfficialMaterialsPage } from "./OfficialMaterialsPage";
+import { BusinessAssistantPage, BUSINESS_MODULES, isBusinessModule, type BusinessModule } from "./BusinessAssistantPage";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
@@ -52,11 +53,11 @@ import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
 import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher, type WorkflowView, type EditorRequest, type WorkflowController } from "./WechatWorkflow";
 import { WechatGettingStarted } from "./WechatGettingStarted";
-import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
+import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget } from "./AgentHome";
 import { AgentOverview } from "./AgentOverview";
 
-type ModuleKey = AgentRoleKey | AgentHomeTarget | "diagnostics" | "overview";
-type GroupKey = WorkspaceRoleKey;
+type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview";
+type GroupKey = WorkspaceRoleKey | "business";
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
 type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
@@ -314,6 +315,7 @@ type ProductDetailAiSettingsResult = {
 
 declare global {
   interface Window {
+    xiaoxiStartup?: { mark: (stage: 'renderer_loaded' | 'login_visible' | 'login_interactive') => void };
     xiaoxiWindowChrome?: { setMode: (mode: "login" | "workspace") => void };
     xiaoxiLicenseAuth?: {
       status: () => Promise<LicenseStatus>;
@@ -405,7 +407,7 @@ const agentSecondary: NavItem[] = [
 ];
 
 const productionChildren: NavItem[] = [
-  { key: "workspace", label: "AI混剪", icon: Clapperboard },
+  { key: "workspace", label: "线索视频混剪", icon: Clapperboard },
   { key: "product-video", label: "产品效果视频", icon: Video },
   { key: "ai-video", label: "数字人视频", icon: UserRound }
 ];
@@ -415,15 +417,19 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroupByRole: Record<GroupKey, NavGroup> = {
+  business: { key: "business", persona: AGENT_ROLE_IDENTITIES.business.name, label: AGENT_ROLE_IDENTITIES.business.responsibility, icon: Bot, children: (Object.keys(BUSINESS_MODULES) as BusinessModule[]).map(key => ({ key, label: BUSINESS_MODULES[key].label, icon: BUSINESS_MODULES[key].icon })) },
   production: { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
   agent: { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
   operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren }
 };
-const navGroups = WORKSPACE_ROLE_ORDER.map((key) => navGroupByRole[key]);
+const navGroups = AGENT_ROLE_ORDER.filter((key): key is GroupKey => key in navGroupByRole).map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
 const supportRoles = ["materials", "tutorials"] as const;
 const supportNavItems: NavItem[] = supportRoles.map(key => ({ key, label: AGENT_ROLE_IDENTITIES[key].responsibility, icon: key === "materials" ? Folder : CircleHelp }));
+function isSupportRole(key: string): key is typeof supportRoles[number] {
+  return supportRoles.some(role => role === key);
+}
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
 const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
@@ -497,6 +503,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
+  if (isSupportRole(key) || key === "business" || isBusinessModule(key)) return true;
   return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "tutorials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
@@ -587,7 +594,7 @@ export default function App() {
     taskId: string;
     projectId?: string | null;
   } | null>(null);
-  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: false, operations: false });
+  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: false, business: false, operations: false });
   useEffect(() => {
     const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || item.key === "agent" && agentSecondary.some((child) => child.key === active));
     if (!group) return;
@@ -615,6 +622,7 @@ export default function App() {
       setLicense({ authorized: false, code: "license_service_unavailable", error: "当前版本未连接授权服务" });
       return;
     }
+    window.xiaoxiStartup?.mark('renderer_loaded');
     void window.xiaoxiLicenseAuth.status().then(setLicense).catch(() => setLicense({ authorized: false, code: "license_status_failed" }));
   }, []);
 
@@ -634,7 +642,7 @@ export default function App() {
   };
 
   const selectRole = (role: AgentRoleKey) => {
-    if (role === "materials" || role === "tutorials") setActive(role);
+    if (isSupportRole(role)) setActive(role);
     else selectGroup(role);
   };
 
@@ -801,8 +809,8 @@ export default function App() {
   const activeGroup = navGroups.find(
     (group) => group.key === active || group.children.some((item) => item.key === active) || group.key === "agent" && agentSecondary.some((item) => item.key === active)
   );
-  const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
-  const themedRole = active === "materials" || active === "tutorials" ? active : activeGroup?.key;
+  const activeRole = activeGroup?.key === active && activeGroup.key !== "business" ? activeGroup.key : undefined;
+  const themedRole = isSupportRole(active) ? active : activeGroup?.key;
   const roleThemeClass = themedRole ? ` role-theme-${themedRole}` : "";
 
   return (
@@ -865,7 +873,7 @@ export default function App() {
         </div>
       </aside>
 
-      <section className={`workspace${roleThemeClass}`} style={themedRole ? appearanceStyle(appearanceFor(themedRole, visiblePreference(themedRole).appearanceId), themedRole === "materials" || themedRole === "tutorials") : undefined}>
+      <section className={`workspace${roleThemeClass}`} style={themedRole ? appearanceStyle(appearanceFor(themedRole, visiblePreference(themedRole).appearanceId), isSupportRole(themedRole) || themedRole === "business") : undefined}>
         <header className="topbar">
           <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productBrand.displayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
@@ -894,6 +902,7 @@ export default function App() {
         <div className="content-card" ref={contentScrollRef}>
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
+          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} onOpenModule={key => selectChild("business", key)} preference={visiblePreference("business")} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
@@ -949,7 +958,7 @@ export default function App() {
           }} />}
           {active === "workspace" && (legacyWorkspace
             ? <CreativeWorkspacePage initialTaskId={legacyResumeTarget?.taskId} initialProjectId={legacyResumeTarget?.projectId} onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
-            : creativeView === "materials" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回AI混剪</button><MaterialsCollectionsPage onCreate={(assetIds, collection) => {
+            : creativeView === "materials" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回线索视频混剪</button><MaterialsCollectionsPage onCreate={(assetIds, collection) => {
                 setBatchInitial({ assetIds, collection }); setCreativeView("studio");
               }} /></> : creativeView === "product"
               ? <ProductOneClickPage

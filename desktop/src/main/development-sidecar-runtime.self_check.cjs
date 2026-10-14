@@ -6,7 +6,8 @@ const path = require("node:path");
 const {
   RUNTIME_SPECS,
   resolveDefaultDevelopmentSidecarRuntime,
-  resolveDevelopmentContentEngineLaunch
+  resolveDevelopmentContentEngineLaunch,
+  resolveDevelopmentProductDetailLaunch
 } = require("./development-sidecar-runtime.cjs");
 
 const HEAD = "a".repeat(40);
@@ -264,6 +265,17 @@ for (const [kind, expectedScope] of [
   }
 }
 
+{
+  const desktopDir = path.resolve('source-product-detail-fixture');
+  const python = path.join(desktopDir, '.build', 'product-detail-venv', 'Scripts', 'python.exe');
+  const entry = path.join(desktopDir, 'sidecars', 'product-detail', 'app', 'desktop_entry.py');
+  assert.deepEqual(resolveDevelopmentProductDetailLaunch({ desktopDir, environment: {},
+    fsImpl: { existsSync: file => [python, entry].includes(file), statSync: () => ({ isFile: () => true }) },
+    spawnSyncImpl: () => ({ status: 0 }) }), { runtimePath: python, runtimeArgs: [entry] });
+  assert.deepEqual(resolveDevelopmentProductDetailLaunch({ environment: { XIAOXI_PRODUCT_DETAIL_SIDECAR: 'explicit.exe' } }),
+    { runtimePath: 'explicit.exe', runtimeArgs: [] });
+}
+
 function assertMainBoundary(functionName, nextFunctionName, environmentName, kind) {
   const source = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   const start = source.indexOf(`function ${functionName}()`);
@@ -277,14 +289,8 @@ function assertMainBoundary(functionName, nextFunctionName, environmentName, kin
     assert.equal(block.indexOf("resolveDevelopmentContentEngineLaunch()") > packagedIndex, true);
     return;
   }
-  const overrideIndex = block.indexOf(environmentName);
-  const defaultIndex = block.indexOf(
-    `resolveDefaultDevelopmentSidecarRuntime("${kind}")`
-  );
   assert.equal(packagedIndex >= 0, true);
-  assert.equal(overrideIndex > packagedIndex, true);
-  assert.equal(defaultIndex > overrideIndex, true);
-  assert.match(block, /if \(configuredPath\) return configuredPath;/);
+  assert.equal(block.indexOf('resolveDevelopmentProductDetailLaunch()') > packagedIndex, true);
 }
 
 assertMainBoundary(

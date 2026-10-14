@@ -1,5 +1,8 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, safeStorage, screen, session, shell } = require("electron");
+if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
+const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing.cjs').createStartupTiming();
+startupTiming.mark('main_loaded');
 const path = require("node:path");
 const components = require("./component-paths.cjs");
 const productBrand = require("../../product-brand.json");
@@ -57,7 +60,7 @@ const {
   registerContentMediaScheme
 } = require("./content-media-protocol.cjs");
 const {
-  resolveDefaultDevelopmentSidecarRuntime,
+  resolveDevelopmentProductDetailLaunch,
   resolveDevelopmentContentEngineLaunch
 } = require("./development-sidecar-runtime.cjs");
 const {
@@ -90,6 +93,7 @@ let feedbackAdmin = null;
 let providerGatewayClient = null;
 let taskPassportStore = null;
 let developmentContentEngineLaunch = null;
+let developmentProductDetailLaunch = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -122,9 +126,8 @@ function productDetailRuntimePath() {
       "product-detail-server.exe"
     );
   }
-  const configuredPath = String(process.env.XIAOXI_PRODUCT_DETAIL_SIDECAR || "").trim();
-  if (configuredPath) return configuredPath;
-  return resolveDefaultDevelopmentSidecarRuntime("product-detail");
+  developmentProductDetailLaunch ||= resolveDevelopmentProductDetailLaunch();
+  return developmentProductDetailLaunch.runtimePath;
 }
 
 function contentEngineRuntimePath() {
@@ -234,8 +237,12 @@ ipcMain.on("window-chrome:set-mode", (event, mode) => {
   if (event.sender !== mainWindow?.webContents || !["login", "workspace"].includes(mode)) return;
   mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#f8f4f0" : "#c91739", symbolColor: mode === "login" ? "#302a2b" : "#ffffff", height: 36 });
 });
+ipcMain.on('startup:mark', (event, stage) => {
+  if (event.sender === mainWindow?.webContents && ['renderer_loaded', 'login_visible', 'login_interactive'].includes(stage)) startupTiming.mark(stage);
+});
 
 function createWindow() {
+  startupTiming.mark('window_creating');
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   mainWindow = new BrowserWindow({
     ...windowLayout(display.workArea),
@@ -250,6 +257,7 @@ function createWindow() {
   keepWindowInWorkArea(mainWindow, screen);
 
   mainWindow.setMenu(null);
+  mainWindow.webContents.once('did-finish-load', () => startupTiming.mark('window_loaded'));
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event) => {
     event.preventDefault();
@@ -377,6 +385,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       packaged: app.isPackaged
     };
     const logger = configureDiagnostics({ rootDir: runtime.rootDir, appInfo });
+    startupTiming.attach(logger);
+    startupTiming.mark('local_runtime_ready');
     taskPassportStore = createTaskPassportStore({
       rootDir: runtime.rootDir,
       onWriteFailure: () => logger.event("task_passport", "write_failed", {}, { level: "warn", code: "task_passport_write_failed" })
@@ -421,23 +431,26 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         catch { return ""; }
       })()
     });
-    const gatewayStatus = await providerGatewayClient.initialize();
-    logger.event("provider_gateway", "session_initialized", {
-      state: gatewayStatus.ready ? "ready" : "unavailable",
-      code: gatewayStatus.code || "",
-      deepseek: gatewayStatus.capabilities?.deepseek === true,
-      bailian: gatewayStatus.capabilities?.bailian === true,
-      volcengine_ark: gatewayStatus.capabilities?.volcengine_ark === true,
-      volcengine_tts: gatewayStatus.capabilities?.volcengine_tts === true,
-      volcengine_asr: gatewayStatus.capabilities?.volcengine_asr === true,
-      apimart: gatewayStatus.capabilities?.apimart === true
+    // Provider readiness gates sidecar spawning, never the local login window.
+    let providerSession = providerGatewayClient.initialize().then(gatewayStatus => {
+      startupTiming.mark('gateway_session_finished');
+      logger.event('provider_gateway', 'session_initialized', {
+        state: gatewayStatus.ready ? 'ready' : 'unavailable', code: gatewayStatus.code || ''
+      });
+      return gatewayStatus;
     });
+    const waitForProviderSession = async () => {
+      let pending;
+      do { pending = providerSession; await pending; } while (pending !== providerSession);
+    };
     registerLicenseAuthIpc({
       ipcMain,
       store: licenseStore,
       onChanged: async ({ action }) => {
-        if (action === "logged_out") providerGatewayClient?.invalidate();
-        else await providerGatewayClient?.initialize({ force: true });
+        // A login change during startup must not reuse the former license's session.
+        providerSession = providerSession.then(() => action === 'logged_out'
+          ? providerGatewayClient.invalidate() : providerGatewayClient.initialize({ force: true }));
+        await waitForProviderSession();
         logger.event("provider_gateway", action === "logged_out" ? "session_invalidated" : "session_refreshed", {
           state: providerGatewayClient?.status().ready ? "ready" : "unavailable",
           code: providerGatewayClient?.status().code || ""
@@ -478,7 +491,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     };
     coordinator.initialize();
     productDetailController = createProductDetailSidecar({
+      beforeStart: waitForProviderSession,
       runtimePath: productDetailRuntimePath(),
+      runtimeArgs: app.isPackaged ? [] : developmentProductDetailLaunch.runtimeArgs,
       dataDir: productDetailDataDir,
       getTrustedRuntimeEnvironment: productDetailRuntimeEnvironment,
       getProviderEnvironment: productDetailReleaseSmokeMode
@@ -555,6 +570,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     let contentProviderConfiguration = "";
     const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
+      beforeStart: waitForProviderSession,
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
       dataDir: contentEngineDataDir,

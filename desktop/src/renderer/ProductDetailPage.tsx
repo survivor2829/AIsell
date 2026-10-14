@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, Copy, LoaderCircle, PlayCircle, RefreshCw, Settings2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./ProductDetailPage.css";
 import { appearanceFor, portraitAsset, type RolePreference } from "./role-appearance";
 import { ProductDetailExamples } from "./ProductDetailExamples";
@@ -89,6 +89,22 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [showExample, setShowExample] = useState(false);
+  const frame = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    if (!status.origin) return;
+    const receive = (event: MessageEvent) => {
+      const element = frame.current;
+      if (!element || event.source !== element.contentWindow || event.origin !== status.origin
+          || element.closest("[hidden]") || event.data?.type !== "xiaoxi:product-detail-scroll") return;
+      const delta = event.data.deltaY;
+      if (typeof delta === "number" && Number.isFinite(delta)) {
+        element.closest(".content-card")?.scrollBy({ top: Math.max(-800, Math.min(800, delta)), behavior: "instant" });
+      }
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, [status.origin]);
 
   const applyResult = (result: ProductDetailResult) => {
     if (result.ok && result.data) {
@@ -196,6 +212,7 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
 
   return (
     <section className={`page product-detail-page${canShowWorkspace ? " has-workspace" : ""}`}>
+      <div className="product-detail-intro">
       <header className="product-detail-guide">
         <button type="button" className="product-detail-persona" onClick={onPersonalize} aria-label="设置产品详情图伙伴的形象与名字"><img src={portraitAsset(appearance)} alt="" /></button>
         <div className="product-detail-guide-copy">
@@ -203,14 +220,15 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
           <p className="product-detail-promise">上传产品图和卖点，制作详情图、参数图</p>
           <p><strong>{preference.name}</strong>，陪你把产品介绍清楚。</p>
           <div className="product-detail-guide-actions">
-            <button type="button" className="secondary-button" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials", { detail: { category: "product-detail" } }))}><PlayCircle size={18} />看操作演示</button>
+            <button type="button" className="secondary-button" onClick={() => setShowExample(true)}><PlayCircle size={18} />查看生成示例</button>
             {!loadingStatus && ["failed", "unavailable", "stopped"].includes(status.state) && <button type="button" className="primary-button" onClick={() => run(status.state === "failed" ? "restart" : "start")} disabled={busy}><RefreshCw size={16} />重试</button>}
           </div>
         </div>
         <button type="button" className="product-detail-personalize" onClick={onPersonalize}><Settings2 size={16} />形象与名字</button>
       </header>
 
-      <ProductDetailExamples />
+      <ProductDetailExamples requested={showExample} onOpened={() => setShowExample(false)} />
+      </div>
 
       {!canShowWorkspace && <div className={`product-detail-state is-${displayState}`} aria-live="polite">
         <div className="product-detail-state-icon">
@@ -240,6 +258,7 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
       {canShowWorkspace && (
         <div className="product-detail-workspace">
           <iframe
+            ref={frame}
             key={status.bootstrapUrl}
             title="产品详情图工作台"
             src={status.bootstrapUrl}

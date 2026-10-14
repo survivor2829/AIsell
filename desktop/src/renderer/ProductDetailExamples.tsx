@@ -8,11 +8,12 @@ const EXAMPLES = [
 ];
 const asset = (name: string) => new URL(`./product-detail-examples/${name}`, document.baseURI).toString();
 
-export function ProductDetailExamples() {
+export function ProductDetailExamples({ requested, onOpened }: { requested?: boolean; onOpened?: () => void }) {
   const [selected, setSelected] = useState<typeof EXAMPLES[number] | null>(null);
   const [zoom, setZoom] = useState(100);
   const [error, setError] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (requested) { setSelected(EXAMPLES[0]); onOpened?.(); } }, [requested, onOpened]);
   useEffect(() => {
     if (selected) { setZoom(100); setError(false); dialog.current?.showModal(); }
     else dialog.current?.close();

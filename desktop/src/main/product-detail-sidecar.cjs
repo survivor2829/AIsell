@@ -321,6 +321,7 @@ function createProductDetailSidecar(options = {}) {
     const bootstrapToken = tokenFrom(randomBytes);
     const controlToken = tokenFrom(randomBytes);
     const args = [
+      ...(options.runtimeArgs || []),
       "--host", "127.0.0.1",
       "--port", "0",
       "--data-dir", dataDir,
@@ -534,9 +535,10 @@ function createProductDetailSidecar(options = {}) {
     );
     const waitForStop = stopPromise || (hasOldRun ? stop() : Promise.resolve());
     startPromise = waitForStop
-      .then((stopped) => {
+      .then(async (stopped) => {
         if (stopped?.state && stopped.state !== "stopped") return stopped;
         if (currentRun && !currentRun.closed) return status();
+        await options.beforeStart?.();
         return beginStart();
       })
       .finally(() => {

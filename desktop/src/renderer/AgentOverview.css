@@ -16,3 +16,5 @@
 @media(max-width:720px){.agent-overview-leaders{grid-template-columns:1fr}.agent-overview-head{padding:16px}.agent-overview-head h1{font-size:21px}.agent-overview{padding:16px}}
 .agent-overview-leader:hover{border-color:var(--overview-accent);box-shadow:0 5px 18px #1720330d}
 .agent-overview-leader:focus-visible{outline:3px solid var(--overview-accent);outline-offset:3px}
+
+.agent-overview-leader { background-image:var(--overview-pattern); background-size:cover; }

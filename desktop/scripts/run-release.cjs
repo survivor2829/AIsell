@@ -73,7 +73,13 @@ function preflightReleaseInputs(edition, environment = process.env) {
   return { artifactType, mediaTools, remotion };
 }
 
-function runRelease(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null } = {}) {
+function runRelease(edition = "delivery", environment = process.env, options = {}) {
+  const space = require("./space-usage.cjs").startSpaceRun("release");
+  try { const result = runReleaseWork(edition, environment, options, space); space.finish("completed"); return result; }
+  catch (error) { space.finish("failed"); throw error; }
+}
+
+function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null } = {}, space) {
   if (componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
   const internalUpgrade = edition === "upgrade";
   if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
@@ -92,6 +98,7 @@ function runRelease(edition = "delivery", environment = process.env, { component
   const inputs = preflightReleaseInputs(edition, environment);
   const { artifactType: remotionArtifactType, remotion } = inputs;
   const sidecarBuildRoot = createBuildRoot();
+  space.ownTemporary(sidecarBuildRoot);
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
   const releaseEnvironment = {
     ...environment,
@@ -132,11 +139,14 @@ function runRelease(edition = "delivery", environment = process.env, { component
     artifacts: [remotionRelative],
     build: () => runNode("Remotion runtime build", "build-remotion-runtime.cjs", [remotionArtifactType, "--output", path.join(remotionRuntimeRoot, remotionArtifactType)], releaseEnvironment)
   });
+  space.observe("runtime-build-complete");
   runNode("portable application build", "build-portable-release.cjs", [edition, ...(componentsOnly ? ["--components-only"] : [])], releaseEnvironment);
+  space.observe("build-and-packaged-validation-complete");
   if (internalUpgrade) runNode("in-place upgrade installer", "build-installer-release.cjs", ["upgrade"], releaseEnvironment);
   } finally {
     try { require("./artifact-retention.cjs").removeOwned(path.dirname(sidecarBuildRoot), sidecarBuildRoot); }
     catch (error) { console.warn(`Release staging cleanup deferred: ${error.message}`); }
+    space.observe("cleanup-complete", { stagingRemoved: !fs.existsSync(sidecarBuildRoot) });
   }
   const candidateRoot = componentsOnly ? JSON.parse(fs.readFileSync(path.join(desktopDir,
     "../release/components/test/unsigned-component-release.json"), "utf8")).validation.candidateRoot : null;

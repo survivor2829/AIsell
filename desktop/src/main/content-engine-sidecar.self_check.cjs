@@ -151,6 +151,30 @@ async function main() {
 
   try {
     {
+      let release, child;
+      const gate = new Promise(resolve => { release = resolve; });
+      let providerReady = false;
+      const controller = createContentEngineSidecar({ runtimePath, dataDir,
+        beforeStart: () => gate,
+        getProviderEnvironment: () => { assert.equal(providerReady, true); return {}; },
+        spawnProcess: () => (child = new FakeChild()) });
+      const started = controller.start();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(child, undefined, 'slow gateway must not spawn a worker with stale credentials');
+      providerReady = true; release();
+      await waitFor(() => Boolean(child)); child.ready();
+      assert.equal((await started).state, 'ready');
+      await controller.dispose();
+      let unlock, spawned = false;
+      const waiting = createContentEngineSidecar({ runtimePath, dataDir,
+        beforeStart: () => new Promise(resolve => { unlock = resolve; }),
+        spawnProcess: () => { spawned = true; return new FakeChild(); } });
+      const pending = waiting.start();
+      await new Promise(resolve => setImmediate(resolve));
+      await waiting.dispose(); unlock();
+      assert.equal((await pending).state, 'stopped'); assert.equal(spawned, false);
+    }
+    {
       let spawnCount = 0;
       const controller = createContentEngineSidecar({
         runtimePath: "",

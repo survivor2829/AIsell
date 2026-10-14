@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+require("../src/main/development-dependencies.cjs").configureDevelopmentDependencies();
 const electronPath = require("electron");
 const { resolveDevelopmentContentEngineLaunch } = require("../src/main/development-sidecar-runtime.cjs");
 const { startApimartTestRelay } = require("./apimart-test-relay.cjs");
@@ -62,7 +63,7 @@ function startDesktop() {
     if (startupTimer) clearTimeout(startupTimer);
     const electronEnv = { ...developmentEnv, VITE_DEV_SERVER_URL: url };
     delete electronEnv.ELECTRON_RUN_AS_NODE;
-    const electron = spawn(electronPath, ["."], {
+    const electron = spawn(electronPath, [".", ...process.argv.slice(2)], {
       stdio: "inherit",
       env: electronEnv
     });

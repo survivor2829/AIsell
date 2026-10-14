@@ -1,4 +1,5 @@
-import { Check, PlayCircle } from 'lucide-react';
+import { Check } from 'lucide-react';
+import { ExampleHelp } from './VideoExamples';
 import type { ReactNode } from 'react';
 import type { TutorialTopic } from './tutorials-types';
 import './CreationGuide.css';
@@ -6,9 +7,7 @@ import './CreationGuide.css';
 export type CreationTopic = TutorialTopic;
 
 export function TutorialHelp({ topic }: { topic: CreationTopic }) {
-  return <button type="button" className="creation-tutorial" onClick={() => window.dispatchEvent(new CustomEvent('xiaoxi:open-tutorials', { detail: { category: 'short-video', topic } }))}>
-    <PlayCircle size={19} aria-hidden="true" /><span>看操作演示</span>
-  </button>;
+  return <ExampleHelp topic={topic} />;
 }
 
 export function CreationSteps({ labels, current, onChange, disabled = [] }: {

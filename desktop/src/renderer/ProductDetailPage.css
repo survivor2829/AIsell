@@ -1,9 +1,7 @@
 .product-detail-page {
-  height: 100%;
-  min-height: 0;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .detail-examples{display:flex;align-items:center;gap:12px;flex:0 0 auto;padding:10px 0;flex-wrap:wrap}
@@ -17,7 +15,7 @@
 @media(max-width:800px){.detail-examples{gap:6px}.detail-examples>div{width:100%}.detail-example-dialog label input{width:80px}}
 
 .product-detail-page.has-workspace { padding: 16px; }
-.has-workspace .product-detail-workspace { margin-top: 12px; min-height: 0; }
+.has-workspace .product-detail-workspace { margin-top: 24px; }
 
 .product-detail-state {
   display: flex;
@@ -89,8 +87,9 @@
 
 .product-detail-workspace {
   position: relative;
-  min-height: 360px;
-  flex: 1;
+  height: max(724px, calc(100vh - 150px));
+  min-height: 724px;
+  flex: 0 0 auto;
   margin-top: 16px;
   min-width: 0;
   overflow: hidden;
@@ -116,7 +115,7 @@
   }
 }
 
-.product-detail-retained { height: 100%; min-height: 0; }
+.product-detail-retained { min-height: 100%; }
 .product-detail-retained[hidden] { display: none; }
 .product-detail-guide {
   position: relative;
@@ -166,3 +165,21 @@
   .product-detail-guide-actions { gap:6px; }
 }
 @media(prefers-reduced-motion: reduce) { .product-detail-spinner { animation: none; } }
+
+.product-detail-intro { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(290px,1fr); gap:28px; align-items:center; }
+.product-detail-intro .product-detail-guide { min-height:310px; gap:18px; }
+.product-detail-intro .product-detail-persona { width:260px; height:310px; }
+.product-detail-intro .detail-examples { display:grid; grid-template-columns:1fr; gap:10px; padding:28px 0; }
+.product-detail-intro .detail-examples > button { padding:9px 14px; gap:16px; }
+.product-detail-intro .detail-examples > button > img { width:48px; height:64px; }
+.product-detail-intro .detail-examples > div { margin:0 0 2px; }
+@media(max-width:1150px) {
+ .product-detail-intro { grid-template-columns:1fr; gap:0; }
+ .product-detail-intro .detail-examples { grid-template-columns:repeat(3,minmax(0,1fr)); padding:12px 0; }
+ .product-detail-intro .detail-examples > div { grid-column:1 / -1; }
+ .product-detail-intro .detail-examples > button { padding:8px; gap:8px; }
+}
+@media(max-width:760px) {
+ .product-detail-intro .product-detail-persona { width:180px; height:250px; }
+ .product-detail-intro .detail-examples { grid-template-columns:1fr; }
+}

@@ -41,7 +41,8 @@ const render = (batch, voices) => renderToStaticMarkup(React.createElement(Batch
   const free = voiceRecovery(batchWith(monkeyId), [xiaohe, monkey()]);
   assert.equal(free.kind, "free", "a saved preview on this machine: replay it for free");
   assert.deepEqual(free.actions, ["play_saved"], "approval waits until a preview has played");
-  assert.match(free.message, /本批使用的「猴哥 2\.0」批准已失效（常见原因：这台电脑运行过不含该声音的旧版本）/u);
+  assert.match(free.message, /本批使用的「猴哥 2\.0」当前没有有效批准记录，需要试听后确认/u);
+  assert.doesNotMatch(free.message, /旧版本/u, "the current state alone does not prove the historical cause");
 
   for (const voices of [[monkey({ previewStatus: "not_ready" })], [monkey({ previewStatus: "failed" })]]) {
     const paid = voiceRecovery(batchWith(monkeyId), voices);

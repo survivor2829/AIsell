@@ -1,3 +1,4 @@
+import { VideoExamples } from './VideoExamples';
 import {
   ArrowRight,
   Bot,
@@ -97,7 +98,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryLabel: "制作短视频",
     primaryTarget: "workspace",
     capabilities: [
-      { key: "workspace", label: "AI混剪", description: "用现有素材制作视频", icon: Clapperboard },
+      { key: "workspace", label: "线索视频混剪", description: "用现有素材制作视频", icon: Clapperboard },
       { key: "product-video", label: "产品效果视频", description: "展示设备在场景中的样子", icon: Video },
       { key: "finished", label: "成片中心", description: "查看成片，导出给客户", icon: Folder },
       { key: "ai-video", label: "数字人视频", description: "制作本人出镜的数字人视频", icon: UserRound }
@@ -431,14 +432,16 @@ function roleStatus(
   role: AgentRoleKey,
   workflowState: WorkflowController["state"],
   workflowLoading: boolean,
-  production: ProductionSnapshot
+  production: ProductionSnapshot,
+  workflowError: string
 ) {
   if (role === "agent") {
     if (workflowLoading) return "正在读取任务";
+    if (workflowError) return window.xiaoxiWorkflow ? "任务状态需检查" : "微信服务未连接";
     if (workflowState.contactSync?.running) return "正在同步联系人";
     if (workflowState.enabled) return "正在执行计划";
     if (workflowState.tasks.some((task) => task.status === "needs_attention")) return "有任务需要处理";
-    return "在线待命";
+    return "任务服务已就绪";
   }
   if (role === "production") {
     if (production.loading) return "正在读取内容数据";
@@ -452,8 +455,17 @@ function roleStatus(
 function buildWechatView(
   workflowState: WorkflowController["state"],
   workflowLoading: boolean,
-  contactCount: number
+  contactCount: number,
+  error: string
 ) {
+  if (error) return {
+    metrics: [
+      { label: "微信客户", value: "—", detail: "任务状态读取异常，暂不展示统计", icon: UsersRound },
+      { label: "今日待办", value: "—", detail: "等待读取任务数据", icon: Clock3 },
+      { label: "今日完成", value: "—", detail: "等待读取任务数据", icon: CheckCircle2 }
+    ] as Metric[],
+    importantTask: { title: "先检查微信拓客服务", detail: error, status: "需检查", target: "workflow", action: "查看今日计划" } as ImportantTask
+  };
   const today = localDateKey(new Date());
   const tasks = workflowState.tasks;
   const pendingStatuses = new Set<WorkflowTask["status"]>(["pending", "running", "needs_attention"]);
@@ -508,10 +520,10 @@ function buildProductionView(snapshot: ProductionSnapshot) {
     }
     : {
       title: "开始一项新的内容制作",
-      detail: snapshot.error || "从我的素材选择内容，进入AI混剪开始制作。",
+      detail: snapshot.error || "从我的素材选择内容，进入线索视频混剪开始制作。",
       status: snapshot.error ? "暂未连接" : "待开始",
       target: "workspace",
-      action: "打开AI混剪"
+      action: "打开线索视频混剪"
     };
   return { metrics, importantTask };
 }
@@ -553,17 +565,18 @@ export function AgentHome({
   const workflowState = workflow.state;
   const workflowLoading = workflow.loading;
   const view = useMemo(() => {
-    if (role === "agent") return buildWechatView(workflowState, workflowLoading, contactCount);
+    if (role === "agent") return buildWechatView(workflowState, workflowLoading, contactCount, workflow.error);
     if (role === "production") return buildProductionView(snapshot);
     return buildOperationsView();
-  }, [contactCount, role, snapshot, workflowLoading, workflowState, preference.name]);
-  const status = roleStatus(role, workflowState, workflowLoading, snapshot);
+  }, [contactCount, role, snapshot, workflowLoading, workflowState, workflow.error, preference.name]);
+  const status = roleStatus(role, workflowState, workflowLoading, snapshot, workflow.error);
   const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : RadioTower;
 
   return (
     <div className={`agent-home is-${role}`} style={appearanceStyle(appearance)} data-appearance={appearance.id}>
       <AgentAtmosphere />
       <div className="agent-personalize"><button type="button" onClick={onPersonalize}><Palette size={15} />形象与名字</button></div>
+      <div className="agent-home-top">
       <section className="agent-hero">
         <AgentPortrait key={definition.portraitKey} definition={definition} />
 
@@ -584,6 +597,7 @@ export function AgentHome({
 
       </section>
 
+      <div className="agent-home-actions">
       <section className="agent-capabilities">
         <div className="agent-section-heading">
           <div><Sparkles size={20} strokeWidth={2.3} /><h2>这里可以做什么</h2></div>
@@ -607,8 +621,9 @@ export function AgentHome({
           })}
         </div>
       </section>
-
-      <div className="agent-work-grid">
+      </div>
+      </div>
+      {role === 'production' && <VideoExamples />}
         <section className="agent-important-task">
           <div className="agent-section-heading">
             <div><ListTodo size={20} strokeWidth={2.3} /><h2>接下来做什么</h2></div>
@@ -623,8 +638,7 @@ export function AgentHome({
             {view.importantTask.action}<ArrowRight size={16} strokeWidth={2.4} />
           </button>
         </section>
-        <MetricStrip metrics={view.metrics} />
-      </div>
+      <MetricStrip metrics={view.metrics} />
     </div>
   );
 }

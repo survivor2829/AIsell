@@ -4,7 +4,7 @@ import catalog from "../shared/role-appearance.json";
 export type WorkspaceRoleKey = "agent" | "production" | "operations";
 export type AgentRoleKey = keyof typeof catalog;
 export const WORKSPACE_ROLE_ORDER: readonly WorkspaceRoleKey[] = ["production", "agent", "operations"];
-export const AGENT_ROLE_ORDER: readonly AgentRoleKey[] = [...WORKSPACE_ROLE_ORDER, "materials", "tutorials"];
+export const AGENT_ROLE_ORDER: readonly AgentRoleKey[] = ["production", "agent", "business", "operations", "materials", "tutorials"];
 export type RolePreference = { name: string; appearanceId: string };
 export type RolePreferences = Record<AgentRoleKey, RolePreference>;
 export type RoleAppearance = typeof catalog.agent.appearances[number] & { portraitFile?: string };

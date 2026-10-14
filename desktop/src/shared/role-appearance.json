@@ -23,6 +23,12 @@
       {"id": "channels", "label": "连接更多", "portraitKey": "xiaolian-channels", "position": "50% 27%", "accent": "#8c82d8", "strong": "#5f549f", "surface": "#f6f7fc", "soft": "#faf9ff", "pattern": "operations-channels.svg", "motifs": ["mail", "send", "users", "chart", "megaphone", "message"], "layout": "orbits"}
     ]
   },
+  "business": {
+    "name": "小睿", "legacyNames": ["生意助手"], "responsibility": "AI生意助手",
+    "appearances": [
+      {"id": "original", "label": "小睿", "portraitKey": "business-assistant", "portraitFile": "business-assistant.png", "position": "50% 24%", "accent": "#b57829", "strong": "#785018", "surface": "#fbf3e6", "soft": "#fffaf2", "pattern": "business-original.svg", "motifs": ["search", "message", "globe"], "layout": "frames"}
+    ]
+  },
   "materials": {
     "name": "小禾", "legacyNames": ["素材小助理"], "responsibility": "物保素材库",
     "appearances": [

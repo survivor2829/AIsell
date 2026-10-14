@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   base: "./",
+  // node_modules may be shared read-only between worktrees; cache stays local.
+  cacheDir: ".build/vite",
   plugins: [react()],
   build: {
     outDir: process.env.VITE_XIAOXI_EDITION === "development"

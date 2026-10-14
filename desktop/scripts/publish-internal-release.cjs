@@ -17,8 +17,16 @@ function publication(args) {
 
 async function main(args = process.argv.slice(2)) {
   const request = publication(args);
-  if (request.kind === "full") await require("./publish-cloud-release.cjs").publish(request.options);
-  else console.log(await require("./publish-component-release.cjs").publishComponentRelease(request.options));
+  const space = require("./space-usage.cjs").startSpaceRun("publish");
+  try {
+    const result = request.kind === "full"
+      ? await require("./publish-cloud-release.cjs").publish(request.options)
+      : await require("./publish-component-release.cjs").publishComponentRelease(request.options);
+    space.recordUploads(result.uploadedFileBytes, result.uploadedFiles);
+    console.log(result);
+    space.observe("publication-readback-complete");
+    space.finish("completed");
+  } catch (error) { space.finish("failed"); throw error; }
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -1061,7 +1061,7 @@ export function ProductOneClickPage({
                 setNotice({
                   tone: recovered.data.status === "failed" || recovered.data.status === "outcome_unknown" ? "error" : "info",
                   text: recovered.data.status === "failed" || recovered.data.status === "outcome_unknown"
-                    ? "已恢复当前任务，但它尚未完成。请先在AI混剪查看任务状态。"
+                    ? "已恢复当前任务，但它尚未完成。请先在线索视频混剪查看任务状态。"
                     : "已重新连接到当前任务，请等待它完成后再生成脚本。"
                 });
                 return;
@@ -1070,7 +1070,7 @@ export function ProductOneClickPage({
               // 此错误在脚本任务创建和模型调用之前返回；保留当前填写内容。
             }
           }
-          setNotice({ tone: "error", text: "当前窗口中的素材解析会话已不可用，标题和填写内容已保留；请从AI混剪打开这条素材解析任务后再继续。" });
+          setNotice({ tone: "error", text: "当前窗口中的素材解析会话已不可用，标题和填写内容已保留；请从线索视频混剪打开这条素材解析任务后再继续。" });
           return;
         }
         setNotice({ tone: "error", text: errorOf(result, "AI 脚本生成未能启动。") });

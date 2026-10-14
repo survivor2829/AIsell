@@ -4759,10 +4759,13 @@ class NarratedBatchDomain:
         if b["settings"].get("brand_profile_id"):
             state["narrated_brand"] = self.d._public_brand(self.d._brand_row(b["settings"]["brand_profile_id"]))
         ids = list(dict.fromkeys(s["asset_id"] for s in c["shots"]))
+        input_hash = canonical_hash([b["batch_id"], c["candidate_id"], c["revision"]])
+        previous = self.db.execute("SELECT id,generation FROM auto_mix_runs_v2 WHERE input_hash=? ORDER BY generation DESC LIMIT 1", (input_hash,)).fetchone()
+        generation = int(previous["generation"]) + 1 if previous else 1
         self.db.execute("INSERT INTO auto_mix_runs_v2(id,project_id,task_id,generation,spec_version,input_hash,status,asset_ids_json,title,copy_framework,public_plan_json,private_state_json,quality_warnings_json,selected_voice_persona_id,created_at,updated_at) "
-                        "VALUES(?,?,?,1,?,?,'planned',?,?,?,?,?,'[]',?,?,?)",
-                        (run_id, b["project_id"], task_id, AUTO_MIX_SPEC_VERSION,
-                         canonical_hash([b["batch_id"], c["candidate_id"], c["revision"]]),
+                        "VALUES(?,?,?,?,?,?,'planned',?,?,?,?,?,'[]',?,?,?)",
+                        (run_id, b["project_id"], task_id, generation, AUTO_MIX_SPEC_VERSION,
+                         input_hash,
                          self.d._json(ids), c["title"], c["angle"] or b["title"], self.d._json(public),
                          self.d._json(state), b["settings"].get("voice_persona_id"), now, now))
         c["_run_id"] = run_id

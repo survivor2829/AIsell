@@ -63,7 +63,7 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     try { run("ssh.exe", [...flags, host, `sudo -n rm -rf -- ${incoming} ${remote}`]); }
     catch { console.warn("Release verified; upload staging cleanup deferred."); }
     console.log(`Published and readback verified: ${manifest.channel} ${manifest.version}, sequence ${manifest.sequence}, SHA-256 ${sha256}. Previous signed manifests retained on server.`);
-    return { published: true, readback };
+    return { published: true, uploadedFileBytes: fs.statSync(installer).size + fs.statSync(document).size, uploadedFiles: 2, readback };
   } finally {
     fs.rmSync(document, { force: true }); fs.rmdirSync(temporary);
   }

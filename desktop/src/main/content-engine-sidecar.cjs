@@ -501,9 +501,10 @@ function createContentEngineSidecar(options = {}) {
     const waitForStop = stopPromise
       || (oldRunNeedsStop ? stop() : Promise.resolve());
     startPromise = waitForStop
-      .then((stopped) => {
+      .then(async (stopped) => {
         if (stopped?.state && stopped.state !== "stopped") return stopped;
         if (currentRun && !currentRun.closed) return status();
+        await options.beforeStart?.();
         return beginStart();
       })
       .finally(() => {

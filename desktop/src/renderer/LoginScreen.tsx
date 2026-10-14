@@ -1,8 +1,7 @@
 import { ArrowRight, Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import "./LoginScreen.css";
 import { characterAsset } from "./role-appearance";
-import productBrand from "../../product-brand.json";
 
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
 
@@ -13,6 +12,8 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const saved = Boolean(license?.authorized) && !replaceSaved;
+  useEffect(() => { window.xiaoxiStartup?.mark('login_visible'); }, []);
+  useEffect(() => { if (license) window.xiaoxiStartup?.mark('login_interactive'); }, [license]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -35,9 +36,8 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
 
   return <main className="signin-scene">
     <div className="signin-layout">
-      <header className="signin-masthead" aria-label="玺联惠"><img src="./app-icon.png" alt="玺联惠 Logo" /><strong>玺联惠</strong><span>{productBrand.displayName}</span></header>
       <section className="signin-reference" aria-label="你的获客搭档，已就位。小影：短视频获客；小诚：微信拓客；小绘：产品详情图。">
-        <img src={characterAsset("login-reference.png")} alt="" aria-hidden="true" />
+        <img src={characterAsset("login-welcome.webp")} alt="" aria-hidden="true" />
       </section>
       <div className="signin-center">
         <section className="signin-panel" aria-labelledby="signin-title">
@@ -47,7 +47,7 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
               <span>{saved ? "已保存的授权" : "软件授权码"}</span>
               <div className="signin-input-wrap">
                 <KeyRound size={17} aria-hidden="true" />
-                <input id="signin-license" type={saved || revealed ? "text" : "password"} value={saved ? (license.licenseId || "已安全保存") : code}
+                <input id="signin-license" type={!saved && revealed ? "text" : "password"} value={saved ? 'saved-license' : code}
                   onChange={event => { setCode(event.target.value); setError(""); }} readOnly={saved} disabled={busy}
                   placeholder="输入您的授权码" autoComplete="off" spellCheck={false} aria-invalid={Boolean(error || license.error)} aria-describedby={error || license.error ? "signin-error" : "signin-storage"} />
                 {!saved && <button className="signin-reveal" type="button" onClick={() => setRevealed(value => !value)} aria-label={revealed ? "隐藏授权码" : "显示授权码"} aria-pressed={revealed} disabled={busy}>{revealed ? <EyeOff size={17} /> : <Eye size={17} />}</button>}

@@ -47,6 +47,9 @@ try {
     ? { ...crypto, createPublicKey: () => keys.publicKey } : require(name) });
   const payload = Buffer.from(JSON.stringify({ product: "ai-huoke-desktop", license_id: "isolated-recovery", expires_at: "2099-01-01T00:00:00Z" })).toString("base64url");
   const code = `${payload}.${crypto.sign("RSA-SHA256", Buffer.from(payload), keys.privateKey).toString("base64url")}`;
+  const expiredPayload = Buffer.from(JSON.stringify({ product: 'ai-huoke-desktop', license_id: 'isolated-expired', expires_at: '2000-01-01T00:00:00Z' })).toString('base64url');
+  const expiredCode = `${expiredPayload}.${crypto.sign('RSA-SHA256', Buffer.from(expiredPayload), keys.privateKey).toString('base64url')}`;
+  assert.equal(isolated.exports.validateLicense(expiredCode).code, 'license_expired');
   const replacement = Buffer.from("new encrypted authorization fixture");
   safeStorage.encryptString = () => replacement;
   safeStorage.decryptString = bytes => {

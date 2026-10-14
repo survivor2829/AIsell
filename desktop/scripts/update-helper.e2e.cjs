@@ -216,10 +216,15 @@ class FixtureInstaller { static int Main(string[] args) {
         }
       } catch { /* No positive ownership evidence: leave the process alone. */ }
     }
-    // Successful runs retain receipts, logs and data, not two disposable Electron distributions.
+    // Successful isolated runs retain receipts, logs and synthetic business data,
+    // not disposable Electron distributions or their synthetic rollback copies.
     if (passed) {
       const failedPrograms = (await fs.readdir(root)).filter(name => /^installed\.failed-update-[a-f0-9-]{36}$/.test(name)).map(name => path.join(root, name));
-      for (const directory of [installed, ...failedPrograms, path.join(userData, "data/cloud-maintenance/components/helper-runtime")]) {
+      for (const directory of [installed, ...failedPrograms,
+        path.join(userData, "data/cloud-maintenance/components/helper-runtime"),
+        path.join(userData, "data/cloud-maintenance/components/generations"),
+        path.join(userData, "data/cloud-maintenance/components/program-backups"),
+        path.join(userData, "update-helper-profile")]) {
         try {
           const realRoot = await fs.realpath(root), realDirectory = await fs.realpath(directory);
           assert.equal(path.dirname(root), parent);

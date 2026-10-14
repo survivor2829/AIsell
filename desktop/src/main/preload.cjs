@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("xiaoxiProductVideo", require("./product-video-p
 contextBridge.exposeInMainWorld("xiaoxiKeywordAcquisition", require("./keyword-acquisition-preload.cjs").createKeywordAcquisitionApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
 contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });
+contextBridge.exposeInMainWorld('xiaoxiStartup', { mark: stage => ipcRenderer.send('startup:mark', stage) });
 contextBridge.exposeInMainWorld("xiaoxiWorkflow", apis.workflow);
 const momentsCampaign = createMomentsCampaignApi(ipcRenderer);
 const momentsPublish = createMomentsPublishApi(ipcRenderer);
