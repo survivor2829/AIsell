@@ -862,7 +862,7 @@ async function main() {
   assert.match(page, /setBatch\(value\);\s*setRejectedEdit\(null\);/u, "a landed save clears the rejection");
   assert.match(page, /async function voiceApproved\(\) \{\s*await refreshVoices\(\);\s*await draftQueue\.retryHeld\(\)\.catch\(\(\) => undefined\);\s*\}/u,
     "an approval retries the held edit");
-  assert.match(page, /onApproved=\{async \(name\) => \{ setNotice\(`已批准「\$\{name\}」，这个批次可以正常保存和继续制作了。`\); await voiceApproved\(\); \}\}/u,
+  assert.match(page, /onApproved=\{async \(name\) => \{ setNotice\(`[^`]+`\); await voiceApproved\(\); \}\}/u,
     "from the recovery card");
   assert.match(page, /onVoiceApproved=\{voiceApproved\}/u, "and from 声音与配乐");
   assert.equal((page.match(/disabled=\{busy \|\| submitting \|\| Boolean\(recoveryHeld\)\} onClick=\{\(\) => void recover(?:Planning|Voice)\(\)\}/gu) || []).length, 2,

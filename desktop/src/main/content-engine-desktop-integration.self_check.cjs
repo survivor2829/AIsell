@@ -704,14 +704,12 @@ function assertMainLifecycle() {
     source,
     /components\.resourcesPath\(\)[\s\S]*?"content-engine"[\s\S]*?"content-engine-worker\.exe"/
   );
-  assert.match(
-    runtimeGateSource,
-    /resolveDefaultDevelopmentSidecarRuntime\("content-engine"(?:, options)?\)/
-  );
+  const { resolveDevelopmentContentEngineLaunch } = require("./development-sidecar-runtime.cjs");
+  assert.deepEqual(resolveDevelopmentContentEngineLaunch({ environment: {
+    XIAOXI_CONTENT_ENGINE_SIDECAR: "configured.exe", XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY: "worker.py"
+  } }), { runtimePath: "configured.exe", runtimeArgs: ["worker.py"] });
   assert.match(source, /function contentEngineRuntimeArgs\(\)/);
   assert.match(source, /runtimeArgs: contentEngineRuntimeArgs\(\)/);
-  assert.match(runtimeGateSource, /XIAOXI_CONTENT_ENGINE_SIDECAR/);
-  assert.match(runtimeGateSource, /XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY/);
   const remotionRuntimeResolver = source.match(/function remotionRuntimeEnvironment\(\) \{([\s\S]*?)\n\}/u)?.[1] || "";
   assert.match(remotionRuntimeResolver, /resolveRemotionRuntimeEnvironment/u);
   assert.match(remotionRuntimeResolver, /isPackaged: app\.isPackaged/u);
