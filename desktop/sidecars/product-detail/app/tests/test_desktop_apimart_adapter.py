@@ -368,6 +368,21 @@ def test_default_api_call_checkpoints_task_id_before_poll_and_completed_url(monk
     ]
 
 
+def test_gateway_receipt_waits_for_original_submission_without_resubmitting(monkeypatch):
+    import uuid
+    operation = str(uuid.uuid4())
+    monkeypatch.setattr(adapter, "_gateway_receipt_base", lambda: "https://gateway.invalid")
+    replies = iter([(202, {"status": "pending"}), (200, {"data": [{"task_id": "original-paid-task"}]})])
+    calls = []
+    def get(url, key):
+        calls.append(url)
+        return next(replies)
+    monkeypatch.setattr(adapter, "_http_get_json_response", get)
+    monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
+    assert adapter.recover_gateway_task_id(operation, "secret") == "original-paid-task"
+    assert calls == [f"https://gateway.invalid/operations/{operation}"] * 2
+
+
 def test_poll_recovers_from_transient_connection_failure_on_same_task(monkeypatch):
     calls = []
 

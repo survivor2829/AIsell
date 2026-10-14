@@ -28,6 +28,39 @@ def task(tmp_path, monkeypatch):
     return directory
 
 
+def test_recovered_result_category_comes_from_original_task(task, monkeypatch):
+    inputs = runner._read_json(task / "_input.json")
+    runner._atomic_write_json(task / "_input.json", {**inputs, "product_category": "设备类"})
+    state = runner._with_costs(task.name, {"status": "success", "user_id": 73, "assembled_url": "/saved.png"})
+    import app as application
+    monkeypatch.setattr(application, "current_user", SimpleNamespace(id=73, is_admin=False))
+    monkeypatch.setattr(runner, "get_task_status", lambda _: state)
+    save = Mock(return_value={})
+    monkeypatch.setattr(application, "save_workspace_result", save)
+    with application.app.test_request_context(method="POST", json={"product_category": "耗材类"}):
+        application.workspace_result_save_ai_refine_v2.__wrapped__(task.name)
+    assert save.call_args.args[2]["product_category"] == "设备类"
+
+
+def test_automatic_recovery_cannot_buy_images_from_saved_planning(task, monkeypatch):
+    ledger = pricing.CostJournal(task)
+    ledger.begin("planner", quote(), .03)
+    ledger.finish("planner", "completed")
+    runner._atomic_write_json(task / "_planning.json", sample())
+    start = Mock(side_effect=AssertionError("automatic recovery must never start paid planning"))
+    monkeypatch.setattr(runner.threading, "Thread", start)
+    with pytest.raises(ValueError, match="自动恢复"):
+        runner.start_task_recovery(task.name, "image-key", query_only=True)
+    import app as application
+    monkeypatch.setattr(application, "current_user", SimpleNamespace(id=73, is_admin=False))
+    monkeypatch.setattr(application, "_get_gpt_image_key", lambda user: ("image-key", "fixture"))
+    with application.app.test_request_context(method="POST", json={"query_only": True}):
+        response, status = application.ai_refine_v2_recover.__wrapped__(task.name)
+    assert status == 409
+    assert response.json["code"] == "AI_REFINE_CONFIRM_CONTINUATION_REQUIRED"
+    start.assert_not_called()
+
+
 @pytest.mark.parametrize("saved", ["response", "response_before_finish", "plan"])
 def test_resume_paid_planner_without_rebuying_or_losing_owner(task, monkeypatch, saved):
     import ai_image_apimart as adapter
@@ -239,6 +272,7 @@ def test_generator_journals_stable_block_identity_before_post(task, monkeypatch)
 @pytest.mark.parametrize("receipt_status", [200, 202, 404, 409, 503])
 def test_restart_finds_gateway_receipt_without_reupload_or_resubmit(task, monkeypatch, receipt_status):
     import ai_image_apimart as adapter
+    monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
     monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
     monkeypatch.setenv("REFINE_API_BASE_URL", "https://gateway.invalid/v1/provider-gateway/apimart")
     checkpoint(task)
@@ -283,7 +317,7 @@ def test_restart_finds_gateway_receipt_without_reupload_or_resubmit(task, monkey
     monkeypatch.setattr(runner, "_run_assembler_v2", assemble)
     state = runner._recover_task(task.name, "secret")
     assert state["status"] == ("success" if receipt_status == 200 else "outcome_unknown")
-    assert [request.method for request in requests] == ["POST", "GET"]
+    assert [request.method for request in requests] == ["POST"] + ["GET"] * (1 if receipt_status in (200, 409) else 3)
     assert upload.call_count == 1
     operation = ledger.load()["operations"]["image:1"]
     assert operation["gateway_operation_id"] == original_id

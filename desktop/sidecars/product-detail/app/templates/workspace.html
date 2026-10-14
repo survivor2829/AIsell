@@ -2114,6 +2114,7 @@
     recoveryError.code = replayPlanner ? 'AI_REFINE_SAVED_PLAN_READY' : pricingRequired ? 'AI_REFINE_PRICING_REQUIRED' :
       (state.status === 'outcome_unknown' ? 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN' : 'AI_REFINE_RECOVERY_REQUIRED');
     recoveryError.taskId = state.task_id || taskRecord.task_id;
+    recoveryError.newTaskBlocked = taskRecord.newTaskBlocked === true;
     recoveryError.technicalDetail = state.technical_detail || state.error || '';
     renderAiRefineError(recoveryError);
     const results = document.getElementById('ai_img_results');
@@ -2123,7 +2124,7 @@
     actions.innerHTML = `
       <button type="button" data-ai-refine-resume
         style="padding:8px 16px; border:none; border-radius:7px; background:#047857; color:#fff; cursor:pointer;">
-        ${replayPlanner ? '使用已保存方案继续' : pricingRequired ? '重新核价并继续' : '继续检查原任务'}
+        ${taskRecord.requires_paid_confirmation ? '确认费用并继续原方案' : replayPlanner ? '使用已保存方案继续' : pricingRequired ? '重新核价并继续' : '继续检查原任务'}
       </button>
       <span style="align-self:center; color:#6b7280; font-size:12px;">如仍无法恢复，请返回桌面软件“日志诊断”导出报告。</span>`;
     results.appendChild(actions);
@@ -2139,10 +2140,10 @@
     });
   }
 
-  async function rememberAiRefineResult(taskId) {
+  async function rememberAiRefineResult(taskId, productCategory) {
     try {
       await postJson(`/api/workspace-results/ai-refine-v2/${encodeURIComponent(taskId)}`, {
-        product_category: currentProductType,
+        product_category: productCategory || '',
       });
       return true;
     } catch (err) {
@@ -2207,6 +2208,7 @@
     const maxIter = 300;
     let finalState = null;
     let consecutiveNotFound = 0;
+    let recoveryAttempts = 0;
 
     for (let i = 0; i < maxIter; i++) {
       let state;
@@ -2259,6 +2261,23 @@
       if (taskRecord.status !== state.status) {
         taskRecord = persistAiRefineTask({ ...taskRecord, status: state.status }) || taskRecord;
       }
+      if (['outcome_unknown', 'recovery_required'].includes(state.status) && recoveryAttempts < 3) {
+        recoveryAttempts++;
+        if (ui.subText) ui.subText.textContent = `正在恢复原任务（${recoveryAttempts}/3），查询结果并继续下载，不会重新付费提交…`;
+        await new Promise(r => setTimeout(r, 3000 * recoveryAttempts));
+        try {
+          await postJson(`/api/ai-refine-v2/recover/${encodeURIComponent(taskId)}`, { query_only: true });
+          continue;
+        } catch (error) {
+          if (error.code === 'AI_REFINE_CONFIRM_CONTINUATION_REQUIRED') {
+            taskRecord = persistAiRefineTask({ ...taskRecord, requires_paid_confirmation: true }) || taskRecord;
+            state.error = error.message;
+          }
+          // A lost recovery response can still have started the original worker.
+          // Poll its status again; authorization/admission failures need user action.
+          if (![400, 401, 403, 409].includes(error.httpStatus)) continue;
+        }
+      }
       if (state.status === 'outcome_unknown') {
         finalState = state;
         break;
@@ -2309,7 +2328,7 @@
 
     if (ui.loading) ui.loading.style.display = 'none';
     renderAiRefineResult(finalState);
-    const remembered = await rememberAiRefineResult(taskId);
+    const remembered = await rememberAiRefineResult(taskId, taskRecord.input_summary?.product_category);
     if (remembered) clearPersistedAiRefineTask(taskId);
     return finalState;
   }
@@ -2344,6 +2363,13 @@
     let productTitle = '';
     let inputMeta = null;
     const reroll = options.reroll;
+    if (taskRecord?.requires_paid_confirmation && options.recoverOriginal) {
+      const confirmed = await confirmInWorkspace(
+        '已保存方案可以继续，但尚未提交的图片会产生生图费用。将重新核价并沿用原任务预算，已提交的请求不会重复购买。',
+        { title: '继续原方案', confirmLabel: '确认费用并继续' },
+      );
+      if (!confirmed) return;
+    }
     if (reroll && !taskRecord?.task_id) {
       const confirmed = await confirmInWorkspace(
         `只重新生成第 ${reroll.block_index + 1} 张，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
@@ -2403,8 +2429,17 @@
             'DESKTOP_AI_REFINE_ALREADY_RUNNING', 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED',
             'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN'
           ].includes(startError.code)) {
-            startError.newTaskBlocked = true;
-            throw startError;
+            if (!startError.taskId) throw startError;
+            const previous = loadPersistedAiRefineTask();
+            taskRecord = persistAiRefineTask({
+              ...(previous?.task_id === startError.taskId ? previous : {}),
+              task_id: startError.taskId,
+              status: 'pending',
+              newTaskBlocked: true,
+              input_summary: previous?.task_id === startError.taskId ? previous.input_summary :
+                { product_title: startError.productTitle || '' },
+            });
+            if (ui.subText) ui.subText.textContent = `正在处理原任务：${startError.productTitle || '上次产品'}。当前资料保留，新任务尚未提交。`;
           } else {
             if (startError.httpStatus >= 500 && ![
               'DESKTOP_AI_REFINE_NOT_CONFIGURED', 'DESKTOP_PAID_ACTION_DISABLED'

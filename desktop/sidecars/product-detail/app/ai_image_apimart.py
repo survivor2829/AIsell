@@ -154,19 +154,23 @@ def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
         valid_id = False
     if not root or not valid_id:
         raise APIMartOutcomeUnknown("", "原请求缺少可核对的网关回执", stage="receipt")
-    try:
-        code, body = _http_get_json_response(f"{root}/operations/{operation_id}", api_key)
-    except Exception as exc:
-        raise APIMartOutcomeUnknown(
-            "", "原提交回执暂不可确认，未重新上传或提交", stage="receipt",
-            http_status=getattr(exc, "code", None),
-        ) from None
-    task_id = _submit_task_id(body) if code in (200, 201) else ""
-    if not task_id:
-        raise APIMartOutcomeUnknown(
-            "", "原提交回执尚无供应商任务编号，未重新提交", stage="receipt", http_status=code,
-        )
-    return task_id
+    code = None
+    for attempt in range(3):
+        try:
+            code, body = _http_get_json_response(f"{root}/operations/{operation_id}", api_key)
+            task_id = _submit_task_id(body) if code in (200, 201) else ""
+            if task_id:
+                return task_id
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+        # Only repeat receipt GETs. Never retry upload or billable submission.
+        if code not in (None, 202, 404, 408, 429, 500, 502, 503, 504):
+            break
+        if attempt < 2:
+            time.sleep(2 ** (attempt + 1))
+    raise APIMartOutcomeUnknown(
+        "", "原提交回执尚不可确认，已保留请求编号，未重新提交", stage="receipt", http_status=code,
+    ) from None
 
 
 def _resolve_api_key(api_key: str = "") -> str:

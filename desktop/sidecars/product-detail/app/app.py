@@ -5336,11 +5336,15 @@ def ai_refine_v2_recover(task_id: str):
         return jsonify({"ok": True, **state})
     try:
         gpt_image_key, _ = _get_gpt_image_key(current_user)
-        if state.get("status") == "pricing_required":
+        if (request.get_json(silent=True) or {}).get("query_only") is True:
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, query_only=True)
+        elif state.get("status") == "pricing_required":
             deepseek_key, _ = _get_deepseek_key(current_user)
             recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, deepseek_key)
         else:
             recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
+    except pipeline_runner.RecoveryConfirmationRequired as exc:
+        return jsonify({"ok": False, "error": str(exc), "code": "AI_REFINE_CONFIRM_CONTINUATION_REQUIRED"}), 409
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 409
     except RuntimeError as exc:
@@ -5369,7 +5373,7 @@ def workspace_result_save_ai_refine_v2(task_id: str):
         return jsonify({"error": "任务缺少 assembled_url，不能保存"}), 400
 
     data = request.get_json(silent=True) or {}
-    product_category = (data.get("product_category") or "").strip()
+    product_category = (state.get("product_category") or data.get("product_category") or "").strip()
     if product_category not in ALLOWED_PRODUCT_TYPES:
         product_category = ""
     blocks = state.get("blocks") or []

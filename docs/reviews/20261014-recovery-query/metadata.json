@@ -1,0 +1,78 @@
+{
+  "branch": "codex/refine-automatic-recovery",
+  "completed_at": "2026-10-14T07:25:23.502524+00:00",
+  "cost": {
+    "host": "codex",
+    "scope": {
+      "changed_lines": 146,
+      "depth": "full",
+      "exec_nontest_lines": 38,
+      "size_band": "small",
+      "unclassified_lines": {
+        ".html": 25
+      }
+    },
+    "stages": [
+      {
+        "elapsed_seconds": 24.407,
+        "ended_at": "2026-10-14T07:15:18.133383+00:00",
+        "facts": {
+          "changed_lines": 146,
+          "depth": "full",
+          "exec_nontest_lines": 38,
+          "size_band": "small",
+          "unclassified_lines": {
+            ".html": 25
+          }
+        },
+        "stage": "scope",
+        "started_at": "2026-10-14T07:14:53.726053+00:00"
+      },
+      {
+        "elapsed_seconds": 0.088,
+        "ended_at": "2026-10-14T07:15:18.221109+00:00",
+        "reviewers": 8,
+        "stage": "select",
+        "started_at": "2026-10-14T07:15:18.133383+00:00"
+      },
+      {
+        "candidates": 2,
+        "elapsed_seconds": 355.953,
+        "ended_at": "2026-10-14T07:21:14.174493+00:00",
+        "stage": "dispatch",
+        "started_at": "2026-10-14T07:15:18.221109+00:00"
+      },
+      {
+        "candidates": 2,
+        "elapsed_seconds": 28.463,
+        "ended_at": "2026-10-14T07:22:13.570258+00:00",
+        "stage": "merge",
+        "started_at": "2026-10-14T07:21:45.107220+00:00"
+      },
+      {
+        "elapsed_seconds": 73.202,
+        "ended_at": "2026-10-14T07:23:40.827789+00:00",
+        "stage": "validate",
+        "started_at": "2026-10-14T07:22:27.625762+00:00"
+      },
+      {
+        "candidates": 0,
+        "elapsed_seconds": 38.938,
+        "ended_at": "2026-10-14T07:25:23.579392+00:00",
+        "stage": "report",
+        "started_at": "2026-10-14T07:24:44.641038+00:00"
+      }
+    ],
+    "status": "complete",
+    "totals": {
+      "artifact_bytes": 620149,
+      "candidates": 2,
+      "elapsed_seconds": 521.051,
+      "reviewers": 8
+    },
+    "truncated_events": 0
+  },
+  "head_sha": "8b9e43cbdbcde1517c8503fd4ef9c787167d07fc",
+  "run_id": "20261014-recovery-query",
+  "verdict": "Ready to merge"
+}

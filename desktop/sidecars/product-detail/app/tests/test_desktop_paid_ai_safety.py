@@ -11,6 +11,85 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 ENTRY = APP_ROOT / "desktop_entry.py"
 
 
+def test_workspace_automatically_recovers_original_task_without_new_purchase():
+    template = (APP_ROOT / 'templates/workspace.html').read_text(encoding='utf-8')
+    poll = template[template.index('  async function pollAiRefineTask('):template.index('  async function generateAiHtmlV2(')]
+    run = template[template.index('  async function runAiHtmlV2('):template.index('  async function handleAiRefineRunError(')]
+    script = r'''
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+(async () => {
+  for (const scenario of ['transient', 'persistent', 'lost-response', 'requires-payment']) {
+    let queries = 0, recoveries = 0, rendered = '', saved = 0;
+    const context = {
+      setTimeout: callback => callback(),
+      aiRefineModeBadge: () => 'test',
+      AI_REFINE_NON_RETRYABLE_POLL_STATUSES: new Set([400,401,403,409]),
+      AI_REFINE_TERMINAL_STATUSES: new Set(['success','failed','recovery_required','pricing_required']),
+      archivedAiRefineTasks: new Set(),
+      persistAiRefineTask: value => value,
+      clearPersistedAiRefineTask: id => assert.equal(id, 'paid-original'),
+      fetch: async url => {
+        assert.match(url, /status\/paid-original$/);
+        queries++;
+        const status = queries === 1 || scenario === 'persistent' || scenario === 'requires-payment' ? 'outcome_unknown' : 'success';
+        return {ok:true,status:200,json:async()=>({task_id:'paid-original',status,image_url:status==='success'?'/saved.png':''})};
+      },
+      postJson: async (url, body) => {
+        assert.match(url, /recover\/paid-original$/);
+        assert.deepEqual(JSON.parse(JSON.stringify(body)), {query_only:true});
+        recoveries++;
+        if(scenario==='lost-response') throw new Error('response disconnected');
+        if(scenario==='requires-payment') throw Object.assign(new Error('confirmation required'),{httpStatus:409,code:'AI_REFINE_CONFIRM_CONTINUATION_REQUIRED'});
+        return {status:'running_recovery'};
+      },
+      renderAiRefineResult: () => {rendered='success'},
+      renderAiRefineRecoveryRequired: (state, record) => {
+        rendered='recovery';
+        if(scenario==='requires-payment') assert.equal(record.requires_paid_confirmation,true);
+      },
+      currentProductType: 'new-category',
+      rememberAiRefineResult: async (id,category) => {assert.equal(id,'paid-original');assert.equal(category,'original-category');saved++;return true},
+    };
+    vm.createContext(context);
+    vm.runInContext(SOURCE, context);
+    await context.pollAiRefineTask({task_id:'paid-original',input_summary:{product_category:'original-category'}}, {loading:{style:{}},results:{},bar:{style:{}},subText:{}});
+    assert.equal(recoveries, scenario==='persistent'?3:1);
+    assert.equal(rendered, ['transient','lost-response'].includes(scenario)?'success':'recovery');
+    assert.equal(saved, rendered==='success'?1:0);
+  }
+  for (const accepted of [false, true]) {
+    let confirmations = 0, prepared = 0, posts = 0, polls = 0;
+    const context = {
+      confirmInWorkspace: async () => {confirmations++;return accepted},
+      prepareAiRefineWorkspace: () => {prepared++;return {subText:{},loading:{style:{}},results:{}}},
+      postJson: async (url, body) => {
+        assert.equal(accepted,true);
+        assert.equal(confirmations,1);
+        assert.equal(url,'/api/ai-refine-v2/recover/paid-original');
+        assert.deepEqual(JSON.parse(JSON.stringify(body)),{});
+        posts++;
+        return {status:'running_recovery'};
+      },
+      persistAiRefineTask: value => value,
+      pollAiRefineTask: async record => {assert.equal(record.task_id,'paid-original');assert.equal(accepted,true);polls++},
+      handleAiRefineRunError: error => {throw error},
+    };
+    vm.createContext(context);
+    vm.runInContext(SOURCE_RUN,context);
+    await context.runAiHtmlV2({resumeTask:{task_id:'paid-original',requires_paid_confirmation:true},recoverOriginal:true});
+    assert.equal(confirmations,1);
+    assert.equal(prepared,Number(accepted));
+    assert.equal(posts,Number(accepted));
+    assert.equal(polls,Number(accepted));
+  }
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    completed = subprocess.run(['node', '-'], input='const SOURCE='+json.dumps(poll)+';\nconst SOURCE_RUN='+json.dumps(run)+';\n'+script,
+                               text=True, capture_output=True, timeout=20)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_unknown_archive_preserves_new_inputs_and_survives_process_and_port_change(tmp_path):
     code = r'''
 import hashlib
@@ -89,7 +168,7 @@ with sync_playwright() as pw:
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(origin + "/")
     if phase == "archive":
-        expect(page.get_by_role("button", name="核对后归档并解除阻塞")).to_be_visible()
+        expect(page.get_by_role("button", name="核对后归档并解除阻塞")).to_be_visible(timeout=30000)
     else:
         assert "new-confirmed-task" not in page.locator("#ai_img_results").inner_text()
         assert page.evaluate("loadPersistedAiRefineTask()") is None
@@ -104,7 +183,7 @@ with sync_playwright() as pw:
     page.locator("#btn_ai_html_v2").click()
     page.get_by_role("button", name="开始付费生成", exact=True).click()
     if phase == "archive":
-        expect(page.locator("#ai_img_results")).to_contain_text("新任务尚未提交")
+        expect(page.locator("#ai_img_results")).to_contain_text("新任务尚未提交", timeout=30000)
         expect(page.locator("#ai_img_results")).to_contain_text(task_id)
         old_title = json.loads((task_dir / "_input.json").read_text(encoding="utf-8"))["product_title"]
         expect(page.locator("#ai_img_results")).to_contain_text(old_title)

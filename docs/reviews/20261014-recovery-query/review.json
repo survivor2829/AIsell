@@ -1,0 +1,93 @@
+{
+  "status": "complete",
+  "verdict": "Ready to merge",
+  "verdict_reason": "No confirmed findings remain in the final tree. Independent validation rejected both initial candidates after verifying the root fixes. This is a source-review verdict; publication and real paid recovery acceptance are not established by this review.",
+  "scope": {
+    "base": "8b9e43c",
+    "branch": "codex/refine-automatic-recovery",
+    "head_sha": "8b9e43cbdbcde1517c8503fd4ef9c787167d07fc",
+    "pr_url": null,
+    "files_changed": 10
+  },
+  "intent": "Recover original paid image tasks automatically using bounded receipt GET and query-only recovery, without resubmission or paid continuation; preserve original task identity/new-product inputs and concurrent paid ledger. Confirm saved-plan continuation explicitly. Historic remote failure trigger unproven.",
+  "intent_confidence": "explicit",
+  "reviewers": [
+    "correctness",
+    "project-standards",
+    "testing",
+    "security",
+    "reliability",
+    "adversarial",
+    "api-contract",
+    "julik-frontend-races"
+  ],
+  "findings": [],
+  "actionable_findings": [],
+  "triage_groups": [],
+  "pre_existing_findings": [],
+  "requirements_completeness": null,
+  "learnings": [],
+  "agent_native_gaps": [],
+  "deployment_notes": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The final Node harness proves that typed continuation refusal persists requires_paid_confirmation, but stubs renderAiRefineRecoveryRequired and never executes generateAiHtmlV2. Add a focused interaction check for the new paid-continuation dialog: cancel must issue no recovery POST; explicit confirmation must recover the original task without submitting the current new-product inputs. This directly covers the new authorization boundary in workspace.html:2366-2372. Existing archive browser coverage exercises the separate archive confirmation path."
+  ],
+  "coverage": {
+    "depth": "full",
+    "notes": [
+      "Full depth for paid recovery/public contract/concurrency.",
+      "Root AGENTS.md governs all paths; app/CLAUDE.md governs app subtree. No matching plan.",
+      "Root fixed initial candidates during review; validator must inspect current final tree and reject resolved candidates with cited evidence.",
+      "Final diff has7implementation/test+3mechanical1.1.92metadata.",
+      "API endpoint test gap resolved by finaltestaddition; standards provisionalhostgap withdrawn after priorhostevidence.",
+      "Python C:/Users/Scott/AppData/Roaming/uv/python/cpython-3.12-windows-x86_64-none/python.exe",
+      "Cross-model not run: no attested-different provider CLI installed. In-process adversarial lens completed.",
+      "No semantic duplicates or settled conflicts; no plan discovered, so settlement suppression was not evaluated.",
+      "First-evidence backfilled: 0; quote-gate demotions: 0; mode-aware demotions: 0; malformed findings: 0; malformed returns: 0.",
+      "Both initial correctness candidates are preserved for the explicitly requested independent validator disposition against the final tree; merge inspection observes new typed-refusal persistence and confirmation at workspace.html:2272-2274 and 2366-2372, and original-category priority at app.py:5376.",
+      "Validator shortcut skipped: 0; no independent cross-model corroboration. One batch contains both actionable candidates.",
+      "Root reports 61 initial targeted tests and build:test passed; final 35 targeted tests passed, including original-category preservation. Archive browser acceptance passed. Review did not rerun tests.",
+      "One validator batch landed: both initial candidates rejected as resolved in the final working tree. Report leaf independently checked the cited typed refusal, explicit confirmation, cancellation return, and original-category priority lines. No rejected claim is retained as a residual risk.",
+      "Review scope is the 10-file working-tree diff against 8b9e43c; head_sha identifies its base commit, not a commit containing these uncommitted changes.",
+      "No source changes, commits, pushes, paid calls, packaging, or release actions were performed by this review. Historical remote failure trigger remains unproven."
+    ],
+    "validator": {
+      "outcome": "verdicts",
+      "confirmed": 0,
+      "rejected": 2,
+      "unresolved": 0,
+      "malformed": 0,
+      "failed": 0,
+      "shortcut_skipped": 0,
+      "protected_subject_reclassifications": 0,
+      "rejections": [
+        {
+          "#": 1,
+          "status": "rejected",
+          "protected_subject": "authorization-authentication",
+          "reason": "The alleged restart state (saved planning without image operations) is reachable through pipeline_runner.py:374-380, but current pipeline_runner.py:1965-1970 raises RecoveryConfirmationRequired before recovery admission, app.py:5346-5347 returns its structured 409 code, workspace.html:2272-2274 persists requires_paid_confirmation (retained by the spread at :989-990), :2127 labels the action explicitly, and :2366-2371 awaits fee confirmation and returns on cancellation before the non-query recover POST at :2462-2464, refuting the original unconfirmed-payment path."
+        },
+        {
+          "#": 2,
+          "status": "rejected",
+          "protected_subject": null,
+          "reason": "For the alleged old-task takeover while another category remains selected, workspace.html:2331 now supplies the original task input summary rather than currentProductType, and app.py:5361,5376 prioritizes the recovered task's category, which pipeline_runner.py:113-115 reads from the original _input.json for terminal results on both in-memory (to_dict at :87-89, get_task_status at :332-335) and restarted (:354) paths; the current form category therefore cannot replace the persisted original category."
+        }
+      ]
+    },
+    "cross_model": "Cross-model not run: no attested-different provider CLI installed. In-process adversarial lens completed.",
+    "suppressed_by_confidence": {},
+    "mode_aware_demotions": 0,
+    "first_evidence_backfilled": 0,
+    "quote_gate_demotions": 0,
+    "failed_reviewers": [],
+    "compound_packs": {
+      "roots": [],
+      "errors": [],
+      "warnings": []
+    }
+  },
+  "artifact_path": "D:/OpenAI/CodexHome/worktrees/0054/xiaoxi-active-touch/docs/reviews/20261014-recovery-query",
+  "run_id": "20261014-recovery-query"
+}

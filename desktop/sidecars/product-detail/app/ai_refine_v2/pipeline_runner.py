@@ -110,6 +110,10 @@ def _with_costs(task_id: str, result: dict) -> dict:
     result["can_replay_planner"] = (
         result.get("status") == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, result)
     )
+    if result.get("status") in {"success", "partial_success"}:
+        inputs = _read_json(_OUTPUT_BASE / task_id / "_input.json") or {}
+        result["product_category"] = inputs.get("product_category") or ""
+        result["product_title"] = inputs.get("product_title") or ""
     return result
 
 
@@ -1942,7 +1946,11 @@ def _recovery_worker(task_id: str, gpt_image_key: str) -> None:
             _RECOVERY_TASK_IDS.discard(task_id)
 
 
-def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = "") -> dict:
+class RecoveryConfirmationRequired(ValueError):
+    """Continuing a saved plan may purchase images; a query cannot authorize it."""
+
+
+def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = "", *, query_only: bool = False) -> dict:
     """Recover receipts, or reprice and continue work that was never submitted."""
     state = get_task_status(task_id)
     if state is None:
@@ -1958,6 +1966,8 @@ def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = ""
         not any(name.startswith("image:") for name in operations)
         and bool(_read_json(directory / "_planning.json") or _read_json(directory / "_planner_response.json"))
     )
+    if query_only and resume_planning:
+        raise RecoveryConfirmationRequired("自动恢复仅查询原生图任务，不会新增策划或生图费用，请手动确认继续原方案。")
     with _TASKS_LOCK:
         if task_id in _RECOVERY_TASK_IDS:
             return _TASKS[task_id].to_dict()
