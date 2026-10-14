@@ -75,7 +75,10 @@ function assertMainLifecycleAndNavigation() {
   assert.match(source, /registerProductDetailIpc/, "main must register product-detail IPC in every edition");
   assert.match(source, /registerProductDetailDownloads/, "main must own product-detail file saving");
   assert.match(source, /app\.getPath\("desktop"\)/, "product-detail downloads must use the Windows desktop path");
-  assert.match(source, /XIAOXI_PRODUCT_DETAIL_SIDECAR/, "development runtime must be configured by environment");
+  assert.match(source, /resolveDevelopmentProductDetailLaunch\(\)/, "main must use the shared development runtime resolver");
+  const { resolveDevelopmentProductDetailLaunch } = require("./development-sidecar-runtime.cjs");
+  assert.deepEqual(resolveDevelopmentProductDetailLaunch({ environment: { XIAOXI_PRODUCT_DETAIL_SIDECAR: "configured.exe" } }),
+    { runtimePath: "configured.exe", runtimeArgs: [] }, "the shared resolver must retain the environment override");
   assert.match(
     source,
     /getTrustedRuntimeEnvironment:\s*productDetailRuntimeEnvironment/,
@@ -190,14 +193,12 @@ function assertRendererContract() {
   assert.match(page, /<summary>故障信息<\/summary>/, "technical details must remain available in a collapsed diagnostic panel");
   assert.match(
     styles,
-    /\.product-detail-page\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
-    "product-detail page must fill the content card without creating a second scroll surface"
+    /\.product-detail-page\s*\{[^}]*min-height:\s*100%;/s,
+    "product-detail page must fill the content card and grow with the workspace"
   );
-  assert.match(
-    styles,
-    /\.product-detail-workspace\s*\{[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*overflow:\s*hidden;/s,
-    "product-detail workspace must consume the remaining page height"
-  );
+  const workspaceStyles = styles.match(/^\.product-detail-workspace\s*\{([^}]*)\}/m)?.[1] || "";
+  assert.ok(Number(workspaceStyles.match(/min-height:\s*(\d+)px;/)?.[1]) >= 720,
+    "product-detail workspace must retain at least 720 CSS px initial height");
   assert.match(
     styles,
     /\.product-detail-workspace iframe\s*\{[^}]*height:\s*100%;[^}]*position:\s*absolute;[^}]*inset:\s*0;/s,
