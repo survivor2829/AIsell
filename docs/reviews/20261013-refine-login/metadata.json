@@ -1,0 +1,79 @@
+{
+  "branch": "codex/refine-reliability-login",
+  "completed_at": "2026-10-14T01:15:00.112785+00:00",
+  "cost": {
+    "host": "codex",
+    "scope": {
+      "changed_lines": 401,
+      "depth": "full",
+      "exec_nontest_lines": 170,
+      "size_band": "small",
+      "unclassified_lines": {
+        ".css": 96,
+        ".md": 34
+      }
+    },
+    "stages": [
+      {
+        "elapsed_seconds": 21.391,
+        "ended_at": "2026-10-14T01:04:13.545085+00:00",
+        "facts": {
+          "changed_lines": 401,
+          "depth": "full",
+          "exec_nontest_lines": 170,
+          "size_band": "small",
+          "unclassified_lines": {
+            ".css": 96,
+            ".md": 34
+          }
+        },
+        "stage": "scope",
+        "started_at": "2026-10-14T01:03:52.153639+00:00"
+      },
+      {
+        "elapsed_seconds": 0.081,
+        "ended_at": "2026-10-14T01:04:13.626160+00:00",
+        "reviewers": 6,
+        "stage": "select",
+        "started_at": "2026-10-14T01:04:13.545085+00:00"
+      },
+      {
+        "candidates": 2,
+        "elapsed_seconds": 292.242,
+        "ended_at": "2026-10-14T01:09:05.867957+00:00",
+        "stage": "dispatch",
+        "started_at": "2026-10-14T01:04:13.626160+00:00"
+      },
+      {
+        "candidates": 2,
+        "elapsed_seconds": 39.838,
+        "ended_at": "2026-10-14T01:10:27.861517+00:00",
+        "stage": "merge",
+        "started_at": "2026-10-14T01:09:48.023630+00:00"
+      },
+      {
+        "elapsed_seconds": 181.138,
+        "ended_at": "2026-10-14T01:13:48.929389+00:00",
+        "stage": "validate",
+        "started_at": "2026-10-14T01:10:47.791016+00:00"
+      },
+      {
+        "elapsed_seconds": 14.891,
+        "ended_at": "2026-10-14T01:15:00.185227+00:00",
+        "stage": "report",
+        "started_at": "2026-10-14T01:14:45.294586+00:00"
+      }
+    ],
+    "status": "complete",
+    "totals": {
+      "artifact_bytes": 563222,
+      "candidates": 2,
+      "elapsed_seconds": 549.581,
+      "reviewers": 6
+    },
+    "truncated_events": 0
+  },
+  "head_sha": "5f7d09a2345cccfaedd8e791b498acd7faac0fc3",
+  "run_id": "20261013-refine-login",
+  "verdict": "Ready with fixes"
+}

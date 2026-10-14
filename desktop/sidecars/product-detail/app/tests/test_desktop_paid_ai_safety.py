@@ -451,6 +451,72 @@ updating = client_one.post("/internal/update-state", json={"hold": False},
                           headers={"x-xiaoxi-control-token": config.control_token})
 assert updating.status_code == 200 and updating.get_json()["busy"] is True
 
+# Recovery 202 takes ownership before a new paid execute can be admitted.
+archive = json.loads(archive_path.read_text(encoding="utf-8"))
+archive["reopened-plan"] = {"state": "failed", "saved_plan_reopened_at": 1}
+archive_path.write_text(json.dumps(archive), encoding="utf-8")
+ledger_path.write_text(json.dumps({"task_id": "reopened-plan", "state": "failed", "user_id": user_id}), encoding="utf-8")
+pipeline_runner.get_task_status = lambda task_id: {"task_id": task_id, "user_id": user_id, "status": "failed"}
+def resume(task_id, *args):
+    pipeline_runner.get_task_status = lambda tid: {"task_id": tid, "user_id": user_id, "status": "running_recovery"}
+    return {"task_id": task_id, "status": "running_recovery"}
+pipeline_runner.start_task_recovery = resume
+# Pause a poll after its failed snapshot is captured but before the desktop
+# ledger hook. Recovery completes admission while that response is in flight.
+stale_captured = threading.Event()
+release_stale = threading.Event()
+def hold_stale_poll(response):
+    from flask import request
+    if request.path == "/api/ai-refine-v2/status/reopened-plan":
+        stale_captured.set()
+        assert release_stale.wait(5)
+    return response
+flask_app.after_request_funcs[None].append(hold_stale_poll)
+stale_result = {}
+stale_thread = threading.Thread(target=lambda: stale_result.update(
+    response=client_two.get("/api/ai-refine-v2/status/reopened-plan")))
+stale_thread.start()
+assert stale_captured.wait(5)
+resumed = post(client_one, csrf_one, "/api/ai-refine-v2/recover/reopened-plan", {})
+assert resumed.status_code == 202, resumed.data
+release_stale.set()
+stale_thread.join(5)
+assert not stale_thread.is_alive()
+assert stale_result["response"].get_json()["status"] == "failed"
+flask_app.after_request_funcs[None].remove(hold_stale_poll)
+assert json.loads(ledger_path.read_text(encoding="utf-8"))["state"] == "pending"
+assert post(client_two, csrf_two, "/api/ai-refine-v2/execute", payload).status_code == 409
+# Explicit resolution must rearchive a formerly reopened task.
+pipeline_runner.get_task_status = lambda tid: {"task_id": tid, "user_id": user_id, "status": "outcome_unknown"}
+client_one.get("/api/ai-refine-v2/status/reopened-plan")
+resolved = post(client_one, csrf_one, "/desktop/ai-refine-v2/resolve-unknown", {"confirm_new_task": True, "task_id": "reopened-plan"})
+assert resolved.status_code == 200, resolved.data
+assert post(client_one, csrf_one, "/api/ai-refine-v2/recover/reopened-plan", {}).status_code == 409
+
+# An admitted recovery that raises retains unknown outcome and releases its
+# lock, so a different request thread can complete and refuse another order.
+ledger_path.write_text(json.dumps({"task_id": "recovery-crash", "state": "recovery_required",
+                                  "user_id": user_id}), encoding="utf-8")
+crash_state = {"task_id": "recovery-crash", "user_id": user_id, "status": "recovery_required"}
+pipeline_runner.get_task_status = lambda tid: dict(crash_state)
+def crash_recovery(*args):
+    crash_state["status"] = "outcome_unknown"
+    raise OSError("synthetic admitted recovery failure")
+pipeline_runner.start_task_recovery = crash_recovery
+crashed = post(client_one, csrf_one, "/api/ai-refine-v2/recover/recovery-crash", {})
+assert crashed.status_code == 500, crashed.data
+crash_ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+assert crash_ledger["task_id"] == "recovery-crash" and crash_ledger["state"] == "outcome_unknown"
+blocked_result = {}
+following = threading.Thread(target=lambda: blocked_result.update(
+    response=post(client_two, csrf_two, "/api/ai-refine-v2/execute", payload)), daemon=True)
+following.start()
+following.join(5)
+assert not following.is_alive(), "recovery teardown leaked admission lock"
+assert blocked_result["response"].status_code == 409
+assert blocked_result["response"].get_json()["task_id"] == "recovery-crash"
+assert len(start_calls) == 4
+
 print(json.dumps({
     "corrupt": corrupt.status_code,
     "concurrent": second.status_code,
@@ -512,3 +578,39 @@ print(json.dumps({
         "recovery_blocked": 409,
         "recovery_task_id": "task-recovery-4",
     }
+
+def test_startup_reopens_only_current_replayable_auto_archived_plan(tmp_path):
+    code = r'''
+import json, os
+from pathlib import Path
+from unittest.mock import patch
+import desktop_entry
+from ai_refine_v2 import pipeline_runner
+root = Path(os.environ['TEST_DATA_DIR'])
+state = os.environ['TEST_LEDGER_STATE']
+config = desktop_entry.DesktopConfig(host='127.0.0.1', port=0, data_dir=root,
+    bootstrap_token='a'*48, control_token='b'*48)
+db=root/'database'; db.mkdir(parents=True)
+ledger={'task_id':'saved-plan','state':state,'user_id':1}
+(db/'desktop-ai-refine-ledger.json').write_text(json.dumps(ledger),encoding='utf8')
+archive={ 'saved-plan':{**ledger,'archived_at':1} }
+(db/'desktop-ai-refine-archive.json').write_text(json.dumps(archive),encoding='utf8')
+status={'status':'failed','task_id':'saved-plan','user_id':1,
+        'can_replay_planner':os.environ['TEST_REPLAY']=='1'}
+with patch.object(pipeline_runner,'get_task_status',return_value=status):
+    app,_=desktop_entry.create_desktop_application(config,shutdown_callback=lambda:None)
+    active=app.config['DESKTOP_AI_REFINE_ARCHIVED_TASKS']()
+raw=json.loads((db/'desktop-ai-refine-archive.json').read_text(encoding='utf8'))
+expected=state=='failed' and status['can_replay_planner']
+assert ('saved-plan' not in active)==expected
+assert raw['saved-plan']['archived_at']==1
+assert bool(raw['saved-plan'].get('saved_plan_reopened_at'))==expected
+print('archive recovery passed')
+'''
+    for state, replay in [('failed', '1'), ('failed', '0'), ('resolved_unknown', '1')]:
+        env = {**os.environ, 'FLASK_ENV': 'development', 'PYTHONUTF8': '1',
+               'TEST_DATA_DIR': str(tmp_path / (state + replay)),
+               'TEST_LEDGER_STATE': state, 'TEST_REPLAY': replay}
+        result = subprocess.run([sys.executable, '-c', code], cwd=APP_ROOT, env=env,
+                                capture_output=True, text=True, encoding='utf8', timeout=30)
+        assert result.returncode == 0, result.stderr

@@ -27,6 +27,7 @@ import json
 import concurrent.futures
 import mimetypes
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -699,11 +700,24 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             bid = f"screen_{idx:02d}_{role}"
         else:
             bid = f"screen_{role}"
+        prompt = s.get("prompt") or ""
+        specifications = []
+        if role == "spec_table":
+            for spec in planning_v2.get("specifications") or []:
+                value = str(spec.get("value") if spec.get("value") is not None else "").strip()
+                if value.casefold() in {"", "未提供", "未填写", "未知", "待确认", "不详", "n/a"}:
+                    name = str(spec.get("name") or "").strip()
+                    if name and value:
+                        prompt = re.sub(re.escape(name) + r"\s*[:：]\s*" + re.escape(value)
+                                        + r"(?=\s*(?:[；;，,。\n]|$))", "", prompt,
+                                        flags=re.IGNORECASE)
+                else:
+                    specifications.append(spec)
         blocks.append({
             "block_id": bid,
             "visual_type": role,        # role 填 visual_type 字段 (v2 不分 in_scene/closeup/concept)
             "is_hero": (idx == 1),       # 第 1 屏 (idx=1) 严格视为 hero
-            "prompt": s.get("prompt") or "",
+            "prompt": prompt,
             "title": s.get("title") or "",
             "planning_version": planning_v2.get("planning_version"),
             "style_dna": planning_v2.get("style_dna") or {},
@@ -716,7 +730,7 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
                 and any(word in str(planning_v2.get("product_meta") or {}) for word in ("清洁", "洗地", "扫地"))
             ),
             "evidence": s.get("evidence") or [],
-            "specifications": planning_v2.get("specifications") if role == "spec_table" else [],
+            "specifications": specifications,
         })
     return blocks
 
@@ -847,9 +861,12 @@ def _generate_one_block_v2(
             "Print only the supplied structured title, subtitle and specification values; "
             "do not copy extra headlines, numbers, certifications or guarantees from creative directions. "
             "Any factual demonstration must remain within the source evidence. "
+            "For parameter tables, print exactly the supplied rows below; omit missing/unknown values "
+            "and never add placeholder rows from earlier directions or source evidence. "
             "If directions conflict, the following verified content wins: "
             + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"),
                           "specifications": block.get("specifications") or [],
+                          "specification_row_count": len(block.get("specifications") or []),
                           "source_evidence": block.get("evidence") or []}, ensure_ascii=False)
         )
 

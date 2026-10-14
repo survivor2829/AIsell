@@ -689,6 +689,7 @@ def _download_generation_results(
     *,
     schema_mode: str,
     is_v2: bool,
+    progress_cb=None,
 ) -> list[dict]:
     """Checkpoint every provider URL, then download without any resubmission."""
     import ai_image_apimart
@@ -735,7 +736,10 @@ def _download_generation_results(
     )
 
     download_errors: list[str] = []
-    for block in blocks:
+    for index, block in enumerate(blocks):
+        if progress_cb:
+            progress_cb(80 + int(index / max(len(blocks), 1) * 4),
+                        f"生图已完成，正在下载图片 {index + 1}/{len(blocks)}…")
         raw_url = block["raw_url"]
         if raw_url and not block["placeholder"]:
             try:
@@ -868,6 +872,7 @@ def _run_real_generator(planning: dict, product_image_url: str,
         total,
         schema_mode="v1",
         is_v2=False,
+        progress_cb=progress_cb,
     )
     return blocks, result.total_cost_rmb
 
@@ -948,6 +953,7 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
         total,
         schema_mode="v2",
         is_v2=True,
+        progress_cb=progress_cb,
     )
     return blocks, result.total_cost_rmb
 
