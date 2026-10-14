@@ -23,6 +23,32 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 ENTRY = APP_ROOT / "desktop_entry.py"
 
 
+def test_dynamic_listener_avoids_browser_blocked_ports_and_retries_occupied_port(monkeypatch):
+    from flask import Flask
+
+    application = Flask(__name__)
+    first = desktop_entry._make_browser_server('127.0.0.1', 0, application)
+    random_port = desktop_entry.secrets.randbelow
+    attempts = []
+
+    def occupied_then_random(size):
+        attempts.append(size)
+        return first.port - 49152 if len(attempts) == 1 else random_port(size)
+
+    try:
+        monkeypatch.setattr(desktop_entry.secrets, 'randbelow', occupied_then_random)
+        second = desktop_entry._make_browser_server('127.0.0.1', 0, application)
+        try:
+            assert 49152 <= first.port <= 65535
+            assert 49152 <= second.port <= 65535
+            assert first.port != second.port
+            assert len(attempts) >= 2
+            assert second.socket.getsockname() == ('127.0.0.1', second.port)
+        finally:
+            second.server_close()
+    finally:
+        first.server_close()
+
 def _clean_env() -> dict[str, str]:
     env = os.environ.copy()
     for name in (

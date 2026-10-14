@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import filecmp
 import hashlib
 import hmac
@@ -19,6 +20,7 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import sys
 import threading
 import time
@@ -869,6 +871,27 @@ def _startup_stage(stage: str) -> None:
     sys.stderr.flush()
 
 
+def _make_browser_server(host: str, port: int, application):
+    options = {"threaded": True, "request_handler": QuietRequestHandler}
+    if port:
+        return make_server(host, port, application, **options)
+    # Windows may allocate a low ephemeral port (e.g. 1719) that Chromium
+    # blocks. Use the IANA dynamic range, keeping the socket bound throughout
+    # handoff to Werkzeug so another process cannot claim the selected port.
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    for _ in range(32):
+        with socket.socket(family, socket.SOCK_STREAM) as listener:
+            try:
+                listener.bind((host, 49152 + secrets.randbelow(16384)))
+            except OSError as exc:
+                if exc.errno in {errno.EADDRINUSE, errno.EACCES}:
+                    continue
+                raise
+            listener.listen()
+            return make_server(host, 0, application, fd=listener.fileno(), **options)
+    raise OSError("无法分配本地动态端口，请检查端口占用或系统保留范围")
+
+
 def _run_server(config: DesktopConfig, protocol_stdout) -> int:
     holder: dict[str, object] = {}
 
@@ -883,18 +906,12 @@ def _run_server(config: DesktopConfig, protocol_stdout) -> int:
         shutdown_callback=request_shutdown,
     )
     _startup_stage("listen")
-    server = make_server(
-        config.host,
-        config.port,
-        flask_app,
-        threaded=True,
-        request_handler=QuietRequestHandler,
-    )
+    server = _make_browser_server(config.host, config.port, flask_app)
     holder["server"] = server
     ready = {
         "event": "ready",
         "host": config.host,
-        "port": server.server_port,
+        "port": server.port,
         "version": VERSION,
         "capabilities": contract.capabilities,
     }
