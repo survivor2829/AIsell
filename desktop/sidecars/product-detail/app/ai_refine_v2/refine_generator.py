@@ -372,7 +372,7 @@ def _generate_one_block(
             last_err = f"{type(e).__name__}: {e}"
             if getattr(e, "outcome_unknown", False):
                 _emit_lifecycle_best_effort(lifecycle_callback, bid, {
-                    "event": "outcome_unknown",
+                    "event": "cancelled" if getattr(e, "not_submitted", False) else "outcome_unknown",
                     "provider_task_id": str(getattr(e, "task_id", "") or ""),
                     "error": str(e),
                 })
@@ -900,7 +900,7 @@ def _generate_one_block_v2(
             last_err = f"{type(e).__name__}: {e}"
             if getattr(e, "outcome_unknown", False):
                 _emit_lifecycle_best_effort(lifecycle_callback, bid, {
-                    "event": "outcome_unknown",
+                    "event": "cancelled" if getattr(e, "not_submitted", False) else "outcome_unknown",
                     "provider_task_id": str(getattr(e, "task_id", "") or ""),
                     "error": str(e),
                 })

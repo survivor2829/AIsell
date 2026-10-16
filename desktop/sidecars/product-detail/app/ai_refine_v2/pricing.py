@@ -35,6 +35,10 @@ class RequestOutcomeUnknown(RuntimeError):
     do_not_retry = True
     outcome_unknown = True
 
+    def __init__(self, message, *, not_submitted=False):
+        super().__init__(message)
+        self.not_submitted = not_submitted
+
 
 def _image_failure_diagnostic(exc):
     """Keep bounded metadata only; exception messages can contain keys or bodies."""
@@ -341,7 +345,7 @@ class CostJournal:
             if existing and not retry:
                 raise RequestOutcomeUnknown("该屏已有付费记录，只能恢复原结果，不能重复提交。")
             if any(op["status"] == "outcome_unknown" for op in previous):
-                raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。")
+                raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。", not_submitted=True)
             if not retry_not_submitted and any(op.get("not_submitted") for op in previous):
                 raise PricingRequired("原生图步骤在提交前失败，已停止后续请求；不会自动重新购买。")
             if not retry and len(previous) >= data.get("image_count", 0):

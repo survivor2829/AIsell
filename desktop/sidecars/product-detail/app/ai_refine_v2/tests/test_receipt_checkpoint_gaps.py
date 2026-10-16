@@ -215,6 +215,18 @@ def test_resume_incomplete_plan_preserves_cover_and_buys_only_missing_screens(ta
     journal.begin("image:1", quote(), .1, block_id=cover_id)
     journal.finish("image:1", "outcome_unknown", provider_task_id="paid-cover")
     checkpoint_fn(cover_id, {"event": "outcome_unknown", "provider_task_id": "paid-cover"})
+    # A worker already dequeued when another screen times out is blocked before
+    # begin()/POST. Its checkpoint must not invent an unknown paid request.
+    blocked = generator._build_blocks_v2(plan)[1]
+    purchase = Mock(side_effect=AssertionError("the unknown receipt must stop new purchases"))
+    def guarded(*args, **kwargs):
+        return journal.image_call(quote(), purchase, *args, **kwargs)
+    with pytest.raises(pricing.RequestOutcomeUnknown):
+        generator._generate_one_block_v2(blocked, generator._to_data_url(str(reference)), "key", guarded, 0, "medium", "3:4",
+                                         lifecycle_callback=checkpoint_fn)
+    purchase.assert_not_called()
+    assert list(journal.load()["operations"]) == ["image:1"]
+    assert runner._read_json(task / "_recovery.json")["blocks"][1]["provider_status"] == "cancelled"
     runner._TASKS.clear()
     monkeypatch.setattr(adapter, "poll_image_task", lambda *a, **kw: "https://example.invalid/cover.png")
     def download(url, destination, **kw):
