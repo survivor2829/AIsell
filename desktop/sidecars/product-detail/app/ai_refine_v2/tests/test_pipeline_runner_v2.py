@@ -402,7 +402,7 @@ class TestV2MockMode(unittest.TestCase):
         finally:
             pipeline_runner._TASKS.pop(task_id, None)
 
-    def test_worker_v2_reports_partial_success_counts_instead_of_full_success(self):
+    def test_worker_v2_keeps_incomplete_counts_recoverable_without_terminal_summary(self):
         """只有 Hero 成功时可保留结果，但绝不能冒充完整多屏成功。"""
         from PIL import Image
 
@@ -461,14 +461,15 @@ class TestV2MockMode(unittest.TestCase):
                     )
 
                 state = pipeline_runner._TASKS[task_id]
-                self.assertEqual(state.status, "partial_success")
+                self.assertEqual(state.status, "recovery_required")
                 self.assertEqual(state.planned_count, 3)
                 self.assertEqual(state.success_count, 1)
                 self.assertEqual(state.failed_count, 2)
                 summary = json.loads(
-                    (task_dir / "_summary.json").read_text(encoding="utf-8")
+                    (task_dir / "_recovery.json").read_text(encoding="utf-8")
                 )
-                self.assertEqual(summary["terminal_status"], "partial_success")
+                self.assertEqual(summary["status"], "recovery_required")
+                self.assertFalse((task_dir / "_summary.json").exists())
                 self.assertEqual(summary["planned_count"], 3)
                 self.assertEqual(summary["success_count"], 1)
                 self.assertEqual(summary["failed_count"], 2)

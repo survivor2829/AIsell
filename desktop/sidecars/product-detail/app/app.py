@@ -5332,7 +5332,7 @@ def ai_refine_v2_recover(task_id: str):
     owner_id = state.get("user_id")
     if owner_id != current_user.id and not current_user.is_admin:
         abort(403)
-    if state.get("status") in {"success", "partial_success"}:
+    if state.get("status") == "success":
         return jsonify({"ok": True, **state})
     try:
         gpt_image_key, _ = _get_gpt_image_key(current_user)
@@ -5365,7 +5365,7 @@ def workspace_result_save_ai_refine_v2(task_id: str):
     if owner_id != current_user.id and not current_user.is_admin:
         abort(403)
     terminal_status = str(state.get("status") or "").strip()
-    if terminal_status not in {"success", "partial_success"}:
+    if terminal_status != "success":
         return jsonify({"error": "任务尚未成功完成，不能保存到首页历史"}), 400
 
     image_url = (state.get("assembled_url") or "").strip()

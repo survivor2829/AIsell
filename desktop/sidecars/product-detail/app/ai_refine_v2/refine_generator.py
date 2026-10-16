@@ -946,6 +946,7 @@ def generate_v2(
     cost_per_call_rmb: float = _COST_PER_CALL_RMB,
     cutout_whitelist: Optional[set[str]] = None,  # v3 (PRD AI_refine_v3.1)
     lifecycle_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
+    completed_blocks: Optional[dict[str, str]] = None,
 ) -> GenerationResult:
     """v2 schema (plan_v2 输出) → 一组 1K、3:4 的 gpt-image-2 PNG.
 
@@ -1051,12 +1052,17 @@ def generate_v2(
     # ── Step 1: 第 1 屏 (Hero) 同步 + 重试 ────────
     hero_block = blocks[0]
     print(f"[gen_v2] Hero ({hero_block['block_id']}) 开始, 重试上限 {max_retries_hero}...")
-    hero_res, hero_cost = _generate_one_block_v2(
-        hero_block, _cutout_for(hero_block), use_key, call_fn,
-        max_retries_hero, thinking, size,
-        color_anchor=color_anchor,
-        lifecycle_callback=lifecycle_callback,
-    )
+    def generate_block(block, retries):
+        saved_url = (completed_blocks or {}).get(block["block_id"])
+        if saved_url:
+            return BlockResult(block_id=block["block_id"], visual_type=block["visual_type"],
+                               prompt=block.get("prompt", ""), image_url=saved_url), 0.0
+        return _generate_one_block_v2(
+            block, _cutout_for(block), use_key, call_fn, retries, thinking, size,
+            color_anchor=color_anchor, lifecycle_callback=lifecycle_callback,
+        )
+
+    hero_res, hero_cost = generate_block(hero_block, max_retries_hero)
     result.blocks.append(hero_res)
     result.total_cost_rmb += hero_cost * scale
 
@@ -1084,11 +1090,7 @@ def generate_v2(
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = {
             pool.submit(
-                _generate_one_block_v2,
-                b, _cutout_for(b), use_key, call_fn,
-                max_retries_sp, thinking, size,
-                color_anchor=color_anchor,
-                lifecycle_callback=lifecycle_callback,
+                generate_block, b, max_retries_sp,
             ): b
             for b in sp_blocks
         }
