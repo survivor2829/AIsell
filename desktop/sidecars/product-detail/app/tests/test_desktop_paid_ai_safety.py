@@ -19,7 +19,7 @@ def test_workspace_automatically_recovers_original_task_without_new_purchase():
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 (async () => {
-  for (const scenario of ['transient', 'persistent', 'lost-response', 'requires-payment']) {
+  for (const scenario of ['transient', 'persistent', 'lost-response', 'requires-payment', 'slow-generation']) {
     let queries = 0, recoveries = 0, rendered = '', saved = 0;
     const context = {
       setTimeout: callback => callback(),
@@ -32,7 +32,7 @@ const vm = require('node:vm');
       fetch: async url => {
         assert.match(url, /status\/paid-original$/);
         queries++;
-        const status = queries === 1 || scenario === 'persistent' || scenario === 'requires-payment' ? 'outcome_unknown' : 'success';
+        const status = scenario === 'slow-generation' ? 'generating' : queries === 1 || scenario === 'persistent' || scenario === 'requires-payment' ? 'outcome_unknown' : 'success';
         return {ok:true,status:200,json:async()=>({task_id:'paid-original',status,image_url:status==='success'?'/saved.png':''})};
       },
       postJson: async (url, body) => {
@@ -54,7 +54,8 @@ const vm = require('node:vm');
     vm.createContext(context);
     vm.runInContext(SOURCE, context);
     await context.pollAiRefineTask({task_id:'paid-original',input_summary:{product_category:'original-category'}}, {loading:{style:{}},results:{},bar:{style:{}},subText:{}});
-    assert.equal(recoveries, scenario==='persistent'?3:1);
+    assert.equal(recoveries, scenario==='slow-generation'?0:scenario==='persistent'?3:1);
+    if(scenario==='slow-generation') assert.equal(queries,300);
     assert.equal(rendered, ['transient','lost-response'].includes(scenario)?'success':'recovery');
     assert.equal(saved, rendered==='success'?1:0);
   }

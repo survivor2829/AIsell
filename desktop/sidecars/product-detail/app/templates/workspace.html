@@ -2128,6 +2128,7 @@
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:12px;';
     actions.innerHTML = `
+      <button type="button" data-ai-refine-query class="btn btn-ghost">查询原任务（不新增费用）</button>
       <button type="button" data-ai-refine-resume
         style="padding:8px 16px; border:none; border-radius:7px; background:#047857; color:#fff; cursor:pointer;">
         确认费用并继续原方案
@@ -2143,6 +2144,9 @@
     }
     actions.querySelector('[data-ai-refine-resume]')?.addEventListener('click', () => {
       resumeAiRefineTask(taskRecord, true);
+    });
+    actions.querySelector('[data-ai-refine-query]')?.addEventListener('click', () => {
+      resumeAiRefineTask(taskRecord);
     });
   }
 
@@ -2219,6 +2223,7 @@
     // 保留 10 分钟当前页面主动轮询窗口；超时后任务仍持久化，可继续接管，绝不自动重提。
     const maxIter = 300;
     let finalState = null;
+    let lastState = null;
     let consecutiveNotFound = 0;
     let recoveryAttempts = 0;
 
@@ -2254,6 +2259,7 @@
           continue;
         }
         state = await resp.json();
+        lastState = state;
         if (state.archived || archivedAiRefineTasks.has(taskId)) {
           archivedAiRefineTasks.add(taskId);
           clearPersistedAiRefineTask(taskId);
@@ -2302,10 +2308,11 @@
     }
 
     if (!finalState) {
-      const deferred = new Error('前端主动轮询达到 10 分钟，原任务仍被保留');
-      deferred.code = 'AI_REFINE_POLL_DEFERRED';
-      deferred.taskId = taskId;
-      throw deferred;
+      const deferred = { ...lastState, task_id: taskId,
+        error: '等待时间较长，原任务仍被保留。可继续查询原任务，已提交的请求不会重提。' };
+      if (ui.loading) ui.loading.style.display = 'none';
+      renderAiRefineRecoveryRequired(deferred, taskRecord);
+      return deferred;
     }
 
     taskRecord = persistAiRefineTask({ ...taskRecord, status: finalState.status,
