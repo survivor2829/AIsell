@@ -107,10 +107,17 @@ def _with_costs(task_id: str, result: dict) -> dict:
         result["costs"] = {"version": 0, "actual_cny": None,
                            "historical_estimate_cny": result.get("cost_rmb", 0),
                            "note": "历史记录中的费用为旧估算，非供应商实际账单"}
+    if result.get("status") == "failed" and _read_json(_OUTPUT_BASE / task_id / "_planning.json"):
+        if any(CostJournal.is_unsubmitted(op) for op in journal.load()["operations"].values()):
+            result.update(status="recovery_required", progress_pct=20,
+                          progress_msg="原方案已保存，存在明确未提交的图片，可确认后继续。")
     result["can_replay_planner"] = (
         result.get("status") == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, result)
     )
-    if result.get("status") in {"success", "partial_success"}:
+    if result.get("status") == "partial_success":
+        result.update(status="recovery_required", progress_pct=90,
+                      progress_msg=f"尚未完成，已保存 {result.get('success_count', 0)}/{result.get('planned_count', 0)} 屏")
+    if result.get("status") in {"success", "recovery_required", "pricing_required"}:
         inputs = _read_json(_OUTPUT_BASE / task_id / "_input.json") or {}
         result["product_category"] = inputs.get("product_category") or ""
         result["product_title"] = inputs.get("product_title") or ""
@@ -339,6 +346,16 @@ def get_task_status(task_id: str) -> dict | None:
     summary_data = _read_json(task_dir / "_summary.json")
     if summary_data is not None:
         result = _status_from_record(task_id, summary_data, terminal=True)
+        if result["failed_count"]:
+            # Old partial summaries are previews, never a completion marker.
+            # Prefer newer continuation checkpoints over that stale preview.
+            recovery = _read_json(task_dir / "_recovery.json")
+            if recovery:
+                result = _status_from_record(task_id, recovery, terminal=False)
+            else:
+                result.update(status="recovery_required", progress_pct=90)
+            result["planning"] = _read_json(task_dir / "_planning.json")
+            return _with_costs(task_id, result)
         result["planning"] = _read_json(task_dir / "_planning.json")
         try:
             _validate_assembled_png(task_dir / "assembled.png")
@@ -619,6 +636,7 @@ def _make_provider_checkpoint(
     planned_count: int,
     *,
     schema_mode: str,
+    existing_blocks: list[dict] | None = None,
 ):
     """Return a block-bound callback that durably records every provider event."""
     checkpoint_lock = threading.Lock()
@@ -640,6 +658,8 @@ def _make_provider_checkpoint(
             "placeholder": False,
             "error": "",
         })
+    existing = {b["block_id"]: b for b in (existing_blocks or [])}
+    blocks = [dict(existing.get(b["block_id"], b)) for b in blocks]
     by_id = {block["block_id"]: block for block in blocks}
     _persist_recovery(
         task_dir,
@@ -748,7 +768,7 @@ def _download_generation_results(
         if raw_url and not block["placeholder"]:
             try:
                 destination = task_dir / block["file"]
-                selected_route = _download_image(
+                selected_route = block["download_route"] if _valid_local_image(destination) else _download_image(
                     raw_url,
                     destination,
                     retries=2,
@@ -886,7 +906,7 @@ def _run_real_generator(planning: dict, product_image_url: str,
 # ─────────────────────────────────────────────────────────────
 def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
                             gpt_image_key: str, task_dir: Path,
-                            progress_cb) -> tuple[list[dict], float]:
+                            progress_cb, *, resume_blocks: list[dict] | None = None) -> tuple[list[dict], float]:
     """调 refine_generator.generate_v2() 真调 APIMart, 下载图到 task_dir.
 
     跟 _run_real_generator (v1) 完全等价的 4 刀 guard 模式, 只是调 generate_v2:
@@ -907,19 +927,23 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
     image_profile = _task_image_profile(task_dir)
     quote = read_quote(include_planner=False, image_profile=image_profile)
     journal = CostJournal(task_dir)
-    journal.set_plan(quote, total)
+    completed = {b["block_id"]: b["raw_url"] for b in (resume_blocks or [])
+                 if b.get("success") and b.get("raw_url")}
+    journal.set_plan(quote, total, completed_blocks=completed if resume_blocks is not None else None)
     provider_checkpoint = _make_provider_checkpoint(
         task_dir,
         refine_generator._build_blocks_v2(planning_v2),
         total,
         schema_mode="v2",
+        existing_blocks=resume_blocks,
     )
 
-    completed = {"count": 0}
+    completed_count = len(completed)
 
     def wrapped_api_call(
         prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None, block_id="",
     ):
+        nonlocal completed_count
         url = journal.image_call(
             quote, refine_generator._default_api_call,
             prompt,
@@ -930,12 +954,13 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
             image_profile=image_profile,
             lifecycle_callback=lifecycle_callback,
             block_id=block_id,
+            retry_not_submitted=resume_blocks is not None,
         )
-        completed["count"] += 1
+        completed_count += 1
         # 进度窗口 20-80 (前 20 给 planner, 后 20 给 assembler)
-        pct = 20 + int(completed["count"] / max(total, 1) * 60)
+        pct = 20 + int(completed_count / max(total, 1) * 60)
         progress_cb(min(pct, 80),
-                    f"AI 精修 v2 中 {completed['count']}/{total}")
+                    f"AI 精修 v2 中 {completed_count}/{total}")
         return url
 
     result = refine_generator.generate_v2(
@@ -948,6 +973,7 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
         max_retries_sp=0,
         cost_per_call_rmb=quote["image_unit_cny"],
         lifecycle_callback=provider_checkpoint,
+        completed_blocks=completed,
     )
 
     blocks = _download_generation_results(
@@ -1022,7 +1048,11 @@ def _write_terminal_summary(
     """Validate the assembled asset, then atomically publish its terminal marker."""
     width, height = _validate_assembled_png(task_dir / "assembled.png")
     planned, success, failed = _result_counts(blocks, planned_count)
-    terminal_status = "success" if failed == 0 else "partial_success"
+    if failed:
+        _persist_recovery(task_dir, blocks, total_cost_rmb, planned, status="recovery_required",
+                          error=f"尚未完成，已保存 {success}/{planned} 屏，请继续原方案。", schema_mode=schema_mode)
+        raise PaidResultRecoveryRequired(f"尚未完成，已保存 {success}/{planned} 屏，请继续原方案。")
+    terminal_status = "success"
     payload = {
         "schema_version": 2,
         "user_id": _task_identity(task_id)[0],
@@ -1091,7 +1121,8 @@ def _record_worker_exception(
         for name, operation in operations.items()
     ):
         outcome_unknown = True
-    recoverable = bool(recovery and provider_evidence)
+    recoverable = bool(recovery and (provider_evidence or any(
+        CostJournal.is_unsubmitted(op) for op in operations.values())))
     if outcome_unknown:
         terminal_status = "outcome_unknown"
         progress_msg = f"结果不明，已停止自动重提: {exc}"
@@ -1226,13 +1257,13 @@ def _run_assembler_v2(task_dir: Path, blocks: list[dict]) -> str:
     """
     from PIL import Image
 
+    if any(not b.get("success") for b in blocks):
+        raise PaidResultRecoveryRequired("无可用 block 图或详情图尚未生成完整，已保存的图片保留，请继续原方案。")
+
     images = []
     for b in blocks:
-        if not b.get("success"):
-            continue  # 跳过失败的 block, 不进拼接
         path = task_dir / b["file"]
-        if path.is_file():
-            images.append(Image.open(path))
+        images.append(Image.open(path))
 
     if not images:
         # 0 张能拼 → 直接 raise (反向 E 刀: 没图也算 fail)
@@ -1711,18 +1742,18 @@ def start_screen_reroll(source_task_id: str, block_index: int, user_id: int, gpt
     return task_id
 
 
-def _recover_task(task_id: str, gpt_image_key: str) -> dict:
-    """Resume only known provider tasks/URLs; never submit or generate again."""
+def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = False) -> dict:
+    """Query old receipts first; explicit continuation may buy unsubmitted screens."""
     import ai_image_apimart
 
     current = get_task_status(task_id)
     current_status = str((current or {}).get("status") or "")
     if current_status not in {
-        "outcome_unknown", "recovery_required", "running_recovery",
+        "outcome_unknown", "recovery_required", "running_recovery", "pricing_required",
     }:
         raise ValueError(f"任务 {task_id} 当前状态不可恢复: {current_status or 'missing'}")
     task_dir = _OUTPUT_BASE / task_id
-    record = _read_json(task_dir / "_recovery.json")
+    record = _read_json(task_dir / "_recovery.json") or _read_json(task_dir / "_summary.json")
     if record is None:
         state = get_task_status(task_id)
         if state and state.get("status") in {"success", "partial_success"}:
@@ -1886,6 +1917,30 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
     if download_errors:
         return persist("recovery_required", "; ".join(download_errors))
 
+    if any(not b.get("success") for b in blocks) or len(blocks) < planned_count:
+        if not continue_missing:
+            return persist("recovery_required", f"尚未完成，已保存 {sum(bool(b.get('success')) for b in blocks)}/{planned_count} 屏。继续原方案只生成未提交的屏，新增屏按报价计费。")
+        from ai_refine_v2 import refine_generator
+        from ai_refine_v2.pricing import PricingRequired
+        if not _is_real_api_allowed() or not gpt_image_key:
+            raise PricingRequired("当前环境未启用付费生成，原方案和图片已保留。")
+        if schema_mode != "v2":
+            return persist("recovery_required", "旧版方案需核对缺失屏，已生成图片保留，未重新购买。")
+        expected = [b["block_id"] for b in refine_generator._build_blocks_v2(planning)]
+        if expected != [b.get("block_id") for b in blocks] or len(expected) != planned_count:
+            return persist("recovery_required", "原方案与图片断点不一致，未提交新请求。")
+        if any(not b.get("success") and (b.get("provider_task_id") or b.get("raw_url")
+                                         or b.get("provider_status") in {"failed", "outcome_unknown"}) for b in blocks):
+            return persist("recovery_required", "缺失屏已有付费或失败记录，需核对原结果；未重复购买。")
+        inputs = _read_json(task_dir / "_input.json") or {}
+        blocks, _ = _run_real_generator_v2(
+            planning, inputs.get("product_image_url", ""), gpt_image_key, task_dir,
+            lambda pct, msg: _set(task_id, progress_pct=pct, progress_msg=msg), resume_blocks=blocks,
+        )
+        persist("running_recovery")
+        if any(not b.get("success") for b in blocks):
+            return persist("recovery_required", "仍有图片未完成，已生成图片保留，未重复购买。")
+
     successful = [block for block in blocks if block.get("success")]
     if not successful or not blocks[0].get("success"):
         return persist("failed", "原任务没有可拼装的 Hero 结果")
@@ -1931,9 +1986,9 @@ def _recover_task(task_id: str, gpt_image_key: str) -> dict:
     return get_task_status(task_id) or {}
 
 
-def _recovery_worker(task_id: str, gpt_image_key: str) -> None:
+def _recovery_worker(task_id: str, gpt_image_key: str, continue_missing: bool = False) -> None:
     try:
-        _recover_task(task_id, gpt_image_key)
+        _recover_task(task_id, gpt_image_key, continue_missing=continue_missing)
     except Exception as exc:
         _record_worker_exception(
             task_id,
@@ -1962,9 +2017,11 @@ def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = ""
     from ai_refine_v2.pricing import CostJournal
     directory = _OUTPUT_BASE / task_id
     operations = CostJournal(directory).load()["operations"]
-    resume_planning = replay_failed or status == "pricing_required" or (
+    image_checkpoint = _read_json(directory / "_recovery.json") or _read_json(directory / "_summary.json") or {}
+    resume_planning = replay_failed or (
         not any(name.startswith("image:") for name in operations)
-        and bool(_read_json(directory / "_planning.json") or _read_json(directory / "_planner_response.json"))
+        and not image_checkpoint.get("blocks")
+        and (status == "pricing_required" or bool(_read_json(directory / "_planning.json") or _read_json(directory / "_planner_response.json")))
     )
     if query_only and resume_planning:
         raise RecoveryConfirmationRequired("自动恢复仅查询原生图任务，不会新增策划或生图费用，请手动确认继续原方案。")
@@ -1989,7 +2046,7 @@ def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = ""
         response = current.to_dict()
     threading.Thread(
         target=_pricing_resume_worker if resume_planning else _recovery_worker,
-        args=(task_id, gpt_image_key, deepseek_key) if resume_planning else (task_id, gpt_image_key),
+        args=(task_id, gpt_image_key, deepseek_key) if resume_planning else (task_id, gpt_image_key, not query_only),
         daemon=True,
     ).start()
     return response

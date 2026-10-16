@@ -365,7 +365,7 @@ def _install_desktop_contract(
                 archive_refine_task(ledger)
                 return ledger
             if ledger.get("state") not in {
-                "pending", "outcome_unknown", "recovery_required", "pricing_required",
+                "pending", "outcome_unknown", "recovery_required", "pricing_required", "partial_success",
             }:
                 return ledger
             current = task_state(str(ledger.get("task_id") or ""))
@@ -398,7 +398,7 @@ def _install_desktop_contract(
     if (startup_ledger.get("state") == "failed" and entry.get("state") == "failed"
             and not entry.get("saved_plan_reopened_at")):
         current = task_state(startup_id)
-        if (current and current.get("can_replay_planner") is True
+        if (current and (current.get("can_replay_planner") is True or current.get("status") == "recovery_required")
                 and current.get("user_id") == startup_ledger.get("user_id") == entry.get("user_id")):
             entry["saved_plan_reopened_at"] = int(time.time())
             write_refine_archive(archived)

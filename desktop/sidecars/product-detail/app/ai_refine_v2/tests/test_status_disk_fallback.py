@@ -138,7 +138,8 @@ class TestGetTaskStatusDiskFallback:
 
         result = pipeline_runner.get_task_status(task_id)
 
-        assert result["status"] == "partial_success"
+        assert result["status"] == "recovery_required"
+        assert result["progress_pct"] < 100
         assert result["planned_count"] == 8
         assert result["success_count"] == 5
         assert result["failed_count"] == 3

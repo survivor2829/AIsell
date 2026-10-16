@@ -1078,7 +1078,7 @@
     if (code === 'DESKTOP_AI_REFINE_ALREADY_RUNNING') return '旧任务仍在运行，新任务尚未提交。请等待旧任务结束。';
     if (code === 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED') return '旧任务尚待恢复，新任务尚未提交。请先处理旧任务。';
     if (code === 'AI_REFINE_RECOVERY_REQUIRED') {
-      return '图片已经生成，但本机下载或拼装尚未完成。请恢复原任务，不要重新下单。';
+      return '任务尚未完成，已保存的图片和原方案会保留。请继续原任务，不要重新下单。';
     }
     if (code === 'AI_REFINE_POLL_DEFERRED') {
       return '任务仍可能在后台生成。系统已记住任务，可稍后继续检查原任务。';
@@ -2033,11 +2033,11 @@
 
   function renderAiRefineResult(result, options = {}) {
     const results = options.target || document.getElementById('ai_img_results');
-    const imageUrl = result.image_url || result.assembled_url;
+    const imageUrl = options.recovery ? '' : (result.image_url || result.assembled_url);
     const blocks = Array.isArray(result.blocks) ? result.blocks : [];
     if (!results || (!imageUrl && !blocks.some(block => block?.success && block.image_url))) return;
 
-    const downloadUrl = result.assembled_url || imageUrl;
+    const downloadUrl = options.recovery ? '' : (result.assembled_url || imageUrl);
     const sep = imageUrl?.includes('?') ? '&' : '?';
     const displayUrl = imageUrl ? `${imageUrl}${sep}t=${Date.now()}` : '';
     const successCount = Number(
@@ -2108,6 +2108,7 @@
   }
 
   function renderAiRefineRecoveryRequired(state, taskRecord) {
+    taskRecord = { ...taskRecord, requires_paid_confirmation: true };
     const recoveryError = new Error(state.error || state.progress_msg || 'local recovery required');
     const pricingRequired = state.status === 'pricing_required';
     const replayPlanner = state.can_replay_planner === true;
@@ -2119,12 +2120,18 @@
     renderAiRefineError(recoveryError);
     const results = document.getElementById('ai_img_results');
     if (!results) return;
+    const incomplete = document.createElement('p');
+    incomplete.style.cssText = 'text-align:center;color:#92400e;';
+    incomplete.textContent = (state.planned_count ? `尚未完成，已保存 ${Number(state.success_count || 0)}/${Number(state.planned_count)} 屏。` : '') +
+      '已提交的请求先查询恢复，仅未提交的屏会新增费用。';
+    results.appendChild(incomplete);
     const actions = document.createElement('div');
     actions.style.cssText = 'display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:12px;';
     actions.innerHTML = `
+      <button type="button" data-ai-refine-query class="btn btn-ghost">查询原任务（不新增费用）</button>
       <button type="button" data-ai-refine-resume
         style="padding:8px 16px; border:none; border-radius:7px; background:#047857; color:#fff; cursor:pointer;">
-        ${taskRecord.requires_paid_confirmation ? '确认费用并继续原方案' : replayPlanner ? '使用已保存方案继续' : pricingRequired ? '重新核价并继续' : '继续检查原任务'}
+        确认费用并继续原方案
       </button>
       <span style="align-self:center; color:#6b7280; font-size:12px;">如仍无法恢复，请返回桌面软件“日志诊断”导出报告。</span>`;
     results.appendChild(actions);
@@ -2137,6 +2144,9 @@
     }
     actions.querySelector('[data-ai-refine-resume]')?.addEventListener('click', () => {
       resumeAiRefineTask(taskRecord, true);
+    });
+    actions.querySelector('[data-ai-refine-query]')?.addEventListener('click', () => {
+      resumeAiRefineTask(taskRecord);
     });
   }
 
@@ -2168,7 +2178,13 @@
         const status = await fetch(`/api/ai-refine-v2/status/${encodeURIComponent(result.task_id)}`);
         if (status.ok) result = { ...result, ...await status.json() };
       }
-      renderAiRefineResult(result, { restored: true });
+      if (['recovery_required', 'outcome_unknown', 'pricing_required'].includes(result.status)) {
+        const record = persistAiRefineTask({ task_id: result.task_id, status: result.status,
+          requires_paid_confirmation: true });
+        renderAiRefineRecoveryRequired(result, record);
+      } else {
+        renderAiRefineResult(result, { restored: true });
+      }
     } catch (err) {
       console.warn('[workspace-results] restore failed', err);
     }
@@ -2207,6 +2223,7 @@
     // 保留 10 分钟当前页面主动轮询窗口；超时后任务仍持久化，可继续接管，绝不自动重提。
     const maxIter = 300;
     let finalState = null;
+    let lastState = null;
     let consecutiveNotFound = 0;
     let recoveryAttempts = 0;
 
@@ -2242,6 +2259,7 @@
           continue;
         }
         state = await resp.json();
+        lastState = state;
         if (state.archived || archivedAiRefineTasks.has(taskId)) {
           archivedAiRefineTasks.add(taskId);
           clearPersistedAiRefineTask(taskId);
@@ -2290,10 +2308,11 @@
     }
 
     if (!finalState) {
-      const deferred = new Error('前端主动轮询达到 10 分钟，原任务仍被保留');
-      deferred.code = 'AI_REFINE_POLL_DEFERRED';
-      deferred.taskId = taskId;
-      throw deferred;
+      const deferred = { ...lastState, task_id: taskId,
+        error: '等待时间较长，原任务仍被保留。可继续查询原任务，已提交的请求不会重提。' };
+      if (ui.loading) ui.loading.style.display = 'none';
+      renderAiRefineRecoveryRequired(deferred, taskRecord);
+      return deferred;
     }
 
     taskRecord = persistAiRefineTask({ ...taskRecord, status: finalState.status,

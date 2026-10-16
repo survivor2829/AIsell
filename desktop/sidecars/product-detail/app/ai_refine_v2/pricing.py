@@ -35,6 +35,10 @@ class RequestOutcomeUnknown(RuntimeError):
     do_not_retry = True
     outcome_unknown = True
 
+    def __init__(self, message, *, not_submitted=False):
+        super().__init__(message)
+        self.not_submitted = not_submitted
+
 
 def _image_failure_diagnostic(exc):
     """Keep bounded metadata only; exception messages can contain keys or bodies."""
@@ -197,6 +201,11 @@ def _write(path, data):
 
 
 class CostJournal:
+    @staticmethod
+    def is_unsubmitted(operation):
+        return (operation.get("status") == "failed" and operation.get("not_submitted") is True
+                and not operation.get("provider_task_id") and not operation.get("raw_url"))
+
     def __init__(self, task_dir: Path):
         self.path = task_dir / "_costs.json"
 
@@ -232,28 +241,42 @@ class CostJournal:
         if money(committed + addition) > cap:
             raise PricingRequired(f"当前方案保守预留约 ¥{committed + addition:.2f}，超过后台单任务上限 ¥{cap:.2f}；方案已保留，尚未提交后续生图。")
 
-    def set_plan(self, quote, count):
+    def set_plan(self, quote, count, *, completed_blocks=None):
         if type(count) is not int or not 1 <= count <= 15:
             raise PricingRequired("方案图片数量无效，尚未提交生图。")
         with _LOCK:
             data = self.load()
-            if any(name.startswith("image:") for name in data["operations"]):
-                raise RequestOutcomeUnknown("原方案已有生图请求，只能恢复原结果，不能重新提交。")
-            remaining = money(count * quote["image_unit_cny"])
+            images = [op for name, op in data["operations"].items() if name.startswith("image:")]
+            if images:
+                # Continuation may purchase only blocks with no prior operation.
+                # Fail closed on legacy receipts without stable block identity.
+                if (completed_blocks is None or any(
+                        not op.get("block_id") or not (
+                            (op["status"] == "completed" and op["block_id"] in completed_blocks)
+                            or self.is_unsubmitted(op)) for op in images)
+                        or len({op["block_id"] for op in images}) != len(images)):
+                    raise RequestOutcomeUnknown("原方案已有付费请求待核对，禁止重复提交。")
+            remaining = money((count - len(completed_blocks or {})) * quote["image_unit_cny"])
             data.update(quote=quote, image_count=count,
-                        estimated_cny=money(remaining + sum(op["reserved_cny"] for op in data["operations"].values())))
+                        estimated_cny=money(remaining + sum(op["reserved_cny"] for op in data["operations"].values() if not op.get("not_submitted"))))
             _write(self.path, data)
             self._ensure_room(data, remaining)
 
-    def begin(self, name, quote, reserve, **context):
+    def begin(self, name, quote, reserve, *, retry_not_submitted=False, **context):
         with _LOCK:
             data = self.load()
-            if name in data["operations"]:
+            previous = data["operations"].get(name)
+            if previous and not (retry_not_submitted and self.is_unsubmitted(previous)):
                 raise RequestOutcomeUnknown("原请求已有费用记录，只能核对原结果，不能重复提交。")
             if not 0 <= time.time() - quote["checked_at"] < MAX_QUOTE_AGE:
                 raise PricingRequired("报价已过期，方案已保留，请重新核价。")
             self._ensure_room(data, reserve)
             data["operations"][name] = {"status": "submitting", "reserved_cny": money(reserve), "started_at": time.time(), **context}
+            if previous:
+                data["operations"][name]["previous_attempts"] = [
+                    *previous.get("previous_attempts", []),
+                    {k: v for k, v in previous.items() if k != "previous_attempts"},
+                ]
             data["quote"] = quote
             data["operations"][name]["quote"] = quote
             _write(self.path, data)
@@ -306,7 +329,7 @@ class CostJournal:
         self._finish_planner(response)
         return response
 
-    def image_call(self, quote, function, *args, block_id="", lifecycle_callback=None, **kwargs):
+    def image_call(self, quote, function, *args, block_id="", lifecycle_callback=None, retry_not_submitted=False, **kwargs):
         if "image_profile" in kwargs:
             profile = normalize_profile(kwargs["image_profile"])
             if (quote.get("image_model") != profile["model"]
@@ -316,14 +339,19 @@ class CostJournal:
         with _LOCK:
             data = self.load()
             previous = [op for name, op in data["operations"].items() if name.startswith("image:")]
+            existing = [(name, op) for name, op in data["operations"].items()
+                        if name.startswith("image:") and block_id and op.get("block_id") == block_id]
+            retry = (len(existing) == 1 and retry_not_submitted and self.is_unsubmitted(existing[0][1]))
+            if existing and not retry:
+                raise RequestOutcomeUnknown("该屏已有付费记录，只能恢复原结果，不能重复提交。")
             if any(op["status"] == "outcome_unknown" for op in previous):
-                raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。")
-            if any(op.get("not_submitted") for op in previous):
+                raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。", not_submitted=True)
+            if not retry_not_submitted and any(op.get("not_submitted") for op in previous):
                 raise PricingRequired("原生图步骤在提交前失败，已停止后续请求；不会自动重新购买。")
-            if len(previous) >= data.get("image_count", 0):
+            if not retry and len(previous) >= data.get("image_count", 0):
                 raise PricingRequired("生成张数超出已核价方案，已停止新增请求。")
-            operation = f"image:{len(previous) + 1}"
-            self.begin(operation, quote, quote["image_unit_cny"], block_id=str(block_id))
+            operation = existing[0][0] if retry else f"image:{len(previous) + 1}"
+            self.begin(operation, quote, quote["image_unit_cny"], block_id=str(block_id), retry_not_submitted=retry)
         receipt = {}
         def checkpoint(event):
             receipt.update({key: event[key] for key in ("provider_task_id", "raw_url", "gateway_operation_id") if event.get(key)})
@@ -392,7 +420,7 @@ class CostJournal:
             if operation.get("raw_url"):
                 block["raw_url"] = operation["raw_url"]
             if operation["status"] == "failed":
-                block["provider_status"] = "failed"
+                block["provider_status"] = "not_submitted" if self.is_unsubmitted(operation) else "failed"
             elif not block.get("provider_task_id") and not block.get("raw_url"):
                 block["provider_status"] = "outcome_unknown"
         return unknown

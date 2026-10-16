@@ -326,7 +326,7 @@ class TestProviderCheckpointAndRecovery(unittest.TestCase):
                 ) as submit:
                     recovered = pipeline_runner._recover_task(task_id, "secret")
 
-                self.assertEqual(recovered["status"], "partial_success")
+                self.assertEqual(recovered["status"], "recovery_required")
                 self.assertEqual(recovered["failed_count"], 1)
                 poll.assert_called_once_with(
                     "provider-feature", "secret", direct=True, receipt_callback=mock.ANY,
@@ -341,7 +341,7 @@ class TestProviderCheckpointAndRecovery(unittest.TestCase):
                     checkpoint["blocks"][1]["raw_url"],
                     "https://cdn.invalid/feature.png",
                 )
-                self.assertTrue((task_dir / "_summary.json").is_file())
+                self.assertFalse((task_dir / "_summary.json").is_file())
         finally:
             pipeline_runner._TASKS.pop(task_id, None)
 

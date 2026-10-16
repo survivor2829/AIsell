@@ -161,22 +161,123 @@ def test_reference_upload_503_stays_known_unsubmitted_after_restart(task, monkey
     Image.new("RGB", (80, 80), "#78ab12").save(reference)
     runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
     runner._worker_v2(task.name, TEXT, str(reference), "产品", "", "image-key")
-    assert runner.get_task_status(task.name)["status"] == "failed"
+    assert runner.get_task_status(task.name)["status"] == "recovery_required"
     runner._TASKS.clear()
-    assert runner.get_task_status(task.name)["status"] == "failed"
-    with pytest.raises(ValueError):
-        runner.start_task_recovery(task.name, "image-key")
+    assert runner.get_task_status(task.name)["status"] == "recovery_required"
+    assert runner._recover_task(task.name, "image-key")["status"] == "recovery_required"
     post.assert_not_called()
     assert ledger.load()["operations"]["image:1"]["not_submitted"] is True
     assert ledger.load()["operations"]["image:1"]["gateway_operation_id"]
     assert ledger.summary()["reserved_cny"] == 0
     assert ledger.summary()["pending_bill_cny"] == .03
+    from ai_refine_v2 import refine_generator
+    inputs = runner._read_json(task / "_input.json")
+    runner._atomic_write_json(task / "_input.json", {**inputs, "product_image_url": str(reference)})
+    submitted = []
+    def generated(*args, lifecycle_callback, **kwargs):
+        submitted.append(1)
+        lifecycle_callback({"event": "submitted", "provider_task_id": f"paid-{len(submitted)}"})
+        return f"https://example.invalid/{len(submitted)}.png"
+    def download(url, destination, **kw):
+        Image.effect_noise((120, 160), 40).convert("RGB").save(destination, format="PNG")
+        return "system"
+    monkeypatch.setattr(refine_generator, "_default_api_call", generated)
+    monkeypatch.setattr(runner, "_download_image", download)
+    result = runner._recover_task(task.name, "image-key", continue_missing=True)
+    assert result["status"] == "success", result.get("error")
+    assert len(submitted) == len(sample()["screens"])
+    retried = ledger.load()["operations"]["image:1"]
+    assert retried["previous_attempts"][0]["not_submitted"] is True
+    assert retried["provider_task_id"] == "paid-1"
 
 
 def checkpoint(task):
     runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73, mode="real")
     runner._make_provider_checkpoint(task, [{"block_id": "hero", "is_hero": True}], 1, schema_mode="v2")
     runner._TASKS.clear()
+
+
+@pytest.mark.parametrize("legacy_partial", [False, True, "without_journal"])
+def test_resume_incomplete_plan_preserves_cover_and_buys_only_missing_screens(task, monkeypatch, legacy_partial):
+    from ai_refine_v2 import refine_generator as generator
+    import ai_image_apimart as adapter
+    plan = sample()
+    reference = task / "reference.png"
+    Image.new("RGB", (120, 160), "green").save(reference)
+    inputs = runner._read_json(task / "_input.json")
+    runner._atomic_write_json(task / "_input.json", {**inputs, "product_image_url": str(reference)})
+    runner._atomic_write_json(task / "_planning.json", plan)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73, mode="real")
+    checkpoint_fn = runner._make_provider_checkpoint(task, generator._build_blocks_v2(plan), 4, schema_mode="v2")
+    cover_id = generator._build_blocks_v2(plan)[0]["block_id"]
+    journal = pricing.CostJournal(task)
+    journal.set_plan(quote(), 4)
+    journal.begin("image:1", quote(), .1, block_id=cover_id)
+    journal.finish("image:1", "outcome_unknown", provider_task_id="paid-cover")
+    checkpoint_fn(cover_id, {"event": "outcome_unknown", "provider_task_id": "paid-cover"})
+    # A worker already dequeued when another screen times out is blocked before
+    # begin()/POST. Its checkpoint must not invent an unknown paid request.
+    blocked = generator._build_blocks_v2(plan)[1]
+    purchase = Mock(side_effect=AssertionError("the unknown receipt must stop new purchases"))
+    def guarded(*args, **kwargs):
+        return journal.image_call(quote(), purchase, *args, **kwargs)
+    with pytest.raises(pricing.RequestOutcomeUnknown):
+        generator._generate_one_block_v2(blocked, generator._to_data_url(str(reference)), "key", guarded, 0, "medium", "3:4",
+                                         lifecycle_callback=checkpoint_fn)
+    purchase.assert_not_called()
+    assert list(journal.load()["operations"]) == ["image:1"]
+    assert runner._read_json(task / "_recovery.json")["blocks"][1]["provider_status"] == "cancelled"
+    runner._TASKS.clear()
+    monkeypatch.setattr(adapter, "poll_image_task", lambda *a, **kw: "https://example.invalid/cover.png")
+    def download(url, destination, **kw):
+        Image.effect_noise((120, 160), 40).convert("RGB").save(destination, format="PNG")
+        return "system"
+    monkeypatch.setattr(runner, "_download_image", download)
+    posts = []
+    def post(prompt, image, key, *, lifecycle_callback, **kw):
+        posts.append(prompt)
+        lifecycle_callback({"event": "submitted", "provider_task_id": f"new-{len(posts)}"})
+        return f"https://example.invalid/{len(posts)}.png"
+    monkeypatch.setattr(generator, "_default_api_call", post)
+    def still_unknown(*args, **kwargs):
+        raise adapter.APIMartOutcomeUnknown("paid-cover", "still running")
+    monkeypatch.setattr(adapter, "poll_image_task", still_unknown)
+    assert runner._recover_task(task.name, "key", continue_missing=True)["status"] == "outcome_unknown"
+    assert posts == []
+    monkeypatch.setattr(adapter, "poll_image_task", lambda *a, **kw: "https://example.invalid/cover.png")
+    # Query-only recovery must preserve the cover without buying the other screens.
+    result = runner._recover_task(task.name, "key")
+    assert result["status"] == "recovery_required"
+    assert result["success_count"] == 1
+    assert result["progress_pct"] < 100
+    assert posts == []
+    cover = task / result["blocks"][0]["file"]
+    original = cover.read_bytes()
+    if legacy_partial:
+        download("", task / "assembled.png")
+        runner._atomic_write_json(task / "_summary.json", {
+            **runner._read_json(task / "_recovery.json"), "terminal_status": "partial_success",
+        })
+    if legacy_partial == "without_journal":
+        journal.path.unlink()
+    runner._TASKS.clear()
+    assert runner.get_task_status(task.name)["status"] == "recovery_required"
+    monkeypatch.setattr(runner, "threading", SimpleNamespace(Lock=runner.threading.Lock,
+        Thread=lambda *, target, args, **kw: SimpleNamespace(start=lambda: target(*args))))
+    runner.start_task_recovery(task.name, "key")
+    result = runner.get_task_status(task.name)
+    assert result["status"] == "success", result.get("error")
+    assert result["success_count"] == 4
+    assert len(posts) == 3
+    assert cover.read_bytes() == original
+    assert runner._read_json(task / "_planning.json") == plan
+    assert len(journal.load()["operations"]) == (3 if legacy_partial == "without_journal" else 4)
+    # Reloading/repeating recovery of a completed task cannot buy again.
+    runner._TASKS.clear()
+    assert runner.get_task_status(task.name)["status"] == "success"
+    with pytest.raises(ValueError):
+        runner.start_task_recovery(task.name, "key")
+    assert len(posts) == 3
 
 
 def test_image_receipt_survives_exit_before_pipeline_checkpoint(task, monkeypatch):

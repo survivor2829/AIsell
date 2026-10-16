@@ -136,7 +136,7 @@ class TestWorkspaceAiResultPersistence(unittest.TestCase):
         self.assertEqual(body["result"]["task_id"], task_id)
         self.assertEqual(body["result"]["image_url"], state["assembled_url"])
 
-    def test_partial_success_persists_counts_but_recovery_required_is_rejected(self):
+    def test_partial_success_and_recovery_required_cannot_be_saved_as_completed(self):
         client, uid = _make_authed_client(self)
         task_id = f"v2_{uuid.uuid4().hex[:10]}"
         task_dir = BASE_DIR / "static" / "ai_refine_v2" / task_id
@@ -174,17 +174,8 @@ class TestWorkspaceAiResultPersistence(unittest.TestCase):
         ):
             response = client.post(endpoint, json={"product_category": "设备类"})
 
-        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
-        saved = response.get_json()["result"]
-        self.assertEqual(saved["planned_count"], 8)
-        self.assertEqual(saved["success_count"], 6)
-        self.assertEqual(saved["failed_count"], 2)
-
-        latest = client.get("/api/workspace-results/latest?kind=ai_refine_v2")
-        restored = latest.get_json()["result"]
-        self.assertEqual(restored["planned_count"], 8)
-        self.assertEqual(restored["success_count"], 6)
-        self.assertEqual(restored["failed_count"], 2)
+        self.assertEqual(response.status_code, 400, response.get_data(as_text=True))
+        self.assertFalse(history_file.exists())
 
 
 class TestWorkspaceFrontendPersistenceHooks:
@@ -261,13 +252,13 @@ class TestWorkspaceFrontendPaidTaskSafety:
         assert "resumePersistedAiRefineTask()" in content
         assert "input_digest" in content
         assert "input_summary" in content
-        assert "const remembered = await rememberAiRefineResult(taskId)" in content
+        assert "const remembered = await rememberAiRefineResult(taskId, taskRecord.input_summary?.product_category)" in content
         assert "if (remembered) clearPersistedAiRefineTask" in content
 
     def test_already_running_response_blocks_new_purchase_and_preserves_inputs(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert "DESKTOP_AI_REFINE_ALREADY_RUNNING" in content
-        assert re.search(r"includes\(startError.code\)\).*?startError.newTaskBlocked = true;\s*throw startError;",
+        assert re.search(r"includes\(startError.code\)\).*?taskRecord = persistAiRefineTask\(\{.*?newTaskBlocked: true,",
                          content, re.DOTALL)
         assert "resumeAiRefineTask" in content
         assert "服务未返回可接管的 task_id" in content
