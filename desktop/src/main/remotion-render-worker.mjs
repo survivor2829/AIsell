@@ -290,6 +290,8 @@ function runtimeHash(bundleRoot) {
   hashTree(digest, bundleRoot);
   for (const name of [
     "contract.cjs",
+    "narration-templates.json",
+    "narration-plan.cjs",
     "effect-registry.json",
     "layout-grid.json",
     "style-packs.json"
@@ -405,6 +407,7 @@ async function renderRequest(envelope) {
   activeRender = run;
   run.promise = (async () => {
     let taskServer;
+    let outcome;
     try {
       const puppeteerInstance = await ensureExplicitBrowser(executable);
       taskServer = await serveTask(bundleRoot, sourcePath, publicProps.sourceFile);
@@ -443,28 +446,35 @@ async function renderRequest(envelope) {
         onProgress: () => undefined
       });
       if (!fs.statSync(outputPath).isFile() || fs.statSync(outputPath).size < 1) {
-        fail(id, "output-quality", "worker_output_invalid");
+        outcome = { ok: false, failureClass: "output-quality", code: "worker_output_invalid" };
         return;
       }
       if (runtimeHash(bundleRoot) !== renderRuntimeHash) {
-        fail(id, "contract", "runtime_changed_during_render");
+        outcome = { ok: false, failureClass: "contract", code: "runtime_changed_during_render" };
         return;
       }
-      reply(id, {
+      outcome = {
         ok: true,
         result: {
           style_version: 1,
           runtime_hash: renderRuntimeHash
         }
-      });
+      };
     } catch (error) {
-      if (run.cancelled) fail(id, "transient-local", "render_cancelled");
-      else fail(id, "transient-local", "remotion_render_failed");
+      outcome = { ok: false, failureClass: "transient-local", code: run.cancelled ? "render_cancelled" : "remotion_render_failed" };
     } finally {
-      if (taskServer) {
-        await new Promise((resolve) => taskServer.server.close(resolve));
+      try {
+        if (taskServer) {
+          const closed = new Promise((resolve) => taskServer.server.close(resolve));
+          taskServer.server.closeIdleConnections();
+          await closed;
+        }
+      } finally {
+        activeRender = null;
+        // A terminal reply admits the caller's next render. Release resources
+        // first, including on failure, so serial jobs cannot race with cleanup.
+        reply(id, outcome);
       }
-      activeRender = null;
     }
   })();
 }

@@ -65,7 +65,18 @@ function taskIdOf(payload) {
 function statusOf(payload) {
   return ({ PENDING: 'pending', RUNNING: 'running', SUCCEEDED: 'completed', FAILED: 'failed', CANCELED: 'failed' })[nodeOf(payload).task_status] || 'unknown';
 }
-function resultVideoUrl(payload) { return remoteUrl(nodeOf(payload).video_url); }
+function resultMediaUrl(url) {
+  // Both legacy result buckets and VideoRetalk's dashscope-* OSS buckets return
+  // HTTP signed URLs. Upgrade only this family, then apply shared URL/DNS guards.
+  if (url.protocol === 'http:' && !url.port && /^dashscope-[a-z0-9-]+\.oss-cn-[a-z0-9-]+\.aliyuncs\.com$/u.test(url.hostname)) url.protocol = 'https:';
+  return remoteUrl(url.href);
+}
+function resultVideoUrl(payload) {
+  const source = String(nodeOf(payload).video_url || '');
+  let url;
+  try { url = new URL(source); } catch { return remoteUrl(source); }
+  return resultMediaUrl(url);
+}
 function normalizePoll(payload) {
   const status = statusOf(payload), node = nodeOf(payload);
   return { status, videoUrl: status === 'completed' ? resultVideoUrl(payload) : '',
@@ -82,10 +93,7 @@ function ttsAudioUrl(payload) {
   const source = String(nodeOf(payload).audio?.url || '');
   let url;
   try { url = new URL(source); } catch { throw fail('bailian_tts_audio_invalid', '配音服务未返回完整音轨地址。'); }
-  // Same narrow compatibility rule as content_engine.creative_analysis:
-  // official TTS examples return HTTP for an HTTPS-capable signed OSS object.
-  if (url.protocol === 'http:' && !url.port && /^dashscope-result-[a-z0-9-]+\.oss-cn-[a-z0-9-]+\.aliyuncs\.com$/u.test(url.hostname)) url.protocol = 'https:';
-  return remoteUrl(url.href);
+  return resultMediaUrl(url);
 }
 
 function createBailianVideoProvider(options = {}) {

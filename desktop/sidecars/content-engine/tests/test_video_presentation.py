@@ -7,7 +7,8 @@ import uuid
 from unittest import mock
 
 from content_engine.creative_domain import CreativeDomain
-from content_engine.creative_render import HybridCreativeRenderer
+from content_engine.creative_render import HybridCreativeRenderer, FFmpegCreativeRenderer
+from content_engine.apimart_cover import APIMartOutcomeUnknown
 from content_engine.narration_alignment import reference_caption_cues
 from content_engine.video_presentation import presentation, validate_headlines
 from content_engine.errors import ContentEngineError
@@ -15,6 +16,33 @@ from content_engine.database import Database
 
 
 class VideoPresentationTests(unittest.TestCase):
+    def test_narration_v2_mix_has_fades_ducking_and_verified_loudness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'base.mp4').write_bytes(b'fixture')
+            (root / 'music.wav').write_bytes(b'fixture')
+            renderer = FFmpegCreativeRenderer(root)
+            recipe = {'imported_base_video': 'base.mp4', 'imported_music_path': 'music.wav',
+                      'imported_audio_profile': 'narration_v2'}
+            output = root / 'output.mp4'
+            with mock.patch.object(renderer, 'probe_audio_duration_ms', return_value=14500), \
+                 mock.patch.object(renderer, '_encode_mezzanine') as encode, \
+                 mock.patch.object(renderer, 'calibrate_final_loudness') as calibrate:
+                renderer.render_mezzanine(recipe=recipe, output=output, temp_dir=root, resolve_asset_path=lambda _: '')
+                args = encode.call_args.args[0]
+                filters = args[args.index('-filter_complex') + 1]
+                self.assertIn('sidechaincompress', filters)
+                self.assertIn('afade=t=out:st=13.700', filters)
+                self.assertIn('loudnorm=I=-26', filters)
+                self.assertNotIn('afftdn', filters)
+                self.assertNotIn('atempo', filters)
+                calibrate.assert_called_once_with(output, target_lufs=-16, max_true_peak=-1.5)
+                encode.reset_mock(); calibrate.reset_mock()
+                recipe.pop('imported_audio_profile')
+                renderer.render_mezzanine(recipe=recipe, output=output, temp_dir=root, resolve_asset_path=lambda _: '')
+                calibrate.assert_not_called()
+                self.assertIn('volume=0.15', encode.call_args.args[0][encode.call_args.args[0].index('-filter_complex') + 1])
+
     def test_persisted_course_words_keep_measured_times_in_reference_packaging(self):
         captions = [{"text": "先看现场，再做判断。", "start_ms": 1000, "end_ms": 2800,
                      "words": [{"text": text, "start": start, "end": end, "confidence": None}
@@ -221,6 +249,53 @@ class VideoPresentationTests(unittest.TestCase):
                 props = HybridCreativeRenderer._public_props(recipe, {})
                 self.assertFalse(props["presentation"]["showTitle"])
                 self.assertTrue(props["captions"])
+                # Full-cover queries cannot purchase, and a lost poll resumes
+                # the same provider receipt without ASR, planning or a new POST.
+                design = {"mode": "full_design", "aspect": "3:4", "title": "看清细节",
+                          "style": "paper", "frame_seconds": 1, "request_id": str(uuid.uuid4())}
+                video_id = result["generated_video_id"]
+                with self.assertRaises(ContentEngineError) as caught:
+                    domain.regenerate_cover(video_id, design, recover_only=True)
+                self.assertEqual("cover_not_submitted", caught.exception.code)
+                self.assertEqual(0, database.connection.execute("SELECT count(*) FROM cover_generation_ledger").fetchone()[0])
+                cover_task = domain.regenerate_cover(video_id, design)
+                with self.assertRaises(ContentEngineError) as caught:
+                    domain.regenerate_cover(video_id, design, recover_only=True)
+                self.assertEqual("cover_not_submitted", caught.exception.code)
+                local_failure = domain.run_task(cover_task["task_id"])
+                self.assertNotEqual("completed", local_failure["status"])
+                self.assertEqual("planned", database.connection.execute("SELECT status FROM cover_generation_ledger").fetchone()[0], "local preparation failure must not mark a paid submission")
+                self.assertEqual(cover_task["task_id"], domain.regenerate_cover(video_id, design)["task_id"])
+                from PIL import Image
+                analyzer._command = lambda args: Image.new('RGB', (300, 400), 'green').save(args[-1])
+                submit = mock.Mock(return_value="provider-original-id")
+                poll = mock.Mock(side_effect=[APIMartOutcomeUnknown("poll_lost", "lost poll"), "https://example.com/cover.png"])
+                domain.cover_client = SimpleNamespace(configured=True, submit=submit, poll=poll,
+                    download=lambda _url, target: Image.new('RGB', (600, 800), 'green').save(target))
+                renderer.compose_cover = lambda *args, **kwargs: FFmpegCreativeRenderer.compose_cover(renderer, *args, **kwargs)
+                failed_poll = domain.run_task(cover_task["task_id"])
+                self.assertNotEqual("completed", failed_poll["status"])
+                self.assertEqual(1, submit.call_count)
+                self.assertEqual("3:4", submit.call_args.kwargs["size"])
+                self.assertIn("Exact headline: 看清细节", submit.call_args.args[0])
+                with self.assertRaises(ContentEngineError):
+                    domain.regenerate_cover(video_id, {**design, "title": "不能覆盖进行中"})
+                resumed = domain.regenerate_cover(video_id, design, recover_only=True)
+                self.assertEqual(cover_task["task_id"], resumed["task_id"])
+                self.assertEqual("completed", domain.run_task(resumed["task_id"])["status"])
+                self.assertEqual(1, submit.call_count)
+                self.assertEqual(2, poll.call_count)
+                self.assertEqual(cover_task["task_id"], domain.regenerate_cover(video_id, design)["task_id"])
+                thumbnail = domain._validate_generated_path(domain._generated_row(video_id)["thumbnail_path"])
+                with Image.open(thumbnail) as cover:
+                    self.assertEqual((1080, 1440), cover.size)
+                    self.assertLess(max(cover.getpixel((540, 720))) - 128, 3)
+                preserved = thumbnail.read_bytes()
+                wrong = root / 'wrong-ratio.png'
+                Image.new('RGB', (900, 1600), 'red').save(wrong)
+                with self.assertRaises(RuntimeError):
+                    renderer.compose_cover(wrong, thumbnail, {"cover": {"design": design}})
+                self.assertEqual(preserved, thumbnail.read_bytes(), "bad cloud ratio cannot replace the usable cover")
                 source.write_bytes(b"changed-video")
                 with self.assertRaises(ContentEngineError) as caught:
                     domain.import_base_video({**request, "source_id": "digital_human_" + uuid.uuid4().hex})

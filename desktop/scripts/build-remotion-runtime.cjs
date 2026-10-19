@@ -27,6 +27,10 @@ const PACKAGING_FILES = Object.freeze([
   "style-packs.json",
   "types.ts",
   "video-template.tsx",
+  "NarrationLayout.tsx",
+  "NarrationLayoutV4.tsx",
+  "narration-plan.cjs",
+  "narration-templates.json",
   "narration-emoji.json",
   "LICENSES.md",
   "runtime-license-record.schema.json",
@@ -34,6 +38,8 @@ const PACKAGING_FILES = Object.freeze([
 ]);
 const WORKER_CONTRACT_FILES = Object.freeze([
   "contract.cjs",
+  "narration-templates.json",
+  "narration-plan.cjs",
   "effect-registry.json",
   "layout-grid.json",
   "style-packs.json"

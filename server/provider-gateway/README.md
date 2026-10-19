@@ -72,6 +72,34 @@ APIMart 请求内容仍在 CONNECT 内通过 TLS 加密。`https://` 代理需�
 
 ## 初次部署和更新
 
+### 数字人口播套餐写稿额度（默认关闭）
+
+`XIAOXI_GATEWAY_NARRATION_SCRIPT_QUOTAS_JSON` 只在服务器配置，按已验证的 license ID 分配
+一个当前额度周期。例如 `{"license-example":{"periodId":"2026-10","startsAt":"2026-10-01T00:00:00Z","endsAt":"2026-11-01T00:00:00Z","limit":20}}`。
+未配置、周期未开始或已结束、额度耗尽都拒绝生成，没有客户端额度覆盖和付费兜底。
+更新额度或续期由运营明确配置；同一周期 ID 下调额度不清空已使用量，周期 ID 不应重复使用。
+
+两个固定路由均要求现有 Bearer 会话：
+
+- `GET /v1/provider-gateway/narration/script-quota` 返回 `{ok,quota:{status,periodId,startsAt,endsAt,limit,used,remaining}}`。
+  `status` 为 `available / exhausted / disabled / inactive / unavailable`；未配置时没有时间字段。
+- `POST /v1/provider-gateway/narration/script` 必须带 `X-Xiaoxi-Operation-Id`。
+  JSON 输入为 `{topic,productFacts,reference?:{platform,title,body,url}}`，只接受这些有界资料字段；
+  模型、提示词、受众和输出格式由服务端固定。返回 `{ok,operationId,title,script,emphasisPhrases,quota}`。
+  文案长度仅作目标估计，用户确认后再配音，以实际音频时长为准。
+- 原操作通过现有 `GET /v1/provider-gateway/operations/{operationId}` 查询。
+  同一 ID、相同输入复用原回执；不同输入返回 `operation_payload_mismatch`。
+  202 只表示原请求仍在执行，必须 GET 查询，不能创建新操作 ID 自动重试。
+
+额度预占和回执建立在同一个 SQLite 事务中，多线程／多进程也不能超额。
+成功和供应商已返回但格式不合格的响应消耗一次额度；明确的 4xx 拒绝或确定未发送的请求释放额度，
+但同一操作仍缓存失败结果，不自动重发。超时、5xx 或进程退出导致的不确定结果保留预占，
+只允许查询；不能因客户重新打开页面而再次调用。运维确认未产生费用后才能处理未知预占。
+回执沿用现有保留期；轻量额度账与操作 ID 墓碑不会随回执清理删除，防止旧操作重新购买。
+`quota` 在成功回执里是当时的快照，当前余额应重新 GET 查询。继续使用持久 receipt DB 和稳定 session secret。
+
+配置和服务器部署需另获授权；本地测试使用替身供应商，不代表云端接口已上线或额度已开通。
+
 客户端通过已认证的 `/v1/provider-gateway/capabilities?price_model=gpt-image-2.5-ext`
 核实公开单价，历史任务可查询 `gpt-image-2`。网关匿名读取固定 APImart 价格地址，
 不转发会话或供应商凭据；成功缓存120秒、失败冷却5秒，普通能力查询不依赖核价。

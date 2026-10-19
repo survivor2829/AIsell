@@ -165,19 +165,35 @@ async function probe(source, ffmpegPath) {
     : path.join(path.dirname(ffmpegPath), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
   return JSON.parse(await run(executable, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', path.resolve(source)]));
 }
-async function freezeAudio({ segments, destination, ffmpegPath = 'ffmpeg' }) {
+async function freezeAudio({ segments, destination, ffmpegPath = 'ffmpeg', preserveNativeRate = false }) {
   if (!segments?.length) throw fail('digital_human_audio_missing', '完整配音尚未准备好。');
+  let sampleRate = RATE, channels = 1;
+  if (preserveNativeRate) {
+    const streams = await Promise.all(segments.map(async (segment) => (await probe(segment.audioPath, ffmpegPath)).streams?.find((s) => s.codec_type === 'audio')));
+    if (streams.some((stream) => !Number.isFinite(Number(stream?.sample_rate)) || Number(stream.sample_rate) < 8000 || ![1, 2].includes(stream.channels))) throw fail('digital_human_audio_invalid', '配音采样率或声道无法核对，原结果已保存。');
+    sampleRate = Math.max(...streams.map((stream) => Number(stream.sample_rate)));
+    channels = Math.max(...streams.map((stream) => stream.channels));
+  }
   const args = ['-hide_banner', '-loglevel', 'error', '-y'], filters = [];
   for (const [index, segment] of segments.entries()) {
     const bytes = fs.readFileSync(segment.audioPath);
     if (segment.audioSha256 && createHash('sha256').update(bytes).digest('hex') !== segment.audioSha256) throw fail('digital_human_audio_changed', '冻结配音文件发生变化。');
     args.push('-i', segment.audioPath);
-    filters.push(`[${index}:a]asetpts=PTS-STARTPTS,aresample=${RATE},aformat=sample_fmts=s16:channel_layouts=mono${segment.preserveDuration ? '' : `,apad,atrim=duration=${segment.seconds}`}[a${index}]`);
+    filters.push(`[${index}:a]asetpts=PTS-STARTPTS,aresample=${sampleRate},aformat=sample_fmts=s16:channel_layouts=${channels === 2 ? 'stereo' : 'mono'}${preserveNativeRate || segment.preserveDuration ? '' : `,apad,atrim=duration=${segment.seconds}`}[a${index}]`);
   }
   filters.push(`${segments.map((_, index) => `[a${index}]`).join('')}concat=n=${segments.length}:v=0:a=1[all]`);
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   await run(ffmpegPath, [...args, '-filter_complex', filters.join(';'), '-map', '[all]', '-c:a', 'pcm_s16le', destination]);
-  return { sha256: createHash('sha256').update(fs.readFileSync(destination)).digest('hex') };
+  const metadata = preserveNativeRate ? { sampleRate, channels, seconds: Number((await probe(destination, ffmpegPath)).format.duration) } : {};
+  return { sha256: createHash('sha256').update(fs.readFileSync(destination)).digest('hex'), ...metadata };
+}
+async function createAsrCopy({ source, destination, ffmpegPath = 'ffmpeg' }) {
+  if (path.resolve(source).toLowerCase() === path.resolve(destination).toLowerCase()) throw fail('digital_human_audio_changed', '字幕识别副本不能覆盖声音母带。');
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', source, '-map', '0:a:0', '-vn',
+    '-af', 'asetpts=PTS-STARTPTS', '-ar', String(RATE), '-ac', '1', '-c:a', 'pcm_s16le', destination]);
+  return { sha256: createHash('sha256').update(fs.readFileSync(destination)).digest('hex'), sampleRate: RATE, channels: 1,
+    seconds: Number((await probe(destination, ffmpegPath)).format.duration) };
 }
 async function cutAudio({ source, destination, startSeconds, seconds, ffmpegPath = 'ffmpeg' }) {
   await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', source,
@@ -220,4 +236,4 @@ function segmentPrompt(task, segment, index) {
   const expressions = ['开口时轻微前倾、眉眼带好奇；解释时回稳，单手自然摊开。', '平稳解释，手势与语气有轻重，适当点头，手势收回。', '收尾时自然微笑、轻点头，仍保持眨眼和呼吸。'];
   return `竖屏写实人物口播，稳定平视大半身构图，保持参考人物身份、服装、场景和产品外形。使用传入音轨作为唯一对白，嘴型、表情、肩膀和手势与该音轨节奏对应；不另读一份文案，不生成额外人声或配乐。${expressions[Math.min(index, expressions.length - 1)]}两手自然完整，不机械循环挥手；大型产品继续落地，不改变产品结构。语音结束后只保留短暂自然呼吸，不定格。不生成字幕或画内文字。本段语义仅供表演理解：${segment.text}`;
 }
-module.exports = { VOICE_IDS, splitScript, speechChunks, splitMeasuredSpeech, cutAudio, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, verifyRecordingTranscript, freezeAudio, assemble, segmentPrompt };
+module.exports = { VOICE_IDS, splitScript, speechChunks, splitMeasuredSpeech, cutAudio, analyzePcm, measureAudio, assertSpeechCoverage, verifyTranscript, verifyRecordingTranscript, freezeAudio, createAsrCopy, assemble, segmentPrompt };

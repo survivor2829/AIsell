@@ -1,0 +1,76 @@
+{
+  "model": "videoretalk",
+  "automaticVoice": {
+    "model": "cosyvoice-v3.5-flash",
+    "enrollmentModel": "voice-enrollment",
+    "enrollRoute": "/bailian/api/v1/services/audio/tts/customization",
+    "ttsRoute": "/bailian/api/v1/services/audio/tts/SpeechSynthesizer",
+    "enrollmentReserveCny": 0,
+    "source": "https://help.aliyun.com/zh/model-studio/voice-clone-design-http-api"
+  },
+  "scriptReserveCny": 0.1,
+  "industries": [
+    "清洁设备",
+    "清洁耗材",
+    "保洁服务",
+    "物业服务",
+    "其他行业"
+  ],
+  "price": {
+    "videoCnyPerSecond": 0.08,
+    "voiceReserveCnyPer10kChars": 20,
+    "asrReserveCny": 1,
+    "checkedOn": "2026-10-15",
+    "source": "https://help.aliyun.com/zh/model-studio/videoretalk/",
+    "note": "预计金额按公开单价测算，不是实际扣费。预留是授权上限；实际结算以供应商账单为准，不使用未核实的免费额度。",
+    "voiceCnyPer10kChars": 0.8,
+    "asrCnyPerHour": 4.5,
+    "voiceSource": "https://help.aliyun.com/zh/model-studio/model-pricing",
+    "asrSource": "https://www.volcengine.com/docs/6561/1359370"
+  },
+  "limits": {
+    "videoMaxBytes": 314572800,
+    "audioMaxBytes": 31457280,
+    "minSeconds": 2,
+    "maxSeconds": 120,
+    "minSide": 640,
+    "maxSide": 2048,
+    "minFps": 15,
+    "maxFps": 60,
+    "voiceMinSeconds": 5,
+    "voiceMaxSeconds": 30,
+    "narrationMinSeconds": 15
+  },
+  "captionStyles": [
+    {
+      "id": "bold_yellow",
+      "name": "黄白大字",
+      "description": "粗体大字，黄白重点"
+    },
+    {
+      "id": "word_highlight",
+      "name": "跟读高亮",
+      "description": "随实际口播逐词点亮"
+    },
+    {
+      "id": "keyword_pop",
+      "name": "重点放大",
+      "description": "关键短语弹出强调"
+    },
+    {
+      "id": "moving_pill",
+      "name": "胶囊强调",
+      "description": "底色跟随当前词语"
+    },
+    {
+      "id": "phrase_slide",
+      "name": "分句弹入",
+      "description": "完整短句轻快入场"
+    },
+    {
+      "id": "clean_business",
+      "name": "清爽商务",
+      "description": "清晰稳重，适合产品讲解"
+    }
+  ]
+}

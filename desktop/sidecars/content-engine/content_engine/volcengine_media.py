@@ -68,7 +68,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
         receipt_url = f"{origin}/v1/provider-gateway/operations/{operation_id}"
         deadline = time.monotonic() + 90
         while True:
-            tls_context = gateway_tls_context(receipt_url)
+            tls_context = gateway_tls_context(receipt_url, method="GET")
             opener_args = [_NoRedirect()]
             if tls_context is not None:
                 opener_args.append(request.HTTPSHandler(context=tls_context))

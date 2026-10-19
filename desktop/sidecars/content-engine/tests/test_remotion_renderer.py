@@ -263,6 +263,7 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
         command = self.renderer.commands[-1]
         self.assertEqual("copy", command[command.index("-c:v") + 1])
         self.assertEqual("copy", command[command.index("-c:a") + 1])
+        self.assertNotIn("-shortest", command, "AAC padding must not make muxing discard validated audio packets")
         self.assertIn("0:v:0", command)
         self.assertIn("1:a:0", command)
 

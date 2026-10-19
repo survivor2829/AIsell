@@ -1,4 +1,6 @@
 import React from "react";
+import { NarrationLayout } from './NarrationLayout';
+import narrationTemplates from './narration-templates.json';
 import {
   AbsoluteFill,
   Audio,
@@ -436,12 +438,13 @@ const ReferenceCaptionTrack: React.FC<{ captions: TimedWord[]; nowMs: number; du
 
 // Each semantic page stays within two lines. Colour follows measured words;
 // phrase-only timing animates the page without inventing word timing.
-const BoldNarration: React.FC<{ captions: TimedWord[]; nowMs: number; frame: number; fps: number }> = ({ captions, nowMs, frame, fps }) => {
+const BoldNarration: React.FC<{ captions: TimedWord[]; nowMs: number; frame: number; fps: number; styleId?: MotionManifest['captionStyleId'] }> = ({ captions, nowMs, frame, fps, styleId }) => {
   const index = findActiveCaptionIndex(captions, nowMs);
   if (index < 0) return null;
   const cue = captions[index];
   const displayText = cue.text;
-  const { lines, fontSize } = referenceCaptionLines(displayText, { maximumFontSize: 88, lineWidth: 10.5, availableWidth: 880 });
+  const business = styleId === 'clean_business';
+  const { lines, fontSize } = referenceCaptionLines(displayText, { maximumFontSize: business ? 70 : 88, lineWidth: 10.5, availableWidth: 880 });
   const pop = spring({ frame: frame - msToFrame(cue.startMs, fps), fps, config: { damping: 14, stiffness: 250, mass: .55 } });
   let offset = 0;
   const words = (cue.words?.length ? cue.words : [cue]).map((word) => {
@@ -453,16 +456,26 @@ const BoldNarration: React.FC<{ captions: TimedWord[]; nowMs: number; frame: num
   let lineOffset = 0;
   return <div style={{ position: "absolute", left: 84, right: 84, top: "72%", transform: "translateY(-50%)",
     textAlign: "center", fontFamily: narrationFontFamily, fontSize, fontWeight: 900, lineHeight: 1.15,
-    color: "#FFE13B", WebkitTextStroke: "8px #101010", paintOrder: "stroke fill", textShadow: "0 5px 3px #0009" }}>
-    <div style={{ transform: `translateY(${(1 - pop) * 12}px) scale(${.96 + pop * .04})` }}>
+    color: "#FFE13B", WebkitTextStroke: `${business ? 3 : 7}px #101010`, paintOrder: "stroke fill", textShadow: "0 4px 3px #0009" }}>
+    <div style={{ transform: business ? undefined : styleId === 'phrase_slide'
+      ? `translateY(${(1 - Math.min(1, (nowMs - cue.startMs) / 180)) * 22}px)`
+      : `translateY(${(1 - pop) * 12}px) scale(${.96 + pop * .04})` }}>
       {lines.map((line, lineIndex) => {
         const start = displayText.indexOf(line, lineOffset);
         lineOffset = start < 0 ? lineOffset : start + line.length;
         let characterOffset = start;
-        return <div key={lineIndex} style={{ whiteSpace: "pre" }}>{start < 0 ? line : Array.from(line).map((character, index) => {
+        return <div key={lineIndex} style={{ whiteSpace: "pre", ...(business ? { background: '#142333dd', borderRadius: 12, padding: '8px 18px', width: 'fit-content', margin: '4px auto' } : {}) }}>{start < 0 ? line : Array.from(line).map((character, index) => {
           const word = words.find((item) => characterOffset >= item.start && characterOffset < item.end);
           characterOffset += character.length;
-          return <span key={index} style={{ color: word && nowMs < word.startMs ? "#FFFFFF" : "#FFE13B" }}>{character}</span>;
+          const speaking = Boolean(word && activeAt(word.startMs, word.endMs, nowMs));
+          const highlight = styleId === 'word_highlight' || styleId === 'moving_pill' ? speaking : Boolean(word && nowMs >= word.startMs);
+          const keyword = false; // Legacy tasks retain their layout; no single-character guessing.
+          return <span key={index} style={{
+            color: business || styleId === 'phrase_slide' || styleId === 'moving_pill' ? '#FFFFFF'
+              : styleId === 'keyword_pop' ? keyword ? '#FFE13B' : '#FFFFFF' : highlight ? '#FFE13B' : '#FFFFFF',
+            ...(styleId === 'moving_pill' && speaking ? { background: '#c52650', borderRadius: 10, padding: '2px 0', WebkitTextStroke: '0' } : {}),
+            ...(styleId === 'keyword_pop' && keyword ? { display: 'inline-block', transform: `scale(${1 + Math.min(.12, pop * .12)})`, margin: '0 3px' } : {}),
+          }}>{character}</span>;
         })}</div>;
       })}
     </div>
@@ -556,18 +569,21 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
   const activeFocus = manifest.captionPresentation === "reference_narration" ? null : registeredFocusRects.find(({ focus }) => activeAt(focus.startMs, focus.endMs, nowMs));
   const zoomEvent = activeEvents.find(({ event }) => event.effect.renderer === "zoomTransition");
   const zoomProgress = zoomEvent ? eventProgress(zoomEvent.event, frame, fps) : 0;
+  const narrationTemplate = narrationTemplates.templates.some((item) => item.id === manifest.captionStyleId);
   return (
     <AbsoluteFill style={{ background: pack.palette.ink, overflow: "hidden" }}>
       <VideoBase manifest={manifest} pack={pack} frame={frame} zoomProgress={zoomProgress} />
-      {manifest.presentation ? <NarrationTypeface><VideoOutline manifest={manifest} nowMs={nowMs} /></NarrationTypeface> : null}
+      {manifest.presentation && !narrationTemplate ? <NarrationTypeface><VideoOutline manifest={manifest} nowMs={nowMs} /></NarrationTypeface> : null}
       {activeFocus ? <RegisteredFocusEffect focus={activeFocus.focus} definition={activeFocus.definition} pack={pack} frame={frame} /> : null}
       {activeEvents.map(({ event, definition }, index) => (
         <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
       ))}
-      {manifest.presentation
-        ? <BoldNarration captions={manifest.captions} nowMs={nowMs} frame={frame} fps={fps} />
+      {narrationTemplate ? <NarrationTypeface><NarrationLayout styleId={manifest.captionStyleId!} title={manifest.title} cues={manifest.captions} nowMs={nowMs} emphasis={manifest.emphasisPhrases} plan={manifest.narrationPlan} /></NarrationTypeface> : manifest.presentation
+        ? <BoldNarration captions={manifest.captions} nowMs={nowMs} frame={frame} fps={fps} styleId={manifest.captionStyleId} />
         : manifest.captionPresentation === "reference_narration"
-        ? <ReferenceCaptionTrack captions={manifest.captions} nowMs={nowMs} durationMs={manifest.durationMs} />
+        ? manifest.captionStyleId
+          ? <BoldNarration captions={manifest.captions} nowMs={nowMs} frame={frame} fps={fps} styleId={manifest.captionStyleId} />
+          : <ReferenceCaptionTrack captions={manifest.captions} nowMs={nowMs} durationMs={manifest.durationMs} />
         : <CaptionTrack captions={manifest.captions} pack={pack} nowMs={nowMs} frame={frame} />}
       {manifest.captionPresentation !== "reference_narration" ? <SoundEffects events={soundEvents} fps={fps} /> : null}
     </AbsoluteFill>

@@ -10,6 +10,21 @@ from content_engine.volcengine_media import ARK_ENDPOINT, VolcengineMediaClient
 
 
 class VolcengineMediaTests(unittest.TestCase):
+    def test_offline_acceptance_blocks_provider_post_before_network(self):
+        from content_engine.apimart_cover import provider_urlopen
+
+        with patch.dict(os.environ, {"XIAOXI_DISABLE_PAID_CALLS": "1"}), patch(
+            "urllib.request.OpenerDirector.open", side_effect=AssertionError("network must not run")
+        ) as network:
+            for submit in (
+                lambda: VolcengineMediaClient()._post(ARK_ENDPOINT, {"model": "test"}, {}, 1, "方舟"),
+                lambda: provider_urlopen(request.Request("https://example.com/generate", data=b"{}"), timeout=1),
+            ):
+                with self.assertRaises(ContentEngineError) as raised:
+                    submit()
+                self.assertEqual("paid_calls_disabled", raised.exception.code)
+            network.assert_not_called()
+
     def test_tts_rejects_non_volcengine_persona_without_naming_a_different_voice(self):
         with self.assertRaises(ContentEngineError) as raised:
             VolcengineMediaClient().synthesize_auto_mix_phrase(

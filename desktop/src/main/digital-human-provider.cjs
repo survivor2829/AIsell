@@ -211,17 +211,31 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
     try {
       response = await gatewayClient.fetch(gatewayClient.url(route), { method, body: body instanceof Buffer ? body : body == null ? undefined : JSON.stringify(body),
         headers: { Accept: 'application/json', ...(body instanceof Buffer ? {} : { 'Content-Type': 'application/json' }), ...headers,
-          ...(operationId ? { 'X-Xiaoxi-Operation-Id': operationId } : {}) }, timeoutMs: 180000 });
+          ...(operationId ? { 'X-Xiaoxi-Operation-Id': operationId } : {}) }, timeoutMs: 270000, maxBytes: 16 * 1024 * 1024 });
     } catch (error) {
+      if (error.code === 'PAID_CALLS_DISABLED') throw error;
       throw fail('digital_human_request_unconfirmed', '服务连接中断，请刷新核对进度，当前请求不会自动重复提交。', { outcomeUnknown: method === 'POST' });
+    }
+    const contentType = response.headers?.get?.('content-type') || response.headers?.['content-type'] || response.headers?.['Content-Type'] || '';
+    if (response.ok && (headers['X-DashScope-SSE'] === 'enable' || contentType.startsWith('text/event-stream'))) {
+      return require('./speech-stream.cjs').parseSpeechStream(await response.text());
     }
     let payload;
     try { payload = await response.json(); } catch { throw fail('digital_human_response_invalid', '服务返回的数据无法识别。', { outcomeUnknown: method === 'POST', status: response.status }); }
     if (!response.ok) {
       const detail = cleanMessage(payload?.error?.message || payload?.error || payload?.message);
-      throw fail(response.status === 404 ? 'digital_human_route_unavailable' : 'digital_human_provider_error',
-        response.status === 404 ? '数字人接口尚未部署或当前不可用，请在开发者工具检查服务版本。' : `服务未完成请求${detail ? `：${detail}` : `（${response.status}）`}`,
-        { outcomeUnknown: method === 'POST' && (response.status >= 500 || response.status === 409), status: response.status });
+      const receiptQuery = method === 'GET' && /^\/operations\/[A-Za-z0-9_.:-]+$/u.test(route);
+      // A receipt endpoint replays the upstream response. Only an identifiable
+      // upstream rejection proves the original POST failed; session, missing
+      // receipt and transport errors cannot authorize another purchase.
+      const originalRequestRejected = receiptQuery && response.status >= 400 && response.status < 500
+        && ![408, 409, 429].includes(response.status) && typeof payload?.request_id === 'string'
+        && payload.request_id.length > 0 && typeof payload?.code === 'string' && payload.code.length > 0;
+      const missingRoute = response.status === 404 && !payload?.code;
+      throw fail(missingRoute ? 'digital_human_route_unavailable' : 'digital_human_provider_error',
+        missingRoute ? '数字人接口尚未部署或当前不可用，请在开发者工具检查服务版本。' : `服务未完成请求${detail ? `：${detail}` : `（${response.status}）`}`,
+        { outcomeUnknown: receiptQuery ? !originalRequestRejected : method === 'POST' && (response.status >= 500 || response.status === 409),
+          originalRequestRejected, status: response.status });
     }
     return payload;
   }

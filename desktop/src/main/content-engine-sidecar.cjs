@@ -12,6 +12,7 @@ const IMPORT_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const RENDER_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 const VOICE_DESIGN_REQUEST_TIMEOUT_MS = 6 * 60_000;
 const TRUSTED_RUNTIME_ENV_KEYS = new Set([
+  "XIAOXI_DISABLE_PAID_CALLS",
   "XIAOXI_FFMPEG_PATH",
   "XIAOXI_FFPROBE_PATH",
   "XIAOXI_CREATIVE_FONT_PATH",
@@ -1013,8 +1014,8 @@ function createContentEngineSidecar(options = {}) {
       "create_visual_comparison_task",
       { candidate_id: generatedVideoId(candidateId) }
     ),
-    regenerateCover: (candidateId) => request("regenerate_cover", {
-      candidate_id: candidateId
+    regenerateCover: (candidateId, design, control) => request("regenerate_cover", {
+      candidate_id: candidateId, ...(design ? { design } : {}), ...(control?.recoverOnly ? { recover_only: true } : {})
     }),
     updateCoverTitle: (candidateId, headlineLines) => request("update_cover_title", {
       candidate_id: candidateId, headline_lines: headlineLines

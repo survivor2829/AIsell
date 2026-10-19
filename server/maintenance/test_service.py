@@ -37,11 +37,12 @@ class ServiceTest(unittest.TestCase):
                 request = urllib.request.Request(
                     f'http://127.0.0.1:{public.server_port}/v1/provider-gateway/bailian/api/v1/services/aigc/video-generation/video-synthesis',
                     b'{}', headers={'Content-Type': 'application/json', 'x-dashscope-async': 'enable',
-                        'X-DashScope-OssResourceResolve': 'enable', 'X-Unrelated': 'drop'})
+                        'X-DashScope-OssResourceResolve': 'enable', 'X-DashScope-SSE': 'enable', 'X-Unrelated': 'drop'})
                 with urllib.request.urlopen(request) as response:
                     self.assertEqual(json.load(response)['output']['task_id'], 'fixture')
             self.assertEqual(received[0]['x-dashscope-async'], 'enable')
             self.assertEqual(received[0]['x-dashscope-ossresourceresolve'], 'enable')
+            self.assertEqual(received[0]['x-dashscope-sse'], 'enable')
             self.assertNotIn('x-unrelated', received[0])
         finally:
             for server in (public, upstream):

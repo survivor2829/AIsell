@@ -7,6 +7,19 @@ const MAX_AGE = 24 * 60 * 60 * 1000;
 const PRICE_TIMEOUT_MS = 15000, MAX_PRICE_BYTES = 1000000;
 const BAILIAN_PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/wan2-6-i2v-flash';
 const TTS_PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/qwen3-tts-flash';
+function createReferencePriceReader({ fetch: fetchImpl } = {}) {
+  const configured = require('../shared/reference-human.json').price;
+  let cached;
+  return async () => {
+    if (cached && Date.now() - Date.parse(cached.checkedAt) < MAX_AGE) return cached;
+    const html = await (fetchImpl ? readFetchText(configured.source, fetchImpl) : readText(configured.source));
+    const rows = [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu)].map((row) => row[1].replace(/<[^>]*>/gu, ' ').replace(/&nbsp;|&#160;/gu, ' '));
+    const row = rows.find((text) => /videoretalk/iu.test(text) && /元\s*\/\s*秒/u.test(text));
+    const rate = Number(row?.match(/(\d+(?:\.\d+)?)\s*元\s*\/\s*秒/u)?.[1]);
+    if (!(rate > 0)) throw fail('reference_price_unavailable', '无法核实当前人物驱动价格，未提交付费制作。');
+    cached = { ...configured, videoCnyPerSecond: rate, checkedAt: new Date().toISOString() }; return cached;
+  };
+}
 // Published reference for the same speech service. It is an estimate, not the
 // gateway account's actual bill; the larger allowance below stays pending.
 const ASR_REFERENCE = Object.freeze({ resourceId: 'volc.bigasr.auc_turbo', cnyPerHour: 4.5,
@@ -179,4 +192,4 @@ function quotePlan(plan, prices, budgetCny) {
   return { ready: true, estimatedCny, maximumCny, reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny,
     source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd, note: '按公开标价保守预留；人民币为预算折算，实际账单另行核对。字幕识别预留非已扣费用。' };
 }
-module.exports = { createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, validBailianPrices };
+module.exports = { createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, validBailianPrices, createReferencePriceReader };

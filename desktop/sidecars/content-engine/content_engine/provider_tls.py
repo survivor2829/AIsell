@@ -12,9 +12,13 @@ GATEWAY_ORIGIN_ENV = "XIAOXI_PROVIDER_GATEWAY_ORIGIN"
 GATEWAY_CA_ENV = "XIAOXI_PROVIDER_GATEWAY_CA_PEM"
 
 
-def gateway_tls_context(url: str):
+def gateway_tls_context(url: str, *, method: str = "POST"):
     """Return a verified TLS context for private gateway URLs only."""
 
+    if os.environ.get("XIAOXI_DISABLE_PAID_CALLS") == "1" and method.upper() not in {"GET", "HEAD"}:
+        raise ContentEngineError(
+            "paid_calls_disabled", "本轮验收禁止外部付费调用，未提交请求。"
+        )
     origin = os.environ.get(GATEWAY_ORIGIN_ENV, "").strip().rstrip("/")
     if not origin or not str(url).startswith(f"{origin}/v1/provider-gateway/"):
         return None

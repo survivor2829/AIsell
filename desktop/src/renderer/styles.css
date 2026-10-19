@@ -523,7 +523,7 @@ button:focus-visible {
   right: 0;
   height: 50px;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(80px,1fr) minmax(0,auto) minmax(0,auto);
   align-items: center;
   justify-content: space-between;
   padding: 0 22px 0 12px;
@@ -2891,3 +2891,10 @@ td .text-button {
     justify-content: flex-start;
   }
 }
+
+/* Keep the shared desktop header on one line at 125% and narrow windows. */
+.topbar-current-module { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.topbar .account-menu-wrap { min-width:0; }
+.topbar .account-trigger { min-width:0; }
+@media (max-width:1080px) { .topbar { column-gap:8px; padding-right:12px; }.topbar .account-name { max-width:110px; } }
+@media (max-width:860px) { .topbar .account-name { max-width:70px; }.topbar-current-module { font-size:14px; } }

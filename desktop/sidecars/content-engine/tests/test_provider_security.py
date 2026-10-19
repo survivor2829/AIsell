@@ -4,6 +4,7 @@ import base64
 from contextlib import contextmanager
 from email.message import Message
 import io
+import ipaddress
 import json
 import os
 import socket
@@ -33,6 +34,7 @@ from content_engine.apimart_cover import (
     provider_urlopen,
     public_https_get,
     validate_public_https_url,
+    _PublicHTTPSConnection,
 )
 from content_engine.creative_analysis import (
     AUTO_MIX_TTS_MODEL,
@@ -102,7 +104,7 @@ class ProviderOriginSecurityTests(unittest.TestCase):
         ) as build:
             build.return_value.open.return_value = "gateway-response"
             self.assertEqual("gateway-response", provider_urlopen(request, timeout=30))
-            tls.assert_called_once_with(request.full_url)
+            tls.assert_called_once_with(request.full_url, method="GET")
             self.assertIsInstance(build.call_args.args[0], _ProviderRedirectHandler)
             self.assertIs(build.call_args.args[1]._context, context)
             build.return_value.open.assert_called_once_with(request, timeout=30)
@@ -168,6 +170,31 @@ class ProviderOriginSecurityTests(unittest.TestCase):
 
 
 class ProviderDownloadSecurityTests(unittest.TestCase):
+    def test_synthetic_dns_uses_verified_public_ip_and_preserves_tls_hostname(self):
+        with mock.patch('content_engine.apimart_cover._resolve_public_media_addresses', return_value=[ipaddress.ip_address('8.8.8.8')]) as fallback:
+            validate_public_https_url('https://cdn.example/image', resolver=resolver_for('198.18.0.10'))
+            fallback.assert_called_once_with('cdn.example')
+            fallback.reset_mock()
+            with self.assertRaises(ProviderUrlError):
+                validate_public_https_url('https://cdn.example/image', resolver=resolver_for('192.168.1.4'))
+            fallback.assert_not_called()
+        with mock.patch('content_engine.apimart_cover._resolve_public_media_addresses', return_value=[ipaddress.ip_address('127.0.0.1')]):
+            with self.assertRaises(ProviderUrlError):
+                validate_public_https_url('https://cdn.example/image', resolver=resolver_for('2001:2::10'))
+        connection = _PublicHTTPSConnection('cdn.example', timeout=10)
+        connection._context = mock.Mock()
+        with mock.patch('content_engine.apimart_cover._resolved_addresses', return_value=[ipaddress.ip_address('8.8.8.8')]), mock.patch('socket.create_connection') as create:
+            connection.connect()
+            self.assertEqual(('8.8.8.8', 443), create.call_args.args[0])
+            self.assertTrue(0 < create.call_args.args[1] <= 10)
+            connection._context.wrap_socket.assert_called_once_with(create.return_value, server_hostname='cdn.example')
+        second = mock.Mock()
+        with mock.patch('content_engine.apimart_cover._resolved_addresses', return_value=[ipaddress.ip_address('8.8.8.8'), ipaddress.ip_address('1.1.1.1')]), mock.patch('socket.create_connection', side_effect=[OSError('first IP unreachable'), second]) as create:
+            connection.connect()
+            self.assertEqual(2, create.call_count)
+            self.assertEqual(('1.1.1.1', 443), create.call_args.args[0])
+            connection._context.wrap_socket.assert_called_with(second, server_hostname='cdn.example')
+
     def test_public_url_rejects_http_credentials_and_private_literals(self):
         invalid_urls = (
             "http://example.com/cover.png",
@@ -223,7 +250,7 @@ class ProviderDownloadSecurityTests(unittest.TestCase):
         response.geturl.return_value = "https://8.8.8.8/cover.png"
         response.read.side_effect = lambda size: b"x" * size
 
-        with mock.patch("urllib.request.urlopen", return_value=response):
+        with mock.patch("content_engine.apimart_cover.provider_urlopen", return_value=response):
             with self.assertRaises(ProviderResponseTooLarge):
                 public_https_get(
                     "https://8.8.8.8/cover.png",
@@ -242,7 +269,7 @@ class ProviderDownloadSecurityTests(unittest.TestCase):
         response.headers["Content-Length"] = "10"
         response.read.return_value = b"short"
 
-        with mock.patch("urllib.request.urlopen", return_value=response):
+        with mock.patch("content_engine.apimart_cover.provider_urlopen", return_value=response):
             with self.assertRaises(ProviderResponseIncomplete):
                 public_https_get(
                     "https://8.8.8.8/voice.wav",
