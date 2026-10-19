@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import http.client
 import mimetypes
 import os
 from pathlib import Path
 import re
 import socket
+import ssl
 import time
 from typing import Any, Callable
 import urllib.error
@@ -95,8 +97,65 @@ def _resolved_addresses(hostname: str, port: int, resolver=socket.getaddrinfo):
                 raise ProviderUrlError("Provider download address is invalid.") from error
         if not addresses:
             raise ProviderUrlError("Provider download hostname has no usable address.")
+        synthetic = lambda address: (address.version == 4 and address in ipaddress.ip_network("198.18.0.0/15")
+                                     or address.version == 6 and address in ipaddress.ip_network("2001:2::/48"))
+        if any(synthetic(address) for address in addresses) and all(address.is_global or synthetic(address) for address in addresses):
+            return _resolve_public_media_addresses(hostname)
         return addresses
     return [literal]
+
+
+def _resolve_public_media_addresses(hostname):
+    # Same fallback as the desktop digital-human downloader. Do not trust VPN
+    # benchmark addresses or relax the private-address check.
+    for origin in ("https://dns.alidns.com", "https://dns.google"):
+        try:
+            url = origin + "/resolve?" + urllib.parse.urlencode({"name": hostname, "type": "A"})
+            request = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
+            with urllib.request.urlopen(request, timeout=8) as response:
+                raw = response.read(65537)
+                if response.status != 200 or len(raw) > 65536:
+                    continue
+            data = json.loads(raw)
+            addresses = [ipaddress.ip_address(item["data"]) for item in data.get("Answer", []) if item.get("type") == 1]
+            if data.get("Status") == 0 and addresses and all(address.version == 4 and address.is_global for address in addresses):
+                return addresses
+        except (OSError, ValueError, KeyError):
+            continue
+    raise ProviderUrlError("Provider download hostname could not be safely resolved.")
+
+
+class _PublicHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        addresses = _resolved_addresses(self.host, self.port)
+        if not addresses or any(not address.is_global for address in addresses):
+            raise ProviderUrlError("Provider download URL resolves to a non-public address.")
+        # Pin the verified public address while retaining hostname verification
+        # and SNI. A second OS lookup must not reintroduce the synthetic address.
+        deadline = time.monotonic() + (self.timeout if isinstance(self.timeout, (int, float)) else 60)
+        connection = None
+        last_error = None
+        for address in sorted(addresses, key=lambda value: value.version):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                connection = socket.create_connection((str(address), self.port), remaining, self.source_address)
+                break
+            except OSError as error:
+                last_error = error
+        if connection is None:
+            raise last_error or TimeoutError("Public media connection timed out.")
+        try:
+            self.sock = self._context.wrap_socket(connection, server_hostname=self.host)
+        except Exception:
+            connection.close()
+            raise
+
+
+class _PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_PublicHTTPSConnection, request, context=self._context)
 
 
 def validate_public_https_url(
@@ -181,7 +240,11 @@ def provider_urlopen(operation, *, timeout):
     # process opener after this module was imported.
     urllib.request.install_opener(_PROVIDER_OPENER)
     url = operation.full_url if isinstance(operation, urllib.request.Request) else str(operation)
-    context = gateway_tls_context(url)
+    method = operation.get_method() if isinstance(operation, urllib.request.Request) else "GET"
+    if getattr(operation, "_xiaoxi_public_download", False):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _ProviderRedirectHandler(), _PublicHTTPSHandler(context=ssl.create_default_context()))
+        return opener.open(operation, timeout=timeout)
+    context = gateway_tls_context(url, method=method)
     if context is not None:
         opener = urllib.request.build_opener(
             _ProviderRedirectHandler(), urllib.request.HTTPSHandler(context=context)
@@ -421,14 +484,16 @@ class APIMartCoverClient:
             )
         return url
 
-    def submit(self, prompt: str, *, reference_path: Path | None = None) -> str:
+    def submit(self, prompt: str, *, reference_path: Path | None = None, size: str = "9:16") -> str:
+        if size not in {"9:16", "3:4"}:
+            raise APIMartError("Unsupported cover aspect ratio.")
         if not self.configured:
             raise APIMartError("APIMart cover generation is not configured.")
         payload = {
             "model": self.model,
             "prompt": str(prompt or "")[:5_000],
             "n": 1,
-            "size": "9:16",
+            "size": size,
             "resolution": "1k",
         }
         if reference_path is not None:

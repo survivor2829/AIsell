@@ -9,6 +9,7 @@ const { classifyWechatFailureReason } = require("../src/shared/wechat-failure-po
 assert.deepEqual(unclassifiedAddedReasons('+ return { blocked_reason: "outcome_unknown" };'), []);
 assert.deepEqual(unclassifiedAddedReasons('+ return { reasonCode: "brand_new_unclassified_reason" };'), ["brand_new_unclassified_reason"]);
 assert.deepEqual(unclassifiedAddedReasons('+ return { reason: "brand_new_reason_field" };'), ["brand_new_reason_field"]);
+assert.deepEqual(unclassifiedAddedReasons('+ return { finish_reason: "stop" };'), [], "speech completion is not a WeChat failure reason");
 assert.deepEqual(unclassifiedAddedReasons('+ return failure("brand_new_failure_helper");'), ["brand_new_failure_helper"]);
 assert.deepEqual(unclassifiedAddedReasons('+ return response("needs_attention", "brand_new_response_helper");'), ["brand_new_response_helper"]);
 assert.deepEqual(unclassifiedAddedReasons('+ return result("blocked", "brand_new_result_helper");'), ["brand_new_result_helper"]);

@@ -1,6 +1,7 @@
 """Offline checks of the official video transport and existing request receipts."""
 import json
 import threading
+import tempfile
 import unittest
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,23 @@ import test_service
 class BailianVideoRoutesTest(unittest.TestCase):
     session = test_service.GatewayTest.session
     post_json = test_service.GatewayTest.post_json
+
+    def test_complete_voice_stream_receipt_exceeds_old_json_limit(self):
+        from service import ReceiptStore, RECEIPT_MAX_BYTES
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReceiptStore(directory + '/receipt.sqlite3', b'fixture')
+            try:
+                audio = b'a' * (RECEIPT_MAX_BYTES + 1)
+                store.begin('person', 'voice-stream', 'fingerprint')
+                store.finish('person', 'voice-stream', 'fingerprint', {'status': 200, 'headers': {'Content-Type': 'text/event-stream'}, 'raw': audio})
+                state, result, _ = store.lookup('person', 'voice-stream')
+                self.assertEqual(state, 'completed')
+                self.assertEqual(result['raw'], audio)
+                store.begin('person', 'ordinary-json', 'other-fingerprint')
+                store.finish('person', 'ordinary-json', 'other-fingerprint', {'status': 200, 'headers': {'Content-Type': 'application/json'}, 'raw': audio})
+                self.assertEqual(store.lookup('person', 'ordinary-json')[0], 'unrecoverable')
+            finally:
+                store.close()
 
     def test_async_headers_and_upload_query_preserve_receipts(self):
         config = test_service.GatewayConfig.from_environment({
@@ -35,7 +53,7 @@ class BailianVideoRoutesTest(unittest.TestCase):
         self.origin = f"http://127.0.0.1:{server.server_port}"
         try:
             token = self.session()
-            headers = {"Authorization": f"Bearer {token}", "X-DashScope-Async": "enable",
+            headers = {"Authorization": f"Bearer {token}", "X-DashScope-Async": "enable", "X-DashScope-SSE": "enable",
                        "X-DashScope-OssResourceResolve": "enable", "X-Xiaoxi-Operation-Id": "wan-one-post"}
             self.assertTrue(config.capabilities()["bailian_video"])
             route = "/v1/provider-gateway/bailian/api/v1/services/aigc/video-generation/video-synthesis"
@@ -45,6 +63,7 @@ class BailianVideoRoutesTest(unittest.TestCase):
             forwarded = dict((key.lower(), value) for key, value in requests[-1].header_items())
             self.assertEqual(forwarded["x-dashscope-async"], "enable")
             self.assertEqual(forwarded["x-dashscope-ossresourceresolve"], "enable")
+            self.assertEqual(forwarded["x-dashscope-sse"], "enable")
             self.assertEqual(forwarded["authorization"], "Bearer fixture-server-only-key")
             # Recovery reads the saved POST result; it never sends another paid request.
             receipt = urllib.request.Request(self.origin + "/v1/provider-gateway/operations/wan-one-post", headers=headers)
@@ -60,6 +79,7 @@ class BailianVideoRoutesTest(unittest.TestCase):
             other_headers = dict((key.lower(), value) for key, value in requests[-1].header_items())
             self.assertNotIn("x-dashscope-async", other_headers)
             self.assertNotIn("x-dashscope-ossresourceresolve", other_headers)
+            self.assertNotIn("x-dashscope-sse", other_headers)
         finally:
             server.shutdown()
             server.server_close()

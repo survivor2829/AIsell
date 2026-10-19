@@ -7,6 +7,7 @@ const { createDigitalHumanService } = require('./digital-human-service.cjs');
 const legacy = require('./digital-human-provider.cjs');
 const officialSchema = require('./bailian-video-provider.cjs');
 const audio = require('./digital-human-audio.cjs');
+const { selectVoiceReference } = require('./reference-human-media.cjs');
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 async function main() {
@@ -50,6 +51,16 @@ async function main() {
   for (let i = 1600; i < 14.5 * 16000; i += 1) pcm.writeInt16LE(Math.round(Math.sin(i / 15) * 10000), i * 2);
   const measured = audio.analyzePcm(pcm); audio.assertSpeechCoverage(measured, 15);
   assert.ok(measured.speechEnd >= 14.5 && measured.speechStart <= .12);
+  const reference = Buffer.alloc(30 * 16000 * 2);
+  pcm.copy(reference, 10 * 16000 * 2);
+  const selected = selectVoiceReference(reference);
+  assert.ok(selected.startSeconds >= 9.8 && selected.activeSeconds >= 14, 'Skip the silent opening and select a continuous active excerpt.');
+  assert.ok(selected.seconds >= 10 && selected.seconds <= 20);
+  assert.equal(selected.speakerAndBackgroundVerified, false, 'Energy cannot prove that a clip has only one speaker or no music.');
+  assert.throws(() => selectVoiceReference(Buffer.alloc(12 * 16000 * 2)), { code: 'reference_voice_silent' });
+  const overloaded = Buffer.alloc(12 * 16000 * 2);
+  for (let i = 0; i < overloaded.length; i += 2) overloaded.writeInt16LE(32767, i);
+  assert.throws(() => selectVoiceReference(overloaded), { code: 'reference_voice_clipped' });
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-avatar-audio-'));
   const image = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);

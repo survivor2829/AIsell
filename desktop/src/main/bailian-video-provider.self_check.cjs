@@ -15,6 +15,9 @@ async function main() {
   assert.equal(normalizePoll({ output: { task_status: 'UNKNOWN' } }).status, 'unknown');
   assert.deepEqual(normalizePoll({ output: { task_status: 'SUCCEEDED', video_url: 'https://cdn.example.com/clip.mp4' } }),
     { status: 'completed', videoUrl: 'https://cdn.example.com/clip.mp4', error: '' });
+  assert.equal(normalizePoll({ output: { task_status: 'SUCCEEDED', video_url: 'http://dashscope-7c2c.oss-cn-shanghai.aliyuncs.com/clip.mp4?Signature=fixture' } }).videoUrl,
+    'https://dashscope-7c2c.oss-cn-shanghai.aliyuncs.com/clip.mp4?Signature=fixture');
+  assert.throws(() => normalizePoll({ output: { task_status: 'SUCCEEDED', video_url: 'http://dashscope-7c2c.oss-cn-shanghai.aliyuncs.com.evil.test/clip.mp4' } }));
   assert.equal(ttsPayload({ text: '完整句子。' }).input.text, '完整句子。');
   assert.throws(() => ttsPayload({ text: '字'.repeat(601) }), { code: 'bailian_tts_text_invalid' });
   assert.equal(ttsAudioUrl({ output: { audio: { url: 'http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/voice.wav?Signature=fixture' } } }),

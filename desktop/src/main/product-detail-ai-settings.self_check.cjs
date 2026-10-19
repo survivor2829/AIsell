@@ -198,10 +198,14 @@ async function main() {
 
     const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
     assert.match(mainSource, /createProductDetailAiSettingsStore/u);
-    assert.match(
-      mainSource,
-      /getProviderEnvironment: productDetailReleaseSmokeMode\s*\? \(\) => \(\{\}\)\s*: getProductDetailProviderEnvironment/u
-    );
+    const providerSelection = mainSource.match(/getProviderEnvironment: (productDetailReleaseSmokeMode[\s\S]*?: getProductDetailProviderEnvironment)/u)?.[1];
+    assert(providerSelection, 'product-detail provider selection must remain wired');
+    const selectProvider = new Function('productDetailReleaseSmokeMode', 'developmentEdition', 'process', 'getProductDetailProviderEnvironment', `return (${providerSelection})`);
+    const providerEnv = { REFINE_API_KEY: 'fixture-only' };
+    for (const [smoke, development, disabled, blocked] of [[true, true, '0', true], [false, true, '1', true], [false, true, '0', false], [false, false, '1', false]]) {
+      const selected = selectProvider(smoke, development, { env: { XIAOXI_DISABLE_PAID_CALLS: disabled } }, () => providerEnv);
+      assert.deepEqual(selected(), blocked ? {} : providerEnv);
+    }
     assert.doesNotMatch(mainSource, /DEEPSEEK_API_KEY = deepSeekKeyStore\.read\(\)/u);
     assert.match(mainSource, /REFINE_API_KEY = providerGatewayClient\.token\(\)/u);
     assert.match(mainSource, /REFINE_API_BASE_URL = providerGatewayClient\.url\("\/apimart"\)/u);

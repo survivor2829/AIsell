@@ -1,3 +1,4 @@
+import type { NarrationPlan } from './NarrationLayoutV4';
 export type StyleId = "social_pop" | "neo_editorial" | "tech_motion";
 export type SemanticPresetId =
   | "knowledge_focus"
@@ -95,6 +96,9 @@ export type MotionManifest = {
   };
   captions: TimedWord[];
   captionPresentation?: "reference_narration";
+  captionStyleId?: "bold_yellow" | "word_highlight" | "keyword_pop" | "moving_pill" | "phrase_slide" | "clean_business" | "layered_v1" | "impact_v1" | "minimal_v1" | "layered_v2" | "impact_v2" | "minimal_v2" | "layered_v3" | "impact_v3" | "minimal_v3" | "layered_v4" | "impact_v4" | "minimal_v4";
+  emphasisPhrases?: string[];
+  narrationPlan?: NarrationPlan;
   presentation?: { templateId: "topic_fixed" | "key_points"; topic: string; points: TimedWord[]; showTitle?: boolean };
   events: MotionEvent[];
   focusRects: FocusRect[];

@@ -9,6 +9,7 @@ from .errors import ContentEngineError
 from .narration_alignment import align_narration, spoken_key
 
 TEMPLATES = {"topic_fixed", "key_points"}
+CAPTION_STYLES = {"bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", "layered_v1", "impact_v1", "minimal_v1", "layered_v2", "impact_v2", "minimal_v2", "layered_v3", "impact_v3", "minimal_v3", "layered_v4", "impact_v4", "minimal_v4"}
 
 
 def display_topic(title):
@@ -143,6 +144,14 @@ def run_imported_video(domain, task_id, payload):
               "packaging": {"preset_id": "knowledge_focus", "title": payload["title"], "events": [],
                   "cover": {"mode": "local_frame", "status": "pending", "auto_generate": payload.get("cover_mode") == "apimart"},
                   "visualRenderer": {"requestedEngine": "remotion", "visualStyleId": "social_pop", "allowFallback": False}}}
+    if payload.get("caption_style_id"):
+        recipe["caption_style_id"] = payload["caption_style_id"]
+    recipe["emphasis_phrases"] = payload.get("emphasis_phrases", [])
+    if payload.get("narration_plan"):
+        recipe["narration_plan"] = payload["narration_plan"]
+    if payload.get("audio_profile") == "narration_v2":
+        recipe["imported_audio_profile"] = "narration_v2"
+    recipe["confirmed_script"] = script
     if payload["source_id"].startswith("digital_human_"):
         recipe["presentation"]["showTitle"] = False
     if payload.get("music_track_id"):
@@ -155,3 +164,20 @@ def run_imported_video(domain, task_id, payload):
     domain._set_task(task_id, "rendering", progress=.35)
     domain._render_generated(video_id, task_id=task_id)
     return {"generated_video_id": video_id, "project_id": payload["project_id"], "status": "completed"}
+
+
+def validate_narration_plan(plan, style):
+    import math
+    def finite(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if not isinstance(plan, dict) or plan.get("version") != 4 or plan.get("templateId") != style or style not in {"layered_v4", "impact_v4", "minimal_v4"} or len(json.dumps(plan)) > 100000:
+        raise ContentEngineError("invalid_narration_plan", "包装方案无法核对，请重新本地包装。")
+    events = plan.get("soundEvents", [])
+    if not isinstance(events, list) or len(events) > 60:
+        raise ContentEngineError("invalid_narration_plan", "音效方案无效。")
+    last = -4000
+    for event in events:
+        if not isinstance(event, dict) or event.get("sound") not in {"click", "pop"} or not finite(event.get("startMs")) or event["startMs"] < 0 or event["startMs"] - last < 4000 or not finite(event.get("gain")) or not 0 <= event["gain"] <= .06:
+            raise ContentEngineError("invalid_narration_plan", "音效时间或音量无效。")
+        last = event["startMs"]
+    return plan

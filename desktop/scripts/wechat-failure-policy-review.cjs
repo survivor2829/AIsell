@@ -4,7 +4,7 @@ const { workflowPolicies } = require("../src/shared/wechat-failure-policy.cjs");
 
 const knownReasons = new Set([...catalog.map((row) => row.reason), ...Object.keys(workflowPolicies)]);
 const patterns = [
-  /(?:blocked_reason|reasonCode|reason)\s*[:=]\s*["']([a-z][a-z0-9_]{1,79})["']/g,
+  /\b(?:blocked_reason|reasonCode|reason)\s*[:=]\s*["']([a-z][a-z0-9_]{1,79})["']/g,
   /\b(?:failure|blocked)\s*\(\s*["']([a-z][a-z0-9_]{1,79})["']/g,
   /\b(?:response|result)\s*\(\s*["'][^"']*["']\s*,\s*["']([a-z][a-z0-9_]{1,79})["']/g,
   /\bsafeReason\s*\(\s*[^,\n]+,\s*["']([a-z][a-z0-9_]{1,79})["']/g,

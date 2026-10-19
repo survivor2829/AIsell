@@ -410,10 +410,25 @@ class CreativeDomain:
         if not re.fullmatch(r"(?:digital_human|product_video)_[a-f0-9-]{32,36}", source_id):
             raise ContentEngineError("invalid_video_import", "生成视频任务编号无效。")
         template = request.get("template_id", "topic_fixed")
+        audio_profile = request.get("audio_profile")
+        if audio_profile is not None and audio_profile != "narration_v2":
+            raise ContentEngineError("invalid_video_import", "声音处理方案无效。")
+        caption_style = request.get("caption_style_id")
+        if caption_style is not None:
+            from .video_presentation import CAPTION_STYLES
+            if caption_style not in CAPTION_STYLES:
+                raise ContentEngineError("invalid_video_import", "请选择有效的网感字幕样式。")
         if template not in TEMPLATES or request.get("cover_mode", "apimart") not in {"apimart", "local_frame"}:
             raise ContentEngineError("invalid_video_import", "视频模板或封面方式无效。")
         title = self._validate_text(request.get("title"), "title", 100)
         script = self._validate_text(request.get("confirmed_script"), "confirmed_script", 5000)
+        narration_plan = request.get("narration_plan")
+        if narration_plan is not None:
+            from .video_presentation import validate_narration_plan
+            validate_narration_plan(narration_plan, caption_style)
+        emphasis = request.get("emphasis_phrases", [])
+        if (not isinstance(emphasis, list) or len(emphasis) > 12 or any(not isinstance(text, str) or not 1 <= len(text) <= 24 or text not in script for text in emphasis)):
+            raise ContentEngineError("invalid_video_import", "强调短语须来自当前口播原文，最多12项。")
         source = Path(str(request.get("input_video_path") or ""))
         if not source.is_absolute() or not source.is_file() or source.is_symlink() or source.suffix.lower() != ".mp4":
             raise ContentEngineError("invalid_video_import", "找不到可用的数字人视频文件。")
@@ -447,6 +462,13 @@ class CreativeDomain:
         payload = {"source_id": source_id, "project_id": project_id, "managed_path": str(managed), "title": title,
                    "confirmed_script": script, "template_id": template, "cover_mode": request.get("cover_mode", "apimart"),
                    "music_track_id": str(request.get("music_track_id") or "")}
+        if caption_style is not None:
+            payload["caption_style_id"] = caption_style
+        payload["emphasis_phrases"] = emphasis
+        if narration_plan is not None:
+            payload["narration_plan"] = narration_plan
+        if audio_profile is not None:
+            payload["audio_profile"] = audio_profile
         if prepared is not None:
             payload["prepared_transcript"] = prepared
         return {**self._create_task("import_base_video", payload), "project_id": project_id}
@@ -457,6 +479,8 @@ class CreativeDomain:
         row = self._generated_row(generated_video_id)
         recipe = json.loads(row["recipe_json"])
         cover = (recipe.get("packaging") or {}).get("cover") or {}
+        if cover.get("design", {}).get("mode") == "full_design":
+            raise ContentEngineError("cover_title_baked", "整张AI封面的文字已生成在图片中，请修改标题后重新确认生成费用。")
         if row["status"] != "completed" or not cover.get("background_path"):
             raise ContentEngineError("cover_background_unavailable", "请先生成封面底图，再调整标题。")
         background = self._validate_generated_path(cover["background_path"])
@@ -9243,14 +9267,34 @@ class CreativeDomain:
             "confirmation_required": bool(bailian_calls or calls),
         }
 
-    def regenerate_cover(self, generated_video_id):
+    def regenerate_cover(self, generated_video_id, design=None, *, recover_only=False):
         row = self._generated_row(generated_video_id)
         if row["status"] != "completed":
             raise ContentEngineError(
                 "generated_video_not_ready", "Only completed videos can request a new cover."
             )
         recipe = json.loads(row["recipe_json"])
-        latest = self.connection.execute("SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (row["id"],)).fetchone()
+        cover = (recipe.get("packaging") or {}).get("cover") or {}
+        if design is not None:
+            from .cover_design import validate_design
+            design = validate_design(design, row["duration_ms"])
+            if not recipe.get("imported_base_video"):
+                raise ContentEngineError("invalid_cover_design", "整张人物封面仅用于已有口播任务。")
+        elif cover.get("design"):
+            raise ContentEngineError("cover_confirmation_required", "请从本人数字分身页面确认封面费用或查询原任务。")
+        latest = self.connection.execute("SELECT * FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (row["id"],)).fetchone()
+        same_design = design is not None and design == cover.get("design")
+        # A query must never reserve or submit a new paid request, even if the
+        # desktop persisted its intent before the sidecar received it.
+        if recover_only and (not same_design or latest is None or latest["status"] == "planned"):
+            raise ContentEngineError("cover_not_submitted", "该封面尚无已提交回执。请重新查看费用并确认生成；查询不会创建新请求。")
+        if same_design and latest is not None and latest["status"] in {"completed", "failed", "cancelled"}:
+            return self._public_task(self._task_row(_stable_id("task_cover", latest["id"])))
+        if latest is not None and latest["status"] in {"planned", "submitted", "outcome_unknown"} and design is not None and not same_design:
+            raise ContentEngineError("cover_pending", "请先处理原封面请求，不能覆盖进行中的标题或人物帧。")
+        if latest is not None and latest["status"] == "outcome_unknown" and same_design and latest["external_task_id"]:
+            self.update_cover_operation(latest["id"], "submitted", external_task_id=latest["external_task_id"], recover_existing=True)
+            latest = self.connection.execute("SELECT * FROM cover_generation_ledger WHERE id=?", (latest["id"],)).fetchone()
         if latest is not None and latest["status"] == "outcome_unknown":
             raise ContentEngineError("cover_outcome_unknown", "上次封面请求结果尚未确认，请先核对该请求，暂不重复提交。")
         reused_operation = False
@@ -9281,6 +9325,9 @@ class CreativeDomain:
                         },
                     )
                 cover = recipe["packaging"]["cover"]
+                if design is not None:
+                    cover["design"] = design
+                    cover.pop("plan", None)
                 revision = max(0, int(cover.get("revision") or 0)) + 1
                 prompt_version = str(
                     cover.get("prompt_version") or COVER_PROMPT_VERSION
@@ -9319,7 +9366,7 @@ class CreativeDomain:
             persisted_task = self._task_row(task_id)
             if (
                 persisted_task["status"] in {
-                    "paused", "failed", "cancelled", "completed"
+                    "paused", "failed", "cancelled", "completed", "outcome_unknown"
                 }
                 and operation["status"] in {"planned", "submitted"}
             ):
@@ -9341,7 +9388,7 @@ class CreativeDomain:
         }
 
     def update_cover_operation(
-        self, operation_id, status, *, external_task_id=None, error_code=None
+        self, operation_id, status, *, external_task_id=None, error_code=None, recover_existing=False
     ):
         row = self.connection.execute(
             "SELECT * FROM cover_generation_ledger WHERE id = ?", (operation_id,)
@@ -9354,7 +9401,10 @@ class CreativeDomain:
         same_status = status == row["status"]
         if same_status and not external_task_id and not error_code:
             return self._public_cover_operation(row)
-        if not same_status and status not in COVER_OPERATION_TRANSITIONS.get(
+        resume_known_request = (recover_existing and row["status"] == "outcome_unknown"
+                                and status == "submitted" and row["external_task_id"]
+                                and external_task_id == row["external_task_id"])
+        if not same_status and not resume_known_request and status not in COVER_OPERATION_TRANSITIONS.get(
             row["status"], set()
         ):
             raise ContentEngineError(
@@ -9474,8 +9524,16 @@ class CreativeDomain:
                 raise APIMartPollingStopped(
                     "APIMart cover submission was stopped before admission."
                 )
-            from .video_presentation import prepare_cover
-            reference_path = prepare_cover(self, video_row, recipe, should_stop)
+            if recipe["packaging"]["cover"].get("design", {}).get("mode") == "full_design":
+                from .cover_design import prepare_design
+                reference_path = prepare_design(self, video_row, recipe)
+            else:
+                from .video_presentation import prepare_cover
+                reference_path = prepare_cover(self, video_row, recipe, should_stop)
+            # Fail local file/readability errors before recording paid admission.
+            with Path(reference_path).open("rb") as reference_file:
+                if not reference_file.read(1):
+                    raise ContentEngineError("cover_reference_missing", "人物参考图为空，尚未提交生图。")
             # Freeze the opaque reference selection before the one-way paid
             # admission. A restart can then resume without silently switching
             # to a different source frame.
@@ -9491,6 +9549,7 @@ class CreativeDomain:
                 provider_task_id = self.cover_client.submit(
                     self._cover_prompt(video_row, recipe),
                     reference_path=reference_path,
+                    **({"size": "3:4"} if recipe["packaging"]["cover"].get("design") else {}),
                 )
             except APIMartOutcomeUnknown as error:
                 self.update_cover_operation(
@@ -9612,6 +9671,9 @@ class CreativeDomain:
     @staticmethod
     def _cover_prompt(video_row, recipe):
         packaging = recipe.get("packaging") or {}
+        if (packaging.get("cover") or {}).get("design", {}).get("mode") == "full_design":
+            from .cover_design import design_prompt
+            return design_prompt(recipe)
         plan = (packaging.get("cover") or {}).get("plan") or {}
         if plan.get("source") == "finished_video":
             composition = ("Keep the product clear in the lower two thirds, with clean upper space for a title."
@@ -11432,7 +11494,7 @@ class CreativeDomain:
             "brand_profile_id": packaging.get("brand_profile_id"),
             "cover_status": cover_status,
             "cover_headline_lines": (cover.get("plan") or {}).get("headline_lines") or [],
-            "cover_title_editable": bool(cover.get("background_path") and Path(cover["background_path"]).is_file()
+            "cover_title_editable": bool(not cover.get("design") and cover.get("background_path") and Path(cover["background_path"]).is_file()
                                          and cover_status not in {"planned", "submitted"}),
             "cover_style": (cover.get("plan") or {}).get("style"),
             "cover_issue_message": redact_text(cover_task["error_message"] or "") if cover_task else cover.get("issue_message"),

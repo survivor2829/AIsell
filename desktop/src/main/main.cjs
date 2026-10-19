@@ -52,7 +52,7 @@ const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
-const { createPriceReader, createBailianPriceReader } = require("./product-video-pricing.cjs");
+const { createPriceReader, createBailianPriceReader, createReferencePriceReader } = require("./product-video-pricing.cjs");
 const { createProductAudioPreparer } = require("./product-video-audio.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
@@ -192,6 +192,7 @@ function remotionRuntimeEnvironment() {
 
 function contentEngineRuntimeEnvironment(runtimePath, dataDir) {
   return {
+    XIAOXI_DISABLE_PAID_CALLS: developmentEdition && process.env.XIAOXI_DISABLE_PAID_CALLS === '1' ? '1' : '0',
     ...remotionRuntimeEnvironment(),
     ...resolveContentEngineMediaToolsEnvironment({
       runtimePath,
@@ -218,7 +219,9 @@ function rendererBuildInfo() {
 if (productDetailReleaseSmokeMode && productDetailReleaseSmokeDataDirIsValid) {
   app.setPath("userData", productDetailReleaseSmokeDataDir);
 } else if (developmentEdition) {
-  app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
+  const developmentProfile = String(process.env.XIAOXI_DEV_PROFILE_DIR || '').trim();
+  if (developmentProfile && (!path.isAbsolute(developmentProfile) || path.resolve(developmentProfile) === path.parse(developmentProfile).root)) throw new Error('开发隔离资料目录必须是非磁盘根目录的绝对路径。');
+  app.setPath("userData", developmentProfile || path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
 } else if (pilotEdition) {
   app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-delivery"));
 }
@@ -351,7 +354,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
   app.whenReady().then(async () => {
     let runtime;
     try {
-      if (productDetailReleaseSmokeMode) {
+      if (productDetailReleaseSmokeMode || developmentEdition && process.env.XIAOXI_DEV_PROFILE_DIR) {
         runtime = {
           ...resolveRuntimePaths(app.getPath("userData")),
           migrated: [],
@@ -419,6 +422,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
     providerGatewayClient = createProviderGatewayClient({
       config: {
+        blockPaidCalls: developmentEdition && process.env.XIAOXI_DISABLE_PAID_CALLS === '1',
         enabled: !productDetailReleaseSmokeMode && developmentEdition && maintenanceConfig.enabled === true,
         origin: maintenanceConfig.origin,
         caPem: maintenanceConfig.caPem
@@ -500,7 +504,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       runtimeArgs: app.isPackaged ? [] : developmentProductDetailLaunch.runtimeArgs,
       dataDir: productDetailDataDir,
       getTrustedRuntimeEnvironment: productDetailRuntimeEnvironment,
-      getProviderEnvironment: productDetailReleaseSmokeMode
+      getProviderEnvironment: productDetailReleaseSmokeMode || developmentEdition && process.env.XIAOXI_DISABLE_PAID_CALLS === '1'
         ? () => ({})
         : getProductDetailProviderEnvironment
     });
@@ -712,6 +716,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       gatewayClient: providerGatewayClient,
       readPrices: readOfficialVideoPrices,
       readPreviewPrices: () => readVideoPrices(),
+      readReferencePrices: createReferencePriceReader({ fetch: net.fetch.bind(net) }),
+      readCoverPrices: () => readVideoPrices(),
+      getGeneratedVideo: (id) => contentEngineController.getGeneratedVideo(id),
+      generateCover: async (id, design, control) => { await beforeContentProviderWork(['apimart']); return contentEngineController.regenerateCover(id, design, control); },
       prepareNarration: prepareWorkbenchNarration,
       listVoices: async () => { await contentEngineController.start(); return contentEngineController.listAutoMixVoicePersonas(); },
       recommendVoice: async (payload) => { await beforeContentProviderWork(["bailian"]); return contentEngineController.recommendDigitalHumanVoice(payload); },

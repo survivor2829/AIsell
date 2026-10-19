@@ -1,0 +1,180 @@
+{
+  "version": 4,
+  "defaultTemplateId": "minimal_v4",
+  "defaultVoiceStyleId": "original",
+  "templates": [
+    {
+      "id": "layered_v1",
+      "name": "层次分句",
+      "description": "灰白铺垫 · 薄荷绿重点 · 分句展开",
+      "accent": "#9FF2BD",
+      "layout": "layered",
+      "coverStyle": "paper"
+    },
+    {
+      "id": "impact_v1",
+      "name": "重点弹字",
+      "description": "黄白大小字 · 重点弹入 · 轻斜排版",
+      "accent": "#FFE66D",
+      "layout": "impact",
+      "coverStyle": "contrast"
+    },
+    {
+      "id": "minimal_v1",
+      "name": "简洁口播",
+      "description": "轻量主题 · 短句描边 · 克制动效",
+      "accent": "#FFFFFF",
+      "layout": "minimal",
+      "coverStyle": "portrait"
+    },
+    {
+      "id": "layered_v2",
+      "name": "层次分句",
+      "description": "大字分句 · 绿色重点 · 层次展开",
+      "accent": "#9FF2BD",
+      "layout": "layered",
+      "coverStyle": "paper",
+      "version": 2
+    },
+    {
+      "id": "impact_v2",
+      "name": "重点弹字",
+      "description": "黄白大字 · 节奏弹入 · 重点放大",
+      "accent": "#FFE66D",
+      "layout": "impact",
+      "coverStyle": "contrast",
+      "version": 2
+    },
+    {
+      "id": "minimal_v2",
+      "name": "简洁口播",
+      "description": "清晰大字 · 短句入场 · 自然讲解",
+      "accent": "#FFFFFF",
+      "layout": "minimal",
+      "coverStyle": "portrait",
+      "version": 2
+    },
+    {
+      "id": "layered_v3",
+      "name": "层次分句",
+      "description": "大字分句 · 绿色重点 · 层次展开",
+      "accent": "#9FF2BD",
+      "layout": "layered",
+      "coverStyle": "paper",
+      "version": 3
+    },
+    {
+      "id": "impact_v3",
+      "name": "重点弹字",
+      "description": "黄白大字 · 节奏弹入 · 重点放大",
+      "accent": "#FFE66D",
+      "layout": "impact",
+      "coverStyle": "contrast",
+      "version": 3
+    },
+    {
+      "id": "minimal_v3",
+      "name": "简洁口播",
+      "description": "清晰大字 · 短句入场 · 自然讲解",
+      "accent": "#FFFFFF",
+      "layout": "minimal",
+      "coverStyle": "portrait",
+      "version": 3
+    },
+    {
+      "id": "layered_v4",
+      "name": "层次讲解",
+      "description": "轻量铺垫 · 绿色重点 · 清晰步骤",
+      "accent": "#9FF2BD",
+      "layout": "layered",
+      "coverStyle": "paper",
+      "version": 4,
+      "motion": "rise",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "impact_v4",
+      "name": "重点观点",
+      "description": "黄白撞色 · 观点标记 · 短促弹入",
+      "accent": "#FFE66D",
+      "layout": "impact",
+      "coverStyle": "contrast",
+      "version": 4,
+      "motion": "pop",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    },
+    {
+      "id": "minimal_v4",
+      "name": "简洁专业",
+      "description": "主题标签 · 清晰短句 · 安静呈现",
+      "accent": "#FFFFFF",
+      "layout": "minimal",
+      "coverStyle": "portrait",
+      "version": 4,
+      "motion": "quiet",
+      "assets": "Self-authored graphics; procedural audio; Noto Sans SC (OFL)"
+    }
+  ],
+  "voiceStyles": [
+    {
+      "id": "conversational_v1",
+      "name": "自然交谈",
+      "instruction": "像与客户面对面聊天，自然停顿，重点词轻强调，避免播音腔，保持本人音色。",
+      "rate": 1,
+      "pitch": 1
+    },
+    {
+      "id": "original",
+      "name": "原始表达",
+      "instruction": "",
+      "rate": 1,
+      "pitch": 1
+    }
+  ],
+  "coverStyles": [
+    {
+      "id": "paper",
+      "name": "撕纸拼贴"
+    },
+    {
+      "id": "contrast",
+      "name": "大字撞色"
+    },
+    {
+      "id": "portrait",
+      "name": "简洁人物"
+    }
+  ],
+  "matching": {
+    "soundSpacingMs": 4000,
+    "viewpoint": [
+      "别只|不要只|先别",
+      "不是.{1,16}而是|不在于.{1,16}而在于",
+      "相比|对比|比价格|更重要",
+      "误区|踩坑|避坑|真正"
+    ],
+    "structured": [
+      "首先|第一|先看|先了解",
+      "其次|第二|再看|再选|再谈|最后",
+      "怎么选|如何选|选型|步骤",
+      "材质|通道|油污|灰尘"
+    ]
+  },
+  "typography": {
+    "bodySize": 82,
+    "bodyLineHeight": 1.12,
+    "auxSize": 70,
+    "auxLineHeight": 1.16,
+    "emphasisSize": 132,
+    "longEmphasisSize": 116,
+    "emphasisLineHeight": 1.12,
+    "gap": 12,
+    "underlineHeight": 16
+  },
+  "safeLayout": {
+    "facePadding": 80,
+    "minHeight": 130,
+    "motionMargin": 18,
+    "bottom": 1660
+  }
+}

@@ -168,6 +168,11 @@ function copyAppSource(appDir, edition) {
     });
   }
   copyAppRuntimeDependencies(appDir);
+  // Main-process quotes and renderer templates share this versioned catalog.
+  fs.mkdirSync(path.join(appDir, 'remotion-packaging'), { recursive: true });
+  fs.copyFileSync(path.join(desktopDir, 'remotion-packaging', 'narration-templates.json'), path.join(appDir, 'remotion-packaging', 'narration-templates.json'));
+  fs.copyFileSync(path.join(desktopDir, 'remotion-packaging', 'narration-plan.cjs'), path.join(appDir, 'remotion-packaging', 'narration-plan.cjs'));
+  fs.cpSync(path.join(desktopDir, 'resources', 'narration-vision'), path.join(appDir, 'resources', 'narration-vision'), { recursive: true });
   const helperTarget = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
   fs.copyFileSync(helper, helperTarget);
   if (sha256(helperTarget) !== CONTACT_HELPER_SHA256) throw new Error("Packaged contact helper hash mismatch");

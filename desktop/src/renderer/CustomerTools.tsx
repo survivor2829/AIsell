@@ -1,4 +1,4 @@
-import { BookOpen, Bell, RefreshCw, ArrowRight } from "lucide-react";
+import { BookOpen, Bell, RefreshCw, ArrowRight, MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CustomerPanel } from "./CustomerPanel";
 import type { CloudStatus } from "./CloudMaintenance";
@@ -110,7 +110,7 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
     <button type="button" className="topbar-tool" aria-label={`更新公告${state?.unreadAnnouncements ? `，${state.unreadAnnouncements} 条未读` : ""}`} title="更新公告" aria-expanded={panel === "announcements"}
       onClick={() => void openAnnouncements()}><Bell size={17} /><span>更新公告</span>{Boolean(state?.unreadAnnouncements) && <span className="topbar-unread" aria-hidden="true" />}</button>
     <div className={`topbar-update${updateReady ? " is-ready" : ""}`}>
-      {updateMessage && !(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-caption" role="status">{updateMessage}</span>}
+      {updateMessage && !(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-caption" role="status" title={updateMessage}>{updateMessage}</span>}
       <button type="button" className="topbar-tool topbar-update-action" aria-label={updateLabel}
         title={updateReady ? "立即更新，软件将自动重启" : updateLabel} disabled={!state?.enabled || updateWorking} onClick={() => void update()}>
         <RefreshCw size={17} /><span>{updateLabel}</span>
@@ -119,6 +119,7 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
       {(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-notice is-error" role="status">{updateMessage}</span>}
     </div>
     <button type="button" className="topbar-tool" aria-label="使用教程" title="使用教程" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials"))}><BookOpen size={17} /><span>使用教程</span></button>
+    <details className="topbar-secondary"><summary className="topbar-tool" aria-label="更多工具" title="更多工具"><MoreHorizontal size={18} /></summary><div className="topbar-secondary-menu"><button className="topbar-tool" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); void openAnnouncements(); }}><Bell size={17} /><span>更新公告{state?.unreadAnnouncements ? ' · 有未读' : ''}</span></button><button className="topbar-tool" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); setPanel('tutorial'); }}><BookOpen size={17} /><span>使用教程</span></button></div></details>
     {panel === "announcements" && <CustomerPanel title="更新公告" description="看看这次有哪些改进。" onClose={() => setPanel(null)}>
       <div className="announcement-toolbar"><span>当前版本 {state?.version || "—"}</span><button type="button" className="customer-text-button" disabled={!state?.enabled || state.announcementsChecking} onClick={() => void refresh()}><RefreshCw size={14} />{state?.announcementsChecking ? "正在刷新…" : "刷新公告"}</button></div>
       {state?.announcements?.length && selectedAnnouncement ? <div className="announcement-list">

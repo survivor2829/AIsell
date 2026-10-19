@@ -999,9 +999,9 @@ class ContentEngineService:
     def list_media_reviews(self, candidate_id: str) -> dict[str, Any]:
         return self.creative_domain.list_media_reviews(candidate_id)
 
-    def regenerate_cover(self, candidate_id: str) -> dict[str, Any]:
+    def regenerate_cover(self, candidate_id: str, design=None, *, recover_only=False) -> dict[str, Any]:
         return self._enqueue_creative_task(
-            self.creative_domain.regenerate_cover(candidate_id)
+            self.creative_domain.regenerate_cover(candidate_id, design, recover_only=recover_only)
         )
 
     def import_base_video(self, request) -> dict[str, Any]:

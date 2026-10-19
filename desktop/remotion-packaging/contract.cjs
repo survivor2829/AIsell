@@ -397,6 +397,9 @@ function normalizeMotionManifest(input) {
     },
     captions,
     ...(input.captionPresentation === "reference_narration" ? { captionPresentation: "reference_narration" } : {}),
+    ...(["bold_yellow", "word_highlight", "keyword_pop", "moving_pill", "phrase_slide", "clean_business", ...require('./narration-templates.json').templates.map((item) => item.id)].includes(input.captionStyleId) ? { captionStyleId: input.captionStyleId } : {}),
+    ...(input.narrationPlan ? { narrationPlan: require('./narration-plan.cjs').validatePlan(input.narrationPlan, input.captionStyleId) } : {}),
+    ...(Array.isArray(input.emphasisPhrases) ? { emphasisPhrases: input.emphasisPhrases.slice(0, 12).map((text) => cleanText(text, 24)).filter(Boolean) } : {}),
     ...(["topic_fixed", "key_points"].includes(input.presentation?.templateId) ? { presentation: {
       templateId: input.presentation.templateId,
       ...(input.presentation.showTitle === false ? { showTitle: false } : {}),

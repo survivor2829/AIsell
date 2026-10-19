@@ -35,6 +35,8 @@ try {
   write(path.join(packagingPath, "effect-registry.json"), JSON.stringify({ version: 1 }));
   write(path.join(packagingPath, "layout-grid.json"), "{}");
   write(path.join(packagingPath, "style-packs.json"), "{}");
+  write(path.join(packagingPath, "narration-templates.json"), "{}");
+  write(path.join(packagingPath, "narration-plan.cjs"), "module.exports = {};");
 
   const manifest = {
     artifactType: "internal-evaluation",

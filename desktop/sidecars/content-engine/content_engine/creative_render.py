@@ -366,6 +366,42 @@ class FFmpegCreativeRenderer:
             source = self._managed_audio_path(recipe["imported_base_video"], code="imported_video_missing", message="数字人基础视频已不可用。")
             video_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
             args = ["-i", str(source)]
+            if recipe.get("imported_audio_profile") == "narration_v2":
+                duration = self.probe_audio_duration_ms(source) / 1000
+                # The imported base carries the frozen driving master. Do not
+                # denoise, compress the speaking rate, or reuse its 16k ASR copy.
+                filters = [f"[0:v]{video_filter}[v]", "[0:a]loudnorm=I=-16:LRA=11:TP=-1.8[voice_norm]"]
+                if recipe.get("imported_music_path"):
+                    music = self._managed_audio_path(recipe["imported_music_path"], code="imported_music_missing", message="所选配乐文件已不可用。")
+                    args += ["-stream_loop", "-1", "-i", str(music)]
+                    fade_out = max(0.0, duration - .8)
+                    filters += ["[voice_norm]asplit=2[voice][side]",
+                        "[1:a]loudnorm=I=-26:LRA=11:TP=-2,"
+                        f"afade=t=in:st=0:d=0.4,afade=t=out:st={fade_out:.3f}:d=0.8[music]",
+                        "[music][side]sidechaincompress=threshold=0.04:ratio=8:attack=10:release=250[duck]",
+                        "[voice][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]"]
+                else:
+                    filters.append("[voice_norm]anull[a]")
+                plan = recipe.get("narration_plan")
+                if plan:
+                    from .video_presentation import validate_narration_plan
+                    validate_narration_plan(plan, recipe.get("caption_style_id"))
+                    events = plan.get("soundEvents", [])
+                    if events:
+                        filters[-1] = filters[-1].removesuffix("[a]") + "[base_audio]"
+                        labels = ["[base_audio]"]
+                        next_input = 2 if recipe.get("imported_music_path") else 1
+                        for index, event in enumerate(events):
+                            sound = Path(__file__).parent / "assets" / "narration-sfx" / ("sfx-" + event["sound"] + ".wav")
+                            args += ["-i", str(sound)]
+                            delay = round(event["startMs"])
+                            filters.append(f"[{next_input+index}:a]volume={event['gain']:.4f},adelay={delay}|{delay}[sfx{index}]")
+                            labels.append(f"[sfx{index}]")
+                        filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:dropout_transition=0:normalize=0[a]")
+                self._encode_mezzanine([*args, "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]",
+                    "-t", str(duration), "-b:v", "8M"], output)
+                self.calibrate_final_loudness(output, target_lufs=-16, max_true_peak=-1.5)
+                return output
             if recipe.get("imported_music_path"):
                 music = self._managed_audio_path(recipe["imported_music_path"], code="imported_music_missing", message="所选配乐文件已不可用。")
                 args += ["-stream_loop", "-1", "-i", str(music), "-filter_complex",
@@ -494,7 +530,9 @@ class FFmpegCreativeRenderer:
                 "-i", str(visual_path), "-i", str(mezzanine_path),
                 "-map", "0:v:0", "-map", "1:a:0",
                 "-c:v", "copy", "-c:a", "copy",
-                "-movflags", "+faststart", "-shortest", str(output_path),
+                # AAC padding and video frames have different time grids. Keep
+                # every validated master packet; validate_final checks duration.
+                "-movflags", "+faststart", str(output_path),
             ]
         )
 
@@ -640,23 +678,24 @@ class FFmpegCreativeRenderer:
             "true_peak_dbtp": round(true_peak, 2),
         }
 
-    def calibrate_final_loudness(self, path):
+    def calibrate_final_loudness(self, path, *, target_lufs=-15, max_true_peak=-1):
         """Calibrate the completed mix; measure both loudness and peak again."""
         measured = self.measure_audio_quality(path)
-        if -16 <= measured["integrated_lufs"] <= -14 and measured["true_peak_dbtp"] <= -1:
+        if target_lufs - 1 <= measured["integrated_lufs"] <= target_lufs + 1 and measured["true_peak_dbtp"] <= max_true_peak:
             return measured
-        gain = min(-15 - measured["integrated_lufs"], -1.1 - measured["true_peak_dbtp"])
+        gain = min(target_lufs - measured["integrated_lufs"], max_true_peak - .1 - measured["true_peak_dbtp"])
         audio_filter = f"volume={gain:.4f}dB"
-        if not -16 <= measured["integrated_lufs"] + gain <= -14:
+        if not target_lufs - 1 <= measured["integrated_lufs"] + gain <= target_lufs + 1:
+            peak_target = min(-1.5, max_true_peak - .3)
             scan = self._command([self.ffmpeg_path, "-hide_banner", "-nostats", "-i", str(path),
-                "-map", "0:a:0", "-af", "loudnorm=I=-15:LRA=8:TP=-1.5:print_format=json",
+                "-map", "0:a:0", "-af", f"loudnorm=I={target_lufs}:LRA=8:TP={peak_target}:print_format=json",
                 "-f", "null", os.devnull], timeout=180)
             blocks = re.findall(r'\{[^{}]*"input_i"[^{}]*"input_tp"[^{}]*\}', scan.stderr or "", re.DOTALL)
             values = json.loads(blocks[-1])
             numbers = {key: float(values[key]) for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
             if not all(math.isfinite(v) for v in numbers.values()):
                 raise ContentEngineError("audio_quality_measure_failed", "混音测量无效，未修改音频。")
-            audio_filter = (f"loudnorm=I=-15:LRA=8:TP=-1.5:measured_I={numbers['input_i']}:"
+            audio_filter = (f"loudnorm=I={target_lufs}:LRA=8:TP={peak_target}:measured_I={numbers['input_i']}:"
                 f"measured_TP={numbers['input_tp']}:measured_LRA={numbers['input_lra']}:"
                 f"measured_thresh={numbers['input_thresh']}:offset={numbers['target_offset']}:linear=false")
         temporary = path.with_name(path.stem + ".calibrated.mp4")
@@ -665,7 +704,7 @@ class FFmpegCreativeRenderer:
                            "-c:v", "copy", "-af", audio_filter, "-c:a", "aac", "-b:a", "192k",
                            "-ar", "48000", "-movflags", "+faststart", str(temporary)])
             verified = self.measure_audio_quality(temporary)
-            if not (-16 <= verified["integrated_lufs"] <= -14 and verified["true_peak_dbtp"] <= -1):
+            if not (target_lufs - 1 <= verified["integrated_lufs"] <= target_lufs + 1 and verified["true_peak_dbtp"] <= max_true_peak):
                 raise ContentEngineError("auto_mix_loudness_failed", "最终音频校准后仍未通过响度或峰值检查。")
             temporary.replace(path)
             return verified
@@ -2439,6 +2478,20 @@ class FFmpegCreativeRenderer:
         target_path = Path(target_path).resolve()
         temporary = target_path.with_name(f".{target_path.stem}.composing.jpg")
         try:
+            if (packaging.get("cover") or {}).get("design", {}).get("mode") == "full_design":
+                from .media_probe import FFprobeAdapter
+                image = FFprobeAdapter(Path(self.ffprobe_path)).probe(background_path, "image")
+                if image.status != "ok" or not image.width or not image.height:
+                    raise RuntimeError("无法读取AI封面尺寸，原结果已保存，请核对；不自动重购。")
+                if abs(image.width / image.height - .75) > .025:
+                    raise RuntimeError("AI封面返回比例不是3:4，原结果已保存，请核对；不自动重购。")
+                self._command([
+                    self.ffmpeg_path, "-y", "-i", str(background_path),
+                    "-vf", "scale=1080:1440:flags=lanczos", "-frames:v", "1",
+                    "-q:v", "2", str(temporary),
+                ], timeout=120)
+                temporary.replace(target_path)
+                return target_path
             self._render_cover(
                 background_path,
                 temporary,
@@ -3340,6 +3393,9 @@ class HybridCreativeRenderer:
                if recipe.get("presentation") else {}),
             **({"captionPresentation": "reference_narration"}
                if recipe.get("caption_presentation") == "reference_narration" else {}),
+            **({"captionStyleId": recipe["caption_style_id"]} if recipe.get("caption_style_id") else {}),
+            **({"narrationPlan": recipe["narration_plan"]} if recipe.get("narration_plan") else {}),
+            **({"emphasisPhrases": recipe["emphasis_phrases"]} if recipe.get("emphasis_phrases") else {}),
             "events": events,
             "focusRects": rectangles("focus_rects"),
             "protectedRects": rectangles("protected_rects", protected=True),

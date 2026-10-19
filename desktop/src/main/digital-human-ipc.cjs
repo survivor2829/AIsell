@@ -1,13 +1,23 @@
 const { createDigitalHumanService, assertKeys, ID } = require('./digital-human-service.cjs');
 const { cleanMessage, fail } = require('./digital-human-provider.cjs');
+const { createReferenceHumanService, TASK_ID: REFERENCE_ID } = require('./reference-human-service.cjs');
 
 const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'capabilities', 'list', 'get', 'import-image', 'import-audio', 'recommend-voice', 'voice-preview', 'voice-select', 'voice-clones', 'voice-train', 'voice-clone-status', 'speech-media', 'create', 'preview', 'confirm', 'refresh', 'resume', 'media', 'images',
+  'reference-capabilities', 'reference-import', 'reference-assets', 'reference-list', 'reference-create', 'reference-get', 'reference-quote', 'reference-prepare', 'reference-confirm', 'reference-refresh', 'reference-resume', 'reference-speech', 'reference-train', 'reference-voice-status', 'reference-write-script', 'reference-repackage',
+  'reference-cover-frame', 'reference-cover-quote', 'reference-cover-generate',
+  'reference-workspace', 'reference-save-workspace', 'reference-script-quota', 'reference-source-status', 'reference-source-connect', 'reference-source-search', 'reference-source-read',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
   const { ipcMain, dialog, getMainWindow = () => null } = options;
   const service = options.service || createDigitalHumanService(options);
+  const reference = options.referenceService || createReferenceHumanService(options);
+  const referenceId = (payload, extra = []) => {
+    assertKeys(payload, ['id', ...extra]);
+    if (!REFERENCE_ID.test(String(payload.id || ''))) throw fail('reference_not_found', '请重新选择本人分身任务。');
+    return payload.id;
+  };
   const id = (payload, extra = []) => {
     assertKeys(payload, ['id', ...extra]);
     if (!ID.test(String(payload.id || ''))) throw fail('digital_human_invalid_id', '请重新选择这条任务。');
@@ -45,6 +55,37 @@ function registerDigitalHumanIpc(options = {}) {
     media: (payload) => service.media(id(payload)),
     'speech-media': (payload) => service.speechMedia(id(payload)),
     images: (payload) => service.images(id(payload)),
+    'reference-capabilities': () => reference.capabilities(),
+    'reference-workspace': () => reference.workspace(),
+    'reference-save-workspace': (payload) => reference.saveWorkspace(payload),
+    'reference-script-quota': () => reference.scriptQuota(),
+    'reference-source-status': () => reference.sourceStatus(),
+    'reference-source-connect': (payload) => reference.sourceConnect(payload),
+    'reference-source-search': (payload) => reference.sourceSearch(payload),
+    'reference-source-read': (payload) => reference.sourceRead(payload),
+    'reference-assets': () => reference.assets(),
+    'reference-list': () => reference.list(),
+    'reference-import': async (payload) => {
+      assertKeys(payload, []);
+      const window = getMainWindow(), settings = { title: '选择本人正面口播视频', properties: ['openFile'], filters: [{ name: '真人视频', extensions: ['mp4', 'mov', 'avi'] }] };
+      const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
+      return result.canceled || !result.filePaths?.[0] ? null : reference.importVideo(result.filePaths[0]);
+    },
+    'reference-create': (payload) => reference.create(payload),
+    'reference-cover-frame': (payload) => reference.coverFrame(referenceId(payload, ['seconds']), payload.seconds),
+    'reference-cover-quote': (payload) => reference.coverQuote(referenceId(payload, ['design']), payload.design),
+    'reference-cover-generate': (payload) => reference.generateCover(referenceId(payload, ['revision', 'recover']), payload.revision, payload.recover === true),
+    'reference-repackage': (payload) => { const taskId = referenceId(payload, ['captionStyleId', 'emphasisPhrases', 'title', 'nextStyle', 'soundEffects']); const { id, ...settings } = payload; return reference.repackage(taskId, settings); },
+    'reference-get': (payload) => reference.get(referenceId(payload)),
+    'reference-quote': (payload) => reference.quote(referenceId(payload)),
+    'reference-prepare': (payload) => reference.prepare(referenceId(payload, ['quoteRevision', 'customerConsent', 'generateVideo']), payload.quoteRevision, payload.customerConsent === true, payload.generateVideo === true),
+    'reference-write-script': (payload) => reference.writeScript(payload),
+    'reference-confirm': (payload) => reference.confirm(referenceId(payload, ['previewRevision']), payload.previewRevision),
+    'reference-refresh': (payload) => reference.refresh(referenceId(payload)),
+    'reference-resume': (payload) => reference.resume(referenceId(payload)),
+    'reference-speech': (payload) => reference.speechMedia(referenceId(payload)),
+    'reference-train': (payload) => reference.trainVoice(payload),
+    'reference-voice-status': (payload) => { assertKeys(payload, ['assetId']); return reference.voiceStatus(payload.assetId); },
   };
   for (const [name, handler] of Object.entries(operations)) {
     ipcMain.handle(DIGITAL_HUMAN_CHANNELS[name], async (event, payload = {}) => {
@@ -53,7 +94,7 @@ function registerDigitalHumanIpc(options = {}) {
         const trusted = options.isTrustedEvent ? options.isTrustedEvent(event)
           : Boolean(window?.webContents && event.sender === window.webContents && (!event.senderFrame || event.senderFrame === window.webContents.mainFrame));
         if (!trusted) throw fail('digital_human_untrusted_sender', '请在应用主窗口操作。');
-        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train'].includes(name)) {
+        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate'].includes(name)) {
           // Caller supplies the same trusted-click policy used for paid content work.
           if (!options.requireTrustedClick) throw fail('digital_human_click_guard_missing', '数字人生成入口尚未完成接入。');
           await options.requireTrustedClick(event, payload, name);
@@ -67,9 +108,12 @@ function registerDigitalHumanIpc(options = {}) {
       }
     });
   }
-  return { service, close: async () => {
+  const combined = { ...service, isBusy: () => service.isBusy() || reference.isBusy(),
+    prepareForUpdate: () => { const old = service.prepareForUpdate(), next = reference.prepareForUpdate(); return { busy: old.busy || next.busy }; },
+    resumeAfterUpdate: () => { service.resumeAfterUpdate(); reference.resumeAfterUpdate(); } };
+  return { service: combined, close: async () => {
     for (const channel of Object.values(DIGITAL_HUMAN_CHANNELS)) ipcMain.removeHandler(channel);
-    await service.close();
+    await Promise.all([service.close(), reference.close()]);
   } };
 }
 module.exports = { registerDigitalHumanIpc, DIGITAL_HUMAN_CHANNELS };

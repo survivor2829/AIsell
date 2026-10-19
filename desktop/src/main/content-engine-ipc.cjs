@@ -271,6 +271,7 @@ const MUSIC_IMPORT_FIELDS = new Set([
 ]);
 
 const PUBLIC_ERRORS = Object.freeze({
+  paid_calls_disabled: "当前为禁止付费调用的验收模式，请使用已有结果查看、播放或导出。",
   ...BATCH_ERRORS,
   CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "未找到可用的内容引擎，请重启应用；若仍无法使用，请通过吐槽中心反馈。",
   CONTENT_ENGINE_DATA_DIR_INVALID: "内容引擎数据目录配置无效。",

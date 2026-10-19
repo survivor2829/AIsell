@@ -292,6 +292,10 @@ function createProviderGatewayClient(options = {}) {
     if (!origin || !String(url || "").startsWith(`${origin}${PREFIX}/`)) {
       throw createError("GATEWAY_ROUTE_INVALID", "统一 AI 服务地址无效。");
     }
+    if (config.blockPaidCalls === true && String(requestOptions.method || 'GET').toUpperCase() !== 'GET'
+        && !/\/volcengine\/voice-clone\/(?:list|status)$/u.test(new URL(url).pathname)) {
+      throw createError('PAID_CALLS_DISABLED', '当前验收已禁止付费调用；请先核实费用并获得试片额度。');
+    }
     const headers = {};
     const suppliedHeaders = requestOptions.headers || {};
     if (typeof suppliedHeaders.forEach === "function") suppliedHeaders.forEach((value, key) => { headers[key] = value; });
