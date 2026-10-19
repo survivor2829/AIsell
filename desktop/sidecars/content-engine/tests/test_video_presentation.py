@@ -272,6 +272,19 @@ class VideoPresentationTests(unittest.TestCase):
                 poll = mock.Mock(side_effect=[APIMartOutcomeUnknown("poll_lost", "lost poll"), "https://example.com/cover.png"])
                 domain.cover_client = SimpleNamespace(configured=True, submit=submit, poll=poll,
                     download=lambda _url, target: Image.new('RGB', (600, 800), 'green').save(target))
+                from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
+                def probe_cover(_adapter, file, kind):
+                    with Image.open(file) as image:
+                        return ProbeOutcome(status="ok", width=image.width, height=image.height)
+                probe_patch = mock.patch.object(FFprobeAdapter, "probe", probe_cover)
+                probe_patch.start()
+                self.addCleanup(probe_patch.stop)
+                renderer.ffprobe_path = renderer.ffmpeg_path = "fixture"
+                def convert_cover(args, **_kwargs):
+                    self.assertEqual("scale=1080:1440:flags=lanczos", args[args.index("-vf") + 1])
+                    with Image.open(args[args.index("-i") + 1]) as image:
+                        image.resize((1080, 1440)).save(args[-1])
+                renderer._command = convert_cover
                 renderer.compose_cover = lambda *args, **kwargs: FFmpegCreativeRenderer.compose_cover(renderer, *args, **kwargs)
                 failed_poll = domain.run_task(cover_task["task_id"])
                 self.assertNotEqual("completed", failed_poll["status"])

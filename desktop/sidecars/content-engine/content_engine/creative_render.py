@@ -2479,11 +2479,17 @@ class FFmpegCreativeRenderer:
         temporary = target_path.with_name(f".{target_path.stem}.composing.jpg")
         try:
             if (packaging.get("cover") or {}).get("design", {}).get("mode") == "full_design":
-                from PIL import Image
-                with Image.open(background_path) as image:
-                    if abs(image.width / image.height - .75) > .025:
-                        raise RuntimeError("AI封面返回比例不是3:4，原结果已保存，请核对；不自动重购。")
-                    image.convert("RGB").resize((1080, 1440), Image.Resampling.LANCZOS).save(temporary, quality=95)
+                from .media_probe import FFprobeAdapter
+                image = FFprobeAdapter(Path(self.ffprobe_path)).probe(background_path, "image")
+                if image.status != "ok" or not image.width or not image.height:
+                    raise RuntimeError("无法读取AI封面尺寸，原结果已保存，请核对；不自动重购。")
+                if abs(image.width / image.height - .75) > .025:
+                    raise RuntimeError("AI封面返回比例不是3:4，原结果已保存，请核对；不自动重购。")
+                self._command([
+                    self.ffmpeg_path, "-y", "-i", str(background_path),
+                    "-vf", "scale=1080:1440:flags=lanczos", "-frames:v", "1",
+                    "-q:v", "2", str(temporary),
+                ], timeout=120)
                 temporary.replace(target_path)
                 return target_path
             self._render_cover(
