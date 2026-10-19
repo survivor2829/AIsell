@@ -271,7 +271,7 @@ class VideoPresentationTests(unittest.TestCase):
                 submit = mock.Mock(return_value="provider-original-id")
                 poll = mock.Mock(side_effect=[APIMartOutcomeUnknown("poll_lost", "lost poll"), "https://example.com/cover.png"])
                 domain.cover_client = SimpleNamespace(configured=True, submit=submit, poll=poll,
-                    download=lambda _url, target: Image.new('RGB', (600, 800), 'green').save(target))
+                    download=lambda _url, target: png(target, 600, 800))
                 from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
                 def probe_cover(_adapter, file, kind):
                     with Image.open(file) as image:
@@ -305,7 +305,7 @@ class VideoPresentationTests(unittest.TestCase):
                     self.assertLess(max(cover.getpixel((540, 720))) - 128, 3)
                 preserved = thumbnail.read_bytes()
                 wrong = root / 'wrong-ratio.png'
-                Image.new('RGB', (900, 1600), 'red').save(wrong)
+                png(wrong, 900, 1600)
                 with self.assertRaises(RuntimeError):
                     renderer.compose_cover(wrong, thumbnail, {"cover": {"design": design}})
                 self.assertEqual(preserved, thumbnail.read_bytes(), "bad cloud ratio cannot replace the usable cover")
