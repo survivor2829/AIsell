@@ -260,7 +260,7 @@ function assertPackagedLifecycleGate() {
   assert.match(main, /function productDetailWebPreferences\(\)/);
   assert.match(main, /runProductDetailReleaseSmoke/);
   assert.match(main, /if \(productDetailReleaseSmokeMode\) \{\s*completeProductDetailReleaseSmoke\(\);\s*return;/);
-  assert.match(main, /getProviderEnvironment: productDetailReleaseSmokeMode\s*\? \(\) => \(\{\}\)/);
+  // Smoke/paid-disabled provider selection is exercised in product-detail-ai-settings.self_check.cjs.
   assert.match(smoke, /window\.xiaoxiProductDetail/);
   assert.match(smoke, /requestProductDetailSmokeHealth/);
   assert.match(smoke, /show: false/);
