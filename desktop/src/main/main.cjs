@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, safeStorage, screen, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, safeStorage, screen, session, shell, clipboard } = require("electron");
 if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
 const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing.cjs').createStartupTiming();
@@ -47,6 +47,7 @@ const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 const { runProductDetailReleaseSmoke } = require("./product-detail-release-smoke.cjs");
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
+const { registerBusinessWorkbenchIpc } = require('./business-workbench-ipc.cjs');
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
@@ -83,6 +84,7 @@ let productDetailDownloadRegistration = null;
 let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let keywordAcquisitionRegistration = null;
+let businessWorkbenchRegistration = null;
 let digitalHumanRegistration = null;
 let productVideoRegistration = null;
 let quitCleanupStarted = false;
@@ -454,6 +456,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         // A login change during startup must not reuse the former license's session.
         providerSession = providerSession.then(() => action === 'logged_out'
           ? providerGatewayClient.invalidate() : providerGatewayClient.initialize({ force: true }));
+        try { await businessWorkbenchRegistration?.refreshAccount?.(); }
+        catch { logger.event('map_acquisition', 'account_refresh_failed', { code: 'LOCAL_ACCOUNT_UNAVAILABLE' }); }
         await waitForProviderSession();
         logger.event("provider_gateway", action === "logged_out" ? "session_invalidated" : "session_refreshed", {
           state: providerGatewayClient?.status().ready ? "ready" : "unavailable",
@@ -682,6 +686,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: path.join(runtime.rootDir, "keyword_acquisition"),
       expertStore: aiExpertStore, deepSeekClient
     });
+    businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell, clipboard,
+      dataDir: runtime.rootDir, getMainWindow: () => mainWindow, getLicenseStatus: () => licenseStore.status() });
     const usedDigitalHumanClicks = new Set();
     const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
     const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
@@ -943,6 +949,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     Promise.race([
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
+        Promise.resolve(businessWorkbenchRegistration?.dispose()),
         Promise.resolve(digitalHumanRegistration?.close()),
         Promise.resolve(productVideoRegistration?.close()),
         Promise.resolve(productDetailController?.dispose()),

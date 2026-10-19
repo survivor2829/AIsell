@@ -9,7 +9,7 @@ const LEADERS: Record<AgentRoleKey, { action: string; description: string }> = {
   agent: { action: "承接微信咨询", description: "用真诚沟通，帮你连接更多客户。" },
   operations: { action: "制作产品详情图", description: "用精美图片，帮你展示产品、提升转化。" },
   materials: { action: "挑选行业素材", description: "工厂、小区、机器人素材拿来用。" },
-  business: { action: "查看功能规划", description: "精准获客、企微助手、GEO推广，筹备中。" },
+  business: { action: "打开生意助手", description: "按地区找企业，查看公开电话、收藏和记录跟进。" },
   tutorials: { action: "看一段跟着做", description: "一个操作一段视频，随时暂停重看。" }
 };
 
