@@ -1,0 +1,5 @@
+Data source: https://github.com/modood/Administrative-divisions-of-China/blob/master/dist/pca-code.json
+Retrieved: 2026-10-19. Offline snapshot; not a claim of current official boundaries.
+Normalized to province/city/district names. Municipal districts merged under municipality;
+province-direct county-level cities exposed as searchable cities. Mainland 31 provinces only.
+Upstream license: map-regions.LICENSE.txt. Refresh this snapshot when administrative boundaries change.

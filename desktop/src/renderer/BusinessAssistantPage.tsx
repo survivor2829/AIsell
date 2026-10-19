@@ -1,8 +1,15 @@
-import { ArrowRight, Globe2, MessageCircle, Search, Settings2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Globe2, MapPin, MessageCircle, Search, Settings2 } from "lucide-react";
 import { appearanceStyle, portraitAsset, type RoleAppearance, type RolePreference } from "./role-appearance";
 import "./BusinessAssistantPage.css";
+import { MapAcquisitionPanel } from "./MapAcquisitionPanel";
 
 export const BUSINESS_MODULES = {
+  "business-map": {
+    label: "地图获客", purpose: "找附近企业", icon: MapPin,
+    title: "按地区寻找适合开发的企业", description: "查看企业资料与公开电话，收藏并记录跟进。",
+    steps: ["选择地区与客户类型", "自动查找并保存企业", "查看资料，记录跟进"],
+    emptyTitle: "本次搜索结果", emptyDescription: "地图企业的实际需求仍待确认。",
+  },
   "business-acquisition": {
     label: "精准获客", purpose: "找客户", icon: Search,
     title: "找到值得联系的生意机会",
@@ -33,19 +40,24 @@ export function isBusinessModule(key: string): key is BusinessModule {
   return Object.prototype.hasOwnProperty.call(BUSINESS_MODULES, key);
 }
 
-export function BusinessAssistantPage({ module, preference, appearance, onPersonalize, onOpenModule }: {
+export function BusinessAssistantPage({ module, preference, appearance, onPersonalize, onOpenModule, onReturnHome }: {
   module?: BusinessModule;
   onOpenModule: (module: BusinessModule) => void;
+  onReturnHome: () => void;
   preference: RolePreference;
   appearance: RoleAppearance;
   onPersonalize: () => void;
 }) {
   const current = module ? BUSINESS_MODULES[module] : undefined;
   const Icon = current?.icon || Search;
+  if (module === 'business-map') return <section className="page business-assistant-page" style={appearanceStyle(appearance, true)}>
+    <button type="button" className="business-personalize" onClick={onReturnHome}><ArrowLeft size={16} aria-hidden="true" />返回 AI 生意助手</button>
+    <MapAcquisitionPanel />
+  </section>;
   return <section className="page business-assistant-page" style={appearanceStyle(appearance, true)}>
     <header className="business-page-head">
       <div><h1>{current?.label || "AI生意助手"}</h1><p>{current ? `AI生意助手 · ${current.purpose}` : "从发现商机，到客户跟进与品牌推广。"}</p></div>
-      <span className="business-stage">功能筹备中</span>
+      <span className="business-stage">{current ? "功能筹备中" : "本地工作台"}</span>
     </header>
     {!current && <div className="business-overview-layout">
     <div className="business-companion">
@@ -56,7 +68,7 @@ export function BusinessAssistantPage({ module, preference, appearance, onPerson
           <button type="button" className="business-personalize" onClick={onPersonalize}><Settings2 size={16} />形象与名字</button>
         </div>
         <p>找客户、跟客户，让客户找到你。<br />三个方向放在一起，生意进展看得清楚。</p>
-        <p className="business-framework-note">当前可以查看三个模块的规划；商机搜索、企微连接和GEO推广尚未开放。</p>
+        <p className="business-framework-note">地图获客已开放；精准获客、企微助手与 GEO 推广仍在筹备中。</p>
       </div>
     </div>
     <nav className="business-module-nav" aria-label="生意助手功能">

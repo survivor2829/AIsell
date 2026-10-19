@@ -7,6 +7,7 @@ const {
 } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
+contextBridge.exposeInMainWorld('xiaoxiMapAcquisition', require('./business-workbench-preload.cjs').createBusinessWorkbenchApi(ipcRenderer, 'map-acquisition'));
 contextBridge.exposeInMainWorld("xiaoxiOfficialMaterials", require("./official-materials-preload.cjs").createOfficialMaterialsApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiTutorials", require("./tutorials-preload.cjs").createTutorialsApi(ipcRenderer));
 

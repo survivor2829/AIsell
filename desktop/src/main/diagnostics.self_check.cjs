@@ -345,7 +345,7 @@ try {
     cloudMaintenance: { stop: () => { quitStopped += 1; }, installOnExit: async () => undefined },
     feedbackController: { stop: () => { quitStopped += 1; } },
     feedbackAdmin: { stop: () => { quitStopped += 1; } },
-    keywordAcquisitionRegistration: undefined, digitalHumanRegistration: undefined,
+    keywordAcquisitionRegistration: undefined, businessWorkbenchRegistration: undefined, digitalHumanRegistration: undefined,
     productVideoRegistration: undefined, productDetailController: undefined,
     contentEngineController: undefined, momentsPublishController: undefined,
     providerGatewayClient: undefined, productDetailIpcRegistration: undefined,

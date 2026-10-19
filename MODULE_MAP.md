@@ -8,6 +8,7 @@
 |---|---|---|
 | `desktop/src/renderer/` | React 页面、用户输入、状态展示和 IPC 调用 | 直接访问微信、文件系统、明文 Key 或执行业务发送 |
 | `desktop/src/main/` | Electron 生命周期、IPC、业务编排、DeepSeek、运行协调和数据目录注入 | 在页面组件中复制 RPA 逻辑；把单功能状态写进共享适配配置 |
+| `desktop/src/main/map-acquisition*`、`acquisition-workbench-scope.cjs` | 高德独立会话、串行采集、任务名单及渠道商账号隔离；地图数据保存在账号目录 | 推断采购需求、自动联系客户、混入精准/GEO或微信发送状态 |
 | `desktop/src/main/keyword-acquisition*`、`douyin-browser-adapter.cjs` | 独立关键词任务、线索、会话及发送账本；官方网页观察和受约束私信适配 | 依赖内容引擎启动；猜测账号、私信归属或发送成功；自动重发未知结果 |
 | `desktop/src/main/digital-human-*` | 数字人图片导入、草稿、预览确认、供应商素材审核和异步视频任务 | 向 renderer 暴露密钥或本地路径；重复提交结果不明的付费请求 |
 | `content_engine/video_presentation.py`、`desktop/remotion-packaging/`、`VideoPresentation.tsx` | 两类视频共用的字幕时间、模板、成片封面和标题修改；生成结果仍由内容引擎登记 | 在封面失败时丢弃视频；修改标题时重新调用生图 |

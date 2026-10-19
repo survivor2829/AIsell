@@ -902,7 +902,7 @@ export default function App() {
         <div className="content-card" ref={contentScrollRef}>
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
-          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} onOpenModule={key => selectChild("business", key)} preference={visiblePreference("business")} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} />}
+          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} onOpenModule={key => selectChild("business", key)} onReturnHome={() => selectChild("business", "business")} preference={visiblePreference("business")} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
