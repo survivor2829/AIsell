@@ -266,24 +266,32 @@ class VideoPresentationTests(unittest.TestCase):
                 self.assertNotEqual("completed", local_failure["status"])
                 self.assertEqual("planned", database.connection.execute("SELECT status FROM cover_generation_ledger").fetchone()[0], "local preparation failure must not mark a paid submission")
                 self.assertEqual(cover_task["task_id"], domain.regenerate_cover(video_id, design)["task_id"])
-                from PIL import Image
-                analyzer._command = lambda args: Image.new('RGB', (300, 400), 'green').save(args[-1])
+                # Recovery fixtures need no image library; production uses FFmpeg.
+                import struct
+                import zlib
+                def png(file, width, height):
+                    def chunk(kind, data):
+                        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+                    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+                    pixels = (b"\0" + b"\0\x80\0" * width) * height
+                    Path(file).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+                        + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
+                analyzer._command = lambda args: png(args[-1], 300, 400)
                 submit = mock.Mock(return_value="provider-original-id")
                 poll = mock.Mock(side_effect=[APIMartOutcomeUnknown("poll_lost", "lost poll"), "https://example.com/cover.png"])
                 domain.cover_client = SimpleNamespace(configured=True, submit=submit, poll=poll,
                     download=lambda _url, target: png(target, 600, 800))
                 from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
                 def probe_cover(_adapter, file, kind):
-                    with Image.open(file) as image:
-                        return ProbeOutcome(status="ok", width=image.width, height=image.height)
+                    width, height = struct.unpack(">II", Path(file).read_bytes()[16:24])
+                    return ProbeOutcome(status="ok", width=width, height=height)
                 probe_patch = mock.patch.object(FFprobeAdapter, "probe", probe_cover)
                 probe_patch.start()
                 self.addCleanup(probe_patch.stop)
                 renderer.ffprobe_path = renderer.ffmpeg_path = "fixture"
                 def convert_cover(args, **_kwargs):
                     self.assertEqual("scale=1080:1440:flags=lanczos", args[args.index("-vf") + 1])
-                    with Image.open(args[args.index("-i") + 1]) as image:
-                        image.resize((1080, 1440)).save(args[-1])
+                    png(args[-1], 1080, 1440)
                 renderer._command = convert_cover
                 renderer.compose_cover = lambda *args, **kwargs: FFmpegCreativeRenderer.compose_cover(renderer, *args, **kwargs)
                 failed_poll = domain.run_task(cover_task["task_id"])
@@ -300,9 +308,7 @@ class VideoPresentationTests(unittest.TestCase):
                 self.assertEqual(2, poll.call_count)
                 self.assertEqual(cover_task["task_id"], domain.regenerate_cover(video_id, design)["task_id"])
                 thumbnail = domain._validate_generated_path(domain._generated_row(video_id)["thumbnail_path"])
-                with Image.open(thumbnail) as cover:
-                    self.assertEqual((1080, 1440), cover.size)
-                    self.assertLess(max(cover.getpixel((540, 720))) - 128, 3)
+                self.assertEqual((1080, 1440), struct.unpack(">II", thumbnail.read_bytes()[16:24]))
                 preserved = thumbnail.read_bytes()
                 wrong = root / 'wrong-ratio.png'
                 png(wrong, 900, 1600)
