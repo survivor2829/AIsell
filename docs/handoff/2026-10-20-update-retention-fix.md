@@ -38,4 +38,6 @@
 
 收尾发现同一3380415的main自动复跑39411171274失败，PR CI仍为成功。失败位于`moments_navigation.self_check.cjs`的隔离决策回放：9个真实PowerShell进程通过Promise.all同时冷启动/编译，6秒限时内多个场景仅返回`powershell_timeout`，未进入预期行为断言。改为依次运行原9个场景，保留6秒限时、所有预期断言及生产代码；本机该定向检查通过。只更改测试夹具，不重新打包或替换已发布101。
 
-该夹具提交用`[skip ci]`避免PR/main对同一输入重复自动运行，并显式手动触发原完整Windows CI；通过后才合并。具体运行结果在收尾补记，不能用本机通过替代云端结果。
+夹具提交`7a19fe93255210302f57d1c602d35f781784633d`显式运行[完整Windows CI 39412463887](https://github.com/survivor2829/AIsell/actions/runs/39412463887)，源码自检、运行时及凭据边界、测试版/交付版界面构建和服务端检查均通过；完整安装器专用作业按条件跳过。通过后以同一提交快进合并main，[PR #39](https://github.com/survivor2829/AIsell/pull/39)已合并。`[skip ci]`仅避免PR/main对同一输入再重复自动运行，没有省略这次完整云端验证。证据：`outputs/update-retention-20261020/release101/ci-fixture-final.json`。
+
+与应用提交3380415相比只有此测试夹具与文档变化；打包规则排除self_check，已发布1.1.101的程序、签名和归档保持不变，未再次构建、上传或要求客户重新更新。正常安装版已按普通入口重新打开，停留在保存授权登录页供用户使用。
