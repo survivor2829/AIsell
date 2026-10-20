@@ -2491,7 +2491,14 @@ function registerContentEngineIpc(options = {}) {
       : dialog.showOpenDialog(dialogOptions);
   }
 
-  handle(CONTENT_ENGINE_CHANNELS.status, () => publicStatus(controller.status()));
+  handle(CONTENT_ENGINE_CHANNELS.status, async () => {
+    const status = controller.status();
+    // Content pages wait for readiness before requesting history. Their first
+    // status request must start the lazy worker, without retrying a failed run.
+    return publicStatus(status.state === "stopped" && status.available && !global.__xiaoxiUpdateHold
+      ? await controller.start()
+      : status);
+  });
   registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick, shell, beforeProviderWork: options.beforeProviderWork });
   handle(CONTENT_ENGINE_CHANNELS.restart, async () => publicStatus(
     await controller.restart()

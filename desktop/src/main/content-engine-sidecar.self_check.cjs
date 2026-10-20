@@ -182,6 +182,20 @@ async function main() {
       assert.equal((await pending).state, 'stopped'); assert.equal(spawned, false);
     }
     {
+      let unlock;
+      const waiting = createContentEngineSidecar({ runtimePath, dataDir,
+        beforeStart: () => new Promise(resolve => { unlock = resolve; }),
+        spawnProcess: () => assert.fail("Update hold must prevent a delayed worker start") });
+      const pending = waiting.start();
+      await waitFor(() => Boolean(unlock));
+      global.__xiaoxiUpdateHold = true;
+      try {
+        unlock();
+        assert.equal((await pending).state, "stopped");
+        assert.equal((await waiting.start()).state, "stopped");
+      } finally { delete global.__xiaoxiUpdateHold; await waiting.dispose(); }
+    }
+    {
       let spawnCount = 0;
       const controller = createContentEngineSidecar({
         runtimePath: "",

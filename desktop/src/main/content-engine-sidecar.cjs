@@ -493,6 +493,7 @@ function createContentEngineSidecar(options = {}) {
   }
 
   function start() {
+    if (global.__xiaoxiUpdateHold) return Promise.resolve(status());
     if (startPromise) return startPromise;
     const oldRunNeedsStop = Boolean(
       currentRun
@@ -510,6 +511,7 @@ function createContentEngineSidecar(options = {}) {
           if (!/^component_/.test(error.code || error.message || "")) throw error;
           return setTerminalState("failed", "CONTENT_ENGINE_RUNTIME_UNAVAILABLE");
         }
+        if (global.__xiaoxiUpdateHold) return status();
         return beginStart();
       })
       .finally(() => {

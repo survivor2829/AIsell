@@ -1012,6 +1012,22 @@ async function main() {
         code: ""
       }
     });
+    const readyStatus = controller.status;
+    let lazyStarts = 0;
+    controller.start = async () => { lazyStarts += 1; return readyStatus(); };
+    controller.status = () => ({ ...readyStatus(), state: "stopped" });
+    assert.deepEqual(await handlers.get(CONTENT_ENGINE_CHANNELS.status)(), statusResult,
+      "opening history directly must start the lazy worker");
+    assert.equal(lazyStarts, 1);
+    global.__xiaoxiUpdateHold = true;
+    try {
+      assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.status)()).data.state, "stopped");
+      assert.equal(lazyStarts, 1, "status must not reopen workers during an update");
+    } finally { delete global.__xiaoxiUpdateHold; }
+    controller.status = () => ({ ...readyStatus(), state: "failed" });
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.status)()).data.state, "failed");
+    assert.equal(lazyStarts, 1, "status reads must not retry failed workers");
+    controller.status = readyStatus;
     const managedArkStatus = await handlers.get(CONTENT_ENGINE_CHANNELS.volcengineArkStatus)({}, {});
     assert.deepEqual(managedArkStatus, {
       ok: true,
