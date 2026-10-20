@@ -43,15 +43,13 @@
       {% endif %}
     </div>
 
+    {% if qr_image %}
     <div style="flex:0 0 190px; width:190px; border-radius:20px; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.18); padding:14px; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);">
-      {% if qr_image %}
       <img src="{{ qr_image }}" alt="二维码" style="width:152px; height:152px; display:block; border-radius:12px; background:#fff; box-shadow:0 4px 16px rgba(0,0,0,0.15);" />
-      {% else %}
-      <div style="width:152px; height:152px; border-radius:12px; background:rgba(255,255,255,0.15); display:flex; align-items:center; justify-content:center; font-size:13px; color:rgba(255,255,255,0.85); font-weight:600;">扫码咨询</div>
-      {% endif %}
       {% if qr_caption %}
       <div style="margin-top:10px; font-size:12px; color:rgba(255,255,255,0.9); text-align:center; line-height:1.5; font-weight:500;">{{ qr_caption }}</div>
       {% endif %}
     </div>
+    {% endif %}
   </div>
 </div>

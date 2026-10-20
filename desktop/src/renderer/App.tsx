@@ -60,6 +60,8 @@ type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics"
 type GroupKey = WorkspaceRoleKey | "business";
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
+const productDisplayName = productBrand.displayName.replace(/版本$/u, "");
+
 type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
 type ActiveTouchState = {
@@ -603,6 +605,7 @@ export default function App() {
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactSyncBusy, setContactSyncBusy] = useState(false);
   const contactSyncInFlight = useRef(false);
+  const contactStatusLoaded = useRef(false);
   const [contactSyncState, setContactSyncState] = useState<ContactSyncState>({
     status: "idle",
     contact_count: 0,
@@ -627,7 +630,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.title = [productBrand.displayName, EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
+    document.title = [productDisplayName, EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
   }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
@@ -765,7 +768,15 @@ export default function App() {
 
 
   useEffect(() => {
-    if (sessionEntered && license?.authorized && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active)) refreshContactSync();
+    if (!sessionEntered || !license?.authorized) {
+      contactStatusLoaded.current = false;
+      return;
+    }
+    // Read saved identity after login, without capturing or starting WeChat.
+    if (!contactStatusLoaded.current || ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active)) {
+      contactStatusLoaded.current = true;
+      refreshContactSync();
+    }
   }, [sessionEntered, license?.authorized, active]);
 
   useEffect(() => {
@@ -816,10 +827,10 @@ export default function App() {
   return (
     <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
       <aside className="sidebar">
-        <button className="brand brand-home" type="button" onClick={() => setActive("overview")} aria-label={`打开${productBrand.displayName}首页`}>
+        <button className="brand brand-home" type="button" onClick={() => setActive("overview")} aria-label={`打开${productDisplayName}首页`}>
           <img className="brand-mark" src="./app-icon.png" alt="" />
           <div className="brand-copy">
-            <span>{productBrand.displayName.split(" ").map((part, index) => <span className="brand-name-part" key={index}>{part}{" "}</span>)}</span>
+            <span>{productDisplayName.split(" ").map((part, index) => <span className="brand-name-part" key={index}>{part}{" "}</span>)}</span>
             <small>生素材 · 引客户 · 促成交</small>
           </div>
         </button>
@@ -875,7 +886,7 @@ export default function App() {
 
       <section className={`workspace${roleThemeClass}`} style={themedRole ? appearanceStyle(appearanceFor(themedRole, visiblePreference(themedRole).appearanceId), isSupportRole(themedRole) || themedRole === "business") : undefined}>
         <header className="topbar">
-          <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productBrand.displayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
+          <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productDisplayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
             <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
               <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
@@ -1009,7 +1020,7 @@ export default function App() {
 }
 
 function WindowChrome() {
-  return <div className="window-chrome" aria-label={`${productBrand.displayName} 窗口标题栏`}><img src="./app-icon.png" alt="" /><span>玺联惠 · {productBrand.displayName}</span></div>;
+  return <div className="window-chrome" aria-label={`${productDisplayName} 窗口标题栏`}><img src="./app-icon.png" alt="" /><span>玺联惠 · {productDisplayName}</span></div>;
 }
 
 function ContactSyncPage({

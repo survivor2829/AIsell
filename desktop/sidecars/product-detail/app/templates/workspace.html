@@ -118,16 +118,18 @@
     }
 
     /* ── Category Pills ─────────────────────────────────────── */
-    .cat-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+    .cat-pills { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
     .cat-pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      height: 32px; padding: 0 14px; border-radius: var(--radius-pill);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      min-width: 0; min-height: 92px; padding: 10px 4px; border-radius: 12px;
       border: 1px solid var(--color-border);
       background: #fff; cursor: pointer;
       font-size: 13px; font-weight: 500; color: var(--color-text-hint);
       transition: all var(--transition-fast); user-select: none;
       white-space: nowrap;
     }
+    .cat-pill svg { width: 36px; height: 36px; flex: none; }
+    .cat-pill:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .cat-pill:hover { border-color: var(--color-border-hover); color: var(--color-text); }
     .cat-pill.active {
       background-color: var(--cat-color-bg, rgba(20,110,245,0.08));
@@ -137,12 +139,12 @@
     }
 
     /* ── Upload Grid ────────────────────────────────────────── */
-    .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .upload-grid { display: grid; grid-template-columns: 1fr; }
     .upload-box {
       border: 1px solid var(--color-border-2); border-radius: var(--radius-input);
       background: #fff; cursor: pointer;
       transition: all var(--transition-fast); position: relative; overflow: hidden;
-      height: 104px;
+      height: 200px;
     }
     .upload-box:hover, .upload-box.drag-over {
       border-color: var(--color-primary);
@@ -152,8 +154,10 @@
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       height: 100%; gap: 4px; pointer-events: none;
     }
-    .upload-placeholder .upload-icon { font-size: 22px; opacity: 0.75; }
-    .upload-placeholder .upload-label { font-size: 12px; color: var(--color-text-hint); font-weight: 500; }
+    .upload-placeholder .upload-icon { width: 56px; height: 56px; color: var(--color-primary); margin-bottom: 8px; }
+    .upload-icon svg { width: 100%; height: 100%; }
+    .upload-box:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .upload-placeholder .upload-label { font-size: 16px; color: var(--color-text-hint); font-weight: 600; }
     .upload-placeholder .upload-required { color: #ee1d36; font-size: 11px; font-weight: 500; }
     .upload-preview { display: none; width: 100%; height: 100%; position: relative; }
     .upload-preview img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
@@ -507,7 +511,7 @@
     .desktop-workspace .topbar-right { width: 100%; gap: 16px; }
     .desktop-workspace .layout-toggle { margin-right: auto; }
     .desktop-workspace .layout-toggle button { min-height: 36px; font-size: 14px; color: #475467; }
-    .desktop-workspace .workspace { gap: 16px; padding: 16px; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
+    .desktop-workspace .workspace { gap: 16px; padding: 16px; grid-template-columns: minmax(360px, 400px) minmax(0, 1fr); }
     .desktop-workspace .workspace.layout-edit .panel-right { display: none; }
     .desktop-workspace .workspace.layout-balance { grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); }
     .desktop-workspace .workspace.layout-balance .panel-left { display: none; }
@@ -577,16 +581,16 @@
       <div class="cat-pills">
         <button class="cat-pill" data-type="设备类"
           style="--cat-color:#E8231A; --cat-color-bg:rgba(232,35,26,0.08)"
-          onclick="selectCategory('设备类')">🤖 设备类</button>
+          onclick="selectCategory('设备类')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8h9l2 8H5l2-8Zm2 0V5h5v3M16 5h4v7M4 16h15"/><circle cx="8" cy="19" r="2"/><circle cx="16" cy="19" r="2"/></svg><span>设备类</span></button>
         <button class="cat-pill" data-type="配件类"
           style="--cat-color:#1E6FBF; --cat-color-bg:rgba(30,111,191,0.08)"
-          onclick="selectCategory('配件类')">🔧 配件类</button>
+          onclick="selectCategory('配件类')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.5 5.5l2 2m9 9 2 2m0-13-2 2m-9 9-2 2"/></svg><span>配件类</span></button>
         <button class="cat-pill" data-type="耗材类"
           style="--cat-color:#2E8B57; --cat-color-bg:rgba(46,139,87,0.08)"
-          onclick="selectCategory('耗材类')">🧪 耗材类</button>
+          onclick="selectCategory('耗材类')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7h8l2 4v9H6v-9l2-4Zm1 0V3h6v4M6 13h12M10 16h4"/></svg><span>耗材类</span></button>
         <button class="cat-pill" data-type="工具类"
           style="--cat-color:#E87C1A; --cat-color-bg:rgba(232,124,26,0.08)"
-          onclick="selectCategory('工具类')">🧹 工具类</button>
+          onclick="selectCategory('工具类')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 3-4 12m-4 0h9l3 6H4l3-6Zm1 3-1 3m5-3v3m3-3 1 3"/></svg><span>工具类</span></button>
       </div>
     </div>
 
@@ -596,48 +600,16 @@
       <div class="upload-grid">
 
         <!-- 产品主图 -->
-        <div class="upload-box" id="upload_product">
+        <div class="upload-box" id="upload_product" role="button" tabindex="0" aria-label="上传或更换产品主图">
           <input type="file" accept="image/*" style="display:none">
           <div class="upload-placeholder">
-            <span class="upload-icon">🖼️</span>
+            <span class="upload-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 4 4 3-3 5 5"/></svg></span>
             <span class="upload-label">产品主图</span>
             <span class="upload-required">* 必填</span>
           </div>
           <div class="upload-preview"></div>
         </div>
 
-        <!-- 场景底图 -->
-        <div class="upload-box" id="upload_scene">
-          <input type="file" accept="image/*" style="display:none">
-          <div class="upload-placeholder">
-            <span class="upload-icon">🏭</span>
-            <span class="upload-label">场景底图</span>
-            <span class="upload-required">可选</span>
-          </div>
-          <div class="upload-preview"></div>
-        </div>
-
-        <!-- 效果图 -->
-        <div class="upload-box" id="upload_effect">
-          <input type="file" accept="image/*" style="display:none">
-          <div class="upload-placeholder">
-            <span class="upload-icon">🎬</span>
-            <span class="upload-label">效果图</span>
-            <span class="upload-required">可选</span>
-          </div>
-          <div class="upload-preview"></div>
-        </div>
-
-        <!-- 二维码 -->
-        <div class="upload-box" id="upload_qr">
-          <input type="file" accept="image/*" style="display:none">
-          <div class="upload-placeholder">
-            <span class="upload-icon">📲</span>
-            <span class="upload-label">二维码</span>
-            <span class="upload-required">可选</span>
-          </div>
-          <div class="upload-preview"></div>
-        </div>
 
       </div>
     </div>
@@ -678,7 +650,7 @@
       <button class="btn-generate" id="btn_generate" onclick="generatePreview()">
         ✨ 一键生成详情页
       </button>
-      <p class="text-hint" style="margin-top:8px;">Jinja 模板秒出 HTML 预览,中央区直接看效果</p>
+      <p class="text-hint" style="margin-top:8px;">根据产品主图、标题和文案生成模板详情页</p>
 
       <button class="btn-generate" id="btn_generate_parameter" type="button" onclick="generateParameterSheet()" style="margin-top:14px; background:linear-gradient(135deg,#ef4444,#dc2626); border:none;">
         📋 一键生成产品参数图
@@ -897,9 +869,6 @@
 <script>
   /* ── State ─────────────────────────────────────────────────── */
   let productImageUrl = '';
-  let sceneImageUrl = '';
-  let effectImageUrl = '';
-  let qrImageUrl = '';
   let currentProductType = '{{ initial_product_type|default("设备类") }}';
   let currentThemeId = 'classic-red';
   let allThemes = [];
@@ -1252,7 +1221,7 @@
 
   /* ── Image Upload ───────────────────────────────────────────── */
   /* opts.autoRembg=true → 后端自动调 rembg 抠图,返回去背景透明 PNG
-     仅 upload_product 需要(产品主图),其他图(场景/效果/二维码)保留原背景 */
+     产品主图在本机去除背景，处理失败仍可保留原图 */
   function initUploadBox(boxId, onSuccess, opts) {
     const box = document.getElementById(boxId);
     const input = box.querySelector('input[type="file"]');
@@ -1261,6 +1230,9 @@
     const autoRembg = !!(opts && opts.autoRembg);
 
     box.addEventListener('click', () => input.click());
+    box.addEventListener('keydown', e => {
+      if (e.target === box && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); input.click(); }
+    });
     box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drag-over'); });
     box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
     box.addEventListener('drop', e => {
@@ -1320,9 +1292,7 @@
     preview.style.display = 'none';
     placeholder.style.display = 'flex';
     if (boxId === 'upload_product') productImageUrl = '';
-    else if (boxId === 'upload_scene') sceneImageUrl = '';
-    else if (boxId === 'upload_effect') effectImageUrl = '';
-    else if (boxId === 'upload_qr') qrImageUrl = '';
+    box.querySelector('input[type=file]').value = '';
   }
 
   /* ── Theme Loading & Application ────────────────────────────── */
@@ -1516,9 +1486,6 @@
       const preview = await postJson(`/api/build/${encodeURIComponent(renderProductType)}/render-preview`, {
         parsed_data: parsed,
         product_image: productImageUrl,
-        scene_image: sceneImageUrl || '',
-        effect_image: effectImageUrl || '',
-        qr_image: qrImageUrl || '',
         theme_id: currentThemeId
       });
       if (!isCurrentWorkspaceRender(renderProductType, renderVersion)) return false;
@@ -1859,9 +1826,6 @@
         block_id: moduleId,
         parsed_data: currentBuildData.parsed,
         product_image: productImageUrl,
-        scene_image: sceneImageUrl || '',
-        effect_image: effectImageUrl || '',
-        qr_image: qrImageUrl || '',
       });
       if (!isCurrentWorkspaceRender(renderProductType, renderVersion)) return;
       updateRenderedModule(moduleId, result.html, result.data);
@@ -2665,8 +2629,6 @@
         body: JSON.stringify({
           parsed_data: currentBuildData.parsed,
           product_image: productImageUrl,
-          scene_image: sceneImageUrl || '',
-          effect_image: effectImageUrl || '',
           theme_id: currentThemeId,
         })
       });
@@ -2755,9 +2717,6 @@
     restoreServerAiRefineTask(); // 新端口没有 browser storage 时，只读接管原任务。
     // 产品图走自动抠图 — 否则 AI 精修合成时原图背景 + 原图水印文字会穿透到模板
     initUploadBox('upload_product', url => { productImageUrl = url; }, { autoRembg: true });
-    initUploadBox('upload_scene', url => { sceneImageUrl = url; });
-    initUploadBox('upload_effect', url => { effectImageUrl = url; });
-    initUploadBox('upload_qr', url => { qrImageUrl = url; });
     await loadThemes();
     initPreviewFit();
     renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)

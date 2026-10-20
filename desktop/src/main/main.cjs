@@ -256,7 +256,7 @@ function createWindow() {
     titleBarStyle: "hidden",
     titleBarOverlay: { color: "#f8f4f0", symbolColor: "#302a2b", height: 36 },
     icon: path.join(__dirname, `../../${rendererDir}/app-icon.ico`),
-    title: [productBrand.displayName, editionLabel].filter(Boolean).join(" "),
+    title: [productBrand.displayName.replace(/版本$/u, ""), editionLabel].filter(Boolean).join(" "),
     webPreferences: productDetailWebPreferences()
   });
   keepWindowInWorkArea(mainWindow, screen);
