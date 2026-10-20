@@ -741,14 +741,16 @@ function assertMainLifecycle() {
     source,
     /app\.getPath\("userData"\)[\s\S]*?"content-engine"/
   );
-  assert.match(
+  assert.doesNotMatch(
     source,
     /contentEngineController\.start\(\)\.catch\(\(\) => undefined\)/,
-    "metadata worker must start in a controlled, non-blocking way"
+    "unused content services must not start on the login critical path"
   );
   const createCall = source.match(
     /contentEngineController = createContentEngineSidecar\(\{([\s\S]*?)\n    \}\);/
   )?.[1] || "";
+  assert.match(createCall, /beforeStart:[\s\S]*ensureRuntimeGroup\("content"\)[\s\S]*waitForProviderSession\(\)/,
+    "lazy service start must retain runtime validation and provider readiness");
   assert.equal(
     createCall.includes("coordinator"),
     false,
