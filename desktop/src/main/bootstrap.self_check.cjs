@@ -4,7 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { registerContentMediaScheme } = require("./content-media-protocol.cjs");
 
-async function check(smoke = false, installedVersion = "1.1.2", selectedVersion = "1.1.3", useInstalled = false, failedBoot = false) {
+async function check(smoke = false, installedVersion = "1.1.2", selectedVersion = "1.1.3", useInstalled = false, failedBoot = false, missingBaseline = false) {
   let ready = false, registrations = 0;
   let finish;
   const result = new Promise(resolve => { finish = resolve; });
@@ -23,7 +23,9 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
   const installedRoot = path.dirname(process.execPath);
   const candidateRoot = path.join(__dirname, "candidate");
   const paths = {
-    readJson: (file, fallback) => file === "selection" ? { active: "candidate" } : fallback,
+    readJson: (file, fallback) => file === "selection" ? { active: "candidate" }
+      : file === path.join(installedRoot, "component-base.json") && !missingBaseline
+        ? { schema: 2, verification: {}, files: [{}] } : fallback,
     updatePaths: userData => {
       assert.equal(userData, expectedProfile, "Release verification must select components from its isolated profile");
       return roots;
@@ -50,7 +52,10 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
       if (id === "./component-paths.cjs") return paths;
       if (id === "./startup-timing.cjs") return require(id);
       if (id === "../shared/cloud-contract.cjs") return require(id);
-      if (id === "../shared/component-contract.cjs") return { verifyComponentManifest: () => ({ version: selectedVersion }) };
+      if (id === "../shared/component-contract.cjs") return { verifyComponentManifest: () => ({ version: selectedVersion }), validateFiles() {} };
+      if (id === "../shared/update-capabilities.json") return { protocol: 4, verification: 1 };
+      if (id === "../shared/component-verification.cjs") return { validatePolicy() {}, groupForPath: () => "startup" };
+      if (id === "./component-store.cjs") return { verifyFiles: async () => {} };
       if (id === "./cloud-config.cjs") return { cloudConfig: () => ({}) };
       if (id === "./content-media-scheme.cjs") return require(id);
       if (id.endsWith(path.join("src", "main", "main.cjs"))) {
@@ -61,7 +66,13 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
       throw Error("Unexpected import " + id);
     }
   });
-  assert.deepEqual(await result, { version: useInstalled ? installedVersion : selectedVersion,
+  const observed = await result;
+  if (missingBaseline) {
+    assert.match(observed.error, /component_base_verification_required/);
+    assert.equal(context.__xiaoxiComponents, undefined, "missing baseline must not load the application or acknowledge update success");
+    return;
+  }
+  assert.deepEqual(observed, { version: useInstalled ? installedVersion : selectedVersion,
     root: useInstalled ? installedRoot : candidateRoot, ready: !useInstalled },
     "A full installer must supersede an older selected component while retaining newer component updates");
   assert.equal(savedSelections.length, useInstalled ? 1 : 0);
@@ -77,5 +88,6 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
 check().then(() => check(true)).then(() => check(false, "1.1.6", "1.1.5", true))
   .then(() => check(false, "1.1.2", "1.1.3", false, true))
   .then(() => check(false, "1.1.6", "1.1.6", true))
+  .then(() => check(false, "1.1.6", "1.1.5", true, false, true))
   .then(() => console.log("bootstrap self-check passed: early media registration, isolated profile and full installer precedence"))
   .catch(error => { console.error(error); process.exitCode = 1; });

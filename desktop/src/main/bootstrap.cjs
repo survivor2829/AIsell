@@ -66,7 +66,11 @@ async function boot() {
   let installedVerification;
   if (!manifest) {
     const baseline = readJson(path.join(installedRoot, "component-base.json"));
+    const capabilities = require("../shared/update-capabilities.json");
+    if (capabilities.verification >= 1 && (!baseline || baseline.schema !== 2 || !baseline.verification
+        || !Array.isArray(baseline.files) || !baseline.files.length)) throw Error("component_base_verification_required");
     if (baseline?.verification) {
+      require("../shared/component-contract.cjs").validateFiles(baseline.files);
       const { validatePolicy, groupForPath } = require("../shared/component-verification.cjs");
       validatePolicy(baseline.verification, baseline.files);
       await require("./component-store.cjs").verifyFiles(installedRoot, selection.pending || selection.failure || previousBootIncomplete
