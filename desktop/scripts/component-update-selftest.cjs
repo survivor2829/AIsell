@@ -191,7 +191,7 @@ test("superseded prepared updates do not accumulate complete programs and archiv
   finally { physical.rmSync = remove; }
   await fs.access(deferred);
   const profile = path.join(root, "idle-profile"); await fs.mkdir(profile);
-  await require("../src/main/update-retention.cjs").retainComponentArtifacts(rootDir, null, { profile, version: "1.1.4" });
+  await require("../src/main/update-startup-maintenance.cjs").maintainAfterStartup(rootDir, { profile, version: "1.1.4" });
   await assert.rejects(fs.stat(deferred), { code: "ENOENT" }, "healthy-start worker retries component cleanup even without a retired full backup");
   await fs.access(historical);
 });

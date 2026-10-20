@@ -290,9 +290,9 @@ async function runHelper({ jobFile, userData }) {
         await backups.confirmSet(userData, job.id, { targetVersion: job.targetVersion, ack: readJson(ack),
           dataCheck: await backups.inspectPreservedData(userData, dataBackup, { runtimeRoot: job.installedRoot }) });
       }
+      // Recalculate references after backup retirement, not before it.
+      await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
     } catch (error) { console.warn(`Post-update cleanup deferred: ${error.code || error.message}`); }
-    // Recalculate references even when a full backup must remain protected.
-    await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {
     if (installationStarted && job.programBackup) {

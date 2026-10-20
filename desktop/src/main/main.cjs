@@ -949,7 +949,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       // Retry only previously registered retirement, after the real page works.
       // Unclassified historical backups and current/candidate versions stay protected.
       if (app.isPackaged) {
-        await require("./update-retention.cjs").retainComponentArtifacts(components.updatePaths(app.getPath("userData")).directory, null,
+        await require("./update-startup-maintenance.cjs").maintainAfterStartup(components.updatePaths(app.getPath("userData")).directory,
           { profile: app.getPath("userData"), version: components.businessVersion(app), runtimeRoot: components.currentRoot() });
       }
     }).catch(error => logger.event("app", "startup_housekeeping_deferred", { code: error.code || "housekeeping_failed" }));

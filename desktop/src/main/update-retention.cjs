@@ -59,16 +59,6 @@ async function retainComponentArtifacts(root, envelope, options) {
   } catch (error) { console.warn(`Update retention deferred: ${error.message}`); }
 }
 
-async function collectAfterStartup(root, options) {
-  try {
-    await require("./update-backups.cjs").retryBackupMaintenance(options.profile, options);
-  } catch (error) { console.warn(`Backup cleanup deferred: ${error.code || error.message}`); }
-  // Component deletion can have failed independently of full-backup retirement.
-  collect(root);
-}
-if (!isMainThread && workerData?.componentRetention) {
-  if (workerData.options?.profile) collectAfterStartup(workerData.root, workerData.options).catch(error => { console.warn(error.message); process.exitCode = 1; });
-  else collect(workerData.root, workerData.envelope, workerData.options);
-}
+if (!isMainThread && workerData?.componentRetention) collect(workerData.root, workerData.envelope, workerData.options);
 
 module.exports = { retainComponentArtifacts };
