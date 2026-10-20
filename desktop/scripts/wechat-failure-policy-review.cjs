@@ -12,9 +12,10 @@ const patterns = [
   /Write-XiaoxiFailure\s+["'][a-z0-9.-]+["']\s+["']([a-z][a-z0-9_]{1,79})["']/g
 ];
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-// These literals are intentionally not failure policies: one is a successful
-// scheduler event and the other is the reserved fail-closed unknown sentinel.
-const nonFailureReasonLiterals = new Set(["failed", "finite_tasks_drained", "idle", "invalid_unclassified_reason"]);
+// These literals are not WeChat failure policies: lifecycle states, a successful
+// scheduler event, the fail-closed sentinel, and update-backup confirmation.
+const nonFailureReasonLiterals = new Set(["failed", "finite_tasks_drained", "idle", "invalid_unclassified_reason",
+  "startup_or_data_confirmation_missing"]);
 
 function unclassifiedAddedReasons(diff) {
   const found = new Set();

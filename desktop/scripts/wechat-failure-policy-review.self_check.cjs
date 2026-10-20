@@ -18,6 +18,8 @@ assert.deepEqual(unclassifiedAddedReasons('+ return attention("blocked", null, "
 assert.deepEqual(unclassifiedAddedReasons('+ Write-XiaoxiFailure "rule-r001" "another_new_reason"'), ["another_new_reason"]);
 assert.deepEqual(unclassifiedAddedReasons('+ log("reply.activated", { reason: "finite_tasks_drained" });'), []);
 assert.deepEqual(unclassifiedAddedReasons('+ return { reason: "invalid_unclassified_reason" };'), []);
+assert.deepEqual(unclassifiedAddedReasons('+ return { reason: "startup_or_data_confirmation_missing" };'), [],
+  "update backup confirmation is not a WeChat action policy");
 
 for (const [reason, classification, attentionScope] of [
   ["atomic_draft_changed", "recoverable", "task"],
