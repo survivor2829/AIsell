@@ -16,7 +16,7 @@ async function run(binary, args, { binaryOutput = false, cwd, maxOutputBytes = 8
     const buffers = []; let bytes = 0, error = '';
     child.stdout.on('data', (chunk) => { bytes += chunk.length; if (bytes > maxOutputBytes) child.kill(); else buffers.push(chunk); });
     child.stderr.on('data', (chunk) => { error = (error + chunk).slice(-3000); });
-    child.once('error', reject);
+    child.once('error', error => { require('./component-paths.cjs').runtimeLaunchFailed(binary, error); reject(error); });
     child.once('close', (code) => code === 0 ? resolve(binaryOutput ? Buffer.concat(buffers) : Buffer.concat(buffers).toString('utf8'))
       : reject(fail('digital_human_media_failed', `本地音画处理未完成（退出码 ${code ?? 'unknown'}），原素材已保留。`, { diagnostic: error })));
   });

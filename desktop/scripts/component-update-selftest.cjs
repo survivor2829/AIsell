@@ -44,6 +44,43 @@ async function fixture(t) {
   return { root, source, base };
 }
 
+test("successful-version verification is cached across launches and invalidated by manifest or runtime failure", async t => {
+  const { root, source } = await fixture(t);
+  const components = require("../src/main/component-paths.cjs");
+  const paths = components.updatePaths(path.join(root, "profile"));
+  const receipt = components.bootVerificationReceipt(paths, source);
+  assert.equal(receipt.hit, false);
+  components.beginBoot(paths);
+  for (const invalid of [null, { schema: 1, records: {} }, { schema: 1, records: [null] }]) {
+    await fs.writeFile(path.join(paths.directory, "verification-cache.json"), JSON.stringify(invalid));
+    assert.equal(components.bootVerificationReceipt(paths, source).hit, false, "malformed cache must degrade to full verification");
+  }
+  try {
+    global.__xiaoxiComponents = { paths, root: source, installedRoot: source, receipt, healthy: false };
+    components.markHealthy();
+    assert.equal(components.bootVerificationReceipt(paths, source).hit, true);
+    components.runtimeLaunchFailed(path.join(source, "ffmpeg.exe"), { code: 1 });
+    assert.equal(components.bootVerificationReceipt(paths, source).hit, true, "ordinary media errors must not invalidate the runtime");
+    components.runtimeLaunchFailed(path.join(root, "external.exe"), { code: "ENOENT" });
+    assert.equal(components.bootVerificationReceipt(paths, source).hit, true, "external executables are not part of the installation");
+    components.runtimeLaunchFailed(path.join(source, "ffmpeg.exe"), { code: "ENOENT" });
+    assert.equal(components.bootVerificationReceipt(paths, source).hit, false);
+    assert.equal(components.beginBoot(paths), true, "runtime failure forces full verification on the next launch");
+    global.__xiaoxiComponents = { paths, root: source, installedRoot: source, receipt, healthy: false };
+    components.markHealthy();
+    const failure = "previous candidate failed";
+    assert.equal(components.bootVerificationReceipt(paths, source, source, failure).hit, false);
+    components.saveSelection(paths, { failure });
+    global.__xiaoxiComponents = { paths, root: source, installedRoot: source,
+      receipt: components.bootVerificationReceipt(paths, source, source, failure), healthy: false };
+    components.markHealthy();
+    assert.equal(components.readJson(paths.selection).failure, failure, "rollback reason must remain available to the user");
+    assert.equal(components.bootVerificationReceipt(paths, source, source, failure).hit, true);
+    await fs.appendFile(path.join(source, "component-base.json"), " ");
+    assert.equal(components.bootVerificationReceipt(paths, source).hit, false, "even metadata changes invalidate a receipt");
+  } finally { delete global.__xiaoxiComponents; }
+});
+
 test("signed verification groups defer only unused runtimes and media, never startup code", async t => {
   const { root, source, base } = await fixture(t);
   const envelope = sign({ ...base.manifest, version: "1.1.1" });

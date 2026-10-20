@@ -272,10 +272,12 @@ function createWindow() {
       event.preventDefault();
     }
   });
-  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3) components.invalidateVerification();
     diagnostics().event("renderer", "load_failed", { error_code: errorCode, error: errorDescription, url: validatedUrl }, { level: "error", code: `load_${errorCode}` });
   });
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason !== "clean-exit") components.invalidateVerification();
     diagnostics().event("renderer", "process_gone", details, { level: "fatal", code: details.reason || "renderer_gone" });
   });
   mainWindow.on("unresponsive", () => diagnostics().event("renderer", "unresponsive", {}, { level: "error", code: "renderer_unresponsive" }));
@@ -646,6 +648,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return providerEnvironment;
       }
     });
+    for (const controller of [productDetailController, contentEngineController]) {
+      controller.onUpdate(state => {
+        if (["failed", "unavailable"].includes(state.state)
+            && /_(?:RUNTIME_(?:UNAVAILABLE|LINK_FAILED)|SPAWN_FAILED|EXITED|PIPE_FAILED|START_TIMEOUT)$/.test(state.code || "")) {
+          components.invalidateVerification();
+        }
+      });
+    }
     const officialMaterials = require('./official-materials-ipc.cjs').registerOfficialMaterials({
       ipcMain, getMainWindow: () => mainWindow, rootDir: runtime.rootDir,
       appDir: path.resolve(__dirname, '../..'), config: maintenanceConfig,

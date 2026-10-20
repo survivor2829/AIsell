@@ -6,7 +6,8 @@ const { promisify } = require('node:util');
 const { fail } = require('./digital-human-provider.cjs');
 async function run(...args) {
   await require('./component-paths.cjs').ensureRuntimeGroup('content');
-  return promisify(execFile)(...args);
+  try { return await promisify(execFile)(...args); }
+  catch (error) { require('./component-paths.cjs').runtimeLaunchFailed(args[0], error); throw error; }
 }
 const SPEAKER = /^S_[A-Za-z0-9_-]{1,128}$/u;
 const OPERATION = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;

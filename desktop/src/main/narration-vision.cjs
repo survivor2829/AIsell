@@ -8,7 +8,8 @@ const { promisify } = require('node:util');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
 async function run(...args) {
   await require('./component-paths.cjs').ensureRuntimeGroup('content');
-  return promisify(execFile)(...args);
+  try { return await promisify(execFile)(...args); }
+  catch (error) { require('./component-paths.cjs').runtimeLaunchFailed(args[0], error); throw error; }
 }
 const VERSION = 'face-layout-v3';
 const SAMPLE_FPS = 6;

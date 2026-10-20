@@ -4,7 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { registerContentMediaScheme } = require("./content-media-protocol.cjs");
 
-async function check(smoke = false, installedVersion = "1.1.2", selectedVersion = "1.1.3", useInstalled = false, failedBoot = false, missingBaseline = false) {
+async function check(smoke = false, installedVersion = "1.1.2", selectedVersion = "1.1.3", useInstalled = false, failedBoot = false, missingBaseline = false, cached = false, developmentProfile = false) {
   let ready = false, registrations = 0;
   let finish;
   const result = new Promise(resolve => { finish = resolve; });
@@ -18,12 +18,13 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
     quit: () => finish({ error: "unexpected quit" }), exit() {} };
   const roots = { directory: __dirname, selection: "selection" };
   const smokeProfile = path.join(__dirname, "isolated-release-profile");
-  const expectedProfile = smoke ? smokeProfile : path.join(__dirname, "xiaoxi-active-touch-delivery");
+  const expectedProfile = smoke || developmentProfile ? smokeProfile : path.join(__dirname, "xiaoxi-active-touch-delivery");
   const context = {}, savedSelections = [];
   const installedRoot = path.dirname(process.execPath);
   const candidateRoot = path.join(__dirname, "candidate");
   const paths = {
-    readJson: (file, fallback) => file === "selection" ? { active: "candidate" }
+    readJson: (file, fallback) => developmentProfile && file.endsWith("build-edition.json") ? { edition: "development" }
+      : file === "selection" ? { active: "candidate" }
       : file === path.join(installedRoot, "component-base.json") && !missingBaseline
         ? { schema: 2, verification: {}, files: [{}] } : fallback,
     updatePaths: userData => {
@@ -31,9 +32,10 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
       return roots;
     }, generationPath: (_paths, id, base) => id ? candidateRoot : base,
     beginBoot: () => failedBoot,
+    bootVerificationReceipt: () => ({ hit: cached }),
     createRuntimeVerification: () => ({}),
     verifySelected: async (_root, _installed, _config, options) => {
-      assert.equal(options.startupOnly, !failedBoot, "An unfinished boot requires complete verification");
+      assert.equal(options.cached, cached && !failedBoot, "An unfinished boot must not reuse its cached verification");
       assert.equal(useInstalled, false, "Superseded components must not fail the new install's base compatibility check");
       await new Promise(resolve => setImmediate(resolve));
       ready = true;
@@ -44,7 +46,7 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "bootstrap.cjs"), "utf8"), {
     __dirname, global: context, process: { argv: [], env: smoke ? {
       XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE: "1", XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR: smokeProfile
-    } : {}, execPath: process.execPath },
+    } : developmentProfile ? { XIAOXI_DEV_PROFILE_DIR: smokeProfile } : {}, execPath: process.execPath },
     require(id) {
       if (id === "electron") return { app, protocol, dialog: { showErrorBox: (_, message) => finish({ error: message }) } };
       if (id === "node:path") return path;
@@ -83,11 +85,15 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
   assert.equal(registrations, 1, "The loaded application must reuse the bootstrap registration");
   const stages = [];
   context.__xiaoxiStartupTiming.attach({ event: (_module, stage) => stages.push(stage) });
-  assert.deepEqual(stages, ['bootstrap_loaded', 'component_verification_started', 'component_verification_finished']);
+  assert.deepEqual(stages, ['bootstrap_loaded', 'component_verification_started',
+    cached && !failedBoot ? 'component_verification_cache_hit' : 'component_full_verification_completed', 'component_verification_finished']);
 }
 check().then(() => check(true)).then(() => check(false, "1.1.6", "1.1.5", true))
   .then(() => check(false, "1.1.2", "1.1.3", false, true))
   .then(() => check(false, "1.1.6", "1.1.6", true))
   .then(() => check(false, "1.1.6", "1.1.5", true, false, true))
+  .then(() => check(false, "1.1.2", "1.1.3", false, false, false, true))
+  .then(() => check(false, "1.1.2", "1.1.3", false, true, false, true))
+  .then(() => check(false, "1.1.2", "1.1.3", false, false, false, false, true))
   .then(() => console.log("bootstrap self-check passed: early media registration, isolated profile and full installer precedence"))
   .catch(error => { console.error(error); process.exitCode = 1; });

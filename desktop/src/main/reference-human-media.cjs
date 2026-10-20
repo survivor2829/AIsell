@@ -8,7 +8,8 @@ const { fail, safeLookup } = require('./digital-human-provider.cjs');
 const { limits } = require('../shared/reference-human.json');
 async function run(...args) {
   await require('./component-paths.cjs').ensureRuntimeGroup('content');
-  return promisify(execFile)(...args);
+  try { return await promisify(execFile)(...args); }
+  catch (error) { require('./component-paths.cjs').runtimeLaunchFailed(args[0], error); throw error; }
 }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 

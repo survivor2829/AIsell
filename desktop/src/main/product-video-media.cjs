@@ -10,7 +10,7 @@ async function run(binary, args, cwd) {
     let stdout = '', stderr = '';
     child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(-2_000_000); });
     child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-3000); });
-    child.on('error', reject);
+    child.on('error', error => { require('./component-paths.cjs').runtimeLaunchFailed(binary, error); reject(error); });
     child.on('close', (code) => code === 0 ? resolve(stdout) : reject(mediaError('product_video_media_failed', stderr || `媒体处理退出：${code}`)));
   });
 }
