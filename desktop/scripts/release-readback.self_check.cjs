@@ -24,7 +24,14 @@ async function main() {
     };
     const envelope = sign(manifest);
     const legacyEnvelope = sign({ ...manifest, version: "1.1.57", sequence: manifest.sequence - 1 });
-    const releaseEndpoint = (options = {}) => options.headers?.["X-Xiaoxi-Update-Protocol"] === "3" ? envelope : legacyEnvelope;
+    const releaseEndpoint = (options = {}) => {
+      if (options.headers?.["X-Xiaoxi-Update-Protocol"] !== "3") return legacyEnvelope;
+      // A bridge-aware server hides newer components from clients without a
+      // matching base or bridge capability, even at the target business version.
+      if (schema === 2 && options.headers["X-Xiaoxi-Bridge-Update"] !== "1"
+          && options.headers["X-Xiaoxi-Base-Fingerprint"] !== manifest.base.fingerprint) return { empty: true };
+      return envelope;
+    };
     assert.equal(releaseEndpoint(), legacyEnvelope, "legacy requests must read the retained transition release");
     let calls = 0;
     const request = async (route, options) => {
@@ -32,7 +39,9 @@ async function main() {
       assert.equal(route, `/v${schema}/releases/test/latest`);
       assert.equal(options.body, undefined, "readback must remain a GET without publication side effects");
       assert.equal(options.maxBytes, 256 * 1024);
-      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": manifest.version });
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": manifest.version,
+        ...(schema === 2 ? { "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Base-Version": manifest.base.version,
+          "X-Xiaoxi-Base-Fingerprint": manifest.base.fingerprint } : {}) });
       return releaseEndpoint(options);
     };
     const verified = await verifyPublishedRelease({ config, envelope, schema, request });

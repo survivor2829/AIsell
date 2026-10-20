@@ -15,7 +15,9 @@ async function verifyPublishedRelease({ config, envelope, schema, request }) {
     if (!request) transport = createTransport(config);
     const returned = await (request || transport.request)(route, {
       maxBytes: 256 * 1024,
-      headers: { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": expected.version }
+      headers: { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": expected.version,
+        ...(schema === 2 ? { "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Base-Version": expected.base.version,
+          "X-Xiaoxi-Base-Fingerprint": expected.base.fingerprint } : {}) }
     });
     const actual = verify(returned, config);
     if (returned.payload !== envelope.payload) {
