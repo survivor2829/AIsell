@@ -115,7 +115,11 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
   if (ack?.ok !== true || ack.version !== targetVersion || !checked) {
     await withRegistry(profile, async (registry, save) => {
       const current = registry.sets.find(set => set.id === id);
-      if (current) { current.confirmationFailure = dataCheck?.issues || [{ reason: "startup_or_data_confirmation_missing" }]; save(registry); }
+      if (current) {
+        current.confirmationFailure = dataCheck?.issues || [{ reason: "startup_or_data_confirmation_missing" }];
+        if (ack?.ok === true && ack.version === targetVersion) current.confirmationTarget = targetVersion;
+        save(registry);
+      }
     });
     throw Error("update_backup_confirmation_required");
   }
@@ -125,6 +129,7 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
     await verifySet(current);
     current.state = "confirmed"; current.confirmedAt = new Date().toISOString(); current.targetVersion = targetVersion;
     delete current.confirmationFailure;
+    delete current.confirmationTarget;
     // Prepared/failed sets may be the sole evidence for an interrupted update.
     // Only completed sets are retired automatically, never an unregistered path.
     // Old unclassified backups are historical candidates, never silently adopted.
@@ -134,16 +139,28 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
           && set.data.directory === current.data.directory && set.programBackup.program === current.programBackup.program)));
     for (const set of expired) set.state = "retiring";
     save(registry);
-    await retireSets(registry, save);
+    await retireSets(profile, registry, save);
     return current;
   });
 }
-async function retireSets(registry, save) {
+async function retireSets(profile, registry, save) {
     const before = registry.sets.length;
     const expired = registry.sets.filter(set => set.state === "retiring" && set.rotationPolicy === "latest-confirmed");
     const retained = registry.sets.filter(set => !expired.includes(set));
-    const protectedPaths = retained.flatMap(set => [set.data.directory, set.programBackup.program]);
+    const ready = [];
     for (const old of expired) {
+      try {
+        old.preservation = await require("./update-backup-preservation.cjs").preserveBackup(profile, old, retained, verifySet);
+        ready.push(old);
+      } catch (error) {
+        old.cleanupFailure = { stage: "preservation", code: error.code || error.message, at: new Date().toISOString() };
+      }
+    }
+    // Several sets may share one captured data/program directory. Preserve all
+    // of them before deleting any owner, and protect a set whose copy failed.
+    save(registry);
+    const protectedPaths = registry.sets.filter(set => !ready.includes(set)).flatMap(set => [set.data.directory, set.programBackup.program]);
+    for (const old of ready) {
       let complete = true;
       for (const owner of old.owners) {
         if (protectedPaths.some(file => contains(owner.directory, file))) continue;
@@ -163,7 +180,34 @@ async function retireSets(registry, save) {
 }
 async function retryRetiringBackups(profile) {
   if (!readRegistry(profile).sets.some(set => set.state === "retiring" && set.rotationPolicy === "latest-confirmed")) return 0;
-  return withRegistry(profile, retireSets);
+  return withRegistry(profile, (registry, save) => retireSets(profile, registry, save));
+}
+async function retryBackupMaintenance(profile, { version, runtimeRoot } = {}) {
+  // Only an acknowledged successful launch of this exact version may retry.
+  // Unknown/failed updates and older unclassified snapshots stay protected.
+  const acknowledged = set => {
+    if (!version) return false;
+    if (set.confirmationTarget === version) return true;
+    // A helper may have completed but lost the registry lock before confirmSet.
+    // Recover its durable job + ACK instead of stranding an unmarked snapshot.
+    try {
+      if (!/^[a-f0-9-]{36}$/.test(set.id)) return false;
+      const jobs = path.join(profile, "data/cloud-maintenance/components/jobs");
+      const read = suffix => JSON.parse(fs.readFileSync(path.join(jobs, set.id + suffix + ".json"), "utf8"));
+      const job = read(""), ack = read(".ack"), status = read(".status");
+      return job.id === set.id && job.targetVersion === version && ack.ok === true && ack.version === version
+        && status.phase === "complete" && job.programBackup?.program === set.programBackup.program;
+    } catch { return false; }
+  };
+  const pending = readRegistry(profile).sets.filter(set => set.state === "prepared"
+    && set.rotationPolicy === "latest-confirmed" && acknowledged(set));
+  for (const set of pending) {
+    try {
+      await confirmSet(profile, set.id, { targetVersion: version, ack: { ok: true, version },
+        dataCheck: await inspectPreservedData(profile, set.data, { runtimeRoot }) });
+    } catch (error) { console.warn(`Backup confirmation deferred: ${error.code || error.message}`); }
+  }
+  return retryRetiringBackups(profile);
 }
 // Startup is allowed to update databases and receipts. Require every previously
 // backed-up business file to remain present, instead of comparing mutable bytes.
@@ -268,4 +312,4 @@ async function inspectPreservedData(profile, data, options = {}) {
   return { ok: true, issues: [] };
 }
 async function checkPreservedData(profile, data, options) { return (await inspectPreservedData(profile, data, options)).ok; }
-module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData, inspectPreservedData, retryRetiringBackups };
+module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData, inspectPreservedData, retryRetiringBackups, retryBackupMaintenance };

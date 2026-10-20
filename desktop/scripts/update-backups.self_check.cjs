@@ -3,7 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { backupProgram } = require("../src/main/update-program-backup.cjs");
-const { captureData, registerSet, confirmSet, readRegistry, checkPreservedData, reusableProgram, dataInventory } = require("../src/main/update-backups.cjs");
+const { captureData, registerSet, confirmSet, readRegistry, checkPreservedData, reusableProgram, dataInventory, retryBackupMaintenance, withRegistry } = require("../src/main/update-backups.cjs");
 const { backupFilter, copyBytes, updateFailure, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
 const { fork } = require("node:child_process");
 
@@ -175,6 +175,12 @@ if (process.argv[2] === "--hold-registry") {
     const unfinished = await make();
     await confirm(third);
     await assert.rejects(fs.stat(second.data.directory), { code: "ENOENT" });
+    const preservedRoot = path.join(profile, "data/cloud-maintenance/preserved-backup-data");
+    const preserved = JSON.parse(await fs.readFile(path.join(preservedRoot, second.id + ".json"), "utf8"));
+    const oldDatabase = preserved.preserved.find(file => file.path === database);
+    assert.ok(oldDatabase, "retiring an old snapshot must first preserve its distinct database bytes");
+    assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database");
+    assert.ok(preserved.preserved.some(file => file.link === outside), "preserve external link identity without copying its target");
     await assert.rejects(fs.stat(path.dirname(second.programBackup.program)), { code: "ENOENT" });
     assert.ok(readRegistry(profile).sets.some(set => set.id === unfinished.id && set.state === "prepared"), "unconfirmed failure evidence stays protected");
     assert.equal(await fs.readFile(path.join(outside, "source.mp4"), "utf8"), "unique source material", "owned backup cleanup unlinks junctions without traversing original materials");
@@ -221,6 +227,53 @@ if (process.argv[2] === "--hold-registry") {
     await confirm(nextAutomatic);
     assert.ok(readRegistry(profile).sets.some(set => set.id === pinned.id && set.rotationPolicy === "pinned"),
       "Explicit independent backups survive automatic rotation");
+    // Confirmation failure is durable and retried only for its acknowledged version.
+    const pending = await make();
+    await assert.rejects(confirmSet(profile, pending.id, { targetVersion: "1.1.80", ack: { ok: true, version: "1.1.80" },
+      dataCheck: { ok: false, issues: [{ reason: "database_locked" }] } }), /confirmation_required/);
+    await retryBackupMaintenance(profile, { version: "1.1.79" });
+    assert.equal(readRegistry(profile).sets.find(set => set.id === pending.id).state, "prepared");
+    await retryBackupMaintenance(profile, { version: "1.1.80" });
+    assert.equal(readRegistry(profile).sets.find(set => set.id === pending.id).state, "confirmed");
+    assert.equal(readRegistry(profile).sets.filter(set => set.rotationPolicy === "latest-confirmed" && set.state === "confirmed").length, 1);
+    assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database", "later updates cannot rotate unique historical data");
+    const lostConfirmation = await make();
+    const jobs = path.join(profile, "data/cloud-maintenance/components/jobs");
+    await fs.mkdir(jobs, { recursive: true });
+    for (const [suffix, value] of Object.entries({
+      "": { id: lostConfirmation.id, targetVersion: "1.1.81", programBackup: lostConfirmation.programBackup },
+      ".ack": { ok: true, version: "1.1.81" }, ".status": { phase: "complete" }
+    })) await fs.writeFile(path.join(jobs, lostConfirmation.id + suffix + ".json"), JSON.stringify(value));
+    await retryBackupMaintenance(profile, { version: "1.1.81" });
+    assert.equal(readRegistry(profile).sets.find(set => set.id === lostConfirmation.id).state, "confirmed",
+      "helper lock conflict before confirmSet must recover from its completed job and startup ACK");
+    // Model two snapshots sharing storage after an earlier deletion was blocked.
+    await fs.writeFile(path.join(profile, "license.enc"), "shared older authorization");
+    await fs.writeFile(path.join(program, "app.asar"), "shared older program");
+    const sharedA = await make(), sharedB = await make();
+    assert.equal(sharedA.data.directory, sharedB.data.directory);
+    await withRegistry(profile, async (registry, save) => {
+      for (const set of registry.sets.filter(set => [sharedA.id, sharedB.id].includes(set.id))) set.state = "confirmed";
+      save(registry);
+    });
+    await fs.writeFile(path.join(profile, "license.enc"), "new authorization");
+    await fs.writeFile(path.join(program, "app.asar"), "new program");
+    const newest = await make(), originalRemove = fs.rm;
+    fs.rm = async (...args) => {
+      if (path.basename(args[0]).startsWith(".discard-")) throw Object.assign(Error("fixture busy"), { code: "EBUSY" });
+      return originalRemove(...args);
+    };
+    try { await confirm(newest); } finally { fs.rm = originalRemove; }
+    assert.ok(readRegistry(profile).sets.some(set => set.id === sharedB.id && set.state === "retiring"));
+    await retryBackupMaintenance(profile, { version: "1.1.79" });
+    assert.equal(readRegistry(profile).sets.some(set => [sharedA.id, sharedB.id].includes(set.id)), false,
+      "all shared snapshots must be preserved before removing their common owner, including quarantine retries");
+    for (const set of [sharedA, sharedB]) {
+      const saved = JSON.parse(await fs.readFile(path.join(preservedRoot, set.id + ".json"), "utf8"));
+      const authorization = saved.preserved.find(file => file.path === "license.enc");
+      assert.equal(await fs.readFile(path.join(preservedRoot, "objects", authorization.sha256), "utf8"), "shared older authorization");
+    }
+    assert.equal(readRegistry(profile).sets.filter(set => set.rotationPolicy === "latest-confirmed" && set.state === "confirmed").length, 1);
     console.log("Update backup governance self-check passed.");
   } finally {
     assert.equal(path.dirname(root), parent);

@@ -180,6 +180,20 @@ test("superseded prepared updates do not accumulate complete programs and archiv
   const duplicate = createComponentStore({ rootDir, baseRoot: source, config, transport: {} });
   await assert.rejects(duplicate.prepare(sign(base.manifest)), /component_prepare_busy/);
   await inflight;
+  const deferred = path.join(rootDir, "deferred-owned"), historical = path.join(rootDir, "unknown-history");
+  await fs.mkdir(deferred); await fs.mkdir(historical);
+  const physical = require("node:fs"), remove = physical.rmSync;
+  physical.rmSync = (file, ...args) => {
+    if (file === deferred) throw Object.assign(Error("fixture occupied"), { code: "EBUSY" });
+    return remove(file, ...args);
+  };
+  try { require("../src/shared/artifact-retention.cjs").retainArtifacts(rootDir, "deferred-fixture", [], 1, [deferred]); }
+  finally { physical.rmSync = remove; }
+  await fs.access(deferred);
+  const profile = path.join(root, "idle-profile"); await fs.mkdir(profile);
+  await require("../src/main/update-retention.cjs").retainComponentArtifacts(rootDir, null, { profile, version: "1.1.4" });
+  await assert.rejects(fs.stat(deferred), { code: "ENOENT" }, "healthy-start worker retries component cleanup even without a retired full backup");
+  await fs.access(historical);
 });
 
 test("local acceptance backs up the active application and business data without historical runtime copies", async t => {
