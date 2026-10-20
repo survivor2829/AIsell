@@ -53,7 +53,14 @@ def promote(envelope_path, incoming_dir, root="/var/lib/ai-maintenance"):
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise ValueError("full_fallback_missing") from error
         digest = full.get("sha256", "")
-        if (full.get("schema") != 1 or full.get("version") != manifest["version"]
+        bridge = full.get("componentBase") or {}
+        compatible_bridge = (bridge.get("updateProtocol") == 4
+                             and bridge.get("version") == manifest.get("base", {}).get("version")
+                             and bridge.get("fingerprint") == manifest.get("base", {}).get("fingerprint")
+                             and bridge.get("dataSchema") == manifest.get("dataSchema")
+                             and VERSION.fullmatch(str(full.get("version", "")))
+                             and tuple(map(int, full["version"].split("."))) < tuple(map(int, manifest["version"].split("."))))
+        if (full.get("schema") != 1 or (full.get("version") != manifest["version"] and not compatible_bridge)
                 or full.get("appId") != manifest["appId"] or full.get("channel") != channel
                 or full.get("platform") != "win32" or full.get("arch") != "x64"
                 or not HEX.fullmatch(digest) or full.get("file") != f"/artifacts/{digest}.exe"):

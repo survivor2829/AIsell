@@ -352,6 +352,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
   });
 
   app.whenReady().then(async () => {
+    // Local examples are verified when requested, not before the login window.
+    // The callback is installed before loadFile and also covers video Range loads.
+    if (global.__xiaoxiComponents?.verification) session.defaultSession.webRequest.onBeforeRequest(
+      { urls: ["file://*/*"] }, (details, callback) => {
+        Promise.resolve().then(() => global.__xiaoxiComponents.verification.media(require("node:url").fileURLToPath(details.url)))
+          .then(() => callback({ cancel: false }), () => callback({ cancel: true }));
+      });
     let runtime;
     try {
       if (productDetailReleaseSmokeMode || developmentEdition && process.env.XIAOXI_DEV_PROFILE_DIR) {
@@ -499,7 +506,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     };
     coordinator.initialize();
     productDetailController = createProductDetailSidecar({
-      beforeStart: waitForProviderSession,
+      beforeStart: async () => {
+        // Detail rendering also uses the content engine's bundled browser.
+        await Promise.all([components.ensureRuntimeGroup("detail"), components.ensureRuntimeGroup("content")]);
+        await waitForProviderSession();
+      },
       runtimePath: productDetailRuntimePath(),
       runtimeArgs: app.isPackaged ? [] : developmentProductDetailLaunch.runtimeArgs,
       dataDir: productDetailDataDir,
@@ -578,7 +589,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     let contentProviderConfiguration = "";
     const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
-      beforeStart: waitForProviderSession,
+      beforeStart: async () => { await components.ensureRuntimeGroup("content"); await waitForProviderSession(); },
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
       dataDir: contentEngineDataDir,
@@ -680,7 +691,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       shell,
       getMainWindow: () => mainWindow
     });
-    contentEngineController.start().catch(() => undefined);
+    // Requests call ensureReady themselves. Opening the login page must not
+    // start or verify the browser/media runtime before a feature needs it.
     keywordAcquisitionRegistration = registerKeywordAcquisitionIpc({
       ipcMain, BrowserWindow, session, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "keyword_acquisition"),
@@ -921,7 +933,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     const readyWindow = mainWindow;
     Promise.resolve(readyWindow.__xiaoxiLoaded).then(() => readyWindow.webContents.executeJavaScript(
       "new Promise(resolve => { const until = Date.now() + 15000; const check = () => { if (document.getElementById('root')?.childElementCount) resolve(true); else if (Date.now() > until) resolve(false); else setTimeout(check, 100); }; check(); })"
-    )).then(ready => { if (ready) { components.markHealthy(); cloudMaintenance?.refreshLocalState(); } }).catch(() => {});
+    )).then(async ready => {
+      if (!ready) return;
+      components.markHealthy(); cloudMaintenance?.refreshLocalState();
+      // Retry only previously registered retirement, after the real page works.
+      // Unclassified historical backups and current/candidate versions stay protected.
+      if (app.isPackaged && await require("./update-backups.cjs").retryRetiringBackups(app.getPath("userData"))) {
+        await require("./update-retention.cjs").retainComponentArtifacts(components.updatePaths(app.getPath("userData")).directory);
+      }
+    }).catch(error => logger.event("app", "startup_housekeeping_deferred", { code: error.code || "housekeeping_failed" }));
 
     app.on("activate", () => {
       if (!mainWindow) createWindow();

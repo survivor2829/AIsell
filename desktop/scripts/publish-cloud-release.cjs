@@ -33,7 +33,8 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     schema: 1, appId, channel: smoke ? "smoke" : config.channel,
     platform: "win32", arch: "x64", version: metadata.version,
     sequence: Date.now(), sha256, size, file: `/artifacts/${sha256}.exe`,
-    publishedAt: new Date().toISOString(), notes
+    publishedAt: new Date().toISOString(), notes,
+    ...(metadata.componentBase ? { componentBase: metadata.componentBase } : {})
   };
   const payload = JSON.stringify(manifest);
   if (!smoke) assertUpgradePaths(manifest, manifest);

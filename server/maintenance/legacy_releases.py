@@ -30,6 +30,8 @@ def version(value):
 
 
 def modern_request(headers):
+    if headers.get("X-Xiaoxi-Bridge-Update") not in (None, "1"):
+        raise ValueError("update_capability_invalid")
     values = [headers.get(name) for name in HEADERS]
     if all(value is None for value in values):
         return False
@@ -163,7 +165,19 @@ class LegacyReleaseRouter:
         config = folder / "legacy-routing.json"
         if modern or (not config.exists() and not config.is_symlink()):
             file = folder / ("latest-components.json" if protocol == "2" else "latest.json")
-            return read_document(file) if file.exists() else {"empty": True}
+            envelope = read_document(file) if file.exists() else {"empty": True}
+            # Protocol-3 clients cannot use an older full installer as a bridge.
+            # Hide incompatible components for them so their existing full-update
+            # branch reaches the new base first. Never rewrite signed envelopes.
+            if modern and protocol == "2" and not envelope.get("empty") and headers.get("X-Xiaoxi-Bridge-Update") != "1":
+                components = json.loads(envelope["payload"])
+                full_file = folder / "latest.json"
+                full = json.loads(read_document(full_file)["payload"]) if full_file.exists() else {}
+                bridge = full.get("componentBase") or {}
+                if (bridge.get("updateProtocol") == 4 and version(full["version"]) < version(components["version"])
+                        and headers.get("X-Xiaoxi-Base-Fingerprint") != components.get("base", {}).get("fingerprint")):
+                    return {"empty": True}
+            return envelope
         public_key = folder / "signing-public.pem"
         with self.lock:
             stamp = tuple((file.stat().st_ino, file.stat().st_mtime_ns, file.stat().st_size) for file in (config, public_key))

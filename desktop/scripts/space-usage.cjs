@@ -75,7 +75,23 @@ function startSpaceRun(operation, roots = [path.join(desktop, '.build'), path.re
   return {
     reportFile,
     observe,
+    preflight(parts) {
+      const volumes = new Map();
+      for (const part of parts) {
+        if (!Number.isSafeInteger(part.bytes) || part.bytes < 0) throw Error("build_space_estimate_invalid");
+        let existing = path.resolve(part.path);
+        while (!fs.existsSync(existing)) existing = path.dirname(existing);
+        const disk = fs.statfsSync(existing), id = String(fs.statSync(existing).dev);
+        const row = volumes.get(id) || { path: path.parse(existing).root, requiredBytes: 0, freeBytes: disk.bavail * disk.bsize };
+        row.requiredBytes += part.bytes; volumes.set(id, row);
+      }
+      record.capacityPlan = [...volumes.values()].map(row => ({ ...row,
+        requiredBytes: row.requiredBytes + Math.max(64 * 1024 ** 2, Math.ceil(row.requiredBytes * 0.05)) }));
+      save();
+      if (record.capacityPlan.some(row => row.freeBytes < row.requiredBytes)) throw Error("build_disk_space_insufficient");
+    },
     recordUploads(bytes, files) { record.uploads = { successfulFileBytes: bytes, files, includesProtocolOverhead: false }; },
+    recordDownloads(bytes) { record.localDownloadBytes = bytes ?? null; },
     ownTemporary(root) {
       roots.push(root); record.ownedTemporaryPaths.push(root);
       try { save(); } catch { /* Observation failure must not change the build. */ }
@@ -87,6 +103,14 @@ function startSpaceRun(operation, roots = [path.join(desktop, '.build'), path.re
         record.elapsedMs = performance.now() - started;
         record.observedPeakBytes = Math.max(0, ...record.samples.map(row => row.bytes));
         record.netChangeBytes = record.samples.length > 1 ? record.samples.at(-1).bytes - record.samples[0].bytes : null;
+        record.volumeChanges = (record.samples[0]?.volumes || []).map(first => {
+          const last = record.samples.at(-1).volumes.find(row => row.path === first.path);
+          return { path: first.path, freeBefore: first.freeBytes, freeAfter: last?.freeBytes,
+            freeChangeBytes: first.freeBytes != null && last?.freeBytes != null ? last.freeBytes - first.freeBytes : null,
+            attribution: "Whole-volume observation includes unrelated applications; not all change belongs to this task." };
+        });
+        record.temporaryArtifacts = record.ownedTemporaryPaths.map(root => ({ path: root,
+          retained: fs.existsSync(root), reason: fs.existsSync(root) ? "Retained evidence or pending cleanup; inspect owner before removal." : "Reclaimed" }));
         record.incomplete = record.failedStages.length > 0 || record.samples.some(row => row.directories.some(dir => dir.errors > 0));
         save();
         // These are our small generated measurement reports, not release/rollback artifacts.

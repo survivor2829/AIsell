@@ -57,12 +57,23 @@ async function verifyFiles(root, files) {
   await Promise.all(Array.from({ length: Math.min(4, files.length) }, () => worker()));
   if (failure) throw failure;
 }
-async function verifyGeneration(root, files) {
+async function verifyGeneration(root, files, group) {
   validateFiles(files);
-  const expected = new Set([...files.map(f => f.path), "component-base.json", "component-complete.json"]);
+  const { groupForPath } = require("../shared/component-verification.cjs");
+  const selected = group ? files.filter(file => groupForPath(file.path) === group) : files;
+  const expected = new Set([...selected.map(f => f.path), "component-base.json", "component-complete.json"]);
+  const directories = new Set();
+  for (const file of selected) {
+    let parent = path.posix.dirname(file.path);
+    while (parent !== ".") { directories.add(parent); parent = path.posix.dirname(parent); }
+  }
   async function walk(directory, prefix = "") {
     for (const entry of await fsp.readdir(directory, { withFileTypes: true })) {
       const relative = prefix + entry.name;
+      if (group && entry.isDirectory() && !directories.has(relative)
+          && (group !== "startup" || groupForPath(relative + "/") !== "startup")) continue;
+      if (group && !entry.isDirectory() && !["component-base.json", "component-complete.json"].includes(relative)
+          && groupForPath(relative) !== group) continue;
       if (entry.isSymbolicLink()) fail("component_symlink_forbidden");
       if (entry.isDirectory()) await walk(path.join(directory, entry.name), relative + "/");
       else if (!entry.isFile() || !expected.delete(relative)) fail("component_generation_invalid");
@@ -70,7 +81,7 @@ async function verifyGeneration(root, files) {
   }
   await walk(root);
   if (expected.size) fail("component_generation_invalid");
-  await verifyFiles(root, files);
+  await verifyFiles(root, selected);
 }
 function inspectZip(buffer, expectedCount) {
   // JSZip normalizes paths and collapses duplicate central-directory names.
@@ -195,6 +206,7 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
         assertCompatible(manifest, full); validateFiles(full.files);
         if (full.files.some(f => !["base", ...COMPONENTS].includes(f.component))) fail("component_generation_invalid");
         for (const name of COMPONENTS) if (treeHash(full.files.filter(f => f.component === name)) !== manifest.components[name].treeSha256) fail("component_generation_invalid");
+        if (manifest.verification) require("../shared/component-verification.cjs").validatePolicy(manifest.verification, full.files);
         await verifyGeneration(finalRoot, full.files);
         await retainComponentArtifacts(rootDir, envelope, { ready: true });
         return { generationRoot: finalRoot, version: manifest.version, envelope, downloadedBytes: 0, totalBytes: 0 };
@@ -255,7 +267,9 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
       }
       validateFiles(targetFiles);
       await verifyFiles(staging, targetFiles);
-      const full = { schema: 2, base: baseline.base, dataSchema: manifest.dataSchema, files: targetFiles, components: descriptors };
+      if (manifest.verification) require("../shared/component-verification.cjs").validatePolicy(manifest.verification, targetFiles);
+      const full = { schema: 2, base: baseline.base, dataSchema: manifest.dataSchema, files: targetFiles, components: descriptors,
+        ...(manifest.verification ? { verification: manifest.verification } : {}) };
       await fsp.writeFile(path.join(staging, "component-base.json"), JSON.stringify(full), { flag: "wx" });
       await fsp.writeFile(path.join(staging, "component-complete.json.tmp"), JSON.stringify(envelope), { flag: "wx" });
       await fsp.rename(path.join(staging, "component-complete.json.tmp"), path.join(staging, "component-complete.json"));

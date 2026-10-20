@@ -61,7 +61,7 @@ async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
       transport: { async request(route, options = {}) {
         requests.push(route);
         if (route.endsWith("/latest")) assert.deepEqual(options.headers, {
-          "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": "1.1.0",
+          "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Version": "1.1.0",
           "X-Xiaoxi-Base-Version": "1.1.0", "X-Xiaoxi-Base-Fingerprint": "0".repeat(64)
         }, "Both release routes expose the exact installed base without customer identifiers");
         else assert.equal(options.headers, undefined, "Release capability headers do not leak to artifact requests");
@@ -92,6 +92,31 @@ async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
       assert.equal(controller.status().unreadAnnouncements, 0);
     } finally { controller.stop(); }
   }
+  const bridgeRoot = path.join(rootDir, "bridge-restart");
+  const bridge = { ...manifest, version: "1.2.0", sequence: 21,
+    componentBase: { version: "1.2.0", fingerprint: "1".repeat(64), dataSchema: 1, updateProtocol: 4 } };
+  const target = { schema: 2, appId: config.appId, channel: config.channel, platform: "win32", arch: "x64",
+    version: "1.3.0", sequence: 22, notes: "Final component target", dataSchema: 1,
+    base: { version: "1.2.0", fingerprint: "1".repeat(64) }, minBaseVersion: "1.2.0",
+    components: Object.fromEntries(COMPONENTS.map(name => [name, { name, sha256: manifest.sha256, treeSha256: manifest.sha256,
+      file: `/components/${manifest.sha256}.zip`, size: bytes.length, expandedSize: bytes.length, fileCount: 1 }])) };
+  const create = () => createCloudMaintenance({ rootDir: bridgeRoot, componentBaseRoot: baseRoot, config,
+    version: "1.1.0", canInstall: () => true, transport: {
+      async request(route, options = {}) {
+        if (route.startsWith("/v2/")) return sign(target);
+        if (route.startsWith("/v1/")) return sign(bridge);
+        fs.writeFileSync(options.destination, bytes); options.onProgress(bytes.length); return { size: bytes.length };
+      }, close() {}
+    } });
+  let controller = create();
+  try {
+    await controller.check();
+    assert.equal((await controller.prepareInstall()).finalTargetVersion, "1.3.0");
+    controller.stop(); controller = create();
+    const prepared = await controller.prepareInstall();
+    assert.equal(prepared.version, "1.2.0");
+    assert.equal(prepared.finalTargetVersion, "1.3.0", "A restart preserves the signed final target after the base upgrade");
+  } finally { controller.stop(); }
 }
 
 async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
@@ -343,7 +368,7 @@ async function main() {
   const transport = { async request(route, options = {}) {
     if (offline) throw new Error("offline");
     if (route.endsWith("latest")) {
-      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": "1.0.0" });
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Version": "1.0.0" });
       return latest;
     }
     if (route === "/v1/reports") { posts.push(options.body); return { accepted: options.body.entries.map((entry) => entry.id) }; }

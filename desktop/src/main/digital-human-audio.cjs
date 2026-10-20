@@ -9,7 +9,8 @@ const { videoEncoderArgs } = require('./product-video-media.cjs');
 const VOICE_IDS = Object.freeze({ natural_female: 'Cherry', steady_male: 'Ethan', lively: 'Serena' });
 const MAX_TAIL_SECONDS = .9;
 const RATE = 16000;
-function run(binary, args, { binaryOutput = false, cwd, maxOutputBytes = 8 * 1024 * 1024 } = {}) {
+async function run(binary, args, { binaryOutput = false, cwd, maxOutputBytes = 8 * 1024 * 1024 } = {}) {
+  await require('./component-paths.cjs').ensureRuntimeGroup('content');
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20 * 60_000 });
     const buffers = []; let bytes = 0, error = '';

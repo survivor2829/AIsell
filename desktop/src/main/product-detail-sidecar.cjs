@@ -538,7 +538,11 @@ function createProductDetailSidecar(options = {}) {
       .then(async (stopped) => {
         if (stopped?.state && stopped.state !== "stopped") return stopped;
         if (currentRun && !currentRun.closed) return status();
-        await options.beforeStart?.();
+        try { await options.beforeStart?.(); }
+        catch (error) {
+          if (!/^component_/.test(error.code || error.message || "")) throw error;
+          return setTerminalState("failed", "PRODUCT_DETAIL_RUNTIME_UNAVAILABLE");
+        }
         return beginStart();
       })
       .finally(() => {

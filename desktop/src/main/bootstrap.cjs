@@ -1,7 +1,7 @@
 const { app, dialog, protocol } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
-const { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection } = require("./component-paths.cjs");
+const { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection, createRuntimeVerification, beginBoot } = require("./component-paths.cjs");
 const { registerContentMediaScheme } = require("./content-media-scheme.cjs");
 const { compareVersions } = require("../shared/cloud-contract.cjs");
 const { verifyComponentManifest } = require("../shared/component-contract.cjs");
@@ -38,6 +38,7 @@ async function boot() {
   // never roll back the candidate that the first process is still starting.
   if (!smoke && !app.requestSingleInstanceLock()) { app.quit(); return; }
   global.__xiaoxiStableLock = true;
+  const previousBootIncomplete = beginBoot(paths);
   const installedRoot = path.dirname(process.execPath);
   const config = require("./cloud-config.cjs").cloudConfig({ developmentEdition: development });
   let selection = readJson(paths.selection, {});
@@ -54,7 +55,7 @@ async function boot() {
         root = installedRoot;
         break;
       }
-      manifest = await verifySelected(root, installedRoot, config);
+      manifest = await verifySelected(root, installedRoot, config, { startupOnly: !selection.pending && !selection.failure && !previousBootIncomplete });
       break;
     }
     catch {
@@ -62,12 +63,24 @@ async function boot() {
       root = generationPath(paths, selection.active, installedRoot);
     }
   }
+  let installedVerification;
+  if (!manifest) {
+    const baseline = readJson(path.join(installedRoot, "component-base.json"));
+    if (baseline?.verification) {
+      const { validatePolicy, groupForPath } = require("../shared/component-verification.cjs");
+      validatePolicy(baseline.verification, baseline.files);
+      await require("./component-store.cjs").verifyFiles(installedRoot, selection.pending || selection.failure || previousBootIncomplete
+        ? baseline.files : baseline.files.filter(file => groupForPath(file.path) === "startup"));
+      installedVerification = createRuntimeVerification(installedRoot, baseline, Boolean(selection.pending || selection.failure || previousBootIncomplete), true);
+    }
+  }
   startupTiming.mark("component_verification_finished");
   if (selection.pending) saveSelection(paths, { ...selection, pending: { ...selection.pending, attempted: true } });
   const applicationRoot = path.join(root, "resources", "app");
   const version = manifest?.version || app.getVersion();
   global.__xiaoxiComponents = { root, installedRoot, resourcesRoot: path.join(root, "resources"), applicationRoot,
-    version, notes: manifest?.notes || selection.pending?.notes || "", id: selection.active || null, paths, healthy: false };
+    version, notes: manifest?.notes || selection.pending?.notes || "", id: selection.active || null, paths, healthy: false,
+    verification: manifest ? createRuntimeVerification(root, manifest, Boolean(selection.pending || selection.failure || previousBootIncomplete)) : installedVerification };
   if (!fs.existsSync(path.join(applicationRoot, "src/main/main.cjs"))) throw Error("component_application_missing");
   require(path.join(applicationRoot, "src/main/main.cjs"));
 }

@@ -23,6 +23,7 @@ async function main(args = process.argv.slice(2)) {
       ? await require("./publish-cloud-release.cjs").publish(request.options)
       : await require("./publish-component-release.cjs").publishComponentRelease(request.options);
     space.recordUploads(result.uploadedFileBytes, result.uploadedFiles);
+    space.recordDownloads(result.downloadedFileBytes);
     console.log(result);
     space.observe("publication-readback-complete");
     space.finish("completed");

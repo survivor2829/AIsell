@@ -39,13 +39,15 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
   const inbox = safePath(root, ".artifact-retention-requests");
   let fd;
   try {
-    if (!/^[a-z0-9-]+$/i.test(category) || !Number.isInteger(keep) || keep < 1) throw new Error("Invalid retention policy");
+    if (category !== null && !/^[a-z0-9-]+$/i.test(category) || !Number.isInteger(keep) || keep < 1) throw new Error("Invalid retention policy");
     const relativePaths = values => values.map(t => path.relative(root, safePath(root, t)));
     fs.mkdirSync(inbox, { recursive: true });
-    const receipt = path.join(inbox, `${Date.now()}-${crypto.randomUUID()}.json`);
-    const temporaryReceipt = `${receipt}.tmp`;
-    fs.writeFileSync(temporaryReceipt, JSON.stringify({ category, refs: relativePaths(targets), owned: relativePaths(owned), keep }));
-    fs.renameSync(temporaryReceipt, receipt);
+    if (category !== null) {
+      const receipt = path.join(inbox, `${Date.now()}-${crypto.randomUUID()}.json`);
+      const temporaryReceipt = `${receipt}.tmp`;
+      fs.writeFileSync(temporaryReceipt, JSON.stringify({ category, refs: relativePaths(targets), owned: relativePaths(owned), keep }));
+      fs.renameSync(temporaryReceipt, receipt);
+    }
     // A deferred request stays in the inbox, including after a process crash.
     for (let attempt = 0; attempt < 30; attempt++) {
       try {
@@ -117,4 +119,7 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
     if (fd !== undefined) { fs.closeSync(fd); fs.unlinkSync(lock); }
   }
 }
-module.exports = { retainArtifacts, removeOwned, safePath };
+function retryArtifacts(root) {
+  if (fs.existsSync(path.join(root, ".artifact-retention.json"))) retainArtifacts(root, null, [], 1, []);
+}
+module.exports = { retainArtifacts, removeOwned, safePath, retryArtifacts };

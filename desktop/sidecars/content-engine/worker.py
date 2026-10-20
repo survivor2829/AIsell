@@ -38,7 +38,11 @@ def main(argv=None) -> int:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    args = parse_args(argv)
+    arguments = sys.argv[1:] if argv is None else argv
+    if len(arguments) == 4 and arguments[0] == "--check-update-database":
+        from content_engine.update_data_check import main as check_database
+        return check_database(arguments[1:])
+    args = parse_args(arguments)
     try:
         data_dir = validate_data_dir(args.data_dir)
         service = ContentEngineService(data_dir)

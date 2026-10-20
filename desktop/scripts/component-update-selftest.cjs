@@ -28,6 +28,7 @@ async function fixture(t) {
     "debug.log": "runtime-created Chromium log",
     "resources/app/node_modules/native/index.node": "stable native",
     "resources/app/src/main/main.cjs": "application v1",
+    "resources/app/dist/video-examples/sample.mp4": "offline sample",
     "resources/content-engine/content-engine-worker.exe": "python owncode v1",
     "resources/product-detail/product-detail-server.exe": "product owncode v1",
     "resources/content-engine/remotion-bundle/index.js": "remotion owncode v1",
@@ -42,6 +43,29 @@ async function fixture(t) {
   await fs.writeFile(path.join(source, "component-base.json"), JSON.stringify(base.baseline));
   return { root, source, base };
 }
+
+test("signed verification groups defer only unused runtimes and media, never startup code", async t => {
+  const { root, source, base } = await fixture(t);
+  const envelope = sign({ ...base.manifest, version: "1.1.1" });
+  const store = createComponentStore({ rootDir: path.join(root, "groups"), baseRoot: source, config, transport: { request() { assert.fail("no downloads"); } } });
+  const prepared = await store.prepare(envelope);
+  const { verifySelected, createRuntimeVerification } = require("../src/main/component-paths.cjs");
+  const runtime = path.join(prepared.generationRoot, "resources/content-engine/content-engine-worker.exe");
+  await fs.writeFile(runtime, "corrupt runtime");
+  const manifest = await verifySelected(prepared.generationRoot, source, config, { startupOnly: true });
+  const verification = createRuntimeVerification(prepared.generationRoot, manifest);
+  await assert.rejects(verification.ensure("content"), /corrupt/);
+  await assert.rejects(verifySelected(prepared.generationRoot, source, config), /corrupt/);
+  const media = path.join(prepared.generationRoot, "resources/app/dist/video-examples/sample.mp4");
+  await fs.writeFile(media, "corrupt sample");
+  await assert.rejects(verification.media(media), /corrupt/);
+  const extra = path.join(prepared.generationRoot, "resources/app/src/main/unlisted.cjs");
+  await fs.writeFile(extra, "unlisted code");
+  await assert.rejects(verifySelected(prepared.generationRoot, source, config, { startupOnly: true }), /generation_invalid/);
+  await fs.unlink(extra);
+  await fs.writeFile(path.join(prepared.generationRoot, "resources/app/src/main/main.cjs"), "application v2");
+  await assert.rejects(verifySelected(prepared.generationRoot, source, config, { startupOnly: true }), /corrupt/);
+});
 
 test("startup verification checks shared parents once but rehashes files on each launch", async t => {
   const { root, source, base } = await fixture(t);
@@ -133,6 +157,11 @@ test("local acceptance backs up the active application and business data without
   await fs.writeFile(path.join(profile, "费用回执.json"), "retained receipt bytes");
   await fs.mkdir(path.join(outputRoot, "unmanaged-history"), { recursive: true });
   const { backupLocalInstall } = require("./backup-local-install.cjs");
+  for (let round = 0; round < 2; round++) {
+    const acceptance = await backupLocalInstall({ program: source, profile, outputRoot, purpose: "acceptance", updateKind: "components" });
+    assert.equal(acceptance.copiedBytes, 0, "Component acceptance uses selection rollback, not a full data copy");
+  }
+  assert.deepEqual(await fs.readdir(outputRoot), ["unmanaged-history"]);
   const snapshots = [];
   for (let index = 0; index < 3; index++) {
     snapshots.push(await backupLocalInstall({ program: source, profile, outputRoot }));

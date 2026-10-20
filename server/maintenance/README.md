@@ -49,6 +49,8 @@ JSON 请求上限 64 KiB；当前全局每分钟 300 次、单地址每分钟 60
 
 部署时需将 `service.py`、`feedback.py`、`materials.py`、`tutorials.py`、`tutorials-admin.js`、`admin.html`、`promote.py`、`promote_components.py` 和安装/升级脚本作为同一版本复制。只更新主脚本会导致启动失败。既有服务器先备份 SQLite，再替换同版本程序文件并重启 `ai-maintenance`；启动会在原库中追加反馈字段及索引，保留旧诊断、issues 和发布文件。初次部署沿用 `install.sh <server-ip>`，不新增公网后台端口。
 
+启动策略升级候选另涉及 `legacy_releases.py`：支持带签名 `componentBase.updateProtocol=4` 的完整底座桥接包、旧客户端先升级底座的路由，以及散列制品路径的只读 HEAD。组件发布门禁仍要求实际完整制品存在且摘要匹配，跨版本桥接必须核对底座摘要和数据模式。相关源码修改不等于服务器已部署；部署必须在具体授权后执行，并与固定底座候选一起验收。
+
 后台新增“视频操作教程”：支持 5 分钟内 MP4 流式上传、封面、草稿预览、发布和下架。录屏独立存放于 `tutorials/`，不进入官方制作素材目录。上传步骤、接口和验收边界见 [短教程上传说明](../../docs/tutorial-upload.md)。
 
 既有服务更新使用同提交的 `upgrade.sh`：将它与上述服务文件放到同一个上传目录，执行 `sudo sh <上传目录>/upgrade.sh`。脚本先校验 Python 源码、使用 SQLite backup API 备份数据库并保留旧代码，再停止服务、替换文件并检查回环管理接口；失败恢复旧代码。不会重签 TLS 证书、改客户端信任或替换已发布安装包。备份保留在 `/var/lib/ai-maintenance/backups/`，本身包含反馈数据，不作为公开下载内容。

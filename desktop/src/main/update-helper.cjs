@@ -146,6 +146,7 @@ async function reclaimFinishedHelpers(paths, processes) {
   }
 }
 async function createUpdateJob({ userData, prepared, currentVersion, channel = "test" }) {
+  await require("./update-backups.cjs").retryRetiringBackups(userData).catch(error => console.warn(`Backup cleanup deferred: ${error.message}`));
   const paths = updatePaths(userData); fs.mkdirSync(paths.jobs, { recursive: true });
   const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid);
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
@@ -276,15 +277,21 @@ async function runHelper({ jobFile, userData }) {
       throw Error(prepared.kind === "components" ? "update_start_rolled_back" : "update_start_failed");
     }
     installationStarted = false;
-    stage("complete", `已更新至 ${job.targetVersion}`, "新版本已成功启动，你的配置和业务数据已保留。");
+    stage("complete", prepared.finalTargetVersion
+      ? `基础版本已就绪，目标版本 ${prepared.finalTargetVersion} 尚待更新`
+      : `已更新至 ${job.targetVersion}`, prepared.finalTargetVersion
+      ? "软件将继续检查组件更新，请在软件中完成剩余更新。你的配置和业务数据已保留。"
+      : "新版本已成功启动，你的配置和业务数据已保留。");
     // Housekeeping cannot turn a successful update into a failed update.
     try {
-      await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
+      await require("./update-backups.cjs").retryRetiringBackups(userData);
       if (dataBackup) {
         const backups = require("./update-backups.cjs");
         await backups.confirmSet(userData, job.id, { targetVersion: job.targetVersion, ack: readJson(ack),
-          dataCheck: await backups.checkPreservedData(userData, dataBackup) });
+          dataCheck: await backups.inspectPreservedData(userData, dataBackup, { runtimeRoot: job.installedRoot }) });
       }
+      // Recalculate references after backup retirement, not before it.
+      await require("./update-retention.cjs").retainComponentArtifacts(paths.directory);
     } catch (error) { console.warn(`Post-update cleanup deferred: ${error.code || error.message}`); }
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {

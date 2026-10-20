@@ -99,8 +99,10 @@ async function reusableProgram(profile, installedRoot, selection) {
   return null;
 }
 async function registerSet(profile, { id, version, programBackup, data, owners = [], kind = "automatic" }) {
+  if (!["automatic", "acceptance", "manual"].includes(kind)) throw Error("update_backup_kind_invalid");
   return withRegistry(profile, async (registry, save) => {
-    const set = { id, version, kind, createdAt: new Date().toISOString(), state: "prepared", programBackup,
+    const set = { id, version, kind, rotationPolicy: kind === "manual" ? "pinned" : "latest-confirmed",
+      createdAt: new Date().toISOString(), state: "prepared", programBackup,
       data: { directory: data.directory, files: data.files },
       owners: [...new Map([...owners, ...(data.owners || []), ...(programBackup.owners || []), ...(programBackup.owned ? [programBackup.owned] : [])].map(owner => [owner.directory, owner])).values()] };
     await verifySet(set);
@@ -109,60 +111,102 @@ async function registerSet(profile, { id, version, programBackup, data, owners =
   });
 }
 async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
-  if (ack?.ok !== true || ack.version !== targetVersion || dataCheck !== true) throw Error("update_backup_confirmation_required");
+  const checked = dataCheck === true || dataCheck?.ok === true;
+  if (ack?.ok !== true || ack.version !== targetVersion || !checked) {
+    await withRegistry(profile, async (registry, save) => {
+      const current = registry.sets.find(set => set.id === id);
+      if (current) { current.confirmationFailure = dataCheck?.issues || [{ reason: "startup_or_data_confirmation_missing" }]; save(registry); }
+    });
+    throw Error("update_backup_confirmation_required");
+  }
   return withRegistry(profile, async (registry, save) => {
     const current = registry.sets.find(set => set.id === id);
     if (!current) throw Error("update_backup_missing");
     await verifySet(current);
     current.state = "confirmed"; current.confirmedAt = new Date().toISOString(); current.targetVersion = targetVersion;
+    delete current.confirmationFailure;
     // Prepared/failed sets may be the sole evidence for an interrupted update.
     // Only completed sets are retired automatically, never an unregistered path.
-    const expired = registry.sets.filter(set => set.id !== id && (["confirmed", "retiring"].includes(set.state) || set.kind === "manual"));
+    // Old unclassified backups are historical candidates, never silently adopted.
+    const expired = registry.sets.filter(set => current.rotationPolicy === "latest-confirmed" && set.id !== id && set.rotationPolicy === "latest-confirmed"
+      && (["confirmed", "retiring"].includes(set.state)
+        || (set.kind === "acceptance" && set.state === "prepared" && !set.confirmationFailure
+          && set.data.directory === current.data.directory && set.programBackup.program === current.programBackup.program)));
     for (const set of expired) set.state = "retiring";
     save(registry);
-    const retained = registry.sets.filter(set => set.state !== "retiring");
+    await retireSets(registry, save);
+    return current;
+  });
+}
+async function retireSets(registry, save) {
+    const before = registry.sets.length;
+    const expired = registry.sets.filter(set => set.state === "retiring" && set.rotationPolicy === "latest-confirmed");
+    const retained = registry.sets.filter(set => !expired.includes(set));
     const protectedPaths = retained.flatMap(set => [set.data.directory, set.programBackup.program]);
     for (const old of expired) {
       let complete = true;
       for (const owner of old.owners) {
         if (protectedPaths.some(file => contains(owner.directory, file))) continue;
         try { await removeOwnedDirectory(owner); }
-        catch (error) { if (error.code !== "ENOENT") { complete = false; console.warn(`Backup cleanup deferred: ${error.code || error.message}`); } }
+        catch (error) {
+          if (error.code !== "ENOENT") {
+            complete = false;
+            old.cleanupFailure = { code: error.code || error.message, at: new Date().toISOString() };
+            console.warn(`Backup cleanup deferred: ${error.code || error.message}`);
+          }
+        }
       }
       if (complete) registry.sets = registry.sets.filter(set => set.id !== old.id);
     }
-    save(registry); return current;
-  });
+    save(registry);
+    return before - registry.sets.length;
+}
+async function retryRetiringBackups(profile) {
+  if (!readRegistry(profile).sets.some(set => set.state === "retiring" && set.rotationPolicy === "latest-confirmed")) return 0;
+  return withRegistry(profile, retireSets);
 }
 // Startup is allowed to update databases and receipts. Require every previously
 // backed-up business file to remain present, instead of comparing mutable bytes.
-async function checkPreservedData(profile, data) {
+async function inspectPreservedData(profile, data, options = {}) {
+  const failure = (file, reason, extra = {}) => ({ ok: false, issues: [{ path: file, reason, ...extra }] });
   const databaseFiles = new Set(data.files.filter(file => !file.link && file.size > 0 && /\.(?:db|sqlite|sqlite3)$/i.test(file.path)).map(file => file.path));
+  const checkedDatabases = new Set();
+  for (const relative of databaseFiles) {
+    try {
+      const previous = path.join(data.directory, relative), current = path.join(profile, relative);
+      const entry = data.files.find(file => file.path === relative), wal = data.files.find(file => file.path === relative + "-wal");
+      const walHash = async file => { try { return (await fs.promises.stat(file)).size ? await hashFile(file) : null; } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
+      if (await hashFile(current) !== entry.sha256 || await walHash(current + "-wal") !== (wal?.size ? wal.sha256 : null)) {
+        const result = await (options.databaseVerifier || require("./update-database-check.cjs").checkDatabase)(previous, current, options);
+        if (!result.ok) return failure(relative, result.reason || "database_verification_failed", { table: result.table });
+      }
+      checkedDatabases.add(relative);
+    } catch (error) { return failure(relative, error.code === "ENOENT" ? "database_missing" : error.message || "database_verification_failed"); }
+  }
   for (const file of data.files) {
     if (isRegenerableProfileFile(file.path) || /(^|[\\/])(logs?|diagnostics)([\\/]|$)/i.test(file.path)) continue;
     // A clean close may remove SQLite's rebuilt shared-memory index or an
     // already empty WAL. Keep both in the snapshot; never exempt a nonempty
     // WAL, and still require the corresponding backed-up database.
-    const transientSqliteFile = /\.(?:db|sqlite|sqlite3)-shm$/i.test(file.path)
-      || (file.size === 0 && /\.(?:db|sqlite|sqlite3)-wal$/i.test(file.path));
+    const transientSqliteFile = /\.(?:db|sqlite|sqlite3)-(?:shm|wal)$/i.test(file.path);
     if (transientSqliteFile && databaseFiles.has(file.path.slice(0, -4))) {
       try {
         const database = await fs.promises.lstat(path.join(profile, file.path.slice(0, -4)));
-        if (!database.isFile() || database.size === 0) return false;
-      } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+        if (!database.isFile() || database.size === 0 || !checkedDatabases.has(file.path.slice(0, -4))) return failure(file.path, "database_not_verified");
+      } catch (error) { return failure(file.path, error.code || "database_not_verified"); }
       continue;
     }
     try {
       const live = path.join(profile, file.path), stat = await fs.promises.lstat(live);
       if (file.link) {
-        if (!stat.isSymbolicLink() || path.resolve(path.dirname(live), await fs.promises.readlink(live)).replace(/[\\/]+$/, "") !== file.link) return false;
+        if (!stat.isSymbolicLink() || path.resolve(path.dirname(live), await fs.promises.readlink(live)).replace(/[\\/]+$/, "") !== file.link) return failure(file.path, "material_link_changed");
         continue;
       }
-      if (!stat.isFile()) return false;
+      if (!stat.isFile() || stat.isSymbolicLink()) return failure(file.path, "business_file_type_changed");
       // Media, customer originals, licensing and other immutable files must keep
       // their exact bytes. Only known mutable storage formats bypass byte equality.
       if (/\.(?:db|sqlite|sqlite3)(?:-wal|-shm)?$/i.test(file.path)) {
-        if (stat.size === 0 && file.size > 0) return false;
+        if (stat.size === 0 && file.size > 0) return failure(file.path, "database_empty");
         continue;
       }
       if (/^(?:Local Storage|Session Storage|Partitions)[\\/]/i.test(file.path)
@@ -182,7 +226,7 @@ async function checkPreservedData(profile, data) {
         if (file.path.replaceAll("\\", "/") === "data/official-materials/catalog.json") {
           const catalog = value => value?.schema === 1 && Number.isSafeInteger(value.revision) && value.revision > 0
             && Array.isArray(value.items) && Array.isArray(value.categories);
-          if (!catalog(current) || !catalog(previous) || current.revision < previous.revision) return false;
+          if (!catalog(current) || !catalog(previous) || current.revision < previous.revision) return failure(file.path, "catalog_invalid");
           continue;
         }
         if (file.path.replaceAll("\\", "/") === "data/auto_reply/auto-reply-state.json"
@@ -195,7 +239,7 @@ async function checkPreservedData(profile, data) {
           const now = new Date(), today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
           if (!validDay(previous.daily_date) || !validDay(current.daily_date)
               || current.daily_date <= previous.daily_date || current.daily_date !== today
-              || !Number.isSafeInteger(previous.reply_count) || previous.reply_count < 0 || current.reply_count !== 0) return false;
+              || !Number.isSafeInteger(previous.reply_count) || previous.reply_count < 0 || current.reply_count !== 0) return failure(file.path, "daily_state_changed");
           previous.daily_date = current.daily_date;
           previous.reply_count = 0;
         }
@@ -213,10 +257,11 @@ async function checkPreservedData(profile, data) {
         }
         if (same(stable(current), stable(previous))) continue;
       }
-      return false;
+      return failure(file.path, "business_content_changed");
     }
-    catch (error) { if (error.code === "ENOENT") return false; throw error; }
+    catch (error) { return failure(file.path, error.code === "ENOENT" ? "business_file_missing" : error.code || "business_file_unreadable"); }
   }
-  return true;
+  return { ok: true, issues: [] };
 }
-module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData };
+async function checkPreservedData(profile, data, options) { return (await inspectPreservedData(profile, data, options)).ok; }
+module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData, inspectPreservedData, retryRetiringBackups };

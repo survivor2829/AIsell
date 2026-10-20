@@ -4,7 +4,10 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { fail } = require('./digital-human-provider.cjs');
-const run = promisify(execFile);
+async function run(...args) {
+  await require('./component-paths.cjs').ensureRuntimeGroup('content');
+  return promisify(execFile)(...args);
+}
 const SPEAKER = /^S_[A-Za-z0-9_-]{1,128}$/u;
 const OPERATION = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 

@@ -44,6 +44,7 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
   const baseline = { schema: 2, base: { version: baseVersion, fingerprint: treeHash(files.filter(f => f.component === "base")) }, dataSchema: 2, files, components: {} };
   const manifest = { schema: 2, appId, channel, platform: "win32", arch: "x64", version, base: baseline.base,
     minBaseVersion: baseVersion, dataSchema: 2, sequence, notes, publishedAt: new Date().toISOString(), components: {} };
+  baseline.verification = manifest.verification = require("../src/shared/component-verification.cjs").verificationPolicy(files);
   const artifacts = [];
   const retentionOwned = [];
   try {

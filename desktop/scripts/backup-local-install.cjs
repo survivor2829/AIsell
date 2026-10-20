@@ -9,7 +9,8 @@ const { dataInventory, registerSet, readRegistry, verifySet } = require("../src/
 const { inventory } = require("../src/main/update-program-backup.cjs");
 const { HEX, digest } = require("../src/shared/component-contract.cjs");
 
-async function backupLocalInstall({ program, profile, outputRoot }) {
+async function backupLocalInstall({ program, profile, outputRoot, purpose = "manual", updateKind = "full" }) {
+  if (!["manual", "acceptance"].includes(purpose) || !["full", "components"].includes(updateKind)) throw Error("backup_purpose_invalid");
   program = fs.realpathSync(program); profile = fs.realpathSync(profile);
   const installedRoot = program;
   outputRoot = path.resolve(outputRoot);
@@ -28,10 +29,16 @@ async function backupLocalInstall({ program, profile, outputRoot }) {
   }
   const version = JSON.parse(fs.readFileSync(path.join(program, "版本清单.json"), "utf8")).version;
   if (!fs.existsSync(path.join(program, "resources/app/src/main/main.cjs"))) throw Error("backup_program_incomplete");
+  if (purpose === "acceptance" && updateKind === "components") {
+    // Same dataSchema is enforced by the component updater. Its active/previous
+    // pointers are the rollback, not another full copy of customer media.
+    return { kind: "component-selection", version, installedRoot, program, selection,
+      copiedBytes: 0, reused: true, note: "Component updater retains the prior program; no data migration." };
+  }
   const filter = backupFilter(profile);
   const programFiles = await inventory(program), dataFiles = await dataInventory(profile, filter);
   for (const previous of [...readRegistry(profile).sets].reverse()) {
-    if (previous.state === "retiring" || previous.kind !== "manual"
+    if (previous.state === "retiring" || previous.kind !== purpose
         || JSON.stringify(previous.programBackup.files) !== JSON.stringify(programFiles)
         || JSON.stringify(previous.programBackup.selection) !== JSON.stringify(selection)
         || JSON.stringify(previous.data.files) !== JSON.stringify(dataFiles)) continue;
@@ -54,7 +61,7 @@ async function backupLocalInstall({ program, profile, outputRoot }) {
     if (JSON.stringify(dataFiles) !== JSON.stringify(await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
     fs.writeFileSync(path.join(owned.directory, "backup.json"), JSON.stringify({ version, createdAt: new Date().toISOString(), programSource: program, profileSource: profile, updateCachesExcluded: true, selection }, null, 2));
     const id = path.basename(owned.directory);
-    await registerSet(profile, { id, version, kind: "manual", owners: [owned],
+    await registerSet(profile, { id, version, kind: purpose, owners: [owned],
       programBackup: { installedRoot, program: path.join(owned.directory, "program"), selection, files: programFiles },
       data: { directory: path.join(owned.directory, "userData"), files: dataFiles } });
     return { directory: owned.directory, version, id };
@@ -67,11 +74,11 @@ async function backupLocalInstall({ program, profile, outputRoot }) {
 if (require.main === module) {
   const args = process.argv.slice(2), options = {};
   for (let index = 0; index < args.length; index += 2) {
-    const key = { "--program": "program", "--profile": "profile", "--output-root": "outputRoot" }[args[index]];
+    const key = { "--program": "program", "--profile": "profile", "--output-root": "outputRoot", "--purpose": "purpose", "--update-kind": "updateKind" }[args[index]];
     if (!key || !args[index + 1]) throw Error("Usage: backup-local-install --program <installed-directory> --profile <user-data> --output-root <backup-directory>");
     options[key] = args[index + 1];
   }
-  if (Object.keys(options).length !== 3) throw Error("program, profile and output-root are required");
+  if (!options.program || !options.profile || !options.outputRoot) throw Error("program, profile and output-root are required");
   backupLocalInstall(options).then(result => console.log(JSON.stringify(result))).catch(error => { console.error(error.message); process.exitCode = 1; });
 }
 module.exports = { backupLocalInstall };

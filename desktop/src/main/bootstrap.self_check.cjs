@@ -4,7 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { registerContentMediaScheme } = require("./content-media-protocol.cjs");
 
-async function check(smoke = false, installedVersion = "1.1.2", selectedVersion = "1.1.3", useInstalled = false) {
+async function check(smoke = false, installedVersion = "1.1.2", selectedVersion = "1.1.3", useInstalled = false, failedBoot = false) {
   let ready = false, registrations = 0;
   let finish;
   const result = new Promise(resolve => { finish = resolve; });
@@ -28,7 +28,10 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
       assert.equal(userData, expectedProfile, "Release verification must select components from its isolated profile");
       return roots;
     }, generationPath: (_paths, id, base) => id ? candidateRoot : base,
-    verifySelected: async () => {
+    beginBoot: () => failedBoot,
+    createRuntimeVerification: () => ({}),
+    verifySelected: async (_root, _installed, _config, options) => {
+      assert.equal(options.startupOnly, !failedBoot, "An unfinished boot requires complete verification");
       assert.equal(useInstalled, false, "Superseded components must not fail the new install's base compatibility check");
       await new Promise(resolve => setImmediate(resolve));
       ready = true;
@@ -72,6 +75,7 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
   assert.deepEqual(stages, ['bootstrap_loaded', 'component_verification_started', 'component_verification_finished']);
 }
 check().then(() => check(true)).then(() => check(false, "1.1.6", "1.1.5", true))
+  .then(() => check(false, "1.1.2", "1.1.3", false, true))
   .then(() => check(false, "1.1.6", "1.1.6", true))
   .then(() => console.log("bootstrap self-check passed: early media registration, isolated profile and full installer precedence"))
   .catch(error => { console.error(error); process.exitCode = 1; });

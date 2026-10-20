@@ -6,7 +6,10 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { fail, safeLookup } = require('./digital-human-provider.cjs');
 const { limits } = require('../shared/reference-human.json');
-const run = promisify(execFile);
+async function run(...args) {
+  await require('./component-paths.cjs').ensureRuntimeGroup('content');
+  return promisify(execFile)(...args);
+}
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 // Energy is useful for avoiding silence and overload, not for claiming that a

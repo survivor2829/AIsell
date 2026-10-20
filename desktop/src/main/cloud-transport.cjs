@@ -10,7 +10,8 @@ function createTransport(config) {
   if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/") fail("cloud_origin_invalid");
   const agent = new https.Agent({ ca: config.caPem || undefined, keepAlive: true, maxSockets: 3 });
   const requests = new Set();
-  async function request(route, { body, headers = {}, maxBytes = 256 * 1024, destination, expected, onProgress, resume = false } = {}) {
+  async function request(route, { body, headers = {}, maxBytes = 256 * 1024, destination, expected, onProgress, resume = false, method } = {}) {
+    if (method !== undefined && method !== "HEAD" || method === "HEAD" && (body !== undefined || destination)) fail("cloud_method_invalid");
     const url = new URL(route, origin);
     if (url.origin !== origin.origin || !route.startsWith("/")) fail("cloud_origin_invalid");
     const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
@@ -31,7 +32,7 @@ function createTransport(config) {
     return new Promise((resolve, reject) => {
       let response;
       const req = https.request(url, {
-        agent, method: data ? "POST" : "GET",
+        agent, method: method || (data ? "POST" : "GET"),
         headers: { ...headers, ...(data ? { "Content-Type": "application/json", "Content-Length": data.length } : offset ? { Range: `bytes=${offset}-` } : {}) }
       });
       requests.add(req);
@@ -42,6 +43,12 @@ function createTransport(config) {
       req.on("response", async (res) => {
         response = res;
         try {
+          if (method === "HEAD") {
+            if (res.statusCode !== 200) { res.resume(); fail(`cloud_http_${res.statusCode}`); }
+            const size = Number(res.headers["content-length"]);
+            if (!Number.isSafeInteger(size) || size < 1) fail("cloud_response_invalid");
+            res.resume(); resolve({ size }); return;
+          }
           let start = 0;
           if (res.statusCode === 206 && destination && resume && offset) {
             const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(res.headers["content-range"] || "");

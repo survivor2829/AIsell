@@ -6,7 +6,10 @@ const { createHash, randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
-const run = promisify(execFile);
+async function run(...args) {
+  await require('./component-paths.cjs').ensureRuntimeGroup('content');
+  return promisify(execFile)(...args);
+}
 const VERSION = 'face-layout-v3';
 const SAMPLE_FPS = 6;
 const pending = new Map();

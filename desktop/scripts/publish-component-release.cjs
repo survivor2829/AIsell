@@ -62,7 +62,9 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
     const readback = await verifyPublishedRelease({ config, envelope, schema: 2 });
     try { run("ssh.exe", [...flags, host, `sudo -n rm -rf -- ${incoming} ${remote}`]); }
     catch { console.warn("Release verified; upload staging cleanup deferred."); }
-    return { published: true, version: manifest.version, channel: manifest.channel, uploadedArchives: missing.length, uploadedFileBytes: missing.reduce((sum, item) => sum + item.size, 0) + fs.statSync(document).size, uploadedFiles: missing.length + 1, readback };
+    return { published: true, version: manifest.version, channel: manifest.channel, uploadedArchives: missing.length,
+      downloadedFileBytes: upgradePaths.downloadedBytes,
+      uploadedFileBytes: missing.reduce((sum, item) => sum + item.size, 0) + fs.statSync(document).size, uploadedFiles: missing.length + 1, readback };
   } finally {
     fs.unlinkSync(document); fs.rmdirSync(temporary);
   }

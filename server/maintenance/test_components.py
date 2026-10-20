@@ -11,6 +11,41 @@ from service import Handler, Server
 from promote_components import promote
 
 class ComponentsTest(unittest.TestCase):
+    def test_compatible_base_bridge_and_old_client_routing(self):
+        from legacy_releases import LegacyReleaseRouter
+        from service import APP_IDS
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            incoming, releases, artifacts = root / "incoming", root / "releases/test", root / "artifacts"
+            for folder in (incoming, releases, artifacts):
+                folder.mkdir(parents=True)
+            data = b"verified fixture"
+            digest = hashlib.sha256(data).hexdigest()
+            (incoming / (digest + ".zip")).write_bytes(data)
+            (artifacts / (digest + ".exe")).write_bytes(data)
+            base = {"version": "1.1.90", "fingerprint": "a" * 64}
+            full = {"schema": 1, "appId": APP_IDS["test"], "channel": "test", "platform": "win32", "arch": "x64",
+                    "version": "1.1.97", "sequence": 1, "sha256": digest, "size": len(data), "file": f"/artifacts/{digest}.exe",
+                    "componentBase": {**base, "dataSchema": 2, "updateProtocol": 4}}
+            target = {**full, "schema": 2, "version": "1.1.98", "sequence": 2, "base": base, "dataSchema": 2,
+                      "components": {name: {"name": name, "sha256": digest, "size": len(data), "file": f"/components/{digest}.zip"}
+                                     for name in ("application", "content-engine", "product-detail", "video")}}
+            wrap = lambda value: {"payload": json.dumps(value), "signature": "SSH-only-fixture"}
+            (releases / "latest.json").write_text(json.dumps(wrap(full)))
+            candidate = incoming / "manifest.json"
+            candidate.write_text(json.dumps(wrap(target)))
+            self.assertTrue(promote(candidate, incoming, root)["published"])
+            router = LegacyReleaseRouter(root, APP_IDS)
+            headers = {"X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": "1.1.96"}
+            self.assertEqual(router.latest("test", "2", headers), {"empty": True})
+            self.assertEqual(json.loads(router.latest("test", "1", headers)["payload"])["version"], "1.1.97")
+            headers["X-Xiaoxi-Bridge-Update"] = "1"
+            self.assertEqual(json.loads(router.latest("test", "2", headers)["payload"])["version"], "1.1.98")
+            target["version"], target["sequence"], target["dataSchema"] = "1.1.99", 3, 3
+            candidate.write_text(json.dumps(wrap(target)))
+            with self.assertRaisesRegex(ValueError, "fallback_mismatch"):
+                promote(candidate, incoming, root)
+
     def test_v2_pointer_range_and_monotonic_publication(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

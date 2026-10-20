@@ -65,7 +65,7 @@ if (process.argv[2] === "--hold-registry") {
         const failure = updateFailure(error, "backup");
         return failure.code === "EPERM" && failure.syscall === "symlink" && failure.phase === "backup";
       });
-      first = await make("manual");
+      first = await make("acceptance");
     } finally { fs.cp = copy; fs.symlink = symlink; }
     assert.equal(junctions, 1, "only the business directory link is recreated");
     assert.equal((await fs.lstat(path.join(first.data.directory, "material-link"))).isSymbolicLink(), true, "external materials remain a link, never a copied tree");
@@ -144,6 +144,7 @@ if (process.argv[2] === "--hold-registry") {
     await assert.rejects(confirmSet(profile, second.id, { targetVersion: "1.1.79", ack: { ok: true, version: "1.1.78" }, dataCheck: true }), /confirmation_required/);
     await assert.rejects(confirmSet(profile, second.id, { targetVersion: "1.1.79", ack: { ok: true, version: "1.1.79" }, dataCheck: false }), /confirmation_required/);
     const confirm = async set => confirmSet(profile, set.id, { targetVersion: "1.1.79", ack: { ok: true, version: "1.1.79" }, dataCheck: await checkPreservedData(profile, set.data) });
+    await confirm(first);
     await confirm(second);
     assert.equal(readRegistry(profile).sets.length, 1);
     await fs.access(first.data.directory); // Shared ownership must survive retiring the manual record.
@@ -204,6 +205,12 @@ if (process.argv[2] === "--hold-registry") {
       await fs.writeFile(path.join(dailyLive, relative), JSON.stringify(after));
       assert.equal(await checkPreservedData(dailyLive, { directory: dailyBackup, files: await dataInventory(dailyBackup) }), expected, label);
     }
+    const pinned = await make("manual");
+    await confirm(pinned);
+    const nextAutomatic = await make();
+    await confirm(nextAutomatic);
+    assert.ok(readRegistry(profile).sets.some(set => set.id === pinned.id && set.rotationPolicy === "pinned"),
+      "Explicit independent backups survive automatic rotation");
     console.log("Update backup governance self-check passed.");
   } finally {
     assert.equal(path.dirname(root), parent);

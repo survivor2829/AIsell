@@ -34,6 +34,16 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     lastAnnouncementsCheck: typeof saved.lastAnnouncementsCheck === "string" ? saved.lastAnnouncementsCheck : "",
     componentSequence: Number.isSafeInteger(saved.componentSequence) ? saved.componentSequence : 0
   };
+  if (saved.bridgeTarget && saved.pending && !saved.pending.kind) {
+    try {
+      const installer = verifyManifest(saved.pending, config);
+      const target = verifyComponentManifest(saved.bridgeTarget.envelope, config);
+      if (saved.bridgeTarget.installerSha256 === installer.sha256
+          && require("../shared/component-contract.cjs").supportsComponentBridge(installer, target)) {
+        state.bridgeTarget = saved.bridgeTarget;
+      }
+    } catch { /* An untrusted bridge hint must not survive into install state. */ }
+  }
   for (const item of [...(Array.isArray(saved.announcements) ? saved.announcements.slice(0, 20) : []), ...(saved.pending ? [{ envelope: saved.pending, read: false }] : [])]) {
     try {
       const manifest = JSON.parse(item.envelope.payload).schema === 2 ? verifyComponentManifest(item.envelope, config) : verifyManifest(item.envelope, config);
@@ -48,7 +58,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   const network = transport || (config?.enabled ? createTransport(config) : null);
   // Release routing uses only technical capabilities. Do not attach install IDs,
   // profile paths or account data, and continue verifying every returned envelope.
-  const releaseHeaders = { "X-Xiaoxi-Update-Protocol": "3" };
+  const releaseHeaders = { "X-Xiaoxi-Update-Protocol": "3",
+    ...(require("../shared/update-capabilities.json").protocol >= 4 ? { "X-Xiaoxi-Bridge-Update": "1" } : {}) };
   if (VERSION.test(version)) releaseHeaders["X-Xiaoxi-Version"] = version;
   const baseline = componentBaseRoot && readJson(path.join(componentBaseRoot, "component-base.json"));
   if (baseline?.schema === 2 && VERSION.test(baseline.base?.version) && /^[a-f0-9]{64}$/.test(baseline.base?.fingerprint)) {
@@ -248,7 +259,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       }
       if (!release) { if (fullUpgradeRequired) fail("full_upgrade_required"); commit({ pending: null }); notify({ stage: "current", nextVersion: "" }); return status(); }
       const { envelope, manifest } = release;
-      if (fullUpgradeRequired && componentRelease && compareVersions(manifest.version, componentRelease.manifest.version) < 0) fail("full_upgrade_required");
+      const bridge = fullUpgradeRequired && componentRelease && compareVersions(manifest.version, componentRelease.manifest.version) < 0;
+      if (bridge && !require("../shared/component-contract.cjs").supportsComponentBridge(manifest, componentRelease.manifest)) fail("full_upgrade_required");
       if (compareVersions(manifest.version, version) <= 0) {
         if (fullUpgradeRequired) fail("full_upgrade_required");
         state.pending = null; save(); notify({ stage: "current", nextVersion: "" }); return status();
@@ -273,7 +285,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       }
       if (stopped) fail("cloud_stopped");
       if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
-      state.pending = envelope; save();
+      state.pending = envelope;
+      state.bridgeTarget = bridge ? { envelope: componentRelease.envelope, installerSha256: manifest.sha256 } : null;
+      save();
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
       try { logger?.event?.("maintenance", "update.failed", { stage: view.stage }, {
@@ -305,7 +319,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     if ((!view.updateRequested && m.sequence < state.sequence) || compareVersions(m.version, version) <= 0) return null;
     const file = path.join(dir, `${m.sha256}.exe`);
     if (fs.statSync(file).size !== m.size || await fileHash(file) !== m.sha256) fail("cloud_download_invalid");
-    return { kind: "full", file, version: m.version, envelope: state.pending };
+    const finalTarget = state.bridgeTarget?.installerSha256 === m.sha256
+      ? verifyComponentManifest(state.bridgeTarget.envelope, config) : null;
+    return { kind: "full", file, version: m.version, envelope: state.pending,
+      ...(finalTarget && require("../shared/component-contract.cjs").supportsComponentBridge(m, finalTarget)
+        ? { finalTargetVersion: finalTarget.version } : {}) };
   }
   async function beginInstall() {
     if (updateLaunching || !userData) return false;

@@ -30,6 +30,10 @@ function verifyManifest(envelope, config) {
   if (m.publishedAt !== undefined && (typeof m.publishedAt !== "string"
       || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(m.publishedAt)
       || !Number.isFinite(Date.parse(m.publishedAt)))) fail("cloud_manifest_invalid");
+  if (m.componentBase !== undefined && (!m.componentBase || !VERSION.test(m.componentBase.version)
+      || !/^[a-f0-9]{64}$/.test(m.componentBase.fingerprint)
+      || !Number.isSafeInteger(m.componentBase.dataSchema) || m.componentBase.dataSchema < 1
+      || m.componentBase.updateProtocol !== 4)) fail("cloud_manifest_invalid");
   return m;
 }
 

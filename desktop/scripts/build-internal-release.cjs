@@ -100,6 +100,19 @@ function main(args = process.argv.slice(2)) {
   const resolvedBaseRoot = componentsOnly ? resolveAcceptedBaseRoot(baseRoot, edition) : baseRoot;
   const space = require("./space-usage.cjs").startSpaceRun("internal-release");
   try {
+    const retention = require("./artifact-retention.cjs");
+    const releaseRoot = path.resolve(desktopDir, "../release");
+    if (resolvedBaseRoot && path.resolve(resolvedBaseRoot).startsWith(releaseRoot + path.sep)) {
+      retention.retainArtifacts(releaseRoot, "accepted-base", [resolvedBaseRoot], 1, []);
+    }
+    for (const root of [releaseRoot, path.join(desktopDir, ".build/runtime-cache")]) retention.retryArtifacts(root);
+    const estimateRoot = resolvedBaseRoot || path.join(releaseRoot,
+      require("../product-brand.json").displayName + (edition === "test" ? "-测试版" : ""));
+    const baseBytes = require("./space-usage.cjs").measureTree(estimateRoot).bytes;
+    // Conservative staging budget, recorded as an estimate, never reported as actual growth.
+    const estimatedRuntime = Math.max(baseBytes, 512 * 1024 ** 2);
+    space.preflight([{ path: releaseRoot, bytes: estimatedRuntime * (componentsOnly ? 3 : 4) },
+      { path: require("node:os").tmpdir(), bytes: estimatedRuntime * 2 }]);
     const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot });
     if (componentsOnly && baseRoot) {
       const acceptedRecord = recordAcceptedBaseRoot(resolvedBaseRoot);

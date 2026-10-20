@@ -49,6 +49,7 @@ function validateManifest(m, config) {
       || typeof m.notes !== "string" || m.notes.length > 2000
       || !m.components || Object.keys(m.components).sort().join() !== [...COMPONENTS].sort().join()) fail("component_manifest_invalid");
   if (m.publishedAt !== undefined && (typeof m.publishedAt !== "string" || !Number.isFinite(Date.parse(m.publishedAt)))) fail("component_manifest_invalid");
+  if (m.verification !== undefined) require("./component-verification.cjs").validatePolicy(m.verification);
   for (const name of COMPONENTS) {
     const c = m.components[name];
     if (!c || c.name !== name || !HEX.test(c.sha256) || !HEX.test(c.treeSha256)
@@ -69,4 +70,11 @@ function assertCompatible(m, baseline) {
       || baseline.base?.version !== m.base.version || compareVersions(baseline.base.version, m.minBaseVersion) < 0) fail("full_upgrade_required");
   if (treeHash(baseline.files.filter(f => f.component === "base")) !== m.base.fingerprint) fail("component_base_invalid");
 }
-module.exports = { COMPONENTS, HEX, MAX_ARCHIVE, MAX_FILES, MAX_EXPANDED, safePath, digest, hashFile, treeHash, validateFiles, validateManifest, verifyComponentManifest, assertCompatible };
+function supportsComponentBridge(full, target) {
+  const base = full?.componentBase;
+  return Boolean(base && base.updateProtocol === 4 && base.version === target.base?.version
+    && base.fingerprint === target.base?.fingerprint && base.dataSchema === target.dataSchema
+    && full.appId === target.appId && full.channel === target.channel
+    && compareVersions(full.version, target.version) <= 0);
+}
+module.exports = { COMPONENTS, HEX, MAX_ARCHIVE, MAX_FILES, MAX_EXPANDED, safePath, digest, hashFile, treeHash, validateFiles, validateManifest, verifyComponentManifest, assertCompatible, supportsComponentBridge };

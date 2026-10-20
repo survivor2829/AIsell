@@ -4,6 +4,7 @@ const { spawn } = require('node:child_process');
 
 function mediaError(code, message, details = {}) { return Object.assign(new Error(message), { code, ...details }); }
 async function run(binary, args, cwd) {
+  await require('./component-paths.cjs').ensureRuntimeGroup('content');
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20 * 60_000 });
     let stdout = '', stderr = '';

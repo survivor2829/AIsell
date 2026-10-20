@@ -59,6 +59,13 @@ async function main() {
 
   try {
     {
+      const blocked = createProductDetailSidecar({ runtimePath, dataDir,
+        beforeStart: () => { throw Error("component_file_corrupt"); },
+        spawnProcess: () => assert.fail("Unverified runtime must not execute") });
+      assert.equal((await blocked.start()).state, "failed");
+      await blocked.dispose();
+    }
+    {
       let release, child;
       const gate = new Promise(resolve => { release = resolve; });
       let providerReady = false;
