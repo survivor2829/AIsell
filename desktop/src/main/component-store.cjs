@@ -14,23 +14,48 @@ const { COMPONENTS, safePath, hashFile, treeHash, validateFiles, verifyComponent
 // preparing the same root concurrently within that process.
 const preparingRoots = new Set();
 async function readJson(file) { return JSON.parse(await fsp.readFile(file, "utf8")); }
-async function regularFile(root, relative) {
+async function checkedFile(root, relative, directories = new Map()) {
   safePath(relative);
   let current = path.resolve(root);
-  if ((await fsp.lstat(current)).isSymbolicLink()) fail("component_symlink_forbidden");
-  const parts = relative.split("/");
-  for (let i = 0; i < parts.length; i++) {
-    current = path.join(current, parts[i]);
-    const stat = await fsp.lstat(current);
-    if (stat.isSymbolicLink() || (i < parts.length - 1 ? !stat.isDirectory() : !stat.isFile())) fail("component_file_type_invalid");
+  async function directory(full) {
+    if (!directories.has(full)) directories.set(full, fsp.lstat(full).then(stat => {
+      if (stat.isSymbolicLink()) fail("component_symlink_forbidden");
+      if (!stat.isDirectory()) fail("component_file_type_invalid");
+    }));
+    await directories.get(full);
   }
-  return current;
+  await directory(current);
+  const parts = relative.split("/");
+  for (let i = 0; i < parts.length - 1; i++) {
+    current = path.join(current, parts[i]);
+    await directory(current);
+  }
+  const full = path.join(current, parts.at(-1)), stat = await fsp.lstat(full);
+  if (stat.isSymbolicLink() || !stat.isFile()) fail("component_file_type_invalid");
+  return { full, stat };
+}
+async function regularFile(root, relative) {
+  return (await checkedFile(root, relative)).full;
 }
 async function verifyFiles(root, files) {
-  for (const file of files) {
-    const full = await regularFile(root, file.path);
-    if ((await fsp.stat(full)).size !== file.size || await hashFile(full) !== file.sha256) fail("component_file_corrupt");
+  // Cache only directory checks within this verification, never file hashes or
+  // trust across launches. Four readers bound memory and disk pressure while
+  // avoiding one round trip per ancestor for every file in the same directory.
+  const directories = new Map();
+  let next = 0, failure;
+  async function worker() {
+    while (!failure && next < files.length) {
+      const file = files[next++];
+      try {
+        const { full, stat } = await checkedFile(root, file.path, directories);
+        if (stat.size !== file.size || await hashFile(full) !== file.sha256) fail("component_file_corrupt");
+      } catch (error) { failure ||= error; }
+    }
   }
+  // Drain all in-flight readers before rejection; callers may remove a failed
+  // staging directory as soon as verification settles.
+  await Promise.all(Array.from({ length: Math.min(4, files.length) }, () => worker()));
+  if (failure) throw failure;
 }
 async function verifyGeneration(root, files) {
   validateFiles(files);

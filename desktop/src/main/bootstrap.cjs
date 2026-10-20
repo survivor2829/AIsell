@@ -5,6 +5,8 @@ const { readJson, updatePaths, generationPath, verifySelected, saveSelection, ro
 const { registerContentMediaScheme } = require("./content-media-scheme.cjs");
 const { compareVersions } = require("../shared/cloud-contract.cjs");
 const { verifyComponentManifest } = require("../shared/component-contract.cjs");
+const startupTiming = global.__xiaoxiStartupTiming ||= require("./startup-timing.cjs").createStartupTiming();
+startupTiming.mark("bootstrap_loaded");
 
 // Selected component verification yields to Electron's ready event. Privileged
 // schemes must be registered synchronously before that verification starts.
@@ -41,6 +43,7 @@ async function boot() {
   let selection = readJson(paths.selection, {});
   if (selection.pending?.attempted) selection = rollbackSelection(paths, "新版上次未能完成启动，已恢复上一版本。");
   let root = generationPath(paths, selection.active, installedRoot), manifest;
+  startupTiming.mark("component_verification_started");
   while (selection.active) {
     try {
       // Check the signed business version before base compatibility: a newer
@@ -59,6 +62,7 @@ async function boot() {
       root = generationPath(paths, selection.active, installedRoot);
     }
   }
+  startupTiming.mark("component_verification_finished");
   if (selection.pending) saveSelection(paths, { ...selection, pending: { ...selection.pending, attempted: true } });
   const applicationRoot = path.join(root, "resources", "app");
   const version = manifest?.version || app.getVersion();

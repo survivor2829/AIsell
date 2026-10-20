@@ -6,7 +6,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const https = require("node:https");
 const { buildComponentRelease } = require("./build-component-release.cjs");
-const { createComponentStore } = require("../src/main/component-store.cjs");
+const { createComponentStore, verifyFiles } = require("../src/main/component-store.cjs");
 const { createTransport } = require("../src/main/cloud-transport.cjs");
 const { createCloudMaintenance } = require("../src/main/cloud-maintenance.cjs");
 const { verifyComponentManifest, treeHash, hashFile, digest } = require("../src/shared/component-contract.cjs");
@@ -42,6 +42,51 @@ async function fixture(t) {
   await fs.writeFile(path.join(source, "component-base.json"), JSON.stringify(base.baseline));
   return { root, source, base };
 }
+
+test("startup verification checks shared parents once but rehashes files on each launch", async t => {
+  const { root, source, base } = await fixture(t);
+  const originalLstat = fs.lstat, seen = new Map();
+  fs.lstat = async function(file, ...args) {
+    seen.set(String(file), (seen.get(String(file)) || 0) + 1);
+    return originalLstat.call(this, file, ...args);
+  };
+  try { await verifyFiles(source, base.baseline.files); }
+  finally { fs.lstat = originalLstat; }
+  assert.equal(Math.max(...seen.values()), 1, "one launch must not repeat parent-directory IO for every file");
+  const file = base.baseline.files.find(f => f.path.endsWith('main.cjs'));
+  const full = path.join(source, file.path), original = await fs.readFile(full);
+  await fs.writeFile(full, Buffer.alloc(original.length, 33));
+  await assert.rejects(verifyFiles(source, base.baseline.files), /component_file_corrupt/,
+    "same-size changes must be hashed again, never accepted from a previous successful check");
+  await fs.writeFile(full, original);
+  const link = path.join(root, 'linked-root');
+  await fs.symlink(source, link, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(verifyFiles(link, base.baseline.files), /component_symlink_forbidden/);
+  await fs.unlink(link);
+  await fs.rename(path.join(source, 'resources/app/src'), path.join(source, 'resources/app/original-src'));
+  await fs.symlink(path.join(source, 'resources/app/original-src'), path.join(source, 'resources/app/src'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(verifyFiles(source, base.baseline.files), /component_symlink_forbidden/);
+  await fs.unlink(path.join(source, 'resources/app/src'));
+  await fs.rename(path.join(source, 'resources/app/original-src'), path.join(source, 'resources/app/src'));
+  await fs.unlink(full);
+  await assert.rejects(verifyFiles(source, base.baseline.files), { code: 'ENOENT' });
+});
+
+test("verification drains in-flight file checks before reporting a corrupt generation", async t => {
+  const { source, base } = await fixture(t);
+  const files = base.baseline.files.map(f => ({ ...f, sha256: '0'.repeat(64) }));
+  const originalLstat = fs.lstat;
+  let pending = 0;
+  fs.lstat = async function(...args) {
+    pending++;
+    try { await new Promise(resolve => setImmediate(resolve)); return await originalLstat.apply(this, args); }
+    finally { pending--; }
+  };
+  try {
+    await assert.rejects(verifyFiles(source, files), /component_file_corrupt/);
+    assert.equal(pending, 0, "failed verification must settle readers before the updater removes staging files");
+  } finally { fs.lstat = originalLstat; }
+});
 
 test("superseded prepared updates do not accumulate complete programs and archives", async t => {
   const { root, source, base } = await fixture(t);

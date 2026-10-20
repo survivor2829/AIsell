@@ -45,6 +45,7 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
       if (id === "node:path") return path;
       if (id === "node:fs") return { existsSync: () => true };
       if (id === "./component-paths.cjs") return paths;
+      if (id === "./startup-timing.cjs") return require(id);
       if (id === "../shared/cloud-contract.cjs") return require(id);
       if (id === "../shared/component-contract.cjs") return { verifyComponentManifest: () => ({ version: selectedVersion }) };
       if (id === "./cloud-config.cjs") return { cloudConfig: () => ({}) };
@@ -66,6 +67,9 @@ async function check(smoke = false, installedVersion = "1.1.2", selectedVersion 
     assert.equal(savedSelections[0].pending, null);
   }
   assert.equal(registrations, 1, "The loaded application must reuse the bootstrap registration");
+  const stages = [];
+  context.__xiaoxiStartupTiming.attach({ event: (_module, stage) => stages.push(stage) });
+  assert.deepEqual(stages, ['bootstrap_loaded', 'component_verification_started', 'component_verification_finished']);
 }
 check().then(() => check(true)).then(() => check(false, "1.1.6", "1.1.5", true))
   .then(() => check(false, "1.1.6", "1.1.6", true))
