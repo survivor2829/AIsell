@@ -7,6 +7,7 @@ const { checkCopySpace } = require("./update-storage.cjs");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 
 async function preserveBackup(profile, old, retained, verifySet) {
+  profile = fs.realpathSync(profile);
   const root = path.join(profile, "data/cloud-maintenance/preserved-backup-data");
   safePath(profile, root);
   fs.mkdirSync(root, { recursive: true });

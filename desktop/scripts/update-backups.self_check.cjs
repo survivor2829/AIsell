@@ -181,6 +181,10 @@ if (process.argv[2] === "--hold-registry") {
     assert.ok(oldDatabase, "retiring an old snapshot must first preserve its distinct database bytes");
     assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database");
     assert.ok(preserved.preserved.some(file => file.link === outside), "preserve external link identity without copying its target");
+    const profileAlias = path.join(root, "relocated-profile");
+    await fs.symlink(profile, profileAlias, "junction");
+    await require("../src/main/update-backup-preservation.cjs").preserveBackup(profileAlias, second, [], () => assert.fail("saved preservation must resume without the deleted source"));
+    await fs.unlink(profileAlias);
     await assert.rejects(fs.stat(path.dirname(second.programBackup.program)), { code: "ENOENT" });
     assert.ok(readRegistry(profile).sets.some(set => set.id === unfinished.id && set.state === "prepared"), "unconfirmed failure evidence stays protected");
     assert.equal(await fs.readFile(path.join(outside, "source.mp4"), "utf8"), "unique source material", "owned backup cleanup unlinks junctions without traversing original materials");
