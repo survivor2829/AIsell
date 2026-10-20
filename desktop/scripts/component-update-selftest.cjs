@@ -196,6 +196,47 @@ test("superseded prepared updates do not accumulate complete programs and archiv
   await fs.access(historical);
 });
 
+test("exit cleanup waits for the executable hardlink lock and retains active and unique files", { skip: process.platform !== "win32" }, async t => {
+  const { root, source, base } = await fixture(t);
+  const profile = path.join(root, "exit-profile"), rootDir = path.join(profile, "data/cloud-maintenance/components");
+  const prepared = await createComponentStore({ rootDir, baseRoot: source, config, transport: {} }).prepare(sign(base.manifest));
+  await fs.writeFile(path.join(rootDir, "selection.json"), JSON.stringify({ active: path.basename(prepared.generationRoot), previous: null }));
+  const executable = path.join(root, "running-node.exe"), obsolete = path.join(rootDir, "obsolete-owned");
+  await fs.copyFile(process.execPath, executable);
+  await fs.mkdir(obsolete);
+  await fs.link(executable, path.join(obsolete, "node.exe"));
+  const unique = path.join(profile, "unique.txt"); await fs.writeFile(unique, "keep");
+  const child = require("node:child_process").spawn(executable,
+    ["-e", 'process.stdin.resume();process.stdin.on("end",()=>process.exit());console.log("ready")'],
+    { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error("locked process did not start")), 10000);
+      child.stdout.once("data", () => { clearTimeout(timer); resolve(); });
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+    });
+    // The shipped Electron/Node version has different Windows unlink behavior
+    // from the developer's newer Node; reproduce with the shipped runtime.
+    const legacy = require("node:child_process").spawnSync(require("electron"), ["-e",
+      `require(${JSON.stringify(path.resolve(__dirname, "../src/shared/artifact-retention.cjs"))}).retainArtifacts(${JSON.stringify(rootDir)},"exit-fixture",[],1,[${JSON.stringify(obsolete)}])`],
+    { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true, encoding: "utf8", timeout: 10000 });
+    assert.equal(legacy.status, 0);
+    assert.match(legacy.stderr, /EPERM/);
+    await fs.access(path.join(obsolete, "node.exe")); // Reproduces Windows EPERM while the shared image runs.
+    const { collectAfterExit } = require("../src/main/update-exit-maintenance.cjs");
+    await collectAfterExit({ profile, parentPid: child.pid, runtimeRoot: prepared.generationRoot }, { timeoutMs: 0 });
+    await fs.access(obsolete);
+    const cleanup = collectAfterExit({ profile, parentPid: child.pid, runtimeRoot: prepared.generationRoot });
+    child.stdin.end();
+    await cleanup;
+    await assert.rejects(fs.stat(obsolete), { code: "ENOENT" });
+    await fs.access(prepared.generationRoot);
+    assert.equal(await fs.readFile(unique, "utf8"), "keep");
+  } finally {
+    if (child.exitCode === null) await new Promise(resolve => { child.once("exit", resolve); child.stdin.end(); });
+  }
+});
+
 test("local acceptance backs up the active application and business data without historical runtime copies", async t => {
   const { root, source, base } = await fixture(t);
   const profile = path.join(root, "中文日常数据"), outputRoot = path.join(root, "本机备份");

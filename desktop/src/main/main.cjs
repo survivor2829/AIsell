@@ -996,6 +996,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       contentEngineIpcRegistration?.dispose();
       momentsCampaignController?.dispose();
       await cloudMaintenance?.installOnExit();
+      if (app.isPackaged && !cloudMaintenance?.status().updateRequested) {
+        try {
+          await require("./update-exit-maintenance.cjs").launchExitMaintenance({
+            profile: app.getPath("userData"), runtimeRoot: components.currentRoot()
+          });
+        } catch (error) { diagnostics().event("app", "exit_housekeeping_deferred", { code: error.code || "housekeeping_failed" }); }
+      }
       quitCleanupComplete = true;
       app.quit();
     });
