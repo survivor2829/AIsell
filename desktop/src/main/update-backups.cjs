@@ -209,7 +209,11 @@ async function inspectPreservedData(profile, data, options = {}) {
         if (stat.size === 0 && file.size > 0) return failure(file.path, "database_empty");
         continue;
       }
-      if (/^(?:Local Storage|Session Storage|Partitions)[\\/]/i.test(file.path)
+      // Chromium updates its root-level protobuf store during media playback
+      // (e.g. decode performance). Keep it in the rollback snapshot and require
+      // the live file/type above, but do not treat changing LevelDB bytes as lost
+      // customer data. Nested customer folders with the same name stay strict.
+      if (/^(?:Local Storage|Session Storage|Partitions|shared_proto_db)[\\/]/i.test(file.path)
           || /(?:^|[\\/])(?:Preferences|Local State|run-bill\.txt|.*\.jsonl)$/.test(file.path)) continue;
       if (await hashFile(live) === file.sha256) continue;
       if (/\.json(?:\.bak)?$/i.test(file.path)) {

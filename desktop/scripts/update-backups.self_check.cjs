@@ -99,6 +99,16 @@ if (process.argv[2] === "--hold-registry") {
         "older snapshots may include regenerable browser state or the worker's OS lock");
     }
     const catalogPath = path.join("data", "official-materials", "catalog.json");
+    for (const relative of ["shared_proto_db/000003.log", "data/shared_proto_db/000003.log"]) {
+      const live = path.join(profile, relative);
+      await fs.mkdir(path.dirname(live), { recursive: true });
+      await fs.writeFile(live, "updated playback state");
+      const snapshot = { ...first.data, files: [{ path: relative, size: 1, sha256: "old" }] };
+      assert.equal(await checkPreservedData(profile, snapshot), relative.startsWith("shared_proto_db/"),
+        "only Chromium's root store is mutable; customer folders remain strict");
+      await fs.unlink(live);
+      assert.equal(await checkPreservedData(profile, snapshot), false, "mutable storage must still exist");
+    }
     const cachedCatalog = { schema: 1, revision: 1, categories: [], items: [] };
     for (const directory of [profile, first.data.directory]) {
       await fs.mkdir(path.join(directory, path.dirname(catalogPath)), { recursive: true });
