@@ -819,26 +819,30 @@ const standaloneWindow = {
     width: 540,
     height: 700
   });
-  const surfaceDecisionResults = await Promise.all([
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [narrowStandalone], integratedProven: false }),
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [], integratedProven: true }),
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [narrowStandalone], integratedProven: true }),
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [narrowStandalone, secondStandalone], integratedProven: false }),
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [], integratedProven: true, userInputBetweenClicks: true }),
-    runOpenSurfaceDecisionProbe({
+  // Each replay starts and compiles a real PowerShell process. Starting all nine
+  // together can exhaust the runner's six-second budget before assertions run.
+  // Keep every scenario and timeout, but avoid competing cold starts.
+  const surfaceDecisionResults = [];
+  for (const scenario of [
+    { standaloneWindows: [narrowStandalone], integratedProven: false },
+    { standaloneWindows: [], integratedProven: true },
+    { standaloneWindows: [narrowStandalone], integratedProven: true },
+    { standaloneWindows: [narrowStandalone, secondStandalone], integratedProven: false },
+    { standaloneWindows: [], integratedProven: true, userInputBetweenClicks: true },
+    {
       standaloneWindows: [narrowStandalone],
       integratedProven: false,
       hostChangesAfterClick: true,
       standaloneAppearsAfterIntegrated: true
-    }),
-    runOpenSurfaceDecisionProbe({
+    },
+    {
       standaloneWindows: [narrowStandalone],
       integratedProven: true,
       standaloneAppearsAfterIntegrated: true
-    }),
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [], integratedProven: true, userInputAfterFinalClick: true }),
-    runOpenSurfaceDecisionProbe({ standaloneWindows: [], integratedProven: true, userInputBeforeFreshObservation: true })
-  ]);
+    },
+    { standaloneWindows: [], integratedProven: true, userInputAfterFinalClick: true },
+    { standaloneWindows: [], integratedProven: true, userInputBeforeFreshObservation: true }
+  ]) surfaceDecisionResults.push(await runOpenSurfaceDecisionProbe(scenario));
   const restoredPopup = await runOpenSurfaceDecisionProbe({
     standaloneWindows: [{ ...narrowStandalone, minimized: true, left: -32000, top: -32000, width: 199, height: 34 }],
     integratedProven: true
