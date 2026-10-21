@@ -45,12 +45,16 @@ function stabilizeEquivalentBaseFiles(candidateRoot, acceptedRoot) {
     const acceptedFile = path.join(acceptedRoot, entry.path);
     const candidateFile = path.join(candidateRoot, entry.path);
     if (!fs.existsSync(acceptedFile) || !fs.existsSync(candidateFile)) continue;
+    const candidateHash = require("./release-tree-hash.cjs").sha256(candidateFile);
+    if (fs.statSync(candidateFile).size === entry.size && candidateHash === entry.sha256) continue;
+    // Only text normalization can stabilize different bytes. Large unchanged
+    // binaries compare with the accepted manifest instead of rereading it.
+    if (!textBaseExtensions.has(path.extname(entry.path).toLowerCase())) continue;
     const accepted = fs.readFileSync(acceptedFile);
     if (accepted.length !== entry.size || digest(accepted) !== entry.sha256) {
       throw new Error(`Accepted component base file has changed on disk: ${entry.path}`);
     }
     const candidate = fs.readFileSync(candidateFile);
-    if (candidate.equals(accepted)) continue;
     const acceptedText = normalizedText(accepted, entry.path);
     const candidateText = normalizedText(candidate, entry.path);
     if (acceptedText === null || candidateText === null || acceptedText !== candidateText) continue;

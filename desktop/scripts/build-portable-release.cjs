@@ -374,9 +374,12 @@ function buildPortableStaging(edition, paths, sourceState) {
     `界面和版本清单中的构建编号应当都是：${manifest.buildId}`
   ].join("\n") + "\n", "utf8");
   if (edition === "test") {
-    const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition)], { encoding: "utf8", windowsHide: true });
+    const inventoryFile = `${target}.inventory.json`;
+    fs.writeFileSync(inventoryFile, JSON.stringify(require("./release-tree-hash.cjs").hashInventory(target)));
+    const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition), inventoryFile], { encoding: "utf8", windowsHide: true });
     if (baseline.status !== 0) throw new Error(baseline.stderr || baseline.stdout || "component baseline failed");
     console.log(baseline.stdout.trim());
+    fs.writeFileSync(inventoryFile, JSON.stringify(require("./release-tree-hash.cjs").hashInventory(target)));
   }
   scanRelease(target);
 
@@ -536,7 +539,7 @@ function runPortableSelfCheck(edition, target, zip, componentsOnly = false) {
     target,
     "--zip",
     zip,
-    ...(componentsOnly ? ["--directory-only"] : [])
+    ...(componentsOnly ? ["--directory-only", "--inventory", `${target}.inventory.json`] : [])
   ], { cwd: desktopDir, encoding: "utf8", windowsHide: true, timeout: PORTABLE_SELF_CHECK_TIMEOUT_MS });
   if (check.status !== 0) throw new Error(check.stderr || check.stdout || "portable release self-check failed");
   if (String(check.stderr || "").trim()) {

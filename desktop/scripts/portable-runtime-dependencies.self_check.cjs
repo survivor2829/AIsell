@@ -23,6 +23,26 @@ const { verifyPackagedRuntime } = require("../src/main/remotion-runtime-environm
 
 const desktopDir = path.resolve(__dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-dependencies-"));
+function checkHashInventory() {
+  const hashes = require("./release-tree-hash.cjs");
+  const file = path.join(root, "inventory-proof.txt");
+  fs.writeFileSync(file, "verified");
+  const read = fs.readSync;
+  let byteReads = 0, snapshot;
+  try {
+    fs.readSync = (...args) => { const count = read(...args); if (count > 0) byteReads++; return count; };
+    snapshot = hashes.hashInventory(root);
+    hashes.sha256(file);
+    hashes.treeSha256(root);
+    assert.equal(byteReads, 1, "Inventory, per-file and tree checks reuse one content read");
+  } finally { fs.readSync = read; }
+  hashes.primeHashInventory(snapshot, root);
+  assert.equal(hashes.sha256(file), sha256(file));
+  fs.writeFileSync(file, "modified");
+  assert.throws(() => hashes.primeHashInventory(snapshot, root), /inventory.*changed/i);
+  assert.equal(hashes.sha256(file), sha256(file), "Changed file metadata invalidates a reused digest");
+  fs.unlinkSync(file);
+}
 
 function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -64,6 +84,7 @@ function fixtureLicenseRecord(browserHash) {
 
 async function main() {
   try {
+    checkHashInventory();
     copyAppRuntimeDependencies(root);
     const { pinyin } = require(path.join(root, "node_modules", "pinyin-pro"));
     assert.equal(pinyin('中文', { toneType: 'none' }), 'zhong wen');

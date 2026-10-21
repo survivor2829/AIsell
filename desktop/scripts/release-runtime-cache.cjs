@@ -8,6 +8,24 @@ const { canonicalJson } = require("./release-trust-record.cjs");
 const digest = (value) => crypto.createHash("sha256").update(canonicalJson(value)).digest("hex");
 const HASH = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
+const fingerprintStates = new Map();
+
+// Bump a kind's recipe when artifact-producing behavior changes outside the
+// listed recipe inputs. Cache/receipt implementation changes are not inputs.
+function runtimeRecipe(kind) {
+  const shared = ["scripts/python-library-archive.cjs", "build/pyinstaller-hooks/hook-ssl.py"];
+  const recipes = {
+    "product-detail": { version: 1, scripts: ["scripts/build-product-detail-sidecar.cjs", ...shared, "src/main/product-detail-source-scope.cjs"] },
+    "content-engine": { version: 1, scripts: ["scripts/build-content-engine-sidecar.cjs", ...shared, "src/main/content-engine-media-tools.cjs"] },
+    remotion: { version: 1, scripts: ["scripts/build-remotion-runtime.cjs", "src/main/remotion-render-worker.mjs"] }
+  };
+  if (!recipes[kind]) throw Error("Unknown runtime recipe");
+  return recipes[kind];
+}
+
+function createFingerprintContext({ execute = spawnSync } = {}) {
+  return { python: new Map(), execute, node: null };
+}
 
 function hashInputTree(root) {
   const hash = crypto.createHash("sha256");
@@ -24,23 +42,36 @@ function hashInputTree(root) {
   return hash.digest("hex");
 }
 
-function pythonInputs(python, environment) {
-  const result = spawnSync(python, ["-c", "import sys,sysconfig,json,glob,os; print(json.dumps({'version':sys.version,'paths':sorted(set([sys.executable,sysconfig.get_path('stdlib'),sysconfig.get_path('purelib'),sysconfig.get_path('platlib'),sysconfig.get_path('scripts')]+glob.glob(os.path.join(sys.base_prefix,'*.dll'))+[p for p in [os.path.join(sys.base_prefix,'DLLs')] if os.path.isdir(p)]))}))"], {
-    encoding: "utf8", windowsHide: true, env: environment
-  });
+function pythonInputs(python, environment, context = createFingerprintContext()) {
+  const pythonEnvironment = Object.fromEntries(["PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHONNOUSERSITE", "VIRTUAL_ENV"].map(key => [key, environment[key] || null]));
+  const key = digest({ python: path.resolve(python), environment: pythonEnvironment });
+  if (context.python.has(key)) return context.python.get(key);
+  const options = { encoding: "utf8", windowsHide: true, env: environment, maxBuffer: 16 * 1024 * 1024 };
+  const result = context.execute(python, ["-c", "import sys,json,glob,os; print(json.dumps({'version':sys.version,'paths':sorted(set([sys.executable]+glob.glob(os.path.join(sys.base_prefix,'python3*.dll'))))}))"], options);
   if (result.status !== 0) throw new Error("Cannot fingerprint Python build environment");
   const state = JSON.parse(result.stdout);
-  return { version: state.version, files: state.paths.map((file) => ({ file, sha256: fs.statSync(file).isDirectory() ? hashInputTree(file) : sha256(file) })) };
+  const freeze = context.execute(python, ["-m", "pip", "freeze", "--all", "--disable-pip-version-check"], options);
+  if (freeze.status !== 0) throw new Error("Cannot fingerprint Python package versions");
+  const packages = [...new Set(freeze.stdout.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#")).map(line => {
+    const pinned = /^([A-Za-z0-9_.-]+)==([^\s]+)$/.exec(line);
+    // Direct URLs/editable installs may contain credentials or local paths.
+    // Keep them as opaque inputs; diagnostics never print their contents.
+    return pinned ? `${pinned[1].toLowerCase().replace(/[-_.]+/g, "-")}==${pinned[2]}` : `reference:${digest(line)}`;
+  }))].sort();
+  const value = { version: state.version, files: state.paths.map(file => ({ file, sha256: sha256(file) })), packages };
+  context.python.set(key, value);
+  return value;
 }
 
-function runtimeFingerprint(desktopDir, kind, artifactType, inputs, environment = process.env) {
+function runtimeFingerprint(desktopDir, kind, artifactType, inputs, environment = process.env, context = createFingerprintContext()) {
   const product = require("./build-product-detail-sidecar.cjs");
   const content = require("./build-content-engine-sidecar.cjs");
   const remotion = require("./build-remotion-runtime.cjs");
-  const scripts = ["scripts/release-runtime-cache.cjs", "scripts/release-tree-hash.cjs", "scripts/release-trust-record.cjs"];
-  const state = { schemaVersion: 1, kind, platform: process.platform, arch: process.arch, node: process.version, nodeSha256: sha256(process.execPath) };
+  const recipe = runtimeRecipe(kind);
+  const scripts = recipe.scripts;
+  context.node ||= sha256(process.execPath);
+  const state = { schemaVersion: 2, recipeVersion: recipe.version, kind, platform: process.platform, arch: process.arch, node: process.version, nodeSha256: context.node };
   if (kind === "remotion") {
-    scripts.push("scripts/build-remotion-runtime.cjs", "src/main/atomic-file.cjs", "src/main/remotion-render-worker.mjs");
     const packages = remotion.readPackageState(desktopDir);
     state.packages = remotion.runtimePackageHashes(packages);
     state.installed = ["runtime", "builder"].map((role) => remotion.resolveLockClosure(packages.packageLock, role).map((item) => ({ ...item, tree: remotion.packageTreeSha256(path.join(desktopDir, item.lockPath)) })));
@@ -52,17 +83,17 @@ function runtimeFingerprint(desktopDir, kind, artifactType, inputs, environment 
     const builder = kind === "product-detail" ? product : content;
     const paths = builder.resolveBuildPaths(desktopDir);
     const python = builder.findBuildPython(paths, environment);
-    state.python = pythonInputs(python, environment);
+    state.python = pythonInputs(python, environment, context);
+    const requirementRoots = kind === "product-detail" ? [paths.sourceRoot, paths.sourceDir] : [paths.sourceDir];
+    state.requirements = requirementRoots.flatMap(root => fs.readdirSync(root).filter(name => /^requirements[^/\\]*\.(?:txt|lock)$/.test(name))
+      .map(name => ({ file: path.relative(desktopDir, path.join(root, name)).replaceAll("\\", "/"), sha256: sha256(path.join(root, name)) })));
     state.pythonEnvironment = Object.fromEntries(["PYTHONPATH", "PYTHONHOME", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH"].map((key) => [key, environment[key] || null]));
-    scripts.push(`scripts/build-${kind}-sidecar.cjs`, "scripts/python-library-archive.cjs", "build/pyinstaller-hooks/hook-ssl.py");
     state.pythonBaseArchive = environment.XIAOXI_PYTHON_BASE_SHA256 || null;
     if (kind === "product-detail") {
-      scripts.push("src/main/product-detail-source-scope.cjs");
       state.sourceTreeSha256 = product.productDetailSourceTreeSha256(paths);
       state.snapshot = sha256(paths.snapshotFile);
       state.browser = inputs.remotion.browser;
     } else {
-      scripts.push("src/main/content-engine-media-tools.cjs");
       state.sourceTreeSha256 = content.sourceTreeSha256(paths);
       // Preflight verifies every declared media binary and notice against this record.
       state.mediaTools = inputs.mediaTools.licenseRecord;
@@ -70,7 +101,9 @@ function runtimeFingerprint(desktopDir, kind, artifactType, inputs, environment 
     }
   }
   state.scripts = scripts.map((file) => ({ file, sha256: sha256(path.join(desktopDir, file)) }));
-  return digest(state);
+  const fingerprint = digest(state);
+  fingerprintStates.set(fingerprint, state);
+  return fingerprint;
 }
 
 function validateReuseReceipt(receipt, { buildCommit, sourceCommit, sourceTreeSha256, runtimeTreeSha256, manifestSha256 = null }) {
@@ -108,6 +141,45 @@ function readReuseReceipt(manifestFile, manifest, source) {
   });
 }
 
+function copyImmutableRuntime(source, target) {
+  const info = fs.lstatSync(source);
+  if (info.isSymbolicLink()) throw Error("Runtime cache must not contain symbolic links");
+  if (info.isDirectory()) {
+    fs.mkdirSync(target);
+    for (const name of fs.readdirSync(source)) copyImmutableRuntime(path.join(source, name), path.join(target, name));
+  } else if (info.isFile()) {
+    try { fs.linkSync(source, target); }
+    catch (error) {
+      if (!["EXDEV", "EPERM", "EACCES", "EMLINK", "ENOTSUP", "EOPNOTSUPP"].includes(error.code)) throw error;
+      fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+    }
+  } else throw Error("Unsupported runtime cache entry");
+}
+
+function inputFieldHashes(fingerprint) {
+  const state = fingerprintStates.get(fingerprint);
+  return state ? Object.fromEntries(Object.entries(state).map(([field, value]) => [field, digest(value)])) : null;
+}
+
+function logCacheDifference(cacheRoot, kind, fingerprint, log) {
+  const next = inputFieldHashes(fingerprint), parent = path.join(cacheRoot, kind);
+  if (!next || !fs.existsSync(parent)) return;
+  const records = [];
+  for (const key of fs.readdirSync(parent, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+    const directory = path.join(parent, key.name);
+    for (const generation of fs.readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+      try {
+        const file = path.join(directory, generation.name, "cache.json");
+        records.push({ modified: fs.statSync(file).mtimeMs, record: JSON.parse(fs.readFileSync(file, "utf8")) });
+      } catch { /* Incomplete historical entries remain available for audit. */ }
+    }
+  }
+  const previous = records.sort((a, b) => b.modified - a.modified)[0]?.record.inputFields;
+  if (!previous) { log(`${kind} cache inputs changed: prior input-field record unavailable`); return; }
+  const differences = [...new Set([...Object.keys(previous), ...Object.keys(next)])].filter(field => previous[field] !== next[field]);
+  if (differences.length) log(`${kind} cache inputs changed: ${differences.map(field => `${field} ${(previous[field] || "missing").slice(0, 12)}→${(next[field] || "missing").slice(0, 12)}`).join(", ")}`);
+}
+
 // Each cache generation is immutable. Invalid generations are retained for audit,
 // and a fresh generation is built instead of overwriting or deleting artifacts.
 function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination, resolve, build, artifacts, sourceOf = null, log = console.log }) {
@@ -131,7 +203,11 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
       const target = path.join(destination, relative);
       if (fs.existsSync(target)) throw new Error(`Runtime staging must be fresh: ${target}`);
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.cpSync(path.join(cached.root, relative), target, { recursive: true, errorOnExist: true, force: false });
+      const source = path.join(cached.root, relative);
+      // Consumers copy runtime trees into the candidate before stabilizing any
+      // bytes. Staging is immutable; standalone manifests remain independent.
+      if (fs.lstatSync(source).isDirectory()) copyImmutableRuntime(source, target);
+      else fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
     }
     const verified = resolve(destination);
     if (sourceOf) {
@@ -148,6 +224,7 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
     return { hit: true };
   }
   log(`${kind} runtime cache miss (${fingerprint.slice(0, 12)})`);
+  logCacheDifference(cacheRoot, kind, fingerprint, log);
   build();
   const verified = resolve(destination);
   if (sourceOf && sourceOf(verified).dirty) throw new Error("Cannot cache runtime built from dirty source");
@@ -160,7 +237,7 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
     fs.cpSync(path.join(destination, relative), target, { recursive: true, errorOnExist: true, force: false });
   }
   const saved = resolve(root);
-  fs.writeFileSync(path.join(root, "cache.json"), JSON.stringify({ kind, fingerprint, manifestSha256: sha256(saved.manifestFile) }), { flag: "wx" });
+  fs.writeFileSync(path.join(root, "cache.json"), JSON.stringify({ kind, fingerprint, inputFields: inputFieldHashes(fingerprint), manifestSha256: sha256(saved.manifestFile) }), { flag: "wx" });
   require("./artifact-retention.cjs").retainArtifacts(cacheRoot, `runtime-${kind}`, [root], 2);
   } catch (error) {
     try { require("./artifact-retention.cjs").removeOwned(cacheRoot, root); }
@@ -170,4 +247,4 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   return { hit: false };
 }
 
-module.exports = { cachedRuntime, digest, readReuseReceipt, runtimeFingerprint, validateBaseStabilization, validateReuseReceipt };
+module.exports = { cachedRuntime, digest, readReuseReceipt, runtimeFingerprint, createFingerprintContext, pythonInputs, runtimeRecipe, validateBaseStabilization, validateReuseReceipt };

@@ -3,7 +3,11 @@ name: Windows CI
 on:
   push:
     branches: [main]
+    paths-ignore: &documentation-only
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore: *documentation-only
   workflow_dispatch:
     inputs:
       install_acceptance:
@@ -135,13 +139,15 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: desktop/requirements-ci.txt
       - name: Maintenance HTTP and feedback contracts
         working-directory: server/maintenance
         run: python -m unittest discover -s . -p 'test_*.py'
       - name: Local acquisition gateway, sync and bounded source reads
         working-directory: server/provider-gateway
         run: |
-          python -m pip install -r requirements-precise.txt
+          python -m pip install -r ../../desktop/requirements-ci.txt -r requirements-precise.txt
           python -m unittest discover -s . -p 'test_*acquisition*.py'
       - name: Product detail planning, caption and billing boundaries
         working-directory: desktop/sidecars/product-detail/app
@@ -153,8 +159,24 @@ jobs:
           ARK_API_KEY: ark-test-fake
         run: |
           $env:DATABASE_URL = "sqlite:///$($env:RUNNER_TEMP.Replace('\', '/'))/detail-tests.db"
-          python -m pip install pytest requests pillow flask python-dotenv flask-sqlalchemy flask-login flask-migrate cryptography flask-wtf flask-sock flask-limiter redis numpy playwright pdfplumber python-docx openpyxl pypdf
           python -m pytest ai_refine_v2/tests -q
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked E2E JavaScript dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Install isolated E2E browser
+        run: python -m playwright install chromium
+      - name: Product detail local E2E
+        working-directory: desktop
+        run: |
+          $env:XIAOXI_BUILD_PYTHON = (Get-Command python).Source
+          $env:XIAOXI_PRODUCT_DETAIL_BROWSER_PATH = python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve E2E Chromium' }
+          node scripts/product-detail-local-e2e.cjs --cleanup-on-success
       - name: Official video gateway protocol
         working-directory: server/provider-gateway
         run: python -m unittest discover -s . -p 'test_bailian_video_routes.py'

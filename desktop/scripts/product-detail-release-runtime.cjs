@@ -116,11 +116,7 @@ function copyProductDetailRuntime(build, releaseTarget) {
     throw new Error(`Refusing to overwrite an existing product-detail release runtime: ${destination}`);
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.cpSync(build.runtimeDir, destination, {
-    recursive: true,
-    errorOnExist: true,
-    force: false
-  });
+    require("./release-tree-hash.cjs").copyTreeVerified(build.runtimeDir, destination);
   const executable = path.join(destination, PRODUCT_DETAIL_EXECUTABLE);
   assertFile(executable, "Packaged product-detail runtime executable");
   if (sha256(executable) !== build.manifest.runtime.exeSha256) {

@@ -1,9 +1,30 @@
 const fs = require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
+const crypto = require("node:crypto");
+const { Readable, Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const JSZip = require("jszip");
 const { COMPONENTS, safePath, hashFile, treeHash, validateFiles, validateManifest, MAX_ARCHIVE } = require("../src/shared/component-contract.cjs");
 const defaultLayout = require("../component-layout.json");
+const { sha256 } = require("./release-tree-hash.cjs");
+const ARCHIVE_RECIPE_VERSION = 2;
+const STORED_MEDIA = /\.(?:png|jpg|jpeg|webp|gif|mp4|webm|mov|mp3|m4a|zip|gz|7z|woff2)$/i;
+function verifiedSource(root, file) {
+  // Open each file only when JSZip consumes it, rather than opening thousands
+  // of paused input streams at once. Hashing shares the single compression read.
+  return Readable.from((async function* () {
+    const full = path.join(root, file.path), stat = await fsp.lstat(full);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== file.size) throw Error("component_source_changed");
+    const hash = crypto.createHash("sha256"); let size = 0;
+    for await (const chunk of fs.createReadStream(full)) {
+      size += chunk.length;
+      if (size > file.size) throw Error("component_source_changed");
+      hash.update(chunk); yield chunk;
+    }
+    if (size !== file.size || hash.digest("hex") !== file.sha256) throw Error("component_source_changed");
+  })());
+}
 function classify(relative, layout) {
   for (const rule of layout.rules) for (const prefix of rule.prefixes) {
     if (prefix.endsWith("/") ? relative.startsWith(prefix) : relative === prefix) return rule.component;
@@ -24,7 +45,7 @@ async function inventory(root, layout) {
       else if (stat.isFile()) {
         const component = classify(relative, layout);
         if (!["base", ...COMPONENTS].includes(component)) throw Error("component_layout_invalid");
-        files.push({ path: relative, size: stat.size, sha256: await hashFile(full), component });
+        files.push({ path: relative, size: stat.size, sha256: sha256(full), component });
       } else throw Error("component_file_type_invalid");
     }
   }
@@ -62,29 +83,42 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
     try {
       const cached = JSON.parse(await fsp.readFile(cache, "utf8"));
       const file = path.join(outputDir, `${cached.sha256}.zip`);
-      if (/^[a-f0-9]{64}$/.test(cached.sha256) && cached.treeSha256 === treeSha256
-          && (await fsp.stat(file)).size === cached.size && await hashFile(file) === cached.sha256) artifact = { ...cached, path: file };
+      const stat = await fsp.lstat(file);
+      if (cached.archiveRecipe === ARCHIVE_RECIPE_VERSION && /^[a-f0-9]{64}$/.test(cached.sha256) && cached.treeSha256 === treeSha256
+          && stat.isFile() && !stat.isSymbolicLink() && stat.size === cached.size
+          && (stat.mtimeMs === cached.mtimeMs || await hashFile(file) === cached.sha256)) {
+        artifact = { ...cached, path: file, mtimeMs: stat.mtimeMs };
+        if (cached.mtimeMs !== stat.mtimeMs) await fsp.writeFile(cache, JSON.stringify(artifact));
+      }
     } catch { /* cache miss: build from the verified source inventory */ }
     if (!artifact) {
       const zip = new JSZip();
       const options = { date: new Date("2000-01-01T00:00:00Z"), createFolders: false, compression: "DEFLATE", compressionOptions: { level: 6 }, unixPermissions: 0o100644 };
       zip.file("component.json", JSON.stringify(descriptor), options);
       for (const file of ownFiles) {
-        const data = await fsp.readFile(path.join(sourceRoot, file.path));
-        if (data.length !== file.size || require("../src/shared/component-contract.cjs").digest(data) !== file.sha256) throw Error("component_source_changed");
-        zip.file(`files/${file.path}`, data, options);
+        zip.file(`files/${file.path}`, verifiedSource(sourceRoot, file), {
+          ...options, compression: STORED_MEDIA.test(file.path) ? "STORE" : "DEFLATE"
+        });
       }
-      const buffer = await zip.generateAsync({ type: "nodebuffer", platform: "UNIX", streamFiles: true });
-      if (buffer.length > MAX_ARCHIVE) throw Error("component_archive_too_large");
-      const sha256 = require("../src/shared/component-contract.cjs").digest(buffer);
-      const destination = path.join(outputDir, `${sha256}.zip`);
+      const temporary = path.join(outputDir, `.component-${crypto.randomUUID()}.tmp`);
+      const hash = crypto.createHash("sha256"); let size = 0, sha256, destination;
       try {
-        await fsp.writeFile(destination, buffer, { flag: "wx" });
-        retentionOwned.push(destination);
-      } catch (error) {
-        if (error.code !== "EEXIST" || await hashFile(destination) !== sha256) throw error;
+        await pipeline(zip.generateNodeStream({ type: "nodebuffer", platform: "UNIX", streamFiles: true }),
+          new Transform({ transform(chunk, _encoding, callback) {
+            size += chunk.length;
+            if (size > MAX_ARCHIVE) return callback(Error("component_archive_too_large"));
+            hash.update(chunk); callback(null, chunk);
+          } }), fs.createWriteStream(temporary, { flags: "wx" }));
+        sha256 = hash.digest("hex"); destination = path.join(outputDir, `${sha256}.zip`);
+        try { await fsp.link(temporary, destination); retentionOwned.push(destination); }
+        catch (error) {
+          if (error.code !== "EEXIST" || await hashFile(destination) !== sha256) throw error;
+        }
+      } finally {
+        await fsp.rm(temporary, { force: true });
       }
-      artifact = { name, path: destination, sha256, size: buffer.length, treeSha256 };
+      artifact = { name, path: destination, sha256, size, treeSha256, archiveRecipe: ARCHIVE_RECIPE_VERSION,
+        mtimeMs: (await fsp.stat(destination)).mtimeMs };
       try { await fsp.access(cache); } catch { retentionOwned.push(cache); }
       await fsp.writeFile(cache, JSON.stringify(artifact));
     }

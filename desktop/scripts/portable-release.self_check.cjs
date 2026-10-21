@@ -1,5 +1,4 @@
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -39,7 +38,7 @@ function parsePortableArguments(argv) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported portable edition: ${edition}`);
 
   const values = new Map();
-  const allowed = new Set(["--target", "--zip"]);
+  const allowed = new Set(["--target", "--zip", "--inventory"]);
   while (args.length) {
     const option = args.shift();
     if (!allowed.has(option)) throw new Error(`Unknown portable self-check option: ${option}`);
@@ -54,7 +53,8 @@ function parsePortableArguments(argv) {
   return {
     edition,
     targetOption: values.get("--target") || null,
-    zipOption: values.get("--zip") || null
+    zipOption: values.get("--zip") || null,
+    ...(values.has("--inventory") ? { inventoryOption: values.get("--inventory") } : {})
   };
 }
 
@@ -184,6 +184,10 @@ function main(argv = process.argv.slice(2)) {
 const directoryOnly = argv.includes("--directory-only");
 const parsedArguments = { ...parsePortableArguments(argv.filter(arg => arg !== "--directory-only")), directoryOnly };
 const { edition, productName, target, zip } = resolvePortablePaths(parsedArguments);
+if (parsedArguments.inventoryOption) {
+  if (!directoryOnly) throw Error("Build inventory reuse is only valid for directory-only checks");
+  require("./release-tree-hash.cjs").primeHashInventory(JSON.parse(fs.readFileSync(parsedArguments.inventoryOption, "utf8")), target);
+}
 const resourcesDir = path.join(target, "resources");
 const appDir = path.join(resourcesDir, "app");
 const executableName = edition === "test" ? `${productBrand.executableName}-测试版` : productBrand.executableName;
@@ -308,7 +312,7 @@ function assertNoBlockedFiles(names, label, { targetRoot = null, archiveRoot = n
 }
 
 function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return require("./release-tree-hash.cjs").sha256(file);
 }
 
 assert.equal(fs.existsSync(executable), true, "portable executable must exist");

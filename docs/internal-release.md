@@ -24,6 +24,10 @@
 
 在 `desktop/` 执行。首次配置构建机时，参考 `build/internal-release-config.example.json`，将实际已有 Python、FFmpeg、Chromium 和对应来源记录的路径保存到 `.build/internal-release-config.json`。相对路径相对于配置文件所在目录；不要把密钥放进此文件。环境准备与安装依赖不是每次更新的重复步骤。
 
+**开发发布提速（2026-10-21）。** 干净HEAD对应的main推送Windows CI两个源码作业及`Product detail local E2E`步骤均成功时，发布复用该run的源码/E2E证据，并将run id写入构建与空间记录。旧CI缺少E2E、提交不一致、查询失败或工作区不干净时不能跳过；`release:internal -- --force-checks`强制本地检查。运行时清洁门禁、包验收、隐私扫描、发布前归档摘要和读回验签继续执行。
+
+Python构建指纹按解释器/DLL、包版本、requirements和显式运行时配方版本计算，同一次发布共享环境探测；缓存实现和回执脚本变化不会单独重打运行时。不可变运行时缓存到暂存目录同盘优先硬链接，候选程序仍为独立副本。构建内复用带文件身份和时间戳的摘要清单；归档流式写盘，压缩媒体使用STORE。上述复用不提供检测保持元数据不变的任意外部篡改的保证。CI纯文档提交跳过源码作业；自检进程数默认不超过6，独占资源检查串行。
+
 ```powershell
 npm.cmd run release:internal
 ```

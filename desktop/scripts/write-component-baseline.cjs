@@ -3,7 +3,8 @@ const path = require("node:path");
 const { buildComponentRelease } = require("./build-component-release.cjs");
 const { cloudConfig } = require("../src/main/cloud-config.cjs");
 async function main() {
-  const [sourceRoot, outputDir] = process.argv.slice(2);
+  const [sourceRoot, outputDir, inventoryFile] = process.argv.slice(2);
+  if (inventoryFile) require("./release-tree-hash.cjs").primeHashInventory(JSON.parse(fs.readFileSync(inventoryFile, "utf8")), sourceRoot);
   const source = JSON.parse(fs.readFileSync(path.join(sourceRoot, "版本清单.json"), "utf8"));
   const config = cloudConfig({ developmentEdition: true });
   const built = await buildComponentRelease({ sourceRoot, outputDir, version: source.version, baseVersion: require("../package.json").componentBaseVersion,
