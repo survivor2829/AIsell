@@ -160,12 +160,12 @@ export function ReferenceHumanPage() {
         <div id="rh-step-1" hidden={step !== 1}>
         <h2 className="rh-section-title">这次，由谁出镜？</h2>
         <p className="dh-quality">选一个已保存的人物，或上传新视频。文案会按视频时长规划。</p>
-        <div className="rh-people"><button className="rh-upload-person" disabled={!ready || !!busy || locked} onClick={() => void run('import', async () => {
+        <div className={`rh-people${assets.length ? " has-people" : ""}`}><button className="rh-upload-person" disabled={!ready || !!busy || locked} onClick={() => void run('import', async () => {
           const item = await unwrap(referenceApi().importVideo()); if (!item) return; updateAsset(item); edit({ referenceAssetId: item.id }); setConsent(false);
         })}>{busy === 'import' ? <LoaderCircle className="dh-spinning" size={26} /> : <Upload size={26} />}<strong>{busy === 'import' ? '正在检查人物与声音…' : '上传本人视频'}</strong><small>正面讲话 · 至少15秒<br />只有本人声音，不加音乐</small></button>
-          {assets.map((item) => <button type="button" key={item.id} className="rh-person" aria-pressed={draft.referenceAssetId === item.id} disabled={!!busy || locked || item.available === false} onClick={() => edit({ referenceAssetId: item.id })}>
+          {assets.length > 0 && <div className="rh-person-grid" aria-label="已保存的人物">{assets.map((item) => <button type="button" key={item.id} className="rh-person" aria-pressed={draft.referenceAssetId === item.id} disabled={!!busy || locked || item.available === false} onClick={() => edit({ referenceAssetId: item.id })}>
             <span className="rh-person-image"><img src={item.previewDataUrl} alt="" loading="lazy" /><span>{item.seconds.toFixed(1)}秒</span>{draft.referenceAssetId === item.id && <Check className="rh-person-check" size={20} />}</span>
-            <strong title={item.name}>{item.name}</strong><small>{item.available === false ? '素材文件缺失，请重新导入' : item.seconds < referencePolicy.limits.narrationMinSeconds ? `不足${referencePolicy.limits.narrationMinSeconds}秒，请补录` : item.voice?.usable ? '本人声音已保存' : item.voiceSampleReady ? '声音可用 · 制作时建立音色' : '需要补录有效声音'}</small></button>)}
+            <strong title={item.name}>{item.name}</strong><small>{item.available === false ? '素材文件缺失，请重新导入' : item.seconds < referencePolicy.limits.narrationMinSeconds ? `不足${referencePolicy.limits.narrationMinSeconds}秒，请补录` : item.voice?.usable ? '本人声音已保存' : item.voiceSampleReady ? '声音可用 · 制作时建立音色' : '需要补录有效声音'}</small></button>)}</div>}
         </div>
         {asset && <div className="rh-voice-setup"><h3>我的声音</h3>
           {!asset.voiceSampleReady ? <p className="dh-quality">有效讲话不足5秒，请补录连续自然讲话的视频。</p>

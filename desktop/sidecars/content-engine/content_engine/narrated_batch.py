@@ -812,27 +812,42 @@ class NarratedBatchDomain:
                                     for c in b.get("script_options", [])]
         return public
 
-    def list_batches(self):
-        rows = self.db.execute("SELECT state_json FROM narrated_batches_v1 WHERE json_extract(state_json, '$._archived_at') IS NULL ORDER BY updated_at DESC LIMIT 500").fetchall()
-        tasks = {r["id"]: r for r in self.db.execute("SELECT id,status,error_code FROM content_tasks WHERE id IN "
-                "(SELECT json_extract(state_json,'$.task_id') FROM narrated_batches_v1 ORDER BY updated_at DESC LIMIT 500)")}
+    def list_batches(self, limit=500, offset=0):
+        require(type(limit) is int and 1 <= limit <= 500 and type(offset) is int and offset >= 0,
+                "invalid_narrated_pagination", "制作记录分页参数无效。")
+        keys = ("batch_id", "project_id", "title", "status", "task_id", "task_status", "target_count", "recommended_count", "feasible_count", "created_at", "updated_at")
+        paths = ",".join("'$." + key + "'" for key in keys)
+        # Project the small summary in SQLite. Transferring and decoding every
+        # shot, provider receipt and narration made opening the editor grow with
+        # the size of all previous productions.
+        rows = self.db.execute(f"""
+            SELECT json_extract(b.state_json,{paths}) AS summary,
+                   t.status AS live_status, t.error_code,
+                   json_extract(b.state_json,'$._planning_inflight') AS inflight,
+                   json_extract(b.state_json,'$._planning_request') NOT IN ('{{}}','[]','',0)
+                       AS planning_request,
+                   (SELECT count(*) FROM json_each(b.state_json,'$.candidates') c
+                    WHERE CAST(c.key AS INTEGER) < coalesce(nullif(json_extract(b.state_json,'$.target_count'),0),json_array_length(b.state_json,'$.candidates'))
+                      AND json_extract(c.value,'$.status')='completed') AS completed_count
+            FROM narrated_batches_v1 b
+            LEFT JOIN content_tasks t ON t.id=json_extract(b.state_json,'$.task_id')
+            WHERE json_extract(b.state_json,'$._archived_at') IS NULL
+            ORDER BY b.updated_at DESC, b.rowid DESC LIMIT ? OFFSET ?
+        """, (limit + 1, offset)).fetchall()
         items = []
-        for r in rows:
-            b = json.loads(r[0])
-            task = tasks.get(b.get("task_id"))
-            if task:
-                b["task_status"] = task["status"]
-                if task["status"] in {"paused", "cancelled", "failed"}:
-                    b["status"] = ("needs_attention" if task["status"] == "failed" or b.get("status") == "needs_attention"
-                                   else task["status"])
-                    if "unknown" in (task["error_code"] or ""):
+        for r in rows[:limit]:
+            b = dict(zip(keys, json.loads(r["summary"])))
+            if r["live_status"]:
+                b["task_status"] = r["live_status"]
+                if r["live_status"] in {"paused", "cancelled", "failed"}:
+                    b["status"] = ("needs_attention" if r["live_status"] == "failed" or b.get("status") == "needs_attention"
+                                   else r["live_status"])
+                    if "unknown" in (r["error_code"] or ""):
                         b["status"] = "outcome_unknown"
-            if (b.get("_planning_inflight") or b.get("_planning_request")) and b.get("task_status") not in {"queued", "analyzing", "rendering"}:
+            if (r["inflight"] or r["planning_request"]) and b.get("task_status") not in {"queued", "analyzing", "rendering"}:
                 b["status"] = "outcome_unknown"
-            keys = ("batch_id", "project_id", "title", "status", "task_id", "task_status", "target_count", "recommended_count", "feasible_count", "created_at", "updated_at")
-            current = b["candidates"][:b.get("target_count") or len(b["candidates"])]
-            items.append({**{k: b.get(k) for k in keys}, "completed_count": sum(c["status"] == "completed" for c in current)})
-        return {"batches": items}
+            items.append({**b, "completed_count": r["completed_count"]})
+        return {"batches": items, "has_more": len(rows) > limit}
 
     def archive(self, batch_id):
         b = self._load(batch_id)

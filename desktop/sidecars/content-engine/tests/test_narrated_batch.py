@@ -1990,6 +1990,21 @@ class NarratedBatchTests(unittest.TestCase):
         with self.assertRaises(ContentEngineError):
             self.s.archive_narrated_batch(running["batch_id"])
 
+    def test_history_pages_keep_counts_without_loading_batch_details(self):
+        first, second = self.create(1), self.create(1)
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        state = domain._load(second["batch_id"])
+        state["candidates"] = [{"status": "completed", "narration": "private details"}, {"status": "completed"}]
+        state["target_count"] = 1
+        domain._store(state)
+        page = self.s.list_narrated_batches(limit=1, offset=0)
+        self.assertEqual(second["batch_id"], page["batches"][0]["batch_id"])
+        self.assertEqual(1, page["batches"][0]["completed_count"])
+        self.assertNotIn("candidates", page["batches"][0])
+        self.assertTrue(page["has_more"])
+        self.assertEqual(first["batch_id"], self.s.list_narrated_batches(limit=1, offset=1)["batches"][0]["batch_id"])
+        self.assertEqual(2, len(self.s.list_narrated_batches()["batches"]))
+
     def test_speech_can_use_continuous_evidence_beyond_analysis_window(self):
         b = self.create(1)
         domain = NarratedBatchDomain(self.s.creative_domain)

@@ -621,8 +621,8 @@ class ContentEngineService:
     def save_asset_collection(self, request):
         return self._narrated_batches().save_collection(request)
 
-    def list_narrated_batches(self):
-        return self._narrated_batches().list_batches()
+    def list_narrated_batches(self, limit=500, offset=0):
+        return self._narrated_batches().list_batches(limit=limit, offset=offset)
 
     def archive_narrated_batch(self, batch_id):
         return self._narrated_batches().archive(batch_id)

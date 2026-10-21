@@ -24,7 +24,7 @@
     ]
   },
   "business": {
-    "name": "小睿", "legacyNames": ["生意助手"], "responsibility": "AI生意助手",
+    "name": "小睿", "legacyNames": ["生意助手"], "responsibility": "精准获客",
     "appearances": [
       {"id": "original", "label": "小睿", "portraitKey": "business-assistant", "portraitFile": "business-assistant.png", "position": "50% 24%", "accent": "#b57829", "strong": "#785018", "surface": "#fbf3e6", "soft": "#fffaf2", "pattern": "business-original.svg", "motifs": ["search", "message", "globe"], "layout": "frames"}
     ]

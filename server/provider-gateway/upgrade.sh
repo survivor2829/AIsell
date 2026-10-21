@@ -11,14 +11,9 @@ data_dir=/var/lib/ai-provider-gateway
 }
 [ -s "$source_dir/service.py" ] || { echo 'Missing deployment file: service.py' >&2; exit 1; }
 [ -s "$source_dir/material_search.py" ] || { echo 'Missing deployment file: material_search.py' >&2; exit 1; }
-for file in local_acquisition.py acquisition_sync.py; do
-  [ -s "$source_dir/$file" ] || { echo "Missing deployment file: $file" >&2; exit 1; }
-done
-catalog_file="$source_dir/../../desktop/src/shared/precise-public-sources.json"
-if [ -f "$source_dir/precise-public-sources.json" ]; then catalog_file="$source_dir/precise-public-sources.json"; fi
-[ -s "$catalog_file" ] || { echo 'Missing acquisition source catalog' >&2; exit 1; }
 
-python3 - "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/local_acquisition.py" "$source_dir/acquisition_sync.py" <<'PY'
+
+python3 - "$source_dir/service.py" "$source_dir/material_search.py" <<'PY'
 from pathlib import Path
 import sys
 for filename in sys.argv[1:]:
@@ -79,8 +74,7 @@ PY
   fi
 done
 trap rollback EXIT
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/local_acquisition.py" "$source_dir/acquisition_sync.py" "$app_dir/"
-install -m 644 "$catalog_file" "$app_dir/precise-public-sources.json"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
 install -d -m 755 "$override_dir"
 printf '%s\n' '[Service]' 'ReadWritePaths=/var/lib/ai-provider-gateway' > "$override_file"
 chmod 644 "$override_file"

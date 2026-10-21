@@ -10,11 +10,7 @@ function checkEnvironment(check, environment = process.env) {
   // PowerShell replays use the OS clock; changing only Node's TZ breaks them.
   const chinaCalendar = /src\/main\/(?:active-touch(?:-dev)?-ipc|touch-task-ipc|wechat-workflow|moments-[^/]+|auto-reply-ipc)\.self_check\.cjs$/.test(check)
     || /^src\/renderer\/moments-[^/]+\.self_check\.cjs$/.test(check);
-  let result = chinaCalendar ? { ...environment, TZ: "Asia/Shanghai" } : environment;
-  if (check === "src/main/acquisition-sync.self_check.cjs" && !environment.PRECISE_TEST_PYTHON) {
-    const python = environment.XIAOXI_BUILD_PYTHON || path.join(desktopDir, ".build/product-detail-venv/Scripts/python.exe");
-    if (fs.existsSync(python)) result = { ...result, PRECISE_TEST_PYTHON: python };
-  }
+  const result = chinaCalendar ? { ...environment, TZ: "Asia/Shanghai" } : environment;
   return result;
 }
 function concurrencyFor(environment = process.env, cpus = os.availableParallelism()) {

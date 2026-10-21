@@ -16,7 +16,7 @@ import creativeThinkingStill from "./assets/creative-thinking-still.webp";
 import creativeMaking from "./assets/creative-making.webp";
 import creativeMakingStill from "./assets/creative-making-still.webp";
 
-type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onInitialConsumed?: (initial: NonNullable<Props["initial"]>) => void; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenLegacy?: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
+type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onInitialConsumed?: (initial: NonNullable<Props["initial"]>) => void; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
 const emptyGroups = (): Groups => ({ opening: [], middle: [], ending: [] });
 const activeStatuses = new Set(["queued", "analyzing", "rendering", "ready_for_review"]);
 const preferredVoiceStorageKey = "batch-studio-preferred-voice";
@@ -43,7 +43,7 @@ function scriptBody(candidate: Candidate) {
 }
 
 
-export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, onOpenMaterials, onOpenLegacy, onOpenDiagnostics }: Props) {
+export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, onOpenMaterials, onOpenDiagnostics }: Props) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -71,6 +71,9 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const [preview, setPreview] = useState<Asset | null>(null);
   const [editing, setEditing] = useState<Candidate | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(true);
+  const [resources, setResources] = useState<Record<string, string>>({ 素材: "正在读取", 制作记录: "正在读取", 素材集: "正在读取", 声音: "正在读取", 品牌: "正在读取" });
+  const [moreBatches, setMoreBatches] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -156,7 +159,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   }
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
-  const locked = busy || running || paused || Boolean(batch?.archived);
+  const locked = busy || restoring || running || paused || Boolean(batch?.archived);
   const scriptFlow = !batch || settings.workflow_version === 2;
   const modern = !batch || batch.brief_version === 1;
   const visualFlow = modern && scriptFlow;
@@ -182,9 +185,14 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   async function refreshAssets() {
     const r = await window.xiaoxiContent?.library.list({ limit: 500 });
     if (!r?.ok) throw new Error(r?.error || "我的素材尚未连接");
-    setAssets(r.data?.items as Asset[] || []);
+    if (mounted.current) setAssets(r.data?.items as Asset[] || []);
   }
-  async function refreshBatches() { setBatches((await callBatch<{ batches: Batch[] }>("list")).batches); }
+  async function refreshBatches(offset = 0) {
+    const result = await callBatch<{ batches: Batch[]; has_more?: boolean }>("list", { limit: 60, offset });
+    if (!mounted.current) return;
+    setBatches(previous => offset ? [...previous, ...result.batches.filter(item => !previous.some(old => old.batch_id === item.batch_id))] : result.batches);
+    setMoreBatches(Boolean(result.has_more));
+  }
   function load(b: Batch) {
     draftOwner.current += 1;
     draftQueue.cancelPending();
@@ -209,34 +217,40 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     try { await action(); } catch (e) { setNotice((e as Error).message); } finally { setBusy(false); }
   }
   useEffect(() => {
-    void run(async () => {
-      const resources = await Promise.allSettled([refreshAssets(), refreshBatches(), callBatch<{ collections: Collection[] }>("collections")]);
-      if (resources[2].status === "fulfilled") setCollections(resources[2].value.collections);
-      const failure = resources.find((result) => result.status === "rejected");
-      if (failure?.status === "rejected") setNotice(failure.reason?.message || "部分资源暂时不可用");
-      let incompatibleVoice = false;
-      // Existing resource pickers retain ownership of audition/approval and licensing.
-      const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ ok?: boolean; data?: { items: VoiceItem[] } }>; listBrandProfiles: () => Promise<{ data?: { items: typeof brands } }> } })?.creative;
-      if (creative) {
-        const results = await Promise.allSettled([creative.listAutoMixVoicePersonas(), creative.listBrandProfiles()]);
-        // A failed read leaves the catalog unknown rather than flagging every voice.
-        if (results[0].status === "fulfilled" && results[0].value.ok !== false) {
-          const approved = applyVoices(results[0].value.data?.items || []);
-          const savedVoice = preferredVoice();
-          if (savedVoice && !approved.some((voice) => voice.voicePersonaId === savedVoice)) {
-            try { localStorage.removeItem(preferredVoiceStorageKey); } catch { /* Selection can still be corrected in this session. */ }
-            incompatibleVoice = true;
-          }
-          if (!initial?.batchId) setSettings((previous) => ({
-            ...previous,
-            voice_persona_id: previous.voice_persona_id && approved.some((voice) => voice.voicePersonaId === previous.voice_persona_id)
-              ? previous.voice_persona_id : savedVoice ? undefined : approved[0]?.voicePersonaId,
-          }));
-        }
-        if (results[1].status === "fulfilled") setBrands(results[1].value.data?.items || []);
-      }
+    let cancelled = false;
+    const owner = draftOwner.current;
+    const active = () => !cancelled && mounted.current && owner === draftOwner.current;
+    function resource(name: string, read: () => Promise<void>) {
+      void read().then(() => {
+        if (!cancelled) setResources(previous => ({ ...previous, [name]: "" }));
+      }).catch(error => {
+        if (!cancelled) setResources(previous => ({ ...previous, [name]: error.message || "读取失败，请重新进入页面重试" }));
+      });
+    }
+    resource("素材", refreshAssets);
+    resource("制作记录", () => refreshBatches());
+    resource("素材集", async () => {
+      const result = await callBatch<{ collections: Collection[] }>("collections");
+      if (!cancelled) setCollections(result.collections);
+    });
+    const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ ok?: boolean; error?: string; data?: { items: VoiceItem[] } }>; listBrandProfiles: () => Promise<{ ok?: boolean; error?: string; data?: { items: typeof brands } }> } })?.creative;
+    resource("声音", async () => {
+      const result = await creative?.listAutoMixVoicePersonas();
+      if (!result?.ok || !result.data) throw new Error(result?.error || "声音目录暂时不可用");
+      if (cancelled) return;
+      const approved = applyVoices(result.data.items || []);
+      // A late catalog response must never replace a task or an explicit selection.
+      if (active() && !selectedId.current) setSettings(previous => previous.voice_persona_id ? previous : { ...previous, voice_persona_id: approved[0]?.voicePersonaId });
+    });
+    resource("品牌", async () => {
+      const result = await creative?.listBrandProfiles();
+      if (!result?.ok || !result.data) throw new Error(result?.error || "品牌目录暂时不可用");
+      if (!cancelled) setBrands(result.data.items || []);
+    });
+    void (async () => {
       // The previous page may still be saving a newly created batch. Recover its ID first.
       await waitForDraftWrites();
+      if (!active()) return;
       // Never replays onto a batch past drafting, keeps the edit through transient
       // failures, and backs it up once a deterministic rejection stops the replay. The
       // edit is replayed whichever batch this page opens, so it is not left behind for
@@ -246,16 +260,20 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         get: (batchId) => callBatch<Batch>("get", { batch_id: batchId }),
         save: (value) => callBatch<Batch>("save", value),
       });
+      if (!active()) return;
       if (restore.kind === "restored" && (!initial?.batchId || restore.batch.batch_id === initial.batchId)) {
         localStorage.setItem("batch-studio-draft-id", restore.batch.batch_id);
         load(restore.batch);
-        if (incompatibleVoice) setNotice("上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。");
         if (initial && mounted.current) onInitialConsumed?.(initial);
         return;
       }
       const notices = [restoreNotice(restore)];
       let loaded: Batch | null = null;
-      if (initial?.batchId) load(loaded = await callBatch<Batch>("get", { batch_id: initial.batchId }));
+      if (initial?.batchId) {
+        loaded = await callBatch<Batch>("get", { batch_id: initial.batchId });
+        if (!active()) return;
+        load(loaded);
+      }
       else if (initial?.assetIds) {
         setGroups({ opening: [], middle: initial.assetIds, ending: [] }); setCollectionId(initial.collection?.collection_id || ""); setTitle(initial.collection?.name || ""); setBrief({ target_audience: "", expression: initial.collection?.description || "", script_source: initial.collection?.description?.trim() ? "ideas" : "provided" });
         // Saving the carried-in materials at once would push a kept edit into the backup unseen.
@@ -264,16 +282,19 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       else {
         const savedId = localStorage.getItem("batch-studio-draft-id");
         if (savedId) {
-          try { const restored = await callBatch<Batch>("get", { batch_id: savedId }); if (!restored.archived) load(loaded = restored); }
+          try { const restored = await callBatch<Batch>("get", { batch_id: savedId }); if (!active()) return; if (!restored.archived) load(loaded = restored); }
           catch { notices.push("上次草稿暂时无法读取，可从制作记录重新打开。"); }
         }
       }
-      notices.push((loaded && voiceWarning(loaded)) || (incompatibleVoice ? "上次选择的声音已不可用于火山配音，请重新选择并试听已批准的声音。" : ""));
+      notices.push(loaded ? voiceWarning(loaded) : "");
       if (notices.some(Boolean)) setNotice(notices.filter(Boolean).join(" "));
       // The mounted editor owns this request now. A later visit must restore its
       // saved edits instead of replaying the original material selection.
       if (initial && mounted.current) onInitialConsumed?.(initial);
-    });
+    })().catch(error => {
+      if (!cancelled && mounted.current) setNotice(error.message || "草稿暂时无法恢复，请从制作记录重新打开。");
+    }).finally(() => { if (!cancelled && mounted.current) setRestoring(false); });
+    return () => { cancelled = true; };
   }, []);
   useEffect(() => {
     mounted.current = true;
@@ -330,7 +351,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const draftFingerprint = JSON.stringify([groups, title, description, brief, materialContext, cta, count, collectionId, settings]);
   latestFingerprint.current = draftFingerprint;
   useEffect(() => {
-    if (!dirty || busy || running || submitting) return;
+    if (!dirty || busy || restoring || running || submitting) return;
     try {
       const value = draft();
       // The batch state this edit starts from, so a later replay can tell whether the batch changed since.
@@ -339,7 +360,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       draftQueue.enqueue(value, draftFingerprint, draftOwner.current);
     }
     catch (error) { setNotice((error as Error).message); }
-  }, [dirty, busy, running, submitting, draftFingerprint]);
+  }, [dirty, busy, restoring, running, submitting, draftFingerprint]);
   async function start(action: "recommend" | "samples" | "continue" | "scripts") {
     if (draftQueue.busy()) return;
     draftQueue.cancelPending();
@@ -450,9 +471,11 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     : null;
   const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
-    <header className="batch-page-header"><div><h1>线索视频混剪</h1><p>用你的图片和视频，做一条给客户看的短视频。</p></div><div className="batch-header-actions"><TutorialHelp topic="ai-editing" /><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button>{onOpenLegacy && <button type="button" disabled={busy || saving || running || paused} onClick={onOpenLegacy}>原声拆条与混剪</button>}<button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}><Plus size={15} />新建视频</button></div></header>
+    <header className="batch-page-header"><div><h1>线索视频混剪</h1><p>用你的图片和视频，做一条给客户看的短视频。</p></div><div className="batch-header-actions"><TutorialHelp topic="ai-editing" /><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || restoring || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}><Plus size={15} />新建视频</button></div></header>
+    {restoring && <p className="batch-hint" role="status">正在恢复上次编辑；可以继续切换页面。</p>}
+    {Object.entries(resources).some(([, message]) => message) && <div className="batch-hint" role="status">{Object.entries(resources).filter(([, message]) => message).map(([name, message]) => <p key={name}>{name}：{message}</p>)}</div>}
     {visualFlow && <CreationSteps labels={flowSteps.map(item => item.label)} current={Math.max(0, flowSteps.findIndex(item => item.step === (flowStep === 1 ? 2 : flowStep)))} disabled={flowSteps.map(item => !item.enabled || submitting)} onChange={index => setFlowView(flowSteps[index].step)} />}
-    <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); load(await callBatch<Batch>("get", { batch_id: id })); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
+    <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving || restoring} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); const owner = ++draftOwner.current; const next = await callBatch<Batch>("get", { batch_id: id }); if (mounted.current && owner === draftOwner.current) load(next); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>{moreBatches && <button disabled={busy || saving} onClick={() => void run(() => refreshBatches(batches.length))}>加载更早记录</button>}
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {
         // An edit still waiting for its save lands before the archive, never after it: a
         // content save would take the batch out of the archive, and its response would

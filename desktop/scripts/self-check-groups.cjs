@@ -8,13 +8,7 @@ const checks = [
   "src/main/map-acquisition.self_check.cjs",
   "src/main/acquisition-workbench.self_check.cjs",
   "src/main/acquisition-account.self_check.cjs",
-  "src/main/acquisition-sync.self_check.cjs",
   "src/main/business-workbench.self_check.cjs",
-  "src/main/geo-workbench.self_check.cjs",
-  "src/main/precise-acquisition.self_check.cjs",
-  "src/main/precise-attachments.self_check.cjs",
-  "src/main/precise-document-images.self_check.cjs",
-  "src/main/precise-public-sources.self_check.cjs",
 
   "scripts/wechat-failure-policy-review.self_check.cjs",
   "scripts/wechat-failure-policy-review.cjs",
@@ -98,12 +92,10 @@ const checks = [
   "src/main/bailian-api-key.self_check.cjs",
   "src/main/content-media-protocol.self_check.cjs",
   "src/main/content-engine-desktop-integration.self_check.cjs",
-  "src/renderer/creative-workspace-concurrency.self_check.cjs",
   "src/renderer/batch-draft-queue.self_check.cjs",
   "src/renderer/batch-voice-recovery.self_check.cjs",
   "src/renderer/ad-law-terms.self_check.cjs",
   "src/renderer/status-subscription.self_check.cjs",
-  "src/renderer/creative-workspace.self_check.cjs",
   "src/renderer/creative-studio.self_check.cjs",
   "src/renderer/product-one-click.self_check.cjs",
   "scripts/remotion-packaging.self_check.cjs",
@@ -131,7 +123,7 @@ const checks = [
 // instance of the same check. Keep the resource policy in one place.
 const exclusivePatterns = [
   /^rpa\//,
-  /^src\/main\/(?:acquisition-sync|failure-evidence)\.self_check\.cjs$/,
+  /^src\/main\/failure-evidence\.self_check\.cjs$/,
   /^scripts\/(?:update-helper\.|component-update-selftest\.|product-detail-download\.electron\.)/,
   /^scripts\/(?:build-renderer|dev-electron|build-product-detail-sidecar|build-content-engine-sidecar|product-detail-release-runtime|content-engine-release-runtime|remotion-packaging|installer-release|customer-edition|internal-release|development-launcher)\.self_check\.cjs$/
 ];

@@ -154,7 +154,7 @@ function helperRuntimeIdentity(installedRoot, applicationRoot) {
   const baseline = readJson(path.resolve(applicationRoot, "../../component-base.json")) || readJson(path.join(installedRoot, "component-base.json"));
   const updater = baseline?.components?.updater?.treeSha256 || baseline?.components?.application?.treeSha256;
   if (!HEX.test(baseline?.base?.fingerprint || "") || !HEX.test(updater || "")) throw Error("update_helper_identity_invalid");
-  return digest(JSON.stringify({ base: baseline.base.fingerprint, updater }));
+  return digest(JSON.stringify({ base: baseline.base.fingerprint, updater, copyRecipe: 2 }));
 }
 async function prepareHelperRuntimeCopy({ paths, installedRoot, applicationRoot, executable }) {
   const identity = helperRuntimeIdentity(installedRoot, applicationRoot), parent = safePath(paths.directory, "helper-runtime");
@@ -199,14 +199,11 @@ async function prepareHelperRuntimeCopy({ paths, installedRoot, applicationRoot,
     for (const copy of copies) {
       const target = path.join(owned.directory, copy.target), stat = await fs.promises.lstat(copy.source);
       if (stat.isSymbolicLink()) throw Error("update_program_link_unsupported");
-      if (stat.isDirectory()) await copySnapshot(copy.source, target, undefined, undefined, { allowLinks: false, linkImmutable: true });
-      else if (stat.isFile()) {
-        if (/\.(?:exe|dll|node)$/i.test(copy.target)) await fs.promises.copyFile(copy.source, target, fs.constants.COPYFILE_EXCL);
-        else { try { await fs.promises.link(copy.source, target); } catch (error) {
-          if (!["EXDEV", "EPERM", "EACCES", "EMLINK", "ENOTSUP", "EOPNOTSUPP"].includes(error.code)) throw error;
-          await fs.promises.copyFile(copy.source, target, fs.constants.COPYFILE_EXCL);
-        } }
-      } else throw Error("update_copy_file_type_invalid");
+      if (stat.isDirectory()) await copySnapshot(copy.source, target, undefined, undefined, { allowLinks: false, linkImmutable: copy.target === "resources/app" });
+      // Electron also maps ICU, snapshots, resource packs and locale packs.
+      // Sharing those inodes would let the exit helper lock its own GC targets.
+      else if (stat.isFile()) await fs.promises.copyFile(copy.source, target, fs.constants.COPYFILE_EXCL);
+      else throw Error("update_copy_file_type_invalid");
     }
     const metadata = await metadataInventory(owned.directory, file => file !== preparing);
     const files = metadata.map(({ path, size }) => ({ path, size }));

@@ -46,6 +46,8 @@ if (process.argv[2] === "--hold-registry") {
     await fs.writeFile(path.join(installedHelper, "app.exe"), "physical executable");
     await fs.writeFile(path.join(installedHelper, "runtime.dll"), "physical library");
     await fs.writeFile(path.join(helperApp, "bootstrap.cjs"), "immutable helper code");
+    await fs.mkdir(path.join(installedHelper, "locales"));
+    for (const name of ["icudtl.dat", "snapshot_blob.bin", "resources.pak", "locales/zh-CN.pak"]) await fs.writeFile(path.join(installedHelper, name), "mapped runtime bytes");
     await fs.writeFile(path.join(installedHelper, "component-base.json"), JSON.stringify({ base: { fingerprint: "a".repeat(64) },
       components: { updater: { treeSha256: "b".repeat(64) } } }));
     const helper = require("../src/main/update-helper.cjs");
@@ -56,6 +58,9 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal((await helper.prepareHelperRuntime(options)).created, false);
     assert.notEqual((await fs.stat(helperOne.helperExecutable)).ino, (await fs.stat(options.executable)).ino, "helper EXE must not share installer-locked bytes");
     assert.notEqual((await fs.stat(path.join(helperOne.owned.directory, "runtime.dll"))).ino, (await fs.stat(path.join(installedHelper, "runtime.dll"))).ino);
+    for (const name of ["icudtl.dat", "snapshot_blob.bin", "resources.pak", "locales/zh-CN.pak"]) {
+      assert.notEqual((await fs.stat(path.join(helperOne.owned.directory, name))).ino, (await fs.stat(path.join(installedHelper, name))).ino, `${name} must not share memory-mapped bytes with retired generations`);
+    }
     assert.equal((await fs.stat(path.join(helperOne.owned.directory, "resources/app/bootstrap.cjs"))).ino, (await fs.stat(path.join(helperApp, "bootstrap.cjs"))).ino);
     assert.equal((await helper.prepareHelperRuntime(options)).helperExecutable, helperOne.helperExecutable,
       "The shared helper cache is independent of update job history");

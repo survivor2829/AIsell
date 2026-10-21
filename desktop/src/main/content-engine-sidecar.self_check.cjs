@@ -151,6 +151,31 @@ async function main() {
 
   try {
     {
+      const child = new FakeChild();
+      let provider = "account-a", revision = 1, holdRefresh = false;
+      const controller = createContentEngineSidecar({ runtimePath, dataDir,
+        getProviderEnvironment: () => ({ XIAOXI_PROVIDER_GATEWAY_TOKEN: provider }),
+        spawnProcess: () => { setImmediate(() => child.ready()); return child; } });
+      child.on("request", request => {
+        if (request.method === "shutdown") { child.respond(request, {}); setImmediate(() => child.emit("close", 0)); }
+        else if (request.method !== "list_brand_profiles" || !holdRefresh) child.respond(request, { revision });
+      });
+      assert.deepEqual(await controller.listBrandProfiles(), { revision: 1 });
+      holdRefresh = true; revision = 2;
+      const hot = controller.listBrandProfiles();
+      assert.equal(await Promise.race([hot.then(value => value.revision), new Promise(resolve => setTimeout(() => resolve("blocked"), 100))]), 1,
+        "a read-only catalog must remain usable while its refresh waits");
+      await waitFor(() => child.stdin.writes.filter(request => request.method === "list_brand_profiles").length === 2);
+      child.respond(child.stdin.writes.at(-1), { revision: 2 });
+      await new Promise(resolve => setImmediate(resolve));
+      holdRefresh = false; revision = 3;
+      await controller.saveAssetCollection({ name: "written" });
+      assert.deepEqual(await controller.listBrandProfiles(), { revision: 3 }, "successful writes invalidate catalogs");
+      provider = "account-b"; revision = 4;
+      assert.deepEqual(await controller.listBrandProfiles(), { revision: 4 }, "authorization identity changes invalidate catalogs");
+      await controller.dispose();
+    }
+    {
       const blocked = createContentEngineSidecar({ runtimePath, dataDir,
         beforeStart: () => { throw Error("component_file_corrupt"); },
         spawnProcess: () => assert.fail("Unverified runtime must not execute") });

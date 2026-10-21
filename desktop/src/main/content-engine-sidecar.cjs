@@ -1,5 +1,5 @@
 const { spawn } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHash } = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -155,6 +155,12 @@ function createContentEngineSidecar(options = {}) {
   let startPromise = null;
   let stopPromise = null;
   let disposed = false;
+  // Read-only pickers may show their last successful result while refreshing.
+  // Production, fee confirmation and draft writes always use a fresh request.
+  const catalogs = new Map();
+  const catalogMethods = new Set(["list_assets", "list_asset_collections", "list_auto_mix_voice_personas", "list_brand_profiles"]);
+  let catalogScope = "", catalogEpoch = 0;
+  function invalidateCatalogs() { catalogEpoch += 1; catalogs.clear(); }
   let snapshot = {
     state: runtimePath && existsSync(runtimePath) ? "stopped" : "unavailable",
     available: Boolean(runtimePath && existsSync(runtimePath)),
@@ -531,6 +537,32 @@ function createContentEngineSidecar(options = {}) {
   }
 
   async function request(method, params = {}, optionsForRequest = {}) {
+    const provider = getProviderEnvironment() || {};
+    const scope = createHash("sha256").update(JSON.stringify(Object.keys(provider).sort().map(key => [key, provider[key]]))).digest("hex");
+    if (scope !== catalogScope) { catalogScope = scope; invalidateCatalogs(); }
+    if (!catalogMethods.has(method)) {
+      const result = await freshRequest(method, params, optionsForRequest);
+      if (!/^(list_|get_|production_summary$)/.test(method)) invalidateCatalogs();
+      return result;
+    }
+    if (global.__xiaoxiUpdateHold) throw createError("UPDATE_IN_PROGRESS");
+    const key = `${method}:${JSON.stringify(params)}`;
+    let entry = catalogs.get(key);
+    if (!entry) { entry = {}; catalogs.set(key, entry); }
+    if (!entry.pending) {
+      const epoch = catalogEpoch;
+      const target = entry;
+      target.pending = freshRequest(method, params, optionsForRequest).then(result => {
+        if (epoch === catalogEpoch) target.value = result;
+        return result;
+      }).finally(() => { target.pending = null; });
+      // A stale result is usable; a refresh failure must not become an unhandled rejection.
+      target.pending.catch(() => {});
+    }
+    return entry.value === undefined ? entry.pending : structuredClone(entry.value);
+  }
+
+  async function freshRequest(method, params = {}, optionsForRequest = {}) {
     if (global.__xiaoxiUpdateHold && !["shutdown", "production_summary"].includes(method)) throw createError("UPDATE_IN_PROGRESS");
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(String(method || ""))) {
       throw createError("CONTENT_ENGINE_METHOD_INVALID");
@@ -635,6 +667,7 @@ function createContentEngineSidecar(options = {}) {
 
   async function restart() {
     if (disposed) return status();
+    invalidateCatalogs();
     const stopped = await stop();
     if (stopped.state !== "stopped") return stopped;
     return start();
@@ -642,6 +675,7 @@ function createContentEngineSidecar(options = {}) {
 
   async function dispose() {
     disposed = true;
+    invalidateCatalogs();
     const result = await stop();
     listeners.clear();
     return result;
@@ -654,6 +688,7 @@ function createContentEngineSidecar(options = {}) {
   }
 
   return {
+    invalidateCatalogs,
     updateStatus: () => ({ state: snapshot.state, pending: currentRun?.pending.size || 0, alive: Boolean(currentRun && !currentRun.closed) }),
     analyzeAssets: (assetIds, profile) => request("analyze_assets", {
       asset_ids: assetIds,
@@ -661,7 +696,7 @@ function createContentEngineSidecar(options = {}) {
     }),
     listAssetCollections: () => request("list_asset_collections", {}),
     saveAssetCollection: (payload) => request("save_asset_collection", payload),
-    listNarratedBatches: () => request("list_narrated_batches", {}),
+    listNarratedBatches: (pagination = {}) => request("list_narrated_batches", pagination),
     archiveNarratedBatch: (batchId) => request("archive_narrated_batch", { batch_id: batchId }),
     saveNarratedBatch: (payload) => request("save_narrated_batch", payload),
     getNarratedBatch: (batchId) => request("get_narrated_batch", { batch_id: batchId }),
