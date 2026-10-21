@@ -5265,7 +5265,7 @@ def ai_refine_v2_execute():
         else None
     )
     if product_category and product_category not in ALLOWED_PRODUCT_TYPES:
-        product_category = None  # 不合法的品类 → 静默降级不重排
+        return _input_error("AI_REFINE_CATEGORY_INVALID", "请选择设备、配件、耗材或工具品类")
 
     from ai_refine_v2 import pipeline_runner
     # PR C (2026-05-07): 二级 key 模式 — paid/admin 用 platform, else 用 user 自配
@@ -5336,13 +5336,15 @@ def ai_refine_v2_recover(task_id: str):
         return jsonify({"ok": True, **state})
     try:
         gpt_image_key, _ = _get_gpt_image_key(current_user)
-        if (request.get_json(silent=True) or {}).get("query_only") is True:
-            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, query_only=True)
-        elif state.get("status") == "pricing_required":
+        deepseek_key = ""
+        if (pipeline_runner.needs_planner_receipt_query(task_id)
+                or state.get("status") == "pricing_required"
+                or pipeline_runner.needs_semantic_review_key(task_id)):
             deepseek_key, _ = _get_deepseek_key(current_user)
-            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, deepseek_key)
+        if (request.get_json(silent=True) or {}).get("query_only") is True:
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, deepseek_key, query_only=True)
         else:
-            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
+            recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key, deepseek_key)
     except pipeline_runner.RecoveryConfirmationRequired as exc:
         return jsonify({"ok": False, "error": str(exc), "code": "AI_REFINE_CONFIRM_CONTINUATION_REQUIRED"}), 409
     except ValueError as exc:

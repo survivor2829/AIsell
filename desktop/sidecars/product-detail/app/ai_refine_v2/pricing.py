@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import urllib.request
+import urllib.error
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -202,6 +203,36 @@ def _write(path, data):
 
 class CostJournal:
     @staticmethod
+    def _request_error(exc):
+        # Never persist exception strings, URLs, headers or supplier messages:
+        # they can contain credentials or echoed customer inputs.
+        result = {"type": type(exc).__name__, "at": time.time()}
+        if isinstance(exc, urllib.error.HTTPError):
+            result["http_status"] = exc.code
+            origin = exc.headers.get("X-Xiaoxi-Error-Origin", "") if exc.headers else ""
+            if origin in {"gateway_transport", "gateway_rate_limit", "coalesced_timeout", "upstream"}:
+                result["origin"] = origin
+            try:
+                raw = exc.read(65536)
+            except Exception:
+                return result
+            result["body_sha256"] = hashlib.sha256(raw).hexdigest()
+            try:
+                data = json.loads(raw)
+                error = data.get("error")
+                code = error.get("code") if isinstance(error, dict) else error
+                if code in ("provider_unavailable", "receipt_not_found", "operation_outcome_unknown",
+                            "session_required", "rate_limit", "provider_request_coalesced_timeout",
+                            "invalid_request_error", "authentication_error", "insufficient_balance",
+                            "invalid_api_key", "context_length_exceeded"):
+                    result["code"] = code
+            except (ValueError, AttributeError):
+                pass
+        elif isinstance(exc, urllib.error.URLError):
+            result["reason_type"] = type(exc.reason).__name__
+        return result
+
+    @staticmethod
     def is_unsubmitted(operation):
         return (operation.get("status") == "failed" and operation.get("not_submitted") is True
                 and not operation.get("provider_task_id") and not operation.get("raw_url"))
@@ -287,12 +318,17 @@ class CostJournal:
             data["operations"][name].update(status=status, **receipt)
             _write(self.path, data)
 
-    def saved_planner_response(self):
+    def _planner_response_path(self, operation):
+        if operation not in {"planner", "semantic_review"}:
+            raise ValueError("unsupported planning operation")
+        return self.path.parent / f"_{operation}_response.json"
+
+    def saved_planner_response(self, operation="planner"):
         """Replay a durably saved paid response, including a crash before finish()."""
         with _LOCK:
-            if "planner" not in self.load()["operations"]:
+            path = self._planner_response_path(operation)
+            if operation not in self.load()["operations"]:
                 return None
-            path = self.path.parent / "_planner_response.json"
             if not path.exists():
                 return None
             try:
@@ -301,33 +337,66 @@ class CostJournal:
                     raise ValueError("planner response shape")
             except Exception:
                 raise RequestOutcomeUnknown("已付费策划回执无法读取，禁止重新提交策划。") from None
-            self._finish_planner(response)
+            self._finish_planner(response, operation)
             return response
 
-    def _finish_planner(self, response):
+    def _finish_planner(self, response, operation="planner"):
         usage = response.get("usage") or {}
         safe_usage = {k: v for k, v in usage.items() if k in {"prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"} and isinstance(v, (int, float))}
-        self.finish("planner", "completed", provider_request_id=str(response.get("id") or ""), usage=safe_usage)
+        self.finish(operation, "completed", provider_request_id=str(response.get("id") or ""), usage=safe_usage)
 
-    def planner_call(self, quote, body, key):
-        from ai_refine_v2.refine_planner import _http_post_deepseek
-        saved = self.saved_planner_response()
+    def planner_call(self, quote, body, key, *, operation="planner"):
+        from ai_refine_v2.refine_planner import _http_post_deepseek, _planner_receipt_origin
+        response_path = self._planner_response_path(operation)
+        request_hash = hashlib.sha256(json.dumps(body["messages"], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        saved = self.saved_planner_response(operation)
         if saved is not None:
+            if operation == "semantic_review" and self.load()["operations"][operation].get("request_sha256") != request_hash:
+                raise RequestOutcomeUnknown("原语义评审与当前输入不一致，保留回执，禁止静默复用或重提。")
             return saved
         # UTF-8 bytes conservatively bound BPE tokens; include chat framing.
         input_bound = len(json.dumps(body["messages"], ensure_ascii=False).encode("utf-8")) + 1024
         rates = quote["planner_per_million_cny"]
         reserve = money((input_bound * rates["input"] + body["max_tokens"] * rates["output"]) / 1_000_000)
-        self.begin("planner", quote, reserve)
+        operation_id = uuid.uuid4().hex
+        self.begin(operation, quote, reserve, request_sha256=request_hash,
+                   gateway_operation_id=operation_id, gateway_origin=_planner_receipt_origin())
         try:
-            response = _http_post_deepseek(body, key)
-        except Exception:
-            self.finish("planner", "outcome_unknown")
+            # Persist the exact payload, but never the credential, before sending.
+            _write(self.path.parent / f"_{operation}_request.json", body)
+            response = _http_post_deepseek(body, key, operation_id)
+        except Exception as exc:
+            self.finish(operation, "outcome_unknown", request_error=self._request_error(exc))
             raise RequestOutcomeUnknown("策划请求结果不明，已保留费用预留；不会自动重新策划。") from None
         # Retain the response before schema parsing: even invalid JSON was paid.
-        _write(self.path.parent / "_planner_response.json", response)
-        self._finish_planner(response)
+        _write(response_path, response)
+        self._finish_planner(response, operation)
         return response
+
+    def query_planner_response(self, key, operation="planner"):
+        from ai_refine_v2.refine_planner import _query_deepseek_receipt, _planner_receipt_origin
+        saved = self.saved_planner_response(operation)
+        if saved is not None:
+            return "recovered"
+        entry = self.load()["operations"].get(operation)
+        if not entry:
+            return "not_submitted"
+        origin = _planner_receipt_origin()
+        if not entry.get("gateway_operation_id") or not origin or entry.get("gateway_origin") != origin:
+            return "receipt_unavailable"
+        try:
+            response = _query_deepseek_receipt(entry["gateway_operation_id"], key)
+            if response is None:
+                return "pending"
+            if not isinstance(response, dict) or not isinstance(response.get("choices"), list) or not response["choices"]:
+                raise ValueError("invalid_planner_receipt")
+            _write(self._planner_response_path(operation), response)
+            self._finish_planner(response, operation)
+            return "recovered"
+        except Exception as exc:
+            self.finish(operation, entry["status"], query_error=self._request_error(exc),
+                        last_query_at=time.time())
+            return "outcome_unknown"
 
     def image_call(self, quote, function, *args, block_id="", lifecycle_callback=None, retry_not_submitted=False, **kwargs):
         if "image_profile" in kwargs:

@@ -1,0 +1,98 @@
+{
+  "provenance": "Actual response v2_1792474082353_2e3d7e; not an expected passing verdict",
+  "review": {
+    "decisions": [
+      {
+        "id": "f1r1",
+        "action": "keep",
+        "reason": "原文明确整机用于室内硬质地面清洁且清洗宽度500mm，回答“在人员流动的室内硬质地面完成洗地作业”的need；结果是整机执行洗地，与f1r2的日常流程安排、f1r3的营业间隙执行不同，有事实支撑。",
+        "target": null,
+        "revision": null
+      },
+      {
+        "id": "f1r2",
+        "action": "merge",
+        "reason": "与f1r1同属“室内硬质地面洗地作业”，仅把场所换成医院、学校并改称纳入日常保洁流程，没有独立于洗地执行的结果；原文场所列举不构成不同工作。",
+        "target": "f1r1",
+        "revision": null
+      },
+      {
+        "id": "f1r3",
+        "action": "merge",
+        "reason": "与f1r1同属室内硬质地面洗地，仅换餐厅、银行场所和“营业间隙”时间修饰，未产生不同工作结果；原文未提供营业间隙作业的特殊能力。",
+        "target": "f1r1",
+        "revision": null
+      },
+      {
+        "id": "f2r1",
+        "action": "keep",
+        "reason": "原文给出清水箱18L与污水箱24L，回答洗地过程中清水供给与污水回收的need；结果是供排水分箱承载并由整机水箱完成，与f2r2的补给倾倒安排不同，有事实支撑。",
+        "target": null,
+        "revision": null
+      },
+      {
+        "id": "f2r2",
+        "action": "revise",
+        "reason": "原文只给出水箱容积，容积不决定补给与倾倒频次或节点，不能支撑“按容量安排节点”；应改写为操作者能识别清水与污水分开承载、便于分别补水与倾倒这一具体使用价值，不量化频次。",
+        "target": null,
+        "revision": {
+          "audience": "保洁操作人员",
+          "scenario": "洗地作业中需要补充清水并处理回收的污水",
+          "need": "区分清水供给与污水收集，避免混用",
+          "benefit": "清水与污水分别由独立水箱承载，操作者可分别补水与倾倒",
+          "value_bridge": "清水箱18L与污水箱24L分箱设置，使洗地供水和污水回收各用其箱",
+          "outcome_key": "清水与污水分箱承载",
+          "title": "清水污水分箱承载",
+          "subtitle": "18L清水箱与24L污水箱分别使用",
+          "visual_brief": {
+            "product_presentation": "whole_product",
+            "scene": "室内硬质地面洗地作业旁",
+            "framing": "侧前方视角",
+            "product_action": "整机在硬质地面上执行洗地",
+            "visual_evidence": "以清水箱与污水箱两个独立箱体标注区分供水和污水回收",
+            "layout": "整机居中，水箱标注分列两侧"
+          }
+        }
+      },
+      {
+        "id": "f3r1",
+        "action": "revise",
+        "reason": "原文给出平均续航2-6h，可作为作业时段参考，但未说明配置与续航对应，也未说明充电衔接能力；应保留“按平均续航安排作业时段”的有限价值，去掉充电衔接的推断。",
+        "target": null,
+        "revision": {
+          "audience": "多区域保洁排班负责人",
+          "scenario": "室内场所需要在不同时段安排地面清洁作业",
+          "need": "为洗地作业时段安排提供时间参考",
+          "benefit": "可依据2-6h平均续航预估单次作业时段",
+          "value_bridge": "平均续航时间2-6h为排班提供时间参考，负责人据此预估洗地作业时段",
+          "outcome_key": "按平均续航预估作业时段",
+          "title": "按续航预估作业时段",
+          "subtitle": "平均续航2-6h，供排班参考",
+          "visual_brief": {
+            "product_presentation": "whole_product",
+            "scene": "室内硬质地面清洁作业",
+            "framing": "侧前方视角",
+            "product_action": "整机在硬质地面上执行洗地",
+            "visual_evidence": "以续航时间标注说明作业时段参考",
+            "layout": "整机居中，续航标注置于上方"
+          }
+        }
+      },
+      {
+        "id": "f3r2",
+        "action": "spec_only",
+        "reason": "原文只说明存在40Ah/60Ah两种配置且未说明配置与续航对应关系；采购者“了解配置与续航关系”的need未被回答，仅能确认配置存在，属于规格信息而非独立使用收益。",
+        "target": null,
+        "revision": null
+      },
+      {
+        "id": "f4r1",
+        "action": "spec_only",
+        "reason": "原文仅在产品名称中写明“含工作站”，未说明工作站的功能、使用方式或带来的独立结果；“确认含工作站配套”只是规格确认，不构成独立使用收益。",
+        "target": null,
+        "revision": null
+      }
+    ],
+    "additions": []
+  }
+}

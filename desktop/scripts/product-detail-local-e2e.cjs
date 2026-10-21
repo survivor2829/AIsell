@@ -636,8 +636,7 @@ def run():
                 confirmation_message = workspace.locator(
                     "#ai_refine_confirm_message"
                 ).inner_text()
-                if (not all(text in confirmation_message for text in ["每个独立卖点一张图", "最多15张", "APIMart", "先核对策划与生图报价"])
-                    or "8–15" in confirmation_message):
+                if not all(text in confirmation_message for text in ["自动策划", "部件特写", "最多15张", "APIMart", "先核对策划与生图报价", "不会自动重提"]):
                     raise AssertionError(
                         "AI refine preflight must disclose product-driven image count, quote checks and APIMart billing"
                     )

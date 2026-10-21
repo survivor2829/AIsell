@@ -106,6 +106,7 @@ function buildPyInstallerArgs(paths) {
     "--onedir",
     "--noupx",
     "--console",
+    "--additional-hooks-dir", path.join(paths.desktopDir, "build", "pyinstaller-hooks"),
     "--name",
     "content-engine-worker",
     "--paths",
