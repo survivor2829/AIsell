@@ -60,6 +60,60 @@ if (process.argv[2] === "--hold-registry") {
     const oldPayload = JSON.stringify({ components: Object.fromEntries(["application", "content-engine", "product-detail", "video"].map((name, index) => [name, { sha256: String(index + 1).repeat(64) }])) });
     assert.equal(generationRefs(root, require("node:crypto").createHash("sha256").update(oldPayload).digest("hex"), { payload: oldPayload }).length, 9,
       "Historical four-component generations remain protected after adding updater/assets");
+    const { backupLocalInstall } = require("./backup-local-install.cjs");
+    const nativeFs = require("node:fs"), localProgram = path.join(root, "local-program"), localProfile = path.join(root, "local-profile");
+    const localMain = path.join(localProgram, "resources/app/src/main/main.cjs"), localMaterial = path.join(localProfile, "material.bin");
+    await fs.mkdir(path.dirname(localMain), { recursive: true }); await fs.mkdir(localProfile);
+    await fs.writeFile(localMain, "local program fixture");
+    await fs.writeFile(path.join(localProgram, "版本清单.json"), JSON.stringify({ version: "1.1.105" }));
+    await fs.writeFile(localMaterial, "original customer material");
+    const stream = nativeFs.createReadStream, reads = new Map();
+    let localBackup;
+    try {
+      nativeFs.createReadStream = (file, ...args) => { const key = path.resolve(file); reads.set(key, (reads.get(key) || 0) + 1); return stream(file, ...args); };
+      localBackup = await backupLocalInstall({ program: localProgram, profile: localProfile, outputRoot: path.join(root, "local-backups"), purpose: "manual" });
+    } finally { nativeFs.createReadStream = stream; }
+    assert.equal(reads.get(localMaterial), 1, "Local full backup reads customer bytes once while copying, not before and after copy");
+    assert.equal(reads.get(localMain), 1, "Local full backup reuses the same program copy/hash receipt");
+    assert.equal([...reads.keys()].some(file => file.startsWith(localBackup.directory + path.sep)), false, "Registering a fresh copied receipt does not reread backup bytes");
+    reads.clear();
+    let reusedLocal;
+    try {
+      nativeFs.createReadStream = (file, ...args) => { const key = path.resolve(file); reads.set(key, (reads.get(key) || 0) + 1); return stream(file, ...args); };
+      reusedLocal = await backupLocalInstall({ program: localProgram, profile: localProfile, outputRoot: path.join(root, "local-backups"), purpose: "manual" });
+      const selectionOnly = await backupLocalInstall({ program: localProgram, profile: localProfile, outputRoot: path.join(root, "local-backups"), purpose: "acceptance", updateKind: "components" });
+      assert.equal(selectionOnly.kind, "component-selection");
+      assert.equal(selectionOnly.copiedBytes, 0);
+    } finally { nativeFs.createReadStream = stream; }
+    assert.equal(reusedLocal.id, localBackup.id, "The local manual entrypoint still reuses equivalent existing snapshots");
+    assert.equal(reads.size, 0, "Unchanged receipts and component-selection do not read file contents");
+    await withRegistry(localProfile, async (registry, save) => {
+      for (const set of registry.sets) {
+        delete set.programBackup.verification; delete set.programBackup.sourceMetadata; delete set.programBackup.programIdentity;
+        delete set.data.verification; delete set.data.sourceMetadata;
+      }
+      save(registry);
+    });
+    reads.clear();
+    try {
+      nativeFs.createReadStream = (file, ...args) => { const key = path.resolve(file); reads.set(key, (reads.get(key) || 0) + 1); return stream(file, ...args); };
+      const historical = await backupLocalInstall({ program: localProgram, profile: localProfile, outputRoot: path.join(root, "local-backups"), purpose: "manual" });
+      assert.equal(historical.id, localBackup.id, "A historical backup without copy receipts is verified before content-based reuse");
+    } finally { nativeFs.createReadStream = stream; }
+    assert.equal(reads.get(localMaterial), 1);
+    assert.equal(reads.get(path.join(localBackup.directory, "userData/material.bin")), 1, "Historical data without a receipt requires fresh verification");
+    assert.deepEqual(await fs.readdir(path.join(root, "local-backups")), [localBackup.id], "Only the newly owned redundant copy is reclaimed");
+    const beforeMutation = readRegistry(localProfile).sets.length;
+    try {
+      nativeFs.createReadStream = (file, ...args) => {
+        const source = stream(file, ...args);
+        if (path.resolve(file) === localMain) source.once("data", () => nativeFs.appendFileSync(localMaterial, "changed during program capture"));
+        return source;
+      };
+      await fs.writeFile(localMain, "changed program to require another backup");
+      await assert.rejects(backupLocalInstall({ program: localProgram, profile: localProfile, outputRoot: path.join(root, "local-backups"), purpose: "acceptance" }), /source_changed/);
+    } finally { nativeFs.createReadStream = stream; }
+    assert.equal(readRegistry(localProfile).sets.length, beforeMutation, "A changed source cannot register a partial local backup");
     const profile = path.join(root, "profile"), program = path.join(root, "installed"), outside = path.join(root, "original-materials");
     for (const dir of [profile, program, outside]) await fs.mkdir(dir);
     await fs.writeFile(path.join(program, "app.asar"), "physical application archive");

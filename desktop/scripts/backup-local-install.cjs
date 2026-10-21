@@ -4,10 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
-const { backupFilter, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
-const { dataInventory, registerSet, readRegistry, verifySet } = require("../src/main/update-backups.cjs");
-const { inventory } = require("../src/main/update-program-backup.cjs");
+const { backupFilter, metadataInventory, copySnapshot, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
+const { registerSet, readRegistry, verifySet } = require("../src/main/update-backups.cjs");
+const { programIdentity } = require("../src/main/update-program-backup.cjs");
 const { HEX, digest } = require("../src/shared/component-contract.cjs");
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 async function backupLocalInstall({ program, profile, outputRoot, purpose = "manual", updateKind = "full" }) {
   if (!["manual", "acceptance"].includes(purpose) || !["full", "components"].includes(updateKind)) throw Error("backup_purpose_invalid");
@@ -36,19 +37,27 @@ async function backupLocalInstall({ program, profile, outputRoot, purpose = "man
       copiedBytes: 0, reused: true, note: "Component updater retains the prior program; no data migration." };
   }
   const filter = backupFilter(profile);
-  const programFiles = await inventory(program), dataFiles = await dataInventory(profile, filter);
-  for (const previous of [...readRegistry(profile).sets].reverse()) {
-    if (previous.state === "retiring" || previous.kind !== purpose
-        || JSON.stringify(previous.programBackup.files) !== JSON.stringify(programFiles)
-        || JSON.stringify(previous.programBackup.selection) !== JSON.stringify(selection)
-        || JSON.stringify(previous.data.files) !== JSON.stringify(dataFiles)) continue;
+  const programMetadata = await metadataInventory(program), dataMetadata = await metadataInventory(profile, filter);
+  if (programMetadata.some(file => file.link)) throw Error("update_program_link_unsupported");
+  const identity = await programIdentity(program, selection);
+  const sourceUnchanged = async () => {
+    if (!same(programMetadata, await metadataInventory(program))
+        || !same(dataMetadata, await metadataInventory(profile, filter))) throw Error("update_backup_source_changed");
+  };
+  const candidates = [...readRegistry(profile).sets].reverse().filter(previous => previous.state !== "retiring"
+    && previous.kind === purpose && same(previous.programBackup.selection, selection));
+  const reused = previous => ({ directory: path.dirname(previous.programBackup.program), version, reused: true, id: previous.id });
+  for (const previous of candidates) {
+    if (!same(previous.programBackup.sourceMetadata, programMetadata)
+        || previous.programBackup.programIdentity !== identity
+        || !same(previous.data.sourceMetadata, dataMetadata)) continue;
     try {
       await verifySet(previous);
-      if (JSON.stringify(dataFiles) !== JSON.stringify(await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
-      return { directory: path.dirname(previous.programBackup.program), version, reused: true, id: previous.id };
+      await sourceUnchanged();
+      return reused(previous);
     } catch (error) { if (error.message === "update_backup_source_changed") throw error; }
   }
-  await checkCopySpace([{ path: outputRoot, bytes: await copyBytes(program) + await copyBytes(profile, filter) }]);
+  await checkCopySpace([{ path: outputRoot, bytes: [...programMetadata, ...dataMetadata].reduce((sum, file) => sum + (file.size || 0), 0) }]);
   const owned = await createOwnedDirectory(outputRoot, crypto.randomUUID());
   try {
     if ([program, profile].some(root => owned.parent === root || owned.parent.startsWith(root + path.sep))) throw Error("backup_destination_invalid");
@@ -56,14 +65,25 @@ async function backupLocalInstall({ program, profile, outputRoot, purpose = "man
       const account = execFileSync("whoami.exe", [], { encoding: "utf8", windowsHide: true }).trim();
       execFileSync("icacls.exe", [owned.directory, "/inheritance:r", "/grant:r", `${account}:(OI)(CI)F`, "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"], { stdio: "ignore", windowsHide: true });
     }
-    await fs.promises.cp(program, path.join(owned.directory, "program"), { recursive: true, errorOnExist: true, force: false });
-    await copyProfile(profile, path.join(owned.directory, "userData"), filter);
-    if (JSON.stringify(dataFiles) !== JSON.stringify(await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
+    const programCopy = await copySnapshot(program, path.join(owned.directory, "program"), programMetadata, undefined, { allowLinks: false });
+    const dataCopy = await copySnapshot(profile, path.join(owned.directory, "userData"), dataMetadata, filter);
+    await sourceUnchanged();
+    // Historical receipts may lack source metadata. Compare the one copied
+    // inventory, then verify the retained backup before discarding only our copy.
+    for (const previous of candidates) {
+      if (!same(previous.programBackup.files, programCopy.files) || !same(previous.data.files, dataCopy.files)) continue;
+      try { await verifySet(previous); }
+      catch { continue; }
+      await sourceUnchanged();
+      await removeOwnedDirectory(owned);
+      return reused(previous);
+    }
     fs.writeFileSync(path.join(owned.directory, "backup.json"), JSON.stringify({ version, createdAt: new Date().toISOString(), programSource: program, profileSource: profile, updateCachesExcluded: true, selection }, null, 2));
     const id = path.basename(owned.directory);
     await registerSet(profile, { id, version, kind: purpose, owners: [owned],
-      programBackup: { installedRoot, program: path.join(owned.directory, "program"), selection, files: programFiles },
-      data: { directory: path.join(owned.directory, "userData"), files: dataFiles } });
+      programBackup: { installedRoot, program: path.join(owned.directory, "program"), selection,
+        ...programCopy, programIdentity: identity },
+      data: { directory: path.join(owned.directory, "userData"), ...dataCopy } });
     return { directory: owned.directory, version, id };
   } catch (error) {
     await removeOwnedDirectory(owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; });
