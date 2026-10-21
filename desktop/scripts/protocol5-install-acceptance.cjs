@@ -81,7 +81,13 @@ async function main() {
     cdp = await connect(port);
     await until(async () => cdp.evaluate('Boolean(window.xiaoxiCloudMaintenance?.check && window.xiaoxiCloudMaintenance?.restart)'));
     await powershell(['-Mode', 'Window', '-Executable', exe]).done;
-    const checked = await cdp.evaluate('window.xiaoxiCloudMaintenance.check()'); save('real-check', checked);
+    await cdp.evaluate('window.xiaoxiCloudMaintenance.check()');
+    const checked = await until(async () => {
+      const status = await cdp.evaluate('window.xiaoxiCloudMaintenance.status()');
+      if (status.stage === 'error') throw Error('Published check failed: ' + JSON.stringify(status));
+      return status.stage === 'ready' ? status : null;
+    }, 20 * 60_000);
+    save('real-check', checked);
     assert.equal(checked.stage, 'ready'); assert.equal(checked.nextVersion, target.version);
     if (scenario !== 'success') fault = powershell(['-Mode', 'Fault', '-Scenario', scenario, '-Executable', exe, '-File', targetCached, '-Jobs', jobs, '-PackageHash', packageHash, '-TargetVersion', target.version, '-Report', report]);
     // Published 104 preload -> trusted IPC -> updater.request -> beginInstall.
