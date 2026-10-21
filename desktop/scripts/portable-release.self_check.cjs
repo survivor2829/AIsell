@@ -710,8 +710,8 @@ const renderer = fs.readdirSync(path.join(appDir, "dist", "assets"))
 assert.equal(renderer.includes("内部测试"), edition === "test");
 assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), edition === "test");
 if (edition === "delivery") {
-  assert.equal(renderer.includes("产品详情图组件不可用"), true, "delivery renderer must show a customer recovery message");
-  assert.equal(renderer.includes("完整安装程序重新安装"), true, "delivery renderer must explain how to recover a damaged installation");
+  assert.equal(renderer.includes("工作台暂不可用"), true, "delivery renderer must show the current customer recovery state");
+  assert.equal(renderer.includes("如果持续失败，请导出日志交给技术人员检查。"), true, "delivery renderer must explain the current retry and diagnostic recovery path");
   assert.equal(renderer.includes("XIAOXI_PRODUCT_DETAIL_SIDECAR"), false, "delivery renderer must not expose a development runtime variable");
 }
 for (const marker of momentsCampaignSourceMarkers) {
