@@ -701,9 +701,15 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
         else:
             bid = f"screen_{role}"
         prompt = s.get("prompt") or ""
+        captions = s
+        spec_rows = planning_v2.get("specifications") or []
+        from .visual_merchandising import CAPTION_REPAIR_VERSION, printable_captions
+        if planning_v2.get("caption_repair_version") == CAPTION_REPAIR_VERSION:
+            captions = printable_captions(planning_v2, s)
+            spec_rows = captions.get("specifications") or []
         specifications = []
         if role == "spec_table":
-            for spec in planning_v2.get("specifications") or []:
+            for spec in spec_rows:
                 value = str(spec.get("value") if spec.get("value") is not None else "").strip()
                 if value.casefold() in {"", "未提供", "未填写", "未知", "待确认", "不详", "n/a"}:
                     name = str(spec.get("name") or "").strip()
@@ -718,15 +724,20 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             "visual_type": role,        # role 填 visual_type 字段 (v2 不分 in_scene/closeup/concept)
             "is_hero": (idx == 1),       # 第 1 屏 (idx=1) 严格视为 hero
             "prompt": prompt,
-            "title": s.get("title") or "",
+            "title": captions.get("title") or "",
             "planning_version": planning_v2.get("planning_version"),
+            "merchandising_version": planning_v2.get("merchandising_version"),
             "style_dna": planning_v2.get("style_dna") or {},
             "visual_brief": s.get("visual_brief") or {},
-            "subtitle": s.get("subtitle") or "",
+            "subtitle": captions.get("subtitle") or "",
+            "body": captions.get("body") or "",
+            "technical_support": captions.get("technical_support") or [],
             "selling_point_id": s.get("selling_point_id"),
+            "product_category": (planning_v2.get("category_check") or {}).get("category"),
             "primary_cleaning_demonstration": bool(
                 s.get("selling_point_id")
                 and s.get("selling_point_id") == planning_v2.get("primary_demonstration_id")
+                and (s.get("visual_brief") or {}).get("product_presentation") != "diagram_only"
                 and any(word in str(planning_v2.get("product_meta") or {}) for word in ("清洁", "洗地", "扫地"))
             ),
             "evidence": s.get("evidence") or [],
@@ -799,14 +810,38 @@ def _generate_one_block_v2(
             "do not present movement speed as cleaning speed. "
             "Shared direction: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
             + "\nOnly these supplied overlay words/specifications may appear (product labels in Image 1 stay unchanged): "
-            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"), "specifications": block.get("specifications") or [], "comparison_labels": ["清洁前", "作业后"] if block.get("primary_cleaning_demonstration") else []}, ensure_ascii=False)
+            + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"),
+                          "body": block.get("body"), "technical_support": block.get("technical_support") or [],
+                          "specifications": block.get("specifications") or [], "comparison_labels": ["清洁前", "作业后"] if block.get("primary_cleaning_demonstration") else []}, ensure_ascii=False)
             + "\nOne image, one selling point. Source evidence: "
             + json.dumps(block.get("evidence") or [], ensure_ascii=False)
             + "\nScreen-specific visual brief (instructions, not additional printed words): "
             + json.dumps(block.get("visual_brief") or {}, ensure_ascii=False)
             + "\n" + prompt
         )
+        if block.get("merchandising_version") == "visual-merchandising-v1":
+            effective_prompt = (
+                "Create a polished 3:4 industrial product detail image for knowledgeable buyers. "
+                "Keep Image 1's product identity, actual colors and recognizable visible features. "
+                "The reference is not a mandatory whole-product cutout or frozen front pose. "
+                "Choose composition for the subject of this page; a component or graphic may occupy the entire page. "
+                "For concept_detail, source-supported components may be rendered as photorealistic illustrative designs, "
+                "not certified photographs or verified internal schematics. Other views may be visually interpreted "
+                "without adding unsupported capabilities, specifications or accessories. "
+                "Do not invent labels or logos. Headline and key specifications dominate. "
+                "No prose when body is empty; no filler captions, miniature product or compulsory three-layer layout. "
+                "Keep qualifiers and units, and do not confuse operating speed with cleaning speed. "
+                "Shared style: " + json.dumps(block.get("style_dna") or {}, ensure_ascii=False)
+                + "\n" + prompt
+            )
         presentation = (block.get("visual_brief") or {}).get("product_presentation")
+        if block.get("product_category"):
+            effective_prompt += (
+                "\nPRODUCT CATEGORY BOUNDARY: " + block["product_category"]
+                + ". Keep Image 1's product as the advertised subject. An accessory must not become "
+                "its host machine; a consumable or hand tool must not become equipment. "
+                "Do not transfer a host machine's capabilities to its accessories or consumables."
+            )
         if presentation:
             if not isinstance(presentation, str) or presentation not in PRODUCT_PRESENTATIONS:
                 raise ValueError("未知产品呈现方式，停止生图；请检查制作方案")
@@ -858,13 +893,19 @@ def _generate_one_block_v2(
         effective_prompt += (
             "\nFINAL FACT AND TEXT AUTHORITY: Creative directions above describe composition only. "
             "Percentages in framing/layout describe image area, never product performance. "
-            "Print only the supplied structured title, subtitle and specification values; "
+            "Print only the supplied structured title, subtitle, body, technical_support and specification values. "
+            + ("Headline and key parameters first; body is optional. Never invent missing explanation text. "
+               if block.get("merchandising_version") == "visual-merchandising-v1" else
+               "When body and technical_support are supplied, show all three layers: benefit headline, "
+               "plain-language body, and a distinct technical proof group; do not omit any layer. ")
+            +
             "do not copy extra headlines, numbers, certifications or guarantees from creative directions. "
             "Any factual demonstration must remain within the source evidence. "
             "For parameter tables, print exactly the supplied rows below; omit missing/unknown values "
             "and never add placeholder rows from earlier directions or source evidence. "
             "If directions conflict, the following verified content wins: "
             + json.dumps({"title": block.get("title"), "subtitle": block.get("subtitle"),
+                          "body": block.get("body"), "technical_support": block.get("technical_support") or [],
                           "specifications": block.get("specifications") or [],
                           "specification_row_count": len(block.get("specifications") or []),
                           "source_evidence": block.get("evidence") or []}, ensure_ascii=False)

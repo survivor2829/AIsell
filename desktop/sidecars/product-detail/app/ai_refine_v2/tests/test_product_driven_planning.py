@@ -41,6 +41,22 @@ def sample(with_specs=True):
 def response(plan, *, fresh=False):
     plan = copy.deepcopy(plan)
     if fresh:
+        plan.setdefault('buying_point_version', 'buying-points-v1')
+        plan.setdefault('category_check', {'category': '设备类', 'evidence': ['清洁机器人']})
+        plan.setdefault('deferred_buying_points', [])
+        for point in plan.get('selling_points', []):
+            for key, value in dict(audience='保洁人员', scenario='办公楼清洁',
+                                   need=point['text'], benefit=point['text']).items():
+                point.setdefault(key, value)
+            point.setdefault('value_bridge', '原文功能用于完成' + point['need'])
+            point.setdefault('outcome_key', point['need'])
+        plan.setdefault('demand_analysis_version', 'demand-analysis-v1')
+        plan.setdefault('demand_review', [
+            {'audience': p['audience'], 'need': p['need'], 'decision': 'covered',
+             'point_id': p['id'], 'reason': '功能支持此工作结果'}
+            for p in plan.get('selling_points', [])
+        ] or [{'audience': '使用者', 'need': '核对规格', 'decision': 'spec_only',
+               'point_id': None, 'reason': '仅有规格，无独立使用结果'}])
         plan.setdefault("visual_strategy_version", "selling-point-evidence-v1")
         plan.setdefault("primary_demonstration_id", None)
         for i, screen in enumerate(plan.get("screens", [])):
@@ -338,9 +354,73 @@ def test_local_colors_are_hints_and_unsupported_evidence_retries(tmp_path, monke
 def test_over_capacity_is_actionable_without_silent_truncation():
     post = Mock(return_value=response({"planning_version": planner.PLANNING_VERSION, "capacity_exceeded": True, "required_screen_count": 16}))
     with pytest.raises(planner.ProductInputError) as error:
-        planner.plan_v2(TEXT, api_key="fake", http_fn=post)
+        planner.plan_v2(TEXT, api_key="fake", http_fn=post, require_visual_strategy=False)
     assert error.value.code == "AI_REFINE_TOO_MANY_SCREENS"
     assert post.call_count == 1
+
+
+def buying_plan(count=2):
+    plan = sample()
+    plan['buying_point_version'] = 'buying-points-v1'
+    plan['category_check'] = {'category': '设备类', 'evidence': ['清洁机器人']}
+    plan['deferred_buying_points'] = []
+    template = plan['screens'][1]
+    plan['selling_points'] = [dict(id=f'p{i}', text=f'购买理由{i}', audience='保洁人员',
+        scenario='办公楼清洁', need=f'客户需求{i}', benefit=f'收益{i}',
+        evidence=['自动洗地']) for i in range(1, count + 1)]
+    plan['screens'] = [plan['screens'][0]] + [dict(copy.deepcopy(template),
+        selling_point_id=p['id'], title=p['text']) for p in plan['selling_points']] + [plan['screens'][-1]]
+    return plan
+
+
+def test_buying_points_are_selected_before_any_image_call(tmp_path):
+    plan = buying_plan(19)
+    plan['selling_points'][1]['need'] = plan['selling_points'][0]['need']
+    planner._select_buying_points(plan)
+    assert len(plan['screens']) == 15
+    assert len(plan['selling_points']) == 13
+    assert len(plan['deferred_buying_points']) == 6
+    assert plan['deferred_buying_points'][0]['reason'] == 'duplicate_need'
+    assert plan['specifications'] == sample()['specifications']
+    reference = tmp_path / 'reference.png'
+    Image.new('RGB', (40, 40), 'white').save(reference)
+    calls = []
+    generator.generate_v2(plan, str(reference), api_key='fake', concurrency=1,
+        api_call_fn=lambda *a, **kw: calls.append(a) or 'https://example.invalid/result.png')
+    assert len(calls) == 15
+    previous = copy.deepcopy(plan)
+    planner._select_buying_points(plan)
+    assert plan == previous
+
+
+def test_selection_keeps_core_demonstration_and_fresh_requires_buying_analysis():
+    plan = buying_plan(19)
+    plan['primary_demonstration_id'] = 'p19'
+    primary = plan['screens'].pop(-2)
+    plan['screens'].insert(1, primary)
+    planner._select_buying_points(plan)
+    assert plan['selling_points'][0]['id'] == 'p19'
+    assert plan['screens'][1]['selling_point_id'] == 'p19'
+    assert len(plan['screens']) == 15
+    with pytest.raises(planner.PlannerError, match='买点需求分析'):
+        planner.plan_v2(TEXT, api_key='fake', max_retries=0,
+                        http_fn=lambda *_: response(sample()))
+
+
+@pytest.mark.parametrize('category', ['设备类', '配件类', '耗材类', '工具类'])
+def test_category_is_checked_in_shared_planner_before_generation(category):
+    plan = buying_plan()
+    post = Mock(return_value=response(plan, fresh=True))
+    if category == '设备类':
+        result = planner.plan_v2(TEXT, api_key='fake', http_fn=post, max_retries=0,
+                                 product_category=category)
+        assert result['input_evidence']['product_category'] == category
+    else:
+        with pytest.raises(planner.ProductInputError) as error:
+            planner.plan_v2(TEXT, api_key='fake', http_fn=post, max_retries=0,
+                            product_category=category)
+        assert error.value.code == 'AI_REFINE_CATEGORY_MISMATCH'
+    assert category in post.call_args.args[0]['messages'][1]['content']
 
 
 def test_every_new_image_gets_original_reference_and_shared_style(tmp_path):
@@ -382,6 +462,7 @@ def test_repeated_composition_is_advisory_but_missing_brief_is_structural():
 @pytest.mark.parametrize("presentation", [None, "diagram_only", "visible_detail"])
 def test_visual_brief_reaches_image_model_without_freezing_reference_pose(tmp_path, presentation):
     plan = sample()
+    plan["primary_demonstration_id"] = "p1"
     brief = {"scene": "办公楼", "framing": "贴地广角中景",
              "product_action": "向前洗地", "visual_evidence": "身后轨迹与两侧污物同框",
              "layout": "上部标题，下部清洁过程"}
@@ -399,6 +480,9 @@ def test_visual_brief_reaches_image_model_without_freezing_reference_pose(tmp_pa
     assert "not a frozen pose" in calls[1]
     if presentation:
         assert generator.PRODUCT_PRESENTATIONS[presentation] in calls[1]
+    if presentation == "diagram_only":
+        assert '"comparison_labels": []' in calls[1]
+        assert "BEFORE/AFTER" not in calls[1]
 
 
 def make_parent(tmp_path, monkeypatch):

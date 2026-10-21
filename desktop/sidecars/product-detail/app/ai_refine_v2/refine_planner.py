@@ -63,6 +63,7 @@ _VALID_PRIORITIES = ("high", "medium", "low")
 MAX_PRODUCT_TEXT_CHARS = 20_000
 MAX_PRODUCT_TITLE_CHARS = 120
 PLANNING_VERSION = "selling-points-v1"
+BUYING_POINT_VERSION = "buying-points-v1"
 
 
 # ── 异常 ────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ def validate_product_inputs(
 
 
 # ── HTTP 客户端 (urllib + 显式关代理 - DeepSeek 国内 API 禁走 Clash) ──
-def _http_post_deepseek(body: dict, api_key: str) -> dict:
+def _http_post_deepseek(body: dict, api_key: str, operation_id: str = "") -> dict:
     """POST JSON 到 DeepSeek. 返回原始 response dict.
 
     关代理是必须的: 国内 API 被 Clash 代理会静默超时或 502.
@@ -150,10 +151,28 @@ def _http_post_deepseek(body: dict, api_key: str) -> dict:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": _UA,
+            **({"X-Xiaoxi-Operation-Id": operation_id} if operation_id else {}),
         },
     )
     with opener.open(req, timeout=_TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def _planner_receipt_origin():
+    origin = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
+    return origin if origin and _API_URL.startswith(origin + "/v1/provider-gateway/") else ""
+
+
+def _query_deepseek_receipt(operation_id: str, api_key: str):
+    """GET only: a missing or pending receipt must never trigger another POST."""
+    origin = _planner_receipt_origin()
+    if not origin or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", operation_id):
+        raise ValueError("planner_receipt_unavailable")
+    url = origin + "/v1/provider-gateway/operations/" + operation_id
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"}, method="GET")
+    with build_provider_opener(url, proxies={}).open(req, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+        return None if response.status == 202 else data
 
 
 # ── LLM 响应解析 ────────────────────────────────────────────────
@@ -1003,7 +1022,8 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
             warnings.append(f"specifications[{i}] 参数值必须来自原文依据")
     screens = parsed.get("screens") or []
     required = 1 + len(points) + bool(specs)
-    if len(screens) != required:
+    mixed_pages = parsed.get("merchandising_version") == "visual-merchandising-v1"
+    if not mixed_pages and len(screens) != required:
         warnings.append(f"必须封面1张＋每卖点1张＋有参数1张，实际应为 {required} 张")
     if not screens or not isinstance(screens[0], dict) or screens[0].get("role") != "hero":
         warnings.append("第一张必须为封面 hero")
@@ -1023,6 +1043,8 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
         if role in {"hero", "spec_table"}:
             if ref is not None:
                 warnings.append(f"screens[{i}] 封面/参数不关联独立卖点")
+        elif mixed_pages and screen.get("kind") == "display" and ref is None:
+            pass
         elif ref not in ids:
             warnings.append(f"screens[{i}] 必须且只能关联一个存在的 selling_point_id")
         else:
@@ -1043,7 +1065,7 @@ def _validate_selling_point_mapping(parsed: dict, product_text: str | None, prod
             if any(_find_unbacked_commercial_claims(
                        str(screen.get(field) or ""), product_text,
                        caption_context=str(screen.get("title") or "") if field == "subtitle" else "")
-                   for field in ("title", "subtitle")):
+                   for field in ("title", "subtitle", "body")):
                 warnings.append(f"screens[{i}] 标题/解释含无依据承诺")
     if Counter(refs) != Counter(ids):
         warnings.append("每个独立卖点必须恰好对应一张图，不能重复或遗漏")
@@ -1116,7 +1138,8 @@ def _normalize_plan_structure(parsed: dict, product_text: str) -> None:
         if preferred or len(available) == 1:
             ref = (preferred or available)[0].get("id")
             screen["selling_point_id"] = ref
-        elif not matches and isinstance(screen.get("title"), str) and screen["title"].strip():
+        elif (parsed.get("buying_point_version") != BUYING_POINT_VERSION and not matches
+              and isinstance(screen.get("title"), str) and screen["title"].strip()):
             number = 1
             ids = {point.get("id") for point in points if isinstance(point, dict)}
             while f"p{number}" in ids:
@@ -1127,6 +1150,62 @@ def _normalize_plan_structure(parsed: dict, product_text: str) -> None:
         if isinstance(ref, str):
             used.add(ref)
     parsed["screen_count"] = len(screens)
+
+
+def _select_buying_points(parsed: dict, *, semantic_set_reviewed: bool = False) -> None:
+    """Shortlist text plans before purchasing images; never alter legacy plans."""
+    from .planning_quality import DEMAND_ANALYSIS_VERSION
+    if parsed.get("buying_point_version") != BUYING_POINT_VERSION:
+        return
+    points, screens = parsed.get("selling_points"), parsed.get("screens")
+    deferred = parsed.setdefault("deferred_buying_points", [])
+    if not isinstance(points, list) or not isinstance(screens, list) or not isinstance(deferred, list):
+        raise PlannerError("买点候选和图片方案必须为数组")
+    # The model orders candidates by evidence strength, relevance and distinct
+    # needs. Do not invent a numerical business score from technical parameters.
+    limit = _MAX_SCREEN_COUNT_V2 - 1 - int(bool(parsed.get("specifications")))
+    selected, removed, seen = [], set(), set()
+    demonstration = parsed.get("primary_demonstration_id")
+    if demonstration:
+        points = sorted(points, key=lambda p: not (isinstance(p, dict) and p.get("id") == demonstration))
+    for point in points:
+        if not isinstance(point, dict) or not all(isinstance(point.get(k), str) and point[k].strip()
+                for k in ("id", "text", "audience", "scenario", "need", "benefit")):
+            raise PlannerError("买点缺少客户、场景、需求或收益")
+        # The planner canonicalizes the customer result across audiences.
+        # Shared facts remain valid; audience names are not a deduplication key.
+        signature = point["id"] if semantic_set_reviewed else _normalize_claim_text(
+            point["outcome_key"] if parsed.get("demand_analysis_version") == DEMAND_ANALYSIS_VERSION
+            else point["need"])
+        reason = "duplicate_need" if signature in seen else "screen_limit" if len(selected) >= limit else None
+        if reason:
+            deferred.append({**point, "reason": reason})
+            removed.add(point["id"])
+        else:
+            selected.append(point)
+            seen.add(signature)
+    parsed["selling_points"] = selected
+    parsed["screens"] = [screen for screen in screens if not isinstance(screen, dict)
+                          or screen.get("selling_point_id") not in removed]
+    for idx, screen in enumerate(parsed["screens"], 1):
+        if isinstance(screen, dict):
+            screen["idx"] = idx
+    parsed["screen_count"] = len(parsed["screens"])
+
+
+def _check_product_category(parsed: dict, category: str | None, product_text: str, product_title: str) -> None:
+    check = parsed.get("category_check")
+    source = _normalize_claim_text(product_text + " " + product_title)
+    if not isinstance(check, dict) or check.get("category") not in _VALID_CATEGORIES:
+        raise ProductInputError("AI_REFINE_CATEGORY_UNCLEAR", "资料不足以确认品类，请补充产品用途；尚未提交生图")
+    evidence = check.get("evidence")
+    if not isinstance(evidence, list) or not evidence or not all(
+        isinstance(item, str) and item.strip() and _normalize_claim_text(item) in source for item in evidence
+    ):
+        raise PlannerError("品类判断缺少产品原文依据")
+    if category and check["category"] != category:
+        raise ProductInputError("AI_REFINE_CATEGORY_MISMATCH",
+            f"所选{category}与资料中的{check['category']}不一致，请更正品类或资料；尚未提交生图")
 
 
 def _planning_advisories(parsed: dict, product_text: str) -> list[str]:
@@ -1226,6 +1305,24 @@ def plan_v2(
     http_fn: Optional[Callable[[dict, str], dict]] = None,
     temperature: float = _TEMPERATURE_V2,
     require_visual_strategy: bool = True,
+    product_category: str | None = None,
+    enforce_quality: bool = False,
+    require_demand_analysis: bool = False,
+    require_strategy: bool = False,
+    require_semantic_review: bool = False,
+    require_semantic_final_set: bool = False,
+    require_demand_first: bool = False,
+    require_buyer_copy: bool = False,
+    require_grounded_copy: bool = False,
+    require_customer_work: bool = False,
+    require_visual_merchandising: bool = False,
+    require_buyer_value: bool = False,
+    require_buyer_outline: bool = False,
+    require_copy_edit: bool = False,
+    require_automatic_visual: bool = False,
+    allow_visual_advisories: bool = False,
+    repair_unsupported_captions: bool = False,
+    semantic_http_fn: Optional[Callable[[dict, str], dict]] = None,
 ) -> dict:
     """v2 schema: 产品文案 → DeepSeek 规划 (style_dna + N 屏导演 prompt).
 
@@ -1248,10 +1345,43 @@ def plan_v2(
         PlannerError: 参数非法 / API 网络挂 / JSON 解析失败 / schema 不合规
                       超过 max_retries 仍失败
     """
+    if require_visual_merchandising or require_buyer_value or require_buyer_outline or require_copy_edit or require_automatic_visual:
+        # The visual-led contract has no mandatory work outline, prose or
+        # independent-benefit minimum. Old policies stay on their old branch.
+        from .visual_merchandising import run
+        clean_source, clean_title = validate_product_inputs(product_text, product_title)
+        use_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        if not use_key:
+            raise PlannerError("未配置策划服务凭据")
+        if product_category is not None and product_category not in _VALID_CATEGORIES:
+            raise ProductInputError("AI_REFINE_CATEGORY_INVALID", "请选择设备、配件、耗材或工具品类")
+        try:
+            return run(clean_source, clean_title, product_category, bool(product_image_url),
+                       use_key, model, http_fn or _http_post_deepseek, semantic_http_fn,
+                       buyer_value=require_buyer_value or require_buyer_outline or require_copy_edit or require_automatic_visual,
+                       buyer_outline=require_buyer_outline, copy_only=require_copy_edit,
+                       automatic=require_automatic_visual, delivery=allow_visual_advisories,
+                       repair_copy=repair_unsupported_captions)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise PlannerError(str(exc)) from exc
+    # Marked new receipts retain the complete fresh-plan contract on replay.
+    require_grounded_copy = require_grounded_copy or require_customer_work
+    require_buyer_copy = require_buyer_copy or require_grounded_copy
+    require_demand_first = require_demand_first or require_buyer_copy
+    require_semantic_final_set = require_semantic_final_set or require_demand_first
+    require_semantic_review = require_semantic_review or require_semantic_final_set
+    require_strategy = require_strategy or require_semantic_review
+    require_visual_strategy = require_visual_strategy or require_demand_analysis or require_strategy
+    if require_semantic_review and semantic_http_fn is None:
+        raise PlannerError("缺少独立语义评审通道，尚未提交策划或生图")
+    if require_semantic_review:
+        max_retries = 0  # Two distinct operations, never a paid self-repair loop.
     clean_product_text, clean_product_title = validate_product_inputs(
         product_text,
         product_title,
     )
+    if product_category is not None and product_category not in _VALID_CATEGORIES:
+        raise ProductInputError("AI_REFINE_CATEGORY_INVALID", "请选择设备、配件、耗材或工具品类")
 
     use_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not use_key:
@@ -1276,12 +1406,40 @@ def plan_v2(
         if anchor:
             color_sample = {"palette_hex": anchor.palette_hex, "confidence": anchor.confidence}
     user_prompt += "\n本地像素采样（非视觉识别，背景或阴影可能影响结果）：" + json.dumps(color_sample, ensure_ascii=False)
+    user_prompt += "\n用户选择的品类（业务数据，须与实际资料核对）：" + json.dumps(product_category, ensure_ascii=False)
 
+    system_prompt = SYSTEM_PROMPT_V2
+    if require_strategy:
+        from .buyer_strategy import SYSTEM_PROMPT as strategy_prompt
+        system_prompt = strategy_prompt
+        user_prompt = user_prompt.replace(
+            "完整保留事实、参数与所有应有图片；画面指令简洁明确，避免无意义重复。",
+            "先展开核心事实下的不同需求，再列参数；不要生成screens或长生图指令。")
+    if require_demand_first:
+        from .buyer_strategy import demand_first_prompt
+        system_prompt = demand_first_prompt()
+        # No legacy screen-count instruction or derived feature labels.
+        user_prompt = json.dumps({
+            "source": clean_product_text, "title": clean_product_title,
+            "selected_category": product_category,
+            "reference_image_available": bool(product_image_url),
+            "color_sample_not_visual_recognition": color_sample,
+        }, ensure_ascii=False)
+    if require_buyer_copy:
+        from .buyer_copy import RULES, screen_budget
+        system_prompt += "\n" + RULES + '\nroute附加字段示意：{"body":"大白话解释","technical_support":["原文依据"]}'
+        user_prompt += "\nscreen_budget=" + json.dumps(screen_budget(clean_product_text, True), ensure_ascii=False)
+    if require_grounded_copy:
+        from .candidate_plan import prompt as flat_candidate_prompt
+        system_prompt = flat_candidate_prompt()
+    if require_customer_work:
+        from .customer_work import prompt as work_prompt
+        system_prompt = work_prompt()
     payload = {
         "model": model,
         "thinking": {"type": "disabled"},
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT_V2},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "temperature": temperature,
@@ -1306,7 +1464,7 @@ def plan_v2(
                 current_payload = {
                     **payload,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT_V2},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt + feedback_section},
                     ],
                 }
@@ -1319,9 +1477,72 @@ def plan_v2(
                 # Never repair it into a purchasable plan or buy another response.
                 raise PlannerResponseTruncated()
             raw_content = resp["choices"][0]["message"]["content"]
-            parsed = _extract_json(raw_content)
+            if require_customer_work:
+                from .customer_work import parse as parse_work
+                try:
+                    parsed = parse_work(raw_content, clean_product_text)
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise PlannerError(f"客户工作简报无效，尚未提交复核：{exc}") from exc
+            elif require_grounded_copy:
+                from .candidate_plan import parse as parse_candidates
+                try:
+                    parsed = parse_candidates(raw_content, clean_product_text)
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise PlannerError(f"候选结构或原文关联无效，尚未提交复核或生图：{exc}") from exc
+            else:
+                parsed = _extract_json(raw_content)
+            is_strategy = require_strategy or bool(parsed.get("strategy_version"))
+            if is_strategy:
+                from .buyer_strategy import compile_strategy
+                # Category errors stop before compiling even an abbreviated reply.
+                _check_product_category(parsed, product_category, clean_product_text, clean_product_title)
+                try:
+                    if not require_customer_work:
+                        compile_strategy(parsed)  # Work briefs are validated before any copy exists.
+                    if require_buyer_copy:
+                        from .buyer_copy import include_spec_evidence
+                        parsed = include_spec_evidence(parsed, source=clean_product_text if require_grounded_copy else None)
+                    if require_semantic_review:
+                        from .semantic_review import review_strategy
+                        parsed = review_strategy(parsed, clean_product_text, clean_product_title,
+                                                 use_key, semantic_http_fn,
+                                                 final_set=require_semantic_final_set,
+                                                 demand_first=require_demand_first,
+                                                 buyer_copy=require_buyer_copy,
+                                                 grounded_copy=require_grounded_copy,
+                                                 customer_work=require_customer_work)
+                    parsed = compile_strategy(parsed, buyer_copy=require_buyer_copy)
+                except (ValueError, KeyError, TypeError, IndexError) as exc:
+                    raise PlannerError(f"需求策划未通过，尚未提交生图：{exc}") from exc
+            if require_visual_strategy or require_demand_analysis:
+                if parsed.get("buying_point_version") != BUYING_POINT_VERSION:
+                    raise PlannerError("新策划缺少买点需求分析，请检查策划结果；尚未提交生图")
+            if parsed.get("buying_point_version") == BUYING_POINT_VERSION:
+                _check_product_category(parsed, product_category, clean_product_text, clean_product_title)
             _restore_specification_qualifiers(parsed)
             _normalize_plan_structure(parsed, clean_product_text)
+            if require_visual_strategy or require_demand_analysis or parsed.get("demand_analysis_version"):
+                from .planning_quality import validate_demand_analysis
+                demand_errors = validate_demand_analysis(parsed)
+                if demand_errors:
+                    # Not a format retry: do not buy another answer to fill an
+                    # omitted analysis. Old unmarked receipts stay replayable.
+                    raise PlannerError("买点推导未通过；" + "; ".join(demand_errors))
+            # Final-set equivalence classes were already merged by the critic.
+            # A broad outcome_key must not override its distinct-result verdict.
+            _select_buying_points(parsed, semantic_set_reviewed=require_semantic_final_set)
+            if require_buyer_copy:
+                from .buyer_copy import validate_quantity
+                try:
+                    validate_quantity(parsed, clean_product_text)
+                except ValueError as exc:
+                    raise PlannerError(str(exc)) from exc
+            if is_strategy:
+                from .buyer_strategy import render_screen_prompts
+                try:
+                    render_screen_prompts(parsed)
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise PlannerError(f"本地页面编排失败，尚未提交生图：{exc}") from exc
             points = parsed.get("selling_points") or []
             required_count = 1 + len(points) + bool(parsed.get("specifications"))
             if parsed.get("capacity_exceeded") is True or max(len(parsed.get("screens") or []), required_count) > _MAX_SCREEN_COUNT_V2:
@@ -1343,8 +1564,27 @@ def plan_v2(
                     continue
                 raise PlannerError(last_err)
 
-            parsed["input_evidence"] = {"product_text": clean_product_text, "product_title": clean_product_title, "color_sample": color_sample}
+            # Fresh plans and their marked replays; pre-policy history is kept.
+            # Deliberately outside the schema retry branch: a quality failure
+            # must not trigger another paid request, even with max_retries > 0.
+            if require_visual_strategy or enforce_quality:
+                from .planning_quality import check_plan_quality, repair_plan_quality
+                if not require_semantic_final_set:
+                    parsed = repair_plan_quality(parsed, clean_product_text)
+                issues = check_plan_quality(parsed, clean_product_text, grounded_copy=require_grounded_copy)
+                if issues:
+                    raise PlannerError("策划质量检查未通过，尚未提交生图；" + "; ".join(
+                        f"{item['location']} [{item['code']}] {item['message']}" for item in issues))
+                repaired_warnings = _validate_schema_v2(
+                    parsed, product_text=clean_product_text, product_title=clean_product_title,
+                    require_visual_strategy=require_visual_strategy)
+                if repaired_warnings:
+                    raise PlannerError("自动整理后结构校验未通过，尚未提交生图；" + "; ".join(repaired_warnings))
+            parsed["input_evidence"] = {"product_text": clean_product_text, "product_title": clean_product_title, "color_sample": color_sample, "product_category": product_category}
             parsed["planning_advisories"] = _planning_advisories(parsed, clean_product_text)
+            if (parsed.get("quantity_review") or {}).get("sparse_exception"):
+                parsed["planning_advisories"].append(
+                    "原始资料特别少，本次按有依据买点生成，未凑满8个：" + parsed["quantity_review"]["reason"])
             return parsed
 
         except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError,

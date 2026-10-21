@@ -103,3 +103,9 @@ DeepSeek Key -> main 进程 -> AI 文案/回复
 ```
 
 内容分析、转码和渲染的资源队列必须与微信协调器隔离：内容任务可暂停、恢复或失败，不得占用微信 RPA 的锁，也不得阻断联系人同步、自动回复、主动触达或朋友圈计划。
+
+## 本轮获客集成
+
+- 精准获客：主进程 `precise-acquisition*.cjs`、`precise-public-sources.cjs`、`precise-document-images.cjs`；界面 `PreciseAcquisitionPanel.tsx`；网关 `local_acquisition.py` / `acquisition_sync.py`。
+- GEO：`geo-workbench.cjs` / `geo-browser-adapter.cjs` 和 `GeoWorkbenchPanel.tsx`。IPC复用 `business-workbench-ipc.cjs`；渠道商资料与会话由 `acquisition-workbench-scope.cjs` 隔离。
+- 独立归属标记保留已发布map-legacy-owner语义；未知付费结果与原始资料继续保留。验收边界见本轮收尾记录。

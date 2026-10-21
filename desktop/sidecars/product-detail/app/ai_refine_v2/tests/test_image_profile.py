@@ -74,10 +74,15 @@ def test_real_worker_reprices_and_submits_original_frozen_profile(tmp_path, monk
     monkeypatch.setenv("V2_ALLOW_REAL_API", "true")
     directory = tmp_path / "profile-task"
     directory.mkdir()
+    # Repricing resumes an already frozen historical plan; fresh planning has
+    # its own current-policy end-to-end coverage.
+    runner._atomic_write_json(directory / "_planning.json", sample())
     reference = tmp_path / "reference.png"
     Image.new("RGB", (80, 80), "#78ab12").save(reference)
     if legacy:
         runner._atomic_write_json(directory / "_input.json", {"product_text": TEXT})
+    else:
+        runner._atomic_write_json(directory / "_input.json", {"product_text": TEXT, "image_profile": DEFAULT_PROFILE})
     expected = LEGACY_PROFILE if legacy else DEFAULT_PROFILE
     quotes = []
     def read_quote(**kwargs):

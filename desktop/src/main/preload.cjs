@@ -6,7 +6,9 @@ const {
 } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
-contextBridge.exposeInMainWorld('xiaoxiMapAcquisition', require('./business-workbench-preload.cjs').createBusinessWorkbenchApi(ipcRenderer, 'map-acquisition'));
+for (const [name, domain] of [['xiaoxiMapAcquisition', 'map-acquisition'], ['xiaoxiPreciseAcquisition', 'precise-acquisition'], ['xiaoxiGeo', 'geo-workbench']]) {
+  contextBridge.exposeInMainWorld(name, require('./business-workbench-preload.cjs').createBusinessWorkbenchApi(ipcRenderer, domain));
+}
 contextBridge.exposeInMainWorld("xiaoxiOfficialMaterials", require("./official-materials-preload.cjs").createOfficialMaterialsApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiTutorials", require("./tutorials-preload.cjs").createTutorialsApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiDigitalHuman", require("./digital-human-preload.cjs").createDigitalHumanApi(ipcRenderer));

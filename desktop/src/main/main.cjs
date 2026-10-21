@@ -708,8 +708,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: path.join(runtime.rootDir, "keyword_acquisition"),
       expertStore: aiExpertStore, deepSeekClient
     });
-    businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell, clipboard,
-      dataDir: runtime.rootDir, getMainWindow: () => mainWindow, getLicenseStatus: () => licenseStore.status() });
+    businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
+      dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: () => licenseStore.status() });
     const usedDigitalHumanClicks = new Set();
     const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
     const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
@@ -958,6 +958,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       if (!mainWindow) createWindow();
       if (mainWindow) mainWindow.show();
     });
+  }).catch(error => {
+    try { diagnostics().event('startup', 'initialization_failed', { error }, { level: 'fatal' }); } catch {}
+    if (productDetailReleaseSmokeMode) console.error(error);
+    else dialog.showErrorBox('软件未能启动', String(error.message || error));
+    app.exit(1);
   });
 
   app.on("window-all-closed", () => {

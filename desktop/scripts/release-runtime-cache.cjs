@@ -54,7 +54,7 @@ function runtimeFingerprint(desktopDir, kind, artifactType, inputs, environment 
     const python = builder.findBuildPython(paths, environment);
     state.python = pythonInputs(python, environment);
     state.pythonEnvironment = Object.fromEntries(["PYTHONPATH", "PYTHONHOME", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH"].map((key) => [key, environment[key] || null]));
-    scripts.push(`scripts/build-${kind}-sidecar.cjs`, "scripts/python-library-archive.cjs");
+    scripts.push(`scripts/build-${kind}-sidecar.cjs`, "scripts/python-library-archive.cjs", "build/pyinstaller-hooks/hook-ssl.py");
     state.pythonBaseArchive = environment.XIAOXI_PYTHON_BASE_SHA256 || null;
     if (kind === "product-detail") {
       scripts.push("src/main/product-detail-source-scope.cjs");
