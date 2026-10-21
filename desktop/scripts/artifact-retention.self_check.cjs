@@ -14,6 +14,20 @@ try {
     retainArtifacts(root, "test", [directory]);
   }
   assert(fs.existsSync(historical));
+  const rename = fs.renameSync;
+  let blocked = false;
+  fs.renameSync = function (source, destination) {
+    if (!blocked && destination === path.join(root, ".artifact-retention.json")) {
+      blocked = true;
+      throw Object.assign(new Error("temporary Windows file lock"), { code: "EPERM" });
+    }
+    return rename.apply(this, arguments);
+  };
+  try { retainArtifacts(root, "replace-retry", [historical], 1, []); }
+  finally { fs.renameSync = rename; }
+  assert(blocked);
+  assert(JSON.parse(fs.readFileSync(path.join(root, ".artifact-retention.json"), "utf8"))["replace-retry"], "transient file lock must be retried before reporting durable retention");
+  assert(!fs.readdirSync(root).some(name => name.endsWith(".tmp")), "atomic receipt writes must not leave temporary files");
   const candidates = path.join(root, "candidates");
   fs.mkdirSync(candidates);
   const base = path.join(candidates, "candidate-0");
