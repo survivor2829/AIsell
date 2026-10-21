@@ -23,7 +23,7 @@
 | `desktop/src/renderer/CustomerTools.tsx`、`desktop/src/renderer/CustomerPanel.tsx` | 顶栏公告、离线教程和对应功能跳转；公告只展示主进程已验证数据 | 下载或执行公告内容；从远程页面加载教程代码 |
 | `desktop/src/main/bootstrap.cjs`、`src/shared/launcher-contract.cjs` | 固定启动器信任核：选择、签名与JSON清单核验、单实例、启动尝试及干净进程回退 | 下载、备份和业务功能进入固定核；启动时全树读取文件内容 |
 | `desktop/src/main/updater-bootstrap.cjs`、`component-*`、`update-*`、`download-verification.cjs` | 可增量更新器：准备回执、一次下载摘要、结构检查、助手、备份与已有保留器；assets保留静态媒体原路径 | 将prepared当作健康ACK；按版本较新清除未知备份；把媒体混入界面包 |
-| `desktop/src/main/cloud-maintenance*`、`cloud-transport.cjs` | 测试版签名更新、公告缓存/已读状态、30 分钟元数据刷新、自动脱敏诊断队列及受限 IPC | 上传聊天原文；把查看公告当成下载安装包；绕过正常退出流程安装 |
+| `desktop/src/main/cloud-maintenance*`、`cloud-transport.cjs` | 测试版签名更新、公告缓存/已读状态、30 分钟元数据刷新；完整下载归属/延期重试、受同意控制的阶段诊断及受限 IPC | 上传聊天原文；把查看公告当成下载安装包；绕过正常退出流程安装 |
 | `desktop/src/main/feedback-*`、`desktop/src/renderer/FeedbackCenter.tsx` | 吐槽中心草稿、固定提交快照、独立发送队列、加密回执凭据、处理进度及日志诊断入口 | 将反馈提交视为持续自动上传授权；未收到回执即显示已进入服务端处理 |
 | `desktop/sidecars/content-engine/content_engine/production_summary.py` | 完整数据库记录的业务制作归并、分类、统计和分页；与精确任务/候选查询配合恢复历史制作 | 截取前 N 条原任务再推算总数；改写历史失败或把同项目所有任务合为一项 |
 | `desktop/sidecars/content-engine/content_engine/provider_usage.py` | 已接入供应商的真实请求开始/结果事件、上下文关联和用量汇总 | 记录提示词/正文/密钥；把缺失用量当零或自行推定账单金额 |
