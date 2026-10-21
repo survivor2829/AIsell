@@ -11,8 +11,14 @@ data_dir=/var/lib/ai-provider-gateway
 }
 [ -s "$source_dir/service.py" ] || { echo 'Missing deployment file: service.py' >&2; exit 1; }
 [ -s "$source_dir/material_search.py" ] || { echo 'Missing deployment file: material_search.py' >&2; exit 1; }
+for file in local_acquisition.py acquisition_sync.py; do
+  [ -s "$source_dir/$file" ] || { echo "Missing deployment file: $file" >&2; exit 1; }
+done
+catalog_file="$source_dir/../../desktop/src/shared/precise-public-sources.json"
+if [ -f "$source_dir/precise-public-sources.json" ]; then catalog_file="$source_dir/precise-public-sources.json"; fi
+[ -s "$catalog_file" ] || { echo 'Missing acquisition source catalog' >&2; exit 1; }
 
-python3 - "$source_dir/service.py" "$source_dir/material_search.py" <<'PY'
+python3 - "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/local_acquisition.py" "$source_dir/acquisition_sync.py" <<'PY'
 from pathlib import Path
 import sys
 for filename in sys.argv[1:]:
@@ -23,6 +29,9 @@ backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup"
 cp -p "$app_dir/service.py" "$backup/service.py"
 if [ -f "$app_dir/material_search.py" ]; then cp -p "$app_dir/material_search.py" "$backup/material_search.py"; fi
+for file in local_acquisition.py acquisition_sync.py precise-public-sources.json; do
+  if [ -f "$app_dir/$file" ]; then cp -p "$app_dir/$file" "$backup/$file"; fi
+done
 override_dir=/etc/systemd/system/ai-provider-gateway.service.d
 override_file="$override_dir/20-operation-receipts.conf"
 if [ -e "$override_file" ]; then
@@ -34,6 +43,9 @@ rollback() {
   systemctl stop ai-provider-gateway || { echo 'Cannot stop service; preserving live data and backup for recovery.' >&2; return 1; }
   install -m 644 "$backup/service.py" "$app_dir/service.py"
   if [ -f "$backup/material_search.py" ]; then install -m 644 "$backup/material_search.py" "$app_dir/material_search.py"; else rm -f "$app_dir/material_search.py"; fi
+  for file in local_acquisition.py acquisition_sync.py precise-public-sources.json; do
+    if [ -f "$backup/$file" ]; then install -m 644 "$backup/$file" "$app_dir/$file"; else rm -f "$app_dir/$file"; fi
+  done
   # Preserve post-start receipts and fee reservations, including unknown outcomes.
   # This deployment has no destructive migrations; backups are diagnostic only.
   if [ -e "$backup/20-operation-receipts.conf" ]; then
@@ -48,7 +60,7 @@ rollback() {
 systemctl stop ai-provider-gateway
 restart_on_backup_failure() { systemctl start ai-provider-gateway || true; }
 trap restart_on_backup_failure EXIT
-for file in operation-receipts.sqlite3 operation-receipts.sqlite3.materials; do
+for file in operation-receipts.sqlite3 operation-receipts.sqlite3.materials operation-receipts.sqlite3.acquisition-sync; do
   if [ -f "$data_dir/$file" ]; then
     python3 - "$data_dir/$file" "$backup/$file" <<'PY'
 import os, sqlite3, sys
@@ -67,7 +79,8 @@ PY
   fi
 done
 trap rollback EXIT
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/local_acquisition.py" "$source_dir/acquisition_sync.py" "$app_dir/"
+install -m 644 "$catalog_file" "$app_dir/precise-public-sources.json"
 install -d -m 755 "$override_dir"
 printf '%s\n' '[Service]' 'ReadWritePaths=/var/lib/ai-provider-gateway' > "$override_file"
 chmod 644 "$override_file"

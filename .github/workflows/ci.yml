@@ -94,6 +94,9 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install locked JavaScript dependencies
         run: npm ci
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: Align Windows and Node clocks for local-time fixtures
         run: tzutil /s "China Standard Time"
       - name: Source self-checks (isolated; no live WeChat operations)
@@ -135,6 +138,23 @@ jobs:
       - name: Maintenance HTTP and feedback contracts
         working-directory: server/maintenance
         run: python -m unittest discover -s . -p 'test_*.py'
+      - name: Local acquisition gateway, sync and bounded source reads
+        working-directory: server/provider-gateway
+        run: |
+          python -m pip install -r requirements-precise.txt
+          python -m unittest discover -s . -p 'test_*acquisition*.py'
+      - name: Product detail planning, caption and billing boundaries
+        working-directory: desktop/sidecars/product-detail/app
+        env:
+          FLASK_ENV: development
+          DEEPSEEK_API_KEY: sk-test-deepseek-fake
+          REFINE_API_KEY: sk-test-refine-fake
+          REFINE_API_BASE_URL: https://api.test-refine.local/v1
+          ARK_API_KEY: ark-test-fake
+        run: |
+          $env:DATABASE_URL = "sqlite:///$($env:RUNNER_TEMP.Replace('\', '/'))/detail-tests.db"
+          python -m pip install pytest requests pillow flask python-dotenv flask-sqlalchemy flask-login flask-migrate cryptography flask-wtf flask-sock flask-limiter redis numpy playwright pdfplumber python-docx openpyxl pypdf
+          python -m pytest ai_refine_v2/tests -q
       - name: Official video gateway protocol
         working-directory: server/provider-gateway
         run: python -m unittest discover -s . -p 'test_bailian_video_routes.py'

@@ -701,9 +701,15 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
         else:
             bid = f"screen_{role}"
         prompt = s.get("prompt") or ""
+        captions = s
+        spec_rows = planning_v2.get("specifications") or []
+        from .visual_merchandising import CAPTION_REPAIR_VERSION, printable_captions
+        if planning_v2.get("caption_repair_version") == CAPTION_REPAIR_VERSION:
+            captions = printable_captions(planning_v2, s)
+            spec_rows = captions.get("specifications") or []
         specifications = []
         if role == "spec_table":
-            for spec in planning_v2.get("specifications") or []:
+            for spec in spec_rows:
                 value = str(spec.get("value") if spec.get("value") is not None else "").strip()
                 if value.casefold() in {"", "未提供", "未填写", "未知", "待确认", "不详", "n/a"}:
                     name = str(spec.get("name") or "").strip()
@@ -718,14 +724,14 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             "visual_type": role,        # role 填 visual_type 字段 (v2 不分 in_scene/closeup/concept)
             "is_hero": (idx == 1),       # 第 1 屏 (idx=1) 严格视为 hero
             "prompt": prompt,
-            "title": s.get("title") or "",
+            "title": captions.get("title") or "",
             "planning_version": planning_v2.get("planning_version"),
             "merchandising_version": planning_v2.get("merchandising_version"),
             "style_dna": planning_v2.get("style_dna") or {},
             "visual_brief": s.get("visual_brief") or {},
-            "subtitle": s.get("subtitle") or "",
-            "body": s.get("body") or "",
-            "technical_support": s.get("technical_support") or [],
+            "subtitle": captions.get("subtitle") or "",
+            "body": captions.get("body") or "",
+            "technical_support": captions.get("technical_support") or [],
             "selling_point_id": s.get("selling_point_id"),
             "product_category": (planning_v2.get("category_check") or {}).get("category"),
             "primary_cleaning_demonstration": bool(

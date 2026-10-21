@@ -601,7 +601,7 @@ def test_availability_rule_only_applies_to_new_policy():
                for i in check_plan_quality(plan, '续航8h', grounded_copy=True))
 
 
-def test_source_rhetoric_is_tempered_in_all_printed_copy_without_changing_facts():
+def test_source_rhetoric_is_tempered_in_all_printed_copy_without_changing_facts(tmp_path):
     from ai_refine_v2.visual_merchandising import repair_captions, render
     source, draft = fixture()
     quote = '风机功率1800W，杜绝扬尘扩散。IP55，全天候室外作业。'
@@ -629,6 +629,21 @@ def test_source_rhetoric_is_tempered_in_all_printed_copy_without_changing_facts(
     snapshot = copy.deepcopy(plan)
     render(plan)
     assert plan == snapshot  # Rendering again cannot accumulate repair records.
+    image = tmp_path / 'source.png'
+    Image.new('RGB', (40, 40), 'white').save(image)
+    requests = []
+    def capture(prompt, *args, **kwargs):
+        requests.append(prompt)
+        return 'https://example.invalid/offline.png'
+    generator.generate_v2(plan, str(image), api_key='offline', api_call_fn=capture,
+                          cutout_whitelist=[], concurrency=1)
+    assert len(requests) == len(plan['screens'])
+    for prompt in requests:
+        authority = json.loads(prompt.split('following verified content wins: ')[1])
+        printable = json.dumps({k: authority[k] for k in ('title', 'subtitle', 'body', 'technical_support', 'specifications')}, ensure_ascii=False)
+        assert '杜绝' not in printable and '全天候' not in printable
+    assert plan == snapshot, 'original evidence and historical plan remain unchanged'
+
 
 
 @pytest.mark.parametrize('text,expected', [

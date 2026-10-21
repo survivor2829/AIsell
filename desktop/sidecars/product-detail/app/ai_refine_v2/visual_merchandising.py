@@ -303,10 +303,17 @@ def normalize_quotes(data, source):
     return result
 
 
+def _check_capacity(data):
+    if data.get("capacity_exceeded") is True:
+        from .refine_planner import ProductInputError
+        raise ProductInputError("AI_REFINE_TOO_MANY_SCREENS", "独立卖点加封面和参数图超过15张，请精简或分批提供资料；尚未提交生图")
+
+
 def read_draft(raw, source, *, delivery=False):
     from .refine_planner import _extract_json
     from .candidate_plan import restore_spec_values
     data = _extract_json(raw)
+    _check_capacity(data)
     for key in ("category_check", "product_meta", "style_dna", "cover"):
         if not isinstance(data.get(key), dict):
             raise ValueError(f"{key}必须为对象")
@@ -358,33 +365,38 @@ def _temper_caption(text):
                   replace, text)
 
 
+def printable_captions(plan, screen):
+    captions = {k: screen.get(k) for k in ("title", "subtitle", "body", "technical_support")}
+    if screen["role"] == "spec_table":
+        captions["specifications"] = plan["specifications"]
+    if plan.get('caption_repair_version') != CAPTION_REPAIR_VERSION:
+        return captions
+    if screen['role'] == 'spec_table':
+        # Evidence stays unchanged in the plan and is never printed as a table value.
+        captions['specifications'] = [{k: row[k] for k in ('name', 'value')} for row in plan['specifications']]
+    def temper(value):
+        if isinstance(value, str):
+            return _temper_caption(value)
+        if isinstance(value, list):
+            return [temper(v) for v in value]
+        if isinstance(value, dict):
+            return {k: temper(v) for k, v in value.items()}
+        return value
+    return temper(captions)
+
+
 def render(plan):
     for screen in plan["screens"]:
-        captions = {k: screen.get(k) for k in ("title", "body", "technical_support")}
-        if screen["role"] == "spec_table":
-            captions["specifications"] = plan["specifications"]
+        captions = printable_captions(plan, screen)
         if plan.get('caption_repair_version') == CAPTION_REPAIR_VERSION:
-            if screen['role'] == 'spec_table':
-                # Raw evidence stays in the plan, not in printed copy.
-                captions['specifications'] = [{k: s[k] for k in ('name', 'value')}
-                                               for s in plan['specifications']]
-            def temper(value):
-                if isinstance(value, str):
-                    return _temper_caption(value)
-                if isinstance(value, list):
-                    return [temper(v) for v in value]
-                if isinstance(value, dict):
-                    return {k: temper(v) for k, v in value.items()}
-                return value
-            for key, value in captions.items():
-                edited = temper(value)
+            for key, edited in captions.items():
+                value = plan['specifications'] if key == 'specifications' else screen.get(key)
                 if edited != value:
-                    change = {'screen': screen['idx'], 'field': key,
-                              'before': value, 'after': edited, 'reason': 'absolute_rhetoric'}
+                    change = {'screen': screen['idx'], 'field': key, 'before': value,
+                              'after': edited, 'reason': 'absolute_rhetoric'}
                     repairs = plan.setdefault('caption_repairs', [])
                     if change not in repairs:
                         repairs.append(change)
-                captions[key] = edited
         screen["prompt"] = (
             "制作专业工业产品竖版详情图。标题与关键参数优先，正文为空就不补正文。"
             "画面由本页内容决定，部件或信息可独占画面，不强塞整机。拟真部件为设计示意，不标称实拍。"
@@ -613,6 +625,7 @@ def run(source, title, category, image_available, key, model, first_http, review
         context = {}
         try:
             parsed = _extract_json(raw)
+            _check_capacity(parsed)
             _check_product_category(parsed, category, source, title)
             draft = normalize_components(read_draft(raw, source, delivery=delivery))
             compile_plan(draft, source, title, category, buyer_value=True, delivery=delivery)

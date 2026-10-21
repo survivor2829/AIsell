@@ -14,7 +14,10 @@ install -d -o ai-gateway -g ai-gateway -m 750 "$data_dir"
 # certificate/key and provider env files remain protected by their file modes
 # and service-specific groups.
 install -d -m 751 -o root -g ai-gateway /etc/ai-maintenance
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/local_acquisition.py" "$source_dir/acquisition_sync.py" "$app_dir/"
+catalog_file="$source_dir/../../desktop/src/shared/precise-public-sources.json"
+if [ -f "$source_dir/precise-public-sources.json" ]; then catalog_file="$source_dir/precise-public-sources.json"; fi
+install -m 644 "$catalog_file" "$app_dir/precise-public-sources.json"
 
 if [ ! -f "$config_file" ]; then
   umask 077

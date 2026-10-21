@@ -1,0 +1,112 @@
+[
+  {
+    "id": "jiaxing-vocational-notices",
+    "name": "嘉兴职业技术学院公开采购目录",
+    "host": "www.jxvtc.edu.cn",
+    "indexUrl": "https://www.jxvtc.edu.cn/zbcg.htm",
+    "articlePath": "/info/1471/",
+    "enabled": true,
+    "cities": [
+      "嘉兴市"
+    ],
+    "signals": [
+      "procurement"
+    ],
+    "scope": "仅本校公开采购目录；本次目录显示旧公告，尚无近期清洁设备正例，不代表全市覆盖",
+    "checkedAt": "2026-10-15"
+  },
+  {
+    "id": "jiaxing-water",
+    "name": "嘉源集团官方公开来源",
+    "host": "www.zjjxswjt.cn",
+    "enabled": false,
+    "reason": "2026-10-15 官方目录和robots返回403，停止读取"
+  },
+  {
+    "id": "jiaxing-nanhu-college",
+    "name": "嘉兴南湖学院采购中心",
+    "host": "cgzx.jxnhu.edu.cn",
+    "enabled": false,
+    "reason": "2026-10-15 返回483，仅校园网可访问，不使用VPN或登录绕过"
+  },
+  {
+    "id": "linjiang-notices",
+    "name": "杭州临江环境能源采购公告",
+    "host": "ljhjny.com",
+    "indexUrl": "https://ljhjny.com/notice.html",
+    "articlePath": "/notice/show/id/",
+    "attachments": {
+      "origin": "https://www.ljhjgylpt.com:9280",
+      "path": "/XBM_Service.bsp"
+    },
+    "enabled": true,
+    "scope": "该企业公开采购目录；附件中的交货地点需单独核对，不代表杭州全市覆盖",
+    "cities": [
+      "杭州市"
+    ],
+    "signals": [
+      "procurement"
+    ],
+    "acceptance": "original-verified",
+    "checkedAt": "2026-10-15",
+    "pagination": {
+      "pathPattern": "^/Notice/index/p/[1-9][0-9]*\\.html$"
+    }
+  },
+  {
+    "id": "hangzhou-dianzi-procurement",
+    "name": "杭州电子科技大学采购中心",
+    "host": "cgzx.hdu.edu.cn",
+    "indexUrl": "https://cgzx.hdu.edu.cn/13049/list.htm",
+    "articlePath": "/2026/",
+    "articlePattern": "^/[0-9]{4}/[0-9]{4}/c13049a[0-9]+/page\\.htm$",
+    "pagination": {
+      "pathPattern": "^/13049/list(?:[1-9][0-9]*)?\\.htm$"
+    },
+    "enabled": true,
+    "cities": [
+      "杭州市"
+    ],
+    "signals": [
+      "procurement"
+    ],
+    "scope": "本校公开采购目录、真实下一页及公告正文已验证；附件与持续清洁设备商机供给未验收",
+    "checkedAt": "2026-10-15"
+  },
+  {
+    "id": "cfmoto-notices",
+    "name": "春风动力官方招标公告",
+    "host": "cn.cfmoto.com",
+    "indexUrl": "https://cn.cfmoto.com/zb",
+    "articlePath": "/zb/",
+    "enabled": true,
+    "scope": "企业官网公开公告，非嘉兴全市或全网覆盖",
+    "cities": [
+      "杭州市"
+    ],
+    "reason": "正文可读；目录翻页为客户端按钮，分页接口尚未验收"
+  },
+  {
+    "id": "zhejiang-port-notices",
+    "name": "浙江海港电子招标采购平台",
+    "host": "hgdzzb.nbport.com.cn",
+    "indexUrl": "https://hgdzzb.nbport.com.cn/",
+    "articlePath": "/sdny_",
+    "enabled": true,
+    "scope": "平台公开目录及公告，不读取登录后报价/投标资料"
+  },
+  {
+    "id": "jiaxing-trading",
+    "name": "嘉兴市公共资源交易网",
+    "host": "jxszwsjb.jiaxing.gov.cn",
+    "enabled": false,
+    "reason": "2026-10-15 本机公开页面返回 403，未绕过限制"
+  },
+  {
+    "id": "government-procurement",
+    "name": "中国政府采购网",
+    "host": "www.ccgp.gov.cn",
+    "enabled": false,
+    "reason": "2026-10-15 本机访问被阻断，未绕过限制"
+  }
+]

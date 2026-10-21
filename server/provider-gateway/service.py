@@ -33,6 +33,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener, urlopen
 from material_search import MaterialSearch
+from local_acquisition import LocalAcquisition
+from acquisition_sync import AcquisitionSync, MAX_BODY as SYNC_MAX_BODY
 
 
 PREFIX = "/v1/provider-gateway"
@@ -595,6 +597,8 @@ class GatewayServer(ThreadingHTTPServer):
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
+        self.local_acquisition = LocalAcquisition((config.receipt_db_path + ".precise") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
+        self.acquisition_sync = AcquisitionSync((config.receipt_db_path + ".acquisition-sync") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
 
     def apimart_public_price(self, model):
         # Anonymous, fixed supplier metadata. Never forward the session or API key.
@@ -630,6 +634,8 @@ class GatewayServer(ThreadingHTTPServer):
 
     def server_close(self):
         self.material_search.db.close()
+        self.local_acquisition.close()
+        self.acquisition_sync.close()
         try:
             self.receipts.close()
         finally:
@@ -1471,6 +1477,35 @@ class Handler(BaseHTTPRequestHandler):
             })
         if route.startswith(PREFIX + "/volcengine/voice-clone/"):
             return self._voice_clone(route.removeprefix(PREFIX + "/volcengine/voice-clone/"))
+        if route.startswith(PREFIX + "/local-acquisition/"):
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            subject = self.config.sessions.subject(token)
+            if not subject:
+                return self._reply_json(401, {"error": "session_required"})
+            if route == PREFIX + "/local-acquisition/catalog":
+                try:
+                    self._read_json(4096)
+                    bundled = Path(__file__).with_name("precise-public-sources.json")
+                    source_file = Path(os.environ.get("XIAOXI_ACQUISITION_CATALOG", str(bundled if bundled.exists() else Path(__file__).resolve().parents[2] / "desktop/src/shared/precise-public-sources.json")))
+                    sources = json.loads(source_file.read_text(encoding="utf-8-sig"))
+                    if not isinstance(sources, list) or len(sources) > 100:
+                        raise ValueError("catalog_invalid")
+                    return self._reply_json(200, {"schema": 1, "sources": sources})
+                except (OSError, ValueError):
+                    return self._reply_json(503, {"error": "acquisition_catalog_unavailable"})
+            if route.startswith(PREFIX + "/local-acquisition/sync/"):
+                try:
+                    body = self._read_json(SYNC_MAX_BODY)
+                    result = self.server.acquisition_sync.handle(route.removeprefix(PREFIX + "/local-acquisition/sync/"), subject, body)
+                    return self._reply_json(200, result)
+                except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+                    return self._reply_json(400, {"error": "acquisition_sync_request_failed"})
+            try:
+                body = self._read_json(28 * 1024 * 1024)
+                result = self.server.local_acquisition.handle(route.rsplit("/", 1)[-1], subject, body)
+                return self._reply_json(200, result)
+            except (ValueError, TypeError, KeyError, OSError):
+                return self._reply_json(400, {"error": "acquisition_request_failed"})
         if route in (PREFIX + "/materials/search", PREFIX + "/materials/cancel", PREFIX + "/materials/status"):
             token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
             subject = self.config.sessions.subject(token)
