@@ -198,10 +198,37 @@ jobs:
       - name: Maintenance HTTP and feedback contracts
         working-directory: server/maintenance
         run: python -m unittest discover -s . -p 'test_*.py'
-      - name: Install locked Python test dependencies
-        working-directory: server/provider-gateway
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked service dependencies in parallel
         run: |
-          python -m pip install -r ../../desktop/requirements-ci.txt
+          $jobs = @(
+            Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+              param($root)
+              Set-Location -LiteralPath $root
+              python -m pip install -r desktop/requirements-ci.txt
+              if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed' }
+            }
+            Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+              param($root)
+              Set-Location -LiteralPath (Join-Path $root 'desktop')
+              npm.cmd ci
+              if ($LASTEXITCODE -ne 0) { throw 'JavaScript dependency installation failed' }
+            }
+          )
+          try {
+            $jobs | Wait-Job | Out-Null
+            foreach ($job in $jobs) {
+              # Native tools may write progress or warnings to stderr even on exit 0.
+              Receive-Job -Job $job -ErrorAction Continue
+              if ($job.State -ne 'Completed') { throw "Dependency job failed: $($job.Id)" }
+            }
+          } finally {
+            $jobs | Remove-Job -Force
+          }
       - name: Product detail planning, caption and billing boundaries
         working-directory: desktop/sidecars/product-detail/app
         env:
@@ -213,14 +240,6 @@ jobs:
         run: |
           $env:DATABASE_URL = "sqlite:///$($env:RUNNER_TEMP.Replace('\', '/'))/detail-tests.db"
           python -m pytest ai_refine_v2/tests -q
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-      - name: Install locked E2E JavaScript dependencies
-        working-directory: desktop
-        run: npm ci
       - name: Install isolated E2E browser
         run: python -m playwright install chromium
       - name: Product detail local E2E

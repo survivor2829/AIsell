@@ -174,12 +174,9 @@
 }
 @media(prefers-reduced-motion: reduce) { .product-detail-spinner { animation: none; } }
 
-.product-detail-intro { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr); gap:28px; align-items:center; }
+.product-detail-intro { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,500px),1fr)); gap:28px; align-items:center; }
 .product-detail-intro .product-detail-guide { min-height:310px; gap:18px; }
 .product-detail-intro .product-detail-persona { width:260px; height:310px; }
-@media(max-width:1150px) {
- .product-detail-intro { grid-template-columns:1fr; gap:0; }
-}
 @media(max-width:760px) {
  .product-detail-intro .product-detail-persona { width:180px; height:250px; }
 }
