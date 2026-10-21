@@ -21,7 +21,7 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
         onChange={(event) => onChange({ ...value, target_audience: event.target.value })} />
     </label>
     <div className="batch-brief-field"><label><span>想讲什么？ <span className="batch-field-note">选填</span></span>
-      <textarea aria-label="你想表达什么" value={value.expression} maxLength={14000} rows={4}
+      <textarea aria-label="想讲什么" value={value.expression} maxLength={14000} rows={4}
         placeholder="粘贴文案将保留原文；留空则根据素材和目标客户生成"
         onChange={(event) => onChange({ ...value, expression: event.target.value })} /></label>
       <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "ideas"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "ideas" : "provided", script_action: value.script_action === "expand" ? "expand" : "rewrite" })} /><span>让 AI 根据这些想法改写或扩写</span></label>

@@ -78,7 +78,7 @@ export function TutorialsPage({ category: initialCategory = 'short-video', topic
     <div className="tutorials-heading-layout">
     {!compact && <header className="tutorials-hero">
       {appearance && <button type="button" className="tutorials-persona" onClick={onPersonalize} disabled={!onPersonalize} aria-label="设置教程伙伴形象与名字"><img src={portraitAsset(appearance)} alt="" /></button>}
-      <div><h1>操作教程</h1><p className="tutorials-intro">看一小段，跟着做一步</p><p>{preference?.name || DEFAULT_ROLE_PREFERENCES.tutorials.name}陪你上手。选一个操作，随时暂停、重看。</p>{onPersonalize && <button type="button" className="tutorials-personalize" onClick={onPersonalize}><Settings2 size={16} />设置我的伙伴</button>}</div>
+      <div><h1>操作教程</h1><p className="tutorials-intro">想完成哪件事？看一小段，跟着做一步。</p><p>{preference?.name || DEFAULT_ROLE_PREFERENCES.tutorials.name}陪您上手。选一个操作，随时暂停、重看。</p>{onPersonalize && <button type="button" className="tutorials-personalize" onClick={onPersonalize}><Settings2 size={16} />设置我的伙伴</button>}</div>
     </header>}
     <div className="tutorials-discovery">
     <div className="tutorials-tools"><nav className="tutorials-categories" aria-label="教程分类">{CATEGORIES.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={category === id} onClick={() => { setCategory(id); setTopic(''); setQuery(''); closePlayer(); }}><Icon size={20} /><span>{label}</span></button>)}</nav><button type="button" className="tutorials-refresh" onClick={() => void load()} disabled={loading} aria-label="刷新教程"><RefreshCw size={18} />刷新</button></div>

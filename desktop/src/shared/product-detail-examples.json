@@ -1,0 +1,16 @@
+{
+  "categories": [
+    { "id": "equipment", "name": "设备类" },
+    { "id": "accessories", "name": "配件类" },
+    { "id": "consumables", "name": "耗材类" },
+    { "id": "tools", "name": "工具类" }
+  ],
+  "examples": [
+    { "id": "bg1", "category": "equipment", "name": "普渡 BG1", "image": "bg1.png", "thumbnail": "bg1-thumb.jpg" },
+    { "id": "s9", "category": "equipment", "name": "毛驴快跑 S9", "image": "s9.png", "thumbnail": "s9-thumb.jpg" },
+    { "id": "cc1-pro", "category": "equipment", "name": "普渡 CC1 Pro", "image": "cc1-pro.png", "thumbnail": "cc1-pro-thumb.jpg" },
+    { "id": "ride-on-sweeper", "category": "equipment", "name": "驾驶式扫地车", "image": "ride-on-sweeper.png", "thumbnail": "ride-on-sweeper-thumb.jpg" },
+    { "id": "indoor-cleaner", "category": "equipment", "name": "室内清洁机器人", "image": "indoor-cleaner.png", "thumbnail": "indoor-cleaner-thumb.jpg" },
+    { "id": "outdoor-sweeper", "category": "equipment", "name": "户外清扫机器人", "image": "outdoor-sweeper.png", "thumbnail": "outdoor-sweeper-thumb.jpg" }
+  ]
+}

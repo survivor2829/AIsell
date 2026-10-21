@@ -78,37 +78,37 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     key: "agent",
     ...AGENT_ROLE_IDENTITIES.agent,
     portraitKey: "xiaoxi-integrated",
-    intro: "用真诚沟通，帮你连接更多客户。",
+    intro: "联系客户、回应咨询，把每次沟通接着做下去。",
     primaryLabel: "联系客户",
     primaryTarget: "touch",
     capabilities: [
       { key: "touch", label: "精准触达", description: "核对联系人后，发送合适的消息", icon: Send },
-      { key: "reply", label: "自动回复", description: "查看客户回复，必要时自己接手", icon: MessageCircle },
-      { key: "moments", label: "朋友圈运营", description: "发朋友圈，查看互动任务", icon: ThumbsUp },
+      { key: "reply", label: "自动回复", description: "按已确认的资料接待咨询，您可随时接手", icon: MessageCircle },
+      { key: "moments", label: "朋友圈运营", description: "分享产品与案例，查看客户互动", icon: ThumbsUp },
       { key: "workflow", label: "今日计划", description: "查看今天要做的事", icon: ListTodo },
       { key: "contact-sync", label: "联系人同步", description: "更新本机微信联系人", icon: UsersRound },
-      { key: "expert", label: "AI 专家", description: "填写你的产品和客户信息", icon: Bot }
+      { key: "expert", label: "AI 专家", description: "整理产品和客户资料，让回复更贴合业务", icon: Bot }
     ]
   },
   production: {
     key: "production",
     ...AGENT_ROLE_IDENTITIES.production,
     portraitKey: "xiaohui-integrated",
-    intro: "用优质视频，帮你吸引精准客户。",
+    intro: "把素材和卖点，做成客户看得懂的短视频。",
     primaryLabel: "制作短视频",
     primaryTarget: "workspace",
     capabilities: [
-      { key: "workspace", label: "线索视频混剪", description: "用现有素材制作视频", icon: Clapperboard },
-      { key: "product-video", label: "产品效果视频", description: "展示设备在场景中的样子", icon: Video },
+      { key: "workspace", label: "线索视频混剪", description: "把零散素材，做成讲清卖点的获客短视频", icon: Clapperboard },
+      { key: "product-video", label: "产品效果视频", description: "一张产品图，配上卖点，让客户看到现场使用效果", icon: Video },
       { key: "finished", label: "成片中心", description: "查看成片，导出给客户", icon: Folder },
-      { key: "ai-video", label: "数字人视频", description: "制作本人出镜的数字人视频", icon: UserRound }
+      { key: "ai-video", label: "数字人视频", description: "上传您的出镜视频，让数字分身替您讲产品", icon: UserRound }
     ]
   },
   operations: {
     key: "operations",
     ...AGENT_ROLE_IDENTITIES.operations,
     portraitKey: "xiaolian-integrated",
-    intro: "用精美图片，帮你展示产品、提升转化。",
+    intro: "把产品卖点讲清楚，详情图、参数图一起准备。",
     primaryLabel: "制作产品详情图",
     primaryTarget: "product-detail",
     capabilities: [
@@ -506,14 +506,14 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   const value = (count: string | null) => snapshot.loading ? "—" : count === null ? "—" : count;
   const metrics: Metric[] = [
     { label: "我的素材", value: value(snapshot.assets), unit: snapshot.assets === null ? undefined : "份", detail: "当前可用图片与视频素材", icon: Folder },
-    { label: "待完成视频", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要你确认或处理`, icon: Clapperboard },
+    { label: "待完成视频", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要您确认或处理`, icon: Clapperboard },
     { label: "可用成片", value: value(snapshot.finished), unit: snapshot.finished === null ? undefined : "条", detail: "本地文件仍可访问的成片", icon: Video }
   ];
   const latest = snapshot.latestTask;
   const importantTask: ImportantTask = latest
     ? {
       title: latest.title || "继续当前内容制作",
-      detail: latest.errorMessage || (latest.category === "active" ? "制作正在进行，可以查看进度和已完成的步骤。" : "这项制作需要你的确认，可以打开查看详情。"),
+      detail: latest.errorMessage || (latest.category === "active" ? "制作正在进行，可以查看进度和已完成的步骤。" : "这项制作需要您的确认，可以打开查看详情。"),
       status: latest.category === "active" ? "进行中" : "需要处理",
       target: "workspace",
       action: "查看这项制作"

@@ -146,7 +146,7 @@ export function ReferenceHumanPage() {
     });
   }
   return <div ref={root} className="digital-human-page reference-human-page">
-    <header className="dh-header"><div className="dh-heading"><h1>数字人口播</h1><p>用你的形象和声音，把行业好内容讲给客户听。</p></div>
+    <header className="dh-header"><div className="dh-heading"><h1>数字人口播</h1><p>上传您的出镜视频，让数字分身替您讲产品。</p></div>
       <div className="dh-header-actions"><button className="dh-button" onClick={() => { if (history.current) { history.current.open = true; history.current.scrollIntoView({ block: 'start', behavior: 'instant' }); } }}><History size={17} />制作记录{tasks.length ? `（${tasks.length}）` : ''}</button>
       <button className="dh-button" disabled={!!busy} onClick={() => newDraft()}><Plus size={17} />新建口播</button></div></header>
     {notice && <p className="dh-message is-error" role="alert">{notice}</p>}
@@ -159,7 +159,7 @@ export function ReferenceHumanPage() {
       <section className="dh-form" aria-label="人物与口播设置">
         <div id="rh-step-1" hidden={step !== 1}>
         <h2 className="rh-section-title">这次，由谁出镜？</h2>
-        <p className="dh-quality">选一个已保存的人物，或上传新视频。文案会按视频时长规划。</p>
+        <p className="dh-quality">选一个已保存的人物，或上传您的讲话视频。文案会按视频时长安排。</p>
         <div className={`rh-people${assets.length ? " has-people" : ""}`}><button className="rh-upload-person" disabled={!ready || !!busy || locked} onClick={() => void run('import', async () => {
           const item = await unwrap(referenceApi().importVideo()); if (!item) return; updateAsset(item); edit({ referenceAssetId: item.id }); setConsent(false);
         })}>{busy === 'import' ? <LoaderCircle className="dh-spinning" size={26} /> : <Upload size={26} />}<strong>{busy === 'import' ? '正在检查人物与声音…' : '上传本人视频'}</strong><small>正面讲话 · 至少15秒<br />只有本人声音，不加音乐</small></button>
@@ -185,7 +185,7 @@ export function ReferenceHumanPage() {
         {!locked && <div className="rh-writing-actions"><button className="dh-button rh-write-script" data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy || !personReady || quota?.status !== 'available' || !!pendingScript} onClick={() => writeScript()}>{draft.script.trim() ? '换个方向 · 使用1次写稿额度' : '生成原创稿 · 使用1次写稿额度'}</button>
         {pendingScript && <><p className="dh-quality">上次写稿结果待核对，先查询原请求；不会自动重新扣额度。</p><button className="dh-button" data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy} onClick={() => writeScript(undefined, true)}>查询上次写稿结果</button><button className="dh-text-button" disabled={!!busy} onClick={() => { setPendingScript(undefined); setNotice('已保留原写稿回执。再次点击写稿将使用新的套餐额度，也可以直接手填。'); }}>结束等待，改为手填或另写</button></>}
         </div>}
-        {busy === 'script' && <NarrationWaiting title="正在写一份适合你讲的稿" detail="结合所选参考与实际产品资料，按人物视频时长组织表达。" />}
+        {busy === 'script' && <NarrationWaiting title="正在准备适合您讲给客户听的稿" detail="结合所选参考与实际产品资料，按人物视频时长组织表达。" />}
         {suggestion && <section className="rh-script-suggestion" aria-label="新文案对照"><h3>新方向，先看看</h3><strong>{suggestion.title}</strong><p>{suggestion.script}</p><div className="rh-source-actions"><button className="dh-button is-primary" disabled={!!busy} onClick={() => { edit(suggestion); setSuggestion(undefined); }}>采用新稿</button><button className="dh-button" disabled={!!busy} onClick={() => setSuggestion(undefined)}>保留当前稿</button></div></section>}
         {asset?.narrationPlan && (!task || (task.pipelineVersion || 4) >= 5) && asset.seconds >= referencePolicy.limits.narrationMinSeconds && <p className="dh-quality">当前人物视频{asset.seconds.toFixed(1)}秒，文案按约{asset.narrationPlan.minimumSeconds}—{asset.narrationPlan.maximumSeconds}秒规划，建议不超过{asset.narrationPlan.maxCharacters}个中文字。实际时长以配音为准，超长会暂停。</p>}
         <label className="dh-field rh-script-field"><span>口播正文 <small>{draft.script.length} / 500字</small></span><textarea rows={6} maxLength={500} value={draft.script} disabled={locked || !!busy} onChange={(event) => edit({ script: event.target.value })} placeholder="可以直接粘贴自己的稿，也可以选上方参考生成原创稿。确认后，数字人就照这份正文讲。" /></label>
@@ -209,7 +209,7 @@ export function ReferenceHumanPage() {
         </div>
         <div id="rh-step-3" hidden={step !== 3}>
           <h2 className="rh-section-title">{working ? task!.statusLabel : task?.status === 'completed' ? '口播已完成' : task?.status === 'draft' ? '确认后自动制作' : '生成与成片'}</h2>
-          {working && <NarrationWaiting title="正在为你完成这一条口播" detail="当前步骤完成后会自动继续，可以切换模块，回来查看结果。" poster={asset?.previewDataUrl} />}
+          {working && <NarrationWaiting title="正在为您完成这一条口播" detail="当前步骤完成后会自动继续，可以切换模块，回来查看结果。" poster={asset?.previewDataUrl} />}
           {video && <div className="dh-output-actions">
           {video && <button className="dh-button" disabled={!!busy} onClick={() => void run('repackage', async () => { applyPackaging(await unwrap(referenceApi().repackage({ id: task!.id, nextStyle: true, soundEffects: draft.soundEffects }))); setStep(3); })}>换个风格 · 本地免费</button>}
           {video && <button className="dh-button" disabled={!!busy} onClick={() => newDraft(task!)}>改文案，再做一条</button>}

@@ -43,7 +43,7 @@ export function ExampleHelp({ topic }: { topic: TutorialTopic }) {
 export function VideoExamples() {
   const [selected, setSelected] = useState<VideoExample | null>(null);
   return <section className="video-examples" aria-label="看看短视频生成效果">
-    <h2>看看生成效果</h2><p>点开成片，看看可以做出什么样的视频。</p>
+    <h2>看看生成效果</h2><p>看看素材和卖点，怎样变成一条发给客户的视频。</p>
     <div className="video-example-cards">{VIDEO_EXAMPLES.map(example => <button type="button" key={example.topic} onClick={() => setSelected(example)}>
       <img src={asset(`${example.file}.jpg`)} alt="" loading="lazy" /><span><small>{example.module} · {example.duration}</small><strong>{example.title}</strong><em><PlayCircle size={16} />看成片示例</em></span>
     </button>)}</div>

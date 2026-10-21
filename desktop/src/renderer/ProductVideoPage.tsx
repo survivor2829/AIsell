@@ -91,7 +91,7 @@ export function ProductVideoPage() {
   const quote = selected?.quote;
   const withinBudget = quote?.ready && Number(quote.maximumCny) <= Number(quote.budgetCny);
   return <div className="product-video-page">
-    <header className="pv-header"><div><h1>产品效果视频</h1><p>传产品图，选使用场景，先看方案再制作。</p></div><TutorialHelp topic="product-video" /></header>
+    <header className="pv-header"><div><h1>产品效果视频</h1><p>一张产品图，配上卖点，让客户看到现场使用效果。</p></div><TutorialHelp topic="product-video" /></header>
     <CreationSteps labels={['上传产品资料', '选择画面', '确认制作']} current={step} onChange={setStep} disabled={[!!busy, !draft.imageId || !!busy, !selected || !!busy]} />
     <div className={`pv-layout${step === 2 ? ' is-confirming' : ''}`}><section className="pv-panel" hidden={step === 2}>
       <div hidden={step !== 0}>
@@ -120,7 +120,7 @@ export function ProductVideoPage() {
       </div>
     </section><section className="pv-panel pv-output">{step === 2 ? <CreationStepTitle number={3}>确认方案，再生成成片</CreationStepTitle> : <h2>产品预览</h2>}
       {selected && step === 2 ? <><div className="pv-task-head"><strong>{selected.productName || "视频方案"} · {selected.durationSeconds}秒</strong><span role="status">{selected.statusLabel}</span></div>
-        <p className="pv-evidence">{selected.plan.evidenceStatus === "appearance_only" ? "资料尚不足以支撑作业效果：本方案只展示产品外观与场景。" : "镜头依据你提供的资料安排，请确认场景、动作和口播准确。"}</p>
+        <p className="pv-evidence">{selected.plan.evidenceStatus === "appearance_only" ? "资料尚不足以支撑作业效果：本方案只展示产品外观与场景。" : "镜头依据您提供的资料安排，请确认场景、动作和口播准确。"}</p>
         {selected.plan.concept && <div className="pv-director-brief"><strong>视频会怎么拍</strong><p>{selected.plan.concept}</p><small>{selected.plan.photography}</small></div>}
         <ol className="pv-shots">{selected.plan.shots.map((shot, index) => { const start = shot.startSecond ?? selected.plan.shots.slice(0, index).reduce((sum, row) => sum + row.seconds, 0); return <li key={shot.index}><div className="pv-shot-visual"><Video size={27} strokeWidth={1.4} /><span>镜头 {index + 1}</span><small>{start}–{shot.endSecond ?? start + shot.seconds}秒</small></div><div className="pv-shot-copy"><strong>{shot.title}</strong><p className="pv-narration">讲解：{shot.narration}</p><details><summary>查看画面安排</summary><p>{shot.camera || "按方案拍摄"}</p>{shot.startState && <p>开始：{shot.startState}<br />结束：{shot.endState}</p>}{shot.firstFramePrompt && <p>场景首帧：{shot.firstFramePrompt}</p>}<p>视频：{shot.prompt}</p></details></div></li>; })}</ol>
         <p className="pv-evidence">{["480p", "720p"].includes(selected.plan.sourceResolution || '') ? `${selected.plan.sourceResolution}生成后普通放大至1080×1920，再渲染字幕；不是AI增强或原生1080p。` : "旧任务沿用创建时的画质与方案。"}</p>
@@ -137,7 +137,7 @@ export function ProductVideoPage() {
         {selected.canExportSource && <button type="button" className="pv-secondary" disabled={!!busy} onClick={() => api && void perform("source", () => unwrap(api.exportSource(selected.id)), result => { if (result) setExportResult(`已导出原片：${result.path}`); })}>导出{selected.plan.sourceResolution || ''}母版</button>}
         {selected.canExport && <div className="pv-send-text"><strong>发给客户时可用</strong><p>{selected.plan.sendText}</p></div>}
         {exportResult && <p className="pv-note" role="status">{exportResult}</p>}
-      </> : <div className="pv-visual-preview"><div className="pv-product-canvas">{image ? <img src={image.previewDataUrl} alt="已选择的产品原图" /> : <ImagePlus size={72} strokeWidth={1} />}<span>{image ? '产品原图 · 非生成效果' : '你的产品会出现在这里'}</span></div><div className="pv-preview-journey"><span><Images size={23} />产品照片</span><ArrowRight size={17} /><span><FileText size={23} />画面方案</span><ArrowRight size={17} /><span><Video size={23} />效果视频</span></div><p className="pv-note">先确认方案，再开始制作。资料不足时只展示外观。</p><details className="pv-quality-details"><summary>画质与制作说明</summary><p>720p 多场景生成，普通放大至1080×1920，配统一讲解与大字字幕，默认30秒。</p></details></div>}
+      </> : <div className="pv-visual-preview"><div className="pv-product-canvas">{image ? <img src={image.previewDataUrl} alt="已选择的产品原图" /> : <ImagePlus size={72} strokeWidth={1} />}<span>{image ? '产品原图 · 非生成效果' : '上传产品图后，在这里查看原图和制作效果'}</span></div><div className="pv-preview-journey"><span><Images size={23} />产品照片</span><ArrowRight size={17} /><span><FileText size={23} />画面方案</span><ArrowRight size={17} /><span><Video size={23} />效果视频</span></div><p className="pv-note">先确认方案，再开始制作。资料不足时只展示外观。</p><details className="pv-quality-details"><summary>画质与制作说明</summary><p>720p 多场景生成，普通放大至1080×1920，配统一讲解与大字字幕，默认30秒。</p></details></div>}
     </section></div>
     {error && <p className="pv-error" role="alert">{error}</p>}
     {items.length > 0 && <section className="pv-history"><h2>制作记录</h2><div>{items.map(task => <button type="button" key={task.id} onClick={() => selectTask(task)}><span>{task.productName || task.plan.scene} · {task.durationSeconds}秒</span><small>{task.statusLabel}</small></button>)}</div></section>}

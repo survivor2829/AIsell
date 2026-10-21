@@ -5,11 +5,11 @@ import "./AgentOverview.css";
 import productBrand from "../../product-brand.json";
 
 const LEADERS: Record<AgentRoleKey, { action: string; description: string }> = {
-  production: { action: "制作获客短片", description: "用优质视频，帮你吸引精准客户。" },
-  agent: { action: "承接微信咨询", description: "用真诚沟通，帮你连接更多客户。" },
-  operations: { action: "制作产品详情图", description: "用精美图片，帮你展示产品、提升转化。" },
-  materials: { action: "挑选行业素材", description: "工厂、小区、机器人素材拿来用。" },
-  business: { action: "打开生意助手", description: "按地区找企业，查看公开电话、收藏和记录跟进。" },
+  production: { action: "制作获客短片", description: "把素材和卖点，做成客户看得懂的短视频。" },
+  agent: { action: "承接微信咨询", description: "联系客户、回应咨询，把每次沟通接着做下去。" },
+  operations: { action: "制作产品详情图", description: "把产品卖点讲清楚，详情图、参数图一起准备。" },
+  materials: { action: "挑选行业素材", description: "做视频缺画面？从工厂、小区、设备素材中选一段。" },
+  business: { action: "打开精准获客", description: "找到附近企业，查资料、留线索、接着跟进。" },
   tutorials: { action: "看一段跟着做", description: "一个操作一段视频，随时暂停重看。" }
 };
 

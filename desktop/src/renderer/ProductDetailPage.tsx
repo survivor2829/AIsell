@@ -217,8 +217,8 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
         <button type="button" className="product-detail-persona" onClick={onPersonalize} aria-label="设置产品详情图伙伴的形象与名字"><img src={portraitAsset(appearance)} alt="" /></button>
         <div className="product-detail-guide-copy">
           <h1>产品详情图</h1>
-          <p className="product-detail-promise">上传产品图和卖点，制作详情图、参数图</p>
-          <p><strong>{preference.name}</strong>，陪你把产品介绍清楚。</p>
+          <p className="product-detail-promise">把产品卖点讲清楚，详情图、参数图一起准备。</p>
+          <p><strong>{preference.name}</strong>，陪您把产品介绍清楚。</p>
           <div className="product-detail-guide-actions">
             <button type="button" className="secondary-button" onClick={() => setShowExample(true)}><PlayCircle size={18} />查看生成示例</button>
             {!loadingStatus && ["failed", "unavailable", "stopped"].includes(status.state) && <button type="button" className="primary-button" onClick={() => run(status.state === "failed" ? "restart" : "start")} disabled={busy}><RefreshCw size={16} />重试</button>}

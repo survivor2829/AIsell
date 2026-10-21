@@ -202,7 +202,7 @@ function ImageDigitalHumanPage() {
     : !draft.script.trim() ? '写下想讲的话，再生成人物预览。' : '生成人物预览后，确认形象与产品再制作视频。';
 
   return <div className="digital-human-page">
-    <header className="dh-header"><div className="dh-heading"><h1>数字人视频</h1><p>选一张你的照片，让你出镜讲产品。</p></div><div className="dh-header-actions"><TutorialHelp topic="digital-human" />
+    <header className="dh-header"><div className="dh-heading"><h1>数字人视频</h1><p>选一张您的照片，让数字人替您讲产品。</p></div><div className="dh-header-actions"><TutorialHelp topic="digital-human" />
       <button className="dh-button" onClick={newSample} disabled={!!busy}><Plus size={16} />新建样片</button></div></header>
     <CreationSteps labels={['上传素材', '选择画面与声音', '确认制作']} current={step} onChange={setStep} disabled={[!!busy, !draft.personAssetId || !draft.productAssetId || !!busy, !selected || selected.status === 'draft' || !!busy]} />
     {notice && <div className={`dh-message is-${notice.kind}`} role={notice.kind === 'success' ? 'status' : 'alert'}>
@@ -221,7 +221,7 @@ function ImageDigitalHumanPage() {
         <div className="dh-step-footer"><span>两张图片准备好，就可以选场景。</span><div>{!locked && <button type="button" className="dh-button" disabled={!!busy} onClick={() => void saveDraft()}>保存草稿</button>}<button type="button" className="dh-button is-primary" disabled={!draft.personAssetId || !draft.productAssetId || !!busy} onClick={() => setStep(1)}>下一步：选画面<ArrowRight size={17} /></button></div></div>
         </div>
         <div hidden={step !== 1}>
-        <CreationStepTitle number={2}>你想在哪里出镜？</CreationStepTitle>
+        <CreationStepTitle number={2}>您想在哪里出镜？</CreationStepTitle>
         <fieldset className="dh-scenes" disabled={locked || !!busy}><legend>出镜场景</legend><div>{capabilities?.scenes.map((scene) => <button type="button" key={scene.id}
           aria-pressed={draft.sceneId === scene.id} className={draft.sceneId === scene.id ? 'is-selected' : ''} onClick={() => setDraft({ ...draft, sceneId: scene.id })}>
           <img src={SCENE_IMAGES[scene.id]} alt="" /><span>{scene.name}{draft.sceneId === scene.id && <Check size={14} />}</span></button>)}</div></fieldset>
