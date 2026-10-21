@@ -9,7 +9,7 @@ const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { verifyManifest, compareVersions } = require("../shared/cloud-contract.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createPreloadApis } = require("./preload-api.cjs");
-const { COMPONENTS } = require("../shared/component-contract.cjs");
+const { LEGACY_COMPONENTS: COMPONENTS } = require("../shared/component-contract.cjs");
 const { releaseNotes, matchingReleaseNotes, bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
 
 async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
@@ -61,7 +61,7 @@ async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
       transport: { async request(route, options = {}) {
         requests.push(route);
         if (route.endsWith("/latest")) assert.deepEqual(options.headers, {
-          "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Version": "1.1.0",
+          "X-Xiaoxi-Update-Protocol": "5", "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Version": "1.1.0",
           "X-Xiaoxi-Base-Version": "1.1.0", "X-Xiaoxi-Base-Fingerprint": "0".repeat(64)
         }, "Both release routes expose the exact installed base without customer identifiers");
         else assert.equal(options.headers, undefined, "Release capability headers do not leak to artifact requests");
@@ -368,7 +368,7 @@ async function main() {
   const transport = { async request(route, options = {}) {
     if (offline) throw new Error("offline");
     if (route.endsWith("latest")) {
-      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Version": "1.0.0" });
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "5", "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Version": "1.0.0" });
       return latest;
     }
     if (route === "/v1/reports") { posts.push(options.body); return { accepted: options.body.entries.map((entry) => entry.id) }; }
@@ -401,7 +401,16 @@ async function main() {
     assert.match(controller.status().uploadError, /重试/);
     assert.equal(await controller.installOnExit(), false, "Ordinary exit never silently starts an installer");
     assert.equal(launched, 0);
-    const prepared = await controller.prepareInstall();
+    const originalReadStream = fs.createReadStream;
+    let repeatedInstallerReads = 0;
+    fs.createReadStream = function(file, ...args) {
+      if (String(file).endsWith(`${manifest.sha256}.exe`)) repeatedInstallerReads++;
+      return originalReadStream.call(this, file, ...args);
+    };
+    let prepared;
+    try { prepared = await controller.prepareInstall(); await controller.prepareInstall(); }
+    finally { fs.createReadStream = originalReadStream; }
+    assert.equal(repeatedInstallerReads, 0, "a download already verified against the signed digest must not be rehashed at each install gate");
     fs.writeFileSync(prepared.file, "tampered");
     await assert.rejects(controller.prepareInstall(), /cloud_download_invalid/);
     assert.equal(await controller.installOnExit(), false);
