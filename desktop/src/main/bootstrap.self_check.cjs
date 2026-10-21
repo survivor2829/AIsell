@@ -196,6 +196,9 @@ async function main() {
 
   const metadata = await pathsApi.verifySelected(target.root, healthy.installed, config, { structure: false });
   assert.equal(metadata.version, target.manifest.version);
+  const runtimeVerification = pathsApi.createRuntimeVerification();
+  await runtimeVerification.ensure("content");
+  await assert.rejects(runtimeVerification.ensure("unknown"), /component_verification_group_invalid/);
   const originals = fs.readFileSync(path.join(target.root, "component-base.json"));
   fs.appendFileSync(path.join(target.root, "component-base.json"), " ");
   assert.equal(pathsApi.bootVerificationReceipt(healthy.paths, target.root).hit, false, "manifest mutation invalidates receipt");

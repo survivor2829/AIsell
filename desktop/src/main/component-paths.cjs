@@ -68,8 +68,11 @@ function updatePathsFromRoot(root) { return { directory: path.dirname(path.dirna
 function createRuntimeVerification() {
   // Calls remain compatible with business launch sites. Download/prepare and
   // switching own validation; runtime errors request rollback, never lazy hashing.
+  const { GROUPS } = require("../shared/component-verification.cjs");
   return {
-    async ensure() {}, async media() {}
+    async ensure(group) {
+      if (!GROUPS.includes(group) || group === "media") throw Error("component_verification_group_invalid");
+    }, async media() {}
   };
 }
 async function ensureRuntimeGroup(group) { await global.__xiaoxiComponents?.verification?.ensure(group); }
