@@ -52,7 +52,9 @@ async function main() {
     network = createTransport(config);
     const sourceEnvelope = require('./fixtures/protocol5-source-1.1.104.json');
     const source = verifyManifest(sourceEnvelope, config);
-    const targetEnvelope = await network.request('/v1/releases/test/latest');
+    const targetEnvelope = await network.request('/v1/releases/test/latest', { headers: {
+      'X-Xiaoxi-Update-Protocol': '5', 'X-Xiaoxi-Version': source.version
+    } });
     const target = verifyManifest(targetEnvelope, config); // Verifies and binds BOTH protocol-5 signed payloads.
     assert.equal(source.version, '1.1.104');
     assert.equal(target.version, require('../package.json').version, 'Latest must be this checkout, never a historical acceptance artifact');
