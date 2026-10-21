@@ -122,4 +122,19 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
 function retryArtifacts(root) {
   if (fs.existsSync(path.join(root, ".artifact-retention.json"))) retainArtifacts(root, null, [], 1, []);
 }
-module.exports = { retainArtifacts, removeOwned, safePath, retryArtifacts };
+function artifactOwnershipRegistered(root, target) {
+  const relative = path.relative(fs.realpathSync(root), safePath(root, target));
+  try {
+    const ledger = JSON.parse(fs.readFileSync(path.join(root, ".artifact-retention.json"), "utf8"));
+    if (Object.values(ledger).some(state => Array.isArray(state?.owned) && state.owned.includes(relative))) return true;
+  } catch { /* A persisted inbox request is also sufficient for later retry. */ }
+  try {
+    const inbox = safePath(root, ".artifact-retention-requests");
+    return fs.readdirSync(inbox).filter(name => name.endsWith(".json")).some(name => {
+      const file = safePath(root, path.join(inbox, name));
+      try { return JSON.parse(fs.readFileSync(file, "utf8")).owned?.includes(relative) === true; }
+      catch { return false; }
+    });
+  } catch { return false; }
+}
+module.exports = { retainArtifacts, removeOwned, safePath, retryArtifacts, artifactOwnershipRegistered };

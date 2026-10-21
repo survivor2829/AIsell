@@ -178,6 +178,8 @@ try {
   const trusted = JSON.parse(fs.readFileSync(writeLauncherTrust(trustApp, "test"), "utf8"));
   const canonicalTrust = require("../src/main/cloud-release-config.json").test;
   assert.deepEqual(trusted, { channel: "test", appId: canonicalTrust.appId, signingPublicKey: canonicalTrust.signingPublicKey });
+  assert.equal(JSON.parse(fs.readFileSync(writeLauncherTrust(trustApp, "delivery"), "utf8")).channel, "production",
+    "delivery builds must use the same trust channel understood by the fixed launcher and cloud config");
   const baseFixture = path.join(fixture, "protocol5-installer");
   const capabilityPath = path.join(baseFixture, "resources/app/src/shared/update-capabilities.json");
   fs.mkdirSync(path.dirname(capabilityPath), { recursive: true });

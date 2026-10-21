@@ -49,7 +49,8 @@ async function main() {
     for (const file of modules) await fs.copyFile(path.join(source, file), path.join(application, file));
     try { await fs.copyFile(path.join(source, "src/main/update-storage.cjs"), path.join(application, "src/main/update-storage.cjs")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
-    for (const file of ["src/main/update-retention.cjs", "src/main/update-program-backup.cjs", "src/main/update-backups.cjs", "src/main/cloud-release-config.json", "src/shared/artifact-retention.cjs"]) {
+    for (const file of ["src/main/update-retention.cjs", "src/main/update-program-backup.cjs", "src/main/update-backups.cjs", "src/main/cloud-release-config.json", "src/shared/artifact-retention.cjs",
+      "src/shared/launcher-contract.cjs", "src/shared/component-verification.cjs", "src/main/download-verification.cjs"]) {
       try { await fs.copyFile(path.join(source, file), path.join(application, file)); }
       catch (error) { if (error.code !== "ENOENT") throw error; }
     }
@@ -58,6 +59,13 @@ async function main() {
     if (bridgeRecovery) await fs.cp(path.join(source, "src/main/legacy-recovery"), path.join(application, "src/main/legacy-recovery"), { recursive: true });
     assert.deepEqual(await fs.readFile(path.join(application, "src/main/update-helper.cjs")), helperBytes, "the starting updater must be byte-identical to the selected source");
     const helperSha256 = crypto.createHash("sha256").update(helperBytes).digest("hex");
+    if (helperBytes.includes(Buffer.from("function helperRuntimeIdentity("))) {
+      // This disposable program tests the process/installer contract, not a
+      // component package. Give its current helper an explicit runtime identity.
+      await fs.writeFile(path.join(installed, "component-base.json"), JSON.stringify({ schema: 2, updateProtocol: 5, dataSchema: 2,
+        base: { version: initialVersion, fingerprint: crypto.createHash("sha256").update("isolated-electron-fixture").digest("hex") },
+        files: [], components: { updater: { treeSha256: helperSha256 } } }));
+    }
     const config = { enabled: true, appId: "com.xiaoxi.update.fixture", channel: "test", signingPublicKey: publicKey.export({ type: "spki", format: "pem" }) };
     // Only the trust fixture changes: no production key, server or user profile is accessed.
     await fs.writeFile(path.join(application, "src/main/cloud-config.cjs"), `module.exports.cloudConfig=()=>(${JSON.stringify(config)});`);
