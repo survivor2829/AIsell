@@ -12,6 +12,7 @@ const { createComponentStore } = require("./component-store.cjs");
 const componentPaths = require("./component-paths.cjs");
 const { bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
 const { updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
+const { retainArtifacts, retryArtifacts } = require("../shared/artifact-retention.cjs");
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
@@ -102,6 +103,27 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       lastAnnouncementsCheck: state.lastAnnouncementsCheck };
   }
   function notify(patch = {}) { view = { ...view, ...patch }; for (const listener of listeners) { try { listener(status()); } catch {} } }
+  function fullDownloadPaths(manifest) {
+    const installer = path.join(dir, manifest.sha256 + ".exe"), partial = path.join(dir, manifest.sha256 + ".part");
+    return [installer, installer + ".verified.json", partial, partial + ".verified.json"];
+  }
+  function fullRetentionOptions() {
+    const busy = updateLaunching || view.updateRequested === true
+      || Boolean(userData && fs.existsSync(path.join(componentPaths.updatePaths(userData).directory, "active-job.json")));
+    return { deferCleanup: busy ? "active_update" : false };
+  }
+  function retainFullDownload(manifest, ready, owned = []) {
+    return retainArtifacts(dir, ready ? "full-ready-downloads" : "full-downloading-downloads",
+      fullDownloadPaths(manifest).slice(0, ready ? 2 : 4), 1, owned, fullRetentionOptions());
+  }
+  function protectPendingFullDownload() {
+    if (!state.pending || state.pending.kind) return;
+    let manifest;
+    try { manifest = verifyManifest(state.pending, config); } catch { return; }
+    // Do this before any branch replaces pending. A prior ready-registration
+    // failure may have left this complete candidate protected only as downloading.
+    if (!retainFullDownload(manifest, true)) fail("update_cache_registration_failed");
+  }
   save();
   function readLatest() {
     if (latestRequest) return latestRequest;
@@ -229,6 +251,10 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     checking = true; notify({ stage: "checking", error: "" });
     let temporary, fullUpgradeRequired = false;
     try {
+      // Drain before replacing an identity within a retention category. This
+      // avoids depending on UUID order when requests share a millisecond.
+      if (!retryArtifacts(dir, fullRetentionOptions())) fail("update_cache_registration_failed");
+      protectPendingFullDownload();
       const [release, componentRelease] = await Promise.all([readLatest(), readLatestComponents()]);
       if (componentRelease && (!release || compareVersions(componentRelease.manifest.version, release.manifest.version) >= 0)) {
           let { envelope } = componentRelease;
@@ -270,6 +296,10 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         state.pending = null; save(); notify({ stage: "current", nextVersion: "" }); return status();
       }
       const destination = path.join(dir, `${manifest.sha256}.exe`);
+      // Claim only absent paths, before proof creation or network writes. Merely
+      // using an older installer/partial never transfers deletion ownership.
+      const created = fullDownloadPaths(manifest).filter(file => !fs.existsSync(file));
+      if (!retainFullDownload(manifest, false, created)) fail("update_cache_registration_failed");
       notify({ stage: "downloading", nextVersion: manifest.version, progress: 0, downloadedBytes: 0, totalBytes: manifest.size });
       const { verifyDownload } = require("./download-verification.cjs");
       let existing = false;
@@ -293,9 +323,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       }
       if (stopped) fail("cloud_stopped");
       if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
-      state.pending = envelope;
-      state.bridgeTarget = bridge ? { envelope: componentRelease.envelope, installerSha256: manifest.sha256 } : null;
-      save();
+      commit({ pending: envelope,
+        bridgeTarget: bridge ? { envelope: componentRelease.envelope, installerSha256: manifest.sha256 } : null });
+      // Keep the downloading reference until the next candidate. If this ready
+      // write fails, saved pending repairs it before that reference can change.
+      retainFullDownload(manifest, true);
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
       try { logger?.event?.("maintenance", "update.failed", { stage: view.stage }, {
@@ -404,7 +436,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     announcementTimer = setInterval(() => void refreshAnnouncements(), 30 * 60_000); announcementTimer.unref?.();
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
-  function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); }
+  function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); retryArtifacts(dir, fullRetentionOptions()); }
   return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }

@@ -53,6 +53,17 @@ async function inventory(root, layout) {
   await walk(root); validateFiles(files);
   return files.sort((a,b) => a.path < b.path ? -1 : 1);
 }
+async function buildComponentBaseline({ sourceRoot, baseVersion = "1.1.0", layout = defaultLayout }) {
+  const files = await inventory(path.resolve(sourceRoot), layout);
+  const baseline = { schema: 2, updateProtocol: 5, base: { version: baseVersion, fingerprint: treeHash(files.filter(f => f.component === "base")) }, dataSchema: 2, files, components: {} };
+  baseline.verification = require("../src/shared/component-verification.cjs").verificationPolicy(files);
+  for (const name of COMPONENTS) {
+    const ownFiles = files.filter(f => f.component === name).map(({ path, size, sha256 }) => ({ path, size, sha256 }));
+    if (!ownFiles.length) throw Error(`component_missing:${name}`);
+    baseline.components[name] = { schema: 2, name, treeSha256: treeHash(ownFiles), files: ownFiles };
+  }
+  return baseline;
+}
 async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersion = "1.1.0", appId, channel,
   notes = "", sequence = Date.now(), buildCommit = "", layout = defaultLayout }) {
   sourceRoot = path.resolve(sourceRoot); outputDir = path.resolve(outputDir);
@@ -62,11 +73,10 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
   notes = require("../src/shared/customer-release-notes.cjs").matchingReleaseNotes(version, notes);
   buildCommit = buildCommit || sourceManifest.commit || "";
   await fsp.mkdir(outputDir, { recursive: true });
-  const files = await inventory(sourceRoot, layout);
-  const baseline = { schema: 2, updateProtocol: 5, base: { version: baseVersion, fingerprint: treeHash(files.filter(f => f.component === "base")) }, dataSchema: 2, files, components: {} };
+  const baseline = await buildComponentBaseline({ sourceRoot, baseVersion, layout });
   const manifest = { schema: 2, updateProtocol: 5, appId, channel, platform: "win32", arch: "x64", version, base: baseline.base,
     minBaseVersion: baseVersion, dataSchema: 2, sequence, notes, publishedAt: new Date().toISOString(), components: {} };
-  baseline.verification = manifest.verification = require("../src/shared/component-verification.cjs").verificationPolicy(files);
+  manifest.verification = baseline.verification;
   const artifacts = [];
   const retentionOwned = [];
   try {
@@ -74,11 +84,7 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
     retentionOwned.push(...(previous.retentionOwned || []));
   } catch { /* First generation has no owned artifacts. */ }
   for (const name of COMPONENTS) {
-    const ownFiles = files.filter(f => f.component === name).map(({ path, size, sha256 }) => ({ path, size, sha256 }));
-    if (!ownFiles.length) throw Error(`component_missing:${name}`);
-    const treeSha256 = treeHash(ownFiles);
-    const descriptor = { schema: 2, name, treeSha256, files: ownFiles };
-    baseline.components[name] = descriptor;
+    const descriptor = baseline.components[name], ownFiles = descriptor.files, treeSha256 = descriptor.treeSha256;
     const cache = path.join(outputDir, `${name}-${treeSha256}.json`);
     let artifact;
     try {
@@ -138,4 +144,4 @@ if (require.main === module) {
   if (!channel) throw Error("Usage: node scripts/build-component-release.cjs <portable-root> <output-dir> <version> <app-id> <channel>");
   buildComponentRelease({ sourceRoot, outputDir, version, appId, channel }).then(r => console.log(r.metadataFile)).catch(e => { console.error(e.message); process.exitCode = 1; });
 }
-module.exports = { buildComponentRelease, inventory, classify };
+module.exports = { buildComponentRelease, buildComponentBaseline, inventory, classify };

@@ -387,10 +387,11 @@ function buildPortableStagingInScope(edition, paths, sourceState) {
     "",
     `界面和版本清单中的构建编号应当都是：${manifest.buildId}`
   ].join("\n") + "\n", "utf8");
-  if (edition === "test") {
+  {
     const inventoryFile = `${target}.inventory.json`;
     fs.writeFileSync(inventoryFile, JSON.stringify(require("./release-tree-hash.cjs").hashInventory(target)));
-    const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition), inventoryFile], { encoding: "utf8", windowsHide: true });
+    const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition), inventoryFile,
+      ...(edition === "test" ? [] : ["--baseline-only"])], { encoding: "utf8", windowsHide: true });
     if (baseline.status !== 0) throw new Error(baseline.stderr || baseline.stdout || "component baseline failed");
     console.log(baseline.stdout.trim());
     require("./component-base-input.cjs").reviewBaseUpgrade(target, sourceState.componentBaseRoot || null,

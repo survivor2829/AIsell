@@ -322,6 +322,13 @@ assert.equal(fs.existsSync(helper), true, "contact helper must be packaged");
 assert.equal(fs.existsSync(wxKeyDll), true, "authorized wx_key.dll must be packaged");
 assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be packaged");
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "版本清单.json"), "utf8"));
+const baseline = require("./component-base-input.cjs").readComponentBase(target, true);
+assert.equal(baseline.updateProtocol, 5, "every packaged edition requires a protocol-5 launcher baseline");
+assert.ok(baseline.files.length, "packaged launcher baseline must describe its runtime");
+assert.ok(baseline.components?.updater?.files.some(file => file.path === "resources/app/src/main/updater-bootstrap.cjs"), "packaged updater must belong to its component");
+assert.ok(baseline.components?.assets?.files.some(file => /\/video-examples\/[^/]+\.mp4$/.test(file.path)), "offline sample media must belong to assets");
+assert.equal(JSON.parse(fs.readFileSync(path.join(appDir, "src/shared/launcher-trust.json"), "utf8")).channel,
+  edition === "test" ? "test" : "production", "launcher trust identity must match the packaged edition");
 const declaredCapabilities = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
 assert.equal(manifest.edition, edition);
 assert.equal(manifest.artifactType, artifactTypeForEdition(edition, process.env));

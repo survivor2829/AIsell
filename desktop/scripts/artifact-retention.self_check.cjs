@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { retainArtifacts, removeOwned } = require("./artifact-retention.cjs");
+const { retainArtifacts, removeOwned, retryArtifacts, safePath } = require("./artifact-retention.cjs");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "artifact-retention-"));
 try {
   const historical = path.join(root, ".backup-historical");
@@ -14,6 +14,40 @@ try {
     retainArtifacts(root, "test", [directory]);
   }
   assert(fs.existsSync(historical));
+  const dangling = path.join(root, "dangling-download");
+  fs.symlinkSync(path.join(root, "missing-download"), dangling, process.platform === "win32" ? "junction" : "file");
+  assert.throws(() => safePath(root, dangling), /link/, "Even a dangling link cannot become an owned download target");
+  fs.unlinkSync(dangling);
+  const busyOld = path.join(root, "busy-old"), busyNew = path.join(root, "busy-new");
+  for (const file of [busyOld, busyNew]) fs.writeFileSync(file, "owned installer");
+  retainArtifacts(root, "busy-download", [busyOld]);
+  const busyApplied = retainArtifacts(root, "busy-download", [busyNew], 1, [busyNew], { deferCleanup: true });
+  assert(fs.existsSync(busyOld), "Active updates defer deletion while still recording the new candidate");
+  assert.equal(busyApplied, true);
+  assert.equal(retryArtifacts(root), true);
+  assert(!fs.existsSync(busyOld), "Unprotected owned files retire when the active update ends");
+  const inboxOnly = path.join(root, "inbox-only"), inbox = path.join(inboxOnly, ".artifact-retention-requests");
+  fs.mkdirSync(inbox, { recursive: true });
+  fs.writeFileSync(path.join(inboxOnly, "candidate"), "interrupted first registration");
+  fs.writeFileSync(path.join(inbox, "first.json"), JSON.stringify({ category: "download", refs: ["candidate"], owned: ["candidate"], keep: 1 }));
+  assert.equal(retryArtifacts(inboxOnly), true);
+  assert(fs.existsSync(path.join(inboxOnly, ".artifact-retention.json")), "A durable first request replays even before the first ledger exists");
+  if (process.platform === "win32") {
+    const occupied = path.join(root, "occupied-installer"), replacement = path.join(root, "replacement-installer");
+    fs.writeFileSync(occupied, "installer held by a live Windows handle"); fs.writeFileSync(replacement, "next installer");
+    retainArtifacts(root, "occupied-download", [occupied]);
+    const probe = `const fs=require('fs'),p=require('path'),assert=require('assert/strict');
+      const root=process.argv[1]; require(process.argv[2]).retainArtifacts(root,'occupied-download',[p.join(root,'replacement-installer')]);
+      assert(fs.existsSync(p.join(root,'occupied-installer')));
+      const state=JSON.parse(fs.readFileSync(p.join(root,'.artifact-retention.json')))['occupied-download'];
+      assert(state.owned.includes('occupied-installer')); assert(/^(EPERM|EBUSY|EACCES)$/.test(state.cleanupFailure.reason));`;
+    const quote = value => "'" + value.replaceAll("'", "''") + "'";
+    const powershell = `$stream=[IO.File]::Open(${quote(occupied)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None);try { & ${quote(process.execPath)} -e ${quote(probe)} ${quote(root)} ${quote(require.resolve('./artifact-retention.cjs'))}; if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE} } finally {$stream.Dispose()}`;
+    const locked = require("node:child_process").spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(powershell, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+    assert.equal(locked.status, 0, locked.stderr || locked.stdout);
+    assert.equal(retryArtifacts(root), true);
+    assert(!fs.existsSync(occupied) && fs.existsSync(replacement), "A real Windows file lock retires on retry after the handle closes");
+  }
   const rename = fs.renameSync;
   let blocked = false;
   fs.renameSync = function (source, destination) {

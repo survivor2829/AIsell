@@ -355,6 +355,72 @@ async function checkPinnedRequest(rootDir, config, manifest, sign, bytes) {
   } finally { controller.stop(); }
 }
 
+async function checkFullDownloadRetention(rootDir, config, manifest, sign) {
+  const directory = path.join(rootDir, "full-download-retention"), profile = path.join(directory, "profile");
+  const cache = path.join(directory, "cloud-maintenance"), jobs = require("./component-paths.cjs").updatePaths(profile).directory;
+  fs.mkdirSync(cache, { recursive: true }); fs.mkdirSync(jobs, { recursive: true });
+  const historical = path.join(cache, "historical.exe"); fs.writeFileSync(historical, "unregistered historical installer");
+  let release, bytes, failDownload = false, downloads = 0;
+  const select = number => {
+    bytes = Buffer.from(`harmless installer candidate ${number}`);
+    const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+    release = { ...manifest, version: `1.0.${number}`, sequence: 100 + number, sha256, size: bytes.length, file: `/artifacts/${sha256}.exe` };
+    return path.join(cache, sha256 + ".exe");
+  };
+  const create = () => createCloudMaintenance({ rootDir: directory, userData: profile, config, version: "1.0.0", canInstall: () => true,
+    transport: { async request(route, options = {}) {
+      if (route.endsWith("latest")) return sign(release);
+      downloads++;
+      fs.writeFileSync(options.destination, failDownload ? bytes.subarray(0, 3) : bytes);
+      if (failDownload) throw Error("interrupted fixture download");
+      options.onProgress(bytes.length);
+    }, close() {} } });
+  let controller = create();
+  const originalRename = fs.renameSync;
+  try {
+    const a = select(1); await controller.check(); assert.equal(controller.status().stage, "ready");
+    const b = select(2); failDownload = true; await controller.check();
+    assert(fs.existsSync(a), "A failed replacement preserves the last complete installer");
+    const bPart = b.replace(/\.exe$/, ".part"); assert(fs.existsSync(bPart));
+    const c = select(3); await controller.check();
+    assert(!fs.existsSync(bPart), "Superseded owned partial installers must be retired");
+    assert(fs.existsSync(a));
+    failDownload = false; await controller.check(); assert.equal(controller.status().stage, "ready");
+    assert(!fs.existsSync(a), "A successful new candidate bounds owned complete installers");
+    assert(fs.existsSync(historical), "Historical unregistered downloads are not adopted");
+    fs.writeFileSync(path.join(jobs, "active-job.json"), JSON.stringify({ id: "active-full-install", pid: process.pid }));
+    const d = select(4); await controller.check(); assert.equal(controller.status().stage, "ready");
+    assert(fs.existsSync(c), "A helper may still own its installer after the new app starts");
+    fs.unlinkSync(path.join(jobs, "active-job.json")); await controller.check();
+    assert(!fs.existsSync(c), "A later normal check retries deferred installer retirement");
+    const e = select(5); let rejectReady = true;
+    fs.renameSync = function(source, destination) {
+      if (rejectReady && String(destination).includes(".artifact-retention-requests")) {
+        const request = JSON.parse(fs.readFileSync(source, "utf8"));
+        if (request.category === "full-ready-downloads" && request.refs.includes(path.basename(e))) throw Object.assign(Error("ready fixture write failed"), { code: "EIO" });
+      }
+      return originalRename.apply(this, arguments);
+    };
+    await controller.check(); assert.equal(controller.status().stage, "ready", "Saved pending candidate remains ready if housekeeping registration fails");
+    assert.equal((await controller.prepareInstall()).file, e);
+    controller.stop(); controller = create();
+    const f = select(6); failDownload = true; const before = downloads;
+    await controller.check();
+    assert.equal(downloads, before, "Do not replace download protection until saved complete pending protection is applied");
+    assert(fs.existsSync(e));
+    rejectReady = false; await controller.check();
+    assert(fs.existsSync(e), "A ready-registration failure survives restart and a later failed download");
+    assert(fs.existsSync(f.replace(/\.exe$/, ".part"))); assert(!fs.existsSync(d));
+    failDownload = false; await controller.check();
+    const g = select(7); fs.writeFileSync(g, bytes); await controller.check();
+    assert.equal(controller.status().stage, "ready");
+    const h = select(8); await controller.check();
+    assert(fs.existsSync(g), "Using a historical complete file cannot silently claim deletion ownership");
+    assert(!fs.existsSync(g + ".verified.json"), "A newly created proof may retire independently of its historical installer");
+    assert(fs.existsSync(h) && fs.existsSync(historical));
+  } finally { fs.renameSync = originalRename; controller.stop(); }
+}
+
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-maintenance-check-"));
   assert.equal(path.dirname(dir), path.resolve(os.tmpdir()));
@@ -435,6 +501,7 @@ async function main() {
     await checkInstallFailures(dir, config, manifest, sign, bytes);
     await checkFailureDiagnostics(dir, config);
     await checkPinnedRequest(dir, config, manifest, sign, bytes);
+    await checkFullDownloadRetention(dir, config, manifest, sign);
     console.log("cloud maintenance: announcements, signatures, rollback/conflict, download race, IPC, consent, staged install failures, safe diagnostics and concurrent retry boundaries passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 }

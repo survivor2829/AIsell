@@ -32,7 +32,7 @@ Python构建指纹按解释器/DLL、包版本、requirements和显式运行时�
 npm.cmd run release:internal
 ```
 
-默认产物为 `release/components/test/unsigned-component-release.json`、四个按哈希命名的组件归档及已验证的候选组合目录；本机构建记录位于 `desktop/.build/internal-release-test-components.json`，其中 `candidateRoot` 可用于本机验收。已接受的增量底座另记于 `desktop/.build/internal-release-accepted-base.json`；记录用于追溯，不替代用户功能验收。已有完整安装器保持不变。
+默认产物为 `release/components/test/unsigned-component-release.json`、六个按哈希命名的组件归档及已验证的候选组合目录；本机构建记录位于 `desktop/.build/internal-release-test-components.json`，其中 `candidateRoot` 可用于本机验收。已接受的增量底座另记于 `desktop/.build/internal-release-accepted-base.json`；记录用于追溯，不替代用户功能验收。已有完整安装器保持不变。
 
 本机验证并确认内部推送后：
 
@@ -67,6 +67,8 @@ npm.cmd run publish:internal -- --full "../release/AI获客 V1.0版本-测试版
 固定启动器只包含信任核、选择与回退契约；更新器通过独立updater组件更新，离线示例媒体通过assets组件更新，保持原引用路径。过渡版需一次完整包；稳定底座之后变更必须列出具体文件与原因。更新器加载抛错先保存回退选择，再用干净进程受限重启，避免复用已注册的IPC或事件。下载归档及安装器只核验一次SHA-256，大小/修改时间/文件身份与签名摘要绑定的记录失配时重新核验；解压流逐文件摘要、安全ZIP检查、签名和防降级继续保留。普通启动、prepare、助手切换分别计时，不能把下载等待当成本地处理耗时。
 
 成功版本保留当前＋一代回退及一个有效候选，并继续保护真实备份依赖。SQLite检查在隔离副本进行，不用文件字节变化直接判数据丢失，也不忽略业务行变化。原素材、成片、授权、回执不属于更新垃圾。
+
+完整安装器下载沿用维护目录的归属保留器：分别保留最新完整候选和一个下载中候选，创建文件前仅登记此前不存在的EXE、part及核验记录；使用历史文件不会接管其删除权限。写入ready引用失败时，已保存的pending继续受下载引用保护，下次任何更新分支替换pending前先修复完整候选引用。活动助手、等待更新或更新交接期间只登记不删除；文件占用原因写回原账，正常检查和退出重试。仅有持久化请求、尚未建立账本时也可恢复，不新建清理系统。test和delivery完整目录均须包含协议5启动基线；delivery仅生成基线，不生成或发布组件归档，正式频道仍关闭。
 
 构建前估算单份目标程序及暂存空间，重试已有回收登记；空间不足先停止。空间账分别记录逻辑占用（硬链接去重、跳过链接目录）、阶段观测峰值、净变化、上传、本机下载及未知的远端 CI 产物。整盘空闲变化包含其他程序，不能全部归因于本次版本。历史存量必须列出具体候选及依赖后另获删除确认。
 

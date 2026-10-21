@@ -12,7 +12,8 @@ function safePath(root, target) {
   let current = base;
   for (const part of relative.split(path.sep)) {
     current = path.join(current, part);
-    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error("Artifact path contains a link");
+    try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error("Artifact path contains a link"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
   }
   return absolute;
 }
@@ -32,7 +33,7 @@ function removeOwned(root, target) {
 
 // Only entries registered by this implementation are eligible for retirement.
 // Existing historical backups and user data are never discovered by globbing.
-function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
+function retainArtifacts(root, category, targets, keep = 1, owned = targets, { deferCleanup = false } = {}) {
   fs.mkdirSync(root, { recursive: true });
   root = fs.realpathSync(root);
   const ledger = path.join(root, ".artifact-retention.json");
@@ -97,25 +98,50 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
       data[request.category] = state;
     }
     const protectedFiles = new Set(Object.values(data).flatMap(state => state.generations.flat()));
+    if (deferCleanup) {
+      for (const state of Object.values(data)) {
+        if (state.owned.some(relative => !protectedFiles.has(relative))) {
+          state.cleanupDeferred = { reason: deferCleanup === "active_update" ? "active_update" : "requested", at: new Date().toISOString() };
+        }
+      }
+    }
     const save = () => writeJsonAtomic(ledger, data);
     save();
     for (const name of requests) fs.unlinkSync(path.join(inbox, name));
+    // References and deferral reason are durable even while a helper still
+    // owns an obsolete file. Ordinary retry keeps its deletion ownership.
+    if (deferCleanup) return true;
     for (const state of Object.values(data)) {
+      delete state.cleanupDeferred;
+      delete state.cleanupFailure;
       state.owned = state.owned.filter(relative => {
         if (protectedFiles.has(relative)) return true;
         try { removeOwned(root, relative); return false; }
-        catch (error) { console.warn(`Artifact cleanup deferred: ${error.message}`); return true; }
+        catch (error) {
+          state.cleanupFailure = { reason: error.code || "cleanup_failed", at: new Date().toISOString() };
+          console.warn(`Artifact cleanup deferred: ${error.message}`); return true;
+        }
       });
     }
     save();
+    return true;
   } catch (error) {
     console.warn(`Artifact retention deferred: ${error.message}`);
+    return false;
   } finally {
     if (fd !== undefined) { fs.closeSync(fd); fs.unlinkSync(lock); }
   }
 }
-function retryArtifacts(root) {
-  if (fs.existsSync(path.join(root, ".artifact-retention.json"))) retainArtifacts(root, null, [], 1, []);
+function retryArtifacts(root, options) {
+  if (!fs.existsSync(root)) return true;
+  try {
+    const inbox = safePath(root, ".artifact-retention-requests");
+    if (fs.existsSync(path.join(root, ".artifact-retention.json"))
+        || fs.existsSync(inbox) && fs.readdirSync(inbox).some(name => name.endsWith(".json"))) {
+      return retainArtifacts(root, null, [], 1, [], options);
+    }
+    return true;
+  } catch (error) { console.warn(`Artifact retention deferred: ${error.message}`); return false; }
 }
 function artifactOwnershipRegistered(root, target) {
   const relative = path.relative(fs.realpathSync(root), safePath(root, target));

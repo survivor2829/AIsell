@@ -45,6 +45,24 @@ async function fixture(t) {
   return { root, source, base };
 }
 
+test("delivery baseline-only writer supplies the packaged launcher without creating component archives", async t => {
+  const { root, source } = await fixture(t);
+  await fs.writeFile(path.join(source, "版本清单.json"), JSON.stringify({ version: "1.1.0", edition: "delivery" }));
+  const inventoryFile = path.join(root, "delivery-inventory.json"), output = path.join(root, "delivery-archives");
+  await fs.writeFile(inventoryFile, JSON.stringify(require("./release-tree-hash.cjs").hashInventory(source)));
+  const result = require("node:child_process").spawnSync(process.execPath,
+    [path.join(__dirname, "write-component-baseline.cjs"), source, output, inventoryFile, "--baseline-only"],
+    { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(require("node:fs").existsSync(output), false, "delivery baseline-only must not create component archives");
+  const baseline = JSON.parse(await fs.readFile(path.join(source, "component-base.json"), "utf8"));
+  assert.equal(baseline.updateProtocol, 5);
+  assert.equal(baseline.base.fingerprint, treeHash(baseline.files.filter(file => file.component === "base")));
+  assert.equal(baseline.components.updater.files.some(file => file.path.endsWith("updater-bootstrap.cjs")), true);
+  assert.equal(baseline.components.assets.files.some(file => file.path.endsWith("sample.mp4")), true);
+  assert.equal(require("../src/main/cloud-release-config.json").production.enabled, false);
+});
+
 test("streamed STORE archives remain readable by the existing updater and unchanged archives are not rehashed", async t => {
   const { root, source } = await fixture(t);
   const next = path.join(root, "streamed-source"), outputDir = path.join(root, "streamed-artifacts");
