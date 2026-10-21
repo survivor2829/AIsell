@@ -58,7 +58,7 @@ function stabilizeEquivalentBaseFiles(candidateRoot, acceptedRoot) {
     const acceptedText = normalizedText(accepted, entry.path);
     const candidateText = normalizedText(candidate, entry.path);
     if (acceptedText === null || candidateText === null || acceptedText !== candidateText) continue;
-    fs.copyFileSync(acceptedFile, candidateFile);
+    require("./release-tree-hash.cjs").replaceImmutableFile(acceptedFile, candidateFile);
     stabilized.push(entry.path);
   }
   return stabilized;

@@ -914,16 +914,11 @@ function copyRemotionRuntime(build, releaseTarget) {
   for (const destination of destinations) {
     if (fs.existsSync(destination)) throw new Error(`Refusing to overwrite packaged Remotion runtime content: ${destination}`);
   }
-  fs.copyFileSync(path.join(build.outputDir, manifest.worker.path), destinations[0]);
-  fs.cpSync(path.join(build.outputDir, manifest.bundle.path), destinations[1], { recursive: true, errorOnExist: true, force: false });
-  fs.cpSync(path.join(build.outputDir, "node_modules"), destinations[2], { recursive: true, errorOnExist: true, force: false });
-  fs.cpSync(path.join(build.outputDir, "licenses"), destinations[3], { recursive: true, errorOnExist: true, force: false });
-  fs.copyFileSync(path.join(build.outputDir, "runtime-manifest.json"), destinations[4]);
-  fs.copyFileSync(path.join(build.outputDir, "runtime-manifest.sha256"), destinations[5]);
-  fs.copyFileSync(path.join(build.outputDir, manifest.sbom.path), destinations[6]);
-  fs.copyFileSync(path.join(build.outputDir, manifest.thirdPartyLicenses.path), destinations[7]);
-  fs.cpSync(path.join(build.outputDir, manifest.packagingAssets.path), packagingRoot, { recursive: true, errorOnExist: true, force: false });
-  if (manifest.browser.packaged) fs.cpSync(path.join(build.outputDir, "browser"), path.join(contentEngineRoot, "browser"), { recursive: true, errorOnExist: true, force: false });
+  const copy = require("./release-tree-hash.cjs").copyTreeVerified;
+  const sources = [manifest.worker.path, manifest.bundle.path, "node_modules", "licenses", "runtime-manifest.json",
+    "runtime-manifest.sha256", manifest.sbom.path, manifest.thirdPartyLicenses.path, manifest.packagingAssets.path];
+  if (manifest.browser.packaged) sources.push("browser");
+  sources.forEach((source, index) => copy(path.join(build.outputDir, source), destinations[index]));
   const descriptor = {
     artifactType: manifest.artifactType,
     browserSha256: manifest.browser.sha256,

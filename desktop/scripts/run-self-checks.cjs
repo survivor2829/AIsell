@@ -160,7 +160,7 @@ function concurrencyFor(environment = process.env, cpus = os.availableParallelis
 }
 
 function checkResult(check, result) {
-  console.log(`\n> ${check}`);
+  console.log(`\n> ${check}${Number.isFinite(result.durationMs) ? ` (${result.durationMs} ms)` : ""}`);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0) throw result.error || new Error(`self-check failed: ${check} (status ${result.status})`);
@@ -171,6 +171,7 @@ function checkResult(check, result) {
 
 function executeCheck(check) {
   return new Promise((resolve, reject) => {
+    const started = performance.now();
     const child = spawn(process.execPath, [path.join(desktopDir, check)], {
       cwd: desktopDir, env: checkEnvironment(check),
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true
@@ -186,6 +187,7 @@ function executeCheck(check) {
     });
     child.once("error", reject);
     child.once("close", status => overflow ? reject(overflow) : resolve({ status,
+      durationMs: Math.round(performance.now() - started),
       stdout: Buffer.concat(output.stdout).toString(), stderr: Buffer.concat(output.stderr).toString() }));
   });
 }

@@ -278,6 +278,10 @@ function assertBuildPreconditions(edition, {
 }
 
 function buildPortableStaging(edition, paths, sourceState) {
+  return require("./release-tree-hash.cjs").immutableHashScope(paths.target, () => buildPortableStagingInScope(edition, paths, sourceState));
+}
+
+function buildPortableStagingInScope(edition, paths, sourceState) {
   const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
   const executableName = edition === "test" ? `${productBrand.executableName}-测试版` : productBrand.executableName;
   const { target, zip, archiveBaseDir } = paths;

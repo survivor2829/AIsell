@@ -15,7 +15,7 @@ function verifiedCiRun({ forceChecks = false, execute = spawnSync } = {}) {
       "--json", "databaseId,headSha,conclusion,event"], options);
     if (list.status !== 0) return null;
     for (const candidate of JSON.parse(list.stdout)) {
-      if (candidate.headSha !== sha || candidate.conclusion !== "success" || candidate.event !== "push"
+      if (candidate.headSha !== sha || candidate.conclusion !== "success" || !["push", "workflow_dispatch"].includes(candidate.event)
           || !Number.isSafeInteger(candidate.databaseId)) continue;
       const detail = execute("gh", ["run", "view", String(candidate.databaseId), "--json", "headSha,conclusion,jobs"], options);
       if (detail.status !== 0) continue;

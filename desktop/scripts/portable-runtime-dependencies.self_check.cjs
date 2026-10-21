@@ -25,6 +25,7 @@ const desktopDir = path.resolve(__dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-dependencies-"));
 function checkHashInventory() {
   const hashes = require("./release-tree-hash.cjs");
+  return hashes.immutableHashScope(root, () => {
   const file = path.join(root, "inventory-proof.txt");
   fs.writeFileSync(file, "verified");
   const read = fs.readSync;
@@ -38,10 +39,43 @@ function checkHashInventory() {
   } finally { fs.readSync = read; }
   hashes.primeHashInventory(snapshot, root);
   assert.equal(hashes.sha256(file), sha256(file));
-  fs.writeFileSync(file, "modified");
+  // This assertion exercises structural invalidation of a saved inventory;
+  // coalesced same-length mutable writes are covered by the runtime gate test.
+  fs.writeFileSync(file, "modified-length");
   assert.throws(() => hashes.primeHashInventory(snapshot, root), /inventory.*changed/i);
   assert.equal(hashes.sha256(file), sha256(file), "Changed file metadata invalidates a reused digest");
   fs.unlinkSync(file);
+  });
+}
+
+function checkImmutableCandidateLinks() {
+  const hashes = require("./release-tree-hash.cjs");
+  const sourceRoot = path.join(root, "immutable-source");
+  const candidateRoot = path.join(root, "immutable-candidate");
+  const acceptedRoot = path.join(root, "accepted-base");
+  const relative = "resources/product-detail/_internal/model.json";
+  const sourceFile = path.join(sourceRoot, "_internal/model.json");
+  const candidateFile = path.join(candidateRoot, relative);
+  const acceptedFile = path.join(acceptedRoot, relative);
+  fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+  fs.mkdirSync(path.dirname(acceptedFile), { recursive: true });
+  fs.mkdirSync(path.join(candidateRoot, "resources"), { recursive: true });
+  fs.writeFileSync(sourceFile, "{}\n");
+  const accepted = Buffer.from("{}\r\n");
+  fs.writeFileSync(acceptedFile, accepted);
+  const contract = require("../src/shared/component-contract.cjs");
+  const baseFile = { path: relative, size: accepted.length, sha256: contract.digest(accepted), component: "base" };
+  fs.writeFileSync(path.join(acceptedRoot, "component-base.json"), JSON.stringify({
+    schema: 2, dataSchema: 2, base: { version: "1.1.97", fingerprint: contract.treeHash([baseFile]) }, files: [baseFile]
+  }));
+  hashes.immutableHashScope(candidateRoot, () => {
+    hashes.copyTreeVerified(sourceRoot, path.join(candidateRoot, "resources/product-detail"));
+    assert.equal(fs.statSync(sourceFile).ino, fs.statSync(candidateFile).ino, "Immutable candidate shares same-volume runtime bytes");
+    require("./component-base-input.cjs").stabilizeEquivalentBaseFiles(candidateRoot, acceptedRoot);
+    assert.deepEqual(fs.readFileSync(candidateFile), accepted);
+    assert.equal(fs.readFileSync(sourceFile, "utf8"), "{}\n", "Base stabilization must detach immutable source/cache hardlinks");
+    assert.notEqual(fs.statSync(sourceFile).ino, fs.statSync(candidateFile).ino);
+  });
 }
 
 function sha256(file) {
@@ -85,6 +119,7 @@ function fixtureLicenseRecord(browserHash) {
 async function main() {
   try {
     checkHashInventory();
+    checkImmutableCandidateLinks();
     copyAppRuntimeDependencies(root);
     const { pinyin } = require(path.join(root, "node_modules", "pinyin-pro"));
     assert.equal(pinyin('中文', { toneType: 'none' }), 'zhong wen');

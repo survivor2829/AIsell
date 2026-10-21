@@ -14,7 +14,7 @@
 
 selection保留当前1.1.104与上一代。backup-registry另有1.1.97 confirmed备份和1.1.101 prepared验收备份，两者实际副本都在D盘，但引用的四个旧generation仍在C盘并受保护。其余两个历史generation未出现在当前保留器的owned清单，不能自动接管删除。
 
-历史报告 `desktop/.build/space-usage/1792562940174-40400-internal-release.json`：632秒、净增1.637 GiB。其嵌套release报告：runtime-build-complete前532秒，构建及包验收再92秒；阶段占用11.37→14.08→13.01 GiB，临时staging已回收。两个报告重叠，不相加。此前main CI 39553627546成功；源码作业约9分钟的历史结论须与后续实际run比较。
+历史报告 `desktop/.build/space-usage/1792562940174-40400-internal-release.json`：632秒、净增1.637 GiB。其嵌套release报告：runtime-build-complete前532秒，构建及包验收再92秒；阶段占用11.37→14.08→13.01 GiB，临时staging已回收。两个报告重叠，不相加。此前main CI 39553627546成功，源码作业13分34秒，其中源码检查步骤12分16秒。第一阶段PR CI 39566091521成功，源码作业11分22秒，其中源码检查10分14秒；并发改变后仍未达到5分钟目标。下一次CI直接记录各子检查耗时，定位剩余瓶颈。
 
 结论：本机同时承担开发构建与客户端更新，存量副本叠加明显；现有数据不能证明单次更新净增十几GiB。上传到服务器和云端CI本身不等于C盘相同占用。重复哈希主要增加耗时，缓存失效、候选复制和保留引用才直接增加文件占用。
 

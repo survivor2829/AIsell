@@ -283,7 +283,11 @@ function resolvePackagedContentEngine(releaseTarget, descriptor) {
   return { runtimeDir, executable, mediaTools: validated.mediaTools };
 }
 
-function runPackagedContentEngineSelfCheck({
+function runPackagedContentEngineSelfCheck(options) {
+  return require("./release-tree-hash.cjs").freshHashBoundary(() => runPackagedContentEngineSelfCheckFresh(options));
+}
+
+function runPackagedContentEngineSelfCheckFresh({
   releaseTarget,
   resourcesDir,
   descriptor,

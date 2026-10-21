@@ -184,6 +184,7 @@ function main(argv = process.argv.slice(2)) {
 const directoryOnly = argv.includes("--directory-only");
 const parsedArguments = { ...parsePortableArguments(argv.filter(arg => arg !== "--directory-only")), directoryOnly };
 const { edition, productName, target, zip } = resolvePortablePaths(parsedArguments);
+return require("./release-tree-hash.cjs").immutableHashScope(target, () => {
 if (parsedArguments.inventoryOption) {
   if (!directoryOnly) throw Error("Build inventory reuse is only valid for directory-only checks");
   require("./release-tree-hash.cjs").primeHashInventory(JSON.parse(fs.readFileSync(parsedArguments.inventoryOption, "utf8")), target);
@@ -729,6 +730,7 @@ if (edition === "delivery") {
   for (const marker of momentsActionUiMarkers) assert.equal(renderer.includes(marker), false, `delivery renderer must not contain ${marker}`);
 }
 console.log(`${edition} ${directoryOnly ? "component application" : "portable release"} self-check passed`);
+});
 }
 
 if (require.main === module) main();

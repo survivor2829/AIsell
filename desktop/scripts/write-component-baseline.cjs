@@ -4,6 +4,7 @@ const { buildComponentRelease } = require("./build-component-release.cjs");
 const { cloudConfig } = require("../src/main/cloud-config.cjs");
 async function main() {
   const [sourceRoot, outputDir, inventoryFile] = process.argv.slice(2);
+  return require("./release-tree-hash.cjs").immutableHashScope(sourceRoot, async () => {
   if (inventoryFile) require("./release-tree-hash.cjs").primeHashInventory(JSON.parse(fs.readFileSync(inventoryFile, "utf8")), sourceRoot);
   const source = JSON.parse(fs.readFileSync(path.join(sourceRoot, "版本清单.json"), "utf8"));
   const config = cloudConfig({ developmentEdition: true });
@@ -11,5 +12,6 @@ async function main() {
     appId: config.appId, channel: config.channel, buildCommit: source.commit });
   fs.writeFileSync(path.join(sourceRoot, "component-base.json"), JSON.stringify(built.baseline));
   console.log(JSON.stringify({ metadata: built.metadataFile, componentBytes: built.artifacts.reduce((sum, artifact) => sum + artifact.size, 0) }));
+  });
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

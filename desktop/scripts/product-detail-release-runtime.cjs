@@ -253,7 +253,11 @@ function parseSelfCheckPayload(result) {
   }
 }
 
-function runPackagedProductDetailSelfCheck({
+function runPackagedProductDetailSelfCheck(options) {
+  return require("./release-tree-hash.cjs").freshHashBoundary(() => runPackagedProductDetailSelfCheckFresh(options));
+}
+
+function runPackagedProductDetailSelfCheckFresh({
   releaseTarget,
   resourcesDir,
   descriptor,
@@ -301,7 +305,11 @@ function runPackagedProductDetailSelfCheck({
   return { ...payload, verifiedResourcesTreeSha256: resourcesHashAfter };
 }
 
-function runPackagedProductDetailLifecycleSmoke({
+function runPackagedProductDetailLifecycleSmoke(options) {
+  return require("./release-tree-hash.cjs").freshHashBoundary(() => runPackagedProductDetailLifecycleSmokeFresh(options));
+}
+
+function runPackagedProductDetailLifecycleSmokeFresh({
   releaseTarget,
   resourcesDir,
   descriptor,

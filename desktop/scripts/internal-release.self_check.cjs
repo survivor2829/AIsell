@@ -36,6 +36,17 @@ async function main() {
       ] }) };
   };
   assert.equal(verifiedCiRun({ execute: ci }).runId, 42);
+  const withEvent = event => (command, args) => {
+    const result = ci(command, args);
+    if (command === "gh" && args[1] === "list") {
+      const runs = JSON.parse(result.stdout); runs[0].event = event; result.stdout = JSON.stringify(runs);
+    }
+    return result;
+  };
+  assert.equal(verifiedCiRun({ execute: withEvent("workflow_dispatch") })?.runId, 42,
+    "An exact-revision manual source workflow with all required jobs is valid evidence");
+  assert.equal(verifiedCiRun({ execute: withEvent("pull_request") }), null,
+    "A PR's synthetic checkout must not masquerade as an exact release revision");
   assert.equal(verifiedCiRun({ execute: ci, forceChecks: true }), null);
   assert.equal(verifiedCiRun({ execute: () => ({ status: 1 }) }), null);
   assert.equal(verifiedCiRun({ execute: (command, args) => command === "git" && args[0] === "status"
