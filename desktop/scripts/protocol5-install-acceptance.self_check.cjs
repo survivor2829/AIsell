@@ -1,0 +1,13 @@
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const { disposable } = require('./protocol5-install-acceptance.cjs');
+const { verifyManifest } = require('../src/shared/cloud-contract.cjs');
+const config = { ...require('../src/main/cloud-release-config.json').test, channel: 'test' };
+const source = require('./fixtures/protocol5-source-1.1.104.json');
+assert.equal(verifyManifest(source, config).version, '1.1.104');
+assert.throws(() => verifyManifest({ ...source, payload: source.payload.replace('1.1.104', '1.1.105') }, config), /cloud_signature_invalid/);
+assert.throws(() => disposable({}, 'win32'), /disposable Windows runner required/);
+assert.throws(() => disposable({ GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted', RUNNER_OS: 'Windows' }, 'win32'), /disposable Windows runner required/);
+const stopped = spawnSync(process.execPath, [require.resolve('./protocol5-install-acceptance.cjs')], { env: { ...process.env, GITHUB_ACTIONS: 'false' }, encoding: 'utf8' });
+assert.equal(stopped.status, 1); assert.match(stopped.stderr, /disposable Windows runner required/);
+console.log('protocol5 install acceptance: signed source fixture and pre-install disposable guard passed');

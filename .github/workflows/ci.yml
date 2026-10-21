@@ -18,6 +18,10 @@ on:
         description: 'With install_acceptance: interrupt actual installer and new startup in disposable runners'
         type: boolean
         default: false
+      protocol5_acceptance:
+        description: 'With install_acceptance: real published 104 to this checkout protocol-5 full package (failure_acceptance selects fault matrix)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,12 +32,12 @@ env:
   PYTHONUTF8: '1'
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.install_acceptance && 'install' || 'source' }}-${{ inputs.failure_acceptance || false }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.install_acceptance && 'install' || 'source' }}-${{ inputs.protocol5_acceptance || false }}-${{ inputs.failure_acceptance || false }}
   cancel-in-progress: true
 
 jobs:
   real-installer-acceptance:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_acceptance }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_acceptance && !inputs.protocol5_acceptance }}
     # GitHub requires write access to read unpublished draft release assets.
     # This opt-in job only downloads artifacts; it has no publishing step.
     permissions:
@@ -76,8 +80,38 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  protocol5-install-acceptance:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.protocol5_acceptance }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(inputs.failure_acceptance && '["installer-interruption","startup-interruption"]' || '["success"]') }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require explicit installer acceptance
+        shell: pwsh
+        run: if ('${{ inputs.install_acceptance }}' -ne 'true') { throw 'protocol5_acceptance requires install_acceptance' }
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Published 104 preload to current protocol-5 full NSIS
+        shell: pwsh
+        run: node desktop/scripts/protocol5-install-acceptance.cjs '${{ matrix.scenario }}'
+      - name: Preserve protocol-5 real installation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: protocol5-install-acceptance-${{ matrix.scenario }}
+          path: ${{ runner.temp }}/protocol5-install-acceptance
+          if-no-files-found: warn
+          retention-days: 7
+
   source-and-renderer:
-    if: ${{ !inputs.install_acceptance }}
+    if: ${{ !inputs.install_acceptance && !inputs.protocol5_acceptance }}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -126,7 +160,7 @@ jobs:
         run: npm run build:delivery
 
   service-and-content:
-    if: ${{ !inputs.install_acceptance }}
+    if: ${{ !inputs.install_acceptance && !inputs.protocol5_acceptance }}
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
