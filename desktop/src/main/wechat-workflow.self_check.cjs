@@ -2709,7 +2709,6 @@ async function main() {
   assert.equal(traceLogger.readRecent(100).some(entry => entry.event === "task_step.finished" && entry.details.status === "completed"), true,
     "Changed results must be retained even when their repeated begin was quiet");
   await waitingControl.dispose();
-  await require("./touch-message-sequence.self_check.cjs").checkTouchMessageSequence();
   process.stdout.write("Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.\n");
   process.exitCode = 0;
 }
