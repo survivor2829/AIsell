@@ -286,7 +286,8 @@ function createTaskPassportStore(options = {}) {
     }
   }
 
-  function cleanup() {
+  function cleanup({ defer = false } = {}) {
+    if (defer) return { ok: true, removed: 0, deferred: true };
     try {
       if (!fs.existsSync(passportRoot)) return { ok: true, removed: 0 };
       const cutoff = now().getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000;

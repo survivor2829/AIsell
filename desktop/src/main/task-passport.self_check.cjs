@@ -109,6 +109,8 @@ try {
   };
   pinMtimes(passportDir);
   clock.value = new Date("2026-10-25T01:00:00.000Z");
+  store.cleanup({ defer: true });
+  assert.equal(fs.existsSync(passportDir), true, "Update startup must preserve expired evidence until backup confirmation");
   store.cleanup();
   assert.equal(fs.existsSync(passportDir), false, "passports older than 30 days must be removed");
 

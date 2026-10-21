@@ -398,7 +398,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       rootDir: runtime.rootDir,
       onWriteFailure: () => logger.event("task_passport", "write_failed", {}, { level: "warn", code: "task_passport_write_failed" })
     });
-    taskPassportStore.cleanup();
+    // A journal can cross its 30-day expiry during installation. Preserve the
+    // snapshot's files for the helper's post-startup data confirmation; the next
+    // normal launch resumes ordinary retention.
+    taskPassportStore.cleanup({ defer: process.argv.includes("--xiaoxi-updated-launch") });
     logger.subscribe((entry) => taskPassportStore.observeDiagnostic(entry));
     process.on("uncaughtException", (error) => logger.event("app", "uncaught_exception", { error }, { level: "fatal", code: error?.code || "uncaught_exception" }));
     process.on("unhandledRejection", (error) => logger.event("app", "unhandled_rejection", { error }, { level: "error", code: error?.code || "unhandled_rejection" }));
