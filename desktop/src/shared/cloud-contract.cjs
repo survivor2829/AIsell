@@ -1,18 +1,11 @@
 const crypto = require("node:crypto");
 
-const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
+const { VERSION, compareVersions, fail } = require("./launcher-contract.cjs");
 const TOKEN = /^[a-z0-9][a-z0-9_.:-]{0,119}$/i;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
-function fail(code) { throw Object.assign(new Error(code), { code }); }
 function token(value, fallback = "") {
   return typeof value === "string" && TOKEN.test(value) && !/(?:sk-|ak-|ltai)/i.test(value) ? value : fallback;
-}
-function compareVersions(a, b) {
-  if (!VERSION.test(a) || !VERSION.test(b)) fail("cloud_version_invalid");
-  const x = a.split(".").map(Number), y = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return Math.sign(x[i] - y[i]);
-  return 0;
 }
 function verifyManifest(envelope, config) {
   if (typeof envelope?.payload !== "string" || envelope.payload.length > 16384
