@@ -9,6 +9,7 @@ const { buildComponentRelease } = require("./build-component-release.cjs");
 const { createComponentStore, verifyFiles } = require("../src/main/component-store.cjs");
 const { createTransport } = require("../src/main/cloud-transport.cjs");
 const { createCloudMaintenance } = require("../src/main/cloud-maintenance.cjs");
+const { createDiagnosticLogger } = require("../src/main/diagnostics.cjs");
 const { verifyComponentManifest, treeHash, hashFile, digest } = require("../src/shared/component-contract.cjs");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 const config = { appId: "com.aihuoke.desktop.test", channel: "test", signingPublicKey: publicKey };
@@ -439,7 +440,8 @@ test("full generation matches signed target, reuses base and unchanged component
 test("new component metadata invalidates ready and in-flight older updates", async t => {
   const { root, source, base } = await fixture(t);
   let latest = sign({ ...base.manifest, version: "1.1.1", sequence: 100 });
-  const controller = createCloudMaintenance({ rootDir: path.join(root, "client"), userData: path.join(root, "user-data"),
+  const logger = createDiagnosticLogger({ rootDir: path.join(root, "client") });
+  const controller = createCloudMaintenance({ logger, rootDir: path.join(root, "client"), userData: path.join(root, "user-data"),
     componentBaseRoot: source, config, version: "1.1.0", buildId: "metadata-race", canInstall: () => true,
     transport: { async request(route) {
       if (route.startsWith("/v1/")) return { empty: true };
@@ -449,6 +451,9 @@ test("new component metadata invalidates ready and in-flight older updates", asy
   t.after(() => controller.stop());
   await controller.check();
   assert.equal(controller.status().stage, "ready");
+  const phases = logger.readRecent(50).filter(entry => entry.module === "maintenance" && entry.event === "update.phase");
+  assert.ok(phases.some(entry => entry.phase === "prepare"), "Real diagnostic filtering must retain component phase measurements");
+  assert.ok(phases.every(entry => Number.isFinite(entry.duration_ms) && entry.duration_ms >= 0), "Phase records retain measured durations");
   assert.equal((await controller.prepareInstall()).version, "1.1.1");
   latest = sign({ ...base.manifest, version: "1.1.2", sequence: 101 });
   await controller.refreshAnnouncements();

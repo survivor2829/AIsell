@@ -280,7 +280,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
               const prepared = await createComponentStore({ rootDir: paths.directory, baseRoot: componentBaseRoot, config, transport: network,
                 onMeasure: measurement => {
                   try { logger?.event?.("maintenance", "update.phase", { phase: measurement.phase, bytes: measurement.bytes, entries: measurement.files },
-                    { durationMs: measurement.durationMs, phase: measurement.phase }); } catch { /* Diagnostics cannot block an update. */ }
+                    { durationMs: measurement.durationMs, phase: measurement.phase, trace: true }); } catch { /* Diagnostics cannot block an update. */ }
                 },
                 onProgress: progress => {
                   if (stopped) fail("cloud_stopped");
