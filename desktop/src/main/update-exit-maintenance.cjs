@@ -8,23 +8,35 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
 
-async function findExitHelper(profile, executable) {
+async function findExitHelper(profile, executable, runtimeRoot = path.dirname(executable)) {
   const root = fs.realpathSync(updatePaths(profile).directory);
   const running = fs.statSync(executable, { bigint: true });
-  const expectedHash = await hashFile(executable);
+  let expectedHash;
+  let runtimeIdentity;
+  try { runtimeIdentity = require("./update-helper.cjs").helperRuntimeIdentity(path.dirname(executable), path.join(runtimeRoot, "resources/app")); }
+  catch { /* Legacy installations can still use a fully verified v1 helper. */ }
   const jobs = fs.readdirSync(path.join(root, "jobs")).filter(name => /^[a-f0-9-]{36}\.json$/.test(name));
-  for (const name of jobs.reverse()) {
+  const records = jobs.flatMap(name => { try { return [{ name, job: read(path.join(root, "jobs", name)) }]; } catch { return []; } })
+    .sort((left, right) => (right.job.helperCopyVersion || 0) - (left.job.helperCopyVersion || 0));
+  for (const { name, job } of records) {
     try {
-      const job = read(path.join(root, "jobs", name));
-      if (job.id + ".json" !== name || job.helperCopyVersion !== 1
+      if (job.id + ".json" !== name || ![1, 2].includes(job.helperCopyVersion)
           || read(path.join(root, "jobs", job.id + ".status.json")).phase !== "complete") continue;
-      const directory = safePath(root, path.join("helper-runtime", job.id));
+      if (job.helperCopyVersion === 2 && (!runtimeIdentity || job.helperRuntimeIdentity !== runtimeIdentity)) continue;
+      const directory = safePath(root, path.join("helper-runtime", job.helperCopyVersion === 2 ? runtimeIdentity : job.id));
       const helper = safePath(root, path.join(directory, "ai-update-helper.exe"));
       if (path.resolve(job.helperExecutable) !== helper) continue;
       const owner = fs.lstatSync(directory, { bigint: true }), binary = fs.lstatSync(helper, { bigint: true });
       if (!owner.isDirectory() || String(owner.dev) !== job.helperIdentity?.dev || String(owner.ino) !== job.helperIdentity?.ino
-          || !binary.isFile() || (binary.dev === running.dev && binary.ino === running.ino)
-          || await hashFile(helper) !== expectedHash) continue;
+          || !binary.isFile() || binary.size !== running.size || (binary.dev === running.dev && binary.ino === running.ino)) continue;
+      if (job.helperCopyVersion === 1) {
+        expectedHash ||= await hashFile(executable);
+        if (await hashFile(helper) !== expectedHash) continue;
+      } else {
+        const receipt = read(path.join(directory, ".helper-runtime.json"));
+        if (receipt.schema !== 2 || receipt.identity !== runtimeIdentity
+            || receipt.owned?.identity?.dev !== String(owner.dev) || receipt.owned?.identity?.ino !== String(owner.ino)) continue;
+      }
       return helper;
     } catch { /* Missing, replaced, unfinished or unsafe helpers are not adopted. */ }
   }
@@ -60,7 +72,7 @@ async function collectAfterExit({ profile, parentPid, runtimeRoot, installedRoot
 }
 
 async function launchExitMaintenance({ profile, runtimeRoot, executable = process.execPath }) {
-  const helper = await findExitHelper(profile, executable);
+  const helper = await findExitHelper(profile, executable, runtimeRoot);
   if (!helper) return false; // No copy is created solely for cleanup.
   const root = fs.realpathSync(updatePaths(profile).directory);
   const log = fs.openSync(safePath(root, "exit-maintenance.log"), "w");

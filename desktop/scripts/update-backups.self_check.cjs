@@ -21,6 +21,45 @@ if (process.argv[2] === "--hold-registry") {
   await fs.mkdir(parent, { recursive: true });
   const root = await fs.mkdtemp(path.join(parent, "run-"));
   try {
+    const storage = require("../src/main/update-storage.cjs");
+    const copySource = path.join(root, "copy-once-source"), copyTarget = path.join(root, "copy-once-target");
+    await fs.mkdir(copySource); await fs.writeFile(path.join(copySource, "bytes.bin"), "verified-copy");
+    const sourceSnapshot = await storage.metadataInventory(copySource);
+    const copied = await storage.copySnapshot(copySource, copyTarget, sourceSnapshot);
+    assert.equal(copied.files[0].sha256, require("node:crypto").createHash("sha256").update("verified-copy").digest("hex"));
+    assert.equal(await storage.verifySnapshot(copyTarget, copied.files, copied.verification), true);
+    await fs.writeFile(path.join(copyTarget, "bytes.bin"), "altered-copy");
+    assert.equal(await storage.verifySnapshot(copyTarget, copied.files, copied.verification), false,
+      "Changed backup bytes invalidate their copied-file receipt");
+    await fs.writeFile(path.join(copySource, "extra.bin"), "source changed");
+    await assert.rejects(storage.copySnapshot(copySource, path.join(root, "stale-target"), sourceSnapshot), /source_changed/);
+    const installedHelper = path.join(root, "helper-installed"), helperApp = path.join(installedHelper, "resources/app");
+    await fs.mkdir(helperApp, { recursive: true });
+    await fs.writeFile(path.join(installedHelper, "app.exe"), "physical executable");
+    await fs.writeFile(path.join(installedHelper, "runtime.dll"), "physical library");
+    await fs.writeFile(path.join(helperApp, "bootstrap.cjs"), "immutable helper code");
+    await fs.writeFile(path.join(installedHelper, "component-base.json"), JSON.stringify({ base: { fingerprint: "a".repeat(64) },
+      components: { updater: { treeSha256: "b".repeat(64) } } }));
+    const helper = require("../src/main/update-helper.cjs");
+    const helperProfile = path.join(root, "helper-profile"), helperPaths = { directory: path.join(root, "helper-profile/data/cloud-maintenance/components") };
+    const options = { paths: helperPaths, installedRoot: installedHelper, applicationRoot: helperApp, executable: path.join(installedHelper, "app.exe") };
+    const helperOne = await helper.prepareHelperRuntime(options), helperTwo = await helper.prepareHelperRuntime(options);
+    assert.equal(helperOne.helperExecutable, helperTwo.helperExecutable, "one base/updater identity reuses its helper runtime");
+    assert.equal(helperTwo.created, false);
+    assert.notEqual((await fs.stat(helperOne.helperExecutable)).ino, (await fs.stat(options.executable)).ino, "helper EXE must not share installer-locked bytes");
+    assert.notEqual((await fs.stat(path.join(helperOne.owned.directory, "runtime.dll"))).ino, (await fs.stat(path.join(installedHelper, "runtime.dll"))).ino);
+    assert.equal((await fs.stat(path.join(helperOne.owned.directory, "resources/app/bootstrap.cjs"))).ino, (await fs.stat(path.join(helperApp, "bootstrap.cjs"))).ino);
+    const helperJobId = randomUUID(), helperJobs = path.join(helperPaths.directory, "jobs");
+    await fs.mkdir(helperJobs);
+    await fs.writeFile(path.join(helperJobs, helperJobId + ".json"), JSON.stringify({ id: helperJobId,
+      helperCopyVersion: 2, helperRuntimeIdentity: helperOne.identity, helperExecutable: helperOne.helperExecutable, helperIdentity: helperOne.owned.identity }));
+    await fs.writeFile(path.join(helperJobs, helperJobId + ".status.json"), JSON.stringify({ phase: "complete" }));
+    assert.equal(await require("../src/main/update-exit-maintenance.cjs").findExitHelper(helperProfile, options.executable, installedHelper), helperOne.helperExecutable,
+      "Normal exit can reuse the identity-bound v2 helper without another program copy");
+    const { generationRefs } = require("../src/main/update-retention.cjs");
+    const oldPayload = JSON.stringify({ components: Object.fromEntries(["application", "content-engine", "product-detail", "video"].map((name, index) => [name, { sha256: String(index + 1).repeat(64) }])) });
+    assert.equal(generationRefs(root, require("node:crypto").createHash("sha256").update(oldPayload).digest("hex"), { payload: oldPayload }).length, 9,
+      "Historical four-component generations remain protected after adding updater/assets");
     const profile = path.join(root, "profile"), program = path.join(root, "installed"), outside = path.join(root, "original-materials");
     for (const dir of [profile, program, outside]) await fs.mkdir(dir);
     await fs.writeFile(path.join(program, "app.asar"), "physical application archive");

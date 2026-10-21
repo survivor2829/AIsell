@@ -1,7 +1,7 @@
 const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
 const { Worker, isMainThread, workerData } = require("node:worker_threads");
-const { digest, COMPONENTS, HEX } = require("../shared/component-contract.cjs");
+const { digest, componentsFor, HEX } = require("../shared/component-contract.cjs");
 const { retainArtifacts } = require("../shared/artifact-retention.cjs");
 
 function generationRefs(root, id, envelope) {
@@ -10,11 +10,12 @@ function generationRefs(root, id, envelope) {
   envelope ||= JSON.parse(fs.readFileSync(path.join(generation, "component-complete.json"), "utf8"));
   if (digest(envelope.payload) !== id) throw Error("component_retention_identity_invalid");
   const manifest = JSON.parse(envelope.payload);
-  const archives = COMPONENTS.map(name => {
+  const archives = componentsFor(manifest).map(name => {
     const hash = manifest.components?.[name]?.sha256;
     if (!HEX.test(hash)) throw Error("component_retention_identity_invalid");
     const archive = path.join(root, "archives", hash + ".zip");
-    return [archive, archive + ".part"];
+    const marker = archive + ".verified.json";
+    return [archive, archive + ".part", ...(fs.existsSync(marker) ? [marker] : [])];
   });
   return [generation, ...archives.flat()];
 }
@@ -61,4 +62,4 @@ async function retainComponentArtifacts(root, envelope, options) {
 
 if (!isMainThread && workerData?.componentRetention) collect(workerData.root, workerData.envelope, workerData.options);
 
-module.exports = { retainComponentArtifacts };
+module.exports = { retainComponentArtifacts, generationRefs };

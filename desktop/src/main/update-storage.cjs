@@ -2,6 +2,8 @@
 const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
+const { Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const PHASES = { prepare: "校验更新文件", helper: "准备更新助手", launch: "启动更新助手", ready: "等待更新助手就绪",
   waiting: "等待程序退出", verifying: "校验更新文件", backup: "备份业务数据", installing: "安装更新", starting: "启动新版本", complete: "保存更新完成记录" };
 const normalize = file => {
@@ -46,6 +48,69 @@ async function copyProfile(source, destination, filter = backupFilter(source)) {
     }
     await fs.promises.symlink(link, target, type);
   }
+}
+const fileIdentity = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(":");
+async function metadataInventory(root, filter = () => true, relative = "") {
+  const result = [];
+  for (const name of (await fs.promises.readdir(path.join(root, relative))).sort()) {
+    const rel = path.join(relative, name), file = path.join(root, rel);
+    if (!filter(file)) continue;
+    const stat = await fs.promises.lstat(file, { bigint: true });
+    if (stat.isSymbolicLink()) {
+      const link = path.resolve(path.dirname(file), await fs.promises.readlink(file)).replace(/[\\/]+$/, "");
+      let linkType;
+      if (process.platform === "win32") {
+        try { if ((await fs.promises.stat(file)).isDirectory()) linkType = "junction"; }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+      }
+      result.push({ path: rel, link, ...(linkType ? { linkType } : {}), identity: fileIdentity(stat) });
+    } else if (stat.isDirectory()) result.push(...await metadataInventory(root, filter, rel));
+    else if (stat.isFile()) result.push({ path: rel, size: Number(stat.size), identity: fileIdentity(stat) });
+    else throw Error("update_copy_file_type_invalid");
+  }
+  return result;
+}
+async function copySnapshot(source, destination, before, filter = () => true, { allowLinks = true, linkImmutable = false } = {}) {
+  before ||= await metadataInventory(source, filter);
+  if (JSON.stringify(before) !== JSON.stringify(await metadataInventory(source, filter))) throw Error("update_backup_source_changed");
+  await fs.promises.mkdir(destination, { recursive: true });
+  const files = [];
+  for (const entry of before) {
+    const from = path.join(source, entry.path), target = path.join(destination, entry.path);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    if (entry.link) {
+      if (!allowLinks) throw Error("update_program_link_unsupported");
+      await fs.promises.symlink(entry.link, target, entry.linkType);
+      files.push({ path: entry.path, link: entry.link }); continue;
+    }
+    if (linkImmutable && !/\.(?:exe|dll|node)$/i.test(entry.path)) {
+      try { await fs.promises.link(from, target); continue; }
+      catch (error) { if (!["EXDEV", "EPERM", "EACCES", "EMLINK", "ENOTSUP", "EOPNOTSUPP"].includes(error.code)) throw error; }
+    }
+    const handle = await fs.promises.open(from, "r"), hash = createHash("sha256");
+    try {
+      if (fileIdentity(await handle.stat({ bigint: true })) !== entry.identity) throw Error("update_backup_source_changed");
+      await pipeline(fs.createReadStream(from, { fd: handle.fd, autoClose: false }), new Transform({
+        transform(chunk, _encoding, next) { hash.update(chunk); next(null, chunk); }
+      }), fs.createWriteStream(target, { flags: "wx" }));
+      if (fileIdentity(await handle.stat({ bigint: true })) !== entry.identity
+          || fileIdentity(await fs.promises.lstat(from, { bigint: true })) !== entry.identity) throw Error("update_backup_source_changed");
+    } finally { await handle.close(); }
+    const stat = await fs.promises.lstat(target);
+    if (stat.size !== entry.size) throw Error("update_backup_verification_failed");
+    files.push({ path: entry.path, size: entry.size, sha256: hash.digest("hex") });
+  }
+  // Immutable helper hardlinks change link counts/ctime on source files. They
+  // are not business snapshots and are checked structurally by their caller.
+  if (!linkImmutable && JSON.stringify(before) !== JSON.stringify(await metadataInventory(source, filter))) throw Error("update_backup_source_changed");
+  const metadata = await metadataInventory(destination);
+  return { files, verification: { schema: 1, files, metadata }, sourceMetadata: before };
+}
+async function verifySnapshot(root, files, verification, { ignored = [] } = {}) {
+  if (verification?.schema !== 1 || JSON.stringify(files) !== JSON.stringify(verification.files)) return false;
+  const filter = file => !ignored.includes(path.relative(root, file));
+  try { return JSON.stringify(verification.metadata) === JSON.stringify(await metadataInventory(root, filter)); }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
 async function copyBytes(file, filter = () => true) {
   if (!filter(file)) return 0;
@@ -152,4 +217,5 @@ function formatUpdateFailure(failure) {
   }
   return `${stage}失败。${detail}${failure.path ? `\n位置：${failure.path}` : ""}${failure.cleanupCode ? `\n本次临时副本未能回收（${failure.cleanupCode}）。` : ""}`;
 }
-module.exports = { backupFilter, isRegenerableProfileFile, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure };
+module.exports = { backupFilter, isRegenerableProfileFile, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure,
+  metadataInventory, copySnapshot, verifySnapshot };

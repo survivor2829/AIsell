@@ -31,22 +31,23 @@ if (!process.versions.electron) {
   app.setPath("userData", path.join(root, "electron-profile"));
 
   async function checkBackupCapacityAndFailure(userData) {
-    const copy = fs.promises.cp, statfs = fs.promises.statfs;
+    const open = fs.promises.open, statfs = fs.promises.statfs;
     const failures = [];
     try {
-      fs.promises.cp = async (source, destination, options) => {
-        if (source !== userData) return copy(source, destination, options);
-        fs.writeFileSync(path.join(destination, "partial.bin"), "owned incomplete copy");
-        throw Object.assign(Error("fixture write failure"), { code: "ENOSPC", path: path.join(destination, "partial.bin"), syscall: "copyfile" });
+      fs.promises.open = async (source, ...args) => {
+        if (!source.startsWith(userData + path.sep)) return open(source, ...args);
+        const partial = path.join(path.dirname(userData), path.basename(userData) + "-update-backups/failed-copy/partial.bin");
+        fs.writeFileSync(partial, "owned incomplete copy");
+        throw Object.assign(Error("fixture write failure"), { code: "ENOSPC", path: partial, syscall: "open" });
       };
       await assert.rejects(backupUserData(userData, "failed-copy"), { code: "ENOSPC" });
       try { assert.equal(fs.existsSync(path.join(root, "user-data-update-backups/failed-copy")), false,
         "a failed backup must remove only its own partial copy instead of accumulating on retry"); } catch (error) { failures.push(error); }
-      fs.promises.cp = copy;
+      fs.promises.open = open;
       fs.promises.statfs = async file => ({ ...await statfs(file), bavail: 0 });
       try { await assert.rejects(backupUserData(userData, "insufficient-space"), { code: "update_disk_space_insufficient" },
         "backup capacity must be checked before copying any business data"); } catch (error) { failures.push(error); }
-    } finally { fs.promises.cp = copy; fs.promises.statfs = statfs; }
+    } finally { fs.promises.open = open; fs.promises.statfs = statfs; }
     if (failures.length) throw new AggregateError(failures, failures.map(error => error.message).join("\n"));
   }
 
@@ -84,13 +85,16 @@ if (!process.versions.electron) {
     fs.mkdirSync(applicationRoot);
     fs.writeFileSync(path.join(installedRoot, "resources/app/version.txt"), "old base");
     fs.writeFileSync(path.join(applicationRoot, "version.txt"), "verified active code");
+    const baselineFile = path.join(installedRoot, "component-base.json");
+    const setUpdater = value => fs.writeFileSync(baselineFile, JSON.stringify({ base: { fingerprint: "a".repeat(64) }, components: { updater: { treeSha256: value.repeat(64) } } }));
+    setUpdater("b");
     const executable = path.join(installedRoot, "app.exe");
     fs.writeFileSync(executable, "inert executable fixture");
     const execFile = () => assert.fail("snapshot must use the promise interface");
     execFile[promisify.custom] = async () => ({ stdout: JSON.stringify([{ ProcessId: process.pid, ParentProcessId: 0, CreationDate: "fixture" }]) });
     let failCopy = false;
-    const native = { ...fs, promises: { ...fs.promises, cp: async (...args) => {
-      await fs.promises.cp(...args);
+    const native = { ...fs, promises: { ...fs.promises, copyFile: async (...args) => {
+      await fs.promises.copyFile(...args);
       if (failCopy) throw Object.assign(Error("fixture helper copy failed"), { code: "ENOSPC", path: args[1] });
     } } };
     const mocks = { "original-fs": native, "node:child_process": { execFile } }, helperModule = { exports: {} };
@@ -104,19 +108,27 @@ if (!process.versions.electron) {
       assert.equal(fs.readFileSync(path.join(path.dirname(first.job.helperExecutable), "resources/app/version.txt"), "utf8"), "verified active code",
         "updates must use the already verified active application, not resurrect the old base updater");
       const helpers = path.dirname(path.dirname(first.job.helperExecutable));
+      setUpdater("c");
       failCopy = true;
       await assert.rejects(helperModule.exports.createUpdateJob(options), { code: "ENOSPC" });
       assert.equal(fs.readdirSync(helpers).length, 1, "a failed preparation must remove only the helper copy owned by that attempt");
       failCopy = false;
+      setUpdater("b");
       const { writeJsonAtomic } = load("./atomic-file.cjs");
       writeJsonAtomic(first.file.replace(/\.json$/, ".status.json"), { phase: "error" });
       writeJsonAtomic(first.file.replace(/\.json$/, ".ready.json"), { pid: process.pid });
       const second = await helperModule.exports.createUpdateJob(options);
+      assert.equal(second.job.helperExecutable, first.job.helperExecutable, "the same base/updater shares one independent helper runtime");
+      assert.equal(second.job.helperTiming.reused, true);
       assert.ok(fs.existsSync(first.job.helperExecutable), "a terminal status cannot authorize deleting a still-running helper");
+      setUpdater("c");
+      const third = await helperModule.exports.createUpdateJob(options);
       writeJsonAtomic(first.file.replace(/\.json$/, ".ready.json"), { pid: 2147483647 });
+      writeJsonAtomic(second.file.replace(/\.json$/, ".status.json"), { phase: "complete" });
+      writeJsonAtomic(second.file.replace(/\.json$/, ".ready.json"), { pid: 2147483646 });
       await helperModule.exports.createUpdateJob(options);
       assert.equal(fs.existsSync(first.job.helperExecutable), false, "the next attempt reclaims an owned terminal helper only after its process has exited");
-      assert.ok(fs.existsSync(second.job.helperExecutable), "missing terminal evidence must preserve the helper");
+      assert.ok(fs.existsSync(third.job.helperExecutable), "the current runtime identity remains reusable");
     } finally { global.__xiaoxiComponents = previous; }
   }
 
@@ -230,6 +242,12 @@ if (!process.versions.electron) {
     const mocks = {
       "node:child_process": { execFile, spawn() { spawned++; throw Error("unexpected_process_start"); } },
       "./cloud-config.cjs": { cloudConfig: () => config },
+      // The shared download marker implementation is exercised by its own
+      // tests. This backup-only fixture still checks the actual inert bytes.
+      "./download-verification.cjs": { verifyDownload: async (candidate, manifest) => {
+        assert.equal(crypto.createHash("sha256").update(fs.readFileSync(candidate)).digest("hex"), manifest.sha256);
+        assert.equal(fs.statSync(candidate).size, manifest.size);
+      } },
       electron: { app: { setPath() {}, whenReady: async () => {}, on() {} }, BrowserWindow: class {
         constructor() { this.webContents = { executeJavaScript: async script => { scripts.push(script); } }; }
         async loadURL() {} on(name, handler) { if (name === "close") closeHandler = handler; } isDestroyed() { return false; }
