@@ -131,7 +131,7 @@ const checks = [
 // instance of the same check. Keep the resource policy in one place.
 const exclusivePatterns = [
   /^rpa\//,
-  /^src\/main\/acquisition-sync\.self_check\.cjs$/,
+  /^src\/main\/(?:acquisition-sync|failure-evidence)\.self_check\.cjs$/,
   /^scripts\/(?:update-helper\.|component-update-selftest\.|product-detail-download\.electron\.)/,
   /^scripts\/(?:build-renderer|dev-electron|build-product-detail-sidecar|build-content-engine-sidecar|product-detail-release-runtime|content-engine-release-runtime|remotion-packaging|installer-release|customer-edition|internal-release|development-launcher)\.self_check\.cjs$/
 ];

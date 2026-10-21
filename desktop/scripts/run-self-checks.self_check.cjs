@@ -29,6 +29,7 @@ async function main() {
     assert.equal(isExclusive(check), true, check + " must run alone");
   }
   assert.equal(isExclusive("src/main/acquisition-sync.self_check.cjs"), true, "local Python sync service startup must not compete with the pool");
+  assert.equal(isExclusive("src/main/failure-evidence.self_check.cjs"), true, "native PowerShell capture fixture must run alone like RPA checks");
   assert.equal(isExclusive("src/main/acquisition-account.self_check.cjs"), false);
   const output = [], errors = [];
   const originalWrite = process.stdout.write, originalErrorWrite = process.stderr.write;
