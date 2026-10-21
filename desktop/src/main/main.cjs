@@ -588,6 +588,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     let contentProviderConfiguration = "";
     const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
+      getCatalogScope: providerConfiguration,
       beforeStart: async () => { await components.ensureRuntimeGroup("content"); await waitForProviderSession(); },
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),

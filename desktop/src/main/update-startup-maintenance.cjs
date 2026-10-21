@@ -17,7 +17,7 @@ if (!isMainThread && workerData?.startupMaintenance) {
       // A pre-upgrade helper may not implement the shared lease yet.
       const fs = require("node:fs"), path = require("node:path");
       const activeFile = path.join(workerData.root, "active-job.json");
-      if (fs.existsSync(activeFile)) {
+      if (require("./update-helper.cjs").hasLiveUpdateHelper(workerData.root)) {
         const job = JSON.parse(fs.readFileSync(activeFile, "utf8"));
         const status = JSON.parse(fs.readFileSync(path.join(workerData.root, "jobs", job.id + ".status.json"), "utf8"));
         if (!["complete", "error"].includes(status.phase)) return;

@@ -264,8 +264,12 @@ test("superseded prepared updates do not accumulate complete programs and archiv
   await fs.writeFile(path.join(rootDir, "jobs", handoffId + ".status.json"), JSON.stringify({ phase: "waiting" }));
   await require("../src/main/update-startup-maintenance.cjs").maintainAfterStartup(rootDir, { profile, version: "1.1.4" });
   await fs.access(deferred); // An older helper without the lease still owns its active handoff.
-  await fs.unlink(activeJob);
+  const exitedHelper = require("node:child_process").spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
+  assert.equal(exitedHelper.status, 0);
+  await fs.writeFile(activeJob, JSON.stringify({ id: handoffId, pid: exitedHelper.pid }));
   await require("../src/main/update-startup-maintenance.cjs").maintainAfterStartup(rootDir, { profile, version: "1.1.4" });
+  await fs.access(activeJob); // Dead-helper proof releases the pin without deleting its evidence.
+
   await assert.rejects(fs.stat(deferred), { code: "ENOENT" }, "healthy-start worker retries component cleanup even without a retired full backup");
   await fs.access(historical);
 });

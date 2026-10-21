@@ -347,8 +347,8 @@ async function main() {
 
   // Source pins for the page wiring the harness mirrors.
   assert.match(page, /approvedVoiceIds\.current = approvedIn\(items\);\s*setCatalog\(items\);/u, "one place applies the voice list");
-  assert.match(page, /const approved = applyVoices\(results\[0\]\.value\.data\?\.items \|\| \[\]\);/u, "the mount read goes through it");
-  assert.match(page, /results\[0\]\.status === "fulfilled" && results\[0\]\.value\.ok !== false/u, "a failed read is not an empty catalog");
+  assert.match(page, /const approved = applyVoices\(result\.data\.items \|\| \[\]\);/u, "the independent mount read goes through it");
+  assert.match(page, /if \(!result\?\.ok \|\| !result\.data\) throw new Error/u, "a failed read is not an empty catalog");
   assert.match(page, /async function refreshVoices\(\) \{[\s\S]{0,400}applyVoices\(result\.data\.items \|\| \[\]\);/u);
   assert.match(page, /async function voiceApproved\(\) \{\s*await refreshVoices\(\);/u);
   assert.match(page, /onApproved=\{async \(name\) => \{ setNotice\([^;]+\); await voiceApproved\(\); \}\}/u, "the card's approval re-reads the list");

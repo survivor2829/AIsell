@@ -1,5 +1,5 @@
 const { spawn } = require("node:child_process");
-const { randomUUID, createHash } = require("node:crypto");
+const { randomUUID } = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -537,8 +537,7 @@ function createContentEngineSidecar(options = {}) {
   }
 
   async function request(method, params = {}, optionsForRequest = {}) {
-    const provider = getProviderEnvironment() || {};
-    const scope = createHash("sha256").update(JSON.stringify(Object.keys(provider).sort().map(key => [key, provider[key]]))).digest("hex");
+    const scope = options.getCatalogScope?.() || "";
     if (scope !== catalogScope) { catalogScope = scope; invalidateCatalogs(); }
     if (!catalogMethods.has(method)) {
       const result = await freshRequest(method, params, optionsForRequest);
@@ -751,46 +750,6 @@ function createContentEngineSidecar(options = {}) {
         project_id: projectId,
         limit: optionsForGeneration.limit,
         seed: optionsForGeneration.seed
-      }
-    ),
-    generateCourseCuts: (assetId, optionsForGeneration = {}) => request(
-      "generate_course_cuts",
-      {
-        asset_id: assetId,
-        min_duration_ms: optionsForGeneration.minDurationMs,
-        max_duration_ms: optionsForGeneration.maxDurationMs,
-        count: optionsForGeneration.count,
-        theme: optionsForGeneration.theme,
-        subtitle_font_size: optionsForGeneration.subtitleFontSize,
-        subtitle_margin_bottom: optionsForGeneration.subtitleMarginBottom,
-        experiment_mode: optionsForGeneration.experimentMode,
-        subtitle_preset: optionsForGeneration.subtitlePreset,
-        packaging_mode: optionsForGeneration.packagingMode,
-        packaging_preset_id: optionsForGeneration.packagingPresetId,
-        brand_profile_id: optionsForGeneration.brandProfileId,
-        cover_mode: optionsForGeneration.coverMode,
-        visual_renderer: optionsForGeneration.visualRenderer,
-        ...(optionsForGeneration.confirmPaidCalls === true
-          ? { confirm_paid_calls: true }
-          : {})
-      }
-    ),
-    generateMixBatch: (assetIds, optionsForGeneration = {}) => request(
-      "generate_mix_batch",
-      {
-        asset_ids: assetIds,
-        theme: optionsForGeneration.theme,
-        target_count: optionsForGeneration.targetCount,
-        voice_asset_id: optionsForGeneration.voiceAssetId,
-        ...(optionsForGeneration.pilotMode === true ? { pilot_mode: true } : {}),
-        packaging_mode: optionsForGeneration.packagingMode,
-        packaging_preset_id: optionsForGeneration.packagingPresetId,
-        brand_profile_id: optionsForGeneration.brandProfileId,
-        cover_mode: optionsForGeneration.coverMode,
-        visual_renderer: optionsForGeneration.visualRenderer,
-        ...(optionsForGeneration.confirmPaidCalls === true
-          ? { confirm_paid_calls: true }
-          : {})
       }
     ),
     createOneClickProject: (name, assetIds, options = {}) => request(

@@ -55,8 +55,6 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   deleteBailianKey: "content-engine:delete-bailian-key",
   analyzeAssets: "content-engine:analyze-assets",
   listMediaSegments: "content-engine:list-media-segments",
-  generateCourseCuts: "content-engine:generate-course-cuts",
-  generateMixBatch: "content-engine:generate-mix-batch",
   createOneClickProject: "content-engine:create-one-click-project",
   createAutoMixV2: "content-engine:create-auto-mix-v2",
   prepareGuidedAutoMixV2: "content-engine:prepare-guided-auto-mix-v2",
@@ -491,6 +489,7 @@ const PUBLIC_ERRORS = Object.freeze({
   music_import_digest_mismatch: "音乐导入校验失败。",
   music_analysis_unavailable: "授权音乐分析运行时不可用。",
   music_analysis_failed: "授权音乐分析失败。",
+  feature_retired: "原声拆条与混剪已停用，制作记录和已有成片仍可查看。",
   generated_video_not_found: "没有找到这条 AI 成片。",
   generated_video_not_ready: "只有已完成的 AI 成片才能执行这项操作。",
   generated_video_path_unavailable: "AI 成片文件尚未生成或已经不可用。",
@@ -2924,111 +2923,6 @@ function registerContentEngineIpc(options = {}) {
       limit
     });
     return { items: (result?.items || []).map(publicMediaSegment) };
-  });
-  handle(CONTENT_ENGINE_CHANNELS.generateCourseCuts, async (payload) => {
-    assertKeys(payload, new Set([
-      "assetId", "minDurationMs", "maxDurationMs", "count", "theme",
-      "subtitleFontSize", "subtitleMarginBottom", "experimentMode", "subtitlePreset",
-      "packagingMode", "packagingPresetId", "brandProfileId", "coverMode",
-      "visualRenderer", "confirmPaidCalls"
-    ]));
-    const minimum = Number(payload.minDurationMs ?? 30_000);
-    const maximum = Number(payload.maxDurationMs ?? 90_000);
-    const count = Number(payload.count ?? 5);
-    if (!Number.isInteger(minimum) || !Number.isInteger(maximum)
-      || minimum < 30_000 || maximum > 90_000 || minimum > maximum) {
-      invalid("invalid_duration_range");
-    }
-    if (!Number.isInteger(count) || count < 1 || count > 20) invalid("invalid_limit");
-    const subtitleFontSize = Number(payload.subtitleFontSize ?? 48);
-    const subtitleMarginBottom = Number(payload.subtitleMarginBottom ?? 170);
-    if (!Number.isInteger(subtitleFontSize) || subtitleFontSize < 36 || subtitleFontSize > 64) {
-      invalid("invalid_subtitle_font_size");
-    }
-    if (!Number.isInteger(subtitleMarginBottom)
-      || subtitleMarginBottom < 120 || subtitleMarginBottom > 360) {
-      invalid("invalid_subtitle_margin_bottom");
-    }
-    const experimentMode = String(payload.experimentMode ?? "standard");
-    const subtitlePreset = String(payload.subtitlePreset ?? "dynamic_clean");
-    if (!new Set(["standard", "supoclip_bailian_v1"]).has(experimentMode)) {
-      invalid("invalid_experiment_mode");
-    }
-    if (experimentMode === "supoclip_bailian_v1" && count !== 5) {
-      invalid("invalid_experiment_count");
-    }
-    const expectedPresets = experimentMode === "standard"
-      ? new Set(["dynamic_clean"])
-      : new Set(["knowledge_course", "energetic_talking"]);
-    if (!expectedPresets.has(subtitlePreset)) invalid("invalid_subtitle_preset");
-    const packaging = validatePackagingOptions(payload);
-    if (packaging.coverMode === "reuse") invalid("invalid_cover_mode");
-    if (packaging.packagingPresetId
-      && !new Set(["knowledge_focus", "slide_teacher", "classroom_value"])
-        .has(packaging.packagingPresetId)) {
-      invalid("invalid_packaging_preset");
-    }
-    if (packaging.coverMode === "ai_generate") {
-      await options.beforeProviderWork?.(["apimart"]);
-    }
-    const result = await controller.generateCourseCuts(
-      validateId(payload.assetId, "asset"),
-      {
-        minDurationMs: minimum,
-        maxDurationMs: maximum,
-        count,
-        theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
-        subtitleFontSize,
-        subtitleMarginBottom,
-        experimentMode,
-        subtitlePreset,
-        confirmPaidCalls: payload.confirmPaidCalls === true,
-        ...packaging
-      }
-    );
-    return camelizePublic({ task_id: result?.task_id, project_id: result?.project_id });
-  });
-  handle(CONTENT_ENGINE_CHANNELS.generateMixBatch, async (payload) => {
-    assertKeys(payload, new Set([
-      "assetIds", "theme", "targetCount", "voiceAssetId",
-      "pilotMode",
-      "packagingMode", "packagingPresetId", "brandProfileId", "coverMode",
-      "visualRenderer", "confirmPaidCalls"
-    ]));
-    if (!Array.isArray(payload.assetIds) || payload.assetIds.length < 1 || payload.assetIds.length > 500) {
-      invalid("invalid_params");
-    }
-    const targetCount = Number(payload.targetCount ?? 30);
-    if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 300) {
-      invalid("invalid_limit");
-    }
-    const assetIds = [...new Set(payload.assetIds.map((item) => validateId(item, "asset")))];
-    const voiceAssetId = payload.voiceAssetId == null
-      ? null
-      : validateId(payload.voiceAssetId, "asset");
-    if (!voiceAssetId || !assetIds.includes(voiceAssetId)) invalid("invalid_voice_asset");
-    if (payload.pilotMode !== undefined && typeof payload.pilotMode !== "boolean") {
-      invalid("invalid_params");
-    }
-    const packaging = validatePackagingOptions(payload);
-    if (packaging.coverMode === "reuse") invalid("invalid_cover_mode");
-    if (packaging.packagingPresetId
-      && !new Set(["hook_impact", "process_rhythm", "result_close"])
-        .has(packaging.packagingPresetId)) {
-      invalid("invalid_packaging_preset");
-    }
-    if (packaging.coverMode === "ai_generate") {
-      await options.beforeProviderWork?.(["apimart"]);
-    }
-    const result = await controller.generateMixBatch(assetIds, {
-      theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
-      targetCount,
-      voiceAssetId,
-      pilotMode: payload.pilotMode === true,
-      confirmPaidCalls: payload.confirmPaidCalls === true,
-      ...packaging
-    });
-    return camelizePublic({ task_id: result?.task_id, project_id: result?.project_id });
   });
   handle(CONTENT_ENGINE_CHANNELS.createOneClickProject, async (payload) => {
     assertKeys(payload, new Set(["name", "assetIds", "options"]));

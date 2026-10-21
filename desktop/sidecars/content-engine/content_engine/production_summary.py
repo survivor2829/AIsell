@@ -12,6 +12,18 @@ from .public_data import redact_text
 
 
 RUNNING = {"queued", "analyzing", "rendering"}
+RETIRED_TASK_TYPES = {"course_generation", "mix_generation"}
+
+
+def retired_task_view(task):
+    if task["task_type"] not in RETIRED_TASK_TYPES or task["status"] not in RUNNING:
+        return task
+    # Keep persisted execution evidence; inactive history must not block updates.
+    return {**dict(task), "status": "paused",
+            "error_code": task["error_code"] or "feature_retired",
+            "error_message": task["error_message"] or "原声拆条与混剪已停用，制作记录和已有成片仍可查看。"}
+
+
 HISTORY = {"completed", "cancelled"}
 INTERNAL_TYPES = {
     "asset_import", "creative_analysis", "product_asset_analysis", "product_copy",
@@ -168,6 +180,12 @@ class ProductionSummary:
             payload = payloads[task["id"]]
             title = payload.get("title") or ""
             state, project_id = task["status"], payload.get("project_id")
+
+        if task:
+            projected = retired_task_view(task)
+            if projected is not task and state != "outcome_unknown":
+                state = projected["status"]
+            task = projected
 
         # Current domain result outranks historical failures within this production.
         if archived:

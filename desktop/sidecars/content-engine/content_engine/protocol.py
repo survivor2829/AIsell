@@ -23,7 +23,6 @@ def _validate_json_numbers(value):
             _validate_json_numbers(child)
 
 
-
 METHODS = {
     "digital_human_upload_audio": lambda service, params: service.digital_human_upload_audio(params),
     "import_base_video": lambda service, params: service.import_base_video(params),
@@ -131,36 +130,6 @@ METHODS = {
         asset_id=params.get("asset_id"),
         role=params.get("role"),
         limit=params.get("limit", 2_000),
-    ),
-    "generate_course_cuts": lambda service, params: service.generate_course_cuts(
-        params.get("asset_id"),
-        min_duration_ms=params.get("min_duration_ms", 30_000),
-        max_duration_ms=params.get("max_duration_ms", 90_000),
-        count=params.get("count", 5),
-        theme=params.get("theme", "培训现场价值"),
-        subtitle_font_size=params.get("subtitle_font_size", 48),
-        subtitle_margin_bottom=params.get("subtitle_margin_bottom", 170),
-        experiment_mode=params.get("experiment_mode", "standard"),
-        subtitle_preset=params.get("subtitle_preset", "dynamic_clean"),
-        packaging_mode=params.get("packaging_mode", "auto"),
-        packaging_preset_id=params.get("packaging_preset_id"),
-        brand_profile_id=params.get("brand_profile_id"),
-        cover_mode=params.get("cover_mode", "auto"),
-        visual_renderer=params.get("visual_renderer"),
-        confirm_paid_calls=params.get("confirm_paid_calls", False),
-    ),
-    "generate_mix_batch": lambda service, params: service.generate_mix_batch(
-        params.get("asset_ids"),
-        theme=params.get("theme", "培训现场价值"),
-        target_count=params.get("target_count", 30),
-        voice_asset_id=params.get("voice_asset_id"),
-        pilot_mode=params.get("pilot_mode", False),
-        packaging_mode=params.get("packaging_mode", "auto"),
-        packaging_preset_id=params.get("packaging_preset_id"),
-        brand_profile_id=params.get("brand_profile_id"),
-        cover_mode=params.get("cover_mode", "auto"),
-        visual_renderer=params.get("visual_renderer"),
-        confirm_paid_calls=params.get("confirm_paid_calls", False),
     ),
     "create_one_click_project": lambda service, params: service.create_one_click_project(
         params.get("name"),

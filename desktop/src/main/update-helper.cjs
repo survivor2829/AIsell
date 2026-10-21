@@ -150,6 +150,17 @@ async function reclaimFinishedHelpers(paths, processes) {
     try { await removeOwnedDirectory({ parent: realParent, directory, identity: job.helperIdentity }); } catch { /* In use or uncertain: preserve it. */ }
   }
 }
+function hasLiveUpdateHelper(root, probe = pid => process.kill(pid, 0)) {
+  const file = path.join(root, "active-job.json");
+  if (!fs.existsSync(file)) return false;
+  const active = readJson(file);
+  // Only ESRCH proves the stale helper ended. Missing identity and access errors
+  // retain protection, including when an unrelated process reused the PID.
+  if (Number.isInteger(active?.pid) && active.pid > 0) {
+    try { probe(active.pid); } catch (error) { if (error.code === "ESRCH") return false; }
+  }
+  return true;
+}
 function helperRuntimeIdentity(installedRoot, applicationRoot) {
   const baseline = readJson(path.resolve(applicationRoot, "../../component-base.json")) || readJson(path.join(installedRoot, "component-base.json"));
   const updater = baseline?.components?.updater?.treeSha256 || baseline?.components?.application?.treeSha256;
@@ -210,7 +221,16 @@ async function prepareHelperRuntimeCopy({ paths, installedRoot, applicationRoot,
     writeJsonAtomic(receipt, { schema: 2, identity, owned, files, bytes });
     await fs.promises.unlink(preparing);
     return { identity, owned, helperExecutable, created: true, bytes, entries: files.length, copyBudget };
-  } catch (error) { await removeOwnedDirectory(owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; }); throw error; }
+  } catch (error) {
+    await removeOwnedDirectory(owned).catch(cleanup => {
+      error.cleanupCode = cleanup.code || cleanup.message;
+      // Only a directory whose inode and boundary were checked by the remover
+      // may enter the existing retry ledger. Historical quarantines are not scanned.
+      if (cleanup.ownedRetirement) retainArtifacts(paths.directory, "failed-helper-preparations", [], 1,
+        [cleanup.ownedRetirement.directory], { deferCleanup: true });
+    });
+    throw error;
+  }
 }
 const helperPreparations = new Map();
 async function retainHelperRuntimes(paths, current, processes = null) {
@@ -445,4 +465,4 @@ async function runHelper({ jobFile, userData }) {
   }
   app.on("window-all-closed", () => app.quit());
 }
-module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper, prepareHelperRuntime, helperRuntimeIdentity, retainHelperRuntimes };
+module.exports = { hasLiveUpdateHelper, processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper, prepareHelperRuntime, helperRuntimeIdentity, retainHelperRuntimes };

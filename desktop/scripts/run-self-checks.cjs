@@ -1,7 +1,6 @@
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const os = require("node:os");
-const fs = require("node:fs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const { checks, groups, checksForGroup, isExclusive } = require("./self-check-groups.cjs");

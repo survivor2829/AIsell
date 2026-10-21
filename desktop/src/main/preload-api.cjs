@@ -414,54 +414,6 @@ function createContentEngineApi(ipcRenderer) {
           limit: Number(payload?.limit || 2_000)
         }
       ),
-      generateCourseCuts: (payload) => ipcRenderer.invoke(
-        "content-engine:generate-course-cuts",
-        {
-          assetId: String(payload?.assetId || ""),
-          minDurationMs: Number(payload?.minDurationMs || 30_000),
-          maxDurationMs: Number(payload?.maxDurationMs || 90_000),
-          count: Number(payload?.count || 5),
-          theme: String(payload?.theme || "培训现场价值"),
-          subtitleFontSize: Number(payload?.subtitleFontSize || 48),
-          subtitleMarginBottom: Number(payload?.subtitleMarginBottom || 170),
-          experimentMode: "standard",
-          subtitlePreset: "dynamic_clean",
-          packagingMode: String(payload?.packagingMode || "auto"),
-          ...(payload?.packagingPresetId == null
-            ? {}
-            : { packagingPresetId: String(payload.packagingPresetId || "") }),
-          ...(payload?.brandProfileId == null
-            ? {}
-            : { brandProfileId: String(payload.brandProfileId || "") }),
-          coverMode: String(payload?.coverMode || "ai_generate"),
-          ...(payload?.confirmPaidCalls === true ? { confirmPaidCalls: true } : {}),
-          ...visualRendererPayload(payload?.visualRenderer)
-        }
-      ),
-      generateMixBatch: (payload) => ipcRenderer.invoke(
-        "content-engine:generate-mix-batch",
-        {
-          assetIds: Array.isArray(payload?.assetIds)
-            ? payload.assetIds.map((item) => String(item || ""))
-            : [],
-          theme: String(payload?.theme || "培训现场价值"),
-          targetCount: Number(payload?.targetCount || 30),
-          ...(payload?.voiceAssetId == null
-            ? {}
-            : { voiceAssetId: String(payload.voiceAssetId || "") }),
-          ...(payload?.pilotMode === true ? { pilotMode: true } : {}),
-          packagingMode: String(payload?.packagingMode || "auto"),
-          ...(payload?.packagingPresetId == null
-            ? {}
-            : { packagingPresetId: String(payload.packagingPresetId || "") }),
-          ...(payload?.brandProfileId == null
-            ? {}
-            : { brandProfileId: String(payload.brandProfileId || "") }),
-          coverMode: String(payload?.coverMode || "ai_generate"),
-          ...(payload?.confirmPaidCalls === true ? { confirmPaidCalls: true } : {}),
-          ...visualRendererPayload(payload?.visualRenderer)
-        }
-      ),
       createOneClickProject: (payload) => ipcRenderer.invoke(
         "content-engine:create-one-click-project",
         {

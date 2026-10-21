@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
@@ -21,7 +21,7 @@ from .public_data import redact_text, sanitize_public_value
 from .media_config import VIDEO_EXTENSIONS, classify_media
 from .media_probe import FFprobeAdapter, ProbeOutcome
 from .mix_domain import MixDomain
-from .production_summary import ProductionSummary
+from .production_summary import ProductionSummary, RETIRED_TASK_TYPES
 from .render_mix import FFmpegMixRenderer
 
 
@@ -447,6 +447,7 @@ class ContentEngineService:
             f"""
             SELECT id FROM content_tasks
             WHERE task_type IN ({placeholders}) AND status = 'queued'
+              AND task_type NOT IN ('course_generation', 'mix_generation')
             ORDER BY created_at, rowid
             """,
             tuple(CREATIVE_TASK_TYPES),
@@ -521,75 +522,6 @@ class ContentEngineService:
             asset_id=asset_id, role=role, limit=limit
         )
 
-    def generate_course_cuts(
-        self,
-        asset_id: str,
-        *,
-        min_duration_ms: int = 30_000,
-        max_duration_ms: int = 90_000,
-        count: int = 5,
-        theme: str = "培训现场价值",
-        subtitle_font_size: int = 48,
-        subtitle_margin_bottom: int = 170,
-        experiment_mode: str = "standard",
-        subtitle_preset: str = "dynamic_clean",
-        packaging_mode: str = "auto",
-        packaging_preset_id: str | None = None,
-        brand_profile_id: str | None = None,
-        cover_mode: str = "auto",
-        visual_renderer: dict[str, Any] | None = None,
-        confirm_paid_calls: bool = False,
-    ) -> dict[str, Any]:
-        return self._enqueue_creative_task(
-            self.creative_domain.create_course_task(
-                asset_id,
-                min_duration_ms=min_duration_ms,
-                max_duration_ms=max_duration_ms,
-                count=count,
-                theme=theme,
-                subtitle_font_size=subtitle_font_size,
-                subtitle_margin_bottom=subtitle_margin_bottom,
-                experiment_mode=experiment_mode,
-                subtitle_preset=subtitle_preset,
-                packaging_mode=packaging_mode,
-                packaging_preset_id=packaging_preset_id,
-                brand_profile_id=brand_profile_id,
-                cover_mode=cover_mode,
-                visual_renderer=visual_renderer,
-                confirm_paid_calls=confirm_paid_calls,
-            )
-        )
-
-    def generate_mix_batch(
-        self,
-        asset_ids: Iterable[str],
-        *,
-        theme: str = "培训现场价值",
-        target_count: int = 30,
-        voice_asset_id: str | None = None,
-        pilot_mode: bool = False,
-        packaging_mode: str = "auto",
-        packaging_preset_id: str | None = None,
-        brand_profile_id: str | None = None,
-        cover_mode: str = "auto",
-        visual_renderer: dict[str, Any] | None = None,
-        confirm_paid_calls: bool = False,
-    ) -> dict[str, Any]:
-        return self._enqueue_creative_task(
-            self.creative_domain.create_mix_task(
-                asset_ids,
-                theme=theme,
-                target_count=target_count,
-                voice_asset_id=voice_asset_id,
-                pilot_mode=pilot_mode,
-                packaging_mode=packaging_mode,
-                packaging_preset_id=packaging_preset_id,
-                brand_profile_id=brand_profile_id,
-                cover_mode=cover_mode,
-                visual_renderer=visual_renderer,
-                confirm_paid_calls=confirm_paid_calls,
-            )
-        )
 
     def create_one_click_project(self, name, asset_ids, options=None):
         options = options if isinstance(options, dict) else {}
@@ -1036,6 +968,8 @@ class ContentEngineService:
 
     def resume_creative_task(self, task_id: str) -> dict[str, Any]:
         task = self._get_public_task(task_id)
+        if task["task_type"] in RETIRED_TASK_TYPES:
+            raise ContentEngineError("feature_retired", "原声拆条与混剪已停用，制作记录和已有成片仍可查看。")
         if task["task_type"] not in CREATIVE_TASK_TYPES:
             raise ContentEngineError("invalid_task_type", "This is not a creative task.")
         if task["task_type"] == "narrated_batch_v1" and (

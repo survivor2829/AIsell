@@ -40,6 +40,19 @@ from content_engine.protocol import METHODS, serve_jsonl
 from content_engine.service import ContentEngineService, utc_now
 
 
+def historical_course_recipe(asset_id, window, *, include_word_timestamps=False, subtitle_font_size=48, subtitle_margin_bottom=170):
+    """Persisted-format fixture; no removed selection or generation pipeline."""
+    captions = []
+    for segment in window["segments"]:
+        caption = {"start_ms": segment["start_ms"], "end_ms": segment["end_ms"], "text": segment["transcript_text"]}
+        if include_word_timestamps:
+            caption["words"] = CreativeDomain._course_caption_words(segment)
+        captions.append(caption)
+    return {"kind": "course", "layout": "auto_portrait", "subtitle_style": {"preset": "dynamic_clean", "font_size": subtitle_font_size, "margin_bottom": subtitle_margin_bottom, "max_chars": 12},
+            "voice_segment": {"asset_id": asset_id, "start_ms": window["start_ms"], "end_ms": window["end_ms"]},
+            "visual_segments": [{"asset_id": asset_id, "start_ms": window["start_ms"], "end_ms": window["end_ms"], "target_duration_ms": window["end_ms"]-window["start_ms"], "media_kind": "video", "frame_mode": "cover"}], "captions": captions}
+
+
 class APIMartCoverClientTests(unittest.TestCase):
     def test_stdlib_http_reader_is_bounded_before_buffering(self):
         response = mock.MagicMock()
@@ -228,15 +241,6 @@ class CreativeRendererRecipeTests(unittest.TestCase):
         self.assertIn("[classroom_source]", graph)
         self.assertIn("overlay=", graph)
 
-    def test_course_layout_marker_comes_from_analyzed_shot_evidence(self):
-        self.assertEqual(
-            "slide_with_teacher_pip",
-            CreativeDomain._course_frame_mode({"shot_type": "screen", "tags": []}),
-        )
-        self.assertEqual(
-            "teacher_focus",
-            CreativeDomain._course_frame_mode({"shot_type": "teacher", "tags": []}),
-        )
 
     def test_renderer_uses_ai_event_text_timing_and_zone_instead_of_generic_labels(self):
         packaging = {
@@ -456,73 +460,6 @@ class CreativeRendererRecipeTests(unittest.TestCase):
         self.assertIn(r"{\c&H004DD8FF&}底价", content)
         self.assertIn("👇", content)
 
-    def test_supoclip_recipe_keeps_real_word_timestamps_and_filters_invalid_words(self):
-        domain = object.__new__(CreativeDomain)
-        window = {
-            "start_ms": 10_000,
-            "end_ms": 20_000,
-            "segments": [{
-                "segment_id": "segment-1",
-                "asset_id": "asset-1",
-                "start_ms": 10_000,
-                "end_ms": 20_000,
-                "transcript_text": "关键是方法。",
-                "speaker": "teacher",
-                "media_kind": "video",
-                "shot_type": "lecturer",
-                "tags": ["培训"],
-                "metadata": {
-                    "words": [
-                        {"text": "关键", "begin_time": 10_100, "end_time": 10_600},
-                        {"text": "是", "begin_time": 10_650, "end_time": 10_900, "confidence": 0.93},
-                        {"text": "方法", "begin_time": 10_950, "end_time": 11_500, "punctuation": "。"},
-                        {"text": "越界", "begin_time": 20_100, "end_time": 20_500},
-                        {"text": "非法", "begin_time": 12_000, "end_time": 11_999},
-                    ]
-                },
-            }],
-        }
-
-        recipe = domain._course_recipe(
-            "asset-1",
-            window,
-            experiment_mode="supoclip_bailian_v1",
-            subtitle_preset="knowledge_course",
-        )
-
-        self.assertEqual("supoclip_bailian_v1", recipe["experiment_mode"])
-        self.assertEqual("knowledge_course", recipe["subtitle_style"]["preset"])
-        self.assertEqual(
-            [
-                {"text": "关键", "start": 10_100, "end": 10_600, "confidence": None, "speaker": "teacher"},
-                {"text": "是", "start": 10_650, "end": 10_900, "confidence": 0.93, "speaker": "teacher"},
-                {"text": "方法。", "start": 10_950, "end": 11_500, "confidence": None, "speaker": "teacher"},
-            ],
-            recipe["captions"][0]["words"],
-        )
-
-    def test_standard_course_recipe_remains_dynamic_clean_without_word_payload(self):
-        domain = object.__new__(CreativeDomain)
-        segment = {
-            "segment_id": "segment-1",
-            "asset_id": "asset-1",
-            "start_ms": 0,
-            "end_ms": 10_000,
-            "transcript_text": "标准字幕。",
-            "speaker": "teacher",
-            "media_kind": "video",
-            "shot_type": "lecturer",
-            "tags": [],
-            "metadata": {"words": [{"text": "标准", "begin_time": 10, "end_time": 500}]},
-        }
-
-        recipe = domain._course_recipe(
-            "asset-1", {"start_ms": 0, "end_ms": 10_000, "segments": [segment]}
-        )
-
-        self.assertEqual("dynamic_clean", recipe["subtitle_style"]["preset"])
-        self.assertNotIn("experiment_mode", recipe)
-        self.assertNotIn("words", recipe["captions"][0])
 
     def test_standard_packaging_keeps_words_and_template_subtitle_contract(self):
         domain = object.__new__(CreativeDomain)
@@ -544,7 +481,7 @@ class CreativeRendererRecipeTests(unittest.TestCase):
                 ]
             },
         }
-        recipe = domain._course_recipe(
+        recipe = historical_course_recipe(
             "asset-1",
             {"start_ms": 10_000, "end_ms": 20_000, "segments": [segment]},
             subtitle_font_size=48,
@@ -617,9 +554,7 @@ class CreativeRendererRecipeTests(unittest.TestCase):
             for index in range(3)
         ]
 
-        recipe = domain._mix_recipe(
-            backbone, choice, include_word_timestamps=True
-        )
+        recipe = historical_course_recipe("voice-asset", {"start_ms": backbone["start_ms"], "end_ms": backbone["end_ms"], "segments": [voice_segment]}, include_word_timestamps=True)
         domain._attach_packaging(
             recipe,
             kind="mix",
@@ -1093,118 +1028,6 @@ class DashScopeCourseSelectionTests(unittest.TestCase):
         self.assertEqual("cloud_response_invalid", raised.exception.code)
         self.assertEqual(2, len(calls))
 
-    def test_standard_ranking_bounds_json_output_without_losing_candidates(self):
-        client = DashScopeMediaClient(api_key="test-key")
-        sizes = []
-        def request_json(_url, **kwargs):
-            rows = json.JSONDecoder().raw_decode(kwargs["payload"]["messages"][0]["content"].split("候选数据：", 1)[1])[0]
-            sizes.append(len(rows))
-            if len(rows) > 12:
-                return {"choices": [{"finish_reason": "length", "message": {"content": '{"candidates":['}}]}
-            scores = [{"id": row["id"], "opening_hook": .8, "standalone_value": .8,
-                "content_completeness": .8, "language_quality": .8, "theme_relevance": .8,
-                "reason": ["完整独立观点"]} for row in rows]
-            return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"candidates": scores})}}]}
-        client._request_json = request_json
-        candidates = [{"id": f"source-{i}", "duration_ms": 30000, "transcript": "完整观点"} for i in range(48)]
-        result = client.rank_course_candidates(candidates, "培训")
-        self.assertEqual({row["id"] for row in candidates}, {row["id"] for row in result})
-        self.assertEqual([12] * 4, sizes)
-
-    def test_supoclip_selection_sends_visual_evidence_and_clamps_four_scores(self):
-        client = DashScopeMediaClient(api_key="test-key")
-        captured = {}
-        source_id = "candidate-" + "x" * 100
-
-        def request_json(_url, **kwargs):
-            captured.update(kwargs["payload"])
-            return {
-                "choices": [{"message": {"content": json.dumps({
-                    "candidates": [{
-                        "id": "c1",
-                        "hook": 40,
-                        "engagement": -3,
-                        "value": 18.5,
-                        "shareability": 21,
-                        "total": 140,
-                        "reason": ["开场给出明确问题"],
-                    }]
-                }, ensure_ascii=False)}}]
-            }
-
-        client._request_json = request_json
-        result = client.rank_course_candidates(
-            [{
-                "id": source_id,
-                "duration_ms": 45_000,
-                "transcript": "如何判断培训设备是否合适？",
-                "visual": [{
-                    "shot_type": "slide",
-                    "tags": ["课件", "老师"],
-                    "quality": 0.82,
-                    "visual_caption": "老师在屏幕旁讲解参数",
-                }],
-            }],
-            "培训现场价值",
-            experiment_mode="supoclip_bailian_v1",
-        )
-
-        prompt = captured["messages"][0]["content"]
-        self.assertIn("老师在屏幕旁讲解参数", prompt)
-        self.assertEqual(source_id, result[0]["id"])
-        self.assertEqual(25.0, result[0]["hook"])
-        self.assertEqual(0.0, result[0]["engagement"])
-        self.assertEqual(18.5, result[0]["value"])
-        self.assertEqual(21.0, result[0]["shareability"])
-        self.assertEqual(64.5, result[0]["total"])
-
-    def test_supoclip_selection_discards_incomplete_cloud_scores(self):
-        client = DashScopeMediaClient(api_key="test-key")
-        client._request_json = lambda *_args, **_kwargs: {
-            "choices": [{"message": {"content": json.dumps({
-                "candidates": [{
-                    "id": "c1",
-                    "hook": 20,
-                    "engagement": 18,
-                    "value": 17,
-                    # shareability is required; a local score must not fill it in.
-                    "total": 90,
-                }]
-            })}}]
-        }
-
-        with self.assertRaises(ContentEngineError) as raised:
-            client.rank_course_candidates(
-                [{"id": "candidate-1", "duration_ms": 45_000, "transcript": "课程内容"}],
-                "培训现场价值",
-                experiment_mode="supoclip_bailian_v1",
-            )
-
-        self.assertEqual("cloud_scores_incomplete", raised.exception.code)
-
-    def test_standard_course_selection_rejects_incomplete_cloud_scores(self):
-        client = DashScopeMediaClient(api_key="test-key")
-        client._request_json = lambda *_args, **_kwargs: {
-            "choices": [{"message": {"content": json.dumps({
-                "candidates": [{
-                    "id": "c1",
-                    "opening_hook": 0.8,
-                    "standalone_value": 0.7,
-                    "content_completeness": 0.9,
-                    "language_quality": 0.8,
-                    # theme_relevance is required; local defaults are forbidden.
-                }]
-            })}}]
-        }
-
-        with self.assertRaises(ContentEngineError) as raised:
-            client.rank_course_candidates(
-                [{"id": "candidate-1", "duration_ms": 45_000, "transcript": "课程内容"}],
-                "培训现场价值",
-            )
-
-        self.assertEqual("cloud_scores_incomplete", raised.exception.code)
-
 
 class FakeCreativeAnalyzer:
     def __init__(
@@ -1297,64 +1120,6 @@ class FakeCreativeAnalyzer:
             }
             for item in candidates
         }
-
-
-class FailingCourseRanker(FakeCreativeAnalyzer):
-    def rank_course_windows(self, _windows, _theme):
-        raise ContentEngineError("cloud_request_failed", "offline")
-
-
-class PartialStandardCourseRanker(FakeCreativeAnalyzer):
-    def rank_course_windows(self, windows, _theme):
-        return [
-            {
-                "id": item["signature"],
-                "opening_hook": 0.8,
-                "standalone_value": 0.7,
-                "content_completeness": 0.9,
-                "language_quality": 0.8,
-                # theme_relevance intentionally missing.
-                "reason": ["字段不完整"],
-            }
-            for item in windows
-        ]
-
-
-class SupoClipEvidenceRanker(FakeCreativeAnalyzer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.rank_calls = 0
-
-    def rank_course_windows(self, windows, _theme, *, experiment_mode=None):
-        if experiment_mode != "supoclip_bailian_v1":
-            raise AssertionError("missing experiment mode")
-        self.rank_calls += 1
-        return [
-            {
-                "id": item["signature"],
-                "hook": 999,
-                "engagement": -4,
-                "value": 18.5,
-                "shareability": 21,
-                "total": 99,
-                "reason": ["开场可直接核验"],
-            }
-            for item in windows
-        ]
-
-
-class PartialSupoClipRanker(SupoClipEvidenceRanker):
-    def rank_course_windows(self, windows, theme, *, experiment_mode=None):
-        return super().rank_course_windows(
-            windows, theme, experiment_mode=experiment_mode
-        )[:4]
-
-
-class EmptySupoClipRanker(FakeCreativeAnalyzer):
-    def rank_course_windows(self, _windows, _theme, *, experiment_mode=None):
-        if experiment_mode != "supoclip_bailian_v1":
-            raise AssertionError("missing experiment mode")
-        return []
 
 
 class FakeCreativeRenderer:
@@ -1658,6 +1423,34 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.service.close()
         shutil.rmtree(self.root, ignore_errors=True)
 
+    def test_retired_generators_are_unavailable_and_history_stays_readable(self):
+        for name in ("generate_course_cuts", "generate_mix_batch"):
+            self.assertNotIn(name, METHODS)
+            self.assertFalse(hasattr(self.service, name))
+        for kind in ("course_generation", "mix_generation"):
+            task = self.service.creative_domain._create_task(kind, {})
+            self.service.update_task(task["task_id"], "paused")
+            with self.assertRaises(ContentEngineError) as raised:
+                self.service.resume_creative_task(task["task_id"])
+            self.assertEqual("feature_retired", raised.exception.code)
+            self.service.update_task(task["task_id"], "queued")
+            with self.assertRaises(ContentEngineError) as raised:
+                self.service.run_creative_task(task["task_id"])
+            self.assertEqual("feature_retired", raised.exception.code)
+            self.assertEqual(kind, self.service.get_task(task["task_id"])["task_type"])
+        enqueued = []
+        with mock.patch.object(self.service, "_creative_jobs", SimpleNamespace(enqueue=enqueued.append)):
+            self.assertEqual(0, self.service._enqueue_recovered_creative_tasks())
+        self.assertEqual([], enqueued, "retired queued records must not terminate the shared worker")
+        self.assertEqual(0, self.service.production_summary()["active"], "retired records cannot hold the update gate open")
+        self.assertTrue(all(item["status"] not in {"queued", "analyzing", "rendering"}
+                            for item in self.service.list_tasks()["items"]),
+                        "provider refresh must not mistake retired history for live work")
+        self.assertEqual(2, self.service.connection.execute(
+            "SELECT count(*) FROM content_tasks WHERE status='queued'"
+        ).fetchone()[0], "read projections must preserve original business rows")
+
+
     def test_database_uses_full_synchronous_durability_for_paid_ledger(self):
         synchronous = self.service.connection.execute(
             "PRAGMA synchronous"
@@ -1716,6 +1509,35 @@ class CreativeWorkbenchTests(unittest.TestCase):
             )
         return asset_id
 
+    def _legacy_generated_fixture(self, asset_id, *, count=1, packaging_mode="auto", cover_mode="auto", **options):
+        """Seed existing-format outputs; shared packaging runner exercises rendering/ledger."""
+        domain = self.service.creative_domain
+        project_id, now = domain._new_id("creative_project"), utc_now()
+        settings = {"asset_ids": [asset_id], "packaging_mode": packaging_mode, "cover_mode": cover_mode}
+        self.service.connection.execute("INSERT INTO creative_projects(id,mode,name,theme,settings_json,created_at,updated_at) VALUES (?, 'course', '历史成片', '培训现场价值', ?, ?, ?)", (project_id,json.dumps(settings),now,now))
+        task = domain._create_task("creative_packaging", {"project_id": project_id})
+        ids = []
+        for index in range(count):
+            start, end = index * 30_000, (index + 1) * 30_000
+            stored = self.service.connection.execute("SELECT * FROM media_segments WHERE asset_id = ? AND start_ms >= ? AND end_ms <= ? ORDER BY start_ms", (asset_id,start,end)).fetchall()
+            segments = [{**dict(row), "metadata": json.loads(row["metadata_json"])} for row in stored]
+            if not segments:
+                segments = [{"asset_id":asset_id,"start_ms":start,"end_ms":end,"transcript_text":"真实课程重点与方法。"}]
+            recipe = historical_course_recipe(asset_id, {"start_ms":start,"end_ms":end,"segments":segments})
+            domain._attach_packaging(recipe,kind="course",title="历史课程",index=index,options={**settings,**options})
+            if recipe.get("packaging"):
+                plan = {"provider":"bailian", "model":"fixture", "version":1, "events":[{"type":"hook", "text":"先看真实课程重点", "start_ms":0, "end_ms":2000, "zone":"top_banner", "size":"hero", "priority":3, "reason":"真实开场观点"}]}
+                recipe["motion_director"] = plan
+                recipe["packaging"] = apply_motion_plan(recipe["packaging"], plan)
+                reference = self.data_dir / "generated" / "historical-cover-reference.jpg"
+                reference.parent.mkdir(exist_ok=True)
+                reference.write_bytes(b"retained cover frame fixture")
+                recipe["packaging"]["cover"]["plan"] = {"reference_path":str(reference)}
+            ids.append(domain._insert_generated(project_id,task["task_id"],"course",recipe,{"total":.8},"历史课程",end-start,recommended=index<2))
+        self.service.connection.execute("UPDATE content_tasks SET payload_json = ? WHERE id = ?", (json.dumps({"project_id":project_id,"generated_video_ids":ids}),task["task_id"]))
+        self.service._enqueue_creative_task(task)
+        return {**task,"project_id":project_id}
+
     def _run(self, task_id):
         self.service.run_creative_task(task_id)
         deadline = time.monotonic() + 2
@@ -1769,7 +1591,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.assertEqual(
             "completed", self._run(self.service.analyze_assets([asset_id])["task_id"])["status"]
         )
-        task = self.service.generate_course_cuts(
+        task = self._legacy_generated_fixture(
             asset_id, count=1, packaging_mode="auto", cover_mode="local_frame"
         )
         self.assertEqual("completed", self._run(task["task_id"])["status"])
@@ -1925,7 +1747,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_media_review_records_digest_and_rejects_stale_candidate(self):
         asset_id = self._insert_asset("phone-review.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        task = self.service.generate_course_cuts(asset_id, count=1, cover_mode="local_frame")
+        task = self._legacy_generated_fixture(asset_id, count=1, cover_mode="local_frame")
         self.assertEqual("completed", self._run(task["task_id"])["status"])
         candidate = self.service.list_generated_videos(project_id=task["project_id"])["items"][0]
         review = self.service.record_media_review(
@@ -2332,7 +2154,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_packaging_validation_rejects_cross_kind_preset_and_bad_brand_color(self):
         asset_id = self._insert_asset("invalid-packaging.mp4", duration_ms=180_000)
         with self.assertRaises(ContentEngineError) as preset_error:
-            self.service.generate_course_cuts(
+            self._legacy_generated_fixture(
                 asset_id,
                 packaging_mode="preset",
                 packaging_preset_id="hook_impact",
@@ -2350,45 +2172,11 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.assertEqual("invalid_primary_color", color_error.exception.code)
         self.assertEqual("invalid_logo", logo_error.exception.code)
 
-    def test_course_generation_persists_auto_packaging_recipe_and_four_scores(self):
-        asset_id = self._insert_asset("packaged-course.mp4", duration_ms=180_000)
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        task = self.service.generate_course_cuts(
-            asset_id,
-            count=3,
-            packaging_mode="auto",
-            cover_mode="local_frame",
-        )
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-        rows = self.service.connection.execute(
-            "SELECT recipe_json, score_json FROM generated_videos WHERE project_id = ? ORDER BY rowid",
-            (task["project_id"],),
-        ).fetchall()
-
-        self.assertEqual(3, len(rows))
-        self.assertEqual(1, self.service.creative_analyzer.motion_plan_calls)
-        self.assertEqual(
-            ["knowledge_focus", "slide_teacher", "classroom_value"],
-            [json.loads(row["recipe_json"])["packaging"]["preset_id"] for row in rows],
-        )
-        for row in rows:
-            recipe = json.loads(row["recipe_json"])
-            score = json.loads(row["score_json"])
-            self.assertEqual(1, recipe["packaging"]["version"])
-            self.assertTrue(recipe["packaging"]["events"])
-            self.assertEqual("bailian", recipe["packaging"]["director"]["provider"])
-            self.assertEqual("先看真实课程重点", recipe["packaging"]["events"][0]["text"])
-            self.assertEqual("local_frame", recipe["packaging"]["cover"]["mode"])
-            self.assertTrue(
-                {"hook", "engagement", "value", "shareability", "virality_total"}
-                .issubset(score)
-            )
 
     def test_repackage_clones_content_without_cloud_calls_and_reuses_cover(self):
         asset_id = self._insert_asset("repackage-course.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        original_task = self.service.generate_course_cuts(asset_id, count=1)
+        original_task = self._legacy_generated_fixture(asset_id, count=1)
         self._run(original_task["task_id"])
         original = self.service.list_generated_videos(
             project_id=original_task["project_id"]
@@ -2423,7 +2211,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_singleton_auto_repackage_rotates_to_the_next_course_preset(self):
         asset_id = self._insert_asset("rotate-packaging.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self.assertEqual("completed", self._run(generated["task_id"])["status"])
         current = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -2457,7 +2245,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_repackage_restores_words_for_historical_unpackaged_recipe(self):
         asset_id = self._insert_asset("historical-caption.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(
+        generated = self._legacy_generated_fixture(
             asset_id, count=1, packaging_mode="none", cover_mode="none"
         )
         self.assertEqual("completed", self._run(generated["task_id"])["status"])
@@ -2493,7 +2281,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_bulk_fresh_ai_cover_repackage_resumes_partial_batch_without_resubmit(self):
         asset_id = self._insert_asset("bulk-cover-repackage.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=2)
+        generated = self._legacy_generated_fixture(asset_id, count=2)
         self.assertEqual("completed", self._run(generated["task_id"])["status"])
         source_ids = [
             item["generated_video_id"]
@@ -2542,7 +2330,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_legacy_packaging_tasks_recover_cover_capabilities_from_saved_recipes(self):
         asset_id = self._insert_asset("legacy-packaging-capability.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(
+        generated = self._legacy_generated_fixture(
             asset_id, count=1, packaging_mode="auto", cover_mode="local_frame"
         )
         self.assertEqual("completed", self._run(generated["task_id"])["status"])
@@ -2618,45 +2406,13 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.assertEqual(5, planned["estimated_image_calls"])
         self.assertFalse(planned["provider_configured"])
 
-    def test_generation_cost_estimate_explains_bailian_stages_and_confirmation(self):
-        asset_id = self._insert_asset("cost-breakdown.mp4", duration_ms=180_000)
-        estimate = self.service.get_packaging_cost_estimate(
-            [],
-            cover_mode="local_frame",
-            planned_count=1,
-            asset_ids=[asset_id],
-            generation_kind="course",
-        )
-
-        self.assertEqual(7, estimate["bailian_calls"])
-        self.assertTrue(estimate["bailian_provider_configured"])
-        self.assertTrue(estimate["confirmation_required"])
-        self.assertEqual(
-            ["speech_to_text", "visual_understanding", "selection_scoring", "motion_direction"],
-            [item["operation"] for item in estimate["bailian_breakdown"]],
-        )
-        self.assertTrue(all("estimated_calls" in item for item in estimate["bailian_breakdown"]))
-
-        task = self.service.generate_course_cuts(
-            asset_id,
-            count=1,
-            cover_mode="local_frame",
-            confirm_paid_calls=True,
-        )
-        settings = json.loads(
-            self.service.connection.execute(
-                "SELECT settings_json FROM creative_projects WHERE id = ?",
-                (task["project_id"],),
-            ).fetchone()[0]
-        )
-        self.assertTrue(settings["paid_call_confirmation"])
 
     def test_regenerate_cover_reserves_one_exact_once_paid_operation(self):
         cover_client = FakeCoverClient()
         self.service.creative_domain.cover_client = cover_client
         asset_id = self._insert_asset("cover-ledger.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated_task = self.service.generate_course_cuts(asset_id, count=1)
+        generated_task = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated_task["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated_task["project_id"]
@@ -2682,7 +2438,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.service.creative_domain.cover_client = cover_client
         asset_id = self._insert_asset("cover-duplicate.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -2709,7 +2465,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.service.creative_domain.cover_client = cover_client
         asset_id = self._insert_asset("cover-revisions.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(
+        generated = self._legacy_generated_fixture(
             asset_id, count=1, cover_mode="ai_generate"
         )
         self.assertEqual("completed", self._run(generated["task_id"])["status"])
@@ -2745,7 +2501,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.service.creative_domain.cover_client = cover_client
         asset_id = self._insert_asset("ai-cover-course.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        task = self.service.generate_course_cuts(
+        task = self._legacy_generated_fixture(
             asset_id, count=2, cover_mode="ai_generate"
         )
         self.assertEqual("completed", self._run(task["task_id"])["status"])
@@ -2770,7 +2526,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
         course_id = self._insert_asset("reference-course.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([course_id])["task_id"])
 
-        task = self.service.generate_course_cuts(
+        task = self._legacy_generated_fixture(
             course_id,
             count=1,
             cover_mode="ai_generate",
@@ -2998,7 +2754,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_outcome_unknown_cover_operation_is_terminal_and_cannot_be_resubmitted(self):
         asset_id = self._insert_asset("unknown-cover.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        task = self.service.generate_course_cuts(asset_id, count=1)
+        task = self._legacy_generated_fixture(asset_id, count=1)
         self._run(task["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=task["project_id"]
@@ -3021,7 +2777,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.service.creative_domain.cover_client = cover_client
         asset_id = self._insert_asset("cover-recovery.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -3040,7 +2796,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_paused_cover_poll_keeps_submitted_ledger_and_resume_only_polls(self):
         asset_id = self._insert_asset("cover-pause.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -3075,7 +2831,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_cancel_submitted_cover_pauses_and_redo_reuses_original_task(self):
         asset_id = self._insert_asset("cover-cancel.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -3106,7 +2862,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_cover_download_failure_pauses_and_resume_does_not_resubmit(self):
         asset_id = self._insert_asset("cover-download-retry.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -3132,7 +2888,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_cover_composition_failure_pauses_and_resume_does_not_resubmit(self):
         asset_id = self._insert_asset("cover-compose-retry.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        generated = self.service.generate_course_cuts(asset_id, count=1)
+        generated = self._legacy_generated_fixture(asset_id, count=1)
         self._run(generated["task_id"])
         candidate_id = self.service.list_generated_videos(
             project_id=generated["project_id"]
@@ -3221,7 +2977,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
             creative_renderer=renderer,
             start_background_jobs=True,
         )
-        task = self.service.generate_course_cuts(
+        task = self._legacy_generated_fixture(
             asset_id,
             count=1,
             packaging_mode="none",
@@ -3260,7 +3016,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
             creative_renderer=renderer,
             start_background_jobs=True,
         )
-        task = self.service.generate_course_cuts(
+        task = self._legacy_generated_fixture(
             asset_id,
             count=1,
             packaging_mode="none",
@@ -3297,128 +3053,6 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.assertEqual("paused", result["status"])
         self.assertEqual([], self.service.list_media_segments(asset_id=asset_id)["items"])
 
-    def test_pause_during_motion_planning_persists_plan_without_creating_outputs(self):
-        asset_id = self._insert_asset("pause-motion-plan.mp4", duration_ms=180_000)
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        analyzer = FakeCreativeAnalyzer(
-            on_motion_plan=lambda: self.service.update_task(task["task_id"], "paused")
-        )
-        self.service.creative_domain.analyzer = analyzer
-
-        task = self.service.generate_course_cuts(asset_id, count=3)
-        first = self._run(task["task_id"])
-
-        self.assertEqual("paused", first["status"])
-        self.assertEqual(1, analyzer.motion_plan_calls)
-        self.assertEqual(
-            [], self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        )
-        self.assertEqual(
-            "paused", self.service.get_creative_project(task["project_id"])["status"]
-        )
-
-        analyzer.on_motion_plan = None
-        resumed = self.service.resume_creative_task(task["task_id"])
-
-        self.assertEqual("completed", self._run(resumed["task_id"])["status"])
-        self.assertEqual(1, analyzer.motion_plan_calls)
-
-    def test_unknown_motion_request_outcome_is_not_automatically_resubmitted(self):
-        asset_id = self._insert_asset("unknown-motion-plan.mp4", duration_ms=180_000)
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        task = self.service.generate_course_cuts(asset_id, count=3)
-        payload = json.loads(self.service.connection.execute(
-            "SELECT payload_json FROM content_tasks WHERE id = ?", (task["task_id"],)
-        ).fetchone()[0])
-        payload["motion_plan_request"] = {
-            "status": "submitted",
-            "expected": ["unknown-after-restart"],
-        }
-        self.service.connection.execute(
-            "UPDATE content_tasks SET payload_json = ? WHERE id = ?",
-            (json.dumps(payload), task["task_id"]),
-        )
-
-        finished = self._run(task["task_id"])
-
-        self.assertEqual("failed", finished["status"])
-        self.assertEqual("cloud_motion_plan_outcome_unknown", finished["error_code"])
-        self.assertEqual(0, self.service.creative_analyzer.motion_plan_calls)
-
-    def test_course_resume_reuses_generation_one_rows_after_render_pause(self):
-        asset_id = self._insert_asset("resume-course.mp4", duration_ms=180_000)
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        paused_once = set()
-
-        def pause_after_render(_video_id):
-            if not paused_once:
-                paused_once.add(True)
-                self.service.update_task(task["task_id"], "paused")
-
-        self.service.creative_domain.renderer = FakeCreativeRenderer(
-            on_render=pause_after_render
-        )
-        task = self.service.generate_course_cuts(asset_id, count=5)
-        first = self._run(task["task_id"])
-        self.assertEqual("paused", first["status"])
-        self.assertEqual(1, self.service.creative_analyzer.motion_plan_calls)
-        self.assertEqual(
-            "paused", self.service.get_creative_project(task["project_id"])["status"]
-        )
-        before = self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        self.assertEqual(5, len(before))
-        completed_before = [item for item in before if item["status"] == "completed"]
-        self.assertEqual(1, len(completed_before))
-        first_id = completed_before[0]["generated_video_id"]
-
-        self.service.creative_domain.renderer = FakeCreativeRenderer()
-        resumed = self.service.resume_creative_task(task["task_id"])
-        self.assertEqual("completed", self._run(resumed["task_id"])["status"])
-        after = self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        self.assertEqual(5, len(after))
-        self.assertIn(first_id, {item["generated_video_id"] for item in after})
-        self.assertTrue(all(item["generation"] == 1 for item in after))
-        self.assertEqual(1, self.service.creative_analyzer.motion_plan_calls)
-
-    def test_latest_analysis_version_is_the_only_generation_and_listing_source(self):
-        asset_id = self._insert_asset("versioned.mp4", duration_ms=180_000)
-        analyzer = FakeCreativeAnalyzer(version="local-v1")
-        self.service.creative_domain.analyzer = analyzer
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        analyzer.version = "bailian-v2"
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        public_segments = self.service.list_media_segments(asset_id=asset_id)["items"]
-        self.assertEqual(18, len(public_segments))
-        self.assertTrue(all(item["transcript"].startswith("bailian-v2") for item in public_segments))
-        stored_count = self.service.connection.execute(
-            "SELECT COUNT(*) FROM media_segments WHERE asset_id = ?", (asset_id,)
-        ).fetchone()[0]
-        self.assertEqual(36, stored_count)
-
-        task = self.service.generate_course_cuts(asset_id, count=1)
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-        video = self.service.list_generated_videos(project_id=task["project_id"])["items"][0]
-        row = self.service.connection.execute(
-            "SELECT recipe_json FROM generated_videos WHERE id = ?",
-            (video["generated_video_id"],),
-        ).fetchone()
-        current_ids = {
-            item[0]
-            for item in self.service.connection.execute(
-                """
-                SELECT id FROM media_segments
-                WHERE asset_id = ? AND analysis_version = 'bailian-v2'
-                """,
-                (asset_id,),
-            ).fetchall()
-        }
-        self.assertTrue(
-            {
-                item["segment_id"]
-                for item in json.loads(row["recipe_json"])["visual_segments"]
-            }.issubset(current_ids)
-        )
 
     def test_cached_manifest_rehydrates_segments_when_database_rows_are_missing(self):
         self.service.close()
@@ -3528,63 +3162,12 @@ class CreativeWorkbenchTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
-    def test_generation_uses_the_same_effective_provider_profile_as_analysis(self):
-        analyzer = FakeCreativeAnalyzer()
-        self.service.creative_domain.analyzer = analyzer
-        asset_id = self._insert_asset("profile-consistency.mp4", duration_ms=180_000)
-
-        self.assertEqual(
-            "completed", self._run(self.service.analyze_assets([asset_id])["task_id"])["status"]
-        )
-        task = self.service.generate_course_cuts(asset_id, count=1)
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-
-        self.assertGreaterEqual(len(analyzer.analysis_profiles), 2)
-        self.assertEqual({"provider": "fixture"}, analyzer.analysis_profiles[0])
-        self.assertEqual({"provider": "fixture"}, analyzer.analysis_profiles[-1])
-
-    def test_course_generation_creates_five_finished_candidates_and_two_recommendations(self):
-        asset_id = self._insert_asset("lesson.mp4", duration_ms=180_000)
-        analysis = self.service.analyze_assets([asset_id])
-        self._run(analysis["task_id"])
-
-        task = self.service.generate_course_cuts(
-            asset_id,
-            min_duration_ms=30_000,
-            max_duration_ms=90_000,
-            count=5,
-            theme="培训现场价值",
-        )
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-        videos = self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        self.assertEqual(5, len(videos))
-        self.assertEqual(2, sum(item["recommended"] for item in videos))
-        self.assertTrue(all(30_000 <= item["duration_ms"] <= 90_000 for item in videos))
-        self.assertTrue(all(item["status"] == "completed" for item in videos))
-        self.assertTrue(all(item["preview_ready"] for item in videos))
-        self.assertTrue(all(item["source_asset_id"] == asset_id for item in videos))
-        self.assertNotIn(str(self.sources), json.dumps(videos, ensure_ascii=False))
-        ranges = sorted(
-            (item["source_start_ms"], item["source_end_ms"]) for item in videos
-        )
-        for index, left in enumerate(ranges):
-            for right in ranges[index + 1:]:
-                overlap = max(0, min(left[1], right[1]) - max(left[0], right[0]))
-                shortest = min(left[1] - left[0], right[1] - right[0])
-                self.assertLessEqual(overlap / shortest, 0.35)
-        row = self.service.connection.execute(
-            "SELECT recipe_json FROM generated_videos WHERE project_id = ? LIMIT 1",
-            (task["project_id"],),
-        ).fetchone()
-        recipe = json.loads(row["recipe_json"])
-        self.assertEqual(48, recipe["subtitle_style"]["font_size"])
-        self.assertEqual(170, recipe["subtitle_style"]["margin_bottom"])
 
     def test_public_generated_video_exposes_safe_recipe_evidence_only(self):
         first_asset_id = self._insert_asset("evidence-first.mp4", duration_ms=180_000)
         second_asset_id = self._insert_asset("evidence-second.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([first_asset_id])["task_id"])
-        task = self.service.generate_course_cuts(first_asset_id, count=1)
+        task = self._legacy_generated_fixture(first_asset_id, count=1)
         self.assertEqual("completed", self._run(task["task_id"])["status"])
 
         row = self.service.connection.execute(
@@ -3643,460 +3226,12 @@ class CreativeWorkbenchTests(unittest.TestCase):
         ][0]
         self.assertEqual("none", public["caption_source"])
 
-    def test_ordinary_course_generation_persists_visual_request_and_fallback(self):
-        asset_id = self._insert_asset("visual-course.mp4", duration_ms=180_000)
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        renderer = OrdinaryVisualRenderer()
-        self.service.creative_domain.renderer = renderer
-
-        task = self.service.generate_course_cuts(
-            asset_id,
-            count=3,
-            visual_renderer={
-                "requestedEngine": "remotion",
-                "requestedStyleVersion": 1,
-                "allowFallback": True,
-            },
-        )
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-        self.assertEqual(
-            ["social_pop", "neo_editorial", "tech_motion"],
-            [item["visualStyleId"] for item in renderer.rendered_visuals],
-        )
-        videos = self.service.list_generated_videos(project_id=task["project_id"])[
-            "items"
-        ]
-        self.assertTrue(all(item["requested_engine"] == "remotion" for item in videos))
-        self.assertTrue(all(item["actual_engine"] == "ffmpeg" for item in videos))
-        self.assertTrue(
-            all(item["fallback_code"] == "browser_unavailable" for item in videos)
-        )
-        recipes = [
-            json.loads(row[0])
-            for row in self.service.connection.execute(
-                "SELECT recipe_json FROM generated_videos WHERE project_id = ? ORDER BY rowid",
-                (task["project_id"],),
-            ).fetchall()
-        ]
-        for recipe in recipes:
-            visual = recipe["packaging"]["visualRenderer"]
-            self.assertTrue(visual["allowFallback"])
-            self.assertEqual(64, len(visual["semanticPlanHash"]))
-            self.assertEqual(64, len(visual["renderRequestHash"]))
-
-    def test_mix_task_preserves_explicit_visual_style_request(self):
-        asset_id = self._insert_asset("visual-mix.mp4")
-        task = self.service.generate_mix_batch(
-            [asset_id],
-            target_count=1,
-            voice_asset_id=asset_id,
-            visual_renderer={
-                "requestedEngine": "remotion",
-                "visualStyleId": "tech_motion",
-                "requestedStyleVersion": 1,
-                "allowFallback": True,
-            },
-        )
-        row = self.service.connection.execute(
-            "SELECT payload_json FROM content_tasks WHERE id = ?", (task["task_id"],)
-        ).fetchone()
-        self.assertEqual(
-            "tech_motion", json.loads(row[0])["visual_renderer"]["visualStyleId"]
-        )
-
-    def test_visual_renderer_request_is_strict_and_requires_packaging(self):
-        asset_id = self._insert_asset("visual-invalid.mp4")
-        invalid_requests = [
-            {
-                "requestedEngine": "remotion",
-                "visualStyleId": "unknown",
-                "requestedStyleVersion": 1,
-                "allowFallback": True,
-            },
-            {
-                "requestedEngine": "remotion",
-                "requestedStyleVersion": 1,
-                "allowFallback": "yes",
-            },
-            {
-                "requestedEngine": "remotion",
-                "requestedStyleVersion": 1,
-                "allowFallback": True,
-                "sourcePath": "C:\\must-not-pass",
-            },
-        ]
-        for request in invalid_requests:
-            with self.subTest(request=request):
-                with self.assertRaises(ContentEngineError) as raised:
-                    self.service.generate_course_cuts(
-                        asset_id, visual_renderer=request, cover_mode="local_frame"
-                    )
-                self.assertEqual("invalid_visual_renderer", raised.exception.code)
-        with self.assertRaises(ContentEngineError) as confirmation_error:
-            self.service.generate_course_cuts(
-                asset_id,
-                visual_renderer={
-                    "requestedEngine": "remotion",
-                    "requestedStyleVersion": 1,
-                    "allowFallback": False,
-                },
-                cover_mode="local_frame",
-            )
-        self.assertEqual("paid_calls_confirmation_required", confirmation_error.exception.code)
-        with self.assertRaises(ContentEngineError) as raised:
-            self.service.generate_course_cuts(
-                asset_id,
-                packaging_mode="none",
-                cover_mode="none",
-                visual_renderer={
-                    "requestedEngine": "remotion",
-                    "requestedStyleVersion": 1,
-                    "allowFallback": True,
-                },
-            )
-        self.assertEqual("invalid_visual_renderer", raised.exception.code)
-
-    def test_course_generation_does_not_label_local_fallback_as_ai_recommendation(self):
-        asset_id = self._insert_asset("editor-offline.mp4", duration_ms=180_000)
-        self.service.creative_domain.analyzer = FailingCourseRanker()
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        task = self.service.generate_course_cuts(asset_id, count=2)
-        finished = self._run(task["task_id"])
-
-        self.assertEqual("failed", finished["status"])
-        self.assertEqual("course_editor_unavailable", finished["error_code"])
-        self.assertEqual(
-            [],
-            self.service.list_generated_videos(project_id=task["project_id"])["items"],
-        )
-
-    def test_standard_course_rejects_partial_bailian_editor_scores(self):
-        asset_id = self._insert_asset("editor-partial.mp4", duration_ms=180_000)
-        self.service.creative_domain.analyzer = PartialStandardCourseRanker()
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        task = self.service.generate_course_cuts(asset_id, count=2)
-        finished = self._run(task["task_id"])
-
-        self.assertEqual("failed", finished["status"])
-        self.assertEqual("course_editor_scores_incomplete", finished["error_code"])
-        self.assertEqual(
-            [],
-            self.service.list_generated_videos(project_id=task["project_id"])["items"],
-        )
-
-    def test_standard_course_never_selects_outside_cloud_ranked_shortlist(self):
-        ranked = set()
-
-        def rank(windows, _theme):
-            ranked.update(item["signature"] for item in windows)
-            return [
-                dict(id=item["signature"], opening_hook=0.1, standalone_value=0.1,
-                     content_completeness=0.1, language_quality=0.1,
-                     theme_relevance=0.1)
-                for item in windows
-            ]
-
-        analyzer = FakeCreativeAnalyzer()
-        analyzer.rank_course_windows = rank
-        self.service.creative_domain.analyzer = analyzer
-        segments = [
-            dict(segment_id=f"s{i}", start_ms=i * 30_000,
-                 end_ms=(i + 1) * 30_000, quality_score=0.9,
-                 transcript_text=f"如何完成第{i}次设备操作？先检查现场，再确认清洁模式。",
-                 metadata={"sentence_complete": True})
-            for i in range(60)
-        ]
-        windows = self.service.creative_domain._course_windows(
-            segments, 30_000, 30_000, 1, theme="设备实操"
-        )
-        self.assertEqual(48, len(ranked))
-        self.assertEqual(1, len(windows))
-        self.assertIn(windows[0]["signature"], ranked)
-        self.assertEqual("bailian_editor", windows[0]["score"]["selection_engine"])
-
-    def test_supoclip_course_scores_use_four_bounded_cloud_dimensions(self):
-        asset_id = self._insert_asset("supoclip-course.mp4", duration_ms=180_000)
-        analyzer = SupoClipEvidenceRanker()
-        self.service.creative_domain.analyzer = analyzer
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        segments = self.service.creative_domain._segments_for_assets(
-            [asset_id], transcript_only=True
-        )
-
-        windows = self.service.creative_domain._course_windows(
-            segments,
-            30_000,
-            90_000,
-            3,
-            theme="培训现场价值",
-            experiment_mode="supoclip_bailian_v1",
-        )
-
-        self.assertEqual(3, len(windows))
-        for window in windows:
-            score = window["score"]
-            self.assertEqual("supoclip_bailian_editor", score["selection_engine"])
-            self.assertEqual(25.0, score["hook"])
-            self.assertEqual(0.0, score["engagement"])
-            self.assertEqual(18.5, score["value"])
-            self.assertEqual(21.0, score["shareability"])
-            self.assertEqual(64.5, score["virality_total"])
-            self.assertEqual(["开场可直接核验"], score["editor_reason"])
-
-    def test_supoclip_course_requires_at_least_one_bailian_ranking(self):
-        asset_id = self._insert_asset("supoclip-empty-ranking.mp4", duration_ms=180_000)
-        self.service.creative_domain.analyzer = EmptySupoClipRanker()
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        segments = self.service.creative_domain._segments_for_assets(
-            [asset_id], transcript_only=True
-        )
-
-        with self.assertRaises(ContentEngineError) as raised:
-            self.service.creative_domain._course_windows(
-                segments,
-                30_000,
-                90_000,
-                3,
-                theme="培训现场价值",
-                experiment_mode="supoclip_bailian_v1",
-            )
-
-        self.assertEqual("course_editor_unavailable", raised.exception.code)
-
-    def test_supoclip_course_task_persists_isolated_recipe_and_finishes(self):
-        asset_id = self._insert_asset("supoclip-render.mp4", duration_ms=180_000)
-        self.service.creative_domain.analyzer = SupoClipEvidenceRanker()
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        task = self.service.creative_domain.create_course_task(
-            asset_id,
-            count=5,
-            experiment_mode="supoclip_bailian_v1",
-            subtitle_preset="energetic_talking",
-        )
-        finished = self._run(task["task_id"])
-
-        self.assertEqual("completed", finished["status"])
-        rows = self.service.connection.execute(
-            "SELECT recipe_json, score_json FROM generated_videos WHERE project_id = ?",
-            (task["project_id"],),
-        ).fetchall()
-        self.assertEqual(5, len(rows))
-        for row in rows:
-            recipe = json.loads(row["recipe_json"])
-            score = json.loads(row["score_json"])
-            self.assertEqual("supoclip_bailian_v1", recipe["experiment_mode"])
-            self.assertEqual("energetic_talking", recipe["subtitle_style"]["preset"])
-            self.assertEqual("supoclip_bailian_editor", score["selection_engine"])
-
-    def test_supoclip_course_requires_exactly_five_candidates(self):
-        asset_id = self._insert_asset("supoclip-partial.mp4", duration_ms=180_000)
-        self.service.creative_domain.analyzer = PartialSupoClipRanker()
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        task = self.service.creative_domain.create_course_task(
-            asset_id,
-            count=5,
-            experiment_mode="supoclip_bailian_v1",
-            subtitle_preset="knowledge_course",
-        )
-        finished = self._run(task["task_id"])
-
-        self.assertEqual("failed", finished["status"])
-        self.assertEqual("insufficient_ai_candidates", finished["error_code"])
-        self.assertEqual(
-            [], self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        )
-
-    def test_supoclip_course_rejects_non_five_request(self):
-        asset_id = self._insert_asset("supoclip-count.mp4", duration_ms=180_000)
-
-        with self.assertRaises(ContentEngineError) as raised:
-            self.service.creative_domain.create_course_task(
-                asset_id,
-                count=4,
-                experiment_mode="supoclip_bailian_v1",
-                subtitle_preset="knowledge_course",
-            )
-
-        self.assertEqual("invalid_experiment_count", raised.exception.code)
-
-    def test_supoclip_resume_renders_persisted_plan_without_second_paid_ranking(self):
-        asset_id = self._insert_asset("supoclip-resume.mp4", duration_ms=180_000)
-        analyzer = SupoClipEvidenceRanker()
-        self.service.creative_domain.analyzer = analyzer
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-        paused_once = set()
-
-        def pause_after_render(_video_id):
-            if not paused_once:
-                paused_once.add(True)
-                self.service.update_task(task["task_id"], "paused")
-
-        self.service.creative_domain.renderer = FakeCreativeRenderer(
-            on_render=pause_after_render
-        )
-        task = self.service.creative_domain.create_course_task(
-            asset_id,
-            count=5,
-            experiment_mode="supoclip_bailian_v1",
-            subtitle_preset="knowledge_course",
-        )
-        self.assertEqual("paused", self._run(task["task_id"])["status"])
-        self.assertEqual(1, analyzer.motion_plan_calls)
-        self.assertEqual(1, analyzer.rank_calls)
-        self.assertEqual(
-            5,
-            len(self.service.list_generated_videos(project_id=task["project_id"])["items"]),
-        )
-
-        self.service.creative_domain.renderer = FakeCreativeRenderer()
-        resumed = self.service.resume_creative_task(task["task_id"])
-        self.assertEqual("completed", self._run(resumed["task_id"])["status"])
-        self.assertEqual(1, analyzer.rank_calls)
-        self.assertEqual(1, analyzer.motion_plan_calls)
-
-    def test_mix_batch_uses_three_roles_and_reports_quality_limited_capacity(self):
-        voice_id = self._insert_asset("voice.mp4", duration_ms=180_000)
-        visual_ids = [self._insert_asset(f"visual-{index}.mp4") for index in range(1, 7)]
-        analysis = self.service.analyze_assets([voice_id, *visual_ids])
-        self._run(analysis["task_id"])
-
-        task = self.service.generate_mix_batch(
-            [voice_id, *visual_ids],
-            theme="培训现场价值",
-            target_count=30,
-            voice_asset_id=voice_id,
-        )
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-        summary = self.service.get_creative_project(task["project_id"])
-        self.assertLessEqual(summary["generated_count"], 30)
-        self.assertGreater(summary["generated_count"], 0)
-        self.assertEqual(["hook", "process", "result"], summary["required_roles"])
-        self.assertIn("maximum_qualified_count", summary)
-        videos = self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        signatures = [item["selection_signature"] for item in videos]
-        self.assertEqual(len(signatures), len(set(signatures)))
-        self.assertEqual(1, self.service.creative_analyzer.motion_plan_calls)
-        recipes = [
-            json.loads(row[0])
-            for row in self.service.connection.execute(
-                "SELECT recipe_json FROM generated_videos WHERE project_id = ?", (task["project_id"],)
-            ).fetchall()
-        ]
-        self.assertTrue(all(recipe["packaging"]["director"]["provider"] == "bailian" for recipe in recipes))
-
-    def test_mix_failure_persists_structured_capacity_and_missing_roles(self):
-        self.service.creative_domain.analyzer = FakeCreativeAnalyzer(only_role="hook")
-        assets = [self._insert_asset(f"missing-role-{index}.mp4") for index in range(3)]
-        task = self.service.generate_mix_batch(
-            assets, target_count=3, voice_asset_id=assets[0]
-        )
-        result = self._run(task["task_id"])
-        self.assertEqual("failed", result["status"])
-
-        project = self.service.get_creative_project(task["project_id"])
-        self.assertEqual(["process", "result"], project["missing_roles"])
-        self.assertEqual(0, project["maximum_qualified_count"])
-        self.assertTrue(project["count_is_exact"])
-
-    def test_mix_pilot_uses_available_segments_before_strict_role_gate(self):
-        asset_id = self._insert_asset("pilot-single-upload.mp4", duration_ms=120_000)
-        self.service.creative_domain.analyzer = FakeCreativeAnalyzer(only_role="hook")
-        self._run(self.service.analyze_assets([asset_id])["task_id"])
-
-        task = self.service.generate_mix_batch(
-            [asset_id], target_count=1, voice_asset_id=asset_id, pilot_mode=True
-        )
-        payload = json.loads(
-            self.service.connection.execute(
-                "SELECT payload_json FROM content_tasks WHERE id = ?", (task["task_id"],)
-            ).fetchone()[0]
-        )
-        self.assertTrue(payload["pilot_mode"])
-        self.assertEqual("completed", self._run(task["task_id"])["status"])
-        project = self.service.get_creative_project(task["project_id"])
-        self.assertEqual(1, project["generated_count"])
-        self.assertEqual(["process", "result"], project["missing_roles"])
-        video = self.service.list_generated_videos(project_id=task["project_id"])["items"][0]
-        self.assertEqual("completed", video["status"])
-
-    def test_mix_pilot_uses_probed_source_when_transcription_is_unavailable(self):
-        asset_ids = [
-            self._insert_asset(f"pilot-no-asr-{index}.mp4", duration_ms=12_000 + index * 1_000)
-            for index in range(3)
-        ]
-        self.service.creative_domain.analyzer = FakeCreativeAnalyzer(
-            fail_asset_ids=set(asset_ids)
-        )
-
-        task = self.service.generate_mix_batch(
-            asset_ids, target_count=1, voice_asset_id=asset_ids[0], pilot_mode=True
-        )
-        finished = self._run(task["task_id"])
-        self.assertEqual("completed", finished["status"])
-        project = self.service.get_creative_project(task["project_id"])
-        self.assertEqual(1, project["generated_count"])
-        self.assertIn("转写", project["pilot_notice"])
-        recipe = json.loads(
-            self.service.connection.execute(
-                "SELECT recipe_json FROM generated_videos WHERE project_id = ?",
-                (task["project_id"],),
-            ).fetchone()[0]
-        )
-        self.assertEqual("visual_montage", recipe["layout"])
-        self.assertEqual("visual_montage", recipe["audio_mode"])
-        self.assertEqual(36_000, recipe["voice_segment"]["end_ms"])
-        self.assertEqual(
-            len(recipe["visual_segments"]),
-            len({item["segment_id"] for item in recipe["visual_segments"]}),
-        )
-        self.assertTrue(
-            all(item["target_duration_ms"] <= 12_000 for item in recipe["visual_segments"])
-        )
-
-    def test_mix_resume_reuses_generation_one_rows(self):
-        voice_id = self._insert_asset("resume-mix-voice.mp4", duration_ms=180_000)
-        visual_ids = [
-            self._insert_asset(f"resume-mix-{index}.mp4") for index in range(5)
-        ]
-        self._run(self.service.analyze_assets([voice_id, *visual_ids])["task_id"])
-        paused_once = set()
-
-        def pause_after_render(_video_id):
-            if not paused_once:
-                paused_once.add(True)
-                self.service.update_task(task["task_id"], "paused")
-
-        self.service.creative_domain.renderer = FakeCreativeRenderer(
-            on_render=pause_after_render
-        )
-        task = self.service.generate_mix_batch(
-            [voice_id, *visual_ids], target_count=3, voice_asset_id=voice_id
-        )
-        self.assertEqual("paused", self._run(task["task_id"])["status"])
-        self.assertEqual(1, self.service.creative_analyzer.motion_plan_calls)
-        before = self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        self.assertEqual(1, len(before))
-        self.assertEqual("completed", before[0]["status"])
-        first_id = before[0]["generated_video_id"]
-
-        self.service.creative_domain.renderer = FakeCreativeRenderer()
-        resumed = self.service.resume_creative_task(task["task_id"])
-        self.assertEqual("completed", self._run(resumed["task_id"])["status"])
-        after = self.service.list_generated_videos(project_id=task["project_id"])["items"]
-        self.assertEqual(3, len(after))
-        self.assertIn(first_id, {item["generated_video_id"] for item in after})
-        self.assertTrue(all(item["generation"] == 1 for item in after))
-        self.assertEqual(1, self.service.creative_analyzer.motion_plan_calls)
 
     def test_queue_and_regenerate_keep_generated_outputs_internal(self):
         asset_id = self._insert_asset("lesson.mp4", duration_ms=180_000)
         analysis = self.service.analyze_assets([asset_id])
         self._run(analysis["task_id"])
-        task = self.service.generate_course_cuts(asset_id, count=1)
+        task = self._legacy_generated_fixture(asset_id, count=1)
         self._run(task["task_id"])
         video = self.service.list_generated_videos(project_id=task["project_id"])["items"][0]
 
@@ -4121,7 +3256,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_restart_reconciles_and_finishes_interrupted_regeneration(self):
         asset_id = self._insert_asset("regeneration-restart.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        project_task = self.service.generate_course_cuts(asset_id, count=1)
+        project_task = self._legacy_generated_fixture(asset_id, count=1)
         self._run(project_task["task_id"])
         source = self.service.list_generated_videos(
             project_id=project_task["project_id"]
@@ -4162,7 +3297,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
     def test_repeated_queue_returns_persisted_status_and_reject_cancels_queued_item(self):
         asset_id = self._insert_asset("queue-state.mp4", duration_ms=180_000)
         self._run(self.service.analyze_assets([asset_id])["task_id"])
-        task = self.service.generate_course_cuts(asset_id, count=2)
+        task = self._legacy_generated_fixture(asset_id, count=2)
         self._run(task["task_id"])
         videos = self.service.list_generated_videos(project_id=task["project_id"])["items"]
         first_id, second_id = [item["generated_video_id"] for item in videos]
@@ -4193,8 +3328,6 @@ class CreativeWorkbenchTests(unittest.TestCase):
         expected = {
             "analyze_assets",
             "list_media_segments",
-            "generate_course_cuts",
-            "generate_mix_batch",
             "list_generated_videos",
             "regenerate_video",
             "queue_generated_videos",
@@ -4210,35 +3343,6 @@ class CreativeWorkbenchTests(unittest.TestCase):
             "update_cover_operation",
         }
         self.assertTrue(expected.issubset(METHODS))
-
-    def test_protocol_forwards_course_experiment_contract(self):
-        captured = {}
-
-        class FakeService:
-            def generate_course_cuts(self, asset_id, **options):
-                captured.update({"asset_id": asset_id, **options})
-                return {"task_id": "task_fixture"}
-
-        result = METHODS["generate_course_cuts"](
-            FakeService(),
-            {
-                "asset_id": "asset_fixture",
-                "experiment_mode": "supoclip_bailian_v1",
-                "subtitle_preset": "energetic_talking",
-                "packaging_mode": "preset",
-                "packaging_preset_id": "knowledge_focus",
-                "brand_profile_id": "brand_fixture",
-                "cover_mode": "ai_generate",
-            },
-        )
-
-        self.assertEqual({"task_id": "task_fixture"}, result)
-        self.assertEqual("supoclip_bailian_v1", captured["experiment_mode"])
-        self.assertEqual("energetic_talking", captured["subtitle_preset"])
-        self.assertEqual("preset", captured["packaging_mode"])
-        self.assertEqual("knowledge_focus", captured["packaging_preset_id"])
-        self.assertEqual("brand_fixture", captured["brand_profile_id"])
-        self.assertEqual("ai_generate", captured["cover_mode"])
 
 
 class ProductGenerationGuardTests(unittest.TestCase):

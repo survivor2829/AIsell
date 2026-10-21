@@ -19,9 +19,9 @@
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
 | `.github/workflows/ci.yml`、`desktop/scripts/build-internal-release.cjs`、`publish-cloud-release.cjs` | 提交后的自动检查、受控 Windows 完整候选包构建与内部测试频道发布；步骤见 `docs/internal-release.md` | 将 CI 通过当作用户验收；上传签名私钥；把内部制品发布到正式频道 |
 | `desktop/scripts/self-check-groups.cjs`、`run-self-checks.cjs`、`release-ci-proof.cjs` | 五组源码检查的统一清单与资源独占、汇总门禁和同提交完整 CI 复用 | 缺组、跳过或取消时跳过本地检查 |
-| `desktop/src/main/update-exit-maintenance.cjs`、`update-process-lock.cjs` | 后台准备同身份助手、退出就绪握手、父进程创建时间核对、与更新交接互斥后复用归属保留器 | 杀进程；删除未登记业务资料；把延期写成已完成 |
+| `desktop/src/main/update-exit-maintenance.cjs`、`update-process-lock.cjs` | 后台准备同身份助手、独立复制Electron映射文件、退出就绪握手、父进程创建时间核对、与更新交接互斥后复用归属保留器 | 杀进程；删除未登记业务资料；把延期写成已完成 |
 | `desktop/src/shared/role-appearance.json`、`desktop/src/renderer/role-appearance.ts`、`desktop/src/main/role-preferences.cjs` | 角色与形象共享目录；名字与形象校验、主进程原子持久化及相关工作区配色 | 用页面本地状态冒充保存成功；允许任意文件或远程地址作为形象 |
-| `desktop/src/renderer/BusinessAssistantPage.tsx` | 生意助手“小睿”的精准获客、企微助手、GEO推广界面框架；复用角色设置与素材库导航 | 将规划页冒充已接通的商机搜索、企微连接或内容发布能力 |
+| `desktop/src/renderer/BusinessAssistantPage.tsx` | “精准获客”的地图工作台与角色设置，一级入口直达地图 | 恢复已废弃的精准/GEO/企微入口，自动联系客户 |
 | `desktop/src/renderer/CustomerTools.tsx`、`desktop/src/renderer/CustomerPanel.tsx` | 顶栏公告、离线教程和对应功能跳转；公告只展示主进程已验证数据 | 下载或执行公告内容；从远程页面加载教程代码 |
 | `desktop/src/main/bootstrap.cjs`、`src/shared/launcher-contract.cjs` | 固定启动器信任核：选择、签名与JSON清单核验、单实例、启动尝试及干净进程回退 | 下载、备份和业务功能进入固定核；启动时全树读取文件内容 |
 | `desktop/src/main/updater-bootstrap.cjs`、`component-*`、`update-*`、`download-verification.cjs` | 可增量更新器：准备回执、一次下载摘要、结构检查、助手、备份与已有保留器；assets保留静态媒体原路径 | 将prepared当作健康ACK；按版本较新清除未知备份；把媒体混入界面包 |
@@ -110,6 +110,6 @@ DeepSeek Key -> main 进程 -> AI 文案/回复
 
 ## 本轮获客集成
 
-- 精准获客：主进程 `precise-acquisition*.cjs`、`precise-public-sources.cjs`、`precise-document-images.cjs`；界面 `PreciseAcquisitionPanel.tsx`；网关 `local_acquisition.py` / `acquisition_sync.py`。
-- GEO：`geo-workbench.cjs` / `geo-browser-adapter.cjs` 和 `GeoWorkbenchPanel.tsx`。IPC复用 `business-workbench-ipc.cjs`；渠道商资料与会话由 `acquisition-workbench-scope.cjs` 隔离。
 - 独立归属标记保留已发布map-legacy-owner语义；未知付费结果与原始资料继续保留。验收边界见本轮收尾记录。
+
+混剪页的素材、历史、声音和品牌分别加载；主进程仅缓存只读目录，成功写入、账号授权变化或运行时重启使其失效。`narrated_batch.py` 提供历史摘要分页，详情在选中后读取；草稿写入及费用操作始终读最新状态。废弃的原声拆条与混剪仅保留历史/成片访问，不再提供执行入口。
