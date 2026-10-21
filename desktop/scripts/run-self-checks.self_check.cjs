@@ -28,6 +28,7 @@ async function main() {
     "scripts/product-detail-download.electron.self_check.cjs", "rpa/active_touch/moments_navigation.self_check.cjs"]) {
     assert.equal(isExclusive(check), true, check + " must run alone");
   }
+  assert.equal(isExclusive("src/main/acquisition-sync.self_check.cjs"), true, "local Python sync service startup must not compete with the pool");
   assert.equal(isExclusive("src/main/acquisition-account.self_check.cjs"), false);
   const output = [], errors = [];
   const originalWrite = process.stdout.write, originalErrorWrite = process.stderr.write;
