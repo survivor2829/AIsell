@@ -21,6 +21,43 @@ async function main() {
     "An explicit user --full overrides the npm entrypoint's internal default marker");
   assert.equal(parseBuildArgs(["config.json", "upgrade"]).componentsOnly, false);
   assert.equal(parseBuildArgs(["--base", "../accepted"]).baseRoot, "../accepted");
+  assert.equal(parseBuildArgs(["--force-checks"]).forceChecks, true);
+  const { verifiedCiRun } = require("./release-ci-proof.cjs");
+  const commit = "a".repeat(40);
+  const calls = [];
+  const ci = (command, args) => {
+    calls.push([command, args]);
+    if (command === "git") return { status: 0, stdout: args[0] === "status" ? "" : commit };
+    return { status: 0, stdout: JSON.stringify(args[1] === "list"
+      ? [{ databaseId: 42, headSha: commit, conclusion: "success", event: "push" }]
+      : { headSha: commit, conclusion: "success", jobs: [
+        { name: "source-and-renderer", conclusion: "success", steps: [] },
+        { name: "service-and-content", conclusion: "success", steps: [{ name: "Product detail local E2E", conclusion: "success" }] }
+      ] }) };
+  };
+  assert.equal(verifiedCiRun({ execute: ci }).runId, 42);
+  const withEvent = event => (command, args) => {
+    const result = ci(command, args);
+    if (command === "gh" && args[1] === "list") {
+      const runs = JSON.parse(result.stdout); runs[0].event = event; result.stdout = JSON.stringify(runs);
+    }
+    return result;
+  };
+  assert.equal(verifiedCiRun({ execute: withEvent("workflow_dispatch") })?.runId, 42,
+    "An exact-revision manual source workflow with all required jobs is valid evidence");
+  assert.equal(verifiedCiRun({ execute: withEvent("pull_request") }), null,
+    "A PR's synthetic checkout must not masquerade as an exact release revision");
+  assert.equal(verifiedCiRun({ execute: ci, forceChecks: true }), null);
+  assert.equal(verifiedCiRun({ execute: () => ({ status: 1 }) }), null);
+  assert.equal(verifiedCiRun({ execute: (command, args) => command === "git" && args[0] === "status"
+    ? { status: 0, stdout: " M package.json" } : ci(command, args) }), null);
+  assert.equal(verifiedCiRun({ execute: (command, args) => {
+    const result = ci(command, args);
+    if (command === "gh" && args[1] === "view") {
+      const run = JSON.parse(result.stdout); run.jobs[1].steps = []; result.stdout = JSON.stringify(run);
+    }
+    return result;
+  } }), null, "Old CI without the local E2E cannot authorize skipping it");
   assert.throws(() => parseBuildArgs(["--components", "--full"]));
   assert.throws(() => parseBuildArgs(["--base"]));
   assert.throws(() => parseBuildArgs(["--unknown"]));

@@ -38,6 +38,21 @@ assert.equal(
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-content-engine-release-"));
 
 try {
+  // NTFS may coalesce timestamps across fast same-length writes. Ordinary
+  // callers must reread bytes even when every observed metadata field matches.
+  const coalescedFile = path.join(root, "coalesced-timestamps.txt");
+  fs.writeFileSync(coalescedFile, "old!");
+  const oldDigest = sha256(coalescedFile);
+  const frozenStat = fs.lstatSync(coalescedFile, { bigint: true });
+  fs.writeFileSync(coalescedFile, "new!");
+  const originalLstat = fs.lstatSync, originalFstat = fs.fstatSync;
+  try {
+    fs.lstatSync = (file, options) => path.resolve(file) === coalescedFile && options?.bigint
+      ? frozenStat : originalLstat(file, options);
+    fs.fstatSync = (fd, options) => options?.bigint ? frozenStat : originalFstat(fd, options);
+    assert.notEqual(sha256(coalescedFile), oldDigest, "Mutable callers cannot reuse a metadata-coalesced digest");
+  } finally { fs.lstatSync = originalLstat; fs.fstatSync = originalFstat; }
+  fs.unlinkSync(coalescedFile);
   const desktopDir = path.join(root, "desktop");
   const buildRoot = path.join(desktopDir, ".build");
   const runtimeDir = path.join(buildRoot, "content-engine-runtime");
@@ -371,6 +386,30 @@ try {
     "packaged media notices must be bound to their license record"
   );
   fs.writeFileSync(packagedRecordFile, originalPackagedRecord, "utf8");
+
+  const immutableHashes = require("./release-tree-hash.cjs");
+  const recordStat = fs.lstatSync(packagedRecordFile, { bigint: true });
+  try {
+    assert.throws(() => immutableHashes.immutableHashScope(releaseTarget, () => runPackagedContentEngineSelfCheck({
+      releaseTarget, resourcesDir, descriptor, dataDir: path.join(root, "coalesced-worker-data"),
+      fontconfigTemporaryDirectory: root,
+      spawn: (_executable, args) => {
+        fs.mkdirSync(args[1], { recursive: false });
+        fs.writeFileSync(packagedRecordFile, originalPackagedRecord.replace('"', "'"), "utf8");
+        fs.lstatSync = (file, options) => path.resolve(file) === packagedRecordFile && options?.bigint
+          ? recordStat : originalLstat(file, options);
+        fs.fstatSync = (fd, options) => {
+          const current = originalFstat(fd, options);
+          return options?.bigint && current.ino === recordStat.ino && current.dev === recordStat.dev ? recordStat : current;
+        };
+        return { status: 0, stdout, stderr: "" };
+      },
+      mediaToolsSpawn: mediaSpawn
+    })), /changed portable resources/, "External worker execution must invalidate an immutable build inventory");
+  } finally {
+    fs.lstatSync = originalLstat; fs.fstatSync = originalFstat;
+    fs.writeFileSync(packagedRecordFile, originalPackagedRecord, "utf8");
+  }
 
   assert.throws(
     () => runPackagedContentEngineSelfCheck({

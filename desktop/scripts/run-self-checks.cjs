@@ -1,5 +1,7 @@
 const path = require("node:path");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
+const os = require("node:os");
+const fs = require("node:fs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const checks = [
@@ -129,73 +131,98 @@ const checks = [
   "scripts/analyze-diagnostics.self_check.cjs"
 ];
 
-const groupDefinitions = [
-  {
-    name: "active-touch",
-    matches: check => /src\/main\/(?:active-touch(?:-dev)?-ipc|touch-task-ipc|wechat-workflow)\.self_check\.cjs$/u.test(check)
-  },
-  {
-    name: "moments",
-    matches: check => /src\/(?:main|renderer)\/moments-[^/]+\.self_check\.cjs$/u.test(check)
-  },
-  {
-    name: "auto-reply",
-    matches: check => check === "src/main/auto-reply-ipc.self_check.cjs"
-  }
+// These checks launch Electron, replay Windows UI/clock behavior, or write
+// shared build fixtures. They run with no other checks alive, not merely one
+// instance of the same check. Keep the resource policy in one place.
+const exclusivePatterns = [
+  /^rpa\//,
+  /^scripts\/(?:update-helper\.|component-update-selftest\.|product-detail-download\.electron\.)/,
+  /^scripts\/(?:build-renderer|dev-electron|build-product-detail-sidecar|build-content-engine-sidecar|product-detail-release-runtime|content-engine-release-runtime|remotion-packaging|installer-release|customer-edition|internal-release|development-launcher)\.self_check\.cjs$/
 ];
-const parallelCheckGroups = groupDefinitions.map(group => ({
-  name: group.name,
-  checks: checks.filter(group.matches)
-}));
-const groupedChecks = new Set(parallelCheckGroups.flatMap(group => group.checks));
-const serialChecks = checks.filter(check => !groupedChecks.has(check));
+const isExclusive = check => exclusivePatterns.some(pattern => pattern.test(check));
+function checkEnvironment(check, environment = process.env) {
+  // Preserve the original three business fixture groups' calendar. Windows
+  // PowerShell replays use the OS clock; changing only Node's TZ breaks them.
+  const chinaCalendar = /src\/main\/(?:active-touch(?:-dev)?-ipc|touch-task-ipc|wechat-workflow|moments-[^/]+|auto-reply-ipc)\.self_check\.cjs$/.test(check)
+    || /^src\/renderer\/moments-[^/]+\.self_check\.cjs$/.test(check);
+  let result = chinaCalendar ? { ...environment, TZ: "Asia/Shanghai" } : environment;
+  if (check === "src/main/acquisition-sync.self_check.cjs" && !environment.PRECISE_TEST_PYTHON) {
+    const python = environment.XIAOXI_BUILD_PYTHON || path.join(desktopDir, ".build/product-detail-venv/Scripts/python.exe");
+    if (fs.existsSync(python)) result = { ...result, PRECISE_TEST_PYTHON: python };
+  }
+  return result;
+}
+function concurrencyFor(environment = process.env, cpus = os.availableParallelism()) {
+  const value = environment.XIAOXI_SELF_CHECK_CONCURRENCY;
+  if (value === undefined || value === "") return Math.max(1, Math.min(cpus, 6));
+  if (!/^[1-9]\d*$/.test(value) || Number(value) > 64) throw Error("Self-check concurrency must be an integer from 1 to 64");
+  return Number(value);
+}
 
-function runChecks(list, execute = spawnSync) {
-  for (const check of list) {
-    console.log(`\n> ${check}`);
-    const result = execute(process.execPath, [path.join(desktopDir, check)], {
-      cwd: desktopDir,
-      env: process.env,
-      stdio: ["inherit", "pipe", "inherit"],
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      windowsHide: true
-    });
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.status !== 0) throw result.error || new Error(`self-check failed: ${check} (status ${result.status})`);
-    if (!result.stdout?.split(/\r?\n/u).some(line => /\bpassed\b/iu.test(line))) {
-      throw new Error(`self-check exited 0 without a passed line: ${check}`);
-    }
+function checkResult(check, result) {
+  console.log(`\n> ${check}${Number.isFinite(result.durationMs) ? ` (${result.durationMs} ms)` : ""}`);
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) throw result.error || new Error(`self-check failed: ${check} (status ${result.status})`);
+  if (!result.stdout?.split(/\r?\n/u).some(line => /\bpassed\b/iu.test(line))) {
+    throw new Error(`self-check exited 0 without a passed line: ${check}`);
   }
 }
 
-function runParallelGroup(group) {
+function executeCheck(check) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [__filename, `--group=${group.name}`], {
-      cwd: desktopDir,
-      // These isolated business fixtures use China calendar dates, as in CI.
-      env: { ...process.env, TZ: "Asia/Shanghai" },
-      stdio: "inherit",
-      windowsHide: true
+    const started = performance.now();
+    const child = spawn(process.execPath, [path.join(desktopDir, check)], {
+      cwd: desktopDir, env: checkEnvironment(check),
+      stdio: ["ignore", "pipe", "pipe"], windowsHide: true
+    });
+    const output = { stdout: [], stderr: [] };
+    let bytes = 0, overflow;
+    for (const name of ["stdout", "stderr"]) child[name].on("data", chunk => {
+      bytes += chunk.length;
+      if (bytes > 64 * 1024 * 1024) {
+        overflow ||= Error(`Self-check output exceeded 64 MiB: ${check}`);
+        child.kill();
+      } else output[name].push(chunk);
     });
     child.once("error", reject);
-    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${group.name} self-checks failed with status ${code}`)));
+    child.once("close", status => overflow ? reject(overflow) : resolve({ status,
+      durationMs: Math.round(performance.now() - started),
+      stdout: Buffer.concat(output.stdout).toString(), stderr: Buffer.concat(output.stderr).toString() }));
   });
 }
 
-async function main(args = process.argv.slice(2)) {
-  const requestedGroup = args.find(arg => arg.startsWith("--group="))?.slice("--group=".length);
-  if (requestedGroup) {
-    const group = parallelCheckGroups.find(item => item.name === requestedGroup);
-    if (!group) throw new Error(`Unknown self-check group: ${requestedGroup}`);
-    runChecks(group.checks);
-    return;
+async function runPool(list, { concurrency = concurrencyFor(), execute = executeCheck, report = checkResult } = {}) {
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64) throw Error("Invalid self-check concurrency");
+  let cursor = 0, failure;
+  async function worker() {
+    while (!failure && cursor < list.length) {
+      const check = list[cursor++];
+      try { report(check, await execute(check)); }
+      catch (error) { failure ||= error; }
+    }
   }
-  runChecks(serialChecks);
-  console.log("\nRunning isolated active-touch, moments and auto-reply self-check groups in parallel.");
-  await Promise.all(parallelCheckGroups.map(runParallelGroup));
+  // Drain every child before rejecting; never leave test processes behind when
+  // a sibling fails or start an exclusive check while a child is still alive.
+  await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
+  if (failure) throw failure;
+}
+
+async function runScheduled(list, options = {}) {
+  let pending = [];
+  for (const check of list) {
+    if (!isExclusive(check)) { pending.push(check); continue; }
+    await runPool(pending, options); pending = [];
+    await runPool([check], { ...options, concurrency: 1 });
+  }
+  await runPool(pending, options);
+}
+
+async function main() {
+  console.log(`\nRunning source checks with up to ${concurrencyFor()} children; exclusive resource checks run alone.`);
+  await runScheduled(checks);
   console.log("\nall source self-checks passed");
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { parallelCheckGroups, serialChecks, runChecks };
+module.exports = { checks, concurrencyFor, isExclusive, runPool, runScheduled, checkResult, checkEnvironment };

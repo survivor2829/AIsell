@@ -8,6 +8,17 @@ const { COMPONENTS, hashFile, validateManifest, verifyComponentManifest } = requ
 const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
 const { verifyPublishedRelease } = require("./release-readback.cjs");
 const { verifyUpgradePaths } = require("./release-upgrade-path.cjs");
+const { reserveBytes, uploadCopies } = require("./release-server-space.cjs");
+const shellQuote = value => `'${String(value).replaceAll("'", "'\"'\"'")}'`;
+function componentPreflightCommand(archives, remote) {
+  if (!/^\/home\/ubuntu\/ai-components-\d+$/.test(remote)
+      || archives.some(item => !/^[a-f0-9]{64}$/.test(item.sha256) || !Number.isSafeInteger(item.size) || item.size < 0)) throw Error("component_preflight_invalid");
+  const rows = archives.map(({ sha256, size }) => ({ sha256, size }));
+  const inspect = `import json,os; rows=${JSON.stringify(rows)}; missing=[r for r in rows if not os.path.isfile('/var/lib/ai-maintenance/components/'+r['sha256']+'.zip')]; print(json.dumps({'missing':[r['sha256'] for r in missing],'uploadBytes':sum(r['size'] for r in missing)}))`;
+  // Only stdout is the machine-readable plan. Cleanup's explanatory output is
+  // stderr so an interrupted preflight cannot masquerade as a successful plan.
+  return `plan=$(sudo -n -u ai-maintenance python3 -c ${shellQuote(inspect)}) && required=$(printf '%s' "$plan" | python3 -c ${shellQuote(`import json,sys; print(${reserveBytes}+${uploadCopies}*json.load(sys.stdin)['uploadBytes'])`)}) && sudo -n python3 /opt/ai-maintenance/release_cleanup.py --apply --require-free-bytes "$required" >&2 && mkdir -m 755 ${remote} && printf '%s\\n' "$plan"`;
+}
 async function publishComponentRelease({ metadataFile, notesFile }) {
   const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
   const config = cloudConfig({ developmentEdition: true });
@@ -40,22 +51,20 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
   const sshDir = path.join(process.env.WINDIR || "C:/Windows", "System32", "OpenSSH");
   const flags = ["-i", path.join(os.homedir(), ".ssh", "ai-release-server_ed25519"), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"];
   const host = `ubuntu@${new URL(config.origin).hostname}`;
-  function run(command, args, allowMissing = false) {
+  function run(command, args) {
     const result = spawnSync(path.join(sshDir, command), args, { encoding: "utf8", windowsHide: true });
-    if (result.status !== 0 && !(allowMissing && result.status === 1)) throw Error(`${command} failed (${result.status})`);
-    return result.status;
+    if (result.status !== 0) throw Error(`${command} failed (${result.status})`);
+    return result;
   }
   const remote = `/home/ubuntu/ai-components-${manifest.sequence}`;
   const incoming = `/var/lib/ai-maintenance/components-incoming-${manifest.sequence}`;
   try {
-    const missing = [];
-    for (const archive of archives) {
-      if (run("ssh.exe", [...flags, host, `sudo -n -u ai-maintenance test -f /var/lib/ai-maintenance/components/${archive.sha256}.zip`], true) === 1) missing.push(archive);
-    }
-    run("ssh.exe", [...flags, host, require("./release-server-space.cjs").releaseSpaceCommand(missing.reduce((sum, item) => sum + item.size, 0))]);
-    run("ssh.exe", [...flags, host, `mkdir -m 755 ${remote}`]);
-    for (const archive of missing) run("scp.exe", [...flags, archive.path, `${host}:${remote}/${archive.sha256}.zip`]);
-    run("scp.exe", [...flags, document, `${host}:${remote}/latest-components.json`]);
+    const plan = JSON.parse(run("ssh.exe", [...flags, host, componentPreflightCommand(archives, remote)]).stdout);
+    if (!Array.isArray(plan.missing) || new Set(plan.missing).size !== plan.missing.length
+        || plan.missing.some(hash => !archives.some(item => item.sha256 === hash))) throw Error("component_preflight_invalid");
+    const missing = archives.filter(archive => plan.missing.includes(archive.sha256));
+    if (plan.uploadBytes !== missing.reduce((sum, item) => sum + item.size, 0)) throw Error("component_preflight_invalid");
+    run("scp.exe", [...flags, ...missing.map(archive => archive.path), document, `${host}:${remote}/`]);
     const uploads = ["latest-components.json", ...missing.map(c => `${c.sha256}.zip`)].map(name => `${remote}/${name}`).join(" ");
     await verifyUpgradePaths({ config, target: manifest, expectedPayload: upgradePaths.payload, verifyArtifact: false });
     run("ssh.exe", [...flags, host, `sudo -n install -d -o ai-maintenance -g ai-maintenance -m 700 ${incoming} && sudo -n install -o ai-maintenance -g ai-maintenance -m 600 ${uploads} ${incoming}/ && sudo -n -u ai-maintenance python3 /opt/ai-maintenance/promote_components.py ${incoming}/latest-components.json ${incoming}`]);
@@ -74,4 +83,4 @@ if (require.main === module) {
   if (!metadataFile) throw Error("Usage: node scripts/publish-component-release.cjs <unsigned-component-release.json> [notes.txt]");
   publishComponentRelease({ metadataFile, notesFile }).then(console.log).catch(e => { console.error(e.message); process.exitCode = 1; });
 }
-module.exports = { publishComponentRelease };
+module.exports = { publishComponentRelease, componentPreflightCommand };

@@ -5,7 +5,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { artifactTypeForEdition, validateRemotionBuildInputs } = require("./build-remotion-runtime.cjs");
 const { resolveMediaToolSources } = require("./build-content-engine-sidecar.cjs");
-const { cachedRuntime, runtimeFingerprint } = require("./release-runtime-cache.cjs");
+const { cachedRuntime, runtimeFingerprint, createFingerprintContext } = require("./release-runtime-cache.cjs");
 const { resolveProductDetailBuild } = require("./product-detail-release-runtime.cjs");
 const { resolveContentEngineBuild } = require("./content-engine-release-runtime.cjs");
 const { verifyRemotionRuntime } = require("./build-remotion-runtime.cjs");
@@ -79,7 +79,7 @@ function runRelease(edition = "delivery", environment = process.env, options = {
   catch (error) { space.finish("failed"); throw error; }
 }
 
-function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null } = {}, space) {
+function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null, forceChecks = false } = {}, space) {
   if (componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
   const internalUpgrade = edition === "upgrade";
   if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
@@ -107,15 +107,22 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
     XIAOXI_SIDECAR_BUILD_ROOT: sidecarBuildRoot,
     XIAOXI_REMOTION_RUNTIME_ROOT: remotionRuntimeRoot
   };
+  const ciProof = require("./release-ci-proof.cjs").verifiedCiRun({ forceChecks });
   try {
-  runNode("source self-check", "run-self-checks.cjs", [], releaseEnvironment);
-  runNode("product-detail local E2E", "product-detail-local-e2e.cjs", ["--cleanup-on-success"], releaseEnvironment);
+  if (ciProof) console.log(`Reusing source and local E2E checks from Windows CI ${ciProof.runId} (${ciProof.commit}).`);
+  else {
+    console.log("No complete CI proof for this clean revision; running source and local E2E checks.");
+    runNode("source self-check", "run-self-checks.cjs", [], releaseEnvironment);
+    runNode("product-detail local E2E", "product-detail-local-e2e.cjs", ["--cleanup-on-success"], releaseEnvironment);
+  }
+  space.observe("source-validation-complete", { ciProof });
   runNode("clean runtime gate", "check-clean-runtime.cjs", [], releaseEnvironment);
   runNode(`${edition} renderer build`, "build-renderer.cjs", [edition], releaseEnvironment);
   const commitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: desktopDir, encoding: "utf8", windowsHide: true });
   const buildCommit = String(commitResult.stdout || "").trim();
   if (commitResult.status !== 0 || !/^[0-9a-f]{40}$/u.test(buildCommit)) throw new Error("Runtime cache requires a release source commit");
   const cacheRoot = path.join(desktopDir, ".build", "runtime-cache");
+  const fingerprintContext = createFingerprintContext();
   for (const [kind, resolver, sourceOf] of [
     ["product-detail", resolveProductDetailBuild, (value) => value.manifest.desktopSource],
     ["content-engine", resolveContentEngineBuild, (value) => value.manifest.source]
@@ -125,7 +132,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
       XIAOXI_PYTHON_BASE_REFERENCE: pythonBase?.file || "", XIAOXI_PYTHON_BASE_SHA256: pythonBase?.sha256 || "" };
     cachedRuntime({
       cacheRoot, kind, buildCommit, destination: sidecarBuildRoot, sourceOf,
-      fingerprint: runtimeFingerprint(desktopDir, kind, remotionArtifactType, inputs, buildEnvironment),
+      fingerprint: runtimeFingerprint(desktopDir, kind, remotionArtifactType, inputs, buildEnvironment, fingerprintContext),
       resolve: (buildRoot) => resolver(desktopDir, { buildRoot }),
       artifacts: [`${kind}-runtime`, `${kind}-runtime.manifest.json`],
       build: () => runNode(`${kind} sidecar build`, `build-${kind}-sidecar.cjs`, [], buildEnvironment)
@@ -134,7 +141,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   const remotionRelative = path.join("r", remotionArtifactType);
   cachedRuntime({
     cacheRoot, kind: "remotion", buildCommit, destination: sidecarBuildRoot,
-    fingerprint: runtimeFingerprint(desktopDir, "remotion", remotionArtifactType, inputs, releaseEnvironment),
+    fingerprint: runtimeFingerprint(desktopDir, "remotion", remotionArtifactType, inputs, releaseEnvironment, fingerprintContext),
     resolve: (root) => verifyRemotionRuntime(path.join(root, remotionRelative), { desktopDir, expectedArtifactType: remotionArtifactType, requireCompositionSmoke: true }),
     artifacts: [remotionRelative],
     build: () => runNode("Remotion runtime build", "build-remotion-runtime.cjs", [remotionArtifactType, "--output", path.join(remotionRuntimeRoot, remotionArtifactType)], releaseEnvironment)
@@ -150,12 +157,12 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   }
   const candidateRoot = componentsOnly ? JSON.parse(fs.readFileSync(path.join(desktopDir,
     "../release/components/test/unsigned-component-release.json"), "utf8")).validation.candidateRoot : null;
-  return { stagingCleaned: !fs.existsSync(sidecarBuildRoot), ...(candidateRoot ? { candidateRoot } : {}) };
+  return { stagingCleaned: !fs.existsSync(sidecarBuildRoot), ciProof, ...(candidateRoot ? { candidateRoot } : {}) };
 }
 
 if (require.main === module) {
   try {
-    const result = runRelease(process.argv[2] || "delivery");
+    const result = runRelease(process.argv[2] || "delivery", process.env, { forceChecks: process.argv.includes("--force-checks") });
     console.log(`\nRelease staging cleaned: ${result.stagingCleaned}`);
   } catch (error) {
     console.error(error);

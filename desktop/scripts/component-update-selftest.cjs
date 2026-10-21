@@ -44,6 +44,56 @@ async function fixture(t) {
   return { root, source, base };
 }
 
+test("streamed STORE archives remain readable by the existing updater and unchanged archives are not rehashed", async t => {
+  const { root, source } = await fixture(t);
+  const next = path.join(root, "streamed-source"), outputDir = path.join(root, "streamed-artifacts");
+  await fs.cp(source, next, { recursive: true });
+  await fs.writeFile(path.join(next, "版本清单.json"), JSON.stringify({ version: "1.1.1" }));
+  await fs.writeFile(path.join(next, "resources/app/dist/video-examples/sample.mp4"), "new compressed media");
+  const args = { sourceRoot: next, outputDir, version: "1.1.1", ...config };
+  const JSZip = require("jszip");
+  const originalGenerate = JSZip.prototype.generateAsync;
+  JSZip.prototype.generateAsync = () => assert.fail("component ZIP must stream to disk, never materialize the archive buffer");
+  let built;
+  try { built = await buildComponentRelease(args); }
+  finally { JSZip.prototype.generateAsync = originalGenerate; }
+  const application = built.artifacts.find(item => item.name === "application");
+  const zip = await JSZip.loadAsync(await fs.readFile(application.path));
+  assert.equal(zip.file("files/resources/app/dist/video-examples/sample.mp4")._data.compression.magic, "\0\0",
+    "already compressed media must use STORE");
+  const rawFs = require("node:fs"), originalRead = rawFs.createReadStream;
+  let archiveReads = 0;
+  rawFs.createReadStream = function(file, ...rest) {
+    if (String(file).startsWith(outputDir + path.sep) && String(file).endsWith(".zip")) archiveReads++;
+    return originalRead.call(this, file, ...rest);
+  };
+  try { await buildComponentRelease(args); }
+  finally { rawFs.createReadStream = originalRead; }
+  assert.equal(archiveReads, 0, "unchanged archive size/mtime receipts must avoid rereading ZIP bytes");
+  const store = createComponentStore({ rootDir: path.join(root, "old-reader-store"), baseRoot: source, config,
+    transport: { async request(route, options) {
+      const artifact = built.artifacts.find(item => route === `/components/${item.sha256}.zip`);
+      assert.ok(artifact); await fs.copyFile(artifact.path, options.destination);
+    } } });
+  const prepared = await store.prepare(sign(built.manifest));
+  assert.equal(await fs.readFile(path.join(prepared.generationRoot, "resources/app/dist/video-examples/sample.mp4"), "utf8"), "new compressed media");
+});
+
+test("streaming rejects a source changed after inventory and removes only its temporary archive", async t => {
+  const { root, source } = await fixture(t);
+  const outputDir = path.join(root, "mutated-artifacts"), rawFs = require("node:fs"), originalRead = rawFs.createReadStream;
+  const target = path.join(source, "resources/app/src/main/main.cjs");
+  rawFs.createReadStream = function(file, ...rest) {
+    if (String(file) === target) {
+      const old = rawFs.readFileSync(file); rawFs.writeFileSync(file, Buffer.alloc(old.length, 33));
+    }
+    return originalRead.call(this, file, ...rest);
+  };
+  try { await assert.rejects(buildComponentRelease({ sourceRoot: source, outputDir, version: "1.1.0", ...config }), /component_source_changed/); }
+  finally { rawFs.createReadStream = originalRead; }
+  assert.equal((await fs.readdir(outputDir)).some(name => name.endsWith(".tmp")), false);
+});
+
 test("successful-version verification is cached across launches and invalidated by manifest or runtime failure", async t => {
   const { root, source } = await fixture(t);
   const components = require("../src/main/component-paths.cjs");

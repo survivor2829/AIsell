@@ -116,11 +116,7 @@ function copyProductDetailRuntime(build, releaseTarget) {
     throw new Error(`Refusing to overwrite an existing product-detail release runtime: ${destination}`);
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.cpSync(build.runtimeDir, destination, {
-    recursive: true,
-    errorOnExist: true,
-    force: false
-  });
+    require("./release-tree-hash.cjs").copyTreeVerified(build.runtimeDir, destination);
   const executable = path.join(destination, PRODUCT_DETAIL_EXECUTABLE);
   assertFile(executable, "Packaged product-detail runtime executable");
   if (sha256(executable) !== build.manifest.runtime.exeSha256) {
@@ -257,7 +253,11 @@ function parseSelfCheckPayload(result) {
   }
 }
 
-function runPackagedProductDetailSelfCheck({
+function runPackagedProductDetailSelfCheck(options) {
+  return require("./release-tree-hash.cjs").freshHashBoundary(() => runPackagedProductDetailSelfCheckFresh(options));
+}
+
+function runPackagedProductDetailSelfCheckFresh({
   releaseTarget,
   resourcesDir,
   descriptor,
@@ -305,7 +305,11 @@ function runPackagedProductDetailSelfCheck({
   return { ...payload, verifiedResourcesTreeSha256: resourcesHashAfter };
 }
 
-function runPackagedProductDetailLifecycleSmoke({
+function runPackagedProductDetailLifecycleSmoke(options) {
+  return require("./release-tree-hash.cjs").freshHashBoundary(() => runPackagedProductDetailLifecycleSmokeFresh(options));
+}
+
+function runPackagedProductDetailLifecycleSmokeFresh({
   releaseTarget,
   resourcesDir,
   descriptor,

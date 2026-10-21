@@ -130,11 +130,7 @@ function copyContentEngineRuntime(build, releaseTarget) {
     throw new Error(`Refusing to overwrite an existing content-engine release runtime: ${destination}`);
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.cpSync(build.runtimeDir, destination, {
-    recursive: true,
-    errorOnExist: true,
-    force: false
-  });
+    require("./release-tree-hash.cjs").copyTreeVerified(build.runtimeDir, destination);
   const executable = path.join(destination, CONTENT_ENGINE_EXECUTABLE);
   assertFile(executable, "Packaged content-engine runtime executable");
   if (sha256(executable) !== build.manifest.runtime.exeSha256) {
@@ -287,7 +283,11 @@ function resolvePackagedContentEngine(releaseTarget, descriptor) {
   return { runtimeDir, executable, mediaTools: validated.mediaTools };
 }
 
-function runPackagedContentEngineSelfCheck({
+function runPackagedContentEngineSelfCheck(options) {
+  return require("./release-tree-hash.cjs").freshHashBoundary(() => runPackagedContentEngineSelfCheckFresh(options));
+}
+
+function runPackagedContentEngineSelfCheckFresh({
   releaseTarget,
   resourcesDir,
   descriptor,
