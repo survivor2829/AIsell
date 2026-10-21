@@ -15,7 +15,7 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 // These literals are not WeChat failure policies: lifecycle states, a successful
 // scheduler event, the fail-closed sentinel, and update-maintenance states.
 const nonFailureReasonLiterals = new Set(["failed", "finite_tasks_drained", "idle", "invalid_unclassified_reason",
-  "startup_or_data_confirmation_missing", "parent_still_running"]);
+  "startup_or_data_confirmation_missing", "parent_still_running", "retention_result_missing"]);
 
 function unclassifiedAddedReasons(diff) {
   const found = new Set();

@@ -21,6 +21,14 @@ if (process.argv[2] === "--hold-registry") {
   await fs.mkdir(parent, { recursive: true });
   const root = await fs.mkdtemp(path.join(parent, "run-"));
   try {
+    const lockScope = path.join(root, "interrupted-maintenance.lock");
+    await fs.writeFile(lockScope, "");
+    const { acquireProcessLock } = require("../src/main/update-process-lock.cjs");
+    const releaseLease = await acquireProcessLock(lockScope, { timeoutMs: 0 });
+    try { await assert.rejects(acquireProcessLock(lockScope, { timeoutMs: 0 }), /update_maintenance_busy/); }
+    finally { await releaseLease(); }
+    await (await acquireProcessLock(lockScope, { timeoutMs: 0 }))();
+    assert.equal(await fs.readFile(lockScope, "utf8"), "", "kernel leases neither trust nor remove a crashed publication file");
     const storage = require("../src/main/update-storage.cjs");
     const copySource = path.join(root, "copy-once-source"), copyTarget = path.join(root, "copy-once-target");
     await fs.mkdir(copySource); await fs.writeFile(path.join(copySource, "bytes.bin"), "verified-copy");
@@ -43,19 +51,73 @@ if (process.argv[2] === "--hold-registry") {
     const helper = require("../src/main/update-helper.cjs");
     const helperProfile = path.join(root, "helper-profile"), helperPaths = { directory: path.join(root, "helper-profile/data/cloud-maintenance/components") };
     const options = { paths: helperPaths, installedRoot: installedHelper, applicationRoot: helperApp, executable: path.join(installedHelper, "app.exe") };
-    const helperOne = await helper.prepareHelperRuntime(options), helperTwo = await helper.prepareHelperRuntime(options);
+    const [helperOne, helperTwo] = await Promise.all([helper.prepareHelperRuntime(options), helper.prepareHelperRuntime(options)]);
     assert.equal(helperOne.helperExecutable, helperTwo.helperExecutable, "one base/updater identity reuses its helper runtime");
-    assert.equal(helperTwo.created, false);
+    assert.equal((await helper.prepareHelperRuntime(options)).created, false);
     assert.notEqual((await fs.stat(helperOne.helperExecutable)).ino, (await fs.stat(options.executable)).ino, "helper EXE must not share installer-locked bytes");
     assert.notEqual((await fs.stat(path.join(helperOne.owned.directory, "runtime.dll"))).ino, (await fs.stat(path.join(installedHelper, "runtime.dll"))).ino);
     assert.equal((await fs.stat(path.join(helperOne.owned.directory, "resources/app/bootstrap.cjs"))).ino, (await fs.stat(path.join(helperApp, "bootstrap.cjs"))).ino);
+    assert.equal((await helper.prepareHelperRuntime(options)).helperExecutable, helperOne.helperExecutable,
+      "The shared helper cache is independent of update job history");
+    const obsoleteHelperFile = path.join(helperPaths.directory, "obsolete-exit-file");
+    await fs.writeFile(obsoleteHelperFile, "owned temporary file");
+    require("../src/shared/artifact-retention.cjs").retainArtifacts(helperPaths.directory, "exit-prepare-fixture", [], 1, [obsoleteHelperFile], { deferCleanup: true });
+    await fs.writeFile(path.join(installedHelper, "component-base.json"), JSON.stringify({ base: { fingerprint: "a".repeat(64) }, components: { updater: { treeSha256: "c".repeat(64) } } }));
+    const exitMaintenance = require("../src/main/update-exit-maintenance.cjs"), exitOptions = { profile: helperProfile, runtimeRoot: installedHelper, executable: options.executable };
+    const preparation = exitMaintenance.prepareExitMaintenance(exitOptions);
+    assert.equal(exitMaintenance.prepareExitMaintenance(exitOptions), preparation, "startup and exit share one background preparation");
+    const newIdentity = await preparation;
+    assert.notEqual(newIdentity.identity, helperOne.identity, "an updater change prepares its own helper without a prior update job");
+    assert.equal((await helper.prepareHelperRuntime(options)).helperExecutable, newIdentity.helperExecutable);
+    await fs.writeFile(path.join(installedHelper, "component-base.json"), JSON.stringify({ base: { fingerprint: "a".repeat(64) }, components: { updater: { treeSha256: "d".repeat(64) } } }));
+    const outsideHelper = await createOwnedDirectory(root, "outside-helper-cache");
+    const uniqueOutside = path.join(outsideHelper.directory, "unique.txt"); await fs.writeFile(uniqueOutside, "must remain");
+    const interruptedId = helper.helperRuntimeIdentity(installedHelper, helperApp), interruptedDirectory = path.join(helperPaths.directory, "helper-runtime", interruptedId);
+    await fs.mkdir(interruptedDirectory);
+    await fs.writeFile(path.join(interruptedDirectory, ".helper-preparing.json"), JSON.stringify({ identity: interruptedId, owned: outsideHelper }));
+    await assert.rejects(helper.prepareHelperRuntime(options));
+    assert.equal(await fs.readFile(uniqueOutside, "utf8"), "must remain", "a preparing receipt cannot authorize deletion outside its independently derived helper directory");
+    if (process.platform === "win32") {
+      const helperParent = path.dirname(interruptedDirectory), savedHelperParent = helperParent + "-saved";
+      const linkedOwned = await createOwnedDirectory(outsideHelper.directory, interruptedId);
+      const linkedUnique = path.join(linkedOwned.directory, "unique.txt"); await fs.writeFile(linkedUnique, "outside junction");
+      await fs.writeFile(path.join(linkedOwned.directory, ".helper-preparing.json"), JSON.stringify({ identity: interruptedId, owned: linkedOwned }));
+      await fs.rename(helperParent, savedHelperParent);
+      await fs.symlink(outsideHelper.directory, helperParent, "junction");
+      try {
+        await assert.rejects(helper.prepareHelperRuntime(options), undefined, "a helper parent junction must not become deletion authority");
+        assert.equal(await fs.readFile(linkedUnique, "utf8"), "outside junction");
+      } finally { await fs.unlink(helperParent); await fs.rename(savedHelperParent, helperParent); }
+    }
+    await fs.writeFile(path.join(installedHelper, "component-base.json"), JSON.stringify({ base: { fingerprint: "a".repeat(64) }, components: { updater: { treeSha256: "b".repeat(64) } } }));
     const helperJobId = randomUUID(), helperJobs = path.join(helperPaths.directory, "jobs");
     await fs.mkdir(helperJobs);
     await fs.writeFile(path.join(helperJobs, helperJobId + ".json"), JSON.stringify({ id: helperJobId,
       helperCopyVersion: 2, helperRuntimeIdentity: helperOne.identity, helperExecutable: helperOne.helperExecutable, helperIdentity: helperOne.owned.identity }));
     await fs.writeFile(path.join(helperJobs, helperJobId + ".status.json"), JSON.stringify({ phase: "complete" }));
-    assert.equal(await require("../src/main/update-exit-maintenance.cjs").findExitHelper(helperProfile, options.executable, installedHelper), helperOne.helperExecutable,
-      "Normal exit can reuse the identity-bound v2 helper without another program copy");
+    const cancelledHelperId = randomUUID();
+    await fs.writeFile(path.join(helperJobs, cancelledHelperId + ".json"), JSON.stringify({ id: cancelledHelperId, helperCopyVersion: 2,
+      helperRuntimeIdentity: helperOne.identity, helperExecutable: helperOne.helperExecutable, helperIdentity: helperOne.owned.identity }));
+    await fs.writeFile(path.join(helperJobs, cancelledHelperId + ".cancel.json"), JSON.stringify({ cancelled: true }));
+    await helper.retainHelperRuntimes(helperPaths, null, []);
+    const activeHelperRefs = async () => JSON.parse(await fs.readFile(path.join(helperPaths.directory, ".artifact-retention.json"), "utf8"))["active-helpers"].generations.flat();
+    assert.equal((await activeHelperRefs()).includes(path.relative(helperPaths.directory, helperOne.owned.directory)), false, "a cancelled launch without a live helper does not pin its cache forever");
+    await helper.retainHelperRuntimes(helperPaths, null, [{ pid: 100, executable: helperOne.helperExecutable }]);
+    assert.equal((await activeHelperRefs()).includes(path.relative(helperPaths.directory, helperOne.owned.directory)), true, "cancellation never releases an actually running helper");
+    const retryProfile = path.join(root, "exit-retry-profile");
+    const retryDirectory = require("../src/main/component-paths.cjs").updatePaths(retryProfile).directory;
+    await fs.mkdir(retryDirectory, { recursive: true });
+    const retryOwned = path.join(retryDirectory, "retry-owned"); await fs.writeFile(retryOwned, "temporary");
+    require("../src/shared/artifact-retention.cjs").retainArtifacts(retryDirectory, "retry-fixture", [], 1, [retryOwned], { deferCleanup: true });
+    const retryOptions = { ...exitOptions, profile: retryProfile };
+    await assert.rejects(exitMaintenance.launchExitMaintenance(retryOptions, { timeoutMs: 0 }), /exit_helper_prepare_timeout/);
+    const retryTask = exitMaintenance.prepareExitMaintenance(retryOptions);
+    assert.equal(exitMaintenance.prepareExitMaintenance(retryOptions), retryTask, "a quit deadline must not start another preparation");
+    await retryTask;
+    await assert.rejects(exitMaintenance.launchExitMaintenance(retryOptions), undefined, "a helper that cannot start must not be mistaken for ready");
+    assert.equal(JSON.parse(await fs.readFile(path.join(retryDirectory, "exit-maintenance-last.json"), "utf8")).state, "deferred");
+    assert.equal((await helper.prepareHelperRuntime(options)).helperExecutable, helperOne.helperExecutable,
+      "A completed job does not require a different helper preparation path");
     const { generationRefs } = require("../src/main/update-retention.cjs");
     const oldPayload = JSON.stringify({ components: Object.fromEntries(["application", "content-engine", "product-detail", "video"].map((name, index) => [name, { sha256: String(index + 1).repeat(64) }])) });
     assert.equal(generationRefs(root, require("node:crypto").createHash("sha256").update(oldPayload).digest("hex"), { payload: oldPayload }).length, 9,

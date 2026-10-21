@@ -8,6 +8,7 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { readJson, updatePaths, verifySelected, saveSelection, rollbackSelection } = require("./component-paths.cjs");
 const { verifyManifest, VERSION } = require("../shared/cloud-contract.cjs");
 const { digest, HEX } = require("../shared/component-contract.cjs");
+const { safePath, retainArtifacts, artifactOwnershipRegistered } = require("../shared/artifact-retention.cjs");
 const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure, metadataInventory, copySnapshot } = require("./update-storage.cjs");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const productBrand = require("../../product-brand.json");
@@ -129,8 +130,8 @@ async function stopLaunch(pid, tracked, onStage) {
 async function backupUserData(userData, id) {
   return (await require("./update-backups.cjs").captureData(userData, id)).directory;
 }
-async function reclaimFinishedHelpers(paths, processes, keepIdentity) {
-  const parent = path.join(paths.directory, "helper-runtime");
+async function reclaimFinishedHelpers(paths, processes) {
+  const parent = safePath(paths.directory, "helper-runtime");
   if (!fs.existsSync(parent)) return;
   const realParent = await fs.promises.realpath(parent);
   for (const name of await fs.promises.readdir(paths.jobs)) {
@@ -139,16 +140,7 @@ async function reclaimFinishedHelpers(paths, processes, keepIdentity) {
     const status = readJson(path.join(paths.jobs, id + ".status.json")), ready = readJson(path.join(paths.jobs, id + ".ready.json"));
     const directory = path.join(realParent, id);
     if (job?.helperCopyVersion === 2) {
-      if (!HEX.test(job.helperRuntimeIdentity || "") || job.helperRuntimeIdentity === keepIdentity) continue;
-      const shared = (await fs.promises.readdir(paths.jobs)).filter(file => /^[a-f0-9-]{36}\.json$/.test(file))
-        .map(file => readJson(path.join(paths.jobs, file))).filter(other => other?.helperRuntimeIdentity === job.helperRuntimeIdentity);
-      if (shared.some(other => {
-        const state = readJson(path.join(paths.jobs, other.id + ".status.json")), ready = readJson(path.join(paths.jobs, other.id + ".ready.json"));
-        return !["error", "complete"].includes(state?.phase) || !Number.isInteger(ready?.pid) || ready.pid <= 0 || processes.some(row => row.pid === ready.pid);
-      })) continue;
-      const sharedDirectory = path.join(realParent, job.helperRuntimeIdentity);
-      if (job.helperExecutable !== path.join(sharedDirectory, "ai-update-helper.exe")) continue;
-      try { await removeOwnedDirectory({ parent: realParent, directory: sharedDirectory, identity: job.helperIdentity }); } catch { /* Occupied or uncertain: retain it. */ }
+      // Shared identities use the two-generation ownership policy below.
       continue;
     }
     if (job?.helperCopyVersion !== 1 || job.id !== id || job.helperExecutable !== path.join(directory, "ai-update-helper.exe")
@@ -164,10 +156,24 @@ function helperRuntimeIdentity(installedRoot, applicationRoot) {
   if (!HEX.test(baseline?.base?.fingerprint || "") || !HEX.test(updater || "")) throw Error("update_helper_identity_invalid");
   return digest(JSON.stringify({ base: baseline.base.fingerprint, updater }));
 }
-async function prepareHelperRuntime({ paths, installedRoot, applicationRoot, executable }) {
-  const identity = helperRuntimeIdentity(installedRoot, applicationRoot), parent = path.join(paths.directory, "helper-runtime");
+async function prepareHelperRuntimeCopy({ paths, installedRoot, applicationRoot, executable }) {
+  const identity = helperRuntimeIdentity(installedRoot, applicationRoot), parent = safePath(paths.directory, "helper-runtime");
   const directory = path.join(parent, identity), receipt = path.join(directory, ".helper-runtime.json");
   const helperExecutable = path.join(directory, "ai-update-helper.exe");
+  const preparing = path.join(directory, ".helper-preparing.json");
+  if (fs.existsSync(preparing)) {
+    const interrupted = readJson(preparing);
+    const realParent = await fs.promises.realpath(parent), stat = await fs.promises.lstat(directory, { bigint: true });
+    if (interrupted?.identity !== identity || interrupted.owned?.parent !== realParent
+        || interrupted.owned?.directory !== path.join(realParent, identity) || stat.isSymbolicLink()
+        || String(stat.dev) !== interrupted.owned?.identity?.dev || String(stat.ino) !== interrupted.owned?.identity?.ino) throw Error("update_helper_runtime_invalid");
+    if (!fs.existsSync(receipt)) await removeOwnedDirectory(interrupted.owned);
+    else {
+      const completed = readJson(receipt);
+      if (completed?.identity !== identity || JSON.stringify(completed.owned) !== JSON.stringify(interrupted.owned)) throw Error("update_helper_runtime_invalid");
+      await fs.promises.unlink(preparing);
+    }
+  }
   if (fs.existsSync(directory)) {
     const record = readJson(receipt), stat = await fs.promises.lstat(directory, { bigint: true });
     if (record?.schema !== 2 || record.identity !== identity || stat.isSymbolicLink()
@@ -189,6 +195,7 @@ async function prepareHelperRuntime({ paths, installedRoot, applicationRoot, exe
   for (const copy of copies) bytes += await copyBytes(copy.source);
   const copyBudget = await checkCopySpace([{ path: parent, bytes }]), owned = await createOwnedDirectory(parent, identity);
   try {
+    writeJsonAtomic(preparing, { identity, owned });
     for (const copy of copies) {
       const target = path.join(owned.directory, copy.target), stat = await fs.promises.lstat(copy.source);
       if (stat.isSymbolicLink()) throw Error("update_program_link_unsupported");
@@ -201,11 +208,67 @@ async function prepareHelperRuntime({ paths, installedRoot, applicationRoot, exe
         } }
       } else throw Error("update_copy_file_type_invalid");
     }
-    const metadata = await metadataInventory(owned.directory);
+    const metadata = await metadataInventory(owned.directory, file => file !== preparing);
     const files = metadata.map(({ path, size }) => ({ path, size }));
     writeJsonAtomic(receipt, { schema: 2, identity, owned, files, bytes });
+    await fs.promises.unlink(preparing);
     return { identity, owned, helperExecutable, created: true, bytes, entries: files.length, copyBudget };
   } catch (error) { await removeOwnedDirectory(owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; }); throw error; }
+}
+const helperPreparations = new Map();
+async function retainHelperRuntimes(paths, current, processes = null) {
+  if (!fs.existsSync(paths.directory)) return;
+  const parent = safePath(paths.directory, "helper-runtime"), pins = new Set(), historical = new Map();
+  if (!fs.existsSync(parent)) return;
+  processes ||= await processSnapshot();
+  for (const row of processes) {
+    const relative = path.relative(parent, String(row.executable || ""));
+    const identity = relative.split(path.sep)[0];
+    if (HEX.test(identity)) pins.add(path.join(parent, identity));
+  }
+  if (fs.existsSync(paths.jobs)) for (const name of fs.readdirSync(paths.jobs).filter(name => /^[a-f0-9-]{36}\.json$/.test(name))) {
+    const job = readJson(path.join(paths.jobs, name));
+    if (!job || job.id + ".json" !== name) continue;
+    if (HEX.test(job.helperRuntimeIdentity || "")) {
+      const directory = path.join(parent, job.helperRuntimeIdentity);
+      const terminal = ["complete", "error"].includes(readJson(path.join(paths.jobs, job.id + ".status.json"))?.phase);
+      const cancelled = readJson(path.join(paths.jobs, job.id + ".cancel.json"))?.cancelled === true;
+      const ready = readJson(path.join(paths.jobs, job.id + ".ready.json"));
+      const uncertainLive = processes.some(row => !row.executable && (row.pid === ready?.pid || String(row.name).toLowerCase() === "ai-update-helper.exe"));
+      if (!terminal && (!cancelled || uncertainLive || pins.has(directory))) pins.add(directory);
+    }
+    if (job?.helperCopyVersion === 2 && HEX.test(job.helperRuntimeIdentity || "")) {
+      const directory = path.join(parent, job.helperRuntimeIdentity);
+      try {
+        const record = readJson(path.join(directory, ".helper-runtime.json")), stat = fs.lstatSync(directory, { bigint: true });
+        if (record?.schema === 2 && record.identity === job.helperRuntimeIdentity && !stat.isSymbolicLink()
+            && record.owned?.directory === directory && record.owned?.parent === parent
+            && String(stat.dev) === record.owned?.identity?.dev && String(stat.ino) === record.owned?.identity?.ino
+            && !artifactOwnershipRegistered(paths.directory, directory)) historical.set(directory, Number(stat.mtimeMs));
+      } catch { /* Never adopt a missing, replaced or unowned historical directory. */ }
+    }
+  }
+  retainArtifacts(paths.directory, "active-helpers", [...pins], 1, [], { deferCleanup: true });
+  for (const [directory] of [...historical].sort((left, right) => left[1] - right[1])) {
+    retainArtifacts(paths.directory, "helper-runtime", [directory], 2, [directory], { deferCleanup: true });
+  }
+  if (current) retainArtifacts(paths.directory, "helper-runtime", [path.join(parent, current)], 2, [path.join(parent, current)], { deferCleanup: true });
+}
+async function prepareHelperRuntime(options) {
+  await fs.promises.mkdir(options.paths.directory, { recursive: true });
+  const parent = safePath(options.paths.directory, "helper-runtime");
+  const identity = helperRuntimeIdentity(options.installedRoot, options.applicationRoot);
+  const key = path.join(options.paths.directory, identity);
+  if (!helperPreparations.has(key)) helperPreparations.set(key, (async () => {
+    const release = await require("./update-process-lock.cjs").acquireProcessLock(safePath(options.paths.directory, path.join(parent, identity + ".lock")), { timeoutMs: 120000 });
+    try {
+      const prepared = await prepareHelperRuntimeCopy(options);
+      await retainHelperRuntimes(options.paths, prepared.identity);
+      return prepared;
+    }
+    finally { await release(); }
+  })().finally(() => helperPreparations.delete(key)));
+  return helperPreparations.get(key);
 }
 async function createUpdateJob({ userData, prepared, currentVersion, channel = "test" }) {
   await require("./update-backups.cjs").retryRetiringBackups(userData).catch(error => console.warn(`Backup cleanup deferred: ${error.message}`));
@@ -214,8 +277,7 @@ async function createUpdateJob({ userData, prepared, currentVersion, channel = "
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
   const installedRoot = global.__xiaoxiComponents?.installedRoot || path.dirname(process.execPath);
   const applicationRoot = global.__xiaoxiComponents?.applicationRoot || path.join(installedRoot, "resources", "app");
-  const runtimeIdentity = helperRuntimeIdentity(installedRoot, applicationRoot);
-  await reclaimFinishedHelpers(paths, snapshot, runtimeIdentity);
+  await reclaimFinishedHelpers(paths, snapshot);
   const parts = [];
   if (prepared.kind !== "components") {
     const source = await fs.promises.realpath(userData);
@@ -280,7 +342,9 @@ async function runHelper({ jobFile, userData }) {
   };
   const activeJobFile = path.join(paths.directory, "active-job.json");
   let installationStarted = false, candidate = null;
+  let releaseMaintenance;
   try {
+    releaseMaintenance = await require("./update-process-lock.cjs").acquireProcessLock(path.join(paths.directory, "maintenance.lock"), { timeoutMs: 120000 });
     // Publish ready last: the parent stays open if either startup receipt cannot be written.
     writeJsonAtomic(activeJobFile, { id: job.id, pid: process.pid });
     writeJsonAtomic(path.join(paths.jobs, job.id + ".ready.json"), { pid: process.pid });
@@ -380,7 +444,8 @@ async function runHelper({ jobFile, userData }) {
   } finally {
     // Failure to remove a receipt must never hide the original failure or lock its window.
     try { if (readJson(activeJobFile)?.id === job.id) fs.rmSync(activeJobFile, { force: true }); } catch {}
+    if (releaseMaintenance) await releaseMaintenance();
   }
   app.on("window-all-closed", () => app.quit());
 }
-module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper, prepareHelperRuntime, helperRuntimeIdentity };
+module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper, prepareHelperRuntime, helperRuntimeIdentity, retainHelperRuntimes };

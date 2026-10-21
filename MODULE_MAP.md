@@ -18,6 +18,8 @@
 | `desktop/sidecars/content-engine/` | 原素材原地索引、媒体探测、素材版权/使用权状态、内容任务和成片登记 | 复制或删除用户原片；调用微信自动化或绕过 Electron 主进程 |
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
 | `.github/workflows/ci.yml`、`desktop/scripts/build-internal-release.cjs`、`publish-cloud-release.cjs` | 提交后的自动检查、受控 Windows 完整候选包构建与内部测试频道发布；步骤见 `docs/internal-release.md` | 将 CI 通过当作用户验收；上传签名私钥；把内部制品发布到正式频道 |
+| `desktop/scripts/self-check-groups.cjs`、`run-self-checks.cjs`、`release-ci-proof.cjs` | 五组源码检查的统一清单与资源独占、汇总门禁和同提交完整 CI 复用 | 缺组、跳过或取消时跳过本地检查 |
+| `desktop/src/main/update-exit-maintenance.cjs`、`update-process-lock.cjs` | 后台准备同身份助手、退出就绪握手、父进程创建时间核对、与更新交接互斥后复用归属保留器 | 杀进程；删除未登记业务资料；把延期写成已完成 |
 | `desktop/src/shared/role-appearance.json`、`desktop/src/renderer/role-appearance.ts`、`desktop/src/main/role-preferences.cjs` | 角色与形象共享目录；名字与形象校验、主进程原子持久化及相关工作区配色 | 用页面本地状态冒充保存成功；允许任意文件或远程地址作为形象 |
 | `desktop/src/renderer/BusinessAssistantPage.tsx` | 生意助手“小睿”的精准获客、企微助手、GEO推广界面框架；复用角色设置与素材库导航 | 将规划页冒充已接通的商机搜索、企微连接或内容发布能力 |
 | `desktop/src/renderer/CustomerTools.tsx`、`desktop/src/renderer/CustomerPanel.tsx` | 顶栏公告、离线教程和对应功能跳转；公告只展示主进程已验证数据 | 下载或执行公告内容；从远程页面加载教程代码 |

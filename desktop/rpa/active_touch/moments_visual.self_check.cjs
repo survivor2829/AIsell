@@ -412,40 +412,32 @@ assert.doesNotMatch(
 );
 assert.match(integratedPageSurfaceSource, /\$evidence\.exactMatchCount -ne 1[\s\S]*\$selectedMatches\.Count -ne 1/u);
 assert.match(surfaceEvidenceSource, /integrated_selected_moments/u);
+// Test data only: fill BGRA buffers once without interpreting every background
+// pixel in PowerShell. The production readers below receive their normal bytes.
+const fixtureRasterPowerShell = String.raw`
+Add-Type @"
+public static class MomentsFixtureRaster {
+  public static byte[] Create(int width, int height, byte b, byte g, byte r, byte a) {
+    byte[] bytes = new byte[checked(width * height * 4)];
+    Fill(bytes, width, height, 0, 0, width - 1, height - 1, b, g, r, a);
+    return bytes;
+  }
+  public static void Fill(byte[] bytes, int width, int height, int left, int top, int right, int bottom,
+      byte b, byte g, byte r, byte a) {
+    for (int y = System.Math.Max(0, top); y <= System.Math.Min(height - 1, bottom); y++) {
+      for (int x = System.Math.Max(0, left); x <= System.Math.Min(width - 1, right); x++) {
+        int offset = y * width * 4 + x * 4;
+        bytes[offset] = b; bytes[offset + 1] = g; bytes[offset + 2] = r; bytes[offset + 3] = a;
+      }
+    }
+  }
+}
+"@
+`;
 const integratedSurfaceProofProgram = `
 $ErrorActionPreference = "Stop"
 ${MOMENTS_VISUAL_READONLY_POWERSHELL}
-function Get-MomentsPixel($frame, [int]$x, [int]$y) {
-  if ($frame.ContainsKey("bytes")) {
-    if ($x -lt 0 -or $y -lt 0 -or $x -ge [int]$frame.width -or $y -ge [int]$frame.height) { return $null }
-    $offset = ($y * [int]$frame.stride) + ($x * 4)
-    return @{
-      b = [int]$frame.bytes[$offset]
-      g = [int]$frame.bytes[$offset + 1]
-      r = [int]$frame.bytes[$offset + 2]
-    }
-  }
-  if ($frame.ContainsKey("glyph")) {
-    if ($frame.ContainsKey("neutralGlyph") -and $frame.neutralGlyph.ContainsKey("$x,$y")) {
-      return @{ r = 88; g = 92; b = 94 }
-    }
-    if ($frame.glyph.ContainsKey("$x,$y")) {
-      return $(if ([bool]$frame.discoverSelected) { @{ r = 20; g = 170; b = 80 } } else { @{ r = 88; g = 92; b = 94 } })
-    }
-    if ([bool]$frame.momentsSelected -and $y -le 100) {
-      foreach ($run in @($frame.momentsRuns)) {
-        if ($x -ge [int]$run.left -and $x -le [int]$run.right) {
-          return @{ r = 20; g = 170; b = 80 }
-        }
-      }
-    }
-    if ($frame.ContainsKey("navigationBackground")) {
-      return $frame.navigationBackground
-    }
-    return @{ r = 220; g = 230; b = 238 }
-  }
-  return @{ r = 232; g = 232; b = 232 }
-}
+${fixtureRasterPowerShell}
 function Get-MomentsOcrObservation($frame, $region) {
   # WinRT returns short CJK labels with inter-character whitespace on the live
   # WeChat 4.1.11.55 surface. Keep that shape in the resolver regression.
@@ -459,66 +451,6 @@ function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
   return @{ ok = $true; lines = $lines }
 }
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
-# Green-ratio fixtures use the same BGRA representation as the production scan.
-$script:originalGreenRatio = (Get-Command Get-MomentsSelectedGreenRatio).ScriptBlock
-function Get-MomentsSelectedGreenRatio($frame, $rect) {
-  if (-not $frame.ContainsKey("bytes")) {
-    $raster = $frame.Clone()
-    $raster.stride = [int]$frame.width * 4
-    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
-    for ($y = [Math]::Max(0,[int][Math]::Floor($rect.top)); $y -lt [Math]::Min([int]$frame.height,[int][Math]::Ceiling($rect.top + $rect.height)); $y++) {
-      for ($x = [Math]::Max(0,[int][Math]::Floor($rect.left)); $x -lt [Math]::Min([int]$frame.width,[int][Math]::Ceiling($rect.left + $rect.width)); $x++) {
-        $pixel = Get-MomentsPixel $frame $x $y
-        $offset = $y * $raster.stride + $x * 4
-        $raster.bytes[$offset] = $pixel.b
-        $raster.bytes[$offset + 1] = $pixel.g
-        $raster.bytes[$offset + 2] = $pixel.r
-      }
-    }
-    $frame = $raster
-  }
-  return & $script:originalGreenRatio $frame $rect
-}
-# The navigation detector reads production BGRA buffers, not procedural pixels.
-$script:originalDiscoverEntry = (Get-Command Get-IntegratedDiscoverEntryEvidence).ScriptBlock
-function Get-IntegratedDiscoverEntryEvidence($frame, $bounds, [double]$scale) {
-  if (-not $frame.ContainsKey("bytes")) {
-    $raster = $frame.Clone()
-    $raster.stride = [int]$frame.width * 4
-    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
-    for ($y = 0; $y -lt [int]$frame.height; $y++) {
-      for ($x = 0; $x -lt [Math]::Min([int]$frame.width, [Math]::Ceiling(80 * $scale)); $x++) {
-        $pixel = Get-MomentsPixel $frame $x $y
-        $offset = $y * $raster.stride + $x * 4
-        $raster.bytes[$offset] = $pixel.b
-        $raster.bytes[$offset + 1] = $pixel.g
-        $raster.bytes[$offset + 2] = $pixel.r
-      }
-    }
-    $frame = $raster
-  }
-  return & $script:originalDiscoverEntry $frame $bounds $scale
-}
-# Rasterize legacy procedural fixtures for the production bitmap fast path.
-$script:originalGreenRun = (Get-Command Get-MomentsSelectedGreenRunEvidence).ScriptBlock
-function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $surfaceBounds, [double]$scale) {
-  if (-not $frame.ContainsKey("bytes")) {
-    $raster = $frame.Clone()
-    $raster.stride = [int]$frame.width * 4
-    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
-    for ($y = [Math]::Max(0,[int][Math]::Floor($bandBounds.top)); $y -lt [Math]::Min([int]$frame.height,[int][Math]::Ceiling($bandBounds.top + $bandBounds.height)); $y++) {
-      for ($x = 0; $x -lt [int]$frame.width; $x++) {
-        $pixel = Get-MomentsPixel $frame $x $y
-        $offset = $y * $raster.stride + $x * 4
-        $raster.bytes[$offset] = $pixel.b
-        $raster.bytes[$offset + 1] = $pixel.g
-        $raster.bytes[$offset + 2] = $pixel.r
-      }
-    }
-    $frame = $raster
-  }
-  return & $script:originalGreenRun $frame $textBounds $bandBounds $surfaceBounds $scale
-}
 function New-DiscoverFrame(
   [double]$scale,
   [string]$shape = "compass",
@@ -528,19 +460,28 @@ function New-DiscoverFrame(
   [double]$centerYLogical = 258.0,
   [bool]$fixedPixelGlyph = $false,
   [bool]$secondCompass = $false,
-  [double]$centerXLogical = 30.0
+  [double]$centerXLogical = 30.0,
+  $navigationBackground = @{ r = 220; g = 230; b = 238 },
+  $momentsRuns = @(@{ left = 70; right = 310 }),
+  [bool]$mergedRail = $false
 ) {
   $frame = @{
     ok = $true
     width = 700
     height = 500
-    glyph = @{}
-    discoverSelected = $discoverSelected
-    momentsSelected = $momentsSelected
-    momentsRuns = @(@{ left = 70; right = 310 })
+    stride = 700 * 4
+    bytes = [MomentsFixtureRaster]::Create(700, 500, $navigationBackground.b, $navigationBackground.g, $navigationBackground.r, 0)
     duplicate = $duplicate
     nativeMiss = $false
   }
+  # Match the former procedural pixel precedence: background, selected Moments
+  # bands, discovery glyph, then neutral rail overlays. Bounds stay inclusive.
+  if ($momentsSelected) {
+    foreach ($run in @($momentsRuns)) {
+      [MomentsFixtureRaster]::Fill($frame.bytes, $frame.width, $frame.height, $run.left, 0, $run.right, 100, 80, 170, 20, 0)
+    }
+  }
+  if ($shape -ceq "empty") { return $frame }
   [int]$centerX = [Math]::Round($centerXLogical * $scale)
   [int]$radius = $(if ($fixedPixelGlyph) { 10 } else { [Math]::Round(10.0 * $scale) })
   [int]$edge = $(if ($fixedPixelGlyph) { 2 } else { [Math]::Max(1, [Math]::Round(1.5 * $scale)) })
@@ -570,10 +511,18 @@ function New-DiscoverFrame(
         $dense = $shape -ceq "dense" -and (($x + $y) % 2) -eq 0
         $solid = $shape -ceq "solid"
         if ($solid -or $dense -or $ring -or $sparseRing -or $liveSparseRing -or $unselectedDiagonal -or $selectedDisk) {
-          $frame.glyph["$x,$y"] = $true
+          if ($discoverSelected) {
+            [MomentsFixtureRaster]::Fill($frame.bytes, $frame.width, $frame.height, $x, $y, $x, $y, 80, 170, 20, 0)
+          } else {
+            [MomentsFixtureRaster]::Fill($frame.bytes, $frame.width, $frame.height, $x, $y, $x, $y, 94, 92, 88, 0)
+          }
         }
       }
     }
+  }
+  if ($mergedRail) {
+    [MomentsFixtureRaster]::Fill($frame.bytes, $frame.width, $frame.height, 37, 100, 37, 306, 94, 92, 88, 0)
+    [MomentsFixtureRaster]::Fill($frame.bytes, $frame.width, $frame.height, 37, 339, 37, 420, 94, 92, 88, 0)
   }
   return $frame
 }
@@ -581,33 +530,13 @@ function New-StructuralSelectedFrame([bool]$duplicate = $false) {
   $width = 700
   $height = 400
   $stride = $width * 4
-  $bytes = New-Object byte[] ($stride * $height)
-  for ($offset = 0; $offset -lt $bytes.Length; $offset += 4) {
-    $bytes[$offset] = 238
-    $bytes[$offset + 1] = 238
-    $bytes[$offset + 2] = 238
-    $bytes[$offset + 3] = 255
-  }
+  $bytes = [MomentsFixtureRaster]::Create($width, $height, 238, 238, 238, 255)
   $bands = New-Object System.Collections.Generic.List[object]
   [void]$bands.Add(@{ top = 40; bottom = 99 })
   if ($duplicate) { [void]$bands.Add(@{ top = 160; bottom = 219 }) }
   foreach ($band in $bands) {
-    for ($y = [int]$band.top; $y -le [int]$band.bottom; $y++) {
-      for ($x = 70; $x -le 310; $x++) {
-        $offset = ($y * $stride) + ($x * 4)
-        $bytes[$offset] = 80
-        $bytes[$offset + 1] = 170
-        $bytes[$offset + 2] = 20
-      }
-    }
-    for ($y = [int]$band.top + 22; $y -le [int]$band.top + 38; $y++) {
-      for ($x = 120; $x -le 210; $x++) {
-        $offset = ($y * $stride) + ($x * 4)
-        $bytes[$offset] = 245
-        $bytes[$offset + 1] = 245
-        $bytes[$offset + 2] = 245
-      }
-    }
+    [MomentsFixtureRaster]::Fill($bytes, $width, $height, 70, $band.top, 310, $band.bottom, 80, 170, 20, 255)
+    [MomentsFixtureRaster]::Fill($bytes, $width, $height, 120, ($band.top + 22), 210, ($band.top + 38), 245, 245, 245, 255)
   }
   return @{ ok = $true; width = $width; height = $height; stride = $stride; bytes = $bytes; nativeMiss = $true; duplicate = $false }
 }
@@ -620,16 +549,9 @@ $discoverShiftedBottom = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 
 $discoverFixedPixel125 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "compass" $false $false $false 258.0 $true) $discoverBounds 1.25
 $discoverDouble = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "compass" $false $false $false 258.0 $false $true) $discoverBounds 1.0
 $discoverSelected = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "compass" $true) $discoverBounds 1.0
-$discoverGrayRailFrame = New-DiscoverFrame 1.25 "compass" $false
-$discoverGrayRailFrame.navigationBackground = @{ r = 188; g = 188; b = 188 }
+$discoverGrayRailFrame = New-DiscoverFrame 1.25 "compass" $false -navigationBackground @{ r = 188; g = 188; b = 188 }
 $discoverGrayRail = Get-IntegratedDiscoverEntryEvidence $discoverGrayRailFrame $discoverBounds 1.25
-$discoverMergedRailFrame = New-DiscoverFrame 1.25 "compass" $true
-$discoverMergedRailFrame.neutralGlyph = @{}
-foreach ($neutralRange in @(@{ top = 100; bottom = 306 }, @{ top = 339; bottom = 420 })) {
-  for ($neutralY = [int]$neutralRange.top; $neutralY -le [int]$neutralRange.bottom; $neutralY++) {
-    $discoverMergedRailFrame.neutralGlyph["37,$neutralY"] = $true
-  }
-}
+$discoverMergedRailFrame = New-DiscoverFrame 1.25 "compass" $true -mergedRail $true
 $discoverMergedRail = Get-IntegratedDiscoverEntryEvidence $discoverMergedRailFrame $discoverBounds 1.25
 $discoverDense = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "dense") $discoverBounds 1.0
 $discoverSparse = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "sparse") $discoverBounds 1.25
@@ -637,7 +559,7 @@ $discoverLiveSparse = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.2
 $discoverOutsideRail = Get-IntegratedDiscoverEntryEvidence (
   New-DiscoverFrame 1.25 "compass" $false $false $false 258.0 $false $false 75.0
 ) $discoverBounds 1.25
-$discoverMissing = Get-IntegratedDiscoverEntryEvidence @{ ok = $true; width = 700; height = 500; glyph = @{} } $discoverBounds 1.0
+$discoverMissing = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "empty") $discoverBounds 1.0
 $discoverSolid = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "solid") $discoverBounds 1.0
 $latestScale = 1.25
 $latestChatCandidate = @{
@@ -686,11 +608,9 @@ $standalonePane = @{ left = 37.0; top = 41.0; width = 603.0; height = 319.0 }
 $standaloneViewport = Get-MomentsVisualViewportBounds $standalonePane $null "standalone"
 $beforePaneViewport = Get-MomentsVisualViewportBounds $standalonePane @{ ok = $true; contentLeft = 20.0 } "integrated"
 $invalidViewport = Get-MomentsVisualViewportBounds $pane @{ ok = $true; contentLeft = 700.0 } "integrated"
-$doubleBandFrame = New-DiscoverFrame 1.0 "compass" $true $true
-$doubleBandFrame.momentsRuns = @(@{ left = 70; right = 250 }, @{ left = 300; right = 470 })
+$doubleBandFrame = New-DiscoverFrame 1.0 "compass" $true $true -momentsRuns @(@{ left = 70; right = 250 }, @{ left = 300; right = 470 })
 $doubleBand = Test-IntegratedMomentsSurface $doubleBandFrame $pane 1.0
-$outOfBoundsBandFrame = New-DiscoverFrame 1.0 "compass" $true $true
-$outOfBoundsBandFrame.momentsRuns = @(@{ left = 70; right = 695 })
+$outOfBoundsBandFrame = New-DiscoverFrame 1.0 "compass" $true $true -momentsRuns @(@{ left = 70; right = 695 })
 $outOfBoundsBand = Test-IntegratedMomentsSurface $outOfBoundsBandFrame $pane 1.0
 $scaledSelectedFrame = New-DiscoverFrame 1.0 "compass" $true $true
 $scaledSelectedFrame.nativeMiss = $true
@@ -896,16 +816,9 @@ assert.deepEqual(JSON.parse(integratedSurfaceProofHarness.stdout.trim()), {
 // This catches the integrated-layout regression where the menu was visible but
 // avatar geometry was still calculated from the full WeChat window.
 const feedViewportReaderProgram = `${MOMENTS_VISUAL_READONLY_POWERSHELL}
+${fixtureRasterPowerShell}
 function Set-FixtureRect($frame, [int]$left, [int]$top, [int]$right, [int]$bottom, [byte]$value) {
-  for ($y = $top; $y -le $bottom; $y++) {
-    for ($x = $left; $x -le $right; $x++) {
-      $offset = ($y * $frame.stride) + ($x * 4)
-      $frame.bytes[$offset] = $value
-      $frame.bytes[$offset + 1] = $value
-      $frame.bytes[$offset + 2] = $value
-      $frame.bytes[$offset + 3] = 255
-    }
-  }
+  [MomentsFixtureRaster]::Fill($frame.bytes, $frame.width, $frame.height, $left, $top, $right, $bottom, $value, $value, $value, 255)
 }
 function Get-MomentsOcrObservation($frame, $rect) {
   return @{
@@ -920,13 +833,7 @@ function Get-MomentsOcrObservation($frame, $rect) {
 }
 $width = 700
 $height = 400
-$bytes = New-Object byte[] ($width * $height * 4)
-for ($offset = 0; $offset -lt $bytes.Length; $offset += 4) {
-  $bytes[$offset] = 240
-  $bytes[$offset + 1] = 240
-  $bytes[$offset + 2] = 240
-  $bytes[$offset + 3] = 255
-}
+$bytes = [MomentsFixtureRaster]::Create($width, $height, 240, 240, 240, 255)
 $frame = @{ width = $width; height = $height; stride = $width * 4; bytes = $bytes }
 Set-FixtureRect $frame 655 220 658 223 80
 Set-FixtureRect $frame 664 220 667 223 80

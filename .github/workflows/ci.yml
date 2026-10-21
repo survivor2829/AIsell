@@ -110,7 +110,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  source-and-renderer:
+  source-checks:
+    name: source-${{ matrix.group }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, moments-visual, reply-visual, rpa, runtime]
     if: ${{ !inputs.install_acceptance && !inputs.protocol5_acceptance }}
     runs-on: windows-latest
     timeout-minutes: 45
@@ -148,16 +153,31 @@ jobs:
             }
             $env:XIAOXI_FAILURE_POLICY_BASE = $base
           }
-          npm run check:self
+          node scripts/run-self-checks.cjs --group "${{ matrix.group }}"
         env:
           XIAOXI_FAILURE_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
           XIAOXI_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       - name: Runtime and secret boundaries
+        if: matrix.group == 'core'
         run: npm run check:clean-runtime
       - name: Build test renderer
+        if: matrix.group == 'core'
         run: npm run build:test
       - name: Build delivery renderer
+        if: matrix.group == 'core'
         run: npm run build:delivery
+
+  source-and-renderer:
+    if: ${{ always() && !inputs.install_acceptance && !inputs.protocol5_acceptance }}
+    needs: [source-checks]
+    runs-on: windows-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all five source groups
+        shell: pwsh
+        env:
+          SOURCE_RESULT: ${{ needs.source-checks.result }}
+        run: if ($env:SOURCE_RESULT -ne 'success') { throw 'A required source group failed, was skipped or cancelled' }
 
   service-and-content:
     if: ${{ !inputs.install_acceptance && !inputs.protocol5_acceptance }}

@@ -897,6 +897,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           && Boolean(installerTargets[maintenanceConfig.channel])
           && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets[maintenanceConfig.channel].installDirectoryName).toLowerCase()
       });
+      let maintenanceStage;
+      cloudMaintenance.onUpdate(state => {
+        if (state.stage === maintenanceStage) return;
+        maintenanceStage = state.stage;
+        if (app.isPackaged && !quitCleanupStarted && !state.updateRequested && ["ready", "current", "error"].includes(state.stage)) {
+          void require("./update-exit-maintenance.cjs").prepareExitMaintenance({ profile: app.getPath("userData"), runtimeRoot: components.currentRoot() })
+            .catch(error => logger.event("app", "exit_helper_prepare_deferred", { code: error.code || error.message }));
+        }
+      });
       let workflowPause = null;
       const updater = require("./update-coordinator.cjs").createUpdateCoordinator({
         controller: cloudMaintenance, setHold: value => { global.__xiaoxiUpdateHold = value; },
@@ -946,7 +955,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       // Unclassified historical backups and current/candidate versions stay protected.
       if (app.isPackaged) {
         await require("./update-startup-maintenance.cjs").maintainAfterStartup(components.updatePaths(app.getPath("userData")).directory,
-          { profile: app.getPath("userData"), version: components.businessVersion(app), runtimeRoot: components.currentRoot() });
+          { profile: app.getPath("userData"), version: components.businessVersion(app), runtimeRoot: components.currentRoot() })
+          .catch(error => logger.event("app", "startup_housekeeping_deferred", { code: error.code || error.message }));
+        await require("./update-exit-maintenance.cjs").prepareExitMaintenance({ profile: app.getPath("userData"), runtimeRoot: components.currentRoot() });
       }
     }).catch(error => logger.event("app", "startup_housekeeping_deferred", { code: error.code || "housekeeping_failed" }));
 

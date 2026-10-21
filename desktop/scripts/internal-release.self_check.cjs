@@ -52,9 +52,36 @@ async function main() {
         { name: "service-and-content", conclusion: "success", steps: [{ name: "Product detail local E2E", conclusion: "success" }] }
       ] }) };
   };
-  assert.equal(verifiedCiRun({ execute: ci }).runId, 42);
+  assert.equal(verifiedCiRun({ execute: ci }), null,
+    "The former two-job workflow cannot authorize skipping the new required groups");
+  const legacyCi = ci;
+  const groupedCi = (command, args) => {
+    const result = legacyCi(command, args);
+    if (command === "gh" && args[1] === "view") {
+      const run = JSON.parse(result.stdout);
+      run.jobs.push(...["core", "moments-visual", "reply-visual", "rpa", "runtime"].map(group =>
+        ({ name: "source-" + group, conclusion: "success", steps: [] })));
+      result.stdout = JSON.stringify(run);
+    }
+    return result;
+  };
+  assert.equal(verifiedCiRun({ execute: groupedCi }).runId, 42);
+  for (const missing of [true, false]) {
+    for (const conclusion of ["skipped", "cancelled", "failure"]) {
+      assert.equal(verifiedCiRun({ execute: (command, args) => {
+        const result = groupedCi(command, args);
+        if (command === "gh" && args[1] === "view") {
+          const run = JSON.parse(result.stdout);
+          if (missing) run.jobs.pop();
+          else run.jobs.at(-1).conclusion = conclusion;
+          result.stdout = JSON.stringify(run);
+        }
+        return result;
+      } }), null, "Every required group must exist and succeed: " + conclusion);
+    }
+  }
   const withEvent = event => (command, args) => {
-    const result = ci(command, args);
+    const result = groupedCi(command, args);
     if (command === "gh" && args[1] === "list") {
       const runs = JSON.parse(result.stdout); runs[0].event = event; result.stdout = JSON.stringify(runs);
     }
@@ -69,7 +96,7 @@ async function main() {
   assert.equal(verifiedCiRun({ execute: (command, args) => command === "git" && args[0] === "status"
     ? { status: 0, stdout: " M package.json" } : ci(command, args) }), null);
   assert.equal(verifiedCiRun({ execute: (command, args) => {
-    const result = ci(command, args);
+    const result = groupedCi(command, args);
     if (command === "gh" && args[1] === "view") {
       const run = JSON.parse(result.stdout); run.jobs[1].steps = []; result.stdout = JSON.stringify(run);
     }

@@ -272,10 +272,16 @@ test("exit cleanup waits for the executable hardlink lock and retains active and
   await fs.copyFile(process.execPath, executable);
   await fs.mkdir(obsolete);
   await fs.link(executable, path.join(obsolete, "node.exe"));
+  const cloudRoot = path.dirname(rootDir), download = path.join(cloudRoot, "obsolete-installer.exe");
+  await fs.link(executable, download);
+  require("../src/shared/artifact-retention.cjs").retainArtifacts(cloudRoot, "exit-download-fixture", [], 1, [download], { deferCleanup: true });
   const unique = path.join(profile, "unique.txt"); await fs.writeFile(unique, "keep");
+  let childMessages = "", childErrors = "";
   const child = require("node:child_process").spawn(executable,
-    ["-e", 'process.stdin.resume();process.stdin.on("end",()=>process.exit());console.log("ready")'],
+    ["-e", `process.stdin.resume();process.stdin.on("end",async()=>{try{const ok=await require(${JSON.stringify(path.resolve(__dirname, "../src/main/update-exit-maintenance.cjs"))}).launchExitMaintenance(${JSON.stringify({ profile, runtimeRoot: prepared.generationRoot, executable })});console.log(ok?"cleanup-ready":"cleanup-not-needed");}catch(e){console.error(e);process.exitCode=1}});console.log("ready")`],
     { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdout.on("data", bytes => { childMessages += bytes; });
+  child.stderr.on("data", bytes => { childErrors += bytes; });
   try {
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(Error("locked process did not start")), 10000);
@@ -291,13 +297,38 @@ test("exit cleanup waits for the executable hardlink lock and retains active and
     assert.match(legacy.stderr, /EPERM/);
     await fs.access(path.join(obsolete, "node.exe")); // Reproduces Windows EPERM while the shared image runs.
     const { collectAfterExit } = require("../src/main/update-exit-maintenance.cjs");
-    await collectAfterExit({ profile, parentPid: child.pid, runtimeRoot: prepared.generationRoot }, { timeoutMs: 0 });
+    const parentCreated = (await require("../src/main/update-helper.cjs").processSnapshot()).find(row => row.pid === child.pid).created;
+    const exitOptions = { profile, parentPid: child.pid, parentCreated, runtimeRoot: prepared.generationRoot };
+    await collectAfterExit(exitOptions, { timeoutMs: 0, snapshot: async () => [{ pid: child.pid, created: null }] });
+    assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8")).reason,
+      "parent_identity_unknown", "a visible PID without creation time cannot prove the original parent exited");
+    await collectAfterExit(exitOptions, { timeoutMs: 0 });
     await fs.access(obsolete);
-    const cleanup = collectAfterExit({ profile, parentPid: child.pid, runtimeRoot: prepared.generationRoot });
+    assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8")).state, "deferred");
+    const reused = require("node:child_process").spawnSync(require("electron"), ["-e",
+      `require(${JSON.stringify(path.resolve(__dirname, "../src/main/update-exit-maintenance.cjs"))}).collectAfterExit(${JSON.stringify({ ...exitOptions, parentCreated: "original-parent-before-pid-reuse" })},{timeoutMs:0,ready:()=>console.log("exit-ready")}).catch(e=>{console.error(e);process.exitCode=1})`],
+    { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true, encoding: "utf8", timeout: 20000 });
+    assert.equal(reused.status, 0, reused.stderr);
+    assert.match(reused.stdout, /exit-ready/, "the child acknowledges readiness before collecting");
+    const occupied = JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8"));
+    assert.equal(occupied.state, "deferred");
+    assert.equal(occupied.reason, undefined, "a reused PID does not keep waiting for the unrelated newer owner");
+    assert(occupied.reasons.some(reason => /EPERM|EBUSY|EACCES/.test(reason)), "occupied files must remain explicitly deferred");
     child.stdin.end();
-    await cleanup;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error("exit handshake timed out: " + childErrors)), 20000);
+      child.once("exit", code => { clearTimeout(timer); code === 0 ? resolve() : reject(Error(childErrors)); });
+    });
+    assert.match(childMessages, /cleanup-ready/, "the real parent waits for the detached helper IPC acknowledgement before exiting");
+    const deadline = Date.now() + 15000;
+    while (JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8")).state !== "complete") {
+      if (Date.now() >= deadline) throw Error("detached exit retirement timed out");
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     await assert.rejects(fs.stat(obsolete), { code: "ENOENT" });
+    await assert.rejects(fs.stat(download), { code: "ENOENT" }, "exit collection also retires owned full downloads in the parent cloud directory");
     await fs.access(prepared.generationRoot);
+    assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8")).state, "complete");
     assert.equal(await fs.readFile(unique, "utf8"), "keep");
   } finally {
     if (child.exitCode === null) await new Promise(resolve => { child.once("exit", resolve); child.stdin.end(); });
@@ -347,6 +378,10 @@ test("signed composition rejects tampering, omitted components, incompatible bas
   const store = createComponentStore({ rootDir: path.join(root, "store"), baseRoot: source, config, transport: { request() { throw Error("unexpected download"); } } });
   await assert.rejects(store.prepare(sign({ ...base.manifest, base: { ...base.manifest.base, fingerprint: "a".repeat(64) } })), /full_upgrade_required/);
   await assert.rejects(store.prepare(sign({ ...base.manifest, dataSchema: 3 })), /full_upgrade_required/);
+  await fs.mkdir(path.join(root, "store"), { recursive: true });
+  const invalidRetention = await require("../src/main/update-retention.cjs").retainComponentArtifacts(path.join(root, "store"), { payload: "{}" });
+  assert.equal(invalidRetention.ok, false, "a worker that defers invalid references cannot report collection completed");
+  assert.match(invalidRetention.reason, /retention|invalid/);
   assert.throws(() => treeHash([{ path: "../escape", size: 1, sha256: "a".repeat(64) }]), /path_invalid/);
   assert.throws(() => treeHash([{ path: "A", size: 1, sha256: "a".repeat(64) }, { path: "a", size: 1, sha256: "a".repeat(64) }]), /files_invalid/);
 });

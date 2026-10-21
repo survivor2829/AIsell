@@ -1,5 +1,6 @@
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { requiredCiJobs } = require("./self-check-groups.cjs");
 
 // Fail closed: an old, skipped, PR-head or incomplete workflow cannot replace
 // checks for the exact release revision. Artifact checks always run separately.
@@ -21,9 +22,11 @@ function verifiedCiRun({ forceChecks = false, execute = spawnSync } = {}) {
       if (detail.status !== 0) continue;
       const run = JSON.parse(detail.stdout);
       if (run.headSha !== sha || run.conclusion !== "success") continue;
-      if (!["source-and-renderer", "service-and-content"].every(name => run.jobs?.some(job =>
-        job.name === name && job.conclusion === "success"))) continue;
-      if (!run.jobs.some(job => job.conclusion === "success" && job.steps?.some(step =>
+      if (!requiredCiJobs.every(name => {
+        const jobs = run.jobs?.filter(job => job.name === name);
+        return jobs?.length === 1 && jobs[0].conclusion === "success";
+      })) continue;
+      if (!run.jobs.some(job => job.name === "service-and-content" && job.conclusion === "success" && job.steps?.some(step =>
         step.name === "Product detail local E2E" && step.conclusion === "success"))) continue;
       return { commit: sha, runId: candidate.databaseId };
     }

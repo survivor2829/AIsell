@@ -20,6 +20,8 @@ assert.deepEqual(unclassifiedAddedReasons('+ log("reply.activated", { reason: "f
 assert.deepEqual(unclassifiedAddedReasons('+ return { reason: "invalid_unclassified_reason" };'), []);
 assert.deepEqual(unclassifiedAddedReasons('+ return { reason: "startup_or_data_confirmation_missing" };'), [],
   "update backup confirmation is not a WeChat action policy");
+assert.deepEqual(unclassifiedAddedReasons('+ return { ok: false, reason: "retention_result_missing" };'), [],
+  "update retention worker receipt is not a WeChat action policy");
 
 for (const [reason, classification, attentionScope] of [
   ["atomic_draft_changed", "recoverable", "task"],

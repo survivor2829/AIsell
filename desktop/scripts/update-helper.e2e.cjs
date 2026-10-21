@@ -49,7 +49,7 @@ async function main() {
     for (const file of modules) await fs.copyFile(path.join(source, file), path.join(application, file));
     try { await fs.copyFile(path.join(source, "src/main/update-storage.cjs"), path.join(application, "src/main/update-storage.cjs")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
-    for (const file of ["src/main/update-retention.cjs", "src/main/update-program-backup.cjs", "src/main/update-backups.cjs", "src/main/cloud-release-config.json", "src/shared/artifact-retention.cjs",
+    for (const file of ["src/main/update-process-lock.cjs", "src/main/update-retention.cjs", "src/main/update-program-backup.cjs", "src/main/update-backups.cjs", "src/main/cloud-release-config.json", "src/shared/artifact-retention.cjs",
       "src/shared/launcher-contract.cjs", "src/shared/component-verification.cjs", "src/main/download-verification.cjs"]) {
       try { await fs.copyFile(path.join(source, file), path.join(application, file)); }
       catch (error) { if (error.code !== "ENOENT") throw error; }

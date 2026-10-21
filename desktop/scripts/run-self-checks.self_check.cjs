@@ -1,7 +1,18 @@
 const assert = require("node:assert/strict");
-const { checks, concurrencyFor, isExclusive, runPool, runScheduled, checkResult, checkEnvironment } = require("./run-self-checks.cjs");
+const { checks, concurrencyFor, isExclusive, runPool, runScheduled, checkResult, checkEnvironment, groups, checksForGroup } = require("./run-self-checks.cjs");
 
 async function main() {
+  assert.deepEqual(Object.keys(groups), ["core", "moments-visual", "reply-visual", "rpa", "runtime"]);
+  const assigned = Object.keys(groups).flatMap(checksForGroup);
+  assert.deepEqual([...assigned].sort(), [...checks].sort(), "every active check executes exactly once across CI groups");
+  assert.equal(new Set(assigned).size, checks.length);
+  assert.deepEqual(checksForGroup(), checks, "the local entrypoint keeps complete coverage");
+  assert.throws(() => checksForGroup("unknown"), /Unknown self-check group/);
+  assert.ok(groups["moments-visual"].includes("rpa/active_touch/moments_visual.self_check.cjs"));
+  assert.equal(groups["reply-visual"].length, 2);
+  const workflow = require("node:fs").readFileSync(require("node:path").join(__dirname, "../../.github/workflows/ci.yml"), "utf8");
+  const matrix = workflow.match(/group: \[([^\]]+)\]/u)?.[1].split(",").map(name => name.trim());
+  assert.deepEqual(matrix, Object.keys(groups), "the workflow must execute the canonical complete partition");
   assert.equal(concurrencyFor({}, 20), 6);
   const local = { TZ: "America/New_York" };
   assert.equal(checkEnvironment("rpa/active_touch/wechat_auto_reply_driver.self_check.cjs", local), local,
@@ -17,6 +28,8 @@ async function main() {
     "scripts/product-detail-download.electron.self_check.cjs", "rpa/active_touch/moments_navigation.self_check.cjs"]) {
     assert.equal(isExclusive(check), true, check + " must run alone");
   }
+  assert.equal(isExclusive("src/main/acquisition-sync.self_check.cjs"), true, "local Python sync service startup must not compete with the pool");
+  assert.equal(isExclusive("src/main/failure-evidence.self_check.cjs"), true, "native PowerShell capture fixture must run alone like RPA checks");
   assert.equal(isExclusive("src/main/acquisition-account.self_check.cjs"), false);
   const output = [], errors = [];
   const originalWrite = process.stdout.write, originalErrorWrite = process.stderr.write;

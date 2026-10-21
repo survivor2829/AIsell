@@ -1,6 +1,6 @@
 const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
-const { Worker, isMainThread, workerData } = require("node:worker_threads");
+const { Worker, isMainThread, workerData, parentPort } = require("node:worker_threads");
 const { digest, componentsFor, HEX } = require("../shared/component-contract.cjs");
 const { retainArtifacts } = require("../shared/artifact-retention.cjs");
 
@@ -39,27 +39,30 @@ function collect(root, preparedEnvelope, { created = [], ready = false, staging 
         for (const id of new Set([set.programBackup?.selection?.active, set.programBackup?.selection?.previous].filter(Boolean))) selectedIds.add(id);
       }
     }
-    retainArtifacts(root, "selected-components", [...selectedIds].flatMap(id => generationRefs(root, id)), 1, []);
+    if (!retainArtifacts(root, "selected-components", [...selectedIds].flatMap(id => generationRefs(root, id)), 1, [])) throw Error("component_retention_deferred");
     if (preparedEnvelope) {
       const refs = generationRefs(root, digest(preparedEnvelope.payload), preparedEnvelope);
       if (staging) refs.push(staging);
       // A failed replacement must leave the last complete candidate installable.
-      retainArtifacts(root, ready ? "prepared-components" : "downloading-components", refs, 1, created);
+      if (!retainArtifacts(root, ready ? "prepared-components" : "downloading-components", refs, 1, created)) throw Error("component_retention_deferred");
     }
-  } catch (error) { console.warn(`Update retention deferred: ${error.message}`); }
+    return { ok: true };
+  } catch (error) { console.warn(`Update retention deferred: ${error.message}`); return { ok: false, reason: error.code || error.message }; }
 }
 
 async function retainComponentArtifacts(root, envelope, options) {
   // Removing complete runtime trees must not block Electron's main thread.
   try {
-    await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const worker = new Worker(__filename, { workerData: { componentRetention: true, root, envelope, options } });
+      let result;
+      worker.once("message", value => { result = value; });
       worker.once("error", reject);
-      worker.once("exit", code => code === 0 ? resolve() : reject(Error(`retention_worker_exit_${code}`)));
+      worker.once("exit", code => code === 0 ? resolve(result || { ok: false, reason: "retention_result_missing" }) : reject(Error(`retention_worker_exit_${code}`)));
     });
-  } catch (error) { console.warn(`Update retention deferred: ${error.message}`); }
+  } catch (error) { console.warn(`Update retention deferred: ${error.message}`); return { ok: false, reason: error.code || error.message }; }
 }
 
-if (!isMainThread && workerData?.componentRetention) collect(workerData.root, workerData.envelope, workerData.options);
+if (!isMainThread && workerData?.componentRetention) parentPort.postMessage(collect(workerData.root, workerData.envelope, workerData.options));
 
 module.exports = { retainComponentArtifacts, generationRefs };
