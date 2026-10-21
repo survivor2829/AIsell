@@ -599,3 +599,51 @@ def test_availability_rule_only_applies_to_new_policy():
     plan['caption_repair_version'] = CAPTION_REPAIR_VERSION
     assert any(i['code'] == 'unbacked_availability'
                for i in check_plan_quality(plan, '续航8h', grounded_copy=True))
+
+
+def test_source_rhetoric_is_tempered_in_all_printed_copy_without_changing_facts():
+    from ai_refine_v2.visual_merchandising import repair_captions, render
+    source, draft = fixture()
+    quote = '风机功率1800W，杜绝扬尘扩散。IP55，全天候室外作业。'
+    source += quote
+    row = draft['pages'][0]
+    row.update(title='杜绝扬尘扩散', body='全天候室外作业',
+               evidence=[quote], technical_support=[quote])
+    row['visual_brief']['product_presentation'] = 'diagram_only'
+    draft['specifications'].append({'name': '防护', 'value': 'IP55，全天候室外作业',
+                                     'evidence': quote})
+    original = copy.deepcopy(draft)
+    repaired = repair_captions(draft, source)
+    assert repaired['pages'][0]['title'] == '减少扬尘扩散'
+    assert repaired['pages'][0]['body'] == '室外作业'
+    plan = compile_plan(repaired, source, '', '设备类', delivery=True, repair_copy=True)
+    assert len(plan['screens']) == 4
+    assert plan['screens'][1]['visual_brief'] == original['pages'][0]['visual_brief']
+    assert plan['screens'][1]['technical_support'] == [quote]
+    assert plan['specifications'] == original['specifications']
+    assert draft == original
+    printed = plan['screens'][1]['prompt'].split('只印以下文案，不印字段名，不自行添加小字：')[1]
+    assert '杜绝' not in printed and '全天候' not in printed
+    assert '1800W' in printed and 'IP55' in printed
+    assert '全天候' not in plan['screens'][-1]['prompt']
+    snapshot = copy.deepcopy(plan)
+    render(plan)
+    assert plan == snapshot  # Rendering again cannot accumulate repair records.
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('彻底消除异味', '减少异味'),
+    ('完全杜绝泄漏', '减少泄漏'),
+    ('全天候户外运行', '户外运行'),
+    ('无法杜绝故障', '无法杜绝故障'),
+    ('不能完全消除异味', '不能完全消除异味'),
+    ('未彻底消除异味', '未彻底消除异味'),
+    ('不支持全天候室外作业', '不支持全天候室外作业'),
+    ('不能保证完全消除异味', '不能保证完全消除异味'),
+    ('不能浸水，全天候室外作业', '不能浸水，室外作业'),
+    ('最大爬坡10°，过滤率99%，续航8~9h，防护IP55',
+     '最大爬坡10°，过滤率99%，续航8~9h，防护IP55'),
+])
+def test_rhetoric_edit_is_generic_and_preserves_limits(text, expected):
+    from ai_refine_v2.visual_merchandising import _temper_caption
+    assert _temper_caption(text) == expected

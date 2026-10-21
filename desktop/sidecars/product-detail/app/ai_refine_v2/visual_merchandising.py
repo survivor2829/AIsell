@@ -41,6 +41,8 @@ cover为封面，pages不包含hero或spec_table，specifications集中收录其
 evidence逐条摘录原文；technical_support必须是同页evidence中的原文，可选短的完整事实。
 保留单位、模式、配置、最大/平均/理论/最长等限定。不同模式的续航和效率必须分别归属。
 不得从容量推算时间、从功率推算效果，不增加比较优势、绝对安全、节省金额或其他未证实承诺。
+原资料中的宣传措辞也不直接当作效果保证：“杜绝/彻底消除”收窄为“减少”，
+“全天候室外作业”收窄为“室外作业”；保留防护等级及数值，不扩展天气适用范围。
 """
 
 AUTO_REVIEW = """
@@ -338,11 +340,51 @@ def read_draft(raw, source, *, delivery=False):
     return data
 
 
+def _temper_caption(text):
+    """Narrow explicit guarantees, including those copied from source material.
+
+    Only wording changes: no number conversion, new function or weather claim.
+    Negative limitations remain intact instead of becoming positive promises.
+    """
+    def replace(match):
+        clause_prefix = re.split(r'[，,；;。！？!?\n]', text[:match.start()])[-1]
+        if re.search(r'不|未|无法|难以|并非', clause_prefix):
+            return match.group()
+        if match.group().startswith('全天候'):
+            return (match.group(1) or '日常') + match.group(2)
+        return '减少'
+
+    return re.sub(r'(?:彻底|完全)(?:杜绝|消除)|杜绝|全天候(室外|户外)?(作业|运行|使用)',
+                  replace, text)
+
+
 def render(plan):
     for screen in plan["screens"]:
         captions = {k: screen.get(k) for k in ("title", "body", "technical_support")}
         if screen["role"] == "spec_table":
             captions["specifications"] = plan["specifications"]
+        if plan.get('caption_repair_version') == CAPTION_REPAIR_VERSION:
+            if screen['role'] == 'spec_table':
+                # Raw evidence stays in the plan, not in printed copy.
+                captions['specifications'] = [{k: s[k] for k in ('name', 'value')}
+                                               for s in plan['specifications']]
+            def temper(value):
+                if isinstance(value, str):
+                    return _temper_caption(value)
+                if isinstance(value, list):
+                    return [temper(v) for v in value]
+                if isinstance(value, dict):
+                    return {k: temper(v) for k, v in value.items()}
+                return value
+            for key, value in captions.items():
+                edited = temper(value)
+                if edited != value:
+                    change = {'screen': screen['idx'], 'field': key,
+                              'before': value, 'after': edited, 'reason': 'absolute_rhetoric'}
+                    repairs = plan.setdefault('caption_repairs', [])
+                    if change not in repairs:
+                        repairs.append(change)
+                captions[key] = edited
         screen["prompt"] = (
             "制作专业工业产品竖版详情图。标题与关键参数优先，正文为空就不补正文。"
             "画面由本页内容决定，部件或信息可独占画面，不强塞整机。拟真部件为设计示意，不标称实拍。"
@@ -515,6 +557,13 @@ def repair_captions(data, source):
         proof = '\n'.join(row.get('evidence') or [])
         for key in ('title', 'body'):
             original = row.get(key) or ''
+            tempered = _temper_caption(original)
+            if tempered != original:
+                row[key] = tempered
+                changes.append({'screen': index, 'field': key, 'before': original,
+                                'after': tempered, 'reason': 'absolute_rhetoric',
+                                'evidence': row.get('evidence', [])})
+                original = tempered
             bad, hard, numeric_conflict = defects(original, proof)
             if not bad or hard:
                 continue
