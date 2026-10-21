@@ -125,7 +125,7 @@ const exclusivePatterns = [
   /^rpa\//,
   /^src\/main\/failure-evidence\.self_check\.cjs$/,
   /^scripts\/(?:update-helper\.|component-update-selftest\.|product-detail-download\.electron\.)/,
-  /^scripts\/(?:build-renderer|dev-electron|build-product-detail-sidecar|build-content-engine-sidecar|product-detail-release-runtime|content-engine-release-runtime|remotion-packaging|installer-release|customer-edition|internal-release|development-launcher)\.self_check\.cjs$/
+  /^scripts\/(?:artifact-retention|build-renderer|dev-electron|build-product-detail-sidecar|build-content-engine-sidecar|product-detail-release-runtime|content-engine-release-runtime|remotion-packaging|installer-release|customer-edition|internal-release|development-launcher)\.self_check\.cjs$/
 ];
 const isExclusive = check => exclusivePatterns.some(pattern => pattern.test(check));
 

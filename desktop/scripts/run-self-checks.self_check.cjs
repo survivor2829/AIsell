@@ -23,7 +23,8 @@ async function main() {
   assert.throws(() => concurrencyFor({ XIAOXI_SELF_CHECK_CONCURRENCY: "0" }, 20), /concurrency/);
   assert.equal(new Set(checks).size, checks.length);
   for (const check of ["scripts/update-helper.e2e.cjs", "scripts/component-update-selftest.cjs",
-    "scripts/product-detail-download.electron.self_check.cjs", "rpa/active_touch/moments_navigation.self_check.cjs"]) {
+    "scripts/product-detail-download.electron.self_check.cjs", "scripts/artifact-retention.self_check.cjs",
+    "rpa/active_touch/moments_navigation.self_check.cjs"]) {
     assert.equal(isExclusive(check), true, check + " must run alone");
   }
   assert.equal(isExclusive("src/main/failure-evidence.self_check.cjs"), true, "native PowerShell capture fixture must run alone like RPA checks");
