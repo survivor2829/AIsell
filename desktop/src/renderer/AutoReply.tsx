@@ -388,7 +388,7 @@ function recoverySummary(context: AutoReplyFailureContext) {
     case "retry_pending":
       return "本条回复尚未发出，系统会先重新确认微信状态，再决定是否继续。";
     case "manual_review_required":
-      return "检测到微信输入框可能有人为操作；为避免覆盖你的内容，这条消息不再自动重试。";
+      return "检测到微信输入框可能有人为操作；为避免覆盖您的内容，这条消息不再自动重试。";
     case "manual_check_required":
       return "发送是否完成无法确认；为避免重复发送，系统已停止对同一条消息自动补发。";
     case "fix_ai_and_restart":
@@ -496,7 +496,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
       <div className="page-head">
         <div>
           <h1>自动回复</h1>
-          <p>{workflow ? "先完成当前可执行的计划任务，空闲时使用 AI 专家资料接待客户。" : "启动后监听新消息，并使用已导入的 AI 专家资料生成回复。"}</p>
+          <p>{workflow ? "按您的业务资料回应客户咨询；先完成当前可执行任务，空闲时接待新消息。" : "启用后按您的业务资料回应新咨询，您可随时暂停并亲自接手。"}</p>
         </div>
         <div className="actions">
           {workflow ? <WorkflowToggle workflow={workflow} onNavigate={onNavigate} /> : running ? (

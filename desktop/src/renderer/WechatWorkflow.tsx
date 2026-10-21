@@ -490,7 +490,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
 
   return <section className="page workflow-page">
     <div className="page-head workflow-page-head">
-      <div><h1>{title}</h1><p>{mode === "home" ? "安排好待办，启动一次。先完成当前可执行任务，空闲时自动接待客户。" : mode === "touch" ? "选好联系人和话术，加入计划后按顺序执行。" : "准备发布内容或安排互动，系统会接着完成下一项。"}</p></div>
+      <div><h1>{title}</h1><p>{mode === "home" ? "集中安排客户联系、朋友圈和咨询接待，方便持续跟进。先完成当前可执行任务，空闲时接待新咨询。" : mode === "touch" ? "给选定客户介绍合适的产品与服务，按计划接着跟进。选好联系人和话术后加入计划。" : "让客户持续了解您的产品和案例，按计划发布朋友圈、安排互动。"}</p></div>
       <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />
     </div>
 
@@ -544,7 +544,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
 
     {history.length > 0 && <details open={view === "history" ? true : undefined} className="workflow-details workflow-history"><summary>已完成与已取消 <span>{history.length} 项</span></summary><ul className="workflow-task-list">{history.map(taskRow)}</ul></details>}
 
-    {mode === "home" && <footer className="workflow-settings-links"><span>基础设置</span><button className="text-button" onClick={() => onOpenSettings("expert")}>你的AI专家<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("contact-sync")}>同步联系人<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("reply")}>自动回复 · {state.recipients.length} 位客户<ChevronRight size={14} /></button></footer>}
+    {mode === "home" && <footer className="workflow-settings-links"><span>基础设置</span><button className="text-button" onClick={() => onOpenSettings("expert")}>您的AI专家<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("contact-sync")}>同步联系人<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("reply")}>自动回复 · {state.recipients.length} 位客户<ChevronRight size={14} /></button></footer>}
   </section>;
 }
 

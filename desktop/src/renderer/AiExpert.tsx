@@ -125,17 +125,17 @@ export function AiExpert() {
 
   const activeSlot = tab === "expert_rules" ? status.expertRules : status.businessKnowledge;
   return <section className="page workflow-expert-page">
-    <div className="page-head workflow-page-head"><div><h1>你的AI专家</h1><p>聊聊你的业务与接待方式，AI 会整理成两份可编辑的专家资料。</p></div><span className={"ai-expert-state " + (status.ready ? "is-configured" : "")}>{dirty ? "有未保存内容" : status.ready ? "专家已就绪" : "待建立"}</span></div>
+    <div className="page-head workflow-page-head"><div><h1>您的AI专家</h1><p>整理产品和接待要求，让AI按您的业务资料回应客户。两份专家资料都可以编辑。</p></div><span className={"ai-expert-state " + (status.ready ? "is-configured" : "")}>{dirty ? "有未保存内容" : status.ready ? "专家已就绪" : "待建立"}</span></div>
     {(error || notice) && <div className={error ? "workflow-alert" : "workflow-notice"} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
     <div className="workflow-expert-layout">
       <section className="workflow-expert-conversation" aria-label="建立专家的对话">
-        <h2>一起建立你的专家</h2>
+        <h2>一起建立您的专家</h2>
         <div className="workflow-expert-messages" aria-live="polite">
-          {loading ? <p className="workflow-small-note">正在读取已有对话…</p> : messages.length ? messages.filter((message) => message.role !== "system").map((message, index) => <div className={"workflow-expert-message " + (message.role === "user" ? "is-user" : "is-assistant")} key={index}><strong>{message.role === "user" ? "你" : "AI 专家"}</strong><p>{message.content}</p></div>) : <div className="workflow-expert-intro"><strong>先从你的业务开始</strong><p>你主要提供什么产品或服务？客户通常会问什么？希望 AI 用怎样的语气接待？</p><p>直接告诉我，也可以先在右侧导入现有资料。</p></div>}
-          {busy === "chat" && <p className="workflow-small-note" role="status">正在整理你的业务信息…</p>}
+          {loading ? <p className="workflow-small-note">正在读取已有对话…</p> : messages.length ? messages.filter((message) => message.role !== "system").map((message, index) => <div className={"workflow-expert-message " + (message.role === "user" ? "is-user" : "is-assistant")} key={index}><strong>{message.role === "user" ? "您" : "AI 专家"}</strong><p>{message.content}</p></div>) : <div className="workflow-expert-intro"><strong>先从您的业务开始</strong><p>您主要提供什么产品或服务？客户通常会问什么？希望 AI 用怎样的语气接待？</p><p>直接告诉我，也可以先在右侧导入现有资料。</p></div>}
+          {busy === "chat" && <p className="workflow-small-note" role="status">正在整理您的业务信息…</p>}
           <div ref={messagesEnd} />
         </div>
-        <form className="workflow-expert-composer" onSubmit={(event) => void send(event)}><label htmlFor="expert-question" className="workflow-sr-only">告诉 AI 你的业务信息</label><textarea id="expert-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：我们做清洁设备租赁，客户最关心价格、配送和售后……" rows={3} disabled={Boolean(busy) || loading || !api} /><div><span>可继续补充或纠正，资料会随对话更新。</span><button type="submit" className="primary-button" disabled={Boolean(busy) || loading || !question.trim() || !api}><Send size={15} />{busy === "chat" ? "整理中…" : "发送"}</button></div></form>
+        <form className="workflow-expert-composer" onSubmit={(event) => void send(event)}><label htmlFor="expert-question" className="workflow-sr-only">告诉 AI 您的业务信息</label><textarea id="expert-question" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="例如：我们做清洁设备租赁，客户最关心价格、配送和售后……" rows={3} disabled={Boolean(busy) || loading || !api} /><div><span>可继续补充或纠正，资料会随对话更新。</span><button type="submit" className="primary-button" disabled={Boolean(busy) || loading || !question.trim() || !api}><Send size={15} />{busy === "chat" ? "整理中…" : "发送"}</button></div></form>
       </section>
       <section className="workflow-expert-documents" aria-label="专家资料">
         <div className="workflow-expert-document-head"><h2>专家资料</h2><button className="primary-button" onClick={() => void save()} disabled={Boolean(busy) || loading || !rules.trim() || !knowledge.trim() || !api}>{busy === "save" ? "保存中…" : "保存资料"}</button></div>
