@@ -151,6 +151,15 @@ function copyAppRuntimeDependencies(appDir) {
   }
 }
 
+function writeLauncherTrust(appDir, edition) {
+  const channel = edition === "test" ? "test" : "production";
+  const config = require("../src/main/cloud-release-config.json")[channel];
+  const file = path.join(appDir, "src/shared/launcher-trust.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ channel, appId: config.appId, signingPublicKey: config.signingPublicKey }));
+  return file;
+}
+
 function copyAppSource(appDir, edition) {
   fs.mkdirSync(appDir, { recursive: true });
   fs.copyFileSync(path.join(desktopDir, "package.json"), path.join(appDir, "package.json"));
@@ -167,6 +176,7 @@ function copyAppSource(appDir, edition) {
       filter: (sourcePath) => sourceAllowed(sourcePath, edition)
     });
   }
+  writeLauncherTrust(appDir, edition);
   copyAppRuntimeDependencies(appDir);
   // Main-process quotes and renderer templates share this versioned catalog.
   fs.mkdirSync(path.join(appDir, 'remotion-packaging'), { recursive: true });
@@ -383,6 +393,8 @@ function buildPortableStagingInScope(edition, paths, sourceState) {
     const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition), inventoryFile], { encoding: "utf8", windowsHide: true });
     if (baseline.status !== 0) throw new Error(baseline.stderr || baseline.stdout || "component baseline failed");
     console.log(baseline.stdout.trim());
+    require("./component-base-input.cjs").reviewBaseUpgrade(target, sourceState.componentBaseRoot || null,
+      path.join(desktopDir, ".build", `base-upgrade-${edition}.json`));
     fs.writeFileSync(inventoryFile, JSON.stringify(require("./release-tree-hash.cjs").hashInventory(target)));
   }
   scanRelease(target);
@@ -652,6 +664,7 @@ module.exports = {
   cleanupPaths,
   copyRuntimePackageTree,
   copyAppRuntimeDependencies,
+  writeLauncherTrust,
   describeBaseStabilizedRuntime,
   isCommercialDeliveryReady,
   publishStagedRelease,

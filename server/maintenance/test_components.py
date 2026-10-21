@@ -11,6 +11,62 @@ from service import Handler, Server
 from promote_components import promote
 
 class ComponentsTest(unittest.TestCase):
+    def test_protocol5_dual_manifest_bridge_and_capability_routing(self):
+        from legacy_releases import LegacyReleaseRouter
+        from service import APP_IDS
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            incoming, releases, artifacts = root / "incoming", root / "releases/test", root / "artifacts"
+            for folder in (incoming, releases, artifacts):
+                folder.mkdir(parents=True)
+            data = b"protocol5 fixture"
+            digest = hashlib.sha256(data).hexdigest()
+            (incoming / (digest + ".zip")).write_bytes(data)
+            (artifacts / (digest + ".exe")).write_bytes(data)
+            base = {"version": "1.1.105", "fingerprint": "a" * 64}
+            full = {"schema": 1, "appId": APP_IDS["test"], "channel": "test", "platform": "win32", "arch": "x64",
+                    "version": "1.1.105", "sequence": 1, "sha256": digest, "size": len(data), "file": f"/artifacts/{digest}.exe",
+                    "componentBaseProtocol": 5}
+            wrap = lambda value: {"payload": json.dumps(value), "signature": "SSH-only-fixture"}
+            envelope = {**wrap(full), "componentBaseEnvelope": wrap({**full, "componentBase": {**base, "dataSchema": 2, "updateProtocol": 5}})}
+            (releases / "latest.json").write_text(json.dumps(envelope))
+            target = {**full, "schema": 2, "version": "1.1.106", "sequence": 2, "updateProtocol": 5, "base": base, "dataSchema": 2,
+                      "components": {name: {"name": name, "sha256": digest, "size": len(data), "file": f"/components/{digest}.zip"}
+                                     for name in ("application", "content-engine", "product-detail", "video", "updater", "assets")}}
+            candidate = incoming / "manifest.json"
+            candidate.write_text(json.dumps(wrap(target)))
+            self.assertTrue(promote(candidate, incoming, root)["published"])
+            router = LegacyReleaseRouter(root, APP_IDS)
+            modern = {"X-Xiaoxi-Update-Protocol": "5", "X-Xiaoxi-Version": "1.1.105",
+                      "X-Xiaoxi-Base-Version": base["version"], "X-Xiaoxi-Base-Fingerprint": base["fingerprint"]}
+            self.assertEqual(json.loads(router.latest("test", "2", modern)["payload"])["updateProtocol"], 5)
+            for headers in ({}, {**modern, "X-Xiaoxi-Update-Protocol": "3"},
+                            {**modern, "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Bridge-Update": "1",
+                             "X-Xiaoxi-Base-Version": base["version"], "X-Xiaoxi-Base-Fingerprint": base["fingerprint"]}):
+                self.assertEqual(router.latest("test", "2", headers), {"empty": True})
+                self.assertEqual(router.latest("test", "1", headers), envelope)
+            before = (releases / "latest-components.json").read_bytes()
+            for supplemental in (None, wrap({**full, "sequence": 100, "componentBase": {**base, "dataSchema": 2, "updateProtocol": 5}})):
+                broken = {**envelope}
+                if supplemental is None:
+                    del broken["componentBaseEnvelope"]
+                else:
+                    broken["componentBaseEnvelope"] = supplemental
+                (releases / "latest.json").write_text(json.dumps(broken))
+                target.update(sequence=3, version="1.1.107")
+                candidate.write_text(json.dumps(wrap(target)))
+                with self.assertRaisesRegex(ValueError, "fallback|binding"):
+                    promote(candidate, incoming, root)
+                self.assertEqual((releases / "latest-components.json").read_bytes(), before)
+            from promote import promote as promote_full
+            with self.assertRaisesRegex(ValueError, "binding"):
+                promote_full(releases / "latest.json", artifacts / (digest + ".exe"), root)
+            later = {**full, "version": "1.1.108", "sequence": 9}
+            later_envelope = {**wrap(later), "componentBaseEnvelope": wrap({**later, "componentBase": {**base, "dataSchema": 2, "updateProtocol": 5}})}
+            candidate.write_text(json.dumps(later_envelope))
+            self.assertTrue(promote_full(candidate, artifacts / (digest + ".exe"), root)["published"])
+            self.assertEqual(json.loads((releases / "latest.json").read_text()), later_envelope)
+
     def test_compatible_base_bridge_and_old_client_routing(self):
         from legacy_releases import LegacyReleaseRouter
         from service import APP_IDS

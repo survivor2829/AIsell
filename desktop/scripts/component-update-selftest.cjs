@@ -28,6 +28,7 @@ async function fixture(t) {
     "debug.log": "runtime-created Chromium log",
     "resources/app/node_modules/native/index.node": "stable native",
     "resources/app/src/main/main.cjs": "application v1",
+    "resources/app/src/main/updater-bootstrap.cjs": "exports.start = () => {};",
     "resources/app/dist/video-examples/sample.mp4": "offline sample",
     "resources/content-engine/content-engine-worker.exe": "python owncode v1",
     "resources/product-detail/product-detail-server.exe": "product owncode v1",
@@ -57,8 +58,8 @@ test("streamed STORE archives remain readable by the existing updater and unchan
   let built;
   try { built = await buildComponentRelease(args); }
   finally { JSZip.prototype.generateAsync = originalGenerate; }
-  const application = built.artifacts.find(item => item.name === "application");
-  const zip = await JSZip.loadAsync(await fs.readFile(application.path));
+  const assets = built.artifacts.find(item => item.name === "assets");
+  const zip = await JSZip.loadAsync(await fs.readFile(assets.path));
   assert.equal(zip.file("files/resources/app/dist/video-examples/sample.mp4")._data.compression.magic, "\0\0",
     "already compressed media must use STORE");
   const rawFs = require("node:fs"), originalRead = rawFs.createReadStream;
@@ -94,67 +95,64 @@ test("streaming rejects a source changed after inventory and removes only its te
   assert.equal((await fs.readdir(outputDir)).some(name => name.endsWith(".tmp")), false);
 });
 
-test("successful-version verification is cached across launches and invalidated by manifest or runtime failure", async t => {
-  const { root, source } = await fixture(t);
-  const components = require("../src/main/component-paths.cjs");
-  const paths = components.updatePaths(path.join(root, "profile"));
-  const receipt = components.bootVerificationReceipt(paths, source);
-  assert.equal(receipt.hit, false);
-  components.beginBoot(paths);
-  for (const invalid of [null, { schema: 1, records: {} }, { schema: 1, records: [null] }]) {
-    await fs.writeFile(path.join(paths.directory, "verification-cache.json"), JSON.stringify(invalid));
-    assert.equal(components.bootVerificationReceipt(paths, source).hit, false, "malformed cache must degrade to full verification");
-  }
-  try {
-    global.__xiaoxiComponents = { paths, root: source, installedRoot: source, receipt, healthy: false };
-    components.markHealthy();
-    assert.equal(components.bootVerificationReceipt(paths, source).hit, true);
-    components.runtimeLaunchFailed(path.join(source, "ffmpeg.exe"), { code: 1 });
-    assert.equal(components.bootVerificationReceipt(paths, source).hit, true, "ordinary media errors must not invalidate the runtime");
-    components.runtimeLaunchFailed(path.join(root, "external.exe"), { code: "ENOENT" });
-    assert.equal(components.bootVerificationReceipt(paths, source).hit, true, "external executables are not part of the installation");
-    components.runtimeLaunchFailed(path.join(source, "ffmpeg.exe"), { code: "ENOENT" });
-    assert.equal(components.bootVerificationReceipt(paths, source).hit, false);
-    assert.equal(components.beginBoot(paths), true, "runtime failure forces full verification on the next launch");
-    global.__xiaoxiComponents = { paths, root: source, installedRoot: source, receipt, healthy: false };
-    components.markHealthy();
-    const failure = "previous candidate failed";
-    assert.equal(components.bootVerificationReceipt(paths, source, source, failure).hit, false);
-    components.saveSelection(paths, { failure });
-    global.__xiaoxiComponents = { paths, root: source, installedRoot: source,
-      receipt: components.bootVerificationReceipt(paths, source, source, failure), healthy: false };
-    components.markHealthy();
-    assert.equal(components.readJson(paths.selection).failure, failure, "rollback reason must remain available to the user");
-    assert.equal(components.bootVerificationReceipt(paths, source, source, failure).hit, true);
-    await fs.appendFile(path.join(source, "component-base.json"), " ");
-    assert.equal(components.bootVerificationReceipt(paths, source).hit, false, "even metadata changes invalidate a receipt");
-  } finally { delete global.__xiaoxiComponents; }
-});
-
-test("signed verification groups defer only unused runtimes and media, never startup code", async t => {
+test("prepared generations reuse immutable bytes and first-start metadata checks never read file contents", async t => {
   const { root, source, base } = await fixture(t);
-  const envelope = sign({ ...base.manifest, version: "1.1.1" });
-  const store = createComponentStore({ rootDir: path.join(root, "groups"), baseRoot: source, config, transport: { request() { assert.fail("no downloads"); } } });
-  const prepared = await store.prepare(envelope);
-  const { verifySelected, createRuntimeVerification } = require("../src/main/component-paths.cjs");
-  const runtime = path.join(prepared.generationRoot, "resources/content-engine/content-engine-worker.exe");
-  await fs.writeFile(runtime, "corrupt runtime");
-  const manifest = await verifySelected(prepared.generationRoot, source, config, { startupOnly: true });
-  const verification = createRuntimeVerification(prepared.generationRoot, manifest);
-  await assert.rejects(verification.ensure("content"), /corrupt/);
-  await assert.rejects(verifySelected(prepared.generationRoot, source, config), /corrupt/);
-  const media = path.join(prepared.generationRoot, "resources/app/dist/video-examples/sample.mp4");
-  await fs.writeFile(media, "corrupt sample");
-  await assert.rejects(verification.media(media), /corrupt/);
-  const extra = path.join(prepared.generationRoot, "resources/app/src/main/unlisted.cjs");
-  await fs.writeFile(extra, "unlisted code");
-  await assert.rejects(verifySelected(prepared.generationRoot, source, config, { startupOnly: true }), /generation_invalid/);
+  const components = require("../src/main/component-paths.cjs"), rawFs = require("node:fs");
+  const paths = components.updatePaths(path.join(root, "profile"));
+  const originalRead = rawFs.createReadStream;
+  let contentReads = 0;
+  rawFs.createReadStream = function(file, ...args) {
+    if (String(file).startsWith(root + path.sep)) contentReads++;
+    return originalRead.call(this, file, ...args);
+  };
+  let prepared;
+  try {
+    prepared = await createComponentStore({ rootDir: paths.directory, baseRoot: source, config,
+      transport: { request() { assert.fail("unchanged components must not download"); } } }).prepare(sign({ ...base.manifest, version: "1.1.1" }));
+    assert.equal(contentReads, 0, "linking a prepared immutable base must not hash its bytes again");
+    assert.equal(components.bootVerificationReceipt(paths, prepared.generationRoot).hit, true, "prepare must persist a receipt before announcing ready");
+    await components.verifySelected(prepared.generationRoot, source, config);
+    const verification = components.createRuntimeVerification(prepared.generationRoot, base.manifest);
+    await verification.ensure("content");
+    await verification.media(path.join(prepared.generationRoot, "resources/app/dist/video-examples/sample.mp4"));
+    assert.equal(contentReads, 0, "first startup and lazy callers must perform zero content hashes");
+  } finally { rawFs.createReadStream = originalRead; }
+  const second = await createComponentStore({ rootDir: paths.directory, baseRoot: prepared.generationRoot, config,
+    transport: { request() { assert.fail("unchanged components must not download"); } } }).prepare(sign({ ...base.manifest, version: "1.1.2" }));
+  assert.equal(components.bootVerificationReceipt(paths, second.generationRoot, source).hit, true,
+    "a generation reused as the source must not change the receipt identity seen from the installed base");
+  const extra = path.join(second.generationRoot, "unexpected.js");
+  await fs.writeFile(extra, "unlisted");
+  await assert.rejects(components.verifySelected(second.generationRoot, source, config), /generation_invalid/);
   await fs.unlink(extra);
-  await fs.writeFile(path.join(prepared.generationRoot, "resources/app/src/main/main.cjs"), "application v2");
-  await assert.rejects(verifySelected(prepared.generationRoot, source, config, { startupOnly: true }), /corrupt/);
+  await fs.appendFile(path.join(second.generationRoot, "component-base.json"), " ");
+  assert.equal(components.bootVerificationReceipt(paths, second.generationRoot).hit, false, "changed metadata invalidates preparation");
+  await assert.rejects(components.verifySelected(second.generationRoot, source, config), /receipt|verification/);
+
+  const failedPaths = components.updatePaths(path.join(root, "receipt-failure"));
+  const failedEnvelope = sign({ ...base.manifest, version: "1.1.3" });
+  const retryStore = createComponentStore({ rootDir: failedPaths.directory, baseRoot: source, config,
+    transport: { request() { assert.fail("unchanged components must not download"); } } });
+  const originalRecord = components.recordVerification;
+  components.recordVerification = () => { throw Error("fixture_receipt_locked"); };
+  try { await assert.rejects(retryStore.prepare(failedEnvelope), /fixture_receipt_locked/); }
+  finally { components.recordVerification = originalRecord; }
+  const ledger = JSON.parse(await fs.readFile(path.join(failedPaths.directory, ".artifact-retention.json"), "utf8"));
+  assert.ok(Object.values(ledger).some(state => state.owned.includes(path.join("generations", digest(failedEnvelope.payload)))),
+    "a failed preparation receipt must leave the renamed generation registered for retry or retirement");
+  const recovered = await retryStore.prepare(failedEnvelope);
+  assert.equal(components.bootVerificationReceipt(failedPaths, recovered.generationRoot).hit, true);
+  const retention = require("../src/shared/artifact-retention.cjs"), originalOwnership = retention.artifactOwnershipRegistered;
+  const unregistered = components.updatePaths(path.join(root, "ownership-failure"));
+  retention.artifactOwnershipRegistered = () => false;
+  try {
+    await assert.rejects(createComponentStore({ rootDir: unregistered.directory, baseRoot: source, config,
+      transport: { request() { assert.fail("no download"); } } }).prepare(failedEnvelope), /component_ownership_record_required/);
+  } finally { retention.artifactOwnershipRegistered = originalOwnership; }
+  assert.deepEqual(await fs.readdir(unregistered.generations), [], "failed ownership persistence must not leave a renamed program tree");
 });
 
-test("startup verification checks shared parents once but rehashes files on each launch", async t => {
+test("explicit file verification checks shared parents once and rejects changed bytes or symlinks", async t => {
   const { root, source, base } = await fixture(t);
   const originalLstat = fs.lstat, seen = new Map();
   fs.lstat = async function(file, ...args) {
@@ -361,7 +359,16 @@ test("full generation matches signed target, reuses base and unchanged component
     await fs.copyFile(archive.path, options.destination); options.onProgress(archive.size);
   } };
   const store = createComponentStore({ rootDir: path.join(root, "updated"), baseRoot: source, config, transport });
-  const result = await store.prepare(sign(target.manifest));
+  const rawFs = require("node:fs"), originalReadStream = rawFs.createReadStream;
+  let archiveReads = 0;
+  rawFs.createReadStream = function(file, ...args) {
+    if (String(file).startsWith(path.join(root, "updated/archives") + path.sep)) archiveReads++;
+    return originalReadStream.call(this, file, ...args);
+  };
+  let result;
+  try { result = await store.prepare(sign(target.manifest)); }
+  finally { rawFs.createReadStream = originalReadStream; }
+  assert.equal(archiveReads, 2, "each of the two changed archives must be hashed once, including fallback transports without a streaming proof");
   assert.equal(requests, 3);
   for (const file of target.baseline.files) assert.equal(await hashFile(path.join(result.generationRoot, file.path)), file.sha256);
   assert.equal(await fs.readFile(path.join(source, "resources/app/src/main/main.cjs"), "utf8"), "application v1");
@@ -370,7 +377,7 @@ test("full generation matches signed target, reuses base and unchanged component
   await assert.rejects(store.prepare(sign(target.manifest)), /generation_invalid/);
   const corrupt = createComponentStore({ rootDir: path.join(root, "corrupt"), baseRoot: source, config,
     transport: { async request(_route, options) { await fs.writeFile(options.destination, "corrupt archive"); } } });
-  await assert.rejects(corrupt.prepare(sign(target.manifest)), /archive_corrupt/);
+  await assert.rejects(corrupt.prepare(sign(target.manifest)), /download_invalid/);
   assert.deepEqual(await fs.readdir(path.join(root, "corrupt/generations")), [], "a failed download must remove its own extracted staging directory");
   const failedParts = await fs.readdir(path.join(root, "corrupt/archives"));
   assert.equal(failedParts.length, 1);

@@ -11,6 +11,23 @@ const { describeBaseStabilizedRuntime, treeSha256 } = require("./build-portable-
 const { digest, treeHash } = require("../src/shared/component-contract.cjs");
 
 async function main() {
+  const { baseUpgradeReview } = require("./component-base-input.cjs");
+  const previousBase = { schema: 2, updateProtocol: 5, base: { version: "1.1.105", fingerprint: "a".repeat(64) },
+    files: [{ path: "electron.exe", component: "base", size: 1, sha256: "a".repeat(64) }] };
+  const upgradedBase = { ...previousBase, files: [{ ...previousBase.files[0], sha256: "b".repeat(64) }] };
+  assert.equal(baseUpgradeReview(previousBase, upgradedBase).allowed, false, "a full build must require an explicit large runtime upgrade reason");
+  assert.equal(baseUpgradeReview(previousBase, upgradedBase, "electron-runtime").allowed, true);
+  const leakedCode = { ...upgradedBase, files: [...upgradedBase.files,
+    { path: "resources/app/src/main/ordinary-business.cjs", component: "base", size: 1, sha256: "c".repeat(64) }] };
+  assert.equal(baseUpgradeReview(previousBase, leakedCode, "electron-runtime").allowed, false,
+    "declaring an Electron upgrade cannot admit ordinary code into the base");
+  const leakedPython = { ...previousBase, files: [...previousBase.files,
+    { path: "resources/content-engine/_internal/content_engine/ordinary_business.py", component: "base", size: 1, sha256: "c".repeat(64) }] };
+  assert.equal(baseUpgradeReview(previousBase, leakedPython, "python-runtime").allowed, false,
+    "a Python runtime declaration cannot override the canonical ownership of business source");
+  assert.equal(baseUpgradeReview(previousBase, { ...previousBase, base: { ...previousBase.base, version: "1.1.106" } }).allowed, false,
+    "a label-only base bump must not force another full installation");
+  assert.equal(baseUpgradeReview({ ...previousBase, updateProtocol: 4 }, leakedCode).changes.every(change => change.reason === "protocol-transition"), true);
   const packageJson = require("../package.json");
   assert.equal(packageJson.scripts["release:internal"], "node scripts/build-internal-release.cjs --default-components");
   assert.equal(packageJson.scripts["publish:internal"], "node scripts/publish-internal-release.cjs --default-components");

@@ -7,6 +7,7 @@ import shutil
 import sys
 from contextlib import contextmanager
 from service import APP_IDS, HEX, VERSION
+from legacy_releases import effective_full_manifest
 
 COMPONENTS = {"application", "content-engine", "product-detail", "video"}
 
@@ -34,11 +35,13 @@ def promote(envelope_path, incoming_dir, root="/var/lib/ai-maintenance"):
     envelope = json.loads(Path(envelope_path).read_text(encoding="utf-8"))
     manifest = json.loads(envelope["payload"])
     channel = manifest.get("channel")
+    update_protocol = manifest.get("updateProtocol", 4)
+    names = COMPONENTS | {"updater", "assets"} if update_protocol == 5 else COMPONENTS
     if (manifest.get("schema") != 2 or channel not in APP_IDS or manifest.get("appId") != APP_IDS[channel]
             or not VERSION.fullmatch(str(manifest.get("version", "")))
             or manifest.get("platform") != "win32" or manifest.get("arch") != "x64"
             or type(manifest.get("sequence")) is not int or manifest["sequence"] < 1
-            or set(manifest.get("components", {})) != COMPONENTS):
+            or update_protocol not in (4, 5) or set(manifest.get("components", {})) != names):
         raise ValueError("release_identity")
     root, incoming = Path(root), Path(incoming_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -49,12 +52,12 @@ def promote(envelope_path, incoming_dir, root="/var/lib/ai-maintenance"):
         # Both v1 and v2 publishers use this lock. Keep legacy installations able
         # to reach this exact target, even when an upload overlaps another release.
         try:
-            full = json.loads(json.loads((releases / "latest.json").read_text(encoding="utf-8"))["payload"])
+            full = effective_full_manifest(json.loads((releases / "latest.json").read_text(encoding="utf-8")))
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise ValueError("full_fallback_missing") from error
         digest = full.get("sha256", "")
         bridge = full.get("componentBase") or {}
-        compatible_bridge = (bridge.get("updateProtocol") == 4
+        compatible_bridge = (bridge.get("updateProtocol") == update_protocol
                              and bridge.get("version") == manifest.get("base", {}).get("version")
                              and bridge.get("fingerprint") == manifest.get("base", {}).get("fingerprint")
                              and bridge.get("dataSchema") == manifest.get("dataSchema")

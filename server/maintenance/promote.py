@@ -1,5 +1,4 @@
 """SSH-only publication: verify artifact before atomically changing the channel pointer."""
-import fcntl
 import hashlib
 import json
 import os
@@ -7,10 +6,12 @@ from pathlib import Path
 import shutil
 import sys
 from service import APP_IDS, HEX, VERSION
+from promote_components import publication_lock
+from legacy_releases import effective_full_manifest
 
 def promote(envelope_path, installer_path, root="/var/lib/ai-maintenance"):
     envelope = json.loads(Path(envelope_path).read_text())
-    manifest = json.loads(envelope["payload"])
+    manifest = effective_full_manifest(envelope)
     channel = manifest["channel"]
     if channel not in APP_IDS or manifest["appId"] != APP_IDS[channel] or not VERSION.fullmatch(manifest["version"]):
         raise ValueError("release_identity")
@@ -27,8 +28,7 @@ def promote(envelope_path, installer_path, root="/var/lib/ai-maintenance"):
     releases = root / "releases" / channel
     artifacts.mkdir(exist_ok=True)
     releases.mkdir(parents=True, exist_ok=True)
-    with (root / "publish.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with publication_lock(root / "publish.lock"):
         latest = releases / "latest.json"
         if latest.exists():
             previous = json.loads(json.loads(latest.read_text())["payload"])

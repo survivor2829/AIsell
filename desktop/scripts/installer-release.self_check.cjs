@@ -35,6 +35,21 @@ for (const installerConfig of [config, testConfig]) {
 const testNsis = fs.readFileSync(path.join(desktopDir, "build", "installer-test.nsh"), "utf8");
 const builder = fs.readFileSync(path.join(desktopDir, "scripts", "build-installer-release.cjs"), "utf8");
 const trustVerifier = fs.readFileSync(path.join(desktopDir, "scripts", "release-trust-record.cjs"), "utf8");
+const { classify } = require("./build-component-release.cjs");
+const componentLayout = require("../component-layout.json");
+for (const [relative, expected] of [
+  ["resources/app/src/main/updater-bootstrap.cjs", "updater"],
+  ["resources/app/src/main/update-helper.cjs", "updater"],
+  ["resources/app/src/main/bootstrap.cjs", "base"],
+  ["resources/app/src/shared/launcher-trust.json", "base"],
+  ["resources/app/dist/assets/example.png", "assets"],
+  ["resources/app/dist/assets/index.js", "application"],
+  ["resources/app/dist-delivery/assets/example.woff2", "assets"],
+  ["resources/content-engine/_internal/base_library.zip", "content-engine"],
+  ["resources/product-detail/_internal/base_library.zip", "product-detail"],
+  ["resources/product-detail/_internal/python312.dll", "base"],
+  ["resources/app/rpa/contact_sync/libs/helper.dll", "application"]
+]) assert.equal(classify(relative, componentLayout), expected, relative);
 
 assert.equal(packageMetadata.productName, productBrand.displayName);
 assert.match(packageMetadata.version, /^\d+\.\d+\.\d+$/u);
@@ -158,6 +173,23 @@ assert.deepEqual(resolveInstallerTarget("test"), {
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "aihuoke-installer-publish-"));
 try {
+  const trustApp = path.join(fixture, "launcher-trust-app");
+  const { writeLauncherTrust } = require("./build-portable-release.cjs");
+  const trusted = JSON.parse(fs.readFileSync(writeLauncherTrust(trustApp, "test"), "utf8"));
+  const canonicalTrust = require("../src/main/cloud-release-config.json").test;
+  assert.deepEqual(trusted, { channel: "test", appId: canonicalTrust.appId, signingPublicKey: canonicalTrust.signingPublicKey });
+  assert.equal(JSON.parse(fs.readFileSync(writeLauncherTrust(trustApp, "delivery"), "utf8")).channel, "production",
+    "delivery builds must use the same trust channel understood by the fixed launcher and cloud config");
+  const baseFixture = path.join(fixture, "protocol5-installer");
+  const capabilityPath = path.join(baseFixture, "resources/app/src/shared/update-capabilities.json");
+  fs.mkdirSync(path.dirname(capabilityPath), { recursive: true });
+  fs.writeFileSync(capabilityPath, JSON.stringify({ protocol: 5, verification: 1 }));
+  const installerBase = { version: "1.1.105", fingerprint: "a".repeat(64) };
+  fs.writeFileSync(path.join(baseFixture, "component-base.json"), JSON.stringify({ updateProtocol: 5, base: installerBase, dataSchema: 2, verification: { schema: 1 } }));
+  const { installerComponentBase } = require("./build-installer-release.cjs");
+  assert.deepEqual(installerComponentBase(baseFixture), { ...installerBase, dataSchema: 2, updateProtocol: 5 });
+  fs.writeFileSync(capabilityPath, JSON.stringify({ protocol: 4, verification: 1 }));
+  assert.throws(() => installerComponentBase(baseFixture), /capabilities_invalid/);
   const staged = path.join(fixture, "staged.exe");
   const canonical = path.join(fixture, "canonical.exe");
   fs.writeFileSync(staged, "new");

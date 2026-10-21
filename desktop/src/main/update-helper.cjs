@@ -7,8 +7,8 @@ const { promisify } = require("node:util");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { readJson, updatePaths, verifySelected, saveSelection, rollbackSelection } = require("./component-paths.cjs");
 const { verifyManifest, VERSION } = require("../shared/cloud-contract.cjs");
-const { hashFile } = require("../shared/component-contract.cjs");
-const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
+const { digest, HEX } = require("../shared/component-contract.cjs");
+const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure, metadataInventory, copySnapshot } = require("./update-storage.cjs");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const productBrand = require("../../product-brand.json");
 const PROCESS_QUERY_TIMEOUT_MS = 60000;
@@ -129,7 +129,7 @@ async function stopLaunch(pid, tracked, onStage) {
 async function backupUserData(userData, id) {
   return (await require("./update-backups.cjs").captureData(userData, id)).directory;
 }
-async function reclaimFinishedHelpers(paths, processes) {
+async function reclaimFinishedHelpers(paths, processes, keepIdentity) {
   const parent = path.join(paths.directory, "helper-runtime");
   if (!fs.existsSync(parent)) return;
   const realParent = await fs.promises.realpath(parent);
@@ -138,6 +138,19 @@ async function reclaimFinishedHelpers(paths, processes) {
     const id = name.slice(0, -5), job = readJson(path.join(paths.jobs, name));
     const status = readJson(path.join(paths.jobs, id + ".status.json")), ready = readJson(path.join(paths.jobs, id + ".ready.json"));
     const directory = path.join(realParent, id);
+    if (job?.helperCopyVersion === 2) {
+      if (!HEX.test(job.helperRuntimeIdentity || "") || job.helperRuntimeIdentity === keepIdentity) continue;
+      const shared = (await fs.promises.readdir(paths.jobs)).filter(file => /^[a-f0-9-]{36}\.json$/.test(file))
+        .map(file => readJson(path.join(paths.jobs, file))).filter(other => other?.helperRuntimeIdentity === job.helperRuntimeIdentity);
+      if (shared.some(other => {
+        const state = readJson(path.join(paths.jobs, other.id + ".status.json")), ready = readJson(path.join(paths.jobs, other.id + ".ready.json"));
+        return !["error", "complete"].includes(state?.phase) || !Number.isInteger(ready?.pid) || ready.pid <= 0 || processes.some(row => row.pid === ready.pid);
+      })) continue;
+      const sharedDirectory = path.join(realParent, job.helperRuntimeIdentity);
+      if (job.helperExecutable !== path.join(sharedDirectory, "ai-update-helper.exe")) continue;
+      try { await removeOwnedDirectory({ parent: realParent, directory: sharedDirectory, identity: job.helperIdentity }); } catch { /* Occupied or uncertain: retain it. */ }
+      continue;
+    }
     if (job?.helperCopyVersion !== 1 || job.id !== id || job.helperExecutable !== path.join(directory, "ai-update-helper.exe")
         || !["error", "complete"].includes(status?.phase) || !Number.isInteger(ready?.pid) || ready.pid <= 0
         || processes.some(row => row.pid === ready.pid)) continue;
@@ -145,45 +158,91 @@ async function reclaimFinishedHelpers(paths, processes) {
     try { await removeOwnedDirectory({ parent: realParent, directory, identity: job.helperIdentity }); } catch { /* In use or uncertain: preserve it. */ }
   }
 }
+function helperRuntimeIdentity(installedRoot, applicationRoot) {
+  const baseline = readJson(path.resolve(applicationRoot, "../../component-base.json")) || readJson(path.join(installedRoot, "component-base.json"));
+  const updater = baseline?.components?.updater?.treeSha256 || baseline?.components?.application?.treeSha256;
+  if (!HEX.test(baseline?.base?.fingerprint || "") || !HEX.test(updater || "")) throw Error("update_helper_identity_invalid");
+  return digest(JSON.stringify({ base: baseline.base.fingerprint, updater }));
+}
+async function prepareHelperRuntime({ paths, installedRoot, applicationRoot, executable }) {
+  const identity = helperRuntimeIdentity(installedRoot, applicationRoot), parent = path.join(paths.directory, "helper-runtime");
+  const directory = path.join(parent, identity), receipt = path.join(directory, ".helper-runtime.json");
+  const helperExecutable = path.join(directory, "ai-update-helper.exe");
+  if (fs.existsSync(directory)) {
+    const record = readJson(receipt), stat = await fs.promises.lstat(directory, { bigint: true });
+    if (record?.schema !== 2 || record.identity !== identity || stat.isSymbolicLink()
+        || String(stat.dev) !== record.owned?.identity?.dev || String(stat.ino) !== record.owned?.identity?.ino) throw Error("update_helper_runtime_invalid");
+    const metadata = await metadataInventory(directory, file => file !== receipt);
+    const shape = entries => entries.map(({ path, size, link }) => ({ path, size, ...(link ? { link } : {}) }));
+    const [sourceExe, helperExe] = await Promise.all([fs.promises.stat(executable, { bigint: true }), fs.promises.stat(helperExecutable, { bigint: true })]);
+    if (metadata.some(file => file.link) || JSON.stringify(shape(metadata)) !== JSON.stringify(record.files)
+        || (sourceExe.dev === helperExe.dev && sourceExe.ino === helperExe.ino)) throw Error("update_helper_runtime_invalid");
+    return { identity, owned: record.owned, helperExecutable, created: false, bytes: record.bytes, entries: metadata.length };
+  }
+  const copies = [];
+  for (const entry of fs.readdirSync(installedRoot, { withFileTypes: true })) {
+    if ((entry.isFile() && (!entry.name.endsWith(".exe") || entry.name === "crashpad_handler.exe"))
+        || (entry.isDirectory() && entry.name === "locales")) copies.push({ source: path.join(installedRoot, entry.name), target: entry.name });
+  }
+  copies.push({ source: executable, target: "ai-update-helper.exe" }, { source: applicationRoot, target: "resources/app" });
+  let bytes = 0;
+  for (const copy of copies) bytes += await copyBytes(copy.source);
+  const copyBudget = await checkCopySpace([{ path: parent, bytes }]), owned = await createOwnedDirectory(parent, identity);
+  try {
+    for (const copy of copies) {
+      const target = path.join(owned.directory, copy.target), stat = await fs.promises.lstat(copy.source);
+      if (stat.isSymbolicLink()) throw Error("update_program_link_unsupported");
+      if (stat.isDirectory()) await copySnapshot(copy.source, target, undefined, undefined, { allowLinks: false, linkImmutable: true });
+      else if (stat.isFile()) {
+        if (/\.(?:exe|dll|node)$/i.test(copy.target)) await fs.promises.copyFile(copy.source, target, fs.constants.COPYFILE_EXCL);
+        else { try { await fs.promises.link(copy.source, target); } catch (error) {
+          if (!["EXDEV", "EPERM", "EACCES", "EMLINK", "ENOTSUP", "EOPNOTSUPP"].includes(error.code)) throw error;
+          await fs.promises.copyFile(copy.source, target, fs.constants.COPYFILE_EXCL);
+        } }
+      } else throw Error("update_copy_file_type_invalid");
+    }
+    const metadata = await metadataInventory(owned.directory);
+    const files = metadata.map(({ path, size }) => ({ path, size }));
+    writeJsonAtomic(receipt, { schema: 2, identity, owned, files, bytes });
+    return { identity, owned, helperExecutable, created: true, bytes, entries: files.length, copyBudget };
+  } catch (error) { await removeOwnedDirectory(owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; }); throw error; }
+}
 async function createUpdateJob({ userData, prepared, currentVersion, channel = "test" }) {
   await require("./update-backups.cjs").retryRetiringBackups(userData).catch(error => console.warn(`Backup cleanup deferred: ${error.message}`));
   const paths = updatePaths(userData); fs.mkdirSync(paths.jobs, { recursive: true });
   const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid);
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
-  await reclaimFinishedHelpers(paths, snapshot);
   const installedRoot = global.__xiaoxiComponents?.installedRoot || path.dirname(process.execPath);
   const applicationRoot = global.__xiaoxiComponents?.applicationRoot || path.join(installedRoot, "resources", "app");
-  const copies = [];
-  // A full installer must be free to replace the installed Electron runtime.
-  // The helper uses its own executable name and files outside that directory.
-  for (const entry of fs.readdirSync(installedRoot, { withFileTypes: true })) {
-    if ((entry.isFile() && (!entry.name.endsWith(".exe") || entry.name === "crashpad_handler.exe"))
-        || (entry.isDirectory() && entry.name === "locales")) copies.push({ source: path.join(installedRoot, entry.name), target: entry.name });
-  }
-  copies.push({ source: process.execPath, target: "ai-update-helper.exe" }, { source: applicationRoot, target: "resources/app" });
-  let helperBytes = 0;
-  for (const copy of copies) helperBytes += await copyBytes(copy.source);
-  const parent = path.join(paths.directory, "helper-runtime"), parts = [{ path: parent, bytes: helperBytes }];
+  const runtimeIdentity = helperRuntimeIdentity(installedRoot, applicationRoot);
+  await reclaimFinishedHelpers(paths, snapshot, runtimeIdentity);
+  const parts = [];
   if (prepared.kind !== "components") {
     const source = await fs.promises.realpath(userData);
     parts.push({ path: path.join(path.dirname(userData), path.basename(userData) + "-update-backups"), bytes: await copyBytes(source, backupFilter(source)) });
   }
   // Budget our own copies before the parent exits; the signed v1 manifest has no NSIS expanded size.
-  const copyBudget = await checkCopySpace(parts), owned = await createOwnedDirectory(parent, id);
+  const copyBudget = parts.length ? await checkCopySpace(parts) : [];
+  const started = performance.now();
+  const runtime = await prepareHelperRuntime({ paths, installedRoot, applicationRoot, executable: process.execPath });
+  const runtimeDurationMs = Math.round(performance.now() - started);
+  const owned = runtime.owned;
   let createdProgramBackup;
   try {
-    for (const copy of copies) await fs.promises.cp(copy.source, path.join(owned.directory, copy.target), { recursive: true, errorOnExist: true, force: false });
-    const helperExecutable = path.join(owned.directory, "ai-update-helper.exe");
+    if (parts.length) await checkCopySpace(parts);
+    const helperExecutable = runtime.helperExecutable;
     const selection = readJson(paths.selection, {});
     let programBackup = prepared.kind === "components" ? null : await require("./update-backups.cjs").reusableProgram(userData, installedRoot, selection);
     if (prepared.kind !== "components" && !programBackup) programBackup = createdProgramBackup = await require("./update-program-backup.cjs").backupProgram(installedRoot, path.join(paths.directory, "program-backups"), id, selection);
     const job = { channel, programBackup, id, parentPid: process.pid, processes, currentVersion, targetVersion: prepared.version, prepared,
-      installedRoot, executable: process.execPath, helperExecutable, helperCopyVersion: 1, helperIdentity: owned.identity, copyBudget };
+      installedRoot, executable: process.execPath, helperExecutable, helperCopyVersion: 2, helperRuntimeIdentity: runtime.identity,
+      helperIdentity: owned.identity, copyBudget, helperTiming: { durationMs: runtimeDurationMs, bytes: runtime.created ? runtime.bytes : 0,
+        entries: runtime.entries, reused: !runtime.created } };
     const file = path.join(paths.jobs, id + ".json"); writeJsonAtomic(file, job);
     return { file, job };
   } catch (error) {
     if (createdProgramBackup?.owned) await removeOwnedDirectory(createdProgramBackup.owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; });
-    try { await removeOwnedDirectory(owned); } catch (cleanupError) { error.cleanupCode = cleanupError.code || cleanupError.message; }
+    if (runtime.created) try { await removeOwnedDirectory(owned); } catch (cleanupError) { error.cleanupCode = cleanupError.code || cleanupError.message; }
     throw error;
   }
 }
@@ -201,11 +260,17 @@ async function runHelper({ jobFile, userData }) {
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: "xiaoxi-update-helper" } });
   await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e83458}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy" max="100"></progress></html>`));
   let finished = false, currentPhase = "ready";
+  const timings = [];
+  let measuredPhase = "ready", phaseStarted = performance.now();
   window.on("close", event => { if (!finished) event.preventDefault(); });
   const stage = (phase, title, detail = "", failure) => {
+    if (phase !== measuredPhase) {
+      timings.push({ phase: measuredPhase, durationMs: Math.round(performance.now() - phaseStarted) });
+      measuredPhase = phase; phaseStarted = performance.now();
+    }
     if (phase !== "error") currentPhase = phase;
     let persistenceError;
-    try { writeJsonAtomic(path.join(paths.jobs, job.id + ".status.json"), { phase, title, detail, failure, updatedAt: new Date().toISOString() }); }
+    try { writeJsonAtomic(path.join(paths.jobs, job.id + ".status.json"), { phase, title, detail, failure, timings, updatedAt: new Date().toISOString() }); }
     catch (error) {
       persistenceError = error;
       detail += `\n更新记录未能保存（${updateFailure(error, currentPhase).code}），请保留此窗口的错误信息。`;
@@ -222,7 +287,7 @@ async function runHelper({ jobFile, userData }) {
     await waitForAuthorization(full, job);
     job.authorizationFile = full;
     const config = require("./cloud-config.cjs").cloudConfig({ channel: job.channel || "test" });
-    currentPhase = "waiting";
+    stage("waiting", "等待软件和工作进程退出", "退出完成后将继续安装更新。");
     await waitForExit(job, stage);
     const prepared = job.prepared;
     let dataBackup;
@@ -238,7 +303,8 @@ async function runHelper({ jobFile, userData }) {
         pending: { jobId: job.id, attempted: false }, failure: "", lastUpdate: null });
     } else {
       const manifest = verifyManifest(prepared.envelope, config);
-      if (manifest.version !== job.targetVersion || await hashFile(prepared.file) !== manifest.sha256 || fs.statSync(prepared.file).size !== manifest.size) throw Error("cloud_download_invalid");
+      if (manifest.version !== job.targetVersion) throw Error("cloud_download_invalid");
+      await require("./download-verification.cjs").verifyDownload(prepared.file, manifest);
       stage("backup", "正在备份本机数据", "保留配置、授权和业务记录，备份完成后开始完整升级。");
       const backups = require("./update-backups.cjs");
       dataBackup = await backups.captureData(userData, job.id);
@@ -317,4 +383,4 @@ async function runHelper({ jobFile, userData }) {
   }
   app.on("window-all-closed", () => app.quit());
 }
-module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper };
+module.exports = { processSnapshot, descendants, trackLaunch, waitForExit, backupUserData, createUpdateJob, authorizeUpdateJob, revokeUpdateJob, waitForAuthorization, runHelper, prepareHelperRuntime, helperRuntimeIdentity };

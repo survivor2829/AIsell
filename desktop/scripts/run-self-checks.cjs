@@ -68,6 +68,7 @@ const checks = [
   "src/main/official-materials.self_check.cjs",
   "src/main/tutorials.self_check.cjs",
   "scripts/release-upgrade-path.self_check.cjs",
+  "scripts/protocol5-install-acceptance.self_check.cjs",
   "scripts/update-helper.electron.self_check.cjs",
   "scripts/update-backups.self_check.cjs",
   "scripts/relocate-update-backup.self_check.cjs",

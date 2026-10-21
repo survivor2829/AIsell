@@ -21,6 +21,8 @@
 | `desktop/src/shared/role-appearance.json`、`desktop/src/renderer/role-appearance.ts`、`desktop/src/main/role-preferences.cjs` | 角色与形象共享目录；名字与形象校验、主进程原子持久化及相关工作区配色 | 用页面本地状态冒充保存成功；允许任意文件或远程地址作为形象 |
 | `desktop/src/renderer/BusinessAssistantPage.tsx` | 生意助手“小睿”的精准获客、企微助手、GEO推广界面框架；复用角色设置与素材库导航 | 将规划页冒充已接通的商机搜索、企微连接或内容发布能力 |
 | `desktop/src/renderer/CustomerTools.tsx`、`desktop/src/renderer/CustomerPanel.tsx` | 顶栏公告、离线教程和对应功能跳转；公告只展示主进程已验证数据 | 下载或执行公告内容；从远程页面加载教程代码 |
+| `desktop/src/main/bootstrap.cjs`、`src/shared/launcher-contract.cjs` | 固定启动器信任核：选择、签名与JSON清单核验、单实例、启动尝试及干净进程回退 | 下载、备份和业务功能进入固定核；启动时全树读取文件内容 |
+| `desktop/src/main/updater-bootstrap.cjs`、`component-*`、`update-*`、`download-verification.cjs` | 可增量更新器：准备回执、一次下载摘要、结构检查、助手、备份与已有保留器；assets保留静态媒体原路径 | 将prepared当作健康ACK；按版本较新清除未知备份；把媒体混入界面包 |
 | `desktop/src/main/cloud-maintenance*`、`cloud-transport.cjs` | 测试版签名更新、公告缓存/已读状态、30 分钟元数据刷新、自动脱敏诊断队列及受限 IPC | 上传聊天原文；把查看公告当成下载安装包；绕过正常退出流程安装 |
 | `desktop/src/main/feedback-*`、`desktop/src/renderer/FeedbackCenter.tsx` | 吐槽中心草稿、固定提交快照、独立发送队列、加密回执凭据、处理进度及日志诊断入口 | 将反馈提交视为持续自动上传授权；未收到回执即显示已进入服务端处理 |
 | `desktop/sidecars/content-engine/content_engine/production_summary.py` | 完整数据库记录的业务制作归并、分类、统计和分页；与精确任务/候选查询配合恢复历史制作 | 截取前 N 条原任务再推算总数；改写历史失败或把同项目所有任务合为一项 |

@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const { pipeline } = require("node:stream/promises");
 const { Transform } = require("node:stream");
 const { fail } = require("../shared/cloud-contract.cjs");
+const { downloadProof } = require("./download-verification.cjs");
 
 function createTransport(config) {
   const origin = new URL(config.origin);
@@ -24,7 +25,7 @@ function createTransport(config) {
         if (offset >= expected.size) {
           const hash = crypto.createHash("sha256");
           if (offset === expected.size) for await (const chunk of fs.createReadStream(destination)) hash.update(chunk);
-          if (offset === expected.size && hash.digest("hex") === expected.sha256) { onProgress?.(offset); return { size: offset, resumedBytes: offset }; }
+          if (offset === expected.size && hash.digest("hex") === expected.sha256) { onProgress?.(offset); return { size: offset, resumedBytes: offset, verification: await downloadProof(destination, expected) }; }
           await fs.promises.truncate(destination, 0); offset = 0;
         }
       } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -77,7 +78,7 @@ function createTransport(config) {
               if (resume) await fs.promises.truncate(destination, 0);
               fail("cloud_download_invalid");
             }
-            resolve({ size, resumedBytes: start });
+            resolve({ size, resumedBytes: start, verification: await downloadProof(destination, expected) });
           } else {
             for await (const chunk of res) {
               size += chunk.length;

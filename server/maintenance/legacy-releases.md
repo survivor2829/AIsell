@@ -5,7 +5,7 @@
 ## 能力与限制
 
 - 未配置 `releases/<channel>/legacy-routing.json` 时，原 v1/v2 latest 行为保持不变。
-- 请求含有效 `X-Xiaoxi-Update-Protocol: 3` 和 `X-Xiaoxi-Version` 时，继续读通常的 `latest.json` / `latest-components.json`。底座头可省略；提供时版本与指纹须完整成对。部分、重复或非法能力头返回 400。
+- 请求含有效 `X-Xiaoxi-Update-Protocol: 3` 或 `5` 和 `X-Xiaoxi-Version` 时，继续读通常的 `latest.json` / `latest-components.json`。底座头可省略；提供时版本与指纹须完整成对。部分、重复或非法能力头返回 400。普通latest为协议5六组件时，协议3即使带Bridge-Update=1也得到空组件清单，先读取兼容格式完整包；无头且未配置固定路由时同样隐藏六组件。
 - 完全没有四个能力头的请求，配置后得到固定 `legacyFull` / `legacyComponents`。返回原 payload 和原签名，不在请求中重签或改写。配置损坏返回 503，不悄悄切回普通清单。错误响应不暴露路径。
 - 请求头只用于功能路由，不构成身份或权限证明；不按 IP、安装账号或随机轮换猜版本。单份 v2 只匹配一个底座指纹。
 - `sourceVersion` 仅声明桥接起点用于发布核验，**不是服务端能执行的客户筛选条件**。包括其他业务版本在内，所有无头、同底座且满足客户端版本条件的程序都会接受这份桥。启用前须检查这整个范围。其他底座只能得到固定 v1，不能因此宣称 1.1.75、1.1.77 或全部历史版本自动升级通过。

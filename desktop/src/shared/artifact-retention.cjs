@@ -2,6 +2,7 @@
 const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { writeJsonAtomic } = require("../main/atomic-file.cjs");
 
 function safePath(root, target) {
   const base = fs.realpathSync(root);
@@ -44,9 +45,7 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
     fs.mkdirSync(inbox, { recursive: true });
     if (category !== null) {
       const receipt = path.join(inbox, `${Date.now()}-${crypto.randomUUID()}.json`);
-      const temporaryReceipt = `${receipt}.tmp`;
-      fs.writeFileSync(temporaryReceipt, JSON.stringify({ category, refs: relativePaths(targets), owned: relativePaths(owned), keep }));
-      fs.renameSync(temporaryReceipt, receipt);
+      writeJsonAtomic(receipt, { category, refs: relativePaths(targets), owned: relativePaths(owned), keep });
     }
     // A deferred request stays in the inbox, including after a process crash.
     for (let attempt = 0; attempt < 30; attempt++) {
@@ -98,11 +97,7 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
       data[request.category] = state;
     }
     const protectedFiles = new Set(Object.values(data).flatMap(state => state.generations.flat()));
-    const save = () => {
-      const temporary = `${ledger}.${process.pid}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify(data, null, 2));
-      fs.renameSync(temporary, ledger);
-    };
+    const save = () => writeJsonAtomic(ledger, data);
     save();
     for (const name of requests) fs.unlinkSync(path.join(inbox, name));
     for (const state of Object.values(data)) {
@@ -122,4 +117,19 @@ function retainArtifacts(root, category, targets, keep = 1, owned = targets) {
 function retryArtifacts(root) {
   if (fs.existsSync(path.join(root, ".artifact-retention.json"))) retainArtifacts(root, null, [], 1, []);
 }
-module.exports = { retainArtifacts, removeOwned, safePath, retryArtifacts };
+function artifactOwnershipRegistered(root, target) {
+  const relative = path.relative(fs.realpathSync(root), safePath(root, target));
+  try {
+    const ledger = JSON.parse(fs.readFileSync(path.join(root, ".artifact-retention.json"), "utf8"));
+    if (Object.values(ledger).some(state => Array.isArray(state?.owned) && state.owned.includes(relative))) return true;
+  } catch { /* A persisted inbox request is also sufficient for later retry. */ }
+  try {
+    const inbox = safePath(root, ".artifact-retention-requests");
+    return fs.readdirSync(inbox).filter(name => name.endsWith(".json")).some(name => {
+      const file = safePath(root, path.join(inbox, name));
+      try { return JSON.parse(fs.readFileSync(file, "utf8")).owned?.includes(relative) === true; }
+      catch { return false; }
+    });
+  } catch { return false; }
+}
+module.exports = { retainArtifacts, removeOwned, safePath, retryArtifacts, artifactOwnershipRegistered };

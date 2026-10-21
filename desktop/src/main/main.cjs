@@ -354,13 +354,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
   });
 
   app.whenReady().then(async () => {
-    // Local examples are verified when requested, not before the login window.
-    // The callback is installed before loadFile and also covers video Range loads.
-    if (global.__xiaoxiComponents?.verification) session.defaultSession.webRequest.onBeforeRequest(
-      { urls: ["file://*/*"] }, (details, callback) => {
-        Promise.resolve().then(() => global.__xiaoxiComponents.verification.media(require("node:url").fileURLToPath(details.url)))
-          .then(() => callback({ cancel: false }), () => callback({ cancel: true }));
-      });
     let runtime;
     try {
       if (productDetailReleaseSmokeMode || developmentEdition && process.env.XIAOXI_DEV_PROFILE_DIR) {

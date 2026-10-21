@@ -9,7 +9,8 @@ const { Transform, Writable } = require("node:stream");
 const JSZip = require("jszip");
 const { fail } = require("../shared/cloud-contract.cjs");
 const { retainComponentArtifacts } = require("./update-retention.cjs");
-const { COMPONENTS, safePath, hashFile, treeHash, validateFiles, verifyComponentManifest, assertCompatible, digest } = require("../shared/component-contract.cjs");
+const { componentsFor, safePath, hashFile, treeHash, validateFiles, verifyComponentManifest, assertCompatible, digest } = require("../shared/component-contract.cjs");
+const { verifyDownload } = require("./download-verification.cjs");
 // The application already holds its single-instance lock; also reject two stores
 // preparing the same root concurrently within that process.
 const preparingRoots = new Set();
@@ -57,7 +58,7 @@ async function verifyFiles(root, files) {
   await Promise.all(Array.from({ length: Math.min(4, files.length) }, () => worker()));
   if (failure) throw failure;
 }
-async function verifyGeneration(root, files, group) {
+async function verifyStructure(root, files, group) {
   validateFiles(files);
   const { groupForPath } = require("../shared/component-verification.cjs");
   const selected = group ? files.filter(file => groupForPath(file.path) === group) : files;
@@ -81,7 +82,15 @@ async function verifyGeneration(root, files, group) {
   }
   await walk(root);
   if (expected.size) fail("component_generation_invalid");
-  await verifyFiles(root, selected);
+  const checkedDirectories = new Map();
+  for (const file of selected) {
+    if ((await checkedFile(root, file.path, checkedDirectories)).stat.size !== file.size) fail("component_file_corrupt");
+  }
+}
+async function verifyGeneration(root, files, group) {
+  await verifyStructure(root, files, group);
+  const { groupForPath } = require("../shared/component-verification.cjs");
+  await verifyFiles(root, group ? files.filter(file => groupForPath(file.path) === group) : files);
 }
 function inspectZip(buffer, expectedCount) {
   // JSZip normalizes paths and collapses duplicate central-directory names.
@@ -113,15 +122,19 @@ function inspectZip(buffer, expectedCount) {
   if (at !== end) fail("component_archive_directory_invalid");
 }
 async function copyVerified(sourceRoot, targetRoot, file) {
-  const source = await regularFile(sourceRoot, file.path);
-  if ((await fsp.stat(source)).size !== file.size || await hashFile(source) !== file.sha256) fail("component_file_corrupt");
+  const { full: source, stat } = await checkedFile(sourceRoot, file.path);
+  if (stat.size !== file.size) fail("component_file_corrupt");
   const target = path.join(targetRoot, safePath(file.path));
   await fsp.mkdir(path.dirname(target), { recursive: true });
   // Hardlink only immutable generations/base; updater never edits linked files in place.
   try { await fsp.link(source, target); }
   catch (error) {
     if (!["EXDEV", "EPERM", "EACCES", "ENOTSUP", "EMLINK"].includes(error.code)) throw error;
-    await fsp.copyFile(source, target, fs.constants.COPYFILE_EXCL);
+    const hash = crypto.createHash("sha256"); let size = 0;
+    await pipeline(fs.createReadStream(source), new Transform({ transform(chunk, _encoding, callback) {
+      size += chunk.length; hash.update(chunk); callback(null, chunk);
+    } }), fs.createWriteStream(target, { flags: "wx" }));
+    if (size !== file.size || hash.digest("hex") !== file.sha256) fail("component_file_corrupt");
   }
 }
 function retryableDownloadError(error) {
@@ -138,7 +151,7 @@ async function downloadArchive(transport, route, options) {
   }
 }
 async function unpack(archive, root, component) {
-  if ((await fsp.stat(archive)).size !== component.size || await hashFile(archive) !== component.sha256) fail("component_archive_corrupt");
+  await verifyDownload(archive, component);
   const buffer = await fsp.readFile(archive);
   inspectZip(buffer, component.fileCount + 1);
   const zip = await JSZip.loadAsync(buffer, { createFolders: false, checkCRC32: false });
@@ -175,20 +188,36 @@ async function unpack(archive, root, component) {
   }
   return descriptor;
 }
-function createComponentStore({ rootDir, baseRoot, config, transport, onProgress }) {
+function createComponentStore({ rootDir, baseRoot, config, transport, onProgress, onMeasure }) {
   rootDir = path.resolve(rootDir); baseRoot = path.resolve(baseRoot);
   if (rootDir === baseRoot || rootDir.startsWith(baseRoot + path.sep)) fail("component_store_inside_base");
   const prepareKey = process.platform === "win32" ? rootDir.toLowerCase() : rootDir;
   async function prepare(envelope) {
     if (preparingRoots.has(prepareKey)) fail("component_prepare_busy");
     preparingRoots.add(prepareKey);
+    const measurements = new Map(), started = performance.now();
+    async function measured(phase, action, bytes = 0, files = 0) {
+      const before = performance.now();
+      try { return await action(); }
+      finally {
+        const item = measurements.get(phase) || { phase, durationMs: 0, bytes: 0, files: 0 };
+        item.durationMs += performance.now() - before; item.bytes += bytes; item.files += files; measurements.set(phase, item);
+      }
+    }
+    function recordPrepared(root) {
+      const paths = { directory: rootDir };
+      const components = require("./component-paths.cjs");
+      const receipt = components.bootVerificationReceipt(paths, root, baseRoot);
+      components.recordVerification(paths, receipt, "prepared");
+    }
     try {
       const manifest = verifyComponentManifest(envelope, config);
+      const names = componentsFor(manifest);
       let baseline;
       try { baseline = await readJson(path.join(baseRoot, "component-base.json")); }
       catch (error) { if (error.code === "ENOENT") fail("full_upgrade_required"); throw error; }
       validateFiles(baseline.files); assertCompatible(manifest, baseline);
-      if (baseline.files.some(f => !["base", ...COMPONENTS].includes(f.component))) fail("component_base_invalid");
+      if (baseline.files.some(f => !["base", ...names].includes(f.component))) fail("component_base_invalid");
       await fsp.mkdir(rootDir, { recursive: true });
       if ((await fsp.lstat(rootDir)).isSymbolicLink()) fail("component_symlink_forbidden");
       const archives = path.join(rootDir, "archives"), generations = path.join(rootDir, "generations");
@@ -204,44 +233,48 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
         if (existing.payload !== envelope.payload) fail("component_generation_invalid");
         const full = await readJson(path.join(finalRoot, "component-base.json"));
         assertCompatible(manifest, full); validateFiles(full.files);
-        if (full.files.some(f => !["base", ...COMPONENTS].includes(f.component))) fail("component_generation_invalid");
-        for (const name of COMPONENTS) if (treeHash(full.files.filter(f => f.component === name)) !== manifest.components[name].treeSha256) fail("component_generation_invalid");
+        if (full.files.some(f => !["base", ...names].includes(f.component))) fail("component_generation_invalid");
+        for (const name of names) if (treeHash(full.files.filter(f => f.component === name)) !== manifest.components[name].treeSha256) fail("component_generation_invalid");
         if (manifest.verification) require("../shared/component-verification.cjs").validatePolicy(manifest.verification, full.files);
-        await verifyGeneration(finalRoot, full.files);
+        await measured("structure", () => verifyStructure(finalRoot, full.files), 0, full.files.length);
+        recordPrepared(finalRoot);
         await retainComponentArtifacts(rootDir, envelope, { ready: true });
         return { generationRoot: finalRoot, version: manifest.version, envelope, downloadedBytes: 0, totalBytes: 0 };
       }
       const disk = await fsp.statfs(rootDir);
-      const required = validateFiles(baseFiles) + COMPONENTS.reduce((n, name) => n + manifest.components[name].expandedSize + manifest.components[name].size, 0) + 128 * 1024 ** 2;
+      const required = validateFiles(baseFiles) + names.reduce((n, name) => n + manifest.components[name].expandedSize + manifest.components[name].size, 0) + 128 * 1024 ** 2;
       if (Number(disk.bavail) * Number(disk.bsize) < required) fail("component_disk_space_insufficient");
       const staging = await fsp.mkdtemp(path.join(generations, ".prepare-"));
       try {
       await retainComponentArtifacts(rootDir, envelope, { created: [staging], staging });
       let downloadedBytes = 0, totalBytes = 0, copiedBytes = 0;
-      const reused = new Set(), cached = new Set();
-      for (const name of COMPONENTS) {
+      const reused = new Set(), cached = new Set(), createdMarkers = [];
+      for (const name of names) {
         const files = baseline.files.filter(f => f.component === name);
         if (treeHash(files) === manifest.components[name].treeSha256) reused.add(name);
         else {
           const component = manifest.components[name];
           try {
             const archive = await regularFile(archives, component.sha256 + ".zip");
-            if ((await fsp.stat(archive)).size === component.size && await hashFile(archive) === component.sha256) cached.add(name);
+            const markerExisted = fs.existsSync(archive + ".verified.json");
+            await measured("cache", () => verifyDownload(archive, component), component.size, 1); cached.add(name);
+            if (!markerExisted) createdMarkers.push(archive + ".verified.json");
           } catch { /* absent or corrupt complete archive needs a download */ }
           if (!cached.has(name)) totalBytes += component.size;
         }
       }
+      if (createdMarkers.length) await retainComponentArtifacts(rootDir, envelope, { created: createdMarkers, staging });
       const progress = phase => onProgress?.({ phase, downloadedBytes, totalBytes, copiedBytes });
       progress("prepare");
       const targetFiles = [...baseFiles], descriptors = {};
-      for (const file of baseFiles) { await copyVerified(baseRoot, staging, file); copiedBytes += file.size; progress("compose"); }
-      for (const name of COMPONENTS) {
+      for (const file of baseFiles) { await measured("compose", () => copyVerified(baseRoot, staging, file), file.size, 1); copiedBytes += file.size; progress("compose"); }
+      for (const name of names) {
         const component = manifest.components[name];
         let descriptor;
         if (reused.has(name)) {
           const files = baseline.files.filter(f => f.component === name).map(({ path, size, sha256 }) => ({ path, size, sha256 }));
           descriptor = { schema: 2, name, treeSha256: component.treeSha256, files };
-          for (const file of files) { await copyVerified(baseRoot, staging, file); copiedBytes += file.size; progress("compose"); }
+          for (const file of files) { await measured("compose", () => copyVerified(baseRoot, staging, file), file.size, 1); copiedBytes += file.size; progress("compose"); }
         } else {
           const archive = path.join(archives, component.sha256 + ".zip");
           if (!cached.has(name)) {
@@ -254,35 +287,50 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
               await retainComponentArtifacts(rootDir, envelope, { created: [partial], staging });
             } catch (e) { if (e.code !== "EEXIST") throw e; }
             const before = downloadedBytes;
-            await downloadArchive(transport, component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
-              onProgress: bytes => { downloadedBytes = before + bytes; progress("download"); } });
-            if ((await fsp.stat(partial)).size !== component.size || await hashFile(partial) !== component.sha256) fail("component_archive_corrupt");
+            const download = await measured("download", () => downloadArchive(transport, component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
+              onProgress: bytes => { downloadedBytes = before + bytes; progress("download"); } }), component.size, 1);
+            const proof = await measured("archive", () => verifyDownload(partial, component, { proof: download?.verification }), component.size, 1);
             await fsp.rename(partial, archive);
-            await retainComponentArtifacts(rootDir, envelope, { created: [archive], staging });
+            await verifyDownload(archive, component, { proof });
+            await fsp.rm(partial + ".verified.json", { force: true });
+            await retainComponentArtifacts(rootDir, envelope, { created: [archive, archive + ".verified.json"], staging });
           }
-          descriptor = await unpack(archive, staging, component);
+          descriptor = await measured("unpack", () => unpack(archive, staging, component), component.expandedSize, component.fileCount);
         }
         descriptors[name] = descriptor;
         targetFiles.push(...descriptor.files.map(file => ({ ...file, component: name })));
       }
       validateFiles(targetFiles);
-      await verifyFiles(staging, targetFiles);
       if (manifest.verification) require("../shared/component-verification.cjs").validatePolicy(manifest.verification, targetFiles);
-      const full = { schema: 2, base: baseline.base, dataSchema: manifest.dataSchema, files: targetFiles, components: descriptors,
+      const full = { schema: 2, updateProtocol: manifest.updateProtocol, base: baseline.base, dataSchema: manifest.dataSchema, files: targetFiles, components: descriptors,
         ...(manifest.verification ? { verification: manifest.verification } : {}) };
       await fsp.writeFile(path.join(staging, "component-base.json"), JSON.stringify(full), { flag: "wx" });
       await fsp.writeFile(path.join(staging, "component-complete.json.tmp"), JSON.stringify(envelope), { flag: "wx" });
       await fsp.rename(path.join(staging, "component-complete.json.tmp"), path.join(staging, "component-complete.json"));
-      await fsp.rename(staging, finalRoot);
-      await retainComponentArtifacts(rootDir, envelope, { created: [finalRoot], ready: true });
+      await measured("structure", () => verifyStructure(staging, targetFiles), 0, targetFiles.length);
+      // Persist ownership of the destination before the rename/receipt window.
+      // An unknown existing directory is never adopted as an owned candidate.
+      try { await fsp.lstat(finalRoot); fail("component_generation_invalid"); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      await retainComponentArtifacts(rootDir, envelope, { created: [finalRoot], staging });
+      if (!require("../shared/artifact-retention.cjs").artifactOwnershipRegistered(rootDir, finalRoot)) fail("component_ownership_record_required");
+      require("./atomic-file.cjs").replaceWithRetry(staging, finalRoot);
+      recordPrepared(finalRoot);
+      await retainComponentArtifacts(rootDir, envelope, { ready: true });
       progress("ready");
       return { generationRoot: finalRoot, version: manifest.version, envelope, downloadedBytes, totalBytes };
       } finally {
         // Keep resumable downloads, but never leave another partial program copy.
         await fsp.rm(staging, { recursive: true, force: true }).catch(error => console.warn(`Component staging cleanup deferred: ${error.code}`));
       }
-    } finally { preparingRoots.delete(prepareKey); }
+    } finally {
+      preparingRoots.delete(prepareKey);
+      try {
+        for (const item of measurements.values()) onMeasure?.({ ...item, durationMs: Math.round(item.durationMs) });
+        onMeasure?.({ phase: "prepare", durationMs: Math.round(performance.now() - started), bytes: 0, files: 0 });
+      } catch { /* Measurement must not change update success or failure. */ }
+    }
   }
   return { prepare };
 }
-module.exports = { createComponentStore, unpack, verifyFiles, verifyGeneration };
+module.exports = { createComponentStore, unpack, verifyFiles, verifyGeneration, verifyStructure };

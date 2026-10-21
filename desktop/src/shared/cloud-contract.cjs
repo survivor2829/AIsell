@@ -1,20 +1,13 @@
 const crypto = require("node:crypto");
 
-const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
+const { VERSION, compareVersions, fail } = require("./launcher-contract.cjs");
 const TOKEN = /^[a-z0-9][a-z0-9_.:-]{0,119}$/i;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
-function fail(code) { throw Object.assign(new Error(code), { code }); }
 function token(value, fallback = "") {
   return typeof value === "string" && TOKEN.test(value) && !/(?:sk-|ak-|ltai)/i.test(value) ? value : fallback;
 }
-function compareVersions(a, b) {
-  if (!VERSION.test(a) || !VERSION.test(b)) fail("cloud_version_invalid");
-  const x = a.split(".").map(Number), y = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return Math.sign(x[i] - y[i]);
-  return 0;
-}
-function verifyManifest(envelope, config) {
+function verifySignedManifest(envelope, config, supplemental = false) {
   if (typeof envelope?.payload !== "string" || envelope.payload.length > 16384
       || typeof envelope.signature !== "string" || envelope.signature.length > 128) fail("cloud_manifest_invalid");
   if (!crypto.verify(null, Buffer.from(envelope.payload), config.signingPublicKey,
@@ -33,8 +26,22 @@ function verifyManifest(envelope, config) {
   if (m.componentBase !== undefined && (!m.componentBase || !VERSION.test(m.componentBase.version)
       || !/^[a-f0-9]{64}$/.test(m.componentBase.fingerprint)
       || !Number.isSafeInteger(m.componentBase.dataSchema) || m.componentBase.dataSchema < 1
-      || m.componentBase.updateProtocol !== 4)) fail("cloud_manifest_invalid");
+      || ![4, ...(supplemental ? [5] : [])].includes(m.componentBase.updateProtocol))) fail("cloud_manifest_invalid");
+  if (m.componentBaseProtocol !== undefined && m.componentBaseProtocol !== 5) fail("cloud_manifest_invalid");
   return m;
+}
+
+function verifyManifest(envelope, config) {
+  const compatible = verifySignedManifest(envelope, config);
+  if (compatible.componentBaseProtocol !== 5) {
+    if (envelope.componentBaseEnvelope !== undefined) fail("cloud_manifest_invalid");
+    return compatible;
+  }
+  if (compatible.componentBase !== undefined || !envelope.componentBaseEnvelope) fail("cloud_manifest_invalid");
+  const actual = verifySignedManifest(envelope.componentBaseEnvelope, config, true);
+  const { componentBase, ...fields } = actual;
+  if (componentBase?.updateProtocol !== 5 || !require("node:util").isDeepStrictEqual(fields, compatible)) fail("cloud_manifest_invalid");
+  return actual;
 }
 
 // Only technical fields cross the network. Never upload free-form messages,

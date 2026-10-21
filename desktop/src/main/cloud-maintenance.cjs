@@ -58,7 +58,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   const network = transport || (config?.enabled ? createTransport(config) : null);
   // Release routing uses only technical capabilities. Do not attach install IDs,
   // profile paths or account data, and continue verifying every returned envelope.
-  const releaseHeaders = { "X-Xiaoxi-Update-Protocol": "3",
+  const releaseHeaders = { "X-Xiaoxi-Update-Protocol": "5",
     ...(require("../shared/update-capabilities.json").protocol >= 4 ? { "X-Xiaoxi-Bridge-Update": "1" } : {}) };
   if (VERSION.test(version)) releaseHeaders["X-Xiaoxi-Version"] = version;
   const baseline = componentBaseRoot && readJson(path.join(componentBaseRoot, "component-base.json"));
@@ -241,6 +241,10 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
               notify({ stage: "preparing", nextVersion: manifest.version, downloadedBytes: 0, totalBytes: 0 });
               let lastPhase = "", lastProgressAt = 0;
               const prepared = await createComponentStore({ rootDir: paths.directory, baseRoot: componentBaseRoot, config, transport: network,
+                onMeasure: measurement => {
+                  try { logger?.event?.("maintenance", "update.phase", { phase: measurement.phase, bytes: measurement.bytes, entries: measurement.files },
+                    { durationMs: measurement.durationMs, phase: measurement.phase }); } catch { /* Diagnostics cannot block an update. */ }
+                },
                 onProgress: progress => {
                   if (stopped) fail("cloud_stopped");
                   const now = Date.now();
@@ -267,21 +271,25 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       }
       const destination = path.join(dir, `${manifest.sha256}.exe`);
       notify({ stage: "downloading", nextVersion: manifest.version, progress: 0, downloadedBytes: 0, totalBytes: manifest.size });
-      const existing = fs.existsSync(destination) && fs.statSync(destination).size === manifest.size
-        && await fileHash(destination) === manifest.sha256;
+      const { verifyDownload } = require("./download-verification.cjs");
+      let existing = false;
+      try { await verifyDownload(destination, manifest); existing = true; } catch { /* Missing or changed download must be fetched. */ }
       if (!existing) {
         const free = fs.statfsSync(dir);
         if (free.bavail * free.bsize < manifest.size * 2 + 256 * 1024 ** 2) fail("cloud_disk_full");
         temporary = path.join(dir, `${manifest.sha256}.part`);
         let lastProgress = -1;
-        await network.request(manifest.file, { destination: temporary, expected: manifest, maxBytes: manifest.size, resume: true,
+        const download = await network.request(manifest.file, { destination: temporary, expected: manifest, maxBytes: manifest.size, resume: true,
           onProgress: (size) => {
             const progress = Math.floor(size / manifest.size * 100);
             if (progress !== lastProgress) { lastProgress = progress; notify({ progress, downloadedBytes: size }); }
           } });
         if (stopped) fail("cloud_stopped");
         if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
+        const proof = await verifyDownload(temporary, manifest, { proof: download?.verification });
         notify({ stage: "verifying" }); fs.renameSync(temporary, destination); temporary = undefined;
+        await verifyDownload(destination, manifest, { proof });
+        fs.rmSync(path.join(dir, `${manifest.sha256}.part.verified.json`), { force: true });
       }
       if (stopped) fail("cloud_stopped");
       if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
@@ -318,7 +326,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     const m = verifyManifest(state.pending, config);
     if ((!view.updateRequested && m.sequence < state.sequence) || compareVersions(m.version, version) <= 0) return null;
     const file = path.join(dir, `${m.sha256}.exe`);
-    if (fs.statSync(file).size !== m.size || await fileHash(file) !== m.sha256) fail("cloud_download_invalid");
+    await require("./download-verification.cjs").verifyDownload(file, m);
     const finalTarget = state.bridgeTarget?.installerSha256 === m.sha256
       ? verifyComponentManifest(state.bridgeTarget.envelope, config) : null;
     return { kind: "full", file, version: m.version, envelope: state.pending,

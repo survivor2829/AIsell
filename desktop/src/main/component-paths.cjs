@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
-const { digest, COMPONENTS, treeHash, verifyComponentManifest, assertCompatible } = require("../shared/component-contract.cjs");
+const { HEX, verificationIdentity, verifyGenerationMetadata } = require("../shared/launcher-contract.cjs");
 
 function readJson(file, fallback = null) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function updatePaths(userData) {
@@ -20,36 +20,29 @@ function beginBoot(paths) {
   writeJsonAtomic(file, { startedAt: new Date().toISOString() });
   return unfinished;
 }
-// This is a successful-version receipt, not a claim that mutable files cannot
-// change between launches. Updates still verify every file; ordinary launches
-// bind the cached result to the manifests and the physical installation root.
 function verificationRecords(paths) {
   const saved = readJson(path.join(paths.directory, "verification-cache.json"));
-  return saved?.schema === 1 && Array.isArray(saved.records) ? saved.records.filter(item =>
-    item && typeof item.root === "string" && /^[a-f0-9]{64}$/.test(item.identity) && item.completed === true).slice(0, 3) : [];
+  return saved?.schema === 2 && Array.isArray(saved.records) ? saved.records.filter(item =>
+    item && typeof item.root === "string" && HEX.test(item.identity) && item.completed === true
+      && ["prepared", "healthy"].includes(item.phase)).slice(0, 3) : [];
 }
-function bootVerificationReceipt(paths, root, installedRoot = root, failure = "") {
+function bootVerificationReceipt(paths, root) {
   const stat = fs.lstatSync(root, { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("component_symlink_forbidden");
-  const identity = digest(JSON.stringify({
-    schema: 1, root: path.resolve(root), directoryId: `${stat.dev}:${stat.ino}`, failure,
-    baseline: digest(fs.readFileSync(path.join(root, "component-base.json"))),
-    installedBaseline: digest(fs.readFileSync(path.join(installedRoot, "component-base.json"))),
-    selected: root === installedRoot ? null : digest(fs.readFileSync(path.join(root, "component-complete.json")))
-  }));
-  const record = { root: path.resolve(root), installedRoot: path.resolve(installedRoot), failure, identity };
-  return { ...record, hit: verificationRecords(paths).some(item =>
-    item.root === record.root && item.identity === identity) };
+  const composedBytes = fs.readFileSync(path.join(root, "component-base.json"));
+  const baseline = JSON.parse(composedBytes);
+  const envelope = readJson(path.join(root, "component-complete.json"));
+  const identity = verificationIdentity({ root, directoryId: `${stat.dev}:${stat.ino}`, envelope, composedBytes, baseline });
+  const record = verificationRecords(paths).find(item => item.root === path.resolve(root) && item.identity === identity);
+  return { root: path.resolve(root), identity, hit: Boolean(record), phase: record?.phase };
 }
-function cacheHealthyVerification(context) {
-  if (!context.receipt) return;
-  const current = bootVerificationReceipt(context.paths, context.root, context.installedRoot, context.receipt.failure);
-  if (current.identity !== context.receipt.identity) throw Error("component_manifest_changed_during_startup");
-  const file = path.join(context.paths.directory, "verification-cache.json");
-  const records = verificationRecords(context.paths);
-  writeJsonAtomic(file, { schema: 1, records: [
-    { ...context.receipt, completed: true, verifiedAt: new Date().toISOString() },
-    ...records.filter(item => item.root !== context.receipt.root)
+function recordVerification(paths, receipt, phase) {
+  if (!["prepared", "healthy"].includes(phase) || !path.isAbsolute(receipt?.root || "") || !HEX.test(receipt.identity)) throw Error("component_receipt_invalid");
+  const current = bootVerificationReceipt(paths, receipt.root);
+  if (current.identity !== receipt.identity) throw Error("component_manifest_changed_during_startup");
+  writeJsonAtomic(path.join(paths.directory, "verification-cache.json"), { schema: 2, records: [
+    { root: receipt.root, identity: receipt.identity, completed: true, phase, verifiedAt: new Date().toISOString() },
+    ...verificationRecords(paths).filter(item => item.root !== receipt.root)
   ].slice(0, 3) });
 }
 function invalidateVerification() {
@@ -58,62 +51,28 @@ function invalidateVerification() {
   context.verificationFailed = true;
   beginBoot(context.paths);
   const file = path.join(context.paths.directory, "verification-cache.json");
-  writeJsonAtomic(file, { schema: 1,
+  writeJsonAtomic(file, { schema: 2,
     records: verificationRecords(context.paths).filter(item => item.root !== path.resolve(context.root)) });
 }
-async function verifySelected(root, installedRoot, config, { startupOnly = false, cached = false } = {}) {
+async function verifySelected(root, installedRoot, config, { structure = true, requireReceipt = true } = {}) {
   const baseline = readJson(path.join(installedRoot, "component-base.json"));
   const envelope = readJson(path.join(root, "component-complete.json"));
-  const manifest = verifyComponentManifest(envelope, config);
-  assertCompatible(manifest, baseline);
-  if (path.basename(root) !== digest(envelope.payload)) throw Error("component_selection_invalid");
   const composed = readJson(path.join(root, "component-base.json"));
-  assertCompatible(manifest, composed);
-  if (composed.files.some(file => !["base", ...COMPONENTS].includes(file.component))) throw Error("component_selection_invalid");
-  for (const name of COMPONENTS) {
-    if (treeHash(composed.files.filter(file => file.component === name)) !== manifest.components[name].treeSha256) throw Error("component_selection_invalid");
-  }
+  const manifest = verifyGenerationMetadata({ root, installedBaseline: baseline, envelope, composed, config });
   if (manifest.verification) require("../shared/component-verification.cjs").validatePolicy(manifest.verification, composed.files);
-  if (!cached) await require("./component-store.cjs").verifyGeneration(root, composed.files,
-    startupOnly && manifest.verification ? "startup" : undefined);
+  if (requireReceipt && !bootVerificationReceipt(updatePathsFromRoot(root), root).hit) throw Error("component_preparation_receipt_required");
+  if (structure) await require("./component-store.cjs").verifyStructure(root, composed.files);
   return manifest;
 }
-function createRuntimeVerification(root, manifest, fullyVerified = false, installed = false) {
-  const composed = readJson(path.join(root, "component-base.json"));
-  const policy = manifest?.verification;
-  const { GROUPS, groupForPath, validatePolicy } = require("../shared/component-verification.cjs");
-  if (policy) validatePolicy(policy, composed.files);
-  const completed = new Set(fullyVerified || !policy ? GROUPS : ["startup"]), pending = new Map();
-  async function once(key, check) {
-    if (completed.has(key)) return;
-    if (!pending.has(key)) pending.set(key, Promise.resolve().then(check).then(() => completed.add(key)).catch(error => {
-      const context = global.__xiaoxiComponents;
-      if (context?.root === root && context.paths) {
-        invalidateVerification();
-      }
-      if (/^component_/.test(error.code || error.message || "")) throw error;
-      throw Object.assign(Error("component_runtime_verification_failed"), { code: "component_runtime_verification_failed", cause: error });
-    }).finally(() => pending.delete(key)));
-    await pending.get(key);
-  }
+function updatePathsFromRoot(root) { return { directory: path.dirname(path.dirname(root)) }; }
+function createRuntimeVerification() {
+  // Calls remain compatible with business launch sites. Download/prepare and
+  // switching own validation; runtime errors request rollback, never lazy hashing.
+  const { GROUPS } = require("../shared/component-verification.cjs");
   return {
-    ensure(group) {
+    async ensure(group) {
       if (!GROUPS.includes(group) || group === "media") throw Error("component_verification_group_invalid");
-      return once(group, () => installed
-        ? require("./component-store.cjs").verifyFiles(root, composed.files.filter(file => groupForPath(file.path) === group))
-        : require("./component-store.cjs").verifyGeneration(root, composed.files, group));
-    },
-    async media(file) {
-      if (!policy) return;
-      const relative = path.relative(root, file).split(path.sep).join("/");
-      if (groupForPath(relative) !== "media") return;
-      if (completed.has("media")) return;
-      const entry = composed.files.find(item => item.path === relative);
-      await once("media:" + relative, () => {
-        if (!entry) throw Error("component_media_unknown");
-        return require("./component-store.cjs").verifyFiles(root, [entry]);
-      });
-    }
+    }, async media() {}
   };
 }
 async function ensureRuntimeGroup(group) { await global.__xiaoxiComponents?.verification?.ensure(group); }
@@ -141,9 +100,11 @@ function currentRoot(fallback = path.dirname(process.execPath)) { return global.
 function markHealthy() {
   const context = global.__xiaoxiComponents;
   if (!context || context.healthy || context.verificationFailed) return;
-  // A failed cache write must not make the usable app fail; the next launch
-  // simply repeats verification instead of claiming an unrecorded cache hit.
-  try { cacheHealthyVerification(context); } catch (error) { console.warn(`Verification receipt unavailable: ${error.message}`); }
+  try { if (context.receipt) recordVerification(context.paths, context.receipt, "healthy"); }
+  catch (error) {
+    if (error.message === "component_manifest_changed_during_startup") { context.verificationFailed = true; return; }
+    console.warn(`Verification receipt unavailable: ${error.message}`);
+  }
   fs.rmSync(path.join(context.paths.directory, "boot-attempt.json"), { force: true });
   context.healthy = true;
   const selection = readJson(context.paths.selection, {});
@@ -156,4 +117,4 @@ function markHealthy() {
 }
 module.exports = { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection,
   applicationPath, resourcesPath, businessVersion, currentRoot, markHealthy, createRuntimeVerification, ensureRuntimeGroup, beginBoot,
-  bootVerificationReceipt, invalidateVerification, runtimeLaunchFailed };
+  bootVerificationReceipt, recordVerification, invalidateVerification, runtimeLaunchFailed };

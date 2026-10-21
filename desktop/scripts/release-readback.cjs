@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 const { createTransport } = require("../src/main/cloud-transport.cjs");
 const { verifyManifest } = require("../src/shared/cloud-contract.cjs");
-const { COMPONENTS, verifyComponentManifest } = require("../src/shared/component-contract.cjs");
+const { componentsFor, verifyComponentManifest } = require("../src/shared/component-contract.cjs");
 
 // Verification only: never submit another publication when the readback is uncertain.
 async function verifyPublishedRelease({ config, envelope, schema, request }) {
@@ -15,18 +15,20 @@ async function verifyPublishedRelease({ config, envelope, schema, request }) {
     if (!request) transport = createTransport(config);
     const returned = await (request || transport.request)(route, {
       maxBytes: 256 * 1024,
-      headers: { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": expected.version,
+      headers: { "X-Xiaoxi-Update-Protocol": "5", "X-Xiaoxi-Version": expected.version,
         ...(schema === 2 ? { "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Base-Version": expected.base.version,
           "X-Xiaoxi-Base-Fingerprint": expected.base.fingerprint } : {}) }
     });
     const actual = verify(returned, config);
-    if (returned.payload !== envelope.payload) {
+    if (returned.payload !== envelope.payload || returned.componentBaseEnvelope?.payload !== envelope.componentBaseEnvelope?.payload) {
       throw Object.assign(new Error("Published manifest differs from the submitted manifest."), { code: "release_readback_mismatch" });
     }
     return {
       verified: true, version: actual.version, channel: actual.channel, sequence: actual.sequence,
       manifestSha256,
-      artifactSha256: schema === 1 ? actual.sha256 : Object.fromEntries(COMPONENTS.map(name => [name, actual.components[name].sha256]))
+      ...(expected.componentBase ? { componentBase: expected.componentBase } : {}),
+      ...(envelope.componentBaseEnvelope ? { componentBaseManifestSha256: crypto.createHash("sha256").update(envelope.componentBaseEnvelope.payload).digest("hex") } : {}),
+      artifactSha256: schema === 1 ? actual.sha256 : Object.fromEntries(componentsFor(actual).map(name => [name, actual.components[name].sha256]))
     };
   } catch (cause) {
     const reason = /^[a-z][a-z0-9_]{0,79}$/.test(cause.code || "") ? cause.code : "release_readback_unavailable";

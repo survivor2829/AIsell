@@ -4,8 +4,8 @@ const fs = process.versions.electron ? require("original-fs") : require("node:fs
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
-const { backupFilter, isRegenerableProfileFile, copyProfile, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("./update-storage.cjs");
-const { inventory } = require("./update-program-backup.cjs");
+const { backupFilter, isRegenerableProfileFile, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, metadataInventory, copySnapshot, verifySnapshot } = require("./update-storage.cjs");
+const { inventory, verifyProgram, programIdentity } = require("./update-program-backup.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const registryPath = profile => path.join(profile, "data/cloud-maintenance/components/backup-registry.json");
@@ -52,32 +52,43 @@ async function dataInventory(root, filter = () => true, relative = "") {
 async function verifyData(data) {
   const receipt = path.join(data.directory, "update-backup.json");
   const includesReceipt = data.files.some(file => file.path === "update-backup.json");
-  if (!same(data.files, await dataInventory(data.directory, file => includesReceipt || file !== receipt))) throw Error("update_backup_verification_failed");
+  const filter = file => includesReceipt || file !== receipt;
+  if (await verifySnapshot(data.directory, data.files, data.verification, { ignored: includesReceipt ? [] : ["update-backup.json"] })) return;
+  if (!same(data.files, await dataInventory(data.directory, filter))) throw Error("update_backup_verification_failed");
+  data.verification = { schema: 1, files: data.files, metadata: await metadataInventory(data.directory, filter) };
 }
 async function verifySet(set) {
   await verifyData(set.data);
-  if (!same(set.programBackup.files, await inventory(set.programBackup.program))) throw Error("update_backup_verification_failed");
+  await verifyProgram(set.programBackup);
 }
 async function captureData(profile, id, destination) {
   profile = await fs.promises.realpath(profile);
   return withRegistry(profile, async registry => {
-    const filter = backupFilter(profile), files = await dataInventory(profile, filter);
+    const filter = backupFilter(profile), sourceMetadata = await metadataInventory(profile, filter);
     for (const set of [...registry.sets].reverse()) {
-      if (set.state === "retiring" || !same(files, set.data.files)) continue;
+      if (set.state === "retiring" || !same(sourceMetadata, set.data.sourceMetadata)) continue;
       try {
         await verifyData(set.data);
-        if (!same(files, await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
-        return { ...set.data, reused: true, owners: set.owners.filter(owner => contains(owner.directory, set.data.directory)) };
+        if (!same(sourceMetadata, await metadataInventory(profile, filter))) throw Error("update_backup_source_changed");
+        return { ...set.data, sourceMetadata, reused: true, owners: set.owners.filter(owner => contains(owner.directory, set.data.directory)) };
       } catch (error) { if (error.message === "update_backup_source_changed") throw error; }
     }
     const parent = destination || path.join(path.dirname(profile), path.basename(profile) + "-update-backups");
-    await checkCopySpace([{ path: parent, bytes: await copyBytes(profile, filter) }]);
+    await checkCopySpace([{ path: parent, bytes: sourceMetadata.reduce((sum, file) => sum + (file.size || 0), 0) }]);
     const owned = await createOwnedDirectory(parent, id);
     try {
-      await copyProfile(profile, owned.directory, filter);
-      const data = { directory: owned.directory, files };
-      await verifyData(data);
-      if (!same(files, await dataInventory(profile, filter))) throw Error("update_backup_source_changed");
+      const copied = await copySnapshot(profile, owned.directory, sourceMetadata, filter);
+      const data = { directory: owned.directory, ...copied };
+      // If metadata changed but all copied bytes stayed identical, reuse the
+      // original set after the same single source read. Never prehash the whole
+      // live profile merely to decide whether another copy is necessary.
+      for (const set of [...registry.sets].reverse()) {
+        if (set.state === "retiring" || !same(data.files, set.data.files)) continue;
+        try { await verifyData(set.data); }
+        catch { continue; }
+        await removeOwnedDirectory(owned);
+        return { ...set.data, sourceMetadata, reused: true, owners: set.owners.filter(owner => contains(owner.directory, set.data.directory)) };
+      }
       writeJsonAtomic(path.join(owned.directory, "update-backup.json"), { createdAt: new Date().toISOString(), kind: "before-full-upgrade" });
       return { ...data, owners: [owned] };
     } catch (error) { await removeOwnedDirectory(owned).catch(cleanup => { error.cleanupCode = cleanup.code || cleanup.message; }); throw error; }
@@ -88,11 +99,13 @@ function contains(root, file) {
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative));
 }
 async function reusableProgram(profile, installedRoot, selection) {
-  const files = await inventory(installedRoot);
+  const identity = await programIdentity(installedRoot, selection);
+  const files = identity ? null : await inventory(installedRoot);
   for (const set of [...readRegistry(profile).sets].reverse()) {
-    if (set.state === "retiring" || !same(selection, set.programBackup.selection) || !same(files, set.programBackup.files)) continue;
+    if (set.state === "retiring" || !same(selection, set.programBackup.selection)
+        || (identity ? identity !== set.programBackup.programIdentity : !same(files, set.programBackup.files))) continue;
     try {
-      if (!same(files, await inventory(set.programBackup.program))) continue;
+      await verifyProgram(set.programBackup);
       return { ...set.programBackup, installedRoot, owners: set.owners.filter(owner => contains(owner.directory, set.programBackup.program)) };
     } catch { /* Corrupt or unavailable backup cannot be reused. */ }
   }
@@ -103,7 +116,7 @@ async function registerSet(profile, { id, version, programBackup, data, owners =
   return withRegistry(profile, async (registry, save) => {
     const set = { id, version, kind, rotationPolicy: kind === "manual" ? "pinned" : "latest-confirmed",
       createdAt: new Date().toISOString(), state: "prepared", programBackup,
-      data: { directory: data.directory, files: data.files },
+      data: { directory: data.directory, files: data.files, verification: data.verification, sourceMetadata: data.sourceMetadata },
       owners: [...new Map([...owners, ...(data.owners || []), ...(programBackup.owners || []), ...(programBackup.owned ? [programBackup.owned] : [])].map(owner => [owner.directory, owner])).values()] };
     await verifySet(set);
     if (registry.sets.some(entry => entry.id === id)) throw Error("update_backup_id_exists");
