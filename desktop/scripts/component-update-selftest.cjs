@@ -299,6 +299,9 @@ test("exit cleanup waits for the executable hardlink lock and retains active and
     const { collectAfterExit } = require("../src/main/update-exit-maintenance.cjs");
     const parentCreated = (await require("../src/main/update-helper.cjs").processSnapshot()).find(row => row.pid === child.pid).created;
     const exitOptions = { profile, parentPid: child.pid, parentCreated, runtimeRoot: prepared.generationRoot };
+    await collectAfterExit(exitOptions, { timeoutMs: 0, snapshot: async () => [{ pid: child.pid, created: null }] });
+    assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8")).reason,
+      "parent_identity_unknown", "a visible PID without creation time cannot prove the original parent exited");
     await collectAfterExit(exitOptions, { timeoutMs: 0 });
     await fs.access(obsolete);
     assert.equal(JSON.parse(await fs.readFile(path.join(rootDir, "exit-maintenance-last.json"), "utf8")).state, "deferred");

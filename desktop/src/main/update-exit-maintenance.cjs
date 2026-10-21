@@ -50,8 +50,11 @@ async function collectAfterExit({ profile, parentPid, parentCreated, runtimeRoot
   validateSource(root, runtimeRoot, installedRoot);
   let rows = await snapshot();
   ready();
-  while (rows.some(row => row.pid === parentPid && row.created === parentCreated)) {
-    if (performance.now() >= deadline) { writeDeferred(profile, Error("parent_still_running"), { parentPid, parentCreated }); return; }
+  while (rows.some(row => row.pid === parentPid && (!row.created || row.created === parentCreated))) {
+    if (performance.now() >= deadline) {
+      writeDeferred(profile, Error(rows.some(row => row.pid === parentPid && !row.created)
+        ? "parent_identity_unknown" : "parent_still_running"), { parentPid, parentCreated }); return;
+    }
     await sleep(250);
     rows = await snapshot();
   }
