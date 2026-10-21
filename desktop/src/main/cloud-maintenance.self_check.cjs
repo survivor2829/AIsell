@@ -383,8 +383,15 @@ async function main() {
     assert.throws(() => verifyManifest({ ...latest, payload: latest.payload.replace("1.0.1", "9.0.0") }, config), /signature/);
     assert.throws(() => verifyManifest(sign({ ...manifest, channel: "delivery" }), config), /invalid/);
     assert.throws(() => verifyManifest(sign({ ...manifest, file: "/artifacts/../../bad.exe" }), config), /invalid/);
-    controller.start();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { unsubscribe(); reject(Error("Automatic update check did not finish")); }, 5000);
+      const unsubscribe = controller.onUpdate(status => {
+        if (!["ready", "error"].includes(status.stage)) return;
+        clearTimeout(timeout); unsubscribe();
+        if (status.stage === "error") reject(Error(status.error)); else resolve();
+      });
+      controller.start();
+    });
     assert.equal(controller.status().stage, "ready");
     assert.equal(posts.length, 0, "No upload before consent");
     controller.setConsent(true);
