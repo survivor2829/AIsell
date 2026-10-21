@@ -282,7 +282,6 @@ type Api = {
 };
 
 type ProductOneClickPageProps = {
-  onOpenLegacy?: () => void;
   onBackToStudio?: () => void;
   initialProjectId?: string | null;
   initialTaskId?: string | null;

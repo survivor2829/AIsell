@@ -6,7 +6,7 @@ const {
 } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
-for (const [name, domain] of [['xiaoxiMapAcquisition', 'map-acquisition'], ['xiaoxiPreciseAcquisition', 'precise-acquisition'], ['xiaoxiGeo', 'geo-workbench']]) {
+for (const [name, domain] of [['xiaoxiMapAcquisition', 'map-acquisition']]) {
   contextBridge.exposeInMainWorld(name, require('./business-workbench-preload.cjs').createBusinessWorkbenchApi(ipcRenderer, domain));
 }
 contextBridge.exposeInMainWorld("xiaoxiOfficialMaterials", require("./official-materials-preload.cjs").createOfficialMaterialsApi(ipcRenderer));

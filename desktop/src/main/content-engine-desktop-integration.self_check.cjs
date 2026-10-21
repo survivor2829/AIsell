@@ -96,8 +96,7 @@ async function assertPreloadContract() {
     "volcengineTtsStatus"
   ]);
   assert.deepEqual(Object.keys(api.creative).sort(), [
-    "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate",
-    "generateCourseCuts", "generateGuidedAutoMixScriptV2", "generateMixBatch", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGenerated", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
+    "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate", "generateGuidedAutoMixScriptV2", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGenerated", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
     "getPackagingCostEstimate", "getProject", "importMusicCatalogTrack", "listAutoMixVoicePersonas", "listBrandProfiles", "listGenerated", "listMediaReviews", "listMusicCatalogTracks", "listOneClickCandidates", "listPackagingPresets",
     "listSegments", "mediaUrl", "open", "packageGeneratedVideos", "preflightVisualComparison", "prepareGuidedAutoMixV2", "previewAutoMixVoicePersona",
     "queue", "recordMediaReview", "regenerate", "regenerateAutoMixLayer", "regenerateCover", "reject", "repackageVideo", "reveal",
@@ -146,8 +145,6 @@ async function assertPreloadContract() {
   api.settings.deleteBailianKey();
   api.creative.analyzeAssets({ assetIds: ["asset_one"], path: "C:\\bad" });
   api.creative.listSegments({ assetId: "asset_one", role: "hook", limit: 20, path: "C:\\bad" });
-  api.creative.generateCourseCuts({ assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140, packagingMode: "auto", brandProfileId: "brand_one", coverMode: "ai_generate", visualRenderer: { requestedEngine: "remotion", visualStyleId: "tech_motion", requestedStyleVersion: 1, allowFallback: true, apiKey: "must-not-pass" }, path: "C:\\bad" });
-  api.creative.generateMixBatch({ assetIds: ["asset_one", "asset_two"], theme: "培训现场价值", targetCount: 30, voiceAssetId: "asset_one", packagingMode: "auto", brandProfileId: "brand_one", coverMode: "ai_generate", visualRenderer: { requestedEngine: "remotion", requestedStyleVersion: 1, allowFallback: true, path: "C:\\bad" }, path: "C:\\bad" });
   api.creative.createAutoMixV2({
     specVersion: "2",
     assetIds: ["asset_one"],
@@ -382,14 +379,6 @@ async function assertPreloadContract() {
     {
       channel: "content-engine:list-media-segments",
       payload: { assetId: "asset_one", role: "hook", limit: 20 }
-    },
-    {
-      channel: "content-engine:generate-course-cuts",
-      payload: { assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140, experimentMode: "standard", subtitlePreset: "dynamic_clean", packagingMode: "auto", brandProfileId: "brand_one", coverMode: "ai_generate", visualRenderer: { requestedEngine: "remotion", visualStyleId: "tech_motion", requestedStyleVersion: 1, allowFallback: true } }
-    },
-    {
-      channel: "content-engine:generate-mix-batch",
-      payload: { assetIds: ["asset_one", "asset_two"], theme: "培训现场价值", targetCount: 30, voiceAssetId: "asset_one", packagingMode: "auto", brandProfileId: "brand_one", coverMode: "ai_generate", visualRenderer: { requestedEngine: "remotion", requestedStyleVersion: 1, allowFallback: true } }
     },
     {
       channel: "content-engine:create-auto-mix-v2",

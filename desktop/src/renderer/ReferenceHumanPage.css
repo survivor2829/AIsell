@@ -16,7 +16,9 @@
 .reference-human-page summary { cursor:pointer; font-size:13px; line-height:1.7; }
 .reference-human-page summary small { font-weight:400; color:#596374; margin-left:8px; }
 .reference-human-page .dh-button:focus-visible,.reference-human-page summary:focus-visible,.rh-people button:focus-visible,.rh-source-modes button:focus-visible { outline:3px solid var(--dh-accent); outline-offset:3px; }
-.rh-people { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:14px; margin:22px 0; max-height:450px; overflow:auto; padding:3px; scrollbar-color:#c4bcc0 #faf7f8; }
+.rh-people { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; margin:22px 0; padding:3px; }
+.rh-people.has-people { grid-template-columns:minmax(240px,1fr) minmax(0,1.5fr); align-items:start; }
+.rh-person-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:14px; max-height:450px; overflow:auto; padding:3px; scrollbar-color:#c4bcc0 #faf7f8; }
 .rh-people button { padding:0; min-width:0; text-align:left; border:1px solid #dfe1e7; background:white; border-radius:12px; overflow:hidden; color:#303849; font:inherit; cursor:pointer; }
 .rh-people button:disabled { cursor:not-allowed; opacity:.65; }
 .rh-people button:hover:not(:disabled),.rh-person[aria-pressed=true] { border-color:var(--dh-accent); }
@@ -27,8 +29,8 @@
 .rh-person-check { position:absolute; top:8px; right:8px; background:var(--dh-accent); color:white; border-radius:50%; padding:3px; }
 .rh-person > strong { display:block; font-size:13px; margin:10px 10px 4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rh-person > small { display:block; font-size:11px; line-height:1.6; color:#596374; margin:0 10px 12px; }
-.rh-people .rh-upload-person { min-height:216px; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px; padding:18px 10px; text-align:center; border-style:dashed; background:#fdf8f9; color:var(--dh-accent); }
-.rh-upload-person strong { font-size:14px; }.rh-upload-person small { font-size:12px; line-height:1.8; color:#6c4c55; }
+.rh-people .rh-upload-person { min-height:216px; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px; padding:28px 24px; text-align:center; width:100%; box-sizing:border-box; border-style:dashed; background:#fdf8f9; color:var(--dh-accent); }
+.rh-upload-person strong { font-size:14px; }.rh-upload-person small { font-size:12px; line-height:1.8; color:#6c4c55; max-width:32em; }
 .rh-step-actions { margin-top:24px; padding-top:20px; border-top:1px solid #eee7e9; display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
 .reference-human-page .rh-voice-setup { margin-top:18px; border:0; padding:0; }
 .rh-preview-summary { margin-top:24px; padding-top:18px; border-top:1px solid #eee7e9; font-size:13px; color:#596374; line-height:1.7; }
@@ -59,7 +61,8 @@
   .reference-human-page .dh-workspace { grid-template-columns:1fr; }
   .reference-human-page .dh-form { min-height:0; }
   .reference-human-page .dh-header { align-items:flex-start; }
-  .rh-people { grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); max-height:390px; }
+  .rh-people.has-people { grid-template-columns:minmax(0,1fr); }
+  .rh-person-grid { grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); max-height:390px; }
   .rh-step-actions .is-primary { flex:1; }
   .rh-search-row { flex-wrap:wrap; }.rh-search-row .dh-field { min-width:180px; }
 }

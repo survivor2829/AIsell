@@ -13,7 +13,6 @@ for (const contract of [
   /当前没有待处理的制作/u,
   /读取创作任务失败/u,
   /onOpenProduct/u,
-  /onOpenLegacy/u,
   /onOpenMaterials/u,
   /onOpenFinished/u,
   /onOpenDiagnostics/u,

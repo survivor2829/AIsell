@@ -458,6 +458,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ipcMain,
       store: licenseStore,
       onChanged: async ({ action }) => {
+        contentEngineController?.invalidateCatalogs?.();
         // A login change during startup must not reuse the former license's session.
         providerSession = providerSession.then(() => action === 'logged_out'
           ? providerGatewayClient.invalidate() : providerGatewayClient.initialize({ force: true }));
@@ -587,6 +588,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     let contentProviderConfiguration = "";
     const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
+      getCatalogScope: providerConfiguration,
       beforeStart: async () => { await components.ensureRuntimeGroup("content"); await waitForProviderSession(); },
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),

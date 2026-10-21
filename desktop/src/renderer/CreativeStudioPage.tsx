@@ -71,7 +71,6 @@ type ContentApi = {
 
 type CreativeStudioPageProps = {
   onOpenProduct: () => void;
-  onOpenLegacy: (taskId?: string, projectId?: string | null) => void;
   onOpenMaterials: () => void;
   onOpenFinished: () => void;
   onOpenDiagnostics: (context?: { module: string; taskId?: string }) => void;
@@ -191,8 +190,9 @@ function TaskRow({
   onFeedback: (task: ContentProduction) => void;
 }) {
   const progress = taskProgress(task.progress);
-  const canPause = !task.archived && task.state !== "outcome_unknown" && RUNNING_STATUSES.has(task.taskStatus || "");
-  const canResume = !task.archived && task.state !== "outcome_unknown" && task.taskStatus === "paused";
+  const retired = ["course_generation", "mix_generation"].includes(task.taskType);
+  const canPause = !retired && !task.archived && task.state !== "outcome_unknown" && RUNNING_STATUSES.has(task.taskStatus || "");
+  const canResume = !retired && !task.archived && task.state !== "outcome_unknown" && task.taskStatus === "paused";
   const canCancel = canPause || canResume;
   const failed = task.category === "needs_attention" && Boolean(task.errorCode || task.errorMessage);
 
@@ -207,6 +207,7 @@ function TaskRow({
           <span>{taskContext(task)}</span>
           <span>{formatDate(task.updatedAt || task.createdAt)}</span>
         </div>
+        {retired && <p className="studio-task-error">原声拆条与混剪已停用，制作记录和已有成片仍可查看，任务不再继续执行。</p>}
         {failed && (
           <p className="studio-task-error">
             <CircleAlert size={14} aria-hidden="true" />
@@ -230,7 +231,7 @@ function TaskRow({
 
       <div className="studio-task-actions">
         <button className="studio-button is-quiet" type="button" onClick={() => onOpen(task)}>
-          {task.archived ? "查看归档" : task.category === "history" ? "查看结果" : "打开制作"}
+          {retired ? "查看成片" : task.archived ? "查看归档" : task.category === "history" ? "查看结果" : "打开制作"}
         </button>
         {failed && <button className="studio-button is-quiet" type="button" onClick={() => onFeedback(task)}>反馈问题</button>}
         {canPause && (
@@ -255,7 +256,6 @@ function TaskRow({
 
 export function CreativeStudioPage({
   onOpenProduct,
-  onOpenLegacy,
   onOpenMaterials,
   onOpenFinished,
   onOpenDiagnostics,
@@ -416,8 +416,8 @@ export function CreativeStudioPage({
       }
       return;
     }
-    onOpenLegacy(task.taskId || undefined, task.projectId);
-  }, [onContinueProduct, onOpenBatch, onOpenFinished, onOpenLegacy, onOpenMaterials, onOpenProduct]);
+    onOpenFinished();
+  }, [onContinueProduct, onOpenBatch, onOpenFinished, onOpenMaterials, onOpenProduct]);
 
   const hasAnyTasks = tasks.length > 0;
   const engineReady = Boolean(engineStatus?.available && engineStatus.state === "ready");

@@ -62,7 +62,7 @@ async function collectAfterExit({ profile, parentPid, parentCreated, runtimeRoot
   try {
     validateSource(root, runtimeRoot, installedRoot);
     const active = path.join(root, "active-job.json");
-    if (fs.existsSync(active)) {
+    if (require("./update-helper.cjs").hasLiveUpdateHelper(root)) {
       const job = read(active), status = read(path.join(root, "jobs", job.id + ".status.json"));
       if (!["complete", "error"].includes(status.phase)) throw Error("active_update");
     }

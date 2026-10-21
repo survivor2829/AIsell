@@ -258,7 +258,18 @@ test("superseded prepared updates do not accumulate complete programs and archiv
   finally { physical.rmSync = remove; }
   await fs.access(deferred);
   const profile = path.join(root, "idle-profile"); await fs.mkdir(profile);
+  const activeJob = path.join(rootDir, "active-job.json"), handoffId = "11111111-2222-4333-8444-555555555555";
+  await fs.mkdir(path.join(rootDir, "jobs"), { recursive: true });
+  await fs.writeFile(activeJob, JSON.stringify({ id: handoffId }));
+  await fs.writeFile(path.join(rootDir, "jobs", handoffId + ".status.json"), JSON.stringify({ phase: "waiting" }));
   await require("../src/main/update-startup-maintenance.cjs").maintainAfterStartup(rootDir, { profile, version: "1.1.4" });
+  await fs.access(deferred); // An older helper without the lease still owns its active handoff.
+  const exitedHelper = require("node:child_process").spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
+  assert.equal(exitedHelper.status, 0);
+  await fs.writeFile(activeJob, JSON.stringify({ id: handoffId, pid: exitedHelper.pid }));
+  await require("../src/main/update-startup-maintenance.cjs").maintainAfterStartup(rootDir, { profile, version: "1.1.4" });
+  await fs.access(activeJob); // Dead-helper proof releases the pin without deleting its evidence.
+
   await assert.rejects(fs.stat(deferred), { code: "ENOENT" }, "healthy-start worker retries component cleanup even without a retired full backup");
   await fs.access(historical);
 });

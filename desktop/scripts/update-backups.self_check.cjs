@@ -46,6 +46,8 @@ if (process.argv[2] === "--hold-registry") {
     await fs.writeFile(path.join(installedHelper, "app.exe"), "physical executable");
     await fs.writeFile(path.join(installedHelper, "runtime.dll"), "physical library");
     await fs.writeFile(path.join(helperApp, "bootstrap.cjs"), "immutable helper code");
+    await fs.mkdir(path.join(installedHelper, "locales"));
+    for (const name of ["icudtl.dat", "snapshot_blob.bin", "resources.pak", "locales/zh-CN.pak"]) await fs.writeFile(path.join(installedHelper, name), "mapped runtime bytes");
     await fs.writeFile(path.join(installedHelper, "component-base.json"), JSON.stringify({ base: { fingerprint: "a".repeat(64) },
       components: { updater: { treeSha256: "b".repeat(64) } } }));
     const helper = require("../src/main/update-helper.cjs");
@@ -56,9 +58,33 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal((await helper.prepareHelperRuntime(options)).created, false);
     assert.notEqual((await fs.stat(helperOne.helperExecutable)).ino, (await fs.stat(options.executable)).ino, "helper EXE must not share installer-locked bytes");
     assert.notEqual((await fs.stat(path.join(helperOne.owned.directory, "runtime.dll"))).ino, (await fs.stat(path.join(installedHelper, "runtime.dll"))).ino);
+    for (const name of ["icudtl.dat", "snapshot_blob.bin", "resources.pak", "locales/zh-CN.pak"]) {
+      assert.notEqual((await fs.stat(path.join(helperOne.owned.directory, name))).ino, (await fs.stat(path.join(installedHelper, name))).ino, `${name} must not share memory-mapped bytes with retired generations`);
+    }
     assert.equal((await fs.stat(path.join(helperOne.owned.directory, "resources/app/bootstrap.cjs"))).ino, (await fs.stat(path.join(helperApp, "bootstrap.cjs"))).ino);
     assert.equal((await helper.prepareHelperRuntime(options)).helperExecutable, helperOne.helperExecutable,
       "The shared helper cache is independent of update job history");
+    const failedProfile = path.join(root, "failed-helper-profile"), failedRoot = path.join(failedProfile, "data/cloud-maintenance/components");
+    const failedHelperCopy = fs.copyFile, failedHelperRemove = fs.rm;
+    fs.copyFile = async (source, ...args) => {
+      if (source === path.join(installedHelper, "icudtl.dat")) throw Object.assign(Error("copy interrupted"), { code: "EIO" });
+      return failedHelperCopy(source, ...args);
+    };
+    fs.rm = async (target, ...args) => {
+      if (target.startsWith(failedRoot + path.sep) && path.basename(target).startsWith(".discard-")) throw Object.assign(Error("external file lock"), { code: "EBUSY" });
+      return failedHelperRemove(target, ...args);
+    };
+    try { await assert.rejects(helper.prepareHelperRuntime({ ...options, paths: { directory: failedRoot } }), { code: "EIO" }); }
+    finally { fs.copyFile = failedHelperCopy; fs.rm = failedHelperRemove; }
+    const quarantines = (await fs.readdir(path.join(failedRoot, "helper-runtime"))).filter(name => name.startsWith(".discard-"));
+    assert.equal(quarantines.length, 1);
+    const retirement = require("../src/main/update-exit-maintenance.cjs").retirementStatus(failedProfile);
+    assert.equal(retirement.pending, true, "failed helper quarantine must remain registered for automatic exit retry");
+    const unknownQuarantine = path.join(failedRoot, "helper-runtime/.discard-historical");
+    await fs.mkdir(unknownQuarantine); await fs.writeFile(path.join(unknownQuarantine, "unique.txt"), "preserve");
+    require("../src/shared/artifact-retention.cjs").retryArtifacts(failedRoot);
+    await assert.rejects(fs.stat(path.join(failedRoot, "helper-runtime", quarantines[0])), { code: "ENOENT" });
+    assert.equal(await fs.readFile(path.join(unknownQuarantine, "unique.txt"), "utf8"), "preserve");
     const obsoleteHelperFile = path.join(helperPaths.directory, "obsolete-exit-file");
     await fs.writeFile(obsoleteHelperFile, "owned temporary file");
     require("../src/shared/artifact-retention.cjs").retainArtifacts(helperPaths.directory, "exit-prepare-fixture", [], 1, [obsoleteHelperFile], { deferCleanup: true });

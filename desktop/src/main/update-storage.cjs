@@ -180,12 +180,14 @@ async function removeOwnedDirectory(owned) {
   if (!quarantined) {
     if (!matches(await fs.promises.lstat(directory, { bigint: true }))
         || normalize(await fs.promises.realpath(directory)) !== normalize(directory)) throw Error("update_copy_path_invalid");
-    await fs.promises.rename(directory, discarded);
+    try { await fs.promises.rename(directory, discarded); }
+    catch (error) { error.ownedRetirement = { parent, directory, identity: owned.identity }; throw error; }
   }
   if (!matches(await fs.promises.lstat(discarded, { bigint: true }))
       || normalize(await fs.promises.realpath(parent)) !== normalize(parent)
       || normalize(await fs.promises.realpath(discarded)) !== normalize(discarded)) throw Error("update_copy_path_invalid");
-  await fs.promises.rm(discarded, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  try { await fs.promises.rm(discarded, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+  catch (error) { error.ownedRetirement = { parent, directory: discarded, identity: owned.identity }; throw error; }
 }
 function updateFailure(error, phase) {
   const rawCode = String(error?.code || error?.message || "update_failed");

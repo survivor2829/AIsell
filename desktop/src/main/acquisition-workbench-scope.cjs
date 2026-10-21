@@ -37,8 +37,6 @@ function registerScopedWorkbench(options, register) {
       generation++;
       const previousWindow = getMainWindow();
       if (previousWindow && !previousWindow.isDestroyed()) {
-        previousWindow.webContents.send('geo-workbench:update', null);
-        previousWindow.webContents.send('precise-acquisition:update', null);
         previousWindow.webContents.send('map-acquisition:update', null);
       }
       adapter.cancel?.();
@@ -53,30 +51,28 @@ function registerScopedWorkbench(options, register) {
           if (accounts.identity()?.namespace !== bound || generation !== boundGeneration) return null;
           return getMainWindow();
         };
-        child = register({ ...common, ipcMain: facade, dataDir: current.directory, domains: ['map-acquisition', 'geo-workbench'], partitionId: current.namespace,
+        child = register({ ...common, ipcMain: facade, dataDir: current.directory, domains: ['map-acquisition'], partitionId: current.namespace,
           getMainWindow: guardedWindow, account: publicAccount,
           mapAdapter: { ...adapter, dispose() { adapter.cancel?.(); } } });
       }
       const w = getMainWindow();
       if (w && !w.isDestroyed()) {
-        w.webContents.send('geo-workbench:update', child?.controllers.get('geo-workbench')?.snapshot() || null);
-        w.webContents.send('precise-acquisition:update', child?.precise?.snapshot() || null);
         w.webContents.send('map-acquisition:update', child?.controllers.get('map-acquisition')?.snapshot() || null);
       }
     })();
     try { await switching; } finally { switching = null; }
   }
-  for (const domain of ['map-acquisition', 'precise-acquisition', 'geo-workbench']) ipcMain.handle(`${domain}:invoke`, async (event, action, payload = {}) => {
+  for (const domain of ['map-acquisition']) ipcMain.handle(`${domain}:invoke`, async (event, action, payload = {}) => {
     const wc = getMainWindow()?.webContents;
     if (!wc || event.sender !== wc || event.senderFrame !== wc.mainFrame) return { ok: false, code: 'BUSINESS_IPC_FORBIDDEN', error: '当前页面无权操作获客资料' };
     try {
       await refreshAccount();
       if (!current) return { ok: false, state: null, error: '请先登录渠道商账号' };
       const bound = current.namespace, requestGeneration = generation;
-      if (domain === 'precise-acquisition' && action === 'claim-legacy') {
-        if (child.precise.controller.snapshot().busy || child.precise.snapshot().sync?.busy || child.controllers.get('map-acquisition').snapshot().busy) throw Error('请先暂停任务并等待同步结束');
+      if (action === 'claim-legacy') {
+        if (child.controllers.get('map-acquisition').snapshot().busy) throw Error('请先暂停地图任务');
         accounts.claim(current, payload.namespace); await refreshAccount(true);
-        return { ok: true, state: child.precise.snapshot() };
+        return { ok: true, state: child.controllers.get('map-acquisition').snapshot() };
       }
       const handler = handlers.get(`${domain}:invoke`);
       const result = handler ? await handler(event, action, payload) : { ok: false, error: '本地资料不可读取' };
@@ -84,6 +80,6 @@ function registerScopedWorkbench(options, register) {
       return result;
     } catch { return { ok: false, state: null, error: '账号资料暂不可读取或迁移条件不满足，原资料保留；请核对账号后重试' }; }
   });
-  return { refreshAccount, async dispose() { disposed = true; await switching; await child?.dispose(); adapter.dispose?.(); for (const domain of ['map-acquisition', 'precise-acquisition', 'geo-workbench']) ipcMain.removeHandler(`${domain}:invoke`); } };
+  return { refreshAccount, async dispose() { disposed = true; await switching; await child?.dispose(); adapter.dispose?.(); for (const domain of ['map-acquisition']) ipcMain.removeHandler(`${domain}:invoke`); } };
 }
 module.exports = { registerScopedWorkbench };

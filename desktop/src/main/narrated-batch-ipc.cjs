@@ -16,6 +16,7 @@ const ERRORS = {
   narrated_batch_busy: "当前任务正在执行，请等待完成或暂停。",
   narrated_batch_paused: "请先恢复或取消暂停任务，再修改。",
   invalid_narrated_count: "生成数量必须是 1 到 300 的整数。",
+  invalid_narrated_pagination: "制作记录分页参数无效，请重新进入页面。",
   narrated_samples_not_ready: "请等待样片完成后再继续整批。",
   narrated_candidate_not_found: "没有找到这条方案。",
   narrated_script_not_found: "没有找到这份文案，请重新选择。",
@@ -75,6 +76,7 @@ for (const field of "workflow_version music_mode script_options selected_script_
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "brief_version script_source script_action target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
+PUBLIC_FIELDS.add("has_more");
 PUBLIC_FIELDS.add("music_notice");
 PUBLIC_FIELDS.add("video_template");
 // The strict visual review switch, and the mark on works made without it.
@@ -147,7 +149,12 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
       name: text(p.name, 100), description: text(p.description, 6000), asset_ids: ids(p.asset_ids)
     }));
   });
-  handle(CHANNELS.list, async () => publicBatch(await controller.listNarratedBatches()));
+  handle(CHANNELS.list, async (p) => {
+    keys(p, ["limit", "offset"]);
+    if (p.limit !== undefined && (!Number.isSafeInteger(p.limit) || p.limit < 1 || p.limit > 500)
+      || p.offset !== undefined && (!Number.isSafeInteger(p.offset) || p.offset < 0)) invalid("invalid_narrated_pagination");
+    return publicBatch(await controller.listNarratedBatches(p));
+  });
   handle(CHANNELS.archive, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.archiveNarratedBatch(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.get, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatch(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.status, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatchStatus(id(p.batch_id, "narrated_batch"))); });

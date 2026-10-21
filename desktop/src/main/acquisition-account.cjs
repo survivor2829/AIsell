@@ -13,14 +13,14 @@ function createAcquisitionAccount({ dataDir, getLicenseStatus }) {
     const namespace = namespaceFor(status.licenseId);
     return { namespace, displayId: `渠道商 ${namespace.slice(0, 8)}`, directory: path.join(dataDir, 'acquisition-accounts', namespace) };
   };
-  const domains = [['map-acquisition', 'map-legacy-owner.json'], ['precise-acquisition', 'precise-legacy-owner.json'], ['geo_workbench', 'geo-legacy-owner.json']];
+  const domains = [['map-acquisition', 'map-legacy-owner.json']];
   const read = file => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
   function candidates(current) {
     if (!current || current.legacy) return [];
     const combined = read(index);
     return domains.map(([domain, marker]) => {
       const file = path.join(dataDir, 'acquisition-accounts', marker);
-      const prior = read(file) || (domain !== 'geo_workbench' ? combined : null);
+      const prior = read(file) || combined;
       return { domain, file, prior, source: path.join(dataDir, domain, 'state.json') };
     }).filter(r => (!r.prior || r.prior.namespace === current.namespace && !r.prior.completed) && fs.existsSync(r.source));
   }

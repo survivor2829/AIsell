@@ -1,2 +1,0 @@
-# Optional text-PDF parsing; without it PDF imports remain explicitly incomplete.
-pypdf>=5,<7

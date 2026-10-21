@@ -151,6 +151,33 @@ async function main() {
 
   try {
     {
+      const child = new FakeChild();
+      let provider = "account-a", revision = 1, holdRefresh = false, environmentReads = 0;
+      const controller = createContentEngineSidecar({ runtimePath, dataDir,
+        getProviderEnvironment: () => { environmentReads++; return { XIAOXI_PROVIDER_GATEWAY_TOKEN: provider }; },
+        getCatalogScope: () => provider,
+        spawnProcess: () => { setImmediate(() => child.ready()); return child; } });
+      child.on("request", request => {
+        if (request.method === "shutdown") { child.respond(request, {}); setImmediate(() => child.emit("close", 0)); }
+        else if (request.method !== "list_brand_profiles" || !holdRefresh) child.respond(request, { revision });
+      });
+      assert.deepEqual(await controller.listBrandProfiles(), { revision: 1 });
+      holdRefresh = true; revision = 2;
+      const hot = controller.listBrandProfiles();
+      assert.equal(await Promise.race([hot.then(value => value.revision), new Promise(resolve => setTimeout(() => resolve("blocked"), 100))]), 1,
+        "a read-only catalog must remain usable while its refresh waits");
+      await waitFor(() => child.stdin.writes.filter(request => request.method === "list_brand_profiles").length === 2);
+      child.respond(child.stdin.writes.at(-1), { revision: 2 });
+      await new Promise(resolve => setImmediate(resolve));
+      holdRefresh = false; revision = 3;
+      await controller.saveAssetCollection({ name: "written" });
+      assert.deepEqual(await controller.listBrandProfiles(), { revision: 3 }, "successful writes invalidate catalogs");
+      provider = "account-b"; revision = 4;
+      assert.deepEqual(await controller.listBrandProfiles(), { revision: 4 }, "authorization identity changes invalidate catalogs");
+      assert.equal(environmentReads, 1, "catalog reads must not update the running worker authorization identity");
+      await controller.dispose();
+    }
+    {
       const blocked = createContentEngineSidecar({ runtimePath, dataDir,
         beforeStart: () => { throw Error("component_file_corrupt"); },
         spawnProcess: () => assert.fail("Unverified runtime must not execute") });
@@ -580,62 +607,6 @@ async function main() {
       const creativeProjectId = "creative_project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
       const autoMixRunId = "auto_mix_run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
       const mixCalls = [
-        [controller.generateCourseCuts(assetId, {
-          minDurationMs: 30_000,
-          maxDurationMs: 90_000,
-          count: 5,
-          theme: "培训现场价值",
-          subtitleFontSize: 42,
-          subtitleMarginBottom: 140,
-          experimentMode: "standard",
-          subtitlePreset: "dynamic_clean",
-          packagingMode: "preset",
-          packagingPresetId: "knowledge_focus",
-          brandProfileId,
-          visualRenderer: {
-            requestedEngine: "remotion",
-            visualStyleId: "tech_motion",
-            requestedStyleVersion: 1,
-            allowFallback: true
-          },
-          coverMode: "local_frame"
-        }), "generate_course_cuts", {
-          asset_id: assetId,
-          min_duration_ms: 30_000,
-          max_duration_ms: 90_000,
-          count: 5,
-          theme: "培训现场价值",
-          subtitle_font_size: 42,
-          subtitle_margin_bottom: 140,
-          experiment_mode: "standard",
-          subtitle_preset: "dynamic_clean",
-          packaging_mode: "preset",
-          packaging_preset_id: "knowledge_focus",
-          brand_profile_id: brandProfileId,
-          visual_renderer: {
-            requestedEngine: "remotion",
-            visualStyleId: "tech_motion",
-            requestedStyleVersion: 1,
-            allowFallback: true
-          },
-          cover_mode: "local_frame"
-        }],
-        [controller.generateMixBatch([assetId], {
-          theme: "培训现场价值", targetCount: 30, voiceAssetId: assetId,
-          packagingMode: "auto", brandProfileId, coverMode: "local_frame",
-          visualRenderer: {
-            requestedEngine: "remotion", requestedStyleVersion: 1,
-            allowFallback: true
-          }
-        }), "generate_mix_batch", {
-          asset_ids: [assetId], theme: "培训现场价值", target_count: 30,
-          voice_asset_id: assetId, packaging_mode: "auto",
-          brand_profile_id: brandProfileId, cover_mode: "local_frame",
-          visual_renderer: {
-            requestedEngine: "remotion", requestedStyleVersion: 1,
-            allowFallback: true
-          }
-        }],
         [controller.createAutoMixV2({
           specVersion: "2",
           assetIds: [assetId],

@@ -18,8 +18,6 @@ async function main() {
   assert.equal(checkEnvironment("rpa/active_touch/wechat_auto_reply_driver.self_check.cjs", local), local,
     "Node and the PowerShell OS clock must keep their existing agreement");
   assert.equal(checkEnvironment("src/main/moments-draft.self_check.cjs", local).TZ, "Asia/Shanghai");
-  assert.equal(checkEnvironment("src/main/acquisition-sync.self_check.cjs", { PRECISE_TEST_PYTHON: "explicit-python" }).PRECISE_TEST_PYTHON,
-    "explicit-python", "An explicit sync fixture interpreter must remain authoritative");
   assert.equal(concurrencyFor({}, 1), 1);
   assert.equal(concurrencyFor({ XIAOXI_SELF_CHECK_CONCURRENCY: "2" }, 20), 2);
   assert.throws(() => concurrencyFor({ XIAOXI_SELF_CHECK_CONCURRENCY: "0" }, 20), /concurrency/);
@@ -28,7 +26,6 @@ async function main() {
     "scripts/product-detail-download.electron.self_check.cjs", "rpa/active_touch/moments_navigation.self_check.cjs"]) {
     assert.equal(isExclusive(check), true, check + " must run alone");
   }
-  assert.equal(isExclusive("src/main/acquisition-sync.self_check.cjs"), true, "local Python sync service startup must not compete with the pool");
   assert.equal(isExclusive("src/main/failure-evidence.self_check.cjs"), true, "native PowerShell capture fixture must run alone like RPA checks");
   assert.equal(isExclusive("src/main/acquisition-account.self_check.cjs"), false);
   const output = [], errors = [];

@@ -8,17 +8,10 @@ type MapTask = { id: string; province?: string; city: string; district?: string;
 type Evidence = { id: string; level: string; url?: string; date?: string; description: string; contactIdentity?: string; confirmedAt?: string };
 type FollowUp = { id: string; content: string; nextStep?: string; createdAt?: string };
 type Lead = { id: string; taskIds?: string[]; name: string; city: string; address: string; industry: string; phone: string; phoneType: string; sourceUrl: string; collectedAt: string; matchReason: string; favorite: boolean; demandLevel: string; suspectedDuplicate?: boolean; evidence: Evidence[]; followUps: FollowUp[]; aiSummary?: { summary: string; questions: string[]; generatedAt: string } };
-type MapState = { tasks: MapTask[]; leads: Lead[]; settings: { limit: number; maxMinutes: number }; browser: { state: string; authorized?: boolean; account?: { nickname?: string; name?: string }; message?: string }; busy: boolean; capabilities?: { collect: boolean; validated?: boolean; reason?: string; organize?: boolean } };
+type MapState = { account?: { namespace: string; displayId: string; migrationAvailable: boolean }; tasks: MapTask[]; leads: Lead[]; settings: { limit: number; maxMinutes: number }; browser: { state: string; authorized?: boolean; account?: { nickname?: string; name?: string }; message?: string }; busy: boolean; capabilities?: { collect: boolean; validated?: boolean; reason?: string; organize?: boolean } };
 const demandLabels: Record<string, string> = { none: '需求待确认', signal: '发现需求信号', confirmed: '已人工确认需求' };
 
-export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterprises, onFavorite, onFollowUp, onCopyLead }: {
-  enterprises?: { id: string; mapLeadIds: string[]; favorite: boolean; followUps: FollowUp[] }[];
-  onCheckLead?: (leadId: string) => void;
-  onRefreshEnterprises?: () => void;
-  onFavorite?: (id: string, favorite: boolean) => void;
-  onFollowUp?: (id: string, content: string, nextStep: string) => Promise<unknown>;
-  onCopyLead?: (leadId: string, phone: string) => void;
-} = {}) {
+export function MapAcquisitionPanel() {
   const { state, loading, pending, error, notice, run } = useWorkbench<MapState>(window.xiaoxiMapAcquisition);
   const [resultTaskId, setResultTaskId] = useState('');
   const runningTask = useRef('');
@@ -42,7 +35,6 @@ export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterpr
   const [evidence, setEvidence] = useState({ level: 'signal', description: '', url: '', date: '', contactIdentity: '', confirmedAt: '', nextStep: '' });
   const [followUp, setFollowUp] = useState({ content: '', nextStep: '' });
   useEffect(() => { setFollowUp({ content: '', nextStep: '' }); setEvidence({ level: 'signal', description: '', url: '', date: '', contactIdentity: '', confirmedAt: '', nextStep: '' }); }, [selectedId]);
-  useEffect(() => { onRefreshEnterprises?.(); }, [state?.leads.map(e => `${e.id}:${e.collectedAt}:${e.followUps.length}`).join('|')]);
   const resultTask = state?.tasks.find(task => task.id === resultTaskId) || state?.tasks.at(-1);
   const showResults = (taskId: string) => {
     setResultTaskId(taskId); setTab('customers'); setCreating(false);
@@ -57,10 +49,7 @@ export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterpr
       if (finished?.status === 'completed') showResults(finished.id);
     }
   }, [state?.tasks]);
-  const leads = useMemo(() => (state?.leads || []).filter(lead => !!resultTask && lead.taskIds?.includes(resultTask.id)).map(lead => {
-    const company = enterprises?.find(e => e.mapLeadIds.includes(lead.id));
-    return company ? { ...lead, favorite: company.favorite, followUps: company.followUps } : lead;
-  }).sort((a, b) => (b.collectedAt || '').localeCompare(a.collectedAt || '')), [state?.leads, enterprises, resultTask?.id]);
+  const leads = useMemo(() => (state?.leads || []).filter(lead => !!resultTask && lead.taskIds?.includes(resultTask.id)).slice().sort((a, b) => (b.collectedAt || '').localeCompare(a.collectedAt || '')), [state?.leads, resultTask?.id]);
   const filtered = useMemo(() => leads.filter(lead => (!favorites || lead.favorite) && (level === 'all' || lead.demandLevel === level) && (phoneType === 'all' || lead.phoneType === phoneType)
     && `${lead.name} ${lead.address} ${lead.city} ${lead.industry}`.toLowerCase().includes(query.trim().toLowerCase())), [leads, query, favorites, level, phoneType]);
   const current = filtered.find(lead => lead.id === selectedId) || filtered[(page - 1) * 10];
@@ -112,11 +101,7 @@ export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterpr
       await run('start-task', { taskId: next.id });
     } finally { startLock.current = false; setStarting(false); }
   };
-  const favorite = (lead: Lead) => {
-    const company = enterprises?.find(e => e.mapLeadIds.includes(lead.id));
-    if (company && onFavorite) onFavorite(company.id, !lead.favorite);
-    else void run('save-lead', { id: lead.id, favorite: !lead.favorite });
-  };
+  const favorite = (lead: Lead) => void run('save-lead', { id: lead.id, favorite: !lead.favorite });
   if (loading) return <p className="bw-loading" role="status">正在读取…</p>;
   return <div className="bw-workbench bw-map map-clean">
     <header className="map-toolbar">
@@ -128,6 +113,7 @@ export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterpr
       </div>
     </header>
     {error && <div className="workflow-alert" role="alert">{error}</div>}{notice && <div className="workflow-notice" role="status">{notice}</div>}
+    {state?.account?.migrationAvailable && <div className="bw-account-strip"><span>此电脑有未归属账号的旧地图资料，原文件将保留。</span><button className="secondary-button" disabled={busy || state.busy} onClick={() => void run('claim-legacy', { namespace: state.account?.namespace }, '旧地图资料已导入当前账号，原文件保留')}>确认属于{state.account.displayId}并导入</button></div>}
     {accountOpen && <div className="bw-account-strip"><span>{state?.browser.state === 'verification_required' ? '请在当前高德窗口完成验证，再点继续任务。' : state?.browser.message || '在高德窗口完成登录后，核对账号即可。'}</span><button className="secondary-button" disabled={busy} onClick={() => void run('open-account')}>打开高德</button><button className="secondary-button" disabled={busy} onClick={() => void run('refresh-account')}>核对账号</button></div>}
     {(activeTask || resultTask?.status === 'paused') && <div className="map-progress" role="status">{activeTask ? '正在查找' : '已暂停'} · 已处理 {(activeTask || resultTask)?.processedCount || 0} 家 / 已保存 {(activeTask || resultTask)?.count || 0} 家 · {invalidRegion ? '原任务地区不匹配，请重新选择省、市、区县。' : !activeTask && connected && resultTask?.stopReason === 'verification_required' ? '账号已核对，可继续任务。' : (activeTask || resultTask)?.message}</div>}
     {resultTask && <div className="map-progress"><button className="map-link" disabled={busy} onClick={async () => { const task = activeTask || resultTask; const result = await run('return-results', { taskId: task.id }); if (result) showResults(task.id); }}>返回结果</button>{resultTask.status !== 'completed' && <button className="map-link" disabled={busy} onClick={async () => { const task = activeTask || resultTask; const result = await run('finish-task', { taskId: task.id }); if (result) showResults(task.id); }}>结束本次</button>}</div>}
@@ -163,8 +149,8 @@ export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterpr
           <div className="map-detail-title"><h3>{current.name}</h3><button className="bw-icon-button" aria-label={current.favorite ? '取消收藏' : '收藏企业'} title={current.favorite ? '取消收藏' : '收藏企业'} aria-pressed={current.favorite} disabled={busy} onClick={() => favorite(current)}><Bookmark size={24} fill={current.favorite ? 'currentColor' : 'none'} /></button></div>
           <span className={'bw-badge bw-' + current.demandLevel}>{demandLabels[current.demandLevel] || demandLabels.none}</span>
           <p className="map-address"><MapPin size={20} /><span>{current.address || current.city}</span></p>
-          <div className="map-phone"><Phone size={22} /><div><strong>{current.phone || '暂无电话'}</strong>{current.phone && <small>公开电话 · 接通未核实</small>}</div>{current.phone && <button className="secondary-button" disabled={busy} onClick={() => onCopyLead ? onCopyLead(current.id, current.phone) : void run('copy-phone', { leadId: current.id }, '电话已复制')}>复制电话</button>}</div>
-          <details className="map-disclosure"><summary>来源与详情</summary><p>{current.industry || '行业待核实'}</p><p>{current.matchReason}</p><small>采集于 {dateText(current.collectedAt)}</small>{safeExternalUrl(current.sourceUrl) && <button className="map-link" disabled={busy} onClick={() => void run('open-source', { leadId: current.id })}>高德地图 <ExternalLink size={14} /></button>}{current.suspectedDuplicate && <p>疑似重复，未自动合并</p>}{onCheckLead && <button className="map-link" disabled={busy} onClick={() => onCheckLead(current.id)}>核查需求依据</button>}{current.aiSummary && <p>{current.aiSummary.summary}</p>}
+          <div className="map-phone"><Phone size={22} /><div><strong>{current.phone || '暂无电话'}</strong>{current.phone && <small>公开电话 · 接通未核实</small>}</div>{current.phone && <button className="secondary-button" disabled={busy} onClick={() => void run('copy-phone', { leadId: current.id }, '电话已复制')}>复制电话</button>}</div>
+          <details className="map-disclosure"><summary>来源与详情</summary><p>{current.industry || '行业待核实'}</p><p>{current.matchReason}</p><small>采集于 {dateText(current.collectedAt)}</small>{safeExternalUrl(current.sourceUrl) && <button className="map-link" disabled={busy} onClick={() => void run('open-source', { leadId: current.id })}>高德地图 <ExternalLink size={14} /></button>}{current.suspectedDuplicate && <p>疑似重复，未自动合并</p>}{current.aiSummary && <p>{current.aiSummary.summary}</p>}
         <details><summary>需求依据（选填）</summary>        <h4>需求依据</h4>{!current.evidence.length && <p className="bw-note">只有地图企业资料，尚无需求证据。</p>}{current.evidence.map(item => <div className="bw-record" key={item.id}><strong>{demandLabels[item.level]}</strong><p>{item.description}</p><small>{item.date || item.confirmedAt || ''} {item.contactIdentity || ''}</small>{safeExternalUrl(item.url) && <button className="bw-text-button" disabled={busy} onClick={() => void run('open-related', { leadId: current.id, evidenceId: item.id })}>查看证据来源</button>}</div>)}
         <form onSubmit={event => { event.preventDefault(); void run('save-evidence', { ...evidence, leadId: current.id }, '需求依据已保存').then(result => { if (result) setEvidence({ level: 'signal', description: '', url: '', date: '', contactIdentity: '', confirmedAt: '', nextStep: '' }); }); }}>
           <label>依据类型<select value={evidence.level} onChange={event => setEvidence({ ...evidence, level: event.target.value })}><option value="signal">公开需求信号</option><option value="confirmed">我已人工确认需求</option></select></label>
@@ -173,7 +159,7 @@ export function MapAcquisitionPanel({ enterprises, onCheckLead, onRefreshEnterpr
           <button className="secondary-button" disabled={busy}>保存依据</button>
         </form></details>
           </details>
-          <form className="map-follow" onSubmit={event => { event.preventDefault(); const e = enterprises?.find(e => e.mapLeadIds.includes(current.id)); void (e && onFollowUp ? onFollowUp(e.id, followUp.content, followUp.nextStep) : run('save-follow-up', { leadId: current.id, ...followUp }, '跟进已保存')).then(result => { if (result) setFollowUp({ content: '', nextStep: '' }); }); }}><h4>跟进</h4><textarea aria-label="跟进情况" placeholder="记一下跟进情况…" required value={followUp.content} onChange={e => setFollowUp({ ...followUp, content: e.target.value })} /><div className="map-follow-actions"><button className="primary-button" disabled={busy || !followUp.content.trim()}>保存</button></div></form>
+          <form className="map-follow" onSubmit={event => { event.preventDefault(); void run('save-follow-up', { leadId: current.id, ...followUp }, '跟进已保存').then(result => { if (result) setFollowUp({ content: '', nextStep: '' }); }); }}><h4>跟进</h4><textarea aria-label="跟进情况" placeholder="记一下跟进情况…" required value={followUp.content} onChange={e => setFollowUp({ ...followUp, content: e.target.value })} /><div className="map-follow-actions"><button className="primary-button" disabled={busy || !followUp.content.trim()}>保存</button></div></form>
           <details className="map-disclosure"><summary>历史记录 {current.followUps.length}</summary>{!current.followUps.length && <p className="bw-note">暂无跟进记录</p>}{current.followUps.map(item => <div className="bw-record" key={item.id}><p>{item.content}</p><small>{dateText(item.createdAt)}{item.nextStep ? ' · ' + item.nextStep : ''}</small></div>)}</details>
         </div> : <div className="bw-empty"><MapPin size={30} /><h3>选择企业查看详情</h3></div>}
       </aside>

@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bot,
+  MapPin,
   ChevronDown,
   ChevronRight,
   CircleHelp,
@@ -39,10 +40,9 @@ import { RoleAppearancePanel } from "./RoleAppearancePanel";
 import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, portraitAsset, useRolePreferences, type AgentRoleKey, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { OfficialMaterialsPage } from "./OfficialMaterialsPage";
-import { BusinessAssistantPage, BUSINESS_MODULES, isBusinessModule, type BusinessModule } from "./BusinessAssistantPage";
+import { BusinessAssistantPage, isBusinessModule, type BusinessModule } from "./BusinessAssistantPage";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
-import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
 import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
@@ -419,7 +419,7 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroupByRole: Record<GroupKey, NavGroup> = {
-  business: { key: "business", persona: AGENT_ROLE_IDENTITIES.business.name, label: AGENT_ROLE_IDENTITIES.business.responsibility, icon: Bot, children: (Object.keys(BUSINESS_MODULES) as BusinessModule[]).map(key => ({ key, label: BUSINESS_MODULES[key].label, icon: BUSINESS_MODULES[key].icon })) },
+  business: { key: "business", persona: AGENT_ROLE_IDENTITIES.business.name, label: AGENT_ROLE_IDENTITIES.business.responsibility, icon: Bot, children: [{ key: "business-map" as BusinessModule, label: "地图获客", icon: MapPin }] },
   production: { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
   agent: { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
   operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren }
@@ -588,8 +588,6 @@ export default function App() {
     setWorkflowView(view); setWorkflowEditor(null); setGuideOpen(view === "start"); setActive("workflow");
   };
   useEffect(() => window.xiaoxiWorkflow?.onNavigate?.(({ view }) => navigateWorkflow(view)), []);
-  const [legacyWorkspace, setLegacyWorkspace] = useState(false);
-  const [legacyResumeTarget, setLegacyResumeTarget] = useState<{ taskId?: string; projectId?: string | null } | null>(null);
   const [creativeView, setCreativeView] = useState<"studio" | "product" | "history" | "materials">("studio");
   const [batchInitial, setBatchInitial] = useState<{ assetIds?: string[]; collection?: Collection; batchId?: string }>();
   const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
@@ -641,7 +639,7 @@ export default function App() {
       return;
     }
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
-    setActive(groupKey === "operations" ? "product-detail" : groupKey);
+    setActive(groupKey === "operations" ? "product-detail" : groupKey === "business" ? "business-map" : groupKey);
   };
 
   const selectRole = (role: AgentRoleKey) => {
@@ -652,7 +650,6 @@ export default function App() {
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
     if (key === "workspace") {
-      setLegacyWorkspace(false);
       setCreativeView("studio");
       setCreativeResumeTarget(null);
     }
@@ -669,21 +666,17 @@ export default function App() {
     setFeedbackContext(context || null);
     setActive("diagnostics");
   };
-  const openLegacy = (taskId?: string, projectId?: string | null) => {
-    setLegacyResumeTarget(taskId ? { taskId, projectId } : null);
-    setLegacyWorkspace(true);
-  };
   const openProduction = (item: ContentProduction) => {
     setActive("workspace");
     setOpenGroups((current) => ({ ...current, production: true }));
     if (item.batchId) {
-      setBatchInitial({ batchId: item.batchId }); setLegacyWorkspace(false); setCreativeView("studio");
+      setBatchInitial({ batchId: item.batchId }); setCreativeView("studio");
     } else if (item.taskId && ["course_generation", "mix_generation"].includes(item.taskType)) {
-      openLegacy(item.taskId, item.projectId);
+      setCreativeView("history");
     } else if (item.taskId) {
-      setCreativeResumeTarget({ taskId: item.taskId, projectId: item.projectId }); setLegacyWorkspace(false); setCreativeView("product");
+      setCreativeResumeTarget({ taskId: item.taskId, projectId: item.projectId }); setCreativeView("product");
     } else {
-      setLegacyWorkspace(false); setCreativeView("history");
+      setCreativeView("history");
     }
   };
   const visiblePreference = (role: AgentRoleKey) => rolePreview?.role === role ? rolePreview.value : rolePreferences.preferences[role];
@@ -913,7 +906,7 @@ export default function App() {
         <div className="content-card" ref={contentScrollRef}>
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
-          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} onOpenModule={key => selectChild("business", key)} onReturnHome={() => selectChild("business", "business")} preference={visiblePreference("business")} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} />}
+          {activeGroup?.key === "business" && <BusinessAssistantPage appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
@@ -965,17 +958,14 @@ export default function App() {
           {active === "product-video" && <ProductVideoPage />}
           {active === "tutorials" && <TutorialsPage preference={visiblePreference("tutorials")} appearance={appearanceFor("tutorials", visiblePreference("tutorials").appearanceId)} onPersonalize={() => setPersonalizingRole("tutorials")} onOpenGuide={openTextGuide} />}
           {active === "materials" && <OfficialMaterialsPage preference={visiblePreference("materials")} appearance={appearanceFor("materials", visiblePreference("materials").appearanceId)} onPersonalize={() => setPersonalizingRole("materials")} onUseMaterial={(assetIds) => {
-            setBatchInitial({ assetIds }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
+            setBatchInitial({ assetIds }); setCreativeView("studio"); setActive("workspace");
           }} />}
-          {active === "workspace" && (legacyWorkspace
-            ? <CreativeWorkspacePage initialTaskId={legacyResumeTarget?.taskId} initialProjectId={legacyResumeTarget?.projectId} onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
-            : creativeView === "materials" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回线索视频混剪</button><MaterialsCollectionsPage onCreate={(assetIds, collection) => {
+          {active === "workspace" && (creativeView === "materials" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回线索视频混剪</button><MaterialsCollectionsPage onCreate={(assetIds, collection) => {
                 setBatchInitial({ assetIds, collection }); setCreativeView("studio");
               }} /></> : creativeView === "product"
               ? <ProductOneClickPage
                 initialTaskId={creativeResumeTarget?.taskId}
                 initialProjectId={creativeResumeTarget?.projectId}
-                onOpenLegacy={() => openLegacy()}
                 onBackToStudio={() => {
                   setCreativeResumeTarget(null);
                   setCreativeView("studio");
@@ -990,19 +980,17 @@ export default function App() {
                   setCreativeResumeTarget({ taskId, projectId });
                   setCreativeView("product");
                 }}
-                onOpenLegacy={openLegacy}
-                onOpenBatch={(batchId) => { setBatchInitial({ batchId }); setCreativeView("studio"); setLegacyWorkspace(false); }}
+                onOpenBatch={(batchId) => { setBatchInitial({ batchId }); setCreativeView("studio"); }}
                 onOpenMaterials={() => setCreativeView("materials")}
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={openFeedback}
               /></> : <BatchCreativePage initial={batchInitial}
                 onInitialConsumed={(consumed) => setBatchInitial((current) => current === consumed ? undefined : current)}
-                onOpenLegacy={() => openLegacy()}
                 onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}
                 onOpenMaterials={() => setCreativeView("materials")} />)}
           {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
-            setLegacyWorkspace(false); setCreativeView("history"); setActive("workspace");
+            setCreativeView("history"); setActive("workspace");
           }} />}
           {active === "diagnostics" && <FeedbackCenter appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} context={feedbackContext} />}
           {active === "touch" && DevelopmentAcceptance && (

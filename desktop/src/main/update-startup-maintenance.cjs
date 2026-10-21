@@ -14,6 +14,14 @@ if (!isMainThread && workerData?.startupMaintenance) {
     let release;
     try {
       release = await require("./update-process-lock.cjs").acquireProcessLock(require("node:path").join(workerData.root, "maintenance.lock"), { timeoutMs: 0 });
+      // A pre-upgrade helper may not implement the shared lease yet.
+      const fs = require("node:fs"), path = require("node:path");
+      const activeFile = path.join(workerData.root, "active-job.json");
+      if (require("./update-helper.cjs").hasLiveUpdateHelper(workerData.root)) {
+        const job = JSON.parse(fs.readFileSync(activeFile, "utf8"));
+        const status = JSON.parse(fs.readFileSync(path.join(workerData.root, "jobs", job.id + ".status.json"), "utf8"));
+        if (!["complete", "error"].includes(status.phase)) return;
+      }
       await require("./update-helper.cjs").retainHelperRuntimes(require("./component-paths.cjs").updatePaths(workerData.options.profile));
       try {
         await require("./update-backups.cjs").retryBackupMaintenance(workerData.options.profile, workerData.options);

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type WorkbenchResult<T> = { ok: boolean; state?: T; result?: unknown; error?: string; code?: string };
 export type WorkbenchApi = { invoke: (action: string, payload?: unknown) => Promise<WorkbenchResult<unknown>>; onUpdate: (listener: (state: unknown) => void) => () => void };
-declare global { interface Window { xiaoxiMapAcquisition?: WorkbenchApi; xiaoxiPreciseAcquisition?: WorkbenchApi; xiaoxiGeo?: WorkbenchApi } }
+declare global { interface Window { xiaoxiMapAcquisition?: WorkbenchApi } }
 
 export function useWorkbench<T>(api?: WorkbenchApi) {
   const [state, setState] = useState<T>();

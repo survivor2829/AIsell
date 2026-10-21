@@ -586,20 +586,6 @@ async function main() {
         calls.push(["setSetting", key, value]);
         return { key, value };
       },
-      generateCourseCuts: async (assetId, options) => {
-        calls.push(["generateCourseCuts", assetId, options]);
-        return {
-          task_id: task().task_id,
-          project_id: "creative_project_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        };
-      },
-      generateMixBatch: async (assetIds, options) => {
-        calls.push(["generateMixBatch", assetIds, options]);
-        return {
-          task_id: task().task_id,
-          project_id: creativeProjectId
-        };
-      },
       createOneClickProject: async (name, assetIds, options) => {
         calls.push(["createOneClickProject", name, assetIds, options]);
         return {
@@ -2011,107 +1997,6 @@ async function main() {
     assert.equal(opened.includes(fs.realpathSync(exportDirectory)), true);
     assert.equal(shown.includes(fs.realpathSync(exportDirectory)), true);
 
-    for (const payload of [
-      { assetId: asset().asset_id, minDurationMs: 29_999, maxDurationMs: 90_000, count: 5, theme: "test" },
-      { assetId: asset().asset_id, minDurationMs: 30_000, maxDurationMs: 90_001, count: 5, theme: "test" }
-    ]) {
-      const invalidCourseDuration = await handlers.get(
-        CONTENT_ENGINE_CHANNELS.generateCourseCuts
-      )({}, payload);
-      assert.equal(invalidCourseDuration.ok, false);
-      assert.equal(invalidCourseDuration.code, "invalid_duration_range");
-    }
-    for (const payload of [
-      { assetId: asset().asset_id, minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "test", subtitleFontSize: 35 },
-      { assetId: asset().asset_id, minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "test", subtitleMarginBottom: 361 }
-    ]) {
-      const invalidSubtitle = await handlers.get(
-        CONTENT_ENGINE_CHANNELS.generateCourseCuts
-      )({}, payload);
-      assert.equal(invalidSubtitle.ok, false);
-      assert.match(invalidSubtitle.code, /^invalid_subtitle_/u);
-    }
-    for (const payload of [
-      {
-        assetId: asset().asset_id,
-        experimentMode: "unknown",
-        subtitlePreset: "dynamic_clean"
-      },
-      {
-        assetId: asset().asset_id,
-        experimentMode: "standard",
-        subtitlePreset: "knowledge_course"
-      },
-      {
-        assetId: asset().asset_id,
-        experimentMode: "supoclip_bailian_v1",
-        subtitlePreset: "dynamic_clean"
-      }
-    ]) {
-      const invalidExperiment = await handlers.get(
-        CONTENT_ENGINE_CHANNELS.generateCourseCuts
-      )({}, payload);
-      assert.equal(invalidExperiment.ok, false);
-      assert.match(invalidExperiment.code, /^invalid_(experiment_mode|subtitle_preset)$/u);
-    }
-    const invalidExperimentCount = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateCourseCuts
-    )({}, {
-      assetId: asset().asset_id,
-      minDurationMs: 30_000,
-      maxDurationMs: 90_000,
-      count: 4,
-      theme: "test",
-      experimentMode: "supoclip_bailian_v1",
-      subtitlePreset: "knowledge_course"
-    });
-    assert.equal(invalidExperimentCount.ok, false);
-    assert.equal(invalidExperimentCount.code, "invalid_experiment_count");
-    const missingVoice = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateMixBatch
-    )({}, {
-      assetIds: [asset().asset_id],
-      theme: "test",
-      targetCount: 30
-    });
-    assert.equal(missingVoice.ok, false);
-    assert.equal(missingVoice.code, "invalid_voice_asset");
-
-    const visualRenderer = {
-      requestedEngine: "remotion",
-      visualStyleId: "tech_motion",
-      requestedStyleVersion: 1,
-      allowFallback: true
-    };
-    const visualCourse = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateCourseCuts
-    )({}, {
-      assetId: asset().asset_id,
-      coverMode: "ai_generate",
-      visualRenderer
-    });
-    assert.equal(visualCourse.ok, true);
-    assert.deepEqual(
-      calls.find((call) => call[0] === "generateCourseCuts").at(-1).visualRenderer,
-      visualRenderer
-    );
-    const visualMix = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateMixBatch
-    )({}, {
-      assetIds: [asset().asset_id],
-      voiceAssetId: asset().asset_id,
-      visualRenderer: {
-        requestedEngine: "remotion",
-        requestedStyleVersion: 1,
-        allowFallback: true
-      }
-    });
-    assert.equal(visualMix.ok, true);
-    assert.equal(
-      calls.find((call) => call[0] === "generateMixBatch").at(-1).visualRenderer.visualStyleId,
-      undefined
-    );
-
     const createdAutoMixV2 = await handlers.get(
       CONTENT_ENGINE_CHANNELS.createAutoMixV2
     )({ sender: mainWindow.webContents }, {
@@ -3315,11 +3200,6 @@ async function main() {
 
     for (const [channel, payload, expectedCode] of [
       [CONTENT_ENGINE_CHANNELS.listPackagingPresets, { kind: "movie" }, "invalid_packaging_kind"],
-      [CONTENT_ENGINE_CHANNELS.generateCourseCuts, { assetId: asset().asset_id, packagingMode: "preset", packagingPresetId: "hook_impact" }, "invalid_packaging_preset"],
-      [CONTENT_ENGINE_CHANNELS.generateCourseCuts, { assetId: asset().asset_id, packagingMode: "none", coverMode: "ai_generate" }, "invalid_cover_mode"],
-      [CONTENT_ENGINE_CHANNELS.generateCourseCuts, { assetId: asset().asset_id, packagingMode: "none", coverMode: "none", visualRenderer: { requestedEngine: "remotion", requestedStyleVersion: 1, allowFallback: true } }, "invalid_visual_renderer"],
-      [CONTENT_ENGINE_CHANNELS.generateCourseCuts, { assetId: asset().asset_id, visualRenderer: { requestedEngine: "remotion", visualStyleId: "unknown", requestedStyleVersion: 1, allowFallback: true } }, "invalid_visual_renderer"],
-      [CONTENT_ENGINE_CHANNELS.generateCourseCuts, { assetId: asset().asset_id, visualRenderer: { requestedEngine: "remotion", requestedStyleVersion: 1, allowFallback: "yes" } }, "invalid_visual_renderer"],
       [CONTENT_ENGINE_CHANNELS.getPackagingCostEstimate, { candidateIds: [generatedVideoId], packagingMode: "none", coverMode: "ai_generate" }, "invalid_cover_mode"],
       [CONTENT_ENGINE_CHANNELS.repackageVideo, { candidateId: generatedVideoId, packagingMode: "preset", coverMode: "local_frame", reuseCover: true }, "packaging_preset_required"],
       [CONTENT_ENGINE_CHANNELS.saveBrandProfile, { name: "x", primaryColor: "red", accentColor: "#ffffff", fontPreset: "microsoft_yahei", outroText: "" }, "invalid_brand_color"]
