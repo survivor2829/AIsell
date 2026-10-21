@@ -151,6 +151,15 @@ function copyAppRuntimeDependencies(appDir) {
   }
 }
 
+function writeLauncherTrust(appDir, edition) {
+  const channel = edition === "test" ? "test" : "delivery";
+  const config = require("../src/main/cloud-release-config.json")[channel === "test" ? "test" : "production"];
+  const file = path.join(appDir, "src/shared/launcher-trust.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ channel, appId: config.appId, signingPublicKey: config.signingPublicKey }));
+  return file;
+}
+
 function copyAppSource(appDir, edition) {
   fs.mkdirSync(appDir, { recursive: true });
   fs.copyFileSync(path.join(desktopDir, "package.json"), path.join(appDir, "package.json"));
@@ -167,6 +176,7 @@ function copyAppSource(appDir, edition) {
       filter: (sourcePath) => sourceAllowed(sourcePath, edition)
     });
   }
+  writeLauncherTrust(appDir, edition);
   copyAppRuntimeDependencies(appDir);
   // Main-process quotes and renderer templates share this versioned catalog.
   fs.mkdirSync(path.join(appDir, 'remotion-packaging'), { recursive: true });
@@ -652,6 +662,7 @@ module.exports = {
   cleanupPaths,
   copyRuntimePackageTree,
   copyAppRuntimeDependencies,
+  writeLauncherTrust,
   describeBaseStabilizedRuntime,
   isCommercialDeliveryReady,
   publishStagedRelease,

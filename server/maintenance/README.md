@@ -47,9 +47,9 @@
 
 JSON 请求上限 64 KiB；当前全局每分钟 300 次、单地址每分钟 60 次限制与既有接收接口共用。客户端正文和后台内容按普通文本显示。服务端只保存回执凭据的 SHA-256 摘要；反馈诊断 30 天到期清理，正文、状态、内容摘要与凭据摘要保留，以便继续查看和幂等重试。备份包含反馈正文，按用户反馈数据管理。
 
-部署时需将 `service.py`、`feedback.py`、`materials.py`、`tutorials.py`、`tutorials-admin.js`、`admin.html`、`promote.py`、`promote_components.py` 和安装/升级脚本作为同一版本复制。只更新主脚本会导致启动失败。既有服务器先备份 SQLite，再替换同版本程序文件并重启 `ai-maintenance`；启动会在原库中追加反馈字段及索引，保留旧诊断、issues 和发布文件。初次部署沿用 `install.sh <server-ip>`，不新增公网后台端口。
+部署时需将 `service.py`、`feedback.py`、`materials.py`、`tutorials.py`、`tutorials-admin.js`、`admin.html`、`promote.py`、`promote_components.py`、`legacy_releases.py` 和安装/升级脚本作为同一版本复制。只更新主脚本会导致启动失败。既有服务器先备份 SQLite，再替换同版本程序文件并重启 `ai-maintenance`；启动会在原库中追加反馈字段及索引，保留旧诊断、issues 和发布文件。初次部署沿用 `install.sh <server-ip>`，不新增公网后台端口。
 
-启动策略升级候选另涉及 `legacy_releases.py`：支持带签名 `componentBase.updateProtocol=4` 的完整底座桥接包、旧客户端先升级底座的路由，以及散列制品路径的只读 HEAD。组件发布门禁仍要求实际完整制品存在且摘要匹配，跨版本桥接必须核对底座摘要和数据模式。相关源码修改不等于服务器已部署；部署必须在具体授权后执行，并与固定底座候选一起验收。
+协议5一次完整包过渡：兼容旧客户端的签名payload省略 `componentBase`，签名内增加 `componentBaseProtocol=5`，响应附带独立签名的 `componentBaseEnvelope`；后者与前者除真实 `componentBase` 外字段完全一致。客户端核验两份签名，服务端仍沿用SSH-only发布信任，只做两份清单结构绑定和实际制品摘要门禁，不新增签名密钥或公钥。请求技术头支持3/5；协议3（含Bridge-Update=1）及未配置旧固定路由的无头请求看不到六组件清单，先获得完整包。既有固定四组件桥接路由保留，协议4底座仍按原契约处理。协议5组件包含updater、assets，跨版本发布核对补充清单中的底座、数据模式和完整制品。源码修改不代表服务器已部署；须先备份再部署同版本服务文件，并分别验收旧客户端完整过渡和后续组件增量。
 
 后台新增“视频操作教程”：支持 5 分钟内 MP4 流式上传、封面、草稿预览、发布和下架。录屏独立存放于 `tutorials/`，不进入官方制作素材目录。上传步骤、接口和验收边界见 [短教程上传说明](../../docs/tutorial-upload.md)。
 

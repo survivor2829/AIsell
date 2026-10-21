@@ -36,7 +36,7 @@ def modern_request(headers):
     if all(value is None for value in values):
         return False
     protocol, current, base, fingerprint = values
-    if (protocol != "3" or not VERSION.fullmatch(current or "")
+    if (protocol not in ("3", "5") or not VERSION.fullmatch(current or "")
             or bool(base) != bool(fingerprint)
             or (base and (not VERSION.fullmatch(base) or not HEX.fullmatch(fingerprint)))):
         raise ValueError("update_capability_invalid")
@@ -53,6 +53,32 @@ def read_document(file):
     if not isinstance(document, dict):
         raise ValueError("legacy_config_invalid")
     return document
+
+
+def effective_full_manifest(envelope):
+    """Bind the two publisher-verified envelopes under the existing SSH trust.
+
+    Publication is SSH-only; clients verify both Ed25519 signatures. This does
+    not introduce a server signing key or replace pinned legacy verification.
+    """
+    manifest = json.loads(envelope["payload"])
+    if manifest.get("componentBaseProtocol") is None:
+        if envelope.get("componentBaseEnvelope") is not None or (manifest.get("componentBase") or {}).get("updateProtocol") == 5:
+            raise ValueError("full_fallback_binding")
+        return manifest
+    supplemental = envelope.get("componentBaseEnvelope")
+    if (manifest.get("componentBaseProtocol") != 5 or "componentBase" in manifest
+            or not isinstance(supplemental, dict) or not isinstance(supplemental.get("payload"), str)
+            or not isinstance(supplemental.get("signature"), str) or not 0 < len(supplemental["signature"]) <= 128):
+        raise ValueError("full_fallback_binding")
+    actual = json.loads(supplemental["payload"])
+    base = actual.get("componentBase") if isinstance(actual, dict) else None
+    if (not isinstance(base, dict) or base.get("updateProtocol") != 5
+            or not VERSION.fullmatch(str(base.get("version", ""))) or not HEX.fullmatch(str(base.get("fingerprint", "")))
+            or type(base.get("dataSchema")) is not int or base["dataSchema"] < 1
+            or {key: value for key, value in actual.items() if key != "componentBase"} != manifest):
+        raise ValueError("full_fallback_binding")
+    return actual
 
 
 def signed_manifest(envelope, public_key, channel, app_id, schema):
@@ -166,15 +192,19 @@ class LegacyReleaseRouter:
         if modern or (not config.exists() and not config.is_symlink()):
             file = folder / ("latest-components.json" if protocol == "2" else "latest.json")
             envelope = read_document(file) if file.exists() else {"empty": True}
+            if protocol == "2" and not envelope.get("empty"):
+                components = json.loads(envelope["payload"])
+                if components.get("updateProtocol", 4) == 5 and headers.get("X-Xiaoxi-Update-Protocol") != "5":
+                    return {"empty": True}
             # Protocol-3 clients cannot use an older full installer as a bridge.
             # Hide incompatible components for them so their existing full-update
             # branch reaches the new base first. Never rewrite signed envelopes.
             if modern and protocol == "2" and not envelope.get("empty") and headers.get("X-Xiaoxi-Bridge-Update") != "1":
                 components = json.loads(envelope["payload"])
                 full_file = folder / "latest.json"
-                full = json.loads(read_document(full_file)["payload"]) if full_file.exists() else {}
+                full = effective_full_manifest(read_document(full_file)) if full_file.exists() else {}
                 bridge = full.get("componentBase") or {}
-                if (bridge.get("updateProtocol") == 4 and version(full["version"]) < version(components["version"])
+                if (bridge.get("updateProtocol") in (4, 5) and version(full["version"]) < version(components["version"])
                         and headers.get("X-Xiaoxi-Base-Fingerprint") != components.get("base", {}).get("fingerprint")):
                     return {"empty": True}
             return envelope

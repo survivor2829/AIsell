@@ -369,6 +369,16 @@ function replaceCanonicalGroup(pairs) {
   }
 }
 
+function installerComponentBase(portableDir) {
+  const capabilityFile = path.join(portableDir, "resources/app/src/shared/update-capabilities.json");
+  if (!fs.existsSync(capabilityFile)) return undefined;
+  const capabilities = JSON.parse(fs.readFileSync(capabilityFile, "utf8"));
+  const baseline = JSON.parse(fs.readFileSync(path.join(portableDir, "component-base.json"), "utf8"));
+  if (![4, 5].includes(capabilities.protocol) || capabilities.verification !== 1 || baseline.verification?.schema !== 1
+      || (baseline.updateProtocol ?? 4) !== capabilities.protocol) throw Error("installer_update_capabilities_invalid");
+  return { ...baseline.base, dataSchema: baseline.dataSchema, updateProtocol: capabilities.protocol };
+}
+
 function buildInstaller(edition = "delivery", options = {}) {
   const { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust } = assertInstallerSource(
     edition,
@@ -451,16 +461,7 @@ function buildInstaller(edition = "delivery", options = {}) {
       userDataDirectory: `%APPDATA%\\${target.dataDirectoryName}\\data`,
       upgradeMode: "offline-full-overwrite",
       // This binding is taken from the exact installer input already verified above.
-      componentBase: (() => {
-        const capabilityFile = path.join(portableDir, "resources/app/src/shared/update-capabilities.json");
-        if (!fs.existsSync(capabilityFile)) return undefined;
-        const capabilities = JSON.parse(fs.readFileSync(capabilityFile, "utf8"));
-        const baseline = JSON.parse(fs.readFileSync(path.join(portableDir, "component-base.json"), "utf8"));
-        if (capabilities.protocol !== 4 || capabilities.verification !== 1 || baseline.verification?.schema !== 1) {
-          throw Error("installer_update_capabilities_invalid");
-        }
-        return { ...baseline.base, dataSchema: baseline.dataSchema, updateProtocol: 4 };
-      })(),
+      componentBase: installerComponentBase(portableDir),
       uninstallPreservesUserData: true,
       signed: false,
       commercialReady: target.requiresCommercialTrust,
@@ -495,6 +496,7 @@ module.exports = {
   assertPortableAppTreeMatchesManifest,
   assertInstallerInputMatchesPortable,
   buildInstaller,
+  installerComponentBase,
   extractInstallerArchive,
   installerManifestName,
   installerName,

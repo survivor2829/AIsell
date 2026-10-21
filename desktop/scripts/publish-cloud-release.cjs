@@ -10,6 +10,17 @@ const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.c
 const { verifyPublishedRelease } = require("./release-readback.cjs");
 const { assertUpgradePaths } = require("./release-upgrade-path.cjs");
 
+function signFullRelease(manifest, signingKey) {
+  const sign = value => {
+    const payload = JSON.stringify(value);
+    return { payload, signature: crypto.sign(null, Buffer.from(payload), signingKey).toString("base64") };
+  };
+  if (manifest.componentBase?.updateProtocol !== 5) return sign(manifest);
+  const { componentBase, ...fields } = manifest;
+  const compatible = { ...fields, componentBaseProtocol: 5 };
+  return { ...sign(compatible), componentBaseEnvelope: sign({ ...compatible, componentBase }) };
+}
+
 async function publish({ installer, manifestFile, notesFile, smoke = false }) {
   const config = cloudConfig({ developmentEdition: true });
   const metadata = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
@@ -36,9 +47,8 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     publishedAt: new Date().toISOString(), notes,
     ...(metadata.componentBase ? { componentBase: metadata.componentBase } : {})
   };
-  const payload = JSON.stringify(manifest);
   if (!smoke) assertUpgradePaths(manifest, manifest);
-  const envelope = { payload, signature: crypto.sign(null, Buffer.from(payload), fs.readFileSync(keyFile)).toString("base64") };
+  const envelope = signFullRelease(manifest, fs.readFileSync(keyFile));
   verifyManifest(envelope, { ...config, appId, channel: manifest.channel });
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "ai-cloud-publish-"));
   const document = path.join(temporary, "latest.json");
@@ -74,4 +84,4 @@ if (require.main === module) {
   if (!installer || !manifestFile) throw Error("Usage: node scripts/publish-cloud-release.cjs <installer.exe> <manifest.json> [notes.txt] [--smoke]");
   publish({ installer, manifestFile, notesFile, smoke: process.argv.includes("--smoke") }).catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
-module.exports = { publish };
+module.exports = { publish, signFullRelease };

@@ -10,12 +10,22 @@ async function main() {
     const payload = JSON.stringify(manifest);
     return { payload, signature: crypto.sign(null, Buffer.from(payload), privateKey).toString("base64") };
   };
+  const { verifyManifest } = require("../src/shared/cloud-contract.cjs");
+  const compatibility = { schema: 1, appId: config.appId, channel: config.channel, platform: "win32", arch: "x64",
+    version: "1.1.105", sequence: 987654321, sha256: "a".repeat(64), size: 100,
+    file: `/artifacts/${"a".repeat(64)}.exe`, notes: "protocol5", componentBaseProtocol: 5 };
+  const componentBase = { version: "1.1.105", fingerprint: "f".repeat(64), dataSchema: 2, updateProtocol: 5 };
+  const dual = { ...sign(compatibility), componentBaseEnvelope: sign({ ...compatibility, componentBase }) };
+  assert.deepEqual(verifyManifest(dual, config).componentBase, componentBase);
+  assert.throws(() => verifyManifest(sign(compatibility), config), /manifest_invalid/);
+  assert.throws(() => verifyManifest({ ...dual, componentBaseEnvelope: sign({ ...compatibility, componentBase, sequence: compatibility.sequence + 1 }) }, config), /manifest_invalid/);
+  assert.throws(() => verifyManifest({ ...dual, componentBaseEnvelope: sign({ ...compatibility, componentBase }, crypto.generateKeyPairSync("ed25519").privateKey) }, config), /signature_invalid/);
   for (const schema of [1, 2]) {
     const manifest = {
       schema, appId: config.appId, channel: config.channel, platform: "win32", arch: "x64",
       version: "1.1.58", sequence: 123456789, notes: "验收后的同一产物", publishedAt: "2026-10-08T00:00:00.000Z",
       ...(schema === 1 ? { sha256: "a".repeat(64), size: 100, file: `/artifacts/${"a".repeat(64)}.exe` } : {
-        base: { version: "1.1.58", fingerprint: "f".repeat(64) }, minBaseVersion: "1.1.58", dataSchema: 1,
+        updateProtocol: 5, base: { version: "1.1.58", fingerprint: "f".repeat(64) }, minBaseVersion: "1.1.58", dataSchema: 1,
         components: Object.fromEntries(COMPONENTS.map((name, index) => {
           const sha256 = (index + 1).toString(16).repeat(64);
           return [name, { name, sha256, treeSha256: sha256, file: `/components/${sha256}.zip`, size: 100, expandedSize: 100, fileCount: 1 }];
@@ -25,7 +35,7 @@ async function main() {
     const envelope = sign(manifest);
     const legacyEnvelope = sign({ ...manifest, version: "1.1.57", sequence: manifest.sequence - 1 });
     const releaseEndpoint = (options = {}) => {
-      if (options.headers?.["X-Xiaoxi-Update-Protocol"] !== "3") return legacyEnvelope;
+      if (options.headers?.["X-Xiaoxi-Update-Protocol"] !== "5") return legacyEnvelope;
       // A bridge-aware server hides newer components from clients without a
       // matching base or bridge capability, even at the target business version.
       if (schema === 2 && options.headers["X-Xiaoxi-Bridge-Update"] !== "1"
@@ -39,7 +49,7 @@ async function main() {
       assert.equal(route, `/v${schema}/releases/test/latest`);
       assert.equal(options.body, undefined, "readback must remain a GET without publication side effects");
       assert.equal(options.maxBytes, 256 * 1024);
-      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": manifest.version,
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "5", "X-Xiaoxi-Version": manifest.version,
         ...(schema === 2 ? { "X-Xiaoxi-Bridge-Update": "1", "X-Xiaoxi-Base-Version": manifest.base.version,
           "X-Xiaoxi-Base-Fingerprint": manifest.base.fingerprint } : {}) });
       return releaseEndpoint(options);
@@ -84,6 +94,18 @@ async function main() {
       });
       assert.equal(attempts, 1, `${label}: must not retry a publication or readback automatically`);
     }
+  }
+  const signFull = require("./publish-cloud-release.cjs").signFullRelease;
+  const publishedDual = signFull({ ...compatibility, componentBase }, keys.privateKey);
+  assert.equal(JSON.parse(publishedDual.payload).componentBase, undefined, "Legacy clients never receive a protocol5 componentBase in their signed payload");
+  assert.deepEqual(verifyManifest(publishedDual, config).componentBase, componentBase);
+  const readback = await verifyPublishedRelease({ config, envelope: publishedDual, schema: 1,
+    request: async (_route, options) => { assert.equal(options.headers["X-Xiaoxi-Update-Protocol"], "5"); return publishedDual; } });
+  assert.deepEqual(readback.componentBase, componentBase);
+  assert.equal(readback.componentBaseManifestSha256, crypto.createHash("sha256").update(publishedDual.componentBaseEnvelope.payload).digest("hex"));
+  for (const returned of [{ payload: publishedDual.payload, signature: publishedDual.signature },
+    { ...publishedDual, componentBaseEnvelope: sign({ ...compatibility, componentBase: { ...componentBase, fingerprint: "e".repeat(64) } }) }]) {
+    await assert.rejects(verifyPublishedRelease({ config, envelope: publishedDual, schema: 1, request: async () => returned }), { code: "release_readback_unverified" });
   }
   console.log("release readback self-check passed");
 }

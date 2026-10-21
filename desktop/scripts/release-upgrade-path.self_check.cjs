@@ -29,8 +29,8 @@ const { assertUpgradePaths, verifyUpgradePaths } = require("./release-upgrade-pa
   let corrupt = false, downloads = 0, heads = 0;
   const request = async (route, options = {}) => {
     if (route.endsWith("latest")) {
-      if (options.headers?.["X-Xiaoxi-Update-Protocol"] !== "3") return legacyEnvelope;
-      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "3", "X-Xiaoxi-Version": manifest.version });
+      if (options.headers?.["X-Xiaoxi-Update-Protocol"] !== "5") return legacyEnvelope;
+      assert.deepEqual(options.headers, { "X-Xiaoxi-Update-Protocol": "5", "X-Xiaoxi-Version": manifest.version });
       return envelope;
     }
     assert.equal(options.headers, undefined, "artifact download must not advertise release capabilities");
@@ -48,6 +48,24 @@ const { assertUpgradePaths, verifyUpgradePaths } = require("./release-upgrade-pa
   fs.unlinkSync(path.join(cacheDir, sha256 + ".json"));
   await assert.rejects(verifyUpgradePaths({ config, target: manifest, request, cacheDir }), /fallback_invalid/);
   await assert.rejects(verifyUpgradePaths({ config, target: manifest, request, expectedPayload: "changed", verifyArtifact: false }), /fallback_changed/);
+  const signFull = require("./publish-cloud-release.cjs").signFullRelease;
+  const full5 = { ...manifest, componentBase: { version: manifest.version, fingerprint: "a".repeat(64), dataSchema: 2, updateProtocol: 5 } };
+  let dual = signFull(full5, keys.privateKey), dualDownloads = 0;
+  const modernTarget = { ...target, updateProtocol: 5, base: full5.componentBase };
+  const request5 = async (route, options = {}) => {
+    if (route.endsWith("latest")) return dual;
+    if (options.method === "HEAD") return { size: bytes.length };
+    dualDownloads++; fs.writeFileSync(options.destination, bytes);
+  };
+  const verified5 = await verifyUpgradePaths({ config, target: modernTarget, request: request5, cacheDir });
+  assert.equal((await verifyUpgradePaths({ config, target: modernTarget, request: request5, cacheDir })).downloadedBytes, 0);
+  assert.equal(dualDownloads, 1);
+  dual = signFull({ ...full5, componentBase: { ...full5.componentBase, fingerprint: "b".repeat(64) } }, keys.privateKey);
+  await assert.rejects(verifyUpgradePaths({ config, target: modernTarget, request: request5, cacheDir,
+    expectedPayload: verified5.payload, expectedComponentBasePayload: verified5.componentBasePayload, verifyArtifact: false }), /fallback/);
+  const sameVersionTarget = { ...manifest, updateProtocol: 5 };
+  await verifyUpgradePaths({ config, target: sameVersionTarget, request: request5, cacheDir });
+  assert.equal(dualDownloads, 2, "A valid but changed supplemental manifest cannot reuse the artifact validation receipt");
   console.log("release upgrade paths: modern/legacy routing, supported legacy protocols, target matching, artifact integrity and publication race checks passed");
   } finally { fs.rmSync(cacheDir, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

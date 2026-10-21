@@ -8,7 +8,7 @@ const JSZip = require("jszip");
 const { COMPONENTS, safePath, hashFile, treeHash, validateFiles, validateManifest, MAX_ARCHIVE } = require("../src/shared/component-contract.cjs");
 const defaultLayout = require("../component-layout.json");
 const { sha256 } = require("./release-tree-hash.cjs");
-const ARCHIVE_RECIPE_VERSION = 2;
+const ARCHIVE_RECIPE_VERSION = 3;
 const STORED_MEDIA = /\.(?:png|jpg|jpeg|webp|gif|mp4|webm|mov|mp3|m4a|zip|gz|7z|woff2)$/i;
 function verifiedSource(root, file) {
   // Open each file only when JSZip consumes it, rather than opening thousands
@@ -27,7 +27,8 @@ function verifiedSource(root, file) {
 }
 function classify(relative, layout) {
   for (const rule of layout.rules) for (const prefix of rule.prefixes) {
-    if (prefix.endsWith("/") ? relative.startsWith(prefix) : relative === prefix) return rule.component;
+    if (rule.extensions && !rule.extensions.includes(path.extname(relative).toLowerCase())) continue;
+    if (prefix.endsWith("*") ? relative.startsWith(prefix.slice(0, -1)) : prefix.endsWith("/") ? relative.startsWith(prefix) : relative === prefix) return rule.component;
   }
   return layout.default;
 }
@@ -62,8 +63,8 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
   buildCommit = buildCommit || sourceManifest.commit || "";
   await fsp.mkdir(outputDir, { recursive: true });
   const files = await inventory(sourceRoot, layout);
-  const baseline = { schema: 2, base: { version: baseVersion, fingerprint: treeHash(files.filter(f => f.component === "base")) }, dataSchema: 2, files, components: {} };
-  const manifest = { schema: 2, appId, channel, platform: "win32", arch: "x64", version, base: baseline.base,
+  const baseline = { schema: 2, updateProtocol: 5, base: { version: baseVersion, fingerprint: treeHash(files.filter(f => f.component === "base")) }, dataSchema: 2, files, components: {} };
+  const manifest = { schema: 2, updateProtocol: 5, appId, channel, platform: "win32", arch: "x64", version, base: baseline.base,
     minBaseVersion: baseVersion, dataSchema: 2, sequence, notes, publishedAt: new Date().toISOString(), components: {} };
   baseline.verification = manifest.verification = require("../src/shared/component-verification.cjs").verificationPolicy(files);
   const artifacts = [];
@@ -97,7 +98,7 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
       zip.file("component.json", JSON.stringify(descriptor), options);
       for (const file of ownFiles) {
         zip.file(`files/${file.path}`, verifiedSource(sourceRoot, file), {
-          ...options, compression: STORED_MEDIA.test(file.path) ? "STORE" : "DEFLATE"
+          ...options, compression: name === "assets" || STORED_MEDIA.test(file.path) ? "STORE" : "DEFLATE"
         });
       }
       const temporary = path.join(outputDir, `.component-${crypto.randomUUID()}.tmp`);
