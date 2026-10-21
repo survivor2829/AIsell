@@ -1,0 +1,428 @@
+{
+  "provenance": "Real failed strategy; expected review is human-authored, not a new model result",
+  "source": "高仙商用清洁机器人 Scrubber 50（含工作站）。\n用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。\n额定电压：24V。\n电池容量：40Ah/60Ah（两种配置，资料未说明配置与续航的对应关系）。\n平均续航时间：2-6h。\n最大功率：1200W。\n驱动电机功率：2×300W。\n吸风电机功率：280W。\n刷盘电机功率：2×150W。\n清洗宽度：500mm。\n刷盘转速：最高270 RPM。\n最大真空度：18.18 KPa。\n污水箱容积：24L。\n清水箱容积：18L。",
+  "title": "高仙商用清洁机器人 Scrubber 50（含工作站）",
+  "strategy": {
+    "strategy_version": "fact-routes-v1",
+    "category_check": {
+      "category": "设备类",
+      "evidence": [
+        "高仙商用清洁机器人 Scrubber 50（含工作站）。",
+        "用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。"
+      ]
+    },
+    "product_meta": {
+      "name": "高仙商用清洁机器人 Scrubber 50（含工作站）",
+      "category": "商用清洁机器人整机",
+      "primary_color": "Image 1 authoritative",
+      "key_visual_parts": [
+        "follow reference image only"
+      ]
+    },
+    "advantages": [
+      {
+        "fact": "以500mm清洗宽度在室内硬质地面执行洗地清洁，可覆盖小型工厂、写字楼、医院、酒店、商场、展馆、学校、餐厅、银行等场所的地面清洁工作",
+        "evidence": [
+          "用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。",
+          "清洗宽度：500mm。"
+        ],
+        "routes": [
+          {
+            "audience": "写字楼、商场等场所的保洁负责人",
+            "scenario": "营业或办公时段需要安排地面清洁，通道与大厅地面要维持整洁",
+            "need": "在人员流动的室内硬质地面完成洗地作业",
+            "benefit": "地面清洁由整机按洗地方式执行，保洁负责人可围绕场所开放节奏安排清洁",
+            "value_bridge": "整机具备洗地用途与500mm清洗宽度，使室内硬质地面的清洁工作可由设备承担，而不只依赖人工拖洗",
+            "outcome_key": "室内硬质地面洗地作业",
+            "title": "室内硬地洗地交给整机",
+            "subtitle": "500mm清洗宽度，覆盖通道与大厅地面",
+            "visual_brief": {
+              "product_presentation": "working_scene",
+              "scene": "写字楼或商场室内硬质地面通道",
+              "framing": "中景，参考图已知整机侧面或前侧视角",
+              "product_action": "整机在硬质地面上执行洗地行进",
+              "visual_evidence": "清洗宽度对应地面被清洁的带状区域",
+              "layout": "整机居中偏右，左侧标题与副标题"
+            }
+          },
+          {
+            "audience": "医院、学校等场所的后勤管理者",
+            "scenario": "日常保洁需要覆盖多处室内硬质地面，清洁任务要按区域推进",
+            "need": "把室内地面清洁纳入日常保洁流程",
+            "benefit": "清洁作业可按场所分区安排，地面洗地由整机完成",
+            "value_bridge": "资料明确整机适用于医院、学校等室内场所硬质地面清洁，后勤管理者可据此把地面洗地纳入日常保洁安排",
+            "outcome_key": "多场所日常地面保洁安排",
+            "title": "日常地面保洁有整机",
+            "subtitle": "适用于医院、学校等室内硬质地面",
+            "visual_brief": {
+              "product_presentation": "working_scene",
+              "scene": "医院走廊或学校室内通道",
+              "framing": "中远景，参考图已知整机整体形态",
+              "product_action": "整机沿室内通道进行洗地",
+              "visual_evidence": "室内硬质地面与整机洗地作业同框",
+              "layout": "通道纵深构图，标题置于上方留白"
+            }
+          },
+          {
+            "audience": "餐厅、银行等营业场所的现场负责人",
+            "scenario": "营业前后需要清洁大堂、餐厅地面等硬质区域",
+            "need": "在营业间隙完成地面洗地",
+            "benefit": "地面清洁可在营业节奏内由整机执行洗地",
+            "value_bridge": "整机面向餐厅、银行等室内场所硬质地面清洁，现场负责人可在营业前后安排地面洗地",
+            "outcome_key": "营业间隙地面洗地",
+            "title": "营业间隙地面洗地",
+            "subtitle": "餐厅、银行等室内硬质地面适用",
+            "visual_brief": {
+              "product_presentation": "working_scene",
+              "scene": "餐厅或银行大堂硬质地面",
+              "framing": "中景，参考图已知整机视角",
+              "product_action": "整机在大堂地面执行洗地",
+              "visual_evidence": "营业场所地面与整机洗地同框",
+              "layout": "整机位于画面下方，标题在上方"
+            }
+          }
+        ],
+        "not_used": [
+          {
+            "audience": "家庭用户",
+            "need": "家庭地面清洁",
+            "reason": "资料限定为商用室内场所，未提及家庭使用"
+          }
+        ]
+      },
+      {
+        "fact": "配备清水箱18L与污水箱24L，以洗地方式完成清水供给与污水回收",
+        "evidence": [
+          "污水箱容积：24L。",
+          "清水箱容积：18L。"
+        ],
+        "routes": [
+          {
+            "audience": "保洁操作人员",
+            "scenario": "一次洗地作业中需要清水供给并回收污水",
+            "need": "在洗地过程中完成清水箱补水与污水箱收集",
+            "benefit": "清水与污水分箱承载，洗地作业的供排水由整机水箱完成",
+            "value_bridge": "清水箱与污水箱分别提供清水和收集污水，操作人员围绕水箱完成洗地作业的供排水",
+            "outcome_key": "洗地供排水作业",
+            "title": "清水污水分开承载",
+            "subtitle": "18L清水箱与24L污水箱",
+            "visual_brief": {
+              "product_presentation": "diagram_only",
+              "scene": "信息图呈现清水箱与污水箱",
+              "framing": "正面信息图，不虚构内部结构",
+              "product_action": "标注两个水箱容积",
+              "visual_evidence": "清水箱18L、污水箱24L的对照标注",
+              "layout": "左右分栏标注容积，标题在上"
+            }
+          },
+          {
+            "audience": "场所保洁管理者",
+            "scenario": "需要安排洗地作业的水箱补给与倾倒",
+            "need": "掌握水箱容量以安排作业中的补给与倾倒",
+            "benefit": "可按水箱容积安排清水补给和污水倾倒节点",
+            "value_bridge": "明确的清水箱与污水箱容积，帮助管理者在洗地作业中安排补水与倾倒",
+            "outcome_key": "水箱补给与倾倒安排",
+            "title": "按水箱容量安排补给",
+            "subtitle": "清水18L，污水24L",
+            "visual_brief": {
+              "product_presentation": "diagram_only",
+              "scene": "信息图展示补给与倾倒节点",
+              "framing": "流程式信息图，不虚构操作细节",
+              "product_action": "标注清水补给与污水倾倒",
+              "visual_evidence": "两个容积数值对应两个作业节点",
+              "layout": "横向流程，标题在上"
+            }
+          }
+        ],
+        "not_used": [
+          {
+            "audience": "采购比价人员",
+            "need": "比较不同配置的补给频次",
+            "reason": "容积不能决定补给频次，资料未给出作业面积与频次关系"
+          }
+        ]
+      },
+      {
+        "fact": "电池容量40Ah/60Ah两种配置，平均续航时间2-6h，支持室内硬质地面清洁作业的电力供给",
+        "evidence": [
+          "电池容量：40Ah/60Ah（两种配置，资料未说明配置与续航的对应关系）。",
+          "平均续航时间：2-6h。"
+        ],
+        "routes": [
+          {
+            "audience": "多区域保洁排班负责人",
+            "scenario": "室内场所需要在不同时段安排地面清洁作业",
+            "need": "按续航时间安排洗地作业时段",
+            "benefit": "可依据2-6h平均续航安排作业时段与充电衔接",
+            "value_bridge": "平均续航时间2-6h为排班提供时间参考，负责人据此安排洗地作业时段",
+            "outcome_key": "按续航安排作业时段",
+            "title": "按续航排洗地时段",
+            "subtitle": "平均续航2-6h，便于安排作业",
+            "visual_brief": {
+              "product_presentation": "diagram_only",
+              "scene": "信息图呈现续航时段与充电衔接",
+              "framing": "时间轴信息图，不虚构电池外观",
+              "product_action": "标注2-6h续航区间",
+              "visual_evidence": "时间轴上的续航区间",
+              "layout": "横向时间轴，标题在上"
+            }
+          },
+          {
+            "audience": "设备采购者",
+            "scenario": "需要在40Ah与60Ah两种电池配置间选择",
+            "need": "了解两种电池配置与续航的关系",
+            "benefit": "可确认存在两种电池配置",
+            "value_bridge": "资料明确40Ah/60Ah两种配置，采购者可据此确认配置选项，但配置与续航的对应关系未说明",
+            "outcome_key": "电池配置选项确认",
+            "title": "两种电池配置可选",
+            "subtitle": "40Ah/60Ah，对应关系待确认",
+            "visual_brief": {
+              "product_presentation": "diagram_only",
+              "scene": "信息图并列两种电池容量",
+              "framing": "并列信息图，不虚构电池实物",
+              "product_action": "标注两种容量",
+              "visual_evidence": "40Ah与60Ah并列标注",
+              "layout": "左右并列，标题在上"
+            }
+          }
+        ],
+        "not_used": [
+          {
+            "audience": "运营管理者",
+            "need": "评估单次充电可覆盖的清洁面积",
+            "reason": "资料未给出续航与清洁面积的换算关系，不能推断"
+          }
+        ]
+      },
+      {
+        "fact": "含工作站，用于商用清洁机器人的配套使用",
+        "evidence": [
+          "高仙商用清洁机器人 Scrubber 50（含工作站）。"
+        ],
+        "routes": [
+          {
+            "audience": "场所设备管理者",
+            "scenario": "清洁机器人需要在场所内配套工作站使用",
+            "need": "确认设备含工作站配套",
+            "benefit": "采购与部署时可确认整机含工作站",
+            "value_bridge": "产品名称明确含工作站，设备管理者可据此确认配套组成",
+            "outcome_key": "工作站配套确认",
+            "title": "整机含工作站配套",
+            "subtitle": "Scrubber 50含工作站",
+            "visual_brief": {
+              "product_presentation": "whole_product",
+              "scene": "整机与工作站同框的简洁场景",
+              "framing": "参考图已知整体视角",
+              "product_action": "展示原图主体与工作站",
+              "visual_evidence": "原图外形与配套组成",
+              "layout": "主体居中，标题在上"
+            }
+          }
+        ],
+        "not_used": [
+          {
+            "audience": "维护人员",
+            "need": "了解工作站的具体功能",
+            "reason": "资料仅说明含工作站，未给出工作站功能与操作细节"
+          }
+        ]
+      }
+    ],
+    "specifications": [
+      {
+        "name": "额定电压",
+        "value": "24V",
+        "evidence": "额定电压：24V。"
+      },
+      {
+        "name": "电池容量",
+        "value": "40Ah/60Ah",
+        "evidence": "电池容量：40Ah/60Ah（两种配置，资料未说明配置与续航的对应关系）。"
+      },
+      {
+        "name": "平均续航时间",
+        "value": "2-6h",
+        "evidence": "平均续航时间：2-6h。"
+      },
+      {
+        "name": "最大功率",
+        "value": "1200W",
+        "evidence": "最大功率：1200W。"
+      },
+      {
+        "name": "驱动电机功率",
+        "value": "2×300W",
+        "evidence": "驱动电机功率：2×300W。"
+      },
+      {
+        "name": "吸风电机功率",
+        "value": "280W",
+        "evidence": "吸风电机功率：280W。"
+      },
+      {
+        "name": "刷盘电机功率",
+        "value": "2×150W",
+        "evidence": "刷盘电机功率：2×150W。"
+      },
+      {
+        "name": "清洗宽度",
+        "value": "500mm",
+        "evidence": "清洗宽度：500mm。"
+      },
+      {
+        "name": "刷盘转速",
+        "value": "最高270 RPM",
+        "evidence": "刷盘转速：最高270 RPM。"
+      },
+      {
+        "name": "最大真空度",
+        "value": "18.18 KPa",
+        "evidence": "最大真空度：18.18 KPa。"
+      },
+      {
+        "name": "污水箱容积",
+        "value": "24L",
+        "evidence": "污水箱容积：24L。"
+      },
+      {
+        "name": "清水箱容积",
+        "value": "18L",
+        "evidence": "清水箱容积：18L。"
+      }
+    ],
+    "style_dna": {
+      "color_palette": "深灰与浅灰为主，点缀清洁行业常用的蓝绿色",
+      "lighting": "均匀明亮的室内光照，地面有干净反光",
+      "composition_style": "层级清晰，主体突出，留白充足",
+      "mood": "专业、整洁、可靠",
+      "typography_hint": "手机可读的大号黑体中文，副标题稍小",
+      "unified_visual_treatment": "统一使用室内硬质地面场景与信息图两种视觉方式，保持同一色调与标题位置"
+    },
+    "cover": {
+      "title": "商用清洁机器人",
+      "subtitle": "室内硬质地面洗地，含工作站",
+      "evidence": [
+        "高仙商用清洁机器人 Scrubber 50（含工作站）。",
+        "用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。"
+      ],
+      "visual_brief": {
+        "product_presentation": "whole_product",
+        "scene": "简洁室内硬质地面背景",
+        "framing": "参考图已知整体视角",
+        "product_action": "展示原图主体",
+        "visual_evidence": "原图外形",
+        "layout": "主体居中，标题在上方"
+      }
+    }
+  },
+  "expected_review": {
+    "decisions": [
+      {
+        "id": "f1r1",
+        "action": "revise",
+        "reason": "保留地面作业用途，去掉开放时段和分工的混合结果",
+        "revision": {
+          "audience": "清洁作业人员",
+          "scenario": "适用的室内硬质地面日常清洁",
+          "need": "完成日常地面清洗",
+          "benefit": "地面清洗可由设备参与完成",
+          "value_bridge": "原文明确室内硬质地面清洁用途，支持设备参与清洗，不承诺无人看管或节省人数",
+          "outcome_key": "完成日常地面清洗",
+          "title": "日常地面清洗有帮手",
+          "subtitle": "用于资料列明的室内硬质地面清洁",
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "简洁的需求说明信息图",
+            "framing": "平面文字分区",
+            "product_action": "不画内部结构或未知配套设备",
+            "visual_evidence": "明确说明客户用途",
+            "layout": "标题居上，说明分组"
+          }
+        }
+      },
+      {
+        "id": "f1r2",
+        "action": "merge",
+        "target": "f1r1",
+        "reason": "去掉医院学校与后勤称呼后，结果仍是设备完成日常地面清洁"
+      },
+      {
+        "id": "f1r3",
+        "action": "merge",
+        "target": "f1r1",
+        "reason": "营业前后只是清洁任务的时间条件，未提供另一个工作结果"
+      },
+      {
+        "id": "f2r1",
+        "action": "spec_only",
+        "reason": "只解释清水污水分箱，没有独立客户结果"
+      },
+      {
+        "id": "f2r2",
+        "action": "spec_only",
+        "reason": "容量不能单独确定补给节点，缺少耗水与工况"
+      },
+      {
+        "id": "f3r1",
+        "action": "keep",
+        "reason": "续航范围可作为排班时段参考，与实际地面作业不同，不保证整班续航"
+      },
+      {
+        "id": "f3r2",
+        "action": "spec_only",
+        "reason": "需求是配置与续航关系，收益只是确认配置存在，未回答需求"
+      },
+      {
+        "id": "f4r1",
+        "action": "spec_only",
+        "reason": "确认含工作站只是配置核对，未提供可形成使用收益的工作站功能"
+      }
+    ],
+    "additions": [
+      {
+        "fact_id": "f1",
+        "reason": "维护公共区域观感与执行清洗动作是不同关注结果，不承诺客流或始终洁净",
+        "route": {
+          "audience": "场所负责人",
+          "scenario": "适用的室内硬质地面日常清洁",
+          "need": "维护公共区域地面观感",
+          "benefit": "设备用于公共区域日常地面清洁维护",
+          "value_bridge": "资料列明酒店、写字楼等硬质地面清洁用途，可用于相容公共区域维护",
+          "outcome_key": "维护公共区域地面观感",
+          "title": "公共区域整洁从地面做起",
+          "subtitle": "用于资料列明的室内硬质地面清洁",
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "简洁的需求说明信息图",
+            "framing": "平面文字分区",
+            "product_action": "不画内部结构或未知配套设备",
+            "visual_evidence": "明确说明客户用途",
+            "layout": "标题居上，说明分组"
+          }
+        }
+      },
+      {
+        "fact_id": "f1",
+        "reason": "不同场所用途适配是采购选择问题，与排班和执行清洗不同，不承诺所有区域可达",
+        "route": {
+          "audience": "多场所采购人员",
+          "scenario": "适用的室内硬质地面日常清洁",
+          "need": "判断多个场所的用途适配",
+          "benefit": "可纳入资料列明的不同室内场所地面清洁选型",
+          "value_bridge": "资料明确多类场所的硬质地面用途，支持用途适配判断，具体区域仍取决于现场条件",
+          "outcome_key": "判断多个场所的用途适配",
+          "title": "多类室内场所可选用",
+          "subtitle": "用于资料列明的室内硬质地面清洁",
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "简洁的需求说明信息图",
+            "framing": "平面文字分区",
+            "product_action": "不画内部结构或未知配套设备",
+            "visual_evidence": "明确说明客户用途",
+            "layout": "标题居上，说明分组"
+          }
+        }
+      }
+    ]
+  }
+}

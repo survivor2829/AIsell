@@ -1,0 +1,495 @@
+{
+  "provenance": "Authored offline editorial target, not a real model response",
+  "review": {
+    "review_version": "semantic-final-set-v1",
+    "material_assessment": {
+      "level": "normal",
+      "reason": "原文含用途和多项明确配置"
+    },
+    "final_points": [
+      {
+        "id": "b1",
+        "fact_id": "f1",
+        "source_ids": [
+          "f1r1",
+          "f3r1",
+          "f7r1"
+        ],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "一线保洁人员",
+          "scenario": "地面需要反复刷洗",
+          "need": "地面需要反复刷洗",
+          "benefit": "获得机械刷洗的作业帮助",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "地面需要反复刷洗",
+          "title": "反复刷地，让设备出一份力",
+          "subtitle": "",
+          "body": "需要认真刷洗的地面，不只靠手工来回用力。让机械刷洗参与日常清洁，给保洁人员提供设备支持。",
+          "technical_support": [
+            "刷盘转速：最高270 RPM。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b2",
+        "fact_id": "f12",
+        "source_ids": [],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "场所经营者",
+          "scenario": "准备顾客接触的公共环境",
+          "need": "准备顾客接触的公共环境",
+          "benefit": "维护接待环境的地面观感",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "准备顾客接触的公共环境",
+          "title": "迎客的准备，也要做到脚下",
+          "subtitle": "",
+          "body": "大厅、入口、公共通道，都是顾客进门能看到的地方。把这些区域的地面清洁纳入日常维护，让接待准备从脚下开始。",
+          "technical_support": [
+            "用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b3",
+        "fact_id": "f12",
+        "source_ids": [],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "保洁服务商",
+          "scenario": "落实约定区域的清洁交付",
+          "need": "落实约定区域的清洁交付",
+          "benefit": "将地面清洁落实到可查看的现场",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "落实约定区域的清洁交付",
+          "title": "客户看的是现场，不只是出勤人数",
+          "subtitle": "",
+          "body": "安排人员只是开始，约定区域的清洁才是要交付的工作。让设备参与地面清洁，把日常保洁落实到客户能查看的现场。",
+          "technical_support": [
+            "用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b4",
+        "fact_id": "f4",
+        "source_ids": [
+          "f4r1"
+        ],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "现场操作人员",
+          "scenario": "将作业用水带到清洁位置",
+          "need": "将作业用水带到清洁位置",
+          "benefit": "随设备携带清水储备",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "将作业用水带到清洁位置",
+          "title": "清洁位置在变，作业用水跟着走",
+          "subtitle": "",
+          "body": "设备自带清水储备，进入清洗区域时，可以把洗地用水一起带过去。实际补水安排仍取决于现场用水情况。",
+          "technical_support": [
+            "清水箱容积：18L。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b5",
+        "fact_id": "f4",
+        "source_ids": [
+          "f2r1",
+          "f6r1"
+        ],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "作业收尾人员",
+          "scenario": "集中处理回收污水",
+          "need": "集中处理回收污水",
+          "benefit": "回收污水有集中的承载去处",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "集中处理回收污水",
+          "title": "洗下来的污水，集中收、统一处理",
+          "subtitle": "",
+          "body": "回收的污水需要有去处。污水箱单独承载回收污水，让作业后的污水有明确的处理对象。",
+          "technical_support": [
+            "污水箱容积：24L。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b6",
+        "fact_id": "f5",
+        "source_ids": [
+          "f5r1"
+        ],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "班组长",
+          "scenario": "安排设备作业时段",
+          "need": "安排设备作业时段",
+          "benefit": "用续航信息作为排班参考",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "安排设备作业时段",
+          "title": "清洁任务怎么排，先有时间依据",
+          "subtitle": "",
+          "body": "参考资料中的平均续航，再结合现场工况安排任务。它提供时间参考，不代表每次作业都能达到同样时长。",
+          "technical_support": [
+            "平均续航时间：2-6h。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b7",
+        "fact_id": "f12",
+        "source_ids": [],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "多项目采购人员",
+          "scenario": "统筹不同室内项目的设备选型",
+          "need": "统筹不同室内项目的设备选型",
+          "benefit": "建立共同候选后逐个核对现场",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "统筹不同室内项目的设备选型",
+          "title": "管理多个项目，先找共同需求",
+          "subtitle": "",
+          "body": "不同室内场所也可能都有硬质地面清洁需求。把共同需求放在一起考虑，再逐个核对现场条件，建立设备候选清单。",
+          "technical_support": [
+            "用于小型工厂、写字楼、医院、酒店、购物中心、商场、展馆、学校、餐厅、银行等室内场所的硬质地面清洁。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      },
+      {
+        "id": "b8",
+        "fact_id": "f10",
+        "source_ids": [
+          "f10r1"
+        ],
+        "reason": "人工离线改写：收窄旧承诺或从原始用途补充不同责任方的购买收益",
+        "route": {
+          "audience": "设备操作人员",
+          "scenario": "移动设备到作业位置",
+          "need": "移动设备到作业位置",
+          "benefit": "获得设备行进动力支持",
+          "value_bridge": "原文提供的用途或配置为这项工作提供帮助，不承诺量化效果",
+          "outcome_key": "移动设备到作业位置",
+          "title": "清洁位置要换，设备行进也有动力",
+          "subtitle": "",
+          "body": "完成地面刷洗需要动力，把设备移动到作业位置也需要动力。整机配置驱动电机，为设备行进提供支持。",
+          "technical_support": [
+            "驱动电机功率：2×300W。"
+          ],
+          "visual_brief": {
+            "product_presentation": "diagram_only",
+            "scene": "客户工作与设备贡献示意",
+            "framing": "文字及简洁图解",
+            "product_action": "不画未知结构",
+            "visual_evidence": "只说明本屏有据的帮助",
+            "layout": "收益、解释、技术支撑三层排版"
+          }
+        }
+      }
+    ],
+    "excluded": [
+      {
+        "id": "f8r1",
+        "reason": "用电配置核对不能单独作买点；内部额定参数不足以推导现场插座线路"
+      },
+      {
+        "id": "f9r1",
+        "reason": "用电配置核对不能单独作买点；内部额定参数不足以推导现场插座线路"
+      }
+    ],
+    "opportunities": [
+      {
+        "fact_id": "f1",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f2",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f3",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f4",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f5",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f6",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f7",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f8",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f9",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f10",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f11",
+        "new_point_ids": [],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      },
+      {
+        "fact_id": "f12",
+        "new_point_ids": [
+          "b2",
+          "b3",
+          "b7"
+        ],
+        "reason": "人工离线探索：用途支持不同责任方的帮助，其余参数不增加未提供的能力"
+      }
+    ],
+    "comparisons": [
+      {
+        "left": "b1",
+        "right": "b2",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与准备顾客接触的公共环境，产品贡献分别为获得机械刷洗的作业帮助与维护接待环境的地面观感"
+      },
+      {
+        "left": "b1",
+        "right": "b3",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与落实约定区域的清洁交付，产品贡献分别为获得机械刷洗的作业帮助与将地面清洁落实到可查看的现场"
+      },
+      {
+        "left": "b1",
+        "right": "b4",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与将作业用水带到清洁位置，产品贡献分别为获得机械刷洗的作业帮助与随设备携带清水储备"
+      },
+      {
+        "left": "b1",
+        "right": "b5",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与集中处理回收污水，产品贡献分别为获得机械刷洗的作业帮助与回收污水有集中的承载去处"
+      },
+      {
+        "left": "b1",
+        "right": "b6",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与安排设备作业时段，产品贡献分别为获得机械刷洗的作业帮助与用续航信息作为排班参考"
+      },
+      {
+        "left": "b1",
+        "right": "b7",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与统筹不同室内项目的设备选型，产品贡献分别为获得机械刷洗的作业帮助与建立共同候选后逐个核对现场"
+      },
+      {
+        "left": "b1",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：地面需要反复刷洗与移动设备到作业位置，产品贡献分别为获得机械刷洗的作业帮助与获得设备行进动力支持"
+      },
+      {
+        "left": "b2",
+        "right": "b3",
+        "relation": "distinct",
+        "reason": "人工待验判断：准备顾客接触的公共环境与落实约定区域的清洁交付，产品贡献分别为维护接待环境的地面观感与将地面清洁落实到可查看的现场"
+      },
+      {
+        "left": "b2",
+        "right": "b4",
+        "relation": "distinct",
+        "reason": "人工待验判断：准备顾客接触的公共环境与将作业用水带到清洁位置，产品贡献分别为维护接待环境的地面观感与随设备携带清水储备"
+      },
+      {
+        "left": "b2",
+        "right": "b5",
+        "relation": "distinct",
+        "reason": "人工待验判断：准备顾客接触的公共环境与集中处理回收污水，产品贡献分别为维护接待环境的地面观感与回收污水有集中的承载去处"
+      },
+      {
+        "left": "b2",
+        "right": "b6",
+        "relation": "distinct",
+        "reason": "人工待验判断：准备顾客接触的公共环境与安排设备作业时段，产品贡献分别为维护接待环境的地面观感与用续航信息作为排班参考"
+      },
+      {
+        "left": "b2",
+        "right": "b7",
+        "relation": "distinct",
+        "reason": "人工待验判断：准备顾客接触的公共环境与统筹不同室内项目的设备选型，产品贡献分别为维护接待环境的地面观感与建立共同候选后逐个核对现场"
+      },
+      {
+        "left": "b2",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：准备顾客接触的公共环境与移动设备到作业位置，产品贡献分别为维护接待环境的地面观感与获得设备行进动力支持"
+      },
+      {
+        "left": "b3",
+        "right": "b4",
+        "relation": "distinct",
+        "reason": "人工待验判断：落实约定区域的清洁交付与将作业用水带到清洁位置，产品贡献分别为将地面清洁落实到可查看的现场与随设备携带清水储备"
+      },
+      {
+        "left": "b3",
+        "right": "b5",
+        "relation": "distinct",
+        "reason": "人工待验判断：落实约定区域的清洁交付与集中处理回收污水，产品贡献分别为将地面清洁落实到可查看的现场与回收污水有集中的承载去处"
+      },
+      {
+        "left": "b3",
+        "right": "b6",
+        "relation": "distinct",
+        "reason": "人工待验判断：落实约定区域的清洁交付与安排设备作业时段，产品贡献分别为将地面清洁落实到可查看的现场与用续航信息作为排班参考"
+      },
+      {
+        "left": "b3",
+        "right": "b7",
+        "relation": "distinct",
+        "reason": "人工待验判断：落实约定区域的清洁交付与统筹不同室内项目的设备选型，产品贡献分别为将地面清洁落实到可查看的现场与建立共同候选后逐个核对现场"
+      },
+      {
+        "left": "b3",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：落实约定区域的清洁交付与移动设备到作业位置，产品贡献分别为将地面清洁落实到可查看的现场与获得设备行进动力支持"
+      },
+      {
+        "left": "b4",
+        "right": "b5",
+        "relation": "distinct",
+        "reason": "人工待验判断：将作业用水带到清洁位置与集中处理回收污水，产品贡献分别为随设备携带清水储备与回收污水有集中的承载去处"
+      },
+      {
+        "left": "b4",
+        "right": "b6",
+        "relation": "distinct",
+        "reason": "人工待验判断：将作业用水带到清洁位置与安排设备作业时段，产品贡献分别为随设备携带清水储备与用续航信息作为排班参考"
+      },
+      {
+        "left": "b4",
+        "right": "b7",
+        "relation": "distinct",
+        "reason": "人工待验判断：将作业用水带到清洁位置与统筹不同室内项目的设备选型，产品贡献分别为随设备携带清水储备与建立共同候选后逐个核对现场"
+      },
+      {
+        "left": "b4",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：将作业用水带到清洁位置与移动设备到作业位置，产品贡献分别为随设备携带清水储备与获得设备行进动力支持"
+      },
+      {
+        "left": "b5",
+        "right": "b6",
+        "relation": "distinct",
+        "reason": "人工待验判断：集中处理回收污水与安排设备作业时段，产品贡献分别为回收污水有集中的承载去处与用续航信息作为排班参考"
+      },
+      {
+        "left": "b5",
+        "right": "b7",
+        "relation": "distinct",
+        "reason": "人工待验判断：集中处理回收污水与统筹不同室内项目的设备选型，产品贡献分别为回收污水有集中的承载去处与建立共同候选后逐个核对现场"
+      },
+      {
+        "left": "b5",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：集中处理回收污水与移动设备到作业位置，产品贡献分别为回收污水有集中的承载去处与获得设备行进动力支持"
+      },
+      {
+        "left": "b6",
+        "right": "b7",
+        "relation": "distinct",
+        "reason": "人工待验判断：安排设备作业时段与统筹不同室内项目的设备选型，产品贡献分别为用续航信息作为排班参考与建立共同候选后逐个核对现场"
+      },
+      {
+        "left": "b6",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：安排设备作业时段与移动设备到作业位置，产品贡献分别为用续航信息作为排班参考与获得设备行进动力支持"
+      },
+      {
+        "left": "b7",
+        "right": "b8",
+        "relation": "distinct",
+        "reason": "人工待验判断：统筹不同室内项目的设备选型与移动设备到作业位置，产品贡献分别为建立共同候选后逐个核对现场与获得设备行进动力支持"
+      }
+    ]
+  }
+}

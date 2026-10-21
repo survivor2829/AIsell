@@ -128,6 +128,31 @@ def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
     """Offer the existing recovery action only for a locally repairable paid reply."""
     if state.get("status") != "failed":
         return False
+    if (_read_json(task_dir / "_quality_policy.json") or {}).get("version") in (13, 14, 15, 16):
+        # No implicit extra editorial purchase after a failed new-policy run.
+        return False
+    if (_read_json(task_dir / "_quality_policy.json") or {}).get("version") in (10, 11, 12):
+        # The independent editor has not run yet. It can read the saved raw
+        # draft; recovery must never purchase the first planning call again.
+        from ai_refine_v2.pricing import CostJournal
+        from ai_refine_v2 import refine_planner
+        try:
+            operations = CostJournal(task_dir).load()["operations"]
+            if set(operations) != {"planner"} or operations["planner"]["status"] != "completed":
+                return False
+            response_path = task_dir / "_planner_response.json"
+            if response_path.stat().st_size > 1_000_000:
+                return False
+            choice = (_read_json(response_path) or {})["choices"][0]
+            if choice.get("finish_reason") != "stop":
+                return False
+            try:
+                refine_planner._extract_json(choice["message"]["content"])
+            except json.JSONDecodeError as exc:
+                return str(state.get("error") or "") == str(exc)
+            return False
+        except (OSError, RuntimeError, ValueError, KeyError, IndexError, TypeError):
+            return False
     format_error = state.get("code") == "AI_REFINE_PLANNER_FORMAT_ERROR" or re.match(
         r"^v2 API/解析失败 \(重试 \d+ 次后\): JSONDecodeError:", str(state.get("error") or ""),
     )
@@ -924,6 +949,56 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
     # v2 总屏数从 screens 数组算 (跟 _run_real_generator 用 block_order 等价)
     screens = planning_v2.get("screens") or []
     total = len(screens)
+    policy_version = (_read_json(task_dir / "_quality_policy.json") or {}).get("version")
+    if policy_version in (10, 11, 12, 13, 14, 15, 16):
+        from ai_refine_v2.visual_merchandising import validate
+        if policy_version in (11, 12, 13, 14, 15, 16):
+            from ai_refine_v2.visual_merchandising import BUYER_VERSION
+            if planning_v2.get("buyer_value_version") != BUYER_VERSION:
+                raise ValueError("缺少买方收益策划版本，尚未提交生图")
+        if policy_version == 12:
+            from ai_refine_v2.visual_merchandising import OUTLINE_VERSION
+            if planning_v2.get("buyer_outline_version") != OUTLINE_VERSION:
+                raise ValueError("缺少买方实际作用编排版本，尚未提交生图")
+        if policy_version == 13:
+            from ai_refine_v2.visual_merchandising import COPY_VERSION
+            if planning_v2.get("copy_edit_version") != COPY_VERSION:
+                raise ValueError("缺少保留画面的文案编辑版本，尚未提交生图")
+        if policy_version in (14, 15, 16):
+            from ai_refine_v2.visual_merchandising import AUTO_VERSION
+            if planning_v2.get("automatic_planning_version") != AUTO_VERSION:
+                raise ValueError("缺少自动用途与画面策划版本，尚未提交生图")
+        if policy_version in (15, 16):
+            from ai_refine_v2.visual_merchandising import DELIVERY_VERSION
+            if planning_v2.get('visual_delivery_version') != DELIVERY_VERSION:
+                raise ValueError('缺少分级校验版本，尚未提交生图')
+        if policy_version == 16:
+            from ai_refine_v2.visual_merchandising import CAPTION_REPAIR_VERSION
+            if planning_v2.get('caption_repair_version') != CAPTION_REPAIR_VERSION:
+                raise ValueError('Missing automatic caption repair policy; images not submitted')
+        evidence = planning_v2.get("input_evidence") or {}
+        validate(planning_v2, evidence.get("product_text", ""),
+                 evidence.get("product_title", ""), evidence.get("product_category"))
+    if policy_version in (7, 8, 9):
+        from collections import Counter
+        from ai_refine_v2.buyer_copy import validate_quantity, copy_fields
+        source = (planning_v2.get("input_evidence") or {}).get("product_text", "")
+        if not source:
+            raise ValueError("缺少买点原文，尚未提交生图")
+        validate_quantity(planning_v2, source)
+        if total > 15 or total != planning_v2.get("screen_count"):
+            raise ValueError("买点图片队列数量异常，尚未提交生图")
+        if Counter(s.get("selling_point_id") for s in screens if s.get("selling_point_id")) != Counter(
+            p["id"] for p in planning_v2["selling_points"]
+        ):
+            raise ValueError("买点与实际图片队列不一致，尚未提交生图")
+        for screen in screens:
+            if screen.get("selling_point_id"):
+                copy_fields(screen, screen.get("evidence") or [])
+        if policy_version in (8, 9):
+            from ai_refine_v2.planning_quality import check_plan_quality
+            if check_plan_quality(planning_v2, source, grounded_copy=True):
+                raise ValueError("买点仍含无依据承诺或画面问题，尚未提交生图")
     image_profile = _task_image_profile(task_dir)
     quote = read_quote(include_planner=False, image_profile=image_profile)
     journal = CostJournal(task_dir)
@@ -1535,6 +1610,21 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             quote = read_quote(image_profile=image_profile) if saved_response is None else None
             _preflight_before_paid_planner(task_dir, product_image_url, gpt_image_key,
                                           saved_response=saved_response, journal=journal)
+            # Persist before the paid request, so recovery cannot treat a new
+            # rejected reply as a pre-policy historical plan.
+            if saved_response is None and not journal.load()["operations"]:
+                _atomic_write_json(task_dir / "_quality_policy.json", {"version": 16})
+            policy_version = (_read_json(task_dir / "_quality_policy.json") or {}).get("version")
+            def semantic_http(body, key):
+                saved_review = journal.saved_planner_response("semantic_review")
+                if saved_review is not None:
+                    return journal.planner_call(None, body, key, operation="semantic_review")
+                if not deepseek_key:
+                    from ai_refine_v2.pricing import PricingRequired
+                    raise PricingRequired("语义评审尚未提交，需要恢复有效的策划服务凭据；原回执已保留。")
+                return journal.planner_call(
+                    quote or read_quote(image_profile=image_profile), body, deepseek_key,
+                    operation="semantic_review")
             planning = refine_planner.plan_v2(
                 product_text=product_text,
                 product_image_url=product_image_url,
@@ -1543,6 +1633,24 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
                 max_retries=0,
                 http_fn=lambda body, key: saved_response if saved_response is not None else journal.planner_call(quote, body, key),
                 require_visual_strategy=saved_response is None,
+                product_category=product_category,
+                enforce_quality=(task_dir / "_quality_policy.json").is_file(),
+                require_demand_analysis=policy_version in (2, 3, 4, 5, 6, 7, 8, 9),
+                require_strategy=policy_version in (3, 4, 5, 6, 7, 8, 9),
+                require_semantic_review=policy_version in (4, 5, 6, 7, 8, 9),
+                require_semantic_final_set=policy_version in (5, 6, 7, 8, 9),
+                require_demand_first=policy_version in (6, 7, 8, 9),
+                require_buyer_copy=policy_version in (7, 8, 9),
+                require_grounded_copy=policy_version in (8, 9),
+                require_customer_work=policy_version == 9,
+                require_visual_merchandising=policy_version == 10,
+                require_buyer_value=policy_version in (11, 12, 13, 14, 15, 16),
+                require_copy_edit=policy_version == 13,
+                require_automatic_visual=policy_version in (14, 15, 16),
+                allow_visual_advisories=policy_version in (15, 16),
+                repair_unsupported_captions=policy_version == 16,
+                require_buyer_outline=policy_version == 12,
+                semantic_http_fn=semantic_http if policy_version in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16) else None,
             )
         else:
             _set(task_id, progress_msg="[v2 mock] 加载预置 planning_v2", progress_pct=10)
@@ -1561,12 +1669,14 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             if existing_planning else bool(deepseek_key or saved_response is not None)
         ))
         _set(task_id, mode=actual_mode, planning=planning, progress_pct=20,
-            progress_msg="产品风格与卖点分图方案已生成")
+            progress_msg="客户买点已精选，分图方案已生成")
         _atomic_write_json(task_dir / "_planning.json", planning)
         (task_dir / "_pricing_required.json").unlink(missing_ok=True)
 
         # ── Stage 2: Generator (generate_v2) ──
         n_screens = len(planning.get("screens") or [])
+        if not 1 <= n_screens <= refine_planner._MAX_SCREEN_COUNT_V2:
+            raise ValueError("生图前张数检查失败：封面、买点图和参数图合计必须为1至15张")
         _set(task_id, status="running_generator", progress_pct=25,
              progress_msg=f"开始生成 {n_screens} 张 v2 AI 精修图...")
 
@@ -2005,6 +2115,48 @@ class RecoveryConfirmationRequired(ValueError):
     """Continuing a saved plan may purchase images; a query cannot authorize it."""
 
 
+def _planner_receipt_worker(task_id, deepseek_key):
+    from ai_refine_v2.pricing import CostJournal
+    directory = _OUTPUT_BASE / task_id
+    try:
+        journal = CostJournal(directory)
+        results = {name: journal.query_planner_response(deepseek_key, name)
+                   for name in ("planner", "semantic_review")
+                   if name in journal.load()["operations"]}
+        recovered = bool(results) and all(value == "recovered" for value in results.values())
+        status = "recovery_required" if recovered else "outcome_unknown"
+        message = ("已找回原文字回执；继续复核或生图前需确认。"
+                   if recovered else "原文字结果仍待核实；未重新提交。")
+        _atomic_write_json(directory / "_planner_receipt_query.json",
+                           {"results": results, "checked_at": time.time()})
+        _persist_recovery(directory, [], 0, 0, status=status, error=message)
+        # Keep terminal disk status consistent with in-memory polling.
+        summary = _read_json(directory / "_summary.json")
+        if summary:
+            summary.update(status=status, error=message, progress_msg=message)
+            _atomic_write_json(directory / "_summary.json", summary)
+        with _TASKS_LOCK:
+            _TASKS[task_id].status = status
+            _TASKS[task_id].error = message
+            _TASKS[task_id].progress_msg = message
+    except Exception as exc:
+        _record_worker_exception(task_id, directory, exc, log_prefix="planner_receipt")
+    finally:
+        with _TASKS_LOCK:
+            _RECOVERY_TASK_IDS.discard(task_id)
+
+
+def needs_planner_receipt_query(task_id):
+    from ai_refine_v2.pricing import CostJournal
+    directory = _OUTPUT_BASE / task_id
+    operations = CostJournal(directory).load()["operations"]
+    if _read_json(directory / "_planning.json") or any(name.startswith("image:") for name in operations):
+        return False
+    return any(operations.get(name, {}).get("status") in {"submitting", "outcome_unknown"}
+               and not (directory / f"_{name}_response.json").exists()
+               for name in ("planner", "semantic_review"))
+
+
 def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = "", *, query_only: bool = False) -> dict:
     """Recover receipts, or reprice and continue work that was never submitted."""
     state = get_task_status(task_id)
@@ -2018,12 +2170,17 @@ def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = ""
     directory = _OUTPUT_BASE / task_id
     operations = CostJournal(directory).load()["operations"]
     image_checkpoint = _read_json(directory / "_recovery.json") or _read_json(directory / "_summary.json") or {}
+    text_only = (not any(name.startswith("image:") for name in operations)
+                 and not image_checkpoint.get("blocks"))
+    query_planning = text_only and (needs_planner_receipt_query(task_id) or (
+        query_only and not _read_json(directory / "_planning.json")
+        and any(name in operations for name in ("planner", "semantic_review"))))
     resume_planning = replay_failed or (
         not any(name.startswith("image:") for name in operations)
         and not image_checkpoint.get("blocks")
         and (status == "pricing_required" or bool(_read_json(directory / "_planning.json") or _read_json(directory / "_planner_response.json")))
     )
-    if query_only and resume_planning:
+    if query_only and resume_planning and not query_planning:
         raise RecoveryConfirmationRequired("自动恢复仅查询原生图任务，不会新增策划或生图费用，请手动确认继续原方案。")
     with _TASKS_LOCK:
         if task_id in _RECOVERY_TASK_IDS:
@@ -2045,11 +2202,22 @@ def start_task_recovery(task_id: str, gpt_image_key: str, deepseek_key: str = ""
         _RECOVERY_TASK_IDS.add(task_id)
         response = current.to_dict()
     threading.Thread(
-        target=_pricing_resume_worker if resume_planning else _recovery_worker,
-        args=(task_id, gpt_image_key, deepseek_key) if resume_planning else (task_id, gpt_image_key, not query_only),
+        target=_planner_receipt_worker if query_planning else _pricing_resume_worker if resume_planning else _recovery_worker,
+        args=(task_id, deepseek_key) if query_planning else (task_id, gpt_image_key, deepseek_key) if resume_planning else (task_id, gpt_image_key, not query_only),
         daemon=True,
     ).start()
     return response
+
+
+def needs_semantic_review_key(task_id: str) -> bool:
+    """Only an unsubmitted policy-4 review needs a live planner credential."""
+    directory = _OUTPUT_BASE / task_id
+    if (_read_json(directory / "_quality_policy.json") or {}).get("version") not in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+        return False
+    if _read_json(directory / "_planning.json"):
+        return False
+    from ai_refine_v2.pricing import CostJournal
+    return "semantic_review" not in CostJournal(directory).load()["operations"]
 
 
 def _pricing_resume_worker(task_id: str, gpt_image_key: str, deepseek_key: str):
@@ -2061,6 +2229,7 @@ def _pricing_resume_worker(task_id: str, gpt_image_key: str, deepseek_key: str):
             raise PricingRequired("当前环境未启用付费生成，原方案已保留。")
         journal = CostJournal(directory)
         journal.saved_planner_response()
+        journal.saved_planner_response("semantic_review")
         operations = journal.load()["operations"]
         if any(name.startswith("image:") or op["status"] != "completed" for name, op in operations.items()):
             raise RequestOutcomeUnknown("已有付费请求待核对，不能从核价步骤重新提交。")

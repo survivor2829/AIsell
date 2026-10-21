@@ -1,0 +1,129 @@
+{
+  "provenance": "Actual failed final-set review v2_1792474853720_faac5c; no authored passing output",
+  "review": {
+    "review_version": "semantic-final-set-v1",
+    "final_points": [
+      {
+        "id": "b1",
+        "fact_id": "f1",
+        "source_ids": [
+          "f1r1"
+        ],
+        "reason": "原文明确整机用于室内硬质地面洗地且清洗宽度500mm，可支撑“由整机执行洗地”这一独立工作结果；不新增自主程度或效率承诺。",
+        "audience": "写字楼、商场等室内场所的保洁负责人",
+        "scenario": "营业或办公时段需要安排地面清洁，通道与大厅地面要维持整洁",
+        "need": "在人员流动的室内硬质地面完成洗地作业",
+        "benefit": "地面清洁由整机按洗地方式执行，保洁负责人可围绕场所开放节奏安排清洁",
+        "value_bridge": "整机具备洗地用途与500mm清洗宽度，使室内硬质地面的清洁工作可由设备承担，而不只依赖人工拖洗",
+        "outcome_key": "室内硬质地面洗地作业",
+        "title": "室内硬地洗地交给整机",
+        "subtitle": "500mm清洗宽度，覆盖通道与大厅地面",
+        "visual_brief": {
+          "product_presentation": "whole_product",
+          "scene": "写字楼或商场室内硬质地面通道",
+          "framing": "已知整体视角",
+          "product_action": "整机在硬质地面上执行洗地",
+          "visual_evidence": "以整机与500mm清洗宽度示意覆盖通道地面",
+          "layout": "产品主图配简短说明"
+        }
+      },
+      {
+        "id": "b2",
+        "fact_id": "f2",
+        "source_ids": [
+          "f2r1",
+          "f2r2"
+        ],
+        "reason": "原文明确清水箱18L与污水箱24L分箱设置，可支撑洗地过程中清水供给与污水回收分别由两箱承载；不将容量解释为补给频次或可调范围。",
+        "audience": "保洁操作人员",
+        "scenario": "一次洗地作业中需要清水供给并回收污水",
+        "need": "在洗地过程中完成清水箱补水与污水箱收集，并区分清水与污水",
+        "benefit": "清水与污水分别由独立水箱承载，操作者可分别补水与倾倒，洗地供排水由整机水箱完成",
+        "value_bridge": "清水箱18L与污水箱24L分箱设置，使洗地供水和污水回收各用其箱",
+        "outcome_key": "洗地清水供给与污水回收分箱承载",
+        "title": "清水污水分箱承载",
+        "subtitle": "18L清水箱与24L污水箱分别使用",
+        "visual_brief": {
+          "product_presentation": "diagram_only",
+          "scene": "洗地作业供排水示意",
+          "framing": "平面图解",
+          "product_action": "清水箱向洗地作业供水，污水箱回收污水",
+          "visual_evidence": "以两个独立水箱及流向箭头说明分箱承载",
+          "layout": "图解配标注"
+        }
+      },
+      {
+        "id": "b3",
+        "fact_id": "f3",
+        "source_ids": [
+          "f3r1"
+        ],
+        "reason": "原文给出平均续航2-6h但未说明电池配置与续航的对应关系，只能作为排班时间参考，不能承诺单次作业时长或覆盖面积。",
+        "audience": "多区域保洁排班负责人",
+        "scenario": "室内场所需要在不同时段安排地面清洁作业",
+        "need": "为洗地作业时段安排提供时间参考",
+        "benefit": "可依据2-6h平均续航预估单次作业时段",
+        "value_bridge": "平均续航时间2-6h为排班提供时间参考，负责人据此预估洗地作业时段",
+        "outcome_key": "按平均续航预估作业时段",
+        "title": "按续航预估作业时段",
+        "subtitle": "平均续航2-6h，供排班参考",
+        "visual_brief": {
+          "product_presentation": "diagram_only",
+          "scene": "排班时间参考示意",
+          "framing": "平面图解",
+          "product_action": "以时间轴标示2-6h平均续航区间",
+          "visual_evidence": "用时间轴说明续航区间供排班参考",
+          "layout": "图解配说明"
+        }
+      }
+    ],
+    "excluded": [
+      {
+        "id": "f2r2",
+        "reason": "与f2r1解决同一工作结果（清水与污水分箱承载），已合并入b2，不单独保留。"
+      }
+    ],
+    "opportunities": [
+      {
+        "fact_id": "f1",
+        "new_point_ids": [],
+        "reason": "原文仅支持整机执行室内硬质地面洗地及500mm清洗宽度，未提供自主程度、效率或兼容性依据，无其他有依据的独立需求。"
+      },
+      {
+        "fact_id": "f2",
+        "new_point_ids": [],
+        "reason": "原文仅支持清水箱18L与污水箱24L分箱承载，容量不决定补给频次，无其他有依据的独立需求。"
+      },
+      {
+        "fact_id": "f3",
+        "new_point_ids": [],
+        "reason": "原文给出40Ah/60Ah两种配置与2-6h平均续航，但未说明配置与续航对应关系，只能支撑排班时间参考，无其他有依据的独立需求。"
+      },
+      {
+        "fact_id": "f4",
+        "new_point_ids": [],
+        "reason": "原文仅说明含工作站，未提供工作站功能、自动对接或维护动作依据，不能补出独立工作需求。"
+      }
+    ],
+    "comparisons": [
+      {
+        "left": "b1",
+        "right": "b2",
+        "relation": "distinct",
+        "reason": "b1解决的是在室内硬质地面由整机执行洗地作业，结果是地面完成洗地；b2解决的是洗地过程中清水供给与污水回收分别由两箱承载，结果是供排水分箱完成，两者工作与结果不同。"
+      },
+      {
+        "left": "b1",
+        "right": "b3",
+        "relation": "distinct",
+        "reason": "b1是执行地面洗地作业，结果是地面被清洁；b3是依据平均续航预估作业时段，结果是排班获得时间参考，两者工作与结果不同。"
+      },
+      {
+        "left": "b2",
+        "right": "b3",
+        "relation": "distinct",
+        "reason": "b2是洗地过程中清水与污水分箱承载，结果是供排水作业完成；b3是依据续航预估作业时段，结果是排班时间参考，两者工作与结果不同。"
+      }
+    ]
+  }
+}

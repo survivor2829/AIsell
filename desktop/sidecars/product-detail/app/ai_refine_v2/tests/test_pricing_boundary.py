@@ -96,6 +96,78 @@ def test_planner_usage_and_images_are_estimates_not_bills(tmp_path, monkeypatch)
     assert ledger.load()["operations"]["planner"]["usage"]["completion_tokens"] == 500
 
 
+def test_planner_receipt_recovers_after_timeout_without_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(refine_planner, "_planner_receipt_origin", lambda: "https://gateway.invalid")
+    journal = pricing.CostJournal(tmp_path)
+    body = {"messages": [], "max_tokens": 100}
+    def timeout(payload, key, operation_id):
+        assert journal.load()["operations"]["planner"]["gateway_operation_id"] == operation_id
+        assert json.loads((tmp_path / "_planner_request.json").read_text()) == body
+        raise TimeoutError("never-log-secret")
+    post = Mock(side_effect=timeout)
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", post)
+    with pytest.raises(pricing.RequestOutcomeUnknown):
+        journal.planner_call(quote(), body, "never-log-secret")
+    get = Mock(side_effect=[None, {"id": "original", "choices": [{"message": {"content": "{}"}}]}])
+    monkeypatch.setattr(refine_planner, "_query_deepseek_receipt", get)
+    assert pricing.CostJournal(tmp_path).query_planner_response("key") == "pending"
+    assert pricing.CostJournal(tmp_path).query_planner_response("key") == "recovered"
+    assert pricing.CostJournal(tmp_path).planner_call(None, body, "key")["id"] == "original"
+    assert post.call_count == 1
+    assert "never-log-secret" not in journal.path.read_text()
+
+
+def test_receipt_http_error_is_redacted_and_cannot_repurchase(tmp_path, monkeypatch):
+    import io
+    import urllib.error
+    monkeypatch.setattr(refine_planner, "_planner_receipt_origin", lambda: "https://gateway.invalid")
+    error = lambda: urllib.error.HTTPError("https://secret.invalid/token", 503, "secret",
+        {"X-Xiaoxi-Error-Origin": "gateway_transport"}, io.BytesIO(b'{"error":"provider_unavailable","message":"secret"}'))
+    post = Mock(side_effect=error())
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", post)
+    journal = pricing.CostJournal(tmp_path)
+    for _ in range(2):
+        with pytest.raises(pricing.RequestOutcomeUnknown):
+            journal.planner_call(quote(), {"messages": [], "max_tokens": 100}, "secret")
+    monkeypatch.setattr(refine_planner, "_query_deepseek_receipt", Mock(side_effect=error()))
+    assert journal.query_planner_response("secret") == "outcome_unknown"
+    entry = journal.load()["operations"]["planner"]
+    assert entry["request_error"]["http_status"] == 503
+    assert entry["query_error"]["code"] == "provider_unavailable"
+    assert "secret" not in journal.path.read_text()
+    assert post.call_count == 1
+
+
+def test_legacy_unknown_receipt_never_queries_or_posts(tmp_path, monkeypatch):
+    journal = pricing.CostJournal(tmp_path)
+    journal.begin("planner", quote(), .1)
+    journal.finish("planner", "outcome_unknown")
+    get = Mock(side_effect=AssertionError("legacy has no receipt ID"))
+    monkeypatch.setattr(refine_planner, "_query_deepseek_receipt", get)
+    assert journal.query_planner_response("key") == "receipt_unavailable"
+    get.assert_not_called()
+
+
+def test_query_route_recovers_text_without_entering_paid_workers(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    task = tmp_path / "text-query"
+    task.mkdir()
+    journal = pricing.CostJournal(task)
+    journal.begin("planner", quote(), .1, gateway_operation_id="a" * 32, gateway_origin="https://gateway.invalid")
+    journal.finish("planner", "outcome_unknown")
+    monkeypatch.setattr(runner, "_OUTPUT_BASE", tmp_path)
+    monkeypatch.setattr(runner, "_TASKS", {task.name: runner.TaskState(task.name, status="outcome_unknown")})
+    monkeypatch.setattr(runner, "_RECOVERY_TASK_IDS", set())
+    monkeypatch.setattr(refine_planner, "_planner_receipt_origin", lambda: "https://gateway.invalid")
+    monkeypatch.setattr(refine_planner, "_query_deepseek_receipt", Mock(return_value={"id": "original", "choices": [{}]}))
+    monkeypatch.setattr(runner, "_pricing_resume_worker", Mock(side_effect=AssertionError("no paid continuation")))
+    monkeypatch.setattr(runner.threading, "Thread", lambda target, args, **kw: SimpleNamespace(start=lambda: target(*args)))
+    runner.start_task_recovery(task.name, "image-key", "text-key", query_only=True)
+    assert runner.get_task_status(task.name)["status"] == "recovery_required"
+    assert journal.saved_planner_response()["id"] == "original"
+    runner._pricing_resume_worker.assert_not_called()
+
+
 @pytest.mark.parametrize("case,stage,http_status", [
     ("invalid_reference", "reference_prepare", None),
     ("upload_rejected", "reference_upload", 401),
@@ -175,6 +247,27 @@ def test_missing_quote_preserves_input_and_stops_planner(tmp_path, monkeypatch):
     state = runner.get_task_status(task)
     assert state["status"] == "pricing_required" and state["user_id"] == 3
     assert json.loads((tmp_path / task / "_input.json").read_text(encoding="utf-8"))["product_text"] == "产品资料"
+
+
+def test_new_worker_selects_automatic_planning_without_paying(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, '_OUTPUT_BASE', tmp_path)
+    task = 'automatic-entry'
+    runner._TASKS[task] = runner.TaskState(task_id=task, user_id=1)
+    monkeypatch.setattr(pricing, 'read_quote', Mock(return_value=quote()))
+    monkeypatch.setattr(runner, '_preflight_before_paid_planner', Mock())
+    planner = Mock(side_effect=pricing.PricingRequired('offline stop before model transport'))
+    monkeypatch.setattr(refine_planner, 'plan_v2', planner)
+    images = Mock(side_effect=AssertionError('no image call'))
+    monkeypatch.setattr(runner, '_run_real_generator_v2', images)
+    runner._worker_v2(task, '设备原始资料', 'reference.png', '设备', 'offline', 'offline')
+    assert json.loads((tmp_path / task / '_quality_policy.json').read_text())['version'] == 16
+    assert planner.call_args.kwargs['require_automatic_visual'] is True
+    assert planner.call_args.kwargs['require_copy_edit'] is False
+    assert planner.call_args.kwargs['allow_visual_advisories'] is True
+    assert planner.call_args.kwargs['repair_unsupported_captions'] is True
+    assert planner.call_args.kwargs['max_retries'] == 0
+    images.assert_not_called()
+    runner._TASKS.pop(task, None)
 
 
 def test_resuming_preserved_plan_does_not_pay_planner_again(tmp_path, monkeypatch):
