@@ -840,7 +840,8 @@ async function main() {
   assert.match(page, /if \(restore\.kind === "restored" && \(!initial\?\.batchId \|\| restore\.batch\.batch_id === initial\.batchId\)\) \{/u);
   assert.match(page, /const notices = \[restoreNotice\(restore\)\];/u, "the page must show the outcome of a replay it does not load");
   assert.match(page, /if \(notices\.some\(Boolean\)\) setNotice\(notices\.filter\(Boolean\)\.join\(" "\)\);/u);
-  assert.match(page, /\}, \[dirty, busy, running, submitting, draftFingerprint\]\);/u, "the harness models the effect re-running when busy flips");
+  assert.match(page, /\}, \[dirty, busy, restoring, running, submitting, draftFingerprint\]\);/u, "the harness models the effect re-running when busy flips");
+  assert.match(page, /if \(!dirty \|\| busy \|\| restoring \|\| running \|\| submitting\) return;/u, "autosave waits for draft recovery before writing");
   assert.match(page, /await draftQueue\.flush\(\);\s*await callBatch\("archive", \{ batch_id: batch\.batch_id \}\);\s*draftOwner\.current \+= 1; draftQueue\.cancelPending\(\);/u,
     "archiving must let a waiting edit land first and ignore later responses for the old form");
   assert.match(page, /const \[draftSlot\] = useState\(\(\) => createPendingDraftSlot\(localStorage\)\)/u);
