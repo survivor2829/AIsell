@@ -107,7 +107,7 @@ export function OfficialMaterialsPage({ onUseMaterial, preference, appearance, o
   const results = search?.items || [];
   return <section className="page official-materials-page" style={appearanceStyle(appearance, true)}>
     <header className="official-materials-head">
-      <div><h1>物保素材库</h1><p>我们为你准备的行业图片与视频。自己的素材请在线索视频混剪中管理。</p></div>
+      <div><h1>物保素材库</h1><p>做视频缺画面？从行业图片与视频中选用。您自己的素材请在线索视频混剪中管理。</p></div>
       <div className="official-materials-head-actions">
         <button type="button" className="secondary-button" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials", { detail: { category: "materials" } }))}><PlayCircle size={18} />看操作演示</button>
         <button type="button" className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button>
@@ -122,7 +122,7 @@ export function OfficialMaterialsPage({ onUseMaterial, preference, appearance, o
         <p>想找什么画面？告诉我场景或设备名称。</p>
         <p className="materials-assistant-hint" id="materials-search-scope">{catalog?.searchEnabled ? "先查官方素材，再查公开网页；网页结果仅供参考。" : "当前只查官方素材，联网查找尚未开放。"}</p>
         <form onSubmit={(event) => { event.preventDefault(); void startSearch(); }}><label className="sr-only" htmlFor="materials-prompt">描述想找的素材</label><input ref={promptInput} id="materials-prompt" aria-describedby="materials-search-scope" value={prompt} maxLength={300} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：工厂里的清洁机器人" /><button className="primary-button" disabled={!prompt.trim() || busySearch}><Search size={16} />{busySearch ? "正在查找" : searchedPrompt ? "继续查找" : "找素材"}</button>{busySearch && <button type="button" className="secondary-button" onClick={() => void cancelSearch()}>停止查找</button>}</form>
-        {searchedPrompt && <p className="materials-search-query">你的需求：{searchedPrompt}</p>}
+        {searchedPrompt && <p className="materials-search-query">您的需求：{searchedPrompt}</p>}
         {search && <p role="status">{search.message || (busySearch ? "正在寻找相关素材…" : search.status === "completed" ? "查找完成" : "查找已结束")}</p>}
       </div>
     </div>

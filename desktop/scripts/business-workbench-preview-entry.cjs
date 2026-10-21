@@ -44,6 +44,19 @@ else {
     const capture = async name => { await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'); fs.writeFileSync(path.join(directory, name), (await window.webContents.capturePage()).toPNG()); };
     const waitFor = async script => { for (let count = 0; count < 100; count++) { if (await evaluate(script)) return; await new Promise(resolve => setTimeout(resolve, 50)); } throw Error('UI condition timed out: ' + script); };
     const click = text => evaluate(`(()=>{const buttons=[...document.querySelectorAll('button')].filter(b=>b.textContent.trim()===${JSON.stringify(text)});if(buttons.length!==1)throw Error('Button not unique');buttons[0].click();})()`);
+    await waitFor("document.querySelector('.business-module-nav')!==null");
+    assert.equal(await evaluate("document.querySelectorAll('.business-module-nav > button').length"), 3);
+    await capture('business-overview.png');
+    for (const [label, name] of [['企微助手', 'wecom'], ['GEO推广', 'geo']]) {
+      await evaluate(`document.querySelector('[aria-label="打开${label}"]').click()`);
+      await waitFor("document.querySelector('.business-module-plan')!==null");
+      assert.equal(await evaluate("document.querySelector('.business-module-plan').textContent.includes('待开放')"), true);
+      assert.equal(await evaluate("document.querySelector('.business-module-plan input,.business-module-plan form')===null"), true);
+      await capture(`business-${name}-planned.png`);
+      await click('返回精准获客');
+      await waitFor("document.querySelector('.business-module-nav')!==null");
+    }
+    await evaluate("document.querySelector('[aria-label=\"打开地图获客\"]').click()");
     await waitFor("document.querySelector('.map-toolbar')!==null");
     await waitFor("document.querySelector('.map-company')!==null");
     const saved = await evaluate("window.xiaoxiMapAcquisition.invoke('status')");
@@ -64,7 +77,10 @@ else {
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
     await capture('map-compact.png');
-    fs.writeFileSync(path.join(directory, 'acceptance.json'), JSON.stringify({ passed: true, network: 'blocked', checks: ['real IPC persistence', 'map paid generation gate closed', 'favorite preserved', 'map default range empty', '1024px no horizontal overflow'], runtime: process.versions.electron }, null, 2));
+    await click('返回精准获客');
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+    await capture('business-overview-compact.png');
+    fs.writeFileSync(path.join(directory, 'acceptance.json'), JSON.stringify({ passed: true, network: 'blocked', checks: ['three acquisition framework entries', 'wecom and GEO remain planned only', 'return to acquisition overview', 'real IPC persistence', 'map paid generation gate closed', 'favorite preserved', 'map default range empty', '1024px no horizontal overflow'], runtime: process.versions.electron }, null, 2));
     await registration.dispose();
     app.exit(0);
   }).catch(error => { console.error(error); app.exit(1); });

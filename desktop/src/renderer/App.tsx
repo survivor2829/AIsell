@@ -1,7 +1,6 @@
 import {
   BarChart3,
   Bot,
-  MapPin,
   ChevronDown,
   ChevronRight,
   CircleHelp,
@@ -40,7 +39,7 @@ import { RoleAppearancePanel } from "./RoleAppearancePanel";
 import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, portraitAsset, useRolePreferences, type AgentRoleKey, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { OfficialMaterialsPage } from "./OfficialMaterialsPage";
-import { BusinessAssistantPage, isBusinessModule, type BusinessModule } from "./BusinessAssistantPage";
+import { BUSINESS_MODULES, BusinessAssistantPage, isBusinessModule, type BusinessModule } from "./BusinessAssistantPage";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
@@ -419,7 +418,7 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroupByRole: Record<GroupKey, NavGroup> = {
-  business: { key: "business", persona: AGENT_ROLE_IDENTITIES.business.name, label: AGENT_ROLE_IDENTITIES.business.responsibility, icon: Bot, children: [{ key: "business-map" as BusinessModule, label: "地图获客", icon: MapPin }] },
+  business: { key: "business", persona: AGENT_ROLE_IDENTITIES.business.name, label: AGENT_ROLE_IDENTITIES.business.responsibility, icon: Bot, children: Object.entries(BUSINESS_MODULES).map(([key, item]) => ({ key: key as BusinessModule, label: item.label, icon: item.icon })) },
   production: { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
   agent: { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
   operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren }
@@ -639,7 +638,7 @@ export default function App() {
       return;
     }
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
-    setActive(groupKey === "operations" ? "product-detail" : groupKey === "business" ? "business-map" : groupKey);
+    setActive(groupKey === "operations" ? "product-detail" : groupKey);
   };
 
   const selectRole = (role: AgentRoleKey) => {
@@ -851,7 +850,7 @@ export default function App() {
                           onClick={() => selectChild(group.key, item.key)}
                         >
                            <span className="sub-agent-avatar" aria-hidden="true"><ChildIcon size={17} strokeWidth={2.5} /></span>
-                           <span className="sub-nav-label"><strong>{item.label}</strong>{!moduleIsAvailable(item.key) && <span className="nav-stage-badge">下一阶段</span>}</span>
+                           <span className="sub-nav-label"><strong>{item.label}</strong>{isBusinessModule(item.key) && !BUSINESS_MODULES[item.key].available ? <span className="nav-stage-badge">待开放</span> : !moduleIsAvailable(item.key) && <span className="nav-stage-badge">下一阶段</span>}</span>
                         </button>
                       );
                     })}
@@ -906,7 +905,7 @@ export default function App() {
         <div className="content-card" ref={contentScrollRef}>
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
-          {activeGroup?.key === "business" && <BusinessAssistantPage appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} />}
+          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} onReturnHome={() => setActive("business")} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}

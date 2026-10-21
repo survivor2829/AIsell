@@ -8,6 +8,20 @@ const { resolveSystemTar } = require("./system-tar.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const productBrand = require("../product-brand.json");
+const detailExamples = require("../src/shared/product-detail-examples.json");
+const exampleIds = detailExamples.examples.map(example => example.id);
+assert.equal(new Set(exampleIds).size, exampleIds.length, "detail examples must have unique identities");
+assert.ok(detailExamples.examples.filter(example => example.category === "equipment").length >= 6,
+  "equipment examples must retain the original three and include the supplied three");
+for (const example of detailExamples.examples) {
+  assert.ok(detailExamples.categories.some(category => category.id === example.category), "each example needs a known category");
+  for (const name of [example.image, example.thumbnail]) {
+    assert.match(name, /^[a-z0-9-]+\.(?:png|jpg)$/u, "example paths must stay in the bundled media directory");
+    assert.ok(fs.statSync(path.join(desktopDir, "public/product-detail-examples", name)).isFile(), "catalog media must exist");
+  }
+  assert.ok(fs.statSync(path.join(desktopDir, "public/product-detail-examples", example.thumbnail)).size < 100_000,
+    "gallery cards must use lightweight thumbnails");
+}
 const {
   runTransactionalRelease,
   scanRelease,

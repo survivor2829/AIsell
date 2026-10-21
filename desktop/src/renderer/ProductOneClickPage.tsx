@@ -1360,7 +1360,7 @@ export function ProductOneClickPage({
       <header className="product-head">
         <div>
           <h1>一键成片</h1>
-          <p>先解析素材，再用少量问题生成脚本；确认后才进入带字幕、配音和音乐的成片。</p>
+          <p>把产品素材做成带讲解、字幕和配乐的视频，方便发给客户。</p>
         </div>
         <div className="product-head-actions">
           {onBackToStudio && <button className="product-legacy-link" onClick={onBackToStudio}>返回创作中心</button>}
@@ -1485,7 +1485,7 @@ export function ProductOneClickPage({
           <section className="product-step">
             <div className="product-step-title">
               <b>脚本</b>
-              <div><h2>先解析，再引导填写</h2><p>你只需填写标题和最多 5 项信息；产品参数、效果与画面事实仍以素材为准。</p></div>
+              <div><h2>补充客户需要了解的信息</h2><p>填写标题和最多 5 项信息，把产品介绍补充清楚；产品参数、效果与画面事实仍以素材为准。</p></div>
             </div>
             {!guidedSession && (
               <div className="product-guided-start">
@@ -1592,7 +1592,7 @@ export function ProductOneClickPage({
                   </label>
                 </div>
                 <div className="product-submit">
-                  <p className="product-generate-note">第 2 步：AI 会把你的填写内容和素材事实合成脚本。填写的企业与产品信息按你的确认写入；画面效果不凭空补造。</p>
+                  <p className="product-generate-note">第 2 步：AI 会把您填写的内容和素材事实整理成讲解稿。填写的企业与产品信息按您的确认写入；画面效果不凭空补造。</p>
                   <button
                     type="button"
                     data-xiaoxi-auto-mix-script

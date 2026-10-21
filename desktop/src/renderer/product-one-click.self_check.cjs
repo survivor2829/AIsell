@@ -107,7 +107,7 @@ assert.match(page, /canContinueFromIssue \? "点击“继续生成成片”[\s\S
 assert.match(page, /const planCanBeRevised = Boolean\([\s\S]+!canContinueFromIssue/u, "素材或文案问题必须允许修改后重新生成");
 assert.match(page, /const formLocked = planRunning \|\| planRequiresResolution \|\| guidedRunning/u, "当前任务未解决时不得允许编辑不会生效的输入");
 assert.match(page, /planProgressVisible && <progress/u, "失败和待处理状态不得伪装成 100% 完成进度");
-assert.match(page, /先解析素材，再用少量问题生成脚本/u, "主界面必须用一句话说明最短流程");
+assert.match(page, /把产品素材做成带讲解、字幕和配乐的视频，方便发给客户。/u, "主界面必须用客户语言说明产出");
 assert.doesNotMatch(page, /<aside className="product-sidebar">/u, "默认主界面不得展示技术规则侧栏");
 assert.doesNotMatch(page, /声音试听与批准/u, "声音资源维护不得成为默认主流程入口");
 assert.doesNotMatch(page, /授权曲库管理/u, "音乐资源维护不得成为默认主流程入口");

@@ -6,6 +6,11 @@ const { createBusinessAi } = require('./business-ai.cjs');
 const { registerBusinessWorkbenchIpc } = require('./business-workbench-ipc.cjs');
 
 async function main() {
+  const framework = fs.readFileSync(path.join(__dirname, '../renderer/BusinessAssistantPage.tsx'), 'utf8');
+  for (const key of ['business-map', 'business-wecom', 'business-geo']) {
+    assert.ok(framework.includes(`"${key}"`), `The acquisition framework exposes ${key}`);
+  }
+  assert.doesNotMatch(framework, /PreciseAcquisitionPanel|GeoWorkbenchPanel/, 'planned entries do not restore retired execution');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'business-workbench-check-'));
   let service;
   try {

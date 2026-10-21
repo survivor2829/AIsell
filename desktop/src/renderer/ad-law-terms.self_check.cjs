@@ -68,7 +68,7 @@ assert.doesNotMatch(page, /adLawSentences/u, "the page only renders the hint");
 // The strict switch: same persistence as video_template, locked once the copy is confirmed.
 assert.match(page, /<input type="checkbox" checked=\{settings\.strict_visual_review === true\} disabled=\{locked \|\| !!batch\?\.script_confirmation\} onChange=\{\(event\) => changeSoundSettings\(\{ \.\.\.settings, strict_visual_review: event\.target\.checked \}\)\} \/>/u);
 assert.match(page, /严格核对画面事实/u);
-assert.match(page, /默认关闭：按你确认的文案直接配音剪辑。/u);
+assert.match(page, /默认关闭：按您确认的文案直接配音剪辑。/u);
 for (const handler of ["async function start(", "async function confirmScript("]) {
   const body = page.slice(page.indexOf(handler), page.indexOf("} finally { setSubmitting(false); }", page.indexOf(handler)));
   assert.match(body, /localStorage\.setItem\("batch-studio-settings", JSON\.stringify\(settings\)\)/u,
