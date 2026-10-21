@@ -127,8 +127,13 @@ if (!process.versions.electron) {
       writeJsonAtomic(second.file.replace(/\.json$/, ".status.json"), { phase: "complete" });
       writeJsonAtomic(second.file.replace(/\.json$/, ".ready.json"), { pid: 2147483646 });
       await helperModule.exports.createUpdateJob(options);
-      assert.equal(fs.existsSync(first.job.helperExecutable), false, "the next attempt reclaims an owned terminal helper only after its process has exited");
+      assert.equal(fs.existsSync(first.job.helperExecutable), true, "the previous helper identity remains within the two-generation cache");
       assert.ok(fs.existsSync(third.job.helperExecutable), "the current runtime identity remains reusable");
+      setUpdater("d");
+      await helperModule.exports.createUpdateJob(options);
+      await load("./update-retention.cjs").retainComponentArtifacts(path.dirname(path.dirname(first.file)));
+      assert.equal(fs.existsSync(first.job.helperExecutable), false, "an unreferenced third-oldest helper is retired through the shared ownership policy");
+      assert.ok(fs.existsSync(third.job.helperExecutable), "an unfinished update pins its helper");
     } finally { global.__xiaoxiComponents = previous; }
   }
 

@@ -19,19 +19,10 @@ function readRegistry(profile) {
 async function withRegistry(profile, action) {
   const file = registryPath(profile); await fs.promises.mkdir(path.dirname(file), { recursive: true });
   const canonical = await fs.promises.realpath(profile);
-  const key = crypto.createHash("sha256").update(process.platform === "win32" ? canonical.toLowerCase() : canonical).digest("hex");
-  // The kernel owns this lock and releases it on process death. No stale file
-  // reclamation can race with another writer or strand an ownerless claim.
-  const server = require("node:net").createServer(socket => socket.destroy());
-  const endpoint = process.platform === "win32"
-    ? { path: "\\\\.\\pipe\\xiaoxi-backup-" + key, exclusive: true }
-    : { host: "127.0.0.1", port: 49152 + parseInt(key.slice(0, 4), 16) % 16384, exclusive: true };
-  await new Promise((resolve, reject) => {
-    server.once("error", error => reject(error.code === "EADDRINUSE" ? Error("update_backup_registry_busy") : error));
-    server.listen(endpoint, resolve);
-  });
+  // Preserve the deployed backup pipe identity while sharing the crash-safe lease.
+  const release = await require("./update-process-lock.cjs").acquireProcessLock(canonical, { namespace: "backup", timeoutMs: 0 });
   try { return await action(readRegistry(profile), value => writeJsonAtomic(file, value)); }
-  finally { await new Promise(resolve => server.close(resolve)); }
+  finally { await release(); }
 }
 async function dataInventory(root, filter = () => true, relative = "") {
   const result = [];

@@ -409,14 +409,18 @@ $script:AutoReplyVisualScale = 1.0
 function New-ChatFrame([int]$width, [int]$height, [byte]$fill) {
   $stride = $width * 4
   $frame = @{ width = $width; height = $height; stride = $stride; bytes = (New-Object byte[] ($stride * $height)) }
+  # Construct one identical BGRA row, then copy it with the CLR. Repeating the
+  # per-pixel PowerShell interpreter loop for every row dominates this fixture.
+  $row = New-Object byte[] $stride
+  for ($x = 0; $x -lt $width; $x++) {
+    $offset = $x * 4
+    $row[$offset] = $fill
+    $row[$offset + 1] = $fill
+    $row[$offset + 2] = $fill
+    $row[$offset + 3] = 255
+  }
   for ($y = 0; $y -lt $height; $y++) {
-    for ($x = 0; $x -lt $width; $x++) {
-      $offset = ($y * $stride) + ($x * 4)
-      $frame.bytes[$offset] = $fill
-      $frame.bytes[$offset + 1] = $fill
-      $frame.bytes[$offset + 2] = $fill
-      $frame.bytes[$offset + 3] = 255
-    }
+    [Array]::Copy($row, 0, $frame.bytes, $y * $stride, $stride)
   }
   return $frame
 }
