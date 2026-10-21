@@ -391,8 +391,12 @@ async function checkFullDownloadRetention(rootDir, config, manifest, sign) {
     fs.writeFileSync(path.join(jobs, "active-job.json"), JSON.stringify({ id: "active-full-install", pid: process.pid }));
     const d = select(4); await controller.check(); assert.equal(controller.status().stage, "ready");
     assert(fs.existsSync(c), "A helper may still own its installer after the new app starts");
-    fs.unlinkSync(path.join(jobs, "active-job.json")); await controller.check();
-    assert(!fs.existsSync(c), "A later normal check retries deferred installer retirement");
+    const exited = require("node:child_process").spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    assert.equal(exited.status, 0);
+    fs.writeFileSync(path.join(jobs, "active-job.json"), JSON.stringify({ id: "crashed-full-install", pid: exited.pid }));
+    await controller.check();
+    assert(!fs.existsSync(c), "An exited helper's crash marker cannot defer owned installer retirement forever");
+    fs.unlinkSync(path.join(jobs, "active-job.json"));
     const e = select(5); let rejectReady = true;
     fs.renameSync = function(source, destination) {
       if (rejectReady && String(destination).includes(".artifact-retention-requests")) {
@@ -419,6 +423,37 @@ async function checkFullDownloadRetention(rootDir, config, manifest, sign) {
     assert(!fs.existsSync(g + ".verified.json"), "A newly created proof may retire independently of its historical installer");
     assert(fs.existsSync(h) && fs.existsSync(historical));
   } finally { fs.renameSync = originalRename; controller.stop(); }
+}
+
+async function checkFullDownloadHandoff(rootDir, config, manifest, sign, bytes) {
+  const { retainArtifacts } = require("../shared/artifact-retention.cjs");
+  const helper = require("./update-helper.cjs"), originalCreate = helper.createUpdateJob;
+  try {
+    for (const mode of ["request", "launch"]) {
+      const directory = path.join(rootDir, `full-download-handoff-${mode}`), cache = path.join(directory, "cloud-maintenance");
+      fs.mkdirSync(cache, { recursive: true });
+      fs.writeFileSync(path.join(cache, "state.json"), JSON.stringify({ pending: sign(manifest), sequence: manifest.sequence }));
+      fs.writeFileSync(path.join(cache, manifest.sha256 + ".exe"), bytes);
+      const create = () => createCloudMaintenance({ rootDir: directory, userData: directory, config, version: "1.0.0",
+        canInstall: () => true, transport: { close() {} } });
+      const controller = create(), old = path.join(cache, "obsolete.exe"), current = path.join(cache, "current.exe");
+      fs.writeFileSync(old, "old"); fs.writeFileSync(current, "current");
+      retainArtifacts(cache, "handoff-fixture", [old], 1, [old]);
+      retainArtifacts(cache, "handoff-fixture", [current], 1, [current], { deferCleanup: "active_update" });
+      let rejectPreparation, launching;
+      helper.createUpdateJob = () => new Promise((_resolve, reject) => { rejectPreparation = reject; });
+      if (mode === "request") controller.setUpdateRequest(true);
+      else {
+        launching = controller.beginInstall();
+        while (!rejectPreparation) await new Promise(resolve => setImmediate(resolve));
+      }
+      controller.stop();
+      assert(fs.existsSync(old), `${mode} handoff must defer physical cleanup during shutdown`);
+      if (launching) { rejectPreparation(Error("cancel fixture preparation")); assert.equal(await launching, false); }
+      create().stop();
+      assert(!fs.existsSync(old), `${mode} handoff deferral must clear on the next normal lifecycle`);
+    }
+  } finally { helper.createUpdateJob = originalCreate; }
 }
 
 async function main() {
@@ -502,6 +537,7 @@ async function main() {
     await checkFailureDiagnostics(dir, config);
     await checkPinnedRequest(dir, config, manifest, sign, bytes);
     await checkFullDownloadRetention(dir, config, manifest, sign);
+    await checkFullDownloadHandoff(dir, config, manifest, sign, bytes);
     console.log("cloud maintenance: announcements, signatures, rollback/conflict, download race, IPC, consent, staged install failures, safe diagnostics and concurrent retry boundaries passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 }

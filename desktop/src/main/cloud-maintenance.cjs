@@ -108,8 +108,19 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     return [installer, installer + ".verified.json", partial, partial + ".verified.json"];
   }
   function fullRetentionOptions() {
-    const busy = updateLaunching || view.updateRequested === true
-      || Boolean(userData && fs.existsSync(path.join(componentPaths.updatePaths(userData).directory, "active-job.json")));
+    let helperActive = false;
+    const activeFile = userData && path.join(componentPaths.updatePaths(userData).directory, "active-job.json");
+    if (activeFile && fs.existsSync(activeFile)) {
+      helperActive = true;
+      const active = readJson(activeFile);
+      // Only a confirmed dead helper releases this pin. Unknown or inaccessible
+      // process identities keep their protection; do not mutate the helper's marker.
+      if (Number.isInteger(active?.pid) && active.pid > 0) {
+        try { process.kill(active.pid, 0); }
+        catch (error) { if (error.code === "ESRCH") helperActive = false; }
+      }
+    }
+    const busy = updateLaunching || view.updateRequested === true || helperActive;
     return { deferCleanup: busy ? "active_update" : false };
   }
   function retainFullDownload(manifest, ready, owned = []) {
