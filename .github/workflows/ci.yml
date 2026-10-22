@@ -136,7 +136,7 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - name: Install locked JavaScript dependencies
-        run: npm ci
+        run: npm ci --fetch-timeout=20000 --fetch-retries=1
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -215,7 +215,7 @@ jobs:
             Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
               param($root)
               Set-Location -LiteralPath (Join-Path $root 'desktop')
-              npm.cmd ci
+              npm.cmd ci --fetch-timeout=20000 --fetch-retries=1
               if ($LASTEXITCODE -ne 0) { throw 'JavaScript dependency installation failed' }
             }
           )
