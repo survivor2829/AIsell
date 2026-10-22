@@ -55,16 +55,21 @@ button:focus-visible {
 
 .sidebar {
   height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 12px 12px 20px 6px;
   background: linear-gradient(188deg, var(--brand-red-bright) 0%, var(--brand-red) 43%, var(--brand-red-dark) 72%, var(--brand-slate) 100%);
   color: #fff;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
 }
 
 .brand {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 12px;
   height: 50px;
@@ -108,11 +113,11 @@ button:focus-visible {
 
 .nav-list {
   min-height: 0;
-  flex: 1 1 auto;
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow-y: auto;
+  overflow: visible;
   padding-right: 2px;
 }
 

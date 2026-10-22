@@ -51,6 +51,11 @@ const checks = [
   "src/main/diagnostics.self_check.cjs",
   "src/main/task-passport.self_check.cjs",
   "src/main/failure-evidence.self_check.cjs",
+  // Start the longest independent state/receipt fixtures first in this pool.
+  // Keep the native-capture barrier above; no assertions or checks are skipped.
+  "src/main/touch-message-sequence.self_check.cjs",
+  "src/main/wechat-workflow.self_check.cjs",
+  "src/main/touch-task-ipc.self_check.cjs",
   "src/main/cloud-maintenance.self_check.cjs",
   "src/main/update-coordinator.self_check.cjs",
   "src/main/official-materials.self_check.cjs",
@@ -72,10 +77,7 @@ const checks = [
   "src/main/moments-campaign-ipc.self_check.cjs",
   "src/main/moments-publish-ipc.self_check.cjs",
   "src/main/moments-daily-automation.self_check.cjs",
-  "src/main/touch-task-ipc.self_check.cjs",
-  "src/main/touch-message-sequence.self_check.cjs",
   "src/main/touch-capture-sweep.self_check.cjs",
-  "src/main/wechat-workflow.self_check.cjs",
   "src/main/development-sidecar-runtime.self_check.cjs",
   "src/main/product-detail-sidecar.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",
