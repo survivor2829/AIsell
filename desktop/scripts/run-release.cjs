@@ -79,7 +79,7 @@ function runRelease(edition = "delivery", environment = process.env, options = {
   catch (error) { space.finish("failed"); throw error; }
 }
 
-function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null, forceChecks = false } = {}, space) {
+function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null, forceChecks = false, requireCi = false } = {}, space) {
   if (componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
   const internalUpgrade = edition === "upgrade";
   if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
@@ -97,6 +97,8 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   const pythonBases = Object.fromEntries(["content-engine", "product-detail"].map(kind => [kind, pythonLibraryReference(baseRoot, baseline, kind)]));
   const inputs = preflightReleaseInputs(edition, environment);
   const { artifactType: remotionArtifactType, remotion } = inputs;
+  const ciProof = require("./release-ci-proof.cjs").verifiedCiRun({ forceChecks });
+  if (requireCi && !ciProof) throw Error("Complete CI provenance is required; no duplicate source checks or build started");
   const sidecarBuildRoot = createBuildRoot();
   space.ownTemporary(sidecarBuildRoot);
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
@@ -107,7 +109,6 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
     XIAOXI_SIDECAR_BUILD_ROOT: sidecarBuildRoot,
     XIAOXI_REMOTION_RUNTIME_ROOT: remotionRuntimeRoot
   };
-  const ciProof = require("./release-ci-proof.cjs").verifiedCiRun({ forceChecks });
   try {
   if (ciProof) console.log(`Reusing source and local E2E checks from Windows CI ${ciProof.runId} (${ciProof.commit}).`);
   else {

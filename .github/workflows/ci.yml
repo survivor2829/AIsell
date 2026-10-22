@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   # Date-boundary fixtures model the application's China-based deployment.
@@ -36,6 +37,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  ci-source-proof:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      reuse: ${{ steps.proof.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      # This gate depends on the event range, not only the final source tree.
+      - name: Check main event failure policy range
+        run: node desktop/scripts/wechat-failure-policy-review.cjs
+        env:
+          XIAOXI_FAILURE_POLICY_BASE: ${{ github.event.before }}
+      - name: Verify unchanged merge tree and required CI
+        id: proof
+        run: node desktop/scripts/ci-source-proof.cjs --reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   real-installer-acceptance:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_acceptance && !inputs.protocol5_acceptance }}
     # GitHub requires write access to read unpublished draft release assets.
@@ -111,12 +137,13 @@ jobs:
           retention-days: 7
 
   source-checks:
+    needs: [ci-source-proof]
     name: source-${{ matrix.group }}
     strategy:
       fail-fast: false
       matrix:
         group: [core, moments-visual, reply-visual, rpa, runtime]
-    if: ${{ !inputs.install_acceptance && !inputs.protocol5_acceptance }}
+    if: ${{ always() && !inputs.install_acceptance && !inputs.protocol5_acceptance && needs.ci-source-proof.result != 'failure' && needs.ci-source-proof.result != 'cancelled' && needs.ci-source-proof.outputs.reuse != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -166,10 +193,21 @@ jobs:
       - name: Build delivery renderer
         if: matrix.group == 'core'
         run: npm run build:delivery
+      - name: Record actual PR merge checkout
+        if: matrix.group == 'core' && github.event_name == 'pull_request'
+        run: node scripts/ci-source-proof.cjs --write
+      - name: Preserve source verification identity
+        if: matrix.group == 'core' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-ci-proof-${{ github.run_attempt }}
+          path: desktop/.build/ci-source-proof.json
+          if-no-files-found: error
+          retention-days: 7
 
   source-and-renderer:
     if: ${{ always() && !inputs.install_acceptance && !inputs.protocol5_acceptance }}
-    needs: [source-checks]
+    needs: [ci-source-proof, source-checks]
     runs-on: windows-latest
     timeout-minutes: 2
     steps:
@@ -177,10 +215,18 @@ jobs:
         shell: pwsh
         env:
           SOURCE_RESULT: ${{ needs.source-checks.result }}
-        run: if ($env:SOURCE_RESULT -ne 'success') { throw 'A required source group failed, was skipped or cancelled' }
+          PROOF_RESULT: ${{ needs.ci-source-proof.result }}
+          REUSED: ${{ needs.ci-source-proof.outputs.reuse }}
+        run: |
+          if ($env:REUSED -eq 'true') {
+            if ($env:PROOF_RESULT -ne 'success' -or $env:SOURCE_RESULT -ne 'skipped') { throw 'Invalid source reuse chain' }
+          } elseif ($env:SOURCE_RESULT -ne 'success') {
+            throw 'A required source group failed, was skipped or cancelled'
+          }
 
   service-and-content:
-    if: ${{ !inputs.install_acceptance && !inputs.protocol5_acceptance }}
+    needs: [ci-source-proof]
+    if: ${{ always() && !inputs.install_acceptance && !inputs.protocol5_acceptance && needs.ci-source-proof.result != 'failure' && needs.ci-source-proof.result != 'cancelled' && needs.ci-source-proof.outputs.reuse != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:

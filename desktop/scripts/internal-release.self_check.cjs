@@ -39,6 +39,8 @@ async function main() {
   assert.equal(parseBuildArgs(["config.json", "upgrade"]).componentsOnly, false);
   assert.equal(parseBuildArgs(["--base", "../accepted"]).baseRoot, "../accepted");
   assert.equal(parseBuildArgs(["--force-checks"]).forceChecks, true);
+  assert.equal(parseBuildArgs(["--require-ci"]).requireCi, true);
+  assert.throws(() => parseBuildArgs(["--require-ci", "--force-checks"]));
   const { verifiedCiRun } = require("./release-ci-proof.cjs");
   const commit = "a".repeat(40);
   const calls = [];
@@ -102,6 +104,71 @@ async function main() {
     }
     return result;
   } }), null, "Old CI without the local E2E cannot authorize skipping it");
+
+  // The former implementation rejects this valid chain (main jobs skipped),
+  // while accepting a summary alone would silently lose all required checks.
+  function reusedFixture(change = () => {}) {
+    const head = "b".repeat(40), tested = "c".repeat(40), tree = "d".repeat(40), base = "e".repeat(40);
+    const repository = "owner/repo";
+    const proof = { schema: 1, repository, runId: 84, attempt: 1, pullRequest: 7, head, base, commit: tested, tree };
+    const sourceJobs = JSON.parse(groupedCi("gh", ["run", "view"]).stdout).jobs;
+    const data = {
+      [`git/commits/${commit}`]: { sha: commit, tree: { sha: tree }, parents: [{ sha: base }] },
+      [`git/commits/${tested}`]: { sha: tested, tree: { sha: tree }, parents: [{ sha: base }, { sha: head }] },
+      [`commits/${commit}/pulls?per_page=100`]: [{ number: 7, merged_at: "2026-10-21T00:00:00Z", merge_commit_sha: commit,
+        base: { ref: "main", repo: { full_name: repository } }, head: { sha: head, repo: { full_name: repository } } }],
+      "actions/runs/84": { id: 84, repository: { full_name: repository }, head_repository: { full_name: repository },
+        head_sha: head, event: "pull_request", path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", run_attempt: 1 },
+      "actions/runs/84/jobs?filter=latest&per_page=100": { total_count: sourceJobs.length, jobs: sourceJobs },
+      "actions/runs/84/artifacts?per_page=100": { total_count: 1, artifacts: [{ name: "source-ci-proof-1", expired: false }] }
+    };
+    change({ data, proof, sourceJobs, commit, tested });
+    return (command, args) => {
+      if (command === "gh" && args[0] === "repo") return { status: 0, stdout: JSON.stringify({ nameWithOwner: repository }) };
+      if (command === "gh" && args[0] === "api") {
+        const value = data[args[1].replace(`repos/${repository}/`, "")];
+        return { status: value ? 0 : 1, stdout: JSON.stringify(value) };
+      }
+      if (command === "gh" && args[1] === "download") {
+        fs.writeFileSync(path.join(args[args.indexOf("--dir") + 1], "ci-source-proof.json"), JSON.stringify(proof));
+        return { status: 0, stdout: "" };
+      }
+      if (command === "gh" && args[1] === "list" && args.includes("--repo")) return { status: 0,
+        stdout: JSON.stringify([{ databaseId: 84, headSha: head, event: "pull_request", conclusion: "success" }]) };
+      const result = groupedCi(command, args);
+      if (command === "gh" && args[1] === "view") {
+        const run = JSON.parse(result.stdout);
+        for (const job of run.jobs) if (job.name !== "source-and-renderer") job.conclusion = "skipped";
+        run.jobs.push({ name: "ci-source-proof", conclusion: "success", steps: [
+          { name: "Verify unchanged merge tree and required CI", conclusion: "success" }] });
+        result.stdout = JSON.stringify(run);
+      }
+      return result;
+    };
+  }
+  assert.equal(verifiedCiRun({ execute: reusedFixture() })?.sourceRunId, 84,
+    "An independently verified identical synthetic merge tree can replace duplicate main checks");
+  for (const mutate of [
+    ({ data, commit }) => { data[`git/commits/${commit}`].tree.sha = "f".repeat(40); },
+    ({ data, tested }) => { data[`git/commits/${tested}`].parents.pop(); },
+    ({ proof }) => { proof.base = "f".repeat(40); },
+    ({ proof }) => { proof.attempt = 2; },
+    ({ sourceJobs }) => { sourceJobs.at(-1).conclusion = "skipped"; },
+    ({ sourceJobs }) => { sourceJobs.find(job => job.name === "service-and-content").steps = []; },
+    ({ data }) => { data["actions/runs/84/artifacts?per_page=100"].artifacts[0].expired = true; },
+    ({ data }) => { data["actions/runs/84"].head_repository.full_name = "foreign/repo"; }
+  ]) assert.equal(verifiedCiRun({ execute: reusedFixture(mutate) }), null,
+    "A changed tree/range, unproven checkout, incomplete run or expired/foreign evidence must fail closed");
+
+  const { waitForCi } = require("./internal-release-pipeline.cjs");
+  let polls = 0, clock = 0;
+  const waiting = { execute: () => ({ status: 0, stdout: JSON.stringify([{ headSha: commit, event: "push", databaseId: 42,
+    status: ++polls === 1 ? "in_progress" : "completed", conclusion: "success" }]) }), now: () => clock,
+    sleep: async () => { clock += 10000; } };
+  assert.equal(await waitForCi(commit, waiting), 42);
+  assert.equal(polls, 2, "wait for the existing run instead of starting duplicate local checks");
+  await assert.rejects(waitForCi(commit, { execute: () => ({ status: 0, stdout: JSON.stringify([
+    { headSha: commit, event: "push", status: "completed", conclusion: "failure" }]) }) }), /did not succeed/);
   assert.throws(() => parseBuildArgs(["--components", "--full"]));
   assert.throws(() => parseBuildArgs(["--base"]));
   assert.throws(() => parseBuildArgs(["--unknown"]));

@@ -24,13 +24,15 @@
 
 在 `desktop/` 执行。首次配置构建机时，参考 `build/internal-release-config.example.json`，将实际已有 Python、FFmpeg、Chromium 和对应来源记录的路径保存到 `.build/internal-release-config.json`。相对路径相对于配置文件所在目录；不要把密钥放进此文件。环境准备与安装依赖不是每次更新的重复步骤。
 
-**开发发布提速（2026-10-21）。** 干净HEAD对应的push或手动Windows CI两个源码作业及`Product detail local E2E`步骤均成功时，发布复用该run的源码/E2E证据，并将run id写入构建与空间记录；PR合成合并提交不作为同一发布提交。旧CI缺少E2E、提交不一致、查询失败或工作区不干净时不能跳过；`release:internal -- --force-checks`强制本地检查。运行时清洁门禁、包验收、隐私扫描、发布前归档摘要和读回验签继续执行。
+**开发发布提速（2026-10-21）。** 干净HEAD对应的push或手动Windows CI全部必需组及`Product detail local E2E`成功时，发布复用源码/E2E证据。主线push另可复用同仓已合并PR的完整CI：原run必须整体成功，证明文件绑定run/attempt、PR head/base、实际受检的合成合并提交；GitHub不可变提交对象必须证明受检全树与最终main全树完全相同，且受检base等于main父提交。主线事件范围的失败原因检查仍执行。原run缺组、跳过、取消、证据过期、内容/基线失配或查询失败均不复用，主线正常跑完整检查；发布端再次独立核对原始证据链，不凭主线汇总成功放行。构建与空间记录保存主线和原始run id、受检提交及tree。`release:internal -- --force-checks`强制本地检查。运行时清洁门禁、包验收、隐私扫描、发布前归档摘要和读回验签继续执行。
 
 Python构建指纹按解释器/DLL、包版本、requirements和显式运行时配方版本计算，同一次发布共享环境探测；缓存实现和回执脚本变化不会单独重打运行时。不可变运行时缓存、暂存目录与候选程序同盘优先硬链接；底座稳定化写入先独立替换目录项，真实进程门禁前后重新读取摘要。仅在显式不可变构建范围内复用带文件身份和时间戳的摘要清单；归档流式写盘，压缩媒体使用STORE。上述复用不提供检测保持元数据不变的任意外部篡改的保证。CI纯文档提交跳过源码作业；自检进程数默认不超过6，独占资源检查串行。
 
 ```powershell
 npm.cmd run release:internal
 ```
+
+已经合入干净main、CI尚未结束时，可用 `npm.cmd run release:internal:prepare` 自动等待现有CI并衔接构建，避免另起一套本地全量检查。该入口要求完整CI证据，缺失或失败就停止，不自动重试发布；原 `release:internal` 的本地检查后备路径保留，`--require-ci` 可显式禁用该后备路径。准备入口在候选就绪后结束，完成本机验收后才执行原 `publish:internal`，不自动发布。单调时钟阶段记录在 `.build/internal-release-pipeline-<version>.json`，包含CI等待及构建；上传、本机更新和验收继续分别记账，不能把候选就绪写成本机已验收。
 
 默认产物为 `release/components/test/unsigned-component-release.json`、六个按哈希命名的组件归档及已验证的候选组合目录；本机构建记录位于 `desktop/.build/internal-release-test-components.json`，其中 `candidateRoot` 可用于本机验收。已接受的增量底座另记于 `desktop/.build/internal-release-accepted-base.json`；记录用于追溯，不替代用户功能验收。已有完整安装器保持不变。
 
@@ -109,4 +111,4 @@ CI/CD 不会自动证明所有微信场景、任意素材的视频质量或跨�
 - 日常内部更新统一优先走组件增量：`npm.cmd run release:internal` 构建增量候选，验收后 `npm.cmd run publish:internal` 发布；原 `release:components`／`publish:components` 入口继续兼容。首次安装、已核实的底座／数据模式不兼容或明确要求离线安装器时才用 `--full`，不能因改动多、普通构建失败或习惯操作就改成整包。先核对基础文件差异；相同内容的压缩包排列变化不能当作依赖升级。增量仍需同提交检查、组合目录与实际切换验收，详细命令和例外见 [内部更新标准](docs/internal-release.md)。
 - 每次发布须在 `desktop/src/shared/customer-release-notes.json` 为该版本写明客户可感知的功能新增、问题修复及未验证项，不用“修复与体验改进”等空泛概括。整包与增量发布共用同一份内容，随安装包内置，确保离线或手动安装后也能查看；已发布版本不原地替换程序内容，新修复递增版本并补新公告。发布前核对公告、版本、构建及验证证据一致，真实微信待测项不能写成已解决。
 
-CI源码检查使用 `self-check-groups.cjs` 的统一清单，分为 core、moments-visual、reply-visual、rpa、runtime 五组，在独立标准 Windows runner 执行；组内资源独占保持不变，`source-and-renderer` 汇总结果。发布复用必须同时核实全部五组、汇总、service-and-content及其中本地详情E2E在同一提交成功；缺组、跳过、取消或查询失败均回到本地检查。五分钟目标包含依赖准备，以实际完整运行记录验收。
+CI源码检查使用 `self-check-groups.cjs` 的统一清单，分为 core、moments-visual、reply-visual、rpa、runtime 五组，在独立标准 Windows runner 执行；组内资源独占保持不变，`source-and-renderer` 汇总结果。PR完整检查及同树主线轻量核验是两种明确状态：后者只在原PR全部五组、汇总、service-and-content及本地详情E2E成功且上述证据链成立时，才允许主线五组/服务显示skipped；普通缺组或跳过仍拒绝复用。PR失败/中断、未合并、外仓、合并时基线/全树变化、artifact缺失或过期均执行主线完整检查。手动工作流保持完整检查。五分钟目标包含依赖准备；端到端另外统计从最终PR CI启动至本机更新验收完成的历时，重试、排队和衔接等待单列，不只报成功单轮耗时。
