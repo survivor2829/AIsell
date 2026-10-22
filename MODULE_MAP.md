@@ -7,6 +7,7 @@
 | 区域 | 职责 | 不应承担 |
 |---|---|---|
 | `desktop/src/renderer/` | React 页面、用户输入、状态展示和 IPC 调用 | 直接访问微信、文件系统、明文 Key 或执行业务发送 |
+| `desktop/src/renderer/App.tsx`、`styles.css` | 左侧整栏拥有导航滚动，内部菜单保留自然高度；右侧content-card独立滚动 | 只让菜单中部接收滚轮；验收后留下与原生窗口不一致的模拟视口 |
 | `desktop/src/main/` | Electron 生命周期、IPC、业务编排、DeepSeek、运行协调和数据目录注入 | 在页面组件中复制 RPA 逻辑；把单功能状态写进共享适配配置 |
 | `desktop/src/main/map-acquisition*`、`acquisition-workbench-scope.cjs` | 高德独立会话、串行采集、任务名单及渠道商账号隔离；地图数据保存在账号目录 | 推断采购需求、自动联系客户、混入精准/GEO或微信发送状态 |
 | `desktop/src/main/keyword-acquisition*`、`douyin-browser-adapter.cjs` | 独立关键词任务、线索、会话及发送账本；官方网页观察和受约束私信适配 | 依赖内容引擎启动；猜测账号、私信归属或发送成功；自动重发未知结果 |
@@ -18,7 +19,7 @@
 | `desktop/sidecars/content-engine/` | 原素材原地索引、媒体探测、素材版权/使用权状态、内容任务和成片登记 | 复制或删除用户原片；调用微信自动化或绕过 Electron 主进程 |
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
 | `.github/workflows/ci.yml`、`desktop/scripts/build-internal-release.cjs`、`publish-cloud-release.cjs` | 提交后的自动检查、受控 Windows 完整候选包构建与内部测试频道发布；步骤见 `docs/internal-release.md` | 将 CI 通过当作用户验收；上传签名私钥；把内部制品发布到正式频道 |
-| `desktop/scripts/self-check-groups.cjs`、`run-self-checks.cjs`、`release-ci-proof.cjs` | 五组源码检查的统一清单与资源独占、汇总门禁和同提交完整 CI 复用 | 缺组、跳过或取消时跳过本地检查 |
+| `desktop/scripts/self-check-groups.cjs`、`run-self-checks.cjs`、`release-ci-proof.cjs` | 五组源码检查的统一清单与资源独占、核心组同批次长检查先启动、汇总门禁和同提交完整 CI 复用 | 缺组、跳过或取消时跳过本地检查 |
 | `desktop/src/main/update-exit-maintenance.cjs`、`update-process-lock.cjs` | 后台准备同身份助手、独立复制Electron映射文件、退出就绪握手、父进程创建时间核对、与更新交接互斥后复用归属保留器 | 杀进程；删除未登记业务资料；把延期写成已完成 |
 | `desktop/src/shared/role-appearance.json`、`desktop/src/renderer/role-appearance.ts`、`desktop/src/main/role-preferences.cjs` | 角色与形象共享目录；名字与形象校验、主进程原子持久化及相关工作区配色 | 用页面本地状态冒充保存成功；允许任意文件或远程地址作为形象 |
 | `desktop/src/renderer/BusinessAssistantPage.tsx` | “精准获客”三入口共用目录、地图工作台与企微/GEO待开放介绍 | 将规划框架冒充已接通能力，自动联系客户 |
