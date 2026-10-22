@@ -20,7 +20,7 @@ export function ProductDetailExamples({ requested, onOpened }: { requested?: boo
   return <>
     <section className="detail-examples" aria-label="真实生成范例">
       <header className="detail-examples-head"><div><strong>看看生成效果</strong><span>点击范例，放大查看完整详情图</span></div><label>示例分类<select value={category} onChange={event => setCategory(event.target.value)}>{categories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></header>
-      <div className="detail-example-grid">{examples.map(example => <button type="button" key={example.id} onClick={() => setSelected(example)}>
+      <div className="detail-example-grid" style={{ gridTemplateRows: `repeat(${Math.max(1, Math.ceil(examples.length / 2))}, auto)` }}>{examples.map(example => <button type="button" key={example.id} onClick={() => setSelected(example)}>
         <img src={asset(example.thumbnail)} alt="" loading="lazy" />
         <span>{example.name}<small><ZoomIn size={13} />查看完整详情图</small></span>
       </button>)}</div>
