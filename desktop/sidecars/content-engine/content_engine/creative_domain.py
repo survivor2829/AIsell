@@ -388,7 +388,7 @@ class CreativeDomain:
             cloud.usage_data_dir = self.data_dir
         self.renderer = renderer
         self.cover_client = cover_client
-        self._visual_capability_snapshot = self._unavailable_visual_capability()
+        self._visual_capability_snapshot = None
         self._sync_configured_voice_persona()
         policy = json.loads((Path(__file__).parent / "assets" / "music-catalog-policy.v1.json").read_text(encoding="utf-8"))
         self._retired_music_fingerprints = tuple(policy["retired_fingerprints"])
@@ -6609,6 +6609,8 @@ class CreativeDomain:
         }
 
     def _visual_comparison_capability_snapshot(self):
+        if self._visual_capability_snapshot is None:
+            self._visual_comparison_capability()
         return dict(self._visual_capability_snapshot)
 
     def _validate_comparison_recipe(self, recipe):

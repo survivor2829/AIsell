@@ -259,6 +259,12 @@ jobs:
       - name: Production summaries
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_production_summary.py'
+      - name: Local editor startup and render guards
+        working-directory: desktop/sidecars/content-engine
+        run: >-
+          python -m unittest
+          tests.test_creative_workbench.CreativeWorkbenchTests.test_metadata_ready_defers_render_probe_until_first_comparison_read
+          tests.test_creative_workbench.CreativeWorkbenchTests.test_visual_comparison_preflight_is_local_exact_and_fail_closed
       - name: Video captions and presentation
         working-directory: desktop/sidecars/content-engine
         run: python -m unittest discover -s tests -p 'test_video_presentation.py'

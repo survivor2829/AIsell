@@ -227,26 +227,29 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         if (!cancelled) setResources(previous => ({ ...previous, [name]: error.message || "读取失败，请重新进入页面重试" }));
       });
     }
-    resource("素材", refreshAssets);
-    resource("制作记录", () => refreshBatches());
-    resource("素材集", async () => {
-      const result = await callBatch<{ collections: Collection[] }>("collections");
-      if (!cancelled) setCollections(result.collections);
-    });
-    const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ ok?: boolean; error?: string; data?: { items: VoiceItem[] } }>; listBrandProfiles: () => Promise<{ ok?: boolean; error?: string; data?: { items: typeof brands } }> } })?.creative;
-    resource("声音", async () => {
-      const result = await creative?.listAutoMixVoicePersonas();
-      if (!result?.ok || !result.data) throw new Error(result?.error || "声音目录暂时不可用");
-      if (cancelled) return;
-      const approved = applyVoices(result.data.items || []);
-      // A late catalog response must never replace a task or an explicit selection.
-      if (active() && !selectedId.current) setSettings(previous => previous.voice_persona_id ? previous : { ...previous, voice_persona_id: approved[0]?.voicePersonaId });
-    });
-    resource("品牌", async () => {
-      const result = await creative?.listBrandProfiles();
-      if (!result?.ok || !result.data) throw new Error(result?.error || "品牌目录暂时不可用");
-      if (!cancelled) setBrands(result.data.items || []);
-    });
+    function readResources() {
+      // Draft restoration owns the serialized worker first; catalogs follow without locking the editor.
+      resource("素材", refreshAssets);
+      resource("制作记录", () => refreshBatches());
+      resource("素材集", async () => {
+        const result = await callBatch<{ collections: Collection[] }>("collections");
+        if (!cancelled) setCollections(result.collections);
+      });
+      const creative = (window.xiaoxiContent as unknown as { creative?: { listAutoMixVoicePersonas: () => Promise<{ ok?: boolean; error?: string; data?: { items: VoiceItem[] } }>; listBrandProfiles: () => Promise<{ ok?: boolean; error?: string; data?: { items: typeof brands } }> } })?.creative;
+      resource("声音", async () => {
+        const result = await creative?.listAutoMixVoicePersonas();
+        if (!result?.ok || !result.data) throw new Error(result?.error || "声音目录暂时不可用");
+        if (cancelled) return;
+        const approved = applyVoices(result.data.items || []);
+        // A late catalog response must never replace a task or an explicit selection.
+        if (active() && !selectedId.current) setSettings(previous => previous.voice_persona_id ? previous : { ...previous, voice_persona_id: approved[0]?.voicePersonaId });
+      });
+      resource("品牌", async () => {
+        const result = await creative?.listBrandProfiles();
+        if (!result?.ok || !result.data) throw new Error(result?.error || "品牌目录暂时不可用");
+        if (!cancelled) setBrands(result.data.items || []);
+      });
+    }
     void (async () => {
       // The previous page may still be saving a newly created batch. Recover its ID first.
       await waitForDraftWrites();
@@ -293,7 +296,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       if (initial && mounted.current) onInitialConsumed?.(initial);
     })().catch(error => {
       if (!cancelled && mounted.current) setNotice(error.message || "草稿暂时无法恢复，请从制作记录重新打开。");
-    }).finally(() => { if (!cancelled && mounted.current) setRestoring(false); });
+    }).finally(() => { if (!cancelled && mounted.current) { setRestoring(false); readResources(); } });
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {

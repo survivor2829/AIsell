@@ -340,7 +340,6 @@ def serve_jsonl(
 ) -> None:
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stdout
-    visual_capability = service.creative_domain._visual_comparison_capability()
     _write_json_line(
         output_stream,
         {
@@ -367,18 +366,12 @@ def serve_jsonl(
                 "creative_cloud_analysis": bool(
                     service.creative_analyzer.capability["cloud_configured"]
                 ),
-                "creative_render": bool(
-                    visual_capability["renderer_available"]
-                ),
+                # Metadata readiness must not launch/probe the rendering worker.
+                # Render-dependent operations validate their actual capability.
+                "render_capabilities_deferred": True,
                 "creative_packaging": True,
                 "brand_profiles": True,
                 "creative_cover": bool(service.creative_cover_client.configured),
-                "remotion_packaging_v1": bool(
-                    visual_capability["remotion_available"]
-                ),
-                "visual_comparison_v1": bool(
-                    visual_capability["available"]
-                ),
                 "auto_mix_v2": True,
                 "licensed_music_catalog_v1": True,
                 "voice_preview_cache_only": True,
