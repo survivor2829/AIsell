@@ -863,20 +863,27 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
   };
 
   const downloadVideo = async (item: FinishedVideoItem) => {
+    if (downloadingId) return;
     const api = window.xiaoxiContent;
     if (!api?.finished.download) {
       setNotice("下载功能尚未加载，请重启软件后再试。");
       return;
     }
     setDownloadingId(item.finishedVideoId);
-    const result = await api.finished.download({ finishedVideoId: item.finishedVideoId });
-    setDownloadingId("");
-    if (result.ok && result.data) {
-      if (!result.data.canceled) setNotice(`已保存成片：${result.data.filename || finishedVideoTitle(item)}`);
-      return;
+    setNotice("");
+    try {
+      const result = await api.finished.download({ finishedVideoId: item.finishedVideoId });
+      if (result.ok && result.data) {
+        if (!result.data.canceled) setNotice(`已保存成片：${result.data.filename || finishedVideoTitle(item)}`);
+        return;
+      }
+      setNotice(result.error || "成片没有保存成功，请确认原文件仍然存在。");
+      await refresh({ silent: true });
+    } catch (error) {
+      setNotice((error as Error).message || "成片没有保存成功，请重试。");
+    } finally {
+      setDownloadingId("");
     }
-    setNotice(result.error || "成片没有保存成功，请确认原文件仍然存在。");
-    await refresh({ silent: true });
   };
 
   const ready = status.state === "ready";

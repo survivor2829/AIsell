@@ -923,12 +923,15 @@ class FFmpegCreativeRenderer:
         if str((packaging.get("cover") or {}).get("mode") or "") == "reuse":
             Path(cover_path).touch()
             return
+        preserve_source = (packaging.get("cover") or {}).get("preserve_source")
+        source, seek = (self._cover_source(recipe, resolve_asset_path, fallback=video_path)
+                        if preserve_source else (video_path, 0.5))
         self._render_cover(
-            video_path,
+            source,
             cover_path,
             packaging,
             resolve_asset_path,
-            seek_seconds=0.5,
+            seek_seconds=seek,
         )
 
     def _render_course(self, recipe, output, subtitle, resolve_asset_path):
@@ -2364,7 +2367,7 @@ class FFmpegCreativeRenderer:
             "scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920"
         )
-        if not isinstance(packaging, dict) or not packaging:
+        if not isinstance(packaging, dict) or not packaging or (packaging.get("cover") or {}).get("preserve_source"):
             return base
         brand = packaging.get("brand") or {}
         primary = self._ffmpeg_color(brand.get("primary_color") or "#6D5DFB")
@@ -2405,7 +2408,8 @@ class FFmpegCreativeRenderer:
 
     def _cover_video_args(self, source, packaging, resolve_asset_path=None):
         args = ["-i", str(source)]
-        brand = packaging.get("brand") if isinstance(packaging, dict) else None
+        brand = (packaging.get("brand") if isinstance(packaging, dict)
+                 and not (packaging.get("cover") or {}).get("preserve_source") else None)
         logo_id = str((brand or {}).get("logo_asset_id") or "").strip()
         if logo_id and resolve_asset_path is not None:
             logo = Path(resolve_asset_path(logo_id))

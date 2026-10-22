@@ -1,7 +1,13 @@
 const assert = require('node:assert/strict');
-const { createBailianVideoProvider, videoRequest, taskIdOf, normalizePoll, ttsPayload, ttsAudioUrl } = require('./bailian-video-provider.cjs');
+const { createBailianVideoProvider, videoRequest, directVideoRequest, taskIdOf, normalizePoll, ttsPayload, ttsAudioUrl } = require('./bailian-video-provider.cjs');
 
 async function main() {
+  const direct = directVideoRequest({ imageUrl: 'data:image/png;base64,aW1hZ2U=', prompt: '原产品图直接生成清洁效果。', seconds: 10 });
+  assert.equal(direct.body.model, 'wan3.0-video');
+  assert.deepEqual(direct.body.input.media, [{ type: 'reference_image', url: 'data:image/png;base64,aW1hZ2U=' }]);
+  assert.equal(direct.body.input.img_url, undefined);
+  assert.deepEqual(direct.body.parameters, { resolution: '480P', ratio: '9:16', duration: 10, audio: false, prompt_extend: false, watermark: false });
+  assert.throws(() => directVideoRequest({ imageUrl: 'https://cdn.example.com/product.png', prompt: '演示', seconds: 31 }), { code: 'bailian_duration_invalid' });
   const request = videoRequest({ imageUrl: 'data:image/png;base64,aW1hZ2U=', audioUrl: 'https://cdn.example.com/speech.wav',
     prompt: '按照固定口播音轨自然讲解。', durationSeconds: 15, resolution: '720p', audio: true });
   assert.equal(request.body.input.audio_url, 'https://cdn.example.com/speech.wav');

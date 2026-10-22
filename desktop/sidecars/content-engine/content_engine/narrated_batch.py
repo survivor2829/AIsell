@@ -4755,6 +4755,7 @@ class NarratedBatchDomain:
                                                   transition_points_ms=[s["timeline_start_ms"] for s in timeline["selected_segments"]],
                                                   material_signals=timeline["selected_segments"])}
         state = {"narrated_batch_v1": True, "narrated_batch_id": b["batch_id"],
+                 "narrated_original_frame": True,
                  'narrated_brief_version': b.get('brief_version'),
                  "narrated_reference_captions": (b.get("settings") or {}).get("workflow_version") == 2,
                  "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",

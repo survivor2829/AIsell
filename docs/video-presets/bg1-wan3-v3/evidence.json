@@ -1,0 +1,45 @@
+{
+  "baseline": "BG1 Wan3 direct v3",
+  "userSelectedOn": "2026-10-22",
+  "provider": "阿里云百炼（通过现有供应商网关调用）",
+  "model": "wan3.0-video",
+  "taskId": "d55ff96b-34d0-48c1-942f-472f23ff66a2",
+  "taskStatus": "SUCCEEDED",
+  "operationId": "wan3-trial-8af8ed35-68bd-4683-ada3-45d5e0929e69",
+  "createdAt": "2026-10-22T09:08:12.951Z",
+  "parameters": {
+    "resolution": "480P",
+    "ratio": "9:16",
+    "duration": 10,
+    "audio": false,
+    "prompt_extend": false,
+    "watermark": false
+  },
+  "usage": {
+    "video_count": 1,
+    "duration": 10,
+    "SR": 480,
+    "output_video_duration": 10,
+    "input_video_duration": 0,
+    "fps": 30,
+    "ratio": "9:16"
+  },
+  "priceEstimateAsRecorded": {
+    "activityCny": 2.1,
+    "listCny": 3,
+    "settledCny": null
+  },
+  "billingNote": "历史报价估算，不是最终账单；settledCny=null。未重新联网核价。",
+  "inputImage": {
+    "path": "C:\\Users\\Scott\\Desktop\\企业微信截图_17916078231120.png",
+    "sha256": "41d5bfdb4e33858e4812f2a50eac64a1c2390234269ae85e7aac47a584376b52"
+  },
+  "video": {
+    "path": "desktop\\.build\\video-download-cover-20261022\\wan3-bg1-epoxy-10s-480p-v3.mp4",
+    "sha256": "4c7c09ba018c6ef9397b239ac54c808fada4a6e50a89938ec6a72f73aaf87a39"
+  },
+  "originalConfigSha256": "14efc6747a326552b07b6f2352eef3347d8f0587edde6b6b1be04e4259104b4e",
+  "promptUtf8Sha256": "ef66e52bb68a70d8962e54417990d48af831abb276df050e15136b9f8c9123c3",
+  "acceptance": "用户选定为后续参考基准，不代表所有产品和场景已经验证。",
+  "paidCallsThisArchive": 0
+}

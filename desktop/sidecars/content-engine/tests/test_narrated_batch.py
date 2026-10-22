@@ -148,6 +148,23 @@ class NarratedBatchTests(unittest.TestCase):
         video_id = rendered["candidates"][0]["generated_video_id"]
         recipe = json.loads(self.s.connection.execute("SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)).fetchone()[0])
         actual_duration = sum(s["target_duration_ms"] for s in recipe["visual_segments"])
+        self.assertTrue(recipe["packaging"]["cover"].get("preserve_source"))
+        self.assertFalse(recipe["packaging"]["cover"].get("auto_generate"))
+        self.assertFalse(recipe.get("presentation", {}).get("showTitle", False))
+        self.assertEqual([], recipe["packaging"]["events"])
+        run = self.s.connection.execute("SELECT * FROM auto_mix_runs_v2 WHERE generated_video_id=?", (video_id,)).fetchone()
+        private = json.loads(run["private_state_json"])
+        private["narrated_reference_captions"] = True
+        modern = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), private,
+                                                        persona={"id": run["selected_voice_persona_id"]}, music=None)
+        self.assertFalse(modern["presentation"]["showTitle"])
+        self.assertEqual("reference_narration", modern["caption_presentation"])
+        self.assertEqual(recipe["captions"], modern["captions"])
+        private.pop("narrated_original_frame")
+        legacy = self.s.creative_domain._auto_mix_recipe(run, json.loads(run["public_plan_json"]), private,
+                                                        persona={"id": run["selected_voice_persona_id"]}, music=None)
+        self.assertTrue(legacy["packaging"]["cover"]["auto_generate"])
+        self.assertNotIn("preserve_source", legacy["packaging"]["cover"])
         self.assertEqual(recipe["captions"][-1]["end_ms"], actual_duration)
         self.assertEqual(rendered["candidates"][0]["narration"], "".join(c["text"] for c in recipe["captions"]))
         self.assertLess(actual_duration, sum(shot["target_duration_ms"] for shot in planned["candidates"][0]["shots"]))

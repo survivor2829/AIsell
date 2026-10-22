@@ -314,3 +314,17 @@
 .batch-page .batch-brief-rail .batch-hint { font-size:12px; }.batch-page .batch-step-action>span { font-size:13px; }
 @media(max-width:960px){.batch-page-header{align-items:flex-start;flex-direction:column;gap:16px}.batch-header-actions{max-width:none;justify-content:flex-start}}
 @media(max-width:600px){.batch-library-preview{grid-template-columns:repeat(2,minmax(0,1fr))}.batch-header-actions{gap:7px}.batch-header-actions>button{font-size:12px}}
+
+.batch-results { container-type: inline-size; }
+.batch-result-grid.is-single { grid-template-columns: minmax(0, 1fr); }
+.batch-result-grid.is-single > .batch-result { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); align-items: start; }
+.batch-result-grid.is-single > .batch-result > video { display: block; aspect-ratio: 9 / 16; max-height: none; }
+.batch-result-grid.is-single .batch-result-body { min-width: 0; padding: 24px; }
+.batch-result-grid.is-single .batch-result-body h3 { margin: 0 0 12px; font-size: 20px; }
+.batch-result-grid.is-single .batch-result-body p { font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.batch-result-grid.is-single .batch-result-copy { white-space: pre-wrap; margin-block: 20px; }
+@container (max-width: 680px) {
+  .batch-result-grid.is-single > .batch-result { grid-template-columns: minmax(0, 1fr); }
+  .batch-result-grid.is-single > .batch-result > video { max-width: 300px; }
+  .batch-result-grid.is-single .batch-result-body { padding: 18px; }
+}

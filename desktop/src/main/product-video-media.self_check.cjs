@@ -3,7 +3,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { normalizeAndAssemble, extractAudio, buildCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
+const { normalizeAndAssemble, assemblePreparedVideo, extractAudio, buildCaptions, renderCaptioned, videoEncoderArgs } = require('./product-video-media.cjs');
 
 async function main() {
   assert.throws(() => buildCaptions({ utterances: [{ text: '计划台词不是字幕' }] }), { code: 'product_video_caption_timing_missing' });
@@ -49,6 +49,12 @@ async function main() {
     assert.equal(wavBytes.toString('ascii', 0, 4), 'RIFF');
     await assert.rejects(extractAudio({source:silent,destination:wav,ffmpegPath}));
     assert.deepEqual(await fs.readFile(wav),wavBytes,'failed extraction never replaces a complete cached WAV');
+    for (const [pipelineVersion, width, height] of [[4,480,854],[3,720,1280]]) {
+      const assembled = await assemblePreparedVideo({task:{plan:{pipelineVersion}},shots:[{path:silent,seconds:.5},{path:silent,seconds:.5}],audioPath:wav,
+        destination:path.join(temp,`prepared-${pipelineVersion}.mp4`),ffmpegPath});
+      assert.equal(assembled.width,width); assert.equal(assembled.height,height);
+      assert.ok(Math.abs(assembled.durationSeconds-1)<.12,'silent direct sources reuse the complete local soundtrack');
+    }
     const result = await renderCaptioned({ source, destination: output, ffmpegPath,
       captions: buildCaptions({ utterances: [{ text: '清洁轨迹', start_time: 0, end_time: 800 }], durationSeconds: 1 }) });
     assert.equal(result.upscaleMethod, 'lanczos');

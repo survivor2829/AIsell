@@ -1,11 +1,12 @@
 const https = require('node:https');
 const { createHash } = require('node:crypto');
 const { fail } = require('./digital-human-provider.cjs');
-const { MODEL, TTS_MODEL } = require('./bailian-video-provider.cjs');
+const { MODEL, DIRECT_MODEL, TTS_MODEL } = require('./bailian-video-provider.cjs');
 const PRICE_ORIGIN = 'https://apimart.ai/api/pricing/model?model=';
 const MAX_AGE = 24 * 60 * 60 * 1000;
 const PRICE_TIMEOUT_MS = 15000, MAX_PRICE_BYTES = 1000000;
 const BAILIAN_PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/wan2-6-i2v-flash';
+const DIRECT_PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/wan3-0-video';
 const TTS_PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/qwen3-tts-flash';
 function createReferencePriceReader({ fetch: fetchImpl } = {}) {
   const configured = require('../shared/reference-human.json').price;
@@ -92,6 +93,23 @@ function parseBailianPrices(videoDocument, ttsDocument, now = Date.now()) {
     ttsModel: TTS_MODEL, ttsCnyPer10kChars, checkedAt, ttsCheckedAt: checkedAt,
     source: [BAILIAN_PRICE_SOURCE, TTS_PRICE_SOURCE], priceEvidenceHash: createHash('sha256').update(videoDocument).update(ttsDocument).digest('hex') };
 }
+function parseDirectPrices(videoDocument, ttsDocument, now = Date.now()) {
+  const rows = beijingPriceRows(videoDocument, DIRECT_MODEL);
+  const rates = {};
+  for (const resolution of ['480p', '720p', '1080p']) {
+    const row = rows.find(cells => cells[0] === `视频生成（${resolution.toUpperCase()}）` && cells[2] === '每秒');
+    const value = Number(row?.[1]);
+    if (!(value > 0) || !Number.isFinite(value)) throw fail('product_video_price_unavailable', 'Wan3对应清晰度的北京区域报价无法核实，未提交付费请求。');
+    rates[resolution] = { silent: value, audio: value };
+  }
+  const tts = beijingPriceRows(ttsDocument, TTS_MODEL).find(cells => cells[0] === '语音合成' && /每万字符/u.test(cells[2] || ''));
+  const ttsCnyPer10kChars = Number(tts?.[1]);
+  if (!(ttsCnyPer10kChars > 0) || !Number.isFinite(ttsCnyPer10kChars)) throw fail('product_video_price_unavailable', '配音计费项无法核实，未提交付费请求。');
+  const checkedAt = new Date(now).toISOString();
+  return { ready: true, provider: 'bailian', model: DIRECT_MODEL, region: 'cn-beijing', rates,
+    ttsModel: TTS_MODEL, ttsCnyPer10kChars, checkedAt, ttsCheckedAt: checkedAt,
+    source: [DIRECT_PRICE_SOURCE, TTS_PRICE_SOURCE], priceEvidenceHash: createHash('sha256').update(videoDocument).update(ttsDocument).digest('hex') };
+}
 function recentPrices(prices, now) {
   return Number.isFinite(Date.parse(prices?.checkedAt)) && now - Date.parse(prices.checkedAt) >= 0 && now - Date.parse(prices.checkedAt) < MAX_AGE;
 }
@@ -128,6 +146,10 @@ function parsePrices(video, image, now = Date.now()) {
     checkedAt: new Date(now).toISOString() };
 }
 function validPrices(prices, now = Date.now()) {
+  if (prices?.provider === 'bailian' && prices.model === DIRECT_MODEL) return prices.ready === true && prices.region === 'cn-beijing'
+    && prices.resolution === '480p' && prices.audio === false && prices.videoCnyPerSecond === prices.rates?.['480p']?.silent
+    && [prices.videoCnyPerSecond, prices.ttsCnyPer10kChars, prices.asrReserveCny, prices.audioReserveCny].every(n => Number.isFinite(n) && n > 0)
+    && recentPrices(prices, now);
   if (prices?.provider === 'bailian') return validBailianPrices(prices, now) && prices.resolution === '720p' && prices.audio === false
     && prices.videoCnyPerSecond === prices.rates['720p'].silent
     && [prices.imageUsd, prices.fxCnyPerUsd, prices.asrReserveCny, prices.audioReserveCny].every((n) => Number.isFinite(n) && n > 0);
@@ -136,6 +158,7 @@ function validPrices(prices, now = Date.now()) {
 }
 function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClient } = {}) {
   const read = fetchJson || (fetchImpl ? (url) => readFetchJson(url, fetchImpl) : readJson);
+  const text = fetchText || (fetchImpl ? (url) => readFetchText(url, fetchImpl) : readText);
   const bailianPrices = createBailianPriceReader({ fetchText, fetch: fetchImpl });
   async function readImagePrice() {
     const source = PRICE_ORIGIN + 'gpt-image-2';
@@ -152,10 +175,21 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
     return price.payload;
   }
   const cache = new Map(), pending = new Map();
+  // No-argument callers include digital-human preview/cover pricing. Product
+  // creation always supplies its saved plan, so keep their legacy image quote.
   return async function prices(plan = { pipelineVersion: 3 }) {
-    const official = plan.pipelineVersion >= 3, key = official ? 'bailian' : 'legacy';
+    const direct = plan.pipelineVersion === 4, official = plan.pipelineVersion >= 3, key = direct ? DIRECT_MODEL : official ? MODEL : 'legacy';
     if (validPrices(cache.get(key))) return cache.get(key);
-    if (!pending.has(key)) pending.set(key, (official
+    if (!pending.has(key)) pending.set(key, (direct
+      ? Promise.all([text(DIRECT_PRICE_SOURCE), text(TTS_PRICE_SOURCE)]).then(([videoDocument, ttsDocument]) => {
+        const video = parseDirectPrices(videoDocument, ttsDocument);
+        return { ...video, resolution: '480p', audio: false, videoCnyPerSecond: video.rates['480p'].silent,
+          imageUsd: 0, estimatedImageUsd: 0, fxCnyPerUsd: 8,
+          audioReserveCny: 2, asrReserveCny: 1, asrCnyPerMinute: ASR_REFERENCE.cnyPerHour / 60, asrReference: ASR_REFERENCE,
+          fxNote: '视频人民币标价；汇率仅用于其他供应商明确返回的美元费用',
+          source: [DIRECT_PRICE_SOURCE, TTS_PRICE_SOURCE, ASR_REFERENCE.source] };
+      })
+      : official
       ? Promise.all([bailianPrices(), readImagePrice()]).then(([video, image]) => {
         const imageUsd = Number(image?.data?.resolution_prices?.['1K']);
         if (!image?.success || !(imageUsd > 0)) throw fail('product_video_price_unavailable', '场景首帧报价无法核实，暂不提交付费请求。');
@@ -172,19 +206,21 @@ function createPriceReader({ fetchJson, fetchText, fetch: fetchImpl, gatewayClie
   };
 }
 function quotePlan(plan, prices, budgetCny) {
-  const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), count = plan.pipelineVersion >= 2 ? plan.shots.length : 0;
+  const seconds = plan.shots.reduce((sum, s) => sum + s.seconds, 0), count = plan.pipelineVersion >= 2 && plan.pipelineVersion !== 4 ? plan.shots.length : 0;
   if (!validPrices(prices)) return { ready: false, budgetCny, estimatedCny: null, reservedCny: 0, actualCny: 0, pendingCny: 0, message: '报价暂不可用，方案已保留。' };
   if (plan.pipelineVersion >= 3) {
-    if (prices.provider !== 'bailian') return { ready: false, budgetCny, message: '当前报价与阿里官方制作方案不匹配，请重新核价。' };
+    if (prices.provider !== 'bailian' || prices.model !== plan.videoModel || prices.resolution !== plan.sourceResolution) return { ready: false, budgetCny, message: '当前报价与本次模型或清晰度不匹配，请重新核价。' };
     const videoCny = round(seconds * prices.videoCnyPerSecond), soundReserveCny = prices.audioReserveCny + prices.asrReserveCny;
+    const imageEstimateCny = count ? count * prices.estimatedImageUsd * prices.fxCnyPerUsd : 0;
+    const imageReserveCny = count ? count * round(prices.imageUsd * prices.fxCnyPerUsd) : 0;
     const retryReserveCny = plan.retryPolicy === 'one_failed_video' ? round(Math.max(0, ...plan.shots.map(shot => shot.seconds)) * prices.videoCnyPerSecond) : 0;
-    return { ready: true, estimatedCny: round(videoCny + count * prices.estimatedImageUsd * prices.fxCnyPerUsd + soundReserveCny),
-      maximumCny: round(videoCny + count * round(prices.imageUsd * prices.fxCnyPerUsd) + soundReserveCny + retryReserveCny),
+    return { ready: true, estimatedCny: round(videoCny + imageEstimateCny + soundReserveCny),
+      maximumCny: round(videoCny + imageReserveCny + soundReserveCny + retryReserveCny),
       retryReserveCny,
       reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny, videoCny, audioReserveCny: prices.audioReserveCny,
       videoModel: prices.model, videoResolution: prices.resolution, videoAudio: false, videoCnyPerSecond: prices.videoCnyPerSecond,
       source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd,
-      note: '视频按阿里官方北京区域人民币标价；首帧美元费用保守折算。声音准备与识别为预留，实际账单另行核对。' };
+      note: `${plan.pipelineVersion === 4 ? 'Wan3原图直出，不另收场景首帧生成费用。' : '首帧美元费用保守折算。'}视频按阿里官方北京区域人民币标价；声音准备与识别为预留，实际账单另行核对。` };
   }
   if (prices.provider === 'bailian') return { ready: false, budgetCny, message: '旧任务须沿用原供应商报价，不能替换为阿里单价。' };
   const estimatedCny = round((seconds * prices.estimatedVideoUsdPerSecond + count * prices.estimatedImageUsd) * prices.fxCnyPerUsd + (count ? prices.asrReserveCny : 0));
@@ -192,4 +228,4 @@ function quotePlan(plan, prices, budgetCny) {
   return { ready: true, estimatedCny, maximumCny, reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny,
     source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd, note: '按公开标价保守预留；人民币为预算折算，实际账单另行核对。字幕识别预留非已扣费用。' };
 }
-module.exports = { createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, validBailianPrices, createReferencePriceReader };
+module.exports = { createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };

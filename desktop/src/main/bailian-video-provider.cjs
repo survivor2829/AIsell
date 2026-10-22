@@ -3,6 +3,8 @@ const { createDigitalHumanProvider, remoteUrl, fail, cleanMessage, SAFE_ID } = r
 // Official Beijing protocol. Prices are supplied by the task's pricing snapshot,
 // not inferred from a successful request or usage.video_duration.
 const MODEL = 'wan2.6-i2v-flash';
+// Keep the legacy protocol for saved product tasks and digital-human callers.
+const DIRECT_MODEL = 'wan3.0-video';
 const TTS_MODEL = 'qwen3-tts-flash';
 const ASYNC_HEADERS = Object.freeze({ 'X-DashScope-Async': 'enable' });
 const ROUTES = Object.freeze({
@@ -54,6 +56,18 @@ function videoRequest(input) {
   const temporary = [body.input.img_url, body.input.audio_url].some((value) => value?.startsWith('oss://'));
   return { route: ROUTES.video, body, headers: { ...ASYNC_HEADERS,
     ...(temporary ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
+}
+function directVideoRequest({ imageUrl, prompt, seconds, durationSeconds, resolution = '480P' } = {}) {
+  const duration = seconds ?? durationSeconds, quality = String(resolution).toUpperCase();
+  if (!Number.isInteger(duration) || duration < 2 || duration > 30) throw fail('bailian_duration_invalid', '单个Wan3镜头必须为2至30秒的整数时长。');
+  if (!['480P', '720P', '1080P'].includes(quality)) throw fail('bailian_resolution_invalid', 'Wan3视频支持480P、720P或1080P。');
+  const text = String(prompt || '').trim();
+  if (!text || [...text].length > 1500) throw fail('bailian_prompt_invalid', '视频提示词须为1至1500字，不能截断导演要求。');
+  const reference = mediaReference(imageUrl, { image: true });
+  return { route: ROUTES.video, body: { model: DIRECT_MODEL,
+    input: { prompt: text, media: [{ type: 'reference_image', url: reference }] },
+    parameters: { resolution: quality, ratio: '9:16', duration, audio: false, prompt_extend: false, watermark: false } },
+    headers: { ...ASYNC_HEADERS, ...(reference.startsWith('oss://') ? { 'X-DashScope-OssResourceResolve': 'enable' } : {}) } };
 }
 function pollRequest(id) { return { route: ROUTES.task(id) }; }
 function nodeOf(payload) { return payload?.output && typeof payload.output === 'object' ? payload.output : {}; }
@@ -110,5 +124,5 @@ function createBailianVideoProvider(options = {}) {
     nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };
 }
 
-module.exports = { MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider,
+module.exports = { MODEL, DIRECT_MODEL, TTS_MODEL, ROUTES, ASYNC_HEADERS, createBailianVideoProvider, directVideoRequest,
   videoPayload, videoRequest, pollRequest, nodeOf, taskIdOf, statusOf, resultVideoUrl, normalizePoll, ttsPayload, ttsAudioUrl };
