@@ -70,11 +70,13 @@ function createProductVideoService(options = {}) {
         actualCny: op.actualCny ?? null, actualUsd: op.actualUsd ?? null, credits: op.credits ?? null, status: op.rejected ? 'rejected' : Number.isFinite(op.actualCny) ? 'supplier_receipt' : 'pending_bill', submittedAt: op.submittedAt })) };
   }
   function publicTask(task) {
-    return { id: task.id, mode: task.mode, version: task.version, status: task.status, statusLabel: LABELS[task.status] || '需要处理', createdAt: task.createdAt, updatedAt: task.updatedAt,
+    return { id: task.id, mode: task.mode, version: task.version, status: task.status,
+      statusLabel: task.plan.pipelineVersion === 4 && task.status === 'locking_frames' ? '核对产品原图与制作方案' : LABELS[task.status] || '需要处理', createdAt: task.createdAt, updatedAt: task.updatedAt,
       durationSeconds: task.durationSeconds, sceneId: task.sceneId, sceneIds: task.sceneIds || task.plan.sceneIds || [], surfaceId: task.surfaceId, dirtId: task.dirtId, goalId: task.goalId,
       productName: task.productName || '', facts: task.facts, expression: task.expression, imageId: task.imageId, budgetCny: task.budgetCny, quote: quote(task),
       plan: task.plan, currentShot: task.currentShot, completedShots: task.shots.filter((shot) => shot.file).length,
-      preparation: task.plan.pipelineVersion >= 3 ? { framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: Boolean(task.frameManifest),
+      preparation: task.plan.pipelineVersion >= 3 ? { referenceMode: task.plan.pipelineVersion === 4 ? 'original_product_image' : 'scene_first_frames',
+        inputsLocked: Boolean(task.frameManifest), framesReady: task.shots.filter((shot) => shot.frameFile).length, framesLocked: task.plan.pipelineVersion !== 4 && Boolean(task.frameManifest),
         ruleCheck: task.frameManifest?.ruleCheck || 'pending', visualReview: 'not_performed', audioReady: Boolean(task.audio), music: publicMusic(task.audio?.music) } : undefined,
       error: cleanMessage(task.error || ''), errorCode: task.errorCode || '', resumeStatus: task.resumeStatus || '', canRetry: task.status === 'needs_attention' && !((task.videoRetryCount || 0) >= 1 && (Number.isInteger(task.failedShotIndex) || ['product_video_video_failed','product_video_shot_failed'].includes(task.errorCode))),
       retryLabel: Number.isInteger(task.failedShotIndex) ? `重新生成第 ${task.failedShotIndex + 1} 段` : ASR_RETRY_ERRORS.has(task.errorCode) ? '重新识别字幕' : '',
@@ -138,7 +140,7 @@ function createProductVideoService(options = {}) {
       save(task); return publicTask(task);
     });
   }
-  async function capabilities(plan = { pipelineVersion: 3 }) {
+  async function capabilities(plan = { pipelineVersion: 4 }) {
     let prices; try { prices = await readPrices(plan); } catch { prices = { ready: false, message: '报价暂不可用，仍可先保存视频方案。' }; }
     const choices = { scenes: SCENES, surfaces: SURFACES, dirt: DIRT, goals: GOALS, prices, videoPricePerSecondUsd: prices.estimatedVideoUsdPerSecond ?? null,
       videoPricePerSecondCny: prices.videoCnyPerSecond ?? null };
@@ -147,16 +149,18 @@ function createProductVideoService(options = {}) {
     const official = plan.pipelineVersion >= 3;
     const videoReady = official ? state.capabilities?.bailian && state.capabilities?.bailian_video : state.capabilities?.apimart_video;
     const audioReady = !official || typeof options.prepareAudio === 'function';
-    const ready = Boolean(state.ready && state.capabilities?.apimart && videoReady && audioReady && state.capabilities?.volcengine_asr && validPrices(prices)
-      && (official ? prices.provider === 'bailian' : prices.provider !== 'bailian'));
-    return { ...choices, ready, message: ready ? '' : !audioReady ? '整片声音准备组件尚未就绪，未提交任何付费生成；仍可保存方案。' : '场景图片、阿里视频异步服务、声音识别或完整报价尚未就绪，仍可先保存方案。' };
+    const ready = Boolean(state.ready && (plan.pipelineVersion === 4 || state.capabilities?.apimart) && videoReady && audioReady && state.capabilities?.volcengine_asr && validPrices(prices)
+      && (official ? prices.provider === 'bailian' && prices.model === (plan.pipelineVersion === 4 ? wan.DIRECT_MODEL : wan.MODEL) : prices.provider !== 'bailian'));
+    return { ...choices, ready, message: ready ? '' : !audioReady ? '整片声音准备组件尚未就绪，未提交任何付费生成；仍可保存方案。' : '视频生成、声音识别或对应型号的完整报价尚未就绪，仍可先保存方案。' };
   }
   function futureReserve(task, exclude, proposedReserve = 0) {
     if (!validPrices(task.prices)) throw fail('product_video_price_unavailable', '报价已失效，请刷新核价后继续。');
     if ((task.plan.pipelineVersion >= 3) !== (task.prices.provider === 'bailian')) throw fail('product_video_price_unavailable', '报价与任务原始供应商不匹配，不能套用其他模型的单价。');
+    if (task.plan.pipelineVersion >= 3 && (task.prices.model !== task.plan.videoModel || task.prices.resolution !== task.plan.sourceResolution))
+      throw fail('product_video_price_unavailable', '报价与任务原始模型或清晰度不匹配，未提交付费请求。');
     const p = task.prices; let total = 0;
     task.plan.shots.forEach((shot, index) => {
-      if (task.plan.pipelineVersion >= 2 && !task.shots[index].frameFile && !task.operations[`frame_${index}`] && exclude !== `frame_${index}`) total += round(p.imageUsd * p.fxCnyPerUsd);
+      if (task.plan.pipelineVersion >= 2 && task.plan.pipelineVersion !== 4 && !task.shots[index].frameFile && !task.operations[`frame_${index}`] && exclude !== `frame_${index}`) total += round(p.imageUsd * p.fxCnyPerUsd);
       if (!task.shots[index].file && !task.operations[`shot_${index}`] && exclude !== `shot_${index}`) total += videoReserve(task, shot);
     });
     if (task.plan.pipelineVersion >= 2 && !task.operations.asr && exclude !== 'asr') total += p.asrReserveCny;
@@ -240,45 +244,49 @@ function createProductVideoService(options = {}) {
   }
   function checkPlan(task) {
     if (task.plan.pipelineVersion < 3) return;
-    if (task.plan.videoProvider !== 'bailian' || task.plan.videoModel !== wan.MODEL || task.plan.sourceResolution !== '720p' || task.plan.videoAudio !== false)
-      throw fail('product_video_plan_invalid', '制作方案与本次已核价的阿里720p无声路线不一致，请重新保存方案。');
+    const direct = task.plan.pipelineVersion === 4;
+    if (![3, 4].includes(task.plan.pipelineVersion) || task.plan.videoProvider !== 'bailian' || task.plan.videoModel !== (direct ? wan.DIRECT_MODEL : wan.MODEL)
+      || task.plan.sourceResolution !== (direct ? '480p' : '720p') || task.plan.videoAudio !== false)
+      throw fail('product_video_plan_invalid', '制作方案与本次已核价的阿里模型、清晰度或无声路线不一致，请重新保存方案。');
     if (task.plan.shots.reduce((sum, shot) => sum + shot.seconds, 0) !== task.durationSeconds) throw fail('product_video_plan_invalid', '分镜时长与成片时长不一致，未提交视频。');
     const image = asset(task.imageId), imageUrl = `data:${image.mime};base64,${image.bytes.toString('base64')}`;
     for (const shot of task.plan.shots) {
-      wan.videoRequest({ imageUrl, prompt: shot.prompt, durationSeconds: shot.seconds, resolution: task.plan.sourceResolution, audio: false });
-      if (!shot.firstFramePrompt || !shot.camera || !shot.startState || !shot.endState || shot.referenceRule !== 'original_product_image'
+      (direct ? wan.directVideoRequest : wan.videoRequest)({ imageUrl, prompt: shot.prompt, durationSeconds: shot.seconds, resolution: task.plan.sourceResolution, audio: false });
+      if ((!direct && !shot.firstFramePrompt) || !shot.camera || !shot.startState || !shot.endState || shot.referenceRule !== 'original_product_image'
         || (shot.evidenceStatus === 'user_supplied_unverified' && (shot.movement !== 'forward_along_visible_front' || shot.changeRule !== 'only_after_cleaning_contact')))
         throw fail('product_video_plan_invalid', '首帧依据、前进方向或清洁因果规则不完整，未提交视频。');
     }
   }
   async function lockFrames(task) {
     checkPlan(task);
-    const source = asset(task.imageId), frames = [];
+    const source = asset(task.imageId), frames = [], direct = task.plan.pipelineVersion === 4;
+    const originalInfo = direct ? await media.probe(source.path, ffmpegPath) : null;
     for (const [index, shot] of task.shots.entries()) {
-      if (!shot.frameFile) throw fail('product_video_frame_missing', '请先完成所有场景首帧，再提交视频。');
-      const framePath = contained(root, shot.frameFile), bytes = fs.readFileSync(framePath);
+      if (!direct && !shot.frameFile) throw fail('product_video_frame_missing', '请先完成所有场景首帧，再提交视频。');
+      const framePath = direct ? source.path : contained(root, shot.frameFile), bytes = direct ? source.bytes : fs.readFileSync(framePath);
       imageMime(bytes);
-      const info = await media.probe(framePath, ffmpegPath);
+      const info = direct ? originalInfo : await media.probe(framePath, ffmpegPath);
       if (!info.video || Math.min(info.video.width, info.video.height) < 240 || Math.max(info.video.width, info.video.height) > 7680
-        || Math.abs(info.video.width / info.video.height - 9 / 16) > 0.05)
-        throw fail('product_video_frame_invalid', `第 ${index + 1} 张首帧无法解码或尺寸不符合模型要求，未提交视频。`);
-      frames.push({ index, sha256: digest(bytes), originalImageSha256: source.sha256,
-        firstFramePromptSha256: digest(task.plan.shots[index].firstFramePrompt), videoPromptSha256: digest(task.plan.shots[index].prompt),
+        || (!direct && Math.abs(info.video.width / info.video.height - 9 / 16) > 0.05))
+        throw fail('product_video_frame_invalid', '参考图片无法解码或尺寸不符合模型要求，未提交视频。');
+      frames.push({ index, sha256: direct ? source.sha256 : digest(bytes), originalImageSha256: source.sha256,
+        firstFramePromptSha256: digest(task.plan.shots[index].firstFramePrompt || ''), videoPromptSha256: digest(task.plan.shots[index].prompt),
         width: info.video.width, height: info.video.height, camera: task.plan.shots[index].camera,
         movement: task.plan.shots[index].movement, changeRule: task.plan.shots[index].changeRule });
     }
-    task.frameManifest = { lockedAt: new Date().toISOString(), ruleCheck: 'passed', visualReview: 'not_performed',
+    task.frameManifest = { lockedAt: new Date().toISOString(), referenceMode: direct ? 'original_product_image' : 'scene_first_frames', ruleCheck: 'passed', visualReview: 'not_performed',
       note: '已核对计划、参考图引用、文件摘要和可解码尺寸；不代表模型已经通过外形或物理效果的视觉验收。', frames };
     save(task);
   }
   function checkLockedInputs(task) {
     checkPlan(task);
-    if (!task.frameManifest || !task.audio) throw fail('product_video_preparation_missing', '全部首帧与整片声音尚未锁定，未提交视频。');
+    if (!task.frameManifest || !task.audio) throw fail('product_video_preparation_missing', '参考图片、制作方案与整片声音尚未锁定，未提交视频。');
     const original = asset(task.imageId);
     for (const [index, shot] of task.shots.entries()) {
       const frame = task.frameManifest.frames[index];
-      if (!frame || frame.originalImageSha256 !== original.sha256 || frame.sha256 !== digest(fs.readFileSync(contained(root, shot.frameFile)))
-        || frame.firstFramePromptSha256 !== digest(task.plan.shots[index].firstFramePrompt) || frame.videoPromptSha256 !== digest(task.plan.shots[index].prompt))
+      const referenceSha = task.plan.pipelineVersion === 4 ? original.sha256 : digest(fs.readFileSync(contained(root, shot.frameFile)));
+      if (!frame || frame.originalImageSha256 !== original.sha256 || frame.sha256 !== referenceSha
+        || frame.firstFramePromptSha256 !== digest(task.plan.shots[index].firstFramePrompt || '') || frame.videoPromptSha256 !== digest(task.plan.shots[index].prompt))
         throw fail('product_video_preparation_changed', '锁定的首帧或导演方案已变化，未提交视频；原任务和费用记录已保留。');
     }
     if (task.audio.sha256 !== digest(fs.readFileSync(contained(root, task.audio.file)))
@@ -337,8 +345,8 @@ function createProductVideoService(options = {}) {
       let response;
       if (official) {
         checkLockedInputs(task);
-        const bytes = fs.readFileSync(contained(root, task.shots[index].frameFile));
-        const request = wan.videoRequest({ imageUrl: `data:${imageMime(bytes)};base64,${bytes.toString('base64')}`, prompt: shot.prompt, durationSeconds: shot.seconds,
+        const bytes = task.plan.pipelineVersion === 4 ? asset(task.imageId).bytes : fs.readFileSync(contained(root, task.shots[index].frameFile));
+        const request = (task.plan.pipelineVersion === 4 ? wan.directVideoRequest : wan.videoRequest)({ imageUrl: `data:${imageMime(bytes)};base64,${bytes.toString('base64')}`, prompt: shot.prompt, durationSeconds: shot.seconds,
           resolution: task.plan.sourceResolution, audio: false });
         response = await operation(task, `shot_${index}`, request.route, request.body, videoReserve(task, shot), request.headers);
       } else response = await operation(task, `shot_${index}`, '/apimart/videos/generations', { model: 'seedance-2.5', duration: shot.seconds, resolution: task.plan.sourceResolution || '480p', size: '9:16', output_format: 'mp4', generate_audio: true, draft: false,
@@ -490,7 +498,7 @@ function createProductVideoService(options = {}) {
       checkPlan(task);
       const status = await capabilities(task.plan); if (!status.ready) throw fail('product_video_provider_unavailable', status.message);
       await verifyQuote(task); hold();
-      task.status = 'uploading'; save(task); schedule(id); return publicTask(task);
+      task.status = task.plan.pipelineVersion === 4 ? 'locking_frames' : 'uploading'; save(task); schedule(id); return publicTask(task);
     });
   }
   async function retryShot(id) {

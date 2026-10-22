@@ -4,13 +4,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { createProductVideoService } = require('./product-video-service.cjs');
 const { planVideo } = require('./video-directors.cjs');
-const { parsePrices, createPriceReader, parseBailianPrices, validBailianPrices } = require('./product-video-pricing.cjs');
+const { parsePrices, createPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, validPrices, quotePlan } = require('./product-video-pricing.cjs');
 const { taskIdOf } = require('./digital-human-provider.cjs');
 
 const legacyPrices = () => parsePrices({ success: true, data: { resolution_prices: { '480P': .1201 }, resolution_paid_prices: { '480P': .09608 } } }, { success: true, data: { resolution_prices: { '1K': .2109 }, resolution_paid_prices: { '1K': .0085 } } });
 const videoPriceDoc = 'wan2.6-i2v-flash 模型价格 华北2（北京）<table>' + [['视频生成（720P）','.3'],['视频生成（1080P）','.5'],['视频生成（720P 无声）','.15'],['视频生成（1080P 无声）','.25']].map(([label,value])=>`<tr><td>${label}</td><td>${value}</td><td>每秒</td></tr>`).join('') + '</table>';
 const ttsPriceDoc = 'qwen3-tts-flash 模型价格 华北2（北京）<table><tr><td>语音合成</td><td>0.8</td><td>每万字符</td></tr></table>';
-const prices = (plan) => plan?.pipelineVersion < 3 ? legacyPrices() : { ...legacyPrices(), ...parseBailianPrices(videoPriceDoc,ttsPriceDoc), resolution:'720p',audio:false,videoCnyPerSecond:.15,audioReserveCny:2 };
+const directPriceDoc = 'wan3.0-video 模型价格 华北2（北京）<table>' + [['480P','.3'],['720P','.6'],['1080P','1.2']].map(([resolution,value])=>`<tr><td>视频生成（${resolution}）</td><td>${value}</td><td>每秒</td></tr>`).join('') + '</table>';
+const prices = (plan = {pipelineVersion:4}) => plan.pipelineVersion < 3 ? legacyPrices() : plan.pipelineVersion === 3
+  ? { ...legacyPrices(), ...parseBailianPrices(videoPriceDoc,ttsPriceDoc), resolution:'720p',audio:false,videoCnyPerSecond:.15,audioReserveCny:2 }
+  : { ...parseDirectPrices(directPriceDoc,ttsPriceDoc), resolution:'480p',audio:false,videoCnyPerSecond:.3,audioReserveCny:2,asrReserveCny:1,imageUsd:0,estimatedImageUsd:0,fxCnyPerUsd:8 };
 const VIDEO_ROUTE='/bailian/api/v1/services/aigc/video-generation/video-synthesis';
 const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii');
 const image = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
@@ -40,11 +43,17 @@ async function run() {
   const routedPrices = { gatewayClient: gatewayPrices,
     fetchText: async (url) => url.includes('wan2-6') ? videoPriceDoc : ttsPriceDoc,
     fetchJson: async () => { throw new Error('customer_must_not_fetch_foreign_image_price'); } };
-  assert.equal((await createPriceReader(routedPrices)()).imageUsd, .2109);
+  assert.equal((await createPriceReader(routedPrices)()).imageUsd, .2109,'shared default callers retain image pricing');
   assert.equal(gatewayPriceReads, 1, 'official product-video prices reuse the authenticated server route');
   await assert.rejects(createPriceReader({ ...routedPrices, gatewayClient: { ...gatewayPrices,
-    fetch: async () => ({ok:false,status:503}) } })(), /场景首帧报价/u,
+    fetch: async () => ({ok:false,status:503}) } })({pipelineVersion:3}), /场景首帧报价/u,
   'failed server pricing must stop instead of switching to direct foreign requests');
+  const directPrices = await createPriceReader({ fetchText: async url => url.includes('wan3-0') ? directPriceDoc : ttsPriceDoc,
+    fetchJson: async () => { throw new Error('direct_does_not_need_image_prices'); } })({pipelineVersion:4});
+  assert.equal(validPrices(directPrices), true);
+  assert.equal(directPrices.videoCnyPerSecond, .3);
+  assert.equal(directPrices.imageUsd, 0);
+  assert.throws(() => parseDirectPrices(directPriceDoc.replace('480P','未知规格'),ttsPriceDoc), /报价无法核实/u);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-product-video-'));
   const posts = [], tasks = new Map(), receipts = new Map();
   let unknownOnce = false, receiptsPending = false, failedOnce = false, failedVideoCount = 0, malformedOnce = false, offlinePrices = false, localFailure = false, badCaptionsOnce = false, badMediaOnce = false, tamperAudioOnce = false;
@@ -79,7 +88,7 @@ async function run() {
   const serviceOptions = { rootDir: root, provider, readPrices: async (plan) => { if (offlinePrices) throw new Error('offline'); return prices(plan); }, pollMs: 1,
     gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true, apimart_video: true, bailian:true,bailian_video:true,volcengine_asr: true } }) },
     prepareAudio: async ({task,directory,operation}) => {
-      assert.equal(task.shots.filter(s=>s.frameFile).length,3,'all scene frames must be ready before audio and video');
+      assert.equal(task.shots.filter(s=>s.frameFile).length,task.plan.pipelineVersion === 4 ? 0 : 3,'new direct tasks use the original image; old tasks retain prepared frames');
       for(let i=0;i<task.shots.length;i+=1) await operation(`audio_narration_${i}`,'/bailian/tts-fixture',{text:task.plan.shots[i].narration},.05);
       const audio=path.join(directory,'full-audio.wav');fs.writeFileSync(audio,'fixture-wave');
       if(tamperAudioOnce){tamperAudioOnce=false;task.plan.shots[0].prompt+='临时修改';}
@@ -119,11 +128,25 @@ async function run() {
     const facts = '清洁机器人适用于办公楼、商超和仓储。适用瓷砖、环氧地坪。清洁灰尘、泥水脚印和纸屑。';
     const input = { mode: 'product', imageId: asset.id, productName: '测试清洁设备', facts, durationSeconds: 30, budgetCny: 50 };
     const plan = planVideo(input);
+    assert.equal(plan.pipelineVersion,4); assert.equal(plan.videoModel,'wan3.0-video'); assert.equal(plan.sourceResolution,'480p');
+    const withoutImagePrice = {...prices()}; delete withoutImagePrice.imageUsd; delete withoutImagePrice.estimatedImageUsd;
+    assert.equal(quotePlan(plan,withoutImagePrice,50).estimatedCny,12,'direct route does not require a scene-image quote');
+    assert.equal(quotePlan(plan, prices({pipelineVersion:3}),50).ready,false,'cannot price Wan3 with the old Wan2.6 quote');
     assert.equal(plan.shots.length, 3); assert.equal(plan.shots.reduce((n,s)=>n+s.seconds,0),30);
     assert.equal(new Set(plan.shots.map((s)=>s.sceneId)).size,3);
     assert.ok(planVideo({ ...input, surfaceId: 'tile' }).shots.every(shot => shot.surface === '瓷砖'), 'selected material must reach every shot');
     assert.equal(planVideo({ ...input, productName:'咖啡杯',facts:'陶瓷咖啡杯，容量300ml。' }).evidenceStatus,'appearance_only');
     assert.equal(planVideo({ ...input, facts: '清洁机器人。不适用办公楼瓷砖，不支持处理灰尘。' }).evidenceStatus,'appearance_only');
+    const otherProduct = planVideo({...input,productName:'另一款洗地机',facts:'洗地机可清洁灰尘和纸屑。',sceneIds:['hotel'],surfaceId:'marble'});
+    assert.ok(otherProduct.shots.every(shot=>shot.prompt.includes('大理石') && !/BG1|绿色|环氧/u.test(shot.prompt)));
+    assert.ok(otherProduct.shots.every(shot=>shot.prompt.includes('持续保持') && shot.prompt.includes('没有残留')));
+    const restricted = planVideo({...input,productName:'干式扫地车',facts:'扫地车适用于小区户外沥青路面清扫落叶。不适用于室内，不能吸水。',sceneIds:['office'],surfaceId:'asphalt'});
+    assert.equal(restricted.evidenceStatus,'appearance_only','scene selection cannot override a documented indoor-use restriction');
+    assert.equal(planVideo({...input,facts:'扫地机适用于仓储环氧地坪灰尘清扫，不能吸水。',sceneIds:['warehouse'],surfaceId:'epoxy',dirtId:'water'}).evidenceStatus,'appearance_only');
+    const colored = planVideo({...input,facts:'洗地机适用于办公楼灰色瓷砖和仓储绿色环氧地坪，清洁细小砂砾。'});
+    assert.ok(colored.shots.find(shot=>shot.sceneId==='office').prompt.includes('灰色瓷砖'));
+    assert.ok(colored.shots.find(shot=>shot.sceneId==='warehouse').prompt.includes('绿色环氧地坪'));
+    for (const durationSeconds of [30,45,60]) assert.equal(planVideo({...input,durationSeconds}).shots.reduce((sum,shot)=>sum+shot.seconds,0),durationSeconds);
     const textPath = path.join(root, '资料.txt'); fs.writeFileSync(textPath, '参数说明'.repeat(250));
     assert.equal(service.importFacts(textPath).text.length, 1000);
     const insufficient = await service.create({ ...input, budgetCny: 1 });
@@ -132,12 +155,14 @@ async function run() {
     assert.equal(task.quote.budgetCny, task.quote.maximumCny, 'the customer need not supply a budget');
     await service.start(task.id);
     const finished = await until(service, task.id, (t)=>t.status==='completed');
-    assert.equal(finished.completedShots,3); assert.equal(finished.quote.pendingCny,5.65,'official usage is not a bill; keep Wan, audio and ASR reserves');
+    assert.equal(finished.completedShots,3); assert.equal(finished.quote.pendingCny,10.15,'official usage is not a bill; keep Wan, audio and ASR reserves');
     const videos = posts.filter((p)=>p.route===VIDEO_ROUTE);
-    assert.deepEqual(videos.map((p)=>p.body.parameters.duration),[10,10,10]); assert.ok(videos.every((p)=>p.body.parameters.resolution==='720P' && p.body.parameters.audio===false && p.body.parameters.prompt_extend===false));
+    assert.deepEqual(videos.map((p)=>p.body.parameters.duration),[10,10,10]); assert.ok(videos.every((p)=>p.body.model==='wan3.0-video' && p.body.parameters.resolution==='480P' && p.body.parameters.audio===false && p.body.parameters.prompt_extend===false));
+    assert.ok(videos.every(p=>p.body.input.media[0].type==='reference_image' && p.body.input.media[0].url===`data:image/png;base64,${image.toString('base64')}`));
+    assert.equal(posts.filter(p=>p.route.includes('/apimart/')).length,0,'no image upload, generated scene frame or APIMart purchase on new direct route');
     assert.ok(videos.every((p)=>p.headers['X-DashScope-Async']==='enable'));
     const firstVideo=posts.findIndex(p=>p.route===VIDEO_ROUTE);
-    assert.equal(posts.slice(0,firstVideo).filter(p=>p.route==='/apimart/images/generations').length,3);
+    assert.equal(posts.slice(0,firstVideo).filter(p=>p.route==='/apimart/images/generations').length,0);
     assert.equal(posts.slice(0,firstVideo).filter(p=>p.route.includes('/asr/')).length,1,'captions must be prepared before paying for any video');
     const before=posts.length; await service.refresh(task.id); assert.equal(posts.length,before);
     const out=await service.exportVideo(task.id,path.join(root,'output.mp4')); assert.match(fs.readFileSync(out.subtitlePath,'utf8'),/现场清洁/u);
@@ -189,7 +214,7 @@ async function run() {
     const asrRequests=posts.filter((p)=>p.route.includes('/asr/'));
     assert.equal(asrRequests.at(-1).headers['X-Api-Request-Id'],asrRequests.at(-1).id);
     assert.notEqual(asrRequests.at(-1).headers['X-Api-Request-Id'],asrRequests.at(-2).headers['X-Api-Request-Id']);
-    assert.equal(service.get(captionsBroken.id).quote.pendingCny,6.65,'failed ASR charge allowance remains reserved');
+    assert.equal(service.get(captionsBroken.id).quote.pendingCny,11.15,'failed ASR charge allowance remains reserved');
     badMediaOnce=true;
     const mediaBroken=await service.create(input); await service.start(mediaBroken.id);
     const mediaPause=await until(service,mediaBroken.id,(t)=>t.status==='needs_attention');
@@ -212,11 +237,22 @@ async function run() {
     assert.equal(posts.filter(p=>p.route===VIDEO_ROUTE).length,priorTamperVideos,'changed locked inputs must be caught before any paid video');
     const oldTask=await service.create(input), oldPath=path.join(root,oldTask.id,'task.json'), oldStored=JSON.parse(fs.readFileSync(oldPath,'utf8'));
     oldStored.version=2;oldStored.plan.pipelineVersion=2;oldStored.plan.sourceResolution='480p';oldStored.prices=legacyPrices();
+    oldStored.plan.shots.forEach(shot=>{shot.firstFramePrompt='旧版场景首帧';});
     delete oldStored.audioVoicePolicy; delete oldStored.presentationPolicy;
     fs.writeFileSync(oldPath,JSON.stringify(oldStored));
     const oldPosts=posts.length;await service.start(oldTask.id);await until(service,oldTask.id,t=>t.status==='completed');
     assert.equal(posts.slice(oldPosts).filter(p=>p.route==='/apimart/videos/generations').length,3,'existing v2 drafts must retain Seedance and its original billing route');
     assert.equal(posts.slice(oldPosts).filter(p=>p.route===VIDEO_ROUTE).length,0);
+    const oldOfficial=await service.create(input), oldOfficialPath=path.join(root,oldOfficial.id,'task.json');
+    const oldOfficialStored=JSON.parse(fs.readFileSync(oldOfficialPath,'utf8'));
+    Object.assign(oldOfficialStored.plan,{pipelineVersion:3,videoModel:'wan2.6-i2v-flash',sourceResolution:'720p'});
+    oldOfficialStored.plan.shots.forEach(shot=>{shot.firstFramePrompt='旧版阿里场景首帧';});
+    oldOfficialStored.prices=prices({pipelineVersion:3});
+    fs.writeFileSync(oldOfficialPath,JSON.stringify(oldOfficialStored));
+    const beforeOldOfficial=posts.length; await service.start(oldOfficial.id); await until(service,oldOfficial.id,t=>t.status==='completed');
+    const legacyOfficialVideos=posts.slice(beforeOldOfficial).filter(p=>p.route===VIDEO_ROUTE);
+    assert.equal(legacyOfficialVideos.length,3);
+    assert.ok(legacyOfficialVideos.every(p=>p.body.model==='wan2.6-i2v-flash' && p.body.parameters.resolution==='720P' && p.body.input.img_url && !p.body.input.media));
     const legacyId='pv_'+require('node:crypto').randomUUID(), legacyDir=path.join(root,legacyId);
     fs.mkdirSync(legacyDir); fs.writeFileSync(path.join(legacyDir,'final.mp4'),clip);
     fs.writeFileSync(path.join(legacyDir,'task.json'),JSON.stringify({id:legacyId,version:1,mode:'product',status:'completed',durationSeconds:30,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),finalFile:legacyId+'/final.mp4',currentShot:2,shots:[{},{}],plan:{shots:[{seconds:15,narration:'旧任务第一镜'},{seconds:15,narration:'旧任务第二镜'}],sendText:'旧任务'},operations:{}}));

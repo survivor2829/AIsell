@@ -117,6 +117,13 @@ async function main() {
     assert.equal(coverResult.data.filename, "我的封面.jpg");
     assert.equal(fs.readFileSync(`${saveTarget}.jpg`, "utf8"), "candidate-cover");
     assert.deepEqual(calls.at(-1)[1].filters, [{ name: "封面图片", extensions: ["jpg"] }]);
+    electron.dialog.showSaveDialog = async () => ({ canceled: true });
+    const canceled = await handlers.get(channel)(null, { candidateId: "generated_video_99999999999999999999999999999999" });
+    assert.equal(canceled.data.canceled, true);
+    electron.dialog.showSaveDialog = async () => ({ canceled: false, filePath: path.join(root, "missing-directory", "video.mp4") });
+    const failed = await handlers.get(finishedChannel)(null, { finishedVideoId });
+    assert.equal(failed.ok, false);
+    assert.match(failed.error, /成片保存失败/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

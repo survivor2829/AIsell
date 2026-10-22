@@ -225,11 +225,12 @@ async function renderCaptioned({ source, destination, captions, ffmpegPath = 'ff
 }
 
 /** Wan silent sources share one already prepared soundtrack. No picture is repeated or frozen. */
-async function assemblePreparedVideo({ shots, audioPath, destination, ffmpegPath = 'ffmpeg' }) {
+async function assemblePreparedVideo({ task, shots, audioPath, destination, ffmpegPath = 'ffmpeg' }) {
   if (!Array.isArray(shots) || !shots.length || shots.some(s => !s.path || !Number.isFinite(s.seconds) || s.seconds <= 0)) {
     throw mediaError('product_video_shots_invalid', '缺少有效的镜头文件或时长。');
   }
   const seconds = shots.reduce((sum, shot) => sum + shot.seconds, 0);
+  const [width, height] = task?.plan?.pipelineVersion === 4 ? [480, 854] : [720, 1280];
   const sound = await probe(audioPath, ffmpegPath);
   if (!sound.audio || !Number.isFinite(sound.seconds) || sound.seconds + 0.05 < seconds) {
     throw mediaError('product_video_audio_incomplete', '完整音轨不足成片时长，请先完成声音准备。');
@@ -244,7 +245,7 @@ async function assemblePreparedVideo({ shots, audioPath, destination, ffmpegPath
       }
       await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', path.resolve(shot.path),
         '-map', '0:v:0', '-an', '-t', String(shot.seconds),
-        '-vf', 'setpts=PTS-STARTPTS,fps=30,scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1',
+        '-vf', `setpts=PTS-STARTPTS,fps=30,scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
         ...encoder, '-pix_fmt', 'yuv420p', path.join(directory, `shot-${index}.mp4`)]);
     }
     await fs.writeFile(path.join(directory, 'clips.txt'), shots.map((_, i) => `file 'shot-${i}.mp4'`).join('\n') + '\n', 'utf8');
@@ -253,11 +254,11 @@ async function assemblePreparedVideo({ shots, audioPath, destination, ffmpegPath
       '-i', path.resolve(audioPath), '-map', '0:v:0', '-map', '1:a:0', '-t', String(seconds),
       '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', output], directory);
     const final = await probe(output, ffmpegPath);
-    if (final.video?.width !== 720 || final.video?.height !== 1280 || !final.audio || Math.abs(final.seconds - seconds) > 0.12) {
+    if (final.video?.width !== width || final.video?.height !== height || !final.audio || Math.abs(final.seconds - seconds) > 0.12) {
       throw mediaError('product_video_assemble_invalid', '合成后的尺寸、时长或音轨检查未通过。');
     }
     await fs.rename(output, path.resolve(destination));
-    return { destination, durationSeconds: final.seconds, width: 720, height: 1280 };
+    return { destination, durationSeconds: final.seconds, width, height };
   });
 }
 

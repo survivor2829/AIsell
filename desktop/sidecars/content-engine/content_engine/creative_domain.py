@@ -6201,6 +6201,15 @@ class CreativeDomain:
                 run["title"],
                 private_state.get("video_template") or "topic_fixed")
             recipe["packaging"]["cover"]["auto_generate"] = True
+        if private_state.get("narrated_original_frame"):
+            # New narrated mixes use the source image, without a second paid cover
+            # or generic course packaging. Existing recipes retain their policy.
+            recipe["packaging"]["cover"] = {
+                "mode": "local_frame", "status": "pending", "preserve_source": True,
+            }
+            recipe["packaging"]["events"] = []
+            if recipe.get("presentation"):
+                recipe["presentation"]["showTitle"] = False
         if "reuse_cover_generated_video_id" in private_state:
             source_id = private_state["reuse_cover_generated_video_id"]
             recipe["packaging"]["cover"] = ({"mode": "reuse", "status": "reused", "source_generated_video_id": source_id}

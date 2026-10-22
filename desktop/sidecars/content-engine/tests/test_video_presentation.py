@@ -16,6 +16,24 @@ from content_engine.database import Database
 
 
 class VideoPresentationTests(unittest.TestCase):
+    def test_original_frame_cover_uses_adopted_source_without_text_or_brand(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            renderer = FFmpegCreativeRenderer(Path(temporary))
+            packaging = {'title': '不应添加的课程标题', 'brand': {'logo_asset_id': 'logo'},
+                         'cover': {'mode': 'local_frame', 'preserve_source': True}}
+            recipe = {'kind': 'mix', 'packaging': packaging, 'visual_segments': [
+                {'asset_id': 'footage', 'start_ms': 2000, 'end_ms': 5000, 'media_kind': 'video'}]}
+            with mock.patch.object(renderer, '_render_cover') as render:
+                renderer.render_cover_for_candidate(Path('finished.mp4'), Path('cover.jpg'), recipe,
+                                                    lambda _: Path('original.mp4'))
+                self.assertEqual(Path('original.mp4'), render.call_args.args[0])
+                self.assertEqual(2.5, render.call_args.kwargs['seek_seconds'])
+            args = renderer._cover_video_args(Path('original.mp4'), packaging,
+                                             lambda _: self.fail('Original frame must not resolve a logo'))
+            self.assertNotIn('drawtext', ' '.join(args))
+            self.assertNotIn('drawbox', ' '.join(args))
+            self.assertIn('drawtext', renderer._cover_filter({'cover': {'mode': 'local_frame'}}))
+
     def test_narration_v2_mix_has_fades_ducking_and_verified_loudness(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

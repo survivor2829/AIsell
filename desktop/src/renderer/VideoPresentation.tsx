@@ -13,6 +13,26 @@ export function VideoTemplatePicker({ value, onChange, disabled = false }: { val
 
 type CoverVideo = { generatedVideoId: string; title: string; coverStatus?: string | null; coverHeadlineLines?: string[]; coverTitleEditable?: boolean; coverIssueMessage?: string | null };
 type Result<T> = { ok: boolean; data?: T; error?: string };
+export function VideoDownloadButton({ generatedId }: { generatedId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const saving = React.useRef(false);
+  const download = async () => {
+    if (saving.current) return;
+    saving.current = true; setBusy(true); setNotice("");
+    try {
+      const api = (window.xiaoxiContent as unknown as { creative?: {
+        downloadCandidate: (payload: { candidateId: string }) => Promise<Result<{ canceled?: boolean; filename?: string }>>;
+      } })?.creative;
+      if (!api?.downloadCandidate) throw new Error("下载功能尚未加载，请重启软件后再试。");
+      const result = await api.downloadCandidate({ candidateId: generatedId });
+      if (!result.ok || !result.data) throw new Error(result.error || "视频未保存成功，请重试。");
+      if (!result.data.canceled) setNotice(`已保存视频：${result.data.filename || "视频.mp4"}`);
+    } catch (error) { setNotice((error as Error).message || "视频未保存成功，请重试。"); }
+    finally { saving.current = false; setBusy(false); }
+  };
+  return <><button type="button" disabled={busy} onClick={() => void download()}>{busy ? "保存中…" : "下载视频"}</button>{notice && <p role="status">{notice}</p>}</>;
+}
 type CoverApi = {
   getGenerated: (payload: { candidateId: string }) => Promise<Result<CoverVideo>>;
   regenerateCover: (payload: { candidateId: string }) => Promise<Result<unknown>>;
