@@ -1656,16 +1656,21 @@ class CreativeWorkbenchTests(unittest.TestCase):
         self.service.creative_domain.renderer = renderer
         return renderer
 
-    def test_startup_ready_refreshes_visual_capability_snapshot_once(self):
+    def test_metadata_ready_defers_render_probe_until_first_comparison_read(self):
         source_task, source = self._comparison_source()
         renderer = self._use_comparison_renderer()
+        # The fixture created its history in a previous renderer session.
+        # Opening the persisted history in a fresh process has no probe snapshot.
+        self.service.creative_domain._visual_capability_snapshot = None
         output = io.StringIO()
 
         serve_jsonl(self.service, input_stream=io.StringIO(""), output_stream=output)
 
         ready = json.loads(output.getvalue())
-        self.assertTrue(ready["capabilities"]["visual_comparison_v1"])
-        after_ready = renderer.capability_calls
+        self.assertEqual(renderer.capability_calls, 0,
+                         "local editor readiness must not start or wait for the render worker")
+        self.assertTrue(ready["capabilities"]["render_capabilities_deferred"])
+        self.assertNotIn("visual_comparison_v1", ready["capabilities"])
         card = next(
             item for item in self.service.list_generated_videos(
                 project_id=source_task["project_id"]
@@ -1673,7 +1678,9 @@ class CreativeWorkbenchTests(unittest.TestCase):
             if item["generated_video_id"] == source["generated_video_id"]
         )
         self.assertTrue(card["visual_comparison_capable"])
-        self.assertEqual(after_ready, renderer.capability_calls)
+        self.assertEqual(renderer.capability_calls, 1)
+        self.service.list_generated_videos(project_id=source_task["project_id"])
+        self.assertEqual(renderer.capability_calls, 1, "later list reads reuse the capability snapshot")
 
         comparison = self.service.create_visual_comparison_task(
             source["generated_video_id"]
