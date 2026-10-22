@@ -1,9 +1,10 @@
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { requiredCiJobs } = require("./self-check-groups.cjs");
+const { completeSourceJobs, mergedSourceProof } = require("./ci-source-proof.cjs");
 
-// Fail closed: an old, skipped, PR-head or incomplete workflow cannot replace
-// checks for the exact release revision. Artifact checks always run separately.
+// A main run may reuse the actual identical merge tree tested by a PR. Verify
+// that chain independently; a successful summary or skipped jobs alone is not proof.
 function verifiedCiRun({ forceChecks = false, execute = spawnSync } = {}) {
   if (forceChecks) return null;
   const options = { cwd: path.resolve(__dirname, "../.."), encoding: "utf8", windowsHide: true, timeout: 30000 };
@@ -22,13 +23,17 @@ function verifiedCiRun({ forceChecks = false, execute = spawnSync } = {}) {
       if (detail.status !== 0) continue;
       const run = JSON.parse(detail.stdout);
       if (run.headSha !== sha || run.conclusion !== "success") continue;
-      if (!requiredCiJobs.every(name => {
-        const jobs = run.jobs?.filter(job => job.name === name);
-        return jobs?.length === 1 && jobs[0].conclusion === "success";
-      })) continue;
-      if (!run.jobs.some(job => job.name === "service-and-content" && job.conclusion === "success" && job.steps?.some(step =>
-        step.name === "Product detail local E2E" && step.conclusion === "success"))) continue;
-      return { commit: sha, runId: candidate.databaseId };
+      if (completeSourceJobs(run.jobs)) return { commit: sha, runId: candidate.databaseId };
+      const single = name => { const jobs = run.jobs?.filter(job => job.name === name); return jobs?.length === 1 ? jobs[0] : null; };
+      if (candidate.event !== "push" || single("ci-source-proof")?.conclusion !== "success"
+          || single("source-and-renderer")?.conclusion !== "success"
+          || !single("ci-source-proof").steps?.some(step => step.name === "Verify unchanged merge tree and required CI" && step.conclusion === "success")
+          || !requiredCiJobs.filter(name => name !== "source-and-renderer").every(name => single(name)?.conclusion === "skipped")) continue;
+      const repositoryResult = execute("gh", ["repo", "view", "--json", "nameWithOwner"], options);
+      if (repositoryResult.status !== 0) continue;
+      const repository = JSON.parse(repositoryResult.stdout).nameWithOwner;
+      const proof = mergedSourceProof({ commit: sha, repository, execute });
+      if (proof) return { commit: sha, runId: candidate.databaseId, ...proof };
     }
   } catch { /* Missing CLI, network failure or malformed response: run locally. */ }
   return null;

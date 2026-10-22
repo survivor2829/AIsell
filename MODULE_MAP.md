@@ -19,7 +19,7 @@
 | `desktop/sidecars/content-engine/` | 原素材原地索引、媒体探测、素材版权/使用权状态、内容任务和成片登记 | 复制或删除用户原片；调用微信自动化或绕过 Electron 主进程 |
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
 | `.github/workflows/ci.yml`、`desktop/scripts/build-internal-release.cjs`、`publish-cloud-release.cjs` | 提交后的自动检查、受控 Windows 完整候选包构建与内部测试频道发布；步骤见 `docs/internal-release.md` | 将 CI 通过当作用户验收；上传签名私钥；把内部制品发布到正式频道 |
-| `desktop/scripts/self-check-groups.cjs`、`run-self-checks.cjs`、`release-ci-proof.cjs` | 五组源码检查的统一清单与资源独占、核心组同批次长检查先启动、汇总门禁和同提交完整 CI 复用 | 缺组、跳过或取消时跳过本地检查 |
+| `desktop/scripts/self-check-groups.cjs`、`run-self-checks.cjs`、`ci-source-proof.cjs`、`release-ci-proof.cjs`、`internal-release-pipeline.cjs` | 完整检查分组与资源独占；实际合并全树/基线及原PR全部检查证明复用；等待现有CI后构建，候选验收后沿原入口发布 | 凭成功汇总或普通skipped放行；失配/缺证据仍复用；候选未验收自动发布 |
 | `desktop/src/main/update-exit-maintenance.cjs`、`update-process-lock.cjs` | 后台准备同身份助手、独立复制Electron映射文件、退出就绪握手、父进程创建时间核对、与更新交接互斥后复用归属保留器 | 杀进程；删除未登记业务资料；把延期写成已完成 |
 | `desktop/src/shared/role-appearance.json`、`desktop/src/renderer/role-appearance.ts`、`desktop/src/main/role-preferences.cjs` | 角色与形象共享目录；名字与形象校验、主进程原子持久化及相关工作区配色 | 用页面本地状态冒充保存成功；允许任意文件或远程地址作为形象 |
 | `desktop/src/renderer/BusinessAssistantPage.tsx` | “精准获客”三入口共用目录、地图工作台与企微/GEO待开放介绍 | 将规划框架冒充已接通能力，自动联系客户 |

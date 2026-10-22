@@ -35,11 +35,12 @@ function assertCleanSource() {
 
 function parseBuildArgs(args) {
   const positional = [];
-  let full = false, components = false, baseRoot = null, forceChecks = false;
+  let full = false, components = false, baseRoot = null, forceChecks = false, requireCi = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--full") full = true;
     else if (arg === "--force-checks") forceChecks = true;
+    else if (arg === "--require-ci") requireCi = true;
     else if (arg === "--components") components = true;
     else if (arg === "--default-components") continue;
     else if (arg === "--base") {
@@ -49,11 +50,12 @@ function parseBuildArgs(args) {
     else positional.push(arg);
   }
   if (full && components) throw new Error("Choose either --full or --components");
+  if (requireCi && forceChecks) throw new Error("Choose --require-ci or --force-checks");
   if (positional.length > 2) throw new Error("Too many internal release arguments");
   const [configFile = ".build/internal-release-config.json", edition = "test"] = positional;
   if (!["test", "upgrade"].includes(edition)) throw new Error("Internal edition must be test or upgrade");
   if (components && edition === "upgrade") throw new Error("In-place upgrade requires the full installer");
-  return { configFile, edition, componentsOnly: !full && edition === "test", baseRoot, forceChecks };
+  return { configFile, edition, componentsOnly: !full && edition === "test", baseRoot, forceChecks, requireCi };
 }
 
 function resolveAcceptedBaseRoot(explicitRoot, edition = "test", buildRoot = path.join(desktopDir, ".build"), fallbackRoot = null) {
@@ -93,7 +95,7 @@ function recordAcceptedBaseRoot(root, buildRoot = path.join(desktopDir, ".build"
 }
 
 function main(args = process.argv.slice(2)) {
-  const { configFile, edition, componentsOnly, baseRoot, forceChecks } = parseBuildArgs(args);
+  const { configFile, edition, componentsOnly, baseRoot, forceChecks, requireCi } = parseBuildArgs(args);
   process.chdir(desktopDir);
   loadBuildConfig(configFile);
   assertCleanSource();
@@ -114,7 +116,7 @@ function main(args = process.argv.slice(2)) {
     const estimatedRuntime = Math.max(baseBytes, 512 * 1024 ** 2);
     space.preflight([{ path: releaseRoot, bytes: estimatedRuntime * (componentsOnly ? 3 : 4) },
       { path: require("node:os").tmpdir(), bytes: estimatedRuntime * 2 }]);
-    const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot, forceChecks });
+    const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot, forceChecks, requireCi });
     if (componentsOnly && baseRoot) {
       const acceptedRecord = recordAcceptedBaseRoot(resolvedBaseRoot);
       console.log(`Accepted component base record: ${acceptedRecord}`);
