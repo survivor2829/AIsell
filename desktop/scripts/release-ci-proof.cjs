@@ -25,10 +25,15 @@ function verifiedCiRun({ forceChecks = false, execute = spawnSync } = {}) {
       if (run.headSha !== sha || run.conclusion !== "success") continue;
       if (completeSourceJobs(run.jobs)) return { commit: sha, runId: candidate.databaseId };
       const single = name => { const jobs = run.jobs?.filter(job => job.name === name); return jobs?.length === 1 ? jobs[0] : null; };
+      const groups = requiredCiJobs.filter(name => name.startsWith("source-") && name !== "source-and-renderer");
+      // Actions evaluates a job-level if before expanding its matrix. A wholly
+      // skipped matrix is one literal-name job rather than five skipped jobs.
+      const skippedGroups = groups.every(name => single(name)?.conclusion === "skipped")
+        || single("source-${{ matrix.group }}")?.conclusion === "skipped" && groups.every(name => !run.jobs.some(job => job.name === name));
       if (candidate.event !== "push" || single("ci-source-proof")?.conclusion !== "success"
           || single("source-and-renderer")?.conclusion !== "success"
           || !single("ci-source-proof").steps?.some(step => step.name === "Verify unchanged merge tree and required CI" && step.conclusion === "success")
-          || !requiredCiJobs.filter(name => name !== "source-and-renderer").every(name => single(name)?.conclusion === "skipped")) continue;
+          || !skippedGroups || single("service-and-content")?.conclusion !== "skipped") continue;
       const repositoryResult = execute("gh", ["repo", "view", "--json", "nameWithOwner"], options);
       if (repositoryResult.status !== 0) continue;
       const repository = JSON.parse(repositoryResult.stdout).nameWithOwner;
