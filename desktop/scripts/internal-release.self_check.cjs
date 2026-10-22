@@ -107,7 +107,7 @@ async function main() {
 
   // The former implementation rejects this valid chain (main jobs skipped),
   // while accepting a summary alone would silently lose all required checks.
-  function reusedFixture(change = () => {}) {
+  function reusedFixture(change = () => {}, collapsed = false) {
     const head = "b".repeat(40), tested = "c".repeat(40), tree = "d".repeat(40), base = "e".repeat(40);
     const repository = "owner/repo";
     const proof = { schema: 1, repository, runId: 84, attempt: 1, pullRequest: 7, head, base, commit: tested, tree };
@@ -139,6 +139,10 @@ async function main() {
       if (command === "gh" && args[1] === "view") {
         const run = JSON.parse(result.stdout);
         for (const job of run.jobs) if (job.name !== "source-and-renderer") job.conclusion = "skipped";
+        if (collapsed) {
+          run.jobs = run.jobs.filter(job => !/^source-(core|moments-visual|reply-visual|rpa|runtime)$/.test(job.name));
+          run.jobs.push({ name: "source-${{ matrix.group }}", conclusion: "skipped" });
+        }
         run.jobs.push({ name: "ci-source-proof", conclusion: "success", steps: [
           { name: "Verify unchanged merge tree and required CI", conclusion: "success" }] });
         result.stdout = JSON.stringify(run);
@@ -148,6 +152,8 @@ async function main() {
   }
   assert.equal(verifiedCiRun({ execute: reusedFixture() })?.sourceRunId, 84,
     "An independently verified identical synthetic merge tree can replace duplicate main checks");
+  assert.equal(verifiedCiRun({ execute: reusedFixture(() => {}, true) })?.sourceRunId, 84,
+    "A skipped matrix may be reported once before expansion, while original PR groups must all succeed");
   for (const mutate of [
     ({ data, commit }) => { data[`git/commits/${commit}`].tree.sha = "f".repeat(40); },
     ({ data, tested }) => { data[`git/commits/${tested}`].parents.pop(); },
