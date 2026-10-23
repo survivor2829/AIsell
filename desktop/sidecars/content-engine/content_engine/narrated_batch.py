@@ -4863,6 +4863,8 @@ class NarratedBatchDomain:
                 track_id = (selection.get("trackId") or selection.get("track_id")
                             or selection.get("musicTrackId") or private.get("music_track", {}).get("track_id")
                             or private.get("selected_music_track_id"))
+                if selection.get("mode") == "none":
+                    c["music_status"] = "none"
                 if track_id:
                     c["music_track_id"] = track_id
                     records = [item for item in b.get("music_selections", []) if item.get("candidate_id") != c["candidate_id"]]

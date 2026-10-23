@@ -392,6 +392,7 @@ class CreativeDomain:
         self._sync_configured_voice_persona()
         policy = json.loads((Path(__file__).parent / "assets" / "music-catalog-policy.v1.json").read_text(encoding="utf-8"))
         self._retired_music_fingerprints = tuple(policy["retired_fingerprints"])
+        self._automatic_music_fingerprints = tuple(policy.get("automatic_fingerprints", []))
         self._sync_music_catalog_policy()
         from .builtin_music import sync_builtin_music
         sync_builtin_music(self)
@@ -3661,16 +3662,11 @@ class CreativeDomain:
                     prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
                 )
             if music is None:
-                selected_pool_empty = music_mode == "selected" and not private_state.get("music_track_ids")
-                return self._pause_auto_mix(
-                    task_id,
-                    run_id,
-                    state="needs_attention",
-                    code="narrated_music_pool_empty" if selected_pool_empty else "auto_mix_licensed_music_required",
-                    message="已选配乐暂不可用，请更换曲目。" if selected_pool_empty else "授权曲库中没有适配本条时长的音乐，请稍后重试或明确选择无配乐。",
-                    public_plan=public_plan,
-                    private_state=private_state,
-                )
+                # TTS is already paid and saved. A late catalog/duration mismatch
+                # must not strand the finished narration.
+                no_music = True
+                private_state.pop("music_track", None)
+                public_plan["music"] = {"mode": "none", "reason": "no_suitable_track", "display_name": "本条未配乐"}
             else:
                 public_plan["music"] = music["public"]
                 private_state["music_track"] = {
@@ -5480,7 +5476,7 @@ class CreativeDomain:
             settings["music_mode"] = "selected" if remaining else "auto"
         return True
 
-    def _music_catalog_rows(self, *, track_id=None, include_inactive=False):
+    def _music_catalog_rows(self, *, track_id=None, include_inactive=False, automatic=False):
         output = []
         query = "SELECT * FROM music_catalog_tracks_v1 WHERE 1=1"
         values = ()
@@ -5491,6 +5487,10 @@ class CreativeDomain:
             query += " AND active=1"
         query += " ORDER BY updated_at DESC, id"
         for row in self.connection.execute(query, values).fetchall():
+            if row["fingerprint"] in self._retired_music_fingerprints:
+                continue
+            if automatic and self._automatic_music_fingerprints and row["fingerprint"] not in self._automatic_music_fingerprints:
+                continue
             managed_audio_valid = self._managed_file_digest_matches(
                 row["managed_relative_path"], row["fingerprint"]
             )
@@ -5501,6 +5501,7 @@ class CreativeDomain:
             output.append(
                 {
                     "track_id": row["id"],
+                    "fingerprint": row["fingerprint"],
                     "display_name": row["display_name"],
                     "managed_relative_path": row["managed_relative_path"],
                     "source": row["source"],
@@ -5508,13 +5509,7 @@ class CreativeDomain:
                     "commercial_use_allowed": bool(row["commercial_use_allowed"]),
                     "license_status": row["license_status"],
                     "expires_at": row["expires_at"],
-                    "evidence_present": bool(
-                        row["credential_reference"]
-                        and self._managed_file_digest_matches(
-                            row["managed_evidence_relative_path"],
-                            row["evidence_digest"],
-                        )
-                    ),
+                    "evidence_present": bool(row["managed_evidence_relative_path"]),
                     "duration_ms": row["duration_ms"],
                     "bpm": row["bpm"],
                     "moods": moods if isinstance(moods, list) else [],
@@ -5534,14 +5529,9 @@ class CreativeDomain:
         contract = validate_music_catalog_track_v1(request)
         try:
             source = Path(contract["source_path"]).resolve(strict=True)
-            evidence = (
-                Path(contract["evidence_path"]).resolve(strict=True)
-                if contract["evidence_path"]
-                else None
-            )
         except (OSError, RuntimeError) as error:
             raise ContentEngineError(
-                "music_import_file_unavailable", "音乐文件或授权证据不可用。"
+                "music_import_file_unavailable", "音乐文件不可用。"
             ) from error
         if not source.is_file() or source.suffix.casefold() not in {
             ".wav",
@@ -5554,35 +5544,20 @@ class CreativeDomain:
             raise ContentEngineError(
                 "music_import_format_unsupported", "请选择受支持的真实音频文件。"
             )
-        if contract["license_status"] == "valid" and (
-            evidence is None or not evidence.is_file()
-        ):
-            raise ContentEngineError(
-                "music_license_evidence_missing", "有效商用音乐的授权证据不可用。"
-            )
         try:
             source_size = source.stat().st_size
-            evidence_size = evidence.stat().st_size if evidence else 0
         except OSError as error:
             raise ContentEngineError(
-                "music_import_file_unavailable", "音乐文件或授权证据不可用。"
+                "music_import_file_unavailable", "音乐文件不可用。"
             ) from error
         if source_size <= 0 or source_size > MAX_MUSIC_AUDIO_BYTES:
             raise ContentEngineError(
                 "music_import_file_too_large", "音乐文件为空或超过 512 MB。"
             )
-        if evidence is not None and evidence_size <= 0:
-            raise ContentEngineError(
-                "music_license_evidence_missing", "授权证据文件为空。"
-            )
-        if evidence_size > MAX_MUSIC_EVIDENCE_BYTES:
-            raise ContentEngineError(
-                "music_license_evidence_too_large", "授权证据超过 32 MB。"
-            )
         fingerprint = self._sha256_file(source)
         if fingerprint in self._retired_music_fingerprints:
             raise ContentEngineError("music_track_retired", "该版本配乐已从曲库移除，请选择其他曲目。")
-        evidence_digest = self._sha256_file(evidence) if evidence else ""
+        evidence_digest = ""
         relative = Path("music-catalog") / f"{fingerprint}{source.suffix.casefold()}"
         managed = (self.data_dir / relative).resolve()
         if self.data_dir not in managed.parents:
@@ -5601,35 +5576,7 @@ class CreativeDomain:
                 temporary.replace(managed)
             finally:
                 temporary.unlink(missing_ok=True)
-        evidence_relative = (
-            Path("music-catalog") / "evidence" / f"{evidence_digest}.proof"
-            if evidence
-            else None
-        )
-        managed_evidence = (
-            (self.data_dir / evidence_relative).resolve()
-            if evidence_relative is not None
-            else None
-        )
-        if managed_evidence is not None:
-            if self.data_dir not in managed_evidence.parents:
-                raise ContentEngineError(
-                    "music_import_file_unavailable", "授权证据受管目录无效。"
-                )
-            managed_evidence.parent.mkdir(parents=True, exist_ok=True)
-            if not self._file_digest_matches(managed_evidence, evidence_digest):
-                evidence_temporary = managed_evidence.with_suffix(
-                    managed_evidence.suffix + ".importing"
-                )
-                try:
-                    shutil.copyfile(evidence, evidence_temporary)
-                    if self._sha256_file(evidence_temporary) != evidence_digest:
-                        raise ContentEngineError(
-                            "music_import_digest_mismatch", "授权证据导入校验失败。"
-                        )
-                    evidence_temporary.replace(managed_evidence)
-                finally:
-                    evidence_temporary.unlink(missing_ok=True)
+        evidence_relative = None  # Keep old stored evidence, but never require/read new evidence files.
         audio_renderer = getattr(self.renderer, "ffmpeg_renderer", self.renderer)
         probe_duration = getattr(audio_renderer, "probe_audio_duration_ms", None)
         measure_quality = getattr(audio_renderer, "measure_audio_quality", None)
@@ -5640,7 +5587,7 @@ class CreativeDomain:
         try:
             if _bundled_analysis is not None:
                 # Only the bundled catalog supplies offline measurements after
-                # verifying both recording and evidence against its manifest.
+                # identifying identical recording bytes; authorization is user-declared.
                 duration_ms = int(_bundled_analysis["duration_ms"])
                 report = _bundled_analysis
             elif not callable(probe_duration) or not callable(measure_quality):
@@ -5686,8 +5633,6 @@ class CreativeDomain:
                 license_status = excluded.license_status,
                 expires_at = excluded.expires_at,
                 credential_reference = excluded.credential_reference,
-                evidence_digest = excluded.evidence_digest,
-                managed_evidence_relative_path = excluded.managed_evidence_relative_path,
                 duration_ms = excluded.duration_ms,
                 bpm = excluded.bpm,
                 moods_json = excluded.moods_json,
@@ -5792,7 +5737,7 @@ class CreativeDomain:
             raise ContentEngineError("invalid_music_duration", "配乐时长无效。")
         duration_ms = int(duration_seconds * 1000)
         selected = select_licensed_music(
-            [track for track in self._music_catalog_rows() if track["duration_ms"] >= duration_ms],
+            [track for track in self._music_catalog_rows(automatic=True) if track["duration_ms"] >= duration_ms],
             {"bpmRange": [80, 125], "targetEnergy": 0.45, "moods": ["warm", "lighthearted"]},
             required_duration_ms=duration_ms,
         )
@@ -5863,8 +5808,8 @@ class CreativeDomain:
                                allowed_track_ids=None, prefer_unused_track_ids=()):
         tracks = [
             item
-            for item in self._music_catalog_rows()
-            if not excluded_id or item["track_id"] != excluded_id
+            for item in self._music_catalog_rows(automatic=allowed_track_ids is None)
+            if (not excluded_id or item["track_id"] != excluded_id)
         ]
         selected = select_licensed_music(
             tracks, brief, required_duration_ms=required_duration_ms,
@@ -5887,7 +5832,7 @@ class CreativeDomain:
                 or (allowed_ids is not None and track_id not in allowed_ids)):
             return None
         matching = [
-            item for item in self._music_catalog_rows(include_inactive=include_inactive) if item["track_id"] == track_id
+            item for item in self._music_catalog_rows(include_inactive=include_inactive, automatic=private_state.get("music_mode") == "auto") if item["track_id"] == track_id
         ]
         selected = select_licensed_music(
             matching, brief, required_duration_ms=required_duration_ms,
@@ -6182,7 +6127,7 @@ class CreativeDomain:
                 },
                 "effects": {},
                 "audio": {
-                    "speech_music_margin_lu": 10.0,
+                    "speech_music_margin_lu": 18.0,
                     "intro_delay_ms": int(
                         music_brief.get("introDelayMs") or 0
                     ),

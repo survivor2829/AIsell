@@ -1475,13 +1475,14 @@ class FFmpegCreativeRenderer:
         music_stem = Path(output).parent / f".auto-mix-music-{uuid.uuid4().hex}.wav"
         graph = ";".join(
             (
-                "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2[voice_meter]",
+                "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2,asplit=2[voice_meter][voice_side]",
                 "[1:a]asetpts=PTS-STARTPTS,"
-                "loudnorm=I=-26:LRA=11:TP=-2.0,"
+                "loudnorm=I=-34:LRA=11:TP=-2.0,"
                 f"{delay_filter}afade=t=in:st={music_fade_in:.3f}:d=0.4,"
                 f"afade=t=out:st={fade_out:.3f}:d=0.8"
                 f"{music_envelope_filter}[music_norm]",
-                f"[music_norm]{post_duck_gain_filter or 'anull'}[music_meter]",
+                "[music_norm][voice_side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250[music_duck]",
+                f"[music_duck]{post_duck_gain_filter or 'anull'}[music_meter]",
             )
         )
         try:
@@ -1523,6 +1524,8 @@ class FFmpegCreativeRenderer:
             )
             voice_series = self._measure_loudness_series(voice_stem)
             music_series = self._measure_loudness_series(music_stem)
+            voice_overall = self.measure_audio_quality(voice_stem)["integrated_lufs"]
+            music_overall = self.measure_audio_quality(music_stem)["integrated_lufs"]
             windows = []
             for caption in captions:
                 start_ms = int(caption.get("start_ms") or 0)
@@ -1551,6 +1554,9 @@ class FFmpegCreativeRenderer:
                         "voiceLufs": round(voice_lufs, 2),
                         "musicLufs": round(music_lufs, 2),
                         "rawMarginLu": round(margin, 2),
+                        "overallMarginLu": round(voice_overall - music_overall, 2),
+                        "voiceIntegratedLufs": voice_overall,
+                        "musicIntegratedLufs": music_overall,
                     }
                 )
             if not windows:
@@ -1564,151 +1570,28 @@ class FFmpegCreativeRenderer:
             music_stem.unlink(missing_ok=True)
 
     @staticmethod
-    def _auto_mix_speech_window_gain_filter(speech_window_gains, *, duration_ms):
-        """Build a smooth post-duck music envelope that is full during speech."""
-        duration = max(0.001, int(duration_ms or 0) / 1000)
-        points = [(0.0, 0.0)]
-
-        def append_point(at_seconds, gain_db):
-            at_seconds = min(duration, max(0.0, float(at_seconds)))
-            gain_db = float(gain_db)
-            if points and at_seconds < points[-1][0] - 0.0001:
-                raise ContentEngineError(
-                    "auto_mix_voice_music_margin_failed",
-                    "口播字幕时间窗口重叠，无法安全执行逐句音乐平衡。",
-                )
-            if points and abs(points[-1][0] - at_seconds) <= 0.0001:
-                points[-1] = (points[-1][0], gain_db)
-            else:
-                points.append((at_seconds, gain_db))
-
-        previous_end = 0.0
-        previous_gain = 0.0
-        for item in speech_window_gains:
-            start = min(duration, max(0.0, int(item["startMs"]) / 1000))
-            end = min(duration, max(start, int(item["endMs"]) / 1000))
-            gain = float(item["gainDb"])
-            if end <= start:
-                raise ContentEngineError(
-                    "audio_quality_measure_failed", "口播字幕时间窗口无效。"
-                )
-            if start < previous_end - 0.0001:
-                raise ContentEngineError(
-                    "auto_mix_voice_music_margin_failed",
-                    "口播字幕时间窗口重叠，无法安全执行逐句音乐平衡。",
-                )
-            gap = max(0.0, start - previous_end)
-            if gap:
-                ramp = min(0.08, gap / 2)
-                append_point(previous_end, previous_gain)
-                append_point(previous_end + ramp, 0.0)
-                append_point(start - ramp, 0.0)
-            append_point(start, gain)
-            append_point(end, gain)
-            previous_end = end
-            previous_gain = gain
-        if previous_end < duration:
-            append_point(previous_end, previous_gain)
-            append_point(previous_end + min(0.08, duration - previous_end), 0.0)
-        append_point(duration, 0.0)
-
-        expression = f"{points[-1][1]:.4f}"
-        for index in range(len(points) - 2, -1, -1):
-            start, start_gain = points[index]
-            end, end_gain = points[index + 1]
-            span = end - start
-            if span <= 0.0001:
-                continue
-            interpolated = (
-                f"({start_gain:.4f}+({end_gain - start_gain:.4f})*"
-                f"(t-{start:.3f})/{span:.3f})"
-            )
-            expression = f"if(lt(t,{end:.3f}),{interpolated},{expression})"
-        return f"volume='pow(10,({expression})/20)':eval=frame"
-
-    @staticmethod
     def _auto_mix_music_gain_plan(windows, *, duration_ms):
-        """Choose a global gain when possible, otherwise balance each phrase."""
-        prepared = []
-        for index, item in enumerate(windows):
-            raw_margin = float(item["rawMarginLu"])
-            start_ms = int(item["startMs"])
-            end_ms = int(item["endMs"])
-            if (
-                not math.isfinite(raw_margin)
-                or end_ms <= start_ms
-            ):
-                raise ContentEngineError(
-                    "audio_quality_measure_failed", "说话窗口混音证据无效。"
-                )
-            prepared.append(
-                {
-                    "captionId": str(item.get("captionId") or f"caption-{index + 1}"),
-                    "startMs": start_ms,
-                    "endMs": end_ms,
-                    "rawMarginLu": raw_margin,
-                }
-            )
-        if not prepared:
-            raise ContentEngineError(
-                "auto_mix_music_not_audible", "说话窗口内未检测到可测量音乐。"
-            )
-
-        lower = max(item["rawMarginLu"] - 12 for item in prepared)
-        upper = min(item["rawMarginLu"] - 8 for item in prepared)
-        if lower <= upper + 0.01:
-            desired = (
-                sum(item["rawMarginLu"] for item in prepared) / len(prepared) - 10
-            )
-            gain = min(max(desired, lower), upper)
-            if abs(gain) > AUTO_MIX_MAX_SPEECH_WINDOW_GAIN_DB:
-                raise ContentEngineError(
-                    "auto_mix_voice_music_margin_failed",
-                    "逐句音乐平衡需要超出安全范围的音乐增益，正式成片已停止。",
-                )
-            speech_window_gains = [
-                {
-                    "captionId": item["captionId"],
-                    "startMs": item["startMs"],
-                    "endMs": item["endMs"],
-                    "gainDb": round(gain, 2),
-                }
-                for item in prepared
-            ]
-            return {
-                "strategy": "global",
-                "music_gain_db": round(gain, 2),
-                "post_duck_gain_filter": f"volume={gain:.3f}dB",
-                "speech_window_gains": speech_window_gains,
-            }
-
-        speech_window_gains = []
-        for item in prepared:
-            gain = item["rawMarginLu"] - 10.0
-            if abs(gain) > AUTO_MIX_MAX_SPEECH_WINDOW_GAIN_DB:
-                raise ContentEngineError(
-                    "auto_mix_voice_music_margin_failed",
-                    "逐句平衡需要超出安全范围的音乐增益，正式成片已停止。",
-                )
-            speech_window_gains.append(
-                {
-                    "captionId": item["captionId"],
-                    "startMs": item["startMs"],
-                    "endMs": item["endMs"],
-                    "gainDb": round(gain, 2),
-                }
-            )
+        """Target an 18 LU overall gap while keeping every phrase above 15 LU."""
+        if not windows:
+            raise ContentEngineError("auto_mix_music_not_audible", "说话窗口内未检测到可测量音乐。")
+        margins = [float(item["rawMarginLu"]) for item in windows]
+        overall = [float(item["overallMarginLu"]) for item in windows if "overallMarginLu" in item]
+        if not all(math.isfinite(value) for value in margins + overall):
+            raise ContentEngineError("audio_quality_measure_failed", "说话窗口混音证据无效。")
+        # A constant gain retains the speech-driven ducking envelope. Allow
+        # music that is too quiet to rise, capped by the weakest spoken phrase.
+        # Keep 0.2 LU of headroom above the sentence floor for meter rounding.
+        desired = min(overall or margins) - 18.0
+        gain = round(min(desired, min(margins) - 15.2), 2)
+        if abs(gain) > AUTO_MIX_MAX_SPEECH_WINDOW_GAIN_DB:
+            raise ContentEngineError("auto_mix_voice_music_margin_failed", "音乐增益超出安全范围。")
         return {
-            "strategy": "per_speech_window",
-            "music_gain_db": round(
-                sum(item["gainDb"] for item in speech_window_gains)
-                / len(speech_window_gains),
-                2,
-            ),
-            "post_duck_gain_filter": FFmpegCreativeRenderer._auto_mix_speech_window_gain_filter(
-                speech_window_gains, duration_ms=duration_ms
-            ),
-            "speech_window_gains": speech_window_gains,
+            "strategy": "global", "music_gain_db": gain,
+            "post_duck_gain_filter": f"volume={gain:.3f}dB",
+            "speech_window_gains": [
+                {"captionId": item["captionId"], "startMs": item["startMs"],
+                 "endMs": item["endMs"], "gainDb": gain} for item in windows
+            ],
         }
 
     @staticmethod
@@ -1720,10 +1603,10 @@ class FFmpegCreativeRenderer:
         verified = []
         for item in windows:
             margin = float(item["rawMarginLu"])
-            if not math.isfinite(margin) or margin < 8 - 0.01 or margin > 12 + 0.01:
+            if not math.isfinite(margin) or margin < 15 - 0.01 or float(item.get("overallMarginLu", margin)) < 15 - 0.01:
                 raise ContentEngineError(
                     "auto_mix_voice_music_margin_failed",
-                    "说话窗口人声与音乐余量未达到 8 到 12 LU。",
+                    "人声与音乐响度差未达到至少 15 LU。",
                 )
             result = dict(item)
             result["marginLu"] = round(margin, 2)
@@ -1900,7 +1783,7 @@ class FFmpegCreativeRenderer:
             )
             for _ in range(2):
                 margins = [float(item["rawMarginLu"]) for item in measured_windows]
-                if margins and min(margins) >= 8 - 0.01 and max(margins) <= 12 + 0.01:
+                if margins and min(margins) >= 15 - 0.01 and all(float(item.get("overallMarginLu", 15)) >= 15 - 0.01 for item in measured_windows):
                     break
                 calibration_plan = self._auto_mix_music_gain_plan(
                     measured_windows, duration_ms=round(duration * 1000)
@@ -1942,13 +1825,14 @@ class FFmpegCreativeRenderer:
             )
             graph = ";".join(
                 (
-                    "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2[voice_mix]",
+                    "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2,asplit=2[voice_mix][voice_side]",
                     "[1:a]asetpts=PTS-STARTPTS,"
-                    "loudnorm=I=-26:LRA=11:TP=-2.0,"
+                    "loudnorm=I=-34:LRA=11:TP=-2.0,"
                     f"{delay_filter}afade=t=in:st={music_fade_in:.3f}:d=0.4,"
                     f"afade=t=out:st={fade_out:.3f}:d=0.8"
                     f"{music_envelope_filter}[music_norm]",
-                    f"[music_norm]{post_duck_gain_filter}[music_mix]",
+                    "[music_norm][voice_side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250[music_duck]",
+                    f"[music_duck]{post_duck_gain_filter}[music_mix]",
                     "[voice_mix][music_mix]amix=inputs=2:duration=first:"
                     "dropout_transition=0,loudnorm=I=-15:LRA=8:TP=-1.2,"
                     "alimiter=limit=0.86:attack=5:release=50:level=false[aout]",

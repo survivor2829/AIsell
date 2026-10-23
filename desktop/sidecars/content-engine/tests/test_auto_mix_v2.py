@@ -387,7 +387,7 @@ class _HappyRenderer(_FakeRenderer):
             "audioQualityReport": {
                 "integrated_lufs": -15.1,
                 "true_peak_dbtp": -1.2,
-                "speech_music_margin_lu": 10.0,
+                "speech_music_margin_lu": 18.0,
             },
         }
 
@@ -1066,7 +1066,7 @@ class AutoMixV2ContractTests(unittest.TestCase):
             "auto_mix_material_facts_insufficient", context.exception.code
         )
 
-    def test_music_selection_requires_current_commercial_evidence(self):
+    def test_music_selection_honors_commercial_declaration_without_evidence_files(self):
         brief = build_music_brief(
             title="真实清扫现场",
             copy_framework="节奏稳健，先展示过程，再展示结果。",
@@ -1102,9 +1102,7 @@ class AutoMixV2ContractTests(unittest.TestCase):
                 "duration_ms": 90_000,
             },
         ]
-        self.assertIsNone(
-            select_licensed_music(tracks, brief, required_duration_ms=30_000, now=now)
-        )
+        self.assertEqual("missing-proof", select_licensed_music(tracks, brief, required_duration_ms=30_000, now=now)["track_id"])
 
         tracks.append(
             {
@@ -1133,8 +1131,26 @@ class AutoMixV2ContractTests(unittest.TestCase):
         tracks[-1]["commercial_scope"] = "non-commercial / 禁止商用"
         tracks[-1]["commercial_use_allowed"] = False
         self.assertIsNone(
-            select_licensed_music(tracks, brief, required_duration_ms=30_000, now=now)
+            select_licensed_music([tracks[-1]], brief, required_duration_ms=30_000, now=now)
         )
+
+    def test_music_prefers_soothing_tracks_with_similar_content_fit(self):
+        common = {
+            "license_status": "valid", "commercial_use_allowed": True,
+            "evidence_present": True, "analysis_status": "ready",
+            "duration_ms": 60_000, "bpm": 100, "energy": 0.4,
+        }
+        tracks = [
+            {**common, "track_id": "a-calm", "moods": ["credible", "calm"]},
+            {**common, "track_id": "z-other", "moods": ["credible", "bright"]},
+        ]
+        brief = {"moods": ["credible"], "targetEnergy": 0.4, "bpmRange": [95, 128]}
+        selected = select_licensed_music(tracks, brief, required_duration_ms=30_000)
+        self.assertEqual("a-calm", selected["track_id"])
+        # Explicit legacy pools retain their requested selection.
+        selected = select_licensed_music(tracks, brief, required_duration_ms=30_000,
+                                         allowed_track_ids=["z-other"])
+        self.assertEqual("z-other", selected["track_id"])
 
     def test_material_structure_changes_music_brief_and_selected_track(self):
         energetic_signals = [
@@ -1472,7 +1488,7 @@ class AutoMixV2ContractTests(unittest.TestCase):
             {
                 "integrated_lufs": -15.1,
                 "true_peak_dbtp": -1.2,
-                "speech_music_margin_lu": 10.0,
+                "speech_music_margin_lu": 18.0,
             }
         )
         self.assertTrue(report["passed"])
@@ -1736,6 +1752,25 @@ class AutoMixV2ServiceTests(unittest.TestCase):
         self.assertEqual("completed", plan["state"])
         return plan, renderer
 
+    def test_final_voice_duration_exceeds_longest_music_completes_with_narration(self):
+        self._install_approved_voice()
+        self._import_valid_music()
+        renderer = _HappyRenderer()
+        self._use_pipeline(_HappyAnalyzer(), renderer)
+        domain = self.service.creative_domain
+        tracks = [{**dict(row), "duration_ms": 4_000, "loop_start_ms": None, "loop_end_ms": None} for row in domain._music_catalog_rows()]
+        created = self.service.create_auto_mix_v2(self._request())
+        with mock.patch.object(domain, "_music_catalog_rows", return_value=tracks):
+            task = self.service.run_creative_task(created["taskId"])
+        plan = self.service.get_auto_mix_plan_v2(project_id=created["projectId"])
+        self.assertEqual("completed", task["status"], plan)
+        self.assertEqual("none", plan["music"]["mode"])
+        self.assertEqual("本条未配乐", plan["music"]["display_name"])
+        self.assertTrue(plan["speechCaptions"])
+        self.assertGreater(plan["selectedDurationMs"], max(track["duration_ms"] for track in tracks))
+        self.assertEqual("none", renderer.rendered_recipes[-1]["music_mode"])
+        self.assertTrue(renderer.rendered_recipes[-1]["voice_audio_path"])
+
     def test_explicit_no_music_retains_voice_validation_without_music_catalog(self):
         _, renderer = self._complete_happy_v2()
         recipe = dict(renderer.rendered_recipes[-1])
@@ -1879,7 +1914,7 @@ class AutoMixV2ServiceTests(unittest.TestCase):
                     "auto_mix_music_authorization_changed", failed["error_code"]
                 )
 
-    def test_v2_render_rechecks_music_audio_and_evidence_digests(self):
+    def test_v2_render_rechecks_managed_music_audio_integrity(self):
         plan, renderer = self._complete_happy_v2()
         candidate_id = plan["generatedVideoId"]
         track = self.service.connection.execute(
@@ -1892,7 +1927,6 @@ class AutoMixV2ServiceTests(unittest.TestCase):
         render_count = len(renderer.rendered_recipes)
         managed_paths = (
             self.root / track["managed_relative_path"],
-            self.root / track["managed_evidence_relative_path"],
         )
 
         for managed_path in managed_paths:
@@ -3338,7 +3372,7 @@ class AutoMixV2ServiceTests(unittest.TestCase):
                     SET license_status = 'restricted'
                     WHERE id = ?
                     """,
-                    (imported["trackId"],),
+                    (kwargs["recipe"]["music_track_id"],),
                 )
                 return rendered
 

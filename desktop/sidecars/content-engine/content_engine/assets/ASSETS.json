@@ -46,81 +46,28 @@
       "license": "LicenseRef-Xiaoxi-Original"
     },
     {
-      "id": "builtin_music_catalog_v1",
-      "type": "music_catalog",
-      "file": "builtin-music.v1.json",
-      "source": "Original-author CC0 recordings; per-track original pages, authors, download dates and full license are preserved in evidenceFile",
-      "license": "CC0-1.0"
+      "id": "builtin_music_my-soul-july",
+      "type": "bgm",
+      "file": "builtin-music/my-soul-july.mp3",
+      "sha256": "b45e8aefe7e427dcd843244148484319d22fb7bbfe511ccdad383ecc22ef40f7",
+      "source": "User supplied",
+      "license": "LicenseRef-User-Authorized-Commercial"
     },
     {
-      "id": "builtin_music_happy",
+      "id": "builtin_music_repeat-jimo-atu",
       "type": "bgm",
-      "file": "builtin-music/happy.mp3",
-      "sha256": "3a614cda671863e3c67084a5a131923dfa5db173d54633a1796f819a3c020d89",
-      "source": "https://opengameart.org/content/happy",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/happy.license.json"
+      "file": "builtin-music/repeat-jimo-atu.mp3",
+      "sha256": "03ea5ac36df1ac597b77c72604fa3745984be9952e3cc9692216240b1945ef9c",
+      "source": "User supplied",
+      "license": "LicenseRef-User-Authorized-Commercial"
     },
     {
-      "id": "builtin_music_elevator-music",
+      "id": "builtin_music_soft-light-mujiuer",
       "type": "bgm",
-      "file": "builtin-music/elevator-music.mp3",
-      "sha256": "b34798f41a8dafdf407da1e15160a13087cc8bd9f66b0c4a6be72fcf2abcc6a4",
-      "source": "https://opengameart.org/content/elevator-music",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/elevator-music.license.json"
-    },
-    {
-      "id": "builtin_music_inspiration-1",
-      "type": "bgm",
-      "file": "builtin-music/inspiration-1.mp3",
-      "sha256": "3579846a27cb1851939e798dd271a5bf1642e645b026432ef59017d52c9eb8f6",
-      "source": "https://opengameart.org/content/inspiration-1",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/inspiration-1.license.json"
-    },
-    {
-      "id": "builtin_music_the-love-cycle-guitar",
-      "type": "bgm",
-      "file": "builtin-music/the-love-cycle-guitar.mp3",
-      "sha256": "cd59c96dc79e924c2de7a2a5be5dbdbc4ba4fec80c170d939e0841ad9ea51ed1",
-      "source": "https://opengameart.org/content/the-love-cycle-guitar",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/the-love-cycle-guitar.license.json"
-    },
-    {
-      "id": "builtin_music_river",
-      "type": "bgm",
-      "file": "builtin-music/river.mp3",
-      "sha256": "17359bba313244c573c4f085ddf1d63fadefe2f964c5d3b4ee36ee36788937e6",
-      "source": "https://opengameart.org/content/river",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/river.license.json"
-    },
-    {
-      "id": "builtin_music_forever-version-2",
-      "type": "bgm",
-      "file": "builtin-music/forever-version-2.mp3",
-      "sha256": "89f799fc0c53a2a4ce073f758b4f7b8661682e6a6db436f3eada8a7e819d4a35",
-      "source": "https://opengameart.org/content/forever-version-2",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/forever-version-2.license.json"
-    },
-    {
-      "id": "builtin_music_taken-lightly",
-      "type": "bgm",
-      "file": "builtin-music/taken-lightly.mp3",
-      "sha256": "c73f8bd479709e68efa1e2f5b93445c6c6e40fcf236b29310e91ee99e1bfe288",
-      "source": "https://opengameart.org/content/taken-lightly",
-      "author": "Alex McCulloch (Pro Sensory)",
-      "license": "CC0-1.0",
-      "license_file": "builtin-music/taken-lightly.license.json"
+      "file": "builtin-music/soft-light-mujiuer.mp3",
+      "sha256": "ceacd810acf74e556474381d12e523bfed157e11a5b559e6cba019b85616a4e7",
+      "source": "User supplied",
+      "license": "LicenseRef-User-Authorized-Commercial"
     }
   ]
 }

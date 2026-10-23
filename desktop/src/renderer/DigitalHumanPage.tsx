@@ -38,8 +38,6 @@ function ImageDigitalHumanPage() {
   const [preview, setPreview] = useState('');
   const [busy, setBusy] = useState('');
   const [audio, setAudio] = useState<DigitalHumanAsset | null>(null);
-  const [voicePreview, setVoicePreview] = useState('');
-  const [preparedSpeech, setPreparedSpeech] = useState('');
   const [transcriptText, setTranscriptText] = useState('');
   const [voiceRecommendation, setVoiceRecommendation] = useState('');
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
@@ -93,42 +91,14 @@ function ImageDigitalHumanPage() {
     if (selected?.voiceSource === 'uploaded_audio' && selected.status === 'preview_ready') setTranscriptText(selected.script);
     else setTranscriptText('');
   }, [selected?.id, selected?.status]);
-  useEffect(() => {
-    setPreparedSpeech('');
-    if (!selected?.audio?.prepared) return;
-    let cancelled = false;
-    void unwrap(api().speechMedia({ id: selected.id })).then((result) => { if (!cancelled) setPreparedSpeech(result.audioDataUrl); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [selected?.id, selected?.audio?.prepared]);
   function chooseCharacterVoice(characterVoice: 'male' | 'female' | 'unknown') {
-    const catalog = capabilities?.voices || [], preference = capabilities?.voicePreferences?.[characterVoice];
-    const voice = catalog.find((v) => v.gender === characterVoice && v.available && v.id === preference)
-      || catalog.find((v) => v.gender === characterVoice && v.digitalHumanDefault);
-    setDraft((current) => ({ ...current, characterVoice, voicePersonaId: voice?.id || '' }));
-    setVoicePreview('');
+    setDraft((current) => ({ ...current, characterVoice, voicePersonaId: '' }));
+
   }
   async function importAudio() {
     await perform('audio', async () => {
       const item = await unwrap(api().importAudio()); if (!item) return;
-      setAudio(item); setVoicePreview(''); setDraft((current) => ({ ...current, audioAssetId: item.id }));
-    });
-  }
-  async function auditionVoice() {
-    if (!draft.voicePersonaId) return;
-    await perform('voice-preview', async () => {
-      try {
-        const result = await unwrap(api().previewVoice({ voicePersonaId: draft.voicePersonaId! }));
-        setVoicePreview(result.audioDataUrl);
-      } finally {
-        await loadCapabilities().catch(() => {});
-      }
-    });
-  }
-  async function useVoice() {
-    if (!draft.voicePersonaId || !draft.characterVoice || draft.characterVoice === 'unknown') return;
-    await perform('voice-select', async () => {
-      await unwrap(api().selectVoice({ voicePersonaId: draft.voicePersonaId!, characterVoice: draft.characterVoice as 'male' | 'female' }));
-      await loadCapabilities(); setNotice({ kind: 'success', message: '数字人的声音已保存，线索视频混剪默认声音保持独立。' });
+      setAudio(item); setDraft((current) => ({ ...current, audioAssetId: item.id }));
     });
   }
   function apply(task: DigitalHumanTask) {
@@ -143,7 +113,7 @@ function ImageDigitalHumanPage() {
   }
   function newSample() {
     setStep(0);
-    selection.current = ''; setSelected(null); setPreview(''); setPreparedSpeech(''); setVoicePreview(''); loadedPreview.current = ''; setNotice(null);
+    selection.current = ''; setSelected(null); setPreview(''); loadedPreview.current = ''; setNotice(null);
     setDraft(current => ({ ...current, sourceTaskId: selected?.id, ...(current.voiceSource === 'cloned_voice' ? { voicePersonaId: capabilities?.voices.find((v) => v.gender === current.characterVoice && v.digitalHumanDefault)?.id || '' } : {}), voiceSource: current.voiceSource === 'uploaded_audio' ? 'uploaded_audio' : 'official', voiceStyle: 'workbench', durationSeconds: [15, 30, 45].includes(current.durationSeconds) ? current.durationSeconds : 15 }));
   }
   async function importImage(role: 'person' | 'product') {
@@ -154,14 +124,19 @@ function ImageDigitalHumanPage() {
       setDraft((current) => ({ ...current, [`${role}AssetId`]: image.id }));
       if (role === 'person') {
         const recommendation = await unwrap(api().recommendVoice({ personAssetId: image.id }));
-        setVoiceRecommendation(recommendation.reason); setVoicePreview('');
-        setDraft((current) => ({ ...current, characterVoice: recommendation.characterVoice, ...(current.voiceSource === 'official' ? { voicePersonaId: recommendation.voicePersonaId } : {}) }));
+        setVoiceRecommendation(recommendation.reason);
+        setDraft((current) => ({ ...current, characterVoice: recommendation.characterVoice, ...(current.voiceSource === 'official' ? { voicePersonaId: '' } : {}) }));
       }
     });
   }
+  const automaticVoice = capabilities?.voices.find((voice) => voice.available && voice.gender === draft.characterVoice && voice.id === capabilities.voicePreferences?.[draft.characterVoice])
+    || capabilities?.voices.find((voice) => voice.available && voice.gender === draft.characterVoice && voice.digitalHumanDefault)
+    || capabilities?.voices.find((voice) => voice.available && voice.gender === draft.characterVoice);
+  const selectedVoiceId = draft.voicePersonaId || automaticVoice?.id || '';
+  const resolvedDraft = { ...draft, ...(draft.voiceSource === 'official' ? { voicePersonaId: selectedVoiceId } : {}) };
   async function makePreview() {
     await perform('preview', async () => {
-      const result = await api().saveAndPreview({ ...draft, ...(selected?.status === 'draft' ? { id: selected.id } : {}) });
+      const result = await api().saveAndPreview({ ...resolvedDraft, ...(selected?.status === 'draft' ? { id: selected.id } : {}) });
       if (result.data) apply(result.data);
       if (!result.ok) throw new Error(result.error || '预览未开始，草稿已保留。');
       setStep(2);
@@ -169,7 +144,7 @@ function ImageDigitalHumanPage() {
   }
   async function saveDraft() {
     await perform('save', async () => {
-      apply(await unwrap(api().create({ ...draft, ...(selected?.status === 'draft' ? { id: selected.id } : {}) })));
+      apply(await unwrap(api().create({ ...resolvedDraft, ...(selected?.status === 'draft' ? { id: selected.id } : {}) })));
       setNotice({ kind: 'success', message: '草稿已保存。' });
     });
   }
@@ -178,7 +153,7 @@ function ImageDigitalHumanPage() {
     setStep(task.status === 'draft' ? 0 : 2);
     apply(task); setDraft({ personAssetId: task.personAssetId, productAssetId: task.productAssetId, sceneId: task.sceneId,
       voiceStyle: task.voiceStyle, voiceSource: task.voiceSource, voicePersonaId: task.voicePersonaId, audioAssetId: task.audioAssetId, characterVoice: task.characterVoice, durationSeconds: task.durationSeconds, script: task.script });
-    setImages({}); setAudio(task.audioAssetId ? { id: task.audioAssetId, name: task.audioName || '已保存录音' } : null); setVoicePreview(''); setVoiceRecommendation(''); setPreview(''); loadedPreview.current = ''; setNotice(null);
+    setImages({}); setAudio(task.audioAssetId ? { id: task.audioAssetId, name: task.audioName || '已保存录音' } : null); setVoiceRecommendation(''); setPreview(''); loadedPreview.current = ''; setNotice(null);
   }
   async function download() {
     if (!selected?.generatedVideoId) return;
@@ -193,7 +168,7 @@ function ImageDigitalHumanPage() {
   const videoUrl = selected?.status === 'completed' && /^generated_video_[A-Za-z0-9_-]+$/u.test(selected.generatedVideoId)
     ? `xiaoxi-content://generated/${selected.generatedVideoId}/video` : '';
   const serviceUnavailable = !legacyTask && capabilities && !capabilities.ready;
-  const canPreview = Boolean((legacyTask || capabilities?.ready) && draft.personAssetId && draft.productAssetId && (draft.voiceSource === 'uploaded_audio' ? draft.audioAssetId : draft.script.trim()) && (draft.voiceSource !== 'official' || (draft.characterVoice !== 'unknown' && capabilities?.voices.some((voice) => voice.id === draft.voicePersonaId && voice.available))) && (draft.voiceSource !== 'cloned_voice' || !!draft.voicePersonaId) && !locked && !busy);
+  const canPreview = Boolean((legacyTask || capabilities?.ready) && draft.personAssetId && draft.productAssetId && (draft.voiceSource === 'uploaded_audio' ? draft.audioAssetId : draft.script.trim()) && (draft.voiceSource !== 'official' || (draft.characterVoice !== 'unknown' && capabilities?.voices.some((voice) => voice.id === selectedVoiceId && voice.available))) && (draft.voiceSource !== 'cloned_voice' || !!draft.voicePersonaId) && !locked && !busy);
   const scene = capabilities?.scenes.find((item) => item.id === draft.sceneId);
   const previewHelp = legacyTask ? '旧任务沿用原制作方式，开始时检查对应生成服务。' : !capabilities ? '正在检查生成服务…' : !capabilities.ready ? capabilities.message
     : preview ? '确认人物、产品和比例后，再生成视频。'
@@ -228,23 +203,21 @@ function ImageDigitalHumanPage() {
         <div className="dh-voice-choice" role="group" aria-label="选择讲解方式">{([{ id: 'official', label: '读我的文案', icon: Volume2 }, { id: 'uploaded_audio', label: '用我的录音', icon: Mic }] as const).map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={draft.voiceSource === id} disabled={locked || !!busy} onClick={() => {
           if (draft.voiceSource === id) return;
           const voice = capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.id === capabilities.voicePreferences?.[draft.characterVoice || 'unknown']) || capabilities?.voices.find((v) => v.gender === draft.characterVoice && v.digitalHumanDefault);
-          setDraft({ ...draft, voiceSource: id, voicePersonaId: id === 'official' ? voice?.id || '' : '' }); setVoicePreview('');
+          setDraft({ ...draft, voiceSource: id, voicePersonaId: id === 'official' ? voice?.id || '' : '' });
         }}><Icon size={24} /><span>{label}</span>{draft.voiceSource === id && <Check size={16} />}</button>)}</div>
         <label className="dh-field"><span>{draft.voiceSource === 'uploaded_audio' ? '场景与产品说明（可选）' : '想讲什么？'}</span><textarea disabled={locked || !!busy} maxLength={legacyTask ? 160 : 1800} rows={4} value={draft.script}
-          placeholder={draft.voiceSource === 'uploaded_audio' ? '录音决定实际讲解内容；这里可补充产品与画面说明。' : '写出整条视频实际要讲的话，包含介绍、解释和收尾。'} aria-describedby="dh-script-help" onChange={(event) => { setDraft({ ...draft, script: event.target.value }); setVoicePreview(''); }} /></label>
+          placeholder={draft.voiceSource === 'uploaded_audio' ? '录音决定实际讲解内容；这里可补充产品与画面说明。' : '写出整条视频实际要讲的话，包含介绍、解释和收尾。'} aria-describedby="dh-script-help" onChange={(event) => { setDraft({ ...draft, script: event.target.value }); }} /></label>
         <p className="dh-quality" id="dh-script-help">{draft.voiceSource === 'uploaded_audio' ? '使用录音中的实际讲话和原声音，字幕根据录音识别，不改读这里的文字。' : legacyTask ? '旧任务沿用原方案，口播文案最多160字。' : selected && selected.pipelineVersion === 2 && selected.narrationPolicy !== 'original_script' ? '这条旧任务沿用原有固定分段方案；按原稿自然时长制作请新建任务。' : `目标${draft.durationSeconds}秒，可按约${draft.durationSeconds * 4}字准备。保留完整原稿和自然语速，成片时长以实际讲话为准。`}</p>
         <div className="dh-voice" aria-label="数字人声音">
           {(!draft.voiceSource || draft.voiceSource === 'cloned_voice') && <p className="dh-quality">{draft.voiceSource === 'cloned_voice' ? '专属音色（历史任务）' : '沿用原任务声音'}</p>}
           {draft.voiceSource === 'official' && <>
             <div className="dh-options"><label className="dh-field"><span>人物声音</span><select disabled={locked || !!busy} value={draft.characterVoice || 'unknown'} onChange={(event) => chooseCharacterVoice(event.target.value as 'male' | 'female' | 'unknown')}>
               <option value="unknown">请选择男声或女声</option><option value="male">男声</option><option value="female">女声</option></select></label>
-              <label className="dh-field"><span>配音音色</span><select disabled={locked || !!busy} value={draft.voicePersonaId || ''} onChange={(event) => { setDraft({ ...draft, voicePersonaId: event.target.value }); setVoicePreview(''); }}>
-                <option value="">请选择音色</option>{capabilities?.voices.filter((voice) => voice.gender === draft.characterVoice).map((voice) => <option key={voice.id} value={voice.id}>{voice.name}{voice.available ? '' : ' · 待试听'}</option>)}
+              <label className="dh-field"><span>配音音色</span><select disabled={locked || !!busy} value={draft.voicePersonaId || ''} onChange={(event) => { setDraft({ ...draft, voicePersonaId: event.target.value }); }}>
+                <option value="">自动选择</option>{capabilities?.voices.filter((voice) => voice.gender === draft.characterVoice).map((voice) => <option key={voice.id} value={voice.id} disabled={!voice.available}>{voice.name}{voice.available ? '' : ' · 暂不可用'}</option>)}
               </select></label></div>
             {voiceRecommendation && <p className="dh-quality">{voiceRecommendation} 可手动调整。</p>}
-            <div className="dh-voice-actions"><button type="button" className="dh-button" data-xiaoxi-digital-human-action="voice-preview" disabled={locked || !!busy || !draft.voicePersonaId} onClick={() => void auditionVoice()}>{busy === 'voice-preview' ? '正在准备试听…' : '试听所选音色'}</button>
-              {voicePreview && !capabilities?.voices.find((v) => v.id === draft.voicePersonaId)?.available && <button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void useVoice()}>采用试听声音</button>}
-            </div>{voicePreview && <audio className="dh-audio" controls src={voicePreview} aria-label="所选音色试听" />}
+
           </>}
           {draft.voiceSource === 'uploaded_audio' && <><button type="button" className="dh-button" disabled={locked || !!busy} onClick={() => void importAudio()}>{audio?.name || '选择自己的录音（WAV / MP3 / M4A）'}</button>
             <p className="dh-quality">保留录音中的完整讲话和本人原声，不用录音朗读另一份文案；成片按实际讲话时长制作。</p></>}
@@ -268,7 +241,6 @@ function ImageDigitalHumanPage() {
         {!working && !videoUrl && <div className={`dh-preview-help${serviceUnavailable ? ' is-unavailable' : ''}`} role="status"><span>{previewHelp}</span>
           {serviceUnavailable && <button className="dh-text-button" disabled={!!busy} onClick={() => void perform('capability', loadCapabilities)}>重新检查</button>}</div>}
         {selected?.error && <div className="dh-message is-error" role="alert"><CircleAlert size={16} /><span>{selected.error}</span></div>}
-        {preparedSpeech && <audio className="dh-audio" controls src={preparedSpeech} aria-label="本片完整口播试听" />}
         {selected?.reusedAudioFrom && <p className="dh-quality">已复用原任务的完整口播与字幕，不重新购买配音。</p>}
         {selected?.voiceSource === 'uploaded_audio' && selected.status === 'preview_ready' && <label className="dh-field"><span>录音字幕校对</span>
           <textarea rows={4} maxLength={5000} disabled={!!busy} value={transcriptText} onChange={(event) => setTranscriptText(event.target.value)} aria-describedby="dh-transcript-help" />

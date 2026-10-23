@@ -3162,17 +3162,17 @@ function registerContentEngineIpc(options = {}) {
       160,
       "music_display_name_missing"
     );
-    const source = validateText(payload.source, 160, "music_source_missing");
+    const source = validateText(payload.source || "用户导入", 160, "music_source_missing");
     const commercialScope = validateText(
-      payload.commercialScope,
+      payload.commercialScope || "用户确认已获授权，可商用",
       240,
       "music_commercial_scope_missing"
     );
-    if (typeof payload.commercialUseAllowed !== "boolean") {
+    if (payload.commercialUseAllowed !== undefined && typeof payload.commercialUseAllowed !== "boolean") {
       invalid("music_commercial_entitlement_invalid");
     }
-    const commercialUseAllowed = payload.commercialUseAllowed;
-    const licenseStatus = String(payload.licenseStatus || "unknown");
+    const commercialUseAllowed = payload.commercialUseAllowed ?? true;
+    const licenseStatus = String(payload.licenseStatus || "valid");
     if (!MUSIC_LICENSE_STATUSES.has(licenseStatus)) {
       invalid("music_license_status_invalid");
     }
@@ -3199,26 +3199,7 @@ function registerContentEngineIpc(options = {}) {
       }
       credentialReference = safeText(payload.credentialReference, 240).trim();
     }
-    let evidencePath = "";
-    if (licenseStatus === "valid") {
-      const evidenceSelection = await openDialog(
-        ["openFile"],
-        undefined,
-        "选择音乐授权证据"
-      );
-      if (evidenceSelection.canceled || evidenceSelection.filePaths.length !== 1) {
-        throw Object.assign(new Error("dialog cancelled"), {
-          code: "CONTENT_DIALOG_CANCELLED"
-        });
-      }
-      evidencePath = validateMusicImportFile(evidenceSelection.filePaths[0], {
-        required: true,
-        maxBytes: MAX_MUSIC_EVIDENCE_BYTES
-      });
-    }
-    if (licenseStatus === "valid" && (!credentialReference || !evidencePath)) {
-      invalid("music_license_evidence_missing");
-    }
+    const evidencePath = ""; // User-confirmed commercial rights need no evidence-file dialog.
     let bpm = null;
     if (payload.bpm !== undefined && payload.bpm !== null) {
       if (!Number.isInteger(payload.bpm) || payload.bpm < 20 || payload.bpm > 300) {
