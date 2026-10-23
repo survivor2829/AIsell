@@ -2422,7 +2422,8 @@ function openWechatSearchResult(query, context = {}) {
       if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
         try { runPowerShell(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
       }
-      return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence };
+      return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
+        searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
     }
     const clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
       XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
@@ -2435,7 +2436,7 @@ function openWechatSearchResult(query, context = {}) {
     }, { ensure: false });
     return clicked?.ok
       ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
-      : clicked;
+      : { ...clicked, searchEvidence, searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
   }
   return runner(SEARCH_SCRIPT, {
     XIAOXI_SEARCH_QUERY: String(query),
@@ -2473,7 +2474,7 @@ function openWechatSearchResultAsync(query, context = {}) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
         }
         return { ...capture.observed, ok: false, reason: resolution.reason, diagnostics: capture.diagnostics, searchEvidence,
-          };
+          searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
       }
       const clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
         XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
@@ -2486,7 +2487,7 @@ function openWechatSearchResultAsync(query, context = {}) {
       }, { ensure: false });
       return clicked?.ok
         ? { ...capture.observed, ...clicked, searchQuery: String(query), searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""), searchResultMode: resolution.mode, searchEvidence }
-        : clicked;
+        : { ...clicked, searchEvidence, searchQueryType: String(context.searchQueryType || 'unknown'), searchFallbackReason: String(context.searchFallbackReason || '') };
     })();
   }
   return runner(SEARCH_SCRIPT, {
@@ -2567,12 +2568,22 @@ $windowRect = $matched.rect
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 $found = $null
 $unavailable = $null
+function Get-TitleComparisonSummary([string]$value, [string]$wanted) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($value)))).Replace('-','').ToLowerInvariant().Substring(0,16) }
+  finally { $sha.Dispose() }
+  $folded = [regex]::Replace($value.Normalize([Text.NormalizationForm]::FormKC), '[\\p{P}\\s]', '')
+  $wantedFolded = [regex]::Replace($wanted.Normalize([Text.NormalizationForm]::FormKC), '[\\p{P}\\s]', '')
+  return @{ length=$value.Length; sha256_16=$hash; exact=($value -ceq $wanted); punctuation_whitespace_width_only=($value -cne $wanted -and $folded -ceq $wantedFolded) }
+}
+$titleSummaries = [Collections.Generic.List[object]]::new()
 for ($i = 0; $i -lt $all.Count; $i++) {
   $item = $all.Item($i)
   $name = $item.Current.Name
   if ([string]::IsNullOrWhiteSpace($name)) { continue }
   $rect = $item.Current.BoundingRectangle
   $inRightHeader = $rect.Left -ge ($windowRect.Left + 260) -and $rect.Top -ge ($windowRect.Top + 30) -and $rect.Top -le ($windowRect.Top + 120)
+  if ($inRightHeader -and $titleSummaries.Count -lt 10) { $titleSummaries.Add((Get-TitleComparisonSummary $name $expected)) }
   if ($inRightHeader -and @("已停用的微信用户", "已停用微信用户", "该微信用户已停用") -contains $name.Trim()) {
     $unavailable = $name.Trim()
     break
@@ -2586,7 +2597,7 @@ for ($i = 0; $i -lt $all.Count; $i++) {
 if ($unavailable -ne $null) {
   @{ ok = $false; reason = "contact_unavailable"; rule_id = (Write-XiaoxiFailure "wx1-r042" "contact_unavailable"); title = $unavailable; windowTitle = $matched.title; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
 } else {
-  @{ ok = ($found -ne $null); title = $found; windowTitle = $matched.title; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
+  @{ ok = ($found -ne $null); title = $found; windowTitle = $matched.title; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64(); titleComparison = @{ expected=(Get-TitleComparisonSummary $expected $expected); titles=@($titleSummaries.ToArray()) } } | ConvertTo-Json -Compress -Depth 6
 }
 `;
 

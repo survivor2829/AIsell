@@ -2620,7 +2620,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "multiple_uia_no_match",
-    "line": 214,
+    "line": 439,
     "classification": "recoverable"
   },
   {
@@ -2628,7 +2628,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "multiple_uia_identity_matches",
-    "line": 214,
+    "line": 442,
     "classification": "recoverable"
   },
   {
@@ -2636,7 +2636,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "ocr_unavailable",
-    "line": 224,
+    "line": 456,
     "classification": "recoverable"
   },
   {
@@ -2644,7 +2644,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "crop_invalid",
-    "line": 224,
+    "line": 456,
     "classification": "recoverable"
   },
   {
@@ -2652,7 +2652,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "candidate_bounds_invalid",
-    "line": 225,
+    "line": 457,
     "classification": "recoverable"
   },
   {
@@ -2660,7 +2660,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "candidate_outside_crop",
-    "line": 225,
+    "line": 457,
     "classification": "recoverable"
   },
   {
@@ -2668,7 +2668,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "multiple_labelled_candidates",
-    "line": 246,
+    "line": 491,
     "classification": "recoverable"
   },
   {
@@ -2676,7 +2676,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "web_boundary_missing",
-    "line": 249,
+    "line": 429,
     "classification": "recoverable"
   },
   {
@@ -2684,7 +2684,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "web_boundary_label_invalid",
-    "line": 249,
+    "line": 513,
     "classification": "recoverable"
   },
   {
@@ -2692,7 +2692,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "reported_boundary_invalid",
-    "line": 257,
+    "line": 521,
     "classification": "recoverable"
   },
   {
@@ -2700,7 +2700,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "reported_boundary_mismatch",
-    "line": 258,
+    "line": 474,
     "classification": "recoverable"
   },
   {
@@ -2708,7 +2708,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "boundary_outside_crop",
-    "line": 258,
+    "line": 522,
     "classification": "recoverable"
   },
   {
@@ -2716,7 +2716,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "unresolved_labelled_candidate",
-    "line": 287,
+    "line": 555,
     "classification": "recoverable"
   },
   {
@@ -2724,7 +2724,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "search_result_identity_unverified",
     "condition": "unexplained_local_candidate",
-    "line": 287,
+    "line": 555,
     "classification": "recoverable"
   },
   {
@@ -2732,7 +2732,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "exact_search_result_not_found",
     "condition": "local_result_not_found",
-    "line": 289,
+    "line": 494,
     "classification": "recoverable"
   },
   {
@@ -2740,7 +2740,7 @@
     "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
     "reason": "wechat_id_name_conflict",
     "condition": "wechat_id_candidate_name_conflict",
-    "line": 275,
+    "line": 439,
     "classification": "blocker"
   },
   {
@@ -2748,7 +2748,7 @@
     "file": "desktop/rpa/active_touch/state_machine.cjs",
     "reason": "wechat_id_no_result",
     "condition": "wechat_id_search_explicit_no_result_fallback",
-    "line": 690,
+    "line": 146,
     "classification": "recoverable"
   },
   {
@@ -2756,7 +2756,7 @@
     "file": "desktop/rpa/active_touch/state_machine.cjs",
     "reason": "wechat_id_invalid_placeholder",
     "condition": "wechat_id_placeholder_fallback",
-    "line": 625,
+    "line": 146,
     "classification": "recoverable"
   },
   {
@@ -2840,15 +2840,129 @@
     "line": 961,
     "classification": "recoverable"
   },
-  { "id": "image-literal.click_point_changed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_click_point_changed", "line": 1, "classification": "blocker" },
-  { "id": "image-literal.click_point_obscured", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_click_point_obscured", "line": 1, "classification": "blocker" },
-  { "id": "image-literal.clipboard_probe_failed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_clipboard_probe_failed", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.clipboard_write_timeout", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_clipboard_write_timeout", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.context_missing", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_context_missing", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.draft_clear_failed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_existing_draft_clear_failed", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.preview_not_verified", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_preview_not_verified", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.send_not_confirmed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_send_not_confirmed", "line": 1, "classification": "blocker" },
-  { "id": "image-literal.stage_timeout", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_stage_timeout", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.window_changed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_window_changed", "line": 1, "classification": "recoverable" },
-  { "id": "image-literal.draft_format_unavailable", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_draft_format_unavailable", "line": 350, "classification": "recoverable" }
+  {
+    "id": "image-literal.click_point_changed",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_click_point_changed",
+    "line": 1,
+    "classification": "blocker"
+  },
+  {
+    "id": "image-literal.click_point_obscured",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_click_point_obscured",
+    "line": 1,
+    "classification": "blocker"
+  },
+  {
+    "id": "image-literal.clipboard_probe_failed",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_clipboard_probe_failed",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.clipboard_write_timeout",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_clipboard_write_timeout",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.context_missing",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_context_missing",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.draft_clear_failed",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_existing_draft_clear_failed",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.preview_not_verified",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_preview_not_verified",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.send_not_confirmed",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_send_not_confirmed",
+    "line": 1,
+    "classification": "blocker"
+  },
+  {
+    "id": "image-literal.stage_timeout",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_stage_timeout",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.window_changed",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_window_changed",
+    "line": 1,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-literal.draft_format_unavailable",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_draft_format_unavailable",
+    "line": 350,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r019",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "local_wechat_id_surface_unresolved",
+    "line": 495,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r020",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "readable_wechat_id_superstring",
+    "line": 578,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r021",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "multiple_exact_name_rows",
+    "line": 657,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r022",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "candidate_without_preceding_contact_header",
+    "line": 664,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r023",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "other_section_before_candidate",
+    "line": 667,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r024",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "unsafe_local_visual_text",
+    "line": 674,
+    "classification": "recoverable"
+  }
 ]
