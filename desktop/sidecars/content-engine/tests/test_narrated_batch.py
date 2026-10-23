@@ -234,15 +234,16 @@ class NarratedBatchTests(unittest.TestCase):
 
     def test_unavailable_automatic_music_preserves_narration_and_finishes(self):
         domain = self.s.creative_domain
-        row = self.s.connection.execute("SELECT * FROM music_catalog_tracks_v1").fetchone()
+        rows = self.s.connection.execute("SELECT * FROM music_catalog_tracks_v1").fetchall()
+        music_paths = {row["managed_relative_path"] for row in rows}
         for condition in ("empty", "damaged", "too_short"):
             with self.subTest(condition=condition):
-                self.s.connection.execute("UPDATE music_catalog_tracks_v1 SET active=1, duration_ms=?, loop_start_ms=NULL, loop_end_ms=NULL", (row["duration_ms"],))
+                self.s.connection.executemany("UPDATE music_catalog_tracks_v1 SET active=1, duration_ms=?, loop_start_ms=NULL, loop_end_ms=NULL WHERE id=?", ((row["duration_ms"], row["id"]) for row in rows))
                 original = domain._managed_file_digest_matches
                 if condition == "empty":
                     self.s.connection.execute("UPDATE music_catalog_tracks_v1 SET active=0")
                 elif condition == "damaged":
-                    domain._managed_file_digest_matches = lambda path, digest: False if path == row["managed_relative_path"] else original(path, digest)
+                    domain._managed_file_digest_matches = lambda path, digest: False if path in music_paths else original(path, digest)
                 else:
                     self.s.connection.execute("UPDATE music_catalog_tracks_v1 SET duration_ms=1")
                 try:
@@ -252,7 +253,7 @@ class NarratedBatchTests(unittest.TestCase):
                     self.assertEqual("none", recipe["music_mode"])
                     self.assertEqual("tts_only", recipe["audio_mode"])
                     self.assertTrue(recipe["voice_audio_path"])
-                    self.assertIn("保留完整配音", result["music_notice"])
+                    self.assertEqual("none", result["candidates"][0]["music_status"])
                 finally:
                     domain._managed_file_digest_matches = original
 
