@@ -3,7 +3,7 @@ import "./VideoPresentation.css";
 
 export type VideoTemplate = "topic_fixed" | "key_points";
 export function VideoTemplatePicker({ value, onChange, disabled = false }: { value: VideoTemplate; onChange: (value: VideoTemplate) => void; disabled?: boolean }) {
-  return <fieldset className="video-template-picker" disabled={disabled}><legend>视频样式</legend><div>
+  return <fieldset className="video-template-picker" disabled={disabled}><legend>字幕样式</legend><div>
     {([{ id: "topic_fixed", title: "主题常驻", sample: "一句话，说清价值" }, { id: "key_points", title: "分段要点", sample: "01 · 先看产品细节" }] as const).map((item) =>
       <button type="button" key={item.id} aria-pressed={value === item.id} className={value === item.id ? "is-selected" : ""} onClick={() => onChange(item.id)}>
         <span className="video-template-preview"><strong>{item.sample}</strong><span><b>重点</b> 跟着口播走</span></span><span>{item.title}</span>

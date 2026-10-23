@@ -302,7 +302,7 @@ function createDigitalHumanService(options = {}) {
     await requireCapabilities(task); await ensurePrices(task);
     if (task.voiceSource === 'official' && !task.reusedAudioFrom) {
       const selected = (await voices()).find((voice) => voice.id === task.voicePersonaId);
-      if (!selected?.available) throw fail('digital_human_voice_unavailable', '所选声音尚未完成试听或账号不可用，请先试听该声音；不会替换成其他声音。');
+      if (!selected?.available) throw fail('digital_human_voice_unavailable', '所选声音暂不可用，请更换可用声音或稍后重试；不会自动替换成其他声音。');
       if (selected.gender !== task.characterVoice) throw fail('digital_human_voice_mismatch', '所选音色与人物声音类型不一致，请选择对应男声或女声。');
       const preferences = voicePreferences(); preferences[task.characterVoice] = selected.id; writeJsonAtomic(voicePreferencesFile, preferences);
       task.voiceName = selected.name; save(task);
@@ -624,7 +624,10 @@ function createDigitalHumanService(options = {}) {
   async function selectVoice(voicePersonaId, characterVoice) {
     const voice = (await voices()).find((v) => v.id === voicePersonaId);
     if (!voice || !['male', 'female'].includes(characterVoice) || voice.gender !== characterVoice) throw fail('digital_human_voice_invalid', '请选择与人物声音类型一致的音色。');
-    await options.approveVoice?.(voicePersonaId);
+    if (!voice.available) {
+      if (!options.approveVoice) throw fail('digital_human_voice_unavailable', '所选声音暂不可用，请更换可用声音或稍后重试。');
+      await options.approveVoice(voicePersonaId);
+    }
     const preferences = voicePreferences(); preferences[characterVoice] = voicePersonaId;
     writeJsonAtomic(voicePreferencesFile, preferences);
     return { voicePersonaId, characterVoice };

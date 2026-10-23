@@ -2318,6 +2318,9 @@ async function main() {
     )({}, {});
     assert.equal(listedVoicePersonas.ok, true);
     assert.deepEqual(listedVoicePersonas.data.items, [{
+      productApproved: false,
+      digitalHumanDefault: false,
+      autoSelectPriority: null,
       voicePersonaId: "natural-life@1",
       displayName: "自然生活",
       catalogVersion: "2026.08",
@@ -2352,8 +2355,8 @@ async function main() {
     assert.equal(designedVoicePersona.ok, true);
     assert.equal(designedVoicePersona.data.provisioningStatus, "ready");
     assert.deepEqual(Object.keys(designedVoicePersona.data).sort(), [
-      "approvalStatus", "catalogVersion", "category", "displayName", "evidenceNote",
-      "previewStatus", "previewText", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
+      "approvalStatus", "autoSelectPriority", "catalogVersion", "category", "digitalHumanDefault", "displayName", "evidenceNote",
+      "previewStatus", "previewText", "productApproved", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
     ]);
     assert.equal(JSON.stringify(designedVoicePersona).includes("must-not-leak"), false);
     assert.deepEqual(
@@ -2614,8 +2617,8 @@ async function main() {
     assert.equal(approvedVoicePersona.ok, true);
     assert.equal(approvedVoicePersona.data.approvalStatus, "approved");
     assert.deepEqual(Object.keys(approvedVoicePersona.data).sort(), [
-      "approvalStatus", "catalogVersion", "category", "displayName", "evidenceNote",
-      "previewStatus", "previewText", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
+      "approvalStatus", "autoSelectPriority", "catalogVersion", "category", "digitalHumanDefault", "displayName", "evidenceNote",
+      "previewStatus", "previewText", "productApproved", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
     ]);
     assert.equal(JSON.stringify(approvedVoicePersona).includes("must-not-leak"), false);
     const approveVoiceCallCount = calls.filter(

@@ -56,7 +56,7 @@ async function run() {
   assert.throws(() => parseDirectPrices(directPriceDoc.replace('480P','未知规格'),ttsPriceDoc), /报价无法核实/u);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-product-video-'));
   const posts = [], tasks = new Map(), receipts = new Map();
-  let unknownOnce = false, receiptsPending = false, failedOnce = false, failedVideoCount = 0, malformedOnce = false, offlinePrices = false, localFailure = false, badCaptionsOnce = false, badMediaOnce = false, tamperAudioOnce = false;
+  let unknownOnce = false, receiptsPending = false, failedOnce = false, failedVideoCount = 0, malformedOnce = false, offlinePrices = false, localFailure = false, badCaptionsOnce = false, badMediaOnce = false, tamperAudioOnce = false, voiceReady = true;
   const provider = {
     imageUploadBody: (file) => ({ body: Buffer.from(path.basename(file)), headers: {} }), nodeOf: (p) => p, taskIdOf,
     resultUrl: (p, kind) => `https://fixture.example/${p.task_id}.${kind === 'images' ? 'png' : 'mp4'}`,
@@ -86,6 +86,8 @@ async function run() {
     }
   };
   const serviceOptions = { rootDir: root, provider, readPrices: async (plan) => { if (offlinePrices) throw new Error('offline'); return prices(plan); }, pollMs: 1,
+    listVoices: async () => ({ items: [{ voicePersonaId: 'volc-xiaohe-2@1', provider: 'volcengine',
+      approvalStatus: 'approved', availability: voiceReady ? 'available' : 'unavailable', productApproved: true }] }),
     gatewayClient: { isEnabled: () => true, initialize: async () => ({ ready: true, capabilities: { apimart: true, apimart_video: true, bailian:true,bailian_video:true,volcengine_asr: true } }) },
     prepareAudio: async ({task,directory,operation}) => {
       assert.equal(task.shots.filter(s=>s.frameFile).length,task.plan.pipelineVersion === 4 ? 0 : 3,'new direct tasks use the original image; old tasks retain prepared frames');
@@ -152,6 +154,15 @@ async function run() {
     const insufficient = await service.create({ ...input, budgetCny: 1 });
     await assert.rejects(service.start(insufficient.id), (e)=>e.code==='product_video_budget_exceeded'); assert.equal(posts.length,0);
     const task = await service.create({ ...input, budgetCny: undefined });
+    voiceReady = false;
+    const missingVoice = await service.capabilities();
+    assert.equal(missingVoice.ready, false, 'A default voice must be checked before any paid work.');
+    assert.match(missingVoice.message, /声音/u);
+    await assert.rejects(service.start(task.id), { code: 'product_video_provider_unavailable' });
+    assert.equal(posts.length, 0, 'Missing voice must stop before uploads, TTS or video requests.');
+    assert.equal(service.get(task.id).status, 'draft');
+    voiceReady = true;
+    assert.equal((await service.capabilities()).ready, true);
     assert.equal(task.quote.budgetCny, task.quote.maximumCny, 'the customer need not supply a budget');
     await service.start(task.id);
     const finished = await until(service, task.id, (t)=>t.status==='completed');

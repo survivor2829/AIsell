@@ -905,7 +905,7 @@ class NarratedBatchDomain:
         """
         persona_id = str((b.get("settings") or {}).get("voice_persona_id") or "").strip()
         require(self.d._approved_auto_mix_voice_persona(selected_id=persona_id or None) is not None,
-                "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
+                "auto_mix_voice_persona_approval_required", "当前声音不可用，请在更多设置中更换声音。")
 
     def require_voice_to_resume(self, task_id):
         """Requeuing a stopped production is the same paid work as starting it.

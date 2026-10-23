@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
+from unittest.mock import patch
 import uuid
 import wave
 
@@ -42,6 +43,9 @@ class _Renderer:
 
 class AutoMixMusicCatalogResourceTests(unittest.TestCase):
     def setUp(self):
+        builtin_sync = patch("content_engine.builtin_music.sync_builtin_music")
+        builtin_sync.start()
+        self.addCleanup(builtin_sync.stop)
         self.root = SIDECAR_ROOT / f".auto-mix-music-catalog-{uuid.uuid4().hex}"
         self.root.mkdir()
         self.service = ContentEngineService(

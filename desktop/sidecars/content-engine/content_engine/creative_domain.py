@@ -393,6 +393,8 @@ class CreativeDomain:
         policy = json.loads((Path(__file__).parent / "assets" / "music-catalog-policy.v1.json").read_text(encoding="utf-8"))
         self._retired_music_fingerprints = tuple(policy["retired_fingerprints"])
         self._sync_music_catalog_policy()
+        from .builtin_music import sync_builtin_music
+        sync_builtin_music(self)
 
     def create_analysis_task(self, asset_ids, profile=None):
         safe_ids = self._validate_asset_ids(asset_ids)
@@ -528,9 +530,9 @@ class CreativeDomain:
             provider = persona.get("provider") or "bailian"
             provider_model = persona.get("provider_model") or AUTO_MIX_TTS_MODEL
             version = int(persona["persona_id"].rsplit("@", 1)[1])
-            # Catalog configuration can register a private provider voice, but
-            # it cannot stand in for the user's preview-and-approve action.
-            approved_at = None
+            # Shipped fixed official voices are a product choice. Designed or
+            # privately configured voices still require preview and approval.
+            approved_at = now if persona.get("product_approved") else None
             previous = self.connection.execute(
                 """
                 SELECT catalog_version, provider, provider_model,
@@ -611,12 +613,12 @@ class CreativeDomain:
                 ),
             )
             if private_configuration_changed:
-                # Approval and the preview both bind to the private provider
-                # configuration. Reusing either after an in-place catalog
-                # change would approve a voice the user never heard.
+                # Never reuse a preview for a changed provider configuration.
+                # A shipped official voice gets fresh product approval; private
+                # or designed voices must be auditioned again.
                 self.connection.execute(
-                    "UPDATE voice_personas_v1 SET approved_at = NULL WHERE id = ?",
-                    (persona["persona_id"],),
+                    "UPDATE voice_personas_v1 SET approved_at = ? WHERE id = ?",
+                    (approved_at, persona["persona_id"]),
                 )
                 self.connection.execute(
                     """
@@ -3538,7 +3540,7 @@ class CreativeDomain:
                 run_id,
                 state="needs_attention",
                 code="auto_mix_voice_persona_approval_required",
-                message="请先试听并批准一个 CosyVoice 3.5 Plus 人声模板。",
+                message="当前声音不可用，请在更多设置中更换声音。",
                 public_plan=public_plan,
                 private_state=private_state,
             )
@@ -3638,7 +3640,6 @@ class CreativeDomain:
         )
         no_music = music_mode == "none" or legacy_no_music
         allowed_track_ids = None if music_mode == "auto" else private_state.get("music_track_ids")
-        automatic_music = music_mode == "auto" or (music_mode is None and not allowed_track_ids)
         music = None
         if no_music:
             private_state.pop('music_track', None)
@@ -3659,21 +3660,17 @@ class CreativeDomain:
                     allowed_track_ids=allowed_track_ids,
                     prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
                 )
-            if music is None and not automatic_music:
+            if music is None:
                 selected_pool_empty = music_mode == "selected" and not private_state.get("music_track_ids")
                 return self._pause_auto_mix(
                     task_id,
                     run_id,
                     state="needs_attention",
                     code="narrated_music_pool_empty" if selected_pool_empty else "auto_mix_licensed_music_required",
-                    message="请先试听并选入至少一首可导出的配乐。" if selected_pool_empty else "授权曲库中没有适配本条时长的音乐，请稍后重试或明确选择无配乐。",
+                    message="已选配乐暂不可用，请更换曲目。" if selected_pool_empty else "授权曲库中没有适配本条时长的音乐，请稍后重试或明确选择无配乐。",
                     public_plan=public_plan,
                     private_state=private_state,
                 )
-            if music is None:
-                no_music = True
-                private_state.pop("music_track", None)
-                public_plan["music"] = {"mode": "none", "display_name": "无配乐", "message": "当前没有适配本片的可用配乐，已保留完整配音继续制作。"}
             else:
                 public_plan["music"] = music["public"]
                 private_state["music_track"] = {
@@ -4450,12 +4447,20 @@ class CreativeDomain:
         else:
             provisioning_status = "not_created"
         configured = next((item for item in configured_voice_personas() if item["persona_id"] == row["id"]), {})
+        product_approved = bool(
+            configured.get("product_approved")
+            and row["provider"] == configured.get("provider")
+            and row["provider_voice_id"] == configured.get("provider_voice_id")
+            and row["catalog_version"] == configured.get("catalog_version")
+        )
         return {
             "voicePersonaId": row["id"],
             "displayName": row["display_name"],
             "gender": configured.get("gender", "unknown"),
             "digitalHumanDefault": configured.get("digital_human_default", False),
-            "availability": "available" if row["approved_at"] and preview_status == "completed" else "unavailable" if preview_status == "failed" else "needs_preview",
+            "productApproved": product_approved,
+            "autoSelectPriority": configured.get("auto_select_priority", 0),
+            "availability": "available" if row["approved_at"] and (product_approved or preview_status == "completed") else "unavailable" if preview_status == "failed" else "needs_preview",
             "style": row["style"],
             "category": row["style"],
             "version": int(row["version"]),
@@ -5525,7 +5530,7 @@ class CreativeDomain:
             )
         return output
 
-    def import_music_catalog_track(self, request):
+    def import_music_catalog_track(self, request, *, _bundled_analysis=None):
         contract = validate_music_catalog_track_v1(request)
         try:
             source = Path(contract["source_path"]).resolve(strict=True)
@@ -5633,12 +5638,18 @@ class CreativeDomain:
         analysis_status = "ready"
         analysis_error_code = None
         try:
-            if not callable(probe_duration) or not callable(measure_quality):
+            if _bundled_analysis is not None:
+                # Only the bundled catalog supplies offline measurements after
+                # verifying both recording and evidence against its manifest.
+                duration_ms = int(_bundled_analysis["duration_ms"])
+                report = _bundled_analysis
+            elif not callable(probe_duration) or not callable(measure_quality):
                 raise ContentEngineError(
                     "music_analysis_unavailable", "授权音乐分析运行时不可用。"
                 )
-            duration_ms = int(probe_duration(managed))
-            report = measure_quality(managed)
+            else:
+                duration_ms = int(probe_duration(managed))
+                report = measure_quality(managed)
             if duration_ms <= 0:
                 raise ContentEngineError(
                     "music_analysis_failed", "授权音乐时长无效。"
@@ -5756,7 +5767,7 @@ class CreativeDomain:
         else:
             persona = self._approved_auto_mix_voice_persona(selected_id=request.get("voice_persona_id"))
         if persona is None:
-            raise ContentEngineError("auto_mix_voice_unavailable", "请先在创作工作台确认一个可用的配音声音。")
+            raise ContentEngineError("auto_mix_voice_unavailable", "当前配音声音不可用，请更换可用声音或稍后重试；已有制作进度已保留。")
         if run is None:
             now, project_id, run_id = self._now(), self._new_id("creative_project"), self._new_id("auto_mix_run")
             with self.database.transaction() as connection:

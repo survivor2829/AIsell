@@ -51,7 +51,7 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
   }
   useEffect(() => { void refresh(); }, [refreshToken]);
   const pool = settings.music_track_ids || [];
-  const musicMode = settings.music_mode || (pool.length ? "selected" : "none");
+  const musicMode = settings.music_mode || (pool.length ? "selected" : "auto");
   const availableTrackCount = tracks.filter(selectable).length;
   const current = voices?.find((voice) => voice.voicePersonaId === settings.voice_persona_id);
   const approvedVoices = (voices || []).filter((voice) => voice.approvalStatus === "approved" && voice.provider === "volcengine");
@@ -106,8 +106,8 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
   return <section className="batch-sound-settings" aria-label="声音与配乐">
     <div className="batch-notice" role="status"><strong>云端智能服务由系统统一提供</strong><br />客户无需配置密钥；开始制作时会实时检查素材理解、语音识别和配音能力。</div>
     <div className="batch-sound-row"><label>配音声音<select aria-label="配音声音" disabled={locked} value={settings.voice_persona_id || ""} onChange={(event) => onChange({ ...settings, voice_persona_id: event.target.value || undefined })}>
-      <option value="">试听后选择声音</option>{unavailable && <option value={settings.voice_persona_id} disabled>{unavailable}</option>}{approvedVoices.map((voice) => <option key={voice.voicePersonaId} value={voice.voicePersonaId}>{voice.displayName}</option>)}
-    </select></label><button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !current} onClick={() => current && requestAudition(current)}>{loading === current?.voicePersonaId ? "准备试听…" : current ? `试听声音（${voiceCharge.label}）` : "试听声音"}</button><button type="button" disabled={resourceLocked} onClick={() => setResourceSection("voice")}>选择试听候选</button></div>
+      <option value="">自动选择（推荐）</option>{unavailable && <option value={settings.voice_persona_id} disabled>{unavailable}</option>}{approvedVoices.map((voice) => <option key={voice.voicePersonaId} value={voice.voicePersonaId}>{voice.displayName}</option>)}
+    </select></label><button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !current} onClick={() => current && requestAudition(current)}>{loading === current?.voicePersonaId ? "准备试听…" : current ? `试听声音（${voiceCharge.label}）` : "试听声音"}</button><button type="button" disabled={resourceLocked} onClick={() => setResourceSection("voice")}>更换声音</button></div>
     {paidShownAt !== null && current && <div className="batch-toolbar batch-voice-paid-confirm" role="alert">{PAID_PREVIEW_WARNING}<button type="button" data-xiaoxi-auto-mix-voice-preview disabled={locked || !!loading || !paidArmed} onClick={() => confirmPaidAudition(current)}>{paidArmed ? PAID_PREVIEW_CONFIRM : `${PAID_PREVIEW_CONFIRM}（请稍候）`}</button><button type="button" onClick={() => setPaidShownAt(null)}>取消</button></div>}
     <details className="batch-music-settings"><summary>配乐 · {musicMode === "none" ? "明确不加配乐" : musicMode === "selected" && pool.length ? `已选 ${pool.length} 首，按内容轮换` : "自动从授权曲库选曲"}</summary>
       <label>配乐策略<select aria-label="配乐策略" disabled={locked} value={musicMode} onChange={(event) => {
@@ -118,7 +118,7 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
         {pool.length > 0 && <option value="selected">仅使用我勾选的曲目</option>}
         <option value="none">明确不加配乐</option>
       </select></label>
-      <p className="batch-hint">默认从已核验授权曲库选曲；没有适配曲目时保留完整配音继续制作。也可明确不加配乐，或勾选曲目限制本批使用范围。</p>
+      <p className="batch-hint">默认从已核验授权曲库自动选曲。也可明确不加配乐，或勾选曲目限制本批使用范围。</p>
       <div className="batch-music-list">{tracks.map((track) => <div className="batch-music-row" key={track.trackId}>
         <label><input type="checkbox" disabled={locked || !selectable(track)} checked={musicMode === "selected" && pool.includes(track.trackId)} onChange={(event) => {
           const nextPool = event.target.checked ? [...pool, track.trackId] : pool.filter((id) => id !== track.trackId);
@@ -126,8 +126,8 @@ export function BatchSoundSettings({ settings, locked, resourceLocked = false, o
         }} /><span><strong>{track.displayName}</strong><small>{track.source}{!selectable(track) ? " · 暂不能用于导出" : ""}</small></span></label>
         <button type="button" disabled={!!loading || track.analysisStatus !== "ready"} onClick={() => void auditionMusic(track.trackId, track.displayName)}>{loading === track.trackId ? "准备试听…" : "试听"}</button>
       </div>)}</div>
-      {!tracks.length && <p className="batch-hint">还没有可用配乐，可导入已取得使用授权的曲目；自动配乐会保留配音继续制作。</p>}
-      {musicMode === "auto" && tracks.length > 0 && availableTrackCount === 0 && <p role="status" className="batch-notice">当前没有可导出的配乐；本片将保留完整配音继续制作。</p>}
+      {!tracks.length && <p className="batch-hint">自动配乐暂不可用，请检查曲库后重试，或明确选择不加配乐。</p>}
+      {musicMode === "auto" && tracks.length > 0 && availableTrackCount === 0 && <p role="status" className="batch-notice">当前没有可导出的配乐，请检查曲库后重试，或明确选择不加配乐。</p>}
       {pool.some((id) => !tracks.some((track) => track.trackId === id && selectable(track))) && <p role="status" className="batch-notice">已选配乐中有曲目暂不可用，请换曲后制作。</p>}
       <button type="button" disabled={resourceLocked} onClick={() => setResourceSection("music")}>管理配乐／导入曲目</button>
     </details>

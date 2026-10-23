@@ -16,6 +16,8 @@ import creativeThinkingStill from "./assets/creative-thinking-still.webp";
 import creativeMaking from "./assets/creative-making.webp";
 import creativeMakingStill from "./assets/creative-making-still.webp";
 
+type VoiceItem = RecoveryVoice & { displayName: string; provider?: string; digitalHumanDefault?: boolean; productApproved?: boolean; autoSelectPriority?: number };
+
 type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onInitialConsumed?: (initial: NonNullable<Props["initial"]>) => void; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
 const emptyGroups = (): Groups => ({ opening: [], middle: [], ending: [] });
 const activeStatuses = new Set(["queued", "analyzing", "rendering", "ready_for_review"]);
@@ -63,7 +65,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     delete saved.strict_visual_review;
     return { minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: [], ...saved, voice_persona_id: preferredVoice(saved?.voice_persona_id), workflow_version: 2 };
   });
-  const [voices, setVoices] = useState<{ voicePersonaId: string; displayName: string; approvalStatus?: string; provider?: string }[]>([]);
+  const [voices, setVoices] = useState<VoiceItem[]>([]);
   // The whole voice catalog (approved or not), for the recovery card; null until read.
   const [catalog, setCatalog] = useState<RecoveryVoice[] | null>(null);
   const [brands, setBrands] = useState<{ brandProfileId: string; name: string }[]>([]);
@@ -133,7 +135,6 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     return voice && !b.archived && approvedVoiceIds.current && !approvedVoiceIds.current.has(voice)
       ? "该批次的声音需要重新试听批准，或改选已批准的声音。" : "";
   }
-  type VoiceItem = RecoveryVoice & { displayName: string; provider?: string };
   function applyVoices(items: VoiceItem[]) {
     approvedVoiceIds.current = approvedIn(items);
     setCatalog(items);
@@ -240,9 +241,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         const result = await creative?.listAutoMixVoicePersonas();
         if (!result?.ok || !result.data) throw new Error(result?.error || "声音目录暂时不可用");
         if (cancelled) return;
-        const approved = applyVoices(result.data.items || []);
-        // A late catalog response must never replace a task or an explicit selection.
-        if (active() && !selectedId.current) setSettings(previous => previous.voice_persona_id ? previous : { ...previous, voice_persona_id: approved[0]?.voicePersonaId });
+        applyVoices(result.data.items || []);
       });
       resource("品牌", async () => {
         const result = await creative?.listBrandProfiles();
@@ -440,6 +439,14 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   // While the batch's voice needs its approval back, paid production is held here too
   // (the engine refuses it before creating a task).
   const voiceBlocked = voiceRecovery(batch, catalog) !== null;
+  const automaticVoice = voices.filter(voice => voice.productApproved).sort((a, b) =>
+    Number(b.digitalHumanDefault === true) - Number(a.digitalHumanDefault === true)
+      || (b.autoSelectPriority || 0) - (a.autoSelectPriority || 0))[0];
+  const voiceSummary = settings.voice_persona_id
+    ? voices.find(voice => voice.voicePersonaId === settings.voice_persona_id)?.displayName || '已选声音'
+    : automaticVoice ? `自动（${automaticVoice.displayName}）` : '自动选择';
+  const musicSummary = settings.music_mode === 'none' ? '不加配乐'
+    : settings.music_mode === 'selected' ? `已选 ${settings.music_track_ids?.length || 0} 首` : '自动';
   const continueHint = voiceBlocked ? VOICE_RECOVERY_BLOCKS : batch?.production_retry_available
     ? settings.strict_visual_review ? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。" : "继续会按文案顺序重新安排未完成作品的镜头；已完成作品会保留。"
     : "继续会从未完成的步骤接着做；已完成的分析、审核和成片会保留。";
@@ -586,7 +593,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       <details className="batch-advanced"><summary>补充事实资料与品牌{dirty ? " · 有未保存修改" : ""}</summary><div className="batch-panel">
         <label>已确认事实与推广目标<textarea value={description} maxLength={6000} placeholder="填写产品资料、真实案例和推广目标；AI 解说只使用有依据的信息。" onChange={(e) => { setDescription(e.target.value); setDirty(true); }} /></label>
         {!modern && <label>结尾引导<input value={cta} maxLength={300} placeholder="例如：私信了解适用方案" onChange={(e) => { setCta(e.target.value); setDirty(true); }} /></label>}
-        <div className="batch-brief">{!scriptFlow && <label>AI 解说声音<select value={settings.voice_persona_id || ""} onChange={(e) => changeSoundSettings({ ...settings, voice_persona_id: e.target.value || undefined })}><option value="">自动选择已批准声音</option>{voices.map((v) => <option key={v.voicePersonaId} value={v.voicePersonaId}>{v.displayName || v.voicePersonaId}</option>)}</select></label>}<label>品牌<select value={settings.brand_profile_id || ""} onChange={(e) => { setSettings({ ...settings, brand_profile_id: e.target.value || undefined }); setDirty(true); }}><option value="">默认品牌</option>{brands.map((b) => <option key={b.brandProfileId} value={b.brandProfileId}>{b.name}</option>)}</select></label></div>
+        <div className="batch-brief">{!scriptFlow && <label>AI 解说声音<select value={settings.voice_persona_id || ""} onChange={(e) => changeSoundSettings({ ...settings, voice_persona_id: e.target.value || undefined })}><option value="">自动选择（推荐）</option>{voices.map((v) => <option key={v.voicePersonaId} value={v.voicePersonaId}>{v.displayName || v.voicePersonaId}</option>)}</select></label>}<label>品牌<select value={settings.brand_profile_id || ""} onChange={(e) => { setSettings({ ...settings, brand_profile_id: e.target.value || undefined }); setDirty(true); }}><option value="">默认品牌</option>{brands.map((b) => <option key={b.brandProfileId} value={b.brandProfileId}>{b.name}</option>)}</select></label></div>
         <p>原视频声音静音，自动选用授权音乐。封面使用真实画面加标题。</p><button onClick={() => void run(async () => { const b = await callBatch<Batch>("save", draft()); load(b); localStorage.setItem("batch-studio-settings", JSON.stringify(settings)); await refreshBatches(); setNotice("批次草稿已保存。"); })}>保存草稿</button>
       </div></details>
       <div className="batch-count-bar">{!scriptFlow && <label>本批生成数量<input aria-label="本批生成数量" type="number" min={1} max={300} step={1} value={count} placeholder="AI 分析后推荐" onChange={(e) => { manualCount.current = true; setCount(e.target.value); setDirty(true); }} /></label>}{suppliedScript ? <span className="batch-hint">视频时长按原文决定</span> : <details className="batch-duration-settings"><summary>视频时长 · 至少 {settings.minimum_duration_seconds || 30} 秒</summary><label>每条最短时长（秒）<input aria-label="每条最短时长" type="number" min={modern ? 30 : 0} step={1} value={settings.minimum_duration_seconds || ""} placeholder="AI 决定" onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label></details>}{scriptFlow ? <button data-batch-action="scripts" className="batch-primary" disabled={!total || (modern && !brief.target_audience.trim())} onClick={() => void start("scripts")}>{options.length ? "换个方向" : "生成一份文案"}</button> : <><button data-batch-action="recommend" disabled={!total} onClick={() => void start("recommend")}>AI 推荐数量</button><button data-batch-action="samples" className="batch-primary" disabled={!total} onClick={() => void start("samples")}>生成／继续样片</button></>}</div>
@@ -605,16 +612,18 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         <footer><small>预计 {Math.round((option.estimated_duration_ms || option.duration_ms || 0) / 1000)} 秒 · 第 {option.revision} 版</small><button disabled={locked} onClick={() => setEditing(option)}>修改正文</button></footer>
       </article>)}</div>}
       {(!visualFlow || flowStep === 2) && <>
-      {modern && chosen.length === 1 && <details className="batch-advanced"><summary>批量制作 · {chosenTotal || 1} 条</summary><label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label><p className="batch-hint">第一条使用确认正文，其余沿用这个方向创作不同内容，最多300条。</p></details>}
-      <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={voiceApproved} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
+      {modern && chosen.length === 1 && <label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label>}
+      <p className="batch-hint" aria-label="制作设置摘要">声音：{voiceSummary} · 配乐：{musicSummary} · 字幕：{settings.video_template === 'key_points' ? '分段要点' : '主题常驻'}</p>
+      <details className="batch-advanced"><summary>更多设置</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} onVoiceApproved={voiceApproved} refreshToken={catalog} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
       <VideoTemplatePicker value={settings.video_template || "topic_fixed"} disabled={locked || !!batch?.script_confirmation} onChange={(video_template) => changeSoundSettings({ ...settings, video_template })} />
       <label className="batch-strict-review"><input type="checkbox" checked={settings.strict_visual_review === true} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, strict_visual_review: event.target.checked })} /><span><b>严格核对画面事实</b><small>开启后逐句核对口播与画面，与画面不符的说法会被拦下，耗时更长、云端识别会计费。默认关闭：按您确认的文案直接配音剪辑。</small></span></label>
+      </details>
       {soundDirty && <p className="batch-hint">制作设置已更新。</p>}
       <div className="batch-script-confirm"><div><p>{chosen.length ? modern ? `制作 ${chosenTotal} 条视频` : `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : modern ? "请先选定一个方案。" : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
-        {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid || !settings.voice_persona_id} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
+        {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid || voiceBlocked} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
         {continueAction}
-      </div>{!settings.voice_persona_id && <p className="batch-hint">开始制作前，请在上方选定已批准的声音；配乐默认自动选择，也可以明确关闭。</p>}
+      </div>
       </>}
     </section>}
     {showResults && batch && completed > 0 && <div className="batch-output-row"><p>{batch.export_ready ? `已自动保存 ${batch.exported_count} 条成片` : "已完成的作品可以保存到成片文件夹"}</p><button disabled={busy} onClick={() => void run(async () => { await callBatch("open-output", { batch_id: batch.batch_id }); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); })}>打开成片文件夹</button>{batch.export_error && <p className="batch-notice" role="status">视频已制作完成，但保存遇到问题。点击上方按钮可重新保存，无需重新制作。</p>}</div>}

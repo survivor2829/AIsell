@@ -23,7 +23,7 @@ const ERRORS = {
   narrated_script_revision_changed: "这份文案已更新，请阅读最新正文后确认。",
   narrated_script_confirmation_required: "请先选择并确认本批文案。",
   narrated_confirmed_script_changed: "确认稿需要调整，已停止制作。请检查原因并重新确认正文。",
-  narrated_music_pool_empty: "请先试听并选入至少一首可用配乐。",
+  narrated_music_pool_empty: "已选配乐暂不可用，请在更多设置中更换曲目。",
   auto_mix_licensed_music_required: "授权曲库中没有适配这条口播的配乐，请补充曲目或明确选择无配乐。",
   remotion_runtime_unavailable: "本机正式渲染组件暂不可用，已停止制作，未生成配音；请检查 Remotion 运行时后重试。",
   media_encoder_unavailable: "本机视频编码器暂不可用，已停止制作，未生成配音；请检查 FFmpeg 编码组件后重试。",

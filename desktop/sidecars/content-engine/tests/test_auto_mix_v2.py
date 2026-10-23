@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -3606,8 +3607,10 @@ class AutoMixV2ServiceTests(unittest.TestCase):
 
 class GuidedAutoMixSupplementalImageTests(unittest.TestCase):
     def setUp(self):
-        self.root = SIDECAR_ROOT / f".guided-supplemental-image-{uuid.uuid4().hex}"
-        self.root.mkdir()
+        # Deep worktree paths plus operation IDs exceed Windows' mkdir limit.
+        self.temporary = tempfile.TemporaryDirectory(prefix="ce-supp-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
         self.source = self.root / "material.mp4"
         self.source.write_bytes(b"guided-supplemental-material")
         self.cover_client = _GuidedSupplementalImageClient()
