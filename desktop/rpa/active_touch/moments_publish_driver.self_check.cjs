@@ -1497,7 +1497,7 @@ async function runInjectedChecks() {
       ensure: false,
       sta: true,
       timeout: 150_000,
-      diagnostics: false,
+      diagnostics: true,
       signal: undefined
     });
     const payload = JSON.parse(Buffer.from(env.XIAOXI_MOMENTS_PUBLISH_CONTEXT_BASE64, "base64").toString("utf8"));
