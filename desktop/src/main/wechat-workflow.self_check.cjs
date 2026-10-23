@@ -138,7 +138,7 @@ async function checkLiveWorkflowRecovery() {
   for (const [waitingReason, reasonCode] of [
     ["wechat_identity_recovery", "search_result_identity_unverified"],
     ["wechat_environment_recovery", "wechat_external_input_detected"],
-    ["wechat_pre_send_recovery", "image_draft_format_unavailable"],
+    ["wechat_pre_send_recovery", "image_paste_not_accepted"],
     ["wechat_operation_busy", "wechat_operation_busy"]
   ]) {
     const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-live-workflow-"));
@@ -549,7 +549,7 @@ async function checkT5FourthReviewExits() {
           imageReads += 1;
           if (kind === "unknown") return { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" };
           if (kind === "preclick") return { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout", pre_send_retry_exhausted: true };
-          if (kind === "imageformat") return { ok: false, send_attempted: false, blocked_reason: "image_draft_format_unavailable", pre_send_retry_exhausted: true };
+          if (kind === "imageformat") return { ok: false, send_attempted: false, blocked_reason: "image_paste_not_accepted", pre_send_retry_exhausted: true };
           if (kind === "environment") return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required" };
           if (kind === "recoverable") return { ok: false, send_attempted: false, blocked_reason: "image_existing_draft_clear_failed" };
           return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",

@@ -14,17 +14,17 @@ const { createTaskPassportStore } = require("./task-passport.cjs");
 
 async function checkTouchMessageSequence() {
   assert.deepEqual(require("../shared/failure-diagnostics.cjs").sanitizeFailureDiagnostics(null), {}, "empty legacy diagnostic details remain valid");
-  assert.match(IMAGE_SEND_SCRIPT, /if \(-not \$existingDraft\.empty\)[\s\S]*Image-Keys "\^a" \$mainWindow[\s\S]*Image-Keys "\{BACKSPACE\}" \$mainWindow[\s\S]*Read-ImageDraft \$mainWindow\)\.empty[\s\S]*image_existing_draft_clear_failed/u,
+  assert.match(IMAGE_SEND_SCRIPT, /function Clear-ImageComposer[\s\S]*Image-Keys "\^a" \$mainWindow[\s\S]*Image-Keys "\{BACKSPACE\}" \$mainWindow[\s\S]*Wait-SendButton \$false[\s\S]*image_existing_draft_clear_failed/u,
     "a verified image composer must replace and then prove removal of any stale draft");
   assert.match(IMAGE_SEND_SCRIPT, /function Invoke-ImageClipboardWrite[\s\S]*hresult_800401D0[\s\S]*InnerException[\s\S]*attempt -eq 5[\s\S]*80 \* \$attempt/u,
     "transient clipboard contention must inspect wrapped exceptions and retry with bounded backoff");
-  assert.match(IMAGE_SEND_SCRIPT, /Invoke-ImageClipboardWrite "draft_sentinel_write"[\s\S]*Invoke-ImageClipboardWrite "image_write"/u,
-    "both draft probing and image installation must use the bounded clipboard retry");
-  assert.match(IMAGE_SEND_SCRIPT, /function Read-ImageDraft[\s\S]*for \(\$copyAttempt = 1; \$copyAttempt -le 5; \$copyAttempt\+\+\)[\s\S]*\$beforeCopySequence = \[Win32WechatImage\]::GetClipboardSequenceNumber\(\)[\s\S]*80 \* \$copyAttempt/u,
-    "image draft verification must wait and retry when WeChat publishes clipboard formats asynchronously");
-  assert.match(IMAGE_SEND_SCRIPT, /function Invoke-ImageClipboardRead[\s\S]*hresult_800401D0[\s\S]*40 \* \$readAttempt/u,
-    "clipboard reads must recover when another Windows component briefly owns the clipboard");
-  assert.match(IMAGE_SEND_SCRIPT, /imageStageBudgets[\s\S]*sentinel_write = 15000[\s\S]*image_load = 60000[\s\S]*clipboard_bitmap = 45000[\s\S]*paste = 30000[\s\S]*read_back = 20000[\s\S]*click_send = 30000[\s\S]*post_confirm = 30000/u,
+  assert.match(IMAGE_SEND_SCRIPT, /Invoke-ImageClipboardWrite "image_write"[\s\S]*Invoke-ImageClipboardWrite "image_file_write"/u,
+    "both the bitmap and the file-list paste must use the bounded clipboard retry");
+  assert.match(IMAGE_SEND_SCRIPT, /Wait-SendButton \$true 3000[\s\S]*Clear-ImageComposer[\s\S]*SetFileDropList[\s\S]*Wait-SendButton \$true 3000\)\) \{ throw "image_paste_not_accepted" \}/u,
+    "an ignored bitmap paste must fall back once to the file itself, then stop before any click");
+  assert.doesNotMatch(IMAGE_SEND_SCRIPT, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
+    "image sending must never depend on copying the WeChat draft back out");
+  assert.match(IMAGE_SEND_SCRIPT, /imageStageBudgets[\s\S]*existing_draft_clear = 15000[\s\S]*image_load = 60000[\s\S]*clipboard_bitmap = 45000[\s\S]*paste = 30000[\s\S]*click_send = 30000[\s\S]*post_confirm = 30000/u,
     "image sending must expose bounded per-stage budgets");
   assert.match(IMAGE_SEND_SCRIPT, /WriteLine\("image_progress:" \+ \$payload\)/u,
     "image sending must persist fixed-token stage progress diagnostics");
@@ -34,8 +34,8 @@ async function checkTouchMessageSequence() {
     "image script must emit startup and preload markers");
   assert.match(IMAGE_SEND_SCRIPT, /imageClipboardWriteJoinTimeoutMs = 5000[\s\S]*image_clipboard_write_timeout/u,
     "clipboard writes must have fixed timeout budget");
-  assert.match(IMAGE_SEND_SCRIPT, /Assert-ImageWindowIdentity \$window[\s\S]*\$copySequence/u,
-    "read-back polling must avoid lease assertions");
+  assert.match(IMAGE_SEND_SCRIPT, /function Wait-SendButton[\s\S]*Assert-ImageWindowIdentity \$mainWindow[\s\S]*Test-SendButtonActive/u,
+    "send-button polling must avoid lease assertions");
   assert.match(IMAGE_SEND_SCRIPT, /script_line = \$scriptLine[\s\S]*source_file[\s\S]*source_line = \$sourceLine/u,
     "image failures must include script/source line mapping");
   assert.doesNotMatch(IMAGE_SEND_SCRIPT, /TickCount64/u,
@@ -928,7 +928,7 @@ async function checkTouchMessageSequence() {
   const preClickTimeout = { ...imageOptions, baseDir: path.join(root, "pre-click-timeout"), onDiagnostic: (entry) => retryProgress.push(entry),
     wait: async () => { assert.equal(retryProgress.at(-1).stage, "image_retry_wait"); }, runner: async (_script, env) => {
     preClickTimeoutAttempts += 1;
-    const stage = preClickTimeoutAttempts === 1 ? "sentinel_write" : "read_back";
+    const stage = preClickTimeoutAttempts === 1 ? "existing_draft_clear" : "paste";
     return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage, status: "start", retry_index: Number(env.XIAOXI_IMAGE_RETRY_INDEX) }] } };
   } };
   const preClickResult = await sendWechatImage(preClickTimeout);
@@ -944,7 +944,7 @@ async function checkTouchMessageSequence() {
     wait: async () => { throw new Error("exhausted budget must not start a retry delay"); }, runner: async () => {
       budgetCalls++;
       imageClock += 180_000;
-      return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "read_back", status: "start", retry_index: 0 }] } };
+      return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "paste", status: "start", retry_index: 0 }] } };
     } };
   const budgetResult = await sendWechatImage(budgetTimeout);
   assert.equal(budgetCalls, 1, "real budget exhaustion must not manufacture a second attempt");
@@ -958,25 +958,22 @@ async function checkTouchMessageSequence() {
   assert.equal((await sendWechatImage(pausedRetry)).blocked_reason, "workflow_paused");
   assert.equal(JSON.parse(fs.readFileSync(path.join(pausedRetry.baseDir, "image-send.json"), "utf8")).status, "not_attempted");
   const imageProgress = [];
-  const copyUnavailable = { ...imageOptions, baseDir: path.join(root, "image-copy-unavailable"),
+  const pasteIgnored = { ...imageOptions, baseDir: path.join(root, "image-paste-ignored"),
     context: { inputPoint: { xRatio: 0.65, yRatio: 0.88 } },
     onDiagnostic: (entry) => { imageProgress.push(entry); throw new Error("display listener fault"); },
     runner: async (_script, env, options) => {
       assert.equal(env.XIAOXI_INPUT_Y_RATIO, "0.88");
-      options.onImageProgress({ stage: "read_back", status: "start", clipboard_sequence_changed: false,
-        clipboard_format_kind: "bitmap", input_point_source: "verified", message: "private clipboard contents" });
-      return { ok: false, reason: "image_draft_format_unavailable", sendAttempted: false };
+      options.onImageProgress({ stage: "paste", status: "start", paste_method: "file_drop", send_button_color: "227,227,227",
+        input_point_source: "verified", message: "private clipboard contents" });
+      return { ok: false, reason: "image_paste_not_accepted", sendAttempted: false };
     } };
-  const copyResult = await sendWechatImage(copyUnavailable);
-  assert.equal(copyResult.pre_send_retry_exhausted, true, "three failed local copy probes must not restart the whole contact search");
-  assert.equal(copyResult.blocked_reason, "image_draft_format_unavailable");
+  const pasteResult = await sendWechatImage(pasteIgnored);
+  assert.equal(pasteResult.pre_send_retry_exhausted, true, "a paste WeChat ignored twice must not restart the whole contact search");
+  assert.equal(pasteResult.blocked_reason, "image_paste_not_accepted");
+  assert.equal(pasteResult.send_attempted, false);
   assert.equal(imageProgress[0].phase, "start");
-  assert.equal(imageProgress[0].clipboard_sequence_changed, false);
+  assert.equal(imageProgress[0].paste_method, "file_drop");
   assert.doesNotMatch(JSON.stringify(imageProgress), /private clipboard contents/u);
-  const readBudgetResult = await sendWechatImage({ ...copyUnavailable, baseDir: path.join(root, "image-read-budget"),
-    runner: async () => ({ ok: false, reason: "image_stage_timeout", driverStage: "read_back", sendAttempted: false }) });
-  assert.equal(readBudgetResult.pre_send_retry_exhausted, true);
-  assert.equal(readBudgetResult.blocked_reason, "image_send_pre_click_timeout");
   const postClickTimeout = { ...imageOptions, baseDir: path.join(root, "post-click-timeout"), runner: async () => ({
     ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "click_send", status: "start", retry_index: 0 }] }
   }) };
@@ -984,7 +981,7 @@ async function checkTouchMessageSequence() {
   assert.equal(postClickResult.send_attempted, null, "a click-stage timeout must remain outcome_unknown");
   const trimmedClickResult = await sendWechatImage({ ...postClickTimeout, baseDir: path.join(root, "trimmed-click-timeout"),
     runner: async () => ({ ok: false, reason: "powershell_timeout", diagnostics: { image_send_attempted: true,
-      image_progress: [{ stage: "read_back", status: "start", retry_index: 0 }] } }) });
+      image_progress: [{ stage: "paste", status: "start", retry_index: 0 }] } }) });
   assert.equal(trimmedClickResult.send_attempted, null, "a retained click latch must outweigh a truncated pre-click-looking history");
   const diagnosedImage = { ...imageOptions, baseDir: path.join(root, "diagnosed-image"), runner: async () => ({
     ok: false, reason: "image_driver_failed", sendAttempted: false, ruleId: "image-r007",

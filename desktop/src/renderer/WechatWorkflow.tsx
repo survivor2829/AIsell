@@ -289,9 +289,9 @@ const TOUCH_STAGE_LABELS: Record<string, string> = {
   before_send_snapshot: "正在检查发送前状态", send_click: "正在发送文字", after_send_confirmation: "正在确认发送结果",
   image_send: "正在准备图片", script_started: "正在启动图片发送", context: "正在检查图片发送环境",
   source_file: "正在校验图片文件", window_binding: "正在核验聊天窗口", clipboard_backup: "正在准备剪贴板",
-  existing_draft_check: "正在检查输入框", existing_draft_clear: "正在清理旧草稿", sentinel_write: "正在准备草稿核验",
+  existing_draft_clear: "正在清理旧草稿",
   image_load: "正在读取图片", clipboard_bitmap: "正在复制图片", paste: "正在粘贴图片",
-  preview_verification: "正在核验图片预览", read_back: "正在核验图片草稿", click_send: "正在发送图片",
+  preview_verification: "正在核验图片预览", click_send: "正在发送图片",
   post_confirm: "正在确认图片发送结果", image_retry_wait: "图片发送前检查超时，等待恢复", part_complete: "当前内容已发送并确认"
 };
 

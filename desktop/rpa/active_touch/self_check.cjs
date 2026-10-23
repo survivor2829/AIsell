@@ -3388,46 +3388,23 @@ try {
     { ok: false, reason: "powershell_output_invalid" }
   );
 
-  // Execute only the draft probe with an in-memory clipboard fixture. No window,
-  // system clipboard or WeChat operation is performed by this regression.
+  // Execute only the shared composer-point helper; no window or WeChat operation.
   const imageScript = require("./wechat_image_send.dev.cjs").IMAGE_SEND_SCRIPT;
-  const imageDraftProbe = imageScript.match(/function Read-ImageDraft[\s\S]*?(?=function Observe-ImageConversation)/u)[0]
-    .replaceAll("[Win32WechatImage]", "[ImageCopyFixture]");
   const composerPointProbe = imageScript.match(/function Get-ComposerInputPoint[\s\S]*?(?=function Normalize-WechatDraftText)/u)[0];
-  const draftProbeResult = await runPowerShellAsync(`
-Add-Type 'public static class ImageCopyFixture { public static uint Sequence = 1; public static uint GetClipboardSequenceNumber() { return Sequence; } }'
-function Assert-ImageWindow {}
-function Assert-ImageWindowIdentity {}
-function Assert-ImageStageBudget {}
-function Set-ImageStage {}
-function Write-ImageProgress {}
-function Set-ImageClipboardOwned {}
-function Get-UptimeMs { return $script:fixtureTime }
-function Start-Sleep([int]$Milliseconds) { $script:fixtureTime += $Milliseconds }
-function Image-Keys([string]$keys) {
-  if ($keys -ceq '^c') {
-    $script:fixtureCopies++
-    if ($script:fixtureCopies -eq $script:copyPublishesAt) { [ImageCopyFixture]::Sequence++ }
-  }
-}
-function Invoke-ImageClipboardWrite { $script:fixtureSentinels++; [ImageCopyFixture]::Sequence++ }
-function Invoke-ImageClipboardRead { $script:fixtureReads++; return @{ empty = $false; image = $true; fingerprint = 'copied-draft' } }
-${imageDraftProbe}
+  const composerPointResult = await runPowerShellAsync(`
 ${composerPointProbe}
-$script:fixtureTime = 0; $script:fixtureCopies = 0; $script:fixtureSentinels = 0; $script:fixtureReads = 0; $script:copyPublishesAt = 99
-$unchanged = Read-ImageDraft ([IntPtr]::Zero) $true
-if ($unchanged.image -or $script:fixtureReads -ne 0 -or $script:fixtureSentinels -ne 0) { throw 'unchanged source bitmap accepted or overwritten' }
-$script:fixtureCopies = 0; $script:copyPublishesAt = 2
-$delayed = Read-ImageDraft ([IntPtr]::Zero) $true
-if (-not $delayed.image -or $script:fixtureCopies -ne 2 -or $script:fixtureReads -ne 1 -or $script:fixtureSentinels -ne 0) { throw 'delayed native copy was not verified' }
 $inputXText = '0.65'; $inputYText = '0.88'; $rect = @{ Left = 20; Top = 30; Width = 1000; Height = 700 }
 $point = Get-ComposerInputPoint $rect
 if ($point.x -ne 670 -or $point.y -ne 646 -or $point.source -cne 'verified') { throw 'verified composer point lost' }
 $inputYText = 'invalid'; $point = Get-ComposerInputPoint $rect
 if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallback changed' }
-@{ ok = $true; unchangedRejected = $true; delayedCopyVerified = $true; sourcePreserved = $true; sharedPointVerified = $true } | ConvertTo-Json -Compress
+@{ ok = $true; sharedPointVerified = $true } | ConvertTo-Json -Compress
 `, {}, { ensure: false, timeout: 5_000 });
-  assert.deepEqual(draftProbeResult, { ok: true, unchangedRejected: true, delayedCopyVerified: true, sourcePreserved: true, sharedPointVerified: true });
+  assert.deepEqual(composerPointResult, { ok: true, sharedPointVerified: true });
+  assert.doesNotMatch(imageScript, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
+    "image sending must not depend on copying the WeChat draft back out");
+  assert.match(imageScript, /function Test-SendButtonActive[\s\S]*CopyFromScreen[\s\S]*\$green -gt \(\$total \* 0\.3\)/u,
+    "image draft state must be read from the send button colour");
   assert.match(imageScript, /function Get-UptimeMs\s*\{\s*return \$script:imageClock\.ElapsedMilliseconds/u,
     "image budgets must use a monotonic Stopwatch, without double-counting the fractional second");
 
@@ -3452,11 +3429,11 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
   const liveProgressResult = runPowerShellAsync("", {}, { ensure: false, diagnostics: true,
     spawnProcess: () => (progressChild = fakePowerShellChild()),
     onImageProgress: (entry) => { liveImageProgress.push(entry); throw new Error("observer failure"); } });
-  progressChild.stderr.emit("data", 'image_progress:{"stage":"read_');
+  progressChild.stderr.emit("data", 'image_progress:{"stage":"pas');
   assert.equal(liveImageProgress.length, 0, "a partial diagnostic line must not publish progress");
-  progressChild.stderr.emit("data", 'back","status":"start","clipboard_sequence_changed":false,"clipboard_format_kind":"bitmap","input_point_source":"verified","message":"private-image-text"}\n');
+  progressChild.stderr.emit("data", 'te","status":"start","paste_method":"bitmap","send_button_color":"7,193,96","input_point_source":"verified","message":"private-image-text"}\n');
   assert.equal(liveImageProgress.length, 1, "image progress must arrive before the native child finishes");
-  progressChild.stderr.emit("data", 'image_progress:{"stage":"private-contact","status":"start"}\nimage_progress:{"stage":"read_back","status":"finish","elapsed_ms":42}');
+  progressChild.stderr.emit("data", 'image_progress:{"stage":"private-contact","status":"start"}\nimage_progress:{"stage":"paste","status":"finish","elapsed_ms":42}');
   progressChild.stdout.emit("data", '{"ok":true}');
   progressChild.emit("close", 0);
   const liveProgress = await liveProgressResult;
@@ -3469,7 +3446,7 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
   const trimmedProgressResult = runPowerShellAsync("", {}, { ensure: false, diagnostics: true,
     spawnProcess: () => (trimmedProgressChild = fakePowerShellChild()) });
   trimmedProgressChild.stderr.emit("data", 'image_progress:{"stage":"click_send","status":"start"}\n'
-    + 'image_progress:{"stage":"read_back","status":"start"}\n'.repeat(45));
+    + 'image_progress:{"stage":"paste","status":"start"}\n'.repeat(45));
   trimmedProgressChild.stdout.emit("data", '{"ok":false,"reason":"image_send_not_confirmed"}');
   trimmedProgressChild.emit("close", 0);
   const trimmedProgress = await trimmedProgressResult;

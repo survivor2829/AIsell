@@ -28,13 +28,6 @@
     "classification": "recoverable"
   },
   {
-    "id": "image-r005",
-    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
-    "reason": "image_existing_draft_check_failure",
-    "line": 161,
-    "classification": "recoverable"
-  },
-  {
     "id": "image-r006",
     "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
     "reason": "image_decode_failure",
@@ -63,13 +56,6 @@
     "classification": "recoverable"
   },
   {
-    "id": "image-r010",
-    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
-    "reason": "image_inline_draft_verification_failure",
-    "line": 201,
-    "classification": "recoverable"
-  },
-  {
     "id": "image-r011",
     "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
     "reason": "image_send_click_guard_failure",
@@ -88,20 +74,6 @@
     "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
     "reason": "image_existing_draft_clear_failure",
     "line": 169,
-    "classification": "recoverable"
-  },
-  {
-    "id": "image-r014",
-    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
-    "reason": "image_stage_timeout",
-    "line": 38,
-    "classification": "recoverable"
-  },
-  {
-    "id": "image-r016",
-    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
-    "reason": "image_sentinel_write_failure",
-    "line": 176,
     "classification": "recoverable"
   },
   {
@@ -2911,9 +2883,9 @@
     "classification": "recoverable"
   },
   {
-    "id": "image-literal.draft_format_unavailable",
+    "id": "image-literal.paste_not_accepted",
     "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
-    "reason": "image_draft_format_unavailable",
+    "reason": "image_paste_not_accepted",
     "line": 350,
     "classification": "recoverable"
   },
