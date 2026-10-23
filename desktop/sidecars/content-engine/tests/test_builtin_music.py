@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -66,6 +68,23 @@ class BuiltinMusicTests(unittest.TestCase):
         self.assertEqual(chosen["track_id"], domain.select_video_music(60)["trackId"])
         other = next(row for row in rows if row["track_id"] != chosen["track_id"])
         self.assertIsNone(domain._reusable_auto_mix_music({"music_mode": "auto", "music_track": {"track_id": other["track_id"]}}, brief, required_duration_ms=60_000, include_inactive=True))
+
+    def test_deep_component_install_registers_all_three_recordings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / ("runtime-" + "x" * 210) / "assets"
+            writable = Path("\\\\?\\" + str(root)) if os.name == "nt" else root
+            try:
+                shutil.copytree(ASSET_ROOT, writable)
+                self.assertGreater(len(str(root / "builtin-music.v1.json")), 260)
+                with patch("content_engine.builtin_music.ASSET_ROOT", root):
+                    service = ContentEngineService(Path(folder) / "profile", creative_analyzer=_Analyzer(), creative_renderer=_Renderer(), start_background_jobs=False)
+                try:
+                    self.assertEqual(3, len(service.list_music_catalog_tracks()["items"]))
+                    self.assertIsNotNone(service.creative_domain._select_auto_mix_music({}, required_duration_ms=300_000))
+                finally:
+                    service.close()
+            finally:
+                shutil.rmtree(writable.parent)
 
     def test_upgrade_does_not_overwrite_existing_fingerprint_or_reactivate_retirement(self):
         connection = self.service.connection

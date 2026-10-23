@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from .errors import ContentEngineError
@@ -12,8 +13,11 @@ ASSET_ROOT = Path(__file__).parent / "assets"
 
 
 def sync_builtin_music(domain):
+    root = ASSET_ROOT.resolve()
+    if os.name == "nt" and not str(root).startswith("\\\\?\\"):
+        root = Path("\\\\?\\UNC\\" + str(root)[2:] if str(root).startswith("\\\\") else "\\\\?\\" + str(root))
     try:
-        catalog = json.loads((ASSET_ROOT / "builtin-music.v1.json").read_text(encoding="utf-8"))
+        catalog = json.loads((root / "builtin-music.v1.json").read_text(encoding="utf-8"))
         tracks = catalog["tracks"]
         if not isinstance(tracks, list):
             raise ValueError("invalid tracks")
@@ -22,8 +26,8 @@ def sync_builtin_music(domain):
         return
     for track in tracks:
         try:
-            source = (ASSET_ROOT / track["file"]).resolve()
-            if ASSET_ROOT.resolve() not in source.parents or not source.is_file():
+            source = (root / track["file"]).resolve()
+            if root not in source.parents or not source.is_file():
                 raise ContentEngineError("builtin_music_invalid", "内置配乐文件缺失。")
             # The fingerprint identifies audio, not its commercial authorization.
             fingerprint = domain._sha256_file(source)
