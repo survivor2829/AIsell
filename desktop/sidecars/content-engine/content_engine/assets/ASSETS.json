@@ -44,6 +44,30 @@
       "file": "music-catalog-policy.v1.json",
       "source": "original editorial catalogue policy",
       "license": "LicenseRef-Xiaoxi-Original"
+    },
+    {
+      "id": "builtin_music_my-soul-july",
+      "type": "bgm",
+      "file": "builtin-music/my-soul-july.mp3",
+      "sha256": "b45e8aefe7e427dcd843244148484319d22fb7bbfe511ccdad383ecc22ef40f7",
+      "source": "User supplied",
+      "license": "LicenseRef-User-Authorized-Commercial"
+    },
+    {
+      "id": "builtin_music_repeat-jimo-atu",
+      "type": "bgm",
+      "file": "builtin-music/repeat-jimo-atu.mp3",
+      "sha256": "03ea5ac36df1ac597b77c72604fa3745984be9952e3cc9692216240b1945ef9c",
+      "source": "User supplied",
+      "license": "LicenseRef-User-Authorized-Commercial"
+    },
+    {
+      "id": "builtin_music_soft-light-mujiuer",
+      "type": "bgm",
+      "file": "builtin-music/soft-light-mujiuer.mp3",
+      "sha256": "ceacd810acf74e556474381d12e523bfed157e11a5b559e6cba019b85616a4e7",
+      "source": "User supplied",
+      "license": "LicenseRef-User-Authorized-Commercial"
     }
   ]
 }

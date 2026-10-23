@@ -62,13 +62,12 @@ assert.doesNotMatch(review, /<button[^>]*disabled/u, "the edit button stays avai
 
 // Page wiring: hints at confirmation and on finished works, never on the confirm button.
 assert.equal((page.match(/<AdLawHint text=\{(?:option|c)\.narration\} \/>/gu) || []).length, 2, "legacy choices and finished works show hints");
-assert.match(page, /data-batch-action="confirm" disabled=\{locked \|\| saving \|\| dirty \|\| !countsValid \|\| !settings\.voice_persona_id\}/u,
+assert.match(page, /data-batch-action="confirm" disabled=\{locked \|\| saving \|\| dirty \|\| !countsValid \|\| voiceBlocked\}/u,
   "the hint does not take part in enabling 确认文案");
 assert.doesNotMatch(page, /adLawSentences/u, "the page only renders the hint");
-// The strict switch: same persistence as video_template, locked once the copy is confirmed.
-assert.match(page, /<input type="checkbox" checked=\{settings\.strict_visual_review === true\} disabled=\{locked \|\| !!batch\?\.script_confirmation\} onChange=\{\(event\) => changeSoundSettings\(\{ \.\.\.settings, strict_visual_review: event\.target\.checked \}\)\} \/>/u);
-assert.match(page, /严格核对画面事实/u);
-assert.match(page, /默认关闭：按您确认的文案直接配音剪辑。/u);
+// New work uses a fixed presentation and no paid strict-review toggle.
+assert.doesNotMatch(page, /batch-strict-review|<VideoTemplatePicker/u);
+assert.match(page, /video_template: "topic_fixed", strict_visual_review: false/u);
 for (const handler of ["async function start(", "async function confirmScript("]) {
   const body = page.slice(page.indexOf(handler), page.indexOf("} finally { setSubmitting(false); }", page.indexOf(handler)));
   assert.match(body, /localStorage\.setItem\("batch-studio-settings", JSON\.stringify\(settings\)\)/u,
@@ -83,8 +82,7 @@ assert.match(page, /c\.review_mode === "follow_script" && <p className="batch-hi
 assert.match(page, /delete saved\.strict_visual_review;\s*return \{ minimum_duration_seconds: 30, music_mode: "auto", music_track_ids: \[\], \.\.\.saved, voice_persona_id/u,
   "a new batch starts with the strict switch off; the other saved settings still seed the page");
 assert.match(page, /material_context: materialContext, cta, target_count: target, settings: productionSettings,/u, "the draft sends the settings");
-assert.match(page, /const productionSettings = modern \? \{ \.\.\.settings, minimum_duration_seconds:/u,
-  "duration normalization retains the strict review switch and all other production settings");
+assert.match(page, /const productionSettings: Batch\["settings"\] = modern \? \{ \.\.\.settings, music_mode:[^;]+strict_visual_review: false/u);
 assert.match(page, /\{s\.description \|\| materialLabel\(batch, s\.asset_id\)\}/u, "shots without a description are named by material");
 assert.match(page, /function materialLabel\(batch: Batch \| null \| undefined, assetId: string\)/u);
 assert.match(page, /settings\.strict_visual_review \? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。" : "继续会按文案顺序重新安排未完成作品的镜头；已完成作品会保留。"/u,

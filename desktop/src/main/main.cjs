@@ -781,6 +781,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     productVideoRegistration = registerProductVideoIpc({
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "product_video"),
+      listVoices: async () => { await contentEngineController.start(); return contentEngineController.listAutoMixVoicePersonas(); },
       defaultExportDir: app.getPath("downloads"),
       gatewayClient: providerGatewayClient,
       readPrices: readVideoPrices,

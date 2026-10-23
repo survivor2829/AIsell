@@ -212,6 +212,9 @@ async function main() {
     options.recommendVoice = async () => ({ characterVoice: 'male', reason: '建议男声' });
     options.previewVoice = async (id) => { assert.equal(id, maleId); return { audioDataUrl: 'data:audio/wav;base64,ZmFrZQ==', cacheHit: false }; };
     options.approveVoice = async (id) => { assert.equal(id, maleId); maleApproved = true; };
+    await service.selectVoice(femaleId, 'female');
+    assert.equal((await service.capabilities()).voicePreferences.female, femaleId,
+      'An available official voice needs no preview or separate approval on a fresh installation.');
     options.prepareNarration = async ({ text, voice_persona_id }) => {
       assert.equal(voice_persona_id, maleId); narrationCalls += 1; lastText = [text];
       const file = path.join(directory, 'male-speech.wav'); fs.writeFileSync(file, 'male frozen fixture');

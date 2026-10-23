@@ -181,8 +181,10 @@ def _validate_music_capacity(domain, batch, settings, narrations):
             'narrated_music_pool_empty',
             '已选配乐当前不可用、授权证据缺失或时长不足，请更换曲目后再开始制作。',
         )
-    # Automatic music is optional. Actual voice duration can differ from the
-    # estimate; production selects again and records a voice-only fallback.
+    raise ContentEngineError(
+        'auto_mix_licensed_music_required',
+        '自动配乐暂不可用，请检查曲库后重试，或在更多设置中明确选择不加配乐。',
+    )
 
 
 def _validate_render_capacity(domain):
@@ -272,7 +274,7 @@ def confirm_selections(domain, request):
         [item['narration'] for item in selections],
     )
     persona = domain.d._approved_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
-    require(persona is not None, 'auto_mix_voice_persona_approval_required', '请先选择已试听批准的声音，再开始制作。')
+    require(persona is not None, 'auto_mix_voice_persona_approval_required', '当前声音不可用，请在更多设置中更换声音。')
     require(persona['provider'] == 'volcengine', 'auto_mix_voice_persona_invalid',
             '当前声音不支持火山配音，请重新选择已批准的火山音色。')
     from .volcengine_tts import VolcengineTTSProvider

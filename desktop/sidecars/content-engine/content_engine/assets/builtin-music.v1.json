@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026.10.user-three",
+  "selectionNote": "Use the three user-provided commercial tracks. Authorization is accepted from the user declaration; no license evidence file or digest is required.",
+  "tracks": [
+    {
+      "id": "my-soul-july",
+      "displayName": "My Soul · July",
+      "file": "builtin-music/my-soul-july.mp3",
+      "sha256": "b45e8aefe7e427dcd843244148484319d22fb7bbfe511ccdad383ecc22ef40f7",
+      "authorization": "User confirmed licensed and commercially usable on 2026-10-23",
+      "moods": [
+        "calm",
+        "credible"
+      ],
+      "energy": 0.4,
+      "analysis": {
+        "duration_ms": 140066,
+        "integrated_lufs": -12.39,
+        "true_peak_dbtp": -1.5
+      }
+    },
+    {
+      "id": "repeat-jimo-atu",
+      "displayName": "没有天赋 那就重复 · 寂寞阿图",
+      "file": "builtin-music/repeat-jimo-atu.mp3",
+      "sha256": "03ea5ac36df1ac597b77c72604fa3745984be9952e3cc9692216240b1945ef9c",
+      "authorization": "User confirmed licensed and commercially usable on 2026-10-23",
+      "moods": [
+        "steady"
+      ],
+      "energy": 0.5,
+      "analysis": {
+        "duration_ms": 186040,
+        "integrated_lufs": -7.05,
+        "true_peak_dbtp": -0.11
+      }
+    },
+    {
+      "id": "soft-light-mujiuer",
+      "displayName": "柔和之光 · 沐九儿",
+      "file": "builtin-music/soft-light-mujiuer.mp3",
+      "sha256": "ceacd810acf74e556474381d12e523bfed157e11a5b559e6cba019b85616a4e7",
+      "authorization": "User confirmed licensed and commercially usable on 2026-10-23",
+      "moods": [
+        "calm",
+        "warm"
+      ],
+      "energy": 0.35,
+      "analysis": {
+        "duration_ms": 363107,
+        "integrated_lufs": -11.89,
+        "true_peak_dbtp": -0.67
+      }
+    }
+  ]
+}

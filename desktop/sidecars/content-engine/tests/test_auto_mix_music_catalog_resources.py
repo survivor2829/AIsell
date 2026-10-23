@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
+from unittest.mock import patch
 import uuid
 import wave
 
@@ -42,6 +43,9 @@ class _Renderer:
 
 class AutoMixMusicCatalogResourceTests(unittest.TestCase):
     def setUp(self):
+        builtin_sync = patch("content_engine.builtin_music.sync_builtin_music")
+        builtin_sync.start()
+        self.addCleanup(builtin_sync.stop)
         self.root = SIDECAR_ROOT / f".auto-mix-music-catalog-{uuid.uuid4().hex}"
         self.root.mkdir()
         self.service = ContentEngineService(
@@ -50,6 +54,7 @@ class AutoMixMusicCatalogResourceTests(unittest.TestCase):
             creative_renderer=_Renderer(),
             start_background_jobs=False,
         )
+        self.service.creative_domain._automatic_music_fingerprints = ()
         self.music = self.root / "licensed-source.wav"
         self.evidence = self.root / "commercial-license.txt"
         self._write_wave(self.music)
@@ -117,78 +122,26 @@ class AutoMixMusicCatalogResourceTests(unittest.TestCase):
             ]
         return [value] if isinstance(value, str) else []
 
-    def test_managed_audio_and_evidence_survive_source_deletion_and_are_rechecked(self):
-        imported = self.service.import_music_catalog_track(self._request())
+    def test_managed_audio_survives_source_deletion_and_ignores_missing_evidence(self):
+        request = {**self._request(), "evidencePath": str(self.root / "nonexistent-license.txt")}
+        imported = self.service.import_music_catalog_track(request)
         row = self._private_row()
         managed_audio = (self.root / row["managed_relative_path"]).resolve()
-        managed_evidence = (
-            self.root / row["managed_evidence_relative_path"]
-        ).resolve()
         self.assertIn(self.root.resolve(), managed_audio.parents)
-        self.assertIn(self.root.resolve(), managed_evidence.parents)
         self.assertTrue(managed_audio.is_file())
-        self.assertTrue(managed_evidence.is_file())
-
-        public_strings = self._public_strings(imported)
-        for private_value in (
-            str(self.music),
-            str(self.evidence),
-            "private-license-reference",
-            row["managed_relative_path"],
-            row["managed_evidence_relative_path"],
-            row["fingerprint"],
-            row["evidence_digest"],
-        ):
-            self.assertFalse(
-                any(private_value in value for value in public_strings),
-                private_value,
-            )
-
+        self.assertIsNone(row["managed_evidence_relative_path"])
+        self.assertFalse(imported["licenseSummary"]["evidencePresent"])
         self.music.unlink()
         self.evidence.unlink()
-        listed = self.service.list_music_catalog_tracks()["items"][0]
-        self.assertEqual("ready", listed["analysisStatus"])
-        self.assertTrue(listed["licenseSummary"]["evidencePresent"])
-        selected = self.service.creative_domain._select_auto_mix_music(
-            self._brief(), required_duration_ms=5_000
-        )
+        selected = self.service.creative_domain._select_auto_mix_music(self._brief(), required_duration_ms=5000)
         self.assertIsNotNone(selected)
-
-        managed_evidence.write_bytes(b"tampered-license")
-        listed = self.service.list_music_catalog_tracks()["items"][0]
-        self.assertFalse(listed["licenseSummary"]["evidencePresent"])
-        self.assertIsNone(
-            self.service.creative_domain._select_auto_mix_music(
-                self._brief(), required_duration_ms=5_000
-            )
-        )
-        self.assertIsNone(
-            self.service.creative_domain._reusable_auto_mix_music(
-                {"music_track": {"track_id": selected["track_id"]}},
-                self._brief(),
-                required_duration_ms=5_000,
-            )
-        )
-
-        managed_evidence.write_bytes(self.evidence_bytes)
+        for private_value in (str(self.music), "private-license-reference", row["managed_relative_path"], row["fingerprint"]):
+            self.assertFalse(any(private_value in value for value in self._public_strings(imported)))
         managed_audio.write_bytes(b"tampered-audio")
         listed = self.service.list_music_catalog_tracks()["items"][0]
         self.assertEqual("failed", listed["analysisStatus"])
-        self.assertEqual(
-            "music_managed_audio_invalid", listed["analysisErrorCode"]
-        )
-        self.assertIsNone(
-            self.service.creative_domain._select_auto_mix_music(
-                self._brief(), required_duration_ms=5_000
-            )
-        )
-        self.assertIsNone(
-            self.service.creative_domain._reusable_auto_mix_music(
-                {"music_track": {"track_id": selected["track_id"]}},
-                self._brief(),
-                required_duration_ms=5_000,
-            )
-        )
+        self.assertIsNone(self.service.creative_domain._select_auto_mix_music(self._brief(), required_duration_ms=5000))
+        self.assertIsNone(self.service.creative_domain._reusable_auto_mix_music({"music_track": {"track_id": selected["track_id"]}}, self._brief(), required_duration_ms=5000))
 
     def test_retired_recording_stays_out_of_new_selection_without_revoking_history(self):
         item = self.service.import_music_catalog_track(self._request())
@@ -200,7 +153,7 @@ class AutoMixMusicCatalogResourceTests(unittest.TestCase):
         self.assertIsNone(domain._select_auto_mix_music(self._brief(), required_duration_ms=5000))
         state = {"music_track": {"track_id": item["trackId"]}}
         self.assertIsNone(domain._reusable_auto_mix_music(state, self._brief(), required_duration_ms=5000))
-        self.assertIsNotNone(domain._reusable_auto_mix_music(state, self._brief(), required_duration_ms=5000, include_inactive=True))
+        self.assertIsNone(domain._reusable_auto_mix_music(state, self._brief(), required_duration_ms=5000, include_inactive=True))
         self.assertEqual("valid", self._private_row()["license_status"])
         self.assertTrue((self.root / row["managed_relative_path"]).is_file())
         with self.assertRaises(ContentEngineError) as error:
@@ -217,9 +170,7 @@ class AutoMixMusicCatalogResourceTests(unittest.TestCase):
         first = self.service.import_music_catalog_track(self._request())
         row = self._private_row()
         managed_audio = self.root / row["managed_relative_path"]
-        managed_evidence = self.root / row["managed_evidence_relative_path"]
         managed_audio.write_bytes(b"tampered-audio")
-        managed_evidence.write_bytes(b"tampered-license")
 
         second = self.service.import_music_catalog_track(self._request())
         count = self.service.connection.execute(
@@ -232,12 +183,17 @@ class AutoMixMusicCatalogResourceTests(unittest.TestCase):
             repaired["fingerprint"],
             self.service.creative_domain._sha256_file(managed_audio),
         )
-        self.assertEqual(
-            repaired["evidence_digest"],
-            self.service.creative_domain._sha256_file(managed_evidence),
-        )
         self.assertEqual("ready", second["analysisStatus"])
-        self.assertTrue(second["licenseSummary"]["evidencePresent"])
+        self.assertFalse(second["licenseSummary"]["evidencePresent"])
+
+    def test_user_authorized_import_needs_no_evidence_file(self):
+        request = self._request()
+        request.pop("credentialReference")
+        request.pop("evidencePath")
+        item = self.service.import_music_catalog_track(request)
+        self.assertEqual("ready", item["analysisStatus"])
+        self.assertFalse(item["licenseSummary"]["evidencePresent"])
+        self.assertIsNotNone(self.service.creative_domain._select_auto_mix_music(self._brief(), required_duration_ms=5_000))
 
 
 if __name__ == "__main__":

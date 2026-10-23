@@ -112,12 +112,11 @@ assert.doesNotMatch(page, /<aside className="product-sidebar">/u, "默认主界�
 assert.doesNotMatch(page, /声音试听与批准/u, "声音资源维护不得成为默认主流程入口");
 assert.doesNotMatch(page, /授权曲库管理/u, "音乐资源维护不得成为默认主流程入口");
 assert.match(page, /<details className="product-quality-details">/u, "技术质量证据必须渐进披露");
-assert.match(page, /plan\.state === "needs_attention"[\s\S]+openResources/u, "只有资源异常时才可打开维护面板");
+assert.doesNotMatch(page, /openResources|<AutoMixResourcePanel/u, "旧任务界面也不暴露试听或选曲入口");
 
 assert.match(page, /plan\?\.state === "completed"/u, "正式结果必须由 completed 状态门控");
 assert.match(page, /plan\.qualityReport\?\.passed === true/u, "正式结果必须由质量报告门控");
 assert.match(page, /plan\.music\.licenseSummary\.commercialUseAllowed === true/u, "正式结果必须明确验证音乐允许商用");
-assert.match(page, /plan\.music\.licenseSummary\.evidencePresent === true/u, "正式结果必须验证音乐授权凭证存在");
 assert.match(page, /plan\?\.voicePersona\?\.approvalStatus === "approved"/u, "正式结果必须使用已批准的声音人格");
 assert.match(page, /candidate\?\.actualEngine === "remotion"/u, "正式结果必须由候选的 Remotion 实际引擎证据门控");
 assert.match(page, /FFmpeg 基础输出/u, "FFmpeg fallback 不得被当作 V2 正式完成");
@@ -141,7 +140,6 @@ assert.match(
   "已知故障不得再要求用户展开技术性的局部重做详情"
 );
 assert.match(page, /onClick=\{\(\) => void regenerate\(layer\)\}/u, "可信点击入口必须绑定当前重做层");
-assert.match(page, /current\.creative\.designAutoMixVoicePersona\(payload\)/u, "页面必须接入显式声音生成 API");
 
 const regeneratableStates = page.match(
   /const\s+RECOVERABLE_STATES\s*=\s*new Set<AutoMixState>\(\[([^)]*)\]\)/u

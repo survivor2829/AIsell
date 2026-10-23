@@ -94,8 +94,8 @@ class CapturingV2Renderer(FFmpegCreativeRenderer):
                 "endMs": 1_500,
                 "voiceLufs": -16.0,
                 "musicLufs": -26.0,
-                "rawMarginLu": 10.0,
-                "marginLu": 10.0,
+                "rawMarginLu": 18.0,
+                "marginLu": 18.0,
             }
         ]
 
@@ -166,7 +166,7 @@ class FakeHybridFFmpeg:
 
     def read_auto_mix_speech_music_report(self, path):
         return {
-            "speech_music_margin_lu": 10.0,
+            "speech_music_margin_lu": 18.0,
             "music_gain_db": 0.0,
             "speech_music_windows": [
                 {
@@ -175,8 +175,8 @@ class FakeHybridFFmpeg:
                     "endMs": 1_500,
                     "voiceLufs": -16.0,
                     "musicLufs": -26.0,
-                    "rawMarginLu": 10.0,
-                    "marginLu": 10.0,
+                    "rawMarginLu": 18.0,
+                    "marginLu": 18.0,
                 }
             ],
         }
@@ -307,8 +307,8 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertNotIn("aevalsrc", all_args)
         self.assertNotIn("volume=-24", all_args)
         self.assertNotIn("lowpass=f=1200", all_args)
-        self.assertNotIn("sidechaincompress", final_graph)
-        self.assertIn("[music_norm]volume=", final_graph)
+        self.assertIn("sidechaincompress", final_graph)
+        self.assertIn("[music_duck]volume=", final_graph)
         self.assertIn("loudnorm=I=-15:LRA=8:TP=-1.2", final_graph)
         self.assertIn("adelay=900|900", final_graph)
         self.assertIn(
@@ -392,9 +392,12 @@ class AutoMixV2RendererTests(unittest.TestCase):
             def _command(self, _args, **_options):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+            def measure_audio_quality(self, path):
+                return {"integrated_lufs": -16.0 if "voice" in Path(path).name else -34.0}
+
             def _measure_loudness_series(self, path):
                 self.series_paths.append(Path(path))
-                loudness = -16.0 if "voice" in Path(path).name else -26.0
+                loudness = -16.0 if "voice" in Path(path).name else -34.0
                 return [(timestamp, loudness) for timestamp in range(0, 20_101, 100)]
 
         captions = [
@@ -434,7 +437,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertEqual("global", gain_plan["strategy"])
         self.assertEqual(0.0, gain_plan["music_gain_db"])
         self.assertTrue(
-            all(window["marginLu"] == 10.0 for window in verified_windows)
+            all(window["marginLu"] == 18.0 for window in verified_windows)
         )
 
     def test_window_margin_measurement_rejects_any_speech_window_without_music(self):
@@ -448,6 +451,9 @@ class AutoMixV2RendererTests(unittest.TestCase):
 
             def _command(self, _args, **_options):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            def measure_audio_quality(self, path):
+                return {"integrated_lufs": -16.0 if "voice" in Path(path).name else -34.0}
 
             def _measure_loudness_series(self, path):
                 if "voice" in Path(path).name:
@@ -474,54 +480,22 @@ class AutoMixV2RendererTests(unittest.TestCase):
             )
         self.assertEqual("auto_mix_music_not_audible", caught.exception.code)
 
-    def test_window_gain_plan_uses_per_speech_control_when_global_gain_is_impossible(self):
+    def test_window_gain_plan_targets_overall_18_lu_with_sentence_floor(self):
         windows = [
-            {
-                "captionId": "caption-1",
-                "startMs": 0,
-                "endMs": 720,
-                "rawMarginLu": 17.84,
-            },
-            {
-                "captionId": "caption-2",
-                "startMs": 880,
-                "endMs": 1_700,
-                "rawMarginLu": 23.87,
-            },
+            {"captionId": "a", "startMs": 0, "endMs": 700, "rawMarginLu": 9.0, "overallMarginLu": 12.0},
+            {"captionId": "b", "startMs": 800, "endMs": 1700, "rawMarginLu": 24.0},
         ]
-
-        plan = FFmpegCreativeRenderer._auto_mix_music_gain_plan(
-            windows, duration_ms=2_000
-        )
-
-        self.assertEqual("per_speech_window", plan["strategy"])
-        self.assertIn("volume='pow(10", plan["post_duck_gain_filter"])
-        self.assertIn("eval=frame", plan["post_duck_gain_filter"])
-        gains = {
-            item["captionId"]: item["gainDb"]
-            for item in plan["speech_window_gains"]
-        }
-        self.assertAlmostEqual(7.84, gains["caption-1"], places=2)
-        self.assertAlmostEqual(13.87, gains["caption-2"], places=2)
-        for window in windows:
-            self.assertAlmostEqual(
-                10.0,
-                window["rawMarginLu"] - gains[window["captionId"]],
-                places=2,
-            )
-        with self.assertRaises(ContentEngineError) as caught:
-            FFmpegCreativeRenderer._auto_mix_music_gain_plan(
-                [
-                    {
-                        "captionId": "unsafe-caption",
-                        "startMs": 0,
-                        "endMs": 500,
-                        "rawMarginLu": 30.1,
-                    }
-                ],
-                duration_ms=1_000,
-            )
-        self.assertEqual("auto_mix_voice_music_margin_failed", caught.exception.code)
+        plan = FFmpegCreativeRenderer._auto_mix_music_gain_plan(windows, duration_ms=2000)
+        self.assertEqual("global", plan["strategy"])
+        self.assertAlmostEqual(-6.2, plan["music_gain_db"])
+        self.assertTrue(all(w["rawMarginLu"] - plan["music_gain_db"] >= 15 for w in windows))
+        quiet = [{**windows[0], "rawMarginLu": 30.0, "overallMarginLu": 30.0}]
+        self.assertEqual(12.0, FFmpegCreativeRenderer._auto_mix_music_gain_plan(quiet, duration_ms=2000)["music_gain_db"])
+        comparison = [{**windows[0], "rawMarginLu": 24.26, "overallMarginLu": 27.53}]
+        gain = FFmpegCreativeRenderer._auto_mix_music_gain_plan(comparison, duration_ms=2000)["music_gain_db"]
+        self.assertAlmostEqual(9.06, gain)
+        self.assertLess(abs(27.53 - gain - 18), 0.5)
+        self.assertGreaterEqual(24.26 - gain, 15)
 
     def test_mezzanine_calibrates_per_speech_music_control_from_measured_residual(self):
         class VariableMarginRenderer(CapturingV2Renderer):
@@ -542,7 +516,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
                             "endMs": 720,
                             "voiceLufs": -16.0,
                             "musicLufs": -26.0,
-                            "rawMarginLu": 10.0,
+                            "rawMarginLu": 18.0,
                         },
                         {
                             "captionId": "caption-2",
@@ -550,7 +524,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
                             "endMs": 1_700,
                             "voiceLufs": -16.0,
                             "musicLufs": -26.0,
-                            "rawMarginLu": 10.0,
+                            "rawMarginLu": 18.0,
                         },
                     ]
                 if post_duck_gain_filter:
@@ -623,7 +597,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertEqual(3, len(renderer.margin_measurement_filters))
         self.assertEqual("", renderer.margin_measurement_filters[0])
         self.assertIn(
-            "volume='pow(10", renderer.margin_measurement_filters[1]
+            "volume=-", renderer.margin_measurement_filters[1]
         )
         self.assertIn(
             ",volume=", renderer.margin_measurement_filters[2]
@@ -639,7 +613,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
             renderer._auto_mix_margin_report_path(output).read_text(encoding="utf-8")
         )
         self.assertTrue(
-            all(8.0 <= item["marginLu"] <= 12.0 for item in report["windows"])
+            all(item["marginLu"] >= 15.0 for item in report["windows"])
         )
 
     def test_short_music_extracts_declared_loop_region_before_repeating(self):
@@ -876,7 +850,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertGreaterEqual(report["integrated_lufs"], -16.0)
         self.assertLessEqual(report["integrated_lufs"], -14.0)
         self.assertLessEqual(report["true_peak_dbtp"], -1.0)
-        self.assertEqual(10.0, report["speech_music_margin_lu"])
+        self.assertGreaterEqual(report["speech_music_margin_lu"], 15.0)
         recipe['music_mode'] = 'none'
         recipe.pop('licensed_music_relative_path')
         recipe.pop('licensed_music')

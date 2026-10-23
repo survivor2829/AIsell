@@ -2181,8 +2181,7 @@ async function main() {
     );
 
     dialogQueue.push(
-      { canceled: false, filePaths: [musicFile] },
-      { canceled: false, filePaths: [musicEvidenceFile] }
+      { canceled: false, filePaths: [musicFile] }
     );
     const importedMusic = await handlers.get(
       CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack
@@ -2205,6 +2204,7 @@ async function main() {
       )
     });
     assert.equal(importedMusic.ok, true);
+    assert.equal(dialogQueue.length, 0, "music import asks only for audio, never license evidence");
     assert.equal(importedMusic.data.trackId, musicCatalogTrack().trackId);
     assert.equal(importedMusic.data.licenseSummary.evidencePresent, true);
     assert.equal(importedMusic.data.analysisStatus, "ready");
@@ -2219,7 +2219,7 @@ async function main() {
         licenseStatus: "valid",
         expiresAt: "2099-01-02T16:00:00.000Z",
         credentialReference: "license-record-001",
-        evidencePath: fs.realpathSync(musicEvidenceFile),
+        evidencePath: "",
         bpm: 104,
         moods: ["steady", "credible"],
         energy: 0.56,
@@ -2281,27 +2281,6 @@ async function main() {
       "超大音乐文件不得到达内容引擎"
     );
 
-    dialogQueue.push(
-      { canceled: false, filePaths: [musicFile] },
-      { canceled: false, filePaths: [oversizedMusicEvidenceFile] }
-    );
-    const oversizedEvidence = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack
-    )({ sender: mainWindow.webContents }, {
-      ...rendererMusicMetadata,
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack,
-        "55555555-5555-4555-8555-555555555555"
-      )
-    });
-    assert.equal(oversizedEvidence.ok, false);
-    assert.equal(oversizedEvidence.code, "music_license_evidence_too_large");
-    assert.equal(
-      calls.filter((call) => call[0] === "importMusicCatalogTrack").length,
-      musicImportCallCount,
-      "超大授权凭证不得到达内容引擎"
-    );
-
     const listedMusic = await handlers.get(
       CONTENT_ENGINE_CHANNELS.listMusicCatalogTracks
     )({}, {});
@@ -2318,6 +2297,9 @@ async function main() {
     )({}, {});
     assert.equal(listedVoicePersonas.ok, true);
     assert.deepEqual(listedVoicePersonas.data.items, [{
+      productApproved: false,
+      digitalHumanDefault: false,
+      autoSelectPriority: null,
       voicePersonaId: "natural-life@1",
       displayName: "自然生活",
       catalogVersion: "2026.08",
@@ -2352,8 +2334,8 @@ async function main() {
     assert.equal(designedVoicePersona.ok, true);
     assert.equal(designedVoicePersona.data.provisioningStatus, "ready");
     assert.deepEqual(Object.keys(designedVoicePersona.data).sort(), [
-      "approvalStatus", "catalogVersion", "category", "displayName", "evidenceNote",
-      "previewStatus", "previewText", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
+      "approvalStatus", "autoSelectPriority", "catalogVersion", "category", "digitalHumanDefault", "displayName", "evidenceNote",
+      "previewStatus", "previewText", "productApproved", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
     ]);
     assert.equal(JSON.stringify(designedVoicePersona).includes("must-not-leak"), false);
     assert.deepEqual(
@@ -2614,8 +2596,8 @@ async function main() {
     assert.equal(approvedVoicePersona.ok, true);
     assert.equal(approvedVoicePersona.data.approvalStatus, "approved");
     assert.deepEqual(Object.keys(approvedVoicePersona.data).sort(), [
-      "approvalStatus", "catalogVersion", "category", "displayName", "evidenceNote",
-      "previewStatus", "previewText", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
+      "approvalStatus", "autoSelectPriority", "catalogVersion", "category", "digitalHumanDefault", "displayName", "evidenceNote",
+      "previewStatus", "previewText", "productApproved", "provider", "provisioningStatus", "researchDate", "voicePersonaId"
     ]);
     assert.equal(JSON.stringify(approvedVoicePersona).includes("must-not-leak"), false);
     const approveVoiceCallCount = calls.filter(

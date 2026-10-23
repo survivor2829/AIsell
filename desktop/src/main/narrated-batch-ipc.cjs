@@ -23,7 +23,7 @@ const ERRORS = {
   narrated_script_revision_changed: "这份文案已更新，请阅读最新正文后确认。",
   narrated_script_confirmation_required: "请先选择并确认本批文案。",
   narrated_confirmed_script_changed: "确认稿需要调整，已停止制作。请检查原因并重新确认正文。",
-  narrated_music_pool_empty: "请先试听并选入至少一首可用配乐。",
+  narrated_music_pool_empty: "已选配乐暂不可用，请在更多设置中更换曲目。",
   auto_mix_licensed_music_required: "授权曲库中没有适配这条口播的配乐，请补充曲目或明确选择无配乐。",
   remotion_runtime_unavailable: "本机正式渲染组件暂不可用，已停止制作，未生成配音；请检查 Remotion 运行时后重试。",
   media_encoder_unavailable: "本机视频编码器暂不可用，已停止制作，未生成配音；请检查 FFmpeg 编码组件后重试。",
@@ -72,7 +72,7 @@ const ERRORS = {
 };
 const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available voice_recovery_available").split(" "));
 for (const field of "phase phase_label overall_percent phase_percent item_index item_total item_name heartbeat_at".split(" ")) PUBLIC_FIELDS.add(field);
-for (const field of "workflow_version music_mode script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
+for (const field of "workflow_version music_mode script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id music_status track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "brief_version script_source script_action target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");

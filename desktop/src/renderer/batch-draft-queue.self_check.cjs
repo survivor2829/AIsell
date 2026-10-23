@@ -851,7 +851,7 @@ async function main() {
   assert.match(page, /const b = await callBatch<Batch>\(action, payload\);\s*draftSlot\.started\(draftOwner\.current\);/u);
   assert.match(page, /if \(dropped && mounted\.current\) discardPendingDraft\(localStorage, [^;]+, fingerprint\);/u,
     "only an edit the user moved on from is backed up; leaving the page keeps it cached");
-  assert.match(page, /"该批次的声音需要重新试听批准，或改选已批准的声音。"/u);
+  assert.match(page, /"该批次的声音暂不可用，请选择可用声音。"/u);
   assert.match(page, /setDirty\(false\); setNotice\(\[droppedNotice\.current, voiceWarning\(b\)\]\.filter\(Boolean\)\.join\(" "\)\);/u,
     "loading a batch must flag a voice that is no longer approved and keep a dropped-edit notice");
 
@@ -861,11 +861,8 @@ async function main() {
     "the retry buttons wait for a save on its way and name a rejection");
   assert.match(page, /if \(isDeterministicDraftError\(error\)\) setRejectedEdit\(\{ fingerprint, owner, message: \(error as Error\)\.message \}\);/u);
   assert.match(page, /setBatch\(value\);\s*setRejectedEdit\(null\);/u, "a landed save clears the rejection");
-  assert.match(page, /async function voiceApproved\(\) \{\s*await refreshVoices\(\);\s*await draftQueue\.retryHeld\(\)\.catch\(\(\) => undefined\);\s*\}/u,
-    "an approval retries the held edit");
-  assert.match(page, /onApproved=\{async \(name\) => \{ setNotice\(`[^`]+`\); await voiceApproved\(\); \}\}/u,
-    "from the recovery card");
-  assert.match(page, /onVoiceApproved=\{voiceApproved\}/u, "and from 声音与配乐");
+  assert.doesNotMatch(page, /<BatchVoiceRecovery|onVoiceApproved=/u,
+    "voice approval and audition controls are absent; an unavailable voice stays blocked");
   assert.equal((page.match(/disabled=\{busy \|\| submitting \|\| Boolean\(recoveryHeld\)\} onClick=\{\(\) => void recover(?:Planning|Voice)\(\)\}/gu) || []).length, 2,
     "an unsaved edit holds both retry buttons");
   assert.match(page, /if \(carriedAssetsAutosave\(restore\)\) setDirty\(true\); else notices\.push\(CARRIED_ASSETS_WAIT\);/u,

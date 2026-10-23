@@ -14,8 +14,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AutoMixResourcePanel,
-  type AutoMixResourcePanelProps,
   type AutoMixVoicePersona,
   type AutoMixVoicePreview,
   type ImportMusicCatalogTrackPayload,
@@ -389,19 +387,7 @@ function personaSummary(plan: AutoMixPlan) {
 }
 
 function licenseSummary(plan: AutoMixPlan) {
-  if (plan.music?.mode === "none") return plan.music.message || "本片无配乐，保留完整配音。";
-  const license = plan.music?.licenseSummary;
-  if (!plan.music || !license) return "授权音乐尚未选定。";
-  const status = license.status === "valid"
-    && license.commercialUseAllowed === true
-    && license.evidencePresent
-    ? "授权证据有效"
-    : "授权证据未通过";
-  const scope = license.commercialScope ? ` · ${license.commercialScope}` : "";
-  const expires = license.expiresAt
-    ? ` · 有效期至 ${new Date(license.expiresAt).toLocaleDateString("zh-CN")}`
-    : "";
-  return `${plan.music.displayName || "授权音乐"} · ${status}${scope}${expires}`;
+  return plan.music?.mode === "none" ? "本条未配乐" : plan.music ? "已自动配乐" : "自动匹配配乐";
 }
 
 function warningText(warning: AutoMixWarning) {
@@ -444,8 +430,6 @@ export function ProductOneClickPage({
   const [assetSearch, setAssetSearch] = useState("");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
   const [visibleAssetCount, setVisibleAssetCount] = useState(PRODUCT_ASSET_PAGE_SIZE);
-  const [resourcePanelOpen, setResourcePanelOpen] = useState(false);
-  const [resourceSection, setResourceSection] = useState<"voice" | "music">("voice");
   const autoProbeAttemptedRef = useRef(new Set<string>());
   const candidateEpochRef = useRef(0);
   const guidedPrefillSessionRef = useRef("");
@@ -562,8 +546,7 @@ export function ProductOneClickPage({
   const licensedMusicReady = Boolean(
     plan?.music?.mode === "none" || (
     plan?.music?.licenseSummary?.status === "valid"
-    && plan.music.licenseSummary.commercialUseAllowed === true
-    && plan.music.licenseSummary.evidencePresent === true)
+    && plan.music.licenseSummary.commercialUseAllowed === true)
   );
   const approvedVoiceReady = plan?.voicePersona?.approvalStatus === "approved";
   const formalEvidenceReady = Boolean(
@@ -1277,52 +1260,6 @@ export function ProductOneClickPage({
     );
   }
 
-  function openResources(section: "voice" | "music") {
-    setResourceSection(section);
-    setResourcePanelOpen(true);
-  }
-
-  const resourceApi: Pick<
-    AutoMixResourcePanelProps,
-    | "listMusicCatalogTracks"
-    | "importMusicCatalogTrack"
-    | "listAutoMixVoicePersonas"
-    | "designAutoMixVoicePersona"
-    | "previewAutoMixVoicePersona"
-    | "approveAutoMixVoicePersona"
-  > = {
-    listMusicCatalogTracks: async () => {
-      const current = api();
-      if (!current) throw new Error("内容引擎尚未就绪");
-      return dataOf(await current.creative.listMusicCatalogTracks(), "授权曲库读取失败");
-    },
-    importMusicCatalogTrack: async (payload) => {
-      const current = api();
-      if (!current) throw new Error("内容引擎尚未就绪");
-      return dataOf(await current.creative.importMusicCatalogTrack(payload), "授权音乐导入失败");
-    },
-    listAutoMixVoicePersonas: async () => {
-      const current = api();
-      if (!current) throw new Error("内容引擎尚未就绪");
-      return dataOf(await current.creative.listAutoMixVoicePersonas(), "声音目录读取失败");
-    },
-    designAutoMixVoicePersona: async (payload) => {
-      const current = api();
-      if (!current) throw new Error("内容引擎尚未就绪");
-      return dataOf(await current.creative.designAutoMixVoicePersona(payload), "声音生成失败");
-    },
-    previewAutoMixVoicePersona: async (payload) => {
-      const current = api();
-      if (!current) throw new Error("内容引擎尚未就绪");
-      return dataOf(await current.creative.previewAutoMixVoicePersona(payload), "声音试听失败");
-    },
-    approveAutoMixVoicePersona: async (payload) => {
-      const current = api();
-      if (!current) throw new Error("内容引擎尚未就绪");
-      return dataOf(await current.creative.approveAutoMixVoicePersona(payload), "声音批准失败");
-    }
-  };
-
   async function download() {
     const current = api();
     if (!current?.creative.downloadCandidate || !candidate || !formalEvidenceReady) {
@@ -1755,11 +1692,6 @@ export function ProductOneClickPage({
                           {busy === `regenerate-${continuationLayer}` ? "正在继续" : "继续生成成片"}
                         </button>
                       )}
-                      {plan.state === "needs_attention" && (plan.attention?.layer === "voice" || plan.attention?.layer === "music") && (
-                        <button type="button" className="product-secondary-button" onClick={() => openResources(plan.attention?.layer as "voice" | "music")}>
-                          <Settings2 size={14} />处理{plan.attention.layer === "voice" ? "配音" : "音乐"}问题
-                        </button>
-                      )}
                       {plan.state === "outcome_unknown" && plan.attention?.layer === "voice" && (
                         <button
                           type="button"
@@ -1815,12 +1747,7 @@ export function ProductOneClickPage({
           )}
         </main>
       </div>
-      <AutoMixResourcePanel
-        open={resourcePanelOpen}
-        onClose={() => setResourcePanelOpen(false)}
-        initialSection={resourceSection}
-        {...resourceApi}
-      />
+
     </section>
   );
 }

@@ -103,6 +103,11 @@ def _builtin_voice_personas() -> list[dict[str, Any]]:
         candidate.setdefault("catalogVersion", catalog_version)
         persona = _configured_persona(candidate)
         if persona is not None:
+            # Only the shipped catalog can approve a fixed official voice.
+            # Environment/private catalogs still require the existing audition flow.
+            persona["product_approved"] = (
+                persona["provider"] == "volcengine" and bool(persona["provider_voice_id"])
+            )
             personas.append(persona)
     return personas
 
@@ -159,11 +164,14 @@ def auto_select_voice_persona_ids(
     personas = configured_voice_personas(environment)
     return [
         item["persona_id"]
-        for item in sorted(
-            personas,
-            key=lambda item: (
-                -int(item.get("auto_select_priority") or 0),
-                item["persona_id"],
+        for _, item in sorted(
+            enumerate(personas),
+            key=lambda entry: (
+                not entry[1].get("product_approved", False),
+                not (entry[1].get("product_approved") and entry[1].get("digital_human_default")),
+                -int(entry[1].get("auto_select_priority") or 0),
+                entry[0] if entry[1].get("product_approved") else 0,
+                entry[1]["persona_id"],
             ),
         )
     ]

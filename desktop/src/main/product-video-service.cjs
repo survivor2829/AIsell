@@ -149,9 +149,19 @@ function createProductVideoService(options = {}) {
     const official = plan.pipelineVersion >= 3;
     const videoReady = official ? state.capabilities?.bailian && state.capabilities?.bailian_video : state.capabilities?.apimart_video;
     const audioReady = !official || typeof options.prepareAudio === 'function';
-    const ready = Boolean(state.ready && (plan.pipelineVersion === 4 || state.capabilities?.apimart) && videoReady && audioReady && state.capabilities?.volcengine_asr && validPrices(prices)
+    let voiceReady = !official;
+    if (official && typeof options.listVoices === 'function') {
+      try {
+        const catalog = await options.listVoices();
+        voiceReady = (catalog?.items || []).some((voice) => voice.provider === 'volcengine'
+          && voice.approvalStatus === 'approved' && voice.availability === 'available');
+      } catch { /* A catalog failure must stop before the first paid request. */ }
+    }
+    const ready = Boolean(state.ready && (plan.pipelineVersion === 4 || state.capabilities?.apimart) && videoReady && audioReady && voiceReady && state.capabilities?.volcengine_asr && validPrices(prices)
       && (official ? prices.provider === 'bailian' && prices.model === (plan.pipelineVersion === 4 ? wan.DIRECT_MODEL : wan.MODEL) : prices.provider !== 'bailian'));
-    return { ...choices, ready, message: ready ? '' : !audioReady ? '整片声音准备组件尚未就绪，未提交任何付费生成；仍可保存方案。' : '视频生成、声音识别或对应型号的完整报价尚未就绪，仍可先保存方案。' };
+    return { ...choices, ready, message: ready ? '' : !audioReady ? '整片声音准备组件尚未就绪，未提交任何付费生成；仍可保存方案。'
+      : !voiceReady ? '默认配音声音暂不可用，请稍后重试；未提交任何付费生成，仍可保存方案。'
+        : '视频生成、声音识别或对应型号的完整报价尚未就绪，仍可先保存方案。' };
   }
   function futureReserve(task, exclude, proposedReserve = 0) {
     if (!validPrices(task.prices)) throw fail('product_video_price_unavailable', '报价已失效，请刷新核价后继续。');

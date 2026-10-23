@@ -232,7 +232,7 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             ),
         )
 
-    def test_volc_candidates_keep_manual_approval_and_reuse_generated_preview_after_local_failure(self):
+    def test_official_volc_candidates_are_approved_and_optional_preview_reuses_audio_after_local_failure(self):
         domain = self.service.creative_domain
         domain._sync_configured_voice_persona_rows(domain._now(), configured_voice_personas({}))
         items = domain.list_auto_mix_voice_personas()["items"]
@@ -241,7 +241,8 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         self.assertEqual(set(configured), {item["voicePersonaId"] for item in new})
         self.assertEqual("seed-tts-2.0", configured["volc-xiaohe-2@1"]["provider_model"])
         self.assertEqual("zh_female_xiaohe_uranus_bigtts", configured["volc-xiaohe-2@1"]["provider_voice_id"])
-        self.assertTrue(all(item["approvalStatus"] == "pending" for item in new))
+        self.assertTrue(all(item["approvalStatus"] == "approved" for item in new))
+        self.assertTrue(all(item["productApproved"] and item["availability"] == "available" for item in new))
         self.assertTrue(all(item["previewText"] == POPULAR_VOICE_PREVIEW_SAMPLE for item in new))
         self.assertEqual(VOICE_PREVIEW_SAMPLE, voice_preview_sample({"provider": "bailian"}))
         self.assertTrue(all("provider_voice_id" not in item for item in new))
@@ -261,10 +262,20 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         self.assertEqual(1, len(self.analyzer.calls), "A local normalization retry must not submit TTS again")
         self.assertEqual(POPULAR_VOICE_PREVIEW_SAMPLE, self.analyzer.calls[0]["text"])
         self.assertEqual("completed", preview["previewStatus"])
-        self.assertEqual("pending", preview["voicePersona"]["approvalStatus"])
-        self.assertIsNone(domain._approved_auto_mix_voice_persona(selected_id=persona_id))
+        self.assertEqual("approved", preview["voicePersona"]["approvalStatus"])
+        self.assertEqual(persona_id, domain._approved_auto_mix_voice_persona(selected_id=persona_id)["id"])
         domain.approve_auto_mix_voice_persona(persona_id)
         self.assertEqual(persona_id, domain._approved_auto_mix_voice_persona(selected_id=persona_id)["id"])
+        changed_catalog = configured_voice_personas({})
+        changed = next(item for item in changed_catalog if item["persona_id"] == persona_id)
+        changed["provider_voice_id"] += "-new"
+        changed["catalog_version"] += "-new"
+        with mock.patch("content_engine.creative_domain.configured_voice_personas", return_value=changed_catalog):
+            domain._sync_configured_voice_persona()
+            self.assertIsNone(self._row("auto_mix_voice_previews_v1", persona_id))
+            updated = domain._approved_auto_mix_voice_persona(selected_id=persona_id)
+            self.assertEqual(changed["provider_voice_id"], updated["provider_voice_id"])
+            self.assertEqual("available", domain._public_voice_persona(updated)["availability"])
 
     def test_design_template_creates_private_voice_before_preview(self):
         now = "2026-08-24T00:00:00.000Z"
@@ -1551,6 +1562,45 @@ class AutoMixVoiceCacheIntegrityTests(unittest.TestCase):
 
 
 class AutoMixVoiceMigrationTests(unittest.TestCase):
+    def test_fresh_service_uses_official_default_without_preview_or_manual_approval(self):
+        root = SIDECAR_ROOT / f".auto-mix-voice-default-{uuid.uuid4().hex}"
+        service = None
+        try:
+            with mock.patch.dict(os.environ, {}, clear=True):
+                analyzer = _PreviewAnalyzer()
+                service = ContentEngineService(
+                    root, creative_analyzer=analyzer, creative_renderer=_Renderer(),
+                    start_background_jobs=False,
+                )
+                domain = service.creative_domain
+                persona = domain._approved_auto_mix_voice_persona()
+                self.assertIsNotNone(persona, "A fresh installation must have a usable official voice")
+                self.assertEqual("volc-xiaohe-2@1", persona["id"])
+                service._narrated_batches()._require_approved_voice({"settings": {}})
+                selected = domain._approved_auto_mix_voice_persona(selected_id="volc-yunzhou-2@1")
+                self.assertEqual("volc-yunzhou-2@1", selected["id"])
+                listed = {item["voicePersonaId"]: item for item in service.list_auto_mix_voice_personas()["items"]}
+                self.assertEqual("available", listed[persona["id"]]["availability"])
+                self.assertEqual("not_ready", listed[persona["id"]]["previewStatus"])
+                self.assertEqual("pending", listed["reliable-business@1"]["approvalStatus"])
+                self.assertEqual([], analyzer.calls)
+                self.assertEqual([], analyzer.design_calls)
+                self.assertEqual(0, service.connection.execute("SELECT COUNT(*) FROM auto_mix_voice_previews_v1").fetchone()[0])
+                narration = service.prepare_video_narration({
+                    "source_id": "fresh-product-video", "text": "全新安装直接准备产品视频口播。",
+                })
+                self.assertEqual("volc-xiaohe-2@1", narration["voice_persona_id"])
+                self.assertEqual("zh_female_xiaohe_uranus_bigtts", analyzer.calls[0]["provider_voice_id"])
+                self.assertTrue(Path(narration["file"]).is_file())
+                # Upgrade an existing installation whose official voices were never approved.
+                service.connection.execute("UPDATE voice_personas_v1 SET approved_at=NULL WHERE provider='volcengine'")
+                domain._sync_configured_voice_persona()
+                self.assertEqual("volc-xiaohe-2@1", domain._approved_auto_mix_voice_persona()["id"])
+        finally:
+            if service is not None:
+                service.close()
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_fresh_service_exposes_design_templates_without_private_fields(self):
         root = SIDECAR_ROOT / f".auto-mix-voice-fresh-{uuid.uuid4().hex}"
         root.mkdir()
@@ -1569,7 +1619,7 @@ class AutoMixVoiceMigrationTests(unittest.TestCase):
                 expected = "ready" if configured[item["voicePersonaId"]].get("provider_voice_id") else "not_created"
                 self.assertEqual(expected, item["provisioningStatus"])
                 self.assertEqual("not_ready", item["previewStatus"])
-                self.assertEqual("pending", item["approvalStatus"])
+                self.assertEqual("approved" if item["provider"] == "volcengine" else "pending", item["approvalStatus"])
             encoded = json.dumps(listed, ensure_ascii=False)
             self.assertNotIn("provider_voice", encoded)
             self.assertNotIn("voice_prompt", encoded)
