@@ -2,6 +2,7 @@ const { app } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { diagnostics } = require("./diagnostics.cjs");
+const { scrubSecretText } = require("../shared/internal-diagnostics.cjs");
 const { applicationPath } = require("./component-paths.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 
@@ -110,8 +111,8 @@ function executeActiveTouch(args, options = {}) {
         process_pid: child.pid || 0,
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr),
-        ...(result?.ok !== true ? { raw_result: result, raw_worker: { stderr: stderr.slice(-16000),
-          stdout: stdout.slice(-16000), stderr_truncated: stderr.length > 16000, stdout_truncated: stdout.length > 16000 } } : {}),
+        ...(result?.ok !== true ? { raw_result: result, raw_worker: { stderr: scrubSecretText(stderr).slice(-16000),
+          stdout: scrubSecretText(stdout).slice(-16000), stderr_truncated: stderr.length > 16000, stdout_truncated: stdout.length > 16000 } } : {}),
         diagnostics: diagnosticValue("diagnostics") ?? null
       }, { ok: result?.ok === true, code: primaryReason });
       resolve(result);

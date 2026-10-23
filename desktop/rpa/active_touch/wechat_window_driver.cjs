@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { performance } = require("node:perf_hooks");
-const { scrubInternalDetails } = require("../../src/shared/internal-diagnostics.cjs");
+const { scrubInternalDetails, scrubSecretText } = require("../../src/shared/internal-diagnostics.cjs");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { sanitizeImageProgress } = require("../../src/shared/failure-diagnostics.cjs");
@@ -374,7 +374,7 @@ function workerEvidence(value, { evidence, script, stdout, stderr, elapsedMs, ex
   };
   if (value?.ok !== true) {
     const raw = scrubInternalDetails({ error, exit_code: exitCode,
-      stdout_tail: String(stdout || "").slice(-16000), stderr_tail: String(stderr || "").slice(-16000),
+      stdout_tail: scrubSecretText(stdout || "").slice(-16000), stderr_tail: scrubSecretText(stderr || "").slice(-16000),
       stdout_bytes: Buffer.byteLength(String(stdout || "")), stderr_bytes: Buffer.byteLength(String(stderr || "")),
       stdout_truncated: String(stdout || "").length > 16000, stderr_truncated: String(stderr || "").length > 16000 });
     detail.raw_worker = raw.value;
