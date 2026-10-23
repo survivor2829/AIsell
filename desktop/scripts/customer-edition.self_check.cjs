@@ -112,7 +112,8 @@ function assertStageWorkflowContract() {
   assert.match(moduleAvailability, /"moments"/, "moments operations must not render together with the placeholder page");
   assert.match(workflow, /mode === "moments" \? \["publish", "interact"\]/, "Moments must expose publishing and interaction");
   assert.match(workflow, /contacts\.filter\(\(contact\) => contact\.allowed\)/, "the picker must exclude disallowed contacts before creating tasks");
-  assert.match(workflow, /contactIds: selectedIds, script: script\.trim\(\)/, "only selected contacts and confirmed script enter a task");
+  assert.match(workflow, /contactIds: selectedIds, script, aiPolish/, "only selected contacts, the unchanged script and explicit polish mode enter a task");
+  assert.doesNotMatch(workflow, /script: script\.trim\(\)/, "original copy must retain its leading and trailing whitespace");
   assert.match(workflow, /task\.progress\.done\}\/\{task\.progress\.total\}/, "completion must use the actual task snapshot, not the whole address book");
   assert.equal(source.includes("未触达原因"), false, "a completed 4/4 task must not label pre-task exclusions as failed touches");
   assert.match(source, /下一阶段开放/, "future modules must stay visible as next-stage placeholders");
