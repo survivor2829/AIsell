@@ -1,6 +1,7 @@
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const { createHash } = require("node:crypto");
+const { scrubInternalDetails } = require("../../src/shared/internal-diagnostics.cjs");
 const { sanitizeVisualSendReceipt } = require("../../src/shared/visual-send-receipt.cjs");
 
 const WECHAT_VISUAL_AUTO_REPLY_POWERSHELL = String.raw`
@@ -1488,6 +1489,15 @@ function visualSendEnvironment(options, phase) {
   };
 }
 
+function localExceptionDetails(error) {
+  return {
+    name: String(error?.name || "Error"),
+    message: String(error?.message || error || ""),
+    code: String(error?.code || ""),
+    stack: String(error?.stack || "")
+  };
+}
+
 function sanitizeVisualSendWorkerDiagnostics(value) {
   if (!value || typeof value !== "object") return undefined;
   const worker = {};
@@ -1528,7 +1538,9 @@ function createVisualSendDiagnostics(phase, timings, workerResult) {
     timings,
     ...(receipt ? { receipt } : {}),
     ...(receiptEvidence ? { receipt_evidence: receiptEvidence } : {}),
-    ...(worker ? { worker } : {})
+    ...(worker ? { worker } : {}),
+    ...(process.env.XIAOXI_INTERNAL_DIAGNOSTICS === "1" && workerResult && workerResult.ok !== true
+      ? { raw_worker: scrubInternalDetails(workerResult) } : {})
   };
 }
 
@@ -1645,13 +1657,15 @@ function createVisualAutoReplySender({
       let allowed;
       try {
         allowed = await options.beforeSend({ pid, hWnd, conversation, incomingMessage: String(options.incomingMessage ?? ""), reply });
-      } catch {
+      } catch (error) {
         timings.before_send_ms = Date.now() - beforeSendStartedAt;
         return normalizeVisualSendResult({
           reason: "visual_send_before_send_failed",
           conversationVerified: true,
           draftVerified: true,
-          diagnostics: { phase: "before_send", timings }
+          composerTouched: true,
+          draftStage: draft.draftStage || "draft_verified",
+          diagnostics: { phase: "before_send", timings, raw_exception: localExceptionDetails(error) }
         }, request);
       }
       if (allowed === false || allowed?.ok === false) {
@@ -1674,7 +1688,7 @@ function createVisualAutoReplySender({
         visualSendEnvironment(request, "send"),
         { ensure: false, sta: true, timeout: 75_000, diagnostics: true }
       );
-    } catch {
+    } catch (error) {
       // The click lives inside this final phase, so a timeout/rejection cannot
       // prove that nothing was sent. Report an attempted unknown outcome and
       // let the controller fence the turn instead of retrying.
@@ -1686,6 +1700,7 @@ function createVisualAutoReplySender({
         conversationVerified: true,
         draftVerified: true,
         receipt: { stage: "worker", code: "worker_failed" },
+        diagnostics: { raw_exception: localExceptionDetails(error) },
         pid,
         hWnd
       };

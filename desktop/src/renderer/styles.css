@@ -704,6 +704,10 @@ button:focus-visible {
   padding: 22px 38px 34px 38px;
 }
 
+.module-return { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin: 12px 28px 0; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--agent-accent-strong, #9e1731); font: inherit; font-size: 14px; cursor: pointer; }
+.module-return:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+.module-return:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
 .page-head {
   display: flex;
   justify-content: space-between;

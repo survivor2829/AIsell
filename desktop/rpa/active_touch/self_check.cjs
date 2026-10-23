@@ -932,8 +932,7 @@ try {
   assert.equal(secondBatch.batch_start_index, 50);
   assert.equal(secondBatch.batch_end_index, 51);
   assert.ok(secondBatch.batch_authorization?.id);
-  assert.equal(sendDelayMs(() => 0), 8000);
-  assert.equal(sendDelayMs(() => 1), 15000);
+  assert.equal(sendDelayMs(), 5000);
 
   const legacyTask = { ...batchTask, version: 2 };
   delete legacyTask.execution_mode;
@@ -1154,7 +1153,7 @@ try {
   const pendingMultipartRow = pendingMultipart.recovered.results[0];
   assert.equal(pendingMultipart.result.status, "pending", "M7 all-pending multipart work must remain safely resumable");
   assert.equal(pendingMultipart.result.retryAfterMs, 1000, "a busy WeChat lock must yield the touch task before it can reclaim scheduler priority");
-  assert.equal(pendingMultipart.result.waitingReason, undefined, "lock contention backoff must not be labelled as a send safety interval");
+  assert.equal(pendingMultipart.result.waitingReason, "wechat_operation_busy", "lock contention retains its cause rather than claiming a send safety interval");
   assert.equal(pendingMultipart.executeCalls, 0);
   assert.equal(pendingMultipart.recovered.status, "running");
   assert.equal(pendingMultipart.recovered.phase, "preparing_batch");
@@ -1293,7 +1292,7 @@ try {
   assert.equal(firstBatchRecovered.current_index, 50);
   assert.equal(firstBatchRecovered.status, "paused");
   assert.equal(firstBatchRecovered.phase, "preparing_batch");
-  assert.ok(firstBoundaryDelay >= 8000 && firstBoundaryDelay <= 15100);
+  assert.ok(firstBoundaryDelay >= 5000 && firstBoundaryDelay <= 5100);
 
   let secondBatchCrash = createTask("second-boundary", boundaryContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   secondBatchCrash.current_index = 50;
@@ -3389,6 +3388,49 @@ try {
     { ok: false, reason: "powershell_output_invalid" }
   );
 
+  // Execute only the draft probe with an in-memory clipboard fixture. No window,
+  // system clipboard or WeChat operation is performed by this regression.
+  const imageScript = require("./wechat_image_send.dev.cjs").IMAGE_SEND_SCRIPT;
+  const imageDraftProbe = imageScript.match(/function Read-ImageDraft[\s\S]*?(?=function Observe-ImageConversation)/u)[0]
+    .replaceAll("[Win32WechatImage]", "[ImageCopyFixture]");
+  const composerPointProbe = imageScript.match(/function Get-ComposerInputPoint[\s\S]*?(?=function Normalize-WechatDraftText)/u)[0];
+  const draftProbeResult = await runPowerShellAsync(`
+Add-Type 'public static class ImageCopyFixture { public static uint Sequence = 1; public static uint GetClipboardSequenceNumber() { return Sequence; } }'
+function Assert-ImageWindow {}
+function Assert-ImageWindowIdentity {}
+function Assert-ImageStageBudget {}
+function Set-ImageStage {}
+function Write-ImageProgress {}
+function Set-ImageClipboardOwned {}
+function Get-UptimeMs { return $script:fixtureTime }
+function Start-Sleep([int]$Milliseconds) { $script:fixtureTime += $Milliseconds }
+function Image-Keys([string]$keys) {
+  if ($keys -ceq '^c') {
+    $script:fixtureCopies++
+    if ($script:fixtureCopies -eq $script:copyPublishesAt) { [ImageCopyFixture]::Sequence++ }
+  }
+}
+function Invoke-ImageClipboardWrite { $script:fixtureSentinels++; [ImageCopyFixture]::Sequence++ }
+function Invoke-ImageClipboardRead { $script:fixtureReads++; return @{ empty = $false; image = $true; fingerprint = 'copied-draft' } }
+${imageDraftProbe}
+${composerPointProbe}
+$script:fixtureTime = 0; $script:fixtureCopies = 0; $script:fixtureSentinels = 0; $script:fixtureReads = 0; $script:copyPublishesAt = 99
+$unchanged = Read-ImageDraft ([IntPtr]::Zero) $true
+if ($unchanged.image -or $script:fixtureReads -ne 0 -or $script:fixtureSentinels -ne 0) { throw 'unchanged source bitmap accepted or overwritten' }
+$script:fixtureCopies = 0; $script:copyPublishesAt = 2
+$delayed = Read-ImageDraft ([IntPtr]::Zero) $true
+if (-not $delayed.image -or $script:fixtureCopies -ne 2 -or $script:fixtureReads -ne 1 -or $script:fixtureSentinels -ne 0) { throw 'delayed native copy was not verified' }
+$inputXText = '0.65'; $inputYText = '0.88'; $rect = @{ Left = 20; Top = 30; Width = 1000; Height = 700 }
+$point = Get-ComposerInputPoint $rect
+if ($point.x -ne 670 -or $point.y -ne 646 -or $point.source -cne 'verified') { throw 'verified composer point lost' }
+$inputYText = 'invalid'; $point = Get-ComposerInputPoint $rect
+if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallback changed' }
+@{ ok = $true; unchangedRejected = $true; delayedCopyVerified = $true; sourcePreserved = $true; sharedPointVerified = $true } | ConvertTo-Json -Compress
+`, {}, { ensure: false, timeout: 5_000 });
+  assert.deepEqual(draftProbeResult, { ok: true, unchangedRejected: true, delayedCopyVerified: true, sourcePreserved: true, sharedPointVerified: true });
+  assert.match(imageScript, /function Get-UptimeMs\s*\{\s*return \$script:imageClock\.ElapsedMilliseconds/u,
+    "image budgets must use a monotonic Stopwatch, without double-counting the fractional second");
+
   function fakePowerShellChild(killResult = true) {
     const child = new EventEmitter();
     child.stdin = new EventEmitter();
@@ -3404,6 +3446,35 @@ try {
     };
     return child;
   }
+
+  let progressChild;
+  const liveImageProgress = [];
+  const liveProgressResult = runPowerShellAsync("", {}, { ensure: false, diagnostics: true,
+    spawnProcess: () => (progressChild = fakePowerShellChild()),
+    onImageProgress: (entry) => { liveImageProgress.push(entry); throw new Error("observer failure"); } });
+  progressChild.stderr.emit("data", 'image_progress:{"stage":"read_');
+  assert.equal(liveImageProgress.length, 0, "a partial diagnostic line must not publish progress");
+  progressChild.stderr.emit("data", 'back","status":"start","clipboard_sequence_changed":false,"clipboard_format_kind":"bitmap","input_point_source":"verified","message":"private-image-text"}\n');
+  assert.equal(liveImageProgress.length, 1, "image progress must arrive before the native child finishes");
+  progressChild.stderr.emit("data", 'image_progress:{"stage":"private-contact","status":"start"}\nimage_progress:{"stage":"read_back","status":"finish","elapsed_ms":42}');
+  progressChild.stdout.emit("data", '{"ok":true}');
+  progressChild.emit("close", 0);
+  const liveProgress = await liveProgressResult;
+  assert.equal(liveProgress.ok, true, "throwing progress subscribers must not fail a native operation");
+  assert.equal(liveImageProgress.length, 2, "the final diagnostic line must flush on child close");
+  assert.deepEqual(liveProgress.diagnostics.image_progress, liveImageProgress);
+  assert.doesNotMatch(JSON.stringify(liveProgress), /private-image-text|private-contact/u);
+
+  let trimmedProgressChild;
+  const trimmedProgressResult = runPowerShellAsync("", {}, { ensure: false, diagnostics: true,
+    spawnProcess: () => (trimmedProgressChild = fakePowerShellChild()) });
+  trimmedProgressChild.stderr.emit("data", 'image_progress:{"stage":"click_send","status":"start"}\n'
+    + 'image_progress:{"stage":"read_back","status":"start"}\n'.repeat(45));
+  trimmedProgressChild.stdout.emit("data", '{"ok":false,"reason":"image_send_not_confirmed"}');
+  trimmedProgressChild.emit("close", 0);
+  const trimmedProgress = await trimmedProgressResult;
+  assert.equal(trimmedProgress.diagnostics.image_progress.length, 40);
+  assert.equal(trimmedProgress.diagnostics.image_send_attempted, true, "bounded history must never erase irreversible-stage evidence");
 
   let timedOutChild;
   let timedOutSettled = false;

@@ -657,6 +657,7 @@ function createMomentsCampaignController(options = {}) {
             candidate_count: Array.isArray(observed?.post_snapshots) ? observed.post_snapshots.length : 0,
             duration_ms: Date.now() - observationStartedAt,
             surface_retry_count: surfaceRetryCount,
+            ...(observed?.ok !== true ? { raw_result: observed } : {}),
             visual: observed?.diagnostics?.visual,
             ...positionDiagnostics
           }, observed?.ok ? "info" : "warn");
@@ -778,6 +779,7 @@ function createMomentsCampaignController(options = {}) {
                 no_op: liked?.no_op === true,
                 real_action_attempted: liked?.real_action_attempted,
                 duration_ms: Date.now() - likeStartedAt,
+                ...(liked?.ok !== true ? { raw_result: liked } : {}),
                 ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
               }, liked?.ok ? "info" : "warn");
               if (
@@ -873,6 +875,7 @@ function createMomentsCampaignController(options = {}) {
                 verification_mode: String(commented?.verification_mode || ""),
                 real_action_attempted: commented?.real_action_attempted,
                 duration_ms: Date.now() - commentStartedAt,
+                ...(commented?.ok !== true ? { raw_result: commented } : {}),
                 diagnostics: commentDiagnostics,
                 comment_length: commentText.length
               }, commented?.ok ? "info" : "warn");

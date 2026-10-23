@@ -34,6 +34,8 @@ type DiagnosticStatus = {
   recentCount: number;
   recentErrorCount: number;
   writesFailed: number;
+  internal?: { enabled: boolean; sequence: number; writes_failed: number };
+  recentCoverage?: { parse_error_count?: number };
   latest: DiagnosticEntry[];
   latestErrors: DiagnosticEntry[];
   autoReplyLatest?: AutoReplyDiagnosticEntry[];
@@ -192,7 +194,7 @@ export function Diagnostics({ appVersion, edition, buildId }: { appVersion: stri
         <div className="status-card"><span>近期事件</span><strong>{status?.recentCount ?? 0}</strong></div>
         <div className="status-card"><span>近期异常</span><strong className={(status?.recentErrorCount ?? 0) > 0 ? "warn" : "ok"}>{status?.recentErrorCount ?? 0}</strong></div>
         <div className="status-card"><span>日志大小</span><strong>{formatBytes(status?.currentBytes ?? 0)}</strong></div>
-        <div className="status-card"><span>写入失败</span><strong className={(status?.writesFailed ?? 0) > 0 ? "danger" : "ok"}>{status?.writesFailed ?? 0}</strong></div>
+        <div className="status-card"><span>写入失败</span><strong className={(status?.writesFailed ?? 0) + (status?.internal?.writes_failed ?? 0) > 0 ? "danger" : "ok"}>{(status?.writesFailed ?? 0) + (status?.internal?.writes_failed ?? 0)}</strong></div>
       </div>
 
       <div className="diagnostics-version" aria-label="软件版本信息">
@@ -203,8 +205,11 @@ export function Diagnostics({ appVersion, edition, buildId }: { appVersion: stri
       </div>
 
       <div className="diagnostics-privacy">
-        日志不会写入 DeepSeek Key、客户消息原文、联系人明文或 AI 专家资料原文；敏感内容只保留长度与不可逆摘要。
+        {status?.internal?.enabled
+          ? `内部详细诊断已开启，本次已记录 ${status.internal.sequence} 条。导出包含执行细节、异常调用栈、任务状态和失败时的微信画面；密钥及认证信息会过滤。`
+          : "结构化日志保留脱敏摘要；主动导出的任务失败附件可能包含微信画面和业务读数。"}
       </div>
+      {(status?.recentCoverage?.parse_error_count ?? 0) > 0 && <div className="touch-notice" role="alert">部分日志记录损坏，已保留可读取记录；请导出诊断包查看缺失明细。</div>}
       {notice && <div className="auto-reply-control-note">{notice}</div>}
       {error && <div className="touch-notice" role="alert">{error}</div>}
 

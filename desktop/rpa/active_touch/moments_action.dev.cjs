@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { scrubInternalDetails } = require("../../src/shared/internal-diagnostics.cjs");
 const {
   MAX_MOMENTS_COMMENT_LENGTH,
   momentsPostFingerprint,
@@ -469,6 +470,13 @@ function safeClickedAt(value, attempted) {
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : "";
 }
 
+function localDriverDiagnostics(result, sanitize, proofRejected = false) {
+  const diagnostics = sanitize(result?.diagnostics);
+  // This object is persisted as well as logged: scrub before either boundary.
+  if (process.env.XIAOXI_INTERNAL_DIAGNOSTICS !== "1" || !result || (result.ok === true && !proofRejected)) return diagnostics;
+  return { ...diagnostics, raw_worker: scrubInternalDetails(result) };
+}
+
 function normalizeCommentDriverMetadata(result, attempted) {
   const metadata = {
     real_action_attempted: attempted
@@ -478,7 +486,7 @@ function normalizeCommentDriverMetadata(result, attempted) {
   const primaryReason = safeDriverReason(result);
   const cleanupReason = safeDiagnosticCode(result?.cleanupReason);
   const verificationMode = safeDiagnosticCode(result?.verificationMode);
-  const diagnostics = sanitizeCommentDriverDiagnostics(result?.diagnostics);
+  const diagnostics = localDriverDiagnostics(result, sanitizeCommentDriverDiagnostics);
   if (stage) metadata.stage = stage;
   if (sendClickedAt) metadata.send_clicked_at = sendClickedAt;
   if (primaryReason) metadata.primary_reason = primaryReason;
@@ -1000,7 +1008,8 @@ async function readbackVisualComment(driver, context, attemptKey, commentText, s
     return {
       ok: false,
       reason: safeDriverReason(result) || "moments_comment_readback_proof_invalid",
-      proof: sanitized?.proof
+      proof: sanitized?.proof,
+      diagnostics: localDriverDiagnostics(result, sanitizeCommentDriverDiagnostics, true)
     };
   }
   return { ok: true, result: sanitized };
@@ -1028,7 +1037,7 @@ async function inspectWithDriver(driver, context, action, attemptKey = "", comme
   } catch {
     return { ok: false, reason: "moments_menu_driver_failed" };
   }
-  const diagnostics = sanitizeVisualMenuDiagnostics(result?.diagnostics);
+  const diagnostics = localDriverDiagnostics(result, sanitizeVisualMenuDiagnostics, !validMenuProof(result, context.observationId, action));
   const cleanupReason = safeDiagnosticCode(result?.cleanupReason);
   if (!validMenuProof(result, context.observationId, action)) {
     return {
@@ -1068,7 +1077,8 @@ async function inspectCommentDraftWithDriver(driver, context, commentText) {
   ) {
     return {
       ok: false,
-      reason: safeDriverReason(result) || "moments_comment_draft_proof_invalid"
+      reason: safeDriverReason(result) || "moments_comment_draft_proof_invalid",
+      diagnostics: localDriverDiagnostics(result, sanitizeCommentDriverDiagnostics, true)
     };
   }
   return { ok: true, verificationMode: result.verificationMode };
@@ -1117,7 +1127,8 @@ async function inspectMomentsMenu(options = {}) {
     commentDraftCheck = await inspectCommentDraftWithDriver(driver, context, commentText);
     if (!commentDraftCheck.ok) {
       return persistBlocked(baseDir, context.state, action, context.observationId, commentDraftCheck.reason, {
-        menu_state: inspected.menuState
+        menu_state: inspected.menuState,
+        diagnostics: commentDraftCheck.diagnostics
       });
     }
   }
@@ -1479,7 +1490,8 @@ async function executeMomentsLike(options = {}) {
   }
 
   const attempted = typeof result?.actionAttempted === "boolean" ? result.actionAttempted : null;
-  const likeDiagnostics = sanitizeVisualMenuDiagnostics(result?.diagnostics);
+  const likeDiagnostics = localDriverDiagnostics(result, sanitizeVisualMenuDiagnostics,
+    !(result?.ok === true && result.observationId === context.observationId && LIKED_MENU_STATES.includes(result.menuState) && attempted !== null));
   const cleanupReason = safeDiagnosticCode(result?.cleanupReason);
   const verificationMode = safeDiagnosticCode(result?.verificationMode);
   let persistedState = loadState(baseDir);
@@ -1752,7 +1764,8 @@ async function executeMomentsComment(options = {}) {
             fuzzy_candidate_count: fuzzyPreviousComments.length,
             diagnostics: {
               candidate_status: safeDiagnosticCode(occurrenceResult?.status),
-              candidate_reason: safeDriverReason(occurrenceResult)
+              candidate_reason: safeDriverReason(occurrenceResult),
+              ...localDriverDiagnostics(occurrenceResult, () => ({}), true)
             }
           }
         );
@@ -1960,6 +1973,9 @@ async function executeMomentsComment(options = {}) {
     const verificationFailure = readback ?? result;
     const verificationReason = safeDriverReason(verificationFailure) || "moments_comment_proof_invalid";
     const failureMetadata = metadataWithPrimaryReason(driverMetadata, verificationReason);
+    if (readback?.diagnostics) {
+      failureMetadata.diagnostics = { ...failureMetadata.diagnostics, local_raw: readback.diagnostics };
+    }
     try {
       persistAttempt(baseDir, persistedState, details, "outcome_unknown", {
         reason: verificationReason,

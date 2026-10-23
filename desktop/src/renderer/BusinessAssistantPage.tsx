@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Globe2, MapPin, MessageCircle, Settings2 } from "lucide-react";
+import { ArrowRight, Globe2, MapPin, MessageCircle, Settings2 } from "lucide-react";
 import { appearanceStyle, type RoleAppearance } from "./role-appearance";
 import { MapAcquisitionPanel } from './MapAcquisitionPanel';
 import "./BusinessAssistantPage.css";
@@ -28,16 +28,15 @@ export function isBusinessModule(key: string): key is BusinessModule {
   return Object.prototype.hasOwnProperty.call(BUSINESS_MODULES, key);
 }
 
-export function BusinessAssistantPage({ module, appearance, onPersonalize, onOpenModule, onReturnHome }: {
+export function BusinessAssistantPage({ module, appearance, onPersonalize, onOpenModule }: {
   module?: BusinessModule;
   appearance: RoleAppearance;
   onPersonalize: () => void;
   onOpenModule: (module: BusinessModule) => void;
-  onReturnHome: () => void;
 }) {
   const current = module ? BUSINESS_MODULES[module] : undefined;
   return <section className="page business-assistant-page" style={appearanceStyle(appearance, true)}>
-    <header className="business-page-head"><div>{current && <button type="button" className="business-return" onClick={onReturnHome}><ArrowLeft size={16} />返回精准获客</button>}<h1>{current?.label || "精准获客"}</h1><p>{current?.description || "从找到企业，到接住咨询、持续跟进，选择您接下来要做的事。"}</p></div>
+    <header className="business-page-head"><div><h1>{current?.label || "精准获客"}</h1><p>{current?.description || "从找到企业，到接住咨询、持续跟进，选择您接下来要做的事。"}</p></div>
       <button type="button" className="business-personalize" onClick={onPersonalize}><Settings2 size={16} />形象与名字</button>
     </header>
     {!current && <nav className="business-module-nav" aria-label="精准获客功能">{Object.entries(BUSINESS_MODULES).map(([key, item]) => {

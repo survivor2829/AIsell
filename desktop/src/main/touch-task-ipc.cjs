@@ -47,7 +47,6 @@ let realSendExecutor = null;
 let realSendSessionVerifier = null;
 let messageBubbleVerifier = null;
 let waitForDelay = null;
-let randomSource = Math.random;
 let requestPauseRef = null;
 let lastDiagnosticTaskSignature = "";
 let currentBuildId = "";
@@ -627,7 +626,7 @@ function finishVerifiedContact(index, executionState = {}, reason = "发送成�
   result.awaiting_resolution = false;
   result.attempt_key = String(executionState.real_send_attempt_key || result.attempt_key || "");
   result.updated_at = new Date().toISOString();
-  if (!alreadyVerified) task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
+  if (!alreadyVerified) task.next_send_not_before = new Date(Date.now() + sendDelayMs()).toISOString();
   const saved = advanceTask(task, index);
   emitTaskUpdate(saved);
   return true;
@@ -675,7 +674,7 @@ function persistRealSendTransition(index, status, executionState = {}) {
   result.reason = status === "sent_verified" ? "发送成功并已验证最新消息气泡" : status === "outcome_unknown" ? "发送结果无法确认，正在再次核验" : "";
   result.updated_at = new Date().toISOString();
   if (status === "sent_verified" && !alreadyVerified) {
-    task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
+    task.next_send_not_before = new Date(Date.now() + sendDelayMs()).toISOString();
   }
   const saved = saveTaskState(activeTouchDir(), task);
   emitTaskUpdate(saved);
@@ -1119,7 +1118,7 @@ function buildRunnableTask(script, excludedContactIds = []) {
   };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
@@ -1129,7 +1128,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   realSendSessionVerifier = typeof sessionVerifier === "function" ? sessionVerifier : null;
   messageBubbleVerifier = typeof verifier === "function" ? verifier : null;
   waitForDelay = typeof wait === "function" ? wait : null;
-  randomSource = typeof random === "function" ? random : Math.random;
   currentBuildId = String(buildId || "").trim();
   currentBuildVersion = String(appVersion || "unknown");
   currentBuildCommit = String(buildCommit || "unknown");
@@ -1363,7 +1361,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
       at: current.updated_at,
       traceId: current.last_trace_id
     });
-    if (resolution === "sent") task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
+    if (resolution === "sent") task.next_send_not_before = new Date(Date.now() + sendDelayMs()).toISOString();
     let nextTask = resolution === "not_sent" ? task : advanceTask(task, task.current_index);
     if (nextTask.status !== "completed") {
       nextTask.status = "paused";
@@ -1399,7 +1397,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     client: deepSeekClient,
     execute: realSendExecutor,
     runStep: runActiveTouch,
-    random: randomSource,
     passport: taskPassportStore
   });
   return { pause: requestPause, ...workflow };

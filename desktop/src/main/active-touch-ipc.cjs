@@ -110,6 +110,8 @@ function executeActiveTouch(args, options = {}) {
         process_pid: child.pid || 0,
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr),
+        ...(result?.ok !== true ? { raw_result: result, raw_worker: { stderr: stderr.slice(-16000),
+          stdout: stdout.slice(-16000), stderr_truncated: stderr.length > 16000, stdout_truncated: stdout.length > 16000 } } : {}),
         diagnostics: diagnosticValue("diagnostics") ?? null
       }, { ok: result?.ok === true, code: primaryReason });
       resolve(result);

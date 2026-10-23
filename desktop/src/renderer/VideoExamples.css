@@ -2,9 +2,9 @@
 .video-examples h2 { margin: 0; font-size: 20px; }
 .video-examples > p { margin: 8px 0 18px; color: #697184; line-height: 1.6; }
 .video-example-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.video-example-cards > button { display: flex; align-items: center; gap: 14px; padding: 12px; min-width: 0; border: 1px solid #eadde1; border-radius: 12px; text-align: left; background: #fff; color: inherit; cursor: pointer; }
+.video-example-cards > button { display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 12px; min-width: 0; border: 1px solid #eadde1; border-radius: 12px; text-align: left; background: #fff; color: inherit; cursor: pointer; }
 .video-example-cards > button:hover { border-color: #c91739; background: #fff3f5; }
-.video-example-cards img { width: 72px; height: 108px; object-fit: cover; border-radius: 7px; }
+.video-example-cards img { display: block; width: min(100%, 190px); height: auto; aspect-ratio: 9 / 16; margin: 0 auto; object-fit: contain; border-radius: 7px; }
 .video-example-cards span { display: grid; gap: 9px; min-width: 0; }
 .video-example-cards small { color: #697184; font-size: 12px; }
 .video-example-cards strong { font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -20,4 +20,4 @@
 .video-example-error { padding: 32px 20px; color: #fff; text-align: center; }
 .video-example-error button { padding: 10px 16px; margin: 8px; border: 0; border-radius: 7px; cursor: pointer; }
 .video-examples button:focus-visible, .video-example-dialog button:focus-visible { outline: 2px solid #c91739; outline-offset: 3px; }
-@media (max-width: 1100px) { .video-example-cards { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .video-example-cards { grid-template-columns: 1fr; } }

@@ -2,9 +2,11 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { performance } = require("node:perf_hooks");
 const { replaceWithRetry, writeJsonAtomic } = require("./atomic-file.cjs");
 const { sanitizeVisualSendReceipt } = require("../shared/visual-send-receipt.cjs");
 const { sanitizeFailureDiagnostics } = require("../shared/failure-diagnostics.cjs");
+const { internalDiagnosticsEnabled, scrubInternalDetails } = require("../shared/internal-diagnostics.cjs");
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ARCHIVES = 19;
@@ -30,6 +32,7 @@ const RECEIPT_DIAGNOSTIC_FIELDS = [
   "draft_consumed", "input_lease_valid", "bubble_verified", "verification_attempts"
 ];
 const RECEIPT_DIAGNOSTIC_KEYS = new Set(RECEIPT_DIAGNOSTIC_FIELDS.map((field) => `receipt_${field}`));
+const INTERNAL_ONLY_KEYS = new Set(["raw_result", "local_raw", "raw_exception", "raw_worker"]);
 
 let activeLogger = null;
 
@@ -124,6 +127,7 @@ function sanitizeValue(value, context = {}) {
     let acceptedKeys = 0;
     for (const childKey in value) {
       if (!Object.prototype.hasOwnProperty.call(value, childKey)) continue;
+      if (INTERNAL_ONLY_KEYS.has(childKey)) continue;
       if (acceptedKeys >= MAX_OBJECT_KEYS || budget.remainingNodes <= 0) break;
       // Receipt fields are finite enums/booleans/counters, never composer or
       // conversation contents. Validate this exact schema before the broad
@@ -213,15 +217,24 @@ function rotate(file, maxBytes, maxArchives) {
   }
 }
 
-function readRecent(file, limit = 100) {
+function readRecent(file, limit = 100, coverage = {}) {
   try {
-    return fs.readFileSync(file, "utf8")
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .slice(-Math.max(1, Math.min(500, Number(limit) || 100)))
-      .map((line) => JSON.parse(line))
-      .reverse();
-  } catch {
+    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+    const rows = [];
+    const maximum = Math.max(1, Math.min(500, Number(limit) || 100));
+    coverage.parse_error_count = 0;
+    coverage.inspected_line_count = 0;
+    for (let index = lines.length - 1; index >= 0 && rows.length < maximum; index -= 1) {
+      coverage.inspected_line_count += 1;
+      try {
+        const row = JSON.parse(lines[index]);
+        if (!row || typeof row !== "object" || Array.isArray(row)) coverage.parse_error_count += 1;
+        else rows.push(row);
+      } catch { coverage.parse_error_count += 1; }
+    }
+    return rows;
+  } catch (error) {
+    coverage.read_error_code = code(error?.code, "log_read_failed");
     return [];
   }
 }
@@ -233,6 +246,8 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   }
   const logsDir = path.join(String(rootDir || ""), "logs");
   const logFile = path.join(logsDir, "diagnostics.jsonl");
+  const internalLogFile = path.join(logsDir, "internal-diagnostics.jsonl");
+  const internalEnabled = internalDiagnosticsEnabled(appInfo);
   const installFile = path.join(logsDir, "install-id");
   fs.mkdirSync(logsDir, { recursive: true });
   let installId = "";
@@ -247,12 +262,55 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   const salt = digest(installId);
   let sequence = 0;
   let writesFailed = 0;
+  let internalSequence = 0;
+  let internalWritesFailed = 0;
+  let internalLastWriteFailure = null;
+  const monotonicStartedAt = performance.now();
+  const internalApp = internalEnabled ? scrubInternalDetails(appInfo).value : null;
   let environmentSnapshot = {};
   const listeners = new Set();
   function publish(entry) {
     for (const listener of listeners) { try { listener(entry); } catch {} }
   }
   const lastFaultByModule = new Map();
+
+  // This local stream is never published to observers or cloud telemetry. It
+  // records before public filtering/deduplication, so repeated failures and
+  // successful prerequisite stages remain available for causal diagnosis.
+  function writeInternal(module, eventName, details = {}, options = {}, force = false) {
+    if (!internalEnabled) return;
+    const level = code(options?.level, "info");
+    const wechatModule = /(?:wechat|active_touch|auto_reply|moments|contact_sync|task_passport|runtime_coordinator|^rpa$)/u.test(module);
+    if (!force && !wechatModule && !ACTIONABLE_LEVELS.has(level) && options?.trace !== true) return;
+    internalSequence += 1;
+    try {
+      const serialized = scrubInternalDetails({
+        details,
+        ...(options.internalContext ? { operation_context: options.internalContext.value,
+          operation_context_truncation: options.internalContext.truncation } : {})
+      });
+      const entry = {
+        v: 1, stream: "internal", ts: clock().toISOString(), run_id: runId,
+        seq: internalSequence, elapsed_ms: Math.round(performance.now() - monotonicStartedAt),
+        app: internalApp, level, module, event: eventName,
+        trace_id: traceIdentifier(options.traceId),
+        parent_trace_id: traceIdentifier(options.parentTraceId || details?.parent_trace_id || details?.parent_trace_code),
+        phase: code(options.phase || details?.phase, ""),
+        code: code(options.code || details?.blocked_reason || details?.code || details?.reason, ""),
+        duration_ms: Number.isFinite(Number(options.durationMs)) ? Math.max(0, Math.round(Number(options.durationMs))) : undefined,
+        ...serialized.value,
+        ...(serialized.truncation ? { truncation: serialized.truncation, omitted_truncation_markers: serialized.omitted_truncation_markers } : {}),
+        redacted_fields: serialized.redacted_fields,
+        prior_write_failures: internalWritesFailed
+      };
+      for (const key of Object.keys(entry)) if (entry[key] === "" || entry[key] === undefined) delete entry[key];
+      rotate(internalLogFile, maxBytes, maxArchives);
+      fs.appendFileSync(internalLogFile, `${JSON.stringify(entry)}\n`, "utf8");
+    } catch (error) {
+      internalWritesFailed += 1;
+      internalLastWriteFailure = { seq: internalSequence, code: code(error?.code, "internal_log_write_failed") };
+    }
+  }
 
   function recover(moduleName) {
     try {
@@ -275,6 +333,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       const module = code(moduleName, "app");
       const eventCode = code(eventName, "event");
       const traced = options?.trace === true;
+      writeInternal(module, eventCode, details, { ...options, level });
       if (options?.cancelled === true && !traced) {
         recover(module);
         return null;
@@ -355,9 +414,11 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
 
   function begin(moduleName, eventName, details = {}, settings = {}) {
     const traceId = crypto.randomUUID();
-    const startedAt = Date.now();
+    const startedAt = performance.now();
     const trace = settings.trace === true;
-    event(moduleName, `${eventName}.started`, details, { traceId, phase: "start", trace });
+    const parentTraceId = traceIdentifier(settings.parentTraceId || details?.parent_trace_id || details?.parent_trace_code);
+    const internalContext = internalEnabled ? scrubInternalDetails(details) : undefined;
+    event(moduleName, `${eventName}.started`, details, { traceId, parentTraceId, phase: "start", trace });
     return {
       traceId,
       end(result = {}, options = {}) {
@@ -366,12 +427,14 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
           const ok = options?.ok ?? result?.ok;
           return event(moduleName, `${eventName}.${cancelled ? "cancelled" : ok === false ? "failed" : "finished"}`, result, {
             traceId,
+            parentTraceId,
+            internalContext,
             trace: trace || options?.trace === true,
             phase: options?.phase || (cancelled ? "cancel" : "finish"),
             level: options?.level || (cancelled ? "info" : ok === false ? "error" : "info"),
             code: options?.code,
             cancelled,
-            durationMs: Date.now() - startedAt
+            durationMs: performance.now() - startedAt
           });
         } catch {
           writesFailed += 1;
@@ -382,11 +445,13 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
         try {
           return event(moduleName, `${eventName}.exception`, { ...details, error }, {
             traceId,
+            parentTraceId,
+            internalContext,
             trace,
             phase: "exception",
             level: "error",
             code: error?.code || "exception",
-            durationMs: Date.now() - startedAt
+            durationMs: performance.now() - startedAt
           });
         } catch {
           writesFailed += 1;
@@ -396,18 +461,21 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       cancel(details = {}) {
         return event(moduleName, `${eventName}.cancelled`, details, {
           traceId,
+          parentTraceId,
+          internalContext,
           trace,
           phase: "cancel",
           level: "info",
           cancelled: true,
-          durationMs: Date.now() - startedAt
+          durationMs: performance.now() - startedAt
         });
       }
     };
   }
 
   function status() {
-    const rows = readRecent(logFile, 200);
+    const recentCoverage = {};
+    const rows = readRecent(logFile, 200, recentCoverage);
     const errors = rows.filter((row) => row.level === "error" || row.level === "fatal");
     return {
       ok: true,
@@ -419,6 +487,9 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
         recentCount: rows.length,
         recentErrorCount: errors.length,
         writesFailed,
+        recentCoverage,
+        internal: { enabled: internalEnabled, sequence: internalSequence, writes_failed: internalWritesFailed,
+          last_write_failure: internalLastWriteFailure, max_file_bytes: maxBytes, max_archives: maxArchives },
         environment: environmentSnapshot,
         latest: rows.slice(0, 20),
         latestErrors: errors.slice(0, 20)
@@ -427,7 +498,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   }
 
   function environment(extra = {}) {
-    environmentSnapshot = boundedDetails({
+    const snapshot = {
       app: appInfo,
       platform: process.platform,
       arch: process.arch,
@@ -443,10 +514,13 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       chrome: process.versions.chrome,
       node: process.versions.node,
       ...extra
-    }, salt);
+    };
+    environmentSnapshot = boundedDetails(snapshot, salt);
+    writeInternal("runtime", "environment", snapshot, { phase: "environment" }, true);
   }
 
-  return { begin, environment, event, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), recover, runId, status, writeJsonAtomic,
+  if (internalEnabled) environment();
+  return { begin, environment, event, internalEnabled, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), recover, runId, status, writeJsonAtomic,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 

@@ -693,9 +693,8 @@ function authorizeNextBatch(task, authorizedAt = nowIso()) {
   return normalized;
 }
 
-function sendDelayMs(random = Math.random) {
-  const value = Math.min(1, Math.max(0, Number(random()) || 0));
-  return Math.round(8000 + value * 7000);
+function sendDelayMs() {
+  return 5000;
 }
 
 function currentResult(task) {

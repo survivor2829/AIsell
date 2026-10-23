@@ -6,6 +6,7 @@ const JSZip = require("jszip");
 const productBrand = require("../../product-brand.json");
 const { replaceWithRetry, uniqueTemporaryPath } = require("./atomic-file.cjs");
 const { diagnostics, normalizeReceiptDiagnostics } = require("./diagnostics.cjs");
+const { internalDiagnosticsEnabled, scrubInternalDetails } = require("../shared/internal-diagnostics.cjs");
 
 const AUTO_REPLY_DIAGNOSTIC_FILE = /^auto-reply-diagnostics\.jsonl(?:\.[1-9]\d*)?$/u;
 const AUTO_REPLY_STATUS_LIMIT = 50;
@@ -102,21 +103,33 @@ function appSummary(info, appRuntime, component = global.__xiaoxiComponents) {
 function diagnosticSummaries(files) {
   const versions = new Map();
   const runs = new Map();
+  const fileCoverage = [];
   let latest = null;
   for (const file of files) {
+    const coverage = { name: file.name, entries: 0, parse_error_count: 0, missing_identity_count: 0 };
     for (const line of file.content.toString("utf8").split(/\r?\n/u)) {
-      const ts = timestamp(/"ts":"([^"]+)"/u.exec(line)?.[1]);
-      const runId = valid(/"run_id":"([^"]+)"/u.exec(line)?.[1], UUID);
-      const seq = Number(/"seq":(\d+)/u.exec(line)?.[1]);
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); } catch { coverage.parse_error_count += 1; continue; }
+      if (!row || typeof row !== "object" || Array.isArray(row)) { coverage.parse_error_count += 1; continue; }
+      coverage.entries += 1;
+      const ts = timestamp(row?.ts);
+      const runId = valid(row?.run_id, UUID);
+      const seq = Number(row?.seq);
       if (ts && runId && Number.isSafeInteger(seq) && seq > 0) {
-        const run = runs.get(runId) || { run_id: runId, first_seq: seq, last_seq: seq, first_ts: ts, last_ts: ts };
+        const run = runs.get(runId) || { run_id: runId, first_seq: seq, last_seq: seq, first_ts: ts, last_ts: ts,
+          sequences: new Set(), entries: 0, app: row.app || null };
         if (seq < run.first_seq) { run.first_seq = seq; run.first_ts = ts; }
         if (seq > run.last_seq) { run.last_seq = seq; run.last_ts = ts; }
+        run.entries += 1;
+        run.sequences.add(seq);
+        if (row.event === "environment" && seq > (run.environment_seq || 0)) {
+          run.environment = scrubInternalDetails(row.details).value;
+          run.environment_seq = seq;
+        }
         runs.set(runId, run);
-      }
+      } else coverage.missing_identity_count += 1;
       if (!ts || !line.includes("wechat_version")) continue;
-      let row;
-      try { row = JSON.parse(line); } catch { continue; }
       const details = row?.details && typeof row.details === "object" ? row.details : {};
       for (const [key, source] of [["window_wechat_version", "window_driver"], ["wechat_version", "contact_sync"]]) {
         const version = valid(details[key], WECHAT_VERSION);
@@ -129,12 +142,29 @@ function diagnosticSummaries(files) {
         if (!latest || ts >= latest.ts) latest = { version, ts, source };
       }
     }
+    fileCoverage.push(coverage);
   }
   return {
     wechat: latest ? { ...latest, versions_seen: [...versions.values()].sort((a, b) => a.first_ts.localeCompare(b.first_ts)) }
       : { version: null, ts: null, source: null, versions_seen: [] },
     log_coverage: { file_count: files.length, total_bytes: files.reduce((sum, file) => sum + file.size_bytes, 0),
-      runs: [...runs.values()].map((run) => ({ ...run, rotated_prefix: run.first_seq > 1 })) }
+      parse_error_count: fileCoverage.reduce((sum, file) => sum + file.parse_error_count, 0), files: fileCoverage,
+      runs: [...runs.values()].map(({ sequences, ...run }) => {
+        const ordered = [...sequences].sort((a, b) => a - b);
+        const missingRanges = [];
+        let missingCount = 0;
+        let missingRangeCount = 0;
+        for (let index = 1; index < ordered.length; index += 1) {
+          if (ordered[index] <= ordered[index - 1] + 1) continue;
+          missingCount += ordered[index] - ordered[index - 1] - 1;
+          missingRangeCount += 1;
+          if (missingRanges.length < 100) missingRanges.push({ first_seq: ordered[index - 1] + 1, last_seq: ordered[index] - 1 });
+        }
+        return { ...run, unique_entries: sequences.size, duplicate_entries: run.entries - sequences.size,
+          rotated_prefix: run.first_seq > 1, missing_sequence_count: missingCount, missing_ranges: missingRanges,
+          missing_ranges_truncated: missingRangeCount > missingRanges.length,
+          tail_completeness: "unknown" };
+      }) }
   };
 }
 
@@ -163,20 +193,23 @@ function feedbackSummary(getLatest) {
   } catch { return null; }
 }
 
-function collectDiagnosticFiles(logsDir) {
-  return fs.readdirSync(logsDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /^diagnostics\.jsonl(?:\.\d+)?$/u.test(entry.name))
-    .map((entry) => entry.name)
-    .sort((left, right) => left.localeCompare(right, "en"))
-    .map((name) => {
+function collectDiagnosticFiles(logsDir, { internal = false, missing = [] } = {}) {
+  const files = [];
+  let entries;
+  try { entries = fs.readdirSync(logsDir, { withFileTypes: true }); }
+  catch (error) { missing.push({ source: "logs", code: error?.code || "directory_read_failed" }); return files; }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^(?:internal-)?diagnostics\.jsonl(?:\.\d+)?$/u.test(entry.name)) continue;
+    if (!internal && entry.name.startsWith("internal-")) continue;
+    const name = entry.name;
+    try {
       const content = fs.readFileSync(path.join(logsDir, name));
-      return {
-        name,
-        content,
-        size_bytes: content.length,
-        sha256: sha256(content)
-      };
-    });
+      files.push({ name, content, size_bytes: content.length, sha256: sha256(content) });
+    } catch (error) { missing.push({ source: name, code: error?.code || "file_read_failed" }); }
+  }
+  if (!files.some((file) => file.name.startsWith("diagnostics."))) missing.push({ source: "diagnostics", code: "no_log_files" });
+  if (internal && !files.some((file) => file.name.startsWith("internal-"))) missing.push({ source: "internal-diagnostics", code: "no_log_files" });
+  return files.sort((left, right) => left.name.localeCompare(right.name, "en"));
 }
 
 function autoReplyDiagnosticSources(autoReplyDir) {
@@ -200,15 +233,19 @@ function autoReplyDiagnosticSources(autoReplyDir) {
   return sources;
 }
 
-function collectAutoReplyDiagnosticFiles(autoReplyDir) {
+function collectAutoReplyDiagnosticFiles(autoReplyDir, missing = []) {
   const files = [];
-  for (const { name, source } of autoReplyDiagnosticSources(autoReplyDir)) {
+  let sources;
+  try { sources = autoReplyDiagnosticSources(autoReplyDir); }
+  catch (error) { missing.push({ source: "auto_reply", code: error?.code || "directory_read_failed" }); return files; }
+  if (!sources.length) missing.push({ source: "auto_reply", code: "no_log_files" });
+  for (const { name, source } of sources) {
     let content;
     try {
       content = fs.readFileSync(source);
     } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      throw error;
+      missing.push({ source: `auto_reply/${name}`, code: error?.code || "file_read_failed" });
+      continue;
     }
     files.push({
       name: path.posix.join("auto_reply", name),
@@ -389,34 +426,78 @@ async function exportBundle(options = {}) {
   if (selected.canceled || !selected.filePath) return { ok: true, canceled: true };
 
   const destination = selected.filePath.toLowerCase().endsWith(".zip") ? selected.filePath : `${selected.filePath}.zip`;
-  const operation = logger.begin("diagnostics", "bundle_export", { destination });
+  const operation = logger.begin("diagnostics", "bundle_export", { destination }, { trace: true });
   try {
-    const diagnosticFiles = collectDiagnosticFiles(logger.logsDir);
-    const autoReplyDiagnosticFiles = collectAutoReplyDiagnosticFiles(autoReplyDir);
-    const failureFiles = require('./failure-evidence.cjs').collectFailureEvidenceFiles(path.dirname(logger.logsDir));
-    const passportFiles = require('./task-passport.cjs').collectTaskPassportFiles(path.dirname(logger.logsDir));
+    const internal = logger.internalEnabled === true || internalDiagnosticsEnabled(options.appInfo);
+    const collection = { started_at: new Date().toISOString(), internal_enabled: internal, missing: [] };
+    if (typeof options.passport?.flushPendingCaptures === "function") {
+      try { collection.passport_capture = await options.passport.flushPendingCaptures({ timeoutMs: 1500 }); }
+      catch (error) { collection.missing.push({ source: "passport_capture", code: error?.code || "flush_failed" }); }
+    } else collection.missing.push({ source: "passport_capture", code: "capture_status_unavailable" });
+    const diagnosticFiles = collectDiagnosticFiles(logger.logsDir, { internal, missing: collection.missing });
+    const autoReplyDiagnosticFiles = collectAutoReplyDiagnosticFiles(autoReplyDir, collection.missing);
+    let failureFiles = [];
+    const failureManifest = {};
+    try { failureFiles = require('./failure-evidence.cjs').collectFailureEvidenceFiles(path.dirname(logger.logsDir), { manifest: failureManifest, includeRaw: internal }); }
+    catch (error) { collection.missing.push({ source: "failure-evidence", code: error?.code || "collection_failed" }); }
+    collection.failure_evidence = { included_files: failureFiles.length, coverage: "filtered_by_existing_evidence_policy", ...failureManifest };
+    if (!failureFiles.length) collection.missing.push({ source: "failure-evidence", code: "no_exportable_evidence" });
+    const passportManifest = {};
+    const passportFiles = require('./task-passport.cjs').collectTaskPassportFiles(path.dirname(logger.logsDir), { manifest: passportManifest });
+    collection.task_passports = passportManifest;
     const collectedFiles = [...diagnosticFiles, ...autoReplyDiagnosticFiles, ...failureFiles, ...passportFiles];
+    if (internal) {
+      if (typeof options.getWechatState === "function") {
+        let timer;
+        try {
+          const state = await Promise.race([
+            Promise.resolve().then(() => options.getWechatState()),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error("state_snapshot_timeout"), { code: "state_snapshot_timeout" })), 1500); })
+          ]);
+          const snapshot = scrubInternalDetails(state);
+          const content = Buffer.from(`${JSON.stringify({ captured_at: new Date().toISOString(), run_id: logger.runId || null,
+            state: snapshot.value, truncation: snapshot.truncation || [], redacted_fields: snapshot.redacted_fields }, null, 2)}\n`, "utf8");
+          collectedFiles.push({ name: "wechat-state.json", content, size_bytes: content.length, sha256: sha256(content) });
+        } catch (error) { collection.missing.push({ source: "wechat-state", code: error?.code || "snapshot_failed" }); }
+        finally { clearTimeout(timer); }
+      } else collection.missing.push({ source: "wechat-state", code: "snapshot_provider_unavailable" });
+    }
+    collection.finished_at = new Date().toISOString();
     const includedFiles = collectedFiles.map(({ name, size_bytes, sha256: digest }) => ({
       name,
       size_bytes,
       sha256: digest
     }));
-    const { wechat, log_coverage } = diagnosticSummaries(diagnosticFiles);
+    const { wechat, log_coverage } = diagnosticSummaries(diagnosticFiles.filter((file) => !file.name.startsWith("internal-")));
+    const internalSummary = diagnosticSummaries(diagnosticFiles.filter((file) => file.name.startsWith("internal-")));
     const summary = Buffer.from(`${JSON.stringify({
       exported_at: new Date().toISOString(),
       build: buildInfo(appRuntime, info.edition),
       diagnostics: exportableStatus(logger.status()?.data),
       app: info,
-      wechat,
+      wechat: internalSummary.wechat.ts && (!wechat.ts || internalSummary.wechat.ts > wechat.ts) ? internalSummary.wechat : wechat,
       display: displaySummary(options.screen || screen),
       feedback_latest: feedbackSummary(options.getFeedbackLatest),
       log_coverage,
+      ...(internal ? { internal_log_coverage: internalSummary.log_coverage } : {}),
+      collection,
       included_files: includedFiles,
-      privacy: "普通结构化日志不包含 DeepSeek Key、客户消息原文、联系人明文或 AI 专家资料原文；任务护照失败附件包含本机微信原始截图和程序原始读数，可能出现屏幕可见信息，仅在用户主动导出诊断包时纳入。"
+      privacy: "普通日志保持脱敏格式。内部版详细日志、状态和任务护照可能包含联系人、消息、读数及微信画面；文本会过滤凭据字段、认证头、Cookie、令牌和私钥，详细日志不进入云端事件。仅在用户主动导出时纳入诊断包，按内部资料处理。"
     }, null, 2)}\n`, "utf8");
     const entries = [
       ...collectedFiles.map(({ name, content }) => ({ name, content })),
-      { name: "summary.json", content: summary }
+      { name: "summary.json", content: summary },
+      { name: "README.txt", content: Buffer.from([
+        "微信拓客诊断包阅读说明",
+        "先看 summary.json 的 app、日志 coverage 和 collection；当前导出环境不代表所有历史运行环境。",
+        "内部日志按 app 版本/build_commit、run_id、trace_id/parent_trace_id、任务标识对齐；同一 run 内用 seq 和 elapsed_ms 判断先后。",
+        "diagnostics 与 internal-diagnostics 是独立序列，不跨流比较 seq；environment 记录对应运行的系统、版本和显示缩放。",
+        "missing、omitted_files、parse_error_count、missing_ranges、rotated_prefix 和 truncation 表示证据缺口；未记录或未导出不代表成功。",
+        "任务护照优先导出最近文件，单文件和总量有上限；截图等待有时限，pending/timed_out 表示截图尚未完成。",
+        "wechat-state.json 是导出时状态；截图、状态和日志不是同一时刻的原子快照。旧版本没有的详细记录无法补录。",
+        "以实际发送回执为准；outcome_unknown 不代表未发送，不得根据日志缺失自动重发。",
+        "详细证据可能含客户内容和屏幕信息，请仅用于授权的内部排障。"
+      ].join("\n") + "\n", "utf8") }
     ];
     const archive = await createArchive(entries);
     await writeVerifiedArchive(destination, archive, entries.map((entry) => entry.name));
@@ -437,7 +518,8 @@ function registerDiagnosticsIpc(options = {}) {
     return { ok: true };
   });
   ipcMain.handle("diagnostics:export", () => exportBundle({ autoReplyDir: options.autoReplyDir,
-    appInfo: options.appInfo, screen: options.screen, getFeedbackLatest: options.getFeedbackLatest }));
+    appInfo: options.appInfo, screen: options.screen, getFeedbackLatest: options.getFeedbackLatest,
+    passport: options.passport, getWechatState: options.getWechatState }));
 }
 
 module.exports = { exportBundle, registerDiagnosticsIpc };

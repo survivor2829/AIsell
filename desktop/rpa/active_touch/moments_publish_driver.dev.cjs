@@ -2356,6 +2356,16 @@ try {
     failureKind = "powershell_exception"
     exceptionCategory = ([string]$_.CategoryInfo.Category)
     exceptionType = $exceptionType
+    diagnostics = @{ raw_exception = @{
+      type = $exceptionType
+      message = [string]$_.Exception.Message
+      error_id = [string]$_.FullyQualifiedErrorId
+      category = [string]$_.CategoryInfo.Category
+      script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+      offset_in_line = [int]$_.InvocationInfo.OffsetInLine
+      script_stack_trace = [string]$_.ScriptStackTrace
+      stack_trace = [string]$_.Exception.StackTrace
+    } }
   }
 }
 `;
@@ -2432,7 +2442,7 @@ async function runMomentsPublish(context = {}) {
       ensure: false,
       sta: true,
       timeout: 150_000,
-      diagnostics: false,
+      diagnostics: true,
       signal: context.signal
     }
   );

@@ -13,6 +13,7 @@ const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy
 const { createTaskPassportStore } = require("./task-passport.cjs");
 
 async function checkTouchMessageSequence() {
+  assert.deepEqual(require("../shared/failure-diagnostics.cjs").sanitizeFailureDiagnostics(null), {}, "empty legacy diagnostic details remain valid");
   assert.match(IMAGE_SEND_SCRIPT, /if \(-not \$existingDraft\.empty\)[\s\S]*Image-Keys "\^a" \$mainWindow[\s\S]*Image-Keys "\{BACKSPACE\}" \$mainWindow[\s\S]*Read-ImageDraft \$mainWindow\)\.empty[\s\S]*image_existing_draft_clear_failed/u,
     "a verified image composer must replace and then prove removal of any stale draft");
   assert.match(IMAGE_SEND_SCRIPT, /function Invoke-ImageClipboardWrite[\s\S]*hresult_800401D0[\s\S]*InnerException[\s\S]*attempt -eq 5[\s\S]*80 \* \$attempt/u,
@@ -276,9 +277,9 @@ async function checkTouchMessageSequence() {
   const intervalRecord = { id: crypto.randomUUID(), payload: intervalPayload, progress: { done: 0 }, status: "running" };
   result = await createTouchWorkflow(config).runWorkflowStep(intervalRecord, context);
   assert.equal(result.status, "pending");
-  assert.equal(result.retryAfterMs, 8000, "a verified contact must expose its exact safety interval to the unified scheduler");
+  assert.equal(result.retryAfterMs, 5000, "a verified contact must expose its exact safety interval to the unified scheduler");
   assert.equal(result.waitingReason, "touch_safety_interval");
-  assert.equal(result.result.nextEligibleAt, new Date(clock.getTime() + 8000).toISOString());
+  assert.equal(result.result.nextEligibleAt, new Date(clock.getTime() + 5000).toISOString());
 
   loginRequired = true;
   const textWorkflow = createTouchWorkflow(config);
@@ -923,7 +924,9 @@ async function checkTouchMessageSequence() {
   await sendWechatImage(uncertainImage);
   assert.equal(clicks, afterTimeout, "A terminated native sender remains quarantined by its durable receipt");
   let preClickTimeoutAttempts = 0;
-  const preClickTimeout = { ...imageOptions, baseDir: path.join(root, "pre-click-timeout"), runner: async (_script, env) => {
+  const retryProgress = [];
+  const preClickTimeout = { ...imageOptions, baseDir: path.join(root, "pre-click-timeout"), onDiagnostic: (entry) => retryProgress.push(entry),
+    wait: async () => { assert.equal(retryProgress.at(-1).stage, "image_retry_wait"); }, runner: async (_script, env) => {
     preClickTimeoutAttempts += 1;
     const stage = preClickTimeoutAttempts === 1 ? "sentinel_write" : "read_back";
     return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage, status: "start", retry_index: Number(env.XIAOXI_IMAGE_RETRY_INDEX) }] } };
@@ -933,11 +936,56 @@ async function checkTouchMessageSequence() {
   assert.equal(preClickResult.send_attempted, false);
   assert.equal(preClickResult.blocked_reason, "image_send_pre_click_timeout");
   assert.equal(preClickResult.pre_send_retry_exhausted, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(preClickTimeout.baseDir, "image-send.json"), "utf8")).status, "not_attempted",
+    "trusted pre-click exhaustion must finalize its durable receipt");
+  let imageClock = 0;
+  let budgetCalls = 0;
+  const budgetTimeout = { ...imageOptions, baseDir: path.join(root, "image-budget-exhausted"), now: () => imageClock,
+    wait: async () => { throw new Error("exhausted budget must not start a retry delay"); }, runner: async () => {
+      budgetCalls++;
+      imageClock += 180_000;
+      return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "read_back", status: "start", retry_index: 0 }] } };
+    } };
+  const budgetResult = await sendWechatImage(budgetTimeout);
+  assert.equal(budgetCalls, 1, "real budget exhaustion must not manufacture a second attempt");
+  assert.equal(budgetResult.send_attempted, false);
+  assert.equal(budgetResult.diagnostics.retry_count, 0);
+  assert.equal(budgetResult.diagnostics.image_progress_lost, false, "budget exhaustion must retain reliable pre-click proof");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(budgetTimeout.baseDir, "image-send.json"), "utf8")).status, "not_attempted");
+  let allowImageRetry = true;
+  const pausedRetry = { ...preClickTimeout, baseDir: path.join(root, "paused-image-retry"),
+    isExecutionAllowed: () => allowImageRetry, wait: async () => { allowImageRetry = false; } };
+  assert.equal((await sendWechatImage(pausedRetry)).blocked_reason, "workflow_paused");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pausedRetry.baseDir, "image-send.json"), "utf8")).status, "not_attempted");
+  const imageProgress = [];
+  const copyUnavailable = { ...imageOptions, baseDir: path.join(root, "image-copy-unavailable"),
+    context: { inputPoint: { xRatio: 0.65, yRatio: 0.88 } },
+    onDiagnostic: (entry) => { imageProgress.push(entry); throw new Error("display listener fault"); },
+    runner: async (_script, env, options) => {
+      assert.equal(env.XIAOXI_INPUT_Y_RATIO, "0.88");
+      options.onImageProgress({ stage: "read_back", status: "start", clipboard_sequence_changed: false,
+        clipboard_format_kind: "bitmap", input_point_source: "verified", message: "private clipboard contents" });
+      return { ok: false, reason: "image_draft_format_unavailable", sendAttempted: false };
+    } };
+  const copyResult = await sendWechatImage(copyUnavailable);
+  assert.equal(copyResult.pre_send_retry_exhausted, true, "three failed local copy probes must not restart the whole contact search");
+  assert.equal(copyResult.blocked_reason, "image_draft_format_unavailable");
+  assert.equal(imageProgress[0].phase, "start");
+  assert.equal(imageProgress[0].clipboard_sequence_changed, false);
+  assert.doesNotMatch(JSON.stringify(imageProgress), /private clipboard contents/u);
+  const readBudgetResult = await sendWechatImage({ ...copyUnavailable, baseDir: path.join(root, "image-read-budget"),
+    runner: async () => ({ ok: false, reason: "image_stage_timeout", driverStage: "read_back", sendAttempted: false }) });
+  assert.equal(readBudgetResult.pre_send_retry_exhausted, true);
+  assert.equal(readBudgetResult.blocked_reason, "image_send_pre_click_timeout");
   const postClickTimeout = { ...imageOptions, baseDir: path.join(root, "post-click-timeout"), runner: async () => ({
     ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "click_send", status: "start", retry_index: 0 }] }
   }) };
   const postClickResult = await sendWechatImage(postClickTimeout);
   assert.equal(postClickResult.send_attempted, null, "a click-stage timeout must remain outcome_unknown");
+  const trimmedClickResult = await sendWechatImage({ ...postClickTimeout, baseDir: path.join(root, "trimmed-click-timeout"),
+    runner: async () => ({ ok: false, reason: "powershell_timeout", diagnostics: { image_send_attempted: true,
+      image_progress: [{ stage: "read_back", status: "start", retry_index: 0 }] } }) });
+  assert.equal(trimmedClickResult.send_attempted, null, "a retained click latch must outweigh a truncated pre-click-looking history");
   const diagnosedImage = { ...imageOptions, baseDir: path.join(root, "diagnosed-image"), runner: async () => ({
     ok: false, reason: "image_driver_failed", sendAttempted: false, ruleId: "image-r007",
     driverStage: "clipboard_image_write", errorLine: 167, errorId: "SetImage", errorType: "System.Runtime.InteropServices.ExternalException",
@@ -1030,6 +1078,7 @@ async function checkMultipartReuse() {
         if (command === "input-message-dry-run") {
           const message = args[args.indexOf("--message") + 1];
           const next = { ...state, message_input_done: true, message_draft: message,
+            message_input_point: { xRatio: 0.65, yRatio: 0.88 },
             send_gate_status: "pending", real_send_status: "not_sent", blocked_reason: "" };
           saveState(context.dataDir, next);
           return { ok: true, state: next };
@@ -1076,7 +1125,10 @@ async function checkMultipartReuse() {
           bubbleVerifier: async (message, context) => context.phase === "before"
             ? { ok: true, snapshot: `before-${index}` }
             : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: message },
-          imageSender: async ({ onTransition }) => {
+          imageSender: async ({ onTransition, context }) => {
+            if (loadState(part.baseDir).session_source === "reused_verified_conversation") {
+              assert.deepEqual(context.inputPoint, { xRatio: 0.65, yRatio: 0.88 }, "the image must reuse the preceding text's verified composer point");
+            }
             counts.image += 1; onTransition?.("sent_verified");
             return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
           }

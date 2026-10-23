@@ -5,7 +5,6 @@
 .business-personalize { display: inline-flex; align-items: center; gap: 6px; padding: 8px 0; border: 0; background: transparent; color: var(--agent-accent-strong); font: inherit; font-size: 12px; cursor: pointer; }
 .business-personalize:hover { text-decoration: underline; text-underline-offset: 3px; }
 .business-assistant-page button:focus-visible { outline: 2px solid var(--agent-accent-strong); outline-offset: 3px; }
-.business-return { display:inline-flex; align-items:center; gap:6px; margin:0 0 16px; padding:0; border:0; background:transparent; color:var(--agent-accent-strong); font:inherit; font-size:13px; cursor:pointer; }
 .business-module-nav { display:grid; gap:0; margin:24px 0; border-top:1px solid var(--business-border); }
 .business-module-nav > button { display:flex; align-items:center; gap:22px; width:100%; padding:28px 16px; border:0; border-bottom:1px solid var(--business-border); background:transparent; color:var(--agent-accent-strong); text-align:left; font:inherit; cursor:pointer; }
 .business-module-nav > button:hover { background:var(--business-panel); }

@@ -521,6 +521,20 @@ function createMomentsPublishController(options = {}) {
 
   function record(event, fields = {}, level = "info") {
     logger.event("moments", event, fields, { level });
+    if (fields.raw_result) {
+      const attemptId = String(fields.attempt_id || "");
+      const taskId = state.attempts.find((attempt) => attempt.attempt_id === attemptId)?.workflow_task_id || attemptId;
+      const signature = `${attemptId}\0${event}\0${fields.reason || ""}`;
+      if (!passportFailureSignatures.has(signature)) {
+        passportFailureSignatures.add(signature);
+        passport?.recordFailure("moments", taskId, {
+          stage: event,
+          reasonCode: fields.reason || "moments_publish_failed",
+          rawReading: fields.raw_result,
+          expected: { status: "verified", verified: true }
+        });
+      }
+    }
   }
 
   function clearSecrets() {
@@ -909,6 +923,7 @@ function createMomentsPublishController(options = {}) {
       fingerprint: state.fingerprint,
       reason: state.last_reason,
       ...breadcrumb,
+      raw_result: rawBreadcrumb,
       ...(buttonSearch.length > 0 ? { button_search: buttonSearch } : {})
     }, "warn");
     return { ok: false, reason: state.last_reason, actionAttempted: false, state: snapshot() };
@@ -943,6 +958,7 @@ function createMomentsPublishController(options = {}) {
       fingerprint,
       reason: state.last_reason,
       ...breadcrumb,
+      raw_result: rawBreadcrumb,
       ...verification
     }, "warn");
     return { ok: false, reason: state.last_reason, actionAttempted: true, state: snapshot() };
@@ -1055,7 +1071,12 @@ function createMomentsPublishController(options = {}) {
         stage: error?.stage || driverResult?.stage,
         failureKind: error?.failureKind || driverResult?.failureKind || "node_exception",
         exceptionCategory: error?.exceptionCategory,
-        exceptionType: error?.exceptionType || error?.name
+        exceptionType: error?.exceptionType || error?.name,
+        raw_exception: {
+          name: String(error?.name || "Error"), message: String(error?.message || error || ""),
+          code: String(error?.code || ""), stack: String(error?.stack || "")
+        },
+        ...(driverResult ? { raw_result: driverResult } : {})
       };
       return actionAttempted
         ? finishUnknown(attemptId, reason, breadcrumb)

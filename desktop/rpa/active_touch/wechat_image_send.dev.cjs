@@ -4,17 +4,16 @@ const path = require("node:path");
 const { writeJsonAtomic } = require("../../src/main/atomic-file.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const { WECHAT_SEND_OBSERVATION_SCRIPT, WECHAT_SEND_BUTTON_OFFSETS, sendMessageEnvironment } = require("./wechat_window_driver.dev.cjs");
+const { sanitizeImageProgress, sanitizeImageObservation } = require("../../src/shared/failure-diagnostics.cjs");
 
 // Reuse the text sender's conversation and composer adapter. Images add only
 // clipboard image proof and WeChat's native preview/inline draft handling.
 const IMAGE_SEND_SCRIPT = `$ErrorActionPreference = "Stop"
 # Windows PowerShell 5.1/.NET Framework lacks the newer environment tick API. Use a
 # process-relative Stopwatch clock so stage deadlines stay monotonic and bounded.
-$script:imageClockStart = [System.Diagnostics.Stopwatch]::GetTimestamp()
+$script:imageClock = [System.Diagnostics.Stopwatch]::StartNew()
 function Get-UptimeMs {
-  $delta = [System.Diagnostics.Stopwatch]::GetTimestamp() - $script:imageClockStart
-  $frequency = [System.Diagnostics.Stopwatch]::Frequency
-  [long](($delta / $frequency) * 1000 + (($delta % $frequency) * 1000 / $frequency))
+  return $script:imageClock.ElapsedMilliseconds
 }
 [void]($script:imageScriptStartedAt = Get-UptimeMs)
 [Console]::Error.WriteLine("image_send_stage:script_started")
@@ -44,11 +43,15 @@ $script:clipboardSequence = [uint32]0
 $sendAttempted = $false
 $oldClipboard = $null
 $sourceImage = $null
+$imageVerification = $null
 $verificationMode = ""
 $script:imageStage = "context"
 $script:imageClipboardOperation = "none"
 $script:imageClipboardWriteAttempts = 0
 $script:imageClipboardReadAttempts = 0
+$script:imageClipboardFormat = "empty"
+$script:imageClipboardSequenceChanged = $false
+$composerPoint = $null
 [void]($script:imageStageStartedAt = Get-UptimeMs)
 $script:imageLeaseSettleIntervalMs = 30
 $script:imageLeaseSettleSamples = 2
@@ -61,7 +64,7 @@ $script:imageStageBudgets = @{
 function Write-ImageProgress([string]$stage, [string]$status) {
   $elapsed = [Math]::Max(0, (Get-UptimeMs) - $script:imageStageStartedAt)
   $retryIndex = 0; if ($env:XIAOXI_IMAGE_RETRY_INDEX) { [int]::TryParse([string]$env:XIAOXI_IMAGE_RETRY_INDEX, [ref]$retryIndex) | Out-Null }
-  $payload = @{ stage = $stage; status = $status; elapsed_ms = $elapsed; clipboard_write_attempts = $script:imageClipboardWriteAttempts; clipboard_read_attempts = $script:imageClipboardReadAttempts; retry_index = $retryIndex; at = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json -Compress
+  $payload = @{ stage = $stage; status = $status; elapsed_ms = $elapsed; clipboard_write_attempts = $script:imageClipboardWriteAttempts; clipboard_read_attempts = $script:imageClipboardReadAttempts; clipboard_format_kind = $script:imageClipboardFormat; clipboard_sequence_changed = $script:imageClipboardSequenceChanged; input_point_source = $composerPoint.source; input_x_ratio = $composerPoint.xRatio; input_y_ratio = $composerPoint.yRatio; retry_index = $retryIndex; at = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json -Compress
   [Console]::Error.WriteLine("image_progress:" + $payload)
 }
 function Complete-ImageStage([string]$stage) {
@@ -180,12 +183,14 @@ function Invoke-ImageClipboardRead([string]$sentinel, [IntPtr]$window) {
     $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $readAttempt)
     try {
       if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+        $script:imageClipboardFormat = "bitmap"
         $copiedImage = [System.Windows.Forms.Clipboard]::GetImage()
         try { return @{ empty = $false; image = $true; fingerprint = (Image-Fingerprint $copiedImage); width = $copiedImage.Width; height = $copiedImage.Height } }
         finally { $copiedImage.Dispose() }
       }
-      if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { return @{ empty = $false; image = $false; fileDrop = $true } }
+      if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { $script:imageClipboardFormat = "file_drop"; return @{ empty = $false; image = $false; fileDrop = $true } }
       $copiedText = [System.Windows.Forms.Clipboard]::GetText()
+      $script:imageClipboardFormat = $(if (-not [string]::IsNullOrEmpty($copiedText)) { "text" } elseif ([System.Windows.Forms.Clipboard]::GetDataObject()) { "other" } else { "empty" })
       return @{ empty = ($copiedText -ceq $sentinel -or [string]::IsNullOrEmpty($copiedText)); image = $false }
     } catch {
       $exception = $_.Exception
@@ -203,22 +208,27 @@ function Invoke-ImageClipboardRead([string]$sentinel, [IntPtr]$window) {
 function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
   Assert-ImageWindow $window
   $sentinel = "xiaoxi-image-copy-" + [Guid]::NewGuid().ToString("N")
-  Set-ImageStage "sentinel_write"
-  Invoke-ImageClipboardWrite "draft_sentinel_write" { [System.Windows.Forms.Clipboard]::SetText($sentinel) } $window
-  Set-ImageClipboardOwned
+  if (-not $expectImage) {
+    Set-ImageStage "sentinel_write"
+    Invoke-ImageClipboardWrite "draft_sentinel_write" { [System.Windows.Forms.Clipboard]::SetText($sentinel) } $window
+    $script:imageClipboardFormat = "text"
+    Set-ImageClipboardOwned
+  }
   Set-ImageStage "read_back"
   Image-Keys "^a" $window
   $copyLimit = $(if ($expectImage) { 3 } else { 1 })
   $lastDraft = @{ empty = $true; image = $false }
   for ($copyAttempt = 1; $copyAttempt -le 5; $copyAttempt++) {
     if ($copyAttempt -gt $copyLimit) { break }
+    $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $copyAttempt)
     if ($expectImage -and $copyAttempt -gt 1) {
+      Write-ImageProgress "read_back" "start"
       Start-Sleep -Milliseconds 1000
       Assert-ImageWindow $window
       Image-Keys "^a" $window
     }
-    $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $copyAttempt)
     $beforeCopySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
+    $script:imageClipboardSequenceChanged = $false
     Image-Keys "^c" $window
     $waitUntil = (Get-UptimeMs) + (120 + (80 * $copyAttempt))
   do {
@@ -227,6 +237,7 @@ function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
       Assert-ImageWindowIdentity $window
       $copySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
     } while ($copySequence -eq $beforeCopySequence -and (Get-UptimeMs) -lt $waitUntil)
+    $script:imageClipboardSequenceChanged = $copySequence -ne $beforeCopySequence
     if ($copySequence -eq $beforeCopySequence) {
       if (-not $expectImage) { return @{ empty = $true; image = $false } }
       continue
@@ -284,8 +295,9 @@ try {
   if (-not $initialTokenMatches -and -not $exactSearchBinding) { throw "atomic_conversation_changed" }
   $script:boundToken = $initial.token
   $rect = $initial.rect
-  $inputX = [int]($rect.Left + $rect.Width * 0.65)
-  $inputY = [int]($rect.Bottom - 105)
+  $composerPoint = Get-ComposerInputPoint $rect
+  $inputX = $composerPoint.x
+  $inputY = $composerPoint.y
   $composer = Get-ComposerObservation $initial.root $rect $inputX $inputY $initial.titleMode
   if (-not $composer.ok) { throw "atomic_composer_not_verified" }
   # Clipboard contents stay in this child process and are restored only while owned.
@@ -324,6 +336,7 @@ try {
   $fingerprint = Image-Fingerprint $sourceImage
   Set-ImageStage "clipboard_bitmap"
   Invoke-ImageClipboardWrite "image_write" { [System.Windows.Forms.Clipboard]::SetImage($sourceImage) } $mainWindow
+  $script:imageClipboardFormat = "bitmap"
   Set-ImageClipboardOwned
   [void](Observe-ImageConversation)
   Set-ImageStage "paste"
@@ -349,6 +362,7 @@ try {
     Set-ImageStage "read_back"
     Click-ImagePoint $inputX $inputY $mainWindow
     $draft = Read-ImageDraft $mainWindow $true
+    $imageVerification = @{ image_present = [bool]$draft.image; expected_width = $sourceImage.Width; expected_height = $sourceImage.Height; actual_width = $draft.width; actual_height = $draft.height; dimensions_match = ($draft.width -eq $sourceImage.Width -and $draft.height -eq $sourceImage.Height); fingerprint_match = ($draft.fingerprint -ceq $fingerprint) }
     if (-not $draft.image -or $draft.fingerprint -cne $fingerprint -or $draft.width -ne $sourceImage.Width -or $draft.height -ne $sourceImage.Height) {
       $reason = $(if ($draft.fileDrop) { "image_draft_file_list" } elseif (-not $draft.image) { "image_draft_format_unavailable" } elseif ($draft.width -ne $sourceImage.Width -or $draft.height -ne $sourceImage.Height) { "image_draft_dimensions_changed" } else { "image_draft_pixels_changed" })
       throw $reason
@@ -382,7 +396,8 @@ try {
   Complete-ImageStage "post_confirm"
   @{ ok = $true; sendAttempted = $true; verificationMode = $verificationMode; conversationVerified = $true; draftVerified = $true } | ConvertTo-Json -Compress
 } catch {
-  $reason = [string]$_.Exception.Message
+  $imageError = $_
+  $reason = [string]$imageError.Exception.Message
   if ($reason -notmatch "^[a-z][a-z0-9_]{1,79}$") { $reason = "image_driver_failed" }
   try { Complete-ImageStage $script:imageStage } catch {}
   $ruleId = switch ($script:imageStage) {
@@ -403,15 +418,19 @@ try {
     default { "image-r099" }
   }
   [void](Write-XiaoxiFailure $ruleId $reason)
-  # Keep diagnostic identifiers locally, never clipboard contents or exception text.
-  $errorId = ([string]$_.FullyQualifiedErrorId -split ",")[0]
+  $errorId = ([string]$imageError.FullyQualifiedErrorId -split ",")[0]
   if ($errorId -notmatch "^[A-Za-z0-9_.-]{1,120}$") { $errorId = "unknown" }
-  $errorType = [string]$_.Exception.GetType().FullName
+  $errorType = [string]$imageError.Exception.GetType().FullName
   if ($errorType -notmatch "^[A-Za-z0-9_.-]{1,120}$") { $errorType = "unknown" }
-  $errorHResult = ('hresult_{0:X8}' -f $_.Exception.HResult)
-  $scriptLine = $_.InvocationInfo.ScriptLineNumber
-  $sourceLine = if ($script:imageStage -eq "read_back" -and $reason -eq "wechat_external_input_detected") { 177 } elseif ($reason -eq "wechat_external_input_detected") { 85 } else { $null }
-  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; clipboardReadAttempts = $script:imageClipboardReadAttempts; script_line = $scriptLine; source_file = "desktop/rpa/active_touch/wechat_image_send.dev.cjs"; source_line = $sourceLine; errorLine = $scriptLine; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult } | ConvertTo-Json -Compress
+  $errorHResult = ('hresult_{0:X8}' -f $imageError.Exception.HResult)
+  $scriptLine = $imageError.InvocationInfo.ScriptLineNumber
+  # Generated PowerShell line numbers are not JavaScript source line numbers.
+  $sourceLine = $null
+  $rawException = $null
+  if ($env:XIAOXI_INTERNAL_DIAGNOSTICS -eq "1") {
+    $rawException = @{ message = (Protect-XiaoxiDiagnosticText $imageError.Exception.Message); type = $errorType; stack = (Protect-XiaoxiDiagnosticText $imageError.ScriptStackTrace) }
+  }
+  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; clipboardReadAttempts = $script:imageClipboardReadAttempts; clipboard_format_kind = $script:imageClipboardFormat; clipboard_sequence_changed = $script:imageClipboardSequenceChanged; input_point_source = $composerPoint.source; input_x_ratio = $composerPoint.xRatio; input_y_ratio = $composerPoint.yRatio; script_line = $scriptLine; source_file = "desktop/rpa/active_touch/wechat_image_send.dev.cjs"; source_line = $sourceLine; errorLine = $scriptLine; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult; image_verification = $imageVerification; raw_exception = $rawException } | ConvertTo-Json -Depth 6 -Compress
 } finally {
   if ($sourceImage) { $sourceImage.Dispose() }
   if ($script:clipboardOwned -and [Win32WechatImage]::GetClipboardSequenceNumber() -eq $script:clipboardSequence) {
@@ -420,7 +439,8 @@ try {
 }
 `;
 
-async function sendWechatImage({ baseDir, attemptId, image, context, onTransition, isExecutionAllowed, runner = runPowerShellAsync }) {
+async function sendWechatImage({ baseDir, attemptId, image, context, onTransition, onDiagnostic, isExecutionAllowed,
+  runner = runPowerShellAsync, now = () => performance.now(), wait = (ms) => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const allowed = async () => !isExecutionAllowed || await isExecutionAllowed() === true;
   const failure = (reason, attempted = false, detail = {}) => ({ ok: false, blocked_reason: reason, send_attempted: attempted,
     ...detail,
@@ -449,24 +469,31 @@ async function sendWechatImage({ baseDir, attemptId, image, context, onTransitio
   const mergeAttemptDiagnostics = (attempts) => ({
     image_progress: attempts.flatMap(entry => Array.isArray(entry?.image_progress) ? entry.image_progress : []),
     retry_count: Math.max(0, attempts.length - 1),
-    image_progress_lost: attempts.some(entry => !Array.isArray(entry?.image_progress) || entry.image_progress.length === 0)
+    image_progress_lost: attempts.some(entry => !Array.isArray(entry?.image_progress) || entry.image_progress.length === 0),
+    ...(process.env.XIAOXI_INTERNAL_DIAGNOSTICS === "1" ? { raw_worker: { attempts } } : {})
   });
-  const deadline = Date.now() + 180_000;
+  const deadline = now() + 180_000;
   const runAttempt = async (retryIndex) => {
-    const remainingMs = Math.max(0, deadline - Date.now());
-    if (remainingMs <= 0) return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [], image_progress_lost: true } };
+    const remainingMs = Math.max(0, deadline - now());
+    if (remainingMs <= 0) return null;
     const controller = new AbortController();
     const monitor = setInterval(() => { allowed().then(ok => { if (!ok) controller.abort(); }).catch(() => controller.abort()); }, 100);
     try {
       return await runner(IMAGE_SEND_SCRIPT, {
         ...sendMessageEnvironment(context), XIAOXI_IMAGE_PATH: image.path, XIAOXI_IMAGE_SHA256: image.sha256,
         XIAOXI_IMAGE_RETRY_INDEX: String(retryIndex)
-      }, { ensure: false, sta: true, timeout: remainingMs, signal: controller.signal, diagnostics: true });
-    } catch { return { ok: false, reason: "image_driver_exception", diagnostics: { image_progress_lost: true } }; }
+      }, { ensure: false, sta: true, timeout: remainingMs, signal: controller.signal, diagnostics: true,
+        onImageProgress: (entry) => {
+          const progress = sanitizeImageProgress(entry);
+          if (!progress) return;
+          try { onDiagnostic?.({ ...progress, phase: progress.status }); } catch { /* Progress cannot change a send decision. */ }
+        }
+      });
+    } catch (error) { return { ok: false, reason: "image_driver_exception", diagnostics: { image_progress_lost: true, raw_exception: error } }; }
     finally { clearInterval(monitor); }
   };
   const isTrustedPreClickTimeout = (candidate, retryIndex) => {
-    if (candidate?.reason !== "powershell_timeout") return false;
+    if (candidate?.reason !== "powershell_timeout" || candidate?.diagnostics?.image_send_attempted === true) return false;
     const progress = Array.isArray(candidate?.diagnostics?.image_progress)
       ? candidate.diagnostics.image_progress.filter(entry => Number(entry?.retry_index) === retryIndex) : [];
     const last = progress.at(-1);
@@ -474,26 +501,41 @@ async function sendWechatImage({ baseDir, attemptId, image, context, onTransitio
       && !progress.some(entry => ["click_send", "post_confirm"].includes(entry.stage)));
   };
   const diagnosticAttempts = [];
+  const finishPreClick = (reason = "image_send_pre_click_timeout") => {
+    saveReceipt("not_attempted");
+    onTransition?.("not_attempted");
+    return failure(reason, false, {
+      ...(reason === "image_send_pre_click_timeout" ? { pre_send_retry_exhausted: true } : {}),
+      diagnostics: { ...mergeAttemptDiagnostics(diagnosticAttempts), retry_exhausted: reason === "image_send_pre_click_timeout" }
+    });
+  };
   let result = await runAttempt(0);
+  if (!result) return finishPreClick();
   diagnosticAttempts.push(result?.diagnostics || {});
   if (isTrustedPreClickTimeout(result, 0)) {
-    if (!await allowed()) return failure("workflow_paused", false, { diagnostics: { attempts: diagnosticAttempts } });
-    await new Promise(resolve => setTimeout(resolve, 5_000));
-    if (!await allowed()) return failure("workflow_paused", false, { diagnostics: { attempts: diagnosticAttempts, retry_count: 0 } });
-    result = await runAttempt(1);
+    if (!await allowed()) return finishPreClick("workflow_paused");
+    if (deadline - now() <= 5_000) return finishPreClick();
+    try { onDiagnostic?.({ stage: "image_retry_wait", phase: "start", retry_index: 1, wait_until: Date.now() + 5_000 }); } catch { /* Progress cannot change a send decision. */ }
+    await wait(5_000);
+    if (!await allowed()) return finishPreClick("workflow_paused");
+    const retry = await runAttempt(1);
+    if (!retry) return finishPreClick();
+    result = retry;
     diagnosticAttempts.push(result?.diagnostics || {});
     if (isTrustedPreClickTimeout(result, 1)) {
-      return failure("image_send_pre_click_timeout", false, {
-        pre_send_retry_exhausted: true,
-        diagnostics: { ...mergeAttemptDiagnostics(diagnosticAttempts), retry_exhausted: true }
-      });
+      return finishPreClick();
     }
   }
   if (diagnosticAttempts.length > 1) result = { ...result, diagnostics: { ...(result?.diagnostics || {}), ...mergeAttemptDiagnostics(diagnosticAttempts) } };
+  if (result?.sendAttempted === false && result.reason === "image_stage_timeout" && result.driverStage === "read_back") {
+    result = { ...result, reason: "image_send_pre_click_timeout" };
+  }
   if (result?.ok !== true || result.sendAttempted !== true || result.draftVerified !== true || result.conversationVerified !== true) {
     saveReceipt(result?.sendAttempted === false ? "not_attempted" : "outcome_unknown", result);
     return failure(result?.reason || "image_send_not_confirmed", result?.sendAttempted === false ? false : null, {
-      ...(result?.diagnostics ? { diagnostics: result.diagnostics } : {}),
+      ...(result?.sendAttempted === false && ["image_draft_format_unavailable", "image_send_pre_click_timeout"].includes(result?.reason) ? { pre_send_retry_exhausted: true } : {}),
+      ...sanitizeImageObservation(result),
+      diagnostics: { ...result?.diagnostics, ...(process.env.XIAOXI_INTERNAL_DIAGNOSTICS === "1" ? { raw_result: result } : {}) },
       ...(/^[a-z0-9_.-]{1,100}$/i.test(result?.ruleId || "") ? { rule_id: result.ruleId } : {}),
       ...(/^[a-z][a-z0-9_]{1,79}$/i.test(result?.driverStage || result?.diagnostics?.image_stage || "") ? { driver_stage: result.driverStage || result.diagnostics.image_stage } : {}),
       ...(/^[a-z][a-z0-9_]{1,79}$/i.test(result?.clipboardOperation || result?.diagnostics?.image_clipboard_operation || "") ? { clipboard_operation: result.clipboardOperation || result.diagnostics.image_clipboard_operation } : {}),

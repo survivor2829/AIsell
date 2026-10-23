@@ -245,6 +245,16 @@ function createTouchWorkflow(options = {}) {
     let legacyCopyMode = false;
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
+    const reportProgress = (detail) => {
+      const row = task?.results?.[task.current_index];
+      try {
+        context.onProgress?.({ contactIndex: (task?.current_index || 0) + 1, contactTotal: task?.total || contacts.length,
+          partTotal: 1 + imageIds.length + (link ? 1 : 0),
+          verifiedParts: row?.message_parts?.filter((part) => part.status === "sent_verified").length || 0,
+          textSent: row?.message_parts?.some((part) => part.kind === "text" && part.status === "sent_verified") === true,
+          ...detail });
+      } catch { /* Display updates must never affect a send decision. */ }
+    };
     const response = (status, extra = {}) => {
       const current = task?.results?.[task.current_index] || task?.results?.at(-1) || {};
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? task?.current_index) || 0)}`;
@@ -275,7 +285,16 @@ function createTouchWorkflow(options = {}) {
              ? result.skip_record?.ruleId || "" : ""
         })));
       }
-      return { status, progress: progress(), ...extra };
+      const waiting = status === "pending" && extra.retryAfterMs > 0 && extra.waitingReason && extra.waitingReason !== "touch_safety_interval";
+      const nextPart = current.message_parts?.find((part) => part.status !== "sent_verified");
+      const recovery = waiting ? {
+        reason: extra.waitingReason === "wechat_operation_busy" ? "" : String(current.reason || ""),
+        partKind: nextPart?.kind || "text",
+        textSent: current.message_parts?.some((part) => part.kind === "text" && part.status === "sent_verified") === true,
+        ...(extra.waitingReason === "wechat_identity_recovery" ? { attempt: current.identity_recovery_attempts, maxAttempts: IDENTITY_RECOVERY_ATTEMPTS } : {}),
+        ...(extra.waitingReason === "wechat_pre_send_recovery" ? { attempt: current.pre_send_recovery_attempts, maxAttempts: PRE_SEND_RECOVERY_ATTEMPTS } : {})
+      } : null;
+      return { status, progress: progress(), ...extra, ...(recovery ? { recovery } : {}) };
     };
     const persist = () => { task = saveTaskState(taskDir, task); };
     const attention = (error, result, reasonCode = "") => {
@@ -377,6 +396,7 @@ function createTouchWorkflow(options = {}) {
       }
       if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器", null, TOUCH_WORKFLOW_REASON_CODES.executorUnavailable);
       if (!current.message) {
+        reportProgress({ stage: "draft_generation", partKind: "text", partIndex: 1 });
         let draft;
         try {
           draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish }, result: current });
@@ -397,6 +417,7 @@ function createTouchWorkflow(options = {}) {
       const lock = coordinator?.acquire({ state: "touching", taskId: id, account: task.wechat_account_id, phase: "workflow:touch" });
       if (!lock?.ok || !lock.lock?.owner) return response("pending", {
         retryAfterMs: WECHAT_LOCK_RETRY_MS,
+        waitingReason: "wechat_operation_busy",
         result: { reason: lock?.error || "wechat_operation_busy" }
       });
       owner = lock.lock.owner;
@@ -470,6 +491,8 @@ function createTouchWorkflow(options = {}) {
           }
         }
         const executePart = async (part, partIndex, onPartTransition) => {
+          const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
+          reportProgress({ ...partProgress, stage: "prepare_contact" });
           const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");
           const executionDir = multipart ? path.join(taskDir, "message-parts", recipientKey, String(partIndex)) : taskDir;
           // Every part has its own CLI transaction. A text receipt must never
@@ -493,9 +516,13 @@ function createTouchWorkflow(options = {}) {
             windowMinIdleMs: 0,
             ...(multipart ? { captureSessionAnchor: true, now,
               ...(partIndex > 0 ? { reuseSession: { partIndex, sourcePartIndex, anchor: sessionAnchor, disabled: !reuseEnabled } } : {}) } : {}),
-            onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
-              trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
-            }),
+            onDiagnostic: (detail) => {
+              if (detail.phase === "start") reportProgress({ ...partProgress, stage: detail.stage,
+                readAttempt: detail.clipboard_read_attempts, retryAttempt: detail.retry_index, waitUntil: detail.wait_until });
+              diagnostics().event("active_touch", "send_stage", detail, {
+                trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
+              });
+            },
             isExecutionAllowed: enabled,
             sessionDriver: (name, sessionContext) => drivers.verifyWechatCurrentConversationAsync(name, { ...sessionContext, wechatRoot }),
             sendDriver: (key, sendContext) => enabled()
@@ -516,7 +543,11 @@ function createTouchWorkflow(options = {}) {
               currentIndex: index
             }),
             onTransition: (status, executionState = {}) => {
-              if (multipart) { onPartTransition(status); return; }
+              if (multipart) {
+                onPartTransition(status);
+                if (status === "sent_verified") reportProgress({ ...partProgress, stage: "part_complete" });
+                return;
+              }
               const row = task.results[index];
               row.status = status;
               row.attempt_key = String(executionState.real_send_attempt_key || row.attempt_key || "");
@@ -566,7 +597,7 @@ function createTouchWorkflow(options = {}) {
           && (!TOUCH_PRE_SEND_STOP_REASONS.has(preSendPolicy.reasonCode) || pendingPause);
         const warnPreSend = confirmedPreSend
           && (Boolean(identityReason) || boundedPreSendFailure);
-        sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason,
+        sendOperation.end({ ...detail, ...(result?.ok === false ? { raw_result: result } : {}) }, { ok: result?.ok === true, code: detail.reason,
           ...(warnPreSend ? { level: "warn" } : {}) });
       } catch (error) {
         sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
@@ -585,7 +616,7 @@ function createTouchWorkflow(options = {}) {
         current.send_attempted = true;
         current.reason = "发送成功并已核验";
         task.current_index = index + 1;
-        task.next_send_not_before = new Date(now().getTime() + sendDelayMs(options.random || Math.random)).toISOString();
+        task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
         if (task.current_index >= task.total) {
           task.status = "completed";
           task.completed_at = now().toISOString();
@@ -615,8 +646,9 @@ function createTouchWorkflow(options = {}) {
         if (reasonCode) current.search_evidence = ruleId === "search-r008"
           ? { ...finiteSearchEvidence(searchDiagnostics), rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
           : { ...finiteSearchEvidence(searchDiagnostics), ...(ruleId ? { rule_id: ruleId } : {}), fingerprint };
-        if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
-          return preSendSkip(failureReason, String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人");
+        if (["image_send_pre_click_timeout", "image_draft_format_unavailable"].includes(failureReason)
+          && result?.pre_send_retry_exhausted === true) {
+          return preSendSkip(failureReason, String(result.error || "图片发送前检查仍未通过") + "，已跳过当前联系人");
         }
         if (failureReason === "wechat_search_network_lookup_misclick" && !reasonCode) {
           current.poisoned = poisonedSearchCandidate(result, now().toISOString());
@@ -877,7 +909,7 @@ function createTouchWorkflow(options = {}) {
     if (advance) {
       task.current_index += 1;
       if (resolution === "sent" && task.current_index < task.total) {
-        task.next_send_not_before = new Date(now().getTime() + sendDelayMs(options.random || Math.random)).toISOString();
+        task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
       }
     }
     task.status = task.current_index >= task.total ? "completed" : "paused";
@@ -1027,6 +1059,7 @@ function createTouchWorkflow(options = {}) {
     };
   }
   return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask, describeUnknownWorkflowTask, resolveUnknownWorkflowTask, acknowledgeUnknownWorkflowResolution,
+    diagnosticSnapshot: (id) => id ? readWorkflowTask(id) : null,
     describeSkippedWorkflowTask, retrySkippedWorkflowTask,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),
     importImages: (paths) => options.mediaStore.importFiles(paths) };

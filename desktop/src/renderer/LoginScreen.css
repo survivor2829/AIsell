@@ -7,6 +7,8 @@
 }
 .signin-scene ::selection { background: #f6bbc7; color: #18212d; }
 .signin-layout { min-height: 100%; width: min(100%, 1660px); margin: auto; padding: 12px 24px 18px; display: flex; flex-direction: column; justify-content: center; }
+.signin-brand { align-self: flex-start; padding-bottom: 8px; }
+.signin-brand img { display: block; width: 64px; height: 64px; object-fit: contain; }
 .signin-reference { width: 100%; }
 .signin-reference > img { display: block; width: 100%; height: auto; }
 .signin-center { display: flex; justify-content: center; padding: 16px 0 0; }

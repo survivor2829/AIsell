@@ -268,6 +268,7 @@ async function main() {
     assert.deepEqual(
       Object.keys(archive.files).sort(),
       [
+        "README.txt",
         "auto_reply/",
         "auto_reply/auto-reply-diagnostics.jsonl",
         "auto_reply/auto-reply-diagnostics.jsonl.1",
@@ -355,6 +356,7 @@ async function main() {
     assert.deepEqual(
       Object.keys(missingAutoReplyArchive.files).sort(),
       [
+        "README.txt",
         "diagnostics.jsonl",
         "diagnostics.jsonl.1",
         "summary.json",
