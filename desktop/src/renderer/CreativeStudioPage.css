@@ -6,7 +6,6 @@
 }
 
 .workspace[class*="role-theme-"] .creative-studio-page { --studio-background: transparent; }
-.creative-history-back { margin: 18px 34px 0; }
 
 .studio-production-tabs {
   display: flex;

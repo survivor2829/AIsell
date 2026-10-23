@@ -10,10 +10,17 @@ function evidenceEnvironment() {
   };
 }
 
-// Called at the rejection site, before recovery or window navigation. Never
-// persist a raw bitmap. Full content masking is intentional: OCR cannot prove
-// that all private text and images have been located on an unfamiliar version.
+// Capture at the rejection site, before recovery/navigation. The internal test
+// profile keeps the actual WeChat surface; other profiles retain the mask.
 const FAILURE_EVIDENCE_SCRIPT = String.raw`
+function Protect-XiaoxiDiagnosticText([string]$text) {
+  $text = $text -replace '(?s)-----BEGIN [^-]*PRIVATE KEY[^-]*-----.*?(-----END [^-]+-----|$)', '[REDACTED_PRIVATE_KEY]'
+  $text = $text -replace '(?i)\b(Bearer|Basic)\s+[a-z0-9+/_=.-]+', '[REDACTED_AUTH]'
+  $text = $text -replace '(?i)(?<![a-z0-9])((sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-z0-9]{8,})', '[REDACTED_KEY]'
+  $text = $text -replace '(?i)((api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|cookie)\s*[:=]\s*)[^\r\n,;]+', '$1[REDACTED]'
+  if ($text.Length -gt 4000) { return $text.Substring(0,4000) + '[TRUNCATED]' }
+  return $text
+}
 function Write-XiaoxiFailure([string]$rule, [string]$reason) {
   try {
     if (-not $env:XIAOXI_FAILURE_DIR) { return $rule }
@@ -23,11 +30,18 @@ function Write-XiaoxiFailure([string]$rule, [string]$reason) {
     $id = [Guid]::NewGuid().ToString('N')
     $at = [DateTime]::UtcNow.ToString('o')
     $detail = @{ rule_id=$rule; reason=$reason; evidence_id=$id; capture_status='unavailable'; redaction_mode='full_content'; decision_scope='branch_not_task_outcome' }
+    $internalCapture = $env:XIAOXI_INTERNAL_DIAGNOSTICS -ceq '1'
+    if ($internalCapture) { $detail.redaction_mode='internal_visible' }
     if ($Error.Count -gt 0) {
       # Error queue can contain an earlier exception: label it as context,
       # never claim it caused this rejection.
       $detail.context_exception_type = $Error[0].Exception.GetType().FullName
       $detail.context_exception_code = ('hresult_{0:X8}' -f $Error[0].Exception.HResult)
+      if ($internalCapture) {
+        $detail.context_exception_message = Protect-XiaoxiDiagnosticText ([string]$Error[0].Exception.Message)
+        $detail.context_exception_stack = Protect-XiaoxiDiagnosticText ([string]$Error[0].ScriptStackTrace)
+        $detail.context_script_line = $Error[0].InvocationInfo.ScriptLineNumber
+      }
     }
     # Persist the branch BEFORE PrintWindow: a capture timeout must not erase
     # the rejection that triggered it. This is not a final send outcome.
@@ -73,14 +87,17 @@ public static class XiaoxiFailureCapture {
           if (-not $captured) { throw 'print_window_failed' }
           # Cover title, avatars, content, controls and window edges. Only a
           # two-pixel outer border survives; no raw image ever reaches disk.
-          $graphics.FillRectangle([Drawing.Brushes]::DimGray,0,0,$w,$h)
+          if (-not $internalCapture) { $graphics.FillRectangle([Drawing.Brushes]::DimGray,0,0,$w,$h) }
         } finally { $graphics.Dispose() }
         $bitmap.Save((Join-Path $dir ($id+'.png')),[Drawing.Imaging.ImageFormat]::Png)
         $detail.capture_status='saved'
         $detail.window_width=$w; $detail.window_height=$h
+        $detail.capture_hwnd=$hwnd.ToInt64(); $detail.capture_pid=$owner
+        $detail.capture_at=[DateTime]::UtcNow.ToString('o')
       } finally { $bitmap.Dispose() }
     } catch {
       $detail.capture_status='failed'; $detail.capture_exception_type=$_.Exception.GetType().FullName
+      if ($internalCapture) { $detail.capture_exception_message=Protect-XiaoxiDiagnosticText ([string]$_.Exception.Message) }
       if ([string]$_.Exception.Message -in @('foreground_not_wechat','window_rect_unavailable','window_size_unsupported','print_window_failed','capture_throttled')) {
         $detail.capture_failure_code=[string]$_.Exception.Message
         if ($detail.capture_failure_code -eq 'capture_throttled') { $detail.capture_status='throttled' }

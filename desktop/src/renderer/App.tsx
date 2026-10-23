@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   BarChart3,
   Bot,
   ChevronDown,
@@ -815,6 +816,16 @@ export default function App() {
   const activeRole = activeGroup?.key === active && activeGroup.key !== "business" ? activeGroup.key : undefined;
   const themedRole = isSupportRole(active) ? active : activeGroup?.key;
   const roleThemeClass = themedRole ? ` role-theme-${themedRole}` : "";
+  const parentGroup = activeGroup && activeGroup.key !== active && activeGroup.key !== "operations" ? activeGroup : null;
+  const creativeSubview = active === "workspace" && creativeView !== "studio";
+  const returnLabel = creativeSubview ? "返回线索视频混剪" : parentGroup ? `返回${parentGroup.label}` : "返回主页面";
+  const returnToParent = () => {
+    if (creativeSubview) {
+      setCreativeResumeTarget(null);
+      setCreativeView("studio");
+      contentScrollRef.current?.scrollTo({ top: 0, left: 0 });
+    } else setActive(parentGroup?.key || "overview");
+  };
 
   return (
     <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
@@ -903,9 +914,10 @@ export default function App() {
           <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact onOpenGuide={openTextGuide} />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
+          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />{returnLabel}</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
-          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} onReturnHome={() => setActive("business")} />}
+          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
@@ -959,18 +971,14 @@ export default function App() {
           {active === "materials" && <OfficialMaterialsPage preference={visiblePreference("materials")} appearance={appearanceFor("materials", visiblePreference("materials").appearanceId)} onPersonalize={() => setPersonalizingRole("materials")} onUseMaterial={(assetIds) => {
             setBatchInitial({ assetIds }); setCreativeView("studio"); setActive("workspace");
           }} />}
-          {active === "workspace" && (creativeView === "materials" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回线索视频混剪</button><MaterialsCollectionsPage onCreate={(assetIds, collection) => {
+          {active === "workspace" && (creativeView === "materials" ? <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
                 setBatchInitial({ assetIds, collection }); setCreativeView("studio");
-              }} /></> : creativeView === "product"
+              }} /> : creativeView === "product"
               ? <ProductOneClickPage
                 initialTaskId={creativeResumeTarget?.taskId}
                 initialProjectId={creativeResumeTarget?.projectId}
-                onBackToStudio={() => {
-                  setCreativeResumeTarget(null);
-                  setCreativeView("studio");
-                }}
               />
-              : creativeView === "history" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回批量创作</button><CreativeStudioPage
+              : creativeView === "history" ? <CreativeStudioPage
                 onOpenProduct={() => {
                   setCreativeResumeTarget(null);
                   setCreativeView("product");
@@ -983,7 +991,7 @@ export default function App() {
                 onOpenMaterials={() => setCreativeView("materials")}
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={openFeedback}
-              /></> : <BatchCreativePage initial={batchInitial}
+              /> : <BatchCreativePage initial={batchInitial}
                 onInitialConsumed={(consumed) => setBatchInitial((current) => current === consumed ? undefined : current)}
                 onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}

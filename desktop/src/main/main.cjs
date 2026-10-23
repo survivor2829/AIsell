@@ -392,11 +392,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       packaged: app.isPackaged
     };
     const logger = configureDiagnostics({ rootDir: runtime.rootDir, appInfo });
+    process.env.XIAOXI_INTERNAL_DIAGNOSTICS = logger.internalEnabled ? "1" : "0";
+    // In-process RPA has no CLI --data-dir; share the same evidence directory.
+    process.env.XIAOXI_FAILURE_DIR = path.join(runtime.rootDir, "failure-evidence");
     startupTiming.attach(logger);
     startupTiming.mark('local_runtime_ready');
     taskPassportStore = createTaskPassportStore({
       rootDir: runtime.rootDir,
-      onWriteFailure: () => logger.event("task_passport", "write_failed", {}, { level: "warn", code: "task_passport_write_failed" })
+      onWriteFailure: (detail) => logger.event("task_passport", "write_failed", detail, { level: "warn", code: "task_passport_write_failed" })
     });
     // A journal can cross its 30-day expiry during installation. Preserve the
     // snapshot's files for the helper's post-startup data confirmation; the next
@@ -572,6 +575,22 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       withProgress: (operation, readProgress) => workflowController.runContactSync(operation, readProgress)
     });
     registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir, appInfo, screen,
+      passport: taskPassportStore,
+      getWechatState: () => {
+        const snapshot = (read) => {
+          try { return read() ?? { available: false }; }
+          catch (error) { return { available: false, error }; }
+        };
+        const workflow = snapshot(() => workflowController?.status({ reconcile: false }));
+        return {
+          coordinator: snapshot(() => coordinator.status()),
+          workflow,
+          touch: snapshot(() => touchTaskController?.diagnosticSnapshot(workflow.currentTaskId || workflow.waitingTaskId || workflow.lastTaskId)),
+          auto_reply: snapshot(() => autoReplyController?.status()),
+          moments_publish: snapshot(() => momentsPublishController?.status()),
+          moments_interact: snapshot(() => momentsCampaignController?.status())
+        };
+      },
       getFeedbackLatest: () => feedbackController?.status()?.items?.[0] || null });
     registerDeepSeekApiIpc({
       keyStore: deepSeekKeyStore,

@@ -6,8 +6,11 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { performance } = require("node:perf_hooks");
+const { scrubInternalDetails, scrubSecretText } = require("../../src/shared/internal-diagnostics.cjs");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
+const { sanitizeImageProgress } = require("../../src/shared/failure-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
 const { NETWORK_SEARCH_LABELS, resolveWechatSearchResultObservation, searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 const { WECHAT_SEARCH_INPUT_GUARD_CSHARP } = require("./wechat_search_input.cjs");
@@ -362,8 +365,28 @@ function ensureWechatWindowVisible() {
   }
 }
 
+function workerEvidence(value, { evidence, script, stdout, stderr, elapsedMs, exitCode, error } = {}) {
+  if (process.env.XIAOXI_INTERNAL_DIAGNOSTICS !== "1") return value;
+  const detail = {
+    worker_trace_id: evidence?.XIAOXI_FAILURE_TRACE,
+    worker_elapsed_ms: Math.max(0, Math.round(elapsedMs || 0)),
+    worker_script_sha256: crypto.createHash("sha256").update(script).digest("hex")
+  };
+  if (value?.ok !== true) {
+    const raw = scrubInternalDetails({ error, exit_code: exitCode,
+      stdout_tail: scrubSecretText(stdout || "").slice(-16000), stderr_tail: scrubSecretText(stderr || "").slice(-16000),
+      stdout_bytes: Buffer.byteLength(String(stdout || "")), stderr_bytes: Buffer.byteLength(String(stderr || "")),
+      stdout_truncated: String(stdout || "").length > 16000, stderr_truncated: String(stderr || "").length > 16000 });
+    detail.raw_worker = raw.value;
+    if (raw.truncation) detail.raw_worker.truncation = raw.truncation;
+  }
+  return { ...value, diagnostics: { ...value?.diagnostics, ...detail } };
+}
+
 function runPowerShell(script, env = {}, options = {}) {
   const startedAt = Date.now();
+  const monotonicStart = performance.now();
+  const evidence = evidenceEnvironment();
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
   const scriptInput = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${FAILURE_EVIDENCE_SCRIPT}\n${script}`, "utf16le").toString("base64");
   const timeout = Number(options.timeout) > 0 ? Number(options.timeout) : 15000;
@@ -375,7 +398,7 @@ function runPowerShell(script, env = {}, options = {}) {
     maxBuffer: 16 * 1024 * 1024,
     env: {
       ...process.env,
-      ...evidenceEnvironment(),
+      ...evidence,
       XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable,
       ...env,
       XIAOXI_PARENT_PID: String(process.pid),
@@ -390,7 +413,8 @@ function runPowerShell(script, env = {}, options = {}) {
     const diagnostics = options.windowDiagnostics === true
       ? readWechatWindowDiagnostics(result.stderr, Date.now() - startedAt, timeout)
       : options.diagnostics === true ? readMomentsDiagnostics(result.stderr, Date.now() - startedAt, timeout) : {};
-    return Object.keys(diagnostics).length ? { ...value, diagnostics: { ...value.diagnostics, ...diagnostics } } : value;
+    return workerEvidence(Object.keys(diagnostics).length ? { ...value, diagnostics: { ...value.diagnostics, ...diagnostics } } : value,
+      { evidence, script, stdout: result.stdout, stderr: result.stderr, exitCode: result.status, error: result.error, elapsedMs: performance.now() - monotonicStart });
   };
 
   if (result.error) {
@@ -2169,6 +2193,8 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     ? Number(options.terminationGraceMs)
     : 2_000;
   const startedAt = Date.now();
+  const monotonicStart = performance.now();
+  const evidence = evidenceEnvironment();
   const signal = options.signal;
   const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
   const shellArgs = ["-NoProfile"];
@@ -2185,7 +2211,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       child = spawnProcess("powershell.exe", shellArgs, {
         env: {
           ...process.env,
-          ...evidenceEnvironment(),
+          ...evidence,
           XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable,
           ...env,
           XIAOXI_PARENT_PID: String(process.pid),
@@ -2198,11 +2224,17 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       const diagnostics = options.diagnostics === true
         ? { error_code: String(error?.code || "") }
         : undefined;
-      resolve({ ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) });
+      resolve(workerEvidence({ ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) },
+        { evidence, script, error, elapsedMs: performance.now() - monotonicStart }));
       return;
     }
     let stdout = "";
     let stderr = "";
+    let workerError;
+    let workerExitCode;
+    let imageProgressBuffer = "";
+    const observedImageProgress = [];
+    let imageSendAttempted = false;
     let settled = false;
     let timer = null;
     let terminationTimer = null;
@@ -2212,16 +2244,22 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     let quarantineRegistered = false;
     const discoverScans = () => Array.from(stderr.matchAll(/moments_discover_scan:elapsed_ms=(\d+),candidates=(\d+),matches=(\d+)/g))
       .slice(-12).map((match) => ({ elapsed_ms: Number(match[1]), candidates: Number(match[2]), matches: Number(match[3]) }));
-    const imageProgress = () => Array.from(stderr.matchAll(/image_progress:(\{[^\r\n]+\})/g)).slice(-40).map((match) => {
+    const recordImageProgress = (line) => {
+      if (!line.startsWith("image_progress:") || line.length > 4096) return;
       try {
-        const entry = JSON.parse(match[1]);
-        if (entry.status === "start" && entry.at) {
-          const started = Date.parse(entry.at);
-          if (Number.isFinite(started)) entry.observed_elapsed_ms = Math.max(0, Date.now() - started);
-        }
-        return entry;
-      } catch { return { parse_error: true }; }
-    });
+        const raw = JSON.parse(line.slice("image_progress:".length));
+        const entry = sanitizeImageProgress(raw);
+        if (!entry) return;
+        if (entry.stage === "click_send" || entry.stage === "post_confirm") imageSendAttempted = true;
+        const started = entry.status === "start" ? Date.parse(raw.at) : NaN;
+        observedImageProgress.push({ entry, started });
+        if (observedImageProgress.length > 40) observedImageProgress.shift();
+        try { options.onImageProgress?.({ ...entry }); } catch { /* Progress cannot change the operation. */ }
+      } catch { /* Ignore incomplete or unrecognized diagnostic data. */ }
+    };
+    const imageProgress = () => observedImageProgress.map(({ entry, started }) => ({ ...entry,
+      ...(Number.isFinite(started) ? { observed_elapsed_ms: Math.max(0, Date.now() - started) } : {})
+    }));
     const imagePreload = () => Array.from(stderr.matchAll(/image_preload:([a-z_]+)(?: elapsed_ms=(\d+))?/g)).slice(-20)
       .map((match) => ({ marker: match[1], ...(match[2] ? { elapsed_ms: Number(match[2]) } : {}) }));
     const terminationDiagnostics = (reason) => options.diagnostics === true ? {
@@ -2238,6 +2276,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       image_stage: Array.from(stderr.matchAll(/image_send_stage:([a-z_]+)/g)).at(-1)?.[1] || "",
       image_clipboard_operation: Array.from(stderr.matchAll(/image_clipboard_operation:([a-z_]+)/g)).at(-1)?.[1] || "",
       image_progress: imageProgress(),
+      image_send_attempted: imageSendAttempted,
       image_progress_lost: imageProgress().length === 0,
       image_preload: imagePreload(),
       discover_scans: discoverScans()
@@ -2254,9 +2293,11 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       clearTimeout(timer);
       clearTimeout(terminationTimer);
       signal?.removeEventListener?.("abort", onAbort);
-      resolve(options.windowDiagnostics === true
+      const result = options.windowDiagnostics === true
         ? { ...value, diagnostics: { ...value.diagnostics, ...readWechatWindowDiagnostics(stderr, Date.now() - startedAt, timeout) } }
-        : value);
+        : value;
+      resolve(workerEvidence(result, { evidence, script, stdout, stderr, error: workerError,
+        exitCode: workerExitCode, elapsedMs: performance.now() - monotonicStart }));
     };
     const requestTermination = (reason) => {
       if (settled || terminationReason) return;
@@ -2277,8 +2318,19 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      if (settled) return;
+      imageProgressBuffer += chunk;
+      let newline;
+      while ((newline = imageProgressBuffer.indexOf("\n")) >= 0) {
+        recordImageProgress(imageProgressBuffer.slice(0, newline).replace(/\r$/u, ""));
+        imageProgressBuffer = imageProgressBuffer.slice(newline + 1);
+      }
+      if (imageProgressBuffer.length > 4096) imageProgressBuffer = "";
+    });
     child.on("error", (error) => {
+      workerError = error;
       if (terminationReason) return;
       const diagnostics = options.diagnostics === true && options.windowDiagnostics !== true
         ? { error_code: String(error?.code || ""), stderr: stderr.trim().slice(-1200) }
@@ -2286,11 +2338,14 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       finish({ ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) });
     });
     child.on("close", (status) => {
+      workerExitCode = status;
       if (quarantineRegistered) {
         quarantineRegistered = false;
         unconfirmedPowerShellWorkerCount = Math.max(0, unconfirmedPowerShellWorkerCount - 1);
       }
       if (settled) return;
+      recordImageProgress(imageProgressBuffer.replace(/\r$/u, ""));
+      imageProgressBuffer = "";
       if (terminationReason) {
         return finish(terminationKillAccepted && !terminationGraceExceeded
           ? {
@@ -2312,7 +2367,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         const parsed = JSON.parse(output);
         if (options.diagnostics === true) {
           const progress = imageProgress();
-          parsed.diagnostics = { ...(parsed.diagnostics || {}), image_progress: progress, image_progress_lost: progress.length === 0, image_preload: imagePreload() };
+          parsed.diagnostics = { ...(parsed.diagnostics || {}), image_progress: progress, image_progress_lost: progress.length === 0, image_send_attempted: imageSendAttempted, image_preload: imagePreload() };
         }
         if (options.diagnostics === true && discoverScans().length > 0) {
           parsed.diagnostics = { ...parsed.diagnostics, discover_scans: discoverScans() };

@@ -81,19 +81,24 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
     const taskRecord = { id, payload };
     const taskDir = path.join(dataDir, "workflow-tasks", require("node:crypto").createHash("sha256").update(id).digest("hex"));
     let release;
+    const progress = [];
     const workflowOptions = {
       dataDir, readContacts: () => [contact],
       coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
       mediaStore: { resolve: () => ({ path: "image-1" }) },
-      execute: async () => {
+      execute: async (input) => {
+        input.onDiagnostic({ stage: input.image ? "read_back" : "prepare_window", phase: "start",
+          ...(input.image ? { clipboard_read_attempts: 2, retry_index: 1 } : {}) });
         if (!release) await new Promise((resolve) => { release = resolve; });
         return { ok: true, state: { real_send_status: "sent_verified" } };
       }
     };
     const workflow = createTouchWorkflow(workflowOptions);
-    const running = workflow.runWorkflowStep(taskRecord, { isEnabled: () => true });
+    const running = workflow.runWorkflowStep(taskRecord, { isEnabled: () => true, onProgress: (value) => progress.push(value) });
     for (let attempt = 0; !release && attempt < 100; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
     assert.ok(release, `the fake sender must hold the persisted sending state: ${JSON.stringify(release ? null : await running)}`);
+    assert.equal(progress.at(-1).stage, "prepare_window", "the running step exposes its stage before the executor returns");
+    assert.equal(progress.at(-1).contactIndex, 1);
     for (let poll = 0; poll < 3; poll += 1) {
       workflow.describeSkippedWorkflowTask(taskRecord);
       assert.equal(workflow.canRetryWorkflowTask(taskRecord, payload), false);
@@ -118,6 +123,85 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
     const completed = await running;
     assert.equal(completed.status, "completed");
     assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified");
+    if (multipart) {
+      const imageProgress = progress.find((value) => value.stage === "read_back");
+      assert.equal(imageProgress.partKind, "image");
+      assert.equal(imageProgress.partIndex, 2);
+      assert.equal(imageProgress.textSent, true, "image progress keeps the confirmed text receipt visible");
+      assert.equal(imageProgress.readAttempt, 2);
+      assert.equal(imageProgress.retryAttempt, 1);
+    }
+  }
+}
+
+async function checkLiveWorkflowRecovery() {
+  for (const [waitingReason, reasonCode] of [
+    ["wechat_identity_recovery", "search_result_identity_unverified"],
+    ["wechat_environment_recovery", "wechat_external_input_detected"],
+    ["wechat_pre_send_recovery", "image_draft_format_unavailable"],
+    ["wechat_operation_busy", "wechat_operation_busy"]
+  ]) {
+    const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-live-workflow-"));
+    let clock = new Date(2026, 9, 23, 12);
+    let release;
+    let calls = 0;
+    let lastProgress;
+    let previousProgress;
+    const control = createWechatWorkflowController({
+      rootDir: root, activeTouchDir: path.join(root, "touch"), autoReplyDir: path.join(root, "reply"), momentsDir: path.join(root, "moments"),
+      autoSchedule: false, now: () => clock, getAccount: () => "test-account",
+      onUpdate: (snapshot) => { if (snapshot.currentExecution) lastProgress = snapshot.currentExecution; },
+      executors: { touch: {
+        prepareWorkflowTask: () => ({ contacts: [{ id: "one" }], script: "fixture" }),
+        runWorkflowStep: async (_task, context) => {
+          if (++calls > 1) {
+            context.onProgress({ stage: "prepare_contact", partKind: "image", textSent: true });
+            previousProgress({ stage: "stale_stage", partKind: "image", textSent: false });
+            assert.equal(control.status().currentExecution.stage, "prepare_contact", "a previous step cannot replace progress on the same task");
+            return { status: "completed", progress: { done: 1, total: 1 } };
+          }
+          previousProgress = context.onProgress;
+          context.onProgress({ stage: "read_back", contactIndex: 1, contactTotal: 1, partKind: "image", partIndex: 2, partTotal: 2, textSent: true,
+            readAttempt: 2, retryAttempt: 1, waitUntil: clock.getTime() + 5000 });
+          await new Promise((resolve) => { release = resolve; });
+          return { status: "pending", progress: { done: 0, total: 1 }, retryAfterMs: 5000, waitingReason, reasonCode,
+            recovery: { reason: "正在自动恢复", partKind: "image", textSent: true, attempt: 1, maxAttempts: 2 } };
+        }
+      } }
+    });
+    try {
+      await control.setReplyEnabled(false);
+      const added = await control.addTask({ type: "touch", payload: { contactIds: ["one"], script: "fixture" } });
+      await control.start();
+      const running = control.tick();
+      for (let attempt = 0; !release && attempt < 100; attempt++) await new Promise((resolve) => setImmediate(resolve));
+      assert.ok(release);
+      assert.equal(lastProgress.taskId, added.task.id);
+      assert.equal(lastProgress.stage, "read_back");
+      assert.equal(lastProgress.textSent, true);
+      assert.equal(lastProgress.readAttempt, 2);
+      assert.equal(lastProgress.retryAttempt, 1);
+      assert.equal(lastProgress.waitUntil, clock.getTime() + 5000);
+      assert.equal(control.status().tasks[0].progress.done, 0, "stage updates never count a partial contact as completed");
+      release();
+      await running;
+      const waiting = control.status();
+      assert.equal(waiting.currentExecution, null);
+      assert.equal(waiting.phase, "waiting_recovery", "automatic recovery must not be reported as a scheduled appointment");
+      assert.equal(waiting.waitingTaskId, added.task.id);
+      assert.equal(waiting.tasks[0].waitingReason, waitingReason);
+      assert.equal(waiting.tasks[0].reasonCode, reasonCode);
+      assert.equal(waiting.tasks[0].recovery.textSent, true, "partial delivery remains visible during recovery waits");
+      assert.equal(waiting.tasks[0].recovery.attempt, 1);
+      assert.equal(waiting.waitUntil, clock.getTime() + 5000);
+      await control.tick();
+      assert.equal(calls, 1);
+      clock = new Date(clock.getTime() + 5000);
+      await control.tick();
+      assert.equal(control.status().phase, "completed");
+      assert.equal(control.status().currentExecution, null);
+      assert.equal(control.status().tasks[0].recovery, undefined);
+    } finally { await control.dispose(); }
   }
 }
 
@@ -446,7 +530,7 @@ async function checkR008PartialSend() {
 }
 
 async function checkT5FourthReviewExits() {
-  for (const kind of ["snapshot", "preclick", "identity", "environment", "recoverable", "unknown"]) {
+  for (const kind of ["snapshot", "preclick", "imageformat", "identity", "environment", "recoverable", "unknown"]) {
     const root = trackedMkdtemp(path.join(os.tmpdir(), `xiaoxi-t5-exit-${kind}-`));
     try {
       let clock = Date.parse("2026-09-24T00:00:00.000Z");
@@ -465,6 +549,7 @@ async function checkT5FourthReviewExits() {
           imageReads += 1;
           if (kind === "unknown") return { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" };
           if (kind === "preclick") return { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout", pre_send_retry_exhausted: true };
+          if (kind === "imageformat") return { ok: false, send_attempted: false, blocked_reason: "image_draft_format_unavailable", pre_send_retry_exhausted: true };
           if (kind === "environment") return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required" };
           if (kind === "recoverable") return { ok: false, send_attempted: false, blocked_reason: "image_existing_draft_clear_failed" };
           return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
@@ -475,6 +560,11 @@ async function checkT5FourthReviewExits() {
       const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
       const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
       let outcome = await step();
+      if (kind === "imageformat") {
+        assert.equal(outcome.status, "completed", "exhausted image readback must not restart contact discovery");
+        assert.equal(imageReads, 1);
+        assert.equal(loadTaskState(taskDir).results[0].message_parts[0].status, "sent_verified");
+      }
       if (kind === "snapshot") changed = true;
       if (kind === "unknown") {
         assert.equal(outcome.status, "needs_attention");
@@ -2726,6 +2816,7 @@ async function main() {
   await checkFailedRetryRecoveryGuards();
   await checkPresendDiagnosticLevels();
   await checkTouchStatusDoesNotRecoverActiveSend();
+  await checkLiveWorkflowRecovery();
   await checkInterruptedSendRecoveryInSameProcess();
   await checkClickedAttentionPersistFailureRecovery();
   await checkR008BoundedRecovery();

@@ -48,6 +48,8 @@
 .workflow-touch-skipped ul { display: grid; gap: 5px; margin: 6px 0 0; padding: 0; list-style: none; }
 .workflow-touch-skipped li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
 .workflow-touch-skipped li small { margin-inline-start: auto; color: #8b5e3c; white-space: nowrap; }
+.workflow-touch-skipped li { flex-wrap: wrap; }
+.workflow-skip-reason { flex-basis: 100%; margin: 0; color: #8b5e3c; font-size: 12px; overflow-wrap: anywhere; }
 .workflow-row-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .workflow-page .text-button,
 .workflow-recipients .text-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; margin: 0; padding: 3px 0; font-size: 12px; color: var(--brand-red-dark); }

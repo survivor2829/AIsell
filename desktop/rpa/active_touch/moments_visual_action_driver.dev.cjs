@@ -5623,12 +5623,27 @@ try {
   [void](Close-VisualMenu $lock)
   Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_visual_action_invalid"; actionAttempted = $false }
 } catch {
+  $actionError = $_
   [void](Close-VisualMenu $lock)
+  $exceptionDiagnostics = @{}
+  if ($env:XIAOXI_INTERNAL_DIAGNOSTICS -eq "1") {
+    $exceptionDiagnostics = @{ raw_exception = @{
+      type = [string]$actionError.Exception.GetType().FullName
+      message = [string]$actionError.Exception.Message
+      error_id = [string]$actionError.FullyQualifiedErrorId
+      category = [string]$actionError.CategoryInfo.Category
+      script_line_number = [int]$actionError.InvocationInfo.ScriptLineNumber
+      offset_in_line = [int]$actionError.InvocationInfo.OffsetInLine
+      script_stack_trace = [string]$actionError.ScriptStackTrace
+      stack_trace = [string]$actionError.Exception.StackTrace
+    } }
+  }
   Write-VisualResult @{
     ok = $false
     status = $(if ($script:visualActionAttempted) { "outcome_unknown" } else { "blocked" })
     reason = $(if ($script:visualActionAttempted) { "moments_visual_action_failed_after_click" } else { "moments_visual_action_failed" })
     actionAttempted = $script:visualActionAttempted
+    diagnostics = $exceptionDiagnostics
   }
 }
 `;

@@ -36,6 +36,7 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
 
   return <main className="signin-scene">
     <div className="signin-layout">
+      <div className="signin-brand"><img src="./xilianhui-logo.jpg" alt="玺联惠" /></div>
       <section className="signin-reference" aria-label="你的获客搭档，已就位。小影：短视频获客；小诚：微信拓客；小绘：产品详情图。">
         <img src={characterAsset("login-welcome.webp")} alt="" aria-hidden="true" />
       </section>

@@ -33,7 +33,8 @@ const RECOVERY_ACTIONS = new Set([
   "continue_other_contacts"
 ]);
 const MANUAL_REVIEW_SEND_REASONS = new Set([
-  "visual_send_external_input_detected"
+  "visual_send_external_input_detected",
+  "visual_send_before_send_failed"
 ]);
 const SCAN_HEALTH_VALUES = new Set(["unknown", "checking", "healthy", "warning", "degraded", "waiting"]);
 const AUTO_REPLY_ACTIVITY_PHASES = new Set([
@@ -1958,6 +1959,7 @@ function createAutoReplyController(options = {}) {
     const failedSendDiagnostic = entry.event === "reply_send_finished" && entry.code !== "sent_verified";
     diagnostics().event("auto_reply", entry.event, {
       ...entry,
+      ...(details.local_raw ? { local_raw: details.local_raw } : {}),
       scan_mode: entry.scan_source,
       trigger_code: entry.scan_trigger,
       legacy_diagnostic_run_id: entry.run_id
@@ -3460,16 +3462,17 @@ function createAutoReplyController(options = {}) {
         expectedConversationAliases: conversationAliases,
         exactConversationMatch: contactScope.strict,
         messageDriven: candidate.messageDriven === true,
-        onTransition: (transition) => {
-          const delivery = diagnosticCode(transition, "");
-          if (delivery === "prepared" && isVisualCandidate && state.processed[fingerprint]) {
-            // `prepared` is emitted only after the visual sender has verified
-            // the exact draft in WeChat. From this point a crash can leave an
-            // externally visible draft, so retain the conservative restart
-            // semantics for this one occurrence.
+        beforeSend: () => {
+          if (!isCurrentRun()) return false;
+          if (isVisualCandidate) {
+            // This durable guard must succeed before the final click worker starts.
             state.processed[fingerprint].status = "sending";
             save();
           }
+          return true;
+        },
+        onTransition: (transition) => {
+          const delivery = diagnosticCode(transition, "");
           const phase = ({
             prepared: "prepared",
             clicked: "clicked",
@@ -3520,6 +3523,7 @@ function createAutoReplyController(options = {}) {
         verification_mode: result?.verification_mode || "",
         send_attempted: result?.send_attempted,
         send_result: result?.send_result,
+        ...(!sendVerified ? { local_raw: result } : {}),
         input_read_reason: sendEnvelope.input_read_reason,
         outcome: sendEnvelope.outcome,
         side_effect: sendEnvelope.side_effect,
@@ -3637,7 +3641,9 @@ function createAutoReplyController(options = {}) {
               state.last_error = manualFollowupMessage(state.manual_followups);
             } else {
               state.last_event = "manual_intervention_required";
-              state.last_error = "";
+              state.last_error = sendCode === "visual_send_before_send_failed"
+                ? "回复尚未发送；发送前状态保存失败，请人工核对微信输入框中的草稿"
+                : "";
             }
             setFailureContext({
               phase: "send",

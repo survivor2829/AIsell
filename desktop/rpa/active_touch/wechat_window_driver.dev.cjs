@@ -66,6 +66,16 @@ $expectedIncomingRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPEC
 $inputXText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_X_RATIO")
 $inputYText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_Y_RATIO")
 
+function Get-ComposerInputPoint($rect) {
+  $xRatio = 0.0
+  $yRatio = 0.0
+  $culture = [Globalization.CultureInfo]::InvariantCulture
+  $style = [Globalization.NumberStyles]::Float
+  $verified = [double]::TryParse($inputXText, $style, $culture, [ref]$xRatio) -and [double]::TryParse($inputYText, $style, $culture, [ref]$yRatio) -and $xRatio -gt 0 -and $xRatio -lt 1 -and $yRatio -gt 0 -and $yRatio -lt 1
+  if (-not $verified) { $xRatio = 0.65; $yRatio = ($rect.Height - 105) / $rect.Height }
+  return @{ x = [int]($rect.Left + $rect.Width * $xRatio); y = [int]($rect.Top + $rect.Height * $yRatio); xRatio = $xRatio; yRatio = $yRatio; source = $(if ($verified) { "verified" } else { "fallback" }) }
+}
+
 function Normalize-WechatDraftText([string]$value) {
   $normalized = ([string]$value).Replace([Environment]::NewLine, [string][char]10)
   $normalized = $normalized.Replace([string][char]13, [string][char]10)
@@ -299,9 +309,6 @@ $boundConversationToken = $conversationBefore.token
 $root = $conversationBefore.root
 $windowRect = $conversationBefore.rect
 
-$inputXRatio = 0.65
-$inputYRatio = 0.0
-$inputPointAvailable = [double]::TryParse($inputXText, [ref]$inputXRatio) -and [double]::TryParse($inputYText, [ref]$inputYRatio) -and $inputXRatio -gt 0 -and $inputXRatio -lt 1 -and $inputYRatio -gt 0 -and $inputYRatio -lt 1
 $oldPoint = New-Object Win32WechatSendMessage+POINT
 [void][Win32WechatSendMessage]::GetCursorPos([ref]$oldPoint)
 $oldClipboard = ""
@@ -310,8 +317,9 @@ $draftVerified = $false
 $sendAction = ""
 $sendAttempted = $false
 try {
-  $inputX = [int]($windowRect.Left + ($windowRect.Width * $(if ($inputPointAvailable) { $inputXRatio } else { 0.65 })))
-  $inputY = $(if ($inputPointAvailable) { [int]($windowRect.Top + ($windowRect.Height * $inputYRatio)) } else { [int]($windowRect.Bottom - 105) })
+  $composerPoint = Get-ComposerInputPoint $windowRect
+  $inputX = $composerPoint.x
+  $inputY = $composerPoint.y
   $inputPoint = New-Object Win32WechatSendMessage+POINT
   $inputPoint.X = $inputX
   $inputPoint.Y = $inputY

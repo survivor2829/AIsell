@@ -622,8 +622,8 @@ export function AgentHome({
         </div>
       </section>
       </div>
-      </div>
       {role === 'production' && <VideoExamples />}
+      </div>
         <section className="agent-important-task">
           <div className="agent-section-heading">
             <div><ListTodo size={20} strokeWidth={2.3} /><h2>接下来做什么</h2></div>

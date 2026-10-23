@@ -2504,7 +2504,7 @@ async function main() {
     scanIncoming: () => sendingCrashCandidate,
     send: async (options) => {
       assert.equal(await options.beforeDraft(), true);
-      options.onTransition("prepared");
+      await options.beforeSend();
       sendingEntered();
       return new Promise(() => undefined);
     }

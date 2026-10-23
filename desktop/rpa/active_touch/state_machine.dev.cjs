@@ -526,6 +526,7 @@ function withSessionAnchor(result, options, baseDir) {
       search_query: state.search_query, search_query_type: state.search_query_type,
       wechat_account_id: state.wechat_account_id,
       contact_identity: identityKey(state.selected_customer),
+      inputPoint: state.message_input_point,
       anchored_at: Number(options.now?.() ?? Date.now())
     } };
   } catch { return result; }
@@ -557,6 +558,7 @@ async function inspectSessionReuse(options, baseDir, snapshot) {
       conversation_verification_mode: String(anchor.conversation_verification_mode),
       conversation_token: String(anchor.conversation_token), conversation_title_mode: String(anchor.conversation_title_mode),
       search_query: String(anchor.search_query), search_query_type: String(anchor.search_query_type),
+      message_input_point: anchor.inputPoint,
       search_input_done: false, search_result_clicked: false,
       send_gate_status: "pending", send_gate_reason: "", real_send_armed: false, real_send_enabled: false,
       real_send_clicked: false, real_send_status: "not_sent", real_send_reason: "",
@@ -678,7 +680,10 @@ async function executeVerifiedContactSendCore(options = {}) {
         incomingVerified: true,
         reply: message,
         expectedInputTick: inspectedInputTick,
-        beforeSend: () => executionMayContinue(options),
+        beforeSend: async () => {
+          if (!(await executionMayContinue(options))) return false;
+          return typeof options.beforeSend === "function" ? await options.beforeSend() : true;
+        },
         onTransition: options.onTransition
       }));
     } catch {
@@ -839,8 +844,10 @@ async function executeVerifiedContactSendCore(options = {}) {
     const imageOutcome = await observeSendStage(options, "image_send", () => imageSender({
       baseDir, attemptId: options.attemptId,
       image: options.image, onTransition: options.onTransition, isExecutionAllowed: options.isExecutionAllowed,
+      onDiagnostic: options.onDiagnostic,
       context: { pid: state.window_pid, hWnd: state.window_handle, expectedConversation: state.selected_customer?.name,
-        expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token }
+        expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token,
+        inputPoint: state.message_input_point }
     }));
     return withSessionAnchor(imageOutcome, options, baseDir);
   }

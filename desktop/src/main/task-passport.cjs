@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
+const { scrubInternalDetails, scrubSecretText } = require("../shared/internal-diagnostics.cjs");
 
 const RETENTION_DAYS = 30;
 const DAILY_ATTACHMENT_LIMIT = 200;
@@ -50,6 +51,7 @@ function createTaskPassportStore(options = {}) {
   const dailyAttachmentLimit = Math.max(3, Math.floor(Number(options.dailyAttachmentLimit) || DAILY_ATTACHMENT_LIMIT));
   const traceTasks = new Map();
   const dailyAttachmentReservations = new Map();
+  const pendingCaptures = new Set();
   let writesFailed = 0;
 
   function reportWriteFailure(error, context = {}) {
@@ -128,8 +130,14 @@ function createTaskPassportStore(options = {}) {
         const rawName = `${base}-raw-reading.json`;
         const expectedName = `${base}-expected.json`;
         const screenshotName = `${base}-screen.png`;
-        writeJsonAtomic(path.join(directory, rawName), failure.rawReading ?? null);
-        writeJsonAtomic(path.join(directory, expectedName), failure.expected ?? null);
+        const safeAttachment = (value) => {
+          const scrubbed = scrubInternalDetails(value);
+          return scrubbed.truncation
+            ? { evidence: scrubbed.value, _diagnostic_truncation: scrubbed.truncation }
+            : scrubbed.value;
+        };
+        writeJsonAtomic(path.join(directory, rawName), safeAttachment(failure.rawReading ?? null));
+        writeJsonAtomic(path.join(directory, expectedName), safeAttachment(failure.expected ?? null));
         attachments.push(rawName, expectedName);
         const screenshot = Object.prototype.hasOwnProperty.call(failure, "screenshotBytes")
           ? failure.screenshotBytes : captureScreenshot({ moduleName, taskId, failure });
@@ -138,7 +146,7 @@ function createTaskPassportStore(options = {}) {
         } else if (screenshot && typeof screenshot.then === "function") {
           attachmentStatus = "screenshot_pending";
           attachments.push(screenshotName);
-          Promise.resolve(screenshot).then((content) => {
+          const capture = Promise.resolve(screenshot).then((content) => {
             if (!Buffer.isBuffer(content) || !content.length) throw new Error("task_passport_screenshot_unavailable");
             writeFileAtomic(path.join(directory, screenshotName), content);
             recordEvent(moduleName, taskId, {
@@ -153,7 +161,8 @@ function createTaskPassportStore(options = {}) {
               reasonCode: "task_passport_screenshot_failed", ruleId: failure.ruleId,
               traceId: failure.traceId, attachmentStatus: "screenshot_failed"
             });
-          });
+          }).finally(() => pendingCaptures.delete(capture));
+          pendingCaptures.add(capture);
         } else {
           if (!Buffer.isBuffer(screenshot) || !screenshot.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) {
             throw new Error("task_passport_screenshot_unavailable");
@@ -313,28 +322,96 @@ function createTaskPassportStore(options = {}) {
     }
   }
 
-  return { bindTrace, cleanup, observeDiagnostic, recordEvent, recordFailure, status: () => ({ writesFailed }), writeRunBill };
+  async function flushPendingCaptures({ timeoutMs = 1500 } = {}) {
+    const initialCaptures = [...pendingCaptures];
+    const pendingAtStart = initialCaptures.length;
+    let timer;
+    let timedOut = false;
+    if (pendingAtStart) {
+      try {
+        await Promise.race([
+          Promise.allSettled(initialCaptures),
+          new Promise((resolve) => { timer = setTimeout(() => { timedOut = true; resolve(); },
+            Math.max(0, Math.min(5000, Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : 1500))); })
+        ]);
+      } finally { clearTimeout(timer); }
+    }
+    return { pending_at_start: pendingAtStart, completed: initialCaptures.filter((capture) => !pendingCaptures.has(capture)).length,
+      pending: pendingCaptures.size, timed_out: timedOut, writes_failed: writesFailed };
+  }
+
+  return { bindTrace, cleanup, flushPendingCaptures, observeDiagnostic, recordEvent, recordFailure,
+    status: () => ({ writesFailed, pendingCaptures: pendingCaptures.size }), writeRunBill };
 }
 
-function collectTaskPassportFiles(rootDir) {
+function collectTaskPassportFiles(rootDir, { manifest = {} } = {}) {
   const passportRoot = path.join(path.resolve(String(rootDir || "")), "task-passports");
   const files = [];
+  const candidates = [];
+  Object.assign(manifest, { order: "newest_first", max_file_bytes: MAX_EXPORT_FILE_BYTES, max_total_bytes: MAX_EXPORT_BYTES,
+    candidate_count: 0, included_count: 0, omitted_count: 0, omitted_files: [], scan_errors: [], scan_error_count: 0, source_missing: false });
   let total = 0;
-  try {
-    walkFiles(passportRoot, (file, stat) => {
-      if (stat.size > MAX_EXPORT_FILE_BYTES || total + stat.size > MAX_EXPORT_BYTES) return;
-      const relative = path.relative(passportRoot, file);
-      if (relative.startsWith("..") || path.isAbsolute(relative)) return;
+  const exportedName = (file) => `task-passports/${path.relative(passportRoot, file).split(path.sep).join("/")}`;
+  const omit = (file, reason, size) => {
+    manifest.omitted_count += 1;
+    if (manifest.omitted_files.length < 1000) manifest.omitted_files.push({ name: exportedName(file), reason, size_bytes: size });
+  };
+  const scan = (directory) => {
+    let names;
+    try {
+      if (fs.lstatSync(directory).isSymbolicLink()) { omit(directory, "symbolic_link_excluded"); return; }
+      names = fs.readdirSync(directory);
+    }
+    catch (error) {
+      if (directory === passportRoot && error?.code === "ENOENT") manifest.source_missing = true;
+      else {
+        manifest.scan_error_count += 1;
+        if (manifest.scan_errors.length < 100) manifest.scan_errors.push({ name: exportedName(directory), code: String(error?.code || "scan_failed") });
+      }
+      return;
+    }
+    for (const name of names) {
+      const file = path.join(directory, name);
+      try {
+        const stat = fs.lstatSync(file);
+        if (stat.isSymbolicLink()) { omit(file, "symbolic_link_excluded", stat.size); continue; }
+        if (stat.isDirectory()) scan(file);
+        else if (stat.isFile()) candidates.push({ file, stat });
+      } catch (error) { omit(file, String(error?.code || "stat_failed")); }
+    }
+  };
+  scan(passportRoot);
+  candidates.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs || left.file.localeCompare(right.file, "en"));
+  manifest.candidate_count = candidates.length;
+  for (const { file, stat } of candidates) {
+    if (stat.size > MAX_EXPORT_FILE_BYTES) { omit(file, "file_size_limit", stat.size); continue; }
+    if (total + stat.size > MAX_EXPORT_BYTES) { omit(file, "total_size_limit", stat.size); continue; }
+    try {
       const content = fs.readFileSync(file);
-      total += content.length;
+      if (content.length > MAX_EXPORT_FILE_BYTES || total + content.length > MAX_EXPORT_BYTES) { omit(file, "changed_size_limit", content.length); continue; }
+      // Older passports predate the credential guard. Scrub textual files at
+      // export too; preserve original shape and business readings where valid.
+      let safeContent = content;
+      if (/\.json$/iu.test(file)) {
+        try {
+          const scrubbed = scrubInternalDetails(JSON.parse(content.toString("utf8")), { maxBytes: MAX_EXPORT_FILE_BYTES });
+          const value = scrubbed.truncation ? { evidence: scrubbed.value, _diagnostic_truncation: scrubbed.truncation } : scrubbed.value;
+          safeContent = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+        } catch { safeContent = Buffer.from(scrubSecretText(content.toString("utf8")), "utf8"); }
+      } else if (/\.(?:jsonl|txt)$/iu.test(file)) safeContent = Buffer.from(scrubSecretText(content.toString("utf8")), "utf8");
+      if (safeContent.length > MAX_EXPORT_FILE_BYTES || total + safeContent.length > MAX_EXPORT_BYTES) { omit(file, "sanitized_size_limit", safeContent.length); continue; }
+      total += safeContent.length;
       files.push({
-        name: `task-passports/${relative.split(path.sep).join("/")}`,
-        content,
-        size_bytes: content.length,
-        sha256: crypto.createHash("sha256").update(content).digest("hex")
+        name: exportedName(file),
+        content: safeContent,
+        size_bytes: safeContent.length,
+        sha256: crypto.createHash("sha256").update(safeContent).digest("hex")
       });
-    });
-  } catch {}
+    } catch (error) { omit(file, String(error?.code || "read_failed"), stat.size); }
+  }
+  manifest.included_count = files.length;
+  manifest.included_bytes = total;
+  manifest.omitted_list_truncated = manifest.omitted_count > manifest.omitted_files.length;
   return files.sort((left, right) => left.name.localeCompare(right.name, "en"));
 }
 

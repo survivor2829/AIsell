@@ -55,11 +55,20 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   skipped_records?: TouchSkipRecord[];
   reasonCode?: string;
   reasonClassification?: "environment" | "recoverable" | "blocker";
+  waitingReason?: string;
+  recovery?: { reason: string; partKind: string; textSent: boolean; attempt?: number; maxAttempts?: number };
+};
+type WorkflowExecution = {
+  taskId: string; stage: string; startedAt: number;
+  contactIndex?: number; contactTotal?: number;
+  partKind: string; partIndex?: number; partTotal?: number; verifiedParts?: number; textSent: boolean;
+  readAttempt?: number; retryAttempt?: number; waitUntil?: number;
 };
 export type WorkflowState = {
   enabled: boolean;
   phase: string;
   currentTaskId: string | null;
+  currentExecution?: WorkflowExecution | null;
   waitingTaskId?: string | null;
   waitUntil?: number | null;
   nextTaskId: string | null;
@@ -125,7 +134,7 @@ const TOUCH_SKIP_LABELS: Record<string, string> = {
   ai_failed_skipped: "AI失败，已跳过",
   pre_send_skipped: "明确未发送，恢复失败后已跳过",
   outcome_unknown_skipped: "结果未知，已跳过",
-  partial_sent_skipped: "部分已发送，编辑后跳过剩余内容"
+  partial_sent_skipped: "部分已发送，其余内容未发送"
 };
 
 export function useWechatWorkflow() {
@@ -197,6 +206,7 @@ export function workflowStatusText(state: WorkflowState) {
     const task = state.tasks.find((item) => item.id === state.waitingTaskId);
     return task ? `${TASK_LABELS[task.type]}安全间隔` : "安全间隔后继续";
   }
+  if (state.phase === "waiting_recovery") return recoveryWaitText(state.tasks.find((item) => item.id === state.waitingTaskId));
   const task = state.tasks.find((item) => item.id === state.currentTaskId);
   if (state.replyBackoff && !task) return state.replyStatus;
   if (state.replyError && !task) return "自动回复需处理";
@@ -248,11 +258,63 @@ function useRemainingSeconds(waitUntil?: number | null) {
   return waitUntil ? Math.max(0, Math.ceil((waitUntil - timestamp) / 1000)) : 0;
 }
 
-function safetyIntervalDetail(state: WorkflowState, seconds: number) {
+function recoveryWaitText(task?: WorkflowTask) {
+  if (/user_active|external_input_detected/u.test(task?.reasonCode || "")) return "检测到键鼠操作，等待电脑空闲";
+  if (task?.waitingReason === "wechat_operation_busy") return "等待其他微信操作结束";
+  if (task?.waitingReason === "wechat_identity_recovery") return "正在恢复联系人身份识别";
+  if (task?.waitingReason === "wechat_environment_recovery") return "微信运行条件暂未满足，等待恢复";
+  if (task?.reasonCode?.startsWith("image_")) return "图片尚未发送，正在恢复发送前检查";
+  return "发送前检查未通过，等待恢复";
+}
+
+function waitingDetailText(state: WorkflowState, seconds: number) {
   const task = state.tasks.find((item) => item.id === state.waitingTaskId);
   if (!task) return seconds > 0 ? `${seconds} 秒后继续` : "即将继续";
   const unit = task.type === "touch" ? "位客户" : "项";
-  return `${task.title || TASK_LABELS[task.type]}：已完成 ${task.progress.done}/${task.progress.total} ${unit}，${seconds > 0 ? `${seconds} 秒后继续` : "即将继续"}`;
+  const recovery = task.recovery;
+  const partial = recovery?.textSent && recovery.partKind === "image" ? "文字已发送，图片尚未发送。" : "";
+  const recoveryReason = recovery?.reason ? `${taskErrorText(recovery.reason)}。` : "";
+  const attempt = !recoveryReason && recovery?.attempt && recovery.maxAttempts ? `自动恢复 ${recovery.attempt}/${recovery.maxAttempts} 次。` : "";
+  const contact = task.type === "touch" && task.waitingReason !== "touch_safety_interval" && task.progress.total > 0
+    ? `第 ${Math.min(task.progress.done + 1, task.progress.total)}/${task.progress.total} 位客户。` : "";
+  return `${contact}${partial}${recoveryReason}${attempt}${task.title || TASK_LABELS[task.type]}：已完成 ${task.progress.done}/${task.progress.total} ${unit}，${seconds > 0 ? `${seconds} 秒后继续` : "即将继续"}`;
+}
+
+const TOUCH_STAGE_LABELS: Record<string, string> = {
+  draft_generation: "正在准备文字", prepare_contact: "正在准备联系人", contact_send: "正在准备发送",
+  "select-customer": "正在读取联系人", calibrate: "正在准备微信适配", prepare_window: "正在定位微信窗口",
+  "click-search-result-dry-run": "正在查找并核验联系人", verify_session: "正在核验聊天对象",
+  session_reuse: "正在检查当前聊天", session_reuse_verify: "正在核验当前聊天",
+  "input-message-dry-run": "正在输入文字", send: "正在检查发送内容", send_session_check: "正在复核聊天对象",
+  before_send_snapshot: "正在检查发送前状态", send_click: "正在发送文字", after_send_confirmation: "正在确认发送结果",
+  image_send: "正在准备图片", script_started: "正在启动图片发送", context: "正在检查图片发送环境",
+  source_file: "正在校验图片文件", window_binding: "正在核验聊天窗口", clipboard_backup: "正在准备剪贴板",
+  existing_draft_check: "正在检查输入框", existing_draft_clear: "正在清理旧草稿", sentinel_write: "正在准备草稿核验",
+  image_load: "正在读取图片", clipboard_bitmap: "正在复制图片", paste: "正在粘贴图片",
+  preview_verification: "正在核验图片预览", read_back: "正在核验图片草稿", click_send: "正在发送图片",
+  post_confirm: "正在确认图片发送结果", image_retry_wait: "图片发送前检查超时，等待恢复", part_complete: "当前内容已发送并确认"
+};
+
+function useExecutionDetail(execution?: WorkflowExecution | null) {
+  const [timestamp, setTimestamp] = useState(() => Date.now());
+  const startedAt = execution?.startedAt;
+  useEffect(() => {
+    if (startedAt === undefined) return undefined;
+    setTimestamp(Date.now());
+    const timer = window.setInterval(() => setTimestamp(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  if (!execution) return "";
+  const contact = execution.contactIndex && execution.contactTotal ? `第 ${execution.contactIndex}/${execution.contactTotal} 位客户` : "";
+  const part = execution.partKind === "image" ? `第 ${Math.max(1, (execution.partIndex || 2) - 1)} 张图片`
+    : TOUCH_PART_LABELS[execution.partKind] || "";
+  const label = TOUCH_STAGE_LABELS[execution.stage] || `正在处理${part || "当前内容"}`;
+  const elapsed = Math.max(0, Math.floor((timestamp - execution.startedAt) / 1000));
+  const recovery = [execution.readAttempt && execution.readAttempt > 1 ? `读回恢复 ${execution.readAttempt - 1} 次` : "",
+    execution.retryAttempt ? `发送前恢复 ${execution.retryAttempt} 次` : ""].filter(Boolean).join(" · ");
+  const seconds = execution.waitUntil ? Math.max(0, Math.ceil((execution.waitUntil - timestamp) / 1000)) : null;
+  return [contact, execution.textSent && execution.partKind !== "text" ? "文字已发送" : "", part, label, recovery,
+    seconds === null ? `本步骤 ${elapsed} 秒` : seconds > 0 ? `${seconds} 秒后继续` : "即将继续"].filter(Boolean).join(" · ");
 }
 
 function contactLabel(contact: WorkflowContact) {
@@ -344,7 +406,8 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId));
   const next = state.tasks.find((task) => task.id === state.nextTaskId);
   const waitingSeconds = useRemainingSeconds(state.waitUntil);
-  const waitingDetail = safetyIntervalDetail(state, waitingSeconds);
+  const waitingDetail = waitingDetailText(state, waitingSeconds);
+  const executionDetail = useExecutionDetail(state.currentExecution);
   const attentionTasks = state.tasks.filter((task) => task.status === "needs_attention");
   const waitingForSchedule = state.tasks.some((task) => task.status === "pending" && !task.accountMismatch && (task.repeat === "daily" || Boolean(task.scheduledAt && Date.parse(task.scheduledAt) > Date.now())));
   const title = mode === "home" ? "今日计划" : mode === "touch" ? "精准触达" : "朋友圈运营";
@@ -363,12 +426,12 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     : null;
   const runningDetail = state.phase === "completed" ? "本轮已结束，可查看下方结果"
     : state.phase === "needs_attention" ? "仍有任务未完成，原因见任务详情"
-      : state.phase === "waiting_safety_interval" ? waitingDetail
+      : state.waitingTaskId ? waitingDetail
       : !state.enabled ? "启动前安排好任务；运行中需先暂停再调整"
-        : next ? `下一项：${next.title}`
+        : executionDetail || (next ? `下一项：${next.title}`
           : current ? "正在执行本轮已安排任务"
             : waitingForSchedule ? "到达已安排的时间后继续执行"
-              : state.replyBackoff ? state.replyStatus : state.replyError || state.replyStatus || (state.replyEnabled === false ? "自动回复未开启" : "正在准备自动回复");
+              : state.replyBackoff ? state.replyStatus : state.replyError || state.replyStatus || (state.replyEnabled === false ? "自动回复未开启" : "正在准备自动回复"));
 
   useEffect(() => {
     if (editor) editorAnchor.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -454,10 +517,11 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     return <li className={`workflow-task-row ${isCurrent ? "is-current" : ""} ${isWaiting ? "is-waiting" : ""}`} key={task.id}>
       <span className="workflow-task-icon"><Icon size={19} /></span>
       <div className="workflow-task-copy">
-        <div className="workflow-task-title"><strong>{task.title || TASK_LABELS[task.type]}</strong><span className={`workflow-task-status is-${isWaiting ? "waiting" : task.status}`}>{isWaiting ? "安全间隔" : TASK_STATUS[task.status]}</span></div>
+        <div className="workflow-task-title"><strong>{task.title || TASK_LABELS[task.type]}</strong><span className={`workflow-task-status is-${isWaiting ? "waiting" : task.status}`}>{isWaiting ? task.waitingReason === "touch_safety_interval" ? "安全间隔" : "等待恢复" : TASK_STATUS[task.status]}</span></div>
         <div className="workflow-task-meta"><span><Clock3 size={13} />{formatTaskTime(task)}</span>{task.progress?.total > 0 && <span>{task.progress.done}/{task.progress.total} {task.type === "touch" ? "人" : "条"}</span>}{task.repeat === "daily" && task.lastCompletedDate && <span>最近完成：{task.lastCompletedDate}</span>}</div>
         {task.type === "touch" && <p className="workflow-small-note">文案模式：{task.aiPolish === undefined ? "历史任务，请编辑确认" : task.aiPolish ? "AI 润色" : "原文发送"}</p>}
-        {isWaiting && <p className="workflow-small-note">{waitingDetail}</p>}
+        {isWaiting && <p className="workflow-small-note">{task.waitingReason !== "touch_safety_interval" && `${recoveryWaitText(task)}。`}{waitingDetail}</p>}
+        {task.id === state.currentExecution?.taskId && <p className="workflow-small-note">{executionDetail}</p>}
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
         {task.error && <p className="workflow-task-error">{taskErrorText(task.error, task.reasonCode, task.reasonClassification)}</p>}
         {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入并继续。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
@@ -473,8 +537,8 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
           <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
             {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}>{canRetryWhileListening ? "暂停自动回复，全部重试并继续" : "全部重试并继续"}</button>}
           </div>
-          <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 编辑后跳过剩余内容 ${task.skipped_breakdown!.partial_sent}`}</p>
-          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.status === "partial_sent_skipped" ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul></details>
+          <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 部分已发送 ${task.skipped_breakdown!.partial_sent}`}</p>
+          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.status === "partial_sent_skipped" ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></details>
         </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
@@ -773,7 +837,8 @@ export function FloatingWorkflowWindow() {
   const api = window.xiaoxiWorkflow;
   const showMain = () => api && void run(() => api.showMain());
   const waitingSeconds = useRemainingSeconds(state.waitUntil);
-  const waitingDetail = safetyIntervalDetail(state, waitingSeconds);
+  const waitingDetail = waitingDetailText(state, waitingSeconds);
+  const executionDetail = useExecutionDetail(state.currentExecution);
   const sync = state.contactSync;
   const moments = sync || state.phase === "replying" ? null : state.momentsProgress;
   const syncLabel = !sync ? "" : !sync.running
@@ -789,7 +854,8 @@ export function FloatingWorkflowWindow() {
     <div className="workflow-floating-body">
       <div className="workflow-floating-current" role="status"><strong>{workflow.loading ? "读取进度中…" : sync ? syncLabel : workflowStatusText(state)}</strong>{sync ? <small>同步联系人</small> : current && current.title !== TASK_LABELS[current.type] && <small>{current.title}</small>}</div>
       {!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 && <div className="floating-progress"><div className="floating-progress-bar"><span style={{ width: `${Math.min(100, displayed.progress.done / displayed.progress.total * 100)}%` }} /></div><b>{displayed.progress.done}/{displayed.progress.total}</b></div>}
-      {!sync && state.phase === "waiting_safety_interval" && <p className="workflow-floating-detail">{waitingDetail}</p>}
+      {!sync && state.waitingTaskId && <p className="workflow-floating-detail">{waitingDetail}</p>}
+      {!sync && executionDetail && <p className="workflow-floating-detail">{executionDetail}</p>}
       {moments && <>{current && <p className="workflow-floating-detail">{momentsLabel(moments.stage, "正在处理当前帖子")}</p>}<div className="workflow-floating-counts"><strong>累计点赞 {moments.liked} · 评论 {moments.commented}</strong><span>扫描 {moments.scanned} · 跳过评论 {moments.skipped || 0} · 原已赞 {moments.alreadyLiked || 0}</span></div>{moments.skipReason && <p className="workflow-floating-detail">{momentsLabel(moments.skipReason, "本条评论未发送")}</p>}</>}
       {!sync && <>{next && <div className="workflow-floating-next"><span>下一项</span><strong>{next.title} · {formatTaskTime(next)}</strong></div>}{!moments && <div className="workflow-floating-counts"><span>已完成 {completed} 项</span><span>未完成 {incomplete.length} 项</span></div>}{incomplete.length > 0 && <p className="workflow-floating-detail">{incomplete.length} 项未完成：{taskErrorText(incomplete[0].error || "请切回任务对应的微信账号后查看详情", incomplete[0].reasonCode, incomplete[0].reasonClassification)}</p>}</>}
       {(error || state.error || sync?.error || state.replyError) && <div className="floating-alert" role="alert">{error || state.error || sync?.error || state.replyError}</div>}

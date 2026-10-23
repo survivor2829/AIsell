@@ -2348,6 +2348,19 @@ try {
   if ($_.Exception -ne $null) {
     $exceptionType = [string]$_.Exception.GetType().FullName
   }
+  $exceptionDiagnostics = @{}
+  if ($env:XIAOXI_INTERNAL_DIAGNOSTICS -eq "1") {
+    $exceptionDiagnostics = @{ raw_exception = @{
+      type = $exceptionType
+      message = [string]$_.Exception.Message
+      error_id = [string]$_.FullyQualifiedErrorId
+      category = [string]$_.CategoryInfo.Category
+      script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+      offset_in_line = [int]$_.InvocationInfo.OffsetInLine
+      script_stack_trace = [string]$_.ScriptStackTrace
+      stack_trace = [string]$_.Exception.StackTrace
+    } }
+  }
   Write-PublishResult @{
     ok = $false
     status = $(if ($script:publishActionAttempted) { "outcome_unknown" } else { "blocked" })
@@ -2356,6 +2369,7 @@ try {
     failureKind = "powershell_exception"
     exceptionCategory = ([string]$_.CategoryInfo.Category)
     exceptionType = $exceptionType
+    diagnostics = $exceptionDiagnostics
   }
 }
 `;
@@ -2432,7 +2446,7 @@ async function runMomentsPublish(context = {}) {
       ensure: false,
       sta: true,
       timeout: 150_000,
-      diagnostics: false,
+      diagnostics: true,
       signal: context.signal
     }
   );
