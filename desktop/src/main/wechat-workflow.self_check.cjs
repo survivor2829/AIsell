@@ -21,6 +21,56 @@ function trackedMkdtemp(prefix) {
   return dir;
 }
 
+async function checkTouchCopyModes() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), 'xiaoxi-copy-mode-'));
+  const contact = { id:'copy-contact', name:'黄总', remark:'湛江港濠酒店黄总', wechatId:'copy_fixture', wechatAccountId:'copy-account' };
+  const script = '业务信息  保留空格\n优惠条款[加油]\n\n结束说明。';
+  let drafts = 0;
+  const messages = [];
+  const failures = [];
+  const touch = createTouchWorkflow({ dataDir:path.join(root,'touch'), readContacts:()=>[contact],
+    coordinator:{acquire:()=>({ok:true,lock:{owner:'test'}}),release(){}},
+    passport:{recordEvent(){},bindTrace(){},writeRunBill(){},recordFailure:(_module,_id,failure)=>failures.push(failure)},
+    client:{async draft({result}) { drafts++; return {draft:result.greeting+'，润色第一行\n润色第二行。'}; }},
+    execute:async input=>{ messages.push(input.message); return {ok:true,state:{real_send_status:'sent_verified'}}; }
+  });
+  const original = touch.prepareWorkflowTask({script,contactIds:[contact.id]});
+  assert.equal(original.aiPolish,false);
+  await touch.runWorkflowStep({id:'original',payload:original},{isEnabled:()=>true});
+  assert.equal(drafts,0);
+  assert.ok(messages[0].endsWith('，'+script));
+  assert.ok(messages[0].startsWith('黄总，'));
+  assert.throws(()=>touch.prepareWorkflowTask({script:'字'.repeat(2000),contactIds:[contact.id]}),/保护上限/u);
+  const polished = touch.prepareWorkflowTask({script,contactIds:[contact.id],aiPolish:true});
+  await touch.runWorkflowStep({id:'polished',payload:polished},{isEnabled:()=>true});
+  assert.equal(drafts,1);
+  assert.ok(messages[1].includes('\n'));
+  const taskDir = path.join(root,'touch','workflow-tasks',require('node:crypto').createHash('sha256').update('original').digest('hex'));
+  const bindingPath = path.join(taskDir,'workflow-binding.json');
+  const binding = JSON.parse(fs.readFileSync(bindingPath,'utf8'));
+  delete binding.copyMode;
+  fs.writeFileSync(bindingPath,JSON.stringify(binding));
+  const legacy = loadTaskState(taskDir);
+  legacy.status='running'; legacy.current_index=0;
+  Object.assign(legacy.results[0],{status:'generated',message:'历史 AI 草稿',retry_blocked:false,send_attempted:false});
+  saveTaskState(taskDir,legacy);
+  const blocked = await touch.runWorkflowStep({id:'original',payload:original},{isEnabled:()=>true});
+  assert.equal(blocked.status,'needs_attention');
+  assert.match(blocked.error,/历史生成文案/u);
+  assert.equal(messages.length,2,'a historical AI draft cannot be sent while claiming original mode');
+  assert.deepEqual(failures.at(-1).rawReading,{copyModeConfirmationRequired:true});
+  const controller = createWechatWorkflowController({rootDir:root,activeTouchDir:path.join(root,'touch'),autoReplyDir:path.join(root,'reply'),momentsDir:path.join(root,'moments'),autoSchedule:false,getAccount:()=>contact.wechatAccountId,
+    executors:{touch:{...touch,prepareWorkflowTask:(_id,input)=>touch.prepareWorkflowTask(input)}}});
+  try {
+    const added = await controller.addTask({type:'touch',payload:{script,contactIds:[contact.id],aiPolish:true}});
+    const saved = await controller.getTask(added.task.id);
+    assert.equal(saved.task.payload.aiPolish,true);
+    assert.equal(controller.status().tasks[0].aiPolish,true);
+    await controller.updateTask({id:added.task.id,type:'touch',payload:{...saved.task.payload,aiPolish:false}});
+    assert.equal((await controller.getTask(added.task.id)).task.payload.aiPolish,false);
+  } finally { await controller.dispose(); }
+}
+
 async function checkTouchStatusDoesNotRecoverActiveSend() {
   for (const multipart of [false, true]) {
     const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-status-race-"));
@@ -264,7 +314,7 @@ async function checkR008PassportAttachmentCount() {
   for (const [ruleId, reasonCode, expectedScreenshots] of [
     ["search-r008", "search_result_identity_unverified", 0],
     ["search-r014", "search_result_identity_unverified", 1],
-    ["search-r015", "exact_search_result_not_found", 1]
+    ["search-r015", "exact_search_result_not_found", 0]
   ]) {
   const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-r008-passport-"));
   try {
@@ -283,7 +333,7 @@ async function checkR008PassportAttachmentCount() {
         coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
         execute: async () => {
           const diagnostics = { rule_id: ruleId, candidate_set_hash: `read-${++reads}` };
-          if (ruleId === "search-r008") {
+          if (['search-r008', 'search-r015'].includes(ruleId)) {
             const file = path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
             fs.writeFileSync(file, ocrPng);
             temporaryCaptures.push(file);
@@ -542,6 +592,12 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
           diagnostics: { rule_id: ruleId, candidate_set_hash: `hash-${Math.ceil(++reads / 2)}`, search_capture_file: capture },
           state: { search_evidence: {
             rule_id: ruleId, capture_source: "untrusted_source", popup_dpi: Infinity,
+            search_query_type:'name_fallback', fallback_reason:'wechat_id_no_result',
+            search_attempts:[{search_query_type:'wechat_id',rule_id:'search-r015',text:secret,
+              ocr_observation:{ocr_boxes:[{left:1,top:2,right:3,bottom:4,text:secret}]}},
+              {search_query_type:'name_fallback',fallback_reason:'wechat_id_no_result',rule_id:ruleId,ocr_observation:{ocr_boxes:[]}}],
+            title_comparison:{expected:{length:3,sha256_16:'1234567890abcdef',text:secret},
+              titles:[{length:4,sha256_16:'abcdef1234567890',punctuation_whitespace_width_only:true,text:secret}]},
             popup_candidate_count: 2, search_columns: [62, Infinity],
             ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }],
               capture_source: "formula_fallback", ocr_boxes: [{ text: secret, left: 1, top: 2, right: 3, bottom: 4,
@@ -564,6 +620,10 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     const task = loadTaskState(taskDir);
     const evidence = task.results[2].search_evidence;
+    assert.equal(evidence.search_query_type,'name_fallback');
+    assert.equal(evidence.search_attempts[0].rule_id,'search-r015');
+    assert.equal(evidence.search_attempts[1].fallback_reason,'wechat_id_no_result');
+    assert.equal(evidence.title_comparison.titles[0].punctuation_whitespace_width_only,true);
     assert.equal(JSON.stringify(task).includes(secret), false, "task state must not retain OCR contact text");
     assert.equal(JSON.stringify(failures).includes(secret), false, "passport failures must not retain OCR contact text");
     assert.equal(JSON.stringify(circuit).includes(secret), false, "circuit diagnostics must not retain OCR contact text");
@@ -2669,6 +2729,7 @@ async function main() {
   await checkInterruptedSendRecoveryInSameProcess();
   await checkClickedAttentionPersistFailureRecovery();
   await checkR008BoundedRecovery();
+  await checkTouchCopyModes();
   await checkR008PassportAttachmentCount();
   await checkR008PartialSend();
   await checkT5FourthReviewExits();

@@ -712,6 +712,7 @@ function createWechatWorkflowController(options) {
     const touchInput = savedTouch ? {
       contactIds: savedTouch.contacts.map((contact) => String(contact.id)),
       script: savedTouch.script,
+      aiPolish: savedTouch.aiPolish === true,
       imageIds: savedTouch.imageIds || [],
       link: savedTouch.link || "",
       ...input.payload
@@ -725,7 +726,8 @@ function createWechatWorkflowController(options) {
       if (typeof executor.updateWorkflowTask !== "function") throw new Error("当前版本不支持编辑进行中的触达任务，请重新添加任务。");
       payload = await executor.updateWorkflowTask(existing.id, {
         ...saved,
-        script: String(touchInput?.script || "").trim(),
+        script: String(touchInput?.script || ""),
+        aiPolish: touchInput?.aiPolish === true,
         imageIds: touchInput?.imageIds ?? [],
         link: touchInput?.link ?? ""
       }, saved);
@@ -741,6 +743,7 @@ function createWechatWorkflowController(options) {
       progress: { done: 0, total: 1 }, occurrenceDate: localDate(now()), enrolled: false
     };
     task.progress.total = input.type === "touch" ? payload.contacts.length : input.type === "interact" ? payload.maxPosts : 1;
+    if (input.type === 'touch') task.aiPolish = payload.aiPolish === true;
     if (startedTouch) {
       task.status = "pending";
       task.progress = { ...existing.progress, total: payload.contacts.length };
@@ -949,6 +952,7 @@ function createWechatWorkflowController(options) {
       const task = findTask(id);
       const saved = readPayload(task);
       const payload = task.type === "touch" ? { script: saved.script, contactIds: saved.contacts.map((contact) => contact.id),
+        aiPolish: saved.aiPolish === true,
         imageIds: saved.imageIds || [], link: saved.link || "" }
         : task.type === "interact" ? { maxPosts: saved.maxPosts, likeEnabled: saved.likeEnabled, commentEnabled: saved.commentEnabled, commentGuidance: saved.commentGuidance }
           : { content: saved.content, sourceTaskId: task.id };

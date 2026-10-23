@@ -294,7 +294,7 @@ function checkSearchRecognitionMatrix() {
       o.visualCandidates[3].top = 130; o.visualCandidates[3].bottom = 140; o.visualCandidates[3].y = 135;
       o.uiaCandidates = [{ ...o.visualCandidates[1], name: friend125.expectedName }];
     });
-  mutationClicks("nearest heading", "if (!header) return withEvidence(reject(\"search-r014\"));",
+  mutationClicks("nearest heading", "if (!header) return withEvidence(reject(\"search-r022\"));",
     "if (!header) return withEvidence(result);", friend125, (o) => {
       o.visualCandidates[0].top = 200; o.visualCandidates[0].bottom = 214; o.visualCandidates[0].y = 207;
       o.uiaCandidates = [{ ...o.visualCandidates[1], name: friend125.expectedName }];
@@ -306,7 +306,7 @@ function checkSearchRecognitionMatrix() {
       o.visualCandidates.push({ text: `微信号：${friend.query}`, left: name.right + 2,
         right: name.right + 130, top: name.top, bottom: name.bottom, x: name.right + 66, y: name.y });
     });
-  mutationClicks("longer WeChat ID", "return longerId ? reject(\"search-r014\") : result;", "return result;", exactId,
+  mutationClicks("longer WeChat ID", "return longerId ? reject(\"search-r020\") : result;", "return result;", exactId,
     (o) => { o.visualCandidates[2].text = `微信号：${exactId.query}x`; });
   mutationClicks("missing popup fallback", "validRectangle(observation.popupBounds);",
     "validRectangle(observation.popupBounds || observation.cropBounds);", noisyFormula,
@@ -805,7 +805,7 @@ try {
   );
   assert.equal(task.total, 2);
   assert.equal(task.results[0].contact.source, "微信通讯录");
-  assert.match(fillTouchTemplate(task.script, task.results[0].contact), /^备注名，(您好|早上好|中午好|下午好|晚上好)，$/u);
+  assert.match(fillTouchTemplate(task.script, task.results[0].contact), /^(您好|早上好|中午好|下午好|晚上好)，$/u);
   assert.match(fillTouchTemplate(task.script, task.results[1].contact), /^(您好|早上好|中午好|下午好|晚上好)，$/u);
   task.status = "paused";
   task.results[0].status = "blocked";
@@ -1065,7 +1065,7 @@ try {
       contacts: workflowRecord.payload.contacts.map(identityKey),
       ...(multipart ? { imageIds, link: "" } : {})
     })).digest("hex");
-    fs.writeFileSync(path.join(workflowTaskDir, "workflow-binding.json"), JSON.stringify({ taskId: workflowRecord.id, signature: workflowSignature }), "utf8");
+    fs.writeFileSync(path.join(workflowTaskDir, "workflow-binding.json"), JSON.stringify({ taskId: workflowRecord.id, signature: workflowSignature, copyMode:'original' }), "utf8");
     if (settings.matchingExecutionState) {
       fs.writeFileSync(path.join(workflowTaskDir, "state.json"), JSON.stringify({
         task_context: { task_id: workflowCrash.id, contact_id: workflowCrash.results[0].id, current_index: 0 },

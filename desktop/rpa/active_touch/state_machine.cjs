@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("../../src/main/atomic-file.cjs");
 const { readWindowTitles } = require("./window_title_reader.cjs");
 const {
@@ -704,6 +705,14 @@ function clickSearchResultDryRun(
     searchIdentity: { query: searchQuery, expectedName: customerName }
   };
   let inputResult = openResultDriver(searchQuery, exactWindow);
+  const searchAttempts = [];
+  const rememberSearch = (result, queryType, fallbackReason = '') => {
+    const evidence = result?.searchEvidence || {};
+    searchAttempts.push({ search_query_type: queryType, fallback_reason: fallbackReason,
+      rule_id: String(evidence.rule_id || result?.diagnostics?.rule_id || ''),
+      ocr_observation: evidence.ocr_observation || null });
+  };
+  rememberSearch(inputResult, searchPlan.queryType, searchPlan.fallbackReason || '');
   let captureHandedOff = false;
   try {
   if (!inputResult?.ok && searchPlan.queryType === "wechat_id"
@@ -717,8 +726,15 @@ function clickSearchResultDryRun(
       searchFallbackReason: "wechat_id_no_result",
       searchFallbackRuleId: SEARCH_FALLBACK_RULES.noResult
     });
-    if (inputResult?.ok) inputResult.searchFallbackReason = "wechat_id_no_result";
+    rememberSearch(inputResult, 'name_fallback', 'wechat_id_no_result');
+    if (inputResult) {
+      inputResult.searchQueryType = 'name_fallback';
+      inputResult.searchFallbackReason = 'wechat_id_no_result';
+    }
   }
+  if (inputResult) inputResult.searchEvidence = { ...(inputResult.searchEvidence || {}),
+    search_query_type: inputResult.searchQueryType || searchPlan.queryType,
+    fallback_reason: inputResult.searchFallbackReason || searchPlan.fallbackReason || '', search_attempts: searchAttempts };
   if (inputResult?.ok) {
     inputResult.searchQueryType ||= searchPlan.queryType;
     inputResult.searchFallbackReason ||= searchPlan.fallbackReason || "";
@@ -750,7 +766,7 @@ function clickSearchResultDryRun(
       reason,
       String(inputResult?.error || wechatWindowBlockText(reason)),
       {
-        diagnostics: inputResult?.diagnostics || null,
+        diagnostics: { ...inputResult?.searchEvidence, ...inputResult?.diagnostics },
         safety_diagnostics: inputResult?.safety_diagnostics || null,
         landing_recovered: inputResult?.landing_recovered === true,
         poisoned_candidate: inputResult?.poisoned_candidate || null
@@ -778,6 +794,7 @@ function clickSearchResultDryRun(
   let titleReadMs = 0;
   let conversationVerifyMs = 0;
   let matchedTitle = "";
+  let observedTitles = [];
   let verifiedConversation;
   if (exactWechatIdSearch) {
     verifiedConversation = {
@@ -794,6 +811,7 @@ function clickSearchResultDryRun(
       inputResult.title,
       ...(exactWindow.pid && exactWindow.hWnd ? [] : titleReader())
     ].filter(Boolean);
+    observedTitles = titles;
     titleReadMs = Date.now() - titleReadStartedAt;
     matchedTitle = titles.find((item) => item.includes(customerName)) || "";
     const verifyStartedAt = Date.now();
@@ -815,6 +833,14 @@ function clickSearchResultDryRun(
     total_ms: Date.now() - operationStartedAt
   };
   if (!verifiedConversation.ok) {
+    const summary = (value) => ({ length: String(value || '').length,
+      sha256_16: crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0,16) });
+    const foldTitle = (value) => String(value || '').normalize('NFKC').replace(/[\p{P}\s]/gu, '');
+    inputResult.searchEvidence.title_comparison = verifiedConversation.titleComparison || { expected: summary(customerName),
+      titles: [...new Set([...observedTitles, verifiedConversation.title].filter(Boolean))].slice(0,10).map(title => ({
+        ...summary(title), exact: title === customerName,
+        punctuation_whitespace_width_only: title !== customerName && foldTitle(title) === foldTitle(customerName)
+      })) };
     const reason = verifiedConversation.reason === "contact_unavailable" ? "contact_unavailable" : "search_result_not_opened";
     const nextState = clearConversationState(state, reason, {
       search_input_done: true,
@@ -830,7 +856,8 @@ function clickSearchResultDryRun(
       "点击搜索结果 dry-run",
       nextState,
       reason,
-      reason === "contact_unavailable" ? "联系人已停用，自动跳过" : "已阻断：未打开匹配客户会话"
+      reason === "contact_unavailable" ? "联系人已停用，自动跳过" : "已阻断：未打开匹配客户会话",
+      { diagnostics: inputResult.searchEvidence }
     );
   }
   if ((exactWindow.pid && Number(verifiedConversation.pid) !== exactWindow.pid)

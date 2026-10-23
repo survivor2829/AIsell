@@ -3,6 +3,49 @@ const { spawnSync } = require("node:child_process");
 const { openWechatSearchResult, openWechatSearchResultAsync, discardSearchCapture, runPowerShell } = require("./wechat_window_driver.cjs");
 const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
 
+// Anonymous text on the four failure-package geometries (1809, 125% DPI).
+{
+  const { resolveWechatSearchResultObservation: resolve } = require('./wechat_search_result_resolver.cjs');
+  const cases = [
+    [6, 493, [128,148,327,176,10], [115,171,366,195,26], [146,224,236,238], 61.6],
+    [9, 323, [168,148,352,165,12], [138,177,342,192,20], [114,224,236,238], 61.6],
+    [16,323, [114,148,344,180,11], [140,178,314,195,16], [114,224,236,238], 61.6],
+    [18,323, [132,146,336,178,16], [123,178,298,198,13], [116,226,237,244], 63.2]
+  ];
+  const line = (text, [left,top,right,bottom]) => ({ text,left,top,right,bottom,x:(left+right)/2,y:(top+bottom)/2 });
+  for (const [index, bottom, nameBox, idBox, webBox, searchColumn] of cases) {
+    for (const noise of ['，', '5']) {
+      const query = 'a' + '1'.repeat(idBox[4] - 6);
+      const bodyLeft = 69 + 80 * 1.25;
+      const withAvatar = (text, box) => ({ ...line(noise + text, box), words: [
+        { text: noise, left: box[0], right: bodyLeft - 4 },
+        { text, left: bodyLeft, right: box[2] }
+      ] });
+      const webLeft = 69 + searchColumn * 1.25;
+      const web = { ...line('搜索网络结果', webBox), words: [...'搜索网络结果'].map((text,i) => ({ text, left:webLeft+i*14,right:webLeft+(i+1)*14 })) };
+      const observation = { ocrOk:true, uiaCandidates:[], popupDpi:120, captureSource:'popup', popupCandidateCount:1,
+        popupBounds:{left:69,top:80,right:529,bottom}, cropBounds:{left:69,top:80,right:529,bottom},
+        visualCandidates:[line('联系人',[114,104,159,118]), withAvatar('甲'.repeat(nameBox[4]-1),nameBox), withAvatar('微信号:'+query,idBox)],
+        webSearchCandidates:[web],webSearchTop:web.top };
+      const identity = { query, expectedName:'甲'.repeat(nameBox[4]-1),queryType:'wechat_id' };
+      assert.equal(resolve(observation,identity).status,'selected', `package #${index} avatar ${noise}`);
+      if (index === 16) {
+        const noWords = structuredClone(observation);
+        for (const row of noWords.visualCandidates.slice(1)) { delete row.words; row.text = row.text.slice(1); }
+        assert.equal(resolve(noWords, identity).status, 'selected', '#16 readable lines without word boxes must survive');
+        assert.equal(resolve(noWords, identity).diagnostics.avatar_unsegmented_line_count, 2);
+      }
+      for (const kind of ['network', 'duplicate', 'superstring']) {
+        const changed = structuredClone(observation);
+        if (kind === 'network') changed.visualCandidates[2].words[1].text = '网络查找微信号:'+query;
+        if (kind === 'duplicate') changed.visualCandidates.push(line('微信号:'+query,[bodyLeft,200,390,218]));
+        if (kind === 'superstring') changed.visualCandidates[2].words[1].text += '1';
+        assert.notEqual(resolve(changed,identity).status,'selected', `package #${index} must reject ${kind}`);
+      }
+    }
+  }
+}
+
 {
   const { resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
   const fixture = require("./fixtures/2026-10-13-name-only-contact-section.json");
@@ -226,12 +269,26 @@ async function checkWrongConversationTitleGate() {
         selected_customer: { ...state.selected_customer, wechatId: "wxid_fixture" } });
       let calls = 0;
       const fallback = clickSearchResultDryRun(root, () => ({ ok: false,
-        reason: "exact_search_result_not_found", diagnostics: { search_capture_file: ++calls === 1 ? first : second } }));
+        reason: "exact_search_result_not_found", diagnostics: { search_capture_file: ++calls === 1 ? first : second },
+        searchEvidence: { rule_id: calls === 1 ? 'search-r015' : 'search-r021', ocr_observation: { ocr_boxes: [{ left: calls }] } } }));
       assert.equal(calls, 2, "WeChat ID not found must fall back to a name search");
       assert.equal(fs.existsSync(first), false, "the superseded ID-search screenshot must be removed before fallback");
       assert.equal(fallback.diagnostics.search_capture_file, second);
+      assert.equal(fallback.diagnostics.search_query_type, 'name_fallback');
+      assert.equal(fallback.diagnostics.fallback_reason, 'wechat_id_no_result');
+      assert.deepEqual(fallback.diagnostics.search_attempts.map(attempt => attempt.rule_id), ['search-r015', 'search-r021']);
+      assert.deepEqual(fallback.diagnostics.search_attempts.map(attempt => attempt.ocr_observation.ocr_boxes[0].left), [1, 2]);
       discardSearchCapture(fallback);
       assert.equal(fs.existsSync(second), false, "the final screenshot owner must remove its capture");
+      saveState(root, { ...loadState(root), selected_customer: { ...state.selected_customer, name: '甲，乙', wechatId: '' } });
+      const titleFailure = clickSearchResultDryRun(root, () => ({ ok:true, title:'甲, 乙' }),
+        () => [], () => ({ ok:false, title:'甲, 乙', reason:'customer_conversation_not_found' }));
+      assert.equal(titleFailure.blocked_reason, 'search_result_not_opened');
+      const comparison = titleFailure.diagnostics.title_comparison;
+      assert.equal(comparison.expected.length, 3);
+      assert.match(comparison.expected.sha256_16, /^[a-f0-9]{16}$/u);
+      assert.equal(comparison.titles[0].punctuation_whitespace_width_only, true);
+      assert.doesNotMatch(JSON.stringify(comparison), /甲|乙/u);
     } finally { for (const file of [first, second]) { try { fs.unlinkSync(file); } catch {} } }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -239,6 +296,25 @@ async function checkWrongConversationTitleGate() {
 // Replay the generated PowerShell OCR processing, not preclassified resolver fixtures.
 // No window lookup, screenshot, keyboard input, or real click runs in this check.
 if (process.platform === "win32") {
+  const fs = require('node:fs');
+  const Module = require('node:module');
+  const driverFile = require.resolve('./wechat_window_driver.cjs');
+  const fixtureDriver = new Module(driverFile, module);
+  fixtureDriver.filename = driverFile; fixtureDriver.paths = module.paths;
+  fixtureDriver._compile(fs.readFileSync(driverFile,'utf8') + '\nmodule.exports.__titleScript = CONVERSATION_TITLE_SCRIPT;', driverFile);
+  const titleScript = fixtureDriver.exports.__titleScript;
+  const titleLoop = titleScript.slice(titleScript.indexOf('$found = $null'), titleScript.indexOf('if ($unavailable -ne $null)'));
+  const replay = `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n$expected='甲，乙'; $windowRect=@{Left=0;Top=0}; `
+    + `$script:items=@([pscustomobject]@{Current=@{Name='甲, 乙';BoundingRectangle=@{Left=300;Top=50}}}); `
+    + `$all=[pscustomobject]@{Count=1}; $all | Add-Member ScriptMethod Item {param($i) return $script:items[$i]}\n`
+    + titleLoop + '\n@{found=$found; titles=@($titleSummaries.ToArray())} | ConvertTo-Json -Compress -Depth 6';
+  const titleReplay = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(replay,'utf16le').toString('base64')],
+    {encoding:'utf8',windowsHide:true,timeout:10000});
+  assert.equal(titleReplay.status,0,titleReplay.stderr);
+  const titleEvidence = JSON.parse(titleReplay.stdout.trim().replace(/^\uFEFF/u,''));
+  assert.equal(titleEvidence.found,null,'punctuation comparison is evidence, never permission to send');
+  assert.equal(titleEvidence.titles[0].punctuation_whitespace_width_only,true);
+  assert.doesNotMatch(JSON.stringify(titleEvidence),/甲|乙/u);
   const largeOutput = runPowerShell('$data="A" * 1600000; @{ok=$true; data=$data} | ConvertTo-Json -Compress', {}, { ensure: false });
   assert.equal(largeOutput.ok, true, "a large OCR screenshot must not exhaust the PowerShell stdout buffer");
   assert.equal(largeOutput.data.length, 1600000);

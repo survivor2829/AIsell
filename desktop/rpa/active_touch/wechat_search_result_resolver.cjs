@@ -492,7 +492,7 @@ function resolveBaselineObservation(observation = {}, identity = {}) {
     const localSurface = uniqueWechatIdLocalSurface(sectionCandidates, webCandidate, query);
     if (localSurface) return { status: "selected", mode: "unique_local_wechat_id_visual", candidate: localSurface };
     if (!localVisualCandidates.length) return reject("search-r015", "exact_search_result_not_found");
-    return reject(webSearchCandidates.length ? "search-r014" : "search-r008");
+    return reject(webSearchCandidates.length ? "search-r019" : "search-r008");
   }
   const labelledAcrossCrop = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
     .filter((candidate) => labelledWechatId(candidate));
@@ -575,22 +575,39 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
       const match = normalized(line.text).match(/^微信号[:：]?(.+)$/u);
       return match && foldedWechatId(match[1]).includes(query) && foldedWechatId(match[1]).length > query.length;
     });
-    return longerId ? reject("search-r014") : result;
+    return longerId ? reject("search-r020") : result;
   };
   const popup = validRectangle(observation.popupBounds);
   const dpi = Number(observation.popupDpi);
   const searchColumns = [];
+  let avatarUnsegmentedLineCount = 0;
   const withEvidence = (decision) => ({ ...decision, diagnostics: { ...decision.diagnostics,
     capture_source: observation.captureSource === "popup" ? "popup" : "formula_crop",
     popup_bounds: popup, popup_dpi: popup && Number.isFinite(dpi) && dpi > 0 ? dpi : null,
     popup_candidate_count: Number.isFinite(observation.popupCandidateCount) ? observation.popupCandidateCount : 0,
-    search_columns: searchColumns.filter(Number.isFinite) } });
+    search_columns: searchColumns.filter(Number.isFinite), avatar_unsegmented_line_count: avatarUnsegmentedLineCount } });
   if (!popup || !Number.isFinite(dpi) || !(dpi > 0)) {
     const result = superstringVeto(observation, resolveBaselineObservation(observation, identity));
     return observation.captureSource || Number.isFinite(observation.popupCandidateCount) ? withEvidence(result) : result;
   }
 
   const column = (left) => (Number(left) - popup.left) / (dpi / 96);
+  const stripAvatar = (line) => {
+    // Preserve section/network labels: they establish the safety boundary.
+    if (isLocalContactSection(line.text) || isOtherSearchSection(line.text)
+      || normalized(line.text).endsWith(POPUP_NETWORK_LABEL) || isNetworkLookupText(line.text)) return line;
+    const inAvatar = (left) => column(left) >= 30 && column(left) <= 72;
+    if (!Array.isArray(line.words) || !line.words.length) {
+      if (inAvatar(line.left)) avatarUnsegmentedLineCount += 1;
+      return line;
+    }
+    const words = line.words.filter((word) => !inAvatar(word.left));
+    if (!words.length) return null;
+    if (words.length === line.words.length) return line;
+    const left = Math.min(...words.map(word => Number(word.left)));
+    return { ...line, words, text: words.map(word => String(word.text || '')).join(' '), left,
+      x: (left + Number(line.right)) / 2 };
+  };
   const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])];
   const visual = [];
   const web = [];
@@ -605,7 +622,10 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
         && wordIndex >= 0 && Math.abs(column(words[wordIndex].left) - 62) <= 8) {
         web.push({ ...line, text: POPUP_NETWORK_LABEL, left: words[wordIndex].left });
       } else web.push({ ...line, text: "untrusted_network_boundary" });
-    } else visual.push(line);
+    } else {
+      const cleaned = stripAvatar(line);
+      if (cleaned) visual.push(cleaned);
+    }
   }
   const classified = { ...observation, visualCandidates: visual, webSearchCandidates: web,
     webSearchTop: web.length ? Math.min(...web.map((line) => Number(line.top))) : null };
@@ -614,7 +634,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
 
   const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
   if (!headers.length) {
-    if (result.status === "selected" || (web.length && result.rule_id === "search-r014")) {
+    if (result.status === "selected" || (web.length && ["search-r014", "search-r019"].includes(result.rule_id))) {
       return withEvidence(reject("search-r015", "exact_search_result_not_found"));
     }
     return withEvidence(result);
@@ -623,7 +643,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   // Prove an exact, unique row inside the actual Contacts section, rather than
   // treating the matching name as an untrusted echo from web/chat history.
   if (["name", "name_fallback"].includes(identity.queryType)
-    && (result.status === "selected" || ["search-r008", "search-r014", "search-r015"].includes(result.rule_id))
+    && (result.status === "selected" || ["search-r008", "search-r014", "search-r015", "search-r019"].includes(result.rule_id))
     && normalized(identity.query).length >= 2
     && normalized(identity.query) === normalized(identity.expectedName)
     && web.length === 1 && web[0].text === POPUP_NETWORK_LABEL) {
@@ -634,24 +654,24 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
       && Number(line.top) >= Number(firstHeader.bottom) && Number(line.bottom) <= end
       && column(line.left) > 60 && normalized(line.text) === normalized(identity.expectedName)));
     if (rows.length === 1) result = { status: "selected", mode: "exact_name_contact_section_visual", candidate: rows[0] };
-    else return withEvidence(reject(rows.length ? "search-r014" : "search-r015",
+    else return withEvidence(reject(rows.length ? "search-r021" : "search-r015",
       rows.length ? "search_result_identity_unverified" : "exact_search_result_not_found"));
   }
   if (result.status !== "selected") return withEvidence(result);
   const candidate = result.candidate;
   const header = headers.filter((line) => Number(line.bottom) <= Number(candidate.top) + 2)
     .sort((left, right) => Number(right.top) - Number(left.top))[0];
-  if (!header) return withEvidence(reject("search-r014"));
+  if (!header) return withEvidence(reject("search-r022"));
   if (visual.some((line) => isOtherSearchSection(line.text)
     && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= Number(candidate.top) + 2)) {
-    return withEvidence(reject("search-r014"));
+    return withEvidence(reject("search-r023"));
   }
   const sectionEnd = Math.min(classified.webSearchTop ?? Infinity,
     ...visual.filter((line) => isOtherSearchSection(line.text) && Number(line.top) >= Number(header.bottom) - 2)
       .map((line) => Number(line.top)));
   if ([...visual, ...mergeVisualLines(visual.filter((line) => column(line.left) > 60))].some((line) => isUnsafeVisualText(line.text)
     && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= sectionEnd)) {
-    return withEvidence(reject("search-r014"));
+    return withEvidence(reject("search-r024"));
   }
   return withEvidence(superstringVeto(classified, result));
 }

@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { cleanupStaleSearchCaptures } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
-const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
+const { generateFixedScriptFallback, generatePersonalizedDraft, validateTouchMessage, fillRespectfulTemplate } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
@@ -86,8 +86,21 @@ function resumableFreshEdit(task, multipart) {
     && current?.send_attempted === false);
 }
 
-function finiteSearchEvidence(diagnostics = {}) {
+function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
   const evidence = {};
+  if (['wechat_id', 'name', 'name_fallback'].includes(diagnostics.search_query_type)) evidence.search_query_type = diagnostics.search_query_type;
+  if (['', 'wechat_id_empty', 'wechat_id_no_result', 'wechat_id_invalid_placeholder'].includes(diagnostics.fallback_reason)) evidence.fallback_reason = diagnostics.fallback_reason;
+  if (includeAttempts && Array.isArray(diagnostics.search_attempts)) evidence.search_attempts = diagnostics.search_attempts.slice(0,2).map(attempt => ({
+    ...finiteSearchEvidence(attempt, false), rule_id: /^search-r\d+$/u.test(attempt?.rule_id) ? attempt.rule_id : ''
+  }));
+  const comparison = diagnostics.title_comparison;
+  if (comparison && typeof comparison === 'object') {
+    const summary = value => ({ length: Number.isInteger(value?.length) && value.length >= 0 ? value.length : 0,
+      sha256_16: /^[a-f0-9]{16}$/u.test(value?.sha256_16) ? value.sha256_16 : '' });
+    evidence.title_comparison = { expected: summary(comparison.expected),
+      titles: (Array.isArray(comparison.titles) ? comparison.titles : []).slice(0,10).map(title => ({ ...summary(title),
+        exact: title.exact === true, punctuation_whitespace_width_only: title.punctuation_whitespace_width_only === true })) };
+  }
   if (["popup", "formula_fallback", "formula_crop"].includes(diagnostics.capture_source)) {
     evidence.capture_source = diagnostics.capture_source === "formula_crop" ? "formula_fallback" : diagnostics.capture_source;
   }
@@ -98,6 +111,9 @@ function finiteSearchEvidence(diagnostics = {}) {
     if (Object.keys(bounds).length) evidence[key] = bounds;
   }
   if (Number.isFinite(diagnostics.popup_dpi)) evidence.popup_dpi = diagnostics.popup_dpi;
+  if (Number.isInteger(diagnostics.avatar_unsegmented_line_count) && diagnostics.avatar_unsegmented_line_count >= 0) {
+    evidence.avatar_unsegmented_line_count = diagnostics.avatar_unsegmented_line_count;
+  }
   if (Array.isArray(diagnostics.search_columns)) evidence.search_columns = diagnostics.search_columns.filter(Number.isFinite);
   if (Number.isFinite(diagnostics.popup_candidate_count)) evidence.popup_candidate_count = diagnostics.popup_candidate_count;
   const observed = diagnostics.ocr_observation;
@@ -172,8 +188,8 @@ function createTouchWorkflow(options = {}) {
   }
 
   function prepareWorkflowTask(input = {}) {
-    const script = String(input.script || "").trim();
-    if (!script) throw new Error("请填写触达话术");
+    const script = String(input.script || "");
+    if (!script.trim()) throw new Error("请填写触达话术");
     const link = normalizeTouchLink(input.link);
     const imageIds = options.mediaStore ? options.mediaStore.validateIds(input.imageIds || []) : [];
     if (!options.mediaStore && input.imageIds?.length) throw new Error("图片服务未连接，请重新打开程序。");
@@ -187,12 +203,14 @@ function createTouchWorkflow(options = {}) {
     const classification = classifyContacts(contacts);
     const eligible = classification.eligible.filter((contact) => requested.has(String(contact.id)));
     if (!eligible.length) throw new Error("所选联系人暂无可安全触达的对象，请检查联系人资料");
+    for (const contact of eligible) validateTouchMessage(fillRespectfulTemplate(script, contact));
     const snapshot = createTask(script, contacts, now().toISOString(), {
       executionMode: "real_send",
       classification: { ...classification, eligible }
     });
     return {
       script,
+      aiPolish: input.aiPolish === true,
       ...(imageIds.length || link ? { imageIds, link } : {}),
       contacts: snapshot.results.map((result) => result.contact),
       excluded: classification.excluded.filter((entry) => requested.has(String(entry.contact.id))),
@@ -204,7 +222,7 @@ function createTouchWorkflow(options = {}) {
     const id = String(taskRecord?.id || "").trim();
     const payload = taskRecord?.payload;
     const contacts = Array.isArray(payload?.contacts) ? payload.contacts : [];
-    const script = String(payload?.script || "").trim();
+    const script = String(payload?.script || "");
     const enabled = () => typeof context.isEnabled === "function" && context.isEnabled() === true;
     const fallback = { done: Math.max(0, Number(taskRecord?.progress?.done) || 0), total: contacts.length };
     if (!id || !contacts.length || !script) return { status: "needs_attention", progress: fallback, reasonCode: TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete, error: "触达任务资料不完整，请重新添加任务" };
@@ -221,8 +239,10 @@ function createTouchWorkflow(options = {}) {
     let imageIds = Array.isArray(payload?.imageIds) ? payload.imageIds : [];
     let link = String(payload?.link || "");
     let multipart = imageIds.length > 0 || Boolean(link);
-    const signature = workflowSignature({ script, contacts, imageIds, link });
+    const aiPolish = payload?.aiPolish === true;
+    const signature = workflowSignature({ script, contacts, imageIds, link, aiPolish });
     let searchCaptureBytes = null;
+    let legacyCopyMode = false;
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
     const response = (status, extra = {}) => {
@@ -241,7 +261,7 @@ function createTouchWorkflow(options = {}) {
             stage: "workflow_step", reasonCode: reasonCode || "touch_workflow_failure_reason_missing", ruleId,
             traceId: current.last_trace_id || "", rawReading: extra.result || current || extra,
             expected: { status: "sent_verified", progress: progress() },
-            ...(/^search-r\d+$/u.test(ruleId) && searchCaptureBytes ? { screenshotBytes: searchCaptureBytes } : {})
+            ...(/^search-r\d+$/u.test(ruleId) && (searchCaptureBytes || ruleId === 'search-r015') ? { screenshotBytes: searchCaptureBytes } : {})
           });
         }
       }
@@ -267,6 +287,7 @@ function createTouchWorkflow(options = {}) {
     try {
       if (fs.existsSync(bindingFile)) {
         const binding = JSON.parse(fs.readFileSync(bindingFile, "utf8"));
+        legacyCopyMode = !binding.copyMode;
         if (binding.taskId !== id || binding.signature !== signature) {
           return response("needs_attention", { error: "任务内容与已启动的冻结记录不一致，请添加新任务" });
         }
@@ -285,7 +306,7 @@ function createTouchWorkflow(options = {}) {
         task.id = id;
         task = authorizeTask(task, now().toISOString());
         persist();
-        writeJsonAtomic(bindingFile, { taskId: id, signature });
+        writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: aiPolish ? 'polish' : 'original' });
         recoveredTaskIds.add(id);
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
@@ -323,6 +344,12 @@ function createTouchWorkflow(options = {}) {
       if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current, multipart)) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
       }
+      if (legacyCopyMode) {
+        if (task.results.slice(task.current_index).some(row => row.message && !COMPLETED_ROW_STATES.has(row.status))) {
+          return attention('旧任务含历史生成文案，请暂停并编辑任务，确认文案模式后保存再继续；已发送和结果不明的内容不会重发。', { copyModeConfirmationRequired: true }, TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete);
+        }
+        writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: aiPolish ? 'polish' : 'original' });
+      }
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
         // Propagate the persisted send interval to the unified scheduler.  Without
         // this it immediately re-enters this branch every poll and starves reply
@@ -352,10 +379,11 @@ function createTouchWorkflow(options = {}) {
       if (!current.message) {
         let draft;
         try {
-          draft = await generatePersonalizedDraft({ client: options.client, task, result: current });
+          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish }, result: current });
         } catch (error) {
-          draft = generateFixedScriptFallback({ task, result: current, error });
-          if (!draft) return attention("触达文案生成失败，请修改话术后重新添加任务", null, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed);
+          try { draft = generateFixedScriptFallback({ task: { ...task, script }, result: current, error }); }
+          catch (fallbackError) { return attention(fallbackError.message, { deliveryStatus:'not_attempted' }, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed); }
+          if (!draft) return attention(error.message || "触达文案生成失败，请修改话术后重新添加任务", { deliveryStatus:'not_attempted' }, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed);
         }
         current.message = draft.message;
         current.ai_status = draft.usedAi ? "generated" : "fixed_script";
@@ -537,7 +565,7 @@ function createTouchWorkflow(options = {}) {
           && preSendPolicy.reasonCode !== "wechat_search_network_lookup_misclick"
           && (!TOUCH_PRE_SEND_STOP_REASONS.has(preSendPolicy.reasonCode) || pendingPause);
         const warnPreSend = confirmedPreSend
-          && (identityReason === "search_result_identity_unverified" || boundedPreSendFailure);
+          && (Boolean(identityReason) || boundedPreSendFailure);
         sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason,
           ...(warnPreSend ? { level: "warn" } : {}) });
       } catch (error) {
@@ -657,10 +685,10 @@ function createTouchWorkflow(options = {}) {
             task.completed_at = now().toISOString();
           }
           persist();
-          if (reasonCode === "search_result_identity_unverified") passport?.recordFailure("active_touch", passportTaskId, {
+          passport?.recordFailure("active_touch", passportTaskId, {
             stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
             rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" },
-            ...(/^search-r\d+$/u.test(ruleId) && searchCaptureBytes ? { screenshotBytes: searchCaptureBytes } : {})
+            ...(/^search-r\d+$/u.test(ruleId) && (searchCaptureBytes || ruleId === 'search-r015') ? { screenshotBytes: searchCaptureBytes } : {})
           });
           return response(task.status === "completed" ? "completed" : "pending", {
             result: { deliveryStatus, skipped: true, reasonCode }
@@ -899,8 +927,10 @@ function createTouchWorkflow(options = {}) {
     if (JSON.stringify(expectedIds) !== JSON.stringify(nextContacts.map((contact) => String(contact?.id || "")))) {
       throw new Error("任务已经开始，不能修改已冻结的联系人范围。");
     }
-    const script = String(payload.script || "").trim();
-    if (!script) throw new Error("请填写触达话术");
+    const script = String(payload.script || "");
+    if (!script.trim()) throw new Error("请填写触达话术");
+    for (const result of task.results.slice(task.current_index)) validateTouchMessage(fillRespectfulTemplate(script, result.contact));
+    const aiPolish = payload.aiPolish === true;
     const imageIds = options.mediaStore ? options.mediaStore.validateIds(payload.imageIds || []) : [];
     if (!options.mediaStore && payload.imageIds?.length) throw new Error("图片服务未连接，请重新打开程序。");
     const link = normalizeTouchLink(payload.link);
@@ -955,8 +985,8 @@ function createTouchWorkflow(options = {}) {
     task.snapshot_hash = taskSnapshotHash(task);
     task = authorizeTask(task, now().toISOString());
     saveTaskState(taskDir, task);
-    writeJsonAtomic(bindingFile, { taskId, signature: workflowSignature({ script, contacts: task.results.map((result) => result.contact), imageIds, link }) });
-    return { script, ...(imageIds.length || link ? { imageIds, link } : {}), contacts: task.results.map((result) => result.contact), preparedAt: now().toISOString() };
+    writeJsonAtomic(bindingFile, { taskId, signature: workflowSignature({ script, contacts: task.results.map((result) => result.contact), imageIds, link, aiPolish }), copyMode: aiPolish ? 'polish' : 'original' });
+    return { script, aiPolish, ...(imageIds.length || link ? { imageIds, link } : {}), contacts: task.results.map((result) => result.contact), preparedAt: now().toISOString() };
   }
   function hasStartedWorkflowTask(id) {
     const taskDir = workflowDirectory(String(id || "").trim());
@@ -1002,10 +1032,11 @@ function createTouchWorkflow(options = {}) {
     importImages: (paths) => options.mediaStore.importFiles(paths) };
 }
 
-function workflowSignature({ script, contacts, imageIds = [], link = "" }) {
+function workflowSignature({ script, contacts, imageIds = [], link = "", aiPolish = false }) {
   const multipart = imageIds.length > 0 || Boolean(link);
   return crypto.createHash("sha256").update(JSON.stringify({
-    script: String(script || "").trim(),
+    script: String(script || ""),
+    ...(aiPolish === true ? { aiPolish: true } : {}),
     contacts: contacts.map(identityKey),
     ...(multipart ? { imageIds, link } : {})
   })).digest("hex");

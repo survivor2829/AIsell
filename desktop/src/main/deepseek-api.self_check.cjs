@@ -164,10 +164,10 @@ async function main() {
   assert.equal(fs.existsSync(unreadableKeyFile), true, "a key encrypted for another Windows user must not be deleted automatically");
   const messages = prompt({ salutation: "张总", script: "{称呼}，您好，我们这边有清洁设备短租方案。" });
   assert.match(messages[0].content, /完整微信消息/);
-  assert.match(messages[0].content, /50至90个汉字/);
-  assert.match(messages[0].content, /自然加入2至3个/);
-  assert.match(messages[0].content, /最少2个/);
-  assert.match(messages[0].content, /不得连续堆叠/);
+  assert.match(messages[0].content, /保留全部业务信息/);
+  assert.match(messages[0].content, /原文分行/);
+  assert.match(messages[0].content, /不得新增问句/);
+  assert.match(messages[0].content, /不得额外添加/);
   assert.equal(messages[1].content, "首句问候语：张总，您好\n基础话术：我们这边有清洁设备短租方案。");
   assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "首句问候语：您好\n基础话术：欢迎了解。");
   assert.match(salutationPrompt({ remark: "老王", nickname: "设备采购" })[0].content, /姓名、花名、昵称/);

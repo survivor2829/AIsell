@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { sanitizeAiMessage } = require("./ai-draft.cjs");
+const { sanitizeAiMessage, validateTouchMessage } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { writeFileAtomic } = require("./atomic-file.cjs");
 const {
@@ -96,15 +96,15 @@ function prompt({ salutation, greeting, script }) {
   return [
     {
       role: "system",
-      content: `你是微信一对一客户触达文案助手。请根据提供的基础话术，改写成一条可以直接发送给客户的完整微信消息。
+      content: `你是微信一对一客户触达文案助手。用户已主动开启 AI 润色，请在原文基础上润色成一条可直接发送的完整微信消息。
 要求：
 1. 首句必须原样使用给定问候语。只有备注或昵称明确带职务时才使用尊称，不得直呼客户全名或猜测性别和职务。
 2. 基础话术里的旧问候不要重复写；没有明确尊称时直接使用给定时间问候语或“您好”。
-3. 保留基础话术中的核心业务、优惠信息和询问目的。
+3. 保留全部业务信息、优惠、数字、表情码（如[加油]）和原文分行，不合并段落、不删减信息。
 4. 不得增加基础话术中没有提供的价格、承诺、活动或客户信息。
 5. 表达自然、简洁、有礼貌，不要像群发广告，不要过度营销。
-6. 控制在50至90个汉字，以一个容易回复的问题结尾。
-7. 自然加入2至3个与语义相关的Emoji，最少2个；优先放在问候后或业务亮点处，不得连续堆叠，不使用夸张、催促类表情。
+6. 不得新增问句，不得强制问句结尾，不设50至90字的压缩目标。
+7. 保留原有表情，不得额外添加 Emoji 或微信表情码。
 8. 只输出最终文案，不解释、不编号、不加引号，不得输出称呼以外的联系人隐私。`
     },
     { role: "user", content: `首句问候语：${opening}\n基础话术：${baseScript}` }
@@ -362,11 +362,15 @@ function sanitizeAutoReplySalutation(value) {
     .trim();
 }
 
-function parsePlainPayload(payload, unavailableMessage) {
+function parsePlainPayload(payload, unavailableMessage, touchDraft = false) {
   const { finishReason, content } = completionChoice(payload);
   if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 返回的文案被截断", "response_truncated");
   if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次文案被内容策略拦截", "content_filtered");
   if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次文案未完整结束", "response_incomplete");
+  if (touchDraft) {
+    try { return validateTouchMessage(String(content || '').trim()); }
+    catch { throw new DeepSeekApiError('AI_RESPONSE_LENGTH_INVALID', 'DeepSeek 返回的触达文案为空或超过单条保护上限', 'content_length_invalid'); }
+  }
   return validateUsableMessage(content, {
     emptyCode: "AI_RESPONSE_EMPTY",
     emptyMessage: unavailableMessage,
@@ -499,14 +503,15 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
     const salutation = result?.salutation?.type === "title" ? result.salutation.value : "";
     const messages = prompt({ salutation, greeting: result?.greeting, script: String(task?.script || "").trim() });
     let lastError;
-    for (const maxTokens of [300, 600]) {
+    const initialTokens = Math.min(4096, Math.max(300, String(task?.script || '').length * 3 + 100));
+    for (const maxTokens of [initialTokens, Math.min(8192, initialTokens * 2)]) {
       try {
         const payload = await request({ key, messages, maxTokens, disableThinking: true });
-        return { draft: parsePlainPayload(payload, "DeepSeek 未返回可用文案。") };
+        return { draft: parsePlainPayload(payload, "DeepSeek 未返回可用文案。", true) };
       } catch (error) {
         lastError = error;
         const recoverable = RECOVERABLE_OUTPUT_FAILURES.has(String(error?.code || ""));
-        if (!recoverable || maxTokens === 600) throw error;
+        if (!recoverable || maxTokens === Math.min(8192, initialTokens * 2)) throw error;
       }
     }
     throw lastError || new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案。");

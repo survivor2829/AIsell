@@ -6,6 +6,7 @@ const {
 
 async function main() {
   const strictTitles = [
+    ["湛江港濠酒店黄总", "黄总"],
     ["陈东海", "陈总"], ["张三", "张总"], ["刘国强总", "刘总"], ["王建国经理", "王经理"], ["欧阳娜娜", "欧阳总"], ["万科物业-陈东海", "陈总"],
     ["王总", "王总"], ["李经理", "李经理"], ["曾总", "曾总"], ["王总经理", "王总"],
     ["王总13800138000", "王总"], ["王总 138 0013 8000", "王总"],
@@ -51,8 +52,25 @@ async function main() {
   }
   assert.equal(fillRespectfulTemplate("给您介绍设备。", { remark: "陈东海" }, new Date(2026, 9, 8, 9)), "陈总，早上好，给您介绍设备。");
   const morning = new Date(2026, 8, 23, 8);
-  assert.equal(greetingForContact({ remark: 'A测试客户' }, morning), 'A测试客户，早上好');
-  assert.equal(greetingForContact({ remark: '星辰客户经理炎燃19946167505' }, morning), '星辰客户经理炎燃，早上好');
+  assert.equal(greetingForContact({ remark: 'A测试客户' }, morning), '早上好');
+  assert.equal(greetingForContact({ remark: '星辰客户经理炎燃19946167505' }, morning), '早上好');
+  for (const remark of ['江门博雍汇灿总', '深圳客户追发票的']) {
+    assert.equal(greetingForContact({ remark }, morning), '早上好');
+  }
+  const body = '第一行业务信息  保留双空格\n第二行优惠[加油]\n\n第三行说明。';
+  assert.equal(fillRespectfulTemplate('感谢{称呼}支持\n[加油]', { remark:'黄总' }, morning), '黄总，早上好，感谢黄总支持\n[加油]');
+  assert.equal(fillRespectfulTemplate('感谢{称呼}支持', {}, morning), '早上好，感谢支持');
+  assert.equal(fillRespectfulTemplate('{称呼}，您好，' + body, { remark: '湛江港濠酒店黄总' }, new Date(2026, 9, 22, 15)),
+    '黄总，下午好，' + body);
+  for (const opening of ['黄总，早上好！', '{称呼}\n下午好！']) {
+    assert.equal(fillRespectfulTemplate(opening + '\n' + body, { remark:'湛江港濠酒店黄总' }, new Date(2026,9,22,15)),
+      '黄总，下午好，\n' + body);
+  }
+  const original = await generatePersonalizedDraft({ client: { draft() { throw new Error('原文模式不应调用 AI'); } },
+    task: { script: body }, result: { contact: { remark: '黄总' } } });
+  assert.equal(original.message, `${greetingForContact({ remark: '黄总' })}，${body}`);
+  assert.equal(original.usedAi, false);
+  assert.ok(generateFixedScriptFallback({ task: { script: '正文\n'.repeat(150) }, result: { contact: {} } }).message.includes('\n'));
   assert.equal(greetingForContact({ remark: 'wxid_customer' }, morning), '早上好');
   assert.equal(greetingForContact({ remark: '13800138000' }, morning), '早上好');
   assert.equal(greetingForContact({ remark: "张总" }, morning), "张总，早上好");
@@ -75,12 +93,12 @@ async function main() {
 
   const valid = await generatePersonalizedDraft({
     client: { async draft({ result }) { return { draft: `${result.greeting}，想和您沟通一下设备需求。` }; } },
-    task: { script: "{称呼}，您好，想和您沟通一下设备需求。" }, result: { contact }
+    task: { script: "{称呼}，您好，想和您沟通一下设备需求。", aiPolish: true }, result: { contact }
   });
   assert.equal(valid.message.startsWith(greetingForContact(contact)), true);
   await assert.rejects(() => generatePersonalizedDraft({
     client: { async draft() { return { draft: "黄佳佳，您好，想和您沟通一下设备需求。" }; } },
-    task: { script: "{称呼}，您好，想和您沟通一下设备需求。" },
+    task: { script: "{称呼}，您好，想和您沟通一下设备需求。", aiPolish: true },
     result: { contact: { name: "黄佳佳" } }
   }), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.equal(generateFixedScriptFallback({ task: { script: "" } }), null);
