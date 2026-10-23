@@ -99,11 +99,8 @@ const topLevelCatchSource = flowSource.slice(flowSource.lastIndexOf("} catch {")
 assert.match(topLevelCatchSource, /failureKind = "powershell_exception"/u);
 assert.match(topLevelCatchSource, /exceptionCategory = \(\[string\]\$_\.CategoryInfo\.Category\)/u);
 assert.match(topLevelCatchSource, /exceptionType =/u);
-assert.doesNotMatch(
-  topLevelCatchSource,
-  /Exception\.Message|StackTrace|InvocationInfo|ScriptStackTrace/u,
-  "publish diagnostics must retain only code-like exception breadcrumbs"
-);
+assert.match(topLevelCatchSource, /if \(\$env:XIAOXI_INTERNAL_DIAGNOSTICS -eq "1"\) \{[\s\S]*raw_exception/u,
+  "raw exception details must require the internal diagnostic profile");
 const topLevelCatchProbe = spawnSync("powershell.exe", [
   "-NoProfile",
   "-STA",

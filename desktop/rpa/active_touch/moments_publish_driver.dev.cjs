@@ -2348,15 +2348,9 @@ try {
   if ($_.Exception -ne $null) {
     $exceptionType = [string]$_.Exception.GetType().FullName
   }
-  Write-PublishResult @{
-    ok = $false
-    status = $(if ($script:publishActionAttempted) { "outcome_unknown" } else { "blocked" })
-    reason = $(if ($script:publishActionAttempted) { "moments_publish_failed_after_click" } else { "moments_publish_driver_failed" })
-    verified = $false
-    failureKind = "powershell_exception"
-    exceptionCategory = ([string]$_.CategoryInfo.Category)
-    exceptionType = $exceptionType
-    diagnostics = @{ raw_exception = @{
+  $exceptionDiagnostics = @{}
+  if ($env:XIAOXI_INTERNAL_DIAGNOSTICS -eq "1") {
+    $exceptionDiagnostics = @{ raw_exception = @{
       type = $exceptionType
       message = [string]$_.Exception.Message
       error_id = [string]$_.FullyQualifiedErrorId
@@ -2366,6 +2360,16 @@ try {
       script_stack_trace = [string]$_.ScriptStackTrace
       stack_trace = [string]$_.Exception.StackTrace
     } }
+  }
+  Write-PublishResult @{
+    ok = $false
+    status = $(if ($script:publishActionAttempted) { "outcome_unknown" } else { "blocked" })
+    reason = $(if ($script:publishActionAttempted) { "moments_publish_failed_after_click" } else { "moments_publish_driver_failed" })
+    verified = $false
+    failureKind = "powershell_exception"
+    exceptionCategory = ([string]$_.CategoryInfo.Category)
+    exceptionType = $exceptionType
+    diagnostics = $exceptionDiagnostics
   }
 }
 `;

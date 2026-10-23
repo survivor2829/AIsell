@@ -923,7 +923,7 @@ function createMomentsPublishController(options = {}) {
       fingerprint: state.fingerprint,
       reason: state.last_reason,
       ...breadcrumb,
-      raw_result: rawBreadcrumb,
+      ...(logger.internalEnabled === true ? { raw_result: rawBreadcrumb } : {}),
       ...(buttonSearch.length > 0 ? { button_search: buttonSearch } : {})
     }, "warn");
     return { ok: false, reason: state.last_reason, actionAttempted: false, state: snapshot() };
@@ -958,7 +958,7 @@ function createMomentsPublishController(options = {}) {
       fingerprint,
       reason: state.last_reason,
       ...breadcrumb,
-      raw_result: rawBreadcrumb,
+      ...(logger.internalEnabled === true ? { raw_result: rawBreadcrumb } : {}),
       ...verification
     }, "warn");
     return { ok: false, reason: state.last_reason, actionAttempted: true, state: snapshot() };
