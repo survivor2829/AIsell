@@ -2,12 +2,12 @@ const TOKEN_FIELDS = ['rule_id', 'evidence_id', 'capture_status', 'redaction_mod
   'context_exception_type', 'context_exception_code', 'capture_exception_type',
   'input_read_exception_type', 'input_read_exception_id', 'input_read_exception_hresult', 'input_read_exception_category',
   'driver_stage', 'driver_error_id', 'driver_exception_type', 'driver_exception_hresult', 'clipboard_operation'];
-const IMAGE_STAGES = new Set(['sentinel_write', 'image_load', 'clipboard_bitmap', 'paste', 'read_back', 'preview_verification', 'click_send', 'post_confirm']);
+const IMAGE_STAGES = new Set(['existing_draft_clear', 'image_load', 'clipboard_bitmap', 'paste', 'preview_verification', 'click_send', 'post_confirm']);
 function sanitizeImageObservation(value = {}) {
   const result = {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
-  if (['bitmap', 'file_drop', 'text', 'other', 'empty'].includes(value.clipboard_format_kind)) result.clipboard_format_kind = value.clipboard_format_kind;
-  if (typeof value.clipboard_sequence_changed === 'boolean') result.clipboard_sequence_changed = value.clipboard_sequence_changed;
+  if (['none', 'bitmap', 'file_drop'].includes(value.paste_method)) result.paste_method = value.paste_method;
+  if (typeof value.send_button_color === 'string' && /^\d{1,3},\d{1,3},\d{1,3}$/.test(value.send_button_color)) result.send_button_color = value.send_button_color;
   if (['verified', 'fallback'].includes(value.input_point_source)) result.input_point_source = value.input_point_source;
   for (const key of ['input_x_ratio', 'input_y_ratio']) {
     if (Number.isFinite(value[key]) && value[key] > 0 && value[key] < 1) result[key] = value[key];

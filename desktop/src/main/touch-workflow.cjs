@@ -646,7 +646,7 @@ function createTouchWorkflow(options = {}) {
         if (reasonCode) current.search_evidence = ruleId === "search-r008"
           ? { ...finiteSearchEvidence(searchDiagnostics), rule_id: ruleId, candidate_set_hash: candidateSetHash, fingerprint }
           : { ...finiteSearchEvidence(searchDiagnostics), ...(ruleId ? { rule_id: ruleId } : {}), fingerprint };
-        if (["image_send_pre_click_timeout", "image_draft_format_unavailable"].includes(failureReason)
+        if (["image_send_pre_click_timeout", "image_paste_not_accepted"].includes(failureReason)
           && result?.pre_send_retry_exhausted === true) {
           return preSendSkip(failureReason, String(result.error || "图片发送前检查仍未通过") + "，已跳过当前联系人");
         }
