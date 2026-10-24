@@ -43,6 +43,7 @@ const checks = [
   "src/main/viral-ranking.self_check.cjs",
   "src/main/viral-scout.self_check.cjs",
   "src/main/narration-originality.self_check.cjs",
+  "src/main/bigtype-cover.self_check.cjs",
   "src/main/digital-human-audio.self_check.cjs",
   "src/main/voice-clone.self_check.cjs",
   "src/main/keyword-acquisition.self_check.cjs",
