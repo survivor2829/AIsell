@@ -37,14 +37,13 @@ try {
   if ($dpi -lt 72) { $dpi = 96 }
   $scale = $dpi / 96.0
   $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
-  $yRatio = 0.84
-  if ([double]::TryParse([string]$env:XIAOXI_INPUT_Y_RATIO, [ref]$null)) { $yRatio = [double]$env:XIAOXI_INPUT_Y_RATIO }
-  if ($yRatio -lt 0.5 -or $yRatio -gt 0.97) { $yRatio = 0.84 }
-  # Chat body only: right of the session list, above the composer toolbar.
+  # Chat body only: right of the session list, and the band just above the
+  # composer, whose height is fixed (~150 px at 96 DPI) whatever the window
+  # size. On a real 1120x760 window the notice sat 168 px above the bottom.
   $left = [int]($rect.Left + [Math]::Max(240 * $scale, $width * 0.28))
   $right = [int]($rect.Right - 12 * $scale)
-  $bottom = [int]($rect.Top + $height * $yRatio - 64 * $scale)
-  $top = [int]([Math]::Max($rect.Top + 80 * $scale, $bottom - 220 * $scale))
+  $bottom = [int]($rect.Bottom - 130 * $scale)
+  $top = [int]([Math]::Max($rect.Top + 80 * $scale, $rect.Bottom - 340 * $scale))
   if ($right - $left -lt 160 -or $bottom - $top -lt 40) { Write-NoticeResult @{ ok = $false; reason = "delivery_notice_region_invalid" } }
   Add-Type -AssemblyName System.Drawing
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -108,8 +107,7 @@ async function detectWechatDeliveryNoticeAsync(context = {}, run = runPowerShell
   if (mentionsNotice(context.message)) return { ok: false, reason: "delivery_notice_message_ambiguous" };
   const result = await run(WECHAT_DELIVERY_NOTICE_SCRIPT, {
     XIAOXI_EXPECTED_PID: String(pid),
-    XIAOXI_EXPECTED_HWND: hWnd,
-    XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? "")
+    XIAOXI_EXPECTED_HWND: hWnd
   }, { ensure: false, timeout: 12_000 });
   if (result?.ok !== true) return { ok: false, reason: String(result?.reason || "delivery_notice_unreadable") };
   return { ok: true, undelivered: result.undelivered === true };
