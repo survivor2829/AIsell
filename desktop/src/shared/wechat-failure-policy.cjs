@@ -78,6 +78,17 @@ const workflowPolicies = Object.freeze({
   wechat_operation_failed: { classification: "blocker", attentionScope: "global" },
   image_send_pre_click_timeout: { classification: "recoverable", attentionScope: "task" },
   wechat_id_name_conflict: { classification: "blocker", attentionScope: "task" },
+  wechat_account_identity_missing: { classification: "blocker", attentionScope: "global" },
+  // The message was sent but the contact no longer has the user as a friend.
+  recipient_not_friend: { classification: "blocker", attentionScope: "task" },
+  // An unreadable undelivered-notice check keeps the verified send as it is.
+  delivery_notice_window_unknown: { classification: "environment", attentionScope: "task" },
+  delivery_notice_message_ambiguous: { classification: "environment", attentionScope: "task" },
+  delivery_notice_window_changed: { classification: "environment", attentionScope: "task" },
+  delivery_notice_not_foreground: { classification: "environment", attentionScope: "task" },
+  delivery_notice_region_invalid: { classification: "environment", attentionScope: "task" },
+  delivery_notice_ocr_unavailable: { classification: "environment", attentionScope: "task" },
+  delivery_notice_unreadable: { classification: "environment", attentionScope: "task" },
   wechat_id_no_result: { classification: "recoverable", attentionScope: "task" },
   wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" },
   auto_reply_start_failed: { classification: "blocker", attentionScope: "global" },
