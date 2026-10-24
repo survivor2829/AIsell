@@ -57,11 +57,12 @@ try {
   const originalCommit = "1".repeat(40);
   const releaseCommit = "2".repeat(40);
   let builds = 0;
-  function run(label, commit = originalCommit) {
+  function run(label, commit = originalCommit, options = {}) {
     const destination = path.join(root, label);
     const sourceHash = productBuilder.productDetailSourceTreeSha256(paths);
     const result = cachedRuntime({
-      cacheRoot, kind: "product-detail", fingerprint: digest({ sourceHash }), buildCommit: commit, destination,
+      cacheRoot: options.cacheRoot || cacheRoot, fallbackCacheRoots: options.fallbackCacheRoots,
+      kind: "product-detail", fingerprint: digest({ sourceHash }), buildCommit: commit, destination,
       artifacts: ["product-detail-runtime", "product-detail-runtime.manifest.json"],
       resolve: (buildRoot) => product.resolveProductDetailBuild(desktopDir, { buildRoot }),
       sourceOf: (value) => value.manifest.desktopSource,
@@ -94,9 +95,35 @@ try {
   const cachedOutput = path.join(cacheRoot, "product-detail", digest({ sourceHash: productBuilder.productDetailSourceTreeSha256(paths) }));
   const cachedGeneration = path.join(cachedOutput, fs.readdirSync(cachedOutput)[0]);
   assert.equal(fs.statSync(path.join(cachedGeneration, "product-detail-runtime", product.PRODUCT_DETAIL_EXECUTABLE)).ino,
+    fs.statSync(path.join(root, "first", "product-detail-runtime", product.PRODUCT_DETAIL_EXECUTABLE)).ino,
+    "a newly built immutable runtime must enter its same-volume cache without another physical copy");
+  assert.equal(fs.statSync(path.join(cachedGeneration, "product-detail-runtime", product.PRODUCT_DETAIL_EXECUTABLE)).ino,
     fs.statSync(path.join(hit.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE)).ino, "same-volume immutable staging reuses runtime file identities");
   assert.notEqual(fs.statSync(path.join(cachedGeneration, "product-detail-runtime.manifest.json")).ino,
     fs.statSync(hit.resolved.manifestFile).ino, "provenance manifest remains independent");
+  const legacyLedger = fs.readFileSync(path.join(cacheRoot, ".artifact-retention.json"));
+  const sharedCache = path.join(root, "shared-cache");
+  const imported = run("imported-worktree", releaseCommit, { cacheRoot: sharedCache, fallbackCacheRoots: [cacheRoot] });
+  assert.equal(imported.hit, true, "a verified legacy runtime seeds the shared cache without rebuilding");
+  const another = run("another-worktree", releaseCommit, { cacheRoot: sharedCache });
+  assert.equal(another.hit, true);
+  assert.equal(builds, 1, "different staging roots share a single verified build");
+  assert.equal(fs.statSync(path.join(imported.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE), { bigint: true }).ino,
+    fs.statSync(path.join(another.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE), { bigint: true }).ino);
+  assert.deepEqual(fs.readFileSync(path.join(cacheRoot, ".artifact-retention.json")), legacyLedger,
+    "importing an old cache must not change its ownership or trigger historical cleanup");
+  const sharedCandidate = path.join(root, "shared-candidate");
+  const { immutableHashScope, replaceImmutableFile } = require("./release-tree-hash.cjs");
+  const sharedPackaged = immutableHashScope(sharedCandidate, () => product.copyProductDetailRuntime(another.resolved, sharedCandidate));
+  const packagedExe = path.join(sharedPackaged, product.PRODUCT_DETAIL_EXECUTABLE);
+  assert.equal(fs.statSync(packagedExe, { bigint: true }).ino,
+    fs.statSync(path.join(another.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE), { bigint: true }).ino,
+    "verified cache, staging and candidate share the same physical immutable payload");
+  const independent = path.join(root, "stabilized-exe"); fs.writeFileSync(independent, "candidate-only normalized bytes");
+  const immutableBefore = fs.readFileSync(path.join(another.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE));
+  immutableHashScope(sharedCandidate, () => replaceImmutableFile(independent, packagedExe));
+  assert.deepEqual(fs.readFileSync(path.join(another.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE)), immutableBefore,
+    "candidate normalization must replace the directory entry rather than overwrite cache hardlinks");
   const packaged = product.copyProductDetailRuntime(hit.resolved, path.join(root, "candidate"));
   const sourceExe = path.join(hit.resolved.runtimeDir, product.PRODUCT_DETAIL_EXECUTABLE), sourceBytes = fs.readFileSync(sourceExe);
   fs.appendFileSync(path.join(packaged, product.PRODUCT_DETAIL_EXECUTABLE), "candidate-only change");
@@ -113,6 +140,24 @@ try {
   fs.appendFileSync(paths.entryFile, "print('changed')\n");
   assert.equal(run("source-change").hit, false);
   assert.equal(builds, 3);
+
+  const incompleteCache = path.join(root, "incomplete-cache"), incompleteStage = path.join(root, "incomplete-stage");
+  const originalRemove = fs.rmSync;
+  fs.rmSync = function (target, ...args) {
+    if (path.resolve(target).startsWith(incompleteCache + path.sep)) throw Object.assign(Error("fixture file lock"), { code: "EPERM" });
+    return originalRemove.call(this, target, ...args);
+  };
+  try {
+    assert.throws(() => cachedRuntime({ cacheRoot: incompleteCache, kind: "remotion", fingerprint: digest("incomplete"),
+      destination: incompleteStage, buildCommit: releaseCommit, artifacts: ["runtime"], log: () => {},
+      build() { fs.mkdirSync(path.join(incompleteStage, "runtime"), { recursive: true }); fs.writeFileSync(path.join(incompleteStage, "runtime/payload"), "fixture"); },
+      resolve(location) { if (location.startsWith(incompleteCache + path.sep)) throw Error("fixture failed cache verification"); return {}; }
+    }), /fixture failed cache verification/);
+  } finally { fs.rmSync = originalRemove; }
+  const incompleteLedger = JSON.parse(fs.readFileSync(path.join(incompleteCache, ".artifact-retention.json")));
+  assert.equal(incompleteLedger["incomplete-runtime"].owned.length, 1, "a failed cache copy with a locked file must retain durable cleanup ownership");
+  assert.equal(require("./release-build-storage.cjs").retryBuildArtifacts([incompleteCache], () => {}).complete, true);
+  assert(!fs.existsSync(path.join(incompleteCache, incompleteLedger["incomplete-runtime"].owned[0])));
 
   const packages = { packageJson: { version: "1.0.0", dependencies: { remotion: "4" } }, packageLock: { version: "1.0.0", packages: { "": { version: "1.0.0" }, "node_modules/remotion": { version: "4", integrity: "abc" } } } };
   const old = runtimePackageHashes(packages);

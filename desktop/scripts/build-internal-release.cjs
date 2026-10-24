@@ -8,7 +8,7 @@ const desktopDir = path.resolve(__dirname, "..");
 const configKeys = new Set([
   "XIAOXI_BUILD_PYTHON", "XIAOXI_FFMPEG_PATH", "XIAOXI_FFPROBE_PATH",
   "XIAOXI_MEDIA_TOOLS_ROOT", "XIAOXI_MEDIA_TOOLS_LICENSE_RECORD",
-  "XIAOXI_REMOTION_BROWSER_SOURCE_PATH", "XIAOXI_REMOTION_LICENSE_RECORD"
+  "XIAOXI_REMOTION_BROWSER_SOURCE_PATH", "XIAOXI_REMOTION_LICENSE_RECORD", "XIAOXI_RELEASE_STORAGE_ROOT"
 ]);
 const acceptedBaseRecord = "internal-release-accepted-base.json";
 
@@ -20,7 +20,7 @@ function loadBuildConfig(filename) {
       throw new Error(`Invalid internal build configuration key: ${name}`);
     }
     const resolved = path.resolve(path.dirname(absolute), value);
-    if (!fs.existsSync(resolved)) throw new Error(`Build input is missing: ${name}`);
+    if (name !== "XIAOXI_RELEASE_STORAGE_ROOT" && !fs.existsSync(resolved)) throw new Error(`Build input is missing: ${name}`);
     process.env[name] = resolved;
   }
 }
@@ -101,22 +101,22 @@ function main(args = process.argv.slice(2)) {
   assertCleanSource();
   console.log(componentsOnly ? "Internal update: build changed components." : "Explicit full installer build.");
   const resolvedBaseRoot = componentsOnly ? resolveAcceptedBaseRoot(baseRoot, edition) : baseRoot;
-  const space = require("./space-usage.cjs").startSpaceRun("internal-release");
+  const storage = require("./release-build-storage.cjs").resolveBuildStorage(desktopDir);
+  const space = require("./space-usage.cjs").startSpaceRun("internal-release", [path.join(desktopDir, ".build"), storage.releaseRoot, storage.root]);
   try {
     const retention = require("./artifact-retention.cjs");
     const releaseRoot = path.resolve(desktopDir, "../release");
     if (resolvedBaseRoot && path.resolve(resolvedBaseRoot).startsWith(releaseRoot + path.sep)) {
       retention.retainArtifacts(releaseRoot, "accepted-base", [resolvedBaseRoot], 1, []);
     }
-    for (const root of [releaseRoot, path.join(desktopDir, ".build/runtime-cache")]) retention.retryArtifacts(root);
     const estimateRoot = resolvedBaseRoot || path.join(releaseRoot,
       require("../product-brand.json").displayName + (edition === "test" ? "-测试版" : ""));
     const baseBytes = require("./space-usage.cjs").measureTree(estimateRoot).bytes;
     // Conservative staging budget, recorded as an estimate, never reported as actual growth.
     const estimatedRuntime = Math.max(baseBytes, 512 * 1024 ** 2);
-    space.preflight([{ path: releaseRoot, bytes: estimatedRuntime * (componentsOnly ? 3 : 4) },
-      { path: require("node:os").tmpdir(), bytes: estimatedRuntime * 2 }]);
-    const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot, forceChecks, requireCi });
+    const spaceRequirements = [{ path: releaseRoot, bytes: estimatedRuntime * (componentsOnly ? 3 : 4) },
+      { path: storage.root, bytes: estimatedRuntime * 2 }];
+    const roots = runRelease(edition, process.env, { componentsOnly, componentBaseRoot: resolvedBaseRoot, forceChecks, requireCi, storage, spaceRequirements });
     if (componentsOnly && baseRoot) {
       const acceptedRecord = recordAcceptedBaseRoot(resolvedBaseRoot);
       console.log(`Accepted component base record: ${acceptedRecord}`);
@@ -129,7 +129,7 @@ function main(args = process.argv.slice(2)) {
     fs.writeFileSync(recordFile, `${JSON.stringify(record, null, 2)}\n`);
     console.log(`Internal build record: ${recordFile}`);
     space.observe("candidate-validation-complete");
-    space.finish("completed", { candidateRoot: roots.candidateRoot || null });
+    space.finish("completed", { candidateRoot: roots.candidateRoot || null, cleanup: roots.cleanup, buildStorage: storage.root });
   } catch (error) { space.finish("failed"); throw error; }
 }
 

@@ -188,6 +188,83 @@ async function main() {
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "internal-release-check-"));
   try {
+    const { resolveBuildStorage, ensureBuildStorage, withBuildStorage, retryBuildArtifacts, buildArtifactRoots } = require("./release-build-storage.cjs");
+    const resolvedStorage = resolveBuildStorage(path.resolve(__dirname, ".."), {});
+    assert.equal(path.parse(resolvedStorage.root).root, path.parse(fs.realpathSync(path.resolve(__dirname, ".."))).root,
+      "default release staging stays on the candidate volume rather than C TEMP");
+    const storage = { root: path.join(root, "shared"), repository: "fixture", releaseRoot: path.join(root, "project/release") };
+    storage.cacheRoot = path.join(storage.root, "c"); storage.stagingParent = path.join(storage.root, "s");
+    ensureBuildStorage(storage);
+    const immutableStorage = fs.readFileSync(path.join(storage.root, "storage.json"));
+    withBuildStorage(storage, () => {
+      assert.throws(() => withBuildStorage(storage, () => {}), /Another release build/, "one shared cache cannot be rotated by two builds");
+      const staging = require("./run-release.cjs").createBuildRoot(storage);
+      assert.equal(path.dirname(staging), storage.stagingParent);
+      assert(fs.existsSync(staging));
+      require("./artifact-retention.cjs").retainArtifacts(storage.stagingParent, "active-staging", [], 1, [], { deferCleanup: true });
+      assert.equal(retryBuildArtifacts([storage.stagingParent], () => {}).complete, true);
+      assert(!fs.existsSync(staging), "registered staging retries through the existing retention ledger");
+    });
+    assert.deepEqual(fs.readFileSync(path.join(storage.root, "storage.json")), immutableStorage);
+    assert(!fs.existsSync(path.join(storage.root, "build.lock")));
+    const originalWrite = fs.writeFileSync;
+    fs.writeFileSync = function (target, ...args) {
+      if (typeof target === "number") throw Object.assign(Error("fixture storage full"), { code: "ENOSPC" });
+      return originalWrite.call(this, target, ...args);
+    };
+    try { assert.throws(() => withBuildStorage(storage, () => {}), /fixture storage full/); }
+    finally { fs.writeFileSync = originalWrite; }
+    assert(!fs.existsSync(path.join(storage.root, "build.lock")), "a full disk while writing the guard must not leave a permanent empty lock");
+    const unknown = { ...storage, root: path.join(root, "historical") };
+    fs.mkdirSync(unknown.root); fs.writeFileSync(path.join(unknown.root, "unique-material"), "keep");
+    assert.throws(() => ensureBuildStorage(unknown), /not an empty or previously registered/);
+    const { runRelease } = require("./run-release.cjs");
+    const noStorage = path.join(root, "must-not-be-created");
+    assert.throws(() => runRelease("delivery", { XIAOXI_INTERNAL_UPGRADE: "1", XIAOXI_RELEASE_STORAGE_ROOT: noStorage }), /explicit upgrade/);
+    assert.throws(() => runRelease("unknown", { XIAOXI_RELEASE_STORAGE_ROOT: noStorage }), /Unsupported release edition/);
+    assert(!fs.existsSync(noStorage), "invalid release options must fail before any storage creation or real ledger retry");
+    const componentRoot = path.join(storage.releaseRoot, "components/test");
+    fs.mkdirSync(componentRoot, { recursive: true });
+    const oldCandidate = path.join(componentRoot, "old"), newCandidate = path.join(componentRoot, "new"), historical = path.join(componentRoot, "historical");
+    for (const file of [oldCandidate, newCandidate, historical]) fs.writeFileSync(file, "fixture");
+    const retention = require("./artifact-retention.cjs");
+    retention.retainArtifacts(componentRoot, "validated-components", [oldCandidate]);
+    retention.retainArtifacts(componentRoot, "validated-components", [newCandidate], 1, [newCandidate], { deferCleanup: true });
+    assert.equal(retryBuildArtifacts(buildArtifactRoots(storage), () => {}).complete, true);
+    assert(!fs.existsSync(oldCandidate), "the build entry must retry the components/test ledger, not only its release parent");
+    assert(fs.existsSync(newCandidate) && fs.existsSync(historical), "current and unregistered historical files remain protected");
+    const spaceModule = require("./space-usage.cjs"), originalStartSpaceRun = spaceModule.startSpaceRun;
+    const staleStaging = path.join(storage.stagingParent, "stale");
+    fs.writeFileSync(staleStaging, "registered disposable staging after a crashed build");
+    retention.retainArtifacts(storage.stagingParent, "active-staging", [staleStaging], 1, [staleStaging], { deferCleanup: true });
+    const stalePortable = path.join(storage.releaseRoot, ".staging-crashed");
+    fs.mkdirSync(stalePortable); fs.writeFileSync(path.join(stalePortable, "program"), "owned disposable program");
+    retention.retainArtifacts(storage.releaseRoot, "active-portable-staging", [stalePortable], 1, [stalePortable], { deferCleanup: true });
+    let preflight = false;
+    spaceModule.startSpaceRun = () => ({ observe() {}, finish() {}, preflight() {
+      preflight = true;
+      assert(!fs.existsSync(staleStaging), "a crashed build's protected staging must retire before the free-space gate");
+      assert(!fs.existsSync(stalePortable), "portable staging interrupted by a crash must also retire before the space gate");
+      throw Error("fixture capacity gate");
+    } });
+    const originalRetryArtifacts = retention.retryArtifacts;
+    const originalRetainArtifacts = retention.retainArtifacts;
+    // Assert that release preparation uses only this injected fixture storage.
+    retention.retryArtifacts = target => {
+      assert(path.resolve(target).startsWith(root + path.sep), "self-check must not retry a real checkout's ledger");
+      return originalRetryArtifacts(target);
+    };
+    retention.retainArtifacts = (target, ...args) => {
+      assert(path.resolve(target).startsWith(root + path.sep), "self-check must not register a real checkout's ledger");
+      return originalRetainArtifacts(target, ...args);
+    };
+    try { assert.throws(() => runRelease("test", {}, { storage, spaceRequirements: [] }), /fixture capacity gate/); }
+    finally {
+      spaceModule.startSpaceRun = originalStartSpaceRun;
+      retention.retryArtifacts = originalRetryArtifacts;
+      retention.retainArtifacts = originalRetainArtifacts;
+    }
+    assert(preflight);
     async function zip(file, list) {
       const archive = new JSZip();
       for (const [name, text] of list) archive.file(name, text, { date: new Date("2000-01-01T00:00:00Z"), createFolders: false });
