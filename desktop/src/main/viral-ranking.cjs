@@ -43,6 +43,8 @@ function rankCandidates(candidates, { industryIds, days = 30, now = Date.now() }
   const thresholds = presets.thresholds;
   const terms = industriesFor(industryIds).flatMap((item) => item.terms);
   const removed = [];
+  // 被筛掉的也带上标题和作者，流图悬停时说明「这条是什么、为什么没进」。
+  const drop = (item, reason, label, extra = {}) => removed.push({ id: item.id, platform: item.platform, title: item.title || '', author: item.author?.name || '', reason, label, ...extra });
   const stats = { collected: candidates.length, byPlatform: {}, duplicates: 0, outdated: 0, irrelevant: 0, notViral: 0, final: 0 };
   for (const item of candidates) stats.byPlatform[item.platform] = (stats.byPlatform[item.platform] || 0) + 1;
 
@@ -52,20 +54,20 @@ function rankCandidates(candidates, { industryIds, days = 30, now = Date.now() }
   for (const item of sorted) {
     const key = normalizeTitle(item.title || item.body);
     const twin = kept.find((other) => other.url === item.url || (key.length >= 6 && similarity(key, normalizeTitle(other.title || other.body)) >= thresholds.duplicateSimilarity));
-    if (twin) { stats.duplicates += 1; removed.push({ id: item.id, reason: 'duplicate', label: '搬运或重复' }); continue; }
+    if (twin) { stats.duplicates += 1; drop(item, 'duplicate', '搬运或重复', { twinId: twin.id }); continue; }
     kept.push(item);
   }
 
   // 2. 时间和行业：发布时间未知的不算过期，但会在卡片上注明「发布时间未知」。
   const fresh = kept.filter((item) => {
     const time = Date.parse(item.publishedAt || '');
-    if (Number.isFinite(time) && now - time > days * 86400000) { stats.outdated += 1; removed.push({ id: item.id, reason: 'outdated', label: `超过 ${days} 天` }); return false; }
+    if (Number.isFinite(time) && now - time > days * 86400000) { stats.outdated += 1; drop(item, 'outdated', `超过 ${days} 天`); return false; }
     return true;
   });
   const relevant = fresh.filter((item) => {
     const text = `${item.title} ${item.body || ''}`;
     if (terms.some((term) => text.includes(term))) return true;
-    stats.irrelevant += 1; removed.push({ id: item.id, reason: 'irrelevant', label: '和清洁行业无关' }); return false;
+    stats.irrelevant += 1; drop(item, 'irrelevant', '和清洁行业无关'); return false;
   });
 
   // 3. 三种爆款标签。读不到的数据不参与判断，绝不估算。
@@ -85,7 +87,7 @@ function rankCandidates(candidates, { industryIds, days = 30, now = Date.now() }
   });
   const viral = tagged.filter((item) => {
     if (item.tags.length) return true;
-    stats.notViral += 1; removed.push({ id: item.id, reason: 'not_viral', label: '不够爆' }); return false;
+    stats.notViral += 1; drop(item, 'not_viral', '不够爆'); return false;
   });
   viral.sort((a, b) => b.tags.length - a.tags.length || (b.metrics?.likes ?? -1) - (a.metrics?.likes ?? -1));
   stats.final = viral.length;

@@ -46,7 +46,9 @@ assert.equal(result.items[1].tags.find((t) => t.id === 'underdog').value, 21);
 assert.equal(result.items[2].publishedKnown, false);
 // 读不到粉丝数的 4 号没有被估算成小号爆，因为也不够高赞，被判为不够爆
 assert.ok(result.removed.some((r) => r.id === '4' && r.reason === 'not_viral'));
-assert.ok(result.removed.some((r) => r.id === '2' && r.reason === 'duplicate'));
+assert.ok(result.removed.some((r) => r.id === '2' && r.reason === 'duplicate' && r.twinId === '1'));
+// 被筛掉的带标题和作者，流图悬停时能说清是哪一条
+assert.deepEqual((({ title, author, platform }) => ({ title, author, platform }))(result.removed.find((r) => r.id === '5')), { title: '今天的晚饭吃火锅', author: '作者', platform: 'douyin' });
 assert.ok(result.removed.some((r) => r.id === '5' && r.label === '和清洁行业无关'));
 // 每个被筛掉的都有原因，数量和统计一致（流图按这些数字画）
 const s = result.stats;

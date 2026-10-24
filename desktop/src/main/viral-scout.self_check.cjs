@@ -103,6 +103,11 @@ const events = [];
   assert.deepEqual(result.items[0].tags.map((t) => t.id), ['high_likes', 'underdog', 'asking_price']);
   assert.ok(result.items[1].tags.some((t) => t.id === 'asking_price' && t.value === 3), '读到评论里的问价');
   assert.ok(result.items.some((x) => x.tags.some((t) => t.id === 'underdog')), '粉丝少点赞高的算小号爆');
+  // 采集事件逐条带出新读到的内容，总数与最终统计一致
+  const added = events.filter((e) => e.stage === 'collect').flatMap((e) => e.added || []);
+  assert.equal(added.length, result.stats.collected);
+  assert.ok(added.every((a) => a.id && a.platform === 'douyin' && typeof a.title === 'string'));
+  assert.equal(new Set(added.map((a) => a.id)).size, added.length);
   assert.ok(events.some((e) => e.stage === 'collect') && events.some((e) => e.stage === 'comments') && events.at(-1).stage === 'done');
   await assert.rejects(instance.scan({ industryIds: ['cleaning'], days: 7 }), /近 30 天或近 90 天/);
   instance.close();

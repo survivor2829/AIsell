@@ -168,8 +168,11 @@ function createViralScout({ BrowserWindow, session, onProgress = () => {} } = {}
         if (reason) { entry.win.show(); entry.win.focus(); throw problem('VIRAL_PLATFORM_BLOCKED', reason); }
       }
       for (let i = 0; i < LIMITS.scrollsPerKeyword && !stopped; i += 1) { await scroll(entry); await pause(jitter(1200, 2200)); }
-      for (const c of entry.captured.filter((x) => x.kind === 'search')) for (const item of c.data) if (!found.has(item.id)) found.set(item.id, { ...item, keyword });
-      emit({ stage: 'collect', platform, collected: found.size, message: `${PLATFORMS[platform].name}已读到 ${found.size} 条` });
+      const added = [];
+      for (const c of entry.captured.filter((x) => x.kind === 'search')) for (const item of c.data) if (!found.has(item.id)) { found.set(item.id, { ...item, keyword }); added.push(item); }
+      // 每条新读到的内容都发给界面，流图上每条线对应一条真实内容。
+      emit({ stage: 'collect', platform, collected: found.size, message: `${PLATFORMS[platform].name}已读到 ${found.size} 条`,
+        added: added.map((item) => ({ id: item.id, platform, title: item.title.slice(0, 60), author: item.author?.name || '' })) });
       await pause(jitter(1500, 3500));
     }
     // 只对点赞靠前的少量内容打开详情读评论（小红书顺便补发布时间和正文），控制访问量。

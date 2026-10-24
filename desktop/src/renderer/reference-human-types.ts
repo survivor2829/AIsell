@@ -29,7 +29,20 @@ export type ReferenceTask = ReferenceDraft & {
 };
 export type ReferenceCapabilities = { ready: boolean; message: string; voiceMode: string;
   captionStyles: { id: string; name: string; description: string }[] };
+export type ViralBrief = { id: string; platform: string; title: string; author: string };
+export type ViralStats = { collected: number; byPlatform: Record<string, number>; duplicates: number; outdated: number; irrelevant: number; notViral: number; final: number };
+export type ViralProgress = { stage: 'collect' | 'comments' | 'blocked' | 'done'; platform?: string; message: string; at: string; collected?: number; added?: ViralBrief[]; stats?: ViralStats };
+export type ViralTag = { id: 'high_likes' | 'underdog' | 'asking_price'; label: string; value: number };
+export type ViralItem = { id: string; platform: string; url: string; title: string; body: string; author: { name: string; followers: number | null };
+  publishedAt: string | null; publishedKnown: boolean; metrics: { likes: number | null }; tags: ViralTag[]; askingPriceComments: number | null; cover?: string | null };
+export type ViralRemoved = ViralBrief & { reason: 'duplicate' | 'outdated' | 'irrelevant' | 'not_viral'; label: string; twinId?: string };
+export type ViralScanResult = { startedAt: string; finishedAt: string; keywords: string[]; days: number; stopped: boolean;
+  platforms: { platform: string; name: string; status: 'ok' | 'blocked'; message?: string; collected: number }[];
+  items: ViralItem[]; stats: ViralStats; removed: ViralRemoved[] };
 export type ReferenceHumanApi = {
+  viralScan(payload: { industryIds: string[]; platforms: string[]; days: 30 | 90 }): Promise<DigitalHumanResult<ViralScanResult>>;
+  viralStop(): Promise<DigitalHumanResult<{ stopped: boolean }>>;
+  onViralProgress(callback: (progress: ViralProgress) => void): () => void;
   workspace(): Promise<DigitalHumanResult<ReferenceWorkspace>>;
   saveWorkspace(payload: ReferenceWorkspace): Promise<DigitalHumanResult<ReferenceWorkspace>>;
   capabilities(): Promise<DigitalHumanResult<ReferenceCapabilities>>;

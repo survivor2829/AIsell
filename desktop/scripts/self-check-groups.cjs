@@ -101,6 +101,7 @@ const checks = [
   "src/renderer/ad-law-terms.self_check.cjs",
   "src/renderer/status-subscription.self_check.cjs",
   "src/renderer/creative-studio.self_check.cjs",
+  "src/renderer/flow-funnel.self_check.cjs",
   "src/renderer/product-one-click.self_check.cjs",
   "scripts/remotion-packaging.self_check.cjs",
   "src/renderer/moments-campaign-panel.self_check.cjs",
