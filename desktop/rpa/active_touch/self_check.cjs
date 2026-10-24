@@ -984,6 +984,34 @@ try {
   assert.equal(preparedRecovered.results[0].awaiting_resolution, true);
   assert.equal(preparedRecovered.results[0].retry_blocked, true);
 
+  // The previous contact's verified receipt must not be read as the next
+  // contact's after a crash between selecting that contact and preparing it.
+  const staleKeyCrash = createTask("stale-key", validContacts.slice(0, 2), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  staleKeyCrash.results[0].status = "sent_verified";
+  staleKeyCrash.results[0].attempt_key = "first-key";
+  staleKeyCrash.current_index = 1;
+  staleKeyCrash.results[1].message = "第二位联系人的消息";
+  staleKeyCrash.results[1].status = "sending";
+  saveTaskState(dir, staleKeyCrash);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: staleKeyCrash.id, contact_id: staleKeyCrash.results[1].id, current_index: 1 },
+    selected_customer: { id: staleKeyCrash.results[1].id },
+    real_send_status: "not_sent",
+    real_send_attempt_key: "first-key",
+    real_send_attempts: { "first-key": "sent_verified" }
+  }), "utf8");
+  const staleKeyRecovered = recoverInterruptedTask(dir);
+  assert.notEqual(staleKeyRecovered.results[1].status, "sent_verified", "a stale receipt must not mark an unsent contact as sent");
+  assert.equal(staleKeyRecovered.current_index, 1);
+  const selectAfterSendDir = path.join(dir, "select-after-send");
+  fs.mkdirSync(selectAfterSendDir, { recursive: true });
+  fs.writeFileSync(path.join(selectAfterSendDir, "contacts.json"), JSON.stringify(validContacts.slice(0, 2)), "utf8");
+  saveState(selectAfterSendDir, { ...loadState(selectAfterSendDir), real_send_attempt_key: "first-key", real_send_attempts: { "first-key": "sent_verified" } });
+  const reselected = selectCustomer(selectAfterSendDir, validContacts[1].id);
+  assert.equal(reselected.ok, true);
+  assert.equal(reselected.state.real_send_attempt_key, "", "selecting a contact clears the previous attempt key");
+  assert.equal(reselected.state.real_send_attempts["first-key"], "sent_verified", "the previous receipt stays in the ledger");
+
   const sendingWithoutExecutionState = createTask("sending-without-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   sendingWithoutExecutionState.results[0].message = "崩溃窗口测试消息";
   sendingWithoutExecutionState.results[0].status = "sending";

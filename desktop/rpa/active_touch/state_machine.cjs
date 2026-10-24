@@ -445,6 +445,9 @@ function selectCustomer(baseDir = __dirname, customerId = "", contactsDir = base
     real_send_clicked: false,
     real_send_status: "not_sent",
     real_send_reason: "",
+    // The ledger keeps the previous contact's receipt; the key must not follow
+    // the selection, or crash recovery would read that receipt for this contact.
+    real_send_attempt_key: "",
     post_send_verified: false,
     post_send_status: "not_checked",
     post_send_reason: "",

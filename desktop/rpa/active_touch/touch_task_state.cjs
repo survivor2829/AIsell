@@ -506,6 +506,11 @@ function reconcileRealSendAttempt(task, executionState) {
   const current = task.results[task.current_index];
   const context = executionState?.task_context;
   if (!current || !context || context.task_id !== task.id || String(context.contact_id) !== String(current.id) || Number(context.current_index) !== task.current_index) return task;
+  // Selecting a contact resets the status to not_sent, and only a send attempt
+  // for that selection (which first writes its own key) moves it on. Older
+  // builds kept the previous contact's key across selection, so without an
+  // attempt status the ledger entry belongs to someone else.
+  if (!["prepared", "clicked", "outcome_unknown", "sent_verified"].includes(String(executionState.real_send_status || ""))) return task;
   const key = String(executionState.real_send_attempt_key || current.attempt_key || "");
   const attemptStatus = String((key && executionState.real_send_attempts?.[key]) || executionState.real_send_status || "");
   if (attemptStatus === "sent_verified") {
