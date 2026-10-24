@@ -5365,6 +5365,25 @@ async function main() {
   assert.equal(pausedRestart.primes, primesBeforeRestart, "priming would discard the restored message");
   assert.equal(pausedRestart.sends, 1, "the interrupted message is answered after a restart");
 
+  // A pause that meets someone typing in WeChat stays a manual case, as it
+  // is when the run is still current; it must not be answered automatically.
+  const pausedManual = pausedFixture("workflow_pause_manual_input");
+  pausedManual.pauseNextGeneration = false;
+  const pausedManualController = createAutoReplyController({
+    dataDir: pausedManual.dataDir, activeTouchDir: workflowContacts, coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("可以继续了解。") },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: Object.assign(() => pausedManual.queue.shift() || { ok: false, reason: "no_unread_message" },
+      { requeue: (candidate) => { pausedManual.queue.unshift(candidate); return true; } }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { pausedManual.enabled = false; return { ok: false, send_attempted: false, composer_touched: false, blocked_reason: "visual_send_external_input_detected" }; },
+    sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+  });
+  await pausedManualController.runWorkflowStep(pausedManual.input);
+  assert.deepEqual(Object.values(pausedManual.state().processed).map((entry) => entry.status), ["cancelled"],
+    "manual input during a paused send is left to the person typing");
+  assert.equal(pausedManual.queue.length, 0, "the message is not handed back for an automatic reply");
+
   console.log("auto-reply v4 self-check passed");
 }
 

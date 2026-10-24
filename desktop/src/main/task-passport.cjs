@@ -10,7 +10,7 @@ const MAX_EXPORT_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_EXPORT_BYTES = 50 * 1024 * 1024;
 const SAFE_SEGMENT = /^[a-z0-9][a-z0-9_.:-]{0,127}$/iu;
 const TERMINAL_SUCCESS = new Set(["sent_verified", "completed", "success", "answered"]);
-const TERMINAL_SKIPPED = new Set(["identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped", "skipped", "silent", "handoff"]);
+const TERMINAL_SKIPPED = new Set(["identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped", "partial_sent_skipped", "recipient_unreachable_skipped", "skipped", "silent", "handoff"]);
 
 function safeSegment(value, fallback = "task") {
   const text = String(value ?? "").trim();

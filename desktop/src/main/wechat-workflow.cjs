@@ -515,7 +515,7 @@ function createWechatWorkflowController(options) {
     // every planned task has completed or been safely isolated. A send cooldown
     // or a future appointment is still unfinished work, not an empty queue.
     if (!finiteWorkPending && people.length && options.reply?.runWorkflowStep && !replyError) {
-      if (await liveAccountChanged(false)) return;
+      if (await liveAccountChanged(false) || !enabled || mutating) return;
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
@@ -567,7 +567,7 @@ function createWechatWorkflowController(options) {
     const task = nextTask();
     if (!task) { currentTaskId = null; settleQueue(); emit(); return; }
     // Touch verifies the account inside its own send session.
-    if (task.type !== "touch" && await liveAccountChanged(true)) return;
+    if (task.type !== "touch" && (await liveAccountChanged(true) || !enabled || mutating)) return;
     replyActivated = false;
     const executor = executors[task.type];
     cycleStage = "task_prepare";

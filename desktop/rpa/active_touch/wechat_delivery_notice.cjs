@@ -82,7 +82,15 @@ try {
   $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('zh-Hans-CN'))
   if ($null -eq $engine) { Write-NoticeResult @{ ok = $false; reason = "delivery_notice_ocr_unavailable" } }
   $reading=Wait-Notice ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult])
-  $text = (@($reading.Lines | ForEach-Object { [string]$_.Text }) -join '').Normalize([Text.NormalizationForm]::FormKC)
+  # Only the lowest text counts: the notice sits directly under the bubble just
+  # sent, while an older notice in the history would sit above that bubble.
+  # (Real 1120x760 window: notice ~30 px above the band bottom, our bubble ~77.)
+  $lowestLimit = $scaled.Height - 60 * $scale * 2
+  $lowestLines = @($reading.Lines | Where-Object {
+    $wordBottoms = @($_.Words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height })
+    $wordBottoms.Count -gt 0 -and ($wordBottoms | Measure-Object -Maximum).Maximum -ge $lowestLimit
+  })
+  $text = (@($lowestLines | ForEach-Object { [string]$_.Text }) -join '').Normalize([Text.NormalizationForm]::FormKC)
   $text = [Text.RegularExpressions.Regex]::Replace($text, '\s+', '')
   $undelivered = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|你还不是[他她]|被对方拒收|拒收了你的消息')
   Write-NoticeResult @{ ok = $true; undelivered = $undelivered; line_count = @($reading.Lines).Count }

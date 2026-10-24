@@ -3608,6 +3608,11 @@ function createAutoReplyController(options = {}) {
             ...sendReceipt
           });
           pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
+        } else if (MANUAL_REVIEW_SEND_REASONS.has(normalizeText(result?.blocked_reason || result?.error))) {
+          // Someone may be typing a manual reply; as on the current-run path,
+          // never answer that conversation automatically.
+          state.processed[fingerprint].status = "cancelled";
+          clearPendingObservation(candidate);
         } else {
           return deferInterruptedReply(fingerprint, candidate);
         }

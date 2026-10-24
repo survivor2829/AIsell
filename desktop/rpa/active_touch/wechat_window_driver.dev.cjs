@@ -750,6 +750,7 @@ foreach ($root in $roots) {
         account = $account
         activityPath = $(if ($latestWal) { $latestWal.FullName } else { $account.FullName })
         activityTimeUtc = $(if ($latestWal) { $latestWal.LastWriteTimeUtc } else { $account.LastWriteTimeUtc })
+        hasWal = ($latestWal -ne $null)
       }
     }
   }
@@ -761,8 +762,10 @@ if (-not [string]::IsNullOrWhiteSpace($expectedAccountId)) {
   # Every account that ever logged in keeps its folder, so the folder alone
   # does not prove who is logged in now. The logged-in account is the one
   # whose database was written last; another account newer than the
-  # expected one means WeChat was switched.
+  # expected one means WeChat was switched. A folder time is not a login
+  # signal, so decide only when both sides have database write times.
   if ($uniqueAccounts.Count -eq 1 -and $newestAccount -ne $null -and $newestAccount.account.Name -ne $expectedAccountId -and
+    $uniqueAccounts[0].hasWal -and $newestAccount.hasWal -and
     ($newestAccount.activityTimeUtc - $uniqueAccounts[0].activityTimeUtc).TotalSeconds -gt 5) {
     @{ ok = $false; reason = "wechat_account_changed"; rule_id = (Write-XiaoxiFailure "wx2-r034" "wechat_account_changed") } | ConvertTo-Json -Compress
     exit
