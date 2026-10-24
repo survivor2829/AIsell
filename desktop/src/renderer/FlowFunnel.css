@@ -1,0 +1,29 @@
+.flow-funnel {
+  --flow-ink: 31, 41, 55;
+  --flow-accent: 230, 0, 0;
+  --flow-line: 226, 212, 214;
+  --flow-bg: 255, 255, 255;
+  --flow-surface: 255, 255, 255;
+  background: rgb(var(--flow-bg));
+}
+.flow-funnel-canvas { position: relative; overflow: hidden; }
+.flow-funnel-canvas canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.flow-funnel-tip { position: absolute; left: 0; top: 0; z-index: 2; max-width: 260px; pointer-events: none; background: #fff; border-radius: 8px; padding: 6px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08); outline: 1px solid #ecdcde; }
+.flow-funnel-tip b { display: block; font-size: 13px; line-height: 1.45; color: #1f2937; }
+.flow-funnel-tip span { display: block; margin-top: 2px; font-size: 12px; color: #6b7280; }
+.flow-funnel-empty { position: absolute; inset: 0; margin: 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; text-align: center; font-size: 14px; color: #9ca3af; }
+.flow-funnel-live { position: absolute; top: 10px; right: 14px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: #166534; background: rgba(255, 255, 255, 0.86); padding: 2px 8px; border-radius: 999px; }
+.flow-funnel-live i { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; animation: flow-funnel-pulse 1.6s infinite; }
+@keyframes flow-funnel-pulse { 0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.5); } 100% { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); } }
+.flow-funnel-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #f3e6e7; }
+.flow-funnel-stage { padding: 10px 14px; border-right: 1px solid #f3e6e7; cursor: default; transition: opacity 0.2s; }
+.flow-funnel-stage:last-child { border-right: 0; }
+.flow-funnel-stages.focusing .flow-funnel-stage { opacity: 0.4; }
+.flow-funnel-stages.focusing .flow-funnel-stage.on { opacity: 1; }
+.flow-funnel-no { font-size: 12px; font-weight: 800; color: #c91739; letter-spacing: 0.1em; }
+.flow-funnel-n { font-size: 26px; font-weight: 900; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: #1f2937; }
+.flow-funnel-n.accent { color: #e60000; }
+.flow-funnel-u { font-size: 13px; color: #6b7280; }
+.flow-funnel-d { margin-top: 2px; font-size: 12px; color: #6b7280; }
+@media (max-width: 760px) { .flow-funnel-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); } .flow-funnel-stage:nth-child(2) { border-right: 0; } }
+@media (prefers-reduced-motion: reduce) { .flow-funnel-live i { animation: none; } }

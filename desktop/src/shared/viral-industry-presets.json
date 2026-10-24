@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "note": "爆款一键成片的行业方向。keywords 用于平台搜索；terms 用于判断内容是否与清洁设备渠道商相关（标题或正文命中任一词即算相关）。",
+  "industries": [
+    { "id": "cleaning", "name": "清洁设备", "keywords": ["洗地机", "扫地车", "驾驶式洗地机", "清洁机器人", "商用清洁设备"], "terms": ["洗地机", "洗地车", "扫地机", "扫地车", "清扫车", "清洁机器人", "清洁设备", "保洁设备", "尘推", "吸尘器", "吸水机", "高压清洗", "单擦机", "抛光机", "地毯清洗"] },
+    { "id": "property", "name": "物业", "keywords": ["物业保洁", "小区清洁", "物业降本"], "terms": ["物业", "小区", "保洁", "清洁", "业主"] },
+    { "id": "factory", "name": "工厂", "keywords": ["车间清洁", "工厂地面清洁", "厂房保洁"], "terms": ["车间", "工厂", "厂房", "仓库", "地面", "油污", "粉尘"] },
+    { "id": "retail", "name": "商超", "keywords": ["商场保洁", "超市清洁"], "terms": ["商场", "超市", "商超", "卖场", "保洁"] },
+    { "id": "campus", "name": "学校医院", "keywords": ["学校保洁", "医院保洁"], "terms": ["学校", "校园", "医院", "食堂", "保洁"] },
+    { "id": "cleaning-company", "name": "保洁公司", "keywords": ["保洁公司", "开荒保洁", "保洁接单"], "terms": ["保洁公司", "开荒", "保洁", "家政", "清洁"] },
+    { "id": "hotel", "name": "酒店", "keywords": ["酒店保洁", "酒店地毯清洗"], "terms": ["酒店", "客房", "地毯", "保洁"] }
+  ],
+  "thresholds": {
+    "highLikesTopRatio": 0.2,
+    "highLikesMinimum": 1000,
+    "highLikesAbsolute": 10000,
+    "underdogRatio": 5,
+    "underdogMinimumLikes": 500,
+    "askingPriceMinimum": 3,
+    "commentSampleLimit": 50,
+    "duplicateSimilarity": 0.8
+  }
+}

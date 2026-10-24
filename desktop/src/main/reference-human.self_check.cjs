@@ -46,6 +46,7 @@ async function main() {
   const counts = { train: 0, voice: 0, video: 0, asr: 0, recover: 0, package: 0, enroll: 0, script: 0 };
   const enrollmentReceipts = new Map(); let loseEnrollmentReply = true;
   let voiceStatusQueries = 0, measuredSeconds = 3;
+  let scriptReply = null;
   let interrupted = true, terminalFailure = false, musicAvailable = true, transcriptMismatch = false, service;
   const videoOperations = new Set();
   const source = path.join(root, 'input.mp4'), sound = path.join(root, 'prepared.wav');
@@ -86,7 +87,7 @@ async function main() {
           return { output: { finish_reason: 'stop', audio: { url: 'https://example.com/voice.wav' } } };
         }
         if (route === '/narration/script-quota') return { quota: { status: 'available', remaining: 2 - counts.script } };
-        if (route === '/narration/script') { counts.script++; return { ok: true, title: '如何选', script: '测试口播。', emphasisPhrases: ['口播'], quota: { remaining: 1 } }; }
+        if (route === '/narration/script') { counts.script++; assert.equal(input.timeoutMs, 420000, 'script wait covers one in-operation rewrite'); if (scriptReply) return scriptReply(); return { ok: true, title: '如何选', script: '测试口播。', emphasisPhrases: ['口播'], quota: { remaining: 1 } }; }
         if (route.includes('recognize')) { counts.asr++; return { result: { utterances } }; }
         if (route.includes('image2video')) {
           assert.ok(!videoOperations.has(input.operationId), 'a video operation may only be submitted once');
@@ -245,6 +246,7 @@ async function main() {
       service.writeScript({ ...scriptInput, referenceSource: { ...referenceSource, collectedAt: '2026-10-15T00:01:00Z', metrics: { likes: 2 } } }),
     ]);
     assert.deepEqual(scriptA, scriptB); assert.equal(counts.script, 1, 'same brief reuses its script receipt');
+    assert.equal(scriptA.originality.passed, true, 'a reference-based script carries its originality check');
     counts.script++;
     const replayedScript = await service.writeScript({ ...scriptInput, referenceSource });
     assert.equal(replayedScript.quota.remaining, 0, 'a replay refreshes quota instead of restoring its old receipt balance');
@@ -281,6 +283,18 @@ async function main() {
     await reopened.writeScript({ ...scriptInput, generationIntentId: intent, recoverOnly: true });
     assert.equal(counts.script, 4, 'restart recovery reuses original receipt');
     await reopened.close();
+    // 仿写稿原创度：旧版云端照抄也能标出来；云端两次都不达标时停下，不重发、不再扣额度
+    const viral = { platform: 'douyin', title: '物业经理别再招保洁了', body: '物业经理千万别再招保洁了，一台洗地机顶六个人，一年省下二十万人工', url: '' };
+    scriptReply = () => ({ ok: true, title: '照抄', script: '物业经理千万别再招保洁了，一台洗地机顶六个人。', emphasisPhrases: [], structure: [{ part: '钩子', method: '反常识开头' }] });
+    const copiedScript = await service.writeScript({ ...scriptInput, referenceSource: viral, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b1' });
+    assert.equal(copiedScript.originality.passed, false);
+    assert.deepEqual(copiedScript.structure, [{ part: '钩子', method: '反常识开头' }]);
+    scriptReply = () => { throw Object.assign(new Error('服务未完成请求：script_not_original'), { code: 'digital_human_provider_error', status: 422, outcomeUnknown: false }); };
+    const rejectedIntent = 'e57a06f7-700d-44ca-8a13-6707c58683b2', before = counts.script;
+    await assert.rejects(service.writeScript({ ...scriptInput, referenceSource: viral, generationIntentId: rejectedIntent }), /这条不适合仿写/);
+    await assert.rejects(service.writeScript({ ...scriptInput, referenceSource: viral, generationIntentId: rejectedIntent }), { code: 'reference_script_rejected' });
+    assert.equal(counts.script, before + 1, 'an unoriginal result is never re-posted');
+    scriptReply = null;
     const personPath = path.join(root, 'reference', 'assets', `${automaticAsset.id}.json`);
     const person = JSON.parse(fs.readFileSync(personPath));
     fs.writeFileSync(personPath, JSON.stringify({ ...person, seconds: 21.6 }));

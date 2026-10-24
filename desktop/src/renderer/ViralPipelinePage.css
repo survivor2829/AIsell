@@ -1,0 +1,56 @@
+.vp-page { --dh-accent: var(--brand, #e5484d); max-width: 1184px; margin: 0 auto; padding: 20px 28px 40px; color: #1f2937; }
+.vp-head h2 { margin: 0; font-size: 24px; font-weight: 900; letter-spacing: -0.01em; }
+.vp-head p { margin: 6px 0 0; font-size: 14px; font-weight: 700; color: #4b5563; }
+.vp-page > .dh-message { margin: 14px 0 0; }
+.vp-layout { display: flex; gap: 20px; align-items: flex-start; margin-top: 16px; }
+.vp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.vp-side { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; }
+.vp-panel { background: #fff; border: 1px solid #f1dfe1; border-radius: 12px; }
+.vp-flow { overflow: hidden; }
+
+.vp-filters { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.vp-filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vp-filter-row > b { width: 48px; font-size: 15px; font-weight: 900; }
+.vp-filter-row > b.vp-filter-gap { width: auto; margin-left: 16px; }
+.vp-spacer { flex: 1; }
+.vp-chip { height: 32px; padding: 0 13px; border-radius: 999px; border: 1px solid #e5e7eb; background: #fff; font: inherit; font-size: 14px; font-weight: 900; color: #4b5563; cursor: pointer; }
+.vp-chip[aria-pressed="true"] { background: #fde7e7; border-color: #f5b5bd; color: #b4122c; }
+.vp-chip:disabled { cursor: default; opacity: 0.7; }
+.vp-login { padding: 8px 10px; border-radius: 8px; background: #fff7ed; font-size: 13px; font-weight: 700; color: #92400e; }
+.vp-login > span { flex: 1; min-width: 200px; }
+
+.vp-list-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.vp-list-head b { font-size: 18px; font-weight: 900; }
+.vp-list-head span { font-size: 13px; font-weight: 700; color: #6b7280; }
+.vp-empty { margin: 0; padding: 24px; text-align: center; font-size: 14px; font-weight: 700; color: #6b7280; background: #fff; border: 1px dashed #ecdcde; border-radius: 12px; }
+.vp-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.vp-card { background: #fff; border: 1px solid #f1dfe1; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.vp-card-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: #4b5563; }
+.vp-platform { width: 20px; height: 20px; border-radius: 5px; color: #fff; font-size: 11px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; background: #111; }
+.vp-platform.is-xiaohongshu { background: #ff2442; }
+.vp-card h3 { margin: 0; font-size: 17px; font-weight: 900; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.vp-likes { font-size: 28px; font-weight: 900; letter-spacing: -0.02em; }
+.vp-likes small { margin-left: 4px; font-size: 12px; font-weight: 700; color: #6b7280; }
+.vp-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.vp-tag { font-size: 13px; font-weight: 900; padding: 2px 8px; border-radius: 999px; }
+.vp-tag.is-likes { background: #fde7e7; color: #b4122c; }
+.vp-tag.is-underdog { background: #efe7ff; color: #6d28d9; }
+.vp-tag.is-asking { background: #e7f6ec; color: #166534; }
+.vp-card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
+.vp-card-actions .dh-button { text-decoration: none; }
+.vp-card-note { font-size: 11px; font-weight: 700; color: #9ca3af; }
+
+.vp-side-block { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.vp-side-block > b { font-size: 15px; font-weight: 900; }
+.vp-side-block > .dh-button { align-self: flex-start; }
+.vp-muted { margin: 0; font-size: 13px; font-weight: 700; line-height: 1.6; color: #6b7280; }
+.vp-person { display: flex; align-items: center; gap: 10px; }
+.vp-person img { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; background: #fde7e7; }
+.vp-person strong { display: block; font-size: 14px; font-weight: 900; }
+.vp-person span { display: block; font-size: 12px; font-weight: 700; color: #6b7280; }
+.vp-spin { vertical-align: -2px; animation: vp-spin 1s linear infinite; }
+@keyframes vp-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 1100px) { .vp-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .vp-layout { flex-direction: column; } .vp-side { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .vp-spin { animation: none; } }

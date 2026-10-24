@@ -15,6 +15,13 @@ function createDigitalHumanApi(ipcRenderer) {
       sourceConnect: (payload) => invoke('reference-source-connect', payload),
       sourceSearch: (payload) => invoke('reference-source-search', payload),
       sourceRead: (payload) => invoke('reference-source-read', payload),
+      viralScan: (payload) => invoke('reference-viral-scan', payload),
+      viralStop: () => invoke('reference-viral-stop'),
+      onViralProgress: (callback) => {
+        const listener = (_event, progress) => callback(progress);
+        ipcRenderer.on('digital-human:viral-progress', listener);
+        return () => ipcRenderer.removeListener('digital-human:viral-progress', listener);
+      },
       importVideo: () => invoke('reference-import'),
       assets: () => invoke('reference-assets'), list: () => invoke('reference-list'),
       create: (payload) => invoke('reference-create', payload), get: (payload) => invoke('reference-get', payload),

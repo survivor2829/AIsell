@@ -1,18 +1,24 @@
 const { createDigitalHumanService, assertKeys, ID } = require('./digital-human-service.cjs');
 const { cleanMessage, fail } = require('./digital-human-provider.cjs');
 const { createReferenceHumanService, TASK_ID: REFERENCE_ID } = require('./reference-human-service.cjs');
+const { createViralScout } = require('./viral-scout.cjs');
 
 const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'capabilities', 'list', 'get', 'import-image', 'import-audio', 'recommend-voice', 'voice-preview', 'voice-select', 'voice-clones', 'voice-train', 'voice-clone-status', 'speech-media', 'create', 'preview', 'confirm', 'refresh', 'resume', 'media', 'images',
   'reference-capabilities', 'reference-import', 'reference-assets', 'reference-list', 'reference-create', 'reference-get', 'reference-quote', 'reference-prepare', 'reference-confirm', 'reference-refresh', 'reference-resume', 'reference-speech', 'reference-train', 'reference-voice-status', 'reference-write-script', 'reference-repackage',
   'reference-cover-frame', 'reference-cover-quote', 'reference-cover-generate',
   'reference-workspace', 'reference-save-workspace', 'reference-script-quota', 'reference-source-status', 'reference-source-connect', 'reference-source-search', 'reference-source-read',
+  'reference-viral-scan', 'reference-viral-stop',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
   const { ipcMain, dialog, getMainWindow = () => null } = options;
   const service = options.service || createDigitalHumanService(options);
   const reference = options.referenceService || createReferenceHumanService(options);
+  // 扒爆款：首次使用时才创建平台窗口；进度推送给主窗口画流图。
+  let viralScout = options.viralScout || null;
+  const viral = () => viralScout || (viralScout = createViralScout({ BrowserWindow: options.BrowserWindow || require('electron').BrowserWindow, session: options.session || require('electron').session,
+    onProgress: (progress) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-progress', progress); } }));
   const referenceId = (payload, extra = []) => {
     assertKeys(payload, ['id', ...extra]);
     if (!REFERENCE_ID.test(String(payload.id || ''))) throw fail('reference_not_found', '请重新选择本人分身任务。');
@@ -63,6 +69,8 @@ function registerDigitalHumanIpc(options = {}) {
     'reference-source-connect': (payload) => reference.sourceConnect(payload),
     'reference-source-search': (payload) => reference.sourceSearch(payload),
     'reference-source-read': (payload) => reference.sourceRead(payload),
+    'reference-viral-scan': (payload) => { assertKeys(payload, ['industryIds', 'platforms', 'days']); return viral().scan(payload); },
+    'reference-viral-stop': () => { viralScout?.stop(); return { stopped: true }; },
     'reference-assets': () => reference.assets(),
     'reference-list': () => reference.list(),
     'reference-import': async (payload) => {
@@ -108,11 +116,12 @@ function registerDigitalHumanIpc(options = {}) {
       }
     });
   }
-  const combined = { ...service, isBusy: () => service.isBusy() || reference.isBusy(),
+  const combined = { ...service, isBusy: () => service.isBusy() || reference.isBusy() || Boolean(viralScout?.isBusy()),
     prepareForUpdate: () => { const old = service.prepareForUpdate(), next = reference.prepareForUpdate(); return { busy: old.busy || next.busy }; },
     resumeAfterUpdate: () => { service.resumeAfterUpdate(); reference.resumeAfterUpdate(); } };
   return { service: combined, close: async () => {
     for (const channel of Object.values(DIGITAL_HUMAN_CHANNELS)) ipcMain.removeHandler(channel);
+    viralScout?.close();
     await Promise.all([service.close(), reference.close()]);
   } };
 }

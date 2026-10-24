@@ -2,7 +2,7 @@ import { ReferenceCostSummary } from './ReferenceCostSummary';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Download, History, LoaderCircle, Plus, RefreshCw, Upload, Video } from 'lucide-react';
 import type { DigitalHumanResult } from './digital-human-types';
-import type { ReferenceAsset, ReferenceCapabilities, ReferenceDraft, ReferenceHumanApi, ReferenceTask, ScriptQuota, ReferenceWorkspace, ScriptInput, ScriptSuggestion } from './reference-human-types';
+import type { NarrationReference, ReferenceAsset, ReferenceCapabilities, ReferenceDraft, ReferenceHumanApi, ReferenceTask, ScriptQuota, ReferenceWorkspace, ScriptInput, ScriptSuggestion } from './reference-human-types';
 import { ReferenceCoverPanel } from './ReferenceCoverPanel';
 import { NarrationTemplatePicker } from './NarrationTemplatePicker';
 import { ReferenceSourcesPanel } from './ReferenceSourcesPanel';
@@ -19,7 +19,7 @@ const initialDraft: ReferenceDraft = { referenceAssetId: '', script: '', title: 
 function taskDraft(item: ReferenceTask): ReferenceDraft {
   return { packagingMode: item.packagingMode || 'manual', soundEffects: item.soundEffects !== false, referenceAssetId: item.referenceAssetId, script: item.script, title: item.title, captionStyleId: item.captionStyleId, musicTrackId: item.musicTrackId, industry: item.industry || initialDraft.industry, business: item.business || '', voiceStyleId: item.voiceStyleId || 'original', emphasisPhrases: item.emphasisPhrases || [], referenceSource: item.referenceSource, includeCover: item.includeCover ?? false, coverStyle: item.coverStyle || 'paper', remakeOfTaskId: item.remakeOfTaskId };
 }
-export function ReferenceHumanPage() {
+export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; reference: NarrationReference } } = {}) {
   const [capabilities, setCapabilities] = useState<ReferenceCapabilities | null>(null);
   const [assets, setAssets] = useState<ReferenceAsset[]>([]);
   const [tasks, setTasks] = useState<ReferenceTask[]>([]);
@@ -110,6 +110,18 @@ export function ReferenceHumanPage() {
     const timer = window.setTimeout(save, 250);
     return () => { clearTimeout(timer); save(); };
   }, [ready, draft, preferences, task?.id, pendingScript, suggestion]);
+  // 从爆款页带入的参考：已开始制作的任务不动（等同「新建口播」，原任务和记录保留），只换参考，不自动写稿。
+  const consumedIncoming = useRef(0);
+  useEffect(() => {
+    if (!ready || !incoming || consumedIncoming.current === incoming.id || busyRef.current) return;
+    consumedIncoming.current = incoming.id;
+    if (locked) newDraft();
+    edit({ referenceSource: incoming.reference });
+    setSuggestion(undefined);
+    setStep(personReady ? 2 : 1);
+    setNotice(personReady ? `已带入爆款「${incoming.reference.title.slice(0, 24)}」。确认产品资料后点「生成原创稿」：只仿它的结构，内容用你的资料。`
+      : `已带入爆款「${incoming.reference.title.slice(0, 24)}」。先选好出镜人物和声音，再到写稿这一步生成原创稿。`);
+  }, [ready, incoming?.id, busy]);
   function newDraft(from?: ReferenceTask) {
     setTask(null); setDraft(from ? { ...taskDraft(from), remakeOfTaskId: from.id } : { ...initialDraft, ...preferences });
     setSpeech(''); setConsent(false); setSuggestion(undefined); setPreviewFirst(false);
