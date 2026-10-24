@@ -4,10 +4,8 @@ import type { DigitalHumanApi, DigitalHumanAsset, DigitalHumanCapabilities, Digi
 import './DigitalHumanPage.css';
 import { VideoCoverDetails } from './VideoPresentation';
 import { CreationSteps, CreationStepTitle, TutorialHelp } from './CreationGuide';
-import { ReferenceHumanPage } from './ReferenceHumanPage';
 import { ViralPipelinePage } from './ViralPipelinePage';
 import { NarrationSimplePage } from './NarrationSimplePage';
-import type { NarrationReference } from './reference-human-types';
 
 function api(): DigitalHumanApi {
   const value = (window as unknown as { xiaoxiDigitalHuman?: DigitalHumanApi }).xiaoxiDigitalHuman;
@@ -25,16 +23,16 @@ const ACTIVE = new Set(['audio_preparing', 'audio_transcribing', 'preview_prepar
 const SCENE_IMAGES: Record<string, string> = Object.fromEntries(['studio', 'store', 'display'].map((id) => [id, `${import.meta.env.BASE_URL}digital-human-scenes/${id}.png`]));
 
 export function DigitalHumanPage() {
-  // 客户版只有极简出片一个页面；开发版保留内部工具（扒爆款、做文案库）和原来的完整页面。
-  const [mode, setMode] = useState<'simple' | 'reference' | 'viral' | 'image'>('simple');
-  // 爆款页点「只仿写」：带着这条爆款切到本人数字分身的写稿步骤，由用户自己点写稿。
-  const [incoming, setIncoming] = useState<{ id: number; reference: NarrationReference }>();
-  const root = useRef<HTMLDivElement>(null);
+  // 数字人视频只有极简出片一个页面。开发版按 Ctrl+Shift+L 打开内部的扒爆款 / 文案库工具，页面上没有入口。
+  const [internal, setInternal] = useState(false);
   useEffect(() => {
-    root.current?.querySelectorAll<HTMLMediaElement>('[hidden] video, [hidden] audio').forEach((media) => media.pause());
-  }, [mode]);
-  if (!DEVELOPMENT_EDITION) return <NarrationSimplePage />;
-  return <div ref={root}><nav className="dh-mode-nav" aria-label="数字人制作方式"><button type="button" aria-pressed={mode === 'simple'} onClick={() => setMode('simple')}>极简出片</button><button type="button" aria-pressed={mode === 'reference'} onClick={() => setMode('reference')}>本人数字分身</button><button type="button" aria-pressed={mode === 'viral'} onClick={() => setMode('viral')}>扒爆款（内部）</button><button type="button" aria-pressed={mode === 'image'} onClick={() => setMode('image')}>图片数字人／历史任务</button></nav><div hidden={mode !== 'simple'}><NarrationSimplePage /></div><div hidden={mode !== 'reference'}><ReferenceHumanPage incoming={incoming} /></div><div hidden={mode !== 'viral'}><ViralPipelinePage onImitate={(reference) => { setIncoming({ id: Date.now(), reference }); setMode('reference'); }} onManagePerson={() => setMode('reference')} /></div><div hidden={mode !== 'image'}><ImageDigitalHumanPage /></div></div>;
+    if (!DEVELOPMENT_EDITION) return;
+    const onKey = (event: KeyboardEvent) => { if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'l') setInternal((open) => !open); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  if (DEVELOPMENT_EDITION && internal) return <ViralPipelinePage onImitate={() => {}} onManagePerson={() => setInternal(false)} />;
+  return <NarrationSimplePage />;
 }
 
 function ImageDigitalHumanPage() {
