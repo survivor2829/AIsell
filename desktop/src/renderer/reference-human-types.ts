@@ -13,6 +13,8 @@ export type ReferenceAsset = {
 export type ReferenceDraft = { referenceAssetId: string; script: string; title?: string; captionStyleId?: string; musicTrackId?: string; id?: string; industry?: string; business?: string; voiceStyleId?: string; emphasisPhrases?: string[]; referenceSource?: NarrationReference; includeCover?: boolean; coverStyle?: string; remakeOfTaskId?: string; packagingMode?: 'auto' | 'manual'; soundEffects?: boolean };
 export type ScriptInput = { generationIntentId?: string; recoverOnly?: boolean; referenceAssetId: string; industry: string; business: string; referenceSource?: NarrationReference };
 export type ScriptSuggestion = { title: string; script: string; emphasisPhrases: string[]; referenceSource?: NarrationReference };
+export type ScriptOriginality = { overlapRatio: number; limit: number; attempts: 1 | 2; passed: boolean; fragments: string[] };
+export type ScriptStructurePart = { part: '钩子' | '痛点' | '方案' | '证据' | '行动号召'; method: string };
 export type ReferenceWorkspace = { preferences: Partial<Pick<ReferenceDraft, 'referenceAssetId' | 'captionStyleId' | 'musicTrackId' | 'includeCover' | 'coverStyle' | 'packagingMode' | 'soundEffects'>>; draft?: ReferenceDraft; taskId?: string; pendingScript?: ScriptInput; suggestion?: ScriptSuggestion };
 export type ReferenceTask = ReferenceDraft & {
   packagingPlan?: NarrationPlan;
@@ -58,7 +60,7 @@ export type ReferenceHumanApi = {
   get(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   quote(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   prepare(payload: { id: string; quoteRevision: string; customerConsent: boolean; generateVideo: boolean }): Promise<DigitalHumanResult<ReferenceTask>>;
-  writeScript(payload: ScriptInput, workspace?: ReferenceWorkspace): Promise<DigitalHumanResult<ScriptSuggestion & { quota: ScriptQuota }>>;
+  writeScript(payload: ScriptInput, workspace?: ReferenceWorkspace): Promise<DigitalHumanResult<ScriptSuggestion & { quota: ScriptQuota; originality?: ScriptOriginality; structure?: ScriptStructurePart[] }>>;
   confirm(payload: { id: string; previewRevision: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   refresh(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   resume(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;

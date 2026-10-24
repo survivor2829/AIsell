@@ -15,6 +15,7 @@ const { createNarrationSources } = require('./narration-sources.cjs');
 const costs = require('./reference-human-costs.cjs');
 const packaging = require('../../remotion-packaging/narration-plan.cjs');
 const vision = require('./narration-vision.cjs');
+const { scriptOriginality, scriptStructure } = require('./narration-originality.cjs');
 
 const TASK_ID = /^rh_[a-f0-9-]{36}$/u, ASSET_ID = /^rha_[a-f0-9-]{36}$/u;
 const RUNNING = new Set(['audio_preparing', 'video_submitting', 'video_generating', 'packaging']);
@@ -164,6 +165,8 @@ function createReferenceHumanService(options = {}) {
     }
     const pending = writeScriptOnce(input, body, key, reference, identity).catch((error) => {
       if (String(error.message).includes('script_response_invalid')) error.message = '云端文案未通过完整性检查，原请求已保留，未自动重试。可以先手填文案；调整资料后重新写稿会使用新的套餐额度。';
+      // 云端已自动重写过一次仍和原文重复太多：这条停下，不再扣额度。
+      else if (String(error.message).includes('script_not_original')) error.message = '这条不适合仿写：改写后仍和原文重复太多，已停止，不会再扣写稿额度。可以换一条爆款，或直接填写文案。';
       throw error;
     }).finally(() => scriptRequests.delete(key));
     scriptRequests.set(key, { promise: pending, identity }); return pending;
@@ -190,7 +193,8 @@ function createReferenceHumanService(options = {}) {
       if (quota?.status !== 'available') throw fail('reference_script_quota_unavailable', quota?.status === 'exhausted' ? '本期写稿额度已用完，可直接填写文案，不会转为付费写稿。' : '套餐写稿额度尚未就绪，可先直接填写文案。');
       record = { id: randomUUID(), createdAt: new Date().toISOString(), included: true, requestHash, body, reference, identity };
       writeJsonAtomic(journal, record);
-      try { response = await provider.request('/narration/script', { method: 'POST', operationId: record.id, body }); }
+      // 云端可能在同一笔操作里重写一次（两次上游调用，各最长 180 秒），等待时间要盖住两次。
+      try { response = await provider.request('/narration/script', { method: 'POST', operationId: record.id, body, timeoutMs: 420000 }); }
       catch (error) { if (!error.outcomeUnknown) { record.rejected = true; writeJsonAtomic(journal, record); } throw error; }
     }
     if (!response || response.status === 'pending') throw fail('reference_submission_unknown', '原文案请求仍待核对，请稍后查询；不会重复扣写稿额度。', { outcomeUnknown: true });
@@ -199,7 +203,10 @@ function createReferenceHumanService(options = {}) {
     record.response = response; writeJsonAtomic(journal, record);
     // A replayed receipt freezes the wording, not the account's remaining quota.
     const currentQuota = await scriptQuota();
-    return { title: response.title, script: response.script, emphasisPhrases, quota: currentQuota.quota, industry, business, referenceSource: reference };
+    // 有参考时附上原创度（按最终正文在本地复算）和结构拆解；旧版云端没有这两项也照常返回正文。
+    const originality = scriptOriginality(response.script, reference, response.originality), structure = scriptStructure(response.structure);
+    return { title: response.title, script: response.script, emphasisPhrases, quota: currentQuota.quota, industry, business, referenceSource: reference,
+      ...(originality ? { originality } : {}), ...(structure.length ? { structure } : {}) };
   }
   function create(input) {
     assertOpen(); assertKeys(input, DRAFT_KEYS);

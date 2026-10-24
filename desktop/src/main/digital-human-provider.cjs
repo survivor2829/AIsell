@@ -193,10 +193,10 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
     return missing.length ? { ready: false, code: 'digital_human_gateway_routes_missing', message: '数字人生成接口尚未接通，暂时无法生成人物与产品预览，可以先保存草稿。', missing }
       : { ready: true, code: '', message: '' };
   }
-  async function request(route, { method = 'GET', body, operationId, headers = {} } = {}) {
+  async function request(route, { method = 'GET', body, operationId, headers = {}, timeoutMs } = {}) {
     // Queries reuse an existing order; paid submissions must remain one-shot.
     for (let attempt = 0; ; attempt += 1) {
-      try { return await requestOnce(route, { method, body, operationId, headers }); }
+      try { return await requestOnce(route, { method, body, operationId, headers, timeoutMs }); }
       catch (error) {
         const transient = error.code === 'digital_human_request_unconfirmed'
           || (['digital_human_provider_error', 'digital_human_response_invalid'].includes(error.code)
@@ -206,12 +206,12 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
       }
     }
   }
-  async function requestOnce(route, { method, body, operationId, headers }) {
+  async function requestOnce(route, { method, body, operationId, headers, timeoutMs = 270000 }) {
     let response;
     try {
       response = await gatewayClient.fetch(gatewayClient.url(route), { method, body: body instanceof Buffer ? body : body == null ? undefined : JSON.stringify(body),
         headers: { Accept: 'application/json', ...(body instanceof Buffer ? {} : { 'Content-Type': 'application/json' }), ...headers,
-          ...(operationId ? { 'X-Xiaoxi-Operation-Id': operationId } : {}) }, timeoutMs: 270000, maxBytes: 16 * 1024 * 1024 });
+          ...(operationId ? { 'X-Xiaoxi-Operation-Id': operationId } : {}) }, timeoutMs, maxBytes: 16 * 1024 * 1024 });
     } catch (error) {
       if (error.code === 'PAID_CALLS_DISABLED') throw error;
       throw fail('digital_human_request_unconfirmed', '服务连接中断，请刷新核对进度，当前请求不会自动重复提交。', { outcomeUnknown: method === 'POST' });
