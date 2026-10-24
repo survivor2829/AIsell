@@ -16,6 +16,11 @@ const STEPS = [
 const VIDEO_STATES = new Set(['video_submitting', 'video_generating']);
 const ASR_SECONDS = 180;
 const DEFAULT_MAX_CNY = 6;
+// 爆款原链接只接受平台作品页。
+function postUrl(value, platform) {
+  try { const u = new URL(String(value)); return u.protocol === 'https:' && (platform === 'douyin' ? ['www.douyin.com', 'douyin.com'] : ['www.xiaohongshu.com', 'xiaohongshu.com']).includes(u.hostname); }
+  catch { return false; }
+}
 const problem = (code, message, extra = {}) => Object.assign(new Error(message), { code, ...extra });
 const chars = (text) => [...String(text || '')];
 const clean = (text) => String(text || '').replace(/[\u0000-\u001f\u007f]/gu, '').trim();
@@ -45,6 +50,10 @@ function createViralPipeline(options) {
   const dir = path.join(root, 'viral-jobs');
   fs.mkdirSync(dir, { recursive: true });
   let pumping = null, closed = false;
+  // 软件正在关闭时，任何付费步骤都不再开始；任务回到排队，下次打开继续。
+  const stopIfClosing = () => { if (closed) throw problem('viral_closed', '软件关闭，下次打开后继续。', { paused: true }); };
+  // 同一条爆款：已经建过口播任务、用过写稿额度，或者还能重试的，都不再新建第二条，避免重复扣费。
+  const holdsItem = (job) => job.status !== 'done' && (['queued', 'running'].includes(job.status) || !job.final || Boolean(job.taskId || job.writeIntent));
 
   const file = (id) => { if (!JOB_ID.test(id)) throw problem('viral_job_not_found', '找不到这条一键成片任务。'); return path.join(dir, `${id}.json`); };
   const workDir = (id) => { const d = path.join(dir, id); fs.mkdirSync(d, { recursive: true }); return d; };
@@ -60,7 +69,7 @@ function createViralPipeline(options) {
       progress: job.progress || 0, message: job.message || '', error: job.error || '', retryable: job.status === 'failed' && !job.final,
       transcriptSource: job.transcriptSource || null, script: job.script ? { title: job.script.title, originality: job.script.originality || null } : null,
       taskId: job.taskId || null, generatedVideoId: job.generatedVideoId || null, coverReady: Boolean(job.coverFile && fs.existsSync(job.coverFile)), coverError: job.coverError || '',
-      quoteMaximumCny: job.quoteMaximumCny ?? null, maxCny: job.maxCny, createdAt: job.createdAt, updatedAt: job.updatedAt };
+      quoteMaximumCny: job.quoteMaximumCny ?? null, maxCny: job.maxCny, holdsItem: holdsItem(job), createdAt: job.createdAt, updatedAt: job.updatedAt };
   }
   const list = () => ({ items: all().map(publicJob).reverse() });
 
@@ -82,10 +91,12 @@ function createViralPipeline(options) {
         save(job, { message: '正在把原口播转成文字' });
         let response;
         if (job.asr.submitted) {
-          // 重启后：同一识别操作只查回执，不重新提交。
-          response = await provider.request(`/operations/${job.asr.id}`);
+          // 重启后：同一识别操作只查回执，不重新提交。回执证明原请求被拒绝（没扣费）时，下次重试换新操作号。
+          try { response = await provider.request(`/operations/${job.asr.id}`); }
+          catch (error) { if (error.originalRequestRejected) save(job, { asr: null }); throw error; }
           if (!response || response.status === 'pending') throw problem('viral_asr_pending', '原口播识别结果还在核对，稍后点重试查询；不会重复扣费。', { outcomeUnknown: true });
         } else {
+          stopIfClosing();
           save(job, { asr: { ...job.asr, submitted: true } });
           try {
             response = await provider.request('/volcengine/asr/recognize/flash', { method: 'POST', operationId: job.asr.id,
@@ -109,6 +120,7 @@ function createViralPipeline(options) {
   // ---- 2. 仿写（复用写稿回执：同一意图只扣一次额度） ----
   async function write(job) {
     if (!job.writeIntent) save(job, { writeIntent: randomUUID() });
+    stopIfClosing();
     save(job, { message: '正在仿写：只仿结构，内容用你的资料' });
     const item = job.item;
     const referenceSource = { platform: item.platform, title: chars(item.title).slice(0, 200).join(''), body: chars(job.transcript).slice(0, 6000).join(''), url: item.url, author: item.author || '',
@@ -122,6 +134,7 @@ function createViralPipeline(options) {
 
   // ---- 3—5. 配音、数字人、剪辑包装：交给本人口播任务 ----
   async function produce(job) {
+    stopIfClosing();
     if (!job.taskId) {
       const task = reference.create({ referenceAssetId: job.assetId, script: job.script.script, title: chars(job.script.title).slice(0, 24).join(''), emphasisPhrases: job.script.emphasisPhrases,
         industry: job.industry, business: job.business, includeCover: false, packagingMode: 'auto', soundEffects: true, referenceSource: { platform: job.item.platform, title: chars(job.item.title).slice(0, 200).join(''), body: '', url: job.item.url, author: job.item.author || '', provenance: '扒爆款' } });
@@ -135,6 +148,7 @@ function createViralPipeline(options) {
       save(job, { quoteMaximumCny: Number.isFinite(maximum) ? maximum : null });
       if (!(maximum > 0)) throw problem('viral_quote_missing', '没有拿到这条的报价，没有开始付费制作。');
       if (maximum > job.maxCny) throw problem('viral_budget', `这条最多要 ${maximum} 元，超过每条 ${job.maxCny} 元的上限，没有开始付费制作。`, { final: true });
+      stopIfClosing();
       save(job, { message: '正在配音' });
       // 声音授权只认用户在本人数字分身里确认过的记录（customerConsent 传 false，不代为同意）。
       try { task = await reference.prepare(job.taskId, task.quoteRevision, false, true); }
@@ -187,21 +201,27 @@ function createViralPipeline(options) {
   function pump() {
     if (pumping || closed) return pumping;
     pumping = (async () => {
-      for (let next; !closed && (next = all().find((j) => j.status === 'running') || all().find((j) => j.status === 'queued'));) await runJob(next);
+      for (let next; !closed && (next = all().find((j) => j.status === 'running') || all().find((j) => j.status === 'queued'));) {
+        // 记录写不进磁盘时停下排队，不在同一条任务上反复空转。
+        try { await runJob(next); } catch { break; }
+      }
     })().finally(() => { pumping = null; });
     return pumping;
   }
 
   function start({ item, assetId, industry, business, maxCny }) {
-    if (!item?.id || !['douyin', 'xiaohongshu'].includes(item.platform) || typeof item.url !== 'string') throw problem('viral_item_invalid', '请从爆款卡片上点「一键成片」。');
-    if (!assetId) throw problem('viral_person_missing', '请先在「本人数字分身」里保存出镜人物和声音。');
-    const duplicate = all().find((j) => j.item.id === item.id && ['queued', 'running'].includes(j.status));
+    if (!item || !/^[A-Za-z0-9]{1,64}$/u.test(String(item.id || '')) || !['douyin', 'xiaohongshu'].includes(item.platform) || !postUrl(item.url, item.platform)) throw problem('viral_item_invalid', '请从爆款卡片上点「一键成片」。');
+    // 人物和声音授权在开始前就核对，免得先花了识别费和写稿额度、到配音才被拦下。
+    const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
+    if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先在「本人数字分身」里保存出镜人物和声音。');
+    if (!person.voiceConsented) throw problem('viral_voice_consent', '这位出镜人物还没确认声音授权，请先在「本人数字分身」里做一条口播并确认授权。');
+    const duplicate = all().find((j) => j.item.id === String(item.id) && holdsItem(j));
     if (duplicate) return publicJob(duplicate);
     const limit = Number(maxCny) > 0 ? Math.min(Number(maxCny), 50) : DEFAULT_MAX_CNY;
     const job = { id: `vp_${randomUUID()}`, createdAt: new Date().toISOString(), status: 'queued', step: 'extract', progress: 0, maxCny: limit,
       assetId, industry: clean(industry).slice(0, 80) || '清洁设备渠道商', business: clean(business).slice(0, 2000),
       item: { id: String(item.id), platform: item.platform, url: item.url, title: clean(item.title).slice(0, 200), body: clean(item.body).slice(0, 6000), author: clean(item.author?.name ?? item.author).slice(0, 120),
-        publishedAt: item.publishedAt || null, likes: item.metrics?.likes ?? null, media: item.media?.url ? { url: item.media.url, durationSeconds: item.media.durationSeconds ?? null } : null } };
+        publishedAt: typeof item.publishedAt === 'string' && Number.isFinite(Date.parse(item.publishedAt)) ? item.publishedAt.slice(0, 64) : null, likes: item.metrics?.likes ?? null, media: typeof item.media?.url === 'string' ? { url: item.media.url.slice(0, 2000), durationSeconds: Number.isFinite(item.media.durationSeconds) ? item.media.durationSeconds : null } : null } };
     save(job); void pump(); return publicJob(job);
   }
 
@@ -220,6 +240,8 @@ function createViralPipeline(options) {
   function remove(id) {
     const job = read(id);
     if (job.status === 'running') throw problem('viral_job_running', '正在制作的任务不能删除。');
+    // 已建口播任务但还没做完的保留记录：删了会让同一条爆款能再点一次、重复花钱。
+    if (job.taskId && job.status !== 'done') throw problem('viral_job_paid', '这条已经开始付费制作，请重试完成或在本人数字分身里处理，不能移出队列。');
     fs.rmSync(path.join(dir, id), { recursive: true, force: true }); fs.rmSync(file(id), { force: true }); onChange(list()); return { removed: true };
   }
   function coverPath(id) { const job = read(id); if (!job.coverFile || !fs.existsSync(job.coverFile)) throw problem('viral_cover_missing', '封面还没有生成。'); return job.coverFile; }

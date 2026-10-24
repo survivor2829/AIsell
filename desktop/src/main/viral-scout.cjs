@@ -252,8 +252,17 @@ function createViralScout({ BrowserWindow, session, onProgress = () => {} } = {}
     if (!PLATFORMS[platform] || !mediaAllowed(item?.media?.url, platform)) throw problem('VIRAL_MEDIA_UNAVAILABLE', '这条爆款没有可下载的视频。');
     if (!session) throw problem('VIRAL_BROWSER_UNAVAILABLE', '当前环境没有可用的平台会话，请重新打开软件。');
     const ses = session.fromPartition(`persist:narration-source-${platform}`);
-    const response = await ses.fetch(item.media.url, { headers: { Referer: platform === 'douyin' ? 'https://www.douyin.com/' : 'https://www.xiaohongshu.com/' }, signal: AbortSignal.timeout(timeoutMs) })
-      .catch(() => { throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败，请稍后重试。`); });
+    // 跳转逐跳核对：每一跳都必须仍是平台官方地址，不会被带去其他网站或本机内网。
+    const signal = AbortSignal.timeout(timeoutMs), headers = { Referer: platform === 'douyin' ? 'https://www.douyin.com/' : 'https://www.xiaohongshu.com/' };
+    let url = item.media.url, response;
+    for (let hop = 0; ; hop += 1) {
+      response = await ses.fetch(url, { headers, signal, redirect: 'manual' })
+        .catch(() => { throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败，请稍后重试。`); });
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const next = (() => { try { return new URL(response.headers.get('location') || '', url).href; } catch { return ''; } })();
+      if (hop >= 5 || !mediaAllowed(next, platform)) throw problem('VIRAL_MEDIA_UNAVAILABLE', '视频地址跳到了平台以外的网站，已停止下载。');
+      url = next;
+    }
     if (!response.ok || !response.body) throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败（${response.status}），链接可能已过期，请重新扒一次。`);
     // 同步写入：出错时先关文件再删，不会留下半截文件或晚到的写入错误。
     const partial = `${destination}.partial`;

@@ -71,8 +71,9 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
   const personReady = Boolean(person && person.available !== false && person.voiceSampleReady && person.seconds >= referencePolicy.limits.narrationMinSeconds);
   const blockedPlatforms = PLATFORMS.filter((p) => scan.blocked[p.id] || result?.platforms.some((r) => r.platform === p.id && r.status === 'blocked'));
   const estimate = estimateCny(person?.narrationPlan?.maximumSeconds);
-  const oneClickBlocked = !personReady ? '先在「本人数字分身」里准备好出镜人物和声音' : '';
-  const queuedIds = new Set(jobs.filter((j) => ['queued', 'running'].includes(j.status)).map((j) => j.itemId));
+  const oneClickBlocked = !personReady ? '先在「本人数字分身」里准备好出镜人物和声音'
+    : !person?.voiceConsented ? '先在「本人数字分身」里做一条口播并确认声音授权' : '';
+  const queuedIds = new Set(jobs.filter((j) => j.holdsItem).map((j) => j.itemId));
   async function oneClick(item: ViralItem) {
     setError('');
     try { await unwrap(referenceApi().viralPipelineStart({ item, maxCny })); setNotice(`已加入一键成片队列：${item.title.slice(0, 20)}`); }

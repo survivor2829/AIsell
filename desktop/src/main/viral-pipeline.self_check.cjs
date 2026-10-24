@@ -14,7 +14,7 @@ const ORIGINAL = '物业经理千万别再招保洁了，一台洗地机顶六�
 const item = (id, patch = {}) => ({ id, platform: 'douyin', url: `https://www.douyin.com/video/${id}`, title: '物业经理别再招保洁了', body: '#物业 #洗地机', author: { name: '保洁老周' },
   metrics: { likes: 83900 }, media: { url: 'https://v3-web.douyinvod.com/a.mp4', durationSeconds: 40 }, ...patch });
 
-function world({ quoteCny = 4, original = true, attentionOnce = false, asrRejectOnce = false } = {}) {
+function world({ quoteCny = 4, original = true, attentionOnce = false, asrRejectOnce = false, consented = true, queryRejected = false } = {}) {
   const calls = { download: 0, ffmpeg: 0, asr: [], asrQuery: 0, write: [], create: 0, quote: 0, prepare: 0, resume: 0, refresh: 0, cover: 0, notify: [] };
   const tasks = new Map();
   let attention = attentionOnce, asrReject = asrRejectOnce;
@@ -27,6 +27,7 @@ function world({ quoteCny = 4, original = true, attentionOnce = false, asrReject
     if (task.status === 'completed') task.generatedVideoId = `generated_video_${task.id}`;
   };
   const reference = {
+    assets: () => ({ items: [{ id: 'rha_1', available: true, voiceSampleReady: true, voiceConsented: consented }] }),
     writeScript: async (input) => { calls.write.push(input); return { title: '买还是租？算完这笔账', script: '你还在为夜班保洁排不开人发愁吗？先看地面材质，再算清洁面积。', emphasisPhrases: ['洗地机租赁'],
       originality: original ? { overlapRatio: 0.04, passed: true, attempts: 1 } : { overlapRatio: 0.4, passed: false, attempts: 2 }, structure: [{ part: '钩子', method: '反问' }] }; },
     create: (input) => { calls.create++; const task = { id: `rh_task_${calls.create}`, status: 'draft', input }; tasks.set(task.id, task); return { ...task }; },
@@ -38,7 +39,7 @@ function world({ quoteCny = 4, original = true, attentionOnce = false, asrReject
     refresh: async () => { calls.refresh++; }
   };
   const provider = { request: async (route, init = {}) => {
-    if (route.startsWith('/operations/')) { calls.asrQuery++; return { result: { text: ORIGINAL } }; }
+    if (route.startsWith('/operations/')) { calls.asrQuery++; if (queryRejected) { queryRejected = false; throw Object.assign(new Error('rejected receipt'), { originalRequestRejected: true }); } return { result: { text: ORIGINAL } }; }
     calls.asr.push(init.operationId);
     if (asrReject) { asrReject = false; throw Object.assign(new Error('rejected'), { outcomeUnknown: false }); }
     assert.ok(init.body.audio.data.length > 0);
@@ -149,13 +150,71 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.equal(pipeline.list().items.length, 0);
     await pipeline.close();
   }
+  // 8. 失败后再点同一条：不新建第二条（不会再扣写稿额度或重新配音）；已开始付费的不能移出队列
+  {
+    const w = world({ attentionOnce: true }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const job = start(pipeline);
+    assert.equal((await until(pipeline, job.id, ['done', 'failed'])).status, 'failed');
+    assert.equal(start(pipeline).id, job.id, '同一条爆款返回原任务');
+    assert.equal(pipeline.list().items.length, 1);
+    assert.equal(pipeline.list().items[0].holdsItem, true);
+    assert.throws(() => pipeline.remove(job.id), { code: 'viral_job_paid' });
+    assert.deepEqual([w.calls.write.length, w.calls.create], [1, 1]);
+    await pipeline.close();
+  }
+  // 9. 识别已提交后软件退出：重启只查回执，不重新提交；回执证明原请求被拒绝时换新操作号
+  for (const rejected of [false, true]) {
+    const w = world({ queryRejected: rejected }), root = newRoot();
+    const first = createViralPipeline({ root, ...w.deps });
+    const job = start(first);
+    await first.close();
+    const file = path.join(root, 'viral-jobs', `${job.id}.json`);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // 模拟：识别请求已发出、结果没来得及写盘就退出
+    Object.assign(saved, { status: 'running', step: 'extract', transcript: undefined, script: undefined, taskId: undefined, generatedVideoId: undefined, asr: { id: 'op-before-crash', submitted: true } });
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const asrBefore = w.calls.asr.length;
+    const second = createViralPipeline({ root, ...w.deps });
+    second.resume();
+    let state = await until(second, job.id, ['done', 'failed']);
+    if (rejected) {
+      assert.equal(state.status, 'failed');
+      assert.equal(w.calls.asr.length, asrBefore, '查到被拒绝时这一轮不自动重发');
+      await second.retry(job.id);
+      state = await until(second, job.id, ['done', 'failed']);
+      assert.equal(w.calls.asr.length, asrBefore + 1); assert.notEqual(w.calls.asr.at(-1), 'op-before-crash');
+    } else assert.equal(w.calls.asr.length, asrBefore, '只查回执，不重新提交识别');
+    assert.equal(state.status, 'done', state.error);
+    assert.ok(w.calls.asrQuery >= 1);
+    await second.close();
+  }
+  // 10. 关闭后不再开始任何付费步骤
+  {
+    const w = world(), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const realDownload = w.deps.scout.downloadMedia;
+    let closing;
+    w.deps.scout.downloadMedia = async (...args) => { closing = pipeline.close(); return realDownload(...args); };
+    const job = start(pipeline);
+    await closing; await new Promise((r) => setTimeout(r, 20));
+    assert.equal(pipeline.list().items.find((j) => j.id === job.id).status, 'queued');
+    assert.deepEqual([w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [0, 0, 0, 0]);
+  }
+  // 11. 人物没确认声音授权：开始前就拦下，不花识别费和写稿额度
+  {
+    const w = world({ consented: false }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    assert.throws(() => start(pipeline), { code: 'viral_voice_consent' });
+    assert.deepEqual([w.calls.download, w.calls.asr.length, w.calls.write.length], [0, 0, 0]);
+    await pipeline.close();
+  }
   // 输入校验
   {
     const w = world(), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
     assert.throws(() => pipeline.start({ item: { id: '1', platform: 'weibo', url: 'x' }, assetId: 'a' }), { code: 'viral_item_invalid' });
     assert.throws(() => pipeline.start({ item: item('1'), assetId: '' }), { code: 'viral_person_missing' });
+    assert.throws(() => pipeline.start({ item: item('1', { url: 'https://evil.example.com/video/1' }), assetId: 'rha_1' }), { code: 'viral_item_invalid' });
+    assert.throws(() => pipeline.start({ item: item('../../x'), assetId: 'rha_1' }), { code: 'viral_item_invalid' });
     await assert.rejects(pipeline.retry('vp_not-a-job'), { code: 'viral_job_not_found' });
     await pipeline.close();
   }
-  console.log('viral pipeline self-check passed: one-click end to end, budget gate before paid work, unoriginal stop, restart resumes without resubmitting, resume failed task, rejected ASR gets a new operation, note text path, cover words');
+  console.log('viral pipeline self-check passed: no second job for a paid item, ASR receipt-only recovery and rejected-receipt reset, no paid step after close, consent checked before spending, one-click end to end, budget gate before paid work, unoriginal stop, restart resumes without resubmitting, resume failed task, rejected ASR gets a new operation, note text path, cover words');
 })().catch((error) => { console.error(error); process.exit(1); });

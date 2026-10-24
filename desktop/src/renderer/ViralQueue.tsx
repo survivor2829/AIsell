@@ -50,7 +50,7 @@ export function ViralQueue({ api, jobs, onError }: { api: ReferenceHumanApi; job
           <div className="vq-actions">
             {job.retryable && <button type="button" className="dh-button" data-xiaoxi-digital-human-action="reference-viral-pipeline-retry" disabled={busy === job.id}
               onClick={() => void act(job.id, () => unwrap(api.viralPipelineRetry({ id: job.id })))}>重试</button>}
-            {job.status !== 'running' && <button type="button" className="dh-text-button" disabled={busy === job.id}
+            {job.status !== 'running' && !(job.taskId && job.status !== 'done') && <button type="button" className="dh-text-button" disabled={busy === job.id}
               onClick={() => void act(job.id, () => unwrap(api.viralPipelineRemove({ id: job.id })))}>移出队列</button>}
           </div>
         </div>

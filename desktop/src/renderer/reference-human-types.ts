@@ -6,7 +6,7 @@ export type SourceState = { connected: boolean; message: string; platforms: { id
 export type SourceResults = { days: number; suggest90Days: boolean; groups: { platform: string; name: string; status: string; message: string; items: NarrationReference[]; unverified: NarrationReference[] }[] };
 export type ReferenceAsset = {
   id: string; name: string; seconds: number; width: number; height: number; previewDataUrl: string;
-  available?: boolean; voiceSampleReady: boolean; voice: { usable: boolean; provider: string } | null;
+  available?: boolean; voiceSampleReady: boolean; voice: { usable: boolean; provider: string } | null; voiceConsented?: boolean;
   narrationPlan?: { minimumSeconds: number; maximumSeconds: number; maxCharacters: number };
   audioQuality?: { activeSeconds: number; warnings: string[]; note: string };
 };
@@ -41,7 +41,7 @@ export type ViralItem = { id: string; platform: string; url: string; title: stri
 export type ViralJobStep = { id: 'extract' | 'write' | 'voice' | 'video' | 'package' | 'cover'; label: string; state: 'done' | 'active' | 'failed' | 'waiting' };
 export type ViralJob = { id: string; itemId: string; title: string; platform: string; url: string; status: 'queued' | 'running' | 'done' | 'failed'; step: string; steps: ViralJobStep[];
   progress: number; message: string; error: string; retryable: boolean; transcriptSource: 'asr' | 'note' | 'caption' | null; script: { title: string; originality: ScriptOriginality | null } | null;
-  taskId: string | null; generatedVideoId: string | null; coverReady: boolean; coverError: string; quoteMaximumCny: number | null; maxCny: number; createdAt: string; updatedAt: string };
+  taskId: string | null; generatedVideoId: string | null; coverReady: boolean; coverError: string; quoteMaximumCny: number | null; maxCny: number; holdsItem: boolean; createdAt: string; updatedAt: string };
 export type ViralRemoved = ViralBrief & { reason: 'duplicate' | 'outdated' | 'irrelevant' | 'not_viral'; label: string; twinId?: string };
 export type ViralScanResult = { startedAt: string; finishedAt: string; keywords: string[]; days: number; stopped: boolean;
   platforms: { platform: string; name: string; status: 'ok' | 'blocked'; message?: string; collected: number }[];

@@ -63,7 +63,9 @@ function createReferenceHumanService(options = {}) {
       previewDataUrl: fs.existsSync(file(item.posterFile)) ? `data:image/jpeg;base64,${fs.readFileSync(file(item.posterFile)).toString('base64')}` : '',
       audioQuality: item.audioQuality, narrationPlan: narrationPlan(item.seconds),
       voiceSampleReady: (item.audioQuality?.activeSeconds ?? Math.min(item.seconds, policy.limits.voiceMaxSeconds)) >= policy.limits.voiceMinSeconds,
-      voice: item.voice ? { usable: Boolean(currentVoice(item.voice)), provider: item.voice.provider || 'volcengine' } : null };
+      voice: item.voice ? { usable: Boolean(currentVoice(item.voice)), provider: item.voice.provider || 'volcengine' } : null,
+      // 只告诉页面和一键成片「是否已确认过声音授权」，不暴露授权时间或声音编号。
+      voiceConsented: Boolean(item.voice?.consentAt) };
   }
   function records(kind) {
     const directory = file(kind);
