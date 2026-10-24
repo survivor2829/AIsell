@@ -2750,6 +2750,17 @@ function createAutoReplyController(options = {}) {
     }
   }
 
+  // A pause, update or quit before the reply was sent is not an answer. Keep
+  // the occurrence non-terminal and its durable in-flight observation, so a
+  // resume re-offers it from the driver queue and a restart restores it.
+  function deferInterruptedReply(fingerprint, candidate) {
+    retryGenerations.delete(fingerprint);
+    if (state.processed[fingerprint]) state.processed[fingerprint].status = "retryable";
+    requeueCandidate(candidate);
+    save();
+    return publicState();
+  }
+
   function enqueueHandoff(metadata, payload) {
     if (pendingHandoffQueue.some((item) => item.metadata.key === metadata.key)) return false;
     if (pendingHandoffQueue.length >= MAX_STATE_ENTRIES) throw new Error("人工提醒待发送队列异常，请人工检查");
@@ -2937,7 +2948,12 @@ function createAutoReplyController(options = {}) {
         if (isCurrentRun()) recordScanResult({ ok: false, reason: "scan_exception" }, "scan");
         throw error;
       }
-      if (!isCurrentRun()) return publicState();
+      if (!isCurrentRun()) {
+        // The driver has already moved past this message; hand it back so a
+        // resume still answers it.
+        if (candidate?.ok === true) requeueCandidate(candidate);
+        return publicState();
+      }
       recordWorkflowScanStats(candidate);
       if (["visual_ocr_structure_missing", "visual_sidebar_match_missing"].includes(candidate?.reason)
         || String(candidate?.reason || "").startsWith("wechat_chat_")) restoreWorkflowChatSurface = true;
@@ -3330,13 +3346,7 @@ function createAutoReplyController(options = {}) {
         }
         return publicState();
       }
-      if (!isCurrentRun()) {
-        retryGenerations.delete(fingerprint);
-        state.processed[fingerprint].status = "cancelled";
-        clearPendingObservation(candidate);
-        save();
-        return publicState();
-      }
+      if (!isCurrentRun()) return deferInterruptedReply(fingerprint, candidate);
       Object.assign(state.processed[fingerprint], {
         action: generated.action,
         reason_code: generated.reasonCode
@@ -3550,6 +3560,9 @@ function createAutoReplyController(options = {}) {
         hWnd: result?.hWnd || candidate.hWnd
       });
 
+      if (!isCurrentRun() && result?.blocked_reason === "batch_cancelled" && result?.send_attempted === false) {
+        return deferInterruptedReply(fingerprint, candidate);
+      }
       if (!isCurrentRun() && result?.blocked_reason === "batch_cancelled") {
         retryGenerations.delete(fingerprint);
         state.processed[fingerprint].status = "cancelled";
@@ -3596,8 +3609,7 @@ function createAutoReplyController(options = {}) {
           });
           pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         } else {
-          state.processed[fingerprint].status = "cancelled";
-          clearPendingObservation(candidate);
+          return deferInterruptedReply(fingerprint, candidate);
         }
         save();
         return publicState();
@@ -3918,6 +3930,7 @@ function createAutoReplyController(options = {}) {
         await waitForScanIdle();
         while (starting) await new Promise((resolve) => setTimeout(resolve, 10));
         const pausedDuringTakeover = workflowPauseGeneration !== pauseGeneration || !enabled();
+        const interruptedReply = normalizeText(state.pending_observation?.reason) === "reply_in_flight" ? state.pending_observation : null;
         discardTestScopeRuntimeState();
         scanIncoming.restoreTurnBoundaries?.(Object.values(state.reply_guards || {}).map((guard) => ({
           conversation: normalizeText(guard?.conversation),
@@ -3925,6 +3938,16 @@ function createAutoReplyController(options = {}) {
           runtimeId: normalizeText(guard?.incoming_runtime_id)
         })));
         primeRetryNeeded = true;
+        // A reply interrupted before it was sent (pause, update, quit) is
+        // restored like the standalone start does; priming would discard it.
+        if (interruptedReply && typeof scanIncoming.restorePendingObservation === "function") {
+          let restored = false;
+          try { restored = scanIncoming.restorePendingObservation(interruptedReply) === true; } catch {}
+          if (restored) {
+            state.pending_observation = interruptedReply;
+            primeRetryNeeded = false;
+          }
+        }
         restoreWorkflowChatSurface = true;
         if (pausedDuringTakeover) {
           return stepReturn({ handled: false, status: "paused", progressText: "自动回复已暂停，请检查后重新启动" }, "paused_by_user");

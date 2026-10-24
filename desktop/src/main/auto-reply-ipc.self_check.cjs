@@ -5312,6 +5312,56 @@ async function main() {
   assert.equal(largeResult.eligible_count, 2000);
   console.log(`workflow scope stress: aliases_json=${largeResult.alias_json_length}, scope_ms=${largeResult.scope_ms}, contacts_reads=${largeReads}`);
 
+  // A pause (user, update or quit) while the AI is still writing is not an
+  // answer: the message must still be replied to after resume or a restart.
+  const pausedCandidate = { ...workflowCandidate, runtimeId: "paused-turn-1", messageSignature: "b".repeat(64),
+    context: [{ role: "user", content: "private-message", key: "paused-turn-1" }] };
+  const pausedFixture = (name) => {
+    const fixture = { enabled: true, pauseNextGeneration: true, sends: 0, primes: 0, restored: [], queue: [pausedCandidate] };
+    const scan = () => fixture.queue.shift() || { ok: false, reason: "no_unread_message" };
+    scan.requeue = (candidate) => { fixture.queue.unshift(candidate); return true; };
+    scan.restorePendingObservation = (value) => { fixture.restored.push(value); fixture.queue.push(pausedCandidate); return true; };
+    fixture.dataDir = path.join(root, name);
+    fixture.create = () => createAutoReplyController({
+      dataDir: fixture.dataDir, activeTouchDir: workflowContacts, coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+      deepSeekClient: { assertAvailable: () => true, reply: async () => {
+        if (fixture.pauseNextGeneration) { fixture.pauseNextGeneration = false; fixture.enabled = false; }
+        return answerDecision("可以继续了解。");
+      } },
+      primeIncoming: () => { fixture.primes += 1; return { ok: true, source: "session_prime", primed: true, latestRole: "assistant" }; },
+      scanIncoming: scan, verifyIncoming: () => ({ ok: true }),
+      send: async (options) => { if (!await options.beforeDraft()) return { ok: false, reason: "incoming_message_changed" }; fixture.sends += 1; return { ok: true }; },
+      sendHandoff: async () => ({ ok: true }), runStep: async () => ({ ok: true })
+    });
+    fixture.input = { recipients: workflowRecipients, accountName: "wx-a", isEnabled: () => fixture.enabled };
+    fixture.state = () => JSON.parse(fs.readFileSync(path.join(fixture.dataDir, "auto-reply-state.json"), "utf8"));
+    return fixture;
+  };
+  const pausedResume = pausedFixture("workflow_pause_during_generation");
+  const pausedResumeController = pausedResume.create();
+  await pausedResumeController.runWorkflowStep(pausedResume.input);
+  assert.equal(pausedResume.sends, 0, "a reply paused during generation must not be sent");
+  assert.deepEqual(Object.values(pausedResume.state().processed).map((entry) => entry.status), ["retryable"],
+    "a pause during generation must not mark the message as answered");
+  assert.equal(pausedResume.state().pending_observation?.reason, "reply_in_flight", "the interrupted reply stays durable for a restart");
+  assert.equal(pausedResume.queue.length, 1, "the interrupted message is handed back to the driver");
+  pausedResume.enabled = true;
+  pausedResumeController.resumeWorkflow();
+  await pausedResumeController.runWorkflowStep(pausedResume.input);
+  assert.equal(pausedResume.sends, 1, "the interrupted message is answered after resume");
+
+  const pausedRestart = pausedFixture("workflow_pause_then_restart");
+  await pausedRestart.create().runWorkflowStep(pausedRestart.input);
+  assert.equal(pausedRestart.sends, 0);
+  pausedRestart.queue.length = 0;
+  pausedRestart.enabled = true;
+  const primesBeforeRestart = pausedRestart.primes;
+  await pausedRestart.create().runWorkflowStep(pausedRestart.input);
+  assert.equal(pausedRestart.restored.length, 1, "a restart restores the reply interrupted before sending");
+  assert.equal(pausedRestart.restored[0].message_signature, "b".repeat(64));
+  assert.equal(pausedRestart.primes, primesBeforeRestart, "priming would discard the restored message");
+  assert.equal(pausedRestart.sends, 1, "the interrupted message is answered after a restart");
+
   console.log("auto-reply v4 self-check passed");
 }
 
