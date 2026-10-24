@@ -182,22 +182,51 @@ function logCacheDifference(cacheRoot, kind, fingerprint, log) {
 
 // Each cache generation is immutable. Invalid generations are retained for audit,
 // and a fresh generation is built instead of overwriting or deleting artifacts.
-function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination, resolve, build, artifacts, sourceOf = null, log = console.log }) {
+function cachedRuntime({ cacheRoot, fallbackCacheRoots = [], kind, fingerprint, buildCommit, destination, resolve, build, artifacts, sourceOf = null, log = console.log }) {
   const bucket = path.join(cacheRoot, kind, fingerprint);
   let cached = null;
-  if (fs.existsSync(bucket)) {
-    for (const entry of fs.readdirSync(bucket, { withFileTypes: true }).filter((item) => item.isDirectory())) {
-      const root = path.join(bucket, entry.name);
+  lookup: for (const lookupRoot of new Set([cacheRoot, ...fallbackCacheRoots])) {
+    const lookupBucket = path.join(lookupRoot, kind, fingerprint);
+    if (!fs.existsSync(lookupBucket)) continue;
+    for (const entry of fs.readdirSync(lookupBucket, { withFileTypes: true }).filter((item) => item.isDirectory())) {
+      const root = path.join(lookupBucket, entry.name);
       try {
         const record = JSON.parse(fs.readFileSync(path.join(root, "cache.json"), "utf8"));
         if (record.fingerprint !== fingerprint || record.kind !== kind) throw new Error("Cache identity mismatch");
         const resolved = resolve(root);
         if (sha256(resolved.manifestFile) !== record.manifestSha256) throw new Error("Cache manifest hash mismatch");
-        cached = { root, resolved };
-        break;
+        cached = { root, resolved, imported: path.resolve(lookupRoot) !== path.resolve(cacheRoot) };
+        break lookup;
       } catch (error) { log(`${kind} cache rejected: ${error.message}`); }
     }
   }
+  function saveRuntime(sourceRoot) {
+    const root = path.join(bucket, crypto.randomBytes(8).toString("hex"));
+    fs.mkdirSync(root, { recursive: true });
+    try {
+      for (const relative of artifacts) {
+        const source = path.join(sourceRoot, relative), target = path.join(root, relative);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        if (fs.lstatSync(source).isDirectory()) copyImmutableRuntime(source, target);
+        else fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+      }
+      const saved = resolve(root);
+      if (sourceOf && sourceOf(saved).dirty) throw new Error("Cannot cache runtime built from dirty source");
+      fs.writeFileSync(path.join(root, "cache.json"), JSON.stringify({ kind, fingerprint, inputFields: inputFieldHashes(fingerprint), manifestSha256: sha256(saved.manifestFile) }), { flag: "wx" });
+      require("./artifact-retention.cjs").retainArtifacts(cacheRoot, `runtime-${kind}`, [root], 2);
+      return { root, resolved: saved };
+    } catch (error) {
+      try { require("./artifact-retention.cjs").removeOwned(cacheRoot, root); }
+      catch (cleanupError) {
+        require("./artifact-retention.cjs").retainArtifacts(cacheRoot, "incomplete-runtime", [], 1, [root], { deferCleanup: true });
+        log(`Incomplete cache cleanup deferred: ${cleanupError.message}`);
+      }
+      throw error;
+    }
+  }
+  // Legacy caches are read-only inputs. Only the new cache directory gains
+  // deletion ownership; a hit never adopts the old path or its history.
+  if (cached?.imported) cached = saveRuntime(cached.root);
   if (cached) {
     for (const relative of artifacts) {
       const target = path.join(destination, relative);
@@ -220,6 +249,7 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
       };
       fs.writeFileSync(`${verified.manifestFile}.reuse.json`, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx" });
     }
+    require("./artifact-retention.cjs").retainArtifacts(cacheRoot, `runtime-${kind}`, [cached.root], 2, []);
     log(`${kind} runtime cache hit (${fingerprint.slice(0, 12)})`);
     return { hit: true };
   }
@@ -228,22 +258,7 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   build();
   const verified = resolve(destination);
   if (sourceOf && sourceOf(verified).dirty) throw new Error("Cannot cache runtime built from dirty source");
-  const root = path.join(bucket, crypto.randomBytes(8).toString("hex"));
-  fs.mkdirSync(root, { recursive: true });
-  try {
-  for (const relative of artifacts) {
-    const target = path.join(root, relative);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.cpSync(path.join(destination, relative), target, { recursive: true, errorOnExist: true, force: false });
-  }
-  const saved = resolve(root);
-  fs.writeFileSync(path.join(root, "cache.json"), JSON.stringify({ kind, fingerprint, inputFields: inputFieldHashes(fingerprint), manifestSha256: sha256(saved.manifestFile) }), { flag: "wx" });
-  require("./artifact-retention.cjs").retainArtifacts(cacheRoot, `runtime-${kind}`, [root], 2);
-  } catch (error) {
-    try { require("./artifact-retention.cjs").removeOwned(cacheRoot, root); }
-    catch (cleanupError) { log(`Incomplete cache cleanup deferred: ${cleanupError.message}`); }
-    throw error;
-  }
+  saveRuntime(destination);
   return { hit: false };
 }
 

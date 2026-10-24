@@ -40,13 +40,17 @@ try {
       const root=process.argv[1]; require(process.argv[2]).retainArtifacts(root,'occupied-download',[p.join(root,'replacement-installer')]);
       assert(fs.existsSync(p.join(root,'occupied-installer')));
       const state=JSON.parse(fs.readFileSync(p.join(root,'.artifact-retention.json')))['occupied-download'];
-      assert(state.owned.includes('occupied-installer')); assert(/^(EPERM|EBUSY|EACCES)$/.test(state.cleanupFailure.reason));`;
+      assert(state.owned.includes('occupied-installer')); assert(/^(EPERM|EBUSY|EACCES)$/.test(state.cleanupFailure.reason));
+      const summary=require(p.join(p.dirname(process.argv[2]),'release-build-storage.cjs')).retryBuildArtifacts([root],()=>{});
+      assert.equal(summary.complete,false,'a successful ledger write must not report locked files as reclaimed');
+      assert(summary.pending.some(item=>/^(EPERM|EBUSY|EACCES)$/.test(item.reason)));`;
     const quote = value => "'" + value.replaceAll("'", "''") + "'";
     const powershell = `$stream=[IO.File]::Open(${quote(occupied)},[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None);try { & ${quote(process.execPath)} -e ${quote(probe)} ${quote(root)} ${quote(require.resolve('./artifact-retention.cjs'))}; if ($LASTEXITCODE -ne 0) {exit $LASTEXITCODE} } finally {$stream.Dispose()}`;
     const locked = require("node:child_process").spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(powershell, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 15000 });
     assert.equal(locked.status, 0, locked.stderr || locked.stdout);
     assert.equal(retryArtifacts(root), true);
     assert(!fs.existsSync(occupied) && fs.existsSync(replacement), "A real Windows file lock retires on retry after the handle closes");
+    assert.equal(require("./release-build-storage.cjs").retryBuildArtifacts([root], () => {}).complete, true);
   }
   const rename = fs.renameSync;
   let blocked = false;

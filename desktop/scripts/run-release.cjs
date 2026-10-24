@@ -1,6 +1,5 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { artifactTypeForEdition, validateRemotionBuildInputs } = require("./build-remotion-runtime.cjs");
@@ -9,18 +8,25 @@ const { cachedRuntime, runtimeFingerprint, createFingerprintContext } = require(
 const { resolveProductDetailBuild } = require("./product-detail-release-runtime.cjs");
 const { resolveContentEngineBuild } = require("./content-engine-release-runtime.cjs");
 const { verifyRemotionRuntime } = require("./build-remotion-runtime.cjs");
+const { resolveBuildStorage, withBuildStorage, retryBuildArtifacts, buildArtifactRoots } = require("./release-build-storage.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 
-function createBuildRoot() {
+function createBuildRoot(storage) {
   // The bundled Playwright browser has a deep tree. Keep the transient build
   // root short enough for Windows before any PyInstaller copy begins.
-  const rootParent = path.join(os.tmpdir(), "x");
+  const rootParent = storage.stagingParent;
   fs.mkdirSync(rootParent, { recursive: true });
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const nonce = crypto.randomBytes(4).toString("hex");
     const candidate = path.join(rootParent, nonce);
-    if (!fs.existsSync(candidate)) return candidate;
+    if (!fs.existsSync(candidate)) {
+      fs.mkdirSync(candidate);
+      if (!require("./artifact-retention.cjs").retainArtifacts(rootParent, "active-staging", [candidate], 1, [candidate], { deferCleanup: true })) {
+        throw Error("Cannot register release staging ownership");
+      }
+      return candidate;
+    }
   }
   throw new Error("Unable to allocate a fresh release staging root");
 }
@@ -74,22 +80,38 @@ function preflightReleaseInputs(edition, environment = process.env) {
 }
 
 function runRelease(edition = "delivery", environment = process.env, options = {}) {
-  const space = require("./space-usage.cjs").startSpaceRun("release");
-  try { const result = runReleaseWork(edition, environment, options, space); space.finish("completed"); return result; }
-  catch (error) { space.finish("failed"); throw error; }
-}
-
-function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null, forceChecks = false, requireCi = false } = {}, space) {
-  if (componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
-  const internalUpgrade = edition === "upgrade";
-  if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
+  if (options.componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
+  if (edition !== "upgrade" && environment.XIAOXI_INTERNAL_UPGRADE) {
     throw new Error("Internal upgrade flag requires the explicit upgrade entry point");
   }
+  if (!["test", "delivery", "upgrade"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
+  const storage = options.storage || resolveBuildStorage(desktopDir, environment);
+  return withBuildStorage(storage, () => {
+    const space = require("./space-usage.cjs").startSpaceRun("release", [path.join(desktopDir, ".build"), storage.releaseRoot, storage.root]);
+    const roots = buildArtifactRoots(storage);
+    let result, failure;
+    try {
+      // Holding the shared build guard proves no previous build still uses its
+      // staging. Drop stale references, without adopting unregistered paths.
+      require("./artifact-retention.cjs").retainArtifacts(storage.stagingParent, "active-staging", [], 1, [], { deferCleanup: true });
+      require("./artifact-retention.cjs").retainArtifacts(storage.releaseRoot, "active-portable-staging", [], 1, [], { deferCleanup: true });
+      space.observe("cleanup-before-build", { cleanup: retryBuildArtifacts(roots) });
+      if (options.spaceRequirements) space.preflight(options.spaceRequirements);
+      result = runReleaseWork(edition, environment, { ...options, storage }, space);
+    } catch (error) { failure = error; }
+    const cleanup = retryBuildArtifacts(roots);
+    space.finish(failure ? "failed" : "completed", { cleanup, buildStorage: storage.root });
+    if (failure) throw failure;
+    return { ...result, cleanup, buildStorage: storage.root };
+  });
+}
+
+function runReleaseWork(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null, forceChecks = false, requireCi = false, storage } = {}, space) {
+  const internalUpgrade = edition === "upgrade";
   if (internalUpgrade) {
     edition = "delivery";
     environment = { ...environment, XIAOXI_INTERNAL_UPGRADE: "1" };
   }
-  if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
   const baseRoot = path.resolve(componentBaseRoot || path.join(desktopDir, "../release",
     require("../product-brand.json").displayName + (edition === "test" ? "-测试版" : "")));
   const { readComponentBase, pythonLibraryReference } = require("./component-base-input.cjs");
@@ -99,7 +121,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   const { artifactType: remotionArtifactType, remotion } = inputs;
   const ciProof = require("./release-ci-proof.cjs").verifiedCiRun({ forceChecks });
   if (requireCi && !ciProof) throw Error("Complete CI provenance is required; no duplicate source checks or build started");
-  const sidecarBuildRoot = createBuildRoot();
+  const sidecarBuildRoot = createBuildRoot(storage);
   space.ownTemporary(sidecarBuildRoot);
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
   const releaseEnvironment = {
@@ -122,7 +144,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   const commitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: desktopDir, encoding: "utf8", windowsHide: true });
   const buildCommit = String(commitResult.stdout || "").trim();
   if (commitResult.status !== 0 || !/^[0-9a-f]{40}$/u.test(buildCommit)) throw new Error("Runtime cache requires a release source commit");
-  const cacheRoot = path.join(desktopDir, ".build", "runtime-cache");
+  const cacheRoot = storage.cacheRoot;
   const fingerprintContext = createFingerprintContext();
   for (const [kind, resolver, sourceOf] of [
     ["product-detail", resolveProductDetailBuild, (value) => value.manifest.desktopSource],
@@ -132,7 +154,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
     const buildEnvironment = { ...releaseEnvironment,
       XIAOXI_PYTHON_BASE_REFERENCE: pythonBase?.file || "", XIAOXI_PYTHON_BASE_SHA256: pythonBase?.sha256 || "" };
     cachedRuntime({
-      cacheRoot, kind, buildCommit, destination: sidecarBuildRoot, sourceOf,
+      cacheRoot, fallbackCacheRoots: storage.fallbackCacheRoots, kind, buildCommit, destination: sidecarBuildRoot, sourceOf,
       fingerprint: runtimeFingerprint(desktopDir, kind, remotionArtifactType, inputs, buildEnvironment, fingerprintContext),
       resolve: (buildRoot) => resolver(desktopDir, { buildRoot }),
       artifacts: [`${kind}-runtime`, `${kind}-runtime.manifest.json`],
@@ -141,7 +163,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   }
   const remotionRelative = path.join("r", remotionArtifactType);
   cachedRuntime({
-    cacheRoot, kind: "remotion", buildCommit, destination: sidecarBuildRoot,
+    cacheRoot, fallbackCacheRoots: storage.fallbackCacheRoots, kind: "remotion", buildCommit, destination: sidecarBuildRoot,
     fingerprint: runtimeFingerprint(desktopDir, "remotion", remotionArtifactType, inputs, releaseEnvironment, fingerprintContext),
     resolve: (root) => verifyRemotionRuntime(path.join(root, remotionRelative), { desktopDir, expectedArtifactType: remotionArtifactType, requireCompositionSmoke: true }),
     artifacts: [remotionRelative],
@@ -152,8 +174,7 @@ function runReleaseWork(edition = "delivery", environment = process.env, { compo
   space.observe("build-and-packaged-validation-complete");
   if (internalUpgrade) runNode("in-place upgrade installer", "build-installer-release.cjs", ["upgrade"], releaseEnvironment);
   } finally {
-    try { require("./artifact-retention.cjs").removeOwned(path.dirname(sidecarBuildRoot), sidecarBuildRoot); }
-    catch (error) { console.warn(`Release staging cleanup deferred: ${error.message}`); }
+    require("./artifact-retention.cjs").retainArtifacts(storage.stagingParent, "active-staging", [], 1, []);
     space.observe("cleanup-complete", { stagingRemoved: !fs.existsSync(sidecarBuildRoot) });
   }
   const candidateRoot = componentsOnly ? JSON.parse(fs.readFileSync(path.join(desktopDir,

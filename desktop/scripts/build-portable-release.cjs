@@ -606,11 +606,20 @@ function buildPortable(edition = "delivery", {
     retainValidatedComponents(componentRoot, metadata, candidateRoot, environment.XIAOXI_COMPONENT_BASE_ROOT || canonicalTarget);
     fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
   }
+  let stagingRegistered = false;
+  function prepareStaging(sourceState, componentsOnly) {
+    if (!require("./artifact-retention.cjs").retainArtifacts(releaseDir, "active-portable-staging", [stagingRoot], 1, [stagingRoot], { deferCleanup: true })) {
+      throw Error("Cannot register portable staging ownership");
+    }
+    stagingRegistered = true;
+    return buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly }, sourceState);
+  }
+  try {
   if (componentsOnly) {
     if (edition !== "test") throw new Error("Component releases currently require the internal test channel");
     const sourceState = assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot });
     try {
-    buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
+    prepareStaging(sourceState, true);
     const metadataFile = path.join(releaseDir, "components", edition, "unsigned-component-release.json");
     const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
     require("./component-base-input.cjs").assertComponentBase(metadata, environment.XIAOXI_COMPONENT_BASE_ROOT || canonicalTarget);
@@ -634,11 +643,7 @@ function buildPortable(edition = "delivery", {
     canonicalZip,
     transactionId,
     preflight: () => assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot }),
-    prepare: (sourceState) => buildPortableStaging(edition, {
-      target: stagingTarget,
-      zip: stagingZip,
-      archiveBaseDir: stagingRoot
-    }, sourceState),
+    prepare: (sourceState) => prepareStaging(sourceState, false),
     validate: () => {
       scanRelease(stagingTarget);
       runPortableSelfCheck(edition, stagingTarget, stagingZip);
@@ -654,6 +659,9 @@ function buildPortable(edition = "delivery", {
   }
   console.log(`${edition} portable release built: ${result.zip}`);
   return result;
+  } finally {
+    if (stagingRegistered) require("./artifact-retention.cjs").retainArtifacts(releaseDir, "active-portable-staging", [], 1, []);
+  }
 }
 
 if (require.main === module) buildPortable(process.argv[2] || "delivery", { componentsOnly: process.argv.includes("--components-only") });
