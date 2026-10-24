@@ -21,6 +21,71 @@ function trackedMkdtemp(prefix) {
   return dir;
 }
 
+// Replies and Moments act on whichever WeChat account is logged in; after a
+// switch away from the synced account the workflow must stop, not reply.
+async function checkLiveAccountGate() {
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-live-account-"));
+  let live = { ok: true };
+  let replies = 0;
+  const checked = [];
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "synced-account",
+    verifyLiveAccount: async (accountId) => { checked.push(accountId); return live; },
+    reply: {
+      prepareWorkflowRecipients: async () => [{ id: "customer", name: "customer-name" }],
+      runWorkflowStep: async () => { replies += 1; return { handled: false, status: "waiting" }; }
+    },
+    executors: {}
+  });
+  await control.addRecipients(["customer"]);
+  await control.start();
+  await control.tick();
+  assert.equal(replies, 1, "the synced account still logged in keeps replying");
+  assert.deepEqual(checked, ["synced-account"]);
+  await control.tick();
+  assert.equal(checked.length, 1, "the account check is throttled between reply polls");
+  assert.equal(replies, 2);
+
+  const switchedDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-live-account-switched-"));
+  live = { ok: false, reason: "wechat_account_changed" };
+  replies = 0;
+  const switched = createWechatWorkflowController({
+    rootDir: switchedDir, autoReplyDir: path.join(switchedDir, "reply"), activeTouchDir: path.join(switchedDir, "touch"), momentsDir: path.join(switchedDir, "moments"),
+    autoSchedule: false, getAccount: () => "synced-account",
+    verifyLiveAccount: async () => live,
+    reply: {
+      prepareWorkflowRecipients: async () => [{ id: "customer", name: "customer-name" }],
+      runWorkflowStep: async () => { replies += 1; return { handled: false, status: "waiting" }; }
+    },
+    executors: {}
+  });
+  await switched.addRecipients(["customer"]);
+  await switched.start();
+  await switched.tick();
+  assert.equal(replies, 0, "a switched WeChat account must not receive automatic replies");
+  assert.equal(switched.controlSnapshot().phase, "needs_attention");
+  assert.match(switched.status().error, /切换到其他账号/u);
+
+  const unreadableDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-live-account-unreadable-"));
+  replies = 0;
+  const unreadable = createWechatWorkflowController({
+    rootDir: unreadableDir, autoReplyDir: path.join(unreadableDir, "reply"), activeTouchDir: path.join(unreadableDir, "touch"), momentsDir: path.join(unreadableDir, "moments"),
+    autoSchedule: false, getAccount: () => "synced-account",
+    verifyLiveAccount: async () => ({ ok: false, reason: "wechat_pid_missing" }),
+    reply: {
+      prepareWorkflowRecipients: async () => [{ id: "customer", name: "customer-name" }],
+      runWorkflowStep: async () => { replies += 1; return { handled: false, status: "waiting" }; }
+    },
+    executors: {}
+  });
+  await unreadable.addRecipients(["customer"]);
+  await unreadable.start();
+  await unreadable.tick();
+  assert.equal(replies, 1, "an unreadable account check does not halt the workflow");
+  for (const item of [control, switched, unreadable]) await item.pause?.();
+}
+
 async function checkTouchCopyModes() {
   const root = trackedMkdtemp(path.join(os.tmpdir(), 'xiaoxi-copy-mode-'));
   const contact = { id:'copy-contact', name:'黄总', remark:'湛江港濠酒店黄总', wechatId:'copy_fixture', wechatAccountId:'copy-account' };
@@ -2821,6 +2886,7 @@ async function main() {
   await checkClickedAttentionPersistFailureRecovery();
   await checkR008BoundedRecovery();
   await checkTouchCopyModes();
+  await checkLiveAccountGate();
   await checkR008PassportAttachmentCount();
   await checkR008PartialSend();
   await checkT5FourthReviewExits();

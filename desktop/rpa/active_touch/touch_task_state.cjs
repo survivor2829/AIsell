@@ -181,7 +181,7 @@ function alignBatchWindow(task) {
 }
 
 function skipCategory(status) {
-  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", pre_send_skipped: "pre_send", outcome_unknown_skipped: "outcome_unknown", partial_sent_skipped: "partial_sent" })[String(status || "")] || "";
+  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", pre_send_skipped: "pre_send", outcome_unknown_skipped: "outcome_unknown", partial_sent_skipped: "partial_sent", recipient_unreachable_skipped: "unreachable" })[String(status || "")] || "";
 }
 
 function recordSkippedResult(result, index, details = {}) {
@@ -216,6 +216,8 @@ function skippedRetryBlockedReason(result) {
   if (RETRYABLE_SKIPPED_STATUSES.has(status)) return "";
   if (["outcome_unknown", "outcome_unknown_skipped"].includes(status)) return "retry_skipped_outcome_unknown_forbidden";
   if (status === "partial_sent_skipped") return "retry_skipped_partial_sent_forbidden";
+  // The message was sent; repeating it only repeats the notice.
+  if (status === "recipient_unreachable_skipped") return "retry_skipped_unreachable_forbidden";
   return "retry_skipped_status_forbidden";
 }
 
@@ -506,6 +508,11 @@ function reconcileRealSendAttempt(task, executionState) {
   const current = task.results[task.current_index];
   const context = executionState?.task_context;
   if (!current || !context || context.task_id !== task.id || String(context.contact_id) !== String(current.id) || Number(context.current_index) !== task.current_index) return task;
+  // Selecting a contact resets the status to not_sent, and only a send attempt
+  // for that selection (which first writes its own key) moves it on. Older
+  // builds kept the previous contact's key across selection, so without an
+  // attempt status the ledger entry belongs to someone else.
+  if (!["prepared", "clicked", "outcome_unknown", "sent_verified"].includes(String(executionState.real_send_status || ""))) return task;
   const key = String(executionState.real_send_attempt_key || current.attempt_key || "");
   const attemptStatus = String((key && executionState.real_send_attempts?.[key]) || executionState.real_send_status || "");
   if (attemptStatus === "sent_verified") {

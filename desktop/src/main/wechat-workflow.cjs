@@ -331,6 +331,22 @@ function createWechatWorkflowController(options) {
     log("workflow.failed", { stage: cycleStage, reason, error: failure, cause: failure?.cause }, { level: "error", code: reason });
   }
 
+  // Recipients and tasks belong to the account contacts were synced from, but
+  // replies and Moments act on whichever account is logged in. Stop only on
+  // a definite switch; an unreadable check must not halt the workflow.
+  let accountCheckedAt = 0;
+  async function liveAccountChanged(force) {
+    const accountName = getAccount();
+    if (typeof options.verifyLiveAccount !== "function" || !accountName) return false;
+    if (!force && Date.now() - accountCheckedAt < 60_000) return false;
+    accountCheckedAt = Date.now();
+    let result;
+    try { result = await options.verifyLiveAccount(accountName); } catch { return false; }
+    if (result?.reason !== "wechat_account_changed" || !enabled) return false;
+    fail(Object.assign(new Error("检测到微信已切换到其他账号，自动回复和朋友圈已停止。请切回同步联系人时的账号，或重新同步联系人后再启动。"), { code: "wechat_account_changed" }));
+    return true;
+  }
+
   function refreshDay(onTaskFailure) {
     const today = localDate(now());
     let changed = false;
@@ -499,6 +515,7 @@ function createWechatWorkflowController(options) {
     // every planned task has completed or been safely isolated. A send cooldown
     // or a future appointment is still unfinished work, not an empty queue.
     if (!finiteWorkPending && people.length && options.reply?.runWorkflowStep && !replyError) {
+      if (await liveAccountChanged(false) || !enabled || mutating) return;
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
@@ -549,6 +566,8 @@ function createWechatWorkflowController(options) {
     if (!enabled || mutating) return;
     const task = nextTask();
     if (!task) { currentTaskId = null; settleQueue(); emit(); return; }
+    // Touch verifies the account inside its own send session.
+    if (task.type !== "touch" && (await liveAccountChanged(true) || !enabled || mutating)) return;
     replyActivated = false;
     const executor = executors[task.type];
     cycleStage = "task_prepare";

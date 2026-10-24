@@ -864,6 +864,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
+      detectDeliveryNotice: internalRealSend ? require("../../rpa/active_touch/wechat_delivery_notice.cjs").detectWechatDeliveryNoticeAsync : undefined,
       onPause: disarmRealSend || undefined,
       passport: taskPassportStore
     });
@@ -882,6 +883,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         try { return String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).account_name || ""); }
         catch { return ""; }
       },
+      verifyLiveAccount: internalRealSend ? (accountId) => {
+        let wechatRoot = "";
+        try { wechatRoot = String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).wechat_root || ""); } catch {}
+        return require("../../rpa/active_touch/wechat_window_driver.dev.cjs").verifyLoggedInWechatAccountAsync(accountId, wechatRoot);
+      } : undefined,
       executors: {
         touch: {
           prepareWorkflowTask: (_id, payload) => touchTaskController.prepareWorkflowTask(payload),

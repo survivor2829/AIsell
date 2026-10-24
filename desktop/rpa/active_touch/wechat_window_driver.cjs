@@ -2770,6 +2770,18 @@ function Assert-ExactDraftLease {
 
 function Rebase-ExactDraftInputLease {
   if ($exactWindowBinding) {
+    # SendKeys and mouse_event can return before the system counts their last
+    # injected event (the Ctrl key-up after ^v landed 16 ms later on a real
+    # run), which then read as user input. Take the lease once the tick has
+    # held still, as the image sender does.
+    $settleStarted = [Environment]::TickCount
+    $settleLast = [Win32WechatMessageDraft]::GetLastInputTick()
+    $settleStable = 0
+    while ($settleStable -lt 2 -and ([Environment]::TickCount - $settleStarted) -lt 250) {
+      Start-Sleep -Milliseconds 30
+      $settleCurrent = [Win32WechatMessageDraft]::GetLastInputTick()
+      if ($settleCurrent -eq $settleLast) { $settleStable++ } else { $settleStable = 0; $settleLast = $settleCurrent }
+    }
     $script:draftInputLeaseTick = [Win32WechatMessageDraft]::GetLastInputTick()
     if ($script:draftInputLeaseTick -eq [uint32]::MaxValue) { Stop-DraftForActiveUser }
     $script:draftInputLeaseActive = $true

@@ -661,6 +661,13 @@
     "classification": "blocker"
   },
   {
+    "id": "wx2-r034",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_account_changed",
+    "line": 767,
+    "classification": "blocker"
+  },
+  {
     "id": "wx3-r001",
     "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
     "reason": "wechat_window_not_ready",

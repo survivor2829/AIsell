@@ -1506,6 +1506,22 @@ async function main() {
   assert.equal(workflowOpenCalls, 1, "one batch must open Moments only once");
   assert.equal(workflowScrollCalls, 3, "skip the old post and keep scrolling without yielding to chat");
 
+  // An old state with the legacy daily timer enabled must not re-arm it when
+  // the workflow owns scheduling and the user pauses or stops.
+  const legacyDailyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-legacy-daily-"));
+  fs.writeFileSync(path.join(legacyDailyRoot, "state.json"), JSON.stringify({ moments_daily_automation: { enabled: true, start_time: "09:00", target: 5 } }));
+  let legacyDailyTimers = 0;
+  const legacyDaily = createMomentsCampaignController({
+    baseDir: legacyDailyRoot, workflowManaged: true,
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "legacy-daily" } }), release: () => undefined },
+    logger: { event: () => undefined },
+    schedule: () => { legacyDailyTimers += 1; return 1; }, cancelSchedule: () => undefined
+  });
+  legacyDaily.initialize();
+  legacyDaily.pause();
+  legacyDaily.stop();
+  assert.equal(legacyDailyTimers, 0, "workflow-managed Moments must not re-arm the legacy daily timer");
+
   async function checkUnknownWorkflowStop(lastReason) {
     const unknownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-unknown-workflow-"));
     const momentsDir = path.join(unknownRoot, "moments");

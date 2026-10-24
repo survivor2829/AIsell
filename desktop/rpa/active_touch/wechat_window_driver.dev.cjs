@@ -750,13 +750,26 @@ foreach ($root in $roots) {
         account = $account
         activityPath = $(if ($latestWal) { $latestWal.FullName } else { $account.FullName })
         activityTimeUtc = $(if ($latestWal) { $latestWal.LastWriteTimeUtc } else { $account.LastWriteTimeUtc })
+        hasWal = ($latestWal -ne $null)
       }
     }
   }
 }
 $uniqueAccounts = @($accounts | Group-Object { $_.account.Name } | ForEach-Object { $_.Group | Sort-Object activityTimeUtc -Descending | Select-Object -First 1 })
+$newestAccount = $uniqueAccounts | Sort-Object activityTimeUtc -Descending | Select-Object -First 1
 if (-not [string]::IsNullOrWhiteSpace($expectedAccountId)) {
   $uniqueAccounts = @($uniqueAccounts | Where-Object { $_.account.Name -eq $expectedAccountId })
+  # Every account that ever logged in keeps its folder, so the folder alone
+  # does not prove who is logged in now. The logged-in account is the one
+  # whose database was written last; another account newer than the
+  # expected one means WeChat was switched. A folder time is not a login
+  # signal, so decide only when both sides have database write times.
+  if ($uniqueAccounts.Count -eq 1 -and $newestAccount -ne $null -and $newestAccount.account.Name -ne $expectedAccountId -and
+    $uniqueAccounts[0].hasWal -and $newestAccount.hasWal -and
+    ($newestAccount.activityTimeUtc - $uniqueAccounts[0].activityTimeUtc).TotalSeconds -gt 5) {
+    @{ ok = $false; reason = "wechat_account_changed"; rule_id = (Write-XiaoxiFailure "wx2-r034" "wechat_account_changed") } | ConvertTo-Json -Compress
+    exit
+  }
 }
 if ($uniqueAccounts.Count -eq 0) {
   @{ ok = $false; reason = "wechat_account_directory_missing"; rule_id = (Write-XiaoxiFailure "wx2-r026" "wechat_account_directory_missing") } | ConvertTo-Json -Compress
@@ -791,6 +804,21 @@ function detectActiveWechatAccountAsync(context = {}) {
     XIAOXI_EXPECTED_PID: String(context.pid),
     XIAOXI_EXPECTED_ACCOUNT_ID: String(context.expectedAccountId ?? ""),
     XIAOXI_WECHAT_ROOT: String(context.wechatRoot ?? "")
+  }, { ensure: false });
+}
+
+// For callers without a verified window (auto reply, Moments): any running
+// WeChat process locates the install whose account folders are compared.
+const FIND_WECHAT_PROCESS_SCRIPT = `
+$running = Get-Process -Name Weixin, WeChat -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($running -ne $null) { [Environment]::SetEnvironmentVariable("XIAOXI_EXPECTED_PID", [string]$running.Id) }
+`;
+
+function verifyLoggedInWechatAccountAsync(expectedAccountId, wechatRoot = "") {
+  if (!String(expectedAccountId ?? "").trim()) return Promise.resolve({ ok: false, reason: "wechat_account_identity_missing" });
+  return runPowerShellAsync(`${FIND_WECHAT_PROCESS_SCRIPT}\n${DETECT_ACTIVE_ACCOUNT_SCRIPT}`, {
+    XIAOXI_EXPECTED_ACCOUNT_ID: String(expectedAccountId).trim(),
+    XIAOXI_WECHAT_ROOT: String(wechatRoot ?? "")
   }, { ensure: false });
 }
 
@@ -1241,6 +1269,7 @@ module.exports = {
   observeWechatConversationAsync,
   verifyWechatCurrentConversation,
   verifyWechatCurrentConversationAsync,
+  verifyLoggedInWechatAccountAsync,
   verifyWechatMessageBubble,
   verifyWechatMessageBubbleAsync
 };
