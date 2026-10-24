@@ -2774,6 +2774,33 @@ try {
   assert.equal(legacyBubbleResult.send_diagnostics.failure_stage, "before_send_snapshot");
   assert.equal(legacySendCalls, 0);
 
+  // A send driver that throws may already have clicked: the attempt must stay
+  // outcome_unknown and block a second click, never read as not_attempted.
+  const throwDir = path.join(dir, "send-driver-throws");
+  fs.mkdirSync(throwDir, { recursive: true });
+  fs.writeFileSync(path.join(throwDir, "contacts.json"), JSON.stringify([{ id: "wxid_throw", name: "驱动异常客户", wechatId: "internal-test-throw", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  calibrate(throwDir);
+  selectCustomer(throwDir, "wxid_throw");
+  verifyConversation(throwDir, "驱动异常客户");
+  inputMessageDryRun(throwDir, "throw", () => ({ ok: true, draftVerified: true }));
+  send(throwDir, { dryRun: true, message: "throw" });
+  const throwSession = () => ({ ok: true, pid: 51, hWnd: "61", processName: "Weixin", title: "驱动异常客户", accountId: "internal-account", accountVerified: true });
+  verifyRealSendSession(throwDir, throwSession);
+  setRealSendArm(throwDir, true);
+  let throwDriverCalls = 0;
+  const throwSnapshot = (_message, context) => context.phase === "before" ? { ok: true, snapshot: { lastMessageId: "throw-before" } } : { ok: false };
+  const thrown = await sendReal(throwDir, { message: "throw", attemptId: "throw-attempt", allowRealSend: true, userConfirmed: true },
+    () => { throwDriverCalls += 1; throw new Error("driver crashed after the click"); }, throwSession, throwSnapshot);
+  assert.equal(thrown.send_attempted, null, "a thrown send driver must not be reported as not attempted");
+  assert.equal(thrown.blocked_reason, "outcome_unknown");
+  assert.equal(loadState(throwDir).real_send_status, "outcome_unknown");
+  assert.equal(loadState(throwDir).real_send_reason, "send_driver_exception");
+  setRealSendArm(throwDir, true);
+  const rethrown = await sendReal(throwDir, { message: "throw", attemptId: "throw-attempt", allowRealSend: true, userConfirmed: true },
+    () => { throwDriverCalls += 1; return { ok: true }; }, throwSession, throwSnapshot);
+  assert.notEqual(rethrown.ok, true);
+  assert.equal(throwDriverCalls, 1, "the same attempt must never click again after a thrown driver");
+
   const retryDir = path.join(dir, "pre-click-retry");
   fs.mkdirSync(retryDir, { recursive: true });
   fs.writeFileSync(path.join(retryDir, "contacts.json"), JSON.stringify([{ id: "wxid_retry", name: "发送前重试客户", wechatId: "internal-test-retry", wechatAccountId: "internal-account", allowed: true }]), "utf8");
