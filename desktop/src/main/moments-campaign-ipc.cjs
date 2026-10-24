@@ -1112,7 +1112,9 @@ function createMomentsCampaignController(options = {}) {
   }
 
   function requestPause(reason, suppressDaily) {
-    if (suppressDaily) dailyAutomation.suppressToday(reason);
+    // The workflow owns scheduling; suppressing would re-arm the disposed
+    // legacy daily timer, which then rewrote state every minute.
+    if (suppressDaily && !workflowManaged) dailyAutomation.suppressToday(reason);
     if (!loopPromise) return { ok: true, state: snapshot() };
     pendingPauseReason = String(reason || "paused_by_user");
     persist({ last_reason: "pause_requested" });
@@ -1128,7 +1130,7 @@ function createMomentsCampaignController(options = {}) {
   }
 
   function stop() {
-    dailyAutomation.suppressToday("stopped_by_user");
+    if (!workflowManaged) dailyAutomation.suppressToday("stopped_by_user");
     if (!loopPromise) {
       finish("stopped", "stopped_by_user");
       return { ok: true, state: snapshot() };
