@@ -287,6 +287,8 @@ class GatewayConfig:
     upstream_timeout_seconds: int = DEFAULT_UPSTREAM_TIMEOUT_SECONDS
     runtime_revision: str = ""
     receipt_db_path: str = ""
+    # Operator-published viral script library (written over SSH, read-only here).
+    viral_library_path: str = ""
     # Operator-verified existing slots; never create pay-as-you-go speaker IDs.
     voice_clone_slots: dict = field(default_factory=dict)
     narration_script_quotas: dict = field(default_factory=dict)
@@ -695,6 +697,28 @@ class GatewayServer(ThreadingHTTPServer):
                 self.inflight.pop(key, None)
             entry["result"] = result
             entry["event"].set()
+
+
+VIRAL_LIBRARY_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _viral_library(path):
+    """Read the operator-published library; reject anything that is not a complete schema-1 document."""
+    if not path:
+        raise FileNotFoundError("viral_library_unset")
+    raw = Path(path).read_bytes()
+    if len(raw) > VIRAL_LIBRARY_MAX_BYTES:
+        raise ValueError("viral_library_too_large")
+    data = json.loads(raw.decode("utf-8"))
+    items = data.get("items") if isinstance(data, dict) else None
+    if data.get("schema") != 1 or not isinstance(items, list) or not 1 <= len(items) <= 100:
+        raise ValueError("viral_library_invalid")
+    for item in items:
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not 1 <= len(item["id"]) <= 64
+                or not isinstance(item.get("title"), str) or not 1 <= len(item["title"]) <= 24
+                or not isinstance(item.get("script"), str) or not 1 <= len(item["script"]) <= 500):
+            raise ValueError("viral_library_item_invalid")
+    return data
 
 
 def _narration_script_input(body):
@@ -1470,6 +1494,15 @@ class Handler(BaseHTTPRequestHandler):
                 "runtime_revision": self.config.runtime_revision,
                 "upstream_timeout_seconds": self.config.upstream_timeout_seconds,
             })
+        if route == PREFIX + "/viral-library":
+            if not self._session():
+                return self._reply_json(401, {"error": "session_required"})
+            try:
+                return self._reply_json(200, _viral_library(self.config.viral_library_path))
+            except OSError:
+                return self._reply_json(404, {"error": "viral_library_empty"})
+            except (ValueError, UnicodeError, AttributeError):
+                return self._reply_json(503, {"error": "viral_library_invalid"})
         if route == PREFIX + "/capabilities":
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
@@ -1580,6 +1613,7 @@ def main():
         raise SystemExit("provider gateway must bind to loopback")
     config = GatewayConfig.from_environment()
     config.receipt_db_path = "/var/lib/ai-provider-gateway/operation-receipts.sqlite3"
+    config.viral_library_path = "/var/lib/ai-provider-gateway/viral-library.json"
     server = GatewayServer((args.host, args.port), Handler, config)
     server.serve_forever()
 

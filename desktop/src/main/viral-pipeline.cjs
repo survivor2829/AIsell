@@ -64,7 +64,7 @@ function createViralPipeline(options) {
 
   function publicJob(job) {
     const index = STEPS.findIndex((s) => s.id === job.step);
-    return { id: job.id, itemId: job.item.id, title: job.item.title, platform: job.item.platform, url: job.item.url, status: job.status, step: job.step,
+    return { id: job.id, mode: job.mode || 'post', itemId: job.item.id, title: job.item.title, platform: job.item.platform, url: job.item.url, status: job.status, step: job.step,
       steps: STEPS.map((s, i) => ({ ...s, state: job.status === 'done' || i < index ? 'done' : i === index ? (job.status === 'failed' ? 'failed' : job.status === 'running' ? 'active' : 'waiting') : 'waiting' })),
       progress: job.progress || 0, message: job.message || '', error: job.error || '', retryable: job.status === 'failed' && !job.final,
       transcriptSource: job.transcriptSource || null, script: job.script ? { title: job.script.title, originality: job.script.originality || null } : null,
@@ -185,8 +185,10 @@ function createViralPipeline(options) {
   async function runJob(job) {
     save(job, { status: 'running', error: '', message: '' });
     try {
-      if (!job.transcript) { save(job, { step: 'extract' }); await extract(job); }
+      if (!job.transcript && !job.script) { save(job, { step: 'extract' }); await extract(job); }
       if (!job.script) { save(job, { step: 'write' }); await write(job); }
+      // 内部做文案库：只提取和改写，不配音、不生成数字人。
+      if (job.mode === 'library') return save(job, { status: 'done', step: 'done', progress: 100, message: '已改写，等待发布到文案库' });
       if (!job.generatedVideoId) { if (!['voice', 'video', 'package'].includes(job.step)) save(job, { step: 'voice' }); await produce(job); }
       save(job, { step: 'cover', message: '正在合成大字封面' }); await cover(job);
       save(job, { status: 'done', step: 'done', progress: 100, message: '已完成，成片在成片中心' });
@@ -209,20 +211,44 @@ function createViralPipeline(options) {
     return pumping;
   }
 
-  function start({ item, assetId, industry, business, maxCny }) {
+  function start({ item, assetId, industry, business, maxCny, mode = 'post' }) {
     if (!item || !/^[A-Za-z0-9]{1,64}$/u.test(String(item.id || '')) || !['douyin', 'xiaohongshu'].includes(item.platform) || !postUrl(item.url, item.platform)) throw problem('viral_item_invalid', '请从爆款卡片上点「一键成片」。');
     // 人物和声音授权在开始前就核对，免得先花了识别费和写稿额度、到配音才被拦下。
     const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
     if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先在「本人数字分身」里保存出镜人物和声音。');
-    if (!person.voiceConsented) throw problem('viral_voice_consent', '这位出镜人物还没确认声音授权，请先在「本人数字分身」里做一条口播并确认授权。');
-    const duplicate = all().find((j) => j.item.id === String(item.id) && holdsItem(j));
+    if (mode !== 'library' && !person.voiceConsented) throw problem('viral_voice_consent', '这位出镜人物还没确认声音授权，请先在「本人数字分身」里做一条口播并确认授权。');
+    const duplicate = all().find((j) => j.item.id === String(item.id) && (j.mode || 'post') === mode && holdsItem(j));
     if (duplicate) return publicJob(duplicate);
     const limit = Number(maxCny) > 0 ? Math.min(Number(maxCny), 50) : DEFAULT_MAX_CNY;
-    const job = { id: `vp_${randomUUID()}`, createdAt: new Date().toISOString(), status: 'queued', step: 'extract', progress: 0, maxCny: limit,
+    const job = { id: `vp_${randomUUID()}`, mode, createdAt: new Date().toISOString(), status: 'queued', step: 'extract', progress: 0, maxCny: limit,
       assetId, industry: clean(industry).slice(0, 80) || '清洁设备渠道商', business: clean(business).slice(0, 2000),
       item: { id: String(item.id), platform: item.platform, url: item.url, title: clean(item.title).slice(0, 200), body: clean(item.body).slice(0, 6000), author: clean(item.author?.name ?? item.author).slice(0, 120),
         publishedAt: typeof item.publishedAt === 'string' && Number.isFinite(Date.parse(item.publishedAt)) ? item.publishedAt.slice(0, 64) : null, likes: item.metrics?.likes ?? null, media: typeof item.media?.url === 'string' ? { url: item.media.url.slice(0, 2000), durationSeconds: Number.isFinite(item.media.durationSeconds) ? item.media.durationSeconds : null } : null } };
     save(job); void pump(); return publicJob(job);
+  }
+
+  // 客户从爆款文案库选了一条原创稿：跳过提取和改写，直接从配音开始（不扣写稿额度）。
+  function startFromScript({ libraryItem: entry, assetId, industry, business, maxCny }) {
+    const valid = entry && /^[A-Za-z0-9]{1,64}$/u.test(String(entry.id || '')) && ['douyin', 'xiaohongshu'].includes(entry.platform)
+      && typeof entry.title === 'string' && entry.title.trim() && chars(entry.title).length <= 24 && typeof entry.script === 'string' && entry.script.trim() && chars(entry.script).length <= 500;
+    if (!valid) throw problem('viral_item_invalid', '请从文案库里选一条文案。');
+    const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
+    if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先上传本人视频。');
+    if (!person.voiceConsented) throw problem('viral_voice_consent', '请先确认视频和声音是你本人的。');
+    const itemId = `lib${entry.id}`.slice(0, 64);
+    const duplicate = all().find((j) => j.item.id === itemId && holdsItem(j));
+    if (duplicate) return publicJob(duplicate);
+    const url = postUrl(entry.source?.url, entry.platform) ? String(entry.source.url) : '';
+    const phrases = (Array.isArray(entry.emphasisPhrases) ? entry.emphasisPhrases : []).filter((p) => typeof p === 'string' && chars(p).length <= 12 && entry.script.includes(p)).slice(0, 5);
+    const job = { id: `vp_${randomUUID()}`, mode: 'script', createdAt: new Date().toISOString(), status: 'queued', step: 'voice', progress: 0,
+      maxCny: Number(maxCny) > 0 ? Math.min(Number(maxCny), 50) : DEFAULT_MAX_CNY, assetId, industry: clean(industry).slice(0, 80) || '清洁设备渠道商', business: clean(business).slice(0, 2000),
+      transcriptSource: 'library', script: { title: clean(entry.title).slice(0, 24), script: clean(entry.script).slice(0, 500), emphasisPhrases: phrases, originality: null, structure: [] },
+      item: { id: itemId, platform: entry.platform, url, title: clean(entry.source?.title || entry.title).slice(0, 200), body: '', author: clean(entry.source?.author).slice(0, 120), publishedAt: null, likes: Number.isFinite(entry.source?.likes) ? entry.source.likes : null, media: null } };
+    save(job); void pump(); return publicJob(job);
+  }
+  // 内部：已改写好的文案库稿子（发布前汇总用）。
+  function libraryScripts() {
+    return all().filter((j) => j.mode === 'library' && j.status === 'done' && j.script).map((j) => ({ sourceId: j.item.id, ...j.script }));
   }
 
   // 重试：已提交的付费操作都走原回执；口播任务卡住时先按原任务恢复，不新建任务。
@@ -246,7 +272,7 @@ function createViralPipeline(options) {
   }
   function coverPath(id) { const job = read(id); if (!job.coverFile || !fs.existsSync(job.coverFile)) throw problem('viral_cover_missing', '封面还没有生成。'); return job.coverFile; }
 
-  return { start, list, retry, remove, coverPath, resume: () => { void pump(); }, isBusy: () => Boolean(pumping), close: () => { closed = true; return pumping; } };
+  return { start, startFromScript, libraryScripts, list, retry, remove, coverPath, resume: () => { void pump(); }, isBusy: () => Boolean(pumping), close: () => { closed = true; return pumping; } };
 }
 
 module.exports = { createViralPipeline, coverWords, textFromUtterances, STEPS, JOB_ID };

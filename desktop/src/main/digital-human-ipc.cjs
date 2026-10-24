@@ -6,6 +6,8 @@ const { createViralPipeline, JOB_ID } = require('./viral-pipeline.cjs');
 const { createBailianVideoProvider } = require('./bailian-video-provider.cjs');
 const { renderBigtypeCover } = require('./bigtype-cover.cjs');
 const { probeMedia } = require('./reference-human-media.cjs');
+const { buildLibrary, validateLibrary } = require('./viral-library.cjs');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
@@ -15,6 +17,7 @@ const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'reference-workspace', 'reference-save-workspace', 'reference-script-quota', 'reference-source-status', 'reference-source-connect', 'reference-source-search', 'reference-source-read',
   'reference-viral-scan', 'reference-viral-stop',
   'reference-viral-pipeline-start', 'reference-viral-pipeline-list', 'reference-viral-pipeline-retry', 'reference-viral-pipeline-remove', 'reference-viral-pipeline-cover',
+  'reference-viral-library', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-export',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
@@ -27,8 +30,12 @@ function registerDigitalHumanIpc(options = {}) {
     onProgress: (progress) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-progress', progress); } }));
   // 一键成片：排队和断点记在数字人目录里；付费环节全部交给写稿回执和本人口播任务。
   const sendPipeline = (state) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-pipeline', state); };
+  const gatewayProvider = options.referenceProvider || createBailianVideoProvider(options);
+  // 最近一次扒取结果：内部发布文案库时用来画流图，重启后从磁盘读回。
+  const scanFile = options.rootDir ? path.join(options.rootDir, 'viral-library', 'last-scan.json') : null;
+  let lastScan = null;
   const pipeline = options.viralPipeline || (options.rootDir ? createViralPipeline({ root: options.rootDir, reference, scout: { downloadMedia: (item, target) => viral().downloadMedia(item, target) },
-    provider: options.referenceProvider || createBailianVideoProvider(options), ffmpegPath: options.ffmpegPath || 'ffmpeg', fontFile: options.coverFontFile,
+    provider: gatewayProvider, ffmpegPath: options.ffmpegPath || 'ffmpeg', fontFile: options.coverFontFile,
     renderCover: renderBigtypeCover, probe: (file) => probeMedia(file, options.ffmpegPath || 'ffmpeg'), resolveVideo: (videoId) => options.resolveGeneratedVideoPath?.(videoId),
     notify: options.notify || (() => {}), onChange: sendPipeline }) : null);
   const pipelineReady = () => { if (!pipeline) throw fail('viral_pipeline_unavailable', '一键成片暂不可用，请重新打开软件。'); return pipeline; };
@@ -83,7 +90,13 @@ function registerDigitalHumanIpc(options = {}) {
     'reference-source-connect': (payload) => reference.sourceConnect(payload),
     'reference-source-search': (payload) => reference.sourceSearch(payload),
     'reference-source-read': (payload) => reference.sourceRead(payload),
-    'reference-viral-scan': (payload) => { assertKeys(payload, ['industryIds', 'platforms', 'days']); return viral().scan(payload); },
+    'reference-viral-scan': async (payload) => {
+      assertKeys(payload, ['industryIds', 'platforms', 'days']);
+      const result = await viral().scan(payload);
+      lastScan = result;
+      if (scanFile) { fs.mkdirSync(path.dirname(scanFile), { recursive: true }); fs.writeFileSync(scanFile, JSON.stringify(result)); }
+      return result;
+    },
     'reference-viral-stop': () => { viralScout?.stop(); return { stopped: true }; },
     'reference-viral-pipeline-start': (payload) => {
       assertKeys(payload, ['item', 'maxCny']);
@@ -93,6 +106,38 @@ function registerDigitalHumanIpc(options = {}) {
         industry: saved.draft?.industry, business: saved.draft?.business });
     },
     'reference-viral-pipeline-list': () => pipelineReady().list(),
+    // 客户：从云端读爆款文案库（只读），逐项校验后给页面。
+    'reference-viral-library': async () => {
+      // 开发版预览：指定了本地文案库文件时读它，并标记为预览数据；客户版永远只读云端。
+      const preview = options.developmentEdition ? String(process.env.XIAOXI_VIRAL_LIBRARY_FILE || '').trim() : '';
+      if (preview) return { ...validateLibrary(JSON.parse(fs.readFileSync(preview, 'utf8'))), preview: true };
+      return validateLibrary(await gatewayProvider.request('/viral-library'));
+    },
+    'reference-confirm-consent': (payload) => { assertKeys(payload, ['assetId']); return reference.confirmConsent(payload.assetId); },
+    'reference-viral-pipeline-start-script': (payload) => {
+      assertKeys(payload, ['libraryItem', 'assetId', 'maxCny']);
+      const saved = reference.workspace();
+      const assetId = reference.assets().items.some((a) => a.id === payload.assetId) ? payload.assetId : saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId;
+      return pipelineReady().startFromScript({ libraryItem: payload.libraryItem, maxCny: payload.maxCny, assetId, industry: saved.draft?.industry, business: saved.draft?.business });
+    },
+    // 内部（只在开发版）：把最近一次扒取的前几条爆款改写成文案库稿子，再导出成待发布文件。
+    'reference-viral-library-build': (payload) => {
+      if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
+      assertKeys(payload, ['limit']);
+      const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
+      if (!scan?.items?.length) throw fail('viral_library_scan_missing', '还没有扒取结果，请先扒一次爆款。');
+      const saved = reference.workspace(), assetId = saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId;
+      const limit = Math.max(1, Math.min(30, Number(payload.limit) || 10));
+      return { jobs: scan.items.slice(0, limit).map((item) => pipelineReady().start({ item, assetId, industry: '清洁设备渠道商', business: '', mode: 'library' })) };
+    },
+    'reference-viral-library-export': () => {
+      if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
+      const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
+      const library = buildLibrary({ scan, scripts: pipelineReady().libraryScripts() });
+      const file = path.join(options.rootDir, 'viral-library', `library-${library.updatedAt.replace(/[:.]/g, '-')}.json`);
+      fs.writeFileSync(file, JSON.stringify(library, null, 1));
+      return { file, items: library.items.length, collected: library.stats.collected };
+    },
     'reference-viral-pipeline-retry': (payload) => pipelineReady().retry(jobId(payload)),
     'reference-viral-pipeline-remove': (payload) => pipelineReady().remove(jobId(payload)),
     'reference-viral-pipeline-cover': (payload) => ({ dataUrl: `data:image/jpeg;base64,${require('node:fs').readFileSync(pipelineReady().coverPath(jobId(payload))).toString('base64')}` }),
@@ -127,7 +172,7 @@ function registerDigitalHumanIpc(options = {}) {
         const trusted = options.isTrustedEvent ? options.isTrustedEvent(event)
           : Boolean(window?.webContents && event.sender === window.webContents && (!event.senderFrame || event.senderFrame === window.webContents.mainFrame));
         if (!trusted) throw fail('digital_human_untrusted_sender', '请在应用主窗口操作。');
-        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry'].includes(name)) {
+        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build'].includes(name)) {
           // Caller supplies the same trusted-click policy used for paid content work.
           if (!options.requireTrustedClick) throw fail('digital_human_click_guard_missing', '数字人生成入口尚未完成接入。');
           await options.requireTrustedClick(event, payload, name);

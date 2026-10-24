@@ -295,6 +295,13 @@ async function main() {
     await assert.rejects(service.writeScript({ ...scriptInput, referenceSource: viral, generationIntentId: rejectedIntent }), { code: 'reference_script_rejected' });
     assert.equal(counts.script, before + 1, 'an unoriginal result is never re-posted');
     scriptReply = null;
+    // 极简页面：上传时本人确认一次，人物即显示已授权；重复确认不改原时间；非法编号直接拒绝
+    const consented = service.confirmConsent(automaticAsset.id);
+    assert.equal(consented.voiceConsented, true);
+    const firstConsent = JSON.parse(fs.readFileSync(path.join(root, 'reference', 'assets', `${automaticAsset.id}.json`), 'utf8')).consentAt;
+    service.confirmConsent(automaticAsset.id);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'reference', 'assets', `${automaticAsset.id}.json`), 'utf8')).consentAt, firstConsent);
+    assert.throws(() => service.confirmConsent('../x'), { code: 'reference_asset_not_found' });
     const personPath = path.join(root, 'reference', 'assets', `${automaticAsset.id}.json`);
     const person = JSON.parse(fs.readFileSync(personPath));
     fs.writeFileSync(personPath, JSON.stringify({ ...person, seconds: 21.6 }));

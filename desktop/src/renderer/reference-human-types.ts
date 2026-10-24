@@ -39,14 +39,23 @@ export type ViralItem = { id: string; platform: string; url: string; title: stri
   publishedAt: string | null; publishedKnown: boolean; metrics: { likes: number | null }; tags: ViralTag[]; askingPriceComments: number | null; cover?: string | null;
   media?: { url: string; durationSeconds: number | null } | null };
 export type ViralJobStep = { id: 'extract' | 'write' | 'voice' | 'video' | 'package' | 'cover'; label: string; state: 'done' | 'active' | 'failed' | 'waiting' };
-export type ViralJob = { id: string; itemId: string; title: string; platform: string; url: string; status: 'queued' | 'running' | 'done' | 'failed'; step: string; steps: ViralJobStep[];
-  progress: number; message: string; error: string; retryable: boolean; transcriptSource: 'asr' | 'note' | 'caption' | null; script: { title: string; originality: ScriptOriginality | null } | null;
+export type ViralJob = { id: string; mode: 'post' | 'script' | 'library'; itemId: string; title: string; platform: string; url: string; status: 'queued' | 'running' | 'done' | 'failed'; step: string; steps: ViralJobStep[];
+  progress: number; message: string; error: string; retryable: boolean; transcriptSource: 'asr' | 'note' | 'caption' | 'library' | null; script: { title: string; originality: ScriptOriginality | null } | null;
   taskId: string | null; generatedVideoId: string | null; coverReady: boolean; coverError: string; quoteMaximumCny: number | null; maxCny: number; holdsItem: boolean; createdAt: string; updatedAt: string };
 export type ViralRemoved = ViralBrief & { reason: 'duplicate' | 'outdated' | 'irrelevant' | 'not_viral'; label: string; twinId?: string };
 export type ViralScanResult = { startedAt: string; finishedAt: string; keywords: string[]; days: number; stopped: boolean;
   platforms: { platform: string; name: string; status: 'ok' | 'blocked'; message?: string; collected: number }[];
   items: ViralItem[]; stats: ViralStats; removed: ViralRemoved[] };
+export type ViralLibraryItem = { id: string; platform: string; title: string; script: string; emphasisPhrases: string[];
+  source: { title: string; author: string; url: string; likes: number | null; tags: ViralTag[] } };
+export type ViralLibrary = { preview?: boolean; updatedAt: string | null; days: number; stats: { collected: number; duplicates: number; outdated: number; irrelevant: number; notViral: number; final: number; ready: number; byPlatform: Record<string, number> };
+  strands: { id: string; title: string; source: string; group: string; outcome: 'pass' | 'drop'; reason: string }[]; items: ViralLibraryItem[] };
 export type ReferenceHumanApi = {
+  viralLibrary(): Promise<DigitalHumanResult<ViralLibrary>>;
+  confirmConsent(payload: { assetId: string }): Promise<DigitalHumanResult<ReferenceAsset>>;
+  viralStartScript(payload: { libraryItem: ViralLibraryItem; assetId: string; maxCny: number }): Promise<DigitalHumanResult<ViralJob>>;
+  viralLibraryBuild(payload: { limit: number }): Promise<DigitalHumanResult<{ jobs: ViralJob[] }>>;
+  viralLibraryExport(): Promise<DigitalHumanResult<{ file: string; items: number; collected: number }>>;
   viralScan(payload: { industryIds: string[]; platforms: string[]; days: 30 | 90 }): Promise<DigitalHumanResult<ViralScanResult>>;
   viralStop(): Promise<DigitalHumanResult<{ stopped: boolean }>>;
   onViralProgress(callback: (progress: ViralProgress) => void): () => void;
