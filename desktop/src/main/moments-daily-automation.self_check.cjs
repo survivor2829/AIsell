@@ -1,3 +1,6 @@
+// Fixtures use +08:00 timestamps and local daily boundaries; pin the zone to
+// Taiwan/Singapore time (UTC+8, no DST) so results do not depend on the machine.
+process.env.TZ = "Asia/Taipei";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
