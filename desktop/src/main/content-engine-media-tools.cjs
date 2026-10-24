@@ -143,6 +143,7 @@ function resolveContentEngineMediaToolsEnvironment({
 }
 
 module.exports = {
+  resolveContentEngineBundledFont,
   resolveContentEngineMediaToolsEnvironment,
   writeContentEngineFontconfig
 };

@@ -1,6 +1,8 @@
 // 扒爆款：用软件自带的平台窗口（与「找行业参考」共用登录）打开抖音、小红书搜索页，
 // 只读取官方页面自己请求回来的数据（点赞、评论数、粉丝数、发布时间、评论文字）。
 // 不重放平台接口、不读取 Cookie 或请求头、不发送任何内容。
+// 一键成片需要爆款原口播时，才按页面数据里给出的官方 CDN 地址下载那一条视频。
+const fs = require('node:fs');
 const { rankCandidates, searchKeywords } = require('./viral-ranking.cjs');
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,6 +23,16 @@ function allowed(url, platform) {
   try { const u = new URL(url); return u.protocol === 'https:' && (PLATFORMS[platform].hosts.includes(u.hostname) || u.hostname.endsWith(platform === 'douyin' ? '.douyin.com' : '.xiaohongshu.com')); }
   catch { return false; }
 }
+// 视频文件只从平台自己的播放 / CDN 域名下载。
+const MEDIA_HOSTS = { douyin: ['.douyin.com', '.douyinvod.com', '.zjcdn.com', '.amemv.com', '.douyinstatic.com', '.bytecdn.cn'], xiaohongshu: ['.xhscdn.com', '.xiaohongshu.com'] };
+function mediaAllowed(url, platform) {
+  try { const u = new URL(url); return u.protocol === 'https:' && !u.username && !u.password && (MEDIA_HOSTS[platform] || []).some((suffix) => u.hostname.endsWith(suffix)); }
+  catch { return false; }
+}
+const mediaOf = (urls, platform, durationMs) => {
+  const url = (Array.isArray(urls) ? urls : [urls]).find((candidate) => typeof candidate === 'string' && mediaAllowed(candidate, platform));
+  return url ? { url, durationSeconds: Number(durationMs) > 0 ? Math.round(Number(durationMs) / 1000) : null } : null;
+};
 
 // 「1.2万」「10w+」「1,234」→ 数字；读不出就返回 null，不估算。
 function count(value) {
@@ -43,6 +55,7 @@ function parseDouyinSearch(body) {
     return [{ id: String(a.aweme_id), platform: 'douyin', url: `https://www.douyin.com/video/${a.aweme_id}`, title: compact(a.desc, 200), body: compact(a.desc, 2000),
       author: { name: compact(a.author?.nickname, 100), followers: positive(a.author?.follower_count) },
       publishedAt: iso(a.create_time), cover: typeof a.video?.cover?.url_list?.[0] === 'string' ? a.video.cover.url_list[0] : null,
+      media: mediaOf(a.video?.play_addr?.url_list, 'douyin', a.video?.duration ?? a.duration),
       metrics: { likes: count(s.digg_count), comments: count(s.comment_count), collects: count(s.collect_count), shares: count(s.share_count) }, comments: null }];
   });
 }
@@ -65,7 +78,9 @@ function parseXhsFeed(body) {
   const n = body?.data?.items?.[0]?.note_card;
   if (!n) return null;
   const i = n.interact_info || {};
-  return { body: compact(n.desc, 2000), title: compact(n.title, 200), publishedAt: iso(n.time),
+  const stream = n.video?.media?.stream || {};
+  const media = n.type === 'video' ? mediaOf([...(stream.h264 || []), ...(stream.h265 || [])].flatMap((s) => [s?.master_url, ...(s?.backup_urls || [])]), 'xiaohongshu', n.video?.capa?.duration * 1000) : null;
+  return { body: compact(n.desc, 2000), title: compact(n.title, 200), publishedAt: iso(n.time), media,
     metrics: { likes: count(i.liked_count), comments: count(i.comment_count), collects: count(i.collected_count), shares: count(i.share_count) } };
 }
 function parseXhsComments(body) {
@@ -188,7 +203,7 @@ function createViralScout({ BrowserWindow, session, onProgress = () => {} } = {}
       const comments = entry.captured.filter((c) => c.kind === 'comments').flatMap((c) => c.data).slice(0, 50);
       const feed = entry.captured.find((c) => c.kind === 'feed')?.data;
       const merged = { ...item, comments: comments.length ? comments : null };
-      if (feed) Object.assign(merged, { body: feed.body || merged.body, title: merged.title || feed.title, publishedAt: feed.publishedAt || merged.publishedAt,
+      if (feed) Object.assign(merged, { body: feed.body || merged.body, title: merged.title || feed.title, publishedAt: feed.publishedAt || merged.publishedAt, media: feed.media || merged.media || null,
         metrics: { ...merged.metrics, ...Object.fromEntries(Object.entries(feed.metrics).filter(([, v]) => v !== null)) } });
       found.set(item.id, merged);
       await pause(jitter(1500, 3000));
@@ -231,8 +246,38 @@ function createViralScout({ BrowserWindow, session, onProgress = () => {} } = {}
     } finally { busy = false; }
   }
 
-  return { scan, stop: () => { stopped = true; }, isBusy: () => busy,
+  // 下载一条爆款的视频，用于提取原口播。用扒取时同一个平台会话，只认官方 CDN 地址，限制大小和时长。
+  async function downloadMedia(item, destination, { maxBytes = 150 * 1024 * 1024, timeoutMs = 120000 } = {}) {
+    const platform = item?.platform;
+    if (!PLATFORMS[platform] || !mediaAllowed(item?.media?.url, platform)) throw problem('VIRAL_MEDIA_UNAVAILABLE', '这条爆款没有可下载的视频。');
+    if (!session) throw problem('VIRAL_BROWSER_UNAVAILABLE', '当前环境没有可用的平台会话，请重新打开软件。');
+    const ses = session.fromPartition(`persist:narration-source-${platform}`);
+    const response = await ses.fetch(item.media.url, { headers: { Referer: platform === 'douyin' ? 'https://www.douyin.com/' : 'https://www.xiaohongshu.com/' }, signal: AbortSignal.timeout(timeoutMs) })
+      .catch(() => { throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败，请稍后重试。`); });
+    if (!response.ok || !response.body) throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败（${response.status}），链接可能已过期，请重新扒一次。`);
+    // 同步写入：出错时先关文件再删，不会留下半截文件或晚到的写入错误。
+    const partial = `${destination}.partial`;
+    const fd = fs.openSync(partial, 'w');
+    let bytes = 0, closed = false;
+    try {
+      for await (const chunk of response.body) {
+        bytes += chunk.length;
+        if (bytes > maxBytes) throw problem('VIRAL_MEDIA_TOO_LARGE', '爆款视频太大，跳过下载。');
+        fs.writeSync(fd, chunk);
+      }
+      fs.closeSync(fd); closed = true;
+      if (!bytes) throw problem('VIRAL_MEDIA_DOWNLOAD', '下载到的视频是空的，请重新扒一次。');
+      fs.renameSync(partial, destination);
+      return { file: destination, bytes };
+    } catch (error) {
+      if (!closed) fs.closeSync(fd);
+      fs.rmSync(partial, { force: true });
+      throw error;
+    }
+  }
+
+  return { scan, downloadMedia, stop: () => { stopped = true; }, isBusy: () => busy,
     close: () => { for (const { win } of windows.values()) if (!win.isDestroyed()) win.destroy(); windows.clear(); } };
 }
 
-module.exports = { createViralScout, parseDouyinSearch, parseDouyinComments, parseXhsSearch, parseXhsFeed, parseXhsComments, parseXhsFans, routeFor, count, allowed, LIMITS };
+module.exports = { createViralScout, mediaAllowed, parseDouyinSearch, parseDouyinComments, parseXhsSearch, parseXhsFeed, parseXhsComments, parseXhsFans, routeFor, count, allowed, LIMITS };

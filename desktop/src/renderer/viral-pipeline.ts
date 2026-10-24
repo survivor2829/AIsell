@@ -4,6 +4,13 @@ import { platformName } from './flow-funnel';
 
 export const TOP_COUNT = 10;
 
+// 一键成片的预估：数字人按秒计费为主（0.08 元/秒），加上配音和字幕识别的零头；以实际报价为准。
+export function estimateCny(maximumSeconds: number | null | undefined) {
+  if (!(Number(maximumSeconds) > 0)) return '3—4 元';
+  const cny = Number(maximumSeconds) * 0.08 + 0.15;
+  return `${cny.toFixed(1)} 元（按 ${Math.round(Number(maximumSeconds))} 秒）`;
+}
+
 export function likesText(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '点赞未知';
   return value >= 10000 ? `${(value / 10000).toFixed(2).replace(/\.?0+$/, '')}w` : String(value);

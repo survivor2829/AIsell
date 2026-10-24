@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LoaderCircle, Pause, Search } from 'lucide-react';
 import type { DigitalHumanResult } from './digital-human-types';
-import type { NarrationReference, ReferenceAsset, ReferenceHumanApi, ViralItem, ViralScanResult } from './reference-human-types';
+import type { NarrationReference, ReferenceAsset, ReferenceHumanApi, ViralItem, ViralJob, ViralScanResult } from './reference-human-types';
+import { ViralQueue } from './ViralQueue';
 import { FlowFunnel } from './FlowFunnel';
 import { platformName, tagText, viralFlow } from './flow-funnel';
-import { applyProgress, dateText, EMPTY_SCAN, likesText, resultSummary, safeLink, TOP_COUNT, viralReference, type ScanState } from './viral-pipeline';
+import { applyProgress, dateText, EMPTY_SCAN, estimateCny, likesText, resultSummary, safeLink, TOP_COUNT, viralReference, type ScanState } from './viral-pipeline';
 import presets from '../shared/viral-industry-presets.json';
 import referencePolicy from '../shared/reference-human.json';
 import './ViralPipelinePage.css';
@@ -16,7 +17,7 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
 const PLATFORMS = [{ id: 'douyin', name: '抖音' }, { id: 'xiaohongshu', name: '小红书' }];
 const TAG_CLASS: Record<string, string> = { high_likes: 'is-likes', underdog: 'is-underdog', asking_price: 'is-asking' };
 
-function ViralCard({ item, onImitate }: { item: ViralItem; onImitate: () => void }) {
+function ViralCard({ item, onImitate, onOneClick, oneClickBlocked, estimate, queued }: { item: ViralItem; onImitate: () => void; onOneClick: () => void; oneClickBlocked: string; estimate: string; queued: boolean }) {
   const link = safeLink(item.url);
   return (
     <article className="vp-card">
@@ -27,9 +28,10 @@ function ViralCard({ item, onImitate }: { item: ViralItem; onImitate: () => void
       <div className="vp-card-actions">
         {link && <a className="dh-button" href={link} target="_blank" rel="noreferrer">原文</a>}
         <button type="button" className="dh-button" onClick={onImitate}>只仿写</button>
-        <button type="button" className="dh-button is-primary" disabled title="一键成片正在开发，现在可以先用「只仿写」">一键成片</button>
+        <button type="button" className="dh-button is-primary" data-xiaoxi-digital-human-action="reference-viral-pipeline-start" disabled={Boolean(oneClickBlocked) || queued}
+          title={oneClickBlocked || undefined} onClick={onOneClick}>{queued ? '已在队列' : '一键成片'}</button>
       </div>
-      <span className="vp-card-note">一键成片即将开放；只仿写使用 1 次写稿额度</span>
+      <span className="vp-card-note">{oneClickBlocked || `一键成片预计约 ${estimate}；只仿写使用 1 次写稿额度`}</span>
     </article>
   );
 }
@@ -43,9 +45,16 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
   const [result, setResult] = useState<ViralScanResult | null>(null);
   const [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [person, setPerson] = useState<ReferenceAsset | null | undefined>(undefined);
+  const [jobs, setJobs] = useState<ViralJob[]>([]);
+  const [maxCny, setMaxCny] = useState(6);
   const scanningRef = useRef(false);
 
   useEffect(() => referenceApi().onViralProgress((event) => { if (scanningRef.current) setScan((current) => applyProgress(current, event)); }), []);
+  useEffect(() => {
+    const off = referenceApi().onViralPipeline((state) => setJobs(state.items));
+    void unwrap(referenceApi().viralPipelineList()).then((state) => setJobs(state.items)).catch(() => {});
+    return off;
+  }, []);
   useEffect(() => {
     let active = true;
     void Promise.allSettled([unwrap(referenceApi().workspace()), unwrap(referenceApi().assets())]).then(([saved, people]) => {
@@ -61,6 +70,14 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
   const top = result?.items.slice(0, TOP_COUNT) || [];
   const personReady = Boolean(person && person.available !== false && person.voiceSampleReady && person.seconds >= referencePolicy.limits.narrationMinSeconds);
   const blockedPlatforms = PLATFORMS.filter((p) => scan.blocked[p.id] || result?.platforms.some((r) => r.platform === p.id && r.status === 'blocked'));
+  const estimate = estimateCny(person?.narrationPlan?.maximumSeconds);
+  const oneClickBlocked = !personReady ? '先在「本人数字分身」里准备好出镜人物和声音' : '';
+  const queuedIds = new Set(jobs.filter((j) => ['queued', 'running'].includes(j.status)).map((j) => j.itemId));
+  async function oneClick(item: ViralItem) {
+    setError('');
+    try { await unwrap(referenceApi().viralPipelineStart({ item, maxCny })); setNotice(`已加入一键成片队列：${item.title.slice(0, 20)}`); }
+    catch (reason) { setError((reason as Error).message); }
+  }
   const toggle = (list: string[], id: string) => list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
 
   async function start() {
@@ -115,13 +132,15 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
 
           {result && <div className="vp-list-head"><b>近 {result.days} 天，清洁圈谁在被点赞</b><span>{resultSummary(result)}。标签可以在原视频上核实；读不到的数据不显示。</span></div>}
           {result && !top.length && <p className="vp-empty">这一轮没有挑出爆款。可以多选几个行业，或改成近 90 天再扒一次。</p>}
-          {top.length > 0 && <div className="vp-cards">{top.map((item) => <ViralCard key={item.id} item={item} onImitate={() => onImitate(viralReference(item, result!.finishedAt))} />)}</div>}
+          {top.length > 0 && <div className="vp-cards">{top.map((item) => <ViralCard key={item.id} item={item} onImitate={() => onImitate(viralReference(item, result!.finishedAt))}
+            onOneClick={() => void oneClick(item)} oneClickBlocked={oneClickBlocked} estimate={estimate} queued={queuedIds.has(item.id)} />)}</div>}
         </div>
 
         <aside className="vp-side">
           <section className="vp-panel vp-side-block" aria-label="一键成片队列">
             <b>一键成片队列</b>
-            <p className="vp-muted">一键成片接通后，选中的爆款会在这里排队，依次完成提取 → 仿写 → 配音 → 数字人 → 剪辑 → 封面。现在可以先点卡片上的「只仿写」。</p>
+            <label className="vp-cap">每条最多花 <input type="number" min={1} max={50} step={1} value={maxCny} onChange={(event) => setMaxCny(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /> 元，报价超过就不开始</label>
+            <ViralQueue api={referenceApi()} jobs={jobs} onError={setError} />
           </section>
           <section className="vp-panel vp-side-block" aria-label="出镜人物与声音">
             <b>出镜人物与声音</b>

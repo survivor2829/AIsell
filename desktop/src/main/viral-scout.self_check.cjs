@@ -113,3 +113,36 @@ const events = [];
   instance.close();
   console.log('viral scout self-check passed: official hosts and fixed routes only, metric parsing without estimation, comment sampling, per-platform login block, progress events');
 })().catch((error) => { console.error(error); process.exit(1); });
+
+// 一键成片用的视频地址：只认平台官方 CDN；下载用同一平台会话、写临时文件、超限即停
+(async () => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const [dy] = scout.parseDouyinSearch({ data: [{ aweme_info: { aweme_id: '7400000000000000009', desc: '洗地机', video: { duration: 31500,
+    play_addr: { url_list: ['http://v3-web.douyinvod.com/a.mp4', 'https://evil.example.com/a.mp4', 'https://v3-web.douyinvod.com/b.mp4'] } } } }] });
+  assert.deepEqual(dy.media, { url: 'https://v3-web.douyinvod.com/b.mp4', durationSeconds: 32 });
+  const [noVideo] = scout.parseDouyinSearch({ data: [{ aweme_info: { aweme_id: '7400000000000000010', desc: 'x', video: { play_addr: { url_list: ['https://evil.example.com/a.mp4'] } } } }] });
+  assert.equal(noVideo.media, null, '非官方域名不当成可下载视频');
+  const xhs = scout.parseXhsFeed({ data: { items: [{ note_card: { type: 'video', desc: '正文', video: { capa: { duration: 40 }, media: { stream: { h264: [{ master_url: 'https://sns-video-bd.xhscdn.com/x.mp4' }] } } } } }] } });
+  assert.deepEqual(xhs.media, { url: 'https://sns-video-bd.xhscdn.com/x.mp4', durationSeconds: 40 });
+  assert.equal(scout.parseXhsFeed({ data: { items: [{ note_card: { type: 'normal', desc: '图文' } }] } }).media, null);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viral-media-'));
+  const requests = [];
+  const chunks = (list) => ({ async *[Symbol.asyncIterator]() { for (const c of list) yield Buffer.from(c); } });
+  let reply = { ok: true, status: 200, body: chunks(['abc', 'def']) };
+  const fetchSession = { fromPartition: (name) => ({ fetch: async (url, init) => { requests.push({ name, url, referer: init.headers.Referer }); return reply; } }) };
+  const downloader = scout.createViralScout({ BrowserWindow: FakeWindow, session: fetchSession });
+  const target = path.join(dir, 'source.mp4');
+  assert.deepEqual(await downloader.downloadMedia(dy, target), { file: target, bytes: 6 });
+  assert.equal(fs.readFileSync(target, 'utf8'), 'abcdef');
+  assert.deepEqual(requests[0], { name: 'persist:narration-source-douyin', url: 'https://v3-web.douyinvod.com/b.mp4', referer: 'https://www.douyin.com/' });
+  reply = { ok: true, status: 200, body: chunks(['12345', '67890']) };
+  await assert.rejects(downloader.downloadMedia(dy, path.join(dir, 'big.mp4'), { maxBytes: 8 }), { code: 'VIRAL_MEDIA_TOO_LARGE' });
+  assert.ok(!fs.existsSync(path.join(dir, 'big.mp4')) && !fs.existsSync(path.join(dir, 'big.mp4.partial')), '超限不留半截文件');
+  reply = { ok: false, status: 403, body: null };
+  await assert.rejects(downloader.downloadMedia(dy, path.join(dir, 'gone.mp4')), /链接可能已过期/);
+  await assert.rejects(downloader.downloadMedia({ ...dy, media: { url: 'https://evil.example.com/a.mp4' } }, path.join(dir, 'x.mp4')), { code: 'VIRAL_MEDIA_UNAVAILABLE' });
+  assert.equal(requests.length, 3, '非官方地址不会发出请求');
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log('viral scout media self-check passed: official CDN only, same platform session with referer, size cap, no partial files');
+})().catch((error) => { console.error(error); process.exit(1); });
