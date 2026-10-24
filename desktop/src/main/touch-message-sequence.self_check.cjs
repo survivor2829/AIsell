@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { createTouchWorkflow } = require("./touch-workflow.cjs");
-const { canContinueTouchResult } = require("./touch-message-sequence.cjs");
+const { canContinueTouchResult, executeMessageSequence, messageParts } = require("./touch-message-sequence.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
 const { IMAGE_SEND_SCRIPT, sendWechatImage } = require("../../rpa/active_touch/wechat_image_send.dev.cjs");
 const { main: runCli } = require("../../rpa/active_touch/active_touch_cli.cjs");
@@ -12,7 +12,35 @@ const { retrySkippedResults, skippedTaskSummary } = require("../../rpa/active_to
 const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy.cjs");
 const { createTaskPassportStore } = require("./task-passport.cjs");
 
+// Each part of a multipart message is sent at most once: a part that may have
+// been clicked stays unknown, and a later run never sends it (or any verified
+// part) again.
+async function checkSequenceExactlyOnce() {
+  const parts = messageParts("文字", ["image-one"]);
+  const row = {};
+  let calls = [];
+  const sequence = (execute) => executeMessageSequence({ row, parts, execute, persist: () => {}, isEnabled: () => true });
+  const late = await sequence(async (_part, index, transition) => {
+    calls.push(index);
+    if (index === 0) return { ok: true, state: { real_send_status: "sent_verified" } };
+    transition("clicked");
+    return { ok: false, send_attempted: false, blocked_reason: "late_not_attempted" };
+  });
+  assert.deepEqual(row.message_parts.map((part) => part.status), ["sent_verified", "outcome_unknown"],
+    "a late not_attempted must not downgrade a part that reached the click");
+  assert.equal(late.send_attempted, null);
+  for (const status of ["outcome_unknown", "sending", "prepared", "clicked"]) {
+    row.message_parts[1].status = status;
+    calls = [];
+    const again = await sequence(async (_part, index) => { calls.push(index); return { ok: true, state: { real_send_status: "sent_verified" } }; });
+    assert.deepEqual(calls, [], `a ${status} part and the verified text must never be sent again`);
+    assert.equal(again.blocked_reason, "touch_part_outcome_unknown");
+    assert.equal(again.send_attempted, null);
+  }
+}
+
 async function checkTouchMessageSequence() {
+  await checkSequenceExactlyOnce();
   assert.deepEqual(require("../shared/failure-diagnostics.cjs").sanitizeFailureDiagnostics(null), {}, "empty legacy diagnostic details remain valid");
   assert.match(IMAGE_SEND_SCRIPT, /function Clear-ImageComposer[\s\S]*Image-Keys "\^a" \$mainWindow[\s\S]*Image-Keys "\{BACKSPACE\}" \$mainWindow[\s\S]*Wait-SendButton \$false[\s\S]*image_existing_draft_clear_failed/u,
     "a verified image composer must replace and then prove removal of any stale draft");
@@ -1006,11 +1034,14 @@ async function checkTouchMessageSequence() {
   assert.equal(imageProgress[0].phase, "start");
   assert.equal(imageProgress[0].paste_method, "file_drop");
   assert.doesNotMatch(JSON.stringify(imageProgress), /private clipboard contents/u);
-  const postClickTimeout = { ...imageOptions, baseDir: path.join(root, "post-click-timeout"), runner: async () => ({
-    ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "click_send", status: "start", retry_index: 0 }] }
-  }) };
+  let postClickAttempts = 0;
+  const postClickTimeout = { ...imageOptions, baseDir: path.join(root, "post-click-timeout"), wait: async () => {}, runner: async () => {
+    postClickAttempts += 1;
+    return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "click_send", status: "start", retry_index: 0 }, { stage: "paste", status: "start", retry_index: 0 }] } };
+  } };
   const postClickResult = await sendWechatImage(postClickTimeout);
   assert.equal(postClickResult.send_attempted, null, "a click-stage timeout must remain outcome_unknown");
+  assert.equal(postClickAttempts, 1, "once the click stage was reached, a later pre-click-looking stage must not make the timeout retryable");
   const trimmedClickResult = await sendWechatImage({ ...postClickTimeout, baseDir: path.join(root, "trimmed-click-timeout"),
     runner: async () => ({ ok: false, reason: "powershell_timeout", diagnostics: { image_send_attempted: true,
       image_progress: [{ stage: "paste", status: "start", retry_index: 0 }] } }) });
