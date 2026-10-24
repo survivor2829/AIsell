@@ -1118,7 +1118,7 @@ function buildRunnableTask(script, excludedContactIds = []) {
   };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, detectDeliveryNotice, waitForDelay: wait, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
@@ -1396,6 +1396,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     readContacts,
     client: deepSeekClient,
     execute: realSendExecutor,
+    detectDeliveryNotice,
     runStep: runActiveTouch,
     passport: taskPassportStore
   });

@@ -29,7 +29,15 @@ const {
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
-const COMPLETED_ROW_STATES = new Set(["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped", "partial_sent_skipped"]);
+const COMPLETED_ROW_STATES = new Set(["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped", "partial_sent_skipped", "recipient_unreachable_skipped"]);
+
+// The window a verified send happened in, for the undelivered-notice check.
+function sentWindow(executionDir) {
+  try {
+    const state = JSON.parse(fs.readFileSync(path.join(executionDir, "state.json"), "utf8"));
+    return state.window_pid && state.window_handle ? { pid: state.window_pid, hWnd: String(state.window_handle), inputPoint: state.message_input_point } : null;
+  } catch { return null; }
+}
 const PRE_SEND_RECOVERY_ATTEMPTS = 2;
 const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
@@ -479,6 +487,7 @@ function createTouchWorkflow(options = {}) {
       passport?.recordEvent("active_touch", passportTaskId, {
         stage: "workflow_contact_send", direction: "in", status: "started", traceId: sendOperation.traceId
       });
+      let lastSentWindow = null;
       try {
         let sessionAnchor = null;
         let sourcePartIndex = null;
@@ -568,6 +577,7 @@ function createTouchWorkflow(options = {}) {
             const { search_capture_file: _captureFile, ...safeDiagnostics } = partOutcome.diagnostics;
             partOutcome = { ...partOutcome, diagnostics: safeDiagnostics };
           }
+          if (partOutcome?.ok === true && partOutcome?.state?.real_send_status === "sent_verified") lastSentWindow = sentWindow(executionDir) || lastSentWindow;
           if (!multipart) return partOutcome;
           const { session_anchor: anchor, ...safeOutcome } = partOutcome || {};
           if (partOutcome?.ok === true && partOutcome?.state?.real_send_status === "sent_verified" && anchor) {
@@ -611,10 +621,24 @@ function createTouchWorkflow(options = {}) {
       if (result?.ok && result?.state?.real_send_status === "sent_verified") {
         delete task.identity_skip_streak;
         delete task.pre_send_skip_streak;
-        current.status = "sent_verified";
+        // The composer emptying proves the click, not delivery: a contact who
+        // deleted the user gets a "friend verification" notice instead.
+        const notice = typeof options.detectDeliveryNotice === "function" && lastSentWindow
+          ? await Promise.resolve(options.detectDeliveryNotice({ ...lastSentWindow, message: current.message })).catch(() => null)
+          : null;
         current.retry_blocked = true;
         current.send_attempted = true;
-        current.reason = "发送成功并已核验";
+        if (notice?.ok === true && notice.undelivered === true) {
+          current.status = "recipient_unreachable_skipped";
+          current.blocked_reason = "recipient_not_friend";
+          current.reason = "已发出，但对方已不是好友（需要朋友验证），消息未送达；不会重发";
+          recordSkippedResult(current, index, { reasonCode: current.blocked_reason, blockedReason: current.reason, at: now().toISOString() });
+        } else {
+          current.status = "sent_verified";
+          current.reason = "发送成功并已核验";
+        }
+        diagnostics().event("active_touch", "delivery_notice", { checked: Boolean(notice), ok: notice?.ok === true,
+          undelivered: notice?.undelivered === true, reason: notice?.reason || "" }, { code: notice?.undelivered === true ? "recipient_not_friend" : notice?.reason || "" });
         task.current_index = index + 1;
         task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
         if (task.current_index >= task.total) {

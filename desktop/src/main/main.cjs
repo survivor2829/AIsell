@@ -864,6 +864,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
+      detectDeliveryNotice: internalRealSend ? require("../../rpa/active_touch/wechat_delivery_notice.cjs").detectWechatDeliveryNoticeAsync : undefined,
       onPause: disarmRealSend || undefined,
       passport: taskPassportStore
     });

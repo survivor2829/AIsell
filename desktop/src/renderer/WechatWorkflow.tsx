@@ -51,7 +51,7 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   canRetry?: boolean;
   unknownResolution?: { required: true; contactLabel: string; partKind: "text" | "image" | "link" | string };
   sent_verified_count?: number;
-  skipped_breakdown?: { identity: number; ai_failed: number; pre_send: number; outcome_unknown: number; partial_sent?: number };
+  skipped_breakdown?: { identity: number; ai_failed: number; pre_send: number; outcome_unknown: number; partial_sent?: number; unreachable?: number };
   skipped_records?: TouchSkipRecord[];
   reasonCode?: string;
   reasonClassification?: "environment" | "recoverable" | "blocker";
@@ -134,7 +134,8 @@ const TOUCH_SKIP_LABELS: Record<string, string> = {
   ai_failed_skipped: "AI失败，已跳过",
   pre_send_skipped: "明确未发送，恢复失败后已跳过",
   outcome_unknown_skipped: "结果未知，已跳过",
-  partial_sent_skipped: "部分已发送，其余内容未发送"
+  partial_sent_skipped: "部分已发送，其余内容未发送",
+  recipient_unreachable_skipped: "对方已不是好友，消息未送达"
 };
 
 export function useWechatWorkflow() {
@@ -537,8 +538,8 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
           <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
             {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}>{canRetryWhileListening ? "暂停自动回复，全部重试并继续" : "全部重试并继续"}</button>}
           </div>
-          <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 部分已发送 ${task.skipped_breakdown!.partial_sent}`}</p>
-          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.status === "partial_sent_skipped" ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></details>
+          <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 部分已发送 ${task.skipped_breakdown!.partial_sent}`}{Boolean(task.skipped_breakdown?.unreachable) && ` · 对方已不是好友 ${task.skipped_breakdown!.unreachable}`}</p>
+          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{["partial_sent_skipped", "recipient_unreachable_skipped"].includes(record.status) ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></details>
         </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}

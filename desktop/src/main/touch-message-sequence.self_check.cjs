@@ -583,6 +583,38 @@ async function checkTouchMessageSequence() {
   stopPassportObserver();
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
 
+  // A contact who deleted the user still empties the composer; WeChat's
+  // friend-verification notice must turn the "sent" into undelivered, once.
+  const noticeChecks = [];
+  const noticeWorkflow = (undelivered) => createTouchWorkflow({ ...config,
+    execute: async (options) => {
+      fs.writeFileSync(path.join(options.baseDir, "state.json"), JSON.stringify({ window_pid: 4242, window_handle: "9191", message_input_point: { xRatio: 0.65, yRatio: 0.84 } }));
+      return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
+    },
+    detectDeliveryNotice: async (window) => { noticeChecks.push(window); return undelivered === null ? { ok: false, reason: "delivery_notice_not_foreground" } : { ok: true, undelivered }; } });
+  const unreachable = noticeWorkflow(true);
+  const unreachableRecord = { id: crypto.randomUUID(), payload: unreachable.prepareWorkflowTask({ script: "被删好友检测", contactIds: [contact.id] }), progress: { done: 0 }, status: "running" };
+  await unreachable.runWorkflowStep(unreachableRecord, context);
+  const unreachableTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(unreachableRecord.id).digest("hex"));
+  const unreachableRow = JSON.parse(fs.readFileSync(path.join(unreachableTaskDir, "touch_task.json"), "utf8")).results[0];
+  assert.equal(noticeChecks.length, 1);
+  assert.equal(noticeChecks[0].pid, 4242);
+  assert.equal(noticeChecks[0].hWnd, "9191");
+  assert.equal(unreachableRow.status, "recipient_unreachable_skipped", "a friend-verification notice is not a delivered message");
+  assert.equal(unreachableRow.retry_blocked, true);
+  assert.equal(unreachableRow.skip_record.reasonCode, "recipient_not_friend");
+  const unreachableSummary = skippedTaskSummary(loadTaskState(unreachableTaskDir));
+  assert.equal(unreachableSummary.breakdown.unreachable, 1);
+  assert.equal(unreachableSummary.records[0].retryable, false, "the sent message must never be repeated");
+  assert.equal(unreachableSummary.records[0].retry_blocked_reason, "retry_skipped_unreachable_forbidden");
+  for (const unclear of [false, null]) {
+    const delivered = noticeWorkflow(unclear);
+    const deliveredRecord = { id: crypto.randomUUID(), payload: delivered.prepareWorkflowTask({ script: "正常送达", contactIds: [contact.id] }), progress: { done: 0 }, status: "running" };
+    await delivered.runWorkflowStep(deliveredRecord, context);
+    const deliveredRow = JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(deliveredRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0];
+    assert.equal(deliveredRow.status, "sent_verified", "no notice, or an unreadable screen, keeps the verified send");
+  }
+
   async function checkPassportWiring(name, reasonCode, contactIds, image = false) {
     let screenshots = 0;
     const logger = require("./diagnostics.cjs").configureDiagnostics({ rootDir: path.join(root, `diagnostics-${name}`) });
