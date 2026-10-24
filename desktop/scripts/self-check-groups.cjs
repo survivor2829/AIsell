@@ -17,6 +17,7 @@ const checks = [
   "rpa/active_touch/file_helper_send.self_check.cjs",
   "rpa/active_touch/wechat_clipboard.self_check.cjs",
   "rpa/active_touch/wechat_search_observation.self_check.cjs",
+  "rpa/active_touch/wechat_search_capture_chain.self_check.cjs",
   "rpa/active_touch/wechat_search_input.self_check.cjs",
   "rpa/active_touch/wechat_render_surface.self_check.cjs",
   "rpa/active_touch/self_check.cjs",
