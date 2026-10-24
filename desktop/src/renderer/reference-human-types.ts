@@ -48,7 +48,7 @@ export type ViralScanResult = { startedAt: string; finishedAt: string; keywords:
   items: ViralItem[]; stats: ViralStats; removed: ViralRemoved[] };
 export type ViralLibraryItem = { id: string; platform: string; title: string; script: string; emphasisPhrases: string[];
   source: { title: string; author: string; url: string; likes: number | null; tags: ViralTag[] } };
-export type ViralLibrary = { updatedAt: string | null; days: number; stats: { collected: number; duplicates: number; outdated: number; irrelevant: number; notViral: number; final: number; ready: number; byPlatform: Record<string, number> };
+export type ViralLibrary = { preview?: boolean; updatedAt: string | null; days: number; stats: { collected: number; duplicates: number; outdated: number; irrelevant: number; notViral: number; final: number; ready: number; byPlatform: Record<string, number> };
   strands: { id: string; title: string; source: string; group: string; outcome: 'pass' | 'drop'; reason: string }[]; items: ViralLibraryItem[] };
 export type ReferenceHumanApi = {
   viralLibrary(): Promise<DigitalHumanResult<ViralLibrary>>;

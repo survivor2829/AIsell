@@ -90,7 +90,7 @@ export function NarrationSimplePage() {
   return (
     <div className="ns-page">
       {library && flow ? <>
-        <div className="ns-kicker">爆款文案库{updatedText(library.updatedAt) && <span className="ns-live"><i />{updatedText(library.updatedAt)}</span>}</div>
+        <div className="ns-kicker">爆款文案库{updatedText(library.updatedAt) && <span className="ns-live"><i />{updatedText(library.updatedAt)}</span>}{library.preview && <span className="ns-preview">预览数据，仅开发版可见</span>}</div>
         <h1 className="ns-h1">{dayWord(library.updatedAt)}全网扒了 {formatCount(library.stats.collected)} 条清洁行业口播，<br />挑出 <em>{library.stats.ready} 条爆款</em>，已经改写成你的原创稿。</h1>
         <div className="ns-flow"><FlowFunnel strands={flow.strands} stages={flow.stages} height={250} outputLabel="爆款文案库" outputNote="已改写成原创稿，可以直接出片" emptyText="" /></div>
       </> : <div className="ns-wait">{libraryError || '正在读取爆款文案库…'}</div>}

@@ -57,3 +57,4 @@
 .ns-error { margin: 0; padding: 0 32px 12px; font-size: 13px; font-weight: 700; color: #b4122c; }
 @media (max-width: 900px) { .ns-steps, .ns-list { grid-template-columns: 1fr; } .ns-h1 { font-size: 30px; } }
 @media (prefers-reduced-motion: reduce) { .ns-live i { animation: none; } .ns-progress i { transition: none; } }
+.ns-preview { padding: 2px 8px; border-radius: 999px; background: #fff4e0; color: #92400e; font-size: 12px; letter-spacing: 0; }

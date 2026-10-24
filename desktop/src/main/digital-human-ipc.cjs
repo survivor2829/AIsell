@@ -107,7 +107,12 @@ function registerDigitalHumanIpc(options = {}) {
     },
     'reference-viral-pipeline-list': () => pipelineReady().list(),
     // 客户：从云端读爆款文案库（只读），逐项校验后给页面。
-    'reference-viral-library': async () => validateLibrary(await gatewayProvider.request('/viral-library')),
+    'reference-viral-library': async () => {
+      // 开发版预览：指定了本地文案库文件时读它，并标记为预览数据；客户版永远只读云端。
+      const preview = options.developmentEdition ? String(process.env.XIAOXI_VIRAL_LIBRARY_FILE || '').trim() : '';
+      if (preview) return { ...validateLibrary(JSON.parse(fs.readFileSync(preview, 'utf8'))), preview: true };
+      return validateLibrary(await gatewayProvider.request('/viral-library'));
+    },
     'reference-confirm-consent': (payload) => { assertKeys(payload, ['assetId']); return reference.confirmConsent(payload.assetId); },
     'reference-viral-pipeline-start-script': (payload) => {
       assertKeys(payload, ['libraryItem', 'assetId', 'maxCny']);
