@@ -65,7 +65,7 @@ function createReferenceHumanService(options = {}) {
       voiceSampleReady: (item.audioQuality?.activeSeconds ?? Math.min(item.seconds, policy.limits.voiceMaxSeconds)) >= policy.limits.voiceMinSeconds,
       voice: item.voice ? { usable: Boolean(currentVoice(item.voice)), provider: item.voice.provider || 'volcengine' } : null,
       // 只告诉页面和一键成片「是否已确认过声音授权」，不暴露授权时间或声音编号。
-      voiceConsented: Boolean(item.voice?.consentAt) };
+      voiceConsented: Boolean(item.voice?.consentAt || item.consentAt) };
   }
   function records(kind) {
     const directory = file(kind);
@@ -141,6 +141,14 @@ function createReferenceHumanService(options = {}) {
   async function voiceStatus(assetId) {
     const item = read(assetId, 'assets');
     if (item.voice?.speakerId) { item.voice = { ...item.voice, ...await options.voiceCloneClient.status({ speakerId: item.voice.speakerId }) }; save(item, 'assets'); }
+    return publicAsset(item);
+  }
+  // 极简页面上传视频时，本人勾选「视频和声音是我本人的」：记下确认时间，之后制作不再重复询问。
+  function confirmConsent(assetId) {
+    assertOpen();
+    if (!ASSET_ID.test(String(assetId || ''))) throw fail('reference_asset_not_found', '请重新上传本人视频。');
+    const item = read(assetId, 'assets');
+    if (!item.consentAt) { item.consentAt = new Date().toISOString(); save(item, 'assets'); }
     return publicAsset(item);
   }
   async function writeScript(input) {
@@ -310,7 +318,7 @@ function createReferenceHumanService(options = {}) {
     if (task.version >= 4 && generateVideo && asset.seconds < minimumReferenceSeconds) throw fail('reference_video_short', `本任务需要至少${minimumReferenceSeconds}秒人物视频，未提交配音或人物生成。旧草稿可新建口播，按素材时长重新规划。`);
     if (task.packagingPlan?.blocked) throw fail('reference_layout_crowded', '当前素材没有足够字幕空间，未开始付费制作。');
     if (task.voiceProvider === 'bailian' && task.quote.voiceModel !== policy.automaticVoice.model) throw fail('reference_quote_confirmation_required', '本人配音服务已更新，请重新查看费用后确认。');
-    if (!customerConsent && !asset.voice?.consentAt) throw fail('voice_clone_consent_required', '请确认视频和声音来自本人或已获授权。');
+    if (!customerConsent && !asset.voice?.consentAt && !asset.consentAt) throw fail('voice_clone_consent_required', '请确认视频和声音来自本人或已获授权。');
     if (Math.min(asset.seconds, policy.limits.voiceMaxSeconds) < policy.limits.voiceMinSeconds) throw fail('reference_voice_short', '声音样本需要至少5秒清晰讲话，建议上传10—30秒本人视频。');
     if (task.voiceProvider === 'volcengine') {
       const slots = await options.voiceCloneClient.list();
@@ -575,7 +583,7 @@ function createReferenceHumanService(options = {}) {
   function pending() { if (!closed && !held && !global.__xiaoxiUpdateHold) for (const task of records('tasks')) if (RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState)) void schedule(task.id); }
   const timer = setInterval(pending, 5000); timer.unref?.();
   const startup = setTimeout(pending, 0); startup.unref?.();
-  return { capabilities, workspace, saveWorkspace, scriptQuota, sourceStatus: sources.status, sourceConnect: sources.connect, sourceSearch: sources.search, sourceRead: sources.read, importVideo: admit(importVideo), assets: () => ({ items: records('assets').map(publicAsset) }),
+  return { capabilities, workspace, saveWorkspace, confirmConsent, scriptQuota, sourceStatus: sources.status, sourceConnect: sources.connect, sourceSearch: sources.search, sourceRead: sources.read, importVideo: admit(importVideo), assets: () => ({ items: records('assets').map(publicAsset) }),
     trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), coverFrame: admit(coverFrame), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
     list: () => ({ items: records('tasks').map(publicTask).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }), get: (id) => publicTask(read(id)),
     speechMedia: (id) => { const task = read(id); return { audioDataUrl: `data:audio/wav;base64,${fs.readFileSync(verified(task.audioFile, task.audioSha256)).toString('base64')}` }; },
