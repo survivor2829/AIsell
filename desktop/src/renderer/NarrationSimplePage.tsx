@@ -19,6 +19,7 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
   const value = await result; if (!value.ok || value.data === undefined) throw new Error(value.error || '操作未完成，请稍后重试。'); return value.data;
 }
 const MAX_CNY = 6;
+const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
 function ScriptCard({ item, selected, onSelect }: { item: ViralLibraryItem; selected: boolean; onSelect: () => void }) {
   const tag = item.source.tags.find((t) => t.id !== 'high_likes');
@@ -43,13 +44,20 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const [stuck, setStuck] = useState<{ reference: ReferenceTask[]; image: DigitalHumanTask[] }>({ reference: [], image: [] });
   const lastJob = useRef('');
   const root = useRef<HTMLDivElement>(null);
+  const [libraryTry, setLibraryTry] = useState(0);
+  // 文案库来自云端；还没准备好时显示「准备中」并可以重新加载，不把接口报错直接给客户看。
+  useEffect(() => {
+    let active = true;
+    setLibraryError('');
+    void unwrap(api().viralLibrary()).then((data) => { if (!active) return; setLibrary(data); setSelected((current) => current || data.items[0]?.id || ''); })
+      .catch((reason) => { if (active) setLibraryError((reason as Error).message || '未知原因'); });
+    return () => { active = false; };
+  }, [libraryTry]);
   // 流图铺满整行，高度跟着宽度放大（宽屏更舒展），限制在 300～480。
   const flowBox = useRef<HTMLDivElement>(null), [flowHeight, setFlowHeight] = useState(340);
 
   useEffect(() => {
     let active = true;
-    void unwrap(api().viralLibrary()).then((data) => { if (!active) return; setLibrary(data); setSelected((current) => current || data.items[0]?.id || ''); })
-      .catch((reason) => { if (active) setLibraryError((reason as Error).message); });
     void Promise.allSettled([unwrap(api().workspace()), unwrap(api().assets())]).then(([saved, people]) => {
       if (!active) return;
       const items = people.status === 'fulfilled' ? people.value.items : [];
@@ -120,7 +128,12 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
             caption="示意图：每条线是一条扒到的口播；搬运和重复的合成一束；经过「够爆」的闸门，只有真爆款的几束通过，汇进爆款文案库。鼠标移上去可以看每条线是什么。" /></div>
           <div className="ns-sec"><b>选一条文案</b><span>按爆款热度排序 · 内容已换成清洁设备，只学它的结构和节奏</span></div>
           <div className="ns-list">{library.items.map((item) => <ScriptCard key={item.id} item={item} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
-        </> : <div className="ns-wait">{libraryError || '正在读取爆款文案库…'}</div>}
+        </> : libraryError ? <div className="ns-wait is-pending">
+          <b>今天的爆款文案库正在准备中</b>
+          <span>云端每天会把抖音、小红书上的清洁行业爆款改写成你的原创稿，准备好后这里会直接显示。</span>
+          <button type="button" className="ns-go is-quiet" onClick={() => setLibraryTry((n) => n + 1)}>重新加载</button>
+          {DEVELOPMENT_EDITION && <small>开发版可见：{libraryError}</small>}
+        </div> : <div className="ns-wait">正在读取爆款文案库…</div>}
         {stuckCount > 0 && onOpenPending && <button type="button" className="ns-pending" onClick={() => onOpenPending(stuckReference.length ? 'reference' : 'image')}>
           之前有 {stuckCount} 条视频需要你处理，已有结果都保留着，不会自动重新扣费<b>去处理 →</b></button>}
         <div className="ns-bar"><div className="ns-bar-in">
