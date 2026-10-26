@@ -32,6 +32,8 @@ for (const face of [null, { x: 0.4, y: 0.1, right: 0.6, bottom: 0.25 }, { x: 0.9
 const centered = planBigtypeCover({ title: '先试再买', source: portrait, face: { x: 0.4, y: 0.3, right: 0.6, bottom: 0.42 } });
 const faceCenter = 0.36 * centered.photo.scaledH - centered.photo.cropY;
 assert.ok(Math.abs(faceCenter - centered.photo.height * 0.38) <= 1, '脸的中心落在人物画面 38% 高度处');
+const moving = planBigtypeCover({ title: '先试再买', source: portrait, face: { x: 0.07, y: 0.22, right: 1, bottom: 0.8 } }).photo;
+assert.ok(0.22 * moving.scaledH - moving.cropY >= moving.height * 0.19, '人一直在动、人脸范围很大时，头顶上方留出空间，不切头');
 
 // 用户写的文字只进临时文本文件，滤镜里只有文件路径，引号、冒号、百分号都不会被当成滤镜语法
 const tricky = planBigtypeCover({ title: "别信'50%'省钱:说法", subtitle: '注意\'引号', tags: ['a:b'], source: portrait });

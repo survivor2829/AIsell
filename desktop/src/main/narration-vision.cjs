@@ -11,7 +11,7 @@ async function run(...args) {
   try { return await promisify(execFile)(...args); }
   catch (error) { require('./component-paths.cjs').runtimeLaunchFailed(args[0], error); throw error; }
 }
-const VERSION = 'face-layout-v3';
+const VERSION = 'face-layout-v4';
 const SAMPLE_FPS = 6;
 const pending = new Map();
 async function bounded(promise, ms = 15000) {
@@ -94,7 +94,12 @@ async function inspect(source, ffmpeg) {
       return Math.max(...centers) - Math.min(...centers);
     })) : 0;
     const multiple = ranked.filter(boxes => boxes.length > 1 && boxes[1].width * boxes[1].height > boxes[0].width * boxes[0].height * .35).length / samples.length;
-    return { status: 'measured', coverage, union, movement, busy: movement > .16 || multiple > .2, sampleCount: samples.length, sampleFps: SAMPLE_FPS,
+    // 封面用的一帧：只有一张主要人脸、大小适中（约占画面高度 22%）、横向居中；跳过开头半秒。
+    const portrait = samples.map((s, i) => ({ s, b: ranked[i][0], crowded: ranked[i].length > 1 && ranked[i][1].width * ranked[i][1].height > ranked[i][0].width * ranked[i][0].height * .35 }))
+      .filter(({ s, b, crowded }) => b && !crowded && s.timeMs >= 500 && b.y >= .06)
+      .map(({ s, b }) => ({ seconds: s.timeMs / 1000, face: { x: b.x, y: b.y, right: b.x + b.width, bottom: b.y + b.height }, score: Math.abs(b.height - .22) + Math.abs(b.x + b.width / 2 - .5) }))
+      .sort((a, b) => a.score - b.score)[0] || null;
+    return { status: 'measured', coverage, union, portrait: portrait && { seconds: portrait.seconds, face: portrait.face }, movement, busy: movement > .16 || multiple > .2, sampleCount: samples.length, sampleFps: SAMPLE_FPS,
       note: coverage < .8 ? '部分画面未可靠检测到人脸，请检查文字位置；检测不代表口型质量。' : '已按本机采样人脸范围安排文字；请在成片中复查。' };
   } catch { return { status: 'unavailable', coverage: 0, union: null, busy: false, note: '本机画面检测未完成，使用保守布局，请检查是否遮脸。' }; }
   finally { if (window && !window.isDestroyed()) window.destroy(); if (server) server.close(); }

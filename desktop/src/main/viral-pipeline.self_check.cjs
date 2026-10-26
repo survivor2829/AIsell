@@ -36,7 +36,8 @@ function world({ quoteCny = 4, original = true, attentionOnce = false, asrReject
     prepare: async (id, revision, consent, generateVideo) => { calls.prepare++; assert.equal(revision, 'rev-1'); assert.equal(consent, false, '不代为确认声音授权'); assert.equal(generateVideo, true);
       const task = tasks.get(id); task.status = 'audio_preparing'; task.progress = 10; return { ...task }; },
     resume: async (id) => { calls.resume++; tasks.get(id).status = 'video_generating'; },
-    refresh: async () => { calls.refresh++; }
+    refresh: async () => { calls.refresh++; },
+    coverSource: async (id) => { const file = path.join(os.tmpdir(), `${id}-base.mp4`); fs.writeFileSync(file, 'mp4'); return { path: file, face: { x: 0.3, y: 0.4, right: 0.7, bottom: 0.6 } }; }
   };
   const provider = { request: async (route, init = {}) => {
     if (route.startsWith('/operations/')) { calls.asrQuery++; if (queryRejected) { queryRejected = false; throw Object.assign(new Error('rejected receipt'), { originalRequestRejected: true }); } return { result: { text: ORIGINAL } }; }
@@ -51,7 +52,7 @@ function world({ quoteCny = 4, original = true, attentionOnce = false, asrReject
     run: async (_bin, args) => { calls.ffmpeg++; fs.writeFileSync(args.at(-1), 'wav'); },
     resolveVideo: async (id) => { const file = path.join(os.tmpdir(), `${id}.mp4`); fs.writeFileSync(file, 'mp4'); return { generated_video_id: id, absolute_path: file }; },
     probe: async () => ({ width: 1080, height: 1920 }),
-    renderCover: async (input) => { calls.cover++; assert.equal(input.title, '买还是租'); assert.equal(input.subtitle, '算完这笔账'); fs.writeFileSync(input.target, 'jpg'); },
+    renderCover: async (input) => { calls.cover++; assert.match(input.source, /-base.mp4$/, '封面用没加字幕的原片'); assert.deepEqual(input.face, { x: 0.3, y: 0.4, right: 0.7, bottom: 0.6 }); assert.equal(input.title, '买还是租'); assert.equal(input.subtitle, '算完这笔账'); fs.writeFileSync(input.target, 'jpg'); },
     fontFile: 'font.ttf', notify: (title) => calls.notify.push(title)
   };
   return { calls, tasks, deps, reference };
