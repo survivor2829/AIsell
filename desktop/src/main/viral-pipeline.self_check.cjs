@@ -243,6 +243,25 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.deepEqual([w.calls.asr.length, w.calls.write.length], [1, 1]);
     await pipeline.close();
   }
+  // 14. 文案库再点一次：下载失败的拿回旧任务（由调用方重试，不另建一条）；确定用不了的不再排队
+  {
+    const w = world();
+    let downloadFails = true;
+    const scout = { downloadMedia: async (_item, target) => { if (downloadFails) { downloadFails = false; throw Object.assign(new Error('抖音视频下载失败，请稍后重试。'), { code: 'VIRAL_MEDIA_DOWNLOAD' }); } fs.writeFileSync(target, 'video'); } };
+    const silent = { request: async () => { w.calls.asr.push('silent'); return { result: { text: '' } }; } };
+    const pipeline = createViralPipeline({ root: newRoot(), ...w.deps, scout, provider: silent });
+    const lib = (patch) => pipeline.start({ item: item('7400000000000000001', patch), assetId: 'rha_1', industry: '清洁设备渠道商', business: '', mode: 'library' });
+    const job = lib({ body: '#洗地机' });
+    assert.equal((await until(pipeline, job.id, ['failed'])).holdsItem, true);
+    const again = lib({ body: '#洗地机' });
+    assert.deepEqual([again.id, again.status, again.holdsItem], [job.id, 'failed', true], '下载失败的拿回原任务，可以重试');
+    await pipeline.retry(job.id);
+    const mute = await until(pipeline, job.id, ['done', 'failed']);
+    assert.match(mute.error, /读不到原口播/);
+    assert.equal(lib({ body: '#洗地机' }).id, job.id, '没有口播的再点一次不新建任务、不再花识别费');
+    assert.equal(w.calls.asr.length, 1);
+    await pipeline.close();
+  }
   // 输入校验
   {
     const w = world(), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });

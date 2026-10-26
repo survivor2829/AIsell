@@ -129,24 +129,32 @@ const events = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viral-media-'));
   const requests = [];
   const chunks = (list) => ({ async *[Symbol.asyncIterator]() { for (const c of list) yield Buffer.from(c); } });
-  let reply = { ok: true, status: 200, body: chunks(['abc', 'def']) };
+  let reply = { status: 200, body: chunks(['abc', 'def']) };
   const redirects = new Map();
-  const fetchSession = { fromPartition: (name) => ({ fetch: async (url, init) => { assert.equal(init.redirect, 'manual'); requests.push({ name, url, referer: init.headers.Referer });
-    if (redirects.has(url)) return { ok: false, status: 302, headers: { get: () => redirects.get(url) }, body: null }; return reply; } }) };
-  const downloader = scout.createViralScout({ BrowserWindow: FakeWindow, session: fetchSession });
+  // 仿 Electron net.request：跳转时发 redirect 事件（不自动跟随），否则发 response
+  const fakeNet = { request: ({ url, session: ses, redirect }) => {
+    assert.equal(redirect, 'manual');
+    const request = new EventEmitter(), headers = {};
+    Object.assign(request, { setHeader: (name, value) => { headers[name] = value; }, abort: () => {}, end: () => {
+      requests.push({ name: ses.name, url, referer: headers.Referer });
+      setImmediate(() => redirects.has(url) ? request.emit('redirect', 302, 'GET', redirects.get(url)) : request.emit('response', Object.assign(reply.body, { statusCode: reply.status })));
+    } });
+    return request;
+  } };
+  const downloader = scout.createViralScout({ BrowserWindow: FakeWindow, session: { fromPartition: (name) => ({ name }) }, net: fakeNet });
   const target = path.join(dir, 'source.mp4');
   assert.deepEqual(await downloader.downloadMedia(dy, target), { file: target, bytes: 6 });
   assert.equal(fs.readFileSync(target, 'utf8'), 'abcdef');
   assert.deepEqual(requests[0], { name: 'persist:narration-source-douyin', url: 'https://v3-web.douyinvod.com/b.mp4', referer: 'https://www.douyin.com/' });
-  reply = { ok: true, status: 200, body: chunks(['12345', '67890']) };
+  reply = { status: 200, body: chunks(['12345', '67890']) };
   await assert.rejects(downloader.downloadMedia(dy, path.join(dir, 'big.mp4'), { maxBytes: 8 }), { code: 'VIRAL_MEDIA_TOO_LARGE' });
   assert.ok(!fs.existsSync(path.join(dir, 'big.mp4')) && !fs.existsSync(path.join(dir, 'big.mp4.partial')), '超限不留半截文件');
-  reply = { ok: false, status: 403, body: null };
+  reply = { status: 403, body: chunks([]) };
   await assert.rejects(downloader.downloadMedia(dy, path.join(dir, 'gone.mp4')), /链接可能已过期/);
   await assert.rejects(downloader.downloadMedia({ ...dy, media: { url: 'https://evil.example.com/a.mp4' } }, path.join(dir, 'x.mp4')), { code: 'VIRAL_MEDIA_UNAVAILABLE' });
   assert.equal(requests.length, 3, '非官方地址不会发出请求');
   // 跳转：官方 CDN 之间可以跳；跳到平台以外（含本机内网）立即停止，不会去请求
-  reply = { ok: true, status: 200, body: chunks(['ok']) };
+  reply = { status: 200, body: chunks(['ok']) };
   redirects.set('https://v3-web.douyinvod.com/b.mp4', 'https://v5-cold.douyinvod.com/c.mp4');
   assert.equal((await downloader.downloadMedia(dy, path.join(dir, 'hop.mp4'))).bytes, 2);
   redirects.set('https://v5-cold.douyinvod.com/c.mp4', 'http://127.0.0.1:8080/secret');
