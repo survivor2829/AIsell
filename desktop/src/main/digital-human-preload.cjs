@@ -26,6 +26,7 @@ function createDigitalHumanApi(ipcRenderer) {
       viralLibraryExport: () => invoke('reference-viral-library-export'),
       viralLibraryPublish: () => invoke('reference-viral-library-publish', { clickToken: clicks['reference-viral-library-publish']() }),
       viralLibraryPublishToken: (payload) => invoke('reference-viral-library-publish-token', payload),
+      viralLibraryRemove: (payload) => invoke('reference-viral-library-remove', payload),
       viralPipelineRetry: (payload) => invoke('reference-viral-pipeline-retry', { ...payload, clickToken: clicks['reference-viral-pipeline-retry']() }),
       viralPipelineRemove: (payload) => invoke('reference-viral-pipeline-remove', payload),
       viralPipelineCover: (payload) => invoke('reference-viral-pipeline-cover', payload),

@@ -60,7 +60,7 @@ function LibraryTools({ jobs, onError }: { jobs: ViralJob[]; onError: (message: 
           onClick={() => void run('publish', async () => {
             setNote('正在发布，并让 AI 拆每条爆款的结构（内部花费，不扣客户额度），条数多时要几分钟…');
             const r = await unwrap(referenceApi().viralLibraryPublish());
-            setNote(`已发布 ${r.sent} 条：新增 ${r.added} 条、更新 ${r.updated} 条，云端文案库共 ${r.total} 条；本次拆好结构 ${r.structured} 条${r.missingStructure ? `，还有 ${r.missingStructure} 条没拆成，下次发布会再拆` : '，全部拆好了'}。`);
+            setNote(`已发布 ${r.sent} 条：新增 ${r.added} 条、更新 ${r.updated} 条${r.skipped ? `、之前删掉的 ${r.skipped} 条没有再加回去` : ''}，云端文案库共 ${r.total} 条；本次拆好结构 ${r.structured} 条${r.rejected ? `，AI 判断 ${r.rejected} 条不适合一个人口播，已从库里拿掉` : ''}${r.missingStructure ? `，还有 ${r.missingStructure} 条没拆成，下次发布会再拆` : '，全部处理完了'}。`);
           })}>{busy === 'publish' ? '正在发布…' : '发布到文案库'}</button>
       </div>
       {tokenSaved === false && <div className="vp-filter-row">

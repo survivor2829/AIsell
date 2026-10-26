@@ -101,7 +101,7 @@ class ViralLibraryPublishTest(ViralLibraryTest):
 
     def upstream(self, request, timeout):
         self.calls.append(json.loads(request.data))
-        reply = self.replies.pop(0) if self.replies else {"structure": STRUCTURE}
+        reply = self.replies.pop(0) if self.replies else {"talkingHead": True, "reason": "", "structure": STRUCTURE}
         if isinstance(reply, Exception):
             raise reply
         return test_service.FakeResponse(body=json.dumps({"choices": [{"finish_reason": "stop", "message": {
@@ -129,7 +129,7 @@ class ViralLibraryPublishTest(ViralLibraryTest):
         self.assertEqual(self.operator("publish", library())[0], 404, "没配置密钥时没有发布接口")
 
     def test_batches_merge_newest_first_and_keep_old_items(self):
-        self.assertEqual(self.operator("publish", library()), (200, {"ok": True, "added": 1, "updated": 0, "total": 1, "missingStructure": 1}))
+        self.assertEqual(self.operator("publish", library()), (200, {"ok": True, "added": 1, "updated": 0, "skipped": 0, "total": 1, "missingStructure": 1}))
         second = library(updatedAt="2026-11-24T08:00:00Z", stats={"collected": 100, "duplicates": 3, "final": 20, "byPlatform": {"douyin": 100}},
                          flow={"strands": [{"id": "2", "title": "t2", "source": "抖音", "group": "1", "outcome": "drop", "reason": "搬运"}]},
                          items=[item(id="2", title="买还是租", transcript=TRANSCRIPT_2), item(title="改过的标题")])
@@ -170,11 +170,11 @@ class ViralLibraryPublishTest(ViralLibraryTest):
 
     def test_structures_are_extracted_a_few_per_call_and_never_twice(self):
         self.operator("publish", library(items=[item(), item(id="2", transcript=TRANSCRIPT_2)]))
-        self.replies = [{"structure": STRUCTURE}, RuntimeError("provider down")]
+        self.replies = [{"talkingHead": True, "reason": "", "structure": STRUCTURE}, RuntimeError("provider down")]
         status, body = self.operator("structure", {"limit": 2})
         self.assertEqual((status, body["structured"], body["failed"], body["missingStructure"]), (200, 1, 1, 1), "一条失败不影响另一条")
         self.assertIn(TRANSCRIPT, json.dumps(self.calls, ensure_ascii=False), "拆结构时 AI 看得到原文")
-        self.assertEqual(self.operator("structure", {"limit": 8})[1], {"ok": True, "structured": 1, "failed": 0, "missingStructure": 0})
+        self.assertEqual(self.operator("structure", {"limit": 8})[1], {"ok": True, "structured": 1, "rejected": 0, "rejectedReasons": [], "failed": 0, "missingStructure": 0})
         self.assertEqual(len(self.calls), 3, "已拆过的不再调用 AI")
         self.assertEqual(self.operator("structure", {"limit": 8})[1]["structured"], 0)
         self.assertEqual(len(self.calls), 3)
@@ -186,9 +186,38 @@ class ViralLibraryPublishTest(ViralLibraryTest):
         self.assertNotIn("structure", json.dumps(body, ensure_ascii=False), "客户看不到拆出的结构")
         self.assertNotIn(TRANSCRIPT, json.dumps(body, ensure_ascii=False))
 
+    def test_not_a_talking_head_script_is_taken_out_and_stays_out(self):
+        lyrics = item(id="6", title="山峰等等我", transcript="我想要个潇洒的以后。山峰山峰等等我，带我去山那头，看看外面的世界。")
+        doc = library(flow={"strands": [{"id": "6", "title": "t", "source": "抖音", "group": "6", "outcome": "pass", "reason": "进了文案库 · 高赞 2759"}]},
+                      items=[item(), lyrics], scanId="a" * 32)
+        self.operator("publish", doc)
+        self.replies = [{"talkingHead": True, "reason": "", "structure": STRUCTURE}, {"talkingHead": False, "reason": "是歌词不是口播", "structure": []}]
+        body = self.operator("structure", {"limit": 8})[1]
+        self.assertEqual((body["structured"], body["rejected"], body["rejectedReasons"], body["missingStructure"]), (1, 1, ["是歌词不是口播"], 0))
+        stored = self.stored()
+        self.assertEqual([entry["id"] for entry in stored["items"]], ["7400000000000000001"])
+        self.assertEqual(stored["stats"]["ready"], 1)
+        self.assertEqual(stored["flow"]["strands"][0]["reason"], "高赞 2759", "流图上不再说它进了文案库")
+        self.assertEqual(stored["rejected"], [{"id": "6", "reason": "是歌词不是口播"}])
+        self.assertEqual(self.operator("publish", doc)[1]["skipped"], 1, "重新发布同一次扒取也不会再加回来")
+        self.assertEqual(len(self.stored()["items"]), 1)
+        status, public = self.get(self.session())
+        self.assertNotIn("rejected", public)
+        self.assertEqual(len(public["items"]), 1)
+
+    def test_operator_removes_items_by_id(self):
+        self.operator("publish", library(items=[item(), item(id="2", transcript=TRANSCRIPT_2), item(id="3", transcript=TRANSCRIPT_2)]))
+        self.assertEqual(self.operator("remove", {"ids": ["2", "999"]}, token="wrong")[0], 401)
+        self.assertEqual(self.operator("remove", {"ids": ["2", "999"]})[1], {"ok": True, "removed": 1, "total": 2})
+        self.assertEqual(self.operator("remove", {"ids": ["../x"]})[0], 400)
+        self.assertEqual(self.operator("remove", {"ids": ["3", "7400000000000000001"]})[0], 422, "不能把客户看的库删空")
+        self.assertEqual(len(self.stored()["items"]), 2)
+        self.operator("publish", library(items=[item(id="2", transcript=TRANSCRIPT_2)] + [item(id="4", transcript=TRANSCRIPT_2)]))
+        self.assertNotIn("2", [entry["id"] for entry in self.stored()["items"]], "删掉的不会被重新发布加回来")
+
     def test_bad_structure_output_is_not_stored(self):
         self.operator("publish", library())
-        self.replies = [{"structure": [{"part": "乱写", "method": "x"}]}]
+        self.replies = [{"talkingHead": True, "structure": [{"part": "乱写", "method": "x"}]}]
         self.assertEqual(self.operator("structure", {"limit": 1})[1]["structured"], 0)
         self.assertNotIn("structure", self.stored()["items"][0])
         self.assertEqual(self.operator("structure", {"limit": 99})[0], 400)
