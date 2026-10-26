@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, Building2, Check, Download, Factory, FileText, Hospital, Hotel, ImagePlus, Images, LoaderCircle, RefreshCw, School, Store, Trees, Video, Warehouse } from "lucide-react";
 import "./ProductVideoPage.css";
-import { CreationSteps, CreationStepTitle, TutorialHelp } from './CreationGuide';
+import { CreationSteps, CreationStepTitle } from './CreationGuide';
+import { ExampleBanner } from './VideoExamples';
 
 type Choice = { id: string; name: string };
 type Quote = { ready?: boolean; estimatedCny?: number | null; maximumCny?: number; actualCny?: number; pendingCny?: number; reservedCny?: number; budgetCny?: number; note?: string; message?: string; checkedAt?: string };
@@ -91,7 +92,8 @@ export function ProductVideoPage() {
   const quote = selected?.quote;
   const withinBudget = quote?.ready && Number(quote.maximumCny) <= Number(quote.budgetCny);
   return <div className="product-video-page">
-    <header className="pv-header"><div><h1>产品效果视频</h1><p>一张产品图，配上卖点，让客户看到现场使用效果。</p></div><TutorialHelp topic="product-video" /></header>
+    <header className="pv-header"><div><h1>产品效果视频</h1><p>一张产品图，配上卖点，让客户看到现场使用效果。</p></div></header>
+    <ExampleBanner topic="product-video" />
     <CreationSteps labels={['上传产品资料', '选择画面', '确认制作']} current={step} onChange={setStep} disabled={[!!busy, !draft.imageId || !!busy, !selected || !!busy]} />
     <div className={`pv-layout${step === 2 ? ' is-confirming' : ''}`}><section className="pv-panel" hidden={step === 2}>
       <div hidden={step !== 0}>
