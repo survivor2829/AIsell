@@ -36,6 +36,19 @@ const candidates = [
 ];
 const result = rankCandidates(candidates, { industryIds: ['cleaning', 'property', 'factory', 'retail'], days: 30, now });
 
+// 相关性：只沾行业词的吐槽不算；家用产品没提商用场景的筛成「家用产品」；家用品牌出现在商用场景里照常保留
+const relevance = rankCandidates([
+  item('r1', { title: '老婆充话费送的破监控 #云鲸洗地机', metrics: { likes: 2800000 } }),
+  item('r2', { title: '交房13年的小区到处都是物业服务细节 #物业', metrics: { likes: 2500 } }),
+  item('r3', { title: '石头P30扫地机器人对比，用了一个月', metrics: { likes: 3000 } }),
+  item('r4', { title: '工厂园区都在用的电动扫地车，看看清扫效果', metrics: { likes: 1800 } }),
+  item('r6', { title: '保洁再勤快，也追不上随手扔垃圾的人', metrics: { likes: 4700 } }),
+  item('r5', { title: '物业保洁换了台添可商用洗地机，夜班少两个人', metrics: { likes: 1500 }, comments: ['多少钱', '能租吗', '怎么联系'] })
+], { industryIds: ['cleaning', 'property', 'factory'], days: 30, now });
+assert.deepEqual(relevance.items.map((i) => i.id).sort(), ['r4', 'r5']);
+assert.deepEqual(relevance.removed.map((r) => [r.id, r.reason]).sort(), [['r1', 'consumer'], ['r2', 'irrelevant'], ['r3', 'consumer'], ['r6', 'irrelevant']]);
+assert.equal(relevance.stats.irrelevant, 4, '家用产品也计入「和清洁无关」这一段，四段数字仍然对得上');
+
 assert.deepEqual(result.stats, { collected: 7, byPlatform: { douyin: 6, xiaohongshu: 1 }, duplicates: 1, outdated: 1, irrelevant: 1, notViral: 1, final: 3 });
 assert.deepEqual(result.items.map((x) => x.id), ['1', '3', '7']);
 const first = result.items[0];

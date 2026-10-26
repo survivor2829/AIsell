@@ -38,6 +38,9 @@ function similarity(a, b) {
 }
 
 const known = (value) => Number.isFinite(value) && value >= 0;
+const mentions = (text, list = []) => list.some((term) => text.includes(term));
+const EQUIPMENT = presets.industries.find((item) => item.id === 'cleaning')?.terms || [];
+const RELEVANCE = presets.relevance || {};
 
 function rankCandidates(candidates, { industryIds, days = 30, now = Date.now() } = {}) {
   const thresholds = presets.thresholds;
@@ -66,8 +69,10 @@ function rankCandidates(candidates, { industryIds, days = 30, now = Date.now() }
   });
   const relevant = fresh.filter((item) => {
     const text = `${item.title} ${item.body || ''}`;
-    if (terms.some((term) => text.includes(term))) return true;
-    stats.irrelevant += 1; drop(item, 'irrelevant', '和清洁行业无关'); return false;
+    // 只沾行业词不够（例如物业吐槽），还要和清洁这件事有关；家用产品没提商用场景的不进候选。
+    if (!mentions(text, terms) || !(mentions(text, EQUIPMENT) || mentions(text, RELEVANCE.cleaningWords))) { stats.irrelevant += 1; drop(item, 'irrelevant', '和清洁行业无关'); return false; }
+    if (mentions(text, RELEVANCE.consumerTerms) && !mentions(text, RELEVANCE.commercialTerms)) { stats.irrelevant += 1; drop(item, 'consumer', '家用产品，不是商用清洁'); return false; }
+    return true;
   });
 
   // 3. 三种爆款标签。读不到的数据不参与判断，绝不估算。
