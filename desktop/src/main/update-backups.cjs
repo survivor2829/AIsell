@@ -114,6 +114,13 @@ async function registerSet(profile, { id, version, programBackup, data, owners =
     registry.sets.push(set); save(registry); return set;
   });
 }
+async function markReused(profile, id) {
+  return withRegistry(profile, async (registry, save) => {
+    const set = registry.sets.find(entry => entry.id === id);
+    if (!set) throw Error("update_backup_missing");
+    set.reusedAt = new Date().toISOString(); save(registry); return set;
+  });
+}
 async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
   const checked = dataCheck === true || dataCheck?.ok === true;
   if (ack?.ok !== true || ack.version !== targetVersion || !checked) {
@@ -137,10 +144,16 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
     // Prepared/failed sets may be the sole evidence for an interrupted update.
     // Only completed sets are retired automatically, never an unregistered path.
     // Old unclassified backups are historical candidates, never silently adopted.
+    // An internal acceptance run that was never confirmed is superseded once a
+    // later acceptance run is confirmed; otherwise it pins old component
+    // generations forever. Automatic (customer) sets keep the stricter rule.
+    // A reused set counts from its last reuse, so a run that picked up an old set is not mistaken for a stale one.
+    const lastUsed = set => Math.max(Date.parse(set.createdAt), Date.parse(set.reusedAt || set.createdAt));
+    const superseded = set => current.kind === "acceptance" && lastUsed(set) < lastUsed(current);
     const expired = registry.sets.filter(set => current.rotationPolicy === "latest-confirmed" && set.id !== id && set.rotationPolicy === "latest-confirmed"
       && (["confirmed", "retiring"].includes(set.state)
         || (set.kind === "acceptance" && set.state === "prepared" && !set.confirmationFailure
-          && set.data.directory === current.data.directory && set.programBackup.program === current.programBackup.program)));
+          && (set.data.directory === current.data.directory && set.programBackup.program === current.programBackup.program || superseded(set)))));
     for (const set of expired) set.state = "retiring";
     save(registry);
     await retireSets(profile, registry, save);
@@ -316,4 +329,4 @@ async function inspectPreservedData(profile, data, options = {}) {
   return { ok: true, issues: [] };
 }
 async function checkPreservedData(profile, data, options) { return (await inspectPreservedData(profile, data, options)).ok; }
-module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, confirmSet, checkPreservedData, inspectPreservedData, retryRetiringBackups, retryBackupMaintenance };
+module.exports = { readRegistry, withRegistry, dataInventory, verifyData, verifySet, captureData, reusableProgram, registerSet, markReused, confirmSet, checkPreservedData, inspectPreservedData, retryRetiringBackups, retryBackupMaintenance };

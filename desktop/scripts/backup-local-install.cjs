@@ -5,7 +5,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { backupFilter, metadataInventory, copySnapshot, checkCopySpace, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
-const { registerSet, readRegistry, verifySet } = require("../src/main/update-backups.cjs");
+const { registerSet, readRegistry, verifySet, markReused } = require("../src/main/update-backups.cjs");
 const { programIdentity } = require("../src/main/update-program-backup.cjs");
 const { HEX, digest } = require("../src/shared/component-contract.cjs");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -54,6 +54,7 @@ async function backupLocalInstall({ program, profile, outputRoot, purpose = "man
     try {
       await verifySet(previous);
       await sourceUnchanged();
+      await markReused(profile, previous.id);
       return reused(previous);
     } catch (error) { if (error.message === "update_backup_source_changed") throw error; }
   }

@@ -2,8 +2,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const nextMillisecond = async () => { const start = Date.now(); while (Date.now() === start) await new Promise(resolve => setTimeout(resolve, 1)); };
 const { backupProgram } = require("../src/main/update-program-backup.cjs");
-const { captureData, registerSet, confirmSet, readRegistry, checkPreservedData, reusableProgram, dataInventory, retryBackupMaintenance, withRegistry } = require("../src/main/update-backups.cjs");
+const { captureData, registerSet, markReused, confirmSet, readRegistry, checkPreservedData, reusableProgram, dataInventory, retryBackupMaintenance, withRegistry } = require("../src/main/update-backups.cjs");
 const { backupFilter, copyBytes, updateFailure, createOwnedDirectory, removeOwnedDirectory } = require("../src/main/update-storage.cjs");
 const { fork } = require("node:child_process");
 
@@ -422,6 +423,36 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal(readRegistry(profile).sets.find(set => set.id === pending.id).state, "confirmed");
     assert.equal(readRegistry(profile).sets.filter(set => set.rotationPolicy === "latest-confirmed" && set.state === "confirmed").length, 1);
     assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database", "later updates cannot rotate unique historical data");
+    // An unconfirmed internal acceptance run older than a newly confirmed one is superseded and rotates out;
+    // an unconfirmed customer (automatic) set made later stays as failure evidence.
+    // Like the real case: the stale run was backed up to a different folder, so the same-folder rule does not apply.
+    const staleId = randomUUID();
+    const staleAcceptance = await registerSet(profile, { id: staleId, version: "1.1.78", kind: "acceptance",
+      programBackup: await backupProgram(program, path.join(root, "programs-elsewhere"), staleId, {}), data: await captureData(profile, staleId) });
+    await nextMillisecond();
+    const newerId = randomUUID();
+    const newerAcceptance = await registerSet(profile, { id: newerId, version: "1.1.78", kind: "acceptance",
+      programBackup: await backupProgram(program, path.join(root, "programs-acceptance"), newerId, {}), data: await captureData(profile, newerId) });
+    const laterAutomatic = await make();
+    assert.notEqual(staleAcceptance.programBackup.program, newerAcceptance.programBackup.program);
+    await confirm(newerAcceptance);
+    assert.equal(readRegistry(profile).sets.some(set => set.id === staleAcceptance.id), false, "a superseded acceptance run no longer pins old components");
+assert.equal(readRegistry(profile).sets.find(set => set.id === laterAutomatic.id)?.state, "prepared", "unconfirmed customer evidence stays protected");
+    // An old acceptance set picked up again by a later run counts from its reuse, so it is not mistaken for a stale one;
+    // a set whose confirmation failed stays as evidence.
+    const acceptanceIn = async folder => { const id = randomUUID(); return registerSet(profile, { id, version: "1.1.78", kind: "acceptance",
+      programBackup: await backupProgram(program, path.join(root, folder), id, {}), data: await captureData(profile, id) }); };
+    const reusedLater = await acceptanceIn("programs-reused");
+    const failedAcceptance = await acceptanceIn("programs-failed");
+    await assert.rejects(confirmSet(profile, failedAcceptance.id, { targetVersion: "1.1.79", ack: { ok: false }, dataCheck: true }), /confirmation_required/);
+    await nextMillisecond();
+    const confirmedLater = await acceptanceIn("programs-confirmed");
+    await nextMillisecond();
+    await markReused(profile, reusedLater.id);
+    await confirm(confirmedLater);
+    const left = readRegistry(profile).sets;
+    assert.ok(left.some(set => set.id === reusedLater.id), "a set reused after the confirmed run is still in use");
+        assert.ok(left.some(set => set.id === failedAcceptance.id), "a failed confirmation stays as evidence");
     const lostConfirmation = await make();
     const jobs = path.join(profile, "data/cloud-maintenance/components/jobs");
     await fs.mkdir(jobs, { recursive: true });
