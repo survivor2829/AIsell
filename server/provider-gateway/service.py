@@ -710,6 +710,7 @@ VIRAL_LIBRARY_MAX_BYTES = 16 * 1024 * 1024
 VIRAL_LIBRARY_MAX_ITEMS = 1000
 VIRAL_LIBRARY_MAX_STRANDS = 240
 VIRAL_LIBRARY_BACKUPS = 5
+VIRAL_LIBRARY_MAX_BATCHES = 200
 VIRAL_LIBRARY_STATS = ("collected", "duplicates", "outdated", "irrelevant", "notViral", "final")
 
 
@@ -729,6 +730,8 @@ def _validate_viral_doc(data):
     customers rewrite one on demand, so both stay on the server and are stripped by _public_viral_library."""
     items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(data, dict) or data.get("schema") != 2 or not isinstance(items, list) or not 1 <= len(items) <= VIRAL_LIBRARY_MAX_ITEMS:
+        raise ValueError("viral_library_invalid")
+    if "scanId" in data and not (isinstance(data["scanId"], str) and VIRAL_LIBRARY_ID.fullmatch(data["scanId"])):
         raise ValueError("viral_library_invalid")
     for item in items:
         if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not VIRAL_LIBRARY_ID.fullmatch(item["id"])
@@ -768,14 +771,15 @@ def _viral_library(path):
 
 
 def _public_viral_library(data):
-    return {**data, "items": [{key: value for key, value in item.items() if key not in ("transcript", "structure")} for item in data["items"]]}
+    return {**{key: value for key, value in data.items() if key not in ("batches", "scanId")}, "items": [{key: value for key, value in item.items() if key not in ("transcript", "structure")} for item in data["items"]]}
 
 
 def _merge_viral_library(old, new):
     """Merge a newly published batch into the library: newest batch first, ids unique, nothing silently lost.
 
-    A re-published item keeps its extracted structure while its transcript is unchanged. Scan counts add up
-    across batches (each batch really scanned that many); ready is the merged item count."""
+    A re-published item keeps its extracted structure while its transcript is unchanged. Scan counts are kept
+    per scan (scanId) and added up across different scans, so publishing the same scan again never inflates
+    them; a library written before scans were tracked contributes no counts. ready is the merged item count."""
     old_items = {item["id"]: item for item in (old or {}).get("items", [])}
     items = []
     for item in new["items"]:
@@ -792,9 +796,15 @@ def _merge_viral_library(old, new):
         return {key: value for key, value in stats.items() if key in VIRAL_LIBRARY_STATS and type(value) is int and value >= 0}, \
             {key: value for key, value in (stats.get("byPlatform") or {}).items() if type(value) is int and value >= 0} if isinstance(stats.get("byPlatform"), dict) else {}
 
-    (new_stats, new_platforms), (old_stats, old_platforms) = counts(new), counts(old)
-    stats = {key: new_stats.get(key, 0) + old_stats.get(key, 0) for key in VIRAL_LIBRARY_STATS}
-    stats["byPlatform"] = {key: new_platforms.get(key, 0) + old_platforms.get(key, 0) for key in {*new_platforms, *old_platforms}}
+    new_stats, new_platforms = counts(new)
+    batch = {"scanId": new["scanId"] if isinstance(new.get("scanId"), str) else secrets.token_hex(16), "stats": {**new_stats, "byPlatform": new_platforms}}
+    previous = (old or {}).get("batches")
+    batches = [batch] + [entry for entry in (previous if isinstance(previous, list) else [])
+                         if isinstance(entry, dict) and isinstance(entry.get("scanId"), str) and entry["scanId"] != batch["scanId"]
+                         and isinstance(entry.get("stats"), dict)][:VIRAL_LIBRARY_MAX_BATCHES - 1]
+    totals = [counts({"stats": entry["stats"]}) for entry in batches]
+    stats = {key: sum(values.get(key, 0) for values, _ in totals) for key in VIRAL_LIBRARY_STATS}
+    stats["byPlatform"] = {key: sum(platforms.get(key, 0) for _, platforms in totals) for _, platforms in totals for key in platforms}
     stats["ready"] = len(items)
 
     def strands(doc):
@@ -812,7 +822,7 @@ def _merge_viral_library(old, new):
             else {**strand, "group": strand["id"]} for strand in kept]
     days = max(value for value in ((new or {}).get("days"), (old or {}).get("days"), 30) if type(value) is int)
     return {"schema": 2, "updatedAt": new.get("updatedAt") if isinstance(new.get("updatedAt"), str) else datetime.now(timezone.utc).isoformat(),
-            "days": days, "stats": stats, "flow": {"strands": kept}, "items": items}
+            "days": days, "stats": stats, "batches": batches, "flow": {"strands": kept}, "items": items}
 
 
 def _write_viral_library(path, data):

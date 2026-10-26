@@ -145,6 +145,24 @@ class ViralLibraryPublishTest(ViralLibraryTest):
         status, body = self.get(self.session())
         self.assertEqual((status, len(body["items"])), (200, 2), "客户马上读到合并后的库")
 
+    def test_the_same_scan_published_again_is_counted_once(self):
+        scan_a = library(scanId="a" * 32, stats={"collected": 557, "final": 21, "byPlatform": {"douyin": 418, "xiaohongshu": 139}})
+        self.operator("publish", scan_a)
+        self.operator("publish", {**scan_a, "items": [item(), item(id="2", transcript=TRANSCRIPT_2)]})
+        self.assertEqual(self.stored()["stats"]["collected"], 557, "同一次扒取发布两次只算一次")
+        self.operator("publish", library(scanId="b" * 32, stats={"collected": 100, "byPlatform": {"douyin": 100}}))
+        stats = self.stored()["stats"]
+        self.assertEqual((stats["collected"], stats["byPlatform"]), (657, {"douyin": 518, "xiaohongshu": 139}), "不同扒取才累加")
+        status, body = self.get(self.session())
+        self.assertNotIn("batches", body)
+        self.assertNotIn("scanId", body)
+        self.assertEqual(self.operator("publish", library(scanId="../x"))[0], 400)
+
+    def test_inflated_counts_from_before_scan_ids_are_replaced(self):
+        self.path.write_text(json.dumps(library(stats={"collected": 1671, "final": 63}), ensure_ascii=False), encoding="utf-8")
+        self.operator("publish", library(scanId="a" * 32, stats={"collected": 557, "final": 21}))
+        self.assertEqual((self.stored()["stats"]["collected"], self.stored()["stats"]["final"]), (557, 21))
+
     def test_old_format_library_is_replaced_not_merged(self):
         self.path.write_text(json.dumps({"schema": 1, "items": [{"id": "1", "title": "t", "script": "s"}]}), encoding="utf-8")
         self.assertEqual(self.operator("publish", library())[1]["total"], 1)

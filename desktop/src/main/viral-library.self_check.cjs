@@ -54,6 +54,12 @@ const ids = new Set(strands.map((s) => s.id));
 assert.ok(strands.every((s) => ids.has(s.group) || s.group.startsWith('kind-')), '每一束都指向存在的线，或者是一种爆款类型');
 
 
+// 同一次扒取编号固定（发布几次都一样），换一次扒取编号就不同
+assert.match(library.scanId, /^[0-9a-f]{32}$/);
+assert.equal(buildLibrary({ scan, transcripts, now: new Date(now + day) }).scanId, library.scanId);
+assert.notEqual(buildLibrary({ scan: { ...scan, removed: scan.removed.slice(1) }, transcripts }).scanId, library.scanId);
+assert.equal(validateLibrary(library).scanId, undefined, '编号只给云端合并用');
+
 // 客户端校验：原口播全文不留在客户端；坏条目丢掉；全坏当作还没有文案库
 const back = validateLibrary(JSON.parse(JSON.stringify(library)));
 assert.deepEqual(back.items[0], { id: '1', platform: 'douyin', title: library.items[0].title, source: library.items[0].source });
