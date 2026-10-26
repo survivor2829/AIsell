@@ -58,6 +58,8 @@ const DRIVERS = {
         const body = json?.data ? Object.values(json.data)[0] : json;
         const result = Number(body?.result ?? json?.result);
         const message = text(body?.error_msg || json?.error_msg || json?.errors?.[0]?.message || "", 120);
+        // No result and no error says nothing either way.
+        if (!Number.isFinite(result) && !message && !json?.errors?.length) return { ok: null, message: "" };
         return { ok: result === 1 && !json?.errors?.length, message };
       }
     }
@@ -91,6 +93,7 @@ function intentOf(comment, extraWords = []) {
 }
 
 // A platform telling the account to slow down; the account then rests until tomorrow.
-const TOO_FREQUENT = /频繁|太快|稍后再试|上限|操作受限|限制/;
+// Only wording about pace: 「评论功能已限制」 or 「已达关注上限」 are refusals, not a reason to rest.
+const TOO_FREQUENT = /频繁|太快|操作过于|稍后再试/;
 
 module.exports = { DRIVERS, acquireDriverFor, intentOf, TOO_FREQUENT };

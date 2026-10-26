@@ -95,7 +95,7 @@ export function AcquisitionPage() {
     const what = kinds.map((kind) => ACTION_NAME[kind]).join("和");
     const caps = state?.caps;
     if (!window.confirm(`给 ${leadIds.length} 个人${kinds.includes("like") ? "的评论" : ""}${what}？\n会用找到他们的那个快手号去做，每个动作间隔半分钟到一分钟。\n每个账号每天最多点赞 ${caps?.like ?? 60} 个、关注 ${caps?.follow ?? 30} 个；平台提示频繁就停到明天。`)) return;
-    void run("queue", async () => { const result = await api.queueActions(leadIds, kinds); if (result.ok) { setPicked(new Set()); setNotice(result.state?.added ? `已加入 ${result.state.added} 个动作，正在依次执行。` : "这些人已经做过或已在排队，没有新加入的。"); } return result; });
+    void run("queue", async () => { const result = await api.queueActions(leadIds, kinds); if (result.ok) { setPicked(new Set()); setNotice(!result.state?.added ? "这些人已经做过或已在排队，没有新加入的。" : result.state.running ? `已加入 ${result.state.added} 个动作，正在依次执行。` : `已加入 ${result.state.added} 个动作。账号正在使用、今天已到上限或在休息，稍后点「继续执行」。`); } return result; });
   };
   const togglePick = (id: string) => setPicked((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const allPicked = visibleLeads.length > 0 && visibleLeads.every((lead) => picked.has(lead.id));
@@ -182,7 +182,7 @@ export function AcquisitionPage() {
         </div>
       </div>
       {capsDraft && <div className="acq-caps">
-        {(["like", "follow", "comment"] as const).map((kind) => <label key={kind}>每个账号每天{ACTION_NAME[kind]}<input type="number" min={0} max={kind === "like" ? 200 : kind === "follow" ? 100 : 50} value={capsDraft[kind]} onChange={(event) => setCapsDraft({ ...capsDraft, [kind]: Number(event.target.value) })} /></label>)}
+        {(["like", "follow", "comment"] as const).map((kind) => <label key={kind}>每个账号每天{ACTION_NAME[kind]}<input type="number" min={0} max={kind === "like" ? 200 : kind === "follow" ? 100 : 50} value={capsDraft[kind]} onChange={(event) => { if (event.target.value !== "") setCapsDraft({ ...capsDraft, [kind]: Number(event.target.value) }); }} /></label>)}
         <button type="button" className="secondary-button" disabled={Boolean(pending)} onClick={() => api && void run("caps", async () => { const result = await api.saveCaps(capsDraft); if (result.ok) setCapsDraft(undefined); return result; }, "上限已保存。")}>保存</button>
         <small>上限设得越高，被平台限制的可能越大。平台一提示频繁，这个账号当天就会停下。</small>
       </div>}
@@ -197,9 +197,9 @@ export function AcquisitionPage() {
         <b>{unknown.length} 个动作结果不明</b><span>已经点下，但没等到平台确认。请到快手上看一下，再告诉软件结果；软件不会自己重做。</span>
         <ul>{unknown.slice(0, 20).map((action) => <li key={action.id}>
           <span>{ACTION_NAME[action.kind]} · {action.target.userName || action.target.videoTitle || action.target.videoId} · {clock(action.clickedAt)}</span>
-          <button type="button" className="acq-mini" onClick={() => api && void run(`open-${action.id}`, () => api.openLead(action.leadId || action.id))}><ExternalLink size={14} />去看看</button>
-          <button type="button" className="acq-mini is-go" onClick={() => api && void run(`ok-${action.id}`, () => api.resolveAction(action.id, "done"))}>已成功</button>
-          <button type="button" className="acq-mini" onClick={() => api && void run(`no-${action.id}`, () => api.resolveAction(action.id, "failed"))}>没成功</button>
+          <button type="button" className="acq-mini" onClick={() => api && void run(`open-${action.id}`, () => api.openLead(action.id))}><ExternalLink size={14} />{action.kind === "follow" ? "看主页" : "去看看"}</button>
+          <button type="button" className="acq-mini is-go" disabled={Boolean(pending)} onClick={() => api && void run(`ok-${action.id}`, () => api.resolveAction(action.id, "done"))}>已成功</button>
+          <button type="button" className="acq-mini" disabled={Boolean(pending)} onClick={() => api && void run(`no-${action.id}`, () => api.resolveAction(action.id, "failed"))}>没成功</button>
         </li>)}</ul>
       </div>}
     </section>

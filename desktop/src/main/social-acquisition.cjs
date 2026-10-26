@@ -62,7 +62,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   function snapshot() {
     const today = {};
     for (const accountId of new Set(state.actions.map((action) => action.accountId))) today[accountId] = { like: used(accountId, "like"), follow: used(accountId, "follow"), comment: used(accountId, "comment"), pausedUntil: paused(accountId) ? state.pauses[accountId] : "" };
-    return { tasks: state.tasks, runs: state.runs.slice(0, 50), leads: state.leads.slice(0, 2000), actions: state.actions.slice(0, 3000), caps: state.settings.caps, today, running: active?.run.id || "" };
+    return { tasks: state.tasks, runs: state.runs.slice(0, 50), leads: state.leads.slice(0, 2000), actions: state.actions.filter((action, index) => index < 3000 || ["queued", "running", "unknown"].includes(action.status)), caps: state.settings.caps, today, running: active?.run.id || "" };
   }
   const emit = () => { if (!closed) onChange(snapshot()); };
   const findTask = (id) => { const task = state.tasks.find((item) => item.id === id); if (!task) throw fail("ACQUIRE_TASK_NOT_FOUND", "没有找到这个任务。"); return task; };
@@ -213,7 +213,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     const control = { task, run, driver, accountId, accountLabel, stop: false, rest: "" };
     control.shouldStop = () => control.stop || closed || Boolean(control.rest);
     active = control; emit();
-    control.done = execute(control, body).catch(() => {}).finally(() => { if (active === control) active = null; emit(); if (!closed && run.status === "done") pump(); });
+    control.done = execute(control, body).catch(() => {}).finally(() => { if (active === control) active = null; emit(); if (!closed && kind === "actions" && run.status === "done") pump({ quiet: true }); });
     return snapshot();
   }
   async function execute(control, body) {
@@ -280,6 +280,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     if (response) {
       const outcome = control.driver.actions.outcome(response.json);
       if (outcome.ok) return settleAction(session, action, { status: "done" });
+      if (outcome.ok === null) return settleAction(session, action, { status: "unknown", reason: "平台的回应看不出成功与否。请到平台上看一下，再标记结果。" });
       return refused(session, control, action, outcome.message);
     }
     if (await stillThere()) return settleAction(session, action, { status: "done" });
@@ -344,7 +345,8 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     clicked(session, action);
     await page.mouse(point);
     const response = await session.answer(mark, (result) => acts.isCommentAdd(result.url, result.operation), "留言");
-    await confirm(session, control, action, response, () => page.evaluate(`[...document.querySelectorAll(".comment-list-item")].some((el) => (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, " ").trim() === ${JSON.stringify(t.text)})`));
+    // Without an answer, only our words near the top of the list, with the box emptied, count as sent.
+    await confirm(session, control, action, response, () => page.evaluate(`!document.querySelector(${JSON.stringify(acts.commentBox)})?.value && [...document.querySelectorAll(".comment-list-item")].slice(0, 3).some((el) => (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "") === ${JSON.stringify(t.text.replace(/\s+/g, ""))})`));
   }
   async function perform(session, control, action) {
     Object.assign(action, { status: "running", reason: "" });
@@ -357,6 +359,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     } catch (error) {
       if (action.clickedAt) settleAction(session, action, { status: "unknown", reason: "已经点下，但之后出了问题。请到平台上看一下，再标记结果。" });
       else if (control.stop || closed) settleAction(session, action, action.kind === "comment" ? { status: "cancelled", reason: "已停下，没有发出。" } : { status: "queued", reason: "" });
+      else if (/^SOCIAL_BROWSER_/.test(String(error?.code))) { settleAction(session, action, action.kind === "comment" ? { status: "cancelled", reason: "浏览器断开，没有发出。" } : { status: "queued", reason: "" }); throw error; }
       else { settleAction(session, action, { status: "failed", reason: userMessage(error, "这一步没做成。") }); if (/LOGIN|VERIFY/.test(String(error?.code))) throw error; }
     }
     if (action.status === "done") control.run.sent += 1;
@@ -375,7 +378,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   // Comments under peer videos found by keyword: one per video per account, in the user's own words.
   async function commentTask(session, control) {
     const { task, run } = control;
-    const commented = new Set(state.actions.filter((action) => action.kind === "comment" && action.accountId === task.accountId && ["running", "done", "unknown"].includes(action.status)).map((action) => action.target.videoId));
+    const commented = new Set(state.actions.filter((action) => action.kind === "comment" && action.accountId === task.accountId && (action.clickedAt || ["running", "done", "unknown"].includes(action.status))).map((action) => action.target.videoId));
     let first = true;
     for (const keyword of task.keywords) {
       if (control.shouldStop() || run.sent >= task.maxComments) break;
@@ -418,18 +421,29 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
         target: { videoId: lead.videoId, videoTitle: lead.videoTitle, commentId: lead.commentId, userId: lead.userId, userName: lead.userName, comment: lead.comment } }));
       added += 1;
     }
-    state.actions = state.actions.slice(0, 20_000);
+    if (state.actions.length > 20_000) { const open = state.actions.filter((action) => ["queued", "running", "unknown"].includes(action.status)); state.actions = [...open, ...state.actions.filter((action) => !open.includes(action)).slice(0, Math.max(0, 20_000 - open.length))]; }
     save(); emit();
-    if (added) pump();
+    if (added) pump({ quiet: true });
     return { ...snapshot(), added };
   }
   // Starts the queue for the first account that still has room today; nothing starts while a run is active.
-  function pump() {
+  // An account that is gone or logged out has its queued actions failed with the reason; a busy one is skipped.
+  function pump({ quiet = false } = {}) {
     if (active || closed) return snapshot();
-    const action = state.actions.slice().reverse().find((item) => item.status === "queued" && item.kind !== "comment" && !paused(item.accountId) && room(item.accountId, item.kind));
-    if (!action) return snapshot();
-    const account = accounts.snapshot().accounts.find((item) => item.id === action.accountId);
-    return begin({ kind: "actions", platform: action.platform, accountId: action.accountId, accountLabel: account?.label || "", body: runQueue });
+    const known = accounts.snapshot().accounts, tried = new Set();
+    let changed = false, lastError = null;
+    for (const action of state.actions.slice().reverse()) {
+      if (action.status !== "queued" || action.kind === "comment" || tried.has(action.accountId)) continue;
+      const account = known.find((item) => item.id === action.accountId);
+      if (!account || account.status !== "active") { Object.assign(action, { status: "failed", reason: account ? "这个账号需要重新扫码登录，没有做。" : "这个账号已删除，没有做。", finishedAt: stamp() }); changed = true; continue; }
+      if (paused(action.accountId) || !room(action.accountId, action.kind)) continue;
+      tried.add(action.accountId);
+      try { return begin({ kind: "actions", platform: action.platform, accountId: action.accountId, accountLabel: account.label, body: runQueue }); }
+      catch (error) { lastError = error; }
+    }
+    if (changed) { save(); emit(); }
+    if (lastError && !quiet) throw lastError;
+    return snapshot();
   }
   function cancelQueued() {
     for (const action of state.actions) if (action.status === "queued") Object.assign(action, { status: "cancelled", reason: "已取消。", finishedAt: stamp() });

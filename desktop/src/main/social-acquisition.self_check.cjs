@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DRIVERS, acquireDriverFor, intentOf } = require("./social-acquire-drivers.cjs");
+const { DRIVERS, acquireDriverFor, intentOf, TOO_FREQUENT } = require("./social-acquire-drivers.cjs");
 const { createSocialAcquisition } = require("./social-acquisition.cjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -298,5 +298,37 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     assert.equal(reopened.actions.find((action) => action.id === "a1").status, "unknown");
     assert.equal(reopened.actions.find((action) => action.id === "a2").status, "queued");
   }
+  {
+    // 排队的动作只在用户排队或点「继续」时开始：跑完一个「找客户」任务不会顺带去点赞关注。
+    const w = world(); w.seed(["买家A"]);
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.actions = [{ id: "q1", kind: "like", platform: "kuaishou", accountId: "ks1", leadId: "lead0", target: { videoId: "3xvideo0001", commentId: "118000000000", userName: "买家A", comment: "这个多少钱" }, status: "queued", clickedAt: "", reason: "" }];
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 1 });
+    acq.start(acq.snapshot().tasks[0].id);
+    let state = await w.until(acq);
+    assert.deepEqual(state.runs.map((run) => run.kind), ["collect"]); assert.deepEqual(w.log.clicks, []);
+    assert.equal(state.actions.find((action) => action.id === "q1").status, "queued");
+    acq.resume(); state = await w.until(acq);
+    assert.equal(state.actions.find((action) => action.id === "q1").status, "done", "用户点继续后才做");
+    await acq.dispose();
+  }
+  {
+    // 账号被删除：排队的动作标成没做并说明原因，「继续」不报错，也不会卡住别的账号。
+    const w = world(); w.seed(["买家A"]);
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.actions = [{ id: "g1", kind: "follow", platform: "kuaishou", accountId: "gone", leadId: "lead0", target: { videoId: "v", userId: "3xbuyer00" }, status: "queued", clickedAt: "", reason: "" }];
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const acq = w.make();
+    const state = acq.resume();
+    assert.equal(state.running, ""); assert.equal(state.actions[0].status, "failed"); assert.match(state.actions[0].reason, /已删除/);
+    await acq.dispose();
+  }
+  // 平台回应里没有结果：算「结果不明」，不当成被拒；只有说「频繁」才让账号休息。
+  assert.deepEqual(ks.actions.outcome({ data: { visionAddComment: { commentId: "1" } } }), { ok: null, message: "" });
+  assert.equal(ks.actions.outcome({ result: 1, followStatus: 1 }).ok, true);
+  assert.equal(ks.actions.outcome({ result: 109, error_msg: "评论功能已限制" }).ok, false);
+  assert.ok(!TOO_FREQUENT.test("评论功能已限制") && !TOO_FREQUENT.test("已达关注上限") && TOO_FREQUENT.test("操作太频繁，请稍后再试"));
   console.log("social acquisition self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });

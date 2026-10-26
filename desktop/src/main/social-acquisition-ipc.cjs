@@ -38,8 +38,8 @@ function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, account
     async openLead(payload) {
       const state = acquisition.snapshot();
       const lead = state.leads.find((item) => item.id === id(payload)), action = state.actions.find((item) => item.id === id(payload));
-      const url = lead?.videoUrl || (action ? `https://www.kuaishou.com/short-video/${action.target.videoId}` : "");
-      if (!/^https:\/\/www\.kuaishou\.com\/short-video\/[A-Za-z0-9_-]+$/.test(url)) throw Object.assign(new Error("这条记录的视频链接不可用。"), { code: "ACQUIRE_LINK_INVALID" });
+      const url = lead?.videoUrl || (action?.kind === "follow" ? `https://www.kuaishou.com/profile/${action.target.userId}` : action ? `https://www.kuaishou.com/short-video/${action.target.videoId}` : "");
+      if (!/^https:\/\/www\.kuaishou\.com\/(short-video|profile)\/[A-Za-z0-9_-]+$/.test(url)) throw Object.assign(new Error("这条记录的视频链接不可用。"), { code: "ACQUIRE_LINK_INVALID" });
       await shell.openExternal(url);
       return acquisition.snapshot();
     }
