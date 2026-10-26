@@ -504,7 +504,8 @@ function createReferenceHumanService(options = {}) {
   // 新包装用同一段数字人视频和配音，只在本机重新配字幕、配色、镜头和花字，避开这个人最近用过的组合。
   const repackageable = () => ({ generatedVideoIds: records('tasks').filter((task) => task.status === 'completed' && task.generatedVideoId && task.baseVideoFile && task.utterances).map((task) => task.generatedVideoId) });
   async function repackageVideo(generatedVideoId) {
-    const source = records('tasks').find((task) => task.generatedVideoId === generatedVideoId && task.status === 'completed');
+    const source = records('tasks').filter((task) => task.generatedVideoId === generatedVideoId && task.status === 'completed')
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
     if (!source) throw fail('reference_repackage_unavailable', '这条成片不是本人口播做的，不能换包装。');
     return repackage(source.id, { nextStyle: true });
   }
