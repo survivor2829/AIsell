@@ -8659,11 +8659,15 @@ class CreativeDomain:
             # 成片中心 重新生成 (the desktop confirmed the quote): finish a request that was
             # never submitted, otherwise design the next cover.
             pending = self.connection.execute(
-                "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                "SELECT id,status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
                 (row["id"],)).fetchone()
             if cover.get("design") and pending is not None and pending["status"] == "planned":
                 design = cover["design"]
             else:
+                if pending is not None and pending["status"] == "planned":
+                    # An older-style request that was never submitted (planned is
+                    # recorded before any paid call); the confirmed design replaces it.
+                    self.update_cover_operation(pending["id"], "cancelled", error_code="superseded_by_redesign")
                 from .cover_design import next_design
                 design = next_design(row, recipe)
         if design is not None:

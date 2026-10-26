@@ -441,6 +441,23 @@ class VideoPresentationTests(unittest.TestCase):
                 self.assertEqual(design["title"], redone["design"]["title"])
                 self.assertEqual(reference, Path(redone["plan"]["reference_path"]).read_bytes())
                 self.assertEqual(2, database.connection.execute("SELECT count(*) FROM cover_generation_ledger").fetchone()[0])
+                # An older-style request that was never submitted does not block a confirmed redesign.
+                old = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex,
+                    "input_video_path": str(source), "title": "老封面", "confirmed_script": "看清细节。", "cover_mode": "local_frame",
+                    "prepared_transcript": {"source_sha256": domain._sha256_file(source), "time_unit": "ms",
+                        "utterances": [{"text": "看清细节。", "start_time": 100, "end_time": 2800,
+                            "words": [{"text": "看清", "start_time": 100, "end_time": 1000},
+                                      {"text": "细节", "start_time": 1100, "end_time": 2800}]}]}})
+                old_id = domain.run_task(old["task_id"])["generated_video_id"]
+                domain.cover_client = SimpleNamespace(configured=False)
+                domain.regenerate_cover(old_id)
+                stale = database.connection.execute("SELECT id,status FROM cover_generation_ledger WHERE generated_video_id=?", (old_id,)).fetchone()
+                self.assertEqual("planned", stale["status"])
+                domain.regenerate_cover(old_id, redesign=True)
+                statuses = [row[0] for row in database.connection.execute(
+                    "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at,rowid", (old_id,))]
+                self.assertEqual(["cancelled", "planned"], statuses)
+                self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
             finally:
                 database.close()
 

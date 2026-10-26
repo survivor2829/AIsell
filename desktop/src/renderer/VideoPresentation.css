@@ -9,8 +9,8 @@
 .video-template-preview > span { font-weight: 900; font-size: 18px; align-self: center; }
 .video-template-preview b { color: #ffe24a; }
 .video-cover-panel { display: flex; gap: 18px; padding: 14px 0; align-items: flex-start; flex-wrap: wrap; }
-.video-cover-preview { flex: 0 0 150px; background: #202329; border-radius: 8px; overflow: hidden; }
-.video-cover-preview img { display: block; width: 100%; aspect-ratio: 9 / 16; object-fit: contain; }
+.video-cover-preview { flex: 0 0 210px; background: #202329; border-radius: 8px; overflow: hidden; }
+.video-cover-preview img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: contain; }
 .video-cover-controls { display: grid; gap: 10px; flex: 1 1 180px; min-width: 0; }
 .video-cover-controls h3 { margin: 0; font-size: 15px; }
 .video-cover-controls label { display: grid; gap: 5px; font-size: 12px; }
