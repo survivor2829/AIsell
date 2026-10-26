@@ -1,0 +1,29 @@
+/* 一键分发：沿用数字人页的「杂志式」排版（.ns-*），这里只放本页特有的部分。 */
+.distribution-page { background: radial-gradient(1200px 360px at 85% -60px, rgba(230, 0, 0, 0.06), transparent 70%); }
+.dist-hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 32px; flex-wrap: wrap; animation: dist-rise .5s ease both; }
+.dist-platforms { display: flex; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.dist-platforms li { display: grid; justify-items: center; gap: 6px; min-width: 92px; padding: 16px 12px 12px; background: #fff; border: 2px solid #f1dfe1; border-radius: 16px; }
+.dist-platforms li .platform-icon { border-radius: 14px; box-shadow: 0 8px 18px rgba(31, 41, 55, .12); }
+.dist-platforms b { font-size: 15px; font-weight: 900; }
+.dist-platforms span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: #9ca3af; }
+.dist-platforms span i { width: 7px; height: 7px; border-radius: 50%; background: #d1d5db; }
+.dist-platforms span.is-ready { color: #166534; }
+.dist-platforms span.is-ready i { background: #16a34a; box-shadow: 0 0 0 3px rgba(22, 163, 74, .15); }
+.dist-platforms span.is-expired { color: #b45309; }
+.dist-platforms span.is-expired i { background: #f59e0b; }
+.dist-tabs { display: inline-flex; gap: 4px; margin: 30px 0 0; padding: 4px; background: #fff; border: 2px solid #f1dfe1; border-radius: 14px; align-self: flex-start; }
+.dist-tabs button { padding: 9px 22px; border: 0; border-radius: 10px; background: transparent; color: #6b7280; font: inherit; font-size: 15px; font-weight: 800; cursor: pointer; }
+.dist-tabs button[aria-selected="true"] { background: #e60000; color: #fff; box-shadow: 0 6px 14px rgba(230, 0, 0, .22); }
+.dist-tabs button:focus-visible { outline: 2px solid #c91739; outline-offset: 2px; }
+.dist-panel { display: flex; flex-direction: column; flex: 1; margin-top: 24px; }
+@keyframes dist-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .dist-hero { animation: none; } }
+/* A compact header: this is a working tool, not a showcase page. */
+.distribution-page .dist-hero .ns-h1 { margin-top: 10px; font-size: 34px; }
+.dist-platforms li { min-width: 84px; padding: 12px 10px 10px; }
+
+/* 收紧头部 */
+.ns-page.distribution-page { padding-top: 22px; }
+.distribution-page .dist-hero { align-items: center; }
+.dist-tabs { margin-top: 16px; }
+.dist-panel { margin-top: 16px; }

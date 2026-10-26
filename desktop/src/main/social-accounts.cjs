@@ -48,12 +48,12 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     fs.mkdirSync(dataDir, { recursive: true });
     writeJsonAtomic(stateFile, state);
   }
-  const open = new Map(), reading = new Map();
+  const open = new Map(), reading = new Map(), leased = new Set(), removing = new Set();
   let disposed = false;
   const save = () => writeJsonAtomic(stateFile, state);
   const profileOf = (account) => path.join(dataDir, "profiles", account.id);
   const snapshot = () => ({ platforms: Object.entries(PLATFORMS).map(([key, item]) => ({ key, name: item.name })),
-    browserReady: Boolean(executable), accounts: state.accounts.map((account) => ({ ...account, loggingIn: open.has(account.id) })) });
+    browserReady: Boolean(executable), accounts: state.accounts.map((account) => ({ ...account, loggingIn: open.has(account.id), publishing: leased.has(account.id) })) });
   const emit = () => { if (!disposed) onChange(snapshot()); };
   const find = (id) => {
     const account = ACCOUNT_ID.test(String(id || "")) && state.accounts.find((item) => item.id === id);
@@ -99,7 +99,11 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
   async function login(id) {
     const account = find(id);
     if (open.has(id)) return snapshot();
+    if (leased.has(id) || removing.has(id)) throw fail("SOCIAL_ACCOUNT_BUSY", "这个账号正在发布或删除，请稍后再打开登录窗口。");
     if (reading.has(id)) await reading.get(id).catch(() => {});
+    // Re-check after waiting: a publish may have taken the profile meanwhile.
+    if (open.has(id)) return snapshot();
+    if (leased.has(id) || removing.has(id)) throw fail("SOCIAL_ACCOUNT_BUSY", "这个账号正在发布或删除，请稍后再打开登录窗口。");
     const browser = launch({ executable, profileDir: profileOf(account), url: PLATFORMS[account.platform].home });
     open.set(id, browser);
     let closing = false;
@@ -123,25 +127,38 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     return snapshot();
   }
   async function refresh() {
-    for (const account of state.accounts) { try { apply(account, await cookiesOf(account)); } catch { /* Keep the last known status. */ } }
+    for (const account of state.accounts) { if (leased.has(account.id)) continue; try { apply(account, await cookiesOf(account)); } catch { /* Keep the last known status. */ } }
     save(); emit(); return snapshot();
   }
   // Deleting removes the account's whole browser profile, which signs it out here.
   async function remove(id) {
     const account = find(id);
-    const running = open.get(id);
-    if (running) { await running.close(); open.delete(id); }
-    if (reading.has(id)) await reading.get(id).catch(() => {});
-    for (let attempt = 0; ; attempt++) {
-      try { fs.rmSync(profileOf(account), { recursive: true, force: true }); break; }
-      catch (error) { if (attempt >= 5) throw fail("SOCIAL_PROFILE_BUSY", "浏览器还没完全关闭，请稍后再删除。"); await new Promise((resolve) => setTimeout(resolve, 500)); }
-    }
-    state.accounts = state.accounts.filter((item) => item.id !== id);
-    save(); emit(); return snapshot();
+    if (leased.has(id) || removing.has(id)) throw fail("SOCIAL_ACCOUNT_BUSY", "这个账号正在发布，发布结束后再删除。");
+    // Mark synchronously so no publish or login can take the profile while it is being deleted.
+    removing.add(id);
+    try {
+      const running = open.get(id);
+      if (running) { await running.close(); open.delete(id); }
+      if (reading.has(id)) await reading.get(id).catch(() => {});
+      for (let attempt = 0; ; attempt++) {
+        try { fs.rmSync(profileOf(account), { recursive: true, force: true }); break; }
+        catch { if (attempt >= 5) throw fail("SOCIAL_PROFILE_BUSY", "浏览器还没完全关闭，请稍后再删除。"); await new Promise((resolve) => setTimeout(resolve, 500)); }
+      }
+      state.accounts = state.accounts.filter((item) => item.id !== id);
+      save(); emit(); return snapshot();
+    } finally { removing.delete(id); }
   }
   function profileDir(id) { return profileOf(find(id)); }
+  // One browser per profile: publishing takes the account exclusively until released.
+  function lease(id) {
+    find(id);
+    if (open.has(id) || reading.has(id) || leased.has(id) || removing.has(id)) throw fail("SOCIAL_ACCOUNT_BUSY", "这个账号的浏览器正在使用（登录或发布中），请稍后再试。");
+    leased.add(id); emit();
+    let released = false;
+    return () => { if (!released) { released = true; leased.delete(id); emit(); } };
+  }
   async function dispose() { disposed = true; await Promise.all([...open.values()].map((browser) => browser.close())); open.clear(); }
-  return { snapshot, add, rename, login, refresh, remove, profileDir, dispose };
+  return { snapshot, add, rename, login, refresh, remove, profileDir, lease, dispose };
 }
 
 module.exports = { createSocialAccounts, PLATFORMS, loggedIn };

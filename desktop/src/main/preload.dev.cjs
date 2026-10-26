@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("xiaoxiDigitalHuman", require("./digital-human-p
 contextBridge.exposeInMainWorld("xiaoxiProductVideo", require("./product-video-preload.cjs").createProductVideoApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiKeywordAcquisition", require("./keyword-acquisition-preload.cjs").createKeywordAcquisitionApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialAccounts", require("./social-accounts-preload.cjs").createSocialAccountsApi(ipcRenderer));
+contextBridge.exposeInMainWorld("xiaoxiSocialPublish", require("./social-publish-preload.cjs").createSocialPublishApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
 contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });
 contextBridge.exposeInMainWorld('xiaoxiStartup', { mark: stage => ipcRenderer.send('startup:mark', stage) });

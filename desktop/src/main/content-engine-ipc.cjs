@@ -3865,5 +3865,6 @@ module.exports = {
   publicStatus,
   publicTask,
   registerContentEngineIpc,
+  resolvedAbsolutePath,
   stripPrivateValue
 };
