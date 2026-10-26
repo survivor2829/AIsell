@@ -49,12 +49,13 @@ function acquireDriverFor(platform) {
 }
 
 // Purchase intent in a comment. The built-in phrases come from the earlier keyword module;
-// the user's own words are added on top.
+// the user's own words are added on top. Only asking forms count: a review like
+// 「价格也能接受」 or 「接的电话」 mentions price or a phone without asking for anything.
 const BUILT_IN = [
-  ["询价", /多少钱|价格|什么价|怎么卖|报价|价位|贵不贵|便宜/],
-  ["想买", /怎么买|哪里买|哪里下单|想买|求购|有货吗|能发货|如何购买|链接|下单/],
-  ["要联系", /怎么联系|联系方式|电话|微信|加你|私信|地址在哪|门店在哪|想了解|了解一下/],
-  ["问效果", /好用吗|效果怎么样|有买过|用过的|靠谱吗|值得买|推荐吗/]
+  ["询价", /多少钱|什么价|啥价|怎么卖|报价|价位|贵不贵|便宜吗|能便宜|价格(是)?(多少|怎么样|如何|呢|[?？])/],
+  ["想买", /怎么买|哪里买|哪里下单|想买|求购|有货吗|能发货|如何购买|求链接|链接(呢|在哪|[?？])|下单/],
+  ["要联系", /怎么联系|联系方式|(留|给|发|要)个?(电话|微信)|(电话|微信)(多少|号)|加你|私信我?|地址在哪|门店在哪|想了解|了解一下/],
+  ["问效果", /好用吗|效果怎么样|效果如何|有买过|有用过|用过的(说|来|吗)|靠谱吗|值得买|推荐吗|耐用吗/]
 ];
 function intentOf(comment, extraWords = []) {
   const value = String(comment || "");

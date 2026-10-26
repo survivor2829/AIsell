@@ -31,6 +31,12 @@ assert.deepEqual(intentOf("你这这个洗地机多少钱"), ["询价"]);
 assert.deepEqual(intentOf("我也想买，有没有推荐的"), ["想买"]);
 assert.deepEqual(intentOf("真的好用吗"), ["问效果"]);
 assert.deepEqual(intentOf("非常不错哦"), []);
+// 实测里混进来的夸赞式评论：提到价格、电话、用过，但没在问。
+assert.deepEqual(intentOf("之前用过的那些一扯就断，这个看着就扎实，价格也能接受，冲了冲了。"), []);
+assert.deepEqual(intentOf("开会时接的电话也没耽误，关键是这个价格让我有点意外"), []);
+assert.deepEqual(intentOf("这价格真合适"), []);
+assert.deepEqual(intentOf("价格多少？留个电话"), ["询价", "要联系"]);
+assert.deepEqual(intentOf("有买过的吗？效果怎么样"), ["问效果"]);
 assert.deepEqual(intentOf("能租吗", ["租"]), ["含「租」"]);
 // 抖音网页搜索会拦截软件控制的浏览器：列出来但不可用，不绕过。
 assert.throws(() => acquireDriverFor("douyin"), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
