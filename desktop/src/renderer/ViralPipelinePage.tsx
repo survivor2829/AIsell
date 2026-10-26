@@ -31,7 +31,7 @@ function ViralCard({ item, onImitate, onOneClick, oneClickBlocked, estimate, que
         <button type="button" className="dh-button is-primary" data-xiaoxi-digital-human-action="reference-viral-pipeline-start" disabled={Boolean(oneClickBlocked) || queued}
           title={oneClickBlocked || undefined} onClick={onOneClick}>{queued ? '已在队列' : '一键成片'}</button>
       </div>
-      <span className="vp-card-note">{oneClickBlocked || `一键成片预计约 ${estimate}；只仿写使用 1 次写稿额度`}</span>
+      <span className="vp-card-note">{oneClickBlocked || `一键成片预计约 ${estimate}`}</span>
     </article>
   );
 }

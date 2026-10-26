@@ -9,7 +9,7 @@ import referencePolicy from '../shared/reference-human.json';
 import './NarrationSimplePage.css';
 
 // 数字人视频（极简版）：第一页看爆款文案库，选一条爆款、选时长，点「仿写」拿到自己的原创稿；第二页上传本人视频，一键出片。
-// 原文案只在云端；每次仿写用一次套餐写稿额度。字幕模板、配乐、封面、报价、试听都在后台按默认自动完成，不在页面出现。
+// 原文案只在云端，客户点「仿写」时才在云端改写。字幕模板、配乐、封面、报价、试听都在后台按默认自动完成，不在页面出现。
 const api = () => (window as unknown as { xiaoxiDigitalHuman: { reference: ReferenceHumanApi } }).xiaoxiDigitalHuman.reference;
 const imageApi = () => (window as unknown as { xiaoxiDigitalHuman: DigitalHumanApi }).xiaoxiDigitalHuman;
 export type PendingKind = 'reference' | 'image';
@@ -45,7 +45,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const [selected, setSelected] = useState(''), [jobs, setJobs] = useState<ViralJob[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [want, setWant] = useState<ScriptSeconds>(45);
   const [titles, setTitles] = useState<Record<string, string[]>>({});
-  const [quotaLeft, setQuotaLeft] = useState<number | null>(null), [business, setBusiness] = useState('');
+  const [business, setBusiness] = useState('');
   const [busy, setBusy] = useState(''), [error, setError] = useState('');
   const [cover, setCover] = useState('');
   const [stuck, setStuck] = useState<{ reference: ReferenceTask[]; image: DigitalHumanTask[] }>({ reference: [], image: [] });
@@ -131,7 +131,6 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
       libraryId: item.id, targetSeconds: seconds, generationIntentId: crypto.randomUUID(), ...(written.length ? { mode: 'structure' as const, avoidTitles: written.slice(-10) } : {}) }));
     setTitles((all) => ({ ...all, [item.id]: [...(all[item.id] || []), result.title].slice(-10) }));
     setDrafts((all) => ({ ...all, [item.id]: { id: item.id, platform: item.platform, title: result.title, script: result.script, emphasisPhrases: result.emphasisPhrases, seconds, problems: result.problems || [] } }));
-    if (typeof result.quota?.remaining === 'number') setQuotaLeft(result.quota.remaining);
   });
   // 开发版：把不适合口播的爆款从云端文案库删掉（以后重新发布也不会再加回来），删完重新读取。
   const removeFromLibrary = () => act('remove', async () => {
@@ -169,11 +168,11 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
           {DEVELOPMENT_EDITION && <small>开发版可见：{libraryError}</small>}
         </div> : <div className="ns-skeleton" aria-busy="true" aria-label="正在读取爆款文案库"><i /><i /><i className="is-flow" /></div>}
         {stuckCount > 0 && onOpenPending && <button type="button" className="ns-pending" onClick={() => onOpenPending(stuckReference.length ? 'reference' : 'image')}>
-          之前有 {stuckCount} 条视频需要你处理，已有结果都保留着，不会自动重新扣费<b>去处理 →</b></button>}
+          有 {stuckCount} 条以前的视频没做完，软件不会自己重做（免得重复花钱）<b>去看看 →</b></button>}
         <div className="ns-bar"><div className="ns-bar-in">
           <div className="ns-sel">{draft ? `已仿写：${draft.title}` : pick ? pick.title : '选一条爆款'}
-            <small>{!pick ? '选好后挑时长，点「仿写」生成你的原创稿' : draft ? '想要另一篇就点「换一篇」：按这条爆款的结构写一篇全新的，再用 1 次写稿额度 · 满意就下一步出片'
-              : `点「仿写」生成你的原创稿，用 1 次写稿额度${quotaLeft !== null ? `（本期还剩 ${quotaLeft} 次）` : ''}`}</small></div>
+            <small>{!pick ? '选好后挑时长，点「仿写」生成你的原创稿' : draft ? '想要另一篇就点「换一篇」：按这条爆款的结构写一篇全新的 · 满意就下一步出片'
+              : '点「仿写」生成你的原创稿，只学它的结构和节奏'}</small></div>
           {pick && <div className="ns-dur" role="group" aria-label="稿子时长">{SCRIPT_SECONDS.map((s) => (
             <button type="button" key={s} className={s === want ? 'is-on' : ''} aria-pressed={s === want} disabled={s > longest || !!busy}
               title={s > longest ? `你的视频只有 ${longest} 秒，想要 ${s} 秒请换一段更长的视频` : ''} onClick={() => setWant(s)}>{s} 秒</button>))}</div>}
