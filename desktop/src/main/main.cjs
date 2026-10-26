@@ -51,6 +51,7 @@ const { registerBusinessWorkbenchIpc } = require('./business-workbench-ipc.cjs')
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
 const { registerSocialPublishIpc } = require("./social-publish-ipc.cjs");
+const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
@@ -89,6 +90,7 @@ let contentEngineIpcRegistration = null;
 let keywordAcquisitionRegistration = null;
 let socialAccountsRegistration = null;
 let socialPublishRegistration = null;
+let socialAcquisitionRegistration = null;
 let businessWorkbenchRegistration = null;
 let digitalHumanRegistration = null;
 let productVideoRegistration = null;
@@ -292,6 +294,7 @@ function createWindow() {
     try { diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
+    void socialAcquisitionRegistration?.dispose().catch(() => undefined);
     void socialPublishRegistration?.dispose().catch(() => undefined);
     void socialAccountsRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
@@ -734,6 +737,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_accounts") });
+    socialAcquisitionRegistration = registerSocialAcquisitionIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow,
+      dataDir: path.join(runtime.rootDir, "social_acquisition"), accounts: socialAccountsRegistration.accounts });
     socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow, copyClient: deepSeekClient,
       ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
@@ -993,7 +998,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           // 地图、关键词等浏览器任务在跑，或者有登录/悬浮窗口正显示着，都算在用。
           if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
           if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
-          if (socialPublishRegistration?.isBusy()) return true;
+          if (socialPublishRegistration?.isBusy() || socialAcquisitionRegistration?.isBusy()) return true;
           if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
           const content = contentEngineController?.updateStatus();
           if (content?.pending || (content?.alive && content.state !== "ready")) return true;
@@ -1061,6 +1066,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     Promise.race([
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
+        Promise.resolve(socialAcquisitionRegistration?.dispose()),
         Promise.resolve(socialPublishRegistration?.dispose()),
         Promise.resolve(socialAccountsRegistration?.dispose()),
         Promise.resolve(businessWorkbenchRegistration?.dispose()),

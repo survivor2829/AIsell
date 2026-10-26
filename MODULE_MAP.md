@@ -13,6 +13,7 @@
 | `desktop/src/main/keyword-acquisition*`、`douyin-browser-adapter.cjs` | 独立关键词任务、线索、会话及发送账本；官方网页观察和受约束私信适配 | 依赖内容引擎启动；猜测账号、私信归属或发送成功；自动重发未知结果 |
 | `desktop/src/main/social-accounts*`、`social-browser.cjs`、`renderer/SocialAccountsPanel.tsx`、`DistributionPage.tsx` | 一键分发入口与平台账号中心：抖音/快手/视频号/小红书多账号；每个账号一个本机 Chrome（无则 Edge）资料目录，经 --remote-debugging-pipe 控制，扫码后只按登录 Cookie 是否存在识别状态 | 读取或保存 Cookie 值；改用内嵌 Electron 窗口登录（抖音会拒绝）；开调试端口；登录期间接管页面；删除账号不删资料目录 |
 | `desktop/src/main/social-publish*`、`social-page.cjs`、`renderer/SocialPublishPanel.tsx` | 一键分发：成片中心视频按「视频×账号」排队发布；各平台驱动在账号自己的 Chrome 资料目录里操作官方创作者后台（真实鼠标点击、闭合 shadow DOM 可达）；点发布前核对标题和可见范围，点发布前落盘 clicked，结果以作品管理页核对为准 | 在点发布之后自动重发；结果不明时当作成功或失败；没核对表单就点发布；同账号并行开两个浏览器；把文件路径发给界面 |
+| `desktop/src/main/social-acquisition*`、`social-acquire-drivers.cjs`、`social-capture.cjs`、`renderer/AcquisitionPage.tsx` | 精准获客 → 关键词获客（第一步只读）：在快手账号自己的 Chrome 里按关键词搜视频、读评论（读取页面自己收到的 JSON），按意向词/时间筛出线索、按人去重、导出表格；记录在 `social_acquisition/state.json`；平台弹验证就暂停并把窗口切到前面等用户自己点；抖音网页搜索会拦截软件控制的浏览器，列出但不可用 | 绕过或伪装规避平台风控/验证码；自动替用户点验证；未授权就私信、评论、点赞或关注；同账号并行开两个浏览器 |
 | `desktop/src/main/digital-human-*` | 数字人图片导入、草稿、预览确认、供应商素材审核和异步视频任务 | 向 renderer 暴露密钥或本地路径；重复提交结果不明的付费请求 |
 | `content_engine/video_presentation.py`、`desktop/remotion-packaging/`、`VideoPresentation.tsx` | 两类视频共用的字幕时间、模板、成片封面和标题修改；生成结果仍由内容引擎登记 | 在封面失败时丢弃视频；修改标题时重新调用生图 |
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
