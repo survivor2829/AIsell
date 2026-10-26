@@ -1,7 +1,7 @@
 const { createTrustedClickGate } = require("./preload-api.cjs");
 
 function createDigitalHumanApi(ipcRenderer) {
-  const clicks = Object.fromEntries(["preview", "confirm", "resume", "voice-preview", "voice-train", "reference-prepare", "reference-confirm", "reference-resume", "reference-train", "reference-write-script", "reference-cover-generate"].map((action) => [
+  const clicks = Object.fromEntries(["preview", "confirm", "resume", "voice-preview", "voice-train", "reference-prepare", "reference-confirm", "reference-resume", "reference-train", "reference-write-script", "reference-cover-generate", "reference-viral-pipeline-start", "reference-viral-pipeline-retry"].map((action) => [
     action, createTrustedClickGate(`[data-xiaoxi-digital-human-action="${action}"]`, `digital-human:${action}`)
   ]));
   const invoke = (name, payload = {}) => ipcRenderer.invoke(`digital-human:${name}`, payload);
@@ -17,6 +17,16 @@ function createDigitalHumanApi(ipcRenderer) {
       sourceRead: (payload) => invoke('reference-source-read', payload),
       viralScan: (payload) => invoke('reference-viral-scan', payload),
       viralStop: () => invoke('reference-viral-stop'),
+      viralPipelineStart: (payload) => invoke('reference-viral-pipeline-start', { ...payload, clickToken: clicks['reference-viral-pipeline-start']() }),
+      viralPipelineList: () => invoke('reference-viral-pipeline-list'),
+      viralPipelineRetry: (payload) => invoke('reference-viral-pipeline-retry', { ...payload, clickToken: clicks['reference-viral-pipeline-retry']() }),
+      viralPipelineRemove: (payload) => invoke('reference-viral-pipeline-remove', payload),
+      viralPipelineCover: (payload) => invoke('reference-viral-pipeline-cover', payload),
+      onViralPipeline: (callback) => {
+        const listener = (_event, state) => callback(state);
+        ipcRenderer.on('digital-human:viral-pipeline', listener);
+        return () => ipcRenderer.removeListener('digital-human:viral-pipeline', listener);
+      },
       onViralProgress: (callback) => {
         const listener = (_event, progress) => callback(progress);
         ipcRenderer.on('digital-human:viral-progress', listener);

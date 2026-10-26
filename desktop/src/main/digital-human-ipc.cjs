@@ -2,6 +2,11 @@ const { createDigitalHumanService, assertKeys, ID } = require('./digital-human-s
 const { cleanMessage, fail } = require('./digital-human-provider.cjs');
 const { createReferenceHumanService, TASK_ID: REFERENCE_ID } = require('./reference-human-service.cjs');
 const { createViralScout } = require('./viral-scout.cjs');
+const { createViralPipeline, JOB_ID } = require('./viral-pipeline.cjs');
+const { createBailianVideoProvider } = require('./bailian-video-provider.cjs');
+const { renderBigtypeCover } = require('./bigtype-cover.cjs');
+const { probeMedia } = require('./reference-human-media.cjs');
+const path = require('node:path');
 
 const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'capabilities', 'list', 'get', 'import-image', 'import-audio', 'recommend-voice', 'voice-preview', 'voice-select', 'voice-clones', 'voice-train', 'voice-clone-status', 'speech-media', 'create', 'preview', 'confirm', 'refresh', 'resume', 'media', 'images',
@@ -9,6 +14,7 @@ const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'reference-cover-frame', 'reference-cover-quote', 'reference-cover-generate',
   'reference-workspace', 'reference-save-workspace', 'reference-script-quota', 'reference-source-status', 'reference-source-connect', 'reference-source-search', 'reference-source-read',
   'reference-viral-scan', 'reference-viral-stop',
+  'reference-viral-pipeline-start', 'reference-viral-pipeline-list', 'reference-viral-pipeline-retry', 'reference-viral-pipeline-remove', 'reference-viral-pipeline-cover',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
@@ -19,6 +25,14 @@ function registerDigitalHumanIpc(options = {}) {
   let viralScout = options.viralScout || null;
   const viral = () => viralScout || (viralScout = createViralScout({ BrowserWindow: options.BrowserWindow || require('electron').BrowserWindow, session: options.session || require('electron').session,
     onProgress: (progress) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-progress', progress); } }));
+  // 一键成片：排队和断点记在数字人目录里；付费环节全部交给写稿回执和本人口播任务。
+  const sendPipeline = (state) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-pipeline', state); };
+  const pipeline = options.viralPipeline || (options.rootDir ? createViralPipeline({ root: options.rootDir, reference, scout: { downloadMedia: (item, target) => viral().downloadMedia(item, target) },
+    provider: options.referenceProvider || createBailianVideoProvider(options), ffmpegPath: options.ffmpegPath || 'ffmpeg', fontFile: options.coverFontFile,
+    renderCover: renderBigtypeCover, probe: (file) => probeMedia(file, options.ffmpegPath || 'ffmpeg'), resolveVideo: (videoId) => options.resolveGeneratedVideoPath?.(videoId),
+    notify: options.notify || (() => {}), onChange: sendPipeline }) : null);
+  const pipelineReady = () => { if (!pipeline) throw fail('viral_pipeline_unavailable', '一键成片暂不可用，请重新打开软件。'); return pipeline; };
+  const jobId = (payload) => { assertKeys(payload, ['id']); if (!JOB_ID.test(String(payload.id || ''))) throw fail('viral_job_not_found', '找不到这条一键成片任务。'); return payload.id; };
   const referenceId = (payload, extra = []) => {
     assertKeys(payload, ['id', ...extra]);
     if (!REFERENCE_ID.test(String(payload.id || ''))) throw fail('reference_not_found', '请重新选择本人分身任务。');
@@ -71,6 +85,17 @@ function registerDigitalHumanIpc(options = {}) {
     'reference-source-read': (payload) => reference.sourceRead(payload),
     'reference-viral-scan': (payload) => { assertKeys(payload, ['industryIds', 'platforms', 'days']); return viral().scan(payload); },
     'reference-viral-stop': () => { viralScout?.stop(); return { stopped: true }; },
+    'reference-viral-pipeline-start': (payload) => {
+      assertKeys(payload, ['item', 'maxCny']);
+      // 出镜人物、行业和产品资料以本人数字分身里保存的为准，不由页面传入。
+      const saved = reference.workspace();
+      return pipelineReady().start({ item: payload.item, maxCny: payload.maxCny, assetId: saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId,
+        industry: saved.draft?.industry, business: saved.draft?.business });
+    },
+    'reference-viral-pipeline-list': () => pipelineReady().list(),
+    'reference-viral-pipeline-retry': (payload) => pipelineReady().retry(jobId(payload)),
+    'reference-viral-pipeline-remove': (payload) => pipelineReady().remove(jobId(payload)),
+    'reference-viral-pipeline-cover': (payload) => ({ dataUrl: `data:image/jpeg;base64,${require('node:fs').readFileSync(pipelineReady().coverPath(jobId(payload))).toString('base64')}` }),
     'reference-assets': () => reference.assets(),
     'reference-list': () => reference.list(),
     'reference-import': async (payload) => {
@@ -102,7 +127,7 @@ function registerDigitalHumanIpc(options = {}) {
         const trusted = options.isTrustedEvent ? options.isTrustedEvent(event)
           : Boolean(window?.webContents && event.sender === window.webContents && (!event.senderFrame || event.senderFrame === window.webContents.mainFrame));
         if (!trusted) throw fail('digital_human_untrusted_sender', '请在应用主窗口操作。');
-        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate'].includes(name)) {
+        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry'].includes(name)) {
           // Caller supplies the same trusted-click policy used for paid content work.
           if (!options.requireTrustedClick) throw fail('digital_human_click_guard_missing', '数字人生成入口尚未完成接入。');
           await options.requireTrustedClick(event, payload, name);
@@ -116,11 +141,13 @@ function registerDigitalHumanIpc(options = {}) {
       }
     });
   }
-  const combined = { ...service, isBusy: () => service.isBusy() || reference.isBusy() || Boolean(viralScout?.isBusy()),
+  pipeline?.resume();
+  const combined = { ...service, isBusy: () => service.isBusy() || reference.isBusy() || Boolean(viralScout?.isBusy()) || Boolean(pipeline?.isBusy()),
     prepareForUpdate: () => { const old = service.prepareForUpdate(), next = reference.prepareForUpdate(); return { busy: old.busy || next.busy }; },
     resumeAfterUpdate: () => { service.resumeAfterUpdate(); reference.resumeAfterUpdate(); } };
   return { service: combined, close: async () => {
     for (const channel of Object.values(DIGITAL_HUMAN_CHANNELS)) ipcMain.removeHandler(channel);
+    await pipeline?.close();
     viralScout?.close();
     await Promise.all([service.close(), reference.close()]);
   } };

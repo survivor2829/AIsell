@@ -21,7 +21,7 @@ const flow = loadTs("flow-funnel.ts");
 const originalResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, ...rest) { return request === "./flow-funnel" ? "flow-funnel-stub" : originalResolve.call(this, request, parent, ...rest); };
 require.cache["flow-funnel-stub"] = { id: "flow-funnel-stub", filename: "flow-funnel-stub", loaded: true, exports: flow };
-const { likesText, dateText, viralReference, applyProgress, EMPTY_SCAN, resultSummary } = loadTs("viral-pipeline.ts");
+const { likesText, dateText, viralReference, applyProgress, EMPTY_SCAN, resultSummary, estimateCny } = loadTs("viral-pipeline.ts");
 Module._resolveFilename = originalResolve;
 const { validateReference } = require("../main/narration-sources.cjs");
 
@@ -56,4 +56,6 @@ assert.deepEqual(state.blocked, { xiaohongshu: "小红书需要先登录" });
 const summary = resultSummary({ stopped: true, stats: { collected: 30, final: 4 }, platforms: [{ name: "抖音", status: "ok" }, { name: "小红书", status: "blocked" }] });
 assert.equal(summary, "30 条里挑出 4 条爆款；已暂停，结果只含暂停前读到的内容；小红书没有扒到，需要先登录或完成验证");
 
+assert.equal(estimateCny(45), "3.8 元（按 45 秒）");
+assert.equal(estimateCny(undefined), "3—4 元", "没有人物时长时给区间，不编精确数");
 console.log("viral pipeline self-check passed: likes/date labels without guessing, imitate reference passes main validation, progress accumulation, blocked platforms, honest summary");
