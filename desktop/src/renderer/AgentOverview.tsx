@@ -20,7 +20,7 @@ export function AgentOverview({ preferences, onOpenRole }: {
   return <div className="agent-overview">
     <header className="agent-overview-head">
       <span className="agent-overview-guide" aria-hidden="true">AI</span>
-      <div><h1>做视频 · 聊客户 · 出美图</h1><p>{productBrand.displayName} · 玺联惠会员超市出品</p></div>
+      <div><h1>生素材 · 引客户 · 促成交</h1><p>{productBrand.displayName} · 玺联惠会员超市出品</p></div>
     </header>
     <div className="agent-overview-leaders">
       {AGENT_ROLE_ORDER.map((key) => {
