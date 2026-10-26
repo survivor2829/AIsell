@@ -4,7 +4,7 @@ export type SocialAccount = {
   status: "login_required" | "active" | "expired";
   createdAt: string; lastLoginAt: string; checkedAt: string; loggingIn: boolean;
 };
-export type SocialAccountsState = { platforms: { key: SocialPlatformKey; name: string }[]; accounts: SocialAccount[] };
+export type SocialAccountsState = { platforms: { key: SocialPlatformKey; name: string }[]; browserReady: boolean; accounts: SocialAccount[] };
 export type SocialAccountsResult = { ok: boolean; code?: string; error?: string; state?: SocialAccountsState };
 type SocialAccountsApi = {
   status: () => Promise<SocialAccountsResult>;

@@ -40,9 +40,10 @@ export function SocialAccountsPanel() {
 
   return <div className="social-accounts">
     <div className="social-accounts-head">
-      <p>每个账号单独登录、互不影响。软件不保存密码、验证码或登录凭据，登录状态只留在这台电脑上。</p>
+      <p>每个账号用 Chrome 单独登录、互不影响。软件不保存密码、验证码或登录凭据，登录状态只留在这台电脑上。</p>
       <button type="button" className="secondary-button" disabled={!api || Boolean(pending)} onClick={() => api && void run("refresh", () => api.refresh(), "已刷新登录状态。")}><RefreshCw size={15} />刷新状态</button>
     </div>
+    {state && !state.browserReady && <div className="social-feedback is-error" role="alert">没有找到 Chrome 或 Edge 浏览器。请先安装 Chrome，再回来登录平台账号。</div>}
     {(error || notice) && <div className={`social-feedback ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
     <div className="social-platforms">
       {(state?.platforms || []).map((platform) => {
@@ -53,12 +54,12 @@ export function SocialAccountsPanel() {
           <ul>
             {accounts.map((account) => <li key={account.id}>
               <span className={`social-dot is-${account.status}`} aria-hidden="true" />
-              <div className="social-account-copy"><strong>{account.label}</strong><small>{account.loggingIn ? "登录窗口已打开，请扫码" : statusLabel[account.status]}</small></div>
+              <div className="social-account-copy"><strong>{account.label}</strong><small>{account.loggingIn ? "Chrome 登录窗口已打开，请扫码" : statusLabel[account.status]}</small></div>
               <button type="button" className="social-text-button" disabled={!api || Boolean(pending)} onClick={() => api && void run(`login-${account.id}`, () => api.login(account.id))}><LogIn size={14} />{account.status === "active" ? "打开" : "登录"}</button>
               <button type="button" className="social-text-button is-danger" aria-label={`删除 ${account.label}`} disabled={!api || Boolean(pending)} onClick={() => remove(account)}><Trash2 size={14} /></button>
             </li>)}
           </ul>
-          <form className="social-add" onSubmit={(event) => { event.preventDefault(); if (api) void run(`add-${platform.key}`, () => api.add(platform.key, labels[platform.key] || ""), "登录窗口已打开，扫码后会自动关闭。").then((ok) => { if (ok) setLabels({ ...labels, [platform.key]: "" }); }); }}>
+          <form className="social-add" onSubmit={(event) => { event.preventDefault(); if (api) void run(`add-${platform.key}`, () => api.add(platform.key, labels[platform.key] || ""), "已在 Chrome 中打开登录页，扫码后会自动关闭。").then((ok) => { if (ok) setLabels({ ...labels, [platform.key]: "" }); }); }}>
             <input aria-label={`${platform.name}账号备注名`} value={labels[platform.key] || ""} maxLength={30} placeholder="备注名（选填）" onChange={(event) => setLabels({ ...labels, [platform.key]: event.target.value })} />
             <button type="submit" className="secondary-button" disabled={!api || Boolean(pending)}><Plus size={15} />添加账号</button>
           </form>

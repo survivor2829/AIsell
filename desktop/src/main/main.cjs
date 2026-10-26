@@ -290,7 +290,7 @@ function createWindow() {
     try { diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
-    socialAccountsRegistration?.dispose();
+    void socialAccountsRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
     momentsCampaignController?.pauseForAppClose();
@@ -729,7 +729,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: path.join(runtime.rootDir, "keyword_acquisition"),
       expertStore: aiExpertStore, deepSeekClient
     });
-    socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, BrowserWindow, session, getMainWindow: () => mainWindow,
+    socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_accounts") });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: () => licenseStore.status() });
@@ -1031,6 +1031,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     Promise.race([
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
+        Promise.resolve(socialAccountsRegistration?.dispose()),
         Promise.resolve(businessWorkbenchRegistration?.dispose()),
         Promise.resolve(digitalHumanRegistration?.close()),
         Promise.resolve(productVideoRegistration?.close()),
