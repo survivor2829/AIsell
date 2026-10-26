@@ -324,8 +324,15 @@ async function main() {
     assert.equal(libraryBody.targetSeconds, 43, '46.7 秒的视频选 45 秒，按 43 秒写');
     assert.equal(counts.script, posted + 2);
     fs.writeFileSync(personFile, original);
+    // 换一篇：把模式和这张卡片写过的标题交给云端，原文仍由云端按 ID 补
+    await service.writeScript({ ...libraryInput, mode: 'structure', avoidTitles: [' 夜班车间没人扫 '], generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b9' });
+    assert.deepEqual([libraryBody.mode, libraryBody.avoidTitles, libraryBody.reference], ['structure', ['夜班车间没人扫'], undefined]);
+    for (const bad of [{ mode: 'random' }, { avoidTitles: 'x' }, { avoidTitles: [''] }, { avoidTitles: Array(11).fill('t') }])
+      await assert.rejects(service.writeScript({ ...libraryInput, ...bad }), { code: 'reference_script_mode_invalid' });
+    await assert.rejects(service.writeScript({ ...scriptInput, mode: 'structure' }), { code: 'reference_script_mode_invalid' }, '换一篇只用于文案库');
+    assert.equal(counts.script, posted + 3);
     scriptReply = () => { throw Object.assign(new Error('服务未完成请求：viral_library_item_missing'), { code: 'digital_human_provider_error', status: 404, outcomeUnknown: false }); };
-    await assert.rejects(service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b5' }), /不在今天的文案库里/);
+    await assert.rejects(service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b5' }), /不在文案库里/);
     scriptReply = null;
     // 极简页面：上传时本人确认一次，人物即显示已授权；重复确认不改原时间；非法编号直接拒绝
     const consented = service.confirmConsent(automaticAsset.id);

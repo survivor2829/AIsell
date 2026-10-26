@@ -39,6 +39,7 @@
 .ns-card.is-on { border-color: #e60000; box-shadow: 0 0 0 4px rgba(230, 0, 0, 0.08); }
 .ns-src { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-right: 32px; font-size: 14px; font-weight: 800; color: #6b7280; }
 .ns-src b { color: #b4122c; font-weight: 900; }
+.ns-made { padding: 2px 9px; border-radius: 999px; background: #eef2f7; color: #475569; font-size: 13px; font-weight: 800; }
 .ns-pf { width: 22px; height: 22px; border-radius: 5px; color: #fff; font-size: 12px; font-weight: 900; display: inline-flex; align-items: center; justify-content: center; background: #111; }
 .ns-pf.is-xiaohongshu { background: #ff2442; }
 .ns-title { margin-top: 12px; padding-right: 32px; font-size: 22px; font-weight: 900; line-height: 1.4; }

@@ -11,7 +11,7 @@ export type ReferenceAsset = {
   audioQuality?: { activeSeconds: number; warnings: string[]; note: string };
 };
 export type ReferenceDraft = { referenceAssetId: string; script: string; title?: string; captionStyleId?: string; musicTrackId?: string; id?: string; industry?: string; business?: string; voiceStyleId?: string; emphasisPhrases?: string[]; referenceSource?: NarrationReference; includeCover?: boolean; coverStyle?: string; remakeOfTaskId?: string; packagingMode?: 'auto' | 'manual'; soundEffects?: boolean };
-export type ScriptInput = { generationIntentId?: string; recoverOnly?: boolean; referenceAssetId: string; industry: string; business: string; referenceSource?: NarrationReference; libraryId?: string; targetSeconds?: 30 | 45 | 60 };
+export type ScriptInput = { generationIntentId?: string; recoverOnly?: boolean; referenceAssetId: string; industry: string; business: string; referenceSource?: NarrationReference; libraryId?: string; targetSeconds?: 30 | 45 | 60; mode?: 'rewrite' | 'structure'; avoidTitles?: string[] };
 export type ScriptSuggestion = { title: string; script: string; emphasisPhrases: string[]; referenceSource?: NarrationReference };
 export type ScriptOriginality = { overlapRatio: number; limit: number; attempts: 1 | 2; passed: boolean; fragments: string[] };
 export type ScriptStructurePart = { part: '钩子' | '痛点' | '方案' | '证据' | '行动号召'; method: string };
