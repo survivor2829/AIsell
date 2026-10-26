@@ -38,7 +38,7 @@ function ViralCard({ item, onImitate, onOneClick, oneClickBlocked, estimate, que
 
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
-// 内部：把最近一次扒取的前几条改写进文案库，再导出成待发布文件（之后由我们上传到云端）。
+// 内部：把最近一次扒取的前几条提取出原口播放进文案库（客户点「仿写」时才改写），再导出成待发布文件（之后由我们上传到云端）。
 function LibraryTools({ jobs, onError }: { jobs: ViralJob[]; onError: (message: string) => void }) {
   const [limit, setLimit] = useState(10), [busy, setBusy] = useState(false), [exported, setExported] = useState('');
   const library = jobs.filter((j) => j.mode === 'library');
@@ -47,10 +47,10 @@ function LibraryTools({ jobs, onError }: { jobs: ViralJob[]; onError: (message: 
   return (
     <section className="vp-panel vp-filters" aria-label="文案库（内部）">
       <div className="vp-filter-row"><b>文案库</b>
-        <span className="vp-muted">已改写 {done} 条{waiting ? `，还有 ${waiting} 条在处理` : ''}</span><span className="vp-spacer" />
+        <span className="vp-muted">已提取 {done} 条{waiting ? `，还有 ${waiting} 条在处理` : ''}</span><span className="vp-spacer" />
         <label className="vp-cap">前 <input type="number" min={1} max={30} value={limit} onChange={(event) => setLimit(Math.max(1, Math.min(30, Number(event.target.value) || 1)))} /> 条</label>
         <button type="button" className="dh-button" data-xiaoxi-digital-human-action="reference-viral-library-build" disabled={busy}
-          onClick={() => void run(async () => { await unwrap(referenceApi().viralLibraryBuild({ limit })); })}>改写进文案库</button>
+          onClick={() => void run(async () => { await unwrap(referenceApi().viralLibraryBuild({ limit })); })}>提取进文案库</button>
         <button type="button" className="dh-button is-primary" disabled={busy || !done}
           onClick={() => void run(async () => { const r = await unwrap(referenceApi().viralLibraryExport()); setExported(`已导出 ${r.items} 条（扒到 ${r.collected} 条）：${r.file}`); })}>导出文案库</button>
       </div>

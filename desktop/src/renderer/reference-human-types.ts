@@ -11,7 +11,7 @@ export type ReferenceAsset = {
   audioQuality?: { activeSeconds: number; warnings: string[]; note: string };
 };
 export type ReferenceDraft = { referenceAssetId: string; script: string; title?: string; captionStyleId?: string; musicTrackId?: string; id?: string; industry?: string; business?: string; voiceStyleId?: string; emphasisPhrases?: string[]; referenceSource?: NarrationReference; includeCover?: boolean; coverStyle?: string; remakeOfTaskId?: string; packagingMode?: 'auto' | 'manual'; soundEffects?: boolean };
-export type ScriptInput = { generationIntentId?: string; recoverOnly?: boolean; referenceAssetId: string; industry: string; business: string; referenceSource?: NarrationReference };
+export type ScriptInput = { generationIntentId?: string; recoverOnly?: boolean; referenceAssetId: string; industry: string; business: string; referenceSource?: NarrationReference; libraryId?: string; targetSeconds?: 30 | 45 | 60 };
 export type ScriptSuggestion = { title: string; script: string; emphasisPhrases: string[]; referenceSource?: NarrationReference };
 export type ScriptOriginality = { overlapRatio: number; limit: number; attempts: 1 | 2; passed: boolean; fragments: string[] };
 export type ScriptStructurePart = { part: '钩子' | '痛点' | '方案' | '证据' | '行动号召'; method: string };
@@ -46,14 +46,16 @@ export type ViralRemoved = ViralBrief & { reason: 'duplicate' | 'outdated' | 'ir
 export type ViralScanResult = { startedAt: string; finishedAt: string; keywords: string[]; days: number; stopped: boolean;
   platforms: { platform: string; name: string; status: 'ok' | 'blocked'; message?: string; collected: number }[];
   items: ViralItem[]; stats: ViralStats; removed: ViralRemoved[] };
-export type ViralLibraryItem = { id: string; platform: string; title: string; script: string; emphasisPhrases: string[];
-  source: { title: string; author: string; url: string; likes: number | null; tags: ViralTag[] } };
+// 文案库里的一条爆款：只有爆款标题和真实数据，原文案留在云端；客户点「仿写」后才拿到自己的原创稿。
+export type ViralLibraryItem = { id: string; platform: string; title: string; source: { likes: number | null; publishedAt: string | null; tags: ViralTag[] } };
+// 仿写好的原创稿，用来一键出片。
+export type ViralLibraryScript = { id: string; platform: string; title: string; script: string; emphasisPhrases: string[] };
 export type ViralLibrary = { preview?: boolean; updatedAt: string | null; days: number; stats: { collected: number; duplicates: number; outdated: number; irrelevant: number; notViral: number; final: number; ready: number; byPlatform: Record<string, number> };
   strands: { id: string; title: string; source: string; group: string; outcome: 'pass' | 'drop'; reason: string }[]; items: ViralLibraryItem[] };
 export type ReferenceHumanApi = {
   viralLibrary(): Promise<DigitalHumanResult<ViralLibrary>>;
   confirmConsent(payload: { assetId: string }): Promise<DigitalHumanResult<ReferenceAsset>>;
-  viralStartScript(payload: { libraryItem: ViralLibraryItem; assetId: string; maxCny: number }): Promise<DigitalHumanResult<ViralJob>>;
+  viralStartScript(payload: { libraryItem: ViralLibraryScript; assetId: string; maxCny: number }): Promise<DigitalHumanResult<ViralJob>>;
   viralLibraryBuild(payload: { limit: number }): Promise<DigitalHumanResult<{ jobs: ViralJob[] }>>;
   viralLibraryExport(): Promise<DigitalHumanResult<{ file: string; items: number; collected: number }>>;
   viralScan(payload: { industryIds: string[]; platforms: string[]; days: 30 | 90 }): Promise<DigitalHumanResult<ViralScanResult>>;
@@ -80,7 +82,7 @@ export type ReferenceHumanApi = {
   get(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   quote(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   prepare(payload: { id: string; quoteRevision: string; customerConsent: boolean; generateVideo: boolean }): Promise<DigitalHumanResult<ReferenceTask>>;
-  writeScript(payload: ScriptInput, workspace?: ReferenceWorkspace): Promise<DigitalHumanResult<ScriptSuggestion & { quota: ScriptQuota; originality?: ScriptOriginality; structure?: ScriptStructurePart[] }>>;
+  writeScript(payload: ScriptInput, workspace?: ReferenceWorkspace): Promise<DigitalHumanResult<ScriptSuggestion & { quota: ScriptQuota; originality?: ScriptOriginality; structure?: ScriptStructurePart[]; problems?: string[] }>>;
   confirm(payload: { id: string; previewRevision: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   refresh(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   resume(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;

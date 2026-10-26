@@ -230,17 +230,21 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.throws(() => pipeline.startFromScript({ libraryItem: { id: '1', platform: 'douyin', title: 't', script: 's' }, assetId: 'rha_1' }), { code: 'viral_voice_consent' });
     await pipeline.close();
   }
-  // 13. 内部做文案库：只提取和改写就停，不建口播任务；不需要声音授权
+  // 13. 内部做文案库：只提取原口播就停，不写稿（客户点「仿写」时才写）、不建口播任务；不需要出镜人物
   {
     const w = world({ consented: false }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
-    const job = pipeline.start({ item: item('7400000000000000001'), assetId: 'rha_1', industry: '清洁设备渠道商', business: '', mode: 'library' });
+    const job = pipeline.start({ item: item('7400000000000000001'), assetId: undefined, industry: '清洁设备渠道商', business: '', mode: 'library' });
     const done = await until(pipeline, job.id, ['done', 'failed']);
     assert.equal(done.status, 'done', done.error);
-    assert.deepEqual([w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [1, 1, 0, 0]);
-    assert.deepEqual(pipeline.libraryScripts().map((s) => s.sourceId), ['7400000000000000001']);
-    const again = pipeline.start({ item: item('7400000000000000001'), assetId: 'rha_1', industry: '清洁设备渠道商', business: '', mode: 'library' });
-    assert.equal(again.id, job.id, '已改写好的再点一次不重新花钱');
-    assert.deepEqual([w.calls.asr.length, w.calls.write.length], [1, 1]);
+    assert.deepEqual([w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [1, 0, 0, 0]);
+    assert.deepEqual(pipeline.libraryTranscripts(), [{ sourceId: '7400000000000000001', transcript: ORIGINAL }]);
+    const again = pipeline.start({ item: item('7400000000000000001'), assetId: undefined, industry: '清洁设备渠道商', business: '', mode: 'library' });
+    assert.equal(again.id, job.id, '已提取好的再点一次不重新花钱');
+    assert.equal(w.calls.asr.length, 1);
+    // 已知时长太短的视频下载前就跳过，不花下载和识别的钱
+    const short = pipeline.start({ item: item('7400000000000000002', { media: { url: 'https://v3-web.douyinvod.com/s.mp4', durationSeconds: 9 } }), industry: '清洁设备渠道商', business: '', mode: 'library' });
+    assert.match((await until(pipeline, short.id, ['done', 'failed'])).error, /只有 9 秒/);
+    assert.deepEqual([w.calls.download, w.calls.asr.length], [1, 1]);
     await pipeline.close();
   }
   // 14. 文案库再点一次：下载失败的拿回旧任务（由调用方重试，不另建一条）；确定用不了的不再排队

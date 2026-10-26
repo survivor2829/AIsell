@@ -27,6 +27,16 @@ const currentVoice = (voice) => voice?.usable === true && (voice.speakerId || vo
 const needsNewNarration = (task) => ['digital_human_transcript_mismatch', 'reference_audio_too_long'].includes(task.errorCode);
 
 // Leave room for natural pauses; measured audio remains the authoritative duration.
+const SCRIPT_KEYS = ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly', 'libraryId', 'targetSeconds'];
+const SCRIPT_SECONDS = [30, 45, 60];
+// 稿子最长写到比本人视频短 3 秒：配音语速有快有慢，留出余量，不让配音超过视频。
+const scriptSecondsFor = (videoSeconds) => Math.max(15, Math.floor(videoSeconds) - 3);
+function libraryOriginality(reported) {
+  const ratio = Number(reported?.overlapRatio), limit = Number(reported?.limit) || 0.15;
+  if (!Number.isFinite(ratio) || ratio < 0) return null;
+  return { overlapRatio: ratio, limit, attempts: reported.attempts === 2 ? 2 : 1, passed: ratio <= limit, fragments: [] };
+}
+
 function narrationPlan(seconds) {
   const maximumSeconds = Math.floor(seconds);
   return { maximumSeconds, minimumSeconds: Math.floor(maximumSeconds * .85),
@@ -152,9 +162,11 @@ function createReferenceHumanService(options = {}) {
     return publicAsset(item);
   }
   async function writeScript(input) {
-    assertKeys(input, ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly']);
+    assertKeys(input, SCRIPT_KEYS);
     if (input.generationIntentId && !/^[a-f0-9-]{36}$/u.test(input.generationIntentId)) throw fail('reference_script_intent_invalid', '写稿操作标识无效，请重新进入文案页面。');
-    const identity = media.sha256(Buffer.from(JSON.stringify([input.referenceAssetId, input.industry, input.business, input.referenceSource && [input.referenceSource.platform, input.referenceSource.title, input.referenceSource.body, input.referenceSource.url]])));
+    if (input.libraryId !== undefined && (!/^[A-Za-z0-9]{1,64}$/u.test(String(input.libraryId)) || input.referenceSource)) throw fail('reference_script_library_invalid', '请从爆款文案库里选一条。');
+    if ((input.targetSeconds !== undefined || input.libraryId !== undefined) && !SCRIPT_SECONDS.includes(input.targetSeconds)) throw fail('reference_script_seconds_invalid', '请选择 30、45 或 60 秒。');
+    const identity = media.sha256(Buffer.from(JSON.stringify([input.referenceAssetId, input.industry, input.business, input.referenceSource && [input.referenceSource.platform, input.referenceSource.title, input.referenceSource.body, input.referenceSource.url], input.libraryId ?? null, input.targetSeconds ?? null])));
     const intentKey = input.generationIntentId ? media.sha256(Buffer.from(JSON.stringify(['included_script_v3', input.generationIntentId]))) : null;
     const receipt = intentKey && fs.existsSync(file(`scripts/${intentKey}.json`)) ? JSON.parse(fs.readFileSync(file(`scripts/${intentKey}.json`), 'utf8')) : null;
     if (receipt?.identity && !input.recoverOnly && receipt.identity !== identity) throw fail('reference_script_intent_changed', '这次写稿资料已变更，请查询原稿或明确选择重新写稿。');
@@ -163,9 +175,14 @@ function createReferenceHumanService(options = {}) {
     if (!body) {
       reference = sources.validateReference(input.referenceSource);
       if (reference && !reference.body && reference.url) reference = sources.validateReference(await sources.read({ platform: reference.platform, url: reference.url }));
-      const asset = read(input.referenceAssetId, 'assets');
-      if (asset.seconds < policy.limits.narrationMinSeconds) throw fail('reference_video_short', `完整口播需要至少${policy.limits.narrationMinSeconds}秒人物视频，未提交写稿。`);
-      body = { targetSeconds: narrationPlan(asset.seconds).maximumSeconds, topic: String(input.industry || '').trim(), productFacts: String(input.business || '').trim(), ...(reference ? { reference: { platform: reference.platform, title: reference.title, body: reference.body, url: reference.url } } : {}) };
+      // 文案库仿写可以在上传本人视频之前做：没有视频时按客户选的时长写，出片前再核对视频够不够长。
+      const asset = input.libraryId !== undefined && !input.referenceAssetId ? null : read(input.referenceAssetId, 'assets');
+      if (asset && asset.seconds < policy.limits.narrationMinSeconds) throw fail('reference_video_short', `完整口播需要至少${policy.limits.narrationMinSeconds}秒人物视频，未提交写稿。`);
+      // 配音不能比本人视频长：客户选的时长超过视频时不提交；没超过的按视频长度留出余量再写，避免配完音才发现超长。
+      if (input.targetSeconds !== undefined && asset && input.targetSeconds > Math.floor(asset.seconds)) throw fail('reference_video_short', `你的视频只有 ${Math.floor(asset.seconds)} 秒，不够写 ${input.targetSeconds} 秒的稿子。请选短一点的时长，或换一段更长的视频。`);
+      const targetSeconds = asset ? Math.min(input.targetSeconds ?? Infinity, scriptSecondsFor(asset.seconds)) : input.targetSeconds;
+      const library = input.libraryId !== undefined ? { libraryId: String(input.libraryId) } : {};
+      body = { targetSeconds, topic: String(input.industry || '').trim(), productFacts: String(input.business || '').trim(), ...library, ...(reference ? { reference: { platform: reference.platform, title: reference.title, body: reference.body, url: reference.url } } : {}) };
     }
     const key = intentKey || media.sha256(Buffer.from(JSON.stringify(['included_script_v2', body])));
     if (scriptRequests.has(key)) {
@@ -177,6 +194,7 @@ function createReferenceHumanService(options = {}) {
       if (String(error.message).includes('script_response_invalid')) error.message = '云端文案未通过完整性检查，原请求已保留，未自动重试。可以先手填文案；调整资料后重新写稿会使用新的套餐额度。';
       // 云端已自动重写过一次仍和原文重复太多：这条停下，不再扣额度。
       else if (String(error.message).includes('script_not_original')) error.message = '这条不适合仿写：改写后仍和原文重复太多，已停止，不会再扣写稿额度。可以换一条爆款，或直接填写文案。';
+      else if (String(error.message).includes('viral_library_item_missing')) error.message = '这条爆款已经不在今天的文案库里了，没有扣写稿额度。请换一条。';
       throw error;
     }).finally(() => scriptRequests.delete(key));
     scriptRequests.set(key, { promise: pending, identity }); return pending;
@@ -186,7 +204,7 @@ function createReferenceHumanService(options = {}) {
     catch { return { quota: { status: 'unavailable', remaining: 0, limit: 0, used: 0 } }; }
   }
   async function writeScriptOnce(input, body, fingerprint, reference, identity) {
-    assertKeys(input, ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly']);
+    assertKeys(input, SCRIPT_KEYS);
     const industry = body.topic, business = body.productFacts;
     if (!industry || industry.length > 80 || business.length > 2000) throw fail('reference_business_invalid', '请填写行业；产品资料最多2000字。');
     const journal = file(`scripts/${fingerprint}.json`);
@@ -214,9 +232,12 @@ function createReferenceHumanService(options = {}) {
     // A replayed receipt freezes the wording, not the account's remaining quota.
     const currentQuota = await scriptQuota();
     // 有参考时附上原创度（按最终正文在本地复算）和结构拆解；旧版云端没有这两项也照常返回正文。
-    const originality = scriptOriginality(response.script, reference, response.originality), structure = scriptStructure(response.structure);
+    // 文案库仿写时原文只在云端，原创度用云端算好的结果；其余情况按最终正文在本地复算。
+    const originality = body.libraryId ? libraryOriginality(response.originality) : scriptOriginality(response.script, reference, response.originality), structure = scriptStructure(response.structure);
+    // 云端字数、英文检查重写一次后仍没通过的问题，原样告诉客户，不再自动扣额度重写。
+    const problems = (Array.isArray(response.problems) ? response.problems : []).filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 80)).slice(0, 4);
     return { title: response.title, script: response.script, emphasisPhrases, quota: currentQuota.quota, industry, business, referenceSource: reference,
-      ...(originality ? { originality } : {}), ...(structure.length ? { structure } : {}) };
+      ...(originality ? { originality } : {}), ...(structure.length ? { structure } : {}), ...(body.libraryId ? { libraryId: body.libraryId, targetSeconds: body.targetSeconds, problems } : {}) };
   }
   function create(input) {
     assertOpen(); assertKeys(input, DRAFT_KEYS);

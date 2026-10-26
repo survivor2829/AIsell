@@ -702,8 +702,14 @@ class GatewayServer(ThreadingHTTPServer):
 VIRAL_LIBRARY_MAX_BYTES = 2 * 1024 * 1024
 
 
+VIRAL_LIBRARY_ID = re.compile(r"[A-Za-z0-9]{1,64}")
+
+
 def _viral_library(path):
-    """Read the operator-published library; reject anything that is not a complete schema-1 document."""
+    """Read the operator-published library; reject anything that is not a complete schema-2 document.
+
+    Schema 2 stores each viral item's original transcript; customers rewrite one on demand, so the
+    transcript stays on the server and is stripped by _public_viral_library."""
     if not path:
         raise FileNotFoundError("viral_library_unset")
     raw = Path(path).read_bytes()
@@ -714,20 +720,25 @@ def _viral_library(path):
     except RecursionError as error:
         raise ValueError("viral_library_invalid") from error
     items = data.get("items") if isinstance(data, dict) else None
-    if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(items, list) or not 1 <= len(items) <= 100:
+    if not isinstance(data, dict) or data.get("schema") != 2 or not isinstance(items, list) or not 1 <= len(items) <= 200:
         raise ValueError("viral_library_invalid")
     for item in items:
-        if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not 1 <= len(item["id"]) <= 64
-                or not isinstance(item.get("title"), str) or not 1 <= len(item["title"]) <= 24
-                or not isinstance(item.get("script"), str) or not 1 <= len(item["script"]) <= 500):
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not VIRAL_LIBRARY_ID.fullmatch(item["id"])
+                or item.get("platform") not in ("douyin", "xiaohongshu")
+                or not isinstance(item.get("title"), str) or not 1 <= len(item["title"]) <= 60
+                or not isinstance(item.get("transcript"), str) or not 20 <= len(item["transcript"]) <= 6000):
             raise ValueError("viral_library_item_invalid")
     if len({item["id"] for item in items}) != len(items):
         raise ValueError("viral_library_item_invalid")
     return data
 
 
+def _public_viral_library(data):
+    return {**data, "items": [{key: value for key, value in item.items() if key != "transcript"} for item in data["items"]]}
+
+
 def _narration_script_input(body):
-    if not isinstance(body, dict) or set(body) - {"topic", "productFacts", "reference", "targetSeconds"}:
+    if not isinstance(body, dict) or set(body) - {"topic", "productFacts", "reference", "targetSeconds", "libraryId"}:
         raise ValueError("script_fields")
 
     def text(value, maximum, required=False):
@@ -742,6 +753,11 @@ def _narration_script_input(body):
         if type(seconds) is not int or not 15 <= seconds < 120:
             raise ValueError("script_duration")
         result["targetSeconds"] = seconds
+    if "libraryId" in body:
+        # A library item's transcript is the reference; it is filled in on the server, never sent by the client.
+        if not isinstance(body["libraryId"], str) or not VIRAL_LIBRARY_ID.fullmatch(body["libraryId"]) or "reference" in body:
+            raise ValueError("script_library_id")
+        result["libraryId"] = body["libraryId"]
     reference = body.get("reference")
     if reference is not None:
         if not isinstance(reference, dict) or set(reference) - {"platform", "title", "body", "url"}:
@@ -781,12 +797,40 @@ def _narration_originality(script, reference):
     return sum(covered) / len(text), fragments[:8]
 
 
-def _narration_script_prompt(inputs, avoid=None):
+SCRIPT_CHARS_PER_SECOND = (3.6, 4.0, 4.3)  # measured narration pace: shortest acceptable, target, longest
+
+
+def _script_length_range(seconds):
+    low, target, high = SCRIPT_CHARS_PER_SECOND
+    return int(seconds * low), int(seconds * target), int(seconds * high)
+
+
+def _script_problems(script, inputs):
+    """Length and language checks for a finished draft; each problem is shown to the rewrite and the user."""
+    problems = []
     seconds = inputs.get("targetSeconds")
-    duration = (f"自然讲话目标约{int(seconds * .85)}—{seconds}秒，不超过{seconds}秒；"
-                f"正文建议不超过{int((seconds - 1) * 3.5)}个中文字，给停顿留空间。时长短时只讲一个核心问题，"
-                "不要为了塞入全部信息而加快语速。" if seconds is not None
-                else "目标30—45秒，正文约100—160个中文字符。")
+    if seconds is not None:
+        low, _, high = _script_length_range(seconds)
+        count = len(re.findall(r"[一-鿿]", script))
+        if count < low:
+            problems.append(f"正文只有{count}个字，太短，需要{low}—{high}个字")
+        elif count > high:
+            problems.append(f"正文有{count}个字，太长，需要{low}—{high}个字")
+    facts = (inputs.get("productFacts") or "").lower()
+    english = sorted({word for word in re.findall(r"[A-Za-z]{3,}", script) if word.lower() not in facts})
+    if english:
+        problems.append("正文里不能有英文单词：" + "、".join(english[:5]))
+    return problems
+
+
+def _narration_script_prompt(inputs, avoid=None, fix=None):
+    seconds = inputs.get("targetSeconds")
+    if seconds is not None:
+        low, target, high = _script_length_range(seconds)
+        duration = (f"自然讲话不超过{seconds}秒：正文约{target}个中文字，必须在{low}—{high}字之间，按每秒约4个字的自然语速估算。"
+                    "时长短时只讲一个核心问题，不要为了塞入全部信息而加快语速。")
+    else:
+        duration = "目标30—45秒，正文约100—160个中文字符。"
     reference = inputs.get("reference")
     if reference and (reference.get("body") or reference.get("title")):
         # Imitate the structure only: decompose first, then write new content from productFacts.
@@ -804,7 +848,13 @@ def _narration_script_prompt(inputs, avoid=None):
         imitation = "参考只借鉴开头、问题组织、节奏，不逐句替换或继承原作者身份。"
         output = ("只输出JSON：title(最多24字)、script(只含要朗读的正文)、emphasisPhrases(0—5个重点短语，"
                   "每个最多12字，必须原样出现在script里)。不要输出营销保证或解释。")
-    data = {**inputs, "avoidFragments": list(avoid)} if avoid else inputs
+    if fix:
+        imitation += "fixNotes是上一稿没通过的检查，这一稿必须改正。"
+    data = {key: value for key, value in inputs.items() if key != "libraryId"}
+    if avoid:
+        data["avoidFragments"] = list(avoid)
+    if fix:
+        data["fixNotes"] = list(fix)
     return {
         "model": "deepseek-v4-flash", "stream": False, "max_tokens": 1500,
         "thinking": {"type": "disabled"},
@@ -1408,6 +1458,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply_json(400, {"error": "invalid_narration_script_request"})
         fingerprint = hashlib.sha256(json.dumps(["narration_script_v1", subject, operation, inputs],
                                               sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        if "libraryId" in inputs:
+            # Looked up before reserving quota: a missing item never costs a credit.
+            try:
+                item = next((entry for entry in _viral_library(self.config.viral_library_path)["items"] if entry["id"] == inputs["libraryId"]), None)
+            except (OSError, ValueError, UnicodeError, AttributeError):
+                item = None
+            if item is None:
+                return self._reply_json(404, {"error": "viral_library_item_missing"})
+            inputs = {**inputs, "reference": {"platform": item["platform"], "title": item["title"], "body": item["transcript"], "url": ""}}
         with self.server.inflight_lock:
             if not self.config.configured("deepseek"):
                 return self._reply_json(503, {"error": "script_service_unavailable"})
@@ -1436,19 +1495,25 @@ class Handler(BaseHTTPRequestHandler):
                     output = _narration_script_output(upstream["raw"])
                     evidence = {"providerEvidence": _narration_script_evidence(upstream["raw"])}
                     ratio, fragments = _narration_originality(output["script"], inputs.get("reference"))
+                    problems = _script_problems(output["script"], inputs)
                     attempts = 1
-                    if ratio > SCRIPT_ORIGINALITY_LIMIT:
-                        # Same operation and quota: one rewrite naming the copied fragments, never a third call.
+                    if ratio > SCRIPT_ORIGINALITY_LIMIT or problems:
+                        # Same operation and quota: one rewrite naming what failed, never a third call.
+                        # A draft that was original enough survives a failed rewrite; a copied one does not.
+                        first = (output, ratio, problems) if ratio <= SCRIPT_ORIGINALITY_LIMIT else (None, None, [])
                         attempts, output, ratio, retry = 2, None, None, None
                         try:
                             retry = self._proxy_upstream("POST", "deepseek", self.config.origins["deepseek"] + "/chat/completions",
-                                                         json.dumps(_narration_script_prompt(inputs, fragments), ensure_ascii=False).encode())
+                                                         json.dumps(_narration_script_prompt(inputs, fragments if fragments and first[0] is None else None, problems), ensure_ascii=False).encode())
                             if 200 <= retry["status"] < 300:
                                 evidence["retryEvidence"] = _narration_script_evidence(retry["raw"])
                                 output = _narration_script_output(retry["raw"])
                                 ratio, _ = _narration_originality(output["script"], inputs.get("reference"))
+                                problems = _script_problems(output["script"], inputs)
                         except Exception:
                             output = None
+                        if first[0] is not None and (output is None or ratio > SCRIPT_ORIGINALITY_LIMIT):
+                            output, ratio, problems = first
                     # Round up so a failing 0.1504 never displays as the 0.15 limit.
                     originality = {"overlapRatio": math.ceil(ratio * 1000) / 1000 if ratio is not None else None, "limit": SCRIPT_ORIGINALITY_LIMIT, "attempts": attempts}
                     if output is None:
@@ -1460,7 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
                                                        "quota": quota, **evidence}, headers)
                     else:
                         result = self._json_result(200, {"ok": True, "operationId": operation, **output, "originality": originality,
-                                                       "quota": quota, **evidence}, headers)
+                                                       "problems": problems, "quota": quota, **evidence}, headers)
                 except (ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
                     reason = str(error) if str(error) in ("script_incomplete", "script_body_invalid", "script_title_invalid") else "script_structure_invalid"
                     result = self._json_result(502, {"error": "script_response_invalid", "reason": reason, "operationId": operation,
@@ -1503,7 +1568,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
             try:
-                return self._reply_json(200, _viral_library(self.config.viral_library_path))
+                return self._reply_json(200, _public_viral_library(_viral_library(self.config.viral_library_path)))
             except OSError:
                 return self._reply_json(404, {"error": "viral_library_empty"})
             except (ValueError, UnicodeError, AttributeError):

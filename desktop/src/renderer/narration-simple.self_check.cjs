@@ -16,7 +16,7 @@ function loadTs(name) {
   compiled._compile(output, filename);
   return compiled.exports;
 }
-const { dayWord, updatedText, libraryStages, barText, formatCount } = loadTs("narration-simple.ts");
+const { dayWord, updatedText, libraryStages, barText, formatCount, agoText, longestScriptSeconds } = loadTs("narration-simple.ts");
 
 const now = new Date(2026, 9, 24, 15, 0);
 assert.equal(dayWord(new Date(2026, 9, 24, 8, 0).toISOString(), now), "今天");
@@ -30,6 +30,15 @@ assert.equal(formatCount(1284), "1,284");
 // 四段数字都来自文案库统计，不编造
 assert.deepEqual(libraryStages({ collected: 1284, duplicates: 237, final: 92, ready: 36 }).map((s) => s.value), [1284, 1047, 92, 36]);
 assert.equal(libraryStages({ collected: 1, duplicates: 5, final: 0, ready: 0 })[1].value, 0);
+
+// 卡片发布时间；仿写时长不超过本人视频，没上传视频时不限制
+assert.equal(agoText(new Date(2026, 9, 24, 1, 0).toISOString(), now), "今天发布");
+assert.equal(agoText(new Date(2026, 9, 23, 23, 0).toISOString(), now), "昨天发布");
+assert.equal(agoText(new Date(2026, 8, 24, 8, 0).toISOString(), now), "30 天前发布");
+assert.equal(agoText(null, now), "");
+assert.equal(longestScriptSeconds(46.7), 46, "46.7 秒的视频可以选 45 秒，不能选 60 秒");
+assert.equal(longestScriptSeconds(59.9), 59);
+assert.equal(longestScriptSeconds(undefined), Infinity);
 
 const job = (patch) => ({ status: "running", step: "voice", progress: 0, error: "", ...patch });
 assert.equal(barText(undefined), null);
