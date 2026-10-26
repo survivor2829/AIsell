@@ -6,7 +6,7 @@ import { PlatformIcon, PLATFORM_NAMES } from "./PlatformIcon";
 import "./SocialPublishPanel.css";
 
 type FinishedItem = { finishedVideoId: string; displayName: string; title: string; metadata: Record<string, unknown>; createdAt: string; available: boolean };
-type FinishedApi = { finished?: { list: (payload?: { limit?: number }) => Promise<{ ok: boolean; data?: { items: FinishedItem[] } }> } };
+type FinishedApi = { finished?: { list: (payload?: { limit?: number }) => Promise<{ ok: boolean; data?: { items: FinishedItem[] } }>; chooseAndRegister?: () => Promise<{ ok: boolean; message?: string }> } };
 const finishedApi = () => (window as unknown as { xiaoxiContent?: FinishedApi }).xiaoxiContent?.finished;
 
 const PLATFORM_ORDER: SocialPlatformKey[] = ["douyin", "kuaishou", "xiaohongshu", "channels"];
@@ -20,6 +20,7 @@ const STEP_OF: Record<string, number> = { 打开平台: 0, 上传视频: 0, 填�
 const GENERATED_ID = /^generated_video_[a-f0-9]{32}$/i;
 const generatedThumb = (item: FinishedItem) => { const id = item.metadata?.generated_video_id; return typeof id === "string" && GENERATED_ID.test(id) ? `xiaoxi-content://generated/${id}/thumbnail` : ""; };
 const videoName = (item: FinishedItem) => item.title || item.displayName;
+const videoDate = (item: FinishedItem) => { const date = new Date(item.createdAt); return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日`; };
 const videoContext = (item: FinishedItem) => typeof item.metadata?.batch_title === "string" ? String(item.metadata.batch_title) : "";
 const topicText = (topics: string[]) => topics.map((topic) => `#${topic}`).join(" ");
 type Copy = { title: string; description: string; topics: string };
@@ -74,6 +75,12 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
       }
     }
   };
+  const importVideo = async () => {
+    const api = finishedApi();
+    if (!api?.chooseAndRegister) { setError("暂时不能导入，请到「成片中心」点「登记已有成片」。"); return; }
+    const result = await api.chooseAndRegister().catch(() => null);
+    if (result?.ok) { setNotice("视频已导入成片中心。"); await loadVideos(); }
+  };
   useEffect(() => {
     void loadVideos();
     if (!publishApi || !accountsApi) { setError("一键分发服务尚未连接，请重新打开桌面应用。"); return; }
@@ -97,6 +104,8 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   const copyOf = (platform: SocialPlatformKey) => copies[platform] || EMPTY_COPY;
   const hasAnyCopy = copyPlatforms.some((platform) => copyOf(platform).title.trim() || copyOf(platform).description.trim());
   const missingTitle = copyPlatforms.filter((platform) => !copyOf(platform).title.trim());
+  const previewVideo = chosenVideos[0];
+  const previewAccount = chosenAccounts.find((account) => account.platform === activePlatform);
   const syncToOthers = () => setCopies((all) => Object.fromEntries(copyPlatforms.map((platform) => [platform, { ...(all[activePlatform] || EMPTY_COPY) }])) as Partial<Record<SocialPlatformKey, Copy>>);
   const problems = useMemo(() => {
     const list: string[] = [];
@@ -207,14 +216,38 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
       <section className="dist-videos" aria-labelledby="publish-videos">
         <div className="dist-sec"><h2 id="publish-videos"><em>第 1 步</em>选视频</h2><span>已选 {selectedVideos.length}/20</span>
           <button type="button" className="social-text-button" onClick={() => void loadVideos()}><RefreshCw size={14} />刷新</button></div>
-        {videos.length === 0 ? <div className="dist-empty"><b>成片中心还没有视频</b><p>做好的视频会自动出现在这里，也可以在「成片中心」点「登记已有成片」导入。</p></div> : <ul className="dist-video-grid">
+        <ul className="dist-video-rows">
           {videos.slice(0, 60).map((item, index) => { const selected = selectedVideos.includes(item.finishedVideoId); const cover = coverOf(item);
-            return <li key={item.finishedVideoId} style={{ "--i": Math.min(index, 20) } as CSSProperties}><button type="button" className={`dist-video ${selected ? "is-on" : ""}`} aria-pressed={selected} onClick={() => setSelectedVideos(toggle(selectedVideos, item.finishedVideoId, 20))}>
+            return <li key={item.finishedVideoId} style={{ "--i": Math.min(index, 20) } as CSSProperties}><button type="button" className={`dist-video-row ${selected ? "is-on" : ""}`} aria-pressed={selected} onClick={() => setSelectedVideos(toggle(selectedVideos, item.finishedVideoId, 20))}>
               {cover ? <img src={cover} alt="" loading="lazy" /> : <span className="dist-video-blank" aria-hidden="true" />}
-              <span className="dist-video-title">{videoName(item)}</span>
+              <span className="dist-video-meta"><b>{videoName(item)}</b><small>{videoDate(item) ? `${videoDate(item)} · ` : ""}来自成片中心</small></span>
               <span className="ns-pick" aria-hidden="true" />
             </button></li>; })}
-        </ul>}
+          <li><button type="button" className="dist-video-row is-import" onClick={() => void importVideo()}>
+            <span className="dist-import-plus" aria-hidden="true">+</span>
+            <span className="dist-video-meta"><b>导入已有成片</b><small>从电脑里选视频文件，加入成片中心</small></span>
+          </button></li>
+        </ul>
+        <div className="dist-preview">
+          <div className="dist-preview-head"><b>发布预览</b><span>{PLATFORM_NAMES[activePlatform]}上大致的样子 · 右边切换平台</span></div>
+          <div className={`dist-phone is-${activePlatform}`}>
+            {previewVideo && coverOf(previewVideo) ? <img src={coverOf(previewVideo)} alt="" /> : <span className="dist-phone-blank" />}
+            {!previewVideo && <p className="dist-phone-empty">选一条视频，<br />这里预览它发出去的样子</p>}
+            <div className="dist-phone-top"><PlatformIcon platform={activePlatform} size={22} /><span>{PLATFORM_NAMES[activePlatform]}</span></div>
+            {previewVideo && <div className="dist-phone-copy">
+              <b className="dist-phone-account">@{previewAccount?.label || `${PLATFORM_NAMES[activePlatform]}账号`}</b>
+              <strong>{current.title.trim() || "标题会显示在这里"}</strong>
+              {current.description.trim() && <p>{current.description.trim()}</p>}
+              {parseTopics(current.topics).length > 0 && <span className="dist-phone-topics">{parseTopics(current.topics).map((topic) => `#${topic}`).join("  ")}</span>}
+            </div>}
+          </div>
+          <ul className="dist-preview-facts">
+            <li><b>{chosenVideos.length}</b><span>条视频</span></li>
+            <li><b>{selectedAccounts.length}</b><span>个账号</span></li>
+            <li><b>{total}</b><span>条待发</span></li>
+            <li><b>{visibility === "public" ? "公开" : "仅自己"}</b><span>可见范围</span></li>
+          </ul>
+        </div>
       </section>
 
       <aside className="dist-side">

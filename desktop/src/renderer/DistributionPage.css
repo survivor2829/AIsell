@@ -21,3 +21,9 @@
 /* A compact header: this is a working tool, not a showcase page. */
 .distribution-page .dist-hero .ns-h1 { margin-top: 10px; font-size: 34px; }
 .dist-platforms li { min-width: 84px; padding: 12px 10px 10px; }
+
+/* 收紧头部 */
+.ns-page.distribution-page { padding-top: 22px; }
+.distribution-page .dist-hero { align-items: center; }
+.dist-tabs { margin-top: 16px; }
+.dist-panel { margin-top: 16px; }
