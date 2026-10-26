@@ -26,7 +26,7 @@ function registerDigitalHumanIpc(options = {}) {
   const reference = options.referenceService || createReferenceHumanService(options);
   // 扒爆款：首次使用时才创建平台窗口；进度推送给主窗口画流图。
   let viralScout = options.viralScout || null;
-  const viral = () => viralScout || (viralScout = createViralScout({ BrowserWindow: options.BrowserWindow || require('electron').BrowserWindow, session: options.session || require('electron').session,
+  const viral = () => viralScout || (viralScout = createViralScout({ BrowserWindow: options.BrowserWindow || require('electron').BrowserWindow, session: options.session || require('electron').session, net: options.net || require('electron').net,
     onProgress: (progress) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-progress', progress); } }));
   // 一键成片：排队和断点记在数字人目录里；付费环节全部交给写稿回执和本人口播任务。
   const sendPipeline = (state) => { const window = getMainWindow(); if (window && !window.isDestroyed?.()) window.webContents.send('digital-human:viral-pipeline', state); };

@@ -108,7 +108,21 @@ function inspectBlock() {
   return { verification: /安全验证|完成验证|拖动滑块|请完成验证/.test(t), login: /扫码登录|登录后查看|登录后即可|手机号登录/.test(t) };
 }
 
-function createViralScout({ BrowserWindow, session, onProgress = () => {} } = {}) {
+// Electron 的 session.fetch 不支持 redirect: 'manual'（遇到跳转直接报 Redirect was cancelled），
+// 所以用 net.request 每一跳都停下来，把跳转地址交给调用方核对。
+function requestHop(net, ses, url, headers, signal) {
+  return new Promise((resolve, reject) => {
+    const request = net.request({ url, session: ses, redirect: 'manual' });
+    for (const [name, value] of Object.entries(headers)) request.setHeader(name, value);
+    signal.addEventListener('abort', () => { request.abort(); reject(new Error('timeout')); }, { once: true });
+    request.on('redirect', (status, method, location) => { request.abort(); resolve({ status, location }); });
+    request.on('response', (response) => resolve({ status: response.statusCode, body: response, abort: () => request.abort() }));
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function createViralScout({ BrowserWindow, session, net, onProgress = () => {} } = {}) {
   const windows = new Map();
   let busy = false, stopped = false;
 
@@ -250,20 +264,20 @@ function createViralScout({ BrowserWindow, session, onProgress = () => {} } = {}
   async function downloadMedia(item, destination, { maxBytes = 150 * 1024 * 1024, timeoutMs = 120000 } = {}) {
     const platform = item?.platform;
     if (!PLATFORMS[platform] || !mediaAllowed(item?.media?.url, platform)) throw problem('VIRAL_MEDIA_UNAVAILABLE', '这条爆款没有可下载的视频。');
-    if (!session) throw problem('VIRAL_BROWSER_UNAVAILABLE', '当前环境没有可用的平台会话，请重新打开软件。');
+    if (!session || !net) throw problem('VIRAL_BROWSER_UNAVAILABLE', '当前环境没有可用的平台会话，请重新打开软件。');
     const ses = session.fromPartition(`persist:narration-source-${platform}`);
     // 跳转逐跳核对：每一跳都必须仍是平台官方地址，不会被带去其他网站或本机内网。
     const signal = AbortSignal.timeout(timeoutMs), headers = { Referer: platform === 'douyin' ? 'https://www.douyin.com/' : 'https://www.xiaohongshu.com/' };
     let url = item.media.url, response;
     for (let hop = 0; ; hop += 1) {
-      response = await ses.fetch(url, { headers, signal, redirect: 'manual' })
+      response = await requestHop(net, ses, url, headers, signal)
         .catch(() => { throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败，请稍后重试。`); });
-      if (![301, 302, 303, 307, 308].includes(response.status)) break;
-      const next = (() => { try { return new URL(response.headers.get('location') || '', url).href; } catch { return ''; } })();
+      if (response.location === undefined) break;
+      const next = (() => { try { return new URL(response.location, url).href; } catch { return ''; } })();
       if (hop >= 5 || !mediaAllowed(next, platform)) throw problem('VIRAL_MEDIA_UNAVAILABLE', '视频地址跳到了平台以外的网站，已停止下载。');
       url = next;
     }
-    if (!response.ok || !response.body) throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败（${response.status}），链接可能已过期，请重新扒一次。`);
+    if (response.status < 200 || response.status > 299) { response.abort(); throw problem('VIRAL_MEDIA_DOWNLOAD', `${PLATFORMS[platform].name}视频下载失败（${response.status}），链接可能已过期，请重新扒一次。`); }
     // 同步写入：出错时先关文件再删，不会留下半截文件或晚到的写入错误。
     const partial = `${destination}.partial`;
     const fd = fs.openSync(partial, 'w');
