@@ -5,8 +5,7 @@ function createSocialAcquisitionApi(ipcRenderer) {
     saveTask: (task) => invoke("saveTask", {
       id: String(task?.id || ""), name: String(task?.name || ""), platform: String(task?.platform || ""), accountId: String(task?.accountId || ""),
       keywords: String(task?.keywords || ""), intentWords: String(task?.intentWords || ""), days: Number(task?.days) || 30, maxVideos: Number(task?.maxVideos) || 10,
-      allComments: task?.allComments === true, skipAuthor: task?.skipAuthor !== false,
-      mode: task?.mode === "comment" ? "comment" : "collect", texts: String(task?.texts || ""), maxComments: Number(task?.maxComments) || 5
+      allComments: task?.allComments === true, skipAuthor: task?.skipAuthor !== false
     }),
     removeTask: (id) => invoke("removeTask", { id: String(id || "") }),
     start: (id) => invoke("start", { id: String(id || "") }),
@@ -16,7 +15,7 @@ function createSocialAcquisitionApi(ipcRenderer) {
     resume: () => invoke("resume"),
     cancelQueued: () => invoke("cancelQueued"),
     resolveAction: (id, outcome) => invoke("resolveAction", { id: String(id || ""), outcome: String(outcome || "") }),
-    saveCaps: (caps) => invoke("saveCaps", { like: Number(caps?.like), follow: Number(caps?.follow), comment: Number(caps?.comment) }),
+    saveCaps: (caps) => invoke("saveCaps", { like: Number(caps?.like), follow: Number(caps?.follow) }),
     exportCsv: (taskId) => invoke("exportCsv", { taskId: String(taskId || "") }),
     openLead: (id) => invoke("openLead", { id: String(id || "") }),
     onUpdate: (callback) => { const listener = (_event, state) => callback(state); ipcRenderer.on("social-acquisition:update", listener); return () => ipcRenderer.removeListener("social-acquisition:update", listener); }

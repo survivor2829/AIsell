@@ -77,8 +77,6 @@
 @media (prefers-reduced-motion: reduce) { .acq-live-dot { animation: none; } }
 
 /* 任务类型、动作状态、今日上限、结果不明、批量操作 */
-.acq-mode { width: fit-content; }
-.acq-mode button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 14px; }
 .acq-act { padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: var(--muted); font-size: 12px; font-weight: 800; }
 .acq-act.is-done { background: #ecfdf3; color: #166534; }
 .acq-act.is-queued, .acq-act.is-running { background: #fff7e6; color: #b45309; }

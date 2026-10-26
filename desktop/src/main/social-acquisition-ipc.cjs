@@ -14,8 +14,7 @@ function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, account
     saveTask: (payload) => acquisition.saveTask({
       id: payload?.id ? String(payload.id) : "", name: String(payload?.name || "").slice(0, 40), platform: String(payload?.platform || ""), accountId: String(payload?.accountId || ""),
       keywords: String(payload?.keywords || "").slice(0, 1000), intentWords: String(payload?.intentWords || "").slice(0, 600),
-      days: Number(payload?.days), maxVideos: Number(payload?.maxVideos), allComments: payload?.allComments === true, skipAuthor: payload?.skipAuthor !== false,
-      mode: payload?.mode === "comment" ? "comment" : "collect", texts: String(payload?.texts || "").slice(0, 3000), maxComments: Number(payload?.maxComments)
+      days: Number(payload?.days), maxVideos: Number(payload?.maxVideos), allComments: payload?.allComments === true, skipAuthor: payload?.skipAuthor !== false
     }),
     removeTask: (payload) => acquisition.removeTask(id(payload)),
     start: (payload) => acquisition.start(id(payload)),
@@ -25,7 +24,7 @@ function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, account
     resume: () => acquisition.resume(),
     cancelQueued: () => acquisition.cancelQueued(),
     resolveAction: (payload) => acquisition.resolveAction(id(payload), String(payload?.outcome || "")),
-    saveCaps: (payload) => acquisition.saveCaps({ like: Number(payload?.like), follow: Number(payload?.follow), comment: Number(payload?.comment) }),
+    saveCaps: (payload) => acquisition.saveCaps({ like: Number(payload?.like), follow: Number(payload?.follow) }),
     // The file goes where the user picks; nothing is written without the save dialog.
     async exportCsv(payload) {
       const window = getMainWindow();

@@ -278,37 +278,19 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     await blocked.dispose();
   }
   {
-    // 同行视频留言：用用户自己写的话，每个视频只留一次；第二次运行换下一个视频。
-    const w = world(); const acq = w.make();
-    assert.throws(() => acq.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机", texts: " " }), { code: "ACQUIRE_TEXTS_REQUIRED" });
-    acq.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机", texts: "厂家直供，需要的私信我\n做清洁设备十年了", maxComments: 1, maxVideos: 5 });
-    const task = acq.snapshot().tasks[0];
-    acq.start(task.id);
-    let state = await w.until(acq);
-    assert.equal(state.runs[0].kind, "comment"); assert.equal(state.runs[0].sent, 1);
-    assert.deepEqual(w.log.typed, ["厂家直供，需要的私信我"]);
-    assert.equal(state.actions[0].target.videoId, "3xvideo0001"); assert.equal(state.actions[0].status, "done");
-    acq.start(task.id);
-    state = await w.until(acq);
-    assert.deepEqual(state.actions.map((action) => action.target.videoId).sort(), ["3xvideo0001", "3xvideo0002"], "同一个视频不留第二次");
-    assert.equal(state.today.ks1.comment, 2);
-    assert.ok(state.actions.every((action) => action.status === "done"), "重新打开视频能看到留言才算完成");
+    // 同行视频留言已下线：以前存下的留言任务和记录留在文件里，但不再显示、不能运行。
+    const w = world(); w.seed(["买家A"]);
+    const seeded = path.join(w.root, "data", "state.json"), old = JSON.parse(fs.readFileSync(seeded, "utf8"));
+    old.tasks = [{ id: "c1", mode: "comment", name: "旧留言任务", platform: "kuaishou", accountId: "ks1", keywords: ["洗地机"], texts: ["厂家直供"] }];
+    old.actions = [{ id: "m1", kind: "comment", platform: "kuaishou", accountId: "ks1", target: { videoId: "v", text: "厂家直供" }, status: "hidden", clickedAt: "2026-10-26T10:00:00Z", reason: "" }];
+    fs.writeFileSync(seeded, JSON.stringify(old));
+    const acq = w.make(), shown = acq.snapshot();
+    assert.deepEqual([shown.tasks.length, shown.actions.length, shown.caps.comment], [0, 0, undefined]);
+    assert.throws(() => acq.start("c1"), { code: "ACQUIRE_TASK_RETIRED" });
+    assert.throws(() => acq.saveTask({ id: "c1", platform: "kuaishou", accountId: "ks1", keywords: "洗地机" }), { code: "ACQUIRE_TASK_RETIRED" });
+    assert.equal(JSON.parse(fs.readFileSync(seeded, "utf8")).actions[0].id, "m1", "旧记录还在文件里");
+    assert.ok(!("comment" in DRIVERS.kuaishou.actions) && !DRIVERS.kuaishou.actions.isCommentAdd);
     await acq.dispose();
-    // 平台收下了但看不到：记成「发了但看不到」，两条之后整个任务停下。
-    const quiet = world({ act: { shown: false } }), hiding = quiet.make();
-    hiding.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机\n扫地机", texts: "厂家直供", maxComments: 5, maxVideos: 5 });
-    hiding.start(hiding.snapshot().tasks[0].id);
-    const hidden = await quiet.until(hiding);
-    assert.deepEqual(hidden.actions.map((action) => action.status), ["hidden", "hidden"]);
-    assert.match(hidden.runs[0].reason, /屏蔽/); assert.equal(hidden.today.ks1.comment, 2, "看不到的也算今天的用量");
-    await hiding.dispose();
-    // 只允许作者好友评论的视频：留言框是禁用的，不填也不点。
-    const friends = world({ act: { closedNote: "仅作者及作者好友可评论" } }), closedRun = friends.make();
-    closedRun.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机", texts: "厂家直供", maxComments: 1, maxVideos: 1 });
-    closedRun.start(closedRun.snapshot().tasks[0].id);
-    const closedState = await friends.until(closedRun);
-    assert.match(closedState.actions[0].reason, /仅作者及作者好友可评论/); assert.deepEqual(friends.log.typed, []); assert.deepEqual(friends.log.clicks, []);
-    await closedRun.dispose();
     // 重启：点下去还没确认的变成结果不明；没点的排队动作还在队里。
     const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
     saved.actions.unshift({ id: "a1", kind: "like", platform: "kuaishou", accountId: "ks1", leadId: "x", target: { videoId: "v" }, status: "running", clickedAt: "2026-10-26T12:00:00Z", reason: "" },

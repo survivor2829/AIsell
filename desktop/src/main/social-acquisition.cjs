@@ -3,7 +3,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { findBrowser, launchBrowser } = require("./social-browser.cjs");
-const { pageFor, sleep, classes } = require("./social-page.cjs");
+const { pageFor, sleep } = require("./social-page.cjs");
 const { captureResponses } = require("./social-capture.cjs");
 const drivers = require("./social-acquire-drivers.cjs");
 
@@ -16,23 +16,23 @@ const CAPTCHA_PROBE = `(() => { const shown = (el) => el.getClientRects().length
   return [...document.querySelectorAll("iframe")].some((frame) => /captcha|verify/i.test(frame.src) && shown(frame))
     || [...document.querySelectorAll('[class*="captcha" i],[id*="captcha" i],[class*="verify-" i]')].some(shown); })()`;
 const words = (value, max, limit) => [...new Set((Array.isArray(value) ? value : String(value || "").split(/[\n,，、\s]+/)).map((item) => String(item).trim().slice(0, max)).filter(Boolean))].slice(0, limit);
-const lines = (value, max, limit) => [...new Set(String(value || "").split(/\r?\n/).map((item) => item.replace(/\s+/g, " ").trim().slice(0, max)).filter(Boolean))].slice(0, limit);
-const KINDS = ["like", "follow", "comment"];
+const KINDS = ["like", "follow"];
 // Per account per day. The defaults stay well under what a person would do by hand.
-const DEFAULT_CAPS = { like: 60, follow: 30, comment: 15 }, MAX_CAPS = { like: 200, follow: 100, comment: 50 };
-const ACTION_NAMES = { like: "点赞", follow: "关注", comment: "留言" };
+const DEFAULT_CAPS = { like: 60, follow: 30 }, MAX_CAPS = { like: 200, follow: 100 };
+const ACTION_NAMES = { like: "点赞", follow: "关注" };
 const KEEP = { collect: "找到的线索都保留了", comment: "已发的留言都有记录", actions: "做过的都有记录" };
 const dayOf = (ms) => { const date = new Date(ms); return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`; };
 const nextMidnight = (ms) => { const date = new Date(ms); date.setHours(24, 0, 0, 0); return date.toISOString(); };
 
 // Finds people whose comments on keyword-matched videos show buying intent, and, when the
-// user asks, likes their comment, follows them or leaves a comment under peer videos. Every
+// user asks, likes their comment or follows them. Comments under peer videos were tried on
+// 2026-10-26 and taken out: the platform hid them as advertising and the account risk is high. Every
 // outward action is recorded before it is clicked; one the platform does not confirm stays
 // "unknown" and is never redone automatically. Platform verification is left to the user,
 // and an account the platform says is too busy rests until the next day.
 function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.acquireDriverFor, capture: makeCapture = captureResponses, makePage = pageFor,
   onChange = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
-  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, commentGapMin: 60_000, commentGapMax: 120_000, scroll: 600, recheck: 8000, ...timing };
+  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, scroll: 600, ...timing };
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -45,7 +45,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   }
   if (!Array.isArray(state.actions)) state.actions = [];
   if (!state.settings || typeof state.settings !== "object") state.settings = {};
-  state.settings.caps = { ...DEFAULT_CAPS, ...state.settings.caps };
+  state.settings.caps = { like: Number(state.settings.caps?.like ?? DEFAULT_CAPS.like), follow: Number(state.settings.caps?.follow ?? DEFAULT_CAPS.follow) };
   if (!state.pauses || typeof state.pauses !== "object") state.pauses = {};
   for (const run of state.runs) if (["running", "needs_user"].includes(run.status)) Object.assign(run, { status: "stopped", reason: `软件中断，${KEEP[run.kind || "collect"]}。`, finishedAt: stamp() });
   // An action cut off after its click may have happened; one cut off before it did not.
@@ -61,8 +61,9 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   const room = (accountId, kind) => used(accountId, kind) < state.settings.caps[kind];
   function snapshot() {
     const today = {};
-    for (const accountId of new Set(state.actions.map((action) => action.accountId))) today[accountId] = { like: used(accountId, "like"), follow: used(accountId, "follow"), comment: used(accountId, "comment"), pausedUntil: paused(accountId) ? state.pauses[accountId] : "" };
-    return { tasks: state.tasks, runs: state.runs.slice(0, 50), leads: state.leads.slice(0, 2000), actions: state.actions.filter((action, index) => index < 3000 || ["queued", "running", "unknown"].includes(action.status)), caps: state.settings.caps, today, running: active?.run.id || "" };
+    const actions = state.actions.filter((action) => action.kind !== "comment");
+    for (const accountId of new Set(actions.map((action) => action.accountId))) today[accountId] = { like: used(accountId, "like"), follow: used(accountId, "follow"), pausedUntil: paused(accountId) ? state.pauses[accountId] : "" };
+    return { tasks: state.tasks.filter((task) => task.mode !== "comment"), runs: state.runs.filter((run) => run.kind !== "comment").slice(0, 50), leads: state.leads.slice(0, 2000), actions: actions.filter((action, index) => index < 3000 || ["queued", "running", "unknown"].includes(action.status)), caps: state.settings.caps, today, running: active?.run.id || "" };
   }
   const emit = () => { if (!closed) onChange(snapshot()); };
   const findTask = (id) => { const task = state.tasks.find((item) => item.id === id); if (!task) throw fail("ACQUIRE_TASK_NOT_FOUND", "没有找到这个任务。"); return task; };
@@ -75,17 +76,13 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     if (!account) throw fail("ACQUIRE_ACCOUNT_REQUIRED", "请选择一个已登录的账号。");
     const keywords = words(input.keywords, 20, 30);
     if (!keywords.length) throw fail("ACQUIRE_KEYWORDS_REQUIRED", "请至少填写一个关键词。");
-    const mode = input.mode === "comment" ? "comment" : "collect";
-    const texts = lines(input.texts, 200, 10);
-    if (mode === "comment" && !texts.length) throw fail("ACQUIRE_TEXTS_REQUIRED", "请至少写一条留言内容。");
     const days = [1, 3, 7, 30, 90].includes(Number(input.days)) ? Number(input.days) : 30;
     const maxVideos = Math.min(50, Math.max(1, Math.round(Number(input.maxVideos) || 10)));
-    const maxComments = Math.min(20, Math.max(1, Math.round(Number(input.maxComments) || 5)));
     const task = input.id ? findTask(String(input.id)) : null;
+    if (task?.mode === "comment") throw fail("ACQUIRE_TASK_RETIRED", "同行视频留言已下线，这个任务不能再改。");
     if (task && active?.task === task) throw fail("ACQUIRE_TASK_RUNNING", "任务正在运行，停下后再改。");
-    const fields = { name: String(input.name || "").trim().slice(0, 40) || keywords.slice(0, 3).join("、"), mode, platform, accountId: account.id, accountLabel: account.label,
-      keywords, intentWords: words(input.intentWords, 12, 30), days, maxVideos, allComments: input.allComments === true, skipAuthor: input.skipAuthor !== false,
-      texts: mode === "comment" ? texts : [], maxComments, updatedAt: stamp() };
+    const fields = { name: String(input.name || "").trim().slice(0, 40) || keywords.slice(0, 3).join("、"), mode: "collect", platform, accountId: account.id, accountLabel: account.label,
+      keywords, intentWords: words(input.intentWords, 12, 30), days, maxVideos, allComments: input.allComments === true, skipAuthor: input.skipAuthor !== false, updatedAt: stamp() };
     if (task) Object.assign(task, fields);
     else state.tasks.unshift({ id: crypto.randomUUID(), createdAt: stamp(), lastRunAt: "", ...fields });
     save(); emit();
@@ -124,7 +121,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     const page = makePage(browser, sessionId);
     const searches = [], comments = [], results = [];
     const acts = driver.actions || {};
-    const isAction = (url, operation) => Boolean(acts.isLike?.(url, operation) || acts.isFollow?.(url) || acts.isCommentAdd?.(url, operation));
+    const isAction = (url, operation) => Boolean(acts.isLike?.(url, operation) || acts.isFollow?.(url));
     const capture = makeCapture(browser, sessionId, {
       match: (url, operation) => driver.isSearch(url) || driver.isComments(url, operation) || isAction(url, operation),
       onJson: ({ url, operation, variables, json }) => {
@@ -273,7 +270,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     if (drivers.TOO_FREQUENT.test(message)) {
       state.pauses[action.accountId] = nextMidnight(now());
       control.rest = `${control.driver.name}提示操作太频繁，这个账号今天先停下，明天再继续。`;
-      settleAction(session, action, action.kind === "comment" ? { status: "failed", reason: `平台提示：${message}` } : { status: "queued", clickedAt: "", reason: "平台提示操作频繁，明天再做。" });
+      settleAction(session, action, { status: "queued", clickedAt: "", reason: "平台提示操作频繁，明天再做。" });
     } else settleAction(session, action, { status: "failed", reason: message ? `平台提示：${message}` : "平台没有通过这次操作。" });
   }
   async function confirm(session, control, action, response, stillThere) {
@@ -330,54 +327,20 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     const response = await session.answer(mark, (result) => acts.isFollow(result.url), "关注");
     await confirm(session, control, action, response, async () => acts.followed.test(await label()));
   }
-  async function leaveComment(session, control, action) {
-    const { page } = session, acts = control.driver.actions, t = action.target;
-    await session.openVideo(t.videoId);
-    if (control.shouldStop()) return;
-    const box = await page.find((node) => node.localName === "textarea" && classes(node).includes("pl-textarea"));
-    if (!box) return settleAction(session, action, { status: "failed", reason: "视频下没有留言框，可能关闭了评论。" });
-    // A video can allow comments from the author's friends only; its box is then disabled.
-    const closedNote = await page.call(box, "function () { return this.disabled ? String(this.placeholder || '这个视频不允许评论') : ''; }");
-    if (closedNote) return settleAction(session, action, { status: "failed", reason: `${closedNote}，没有发。` });
-    await page.type(box, t.text);
-    if (await page.valueOf(box) !== t.text) return settleAction(session, action, { status: "failed", reason: "留言没有完整填进去，没有发。" });
-    const send = `document.querySelector(${JSON.stringify(`${acts.sendButton}:not([disabled])`)})`;
-    const point = await session.pointOf(send);
-    if (!point) return settleAction(session, action, { status: "failed", reason: "发送按钮不可用，没有发。" });
-    const mark = session.results.length;
-    clicked(session, action);
-    await page.mouse(point);
-    const response = await session.answer(mark, (result) => acts.isCommentAdd(result.url, result.operation), "留言");
-    // Without an answer, only our words near the top of the list, with the box emptied, count as sent.
-    await confirm(session, control, action, response, () => page.evaluate(`!document.querySelector(${JSON.stringify(acts.commentBox)})?.value && [...document.querySelectorAll(".comment-list-item")].slice(0, 3).some((el) => (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "") === ${JSON.stringify(t.text.replace(/\s+/g, ""))})`));
-    if (action.status !== "done" || control.shouldStop()) return;
-    // Accepted is not shown: on 2026-10-26 five accepted comments were gone when the videos were
-    // opened again. So the video is opened afresh and the comment looked for in its list.
-    await sleep(wait.recheck);
-    const same = (value) => String(value || "").replace(/\s+/g, "") === t.text.replace(/\s+/g, "");
-    const fresh = await session.openVideo(t.videoId);
-    if (control.shouldStop()) return;
-    const shown = fresh.some((result) => result.comments.some((comment) => same(comment.text)))
-      || await page.evaluate(`[...document.querySelectorAll(".comment-list-item")].some((el) => (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "") === ${JSON.stringify(t.text.replace(/\s+/g, ""))})`);
-    if (!shown) Object.assign(action, { status: "hidden", reason: "平台收下了，但重新打开视频看不到这条留言，可能被当成广告屏蔽了。" });
-    session.update({});
-  }
   async function perform(session, control, action) {
     Object.assign(action, { status: "running", reason: "" });
     session.update({ detail: `${ACTION_NAMES[action.kind]}：${action.target.userName || action.target.videoTitle?.slice(0, 20) || ""}` });
     try {
       if (action.kind === "like") await likeComment(session, control, action);
-      else if (action.kind === "follow") await follow(session, control, action);
-      else await leaveComment(session, control, action);
-      if (action.status === "running") settleAction(session, action, action.kind === "comment" ? { status: "cancelled", reason: "已停下，没有发出。" } : { status: "queued", reason: "" });
+      else await follow(session, control, action);
+      if (action.status === "running") settleAction(session, action, { status: "queued", reason: "" });
     } catch (error) {
       if (action.clickedAt) settleAction(session, action, { status: "unknown", reason: "已经点下，但之后出了问题。请到平台上看一下，再标记结果。" });
-      else if (control.stop || closed) settleAction(session, action, action.kind === "comment" ? { status: "cancelled", reason: "已停下，没有发出。" } : { status: "queued", reason: "" });
-      else if (/^SOCIAL_BROWSER_/.test(String(error?.code))) { settleAction(session, action, action.kind === "comment" ? { status: "cancelled", reason: "浏览器断开，没有发出。" } : { status: "queued", reason: "" }); throw error; }
+      else if (control.stop || closed) settleAction(session, action, { status: "queued", reason: "" });
+      else if (/^SOCIAL_BROWSER_/.test(String(error?.code))) { settleAction(session, action, { status: "queued", reason: "" }); throw error; }
       else { settleAction(session, action, { status: "failed", reason: userMessage(error, "这一步没做成。") }); if (/LOGIN|VERIFY/.test(String(error?.code))) throw error; }
     }
     if (action.status === "done") control.run.sent += 1;
-    if (action.status === "hidden") control.run.hidden = (control.run.hidden || 0) + 1;
     if (["failed", "unknown"].includes(action.status)) control.run.failed += 1;
     session.update({});
   }
@@ -390,39 +353,11 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     }
     if (!control.rest && state.actions.some((action) => action.status === "queued" && action.accountId === control.accountId)) control.rest = "今天的上限到了，剩下的明天点「继续执行」。";
   }
-  // Comments under peer videos found by keyword: one per video per account, in the user's own words.
-  async function commentTask(session, control) {
-    const { task, run } = control;
-    const commented = new Set(state.actions.filter((action) => action.kind === "comment" && action.accountId === task.accountId && (action.clickedAt || ["running", "done", "unknown"].includes(action.status))).map((action) => action.target.videoId));
-    let first = true;
-    for (const keyword of task.keywords) {
-      if (control.shouldStop() || run.sent >= task.maxComments) break;
-      session.update({ detail: `搜索「${keyword}」` });
-      for (const video of await session.search(keyword, task.maxVideos)) {
-        if (control.shouldStop() || run.sent >= task.maxComments) break;
-        if (commented.has(video.id)) continue;
-        if (!room(task.accountId, "comment")) { control.rest = "今天的留言上限到了，明天再继续。"; break; }
-        if (!first) await gap(control, wait.commentGapMin, wait.commentGapMax);
-        if (control.shouldStop()) break;
-        first = false;
-        const action = newAction({ kind: "comment", platform: task.platform, accountId: task.accountId, taskId: task.id, target: { videoId: video.id, videoTitle: video.title, videoUrl: control.driver.videoUrl(video.id), videoAuthor: video.authorName, text: task.texts[(run.sent + run.failed) % task.texts.length] } });
-        state.actions.unshift(action); commented.add(video.id);
-        run.videos += 1;
-        await perform(session, control, action);
-        // Comments the platform keeps out of sight mean the words or the pace look like advertising.
-        if ((run.hidden || 0) >= 2) { control.rest = "已有 2 条留言发出后看不到，可能被平台当成广告屏蔽了。先停下，建议换个说法、少发几条。"; break; }
-      }
-    }
-  }
-
   function start(id) {
     const task = findTask(id);
     ensureNotBusy();
-    if (task.mode === "comment") {
-      if (paused(task.accountId)) throw fail("ACQUIRE_ACCOUNT_RESTING", "这个账号今天被平台提示操作频繁，明天再留言。");
-      if (!room(task.accountId, "comment")) throw fail("ACQUIRE_CAP_REACHED", "这个账号今天的留言上限到了，明天再继续。");
-    }
-    return begin({ kind: task.mode === "comment" ? "comment" : "collect", task, platform: task.platform, accountId: task.accountId, accountLabel: task.accountLabel, body: task.mode === "comment" ? commentTask : collect });
+    if (task.mode === "comment") throw fail("ACQUIRE_TASK_RETIRED", "同行视频留言已下线，这个任务不能再运行。");
+    return begin({ kind: "collect", task, platform: task.platform, accountId: task.accountId, accountLabel: task.accountLabel, body: collect });
   }
   // Queues likes and follows for chosen leads, run by the account that found each lead.
   function queueActions({ leadIds = [], kinds = [] } = {}) {

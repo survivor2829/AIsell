@@ -38,9 +38,10 @@ const DRIVERS = {
     // Actions, confirmed on 2026-10-26: liking a comment answers GraphQL visionLikeComment
     // {result: 1} and marks the icon .liked (a second click would unlike it); following answers
     // /rest/v/relation/follow {result: 1, followStatus: 1} and the button reads 已关注. The web
-    // site has no reply-to-comment, so replies are not offered here.
+    // site has no reply-to-comment, so replies are not offered here. Commenting under peer videos
+    // was removed after the platform hid every such comment as advertising (2026-10-26).
     actions: {
-      like: true, follow: true, comment: true,
+      like: true, follow: true,
       profileUrl: (userId) => `https://www.kuaishou.com/profile/${userId}`,
       // Compared without any spaces: the page shows 「🍀 吃货芸姐🪷 」 where the data says 「🍀吃货芸姐🪷」.
       commentItem: (userName, content) => `[...document.querySelectorAll(".comment-list-item")].find((el) => {
@@ -49,10 +50,8 @@ const DRIVERS = {
         return name === ${JSON.stringify(String(userName).replace(/\s+/g, ""))} && said.slice(0, 60) === ${JSON.stringify(String(content).replace(/\s+/g, "").slice(0, 60))}; })`,
       likeIcon: ".comment-item-likeicon", likedClass: "liked",
       followButton: ".follow-btn", followed: /已关注|互相关注/,
-      commentBox: ".comment-input textarea", sendButton: ".comment-input .submit-button",
       isLike: (url, operation) => /www\.kuaishou\.com\/graphql/.test(url) && operation === "visionLikeComment",
       isFollow: (url) => /www\.kuaishou\.com\/rest\/v\/relation\/follow/.test(url),
-      isCommentAdd: (url, operation) => /www\.kuaishou\.com\/graphql/.test(url) && /comment/i.test(operation) && !/^(commentListQuery|visionLikeComment|visionSubCommentList)$/.test(operation),
       // { ok, message } from an action's response; anything but result 1 is a refusal.
       outcome(json) {
         const body = json?.data ? Object.values(json.data)[0] : json;
