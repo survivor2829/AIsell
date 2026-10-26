@@ -122,17 +122,20 @@ function registerDigitalHumanIpc(options = {}) {
       return pipelineReady().startFromScript({ libraryItem: payload.libraryItem, maxCny: payload.maxCny, assetId: payload.assetId, industry: saved.draft?.industry, business: saved.draft?.business });
     },
     // 内部（只在开发版）：把最近一次扒取的前几条爆款改写成文案库稿子，再导出成待发布文件。
-    'reference-viral-library-build': (payload) => {
+    'reference-viral-library-build': async (payload) => {
       if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
       assertKeys(payload, ['limit']);
       const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
       if (!scan?.items?.length) throw fail('viral_library_scan_missing', '还没有扒取结果，请先扒一次爆款。');
       const saved = reference.workspace(), assetId = saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId;
       const limit = Math.max(1, Math.min(30, Number(payload.limit) || 10));
-      // 一条不合格不影响其余条目，也不让已排上的再排一次。
+      // 一条不合格不影响其余条目，也不让已排上的再排一次；上次失败但还能重试的（如下载失败）重新排队。
       const jobs = [], skipped = [];
       for (const item of scan.items.slice(0, limit)) {
-        try { jobs.push(pipelineReady().start({ item, assetId, industry: '清洁设备渠道商', business: '', mode: 'library' })); } catch (error) { skipped.push({ id: String(item?.id || ''), error: error.message }); }
+        try {
+          const job = pipelineReady().start({ item, assetId, industry: '清洁设备渠道商', business: '', mode: 'library' });
+          jobs.push(job.status === 'failed' && job.holdsItem ? await pipelineReady().retry(job.id) : job);
+        } catch (error) { skipped.push({ id: String(item?.id || ''), error: error.message }); }
       }
       if (!jobs.length && skipped.length) throw fail('viral_library_build_failed', skipped[0].error);
       return { jobs, skipped };
