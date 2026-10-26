@@ -974,6 +974,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           const workflow = workflowController?.status();
           if (workflow?.enabled || workflow?.phase === "pausing" || workflow?.contactSync?.running || coordinator.status().lock) return true;
           if (productVideoRegistration?.service?.isBusy?.() || digitalHumanRegistration?.service?.isBusy?.()) return true;
+          // 地图、关键词等浏览器任务在跑，或者有登录/悬浮窗口正显示着，都算在用。
+          if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
+          if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
+          if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
           const content = contentEngineController?.updateStatus();
           if (content?.pending || (content?.alive && content.state !== "ready")) return true;
           return content?.state === "ready" && (await contentEngineController.productionSummary()).active > 0;
