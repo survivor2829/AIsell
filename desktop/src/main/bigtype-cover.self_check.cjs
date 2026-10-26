@@ -55,13 +55,14 @@ assert.equal(Object.values(coverTexts(tricky)).join(''), [...tricky.lines, ...tr
     seen = { bin, args, texts: files.map((file) => fs.readFileSync(file, 'utf8')) };
     fs.writeFileSync(args.at(-1), 'jpeg');
   };
+  const before = new Set(fs.readdirSync(os.tmpdir()));
   const result = await renderBigtypeCover({ ffmpegPath: 'ffmpeg-test', source: 'person.mp4', seconds: 3.5, sourceSize: portrait, title: '买还是租？算完这笔账', subtitle: '八成物业选错', tags: ['洗地机租赁'], fontFile: font, target, run });
   assert.equal(seen.bin, 'ffmpeg-test');
   assert.deepEqual(seen.args.slice(seen.args.indexOf('-ss'), seen.args.indexOf('-ss') + 4), ['-ss', '3.5', '-i', 'person.mp4']);
   assert.deepEqual(seen.texts, ['买还是租', '算完这笔账', ...'八成物业选错', '洗地机租赁']);
   assert.equal(fs.readFileSync(target, 'utf8'), 'jpeg');
   assert.equal(result.file, target);
-  assert.ok(!fs.readdirSync(os.tmpdir()).some((name) => name.startsWith('xiaoxi-bigtype-') && fs.existsSync(path.join(os.tmpdir(), name, 'title-0.txt'))), '临时文字文件已清理');
+  assert.ok(!fs.readdirSync(os.tmpdir()).some((name) => !before.has(name) && name.startsWith('xiaoxi-bigtype-') && fs.existsSync(path.join(os.tmpdir(), name, 'title-0.txt'))), '临时文字文件已清理');
   await assert.rejects(renderBigtypeCover({ source: 'x', sourceSize: portrait, title: '先试', fontFile: path.join(dir, 'missing.ttf'), target, run }), { code: 'bigtype_font_missing' });
   await assert.rejects(renderBigtypeCover({ source: 'x', sourceSize: portrait, title: '先试', fontFile: font, target: path.join(dir, 'empty.jpg'), run: async () => {} }), { code: 'bigtype_render_failed' });
   fs.rmSync(dir, { recursive: true, force: true });

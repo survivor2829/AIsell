@@ -122,4 +122,5 @@ function createPage(browser, sessionId) {
   return { send, tree, box, visible, mouse, click, hover, find, byText, byClass, byAttr, call, type, valueOf, evaluate, url, text, setFile, navigate, front, reload };
 }
 
-module.exports = { attachPage, hostMatches, attr, ownText, textOf, classes, sleep };
+// pageFor: a page on a tab the caller created and attached itself (e.g. to start network capture before navigating).
+module.exports = { attachPage, pageFor: createPage, hostMatches, attr, ownText, textOf, classes, sleep };
