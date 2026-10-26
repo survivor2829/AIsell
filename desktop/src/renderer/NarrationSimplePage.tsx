@@ -4,7 +4,7 @@ import type { ReferenceAsset, ReferenceHumanApi, ReferenceTask, ViralJob, ViralL
 import { FlowFunnel } from './FlowFunnel';
 import { tagText } from './flow-funnel';
 import { likesText } from './viral-pipeline';
-import { barText, libraryHeadline, libraryStages, libraryUsage, longestScriptSeconds, orderByUsage, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
+import { barText, currentJob, libraryHeadline, libraryStages, libraryUsage, longestScriptSeconds, orderByUsage, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
 import referencePolicy from '../shared/reference-human.json';
 import './NarrationSimplePage.css';
 
@@ -86,7 +86,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
     return () => observer.disconnect();
   }, [page, Boolean(library)]);
 
-  const current = jobs.find((j) => ['running', 'queued'].includes(j.status)) || jobs.find((j) => j.id === lastJob.current) || undefined;
+  const current = currentJob<ViralJob>(jobs, lastJob.current);
   const status = barText(current);
   useEffect(() => {
     setCover('');

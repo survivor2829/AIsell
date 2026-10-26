@@ -3,6 +3,9 @@ const normalize = text => Array.from(String(text || '')).filter(char => /[\p{L}\
 
 function integerKey(text) {
   if (/^\d+$/u.test(text)) return `number:${BigInt(text)}`;
+  // ASR writes 一万 as 1万 and 三千 as 3千: digits times one magnitude unit.
+  const mixed = text.match(/^(\d+)([千万亿])$/u);
+  if (mixed) return `number:${BigInt(mixed[1]) * BigInt({ 千: 1000, 万: 10000, 亿: 100000000 }[mixed[2]])}`;
   const digits = '零一二三四五六七八九', units = { 十: 10, 百: 100, 千: 1000, 万: 10000, 亿: 100000000 };
   text = text.replace(/〇/gu, '零').replace(/两/gu, '二');
   if (!/[十百千万亿]/u.test(text)) return `number:${BigInt(Array.from(text, c => digits.indexOf(c)).join(''))}`;
@@ -28,7 +31,7 @@ function integerKey(text) {
 // 3~4, but 15 must never match 50. Model identifiers retain their digit values.
 function spokenTokens(text) {
   const source = String(text || '');
-  const tokens = Array.from(source.matchAll(/[零〇一二两三四五六七八九十百千万亿]+|\d+|\p{L}|[~～]/gu), match => ({ text: match[0], at: match.index }));
+  const tokens = Array.from(source.matchAll(/\d+[千万亿](?![零〇一二两三四五六七八九十百千万亿\d])|[零〇一二两三四五六七八九十百千万亿]+|\d+|\p{L}|[~～]/gu), match => ({ text: match[0], at: match.index }));
   for (const [index, token] of tokens.entries()) {
     token.key = /^[零〇一二两三四五六七八九十百千万亿\d]+$/u.test(token.text) ? integerKey(token.text) : token.text.toLowerCase();
     if (/^number:/u.test(token.key) && /[A-Za-z]/u.test(source.slice(Math.max(0, token.at - 1), token.at) + source.slice(token.at + token.text.length, token.at + token.text.length + 1))) token.key = `identifier:${token.text}`;

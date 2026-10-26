@@ -24,6 +24,11 @@ async function main() {
   assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC2 Pro，十五升，五百毫米，三到四小时。', 15), /不一致/);
   assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC01 Pro，十五升，五百毫米，三到四小时。', 15), /不一致/);
   assert.throws(() => audio.verifyTranscript(numericSpeech, '普渡CC1 Pro，五十升，五百毫米，三到四小时。', 15), /不一致/);
+  // 识别结果把「一万」写成「1万」：同一个数可以对上，换了数值（十万、一千、两万）仍然拦下
+  const wan = [{ text: '凌晨2点，1万平车间没一个人。', start_time: 0, end_time: 14500 }];
+  assert.ok(audio.verifyTranscript(wan, '凌晨两点，一万平车间没一个人。', 15));
+  for (const changed of ['凌晨两点，十万平车间没一个人。', '凌晨两点，一千平车间没一个人。', '凌晨两点，两万平车间没一个人。'])
+    assert.throws(() => audio.verifyTranscript(wan, changed, 15), /不一致/);
   const exact = '先看地面是否适合使用清洁机器人，再看现场需要清理什么污物，把现场情况发来一起安排合适的清洁方案。';
   assert.throws(() => audio.verifyTranscript([{ text: exact.replace('地面', '地棉'), start_time: 0, end_time: 14500 }], exact, 15), /不一致/, 'Even one substitution must stop before paid video; packaging needs exact anchors.');
   assert.throws(() => audio.verifyTranscript([{ text: 'CC1 Pro', start_time: 0, end_time: 14500 }], 'ＣＣ1 Pro', 15), /不一致/, 'Packaging does not normalize compatibility characters.');

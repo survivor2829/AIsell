@@ -395,11 +395,21 @@ async function main() {
     const incompleteQuote = await service.quote(incomplete.id), videosBeforeMismatch = counts.video;
     await service.prepare(incomplete.id, incompleteQuote.quoteRevision, true, true);
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(service.get(incomplete.id).canResume, false, 'cached incomplete narration cannot be fixed by continuing');
     assert.equal(service.get(incomplete.id).audioAvailable, true, 'failed narration remains available for listening');
-    await assert.rejects(service.resume(incomplete.id), { code: 'reference_resume_invalid' });
     assert.equal(counts.video, videosBeforeMismatch, 'incomplete narration never purchases a video');
+    // 识别对不上可以重新核对：复用已买的配音和识别，仍不一致就再停下，不多花一分钱
+    assert.equal(service.get(incomplete.id).canResume, true);
+    const paidBeforeRecheck = counts.voice + counts.asr;
+    await service.resume(incomplete.id);
+    while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(service.get(incomplete.id).status, 'needs_attention', 'a genuine mismatch still stops');
+    assert.equal(counts.voice + counts.asr + counts.video, paidBeforeRecheck + videosBeforeMismatch, 're-checking buys no voice, recognition or video');
+    // 核对规则修好后（比如数字写法误判），同一条任务接着往下做，配音和识别仍然只买过一次
     transcriptMismatch = false;
+    await service.resume(incomplete.id);
+    while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.notEqual(service.get(incomplete.id).status, 'needs_attention');
+    assert.equal(counts.voice + counts.asr, paidBeforeRecheck, 'the fixed check reuses the paid narration');
     const gateway = createProviderGatewayClient({ config: { enabled: true, origin: 'https://example.com', blockPaidCalls: true }, requestImpl: () => { throw Error('network must not run'); } });
     await assert.rejects(gateway.fetch(gateway.url('/bailian/api/v1/services/aigc/image2video/video-synthesis'), { method: 'POST', body: '{}' }), { code: 'PAID_CALLS_DISABLED' });
     await gateway.close();
