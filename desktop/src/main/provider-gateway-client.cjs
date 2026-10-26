@@ -303,8 +303,15 @@ function createProviderGatewayClient(options = {}) {
     for (const key of Object.keys(headers)) {
       if (key.toLowerCase() === "authorization") delete headers[key];
     }
-    await initialize();
-    Object.assign(headers, requestHeaders());
+    // 运营发布文案库用自己的发布密钥，只能用在 /viral-library/ 下的发布路由，其他请求一律用客户授权会话。
+    const operatorToken = String(requestOptions.operatorToken || "");
+    if (operatorToken) {
+      if (!/^\/viral-library\/(?:publish|structure)$/u.test(new URL(url).pathname.slice(PREFIX.length))) throw createError("GATEWAY_ROUTE_INVALID", "统一 AI 服务地址无效。");
+      headers.Authorization = `Bearer ${operatorToken}`;
+    } else {
+      await initialize();
+      Object.assign(headers, requestHeaders());
+    }
     const result = await requestImpl({
       url,
       method: String(requestOptions.method || "GET").toUpperCase(),

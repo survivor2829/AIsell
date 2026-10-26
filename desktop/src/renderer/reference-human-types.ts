@@ -58,6 +58,8 @@ export type ReferenceHumanApi = {
   viralStartScript(payload: { libraryItem: ViralLibraryScript; assetId: string; maxCny: number }): Promise<DigitalHumanResult<ViralJob>>;
   viralLibraryBuild(payload: { limit: number }): Promise<DigitalHumanResult<{ jobs: ViralJob[] }>>;
   viralLibraryExport(): Promise<DigitalHumanResult<{ file: string; items: number; collected: number }>>;
+  viralLibraryPublish(): Promise<DigitalHumanResult<{ sent: number; added: number; updated: number; total: number; structured: number; missingStructure: number }>>;
+  viralLibraryPublishToken(payload: { token?: string }): Promise<DigitalHumanResult<{ saved: boolean }>>;
   viralScan(payload: { industryIds: string[]; platforms: string[]; days: 30 | 90 }): Promise<DigitalHumanResult<ViralScanResult>>;
   viralStop(): Promise<DigitalHumanResult<{ stopped: boolean }>>;
   onViralProgress(callback: (progress: ViralProgress) => void): () => void;

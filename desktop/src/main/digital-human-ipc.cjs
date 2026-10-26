@@ -18,6 +18,7 @@ const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'reference-viral-scan', 'reference-viral-stop',
   'reference-viral-pipeline-start', 'reference-viral-pipeline-list', 'reference-viral-pipeline-retry', 'reference-viral-pipeline-remove', 'reference-viral-pipeline-cover',
   'reference-viral-library', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-export',
+  'reference-viral-library-publish', 'reference-viral-library-publish-token',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
@@ -34,6 +35,24 @@ function registerDigitalHumanIpc(options = {}) {
   // 最近一次扒取结果：内部发布文案库时用来画流图，重启后从磁盘读回。
   const scanFile = options.rootDir ? path.join(options.rootDir, 'viral-library', 'last-scan.json') : null;
   let lastScan = null;
+  // 运营发布密钥：用 Windows 当前用户加密后存在数字人目录里。
+  const publishTokenFile = options.rootDir ? path.join(options.rootDir, 'viral-library', 'publish-token.bin') : null;
+  const secure = () => options.safeStorage || require('electron').safeStorage;
+  const publishToken = {
+    saved: () => Boolean(publishTokenFile && fs.existsSync(publishTokenFile)),
+    save(value) {
+      if (!publishTokenFile) throw fail('viral_library_internal_only', '这是内部功能。');
+      if (!value) { fs.rmSync(publishTokenFile, { force: true }); return; }
+      if (value.length < 32 || !/^[!-~]+$/u.test(value)) throw fail('viral_library_publish_token_invalid', '发布密钥格式不对，请从服务器配置里完整复制。');
+      if (!secure().isEncryptionAvailable()) throw fail('viral_library_secure_storage_unavailable', '无法启用 Windows 账户加密存储。');
+      fs.mkdirSync(path.dirname(publishTokenFile), { recursive: true });
+      fs.writeFileSync(publishTokenFile, secure().encryptString(value));
+    },
+    read() {
+      if (!publishToken.saved()) throw fail('viral_library_publish_token_missing', '请先填写发布密钥。');
+      try { return secure().decryptString(fs.readFileSync(publishTokenFile)); } catch { throw fail('viral_library_publish_token_unreadable', '发布密钥无法在当前 Windows 用户下解密，请重新填写。'); }
+    }
+  };
   const pipeline = options.viralPipeline || (options.rootDir ? createViralPipeline({ root: options.rootDir, reference, scout: { downloadMedia: (item, target) => viral().downloadMedia(item, target) },
     provider: gatewayProvider, ffmpegPath: options.ffmpegPath || 'ffmpeg', fontFile: options.coverFontFile,
     renderCover: renderBigtypeCover, probe: (file) => probeMedia(file, options.ffmpegPath || 'ffmpeg'), resolveVideo: (videoId) => options.resolveGeneratedVideoPath?.(videoId),
@@ -130,7 +149,7 @@ function registerDigitalHumanIpc(options = {}) {
       const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
       if (!scan?.items?.length) throw fail('viral_library_scan_missing', '还没有扒取结果，请先扒一次爆款。');
       const saved = reference.workspace(), assetId = saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId;
-      const limit = Math.max(1, Math.min(30, Number(payload.limit) || 10));
+      const limit = Math.max(1, Math.min(300, Number(payload.limit) || 10));
       // 一条不合格不影响其余条目，也不让已排上的再排一次；上次失败但还能重试的（如下载失败）重新排队。
       const jobs = [], skipped = [];
       for (const item of scan.items.slice(0, limit)) {
@@ -149,6 +168,42 @@ function registerDigitalHumanIpc(options = {}) {
       const file = path.join(options.rootDir, 'viral-library', `library-${library.updatedAt.replace(/[:.]/g, '-')}.json`);
       fs.writeFileSync(file, JSON.stringify(library, null, 1));
       return { file, items: library.items.length, collected: library.stats.collected };
+    },
+    // 内部（只在开发版）：保存运营发布密钥（Windows 当前用户加密，不进源码和日志）；只返回有没有保存。
+    'reference-viral-library-publish-token': (payload) => {
+      if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
+      assertKeys(payload, ['token']);
+      if (payload.token === undefined) return { saved: publishToken.saved() };
+      publishToken.save(String(payload.token || '').trim());
+      return { saved: publishToken.saved() };
+    },
+    // 内部（只在开发版）：把提取好的原口播发布到云端（云端合并进已有的库），再分批拆结构，直到拆完或一轮没有进展。
+    // 拆结构是我们内部的 AI 花费，不扣客户额度；一轮失败的条目留着下次发布时再拆。
+    'reference-viral-library-publish': async () => {
+      if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
+      const token = publishToken.read();
+      const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
+      const library = buildLibrary({ scan, transcripts: pipelineReady().libraryTranscripts() });
+      const client = options.gatewayClient;
+      if (!client?.isEnabled?.()) throw fail('viral_library_gateway_unavailable', '统一 AI 服务没有连接，不能发布。');
+      const post = async (route, body) => {
+        const response = await client.fetch(client.url(route), { method: 'POST', operatorToken: token, headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(body), timeoutMs: 240000, maxBytes: 64 * 1024 });
+        let result = null;
+        try { result = await response.json(); } catch { /* 下面按状态码报错 */ }
+        if (response.status === 401) throw fail('viral_library_publish_token_invalid', '发布密钥不对，请重新填写。');
+        if (response.status === 404) throw fail('viral_library_publish_unavailable', '云端还没有开通文案库发布，请先部署网关并配置发布密钥。');
+        if (!response.ok || !result?.ok) throw fail('viral_library_publish_failed', `云端没有接收（${response.status}${result?.error ? ` ${result.error}` : ''}）`);
+        return result;
+      };
+      const published = await post('/viral-library/publish', library);
+      let structured = 0, missing = published.missingStructure;
+      for (let round = 0; missing > 0 && round < 200; round += 1) {
+        const step = await post('/viral-library/structure', { limit: 8 });
+        structured += step.structured; missing = step.missingStructure;
+        if (!step.structured) break;
+      }
+      return { sent: library.items.length, added: published.added, updated: published.updated, total: published.total, structured, missingStructure: missing };
     },
     'reference-viral-pipeline-retry': (payload) => pipelineReady().retry(jobId(payload)),
     'reference-viral-pipeline-remove': (payload) => pipelineReady().remove(jobId(payload)),
@@ -184,7 +239,7 @@ function registerDigitalHumanIpc(options = {}) {
         const trusted = options.isTrustedEvent ? options.isTrustedEvent(event)
           : Boolean(window?.webContents && event.sender === window.webContents && (!event.senderFrame || event.senderFrame === window.webContents.mainFrame));
         if (!trusted) throw fail('digital_human_untrusted_sender', '请在应用主窗口操作。');
-        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build'].includes(name)) {
+        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-publish'].includes(name)) {
           // Caller supplies the same trusted-click policy used for paid content work.
           if (!options.requireTrustedClick) throw fail('digital_human_click_guard_missing', '数字人生成入口尚未完成接入。');
           await options.requireTrustedClick(event, payload, name);

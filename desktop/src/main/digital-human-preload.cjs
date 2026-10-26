@@ -1,7 +1,7 @@
 const { createTrustedClickGate } = require("./preload-api.cjs");
 
 function createDigitalHumanApi(ipcRenderer) {
-  const clicks = Object.fromEntries(["preview", "confirm", "resume", "voice-preview", "voice-train", "reference-prepare", "reference-confirm", "reference-resume", "reference-train", "reference-write-script", "reference-cover-generate", "reference-viral-pipeline-start", "reference-viral-pipeline-retry", "reference-confirm-consent", "reference-viral-pipeline-start-script", "reference-viral-library-build"].map((action) => [
+  const clicks = Object.fromEntries(["preview", "confirm", "resume", "voice-preview", "voice-train", "reference-prepare", "reference-confirm", "reference-resume", "reference-train", "reference-write-script", "reference-cover-generate", "reference-viral-pipeline-start", "reference-viral-pipeline-retry", "reference-confirm-consent", "reference-viral-pipeline-start-script", "reference-viral-library-build", "reference-viral-library-publish"].map((action) => [
     action, createTrustedClickGate(`[data-xiaoxi-digital-human-action="${action}"]`, `digital-human:${action}`)
   ]));
   const invoke = (name, payload = {}) => ipcRenderer.invoke(`digital-human:${name}`, payload);
@@ -24,6 +24,8 @@ function createDigitalHumanApi(ipcRenderer) {
       viralStartScript: (payload) => invoke('reference-viral-pipeline-start-script', { ...payload, clickToken: clicks['reference-viral-pipeline-start-script']() }),
       viralLibraryBuild: (payload) => invoke('reference-viral-library-build', { ...payload, clickToken: clicks['reference-viral-library-build']() }),
       viralLibraryExport: () => invoke('reference-viral-library-export'),
+      viralLibraryPublish: () => invoke('reference-viral-library-publish', { clickToken: clicks['reference-viral-library-publish']() }),
+      viralLibraryPublishToken: (payload) => invoke('reference-viral-library-publish-token', payload),
       viralPipelineRetry: (payload) => invoke('reference-viral-pipeline-retry', { ...payload, clickToken: clicks['reference-viral-pipeline-retry']() }),
       viralPipelineRemove: (payload) => invoke('reference-viral-pipeline-remove', payload),
       viralPipelineCover: (payload) => invoke('reference-viral-pipeline-cover', payload),

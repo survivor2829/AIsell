@@ -17,7 +17,8 @@ const PLATFORMS = {
     detail: (item) => `https://www.xiaohongshu.com/explore/${item.id}?xsec_token=${encodeURIComponent(item.xsecToken || '')}&xsec_source=pc_search`,
     profile: (item) => `https://www.xiaohongshu.com/user/profile/${item.authorId}` }
 };
-const LIMITS = { keywordsPerScan: 6, scrollsPerKeyword: 2, detailVisits: 12, profileVisits: 8, commentPasses: 3 };
+// 一次扒取要撑很久（结果合并进云端文案库），所以选中的关键词全搜；详情和主页访问次数随之放宽，仍有上限并带随机停顿。
+const LIMITS = { keywordsPerScan: 30, scrollsPerKeyword: 3, detailVisits: 40, profileVisits: 24, commentPasses: 3 };
 
 function allowed(url, platform) {
   try { const u = new URL(url); return u.protocol === 'https:' && (PLATFORMS[platform].hosts.includes(u.hostname) || u.hostname.endsWith(platform === 'douyin' ? '.douyin.com' : '.xiaohongshu.com')); }
