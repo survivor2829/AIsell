@@ -185,6 +185,34 @@ class NarrationScriptTest(unittest.TestCase):
         self.assertEqual(self.call(body=body)[1], result, "同一操作重放不再调用")
         self.assertEqual(len(self.calls), 1)
 
+    def test_another_script_uses_the_stored_structure_without_the_transcript(self):
+        structure = [{"part": "钩子", "method": "开头一句反常识的劝告"}, {"part": "行动号召", "method": "评论区问价引导私信"}]
+        self.period["limit"] = 5
+        with open(self.library, "w", encoding="utf-8") as handle:
+            json.dump({"schema": 2, "items": [{**self.LIBRARY_ITEM, "structure": structure}]}, handle, ensure_ascii=False)
+        body = {"topic": "清洁设备渠道商", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30, "mode": "structure", "avoidTitles": ["物业怎样选洗地机"]}
+        self.scripts = [self.GOOD_30S]
+        status, result = self.call(body=body)
+        self.assertEqual((status, result["quota"]["remaining"]), (200, 4), "换一篇也用 1 次额度")
+        system, sent = json.loads(self.calls[0].data)["messages"][0]["content"], json.loads(json.loads(self.calls[0].data)["messages"][1]["content"])
+        self.assertEqual(sent["structure"], structure)
+        self.assertEqual(sent["avoidTitles"], ["物业怎样选洗地机"])
+        self.assertNotIn("reference", sent, "换一篇只给结构，不给原文")
+        self.assertNotIn(self.VIRAL, json.dumps(sent, ensure_ascii=False))
+        self.assertIn("同样的段落顺序", system)
+        self.assertIn("avoidTitles", system)
+        # 照抄原爆款的稿子仍然会被查出来重写（原创度照样对比原文）
+        self.scripts = [self.VIRAL + "，赶紧来问。", self.GOOD_30S]
+        self.assertEqual(self.call("op-2", body)[1]["originality"]["attempts"], 2)
+        # 还没拆结构的条目退回到看原文仿写
+        self.publish_library()
+        self.scripts = [self.GOOD_30S]
+        self.assertEqual(self.call("op-3", {**body, "avoidTitles": []})[0], 200)
+        self.assertEqual(json.loads(json.loads(self.calls[-1].data)["messages"][1]["content"])["reference"]["body"], self.LIBRARY_ITEM["transcript"])
+        for bad in ({"mode": "structure"}, {**body, "mode": "random"}, {**body, "avoidTitles": "t"}, {**body, "avoidTitles": ["t"] * 11}, {**body, "avoidTitles": [""]}):
+            with self.assertRaises(ValueError):
+                _narration_script_input({"topic": "t", **bad})
+
     def test_missing_library_item_or_client_reference_costs_nothing(self):
         self.assertEqual(self.call(body={"topic": "t", "libraryId": "7400000000000000001"}), (404, {"error": "viral_library_item_missing"}))
         self.publish_library()
