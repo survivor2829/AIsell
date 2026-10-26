@@ -16,6 +16,7 @@ import {
   Play,
   RefreshCw,
   Send,
+  Share2,
   Square,
   ThumbsUp,
   UserRound,
@@ -47,6 +48,8 @@ import { CreativeStudioPage } from "./CreativeStudioPage";
 import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
+import { DistributionPage } from "./DistributionPage";
+import { SocialAccountsPanel } from "./SocialAccountsPanel";
 import { DigitalHumanPage } from "./DigitalHumanPage";
 import { ProductVideoPage } from "./ProductVideoPage";
 import type { Collection } from "./batch-studio-api";
@@ -432,8 +435,9 @@ const supportNavItems: NavItem[] = supportRoles.map(key => ({ key, label: AGENT_
 function isSupportRole(key: string): key is typeof supportRoles[number] {
   return supportRoles.some(role => role === key);
 }
+const distributionNavItem: NavItem = { key: "publish", label: "一键分发", icon: Share2 };
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, distributionNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -506,7 +510,7 @@ function taskStatusLabel(status: string) {
 
 function moduleIsAvailable(key: ModuleKey) {
   if (isSupportRole(key) || key === "business" || isBusinessModule(key)) return true;
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "tutorials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "product-detail", "materials", "tutorials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -879,6 +883,7 @@ export default function App() {
           })}
         </nav>
         <div className="sidebar-system-nav">
+          <button className={`nav-item ${active === "publish" ? "active" : ""}`} onClick={() => setActive("publish")}><Share2 size={20} strokeWidth={2.5} /><span>一键分发</span></button>
           <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
@@ -962,7 +967,8 @@ export default function App() {
           )}
           {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} contacts={contactRows} />}
           {active === "expert" && <AiExpert />}
-          {active === "accounts" && <AccountManagement />}
+          {active === "accounts" && <section className="page"><div className="page-head"><div><h1>平台账号</h1></div></div><SocialAccountsPanel /></section>}
+          {active === "publish" && <DistributionPage />}
           {(productDetailVisited || active === "product-detail") && <div className="product-detail-retained" hidden={active !== "product-detail"}><ProductDetailPage preference={visiblePreference("operations")} onPersonalize={() => setPersonalizingRole("operations")} /></div>}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
@@ -1149,34 +1155,6 @@ function ContactSyncPage({
     </section>
   );
 }
-
-function AccountManagement() {
-  const platforms = ["抖音", "小红书", "快手", "视频号"];
-
-  return (
-    <section className="page account-page">
-      <div className="page-head">
-        <div>
-          <h1>学员与账号</h1>
-          <p>只记录平台、账号标识、城市和授权状态；不保存密码、验证码、Cookie 或设备登录态。</p>
-        </div>
-      </div>
-      <div className="channel-account-grid">
-        {platforms.map((platform) => (
-          <article className="channel-account-card" key={platform}>
-            <div className="channel-account-icon"><UserRound size={22} /></div>
-            <div>
-              <strong>{platform}</strong>
-              <p>账号授权与发布能力</p>
-            </div>
-            <span>下一阶段</span>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 
 function FloatingTouchWindow() {
   const [touchTask, setTouchTask] = useState<TouchTaskState>(() => emptyTouchTask());
