@@ -53,14 +53,16 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-acquire-"));
   const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0, clicks: [], typed: [] };
   // How the platform behaves for likes, follows and comments in this world.
-  const ui = { liked: false, like: "ok", follow: "ok", comment: "ok", followLabel: "关注", covered: false, boxValue: "", target: "", ...act };
+  const ui = { liked: false, like: "ok", follow: "ok", comment: "ok", followLabel: "关注", covered: false, boxValue: "", target: "", shown: true, closedNote: "", posted: [], ...act };
   let captchaLeft = captchaPolls, emitJson = null, pending = null, previous = "", hung = null;
   const hour = 3_600_000, nowMs = Date.parse("2026-10-26T12:00:00Z"), started = Date.now();
   const commentsFor = (id) => ({ data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
     { commentId: `1${id.length}00000001`, authorId: "3xbuyer01", authorName: "买家A", content: "这个多少钱", timestamp: nowMs - hour },
     { commentId: `1${id.length}00000002`, authorId: id.endsWith("1") ? "3xauthor01" : "3xauthor02", authorName: "作者本人", content: "多少钱私信我", timestamp: nowMs - hour },
     { commentId: `1${id.length}00000003`, authorId: "3xold", authorName: "很久以前", content: "怎么买", timestamp: nowMs - 100 * 24 * hour },
-    { commentId: `1${id.length}00000004`, authorId: "3xchat", authorName: "路人", content: "拍得真好", timestamp: nowMs - hour }
+    { commentId: `1${id.length}00000004`, authorId: "3xchat", authorName: "路人", content: "拍得真好", timestamp: nowMs - hour },
+    // Our own comments, when the platform shows them.
+    ...ui.posted.filter((item) => item.videoId === id && ui.shown).map((item, i) => ({ commentId: `19000000${i}`, authorId: "3xme", authorName: "我", content: item.text, timestamp: nowMs }))
   ] } } });
   // The page's data only arrives once a verification is done, and never on a logged-out page.
   const deliver = (url) => {
@@ -105,9 +107,11 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
       if (kind === "like" && ui.like === "ok") { ui.liked = true; answer("https://www.kuaishou.com/graphql", "visionLikeComment", { data: { visionLikeComment: { result: 1 } } }, { commentId: ui.commentId || "" }); }
       if (kind === "like" && ui.like === "frequent") answer("https://www.kuaishou.com/graphql", "visionLikeComment", { data: { visionLikeComment: { result: 2, error_msg: "操作太频繁，请稍后再试" } } });
       if (kind === "follow" && ui.follow === "ok") { ui.followLabel = "已关注"; answer("https://www.kuaishou.com/rest/v/relation/follow", "", { result: 1, followStatus: 1 }); }
+      if (kind === "comment" && ui.comment === "ok") ui.posted.push({ videoId: previous, text: ui.boxValue });
       if (kind === "comment" && ui.comment === "ok") answer("https://www.kuaishou.com/graphql", "visionAddComment", { data: { visionAddComment: { result: 1 } } });
     },
     find: async () => ({ localName: "textarea" }),
+    call: async () => ui.closedNote,
     type: async (_node, value) => { log.typed.push(value); ui.boxValue = value; },
     valueOf: async () => ui.boxValue,
     front: async () => { log.fronts++; },
@@ -122,7 +126,7 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
   const make = () => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs + (Date.now() - started),
     launch: () => { log.launches++; return browser; }, makePage: () => page,
     capture: (_browser, _session, { match, onJson }) => { emitJson = (event) => { if (match(event.url, event.operation)) onJson(event); }; return { start: async () => {} }; },
-    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1 } });
+    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1, recheck: 1 } });
   const until = async (acq) => { for (let i = 0; i < 500; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
   // Leads as a finished run leaves them, found by the account ks1.
   const seed = (names) => {
@@ -288,7 +292,23 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     state = await w.until(acq);
     assert.deepEqual(state.actions.map((action) => action.target.videoId).sort(), ["3xvideo0001", "3xvideo0002"], "同一个视频不留第二次");
     assert.equal(state.today.ks1.comment, 2);
+    assert.ok(state.actions.every((action) => action.status === "done"), "重新打开视频能看到留言才算完成");
     await acq.dispose();
+    // 平台收下了但看不到：记成「发了但看不到」，两条之后整个任务停下。
+    const quiet = world({ act: { shown: false } }), hiding = quiet.make();
+    hiding.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机\n扫地机", texts: "厂家直供", maxComments: 5, maxVideos: 5 });
+    hiding.start(hiding.snapshot().tasks[0].id);
+    const hidden = await quiet.until(hiding);
+    assert.deepEqual(hidden.actions.map((action) => action.status), ["hidden", "hidden"]);
+    assert.match(hidden.runs[0].reason, /屏蔽/); assert.equal(hidden.today.ks1.comment, 2, "看不到的也算今天的用量");
+    await hiding.dispose();
+    // 只允许作者好友评论的视频：留言框是禁用的，不填也不点。
+    const friends = world({ act: { closedNote: "仅作者及作者好友可评论" } }), closedRun = friends.make();
+    closedRun.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机", texts: "厂家直供", maxComments: 1, maxVideos: 1 });
+    closedRun.start(closedRun.snapshot().tasks[0].id);
+    const closedState = await friends.until(closedRun);
+    assert.match(closedState.actions[0].reason, /仅作者及作者好友可评论/); assert.deepEqual(friends.log.typed, []); assert.deepEqual(friends.log.clicks, []);
+    await closedRun.dispose();
     // 重启：点下去还没确认的变成结果不明；没点的排队动作还在队里。
     const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
     saved.actions.unshift({ id: "a1", kind: "like", platform: "kuaishou", accountId: "ks1", leadId: "x", target: { videoId: "v" }, status: "running", clickedAt: "2026-10-26T12:00:00Z", reason: "" },

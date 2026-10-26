@@ -32,7 +32,7 @@ const nextMidnight = (ms) => { const date = new Date(ms); date.setHours(24, 0, 0
 // and an account the platform says is too busy rests until the next day.
 function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.acquireDriverFor, capture: makeCapture = captureResponses, makePage = pageFor,
   onChange = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
-  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, commentGapMin: 60_000, commentGapMax: 120_000, scroll: 600, ...timing };
+  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, commentGapMin: 60_000, commentGapMax: 120_000, scroll: 600, recheck: 8000, ...timing };
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -57,7 +57,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   let active = null, closed = false;
   const save = () => writeJsonAtomic(stateFile, state);
   const paused = (accountId) => Date.parse(state.pauses[accountId] || "") > now();
-  const used = (accountId, kind) => state.actions.filter((action) => action.accountId === accountId && action.kind === kind && action.clickedAt && ["running", "done", "unknown"].includes(action.status) && dayOf(Date.parse(action.clickedAt)) === dayOf(now())).length;
+  const used = (accountId, kind) => state.actions.filter((action) => action.accountId === accountId && action.kind === kind && action.clickedAt && ["running", "done", "unknown", "hidden"].includes(action.status) && dayOf(Date.parse(action.clickedAt)) === dayOf(now())).length;
   const room = (accountId, kind) => used(accountId, kind) < state.settings.caps[kind];
   function snapshot() {
     const today = {};
@@ -336,6 +336,9 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     if (control.shouldStop()) return;
     const box = await page.find((node) => node.localName === "textarea" && classes(node).includes("pl-textarea"));
     if (!box) return settleAction(session, action, { status: "failed", reason: "视频下没有留言框，可能关闭了评论。" });
+    // A video can allow comments from the author's friends only; its box is then disabled.
+    const closedNote = await page.call(box, "function () { return this.disabled ? String(this.placeholder || '这个视频不允许评论') : ''; }");
+    if (closedNote) return settleAction(session, action, { status: "failed", reason: `${closedNote}，没有发。` });
     await page.type(box, t.text);
     if (await page.valueOf(box) !== t.text) return settleAction(session, action, { status: "failed", reason: "留言没有完整填进去，没有发。" });
     const send = `document.querySelector(${JSON.stringify(`${acts.sendButton}:not([disabled])`)})`;
@@ -347,6 +350,17 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     const response = await session.answer(mark, (result) => acts.isCommentAdd(result.url, result.operation), "留言");
     // Without an answer, only our words near the top of the list, with the box emptied, count as sent.
     await confirm(session, control, action, response, () => page.evaluate(`!document.querySelector(${JSON.stringify(acts.commentBox)})?.value && [...document.querySelectorAll(".comment-list-item")].slice(0, 3).some((el) => (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "") === ${JSON.stringify(t.text.replace(/\s+/g, ""))})`));
+    if (action.status !== "done" || control.shouldStop()) return;
+    // Accepted is not shown: on 2026-10-26 five accepted comments were gone when the videos were
+    // opened again. So the video is opened afresh and the comment looked for in its list.
+    await sleep(wait.recheck);
+    const same = (value) => String(value || "").replace(/\s+/g, "") === t.text.replace(/\s+/g, "");
+    const fresh = await session.openVideo(t.videoId);
+    if (control.shouldStop()) return;
+    const shown = fresh.some((result) => result.comments.some((comment) => same(comment.text)))
+      || await page.evaluate(`[...document.querySelectorAll(".comment-list-item")].some((el) => (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "") === ${JSON.stringify(t.text.replace(/\s+/g, ""))})`);
+    if (!shown) Object.assign(action, { status: "hidden", reason: "平台收下了，但重新打开视频看不到这条留言，可能被当成广告屏蔽了。" });
+    session.update({});
   }
   async function perform(session, control, action) {
     Object.assign(action, { status: "running", reason: "" });
@@ -363,6 +377,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       else { settleAction(session, action, { status: "failed", reason: userMessage(error, "这一步没做成。") }); if (/LOGIN|VERIFY/.test(String(error?.code))) throw error; }
     }
     if (action.status === "done") control.run.sent += 1;
+    if (action.status === "hidden") control.run.hidden = (control.run.hidden || 0) + 1;
     if (["failed", "unknown"].includes(action.status)) control.run.failed += 1;
     session.update({});
   }
@@ -394,6 +409,8 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
         state.actions.unshift(action); commented.add(video.id);
         run.videos += 1;
         await perform(session, control, action);
+        // Comments the platform keeps out of sight mean the words or the pace look like advertising.
+        if ((run.hidden || 0) >= 2) { control.rest = "已有 2 条留言发出后看不到，可能被平台当成广告屏蔽了。先停下，建议换个说法、少发几条。"; break; }
       }
     }
   }

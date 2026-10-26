@@ -10,11 +10,11 @@ const DAYS = [[1, "1 天内"], [7, "7 天内"], [30, "30 天内"], [90, "90 天�
 const RUN_STATUS: Record<string, string> = { running: "运行中", needs_user: "等你验证", done: "已完成", stopped: "已停下", failed: "没完成" };
 const LEAD_STATUS: Record<AcquireLead["status"], string> = { new: "新线索", contacted: "已联系", ignored: "已忽略" };
 const ACTION_NAME: Record<AcquireActionKind, string> = { like: "点赞", follow: "关注", comment: "留言" };
-const ACTION_STATUS: Record<AcquireAction["status"], string> = { queued: "排队中", running: "进行中", done: "已完成", failed: "没成功", unknown: "结果不明", cancelled: "已取消" };
+const ACTION_STATUS: Record<AcquireAction["status"], string> = { queued: "排队中", running: "进行中", done: "已完成", failed: "没成功", unknown: "结果不明", cancelled: "已取消", hidden: "发了但看不到" };
 const emptyTask = (accountId = "", mode: AcquireTaskInput["mode"] = "collect"): AcquireTaskInput => ({ name: "", mode, platform: "kuaishou", accountId, keywords: "", intentWords: "", days: 30, maxVideos: 10, allComments: false, skipAuthor: true, texts: "", maxComments: 5 });
 const when = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日`; };
 const clock = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
-const runLine = (run: AcquireRun) => run.kind === "comment" ? `看了 ${run.videos} 个视频 · 留言 ${run.sent || 0} 条` : run.kind === "actions" ? `做完 ${run.sent || 0} 个 · 没成功 ${run.failed || 0} 个` : `${run.videos} 个视频 · 找到 ${run.leads} 条线索`;
+const runLine = (run: AcquireRun) => run.kind === "comment" ? `看了 ${run.videos} 个视频 · 留言显示 ${run.sent || 0} 条${run.hidden ? ` · 发了但看不到 ${run.hidden} 条` : ""}` : run.kind === "actions" ? `做完 ${run.sent || 0} 个 · 没成功 ${run.failed || 0} 个` : `${run.videos} 个视频 · 找到 ${run.leads} 条线索`;
 
 // 关键词获客：按关键词搜视频、读评论，把有购买意向的人整理成线索；可以给线索的评论点赞、关注线索，
 // 也可以在同行视频下留言。每个动作都有每天上限，平台提示频繁就停到明天，结果不明的不会自动重做。
@@ -247,7 +247,7 @@ export function AcquisitionPage() {
       <ul className="acq-tasks">{commentRecords.map((action) => <li key={action.id}>
         <MessageSquare size={20} />
         <div className="acq-task-copy"><b>「{action.target.text}」</b><span>{accountName(action.accountId)} · 视频：{action.target.videoTitle || action.target.videoId}</span>
-          <small className={`is-${action.status === "done" ? "done" : action.status === "failed" ? "failed" : "running"}`}>{ACTION_STATUS[action.status]}{action.clickedAt ? ` · ${clock(action.clickedAt)}` : ""}{action.reason ? ` · ${action.reason}` : ""}</small></div>
+          <small className={`is-${action.status === "done" ? "done" : action.status === "failed" || action.status === "hidden" ? "failed" : "running"}`}>{ACTION_STATUS[action.status]}{action.clickedAt ? ` · ${clock(action.clickedAt)}` : ""}{action.reason ? ` · ${action.reason}` : ""}</small></div>
         <div className="acq-task-actions"><button type="button" className="acq-mini" onClick={() => api && void run(`open-${action.id}`, () => api.openLead(action.id))}><ExternalLink size={14} />看视频</button></div>
       </li>)}</ul>
     </section>}

@@ -4,12 +4,12 @@ export type AcquireTask = {
   mode?: "collect" | "comment"; texts?: string[]; maxComments?: number;
   createdAt: string; updatedAt: string; lastRunAt: string;
 };
-export type AcquireRun = { id: string; kind?: "collect" | "comment" | "actions"; taskId: string; accountId?: string; accountLabel?: string; status: "running" | "needs_user" | "done" | "stopped" | "failed"; detail: string; videos: number; comments: number; leads: number; sent?: number; failed?: number; reason: string; startedAt: string; finishedAt: string };
+export type AcquireRun = { id: string; kind?: "collect" | "comment" | "actions"; taskId: string; accountId?: string; accountLabel?: string; status: "running" | "needs_user" | "done" | "stopped" | "failed"; detail: string; videos: number; comments: number; leads: number; sent?: number; failed?: number; hidden?: number; reason: string; startedAt: string; finishedAt: string };
 export type AcquireActionKind = "like" | "follow" | "comment";
 export type AcquireAction = {
   id: string; kind: AcquireActionKind; platform: string; accountId: string; leadId?: string; taskId?: string;
   target: { videoId: string; videoTitle?: string; videoUrl?: string; commentId?: string; userId?: string; userName?: string; comment?: string; text?: string };
-  status: "queued" | "running" | "done" | "failed" | "unknown" | "cancelled"; reason: string; already: boolean; createdAt: string; clickedAt: string; finishedAt: string;
+  status: "queued" | "running" | "done" | "failed" | "unknown" | "cancelled" | "hidden"; reason: string; already: boolean; createdAt: string; clickedAt: string; finishedAt: string;
 };
 export type AcquireCaps = Record<AcquireActionKind, number>;
 export type AcquireToday = Record<string, Record<AcquireActionKind, number> & { pausedUntil: string }>;
