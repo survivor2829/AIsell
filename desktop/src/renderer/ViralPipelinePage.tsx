@@ -36,6 +36,29 @@ function ViralCard({ item, onImitate, onOneClick, oneClickBlocked, estimate, que
   );
 }
 
+const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
+
+// 内部：把最近一次扒取的前几条改写进文案库，再导出成待发布文件（之后由我们上传到云端）。
+function LibraryTools({ jobs, onError }: { jobs: ViralJob[]; onError: (message: string) => void }) {
+  const [limit, setLimit] = useState(10), [busy, setBusy] = useState(false), [exported, setExported] = useState('');
+  const library = jobs.filter((j) => j.mode === 'library');
+  const done = library.filter((j) => j.status === 'done').length, waiting = library.filter((j) => ['queued', 'running'].includes(j.status)).length;
+  async function run(work: () => Promise<void>) { setBusy(true); try { await work(); } catch (error) { onError((error as Error).message); } finally { setBusy(false); } }
+  return (
+    <section className="vp-panel vp-filters" aria-label="文案库（内部）">
+      <div className="vp-filter-row"><b>文案库</b>
+        <span className="vp-muted">已改写 {done} 条{waiting ? `，还有 ${waiting} 条在处理` : ''}</span><span className="vp-spacer" />
+        <label className="vp-cap">前 <input type="number" min={1} max={30} value={limit} onChange={(event) => setLimit(Math.max(1, Math.min(30, Number(event.target.value) || 1)))} /> 条</label>
+        <button type="button" className="dh-button" data-xiaoxi-digital-human-action="reference-viral-library-build" disabled={busy}
+          onClick={() => void run(async () => { await unwrap(referenceApi().viralLibraryBuild({ limit })); })}>改写进文案库</button>
+        <button type="button" className="dh-button is-primary" disabled={busy || !done}
+          onClick={() => void run(async () => { const r = await unwrap(referenceApi().viralLibraryExport()); setExported(`已导出 ${r.items} 条（扒到 ${r.collected} 条）：${r.file}`); })}>导出文案库</button>
+      </div>
+      {exported && <p className="vp-muted">{exported}</p>}
+    </section>
+  );
+}
+
 export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (reference: NarrationReference) => void; onManagePerson: () => void }) {
   const [industries, setIndustries] = useState<string[]>(['cleaning', 'property', 'factory']);
   const [platforms, setPlatforms] = useState<string[]>(['douyin', 'xiaohongshu']);
@@ -107,6 +130,7 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
       {notice && <p className="dh-message" role="status">{notice}</p>}
       <div className="vp-layout">
         <div className="vp-main">
+          {DEVELOPMENT_EDITION && <LibraryTools jobs={jobs} onError={setError} />}
           <section className="vp-panel vp-filters" aria-label="扒取方向">
             <div className="vp-filter-row"><b>行业</b>
               {presets.industries.map((item) => <button type="button" key={item.id} className="vp-chip" aria-pressed={industries.includes(item.id)} disabled={scanning} onClick={() => setIndustries(toggle(industries, item.id))}>{industries.includes(item.id) ? '✓ ' : ''}{item.name}</button>)}

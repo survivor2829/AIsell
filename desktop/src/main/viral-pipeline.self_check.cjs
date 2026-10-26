@@ -206,6 +206,42 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.deepEqual([w.calls.download, w.calls.asr.length, w.calls.write.length], [0, 0, 0]);
     await pipeline.close();
   }
+  // 12. 客户从文案库选原创稿：不识别、不写稿，直接配音和数字人；同一条不重复出片
+  {
+    const w = world(), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const libraryItem = { id: '7400000000000000001', platform: 'douyin', title: '买还是租？算完这笔账', script: '你还在为夜班保洁排不开人发愁吗？先看地面材质。', emphasisPhrases: ['地面材质', '不存在'],
+      source: { title: '原爆款标题', author: '保洁老周', url: 'https://www.douyin.com/video/7400000000000000001', likes: 83900 } };
+    const job = pipeline.startFromScript({ libraryItem, assetId: 'rha_1', industry: '清洁设备渠道商', business: '', maxCny: 6 });
+    assert.equal(job.mode, 'script');
+    const done = await until(pipeline, job.id, ['done', 'failed']);
+    assert.equal(done.status, 'done', done.error);
+    assert.deepEqual([w.calls.download, w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [0, 0, 0, 1, 1]);
+    const task = w.tasks.get(done.taskId);
+    assert.equal(task.input.script, libraryItem.script, '照着客户选的原创稿出片');
+    assert.deepEqual(task.input.emphasisPhrases, ['地面材质']);
+    assert.equal(pipeline.startFromScript({ libraryItem, assetId: 'rha_1', maxCny: 6 }).id === job.id, false, '做完可以再做一条');
+    assert.throws(() => pipeline.startFromScript({ libraryItem: { ...libraryItem, script: 'x'.repeat(501) }, assetId: 'rha_1' }), { code: 'viral_item_invalid' });
+    assert.throws(() => pipeline.startFromScript({ libraryItem: { ...libraryItem, id: '../x' }, assetId: 'rha_1' }), { code: 'viral_item_invalid' });
+    await pipeline.close();
+  }
+  {
+    const w = world({ consented: false }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    assert.throws(() => pipeline.startFromScript({ libraryItem: { id: '1', platform: 'douyin', title: 't', script: 's' }, assetId: 'rha_1' }), { code: 'viral_voice_consent' });
+    await pipeline.close();
+  }
+  // 13. 内部做文案库：只提取和改写就停，不建口播任务；不需要声音授权
+  {
+    const w = world({ consented: false }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const job = pipeline.start({ item: item('7400000000000000001'), assetId: 'rha_1', industry: '清洁设备渠道商', business: '', mode: 'library' });
+    const done = await until(pipeline, job.id, ['done', 'failed']);
+    assert.equal(done.status, 'done', done.error);
+    assert.deepEqual([w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [1, 1, 0, 0]);
+    assert.deepEqual(pipeline.libraryScripts().map((s) => s.sourceId), ['7400000000000000001']);
+    const again = pipeline.start({ item: item('7400000000000000001'), assetId: 'rha_1', industry: '清洁设备渠道商', business: '', mode: 'library' });
+    assert.equal(again.id, job.id, '已改写好的再点一次不重新花钱');
+    assert.deepEqual([w.calls.asr.length, w.calls.write.length], [1, 1]);
+    await pipeline.close();
+  }
   // 输入校验
   {
     const w = world(), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });

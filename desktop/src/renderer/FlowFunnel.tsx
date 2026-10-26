@@ -5,7 +5,7 @@ import './FlowFunnel.css';
 // 通用流图：线条和光点全部由调用方给的真实数据驱动。
 // 新出现一条内容、或者一条内容有了去向，就沿它的线流过一个光点；没有新事件时画面静止。
 type Rgb = [number, number, number];
-type Engine = { setStrands(next: FlowStrand[]): void; setFocus(index: number | null): void; setOutput(label: string, note: string): void; destroy(): void };
+type Engine = { setStrands(next: FlowStrand[]): void; setFocus(index: number | null): void; setOutput(label: string, note: string): void; setAmbient(on: boolean): void; destroy(): void };
 
 function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTMLDivElement): Engine {
   const ctx = canvas.getContext('2d')!, base = document.createElement('canvas'), bctx = base.getContext('2d')!;
@@ -17,7 +17,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
   let strands: FlowStrand[] = [], L: FlowLayout | null = null, index = new Map<string, number>(), dpr = 1;
   let pulses: { id: string; x: number; v: number }[] = [], pending: string[] = [], acc = 0, last = 0;
   let introAt = -1e9, glowAt = -1e9, hover: { line: number | null; bundle: number | null } | null = null, focus: number | null = null;
-  let output = { label: '', note: '' }, raf = 0, visible = true, alive = true;
+  let output = { label: '', note: '' }, raf = 0, visible = true, alive = true, ambient = false;
   const INTRO = 1200;
 
   function trace(c: CanvasRenderingContext2D, ys: Float32Array, a: number, b: number) {
@@ -53,9 +53,10 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
       trace(c, l.ys, 0, Math.min(l.end, L.gate)); c.strokeStyle = rgba(C.ink, a); c.stroke();
       if (!b) continue;
       trace(c, l.ys, L.gate, l.end);
-      if (b.pass) c.strokeStyle = rgba(C.accent, 0.4);
+      // 单独一条进文案库的线画粗一点，几束合拢时看得清。
+      if (b.pass) { c.lineWidth = b.members.length === 1 ? 2.4 : 1; c.strokeStyle = rgba(C.accent, b.members.length === 1 ? 0.7 : 0.4); }
       else { const g = c.createLinearGradient(L.gate, 0, l.end, 0); g.addColorStop(0, rgba(C.ink, a)); g.addColorStop(1, rgba(C.ink, 0)); c.strokeStyle = g; }
-      c.stroke();
+      c.stroke(); c.lineWidth = 1;
     }
     // 闸门：判定前是一条淡线；判定后只在通过的几束处留口。
     c.lineWidth = 1; c.strokeStyle = rgba(C.line, L.decided ? 1 : 0.6); c.beginPath();
@@ -64,7 +65,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
     for (const [t, bottom] of holes) { c.moveTo(L.gate, y); c.lineTo(L.gate, t); y = bottom; }
     c.moveTo(L.gate, y); c.lineTo(L.gate, L.h * 0.95); c.stroke();
     for (const [t, bottom] of holes) for (const yy of [t, bottom]) { c.beginPath(); c.moveTo(L.gate - 4, yy); c.lineTo(L.gate + 4, yy); c.stroke(); }
-    if (holes.length) { c.beginPath(); c.moveTo(L.xo, L.outY); c.lineTo(L.icon.x, L.outY); c.lineWidth = 1.6; c.strokeStyle = rgba(C.accent, 0.95); c.stroke(); }
+    if (holes.length) { c.beginPath(); c.moveTo(L.xo, L.outY); c.lineTo(L.icon.x, L.outY); c.lineWidth = Math.min(5, 1.6 + holes.length * 0.6); c.strokeStyle = rgba(C.accent, 0.95); c.stroke(); }
     drawIcon(c, 0);
     c.save(); c.globalCompositeOperation = 'destination-out';
     const fw = Math.min(64, L.w * 0.06), g = c.createLinearGradient(0, 0, fw, 0);
@@ -124,7 +125,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
       for (let i = 0; i < 4; i += 1) if (i !== focus) ctx.fillRect(L.w * FLOW_STAGE_X[i], 0, L.w * (FLOW_STAGE_X[i + 1] - FLOW_STAGE_X[i]), L.h);
     }
   }
-  const busy = (now: number) => pulses.length > 0 || pending.length > 0 || now - introAt < INTRO || now - glowAt < 900;
+  const busy = (now: number) => ambient || pulses.length > 0 || pending.length > 0 || now - introAt < INTRO || now - glowAt < 900;
   function tick(now: number) {
     raf = 0;
     if (!L || !alive) return;
@@ -133,7 +134,14 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
       // 一次来很多条（比如扒完统一判定）时加快放行，几秒内流完。
       const rate = Math.max(8, pending.length / 2.5);
       for (acc += dt * rate; acc >= 1 && pending.length && pulses.length < 90; acc -= 1) pulses.push({ id: pending.shift()!, x: -Math.random() * 30, v: L.w * (0.26 + Math.random() * 0.08) });
-      if (!pending.length) acc = 0;
+      // 常驻流动：没有新事件时，也沿真实的线持续流过光点（偶尔走通过的线），画面一直是活的。
+      if (ambient && !pending.length && L.lines.length) {
+        const passing = L.lines.flatMap((l, i) => L!.bundles[l.bundle]?.pass ? [i] : []);
+        for (acc += dt * (L.w >= 900 ? 6 : 4); acc >= 1 && pulses.length < 60; acc -= 1) {
+          const i = passing.length && Math.random() < 0.15 ? passing[Math.floor(Math.random() * passing.length)] : Math.floor(Math.random() * L.lines.length);
+          pulses.push({ id: L.lines[i].strand.id, x: -Math.random() * 30, v: L.w * (0.12 + Math.random() * 0.06) });
+        }
+      } else if (!pending.length) acc = 0;
       const keep = [];
       for (const p of pulses) {
         const i = index.get(p.id);
@@ -198,6 +206,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
     },
     setFocus(value) { focus = value; redraw(); },
     setOutput(label, note) { output = { label, note }; },
+    setAmbient(on) { ambient = on && !reduce; schedule(); },
     destroy() {
       alive = false; if (raf) cancelAnimationFrame(raf);
       host.removeEventListener('pointermove', onMove); host.removeEventListener('pointerleave', onLeave);
@@ -206,8 +215,9 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
   };
 }
 
-export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote = '', emptyText, height = 240 }: {
+export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote = '', emptyText, height = 240, ambient = false, summary }: {
   strands: FlowStrand[]; stages: FlowStage[]; live?: string; outputLabel?: string; outputNote?: string; emptyText: string; height?: number;
+  ambient?: boolean; summary?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null), canvasRef = useRef<HTMLCanvasElement>(null), tipRef = useRef<HTMLDivElement>(null);
   const engine = useRef<Engine | null>(null);
@@ -221,6 +231,7 @@ export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote
   useEffect(() => { engine.current?.setOutput(outputLabel, outputNote); }, [outputLabel, outputNote]);
   useEffect(() => { engine.current?.setStrands(strands); }, [strands]);
   useEffect(() => { engine.current?.setFocus(focus); }, [focus]);
+  useEffect(() => { engine.current?.setAmbient(ambient); }, [ambient]);
   return (
     <div className="flow-funnel">
       <div className="flow-funnel-canvas" ref={hostRef} style={{ height }}>
@@ -229,6 +240,8 @@ export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote
         {!strands.length && <p className="flow-funnel-empty">{emptyText}</p>}
         {live && <span className="flow-funnel-live"><i />{live}</span>}
       </div>
+      {summary ? <div className="flow-funnel-summary">{stages.map((stage, i) => <span key={stage.no} className={stage.accent ? 'accent' : ''}>
+        {i > 0 && <i aria-hidden="true">→</i>}{stage.label}<b>{stage.value === null ? '—' : stage.value.toLocaleString('zh-CN')}</b>{stage.unit}</span>)}</div> :
       <div className={`flow-funnel-stages${focus !== null ? ' focusing' : ''}`}>
         {stages.map((stage, i) => (
           <div key={stage.no} className={`flow-funnel-stage${focus === i ? ' on' : ''}`} onPointerEnter={() => setFocus(i)} onPointerLeave={() => setFocus(null)}>
@@ -237,7 +250,7 @@ export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote
             {stage.note && <div className="flow-funnel-d">{stage.note}</div>}
           </div>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }
