@@ -18,7 +18,7 @@ const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'reference-viral-scan', 'reference-viral-stop',
   'reference-viral-pipeline-start', 'reference-viral-pipeline-list', 'reference-viral-pipeline-retry', 'reference-viral-pipeline-remove', 'reference-viral-pipeline-cover',
   'reference-viral-library', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-export',
-  'reference-viral-library-publish', 'reference-viral-library-publish-token',
+  'reference-viral-library-publish', 'reference-viral-library-publish-token', 'reference-viral-library-remove',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
@@ -35,6 +35,21 @@ function registerDigitalHumanIpc(options = {}) {
   // 最近一次扒取结果：内部发布文案库时用来画流图，重启后从磁盘读回。
   const scanFile = options.rootDir ? path.join(options.rootDir, 'viral-library', 'last-scan.json') : null;
   let lastScan = null;
+  // 运营发布、拆结构、删除都用发布密钥直接调网关的运营接口，不用客户会话。
+  async function operatorPost(route, body) {
+    const token = publishToken.read();
+    const client = options.gatewayClient;
+    if (!client?.isEnabled?.()) throw fail('viral_library_gateway_unavailable', '统一 AI 服务没有连接，不能发布。');
+    const response = await client.fetch(client.url(route), { method: 'POST', operatorToken: token, headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body), timeoutMs: 240000, maxBytes: 64 * 1024 });
+    let result = null;
+    try { result = await response.json(); } catch { /* 下面按状态码报错 */ }
+    if (response.status === 401) throw fail('viral_library_publish_token_invalid', '发布密钥不对，请重新填写。');
+    if (response.status === 404 && result?.error === 'not_found') throw fail('viral_library_publish_unavailable', '云端还没有开通这个功能，请先部署网关。');
+    if (response.status === 422) throw fail('viral_library_would_be_empty', '不能把文案库删空或全部去掉，客户那边至少要留一条。');
+    if (!response.ok || !result?.ok) throw fail('viral_library_publish_failed', `云端没有接收（${response.status}${result?.error ? ` ${result.error}` : ''}）`);
+    return result;
+  }
   // 运营发布密钥：用 Windows 当前用户加密后存在数字人目录里。
   const publishTokenFile = options.rootDir ? path.join(options.rootDir, 'viral-library', 'publish-token.bin') : null;
   const secure = () => options.safeStorage || require('electron').safeStorage;
@@ -181,29 +196,25 @@ function registerDigitalHumanIpc(options = {}) {
     // 拆结构是我们内部的 AI 花费，不扣客户额度；一轮失败的条目留着下次发布时再拆。
     'reference-viral-library-publish': async () => {
       if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
-      const token = publishToken.read();
       const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
       const library = buildLibrary({ scan, transcripts: pipelineReady().libraryTranscripts() });
-      const client = options.gatewayClient;
-      if (!client?.isEnabled?.()) throw fail('viral_library_gateway_unavailable', '统一 AI 服务没有连接，不能发布。');
-      const post = async (route, body) => {
-        const response = await client.fetch(client.url(route), { method: 'POST', operatorToken: token, headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(body), timeoutMs: 240000, maxBytes: 64 * 1024 });
-        let result = null;
-        try { result = await response.json(); } catch { /* 下面按状态码报错 */ }
-        if (response.status === 401) throw fail('viral_library_publish_token_invalid', '发布密钥不对，请重新填写。');
-        if (response.status === 404) throw fail('viral_library_publish_unavailable', '云端还没有开通文案库发布，请先部署网关并配置发布密钥。');
-        if (!response.ok || !result?.ok) throw fail('viral_library_publish_failed', `云端没有接收（${response.status}${result?.error ? ` ${result.error}` : ''}）`);
-        return result;
-      };
-      const published = await post('/viral-library/publish', library);
-      let structured = 0, missing = published.missingStructure;
+      const published = await operatorPost('/viral-library/publish', library);
+      // 拆结构时 AI 会顺便判断是不是一个人能讲的口播（歌词、多人剧情、纯画面解说会被拿掉）；一轮既没拆成也没拿掉就停。
+      let structured = 0, rejected = 0, missing = published.missingStructure;
       for (let round = 0; missing > 0 && round < 200; round += 1) {
-        const step = await post('/viral-library/structure', { limit: 8 });
-        structured += step.structured; missing = step.missingStructure;
-        if (!step.structured) break;
+        const step = await operatorPost('/viral-library/structure', { limit: 8 });
+        structured += step.structured; rejected += step.rejected || 0; missing = step.missingStructure;
+        if (!step.structured && !step.rejected) break;
       }
-      return { sent: library.items.length, added: published.added, updated: published.updated, total: published.total, structured, missingStructure: missing };
+      return { sent: library.items.length, added: published.added, updated: published.updated, skipped: published.skipped || 0, total: published.total - rejected, structured, rejected, missingStructure: missing };
+    },
+    // 内部（只在开发版）：从云端文案库删掉不合适的条目；删掉的以后重新发布也不会再加回来。
+    'reference-viral-library-remove': async (payload) => {
+      if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
+      assertKeys(payload, ['ids']);
+      if (!Array.isArray(payload.ids) || !payload.ids.length || payload.ids.length > 50 || !payload.ids.every((id) => /^[A-Za-z0-9]{1,64}$/u.test(String(id)))) throw fail('viral_library_remove_invalid', '请选择要删除的爆款。');
+      const result = await operatorPost('/viral-library/remove', { ids: payload.ids.map(String) });
+      return { removed: result.removed, total: result.total };
     },
     'reference-viral-pipeline-retry': (payload) => pipelineReady().retry(jobId(payload)),
     'reference-viral-pipeline-remove': (payload) => pipelineReady().remove(jobId(payload)),

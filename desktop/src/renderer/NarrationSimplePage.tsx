@@ -133,6 +133,13 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
     setDrafts((all) => ({ ...all, [item.id]: { id: item.id, platform: item.platform, title: result.title, script: result.script, emphasisPhrases: result.emphasisPhrases, seconds, problems: result.problems || [] } }));
     if (typeof result.quota?.remaining === 'number') setQuotaLeft(result.quota.remaining);
   });
+  // 开发版：把不适合口播的爆款从云端文案库删掉（以后重新发布也不会再加回来），删完重新读取。
+  const removeFromLibrary = () => act('remove', async () => {
+    if (!pick || !window.confirm(`从云端文案库删除「${pick.title}」？
+所有客户都会看不到这条，以后重新发布也不会再加回来。`)) return;
+    await unwrap(api().viralLibraryRemove({ ids: [pick.id] }));
+    setSelected(''); setLibraryTry((n) => n + 1);
+  });
   const go = () => act('go', async () => {
     if (!draft || !person) return;
     const { seconds: _seconds, problems: _problems, ...libraryItem } = draft;
@@ -172,6 +179,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
               title={s > longest ? `你的视频只有 ${longest} 秒，想要 ${s} 秒请换一段更长的视频` : ''} onClick={() => setWant(s)}>{s} 秒</button>))}</div>}
           {pick && <button type="button" className={`ns-go${draft ? ' is-quiet' : ''}`} data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy || want > longest}
             onClick={() => void write()}>{busy.startsWith('write:') ? (draft ? '正在换…' : '正在仿写…') : draft ? '换一篇' : '仿写'}</button>}
+          {DEVELOPMENT_EDITION && pick && !library?.preview && !library?.offline && <button type="button" className="ns-go is-quiet" disabled={!!busy} onClick={() => void removeFromLibrary()}>从文案库删除</button>}
           {draft && <button type="button" className="ns-go" disabled={!!busy} onClick={() => setPage('upload')}>下一步</button>}
         </div>{error && <p className="ns-error" role="alert">{error}</p>}</div>
       </> : <>

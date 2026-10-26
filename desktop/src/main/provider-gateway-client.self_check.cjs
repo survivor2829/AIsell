@@ -89,6 +89,8 @@ async function main() {
   assert.equal(calls[3].headers.Authorization, "Bearer operator-token");
   await assert.rejects(client.fetch(client.url("/deepseek/chat/completions"), { method: "POST", operatorToken: "operator-token", body: "{}" }), { code: "GATEWAY_ROUTE_INVALID" });
   assert.equal(calls.length, 4);
+  await client.fetch(client.url("/viral-library/remove"), { method: "POST", operatorToken: "operator-token", body: "{}" });
+  assert.equal(calls[4].headers.Authorization, "Bearer operator-token");
 
   const missing = createProviderGatewayClient({
     config: { enabled: true, origin: "https://gateway.test" },
