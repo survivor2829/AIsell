@@ -761,6 +761,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getGeneratedVideo: (id) => contentEngineController.getGeneratedVideo(id),
       // 爆款一键成片：成片文件路径、本地大字封面字体（缺字体时只影响封面）、完成提醒
       resolveGeneratedVideoPath: (id) => contentEngineController.resolveGeneratedVideoPath(id, "video"),
+      developmentEdition,
       coverFontFile: (() => { try { return app.isPackaged ? resolveContentEngineBundledFont(contentEngineRuntimePath()) : path.join(__dirname, "..", "..", "sidecars", "content-engine", "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf"); } catch { return undefined; } })(),
       notify: (title, body) => { try { if (Notification.isSupported()) new Notification({ title, body: String(body || "").slice(0, 120) }).show(); } catch { /* 提醒失败不影响任务 */ } },
       generateCover: async (id, design, control) => { await beforeContentProviderWork(['apimart']); return contentEngineController.regenerateCover(id, design, control); },
