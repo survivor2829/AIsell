@@ -12,7 +12,7 @@ export type NarrationPlan = {
   soundEvents: { startMs: number; sound: string; gain: number }[];
   variant?: { palette: string; accent: string; transition: 'flash' | 'iris' | 'push'; rhythm: string };
   camera?: { focusX: number; focusY: number; shots: { startMs: number; scale: number }[] };
-  stickers?: { text: string; startMs: number; endMs: number; side: 'left' | 'right'; top: number; width: number; fontSize: number; rotate: number }[];
+  stickers?: { text: string; startMs: number; endMs: number; side: 'left' | 'right' | 'top'; top: number; width: number; fontSize: number; rotate: number }[];
 };
 
 // 只在词与词之间换行：词边界插入零宽空格，再配合 keep-all 禁止在词中间断开。
@@ -36,9 +36,10 @@ function Sticker({ sticker, nowMs, accent }: { sticker: NonNullable<NarrationPla
   const elapsed = nowMs - sticker.startMs, left = sticker.endMs - nowMs;
   const pop = 1 - .35 * Math.exp(-elapsed / 120) * Math.cos(elapsed / 55);
   const fade = Math.min(1, left / 200, elapsed / 90);
-  const chars = Array.from(sticker.text), perLine = Math.min(chars.length, 4);
+  // 头顶上方的花字一行放下；脸旁边的窄，超过 4 个字分两行。
+  const chars = Array.from(sticker.text), perLine = sticker.side === 'top' ? chars.length : Math.min(chars.length, 4);
   const lines = chars.length > perLine ? [chars.slice(0, Math.ceil(chars.length / 2)).join(''), chars.slice(Math.ceil(chars.length / 2)).join('')] : [sticker.text];
-  return <div style={{ position: 'absolute', top: sticker.top, width: sticker.width, ...(sticker.side === 'left' ? { left: 18 } : { right: 18 }),
+  return <div style={{ position: 'absolute', top: sticker.top, width: sticker.width, ...(sticker.side === 'left' ? { left: 18 } : sticker.side === 'right' ? { right: 18 } : { left: (1080 - sticker.width) / 2 }),
     display: 'flex', justifyContent: 'center', opacity: fade, transform: `rotate(${sticker.rotate + Math.sin(elapsed / 260) * 1.2}deg) scale(${pop})` }}>
     <div style={{ padding: '10px 16px 14px', borderRadius: 16, background: '#111a', border: `5px solid ${accent}`, boxShadow: '0 10px 24px #0008',
       fontFamily: '"Narration Sans", "Microsoft YaHei", sans-serif', fontWeight: 900, fontSize: sticker.fontSize, lineHeight: 1.12, color: accent,
@@ -72,7 +73,7 @@ export function NarrationLayoutV4({ styleId, title, cues, nowMs, emphasis = [], 
     <div style={{ position: 'absolute', left: 0, right: 0,
       ...(layout.bottom < 1000 ? { top: 0, height: layout.bottom + 50, background: `linear-gradient(rgba(6,12,10,${minimal ? '.32' : '.55'}),rgba(6,12,10,.28) 80%,transparent)` }
         : { top: Math.max(1050, layout.top - 120), bottom: 0, background: `linear-gradient(transparent,rgba(6,12,10,${minimal ? '.32' : '.55'}) 48%,rgba(6,12,10,.22))` }) }} />
-    {layout.showTitle && <div style={{ ...body, position: 'absolute', top: layout.titleTop, left: layout.left, width: layout.width,
+    {layout.showTitle && !(plan?.stickers || []).some(s => s.side === 'top' && nowMs >= s.startMs - 150 && nowMs < s.endMs + 150) && <div style={{ ...body, position: 'absolute', top: layout.titleTop, left: layout.left, width: layout.width,
       transform: `translateY(${(1 - titleEnter) * -12}px)`, opacity: .8 + titleEnter * .2 }}>
       {minimal ? <div style={{ display: 'inline-block', maxWidth: 820, padding: '15px 24px', borderRadius: 10, background: '#12221dde',
         fontSize: 48, fontWeight: 750, lineHeight: 1.25, textWrap: 'balance' }}>{title}</div>

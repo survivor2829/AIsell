@@ -61,7 +61,16 @@ for (const s of quoted.stickers) {
   assert.ok(s.width <= .3 * 1080, '花字宽度不超过脸旁边的空位');
   assert.equal(quoted.pages.find((p) => p.startMs === s.startMs).emphasisMode, 'inline', '同屏字幕只做行内高亮，不重复放大');
 }
-assert.deepEqual(plan.buildPlan({ id: 'rh_w', script, emphasisPhrases: ['干满八小时'] }, { ...visual, union: { x: .15, right: .85, y: .12, bottom: .6 } }, cues).stickers, []);
+// 脸晃动范围很宽、两边放不下时，放到头顶上方（占用标题的位置），按当时镜头放大后的头顶算，不压脸
+const wide = plan.buildPlan({ id: 'rh_w', script, emphasisPhrases: ['干满八小时', '按这三点去比'] }, { ...visual, union: { x: .15, right: .85, y: .22, bottom: .6 } }, cues);
+assert.ok(wide.stickers.length >= 1 && wide.stickers.every((s) => s.side === 'top'));
+for (const s of wide.stickers) {
+  const scale = wide.camera.shots.reduce((v, shot) => shot.startMs <= s.startMs ? shot.scale : v, 1);
+  const headTop = (wide.camera.focusY + (.22 - wide.camera.focusY) * scale) * 1920;
+  assert.ok(s.top + s.fontSize * 1.12 + 40 <= headTop, '头顶上方的花字不碰到头');
+}
+// 头顶也没空（脸几乎顶到画面上沿）就不放
+assert.deepEqual(plan.buildPlan({ id: 'rh_n', script, emphasisPhrases: ['干满八小时'] }, { ...visual, union: { x: .15, right: .85, y: .08, bottom: .6 } }, cues).stickers, []);
 
 // 5. 校验：坏的组合、越界的镜头和花字都不放行
 assert.throws(() => plan.validatePlan({ ...quoted, variant: { ...quoted.variant, palette: 'neon' } }, quoted.templateId));

@@ -131,20 +131,34 @@ function cameraPlan(displayPages, visual, layout, rhythm) {
   return { focusX: +focusX.toFixed(4), focusY: +focusY.toFixed(4), shots };
 }
 
-// 花字：挑 1～2 个重点词，斜放在脸旁边空着的一侧；两边都太窄就不放，绝不压脸。
-function stickerPlan(displayPages, visual) {
+// 花字：挑 1～2 个重点词放在脸外的空白处：脸旁边够宽就斜放在一侧，否则放在头顶和标题之间。
+// 位置按那一刻镜头的放大倍数算（推近时脸变大，空白变小）。放在头顶时，花字出现的这一两秒顶部标题让出来。
+// 哪里都放不下就跳过这个词，绝不压脸。
+function stickerPlan(displayPages, visual, camera, ceiling) {
   const union = visual.union;
   if (!union || ![union.x, union.right, union.y, union.bottom].every(Number.isFinite)) return [];
-  const rooms = [{ side: 'left', width: union.x * 1080 }, { side: 'right', width: (1 - union.right) * 1080 }].filter(r => r.width >= 250);
-  if (!rooms.length) return [];
-  const centerY = Math.round((union.y + union.bottom) / 2 * 1920);
+  const shotScale = (ms) => camera.shots.reduce((scale, shot) => shot.startMs <= ms ? shot.scale : scale, camera.shots[0]?.scale || 1);
   const stickers = []; let last = -Infinity;
   for (const page of displayPages) {
     if (stickers.length >= 2 || !page.phrase || page.endMs - page.startMs < 900 || page.startMs - last < 6000) continue;
-    const room = rooms[stickers.length % rooms.length], perLine = Math.min(Array.from(page.phrase).length, 4);
-    const fontSize = Math.max(44, Math.min(78, Math.floor((room.width - 50) / perLine)));
-    stickers.push({ text: page.phrase, startMs: page.startMs, endMs: page.endMs + 400, side: room.side, top: centerY - 40,
-      width: Math.round(room.width - 30), fontSize, rotate: room.side === 'left' ? -7 : 7 });
+    // 以镜头基准点放大后，脸在画面里的范围
+    const scale = shotScale(page.startMs), grow = (value, origin) => origin + (value - origin) * scale;
+    const left = grow(union.x, camera.focusX) * 1080, right = (1 - grow(union.right, camera.focusX)) * 1080;
+    const headTop = grow(union.y, camera.focusY) * 1920;
+    const sides = [{ side: 'left', width: left }, { side: 'right', width: right }].filter(r => r.width >= 250);
+    const chars = Array.from(page.phrase).length;
+    let sticker = null;
+    if (sides.length) {
+      const room = sides[stickers.length % sides.length], perLine = Math.min(chars, 4);
+      sticker = { side: room.side, top: Math.round((headTop + union.bottom * 1920) / 2) - 40, width: Math.round(room.width - 30),
+        fontSize: Math.max(44, Math.min(78, Math.floor((room.width - 50) / perLine))), rotate: room.side === 'left' ? -7 : 7 };
+    } else if (headTop - ceiling >= 140) {
+      const fontSize = Math.max(44, Math.min(84, Math.floor((headTop - ceiling - 60) / 1.15), Math.floor(760 / chars)));
+      sticker = { side: 'top', top: Math.round(ceiling + (headTop - ceiling - fontSize * 1.15 - 40) / 2), width: 800, fontSize,
+        rotate: stickers.length % 2 ? 4 : -4 };
+    }
+    if (!sticker) continue;
+    stickers.push({ text: page.phrase, startMs: page.startMs, endMs: page.endMs + 400, ...sticker });
     // 同一屏字幕里这个词只做行内高亮，不再放大一遍，避免两处大字重复。
     page.emphasisMode = 'inline'; last = page.startMs;
   }
@@ -211,9 +225,10 @@ function buildPlan(task, visual = {}, cues = [], final = false, recent = []) {
     }
   }
   const layoutBox = { revision: 2, align: 'center', left: 115, width: 850, top, bottom, showTitle, titleTop, compact: availableHeight < 310 };
-  const stickers = stickerPlan(displayPages, visual);
+  const camera = cameraPlan(displayPages, visual, layoutBox, chosen.variant.rhythm);
+  const stickers = stickerPlan(displayPages, visual, camera, 100);
   return { version: 4, templateId, mode: task.packagingMode || 'auto', candidates: picked.candidates,
-    variant: chosen.variant, camera: cameraPlan(displayPages, visual, layoutBox, chosen.variant.rhythm), stickers,
+    variant: chosen.variant, camera, stickers,
     reasons: task.packagingPlan?.reasons && final ? task.packagingPlan.reasons : picked.reasons,
     warnings, analysisVersion: visual.version || 'unavailable', analysisStatus: visual.status || 'unavailable',
     layout: layoutBox,
@@ -232,7 +247,7 @@ function validatePlan(plan, styleId) {
       || plan.variant && (!PALETTES.some(p => p.id === plan.variant.palette && p.accent === plan.variant.accent) || !TRANSITIONS.includes(plan.variant.transition) || !RHYTHMS[plan.variant.rhythm])
       || plan.camera && (!Array.isArray(plan.camera.shots) || plan.camera.shots.length > 200 || ![plan.camera.focusX, plan.camera.focusY].every(v => Number.isFinite(v) && v >= 0 && v <= 1)
         || plan.camera.shots.some(s => !Number.isFinite(s.startMs) || s.startMs < 0 || !Number.isFinite(s.scale) || s.scale < 1 || s.scale > 1.3))
-      || plan.stickers && (!Array.isArray(plan.stickers) || plan.stickers.length > 2 || plan.stickers.some(s => typeof s.text !== 'string' || !s.text || s.text.length > 12 || !['left', 'right'].includes(s.side)
+      || plan.stickers && (!Array.isArray(plan.stickers) || plan.stickers.length > 2 || plan.stickers.some(s => typeof s.text !== 'string' || !s.text || s.text.length > 12 || !['left', 'right', 'top'].includes(s.side)
         || ![s.startMs, s.endMs, s.top, s.width, s.fontSize, s.rotate].every(Number.isFinite) || s.endMs <= s.startMs || s.fontSize < 30 || s.fontSize > 90 || Math.abs(s.rotate) > 12))) throw Error('Invalid narration packaging plan');
   return plan;
 }
