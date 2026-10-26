@@ -702,6 +702,8 @@ function assertMainLifecycle() {
   const remotionRuntimeResolver = source.match(/function remotionRuntimeEnvironment\(\) \{([\s\S]*?)\n\}/u)?.[1] || "";
   assert.match(remotionRuntimeResolver, /resolveRemotionRuntimeEnvironment/u);
   assert.match(remotionRuntimeResolver, /isPackaged: app\.isPackaged/u);
+  assert.match(remotionRuntimeResolver, /verifiedRuntime:/u, "engine starts reuse the background verification");
+  assert.match(source, /beforeStart: async \(\) => \{[^}]*await verifyRemotionRuntime\(\);/u, "the packaged runtime is hashed off the main thread before the engine starts");
   const remotionRuntimeSource = read("src/main/remotion-runtime-environment.cjs");
   const packagedBranchStart = remotionRuntimeSource.indexOf("if (isPackaged)");
   const packagedBranch = remotionRuntimeSource.slice(

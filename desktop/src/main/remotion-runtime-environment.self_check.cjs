@@ -15,7 +15,56 @@ function write(file, content) {
   fs.writeFileSync(file, content);
 }
 
+const modulePath = require.resolve("./remotion-runtime-environment.cjs");
+// A fresh module instance stands in for a new app launch: no in-process memo, only the cache file.
+function freshModule() {
+  delete require.cache[modulePath];
+  return require(modulePath);
+}
+
+async function backgroundVerification({ resourcesPath, browserDependency, bundlePath, browserPath, workerPath, root }) {
+  const cacheFile = path.join(root, "userData", "remotion-runtime-verification.json");
+  const expected = { browserPath, bundlePath, workerPath };
+
+  // First launch hashes in a worker thread; the main thread keeps ticking meanwhile.
+  let { verifyPackagedRuntimeInBackground } = freshModule();
+  let longestStall = 0;
+  let last = Date.now();
+  const ticker = setInterval(() => { const now = Date.now(); longestStall = Math.max(longestStall, now - last); last = now; }, 5);
+  const started = Date.now();
+  assert.deepEqual(await verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile }), expected);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  clearInterval(ticker);
+  assert.ok(longestStall < 100, `main thread stalled ${longestStall}ms while hashing for ${Date.now() - started}ms`);
+  assert.ok(fs.existsSync(cacheFile), "a passed verification is cached");
+
+  // The same launch restarting the engine reuses the result.
+  const { verifyPackagedRuntime } = require(modulePath);
+  let hashed = 0;
+  const counting = async (target) => { hashed += 1; return verifyPackagedRuntime(target); };
+  await verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile, verify: counting });
+  assert.equal(hashed, 0, "a second engine start in the same launch does not hash again");
+
+  // The next launch only compares sizes and mtimes against the cache.
+  ({ verifyPackagedRuntimeInBackground } = freshModule());
+  assert.deepEqual(await verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile, verify: counting }), expected);
+  assert.equal(hashed, 0, "an unchanged runtime is not re-read on the next launch");
+
+  // Any change to the verified files forces a full hash, which still catches tampering.
+  const original = fs.readFileSync(browserDependency);
+  fs.appendFileSync(browserDependency, "tampered");
+  ({ verifyPackagedRuntimeInBackground } = freshModule());
+  await assert.rejects(verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile }), /browser runtime tree hash mismatch/u);
+  await assert.rejects(verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile, verify: counting }), /browser runtime tree hash mismatch/u);
+  assert.equal(hashed, 1, "a failed verification is not memoized or cached");
+  fs.writeFileSync(browserDependency, original);
+  // Restoring the bytes changes the mtime, so the runtime is hashed again before it is trusted.
+  assert.deepEqual(await verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile, verify: counting }), expected);
+  assert.equal(hashed, 2);
+}
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aihuoke-remotion-env-"));
+(async () => {
 try {
   const resourcesPath = path.join(root, "portable", "resources");
   const contentEngine = path.join(resourcesPath, "content-engine");
@@ -30,6 +79,8 @@ try {
   write(workerPath, "verified worker");
   write(browserPath, "verified browser");
   write(browserDependency, "verified browser dependency");
+  // Large enough that hashing it on the main thread would visibly stall the ticker.
+  write(path.join(contentEngine, "browser", "resources.pak"), Buffer.alloc(192 * 1024 * 1024, 7));
   write(path.join(packagePath, "package.json"), JSON.stringify({ name: "remotion", version: "4.0.512" }));
   write(path.join(packagingPath, "contract.cjs"), "contract");
   write(path.join(packagingPath, "effect-registry.json"), JSON.stringify({ version: 1 }));
@@ -141,7 +192,12 @@ try {
   assert.equal(development.XIAOXI_REMOTION_BROWSER_PATH, overrideBrowser);
   assert.equal(development.XIAOXI_REMOTION_WORKER_PATH, path.join(root, "module", "remotion-render-worker.mjs"));
 
-  console.log("remotion runtime environment self-check passed");
+  await backgroundVerification({ resourcesPath, browserDependency, bundlePath, browserPath, workerPath, root });
+  console.log("remotion runtime environment self-check passed: sync and background verification, cached restarts, tamper detection, responsive main thread");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

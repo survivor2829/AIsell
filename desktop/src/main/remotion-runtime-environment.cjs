@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { Worker, isMainThread, parentPort, workerData } = require("node:worker_threads");
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const WORKER_CONTRACT_FILES = Object.freeze([
@@ -230,6 +231,86 @@ function verifyPackagedRuntime(resourcesPath) {
   return { browserPath, bundlePath, workerPath };
 }
 
+const VERIFICATION_CACHE_SCHEMA = "xiaoxi-remotion-verification-v1";
+const verifications = new Map();
+
+// The verified surface as stat-only entries (path, size, mtime) plus the manifest digest.
+async function fingerprintPackagedRuntime(resourcesPath) {
+  const resourcesRoot = path.resolve(resourcesPath);
+  const releaseRoot = path.dirname(resourcesRoot);
+  const contentEngineRoot = path.join(resourcesRoot, "content-engine");
+  const digest = crypto.createHash("sha256");
+  digest.update(`${VERIFICATION_CACHE_SCHEMA}\0${resourcesRoot}\0`);
+  const visit = async (absolute, relative) => {
+    const state = await fs.promises.lstat(absolute);
+    if (state.isSymbolicLink()) throw new Error("Remotion runtime contains a symbolic link");
+    if (state.isFile()) {
+      digest.update(`file\0${relative}\0${state.size}\0${state.mtimeMs}\0`);
+      return;
+    }
+    if (!state.isDirectory()) throw new Error("Remotion runtime contains an unsupported entry");
+    digest.update(`directory\0${relative}\0`);
+    const entries = (await fs.promises.readdir(absolute, { withFileTypes: true })).sort(compareNames);
+    for (const entry of entries) await visit(path.join(absolute, entry.name), `${relative}/${entry.name}`);
+  };
+  for (const name of ["remotion-runtime-manifest.json", "remotion-render-worker.mjs", "remotion-bundle", "browser", "node_modules"]) {
+    await visit(path.join(contentEngineRoot, name), name);
+  }
+  await visit(path.join(releaseRoot, "版本清单.json"), "版本清单.json");
+  await visit(path.join(releaseRoot, "remotion-packaging"), "remotion-packaging");
+  digest.update(await fs.promises.readFile(path.join(contentEngineRoot, "remotion-runtime-manifest.sha256")));
+  return digest.digest("hex");
+}
+
+function runtimePaths(resourcesPath) {
+  const contentEngineRoot = path.join(path.resolve(resourcesPath), "content-engine");
+  return {
+    browserPath: path.join(contentEngineRoot, "browser", "chrome.exe"),
+    bundlePath: path.join(contentEngineRoot, "remotion-bundle"),
+    workerPath: path.join(contentEngineRoot, "remotion-render-worker.mjs")
+  };
+}
+
+function verifyInWorker(resourcesPath) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(__filename, { workerData: { remotionVerification: true, resourcesPath } });
+    let result;
+    worker.once("message", (value) => { result = value; });
+    worker.once("error", reject);
+    worker.once("exit", (code) => {
+      if (result?.ok) resolve(result.runtime);
+      else reject(new Error(result?.error || `Remotion verification worker exited with code ${code}`));
+    });
+  });
+}
+
+async function readVerificationCache(cacheFile) {
+  try { return JSON.parse(await fs.promises.readFile(cacheFile, "utf8")); } catch { return null; }
+}
+
+// Hashing ~500 MB of runtime on Electron's main thread froze low-end PCs for minutes.
+// Hash once per unchanged runtime in a worker; later starts only compare sizes and mtimes.
+async function verifyPackagedRuntimeInBackground(resourcesPath, { cacheFile = "", verify = verifyInWorker } = {}) {
+  const fingerprint = await fingerprintPackagedRuntime(resourcesPath);
+  if (!verifications.has(fingerprint)) {
+    const pending = (async () => {
+      const cached = cacheFile ? await readVerificationCache(cacheFile) : null;
+      if (cached?.schema === VERIFICATION_CACHE_SCHEMA && cached.fingerprint === fingerprint) return runtimePaths(resourcesPath);
+      const runtime = await verify(resourcesPath);
+      if (cacheFile) {
+        try {
+          await fs.promises.mkdir(path.dirname(cacheFile), { recursive: true });
+          await fs.promises.writeFile(cacheFile, JSON.stringify({ schema: VERIFICATION_CACHE_SCHEMA, fingerprint, verifiedAt: new Date().toISOString() }));
+        } catch (error) { console.warn(`Remotion verification cache not written: ${error.message}`); }
+      }
+      return runtime;
+    })();
+    verifications.set(fingerprint, pending);
+    pending.catch(() => verifications.delete(fingerprint));
+  }
+  return verifications.get(fingerprint);
+}
+
 function firstExistingFile(candidates) {
   return candidates.find((candidate) => {
     try {
@@ -245,11 +326,12 @@ function resolveRemotionRuntimeEnvironment({
   executablePath = process.execPath,
   isPackaged,
   moduleDir,
-  resourcesPath
+  resourcesPath,
+  verifiedRuntime = null
 }) {
   let runtime;
   if (isPackaged) {
-    runtime = verifyPackagedRuntime(resourcesPath);
+    runtime = verifiedRuntime || verifyPackagedRuntime(resourcesPath);
   } else {
     const configuredBundle = String(environment.XIAOXI_REMOTION_BUNDLE_PATH || "").trim();
     const configuredBrowser = String(environment.XIAOXI_REMOTION_BROWSER_PATH || "").trim();
@@ -275,11 +357,18 @@ function resolveRemotionRuntimeEnvironment({
   };
 }
 
+if (!isMainThread && workerData?.remotionVerification) {
+  try { parentPort.postMessage({ ok: true, runtime: verifyPackagedRuntime(workerData.resourcesPath) }); }
+  catch (error) { parentPort.postMessage({ ok: false, error: error.message }); }
+}
+
 module.exports = {
+  fingerprintPackagedRuntime,
   hashWorkerRuntime,
   packageTreeSha256,
   resolveRemotionRuntimeEnvironment,
   sha256,
   treeSha256,
-  verifyPackagedRuntime
+  verifyPackagedRuntime,
+  verifyPackagedRuntimeInBackground
 };

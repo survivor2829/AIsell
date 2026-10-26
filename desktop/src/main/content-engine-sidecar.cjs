@@ -512,12 +512,18 @@ function createContentEngineSidecar(options = {}) {
       .then(async (stopped) => {
         if (stopped?.state && stopped.state !== "stopped") return stopped;
         if (currentRun && !currentRun.closed) return status();
+        // Preparing the runtime (component download, integrity check) can take a while; show it as starting.
+        const previousState = snapshot.state;
+        if (options.beforeStart) update({ state: "starting", code: "" });
         try { await options.beforeStart?.(); }
         catch (error) {
-          if (!/^component_/.test(error.code || error.message || "")) throw error;
+          if (!/^component_/.test(error.code || error.message || "")) {
+            update({ state: previousState });
+            throw error;
+          }
           return setTerminalState("failed", "CONTENT_ENGINE_RUNTIME_UNAVAILABLE");
         }
-        if (global.__xiaoxiUpdateHold) return status();
+        if (global.__xiaoxiUpdateHold) return update({ state: previousState });
         return beginStart();
       })
       .finally(() => {

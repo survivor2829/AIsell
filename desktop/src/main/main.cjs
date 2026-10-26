@@ -68,7 +68,8 @@ const {
   resolveDevelopmentContentEngineLaunch
 } = require("./development-sidecar-runtime.cjs");
 const {
-  resolveRemotionRuntimeEnvironment
+  resolveRemotionRuntimeEnvironment,
+  verifyPackagedRuntimeInBackground
 } = require("./remotion-runtime-environment.cjs");
 const {
   resolveContentEngineBundledFont,
@@ -187,13 +188,31 @@ function contentEngineRuntimeArgs() {
   return developmentContentEngineLaunch.runtimeArgs;
 }
 
+let verifiedRemotionRuntime = null;
+async function verifyRemotionRuntime() {
+  if (!app.isPackaged) return;
+  const resourcesPath = components.resourcesPath();
+  try {
+    const runtime = await verifyPackagedRuntimeInBackground(resourcesPath, {
+      cacheFile: path.join(app.getPath("userData"), "content-engine", "remotion-runtime-verification.json")
+    });
+    verifiedRemotionRuntime = { resourcesPath, runtime };
+  } catch (error) {
+    console.warn(`Remotion runtime verification failed: ${error.message}`);
+    // Never fall back to the synchronous hash in beginStart; report the runtime as unavailable instead.
+    throw Object.assign(new Error(error.message), { code: "component_runtime_verification_failed" });
+  }
+}
+
 function remotionRuntimeEnvironment() {
+  const resourcesPath = components.resourcesPath();
   return resolveRemotionRuntimeEnvironment({
     environment: process.env,
     executablePath: process.execPath,
     isPackaged: app.isPackaged,
     moduleDir: __dirname,
-    resourcesPath: components.resourcesPath()
+    resourcesPath,
+    verifiedRuntime: verifiedRemotionRuntime?.resourcesPath === resourcesPath ? verifiedRemotionRuntime.runtime : null
   });
 }
 
@@ -618,7 +637,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
       getCatalogScope: providerConfiguration,
-      beforeStart: async () => { await components.ensureRuntimeGroup("content"); await waitForProviderSession(); },
+      beforeStart: async () => {
+        await components.ensureRuntimeGroup("content");
+        await verifyRemotionRuntime();
+        await waitForProviderSession();
+      },
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
       dataDir: contentEngineDataDir,

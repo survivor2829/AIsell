@@ -195,6 +195,7 @@ async function main() {
       const started = controller.start();
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(child, undefined, 'slow gateway must not spawn a worker with stale credentials');
+      assert.equal(controller.status().state, 'starting', 'runtime preparation shows as starting, not unavailable');
       providerReady = true; release();
       await waitFor(() => Boolean(child)); child.ready();
       assert.equal((await started).state, 'ready');
