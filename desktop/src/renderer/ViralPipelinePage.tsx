@@ -38,23 +38,38 @@ function ViralCard({ item, onImitate, onOneClick, oneClickBlocked, estimate, que
 
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
-// 内部：把最近一次扒取的前几条提取出原口播放进文案库（客户点「仿写」时才改写），再导出成待发布文件（之后由我们上传到云端）。
+// 内部：把最近一次扒取的爆款提取出原口播（客户点「仿写」时才改写），再发布到云端：云端合并进已有的库，并拆好每条的结构。
 function LibraryTools({ jobs, onError }: { jobs: ViralJob[]; onError: (message: string) => void }) {
-  const [limit, setLimit] = useState(10), [busy, setBusy] = useState(false), [exported, setExported] = useState('');
+  const [limit, setLimit] = useState(100), [busy, setBusy] = useState(''), [note, setNote] = useState('');
+  const [tokenSaved, setTokenSaved] = useState<boolean | null>(null), [token, setToken] = useState('');
   const library = jobs.filter((j) => j.mode === 'library');
   const done = library.filter((j) => j.status === 'done').length, waiting = library.filter((j) => ['queued', 'running'].includes(j.status)).length;
-  async function run(work: () => Promise<void>) { setBusy(true); try { await work(); } catch (error) { onError((error as Error).message); } finally { setBusy(false); } }
+  useEffect(() => { void unwrap(referenceApi().viralLibraryPublishToken({})).then((r) => setTokenSaved(r.saved)).catch(() => setTokenSaved(false)); }, []);
+  async function run(name: string, work: () => Promise<void>) { setBusy(name); try { await work(); } catch (error) { onError((error as Error).message); } finally { setBusy(''); } }
   return (
     <section className="vp-panel vp-filters" aria-label="文案库（内部）">
       <div className="vp-filter-row"><b>文案库</b>
         <span className="vp-muted">已提取 {done} 条{waiting ? `，还有 ${waiting} 条在处理` : ''}</span><span className="vp-spacer" />
-        <label className="vp-cap">前 <input type="number" min={1} max={30} value={limit} onChange={(event) => setLimit(Math.max(1, Math.min(30, Number(event.target.value) || 1)))} /> 条</label>
-        <button type="button" className="dh-button" data-xiaoxi-digital-human-action="reference-viral-library-build" disabled={busy}
-          onClick={() => void run(async () => { await unwrap(referenceApi().viralLibraryBuild({ limit })); })}>提取进文案库</button>
-        <button type="button" className="dh-button is-primary" disabled={busy || !done}
-          onClick={() => void run(async () => { const r = await unwrap(referenceApi().viralLibraryExport()); setExported(`已导出 ${r.items} 条（扒到 ${r.collected} 条）：${r.file}`); })}>导出文案库</button>
+        <label className="vp-cap">前 <input type="number" min={1} max={300} value={limit} onChange={(event) => setLimit(Math.max(1, Math.min(300, Number(event.target.value) || 1)))} /> 条</label>
+        <button type="button" className="dh-button" data-xiaoxi-digital-human-action="reference-viral-library-build" disabled={Boolean(busy)}
+          onClick={() => void run('build', async () => { await unwrap(referenceApi().viralLibraryBuild({ limit })); })}>提取进文案库</button>
+        <button type="button" className="dh-button" disabled={Boolean(busy) || !done}
+          onClick={() => void run('export', async () => { const r = await unwrap(referenceApi().viralLibraryExport()); setNote(`已导出 ${r.items} 条（扒到 ${r.collected} 条）：${r.file}`); })}>导出文件</button>
+        <button type="button" className="dh-button is-primary" data-xiaoxi-digital-human-action="reference-viral-library-publish" disabled={Boolean(busy) || !done || !tokenSaved}
+          title={tokenSaved ? undefined : '先填写发布密钥'}
+          onClick={() => void run('publish', async () => {
+            setNote('正在发布，并让 AI 拆每条爆款的结构（内部花费，不扣客户额度），条数多时要几分钟…');
+            const r = await unwrap(referenceApi().viralLibraryPublish());
+            setNote(`已发布 ${r.sent} 条：新增 ${r.added} 条、更新 ${r.updated} 条，云端文案库共 ${r.total} 条；本次拆好结构 ${r.structured} 条${r.missingStructure ? `，还有 ${r.missingStructure} 条没拆成，下次发布会再拆` : '，全部拆好了'}。`);
+          })}>{busy === 'publish' ? '正在发布…' : '发布到文案库'}</button>
       </div>
-      {exported && <p className="vp-muted">{exported}</p>}
+      {tokenSaved === false && <div className="vp-filter-row">
+        <span className="vp-muted">发布密钥（只存在这台电脑、当前 Windows 用户加密）</span>
+        <input type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="粘贴服务器上配置的发布密钥" />
+        <button type="button" className="dh-button" disabled={Boolean(busy) || token.trim().length < 32}
+          onClick={() => void run('token', async () => { setTokenSaved((await unwrap(referenceApi().viralLibraryPublishToken({ token }))).saved); setToken(''); })}>保存密钥</button>
+      </div>}
+      {note && <p className="vp-muted">{note}</p>}
     </section>
   );
 }
@@ -62,7 +77,7 @@ function LibraryTools({ jobs, onError }: { jobs: ViralJob[]; onError: (message: 
 export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (reference: NarrationReference) => void; onManagePerson: () => void }) {
   const [industries, setIndustries] = useState<string[]>(['cleaning', 'property', 'factory']);
   const [platforms, setPlatforms] = useState<string[]>(['douyin', 'xiaohongshu']);
-  const [days, setDays] = useState<30 | 90>(30);
+  const [days, setDays] = useState<30 | 90>(90);
   const [scanning, setScanning] = useState(false), [stopping, setStopping] = useState(false);
   const [scan, setScan] = useState<ScanState>(EMPTY_SCAN);
   const [result, setResult] = useState<ViralScanResult | null>(null);

@@ -84,6 +84,12 @@ async function main() {
   assert.equal(calls[2].headers.Authorization, "Bearer gateway-session-token-abcdefghijklmnopqrstuvwxyz");
   assert.equal(calls[2].headers["content-type"], "application/json");
 
+  // 运营发布密钥只能用在文案库发布路由上，并替换掉客户会话
+  await client.fetch(client.url("/viral-library/publish"), { method: "POST", operatorToken: "operator-token", headers: { Authorization: "Bearer forged" }, body: "{}" });
+  assert.equal(calls[3].headers.Authorization, "Bearer operator-token");
+  await assert.rejects(client.fetch(client.url("/deepseek/chat/completions"), { method: "POST", operatorToken: "operator-token", body: "{}" }), { code: "GATEWAY_ROUTE_INVALID" });
+  assert.equal(calls.length, 4);
+
   const missing = createProviderGatewayClient({
     config: { enabled: true, origin: "https://gateway.test" },
     licenseStore: { readCode: () => { throw Object.assign(new Error("required"), { code: "license_required" }); } },
