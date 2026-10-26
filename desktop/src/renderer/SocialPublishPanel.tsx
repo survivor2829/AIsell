@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Globe2, Lock, RefreshCw, RotateCcw, Send, Sparkles, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Check, ChevronDown, Globe2, Lock, RefreshCw, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import type { SocialAccount, SocialAccountsState, SocialPlatformKey } from "./social-accounts-types";
 import type { SocialPublishJob, SocialPublishResult, SocialPublishState } from "./social-publish-types";
 import { PlatformIcon, PLATFORM_NAMES } from "./PlatformIcon";
@@ -12,14 +12,30 @@ const finishedApi = () => (window as unknown as { xiaoxiContent?: FinishedApi })
 const PLATFORM_ORDER: SocialPlatformKey[] = ["douyin", "kuaishou", "xiaohongshu", "channels"];
 const TITLE_LIMITS: Partial<Record<SocialPlatformKey, number>> = { douyin: 30, xiaohongshu: 20 };
 const STATUS: Record<SocialPublishJob["status"], string> = { queued: "排队中", running: "进行中", needs_user: "等你验证", clicked: "等待平台结果", published: "已发出", unknown: "结果不明", failed: "没有发出", cancelled: "已取消" };
-// Records that still need the user or are still running are listed first, so none is hidden by older ones.
+const ACTIVE = new Set<SocialPublishJob["status"]>(["queued", "running", "clicked", "needs_user"]);
+// Records that still need the user or are still running are shown first and never folded away.
 const ATTENTION = new Set<SocialPublishJob["status"]>(["unknown", "needs_user", "running", "clicked", "queued"]);
+const STEPS = ["上传", "填文案", "点发布", "平台结果", "核对"];
+const STEP_OF: Record<string, number> = { 打开平台: 0, 上传视频: 0, 填写内容: 1, 点击发布: 2, 等待平台结果: 3, 等你验证: 3, 核对作品: 4 };
 const GENERATED_ID = /^generated_video_[a-f0-9]{32}$/i;
 const generatedThumb = (item: FinishedItem) => { const id = item.metadata?.generated_video_id; return typeof id === "string" && GENERATED_ID.test(id) ? `xiaoxi-content://generated/${id}/thumbnail` : ""; };
 const videoName = (item: FinishedItem) => item.title || item.displayName;
 const videoContext = (item: FinishedItem) => typeof item.metadata?.batch_title === "string" ? String(item.metadata.batch_title) : "";
 const topicText = (topics: string[]) => topics.map((topic) => `#${topic}`).join(" ");
+type Copy = { title: string; description: string; topics: string };
+const EMPTY_COPY: Copy = { title: "", description: "", topics: "" };
+const STYLE_HINT: Record<SocialPlatformKey, string> = { douyin: "口语、有钩子", kuaishou: "接地气、实在", xiaohongshu: "种草笔记风", channels: "稳重、可信" };
 const parseTopics = (value: string) => [...new Set(value.split(/[\s,，#]+/).map((topic) => topic.trim()).filter(Boolean))].slice(0, 8);
+
+// Five step pills for one job: done / current / failed / waiting, read from status and step only.
+function stepStates(job: SocialPublishJob): ("done" | "now" | "fail" | "wait" | "")[] {
+  if (job.status === "published") return STEPS.map(() => "done");
+  if (job.status === "queued" || job.status === "cancelled") return STEPS.map(() => "");
+  if (job.status === "unknown") return STEPS.map((_, index) => index < 3 ? "done" : "wait");
+  if (job.status === "failed") return STEPS.map((_, index) => job.clickedAt ? (index < 3 ? "done" : "fail") : index === 0 ? "fail" : "");
+  const at = STEP_OF[job.step] ?? 0;
+  return STEPS.map((_, index) => index < at ? "done" : index === at ? (job.status === "needs_user" ? "wait" : "now") : "");
+}
 
 export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () => void }) {
   const publishApi = window.xiaoxiSocialPublish;
@@ -30,16 +46,17 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   const [state, setState] = useState<SocialPublishState>();
   const [selectedVideos, setSelectedVideos] = useState<string[]>([]);
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [topics, setTopics] = useState("");
+  const [copies, setCopies] = useState<Partial<Record<SocialPlatformKey, Copy>>>({});
+  const [tabPlatform, setTabPlatform] = useState<SocialPlatformKey>("douyin");
   const [hint, setHint] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [pending, setPending] = useState("");
   const [writing, setWriting] = useState(false);
+  const [showDone, setShowDone] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const autoWritten = useRef("");
+  const batchIds = useRef<Set<string>>(new Set());
 
   const loadVideos = async () => {
     const api = finishedApi();
@@ -70,32 +87,47 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
 
   const chosenVideos = useMemo(() => videos.filter((item) => selectedVideos.includes(item.finishedVideoId)), [videos, selectedVideos]);
   const chosenAccounts = useMemo(() => (accounts?.accounts || []).filter((account) => selectedAccounts.includes(account.id)), [accounts, selectedAccounts]);
-  const fullDescription = [description.trim(), topicText(parseTopics(topics))].filter(Boolean).join(" ");
+  const coverOf = (item: FinishedItem) => generatedThumb(item) || covers[item.finishedVideoId] || "";
+  const coverByName = useMemo(() => new Map(videos.map((item) => [videoName(item), coverOf(item)])), [videos, covers]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The platforms being published to decide which copies are needed; with no account chosen yet, all four.
+  const copyPlatforms = useMemo(() => { const chosen = PLATFORM_ORDER.filter((platform) => chosenAccounts.some((account) => account.platform === platform)); return chosen.length ? chosen : PLATFORM_ORDER; }, [chosenAccounts]);
+  const activePlatform = copyPlatforms.includes(tabPlatform) ? tabPlatform : copyPlatforms[0];
+  const current = copies[activePlatform] || EMPTY_COPY;
+  const setCurrent = (patch: Partial<Copy>) => setCopies((all) => ({ ...all, [activePlatform]: { ...(all[activePlatform] || EMPTY_COPY), ...patch } }));
+  const copyOf = (platform: SocialPlatformKey) => copies[platform] || EMPTY_COPY;
+  const hasAnyCopy = copyPlatforms.some((platform) => copyOf(platform).title.trim() || copyOf(platform).description.trim());
+  const missingTitle = copyPlatforms.filter((platform) => !copyOf(platform).title.trim());
+  const syncToOthers = () => setCopies((all) => Object.fromEntries(copyPlatforms.map((platform) => [platform, { ...(all[activePlatform] || EMPTY_COPY) }])) as Partial<Record<SocialPlatformKey, Copy>>);
   const problems = useMemo(() => {
     const list: string[] = [];
     for (const account of chosenAccounts) {
       const limit = TITLE_LIMITS[account.platform];
-      if (limit && title.trim().length > limit) list.push(`${PLATFORM_NAMES[account.platform]}标题最多 ${limit} 个字`);
+      if (limit && copyOf(account.platform).title.trim().length > limit) list.push(`${PLATFORM_NAMES[account.platform]}标题最多 ${limit} 个字`);
       if (visibility === "private" && account.platform === "channels") list.push("视频号发表时不能设为仅自己可见");
     }
     return [...new Set(list)];
-  }, [chosenAccounts, title, visibility]);
+  }, [chosenAccounts, copies, visibility]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const jobs = state?.jobs || [];
+  const running = jobs.filter((job) => ACTIVE.has(job.status));
+  const batch = jobs.filter((job) => batchIds.current.has(job.id));
 
   const writeCopy = async (auto = false) => {
     if (!publishApi || !chosenVideos.length) return;
     setWriting(true); if (!auto) { setError(""); setNotice(""); }
     try {
-      const result = await publishApi.suggest({ hint, videos: chosenVideos.map((item) => ({ title: item.title, name: item.displayName, context: videoContext(item) })) });
+      const result = await publishApi.suggest({ hint, platforms: copyPlatforms, videos: chosenVideos.map((item) => ({ title: item.title, name: item.displayName, context: videoContext(item) })) });
       if (!result.ok || !result.state) { if (!auto) setError(result.error || "AI 写文案暂时不可用，请自己填写。"); return; }
-      setTitle(result.state.title); setDescription(result.state.description); setTopics(result.state.topics.join(" "));
-      setNotice("AI 已写好标题、正文和话题，可以直接改。");
+      const written = result.state;
+      setCopies((all) => ({ ...all, ...Object.fromEntries(Object.entries(written).map(([platform, copy]) => [platform, { title: copy.title, description: copy.description, topics: copy.topics.join(" ") }])) }));
+      setNotice(`AI 已按 ${Object.keys(written).map((platform) => PLATFORM_NAMES[platform as SocialPlatformKey]).join("、")} 各写了一套文案，切换上面的平台查看和修改。`);
     } catch { if (!auto) setError("AI 写文案暂时不可用，请自己填写。"); }
     finally { setWriting(false); }
   };
   // Picking a video with empty copy fields drafts the copy automatically, once per selection.
   useEffect(() => {
     const key = selectedVideos.join(",");
-    if (!key || title.trim() || description.trim() || autoWritten.current === key) return;
+    if (!key || hasAnyCopy || autoWritten.current === key) return;
     autoWritten.current = key;
     void writeCopy(true);
   }, [selectedVideos]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -117,10 +149,15 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
     // Publishing is visible to followers at once; say exactly where it goes before anything starts.
     const targets = chosenAccounts.map((account) => `${PLATFORM_NAMES[account.platform]} · ${account.label}`).join("\n");
     const scope = visibility === "public" ? "公开发布（所有人可见）" : "仅自己可见";
-    if (!window.confirm(`确认发布 ${chosenVideos.length} 条视频，${scope}，发到这些账号？\n\n${targets}\n\n标题：${title.trim()}`)) return;
+    const titles = copyPlatforms.map((platform) => `${PLATFORM_NAMES[platform]}：${copyOf(platform).title.trim()}`).join("\n");
+    if (!window.confirm(`确认发布 ${chosenVideos.length} 条视频，${scope}，发到这些账号？\n\n${targets}\n\n各平台标题：\n${titles}`)) return;
+    const before = new Set(jobs.map((job) => job.id));
     const ok = await run("submit", async () => {
-      const result = await publishApi.submit({ videos: chosenVideos.map((item) => ({ finishedVideoId: item.finishedVideoId, name: videoName(item) })), accountIds: selectedAccounts, title, description: fullDescription, visibility });
+      const result = await publishApi.submit({ videos: chosenVideos.map((item) => ({ finishedVideoId: item.finishedVideoId, name: videoName(item) })), accountIds: selectedAccounts, visibility,
+        title: copyOf(copyPlatforms[0]).title, description: "",
+        copies: Object.fromEntries(copyPlatforms.map((platform) => [platform, { title: copyOf(platform).title, description: [copyOf(platform).description.trim(), topicText(parseTopics(copyOf(platform).topics))].filter(Boolean).join(" ") }])) });
       if (result.ok && result.state) {
+        batchIds.current = new Set(result.state.jobs.filter((job) => !before.has(job.id)).map((job) => job.id));
         const skipped = result.state.skipped || [];
         setNotice(`已加入发布队列 ${result.state.created || 0} 条。${skipped.length ? `已跳过 ${skipped.length} 条重复发布。` : ""}发布时会自动打开 Chrome 窗口，请不要在窗口里打字。`);
       }
@@ -130,84 +167,123 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   };
 
   const usable = (account: SocialAccount) => account.status === "active" && !account.loggingIn;
-  const coverOf = (item: FinishedItem) => generatedThumb(item) || covers[item.finishedVideoId] || "";
-  const accountsByPlatform = PLATFORM_ORDER.map((platform) => ({ platform, list: (accounts?.accounts || []).filter((account) => account.platform === platform) }));
-  const jobs = [...(state?.jobs || [])].sort((a, b) => Number(!ATTENTION.has(a.status)) - Number(!ATTENTION.has(b.status))).slice(0, 100);
-  const canSubmit = Boolean(publishApi) && !pending && !writing && chosenVideos.length > 0 && selectedAccounts.length > 0 && Boolean(title.trim()) && problems.length === 0;
+  const accountsByPlatform = PLATFORM_ORDER.flatMap((platform) => (accounts?.accounts || []).filter((account) => account.platform === platform));
+  const sorted = [...jobs].sort((a, b) => Number(!ATTENTION.has(a.status)) - Number(!ATTENTION.has(b.status)));
+  const open = sorted.filter((job) => ATTENTION.has(job.status));
+  const done = sorted.filter((job) => !ATTENTION.has(job.status)).slice(0, 80);
+  const total = chosenVideos.length * selectedAccounts.length;
+  const progress = running.length || batch.some((job) => ACTIVE.has(job.status)) ? { sent: batch.filter((job) => job.status === "published").length, all: batch.length || running.length } : null;
+  const canSubmit = Boolean(publishApi) && !pending && !writing && total > 0 && missingTitle.length === 0 && problems.length === 0;
 
-  return <div className="social-publish">
+  const jobRow = (job: SocialPublishJob) => {
+    const cover = coverByName.get(job.videoName);
+    return <li key={job.id} className={`dist-job is-${job.status}`}>
+      <span className="dist-job-media">{cover ? <img src={cover} alt="" /> : <span />}<PlatformIcon platform={job.platform} size={24} /></span>
+      <div className="dist-job-copy">
+        <strong>{job.title}</strong>
+        <span>{PLATFORM_NAMES[job.platform]} · {job.accountLabel} · {job.visibility === "private" ? "仅自己可见" : "公开"}</span>
+        {job.reason && <small>{job.reason}</small>}
+      </div>
+      <div className="dist-job-track">
+        <ol className="dist-steps" aria-label={`进度：${STATUS[job.status]}`}>{stepStates(job).map((value, index) => <li key={STEPS[index]} className={value ? `is-${value}` : ""}><i /><span>{STEPS[index]}</span></li>)}</ol>
+        <b className={`dist-job-status is-${job.status}`}>{STATUS[job.status]}</b>
+      </div>
+      <div className="dist-job-actions">
+        {job.status === "queued" && <button type="button" className="social-text-button" disabled={Boolean(pending)} onClick={() => publishApi && void run(`cancel-${job.id}`, () => publishApi.cancel(job.id))}><X size={14} />取消</button>}
+        {job.status === "failed" && <button type="button" className="social-text-button" disabled={Boolean(pending)} onClick={() => publishApi && void run(`retry-${job.id}`, () => publishApi.retry(job.id))}><RotateCcw size={14} />重新发布</button>}
+        {job.status === "unknown" && <>
+          <button type="button" className="dist-check is-yes" disabled={Boolean(pending)} onClick={() => publishApi && void run(`yes-${job.id}`, () => publishApi.resolve(job.id, true))}>我核对过：已发出</button>
+          <button type="button" className="dist-check" disabled={Boolean(pending)} onClick={() => publishApi && void run(`no-${job.id}`, () => publishApi.resolve(job.id, false))}>我核对过：没发出</button>
+        </>}
+        {["published", "failed", "cancelled"].includes(job.status) && <button type="button" className="social-text-button is-danger" aria-label="删除这条记录" disabled={Boolean(pending)} onClick={() => publishApi && void run(`remove-${job.id}`, () => publishApi.remove(job.id))}><Trash2 size={14} /></button>}
+      </div>
+    </li>;
+  };
+
+  return <div className="social-publish dist-publish">
     {(error || notice) && <div className={`social-feedback ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
-    <div className="social-publish-layout">
-      <section className="social-publish-videos" aria-labelledby="publish-videos">
-        <div className="social-publish-head"><h2 id="publish-videos"><span className="social-step">1</span>选视频<small>已选 {selectedVideos.length}/20</small></h2>
+
+    <div className="dist-grid">
+      <section className="dist-videos" aria-labelledby="publish-videos">
+        <div className="dist-sec"><h2 id="publish-videos"><em>第 1 步</em>选视频</h2><span>已选 {selectedVideos.length}/20</span>
           <button type="button" className="social-text-button" onClick={() => void loadVideos()}><RefreshCw size={14} />刷新</button></div>
-        {videos.length === 0 ? <div className="social-publish-empty"><p>成片中心还没有视频。</p><p>做好的视频会自动出现在这里，也可以在「成片中心」里点「登记已有成片」导入。</p></div> : <ul className="social-video-grid">
-          {videos.slice(0, 60).map((item) => { const selected = selectedVideos.includes(item.finishedVideoId); const cover = coverOf(item);
-            return <li key={item.finishedVideoId}><button type="button" className={`social-video ${selected ? "is-selected" : ""}`} aria-pressed={selected} onClick={() => setSelectedVideos(toggle(selectedVideos, item.finishedVideoId, 20))}>
-              {cover ? <img src={cover} alt="" loading="lazy" /> : <span className="social-video-blank" aria-hidden="true" />}
-              <span className="social-video-title">{videoName(item)}</span>
-              <span className="social-video-check" aria-hidden="true">{selected ? <Check size={15} /> : null}</span>
+        {videos.length === 0 ? <div className="dist-empty"><b>成片中心还没有视频</b><p>做好的视频会自动出现在这里，也可以在「成片中心」点「登记已有成片」导入。</p></div> : <ul className="dist-video-grid">
+          {videos.slice(0, 60).map((item, index) => { const selected = selectedVideos.includes(item.finishedVideoId); const cover = coverOf(item);
+            return <li key={item.finishedVideoId} style={{ "--i": Math.min(index, 20) } as CSSProperties}><button type="button" className={`dist-video ${selected ? "is-on" : ""}`} aria-pressed={selected} onClick={() => setSelectedVideos(toggle(selectedVideos, item.finishedVideoId, 20))}>
+              {cover ? <img src={cover} alt="" loading="lazy" /> : <span className="dist-video-blank" aria-hidden="true" />}
+              <span className="dist-video-title">{videoName(item)}</span>
+              <span className="ns-pick" aria-hidden="true" />
             </button></li>; })}
         </ul>}
       </section>
-      <aside className="social-publish-side">
-        <section className="social-publish-card" aria-labelledby="publish-accounts">
-          <div className="social-publish-head"><h2 id="publish-accounts"><span className="social-step">2</span>选账号<small>已选 {selectedAccounts.length}</small></h2>
+
+      <aside className="dist-side">
+        <section className="dist-card" aria-labelledby="publish-accounts">
+          <div className="dist-sec"><h2 id="publish-accounts"><em>第 2 步</em>选账号</h2><span>已选 {selectedAccounts.length}</span>
             <button type="button" className="social-text-button" onClick={onManageAccounts}>管理账号</button></div>
-          {(accounts?.accounts.length || 0) === 0 ? <p className="social-empty">还没有登录任何平台账号，先到「平台账号」扫码登录。</p> : <div className="social-account-tiles">
-            {accountsByPlatform.filter((group) => group.list.length).flatMap((group) => group.list.map((account) => {
+          {accountsByPlatform.length === 0 ? <p className="social-empty">还没有登录任何平台账号，先到「平台账号」扫码登录。</p> : <div className="dist-accounts">
+            {accountsByPlatform.map((account) => {
               const selected = selectedAccounts.includes(account.id);
-              return <button type="button" key={account.id} className={`social-account-tile ${selected ? "is-selected" : ""}`} aria-pressed={selected} disabled={!usable(account)} onClick={() => setSelectedAccounts(toggle(selectedAccounts, account.id))}>
-                <PlatformIcon platform={account.platform} size={30} />
-                <span><strong>{account.label}</strong><small>{usable(account) ? PLATFORM_NAMES[account.platform] : account.status === "active" ? "登录窗口打开中" : "需要重新登录"}</small></span>
-                {selected && <Check size={15} className="social-tile-check" />}
+              return <button type="button" key={account.id} className={`dist-account ${selected ? "is-on" : ""}`} aria-pressed={selected} disabled={!usable(account)} onClick={() => setSelectedAccounts(toggle(selectedAccounts, account.id))}>
+                <PlatformIcon platform={account.platform} size={36} />
+                <span><b>{PLATFORM_NAMES[account.platform]}</b><small>{usable(account) ? account.label : account.status === "active" ? "登录窗口打开中" : "需要重新登录"}</small></span>
+                <span className="ns-pick" aria-hidden="true" />
               </button>;
-            }))}
+            })}
           </div>}
         </section>
-        <section className="social-publish-card" aria-labelledby="publish-copy">
-          <div className="social-publish-head"><h2 id="publish-copy"><span className="social-step">3</span>标题和文案</h2>
-            <button type="button" className="social-ai-button" disabled={!chosenVideos.length || writing} onClick={() => void writeCopy()}><Sparkles size={14} />{writing ? "AI 正在写…" : title ? "AI 重写" : "AI 帮我写"}</button></div>
-          <div className="social-publish-form">
-            <label>标题<input value={title} maxLength={60} placeholder={chosenVideos.length ? "AI 会自动写，也可以自己填" : "先在左边选视频"} onChange={(event) => setTitle(event.target.value)} />
-              <small className="social-count">{title.trim().length} 字 · 抖音≤30，小红书≤20</small></label>
-            <label>正文<textarea rows={4} value={description} maxLength={800} placeholder="说说视频讲了什么、对谁有用" onChange={(event) => setDescription(event.target.value)} /></label>
-            <label>话题<input value={topics} placeholder="用空格分开，例如：清洁设备 保洁" onChange={(event) => setTopics(event.target.value)} /></label>
-            {parseTopics(topics).length > 0 && <div className="social-topics">{parseTopics(topics).map((topic) => <span key={topic}>#{topic}</span>)}</div>}
+
+        <section className={`dist-card ${writing ? "is-writing" : ""}`} aria-labelledby="publish-copy">
+          <div className="dist-sec"><h2 id="publish-copy"><em>第 3 步</em>写文案</h2>
+            <button type="button" className="social-ai-button" disabled={!chosenVideos.length || writing} onClick={() => void writeCopy()}><Sparkles size={14} />{writing ? "AI 正在写…" : hasAnyCopy ? "AI 重写" : "AI 帮我写"}</button></div>
+          <div className="dist-copy-tabs" role="tablist" aria-label="按平台编辑文案">
+            {copyPlatforms.map((platform) => <button type="button" role="tab" key={platform} aria-selected={platform === activePlatform} className={platform === activePlatform ? "is-on" : ""} onClick={() => setTabPlatform(platform)}>
+              <PlatformIcon platform={platform} size={22} /><span>{PLATFORM_NAMES[platform]}</span>{!copyOf(platform).title.trim() && <i aria-label="还没写" />}
+            </button>)}
+          </div>
+          <p className="dist-copy-style">{PLATFORM_NAMES[activePlatform]}风格：{STYLE_HINT[activePlatform]}{copyPlatforms.length > 1 && <button type="button" className="social-text-button" disabled={!current.title.trim()} onClick={syncToOthers}>同步到其他平台</button>}</p>
+          <div className="dist-form">
+            <label>标题<input value={current.title} maxLength={60} placeholder={chosenVideos.length ? "AI 会自动写，也可以自己填" : "先选视频"} onChange={(event) => setCurrent({ title: event.target.value })} />
+              <small>{current.title.trim().length} 字{TITLE_LIMITS[activePlatform] ? ` · ${PLATFORM_NAMES[activePlatform]}最多 ${TITLE_LIMITS[activePlatform]} 字` : ""}</small></label>
+            <label>正文<textarea rows={5} value={current.description} maxLength={800} placeholder="说说视频讲了什么、对谁有用" onChange={(event) => setCurrent({ description: event.target.value })} /></label>
+            <label>话题<input value={current.topics} placeholder="用空格分开，例如：清洁设备 保洁" onChange={(event) => setCurrent({ topics: event.target.value })} /></label>
+            {parseTopics(current.topics).length > 0 && <div className="dist-topics">{parseTopics(current.topics).map((topic) => <span key={topic}>#{topic}</span>)}</div>}
             <label>给 AI 的补充说明<span className="social-optional">选填</span><input value={hint} maxLength={300} placeholder="例如：主推商用洗地机，面向物业" onChange={(event) => setHint(event.target.value)} /></label>
-            <div className="social-visibility" role="radiogroup" aria-label="可见范围">
+            <div className="dist-visibility" role="radiogroup" aria-label="可见范围">
               <button type="button" role="radio" aria-checked={visibility === "public"} className={visibility === "public" ? "is-on" : ""} onClick={() => setVisibility("public")}><Globe2 size={15} />公开</button>
               <button type="button" role="radio" aria-checked={visibility === "private"} className={visibility === "private" ? "is-on" : ""} onClick={() => setVisibility("private")}><Lock size={15} />仅自己可见</button>
             </div>
+            {visibility === "public" && <p className="dist-public-note">公开发布：所有人都能看到，粉丝会刷到。</p>}
           </div>
           {problems.length > 0 && <p className="social-problems" role="alert">{problems.join("；")}。</p>}
-          <button type="button" className="primary-button social-publish-go" disabled={!canSubmit} onClick={() => void submit()}><Send size={17} />开始发布{chosenVideos.length && selectedAccounts.length ? `（${chosenVideos.length * selectedAccounts.length} 条）` : ""}</button>
-          <p className="social-hint">每个账号一条一条地发，每天最多 10 条。发布时会打开 Chrome 窗口；平台要验证时窗口会跳到前面等你处理。</p>
+          {total > 0 && missingTitle.length > 0 && <p className="social-problems">还没写标题：{missingTitle.map((platform) => PLATFORM_NAMES[platform]).join("、")}。</p>}
         </section>
       </aside>
     </div>
-    <section className="social-publish-card" aria-labelledby="publish-jobs">
-      <div className="social-publish-head"><h2 id="publish-jobs">发布记录</h2></div>
-      {jobs.length === 0 ? <p className="social-empty">还没有发布记录。</p> : <ul className="social-jobs">
-        {jobs.map((job) => <li key={job.id} className={`is-${job.status}`}>
-          <PlatformIcon platform={job.platform} size={26} />
-          <div className="social-job-copy">
-            <strong>{job.title}</strong>
-            <span>{job.accountLabel} · {job.videoName} · {job.visibility === "private" ? "仅自己可见" : "公开"}</span>
-            {job.reason && <small>{job.reason}</small>}
-          </div>
-          <span className={`social-job-status is-${job.status}`}>{STATUS[job.status]}{job.step && ["running", "clicked", "needs_user"].includes(job.status) ? ` · ${job.step}` : ""}</span>
-          <div className="social-job-actions">
-            {job.status === "queued" && <button type="button" className="social-text-button" disabled={Boolean(pending)} onClick={() => publishApi && void run(`cancel-${job.id}`, () => publishApi.cancel(job.id))}><X size={14} />取消</button>}
-            {job.status === "failed" && <button type="button" className="social-text-button" disabled={Boolean(pending)} onClick={() => publishApi && void run(`retry-${job.id}`, () => publishApi.retry(job.id))}><RotateCcw size={14} />重新发布</button>}
-            {job.status === "unknown" && <>
-              <button type="button" className="social-text-button" disabled={Boolean(pending)} onClick={() => publishApi && void run(`yes-${job.id}`, () => publishApi.resolve(job.id, true))}>我核对过：已发出</button>
-              <button type="button" className="social-text-button" disabled={Boolean(pending)} onClick={() => publishApi && void run(`no-${job.id}`, () => publishApi.resolve(job.id, false))}>我核对过：没发出</button>
-            </>}
-            {["published", "failed", "cancelled"].includes(job.status) && <button type="button" className="social-text-button is-danger" aria-label="删除这条记录" disabled={Boolean(pending)} onClick={() => publishApi && void run(`remove-${job.id}`, () => publishApi.remove(job.id))}><Trash2 size={14} /></button>}
-          </div>
-        </li>)}
-      </ul>}
+
+    <section className="dist-board" aria-labelledby="publish-jobs">
+      <div className="dist-sec"><h2 id="publish-jobs"><em>进度</em>发布记录</h2><span>{open.length ? `${open.length} 条进行中或待处理` : "没有进行中的发布"}</span></div>
+      {open.length === 0 && done.length === 0 ? <p className="social-empty">还没有发布记录。</p> : <>
+        {open.length > 0 && <ul className="dist-jobs">{open.map(jobRow)}</ul>}
+        {done.length > 0 && <>
+          <button type="button" className="dist-fold" aria-expanded={showDone} onClick={() => setShowDone(!showDone)}><ChevronDown size={16} />已完成 {done.length} 条</button>
+          {showDone && <ul className="dist-jobs">{done.map(jobRow)}</ul>}
+        </>}
+      </>}
     </section>
+
+    <div className="ns-bar dist-bar">
+      <div className="ns-bar-in">
+        <div className="ns-sel">
+          {total ? <>已选 {chosenVideos.length} 条视频 × {selectedAccounts.length} 个账号 = <em className="dist-total">{total} 条</em></> : "选好视频和账号，就可以一键发布"}
+          <small>
+            <span className="dist-bar-icons">{[...new Set(chosenAccounts.map((account) => account.platform))].map((platform) => <PlatformIcon key={platform} platform={platform} size={20} />)}</span>
+            {visibility === "public" ? "公开发布" : "仅自己可见"}{progress ? ` · 本轮已发出 ${progress.sent}/${progress.all}` : ""}
+          </small>
+          {progress && <span className="ns-progress"><i style={{ width: `${progress.all ? Math.round(progress.sent / progress.all * 100) : 0}%` }} /></span>}
+        </div>
+        <button type="button" className="ns-go" disabled={!canSubmit} onClick={() => void submit()}>开始发布</button>
+      </div>
+    </div>
   </div>;
 }

@@ -3,6 +3,7 @@ const { createSocialPublisher } = require("./social-publisher.cjs");
 const { createCoverCache, writeCopy } = require("./social-publish-copy.cjs");
 
 const FINISHED_ID = /^finished_[a-f0-9]{32}$/;
+const PLATFORMS = ["douyin", "kuaishou", "xiaohongshu", "channels"];
 
 // The renderer names videos by their 成片中心 id; file paths are resolved here and never sent back.
 function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {} }) {
@@ -26,7 +27,12 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
         videos.push({ path: file, name: text(item?.name, 80) || path.basename(file) });
       }
       const accountIds = Array.isArray(payload?.accountIds) ? payload.accountIds.slice(0, 40).map((id) => String(id || "")) : [];
-      const result = publisher.submit({ videos, accountIds, title: text(payload?.title, 60), description: text(payload?.description, 1000), visibility: payload?.visibility === "private" ? "private" : "public" });
+      const copies = {};
+      for (const platform of PLATFORMS) {
+        const copy = payload?.copies?.[platform];
+        if (copy && typeof copy === "object") copies[platform] = { title: text(copy.title, 60), description: text(copy.description, 1000) };
+      }
+      const result = publisher.submit({ videos, accountIds, title: text(payload?.title, 60), description: text(payload?.description, 1000), copies, visibility: payload?.visibility === "private" ? "private" : "public" });
       return { ...result.state, created: result.created, skipped: result.skipped };
     },
     // Cover frames for the video picker; a video whose file is gone simply has none.
@@ -38,7 +44,8 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
     },
     async suggest(payload) {
       const videos = (Array.isArray(payload?.videos) ? payload.videos : []).slice(0, 5).map((video) => ({ title: text(video?.title, 80), name: text(video?.name, 80), context: text(video?.context, 200) }));
-      return writeCopy({ client: copyClient, videos, hint: text(payload?.hint, 300) });
+      const platforms = (Array.isArray(payload?.platforms) ? payload.platforms : []).map(String).filter((platform) => PLATFORMS.includes(platform));
+      return writeCopy({ client: copyClient, videos, hint: text(payload?.hint, 300), platforms: platforms.length ? platforms : PLATFORMS });
     },
     cancel: (payload) => publisher.cancel(String(payload?.id || "")),
     retry: (payload) => publisher.retry(String(payload?.id || "")),

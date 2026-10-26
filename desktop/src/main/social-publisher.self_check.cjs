@@ -175,6 +175,20 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     await p.dispose();
   }
   {
+    // 不同平台用各自的标题和正文；某平台没给就用通用文案；标题上限按各平台检查。
+    const w = world(), p = w.make();
+    const result = p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin", "a-channels"], title: "通用标题", description: "通用正文",
+      copies: { douyin: { title: "抖音专属标题", description: "抖音正文 #保洁" } } });
+    assert.equal(result.created, 2);
+    const byPlatform = Object.fromEntries(p.snapshot().jobs.map((job) => [job.platform, job]));
+    assert.equal(byPlatform.douyin.title, "抖音专属标题"); assert.equal(byPlatform.douyin.description, "抖音正文 #保洁");
+    assert.equal(byPlatform.channels.title, "通用标题"); assert.equal(byPlatform.channels.description, "通用正文");
+    await w.until(p, finished);
+    assert.throws(() => p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], copies: { douyin: { title: "一".repeat(31), description: "" } } }), { code: "SOCIAL_TITLE_TOO_LONG" });
+    assert.throws(() => p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], copies: { douyin: { title: " ", description: "" } } }), { code: "SOCIAL_TITLE_REQUIRED" });
+    await p.dispose();
+  }
+  {
     // 一次排太多：拒绝，而不是悄悄截断。
     const w = world(), p = w.make();
     const many = Array.from({ length: 101 }, () => ({ path: w.video }));

@@ -55,9 +55,11 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
     for (let index = state.jobs.length - 1; index >= 0 && extra > 0; index--) if (!KEEP.has(state.jobs[index].status)) { state.jobs.splice(index, 1); extra--; }
   }
 
-  function submit({ videos = [], accountIds = [], title = "", description = "", visibility = "public" } = {}) {
-    title = String(title).trim().replace(/\s+/g, " "); description = String(description).trim().slice(0, 1000);
-    if (!title) throw fail("SOCIAL_TITLE_REQUIRED", "请填写标题。");
+  // `copies` gives each platform its own title and text; platforms without one use `title`/`description`.
+  function submit({ videos = [], accountIds = [], title = "", description = "", visibility = "public", copies = {} } = {}) {
+    const tidy = (copy) => ({ title: String(copy?.title ?? "").trim().replace(/\s+/g, " "), description: String(copy?.description ?? "").trim().slice(0, 1000) });
+    const shared = tidy({ title, description });
+    const copyFor = (platform) => copies && copies[platform] ? tidy(copies[platform]) : shared;
     if (!["public", "private"].includes(visibility)) throw fail("SOCIAL_VISIBILITY_INVALID", "请选择公开或仅自己可见。");
     if (!videos.length) throw fail("SOCIAL_VIDEO_REQUIRED", "请至少选择一条视频。");
     if (!accountIds.length) throw fail("SOCIAL_ACCOUNT_REQUIRED", "请至少选择一个账号。");
@@ -66,7 +68,9 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
     const targets = accountIds.map((id) => { const account = known.get(id); if (!account) throw fail("SOCIAL_ACCOUNT_NOT_FOUND", "有账号已被删除，请刷新后重选。"); return account; });
     for (const account of targets) {
       const driver = driverFor(account.platform);
-      if (driver.titleLimit && title.length > driver.titleLimit) throw fail("SOCIAL_TITLE_TOO_LONG", `${driver.name}标题最多 ${driver.titleLimit} 个字，现在是 ${title.length} 个字。`);
+      const copy = copyFor(account.platform);
+      if (!copy.title) throw fail("SOCIAL_TITLE_REQUIRED", `请填写${driver.name}的标题。`);
+      if (driver.titleLimit && copy.title.length > driver.titleLimit) throw fail("SOCIAL_TITLE_TOO_LONG", `${driver.name}标题最多 ${driver.titleLimit} 个字，现在是 ${copy.title.length} 个字。`);
       if (visibility === "private" && !driver.supportsPrivate) throw fail("SOCIAL_PRIVATE_UNSUPPORTED", `${driver.name}发表时不能设为仅自己可见，请取消勾选${driver.name}或改为公开。`);
     }
     for (const video of videos) if (!VIDEO.test(String(video.path || "")) || !fs.existsSync(video.path)) throw fail("SOCIAL_VIDEO_MISSING", `找不到视频文件：${video.name || "所选视频"}`);
@@ -74,6 +78,7 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
     if (kept + videos.length * targets.length > MAX_RECORDS) throw fail("SOCIAL_SUBMIT_TOO_LARGE", "进行中和待核对的发布太多了，请先处理完再继续。");
     const created = [], skipped = [];
     for (const video of videos) for (const account of targets) {
+      const { title, description } = copyFor(account.platform);
       // The same video with the same title on the same account is never queued twice.
       if (state.jobs.some((job) => job.accountId === account.id && job.videoPath === video.path && job.title === title && KEEP.has(job.status))) { skipped.push(`${video.name} → ${account.label}`); continue; }
       const job = { id: crypto.randomUUID(), accountId: account.id, accountLabel: account.label, platform: account.platform, videoPath: video.path, videoName: String(video.name || path.basename(video.path)).slice(0, 80),
