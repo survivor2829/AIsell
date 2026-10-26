@@ -14,12 +14,18 @@ function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, account
     saveTask: (payload) => acquisition.saveTask({
       id: payload?.id ? String(payload.id) : "", name: String(payload?.name || "").slice(0, 40), platform: String(payload?.platform || ""), accountId: String(payload?.accountId || ""),
       keywords: String(payload?.keywords || "").slice(0, 1000), intentWords: String(payload?.intentWords || "").slice(0, 600),
-      days: Number(payload?.days), maxVideos: Number(payload?.maxVideos), allComments: payload?.allComments === true, skipAuthor: payload?.skipAuthor !== false
+      days: Number(payload?.days), maxVideos: Number(payload?.maxVideos), allComments: payload?.allComments === true, skipAuthor: payload?.skipAuthor !== false,
+      mode: payload?.mode === "comment" ? "comment" : "collect", texts: String(payload?.texts || "").slice(0, 3000), maxComments: Number(payload?.maxComments)
     }),
     removeTask: (payload) => acquisition.removeTask(id(payload)),
     start: (payload) => acquisition.start(id(payload)),
     stop: () => acquisition.stop(),
     setLead: (payload) => acquisition.setLead(id(payload), String(payload?.status || "")),
+    queueActions: (payload) => acquisition.queueActions({ leadIds: (Array.isArray(payload?.leadIds) ? payload.leadIds : []).slice(0, 500).map(String), kinds: (Array.isArray(payload?.kinds) ? payload.kinds : []).slice(0, 2).map(String) }),
+    resume: () => acquisition.resume(),
+    cancelQueued: () => acquisition.cancelQueued(),
+    resolveAction: (payload) => acquisition.resolveAction(id(payload), String(payload?.outcome || "")),
+    saveCaps: (payload) => acquisition.saveCaps({ like: Number(payload?.like), follow: Number(payload?.follow), comment: Number(payload?.comment) }),
     // The file goes where the user picks; nothing is written without the save dialog.
     async exportCsv(payload) {
       const window = getMainWindow();
@@ -28,11 +34,13 @@ function registerSocialAcquisitionIpc({ ipcMain, dialog, shell, dataDir, account
       fs.writeFileSync(chosen.filePath, acquisition.csv(String(payload?.taskId || "")), "utf8");
       return { ...acquisition.snapshot(), exported: true };
     },
-    // Only the lead's own video link on the platform is opened, in the user's default browser.
+    // Only a lead's or a comment record's own video link on the platform is opened, in the user's default browser.
     async openLead(payload) {
-      const lead = acquisition.snapshot().leads.find((item) => item.id === id(payload));
-      if (!lead || !/^https:\/\/www\.kuaishou\.com\/short-video\/[A-Za-z0-9_-]+$/.test(lead.videoUrl)) throw Object.assign(new Error("这条线索的视频链接不可用。"), { code: "ACQUIRE_LINK_INVALID" });
-      await shell.openExternal(lead.videoUrl);
+      const state = acquisition.snapshot();
+      const lead = state.leads.find((item) => item.id === id(payload)), action = state.actions.find((item) => item.id === id(payload));
+      const url = lead?.videoUrl || (action ? `https://www.kuaishou.com/short-video/${action.target.videoId}` : "");
+      if (!/^https:\/\/www\.kuaishou\.com\/short-video\/[A-Za-z0-9_-]+$/.test(url)) throw Object.assign(new Error("这条记录的视频链接不可用。"), { code: "ACQUIRE_LINK_INVALID" });
+      await shell.openExternal(url);
       return acquisition.snapshot();
     }
   };

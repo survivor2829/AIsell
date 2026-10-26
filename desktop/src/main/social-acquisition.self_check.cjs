@@ -38,12 +38,22 @@ assert.deepEqual(intentOf("这价格真合适"), []);
 assert.deepEqual(intentOf("价格多少？留个电话"), ["询价", "要联系"]);
 assert.deepEqual(intentOf("有买过的吗？效果怎么样"), ["问效果"]);
 assert.deepEqual(intentOf("能租吗", ["租"]), ["含「租」"]);
+// 在页面上找线索的那条评论：页面上的昵称会在表情后多出空格（实测「🍀 吃货芸姐🪷 」）。
+{
+  const item = (name, said) => ({ querySelector: (selector) => ({ textContent: selector === ".author-name" ? name : said }) });
+  const items = [item("别人", " 我也想买，有没有推荐的 "), item("🍀 吃货芸姐🪷 ", " 我也想买，有没有推荐的 ")], document = { querySelectorAll: () => items };
+  const found = new Function("document", `return ${ks.actions.commentItem("🍀吃货芸姐🪷", "我也想买，有没有推荐的")};`)(document);
+  assert.equal(found, items[1]);
+  assert.equal(new Function("document", `return ${ks.actions.commentItem("🍀吃货芸姐🪷", "别的话")};`)(document), undefined);
+}
 // 抖音网页搜索会拦截软件控制的浏览器：列出来但不可用，不绕过。
 assert.throws(() => acquireDriverFor("douyin"), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
 
-function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
+function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-acquire-"));
-  const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0 };
+  const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0, clicks: [], typed: [] };
+  // How the platform behaves for likes, follows and comments in this world.
+  const ui = { liked: false, like: "ok", follow: "ok", comment: "ok", followLabel: "关注", covered: false, boxValue: "", target: "", ...act };
   let captchaLeft = captchaPolls, emitJson = null, pending = null, previous = "", hung = null;
   const hour = 3_600_000, nowMs = Date.parse("2026-10-26T12:00:00Z"), started = Date.now();
   const commentsFor = (id) => ({ data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
@@ -77,8 +87,29 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
     // Captions and comments can mention 滑块; that alone is not a verification.
     evaluate: async (expression) => {
       if (expression.includes("captcha")) { if (captchaLeft > 0 && --captchaLeft === 0 && pending) setImmediate(() => deliver(pending)); return captchaLeft > 0; }
+      // The element under the pointer: only the target itself counts, unless something covers it.
+      if (expression.includes("elementFromPoint")) { ui.target = expression.includes("likeicon") ? "like" : expression.includes("follow-btn") ? "follow" : expression.includes("submit-button") ? "comment" : ""; return ui.covered ? null : { x: 10, y: 20 }; }
+      if (expression.includes("scrollIntoView({ block:")) return true;
+      if (expression.includes("classList.contains")) return ui.liked;
+      if (expression.includes(".follow-btn") && expression.includes("textContent")) return ui.followLabel;
+      if (expression.includes(".follow-btn")) return true;
+      if (expression.includes(".comment-item-content") && expression.includes("some(")) return false;
+      if (expression.startsWith("Boolean(") && expression.includes("comment-list-item")) return true;
+      if (expression.includes("scrollIntoView({ block: \"end\" })")) return undefined;
       return loggedOut ? "登录即可享受" : "洗地机 拖动滑块就能拆下水箱";
     },
+    // A click answers the way the platform does; "silent" never answers, "frequent" refuses.
+    mouse: async () => {
+      const kind = ui.target; log.clicks.push(kind);
+      const answer = (url, operation, json, variables = {}) => setImmediate(() => emitJson({ url, operation, variables, json }));
+      if (kind === "like" && ui.like === "ok") { ui.liked = true; answer("https://www.kuaishou.com/graphql", "visionLikeComment", { data: { visionLikeComment: { result: 1 } } }, { commentId: ui.commentId || "" }); }
+      if (kind === "like" && ui.like === "frequent") answer("https://www.kuaishou.com/graphql", "visionLikeComment", { data: { visionLikeComment: { result: 2, error_msg: "操作太频繁，请稍后再试" } } });
+      if (kind === "follow" && ui.follow === "ok") { ui.followLabel = "已关注"; answer("https://www.kuaishou.com/rest/v/relation/follow", "", { result: 1, followStatus: 1 }); }
+      if (kind === "comment" && ui.comment === "ok") answer("https://www.kuaishou.com/graphql", "visionAddComment", { data: { visionAddComment: { result: 1 } } });
+    },
+    find: async () => ({ localName: "textarea" }),
+    type: async (_node, value) => { log.typed.push(value); ui.boxValue = value; },
+    valueOf: async () => ui.boxValue,
     front: async () => { log.fronts++; },
     send: async (method) => { if (method === "Input.dispatchMouseEvent") log.wheels++; }
   };
@@ -91,9 +122,16 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
   const make = () => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs + (Date.now() - started),
     launch: () => { log.launches++; return browser; }, makePage: () => page,
     capture: (_browser, _session, { match, onJson }) => { emitJson = (event) => { if (match(event.url, event.operation)) onJson(event); }; return { start: async () => {} }; },
-    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2 } });
+    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1 } });
   const until = async (acq) => { for (let i = 0; i < 500; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
-  return { root, log, make, until };
+  // Leads as a finished run leaves them, found by the account ks1.
+  const seed = (names) => {
+    fs.mkdirSync(path.join(root, "data"), { recursive: true });
+    const leads = names.map((name, i) => ({ id: `lead${i}`, taskId: "t", platform: "kuaishou", accountId: "ks1", keyword: "洗地机", videoId: `3xvideo000${i + 1}`, videoTitle: "洗地机测评", videoUrl: `https://www.kuaishou.com/short-video/3xvideo000${i + 1}`, videoAuthor: "作者",
+      commentId: `11800000000${i}`, userId: `3xbuyer0${i}`, userName: name, comment: "这个多少钱", commentAt: "", region: "", signals: ["询价"], status: "new", createdAt: "" }));
+    fs.writeFileSync(path.join(root, "data", "state.json"), JSON.stringify({ version: 1, tasks: [], runs: [], leads }));
+  };
+  return { root, log, ui, make, until, seed };
 }
 
 (async () => {
@@ -168,6 +206,97 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
     assert.throws(() => w.make(), { code: "ACQUIRE_STATE_INVALID" });
     assert.equal(fs.readFileSync(file, "utf8"), "{broken", "损坏的记录保留原样");
     fs.rmSync(w.root, { recursive: true, force: true });
+  }
+  {
+    // 点赞 + 关注：排进队后自动开始；平台确认后才算完成，并计入今天的用量。
+    const w = world(); w.seed(["买家A"]); const acq = w.make();
+    assert.equal(acq.queueActions({ leadIds: ["lead0"], kinds: ["like", "follow"] }).added, 2);
+    const state = await w.until(acq);
+    assert.deepEqual(state.actions.map((action) => [action.kind, action.status]).sort(), [["follow", "done"], ["like", "done"]]);
+    assert.ok(state.actions.every((action) => action.clickedAt), "点之前先记下");
+    assert.deepEqual(w.log.clicks.sort(), ["follow", "like"]);
+    assert.deepEqual([state.today.ks1.like, state.today.ks1.follow], [1, 1]);
+    assert.equal(state.runs[0].kind, "actions"); assert.equal(state.runs[0].sent, 2);
+    assert.ok(w.log.navigations.includes("https://www.kuaishou.com/profile/3xbuyer00"));
+    assert.equal(acq.queueActions({ leadIds: ["lead0"], kinds: ["like", "follow"] }).added, 0, "做过的不再做");
+    assert.match(acq.csv(), /"已完成","已完成"/);
+    await acq.dispose();
+  }
+  {
+    // 已经点过赞的评论不再点（再点一次会取消点赞），也不占今天的用量。
+    const w = world({ act: { liked: true, followLabel: "已关注" } }); w.seed(["买家A"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["like", "follow"] });
+    const state = await w.until(acq);
+    assert.deepEqual(w.log.clicks, [], "一次都没点");
+    assert.ok(state.actions.every((action) => action.status === "done" && action.already));
+    assert.deepEqual([state.today.ks1.like, state.today.ks1.follow], [0, 0]);
+    await acq.dispose();
+  }
+  {
+    // 点了但平台没回应：标「结果不明」，不自动重做；用户看过之后再标结果。
+    const w = world({ act: { like: "silent" } }); w.seed(["买家A"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["like"] });
+    let state = await w.until(acq);
+    const action = state.actions[0];
+    assert.equal(action.status, "unknown"); assert.equal(w.log.clicks.length, 1);
+    assert.equal(acq.queueActions({ leadIds: ["lead0"], kinds: ["like"] }).added, 0, "结果不明的不会再排进去");
+    assert.throws(() => acq.resolveAction(action.id, "maybe"), { code: "ACQUIRE_ACTION_OUTCOME" });
+    state = acq.resolveAction(action.id, "failed");
+    assert.equal(state.actions[0].status, "failed");
+    assert.throws(() => acq.resolveAction(action.id, "done"), { code: "ACQUIRE_ACTION_SETTLED" });
+    await acq.dispose();
+  }
+  {
+    // 平台提示频繁：这个账号停到明天，被拒的动作留在队里，明天再做；今天点「继续」也不会开始。
+    const w = world({ act: { like: "frequent" } }); w.seed(["买家A", "买家B"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0", "lead1"], kinds: ["like"] });
+    const state = await w.until(acq);
+    assert.equal(w.log.clicks.length, 1, "第一次被拒后就停");
+    assert.ok(state.actions.every((action) => action.status === "queued" && !action.clickedAt));
+    assert.ok(state.today.ks1.pausedUntil); assert.match(state.runs[0].reason, /频繁/);
+    assert.equal(acq.resume().running, "", "今天不会再开始");
+    await acq.dispose();
+  }
+  {
+    // 每天上限：到了就停，剩下的留着；按钮被挡住时不点。
+    const w = world(); w.seed(["买家A", "买家B"]); const acq = w.make();
+    acq.saveCaps({ like: 1, follow: 999 });
+    assert.equal(acq.snapshot().caps.follow, 100, "上限不能超过允许的最大值");
+    acq.queueActions({ leadIds: ["lead0", "lead1"], kinds: ["like"] });
+    const state = await w.until(acq);
+    assert.deepEqual(state.actions.map((action) => action.status).sort(), ["done", "queued"]);
+    assert.match(state.runs[0].reason, /上限/);
+    await acq.dispose();
+    const covered = world({ act: { covered: true } }); covered.seed(["买家A"]); const blocked = covered.make();
+    blocked.queueActions({ leadIds: ["lead0"], kinds: ["like"] });
+    const after = await covered.until(blocked);
+    assert.equal(after.actions[0].status, "failed"); assert.deepEqual(covered.log.clicks, []); assert.match(after.actions[0].reason, /挡住/);
+    await blocked.dispose();
+  }
+  {
+    // 同行视频留言：用用户自己写的话，每个视频只留一次；第二次运行换下一个视频。
+    const w = world(); const acq = w.make();
+    assert.throws(() => acq.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机", texts: " " }), { code: "ACQUIRE_TEXTS_REQUIRED" });
+    acq.saveTask({ mode: "comment", platform: "kuaishou", accountId: "ks1", keywords: "洗地机", texts: "厂家直供，需要的私信我\n做清洁设备十年了", maxComments: 1, maxVideos: 5 });
+    const task = acq.snapshot().tasks[0];
+    acq.start(task.id);
+    let state = await w.until(acq);
+    assert.equal(state.runs[0].kind, "comment"); assert.equal(state.runs[0].sent, 1);
+    assert.deepEqual(w.log.typed, ["厂家直供，需要的私信我"]);
+    assert.equal(state.actions[0].target.videoId, "3xvideo0001"); assert.equal(state.actions[0].status, "done");
+    acq.start(task.id);
+    state = await w.until(acq);
+    assert.deepEqual(state.actions.map((action) => action.target.videoId).sort(), ["3xvideo0001", "3xvideo0002"], "同一个视频不留第二次");
+    assert.equal(state.today.ks1.comment, 2);
+    await acq.dispose();
+    // 重启：点下去还没确认的变成结果不明；没点的排队动作还在队里。
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.actions.unshift({ id: "a1", kind: "like", platform: "kuaishou", accountId: "ks1", leadId: "x", target: { videoId: "v" }, status: "running", clickedAt: "2026-10-26T12:00:00Z", reason: "" },
+      { id: "a2", kind: "follow", platform: "kuaishou", accountId: "ks1", leadId: "x", target: { videoId: "v" }, status: "running", clickedAt: "", reason: "" });
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const reopened = w.make().snapshot();
+    assert.equal(reopened.actions.find((action) => action.id === "a1").status, "unknown");
+    assert.equal(reopened.actions.find((action) => action.id === "a2").status, "queued");
   }
   console.log("social acquisition self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });
