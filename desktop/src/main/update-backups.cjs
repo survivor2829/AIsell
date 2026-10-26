@@ -137,10 +137,14 @@ async function confirmSet(profile, id, { targetVersion, ack, dataCheck }) {
     // Prepared/failed sets may be the sole evidence for an interrupted update.
     // Only completed sets are retired automatically, never an unregistered path.
     // Old unclassified backups are historical candidates, never silently adopted.
+    // An internal acceptance run that was never confirmed is superseded once a
+    // later acceptance run is confirmed; otherwise it pins old component
+    // generations forever. Automatic (customer) sets keep the stricter rule.
+    const superseded = set => current.kind === "acceptance" && Date.parse(set.createdAt) < Date.parse(current.createdAt);
     const expired = registry.sets.filter(set => current.rotationPolicy === "latest-confirmed" && set.id !== id && set.rotationPolicy === "latest-confirmed"
       && (["confirmed", "retiring"].includes(set.state)
         || (set.kind === "acceptance" && set.state === "prepared" && !set.confirmationFailure
-          && set.data.directory === current.data.directory && set.programBackup.program === current.programBackup.program)));
+          && (set.data.directory === current.data.directory && set.programBackup.program === current.programBackup.program || superseded(set)))));
     for (const set of expired) set.state = "retiring";
     save(registry);
     await retireSets(profile, registry, save);

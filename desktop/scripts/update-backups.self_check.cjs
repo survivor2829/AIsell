@@ -422,6 +422,21 @@ if (process.argv[2] === "--hold-registry") {
     assert.equal(readRegistry(profile).sets.find(set => set.id === pending.id).state, "confirmed");
     assert.equal(readRegistry(profile).sets.filter(set => set.rotationPolicy === "latest-confirmed" && set.state === "confirmed").length, 1);
     assert.equal(await fs.readFile(path.join(preservedRoot, "objects", oldDatabase.sha256), "utf8"), "business database", "later updates cannot rotate unique historical data");
+    // An unconfirmed internal acceptance run older than a newly confirmed one is superseded and rotates out;
+    // an unconfirmed customer (automatic) set made later stays as failure evidence.
+    // Like the real case: the stale run was backed up to a different folder, so the same-folder rule does not apply.
+    const staleId = randomUUID();
+    const staleAcceptance = await registerSet(profile, { id: staleId, version: "1.1.78", kind: "acceptance",
+      programBackup: await backupProgram(program, path.join(root, "programs-elsewhere"), staleId, {}), data: await captureData(profile, staleId) });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const newerId = randomUUID();
+    const newerAcceptance = await registerSet(profile, { id: newerId, version: "1.1.78", kind: "acceptance",
+      programBackup: await backupProgram(program, path.join(root, "programs-acceptance"), newerId, {}), data: await captureData(profile, newerId) });
+    const laterAutomatic = await make();
+    assert.notEqual(staleAcceptance.programBackup.program, newerAcceptance.programBackup.program);
+    await confirm(newerAcceptance);
+    assert.equal(readRegistry(profile).sets.some(set => set.id === staleAcceptance.id), false, "a superseded acceptance run no longer pins old components");
+    assert.equal(readRegistry(profile).sets.find(set => set.id === laterAutomatic.id)?.state, "prepared", "unconfirmed customer evidence stays protected");
     const lostConfirmation = await make();
     const jobs = path.join(profile, "data/cloud-maintenance/components/jobs");
     await fs.mkdir(jobs, { recursive: true });
