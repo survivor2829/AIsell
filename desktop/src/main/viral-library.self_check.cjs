@@ -27,8 +27,10 @@ assert.equal(library.stats.ready, 1);
 assert.equal(library.stats.collected, 4);
 assert.equal(library.flow.strands.length, 4, '每条扒到的内容都是一条线');
 assert.match(library.flow.strands.find((s) => s.id === '1').reason, /^已改写成原创稿/);
-assert.deepEqual(library.flow.strands.filter((s) => s.outcome === 'pass').map((s) => s.id), ['1'], '只有进了文案库的画成通过，最后合拢汇进文案库');
-assert.equal(library.flow.strands.find((s) => s.id === '3').reason, '够爆，这次没改写');
+const passing = library.flow.strands.filter((s) => s.outcome === 'pass');
+assert.deepEqual(passing.map((s) => [s.id, s.group, s.label]), [['1', 'kind-asking', '评论里问价多'], ['3', 'kind-underdog', '小号也能爆']], '够爆的按爆款类型合成几束，最后合拢汇进文案库');
+assert.doesNotMatch(passing[1].reason, /已改写/, '没改写的不说已改写');
+assert.equal(validateLibrary(JSON.parse(JSON.stringify(library))).strands.find((s) => s.id === '1').label, '评论里问价多');
 assert.equal(library.flow.strands.find((s) => s.id === '2').group, '1', '搬运并到原作那一束');
 assert.throws(() => buildLibrary({ scan, scripts: [] }), { code: 'viral_library_empty' });
 const twice = buildLibrary({ scan, scripts: [scripts[0], { ...scripts[0], title: '后改写的那条' }], now: new Date(now) });
@@ -41,7 +43,7 @@ const strands = strandsFromScan(big, new Set(['1']));
 assert.equal(strands.length, MAX_STRANDS);
 assert.ok(strands.some((s) => s.outcome === 'pass'));
 const ids = new Set(strands.map((s) => s.id));
-assert.ok(strands.every((s) => ids.has(s.group)), '每一束都指向存在的线');
+assert.ok(strands.every((s) => ids.has(s.group) || s.group.startsWith('kind-')), '每一束都指向存在的线，或者是一种爆款类型');
 
 // 客户端校验：往返一致；坏条目丢掉；全坏当作还没有文案库
 const back = validateLibrary(JSON.parse(JSON.stringify(library)));

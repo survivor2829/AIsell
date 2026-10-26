@@ -2,9 +2,10 @@
 // 每条线是一条真实内容；同一束是被合并的搬运内容（或同一原因被筛掉的一组）；过闸门的汇入产出。
 import type { ViralBrief, ViralScanResult, ViralTag } from './reference-human-types';
 
-export type FlowStrand = { id: string; title: string; source: string; group?: string; outcome?: 'pass' | 'drop'; reason?: string };
-export type FlowStage = { no: string; label: string; value: number | null; unit: string; note?: string; accent?: boolean };
-export type FlowBundle = { key: string; members: number[]; pass: boolean; reason: string; merged: boolean; y: number; half: number };
+// label：这一束的名字（例如按爆款类型合成的一束「评论里问价多」），没有时按搬运合并或单条来解释。
+export type FlowStrand = { id: string; title: string; source: string; group?: string; outcome?: 'pass' | 'drop'; reason?: string; label?: string };
+export type FlowStage = { no: string; label: string; value: number | null; unit: string; note?: string; hint?: string; accent?: boolean };
+export type FlowBundle = { key: string; members: number[]; pass: boolean; reason: string; merged: boolean; label?: string; y: number; half: number };
 export type FlowLine = { strand: FlowStrand; ys: Float32Array; end: number; bundle: number };
 export type FlowLayout = {
   w: number; h: number; decided: boolean; lines: FlowLine[]; bundles: FlowBundle[];
@@ -40,8 +41,8 @@ export function bundleStrands(strands: FlowStrand[], maxBundles = MAX_BUNDLES) {
   const groups = new Map<string, number[]>();
   strands.forEach((s, i) => { const key = s.group || s.id; groups.set(key, [...(groups.get(key) || []), i]); });
   const lead = (key: string, members: number[]) => strands[members.find((i) => strands[i].id === key) ?? members[0]];
-  type Draft = { key: string; members: number[]; pass: boolean; reason: string; merged: boolean };
-  let drafts: Draft[] = [...groups].map(([key, members]) => { const head = lead(key, members); return { key, members, pass: head.outcome === 'pass', reason: head.reason || '', merged: false }; });
+  type Draft = { key: string; members: number[]; pass: boolean; reason: string; merged: boolean; label?: string };
+  let drafts: Draft[] = [...groups].map(([key, members]) => { const head = lead(key, members); return { key, members, pass: head.outcome === 'pass', reason: head.reason || '', merged: false, label: head.label }; });
   const mergeBy = (list: Draft[], keyOf: (d: Draft) => string) => {
     const merged = new Map<string, Draft>();
     for (const d of list) {
@@ -70,7 +71,9 @@ export function layoutFlow(strands: FlowStrand[], w: number, h: number): FlowLay
   const order = decided ? drafts.flatMap((d) => d.members) : strands.map((_, i) => i);
   const biggest = Math.max(1, ...drafts.map((d) => d.members.length));
   const gap = Math.max(0.8, Math.min(1.6, (h * 0.075) / biggest));
-  const bundles: FlowBundle[] = drafts.map((d, i) => ({ ...d, y: h * 0.14 + ((i + 0.5) / nb) * h * 0.72, half: (d.members.length * gap) / 2 }));
+  // 通过的几束线距拉开，画成粗红带；没通过的保持细密。
+  const spread = (pass: boolean) => gap * (pass ? 2.4 : 1);
+  const bundles: FlowBundle[] = drafts.map((d, i) => ({ ...d, y: h * 0.14 + ((i + 0.5) / nb) * h * 0.72, half: (d.members.length * spread(d.pass)) / 2 }));
   const bundleOf = new Map<number, number>();
   bundles.forEach((b, bi) => b.members.forEach((m) => bundleOf.set(m, bi)));
   const cols = Math.ceil(w / FLOW_STEP) + 1, band = (h - 2 * pad) / Math.max(1, total);
@@ -84,7 +87,7 @@ export function layoutFlow(strands: FlowStrand[], w: number, h: number): FlowLay
       const y0 = pad + (k + 0.5) * band + (r() - 0.5) * band * 0.8;
       const amp = 2 + r() * 5, freq = (Math.PI * 2) / (70 + r() * 140), phase = r() * Math.PI * 2;
       const ys = new Float32Array(cols);
-      const b = bi < 0 ? null : bundles[bi], off = (j - (members.length - 1) / 2) * gap;
+      const b = bi < 0 ? null : bundles[bi], off = (j - (members.length - 1) / 2) * (b ? spread(b.pass) : gap);
       const yAtX1 = y0 + (mid - y0) * 0.25 + amp * 0.4 * Math.sin(freq * x1 + phase);
       for (let c = 0; c < cols; c += 1) {
         const x = c * FLOW_STEP;
@@ -112,6 +115,7 @@ export function describeHover(layout: FlowLayout, line: number, x: number) {
   // 合并束里只数原作；并进来的搬运另外说明，数字和四段统计对得上。
   const heads = layout.lines.filter((other) => other.bundle === l.bundle && (other.strand.group || other.strand.id) === other.strand.id).length;
   const copies = n - heads ? `，另有 ${n - heads} 条搬运并在这一束` : '';
+  if (b.label && x < layout.gate) return { title: b.label, detail: `${n} 条够爆的内容汇成一束` };
   if (b.merged) return b.pass ? { title: `${heads} 条进候选`, detail: `命中至少一种爆款指标${copies}` } : { title: `${heads} 条没进：${b.reason}`, detail: `同一原因的合在一起画${copies}` };
   if (x < layout.gate) return n > 1 ? { title: `同一文案 ${n} 条`, detail: '多人发了几乎一样的内容，只留点赞最高的一条' } : { title, detail: s.source };
   return b.pass ? { title, detail: `进候选：${b.reason}` } : { title, detail: `没进：${b.reason}` };

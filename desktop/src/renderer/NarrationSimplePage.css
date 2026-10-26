@@ -11,10 +11,18 @@
 /* 流图：铺满整行，高度随宽度放大 */
 .ns-flow { margin-top: 30px; }
 .ns-flow .flow-funnel { --flow-bg: 255, 247, 247; background: transparent; }
-.ns-flow .flow-funnel-summary { padding-top: 20px; font-size: 19px; font-weight: 800; gap: 8px 6px; }
-.ns-flow .flow-funnel-summary span { gap: 8px; }
-.ns-flow .flow-funnel-summary i { margin: 0 16px; }
-.ns-flow .flow-funnel-summary b { font-size: 40px; }
+.ns-flow .flow-funnel-caption { margin-top: 10px; font-size: 14px; }
+.ns-flow .flow-funnel-output b { font-size: 18px; }
+.ns-flow .flow-funnel-output span { font-size: 14px; }
+/* 四张步骤卡：编号、大号数字、说明、明细 */
+.ns-flow .flow-funnel-stages { margin-top: 18px; border-top-color: #f0dfe1; }
+.ns-flow .flow-funnel-stage { padding: 22px 28px 4px; border-right-color: #f3e6e7; }
+.ns-flow .flow-funnel-stage:first-child { padding-left: 0; }
+.ns-flow .flow-funnel-no { font-size: 15px; letter-spacing: 0.12em; }
+.ns-flow .flow-funnel-n { display: inline-block; margin-top: 10px; font-size: 46px; line-height: 1.05; }
+.ns-flow .flow-funnel-u { font-size: 16px; font-weight: 700; }
+.ns-flow .flow-funnel-d { margin-top: 12px; font-size: 15px; font-weight: 500; line-height: 1.7; color: #4b5563; }
+.ns-flow .flow-funnel-h { font-size: 13px; }
 .ns-flow .flow-funnel-tip b { font-size: 15px; }
 .ns-flow .flow-funnel-tip span { font-size: 13px; }
 

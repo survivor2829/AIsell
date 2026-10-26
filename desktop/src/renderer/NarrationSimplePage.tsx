@@ -116,7 +116,8 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
         {library && flow ? <>
           <div className="ns-kicker">爆款文案库{updatedText(library.updatedAt) && <span className="ns-live"><i />{updatedText(library.updatedAt)}</span>}{library.preview && <span className="ns-preview">预览数据，仅开发版可见</span>}</div>
           <h1 className="ns-h1">{dayWord(library.updatedAt)}全网扒了 {formatCount(library.stats.collected)} 条清洁行业口播，<br />挑出 <em>{library.stats.ready} 条爆款</em>，已经改写成你的原创稿。</h1>
-          <div className="ns-flow" ref={flowBox}><FlowFunnel strands={flow.strands} stages={flow.stages} height={flowHeight} ambient summary outputLabel="爆款文案库" outputNote="已改写成原创稿，可以直接出片" emptyText="" /></div>
+          <div className="ns-flow" ref={flowBox}><FlowFunnel strands={flow.strands} stages={flow.stages} height={flowHeight} ambient showOutput outputLabel="爆款文案库" outputNote="已改写成原创稿，可以直接出片" emptyText=""
+            caption="示意图：每条线是一条扒到的口播；搬运和重复的合成一束；经过「够爆」的闸门，只有真爆款的几束通过，汇进爆款文案库。鼠标移上去可以看每条线是什么。" /></div>
           <div className="ns-sec"><b>选一条文案</b><span>按爆款热度排序 · 内容已换成清洁设备，只学它的结构和节奏</span></div>
           <div className="ns-list">{library.items.map((item) => <ScriptCard key={item.id} item={item} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
         </> : <div className="ns-wait">{libraryError || '正在读取爆款文案库…'}</div>}
