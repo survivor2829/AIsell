@@ -21,3 +21,25 @@
 .video-example-error button { padding: 10px 16px; margin: 8px; border: 0; border-radius: 7px; cursor: pointer; }
 .video-examples button:focus-visible, .video-example-dialog button:focus-visible { outline: 2px solid #c91739; outline-offset: 3px; }
 @media (max-width: 600px) { .video-example-cards { grid-template-columns: 1fr; } }
+.example-banner { display: flex; gap: 22px; align-items: stretch; margin: 0 0 18px; padding: 14px; background: #fff9fa; border: 1px solid #eadde1; border-radius: 14px; color: #283344; }
+.example-banner-player { flex: 0 0 auto; width: 152px; aspect-ratio: 9 / 16; overflow: hidden; border-radius: 10px; background: #10141c; }
+.example-banner-player video, .example-banner-poster img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.example-banner-poster { position: relative; display: block; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.example-banner-poster > span { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: #10141c33; transition: background .15s; }
+.example-banner-poster:hover > span { background: #10141c55; }
+.example-banner-error { display: grid; place-content: center; gap: 10px; height: 100%; padding: 12px; color: #fff; text-align: center; font-size: 13px; }
+.example-banner-error p { margin: 0; }
+.example-banner-error button { padding: 6px 12px; border: 0; border-radius: 6px; cursor: pointer; }
+.example-banner-copy { display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; max-width: 620px; }
+.example-banner-copy small { color: #b81735; font-size: 13px; font-weight: 600; }
+.example-banner-copy h2 { margin: 0; font-size: 20px; }
+.example-banner-copy p { margin: 0; color: #4b5565; line-height: 1.65; }
+.example-banner-copy .example-banner-title { color: #283344; font-weight: 600; }
+.example-banner-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.example-banner-actions button, .example-banner.is-collapsed button { display: inline-flex; align-items: center; gap: 4px; padding: 7px 14px; border: 1px solid #eadde1; border-radius: 8px; background: #fff; color: #283344; font: inherit; font-size: 14px; cursor: pointer; }
+.example-banner-actions .example-banner-tutorial { border-color: #c91739; color: #b81735; }
+.example-banner-actions button:hover, .example-banner.is-collapsed button:hover { background: #fff3f5; }
+.example-banner.is-collapsed { align-items: center; justify-content: space-between; padding: 10px 14px; }
+.example-banner.is-collapsed > span { display: inline-flex; align-items: center; gap: 8px; color: #4b5565; }
+.example-banner button:focus-visible { outline: 2px solid #c91739; outline-offset: 3px; }
+@media (max-width: 600px) { .example-banner { flex-direction: column; } .example-banner-player { width: min(100%, 200px); margin: 0 auto; } }

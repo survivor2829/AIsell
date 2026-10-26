@@ -415,6 +415,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     notify({ updateRequested: requested, waitingReason, stage }); return status();
   }
   function setInstallBlocked(message) { notify({ stage: "ready", error: message }); return status(); }
+  // Launch update gate state (update-launch-gate.cjs), shown full screen by the renderer.
+  function setLaunchGate(launchGate) { notify({ launchGate }); return status(); }
   function acknowledgeUpdate() {
     if (userData) { const paths = componentPaths.updatePaths(userData), selected = readJson(paths.selection, {});
       if (selected.lastUpdate) componentPaths.saveSelection(paths, { ...selected, lastUpdate: { ...selected.lastUpdate, unread: false } }); }
@@ -437,7 +439,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); retryArtifacts(dir, fullRetentionOptions()); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
+  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, setLaunchGate, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

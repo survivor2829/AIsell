@@ -9,6 +9,7 @@ export type CloudStatus = {
   announcements: CloudAnnouncement[]; unreadAnnouncements: number; lastAnnouncementsCheck: string;
   announcementError: string; announcementsChecking: boolean;
   downloadedBytes?: number; totalBytes?: number; updateFailure?: string;
+  launchGate?: { phase: "checking" | "updating" | "retrying" | "installing" | "open"; reason: string; attempt: number; retryAt: number };
   lastUpdate?: { version: string; notes: string; completedAt: string; unread: boolean } | null;
 };
 declare global {
