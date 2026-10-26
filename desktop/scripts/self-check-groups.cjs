@@ -51,6 +51,7 @@ const checks = [
   "src/main/voice-clone.self_check.cjs",
   "src/main/keyword-acquisition.self_check.cjs",
   "src/main/social-accounts.self_check.cjs",
+  "src/main/social-publisher.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",
   "src/main/deepseek-api.self_check.cjs",

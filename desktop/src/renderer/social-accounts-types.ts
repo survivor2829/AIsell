@@ -2,7 +2,7 @@ export type SocialPlatformKey = "douyin" | "kuaishou" | "channels" | "xiaohongsh
 export type SocialAccount = {
   id: string; platform: SocialPlatformKey; label: string;
   status: "login_required" | "active" | "expired";
-  createdAt: string; lastLoginAt: string; checkedAt: string; loggingIn: boolean;
+  createdAt: string; lastLoginAt: string; checkedAt: string; loggingIn: boolean; publishing?: boolean;
 };
 export type SocialAccountsState = { platforms: { key: SocialPlatformKey; name: string }[]; browserReady: boolean; accounts: SocialAccount[] };
 export type SocialAccountsResult = { ok: boolean; code?: string; error?: string; state?: SocialAccountsState };

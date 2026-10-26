@@ -50,6 +50,7 @@ const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { registerBusinessWorkbenchIpc } = require('./business-workbench-ipc.cjs');
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
+const { registerSocialPublishIpc } = require("./social-publish-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
@@ -87,6 +88,7 @@ let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let keywordAcquisitionRegistration = null;
 let socialAccountsRegistration = null;
+let socialPublishRegistration = null;
 let businessWorkbenchRegistration = null;
 let digitalHumanRegistration = null;
 let productVideoRegistration = null;
@@ -290,6 +292,7 @@ function createWindow() {
     try { diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
+    void socialPublishRegistration?.dispose().catch(() => undefined);
     void socialAccountsRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
@@ -731,6 +734,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_accounts") });
+    socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow,
+      dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
+      resolveFinishedVideo: async (finishedVideoId) => {
+        const result = await contentEngineController.resolveFinishedPath(finishedVideoId);
+        if (result?.finished_video_id !== finishedVideoId) throw new Error("finished video mismatch");
+        return require("./content-engine-ipc.cjs").resolvedAbsolutePath(result);
+      } });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: () => licenseStore.status() });
     const usedDigitalHumanClicks = new Set();
@@ -982,6 +992,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           // 地图、关键词等浏览器任务在跑，或者有登录/悬浮窗口正显示着，都算在用。
           if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
           if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
+          if (socialPublishRegistration?.isBusy()) return true;
           if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
           const content = contentEngineController?.updateStatus();
           if (content?.pending || (content?.alive && content.state !== "ready")) return true;
@@ -1049,6 +1060,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     Promise.race([
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
+        Promise.resolve(socialPublishRegistration?.dispose()),
         Promise.resolve(socialAccountsRegistration?.dispose()),
         Promise.resolve(businessWorkbenchRegistration?.dispose()),
         Promise.resolve(digitalHumanRegistration?.close()),
