@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { DigitalHumanApi, DigitalHumanResult, DigitalHumanTask } from './digital-human-types';
+import type { DigitalHumanResult } from './digital-human-types';
 import type { ReferenceAsset, ReferenceHumanApi, ReferenceTask, ViralJob, ViralLibrary, ViralLibraryItem, ViralLibraryScript } from './reference-human-types';
 import { FlowFunnel } from './FlowFunnel';
 import { tagText } from './flow-funnel';
@@ -11,8 +11,6 @@ import './NarrationSimplePage.css';
 // 数字人视频（极简版）：第一页看爆款文案库，选一条爆款、选时长，点「仿写」拿到自己的原创稿；第二页上传本人视频，一键出片。
 // 原文案只在云端，客户点「仿写」时才在云端改写。字幕模板、配乐、封面、报价、试听都在后台按默认自动完成，不在页面出现。
 const api = () => (window as unknown as { xiaoxiDigitalHuman: { reference: ReferenceHumanApi } }).xiaoxiDigitalHuman.reference;
-const imageApi = () => (window as unknown as { xiaoxiDigitalHuman: DigitalHumanApi }).xiaoxiDigitalHuman;
-export type PendingKind = 'reference' | 'image';
 // 结果待核对或需要处理的旧任务：不自动重新购买，要让客户能找到并自己决定。
 const STUCK = new Set(['needs_attention', 'outcome_unknown']);
 async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
@@ -38,7 +36,7 @@ function ScriptCard({ item, draft, made, writing, selected, onSelect }: { item: 
   );
 }
 
-export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: PendingKind) => void } = {}) {
+export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => void } = {}) {
   const [page, setPage] = useState<'pick' | 'upload'>('pick');
   const [library, setLibrary] = useState<ViralLibrary | null>(null), [libraryError, setLibraryError] = useState('');
   const [person, setPerson] = useState<ReferenceAsset | null | undefined>(undefined);
@@ -48,7 +46,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const [business, setBusiness] = useState('');
   const [busy, setBusy] = useState(''), [error, setError] = useState('');
   const [cover, setCover] = useState('');
-  const [stuck, setStuck] = useState<{ reference: ReferenceTask[]; image: DigitalHumanTask[] }>({ reference: [], image: [] });
+  const [stuck, setStuck] = useState<ReferenceTask[]>([]);
   const lastJob = useRef('');
   const root = useRef<HTMLDivElement>(null);
   const [libraryTry, setLibraryTry] = useState(0);
@@ -72,9 +70,9 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
       if (saved.status === 'fulfilled') setBusiness(saved.value.draft?.business || '');
       setPerson(items.find((a) => a.id === preferred) || items[0] || null);
     });
-    void Promise.allSettled([unwrap(api().list()), unwrap(imageApi().list())]).then(([references, images]) => {
-      if (active) setStuck({ reference: references.status === 'fulfilled' ? references.value.items.filter((t) => STUCK.has(t.status)) : [], image: images.status === 'fulfilled' ? images.value.items.filter((t) => STUCK.has(t.status)) : [] });
-    });
+    void unwrap(api().list()).then((references) => {
+      if (active) setStuck(references.items.filter((t) => STUCK.has(t.status)));
+    }).catch(() => {});
     const off = api().onViralPipeline((state) => setJobs(state.items.filter((j) => j.mode === 'script')));
     void unwrap(api().viralPipelineList()).then((state) => { if (active) setJobs(state.items.filter((j) => j.mode === 'script')); }).catch(() => {});
     return () => { active = false; off(); };
@@ -148,8 +146,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const retry = () => act('retry', async () => { if (current) await unwrap(api().viralPipelineRetry({ id: current.id })); });
   const working = status?.tone === 'busy';
   // 一键出片自己的任务在底部栏里处理，这里只数其他旧任务。
-  const stuckReference = stuck.reference.filter((t) => !jobs.some((j) => j.taskId === t.id));
-  const stuckCount = stuckReference.length + stuck.image.length;
+  const stuckCount = stuck.filter((t) => !jobs.some((j) => j.taskId === t.id)).length;
 
   return (
     <div className="ns-page" ref={root}>
@@ -167,7 +164,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
           <button type="button" className="ns-go is-quiet" onClick={() => setLibraryTry((n) => n + 1)}>重新加载</button>
           {DEVELOPMENT_EDITION && <small>开发版可见：{libraryError}</small>}
         </div> : <div className="ns-skeleton" aria-busy="true" aria-label="正在读取爆款文案库"><i /><i /><i className="is-flow" /></div>}
-        {stuckCount > 0 && onOpenPending && <button type="button" className="ns-pending" onClick={() => onOpenPending(stuckReference.length ? 'reference' : 'image')}>
+        {stuckCount > 0 && onOpenPending && <button type="button" className="ns-pending" onClick={onOpenPending}>
           有 {stuckCount} 条以前的视频没做完，软件不会自己重做（免得重复花钱）<b>去看看 →</b></button>}
         <div className="ns-bar"><div className="ns-bar-in">
           <div className="ns-sel">{draft ? `已仿写：${draft.title}` : pick ? pick.title : '选一条爆款'}

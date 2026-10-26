@@ -6,7 +6,7 @@ const Module = require("node:module");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 function source(name) { return fs.readFileSync(path.join(__dirname, name), "utf8"); }
-const page = source("BatchCreativePage.tsx"), sound = source("BatchSoundSettings.tsx"), digital = source("DigitalHumanPage.tsx");
+const page = source("BatchCreativePage.tsx"), sound = source("BatchSoundSettings.tsx");
 const previous = require.extensions[".tsx"];
 const previousTs = require.extensions[".ts"];
 require.extensions[".tsx"] = (module, file) => module._compile(ts.transpileModule(fs.readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText, file);
@@ -25,8 +25,5 @@ try {
   assert.match(page, /video_template: "topic_fixed", strict_visual_review: false/u);
   assert.match(page, /c.music_status === "none" && <p>本条未配乐/u);
   assert.doesNotMatch(sound, /previewAutoMixVoicePersona|approveAutoMixVoicePersona|music-preview/u);
-  assert.doesNotMatch(digital, /试听|previewVoice\(/u);
-  assert.match(digital, /saveAndPreview\(\{ \.\.\.resolvedDraft/u);
-  assert.match(digital, /create\(\{ \.\.\.resolvedDraft/u);
   console.log("Simple video sound settings and legacy recovery boundary self-check passed");
 } finally { if (previousTs) require.extensions[".ts"] = previousTs; else delete require.extensions[".ts"]; if (previous) require.extensions[".tsx"] = previous; else delete require.extensions[".tsx"]; }

@@ -55,7 +55,7 @@ const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs")
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
-const { createPriceReader, createBailianPriceReader, createReferencePriceReader } = require("./product-video-pricing.cjs");
+const { createPriceReader, createReferencePriceReader } = require("./product-video-pricing.cjs");
 const { createProductAudioPreparer } = require("./product-video-audio.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
@@ -751,7 +751,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: () => licenseStore.status() });
     const usedDigitalHumanClicks = new Set();
     const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
-    const readOfficialVideoPrices = createBailianPriceReader({ fetch: net.fetch.bind(net) });
     const prepareWorkbenchNarration = async (payload) => {
       await beforeContentProviderWork([]);
       try { return await contentEngineController.prepareVideoNarration(payload); }
@@ -775,8 +774,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
-      readPrices: readOfficialVideoPrices,
-      readPreviewPrices: () => readVideoPrices(),
       readReferencePrices: createReferencePriceReader({ fetch: net.fetch.bind(net) }),
       readCoverPrices: () => readVideoPrices(),
       getGeneratedVideo: (id) => contentEngineController.getGeneratedVideo(id),
@@ -786,28 +783,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       coverFontFile: (() => { try { return app.isPackaged ? resolveContentEngineBundledFont(contentEngineRuntimePath()) : path.join(__dirname, "..", "..", "sidecars", "content-engine", "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf"); } catch { return undefined; } })(),
       notify: (title, body) => { try { if (Notification.isSupported()) new Notification({ title, body: String(body || "").slice(0, 120) }).show(); } catch { /* 提醒失败不影响任务 */ } },
       generateCover: async (id, design, control) => { await beforeContentProviderWork(['apimart']); return contentEngineController.regenerateCover(id, design, control); },
-      prepareNarration: prepareWorkbenchNarration,
-      listVoices: async () => { await contentEngineController.start(); return contentEngineController.listAutoMixVoicePersonas(); },
-      recommendVoice: async (payload) => { await beforeContentProviderWork(["bailian"]); return contentEngineController.recommendDigitalHumanVoice(payload); },
-      previewVoice: async (id) => { await beforeContentProviderWork(["volcengine_tts"]); return contentEngineController.previewAutoMixVoicePersona(id); },
-      approveVoice: (id) => contentEngineController.approveAutoMixVoicePersona(id),
       voiceCloneClient: createVoiceCloneClient({ gatewayClient: providerGatewayClient, rootDir: path.join(runtime.rootDir, "digital_human", "voice-clones"),
         ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg" }),
       selectMusic: selectWorkbenchMusic,
       ffmpegPath: app.isPackaged
         ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
         : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
-      imageSize: (bytes) => nativeImage.createFromBuffer(bytes).getSize(),
-      imageThumbnail: (bytes) => nativeImage.createFromBuffer(bytes).resize({ width: 320 }).toDataURL(),
-      uploadPreparedAudio: async (payload) => {
-        await beforeContentProviderWork(["bailian"]);
-        return contentEngineController.uploadDigitalHumanAudio(payload);
-      },
-      requireAudioUploadCapability: async () => {
-        await beforeContentProviderWork(["bailian"]);
-        await contentEngineController.start();
-        return contentEngineController.status().capabilities?.digital_human_audio_upload === true;
-      },
       requireTrustedClick: (event, payload, action) => {
         const token = String(payload?.clickToken || "");
         const prefix = `digital-human:${action}:`;

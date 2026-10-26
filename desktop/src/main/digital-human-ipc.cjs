@@ -1,5 +1,4 @@
-const { createDigitalHumanService, assertKeys, ID } = require('./digital-human-service.cjs');
-const { cleanMessage, fail } = require('./digital-human-provider.cjs');
+const { assertKeys, cleanMessage, fail } = require('./digital-human-provider.cjs');
 const { createReferenceHumanService, TASK_ID: REFERENCE_ID } = require('./reference-human-service.cjs');
 const { createViralScout } = require('./viral-scout.cjs');
 const { createViralPipeline, JOB_ID } = require('./viral-pipeline.cjs');
@@ -11,7 +10,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
-  'capabilities', 'list', 'get', 'import-image', 'import-audio', 'recommend-voice', 'voice-preview', 'voice-select', 'voice-clones', 'voice-train', 'voice-clone-status', 'speech-media', 'create', 'preview', 'confirm', 'refresh', 'resume', 'media', 'images',
   'reference-capabilities', 'reference-import', 'reference-assets', 'reference-list', 'reference-create', 'reference-get', 'reference-quote', 'reference-prepare', 'reference-confirm', 'reference-refresh', 'reference-resume', 'reference-speech', 'reference-train', 'reference-voice-status', 'reference-write-script', 'reference-repackage',
   'reference-cover-frame', 'reference-cover-quote', 'reference-cover-generate',
   'reference-workspace', 'reference-save-workspace', 'reference-script-quota', 'reference-source-status', 'reference-source-connect', 'reference-source-search', 'reference-source-read',
@@ -23,7 +21,6 @@ const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
 
 function registerDigitalHumanIpc(options = {}) {
   const { ipcMain, dialog, getMainWindow = () => null } = options;
-  const service = options.service || createDigitalHumanService(options);
   const reference = options.referenceService || createReferenceHumanService(options);
   // 扒爆款：首次使用时才创建平台窗口；进度推送给主窗口画流图。
   let viralScout = options.viralScout || null;
@@ -79,43 +76,7 @@ function registerDigitalHumanIpc(options = {}) {
     if (!REFERENCE_ID.test(String(payload.id || ''))) throw fail('reference_not_found', '请重新选择本人分身任务。');
     return payload.id;
   };
-  const id = (payload, extra = []) => {
-    assertKeys(payload, ['id', ...extra]);
-    if (!ID.test(String(payload.id || ''))) throw fail('digital_human_invalid_id', '请重新选择这条任务。');
-    return payload.id;
-  };
   const operations = {
-    capabilities: () => service.capabilities(),
-    list: () => service.list(),
-    get: (payload) => service.get(id(payload)),
-    'import-image': async (payload) => {
-      assertKeys(payload, []);
-      const window = getMainWindow();
-      const settings = { title: '选择形象或产品图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp'] }] };
-      const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
-      if (result.canceled || !result.filePaths?.[0]) return null;
-      return service.importImage(result.filePaths[0]);
-    },
-    'import-audio': async (payload) => {
-      assertKeys(payload, []);
-      const window = getMainWindow(), settings = { title: '选择自己的口播录音', properties: ['openFile'], filters: [{ name: '录音', extensions: ['wav', 'mp3', 'm4a'] }] };
-      const result = await (window ? dialog.showOpenDialog(window, settings) : dialog.showOpenDialog(settings));
-      return result.canceled || !result.filePaths?.[0] ? null : service.importAudio(result.filePaths[0]);
-    },
-    'recommend-voice': (payload) => { assertKeys(payload, ['personAssetId']); return service.recommendVoice(payload.personAssetId); },
-    'voice-preview': (payload) => { assertKeys(payload, ['voicePersonaId']); return service.previewVoice(payload.voicePersonaId); },
-    'voice-select': (payload) => { assertKeys(payload, ['voicePersonaId', 'characterVoice']); return service.selectVoice(payload.voicePersonaId, payload.characterVoice); },
-    'voice-clones': () => service.voiceClones(),
-    'voice-train': (payload) => { assertKeys(payload, ['speakerId', 'audioAssetId', 'customerConsent']); return service.trainVoice(payload); },
-    'voice-clone-status': (payload) => { assertKeys(payload, ['speakerId', 'operationId']); return service.cloneStatus(payload); },
-    create: (payload) => service.create(payload),
-    preview: (payload) => service.preview(id(payload)),
-    confirm: (payload) => service.confirm(id(payload, ['previewRevision', 'transcriptText']), payload.previewRevision, payload.transcriptText),
-    refresh: (payload) => service.refresh(id(payload)),
-    resume: (payload) => service.resume(id(payload)),
-    media: (payload) => service.media(id(payload)),
-    'speech-media': (payload) => service.speechMedia(id(payload)),
-    images: (payload) => service.images(id(payload)),
     'reference-capabilities': () => reference.capabilities(),
     'reference-workspace': () => reference.workspace(),
     'reference-save-workspace': (payload) => reference.saveWorkspace(payload),
@@ -250,7 +211,7 @@ function registerDigitalHumanIpc(options = {}) {
         const trusted = options.isTrustedEvent ? options.isTrustedEvent(event)
           : Boolean(window?.webContents && event.sender === window.webContents && (!event.senderFrame || event.senderFrame === window.webContents.mainFrame));
         if (!trusted) throw fail('digital_human_untrusted_sender', '请在应用主窗口操作。');
-        if (['preview', 'confirm', 'resume', 'voice-preview', 'voice-train', 'reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-publish'].includes(name)) {
+        if (['reference-prepare', 'reference-confirm', 'reference-resume', 'reference-train', 'reference-write-script', 'reference-cover-generate', 'reference-viral-pipeline-start', 'reference-viral-pipeline-retry', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-publish'].includes(name)) {
           // Caller supplies the same trusted-click policy used for paid content work.
           if (!options.requireTrustedClick) throw fail('digital_human_click_guard_missing', '数字人生成入口尚未完成接入。');
           await options.requireTrustedClick(event, payload, name);
@@ -259,20 +220,19 @@ function registerDigitalHumanIpc(options = {}) {
         }
         return { ok: true, data: await handler(payload) };
       } catch (error) {
-        return { ok: false, code: error.code || 'digital_human_operation_failed', error: cleanMessage(error.message || '操作未完成，请稍后重试。'),
-          ...(name === 'voice-train' && /^[A-Za-z0-9_.:-]{1,128}$/u.test(String(error.operationId || '')) ? { operationId: error.operationId, outcomeUnknown: error.outcomeUnknown === true } : {}) };
+        return { ok: false, code: error.code || 'digital_human_operation_failed', error: cleanMessage(error.message || '操作未完成，请稍后重试。') };
       }
     });
   }
   pipeline?.resume();
-  const combined = { ...service, isBusy: () => service.isBusy() || reference.isBusy() || Boolean(viralScout?.isBusy()) || Boolean(pipeline?.isBusy()),
-    prepareForUpdate: () => { const old = service.prepareForUpdate(), next = reference.prepareForUpdate(); return { busy: old.busy || next.busy }; },
-    resumeAfterUpdate: () => { service.resumeAfterUpdate(); reference.resumeAfterUpdate(); } };
+  const combined = { isBusy: () => reference.isBusy() || Boolean(viralScout?.isBusy()) || Boolean(pipeline?.isBusy()),
+    prepareForUpdate: () => ({ busy: reference.prepareForUpdate().busy }),
+    resumeAfterUpdate: () => { reference.resumeAfterUpdate(); } };
   return { service: combined, close: async () => {
     for (const channel of Object.values(DIGITAL_HUMAN_CHANNELS)) ipcMain.removeHandler(channel);
     await pipeline?.close();
     viralScout?.close();
-    await Promise.all([service.close(), reference.close()]);
+    await reference.close();
   } };
 }
 module.exports = { registerDigitalHumanIpc, DIGITAL_HUMAN_CHANNELS };
