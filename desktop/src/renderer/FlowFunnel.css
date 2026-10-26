@@ -32,3 +32,8 @@
 .flow-funnel-summary i { margin: 0 10px; font-style: normal; color: #d1b6ba; }
 .flow-funnel-summary b { font-size: 26px; font-weight: 900; letter-spacing: -0.02em; color: #1f2937; font-variant-numeric: tabular-nums; }
 .flow-funnel-summary span.accent b { color: #e60000; }
+.flow-funnel-output { position: absolute; left: 80%; top: calc(42% + 48px); max-width: 20%; pointer-events: none; }
+.flow-funnel-output b { display: block; font-size: 15px; font-weight: 900; color: #1f2937; }
+.flow-funnel-output span { display: block; margin-top: 3px; font-size: 13px; font-weight: 600; line-height: 1.5; color: #6b7280; }
+.flow-funnel-caption { margin: 6px 0 0; font-size: 13px; color: #6b7280; }
+.flow-funnel-h { margin-top: 8px; font-size: 12px; color: #9ca3af; }

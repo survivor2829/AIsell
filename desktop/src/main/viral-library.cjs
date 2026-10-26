@@ -17,19 +17,21 @@ const cleanTags = (tags) => (Array.isArray(tags) ? tags : []).filter((t) => t &&
   .map((t) => ({ id: t.id, label: text(t.label, 8), value: count(t.value) })).slice(0, 3);
 const httpsUrl = (value) => { try { const u = new URL(String(value)); return u.protocol === 'https:' ? u.href.slice(0, 2000) : ''; } catch { return ''; } };
 
-// 流图的线：每条线是一次扒取里的一条真实内容。只有改写好、进了文案库的标为通过（每条单独一束，最后合拢成一股汇进文案库）；
-// 够爆但这次没改写的归到没进的里。条数太多时保留全部通过的，没通过的均匀抽样。
+// 流图的线：每条线是一次扒取里的一条真实内容。闸门是「够爆」：通过的按爆款类型合成几束粗红带（评论里问价多 / 小号也能爆 / 点赞高），
+// 最后合拢成一股汇进文案库。条数太多时保留全部通过的，没通过的均匀抽样。
+const KINDS = [['asking_price', 'kind-asking', '评论里问价多'], ['underdog', 'kind-underdog', '小号也能爆']];
+const kindOf = (item) => KINDS.find(([tag]) => (item.tags || []).some((t) => t.id === tag)) || [null, 'kind-likes', '点赞高'];
 function strandsFromScan(result, readyIds) {
   const line = (item) => ({ id: String(item.id), title: text(item.title, 60), source: `${platformName(item.platform)} · ${text(item.author?.name, 40)}`, group: String(item.id) });
-  const pass = result.items.filter((item) => readyIds.has(String(item.id))).map((item) => ({ ...line(item), outcome: 'pass', reason: `已改写成原创稿 · ${item.tags.map(tagText).join(' · ')}` }));
-  const unused = result.items.filter((item) => !readyIds.has(String(item.id))).map((item) => ({ ...line(item), outcome: 'drop', reason: '够爆，这次没改写' }));
-  const drop = [...unused, ...result.removed.map((r) => ({ id: String(r.id), title: text(r.title, 60), source: `${platformName(r.platform)} · ${text(r.author, 40)}`,
+  const pass = result.items.map((item) => { const [, group, label] = kindOf(item); return { ...line(item), group, label, outcome: 'pass',
+    reason: `${readyIds.has(String(item.id)) ? '已改写成原创稿 · ' : ''}${item.tags.map(tagText).join(' · ')}` }; });
+  const drop = [...result.removed.map((r) => ({ id: String(r.id), title: text(r.title, 60), source: `${platformName(r.platform)} · ${text(r.author, 40)}`,
     group: String(r.twinId || r.id), outcome: 'drop', reason: text(r.label, 20) }))];
   const room = Math.max(0, MAX_STRANDS - pass.length), step = drop.length > room ? drop.length / room : 1;
   const sampled = room ? Array.from({ length: Math.min(room, drop.length) }, (_, i) => drop[Math.floor(i * step)]) : [];
   const kept = new Set([...pass, ...sampled].map((s) => s.id));
   // 搬运归到的原作如果被抽样丢掉了，就让它自成一束，避免指向不存在的线。
-  return [...pass.slice(0, MAX_STRANDS), ...sampled].map((s) => (kept.has(s.group) ? s : { ...s, group: s.id }));
+  return [...pass.slice(0, MAX_STRANDS), ...sampled].map((s) => (kept.has(s.group) || s.group.startsWith('kind-') ? s : { ...s, group: s.id }));
 }
 
 function buildLibrary({ scan, scripts, now = new Date() }) {
@@ -65,7 +67,7 @@ function validateLibrary(doc) {
   const st = doc.stats || {};
   const stats = Object.fromEntries(['collected', 'duplicates', 'outdated', 'irrelevant', 'notViral', 'final', 'ready'].map((k) => [k, count(st[k]) ?? 0]));
   const strands = (Array.isArray(doc.flow?.strands) ? doc.flow.strands : []).slice(0, MAX_STRANDS).filter((s) => s && typeof s.id === 'string' && ['pass', 'drop'].includes(s.outcome))
-    .map((s) => ({ id: text(s.id, 64), title: text(s.title, 60), source: text(s.source, 60), group: text(s.group || s.id, 64), outcome: s.outcome, reason: text(s.reason, 80) }));
+    .map((s) => ({ id: text(s.id, 64), title: text(s.title, 60), source: text(s.source, 60), group: text(s.group || s.id, 64), outcome: s.outcome, reason: text(s.reason, 80), ...(s.label ? { label: text(s.label, 20) } : {}) }));
   return { updatedAt: typeof doc.updatedAt === 'string' ? doc.updatedAt : null, days: count(doc.days) || 30, stats: { ...stats, byPlatform: st.byPlatform && typeof st.byPlatform === 'object' ? st.byPlatform : {} }, strands, items };
 }
 

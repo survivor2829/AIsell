@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { describeHover, FLOW_STAGE_X, FLOW_STEP, layoutFlow, type FlowLayout, type FlowStage, type FlowStrand } from './flow-funnel';
+import { describeHover, FLOW_STAGE_X, FLOW_STEP, isDecided, layoutFlow, type FlowLayout, type FlowStage, type FlowStrand } from './flow-funnel';
 import './FlowFunnel.css';
 
 // 通用流图：线条和光点全部由调用方给的真实数据驱动。
@@ -54,7 +54,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
       if (!b) continue;
       trace(c, l.ys, L.gate, l.end);
       // 单独一条进文案库的线画粗一点，几束合拢时看得清。
-      if (b.pass) { c.lineWidth = b.members.length === 1 ? 2.4 : 1; c.strokeStyle = rgba(C.accent, b.members.length === 1 ? 0.7 : 0.4); }
+      if (b.pass) { c.lineWidth = b.members.length === 1 ? 2.4 : 1.3; c.strokeStyle = rgba(C.accent, b.members.length === 1 ? 0.7 : 0.5); }
       else { const g = c.createLinearGradient(L.gate, 0, l.end, 0); g.addColorStop(0, rgba(C.ink, a)); g.addColorStop(1, rgba(C.ink, 0)); c.strokeStyle = g; }
       c.stroke(); c.lineWidth = 1;
     }
@@ -215,9 +215,9 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
   };
 }
 
-export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote = '', emptyText, height = 240, ambient = false, summary }: {
+export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote = '', emptyText, height = 240, ambient = false, summary, caption, showOutput = false }: {
   strands: FlowStrand[]; stages: FlowStage[]; live?: string; outputLabel?: string; outputNote?: string; emptyText: string; height?: number;
-  ambient?: boolean; summary?: boolean;
+  ambient?: boolean; summary?: boolean; caption?: string; showOutput?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null), canvasRef = useRef<HTMLCanvasElement>(null), tipRef = useRef<HTMLDivElement>(null);
   const engine = useRef<Engine | null>(null);
@@ -239,7 +239,9 @@ export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote
         <div className="flow-funnel-tip" ref={tipRef} hidden><b /><span /></div>
         {!strands.length && <p className="flow-funnel-empty">{emptyText}</p>}
         {live && <span className="flow-funnel-live"><i />{live}</span>}
+        {showOutput && outputLabel && isDecided(strands) && <div className="flow-funnel-output"><b>{outputLabel}</b>{outputNote && <span>{outputNote}</span>}</div>}
       </div>
+      {caption && <p className="flow-funnel-caption">{caption}</p>}
       {summary ? <div className="flow-funnel-summary">{stages.map((stage, i) => <span key={stage.no} className={stage.accent ? 'accent' : ''}>
         {i > 0 && <i aria-hidden="true">→</i>}{stage.label}<b>{stage.value === null ? '—' : stage.value.toLocaleString('zh-CN')}</b>{stage.unit}</span>)}</div> :
       <div className={`flow-funnel-stages${focus !== null ? ' focusing' : ''}`}>
@@ -248,6 +250,7 @@ export function FlowFunnel({ strands, stages, live, outputLabel = '', outputNote
             <div className="flow-funnel-no">{stage.no} {stage.label}</div>
             <span className={`flow-funnel-n${stage.accent ? ' accent' : ''}`}>{stage.value === null ? '—' : stage.value.toLocaleString('zh-CN')}</span> <span className="flow-funnel-u">{stage.unit}</span>
             {stage.note && <div className="flow-funnel-d">{stage.note}</div>}
+            {stage.hint && <div className="flow-funnel-h">{stage.hint}</div>}
           </div>
         ))}
       </div>}
