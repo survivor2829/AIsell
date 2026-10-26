@@ -8,12 +8,16 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 // including ones the user registered from disk, which carry no generated thumbnail.
 function createCoverCache({ dir, ffmpegPath = "ffmpeg", run = execFile }) {
   const pending = new Map();
+  // Short side 720px at high quality: the preview shows it phone-sized, and a landscape
+  // frame is shown whole there, so a small thumbnail would look blurred.
   const grab = (file, target, seconds) => new Promise((resolve, reject) => {
-    run(ffmpegPath, ["-y", "-v", "error", "-ss", String(seconds), "-i", file, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "5", target],
-      { windowsHide: true, timeout: 20_000 }, (error) => error ? reject(error) : resolve());
+    run(ffmpegPath, ["-y", "-v", "error", "-ss", String(seconds), "-i", file, "-frames:v", "1",
+      "-vf", "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'", "-q:v", "2", target],
+    { windowsHide: true, timeout: 20_000 }, (error) => error ? reject(error) : resolve());
   });
   async function cover(id, file) {
-    const target = path.join(dir, `${id}.jpg`);
+    // "-hd" in the name: covers cached by the earlier, smaller version are not reused.
+    const target = path.join(dir, `${id}-hd.jpg`);
     if (!fs.existsSync(target)) {
       if (!pending.has(id)) pending.set(id, (async () => {
         fs.mkdirSync(dir, { recursive: true });

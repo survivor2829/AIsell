@@ -176,3 +176,7 @@
 .dist-video-row.is-import:hover { border-color: var(--red); }
 .dist-import-plus { display: grid; place-items: center; flex: 0 0 auto; width: 60px; height: 80px; border-radius: 10px; background: #fff0f2; color: var(--red); font-size: 30px; font-weight: 400; }
 @media (prefers-reduced-motion: reduce) { .dist-video-rows li { animation: none; } .dist-video-row:hover { transform: none; } }
+
+/* 横屏视频：完整显示在中间，上下用同一画面虚化填满 */
+.dist-phone > img.dist-phone-backdrop { filter: blur(18px) brightness(.7); transform: scale(1.15); }
+.dist-phone > img.dist-phone-landscape { top: 50%; bottom: auto; height: auto; transform: translateY(-62%); object-fit: contain; }

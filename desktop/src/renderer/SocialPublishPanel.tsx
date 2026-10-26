@@ -54,6 +54,7 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   const [pending, setPending] = useState("");
   const [writing, setWriting] = useState(false);
   const [showDone, setShowDone] = useState(false);
+  const [landscape, setLandscape] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const autoWritten = useRef("");
@@ -231,7 +232,10 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
         <div className="dist-preview">
           <div className="dist-preview-head"><b>发布预览</b><span>{PLATFORM_NAMES[activePlatform]}上大致的样子 · 右边切换平台</span></div>
           <div className={`dist-phone is-${activePlatform}`}>
-            {previewVideo && coverOf(previewVideo) ? <img src={coverOf(previewVideo)} alt="" /> : <span className="dist-phone-blank" />}
+            {previewVideo && coverOf(previewVideo) ? <>
+              {landscape && <img className="dist-phone-backdrop" src={coverOf(previewVideo)} alt="" aria-hidden="true" />}
+              <img className={landscape ? "dist-phone-landscape" : ""} src={coverOf(previewVideo)} alt="" onLoad={(event) => setLandscape(event.currentTarget.naturalWidth > event.currentTarget.naturalHeight)} />
+            </> : <span className="dist-phone-blank" />}
             {!previewVideo && <p className="dist-phone-empty">选一条视频，<br />这里预览它发出去的样子</p>}
             <div className="dist-phone-top"><PlatformIcon platform={activePlatform} size={22} /><span>{PLATFORM_NAMES[activePlatform]}</span></div>
             {previewVideo && <div className="dist-phone-copy">
