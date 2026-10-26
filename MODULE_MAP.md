@@ -12,6 +12,7 @@
 | `desktop/src/main/map-acquisition*`、`acquisition-workbench-scope.cjs` | 高德独立会话、串行采集、任务名单及渠道商账号隔离；地图数据保存在账号目录 | 推断采购需求、自动联系客户、混入精准/GEO或微信发送状态 |
 | `desktop/src/main/keyword-acquisition*`、`douyin-browser-adapter.cjs` | 独立关键词任务、线索、会话及发送账本；官方网页观察和受约束私信适配 | 依赖内容引擎启动；猜测账号、私信归属或发送成功；自动重发未知结果 |
 | `desktop/src/main/social-accounts*`、`social-browser.cjs`、`renderer/SocialAccountsPanel.tsx`、`DistributionPage.tsx` | 一键分发入口与平台账号中心：抖音/快手/视频号/小红书多账号；每个账号一个本机 Chrome（无则 Edge）资料目录，经 --remote-debugging-pipe 控制，扫码后只按登录 Cookie 是否存在识别状态 | 读取或保存 Cookie 值；改用内嵌 Electron 窗口登录（抖音会拒绝）；开调试端口；登录期间接管页面；删除账号不删资料目录 |
+| `desktop/src/main/social-publish*`、`social-page.cjs`、`renderer/SocialPublishPanel.tsx` | 一键分发：成片中心视频按「视频×账号」排队发布；各平台驱动在账号自己的 Chrome 资料目录里操作官方创作者后台（真实鼠标点击、闭合 shadow DOM 可达）；点发布前核对标题和可见范围，点发布前落盘 clicked，结果以作品管理页核对为准 | 在点发布之后自动重发；结果不明时当作成功或失败；没核对表单就点发布；同账号并行开两个浏览器；把文件路径发给界面 |
 | `desktop/src/main/digital-human-*` | 数字人图片导入、草稿、预览确认、供应商素材审核和异步视频任务 | 向 renderer 暴露密钥或本地路径；重复提交结果不明的付费请求 |
 | `content_engine/video_presentation.py`、`desktop/remotion-packaging/`、`VideoPresentation.tsx` | 两类视频共用的字幕时间、模板、成片封面和标题修改；生成结果仍由内容引擎登记 | 在封面失败时丢弃视频；修改标题时重新调用生图 |
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
@@ -72,6 +73,7 @@
 | `wechat_adapter/` | 共享微信窗口与 adapter 配置，不含业务结果 |
 | `keyword_acquisition/state.json` | 关键词任务、来源评论、线索、会话、联系额度及逐次发送状态；独立抖音 session partition 不复用微信状态 |
 | `social_accounts/state.json`、`social_accounts/profiles/<id>/` | 平台账号列表：平台、备注名、登录状态与时间，不含任何登录凭据；登录态只在各账号的浏览器资料目录内 |
+| `social_publish/state.json` | 发布记录：视频、账号、标题文案、可见范围、状态（排队/进行中/等你验证/已点发布/已发出/结果不明/没有发出）与原因；点击发布前写入 clickedAt |
 | `digital_human/` | 图片副本、可编辑草稿、预览版本确认、供应商操作编号与返回结果、基础视频；成片编号指向内容引擎 |
 | `role-preferences.json` | 各角色已保存的名字和该角色有效形象 ID；共享目录定义默认值与可选范围 |
 | `feedback/state.json` | 反馈草稿、不可变正文/诊断快照、当前 Windows 账户加密的回执凭据、投递重试和已收到的服务端状态 |

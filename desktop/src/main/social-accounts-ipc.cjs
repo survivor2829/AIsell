@@ -20,7 +20,7 @@ function registerSocialAccountsIpc({ ipcMain, dataDir, getMainWindow }) {
     if (!trusted || event.sender !== trusted || event.senderFrame !== trusted.mainFrame) return { ok: false, code: "SOCIAL_IPC_FORBIDDEN", error: "当前页面无权管理平台账号。" };
     if (initializationError) return initializationError;
     try { return { ok: true, state: await method(payload) }; }
-    catch (error) { return { ok: false, code: error.code || "SOCIAL_OPERATION_FAILED", error: error.code ? error.message : "操作未完成，已有账号保留，请稍后重试。", state: accounts.snapshot() }; }
+    catch (error) { return { ok: false, code: error.code || "SOCIAL_OPERATION_FAILED", error: /^SOCIAL_/.test(String(error.code || "")) ? error.message : "操作未完成，已有账号保留，请稍后重试。", state: accounts.snapshot() }; }
   });
   return { accounts, async dispose() { channels.forEach((channel) => ipcMain.removeHandler(channel)); await accounts?.dispose(); } };
 }
