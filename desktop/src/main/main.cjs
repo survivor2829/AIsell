@@ -49,6 +49,7 @@ const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { registerBusinessWorkbenchIpc } = require('./business-workbench-ipc.cjs');
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
+const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
@@ -85,6 +86,7 @@ let productDetailDownloadRegistration = null;
 let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let keywordAcquisitionRegistration = null;
+let socialAccountsRegistration = null;
 let businessWorkbenchRegistration = null;
 let digitalHumanRegistration = null;
 let productVideoRegistration = null;
@@ -288,6 +290,7 @@ function createWindow() {
     try { diagnostics().event("app", "window_closing", { workflow_phase: workflow?.phase,
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
+    socialAccountsRegistration?.dispose();
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
     momentsCampaignController?.pauseForAppClose();
@@ -726,6 +729,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: path.join(runtime.rootDir, "keyword_acquisition"),
       expertStore: aiExpertStore, deepSeekClient
     });
+    socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, BrowserWindow, session, getMainWindow: () => mainWindow,
+      dataDir: path.join(runtime.rootDir, "social_accounts") });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: () => licenseStore.status() });
     const usedDigitalHumanClicks = new Set();
