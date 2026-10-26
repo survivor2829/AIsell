@@ -5,7 +5,8 @@ import './DigitalHumanPage.css';
 import { VideoCoverDetails } from './VideoPresentation';
 import { CreationSteps, CreationStepTitle, TutorialHelp } from './CreationGuide';
 import { ViralPipelinePage } from './ViralPipelinePage';
-import { NarrationSimplePage } from './NarrationSimplePage';
+import { NarrationSimplePage, type PendingKind } from './NarrationSimplePage';
+import { ReferenceHumanPage } from './ReferenceHumanPage';
 
 function api(): DigitalHumanApi {
   const value = (window as unknown as { xiaoxiDigitalHuman?: DigitalHumanApi }).xiaoxiDigitalHuman;
@@ -24,7 +25,8 @@ const SCENE_IMAGES: Record<string, string> = Object.fromEntries(['studio', 'stor
 
 export function DigitalHumanPage() {
   // 数字人视频只有极简出片一个页面。开发版按 Ctrl+Shift+L 打开内部的扒爆款 / 文案库工具，页面上没有入口。
-  const [internal, setInternal] = useState(false);
+  // 之前做的视频有结果待核对或需要处理时，才从极简页进到原来的处理页面，处理完返回。
+  const [internal, setInternal] = useState(false), [pending, setPending] = useState<PendingKind | null>(null);
   useEffect(() => {
     if (!DEVELOPMENT_EDITION) return;
     const onKey = (event: KeyboardEvent) => { if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'l') setInternal((open) => !open); };
@@ -32,7 +34,13 @@ export function DigitalHumanPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
   if (DEVELOPMENT_EDITION && internal) return <ViralPipelinePage onImitate={() => {}} onManagePerson={() => setInternal(false)} />;
-  return <NarrationSimplePage />;
+  if (pending) return (
+    <div className="ns-pending-view">
+      <button type="button" className="ns-back" onClick={() => setPending(null)}>← 返回数字人视频</button>
+      {pending === 'reference' ? <ReferenceHumanPage /> : <ImageDigitalHumanPage />}
+    </div>
+  );
+  return <NarrationSimplePage onOpenPending={setPending} />;
 }
 
 function ImageDigitalHumanPage() {

@@ -12,20 +12,10 @@
 .ns-flow .flow-funnel-n { font-size: 32px; }
 .ns-wait { padding: 60px 0 20px; font-size: 18px; font-weight: 900; color: #6b7280; }
 
-.ns-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 48px; align-items: start; }
-.ns-step { background: #fff; border: 1px solid #f1dfe1; border-radius: 14px; padding: 18px 20px; display: flex; gap: 14px; align-items: flex-start; }
-.ns-step b { display: block; font-size: 17px; font-weight: 900; }
-.ns-step span { display: block; margin-top: 3px; font-size: 13px; font-weight: 700; color: #6b7280; }
-.ns-num { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; display: flex !important; align-items: center; justify-content: center; margin: 0 !important; font-weight: 900; font-size: 16px !important; background: #f3f4f6; color: #6b7280 !important; }
-.ns-step.is-done .ns-num { background: #16a34a; color: #fff !important; }
-.ns-step.is-on { border-color: #e60000; box-shadow: 0 0 0 3px rgba(230, 0, 0, 0.08); }
-.ns-step.is-on .ns-num { background: #e60000; color: #fff !important; }
-.ns-link { padding: 0; border: 0; background: none; font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .ns-upload { margin-top: 12px; height: 38px; padding: 0 18px; border: 0; border-radius: 10px; background: #e60000; color: #fff; font: inherit; font-size: 14px; font-weight: 900; cursor: pointer; }
 .ns-upload:disabled { opacity: 0.6; cursor: default; }
 .ns-consent { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; font-weight: 900; color: #b4122c; cursor: pointer; }
 .ns-consent input { width: 16px; height: 16px; accent-color: #e60000; }
-.ns-warn { color: #b4122c !important; }
 
 .ns-sec { display: flex; align-items: baseline; gap: 12px; margin: 40px 0 14px; flex-wrap: wrap; }
 .ns-sec b { font-size: 20px; font-weight: 900; }
@@ -55,7 +45,7 @@
 .ns-go:disabled { opacity: 0.45; box-shadow: none; cursor: default; }
 .ns-go.is-quiet { background: #fff; color: #b4122c; border: 1.5px solid #f5b5bd; box-shadow: none; font-size: 16px; padding: 0 22px; }
 .ns-error { margin: 0; padding: 0 32px 12px; font-size: 13px; font-weight: 700; color: #b4122c; }
-@media (max-width: 900px) { .ns-steps, .ns-list { grid-template-columns: 1fr; } .ns-h1 { font-size: 30px; } }
+@media (max-width: 900px) { .ns-list { grid-template-columns: 1fr; } .ns-h1 { font-size: 30px; } }
 @media (prefers-reduced-motion: reduce) { .ns-live i { animation: none; } .ns-progress i { transition: none; } }
 .ns-preview { padding: 2px 8px; border-radius: 999px; background: #fff4e0; color: #92400e; font-size: 12px; letter-spacing: 0; }
 .ns-back { align-self: flex-start; padding: 0; border: 0; background: none; font: inherit; font-size: 14px; font-weight: 900; color: #6b7280; cursor: pointer; }
@@ -76,3 +66,7 @@
 .ns-person .ns-upload { margin-top: 0; height: 48px; padding: 0 28px; font-size: 16px; }
 .ns-wait, .ns-list { margin-bottom: 32px; }
 .ns-person .ns-upload.is-quiet { background: #fff; color: #4b5563; border: 1.5px solid #e5d5d7; }
+.ns-pending { align-self: flex-start; display: flex; gap: 12px; align-items: baseline; margin: 0 0 20px; padding: 10px 14px; border: 1px solid #f5d9a8; border-radius: 10px; background: #fffaf0; font: inherit; font-size: 13px; font-weight: 700; color: #92400e; text-align: left; cursor: pointer; }
+.ns-pending b { white-space: nowrap; font-weight: 900; }
+.ns-pending-view { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; }
+.ns-pending-view > .ns-back { margin-left: 32px; }

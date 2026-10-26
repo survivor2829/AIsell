@@ -237,6 +237,9 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.equal(done.status, 'done', done.error);
     assert.deepEqual([w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [1, 1, 0, 0]);
     assert.deepEqual(pipeline.libraryScripts().map((s) => s.sourceId), ['7400000000000000001']);
+    const again = pipeline.start({ item: item('7400000000000000001'), assetId: 'rha_1', industry: '清洁设备渠道商', business: '', mode: 'library' });
+    assert.equal(again.id, job.id, '已改写好的再点一次不重新花钱');
+    assert.deepEqual([w.calls.asr.length, w.calls.write.length], [1, 1]);
     await pipeline.close();
   }
   // 输入校验

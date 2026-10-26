@@ -29,6 +29,8 @@ assert.equal(library.flow.strands.length, 4, '每条扒到的内容都是一条�
 assert.match(library.flow.strands.find((s) => s.id === '1').reason, /^已改写成原创稿/);
 assert.equal(library.flow.strands.find((s) => s.id === '2').group, '1', '搬运并到原作那一束');
 assert.throws(() => buildLibrary({ scan, scripts: [] }), { code: 'viral_library_empty' });
+const twice = buildLibrary({ scan, scripts: [scripts[0], { ...scripts[0], title: '后改写的那条' }], now: new Date(now) });
+assert.deepEqual(twice.items.map((i) => [i.id, i.title]), [['1', '后改写的那条']], '同一来源改写两次只收后一条');
 assert.throws(() => buildLibrary({ scan: null, scripts }), { code: 'viral_library_scan_missing' });
 
 // 线太多时：通过的全保留，没通过的抽样，总数不超过上限，抽样丢掉原作的搬运自成一束
@@ -46,6 +48,7 @@ assert.equal(back.strands.length, 4);
 assert.equal(back.stats.ready, 1);
 const mixed = validateLibrary({ ...library, items: [...library.items, { id: '../x', platform: 'douyin', title: 't', script: 's' }, { id: '9', platform: 'weibo', title: 't', script: 's' }, { id: '8', platform: 'douyin', title: 'x'.repeat(25), script: 's' }] });
 assert.equal(mixed.items.length, 1);
+assert.equal(validateLibrary({ ...library, items: [library.items[0], library.items[0]] }).items.length, 1, '重复 id 只留一条');
 assert.throws(() => validateLibrary({ schema: 1, items: [{ id: '1', platform: 'douyin', title: '', script: '' }] }), { code: 'viral_library_empty' });
 assert.throws(() => validateLibrary({ schema: 2, items: [] }), { code: 'viral_library_invalid' });
 assert.equal(validateLibrary({ ...library, items: [{ ...library.items[0], source: { url: 'javascript:alert(1)' } }] }).items[0].source.url, '');

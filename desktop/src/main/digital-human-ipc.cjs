@@ -117,8 +117,9 @@ function registerDigitalHumanIpc(options = {}) {
     'reference-viral-pipeline-start-script': (payload) => {
       assertKeys(payload, ['libraryItem', 'assetId', 'maxCny']);
       const saved = reference.workspace();
-      const assetId = reference.assets().items.some((a) => a.id === payload.assetId) ? payload.assetId : saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId;
-      return pipelineReady().startFromScript({ libraryItem: payload.libraryItem, maxCny: payload.maxCny, assetId, industry: saved.draft?.industry, business: saved.draft?.business });
+      // 只用页面上这位本人；不认识的 id 直接拒绝，不换成别的已保存人物。
+      if (!reference.assets().items.some((a) => a.id === payload.assetId)) throw fail('viral_person_missing', '请先上传本人视频。');
+      return pipelineReady().startFromScript({ libraryItem: payload.libraryItem, maxCny: payload.maxCny, assetId: payload.assetId, industry: saved.draft?.industry, business: saved.draft?.business });
     },
     // 内部（只在开发版）：把最近一次扒取的前几条爆款改写成文案库稿子，再导出成待发布文件。
     'reference-viral-library-build': (payload) => {
@@ -128,7 +129,13 @@ function registerDigitalHumanIpc(options = {}) {
       if (!scan?.items?.length) throw fail('viral_library_scan_missing', '还没有扒取结果，请先扒一次爆款。');
       const saved = reference.workspace(), assetId = saved.preferences?.referenceAssetId || saved.draft?.referenceAssetId;
       const limit = Math.max(1, Math.min(30, Number(payload.limit) || 10));
-      return { jobs: scan.items.slice(0, limit).map((item) => pipelineReady().start({ item, assetId, industry: '清洁设备渠道商', business: '', mode: 'library' })) };
+      // 一条不合格不影响其余条目，也不让已排上的再排一次。
+      const jobs = [], skipped = [];
+      for (const item of scan.items.slice(0, limit)) {
+        try { jobs.push(pipelineReady().start({ item, assetId, industry: '清洁设备渠道商', business: '', mode: 'library' })); } catch (error) { skipped.push({ id: String(item?.id || ''), error: error.message }); }
+      }
+      if (!jobs.length && skipped.length) throw fail('viral_library_build_failed', skipped[0].error);
+      return { jobs, skipped };
     },
     'reference-viral-library-export': () => {
       if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');

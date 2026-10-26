@@ -217,7 +217,8 @@ function createViralPipeline(options) {
     const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
     if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先在「本人数字分身」里保存出镜人物和声音。');
     if (mode !== 'library' && !person.voiceConsented) throw problem('viral_voice_consent', '这位出镜人物还没确认声音授权，请先在「本人数字分身」里做一条口播并确认授权。');
-    const duplicate = all().find((j) => j.item.id === String(item.id) && (j.mode || 'post') === mode && holdsItem(j));
+    // 文案库稿子改写完就够了，再点一次不重复花识别费和写稿额度。
+    const duplicate = all().find((j) => j.item.id === String(item.id) && (j.mode || 'post') === mode && (holdsItem(j) || (mode === 'library' && j.status === 'done')));
     if (duplicate) return publicJob(duplicate);
     const limit = Number(maxCny) > 0 ? Math.min(Number(maxCny), 50) : DEFAULT_MAX_CNY;
     const job = { id: `vp_${randomUUID()}`, mode, createdAt: new Date().toISOString(), status: 'queued', step: 'extract', progress: 0, maxCny: limit,

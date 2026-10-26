@@ -65,7 +65,8 @@ class ViralLibraryTest(unittest.TestCase):
         token = self.session()
         for bad in ("not json", json.dumps({"schema": 2, "items": []}), json.dumps(library(items=[])),
                     json.dumps(library(items=[{"id": "1", "title": "x" * 25, "script": "s"}])),
-                    json.dumps(library(items=[{"id": "1", "title": "t", "script": ""}])), json.dumps([1, 2])):
+                    json.dumps(library(items=[{"id": "1", "title": "t", "script": ""}])), json.dumps([1, 2]),
+                    json.dumps(library(items=[{"id": "1", "title": "t", "script": "s"}] * 2)), "[" * 100000):
             self.path.write_text(bad, encoding="utf-8")
             self.assertEqual(self.get(token), (503, {"error": "viral_library_invalid"}), bad[:40])
         self.path.write_bytes(b" " * (VIRAL_LIBRARY_MAX_BYTES + 1))

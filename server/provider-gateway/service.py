@@ -709,15 +709,20 @@ def _viral_library(path):
     raw = Path(path).read_bytes()
     if len(raw) > VIRAL_LIBRARY_MAX_BYTES:
         raise ValueError("viral_library_too_large")
-    data = json.loads(raw.decode("utf-8"))
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except RecursionError as error:
+        raise ValueError("viral_library_invalid") from error
     items = data.get("items") if isinstance(data, dict) else None
-    if data.get("schema") != 1 or not isinstance(items, list) or not 1 <= len(items) <= 100:
+    if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(items, list) or not 1 <= len(items) <= 100:
         raise ValueError("viral_library_invalid")
     for item in items:
         if (not isinstance(item, dict) or not isinstance(item.get("id"), str) or not 1 <= len(item["id"]) <= 64
                 or not isinstance(item.get("title"), str) or not 1 <= len(item["title"]) <= 24
                 or not isinstance(item.get("script"), str) or not 1 <= len(item["script"]) <= 500):
             raise ValueError("viral_library_item_invalid")
+    if len({item["id"] for item in items}) != len(items):
+        raise ValueError("viral_library_item_invalid")
     return data
 
 

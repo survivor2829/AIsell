@@ -33,7 +33,9 @@ function strandsFromScan(result, readyIds) {
 function buildLibrary({ scan, scripts, now = new Date() }) {
   if (!scan?.items || !scan?.removed || !scan?.stats) throw problem('viral_library_scan_missing', '还没有扒取结果，请先扒一次爆款。');
   const bySource = new Map(scan.items.map((item) => [String(item.id), item]));
-  const items = scripts.filter((s) => bySource.has(String(s.sourceId)) && s.script && s.title && s.originality?.passed !== false).slice(0, MAX_ITEMS).map((s) => {
+  // 同一来源只收一条（后改写的那条），文案库里的 id 不重复。
+  const latest = new Map(scripts.filter((s) => bySource.has(String(s.sourceId)) && s.script && s.title && s.originality?.passed !== false).map((s) => [String(s.sourceId), s]));
+  const items = [...latest.values()].slice(0, MAX_ITEMS).map((s) => {
     const source = bySource.get(String(s.sourceId));
     return { id: String(source.id), platform: source.platform, title: text(s.title, 24), script: text(s.script, 500),
       emphasisPhrases: (s.emphasisPhrases || []).filter((p) => typeof p === 'string' && p.length <= 12 && s.script.includes(p)).slice(0, 5),
@@ -53,7 +55,7 @@ function buildLibrary({ scan, scripts, now = new Date() }) {
 function validateLibrary(doc) {
   if (!doc || doc.schema !== 1 || !Array.isArray(doc.items)) throw problem('viral_library_invalid', '爆款文案库暂时不可用，请稍后再试。');
   const items = doc.items.filter((i) => i && /^[A-Za-z0-9]{1,64}$/u.test(String(i.id)) && PLATFORMS.has(i.platform) && typeof i.title === 'string' && i.title.trim() && i.title.length <= 24
-    && typeof i.script === 'string' && i.script.trim() && i.script.length <= 500).slice(0, MAX_ITEMS).map((i) => ({
+    && typeof i.script === 'string' && i.script.trim() && i.script.length <= 500).filter((i, index, all) => all.findIndex((o) => String(o.id) === String(i.id)) === index).slice(0, MAX_ITEMS).map((i) => ({
     id: String(i.id), platform: i.platform, title: text(i.title, 24), script: text(i.script, 500),
     emphasisPhrases: (Array.isArray(i.emphasisPhrases) ? i.emphasisPhrases : []).filter((p) => typeof p === 'string' && p.length <= 12 && i.script.includes(p)).slice(0, 5),
     source: { title: text(i.source?.title, 200), author: text(i.source?.author, 120), url: httpsUrl(i.source?.url), likes: count(i.source?.likes), tags: cleanTags(i.source?.tags) } }));
