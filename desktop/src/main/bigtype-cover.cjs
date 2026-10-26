@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { wordBoundaries } = require('../../remotion-packaging/word-breaks.cjs');
 
 const W = 1080, H = 1440;
 const LIMITS = { title: 12, subtitle: 8, tag: 8, tags: 3 };
@@ -15,24 +16,35 @@ const BREAK_AFTER = /[，。！？、；：,.!?;:]/u;
 function problem(code, message) { return Object.assign(new Error(message), { code }); }
 const clean = (value) => String(value ?? '').replace(/[\u0000-\u001f\u007f]/gu, '').replace(/\s+/gu, '').trim();
 
-// 主标题按字数均分成 1—3 行；优先在标点后断行，标点本身不进封面。
+// 主标题按字数均分成 1—3 行；优先在标点后断行，其次在词与词之间断，不把一个词（如「选型」）拆到两行。
+// 标点本身不进封面。
 function splitTitle(title) {
   const chars = [...title];
   const count = chars.length <= 5 ? 1 : chars.length <= 10 ? 2 : 3;
+  const wordEnds = wordBoundaries(title);
   const lines = [];
-  let rest = chars;
+  let rest = chars, offset = 0;
   for (let i = count; i > 1; i -= 1) {
     const ideal = Math.ceil(rest.length / i);
-    let cut = ideal;
-    for (const delta of [0, 1, -1, 2, -2]) {
-      const at = ideal + delta;
-      if (at > 0 && at < rest.length && BREAK_AFTER.test(rest[at - 1])) { cut = at; break; }
-    }
+    const near = (test) => [0, 1, -1, 2, -2].map((delta) => ideal + delta).find((cut) => cut > 0 && cut < rest.length && test(cut));
+    const cut = near((cut) => BREAK_AFTER.test(rest[cut - 1])) ?? near((cut) => wordEnds.has(offset + cut)) ?? ideal;
     lines.push(rest.slice(0, cut).join(''));
-    rest = rest.slice(cut);
+    rest = rest.slice(cut); offset += cut;
   }
   lines.push(rest.join(''));
   return lines.map((line) => line.replace(/[，。！？、；：,.!?;:]+$/u, '')).filter(Boolean);
+}
+
+// 底部标签条：一行放不下时先把字缩小（最小 38），还放不下就从最后一个标签开始去掉，不让两头被裁掉。
+const TAG_GAP = '   |   ';
+function fitTags(labels) {
+  const width = (tags, size) => [...tags.join('')].length * size + (tags.length - 1) * size * 1.6;
+  let tags = labels.slice();
+  while (tags.length) {
+    for (let size = 52; size >= 38; size -= 2) if (width(tags, size) <= W - 80) return { tags, size };
+    tags = tags.slice(0, -1);
+  }
+  return { tags: [], size: 52 };
 }
 
 function planBigtypeCover({ title, subtitle = '', tags = [], source, face = null }) {
@@ -40,7 +52,8 @@ function planBigtypeCover({ title, subtitle = '', tags = [], source, face = null
   if (!headline) throw problem('bigtype_title_required', '大字封面需要主标题。');
   if ([...headline].length > LIMITS.title) throw problem('bigtype_title_long', `封面主标题最多 ${LIMITS.title} 个字。`);
   const side = [...clean(subtitle)].slice(0, LIMITS.subtitle).join('');
-  const labels = (Array.isArray(tags) ? tags : []).map((tag) => [...clean(tag)].slice(0, LIMITS.tag).join('')).filter(Boolean).slice(0, LIMITS.tags);
+  const fitted = fitTags((Array.isArray(tags) ? tags : []).map((tag) => [...clean(tag)].slice(0, LIMITS.tag).join('')).filter(Boolean).slice(0, LIMITS.tags));
+  const labels = fitted.tags;
   if (!(source?.width > 0 && source?.height > 0)) throw problem('bigtype_source_invalid', '人物画面尺寸无效。');
 
   // 字号让最长的一行占满约 90% 宽度。
@@ -69,7 +82,7 @@ function planBigtypeCover({ title, subtitle = '', tags = [], source, face = null
   return { width: W, height: H, lines, fontSize, lineHeight, band, photo: { height: photoH, scaledW, scaledH, cropX, cropY },
     // 竖排副标题逐字定位，底框高度按实际每字步长算，最后一个字不会出框。
     subtitle: side ? { chars: [...side], fontSize: sideFont, step: sideStep, x: W - 54 - Math.round(sideFont / 2), y: band + 48 } : null,
-    tags: labels, tagBar };
+    tags: labels, tagFont: fitted.size, tagBar };
 }
 
 // 文字一律写进临时文本文件交给 drawtext，用户写的内容不会被当成滤镜语法。
@@ -93,7 +106,7 @@ function bigtypeFilter(plan, fontFile, textFile) {
   }
   if (plan.tags.length) {
     steps.push(`drawbox=x=0:y=${H - plan.tagBar}:w=${W}:h=${plan.tagBar}:color=${COLORS.shade}@0.88:t=fill`);
-    steps.push(`drawtext=${font}:${text('tags')}:fontsize=52:fontcolor=white:borderw=2:bordercolor=white:x=(w-text_w)/2:y=${H - plan.tagBar}+(${plan.tagBar}-text_h)/2`);
+    steps.push(`drawtext=${font}:${text('tags')}:fontsize=${plan.tagFont || 52}:fontcolor=white:borderw=2:bordercolor=white:x=(w-text_w)/2:y=${H - plan.tagBar}+(${plan.tagBar}-text_h)/2`);
   }
   return steps.join(',');
 }
@@ -101,7 +114,7 @@ function bigtypeFilter(plan, fontFile, textFile) {
 function coverTexts(plan) {
   const texts = Object.fromEntries(plan.lines.map((line, i) => [`title-${i}`, line]));
   if (plan.subtitle) plan.subtitle.chars.forEach((char, i) => { texts[`subtitle-${i}`] = char; });
-  if (plan.tags.length) texts.tags = plan.tags.join('   |   ');
+  if (plan.tags.length) texts.tags = plan.tags.join(TAG_GAP);
   return texts;
 }
 

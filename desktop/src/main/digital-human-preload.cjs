@@ -45,6 +45,8 @@ function createDigitalHumanApi(ipcRenderer) {
       create: (payload) => invoke('reference-create', payload), get: (payload) => invoke('reference-get', payload),
       quote: (payload) => invoke('reference-quote', payload),
       repackage: (payload) => invoke('reference-repackage', payload),
+      repackageable: () => invoke('reference-repackageable'),
+      repackageVideo: (payload) => invoke('reference-repackage-video', payload),
       coverFrame: (payload) => invoke('reference-cover-frame', payload),
       coverQuote: (payload) => invoke('reference-cover-quote', payload),
       generateCover: (payload) => invoke('reference-cover-generate', { ...payload, clickToken: clicks['reference-cover-generate']() }),

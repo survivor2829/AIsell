@@ -7,6 +7,8 @@ const WORKER_CONTRACT_FILES = Object.freeze([
   "contract.cjs",
   "narration-templates.json",
   "narration-plan.cjs",
+  "word-breaks.cjs",
+  "word-glossary.json",
   "effect-registry.json",
   "layout-grid.json",
   "style-packs.json"

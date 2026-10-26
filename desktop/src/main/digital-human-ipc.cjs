@@ -17,6 +17,7 @@ const DIGITAL_HUMAN_CHANNELS = Object.freeze(Object.fromEntries([
   'reference-viral-pipeline-start', 'reference-viral-pipeline-list', 'reference-viral-pipeline-retry', 'reference-viral-pipeline-remove', 'reference-viral-pipeline-cover',
   'reference-viral-library', 'reference-confirm-consent', 'reference-viral-pipeline-start-script', 'reference-viral-library-build', 'reference-viral-library-export',
   'reference-viral-library-publish', 'reference-viral-library-publish-token', 'reference-viral-library-remove',
+  'reference-repackageable', 'reference-repackage-video',
 ].map((name) => [name, `digital-human:${name}`])));
 
 function registerDigitalHumanIpc(options = {}) {
@@ -194,6 +195,8 @@ function registerDigitalHumanIpc(options = {}) {
     'reference-cover-generate': (payload) => reference.generateCover(referenceId(payload, ['revision', 'recover']), payload.revision, payload.recover === true),
     'reference-repackage': (payload) => { const taskId = referenceId(payload, ['captionStyleId', 'emphasisPhrases', 'title', 'nextStyle', 'soundEffects']); const { id, ...settings } = payload; return reference.repackage(taskId, settings); },
     'reference-get': (payload) => reference.get(referenceId(payload)),
+    'reference-repackageable': () => reference.repackageable(),
+    'reference-repackage-video': (payload) => { assertKeys(payload, ['generatedVideoId']); if (!/^generated_video_[a-f0-9]{32}$/u.test(String(payload.generatedVideoId || ''))) throw fail('reference_repackage_unavailable', '请选择一条成片。'); return reference.repackageVideo(payload.generatedVideoId); },
     'reference-quote': (payload) => reference.quote(referenceId(payload)),
     'reference-prepare': (payload) => reference.prepare(referenceId(payload, ['quoteRevision', 'customerConsent', 'generateVideo']), payload.quoteRevision, payload.customerConsent === true, payload.generateVideo === true),
     'reference-write-script': (payload) => reference.writeScript(payload),

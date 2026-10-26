@@ -17,7 +17,9 @@ async function main() {
   const text = '先了解地面，再查看通道。', visual = { status: 'measured', union: { y: .2, bottom: .6 }, busy: false };
   assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }).templateId, 'layered_v4');
   assert.equal(packaging.choose({ script: '先别比价格，不是越贵越好，而是看实际效果。' }).templateId, 'impact_v4');
-  assert.equal(packaging.choose({ script: text }, { busy: true }).templateId, 'minimal_v4');
+  // 人物动作多不再退回最素的版式（重点词和花字照常显示），只把动效放慢
+  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }, { busy: true }).templateId, 'layered_v4');
+  assert.equal(packaging.buildPlan({ script: text }, { ...visual, busy: true }).motion, 'quiet');
   const crowded = packaging.buildPlan({ script: text }, { ...visual, union: { y: .1, bottom: .84 } });
   assert.equal(crowded.blocked, true);
   const upper = packaging.buildPlan({ script: text }, { ...visual, union: { y: .32, bottom: .72 } }, [{ text, startMs: 0, endMs: 4000 }]);
@@ -222,6 +224,32 @@ async function main() {
       assert.deepEqual(cycled.packagingPlan, service.get(cycled.id).packagingPlan, 'saved plan is deterministic');
     }
     assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage);
+    // 成片中心「换个包装 · 免费」：按成片找到本人口播任务，换一套和上一条不同的包装，不重复任何付费步骤
+    const finishedVideo = service.get(cycled.id).generatedVideoId;
+    assert.ok(service.repackageable().generatedVideoIds.includes(finishedVideo));
+    const fresh = await service.repackageVideo(finishedVideo);
+    while (service.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
+    const freshTask = service.get(fresh.id);
+    assert.equal(freshTask.status, 'completed'); assert.notEqual(freshTask.captionStyleId, cycled.captionStyleId);
+    assert.notDeepEqual(freshTask.packagingPlan.variant, service.get(cycled.id).packagingPlan.variant, '新包装和上一条组合不同');
+    assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage);
+    await assert.rejects(service.repackageVideo('generated_video_00000000000000000000000000000000'), { code: 'reference_repackage_unavailable' });
+    // 渲染时查询进度超时只说明内容引擎在忙：任务继续等，不判失败，之后查到结果就完成
+    const realQuery = options.queryPackaging; let busyQueries = 1;
+    options.queryPackaging = async (...args) => { if (busyQueries-- > 0) throw Object.assign(Error('timeout'), { code: 'CONTENT_ENGINE_REQUEST_TIMEOUT' }); return realQuery(...args); };
+    const patient = await service.repackageVideo(finishedVideo);
+    while (service.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(service.get(patient.id).status, 'packaging', '查询超时不判失败');
+    for (let i = 0; i < 300 && service.get(patient.id).status !== 'completed'; i++) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(service.get(patient.id).status, 'completed', '内容引擎空下来后查到结果就完成');
+    options.queryPackaging = realQuery;
+    // 旧版本误判成失败的任务：重新启动时自动接着查结果
+    const misjudgedPath = path.join(root, 'reference', 'tasks', `${patient.id}.json`);
+    fs.writeFileSync(misjudgedPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(misjudgedPath, 'utf8')), status: 'needs_attention', resumeStatus: 'packaging', errorCode: 'CONTENT_ENGINE_REQUEST_TIMEOUT', error: '超时' }));
+    await service.close(); service = createReferenceHumanService(options);
+    for (let i = 0; i < 100 && service.get(patient.id).status !== 'completed'; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(service.get(patient.id).status, 'completed');
+    assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage, '查询和找回都不花钱');
     await assert.rejects(service.repackage(nextDraft.id, { captionStyleId: 'impact_v1', emphasisPhrases: ['虚构卖点'] }), { code: 'reference_emphasis_invalid' });
     let coverState = '', coverCalls = [];
     options.getGeneratedVideo = async () => ({ cover_status: coverState });

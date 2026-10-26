@@ -18,6 +18,7 @@ const { scriptOriginality, scriptStructure } = require('./narration-originality.
 
 const TASK_ID = /^rh_[a-f0-9-]{36}$/u, ASSET_ID = /^rha_[a-f0-9-]{36}$/u;
 const RUNNING = new Set(['audio_preparing', 'video_submitting', 'video_generating', 'packaging']);
+const PACKAGING_QUERY_TIMEOUTS = 60;
 const LABELS = { draft: '待确认制作费用', audio_preparing: '制作本人配音与字幕', preview_ready: '声音已就绪，待确认人物制作',
   video_submitting: '上传人物与口播', video_generating: '生成本人口播', packaging: '合成字幕与配乐', completed: '成片已就绪',
   needs_attention: '需要处理', outcome_unknown: '原请求待核对' };
@@ -271,13 +272,18 @@ function createReferenceHumanService(options = {}) {
       referenceSeconds: asset.seconds, status: 'draft', operations: {}, progress: 0, createdAt: previous?.createdAt || new Date().toISOString() };
     save(task); return publicTask(task);
   }
+  // 同一个人最近几条片子用过的包装组合（新的在前），包装时避开它们，连续几条不重样。
+  const recentPackaging = (task) => records('tasks')
+    .filter((other) => other.id !== task.id && other.referenceAssetId === task.referenceAssetId && other.packagingPlan?.variant)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5)
+    .map((other) => ({ templateId: other.packagingPlan.templateId, variant: other.packagingPlan.variant }));
   async function quote(id) {
     const task = read(id);
     if (task.status !== 'draft') return publicTask(task);
     if (task.captionStyleId.endsWith('_v4')) {
       const asset = read(task.referenceAssetId, 'assets');
       const measured = await (options.analyzeNarration || vision.analyze)(verified(asset.videoFile, asset.videoSha256), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
-      task.packagingPlan = packaging.buildPlan(task, measured);
+      task.packagingPlan = packaging.buildPlan(task, measured, [], false, recentPackaging(task));
       task.captionStyleId = task.packagingPlan.templateId;
       if (task.packagingPlan.blocked) { save(task); throw fail('reference_layout_crowded', '人物占据字幕区域，请换留白更多的素材；未开始付费制作。'); }
       if (!task.coverStyleExplicit) task.coverStyle = templates.templates.find(t => t.id === task.captionStyleId).coverStyle;
@@ -449,7 +455,7 @@ function createReferenceHumanService(options = {}) {
       if (!task.packagingTaskId) {
         if (task.captionStyleId.endsWith('_v4') && !task.packagingPlan?.finalized) {
           const measured = await (options.analyzeNarration || vision.analyze)(file(task.baseVideoFile), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
-          task.packagingPlan = { ...packaging.buildPlan(task, measured, task.utterances, true), finalized: true }; save(task);
+          task.packagingPlan = { ...packaging.buildPlan(task, measured, task.utterances, true, recentPackaging(task)), finalized: true }; save(task);
         }
         if (task.packagingPlan?.blocked) throw fail('reference_layout_crowded', '画面没有足够的字幕空间，或长句缺少可靠分词时间。原片已保留，请调整素材或字幕后重新本地包装；不会重新购买人物。');
         if (!task.musicSelected) {
@@ -466,7 +472,13 @@ function createReferenceHumanService(options = {}) {
         if (!result?.task_id) throw fail('reference_packaging_unavailable', '人物视频已保留，包装服务暂未返回任务。');
         task.packagingTaskId = result.task_id; save(task);
       }
-      const result = await options.queryPackaging(task.packagingTaskId);
+      // 渲染时内容引擎很忙，查询进度可能超时：这只说明还在做，过一会儿再查；连续超时太多次才算失败。
+      let result;
+      try { result = await options.queryPackaging(task.packagingTaskId); task.packagingQueryTimeouts = 0; }
+      catch (error) {
+        if (error.code !== 'CONTENT_ENGINE_REQUEST_TIMEOUT' || (task.packagingQueryTimeouts || 0) >= PACKAGING_QUERY_TIMEOUTS) throw error;
+        task.packagingQueryTimeouts = (task.packagingQueryTimeouts || 0) + 1; save(task); return;
+      }
       if (['failed', 'paused', 'cancelled', 'needs_attention', 'outcome_unknown'].includes(result?.status)) throw fail(result.error_code || 'reference_packaging_failed', result.error_message || '包装未完成，请继续处理；人物视频不会重新生成。', { outcomeUnknown: result.status === 'outcome_unknown' });
       if (result?.status === 'completed') {
         const generatedVideoId = result.generated_video_id || result.result?.generated_video_id || result.output?.generated_video_id;
@@ -494,6 +506,15 @@ function createReferenceHumanService(options = {}) {
   function validateEmphasis(value = [], script) {
     if (!Array.isArray(value) || value.length > 12 || value.some((text) => typeof text !== 'string' || !text.trim() || text.length > 24 || !script.includes(text))) throw fail('reference_emphasis_invalid', '强调短语须来自口播原文，每项最多24字，最多12项。');
     return [...new Set(value)];
+  }
+  // 成片中心：哪些成片是本人口播做的（可以免费换包装），以及按成片换一套新包装。
+  // 新包装用同一段数字人视频和配音，只在本机重新配字幕、配色、镜头和花字，避开这个人最近用过的组合。
+  const repackageable = () => ({ generatedVideoIds: records('tasks').filter((task) => task.status === 'completed' && task.generatedVideoId && task.baseVideoFile && task.utterances).map((task) => task.generatedVideoId) });
+  async function repackageVideo(generatedVideoId) {
+    const source = records('tasks').filter((task) => task.generatedVideoId === generatedVideoId && task.status === 'completed')
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    if (!source) throw fail('reference_repackage_unavailable', '这条成片不是本人口播做的，不能换包装。');
+    return repackage(source.id, { nextStyle: true });
   }
   async function repackage(id, input) {
     assertKeys(input, ['captionStyleId', 'emphasisPhrases', 'title', 'nextStyle', 'soundEffects']);
@@ -613,9 +634,15 @@ function createReferenceHumanService(options = {}) {
   }
   function pending() { if (!closed && !held && !global.__xiaoxiUpdateHold) for (const task of records('tasks')) if (RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState)) void schedule(task.id); }
   const timer = setInterval(pending, 5000); timer.unref?.();
-  const startup = setTimeout(pending, 0); startup.unref?.();
+  // 旧版本把「包装时查询进度超时」当成失败：这类任务启动时自动接着查结果（只是查询，不花钱）。
+  function recoverPackagingTimeouts() {
+    for (const task of records('tasks')) if (task.status === 'needs_attention' && task.errorCode === 'CONTENT_ENGINE_REQUEST_TIMEOUT' && task.resumeStatus === 'packaging' && task.packagingTaskId) {
+      transition(task, 'packaging', { error: '', errorCode: '', packagingQueryTimeouts: 0 });
+    }
+  }
+  const startup = setTimeout(() => { if (!closed) recoverPackagingTimeouts(); pending(); }, 0); startup.unref?.();
   return { capabilities, workspace, saveWorkspace, confirmConsent, scriptQuota, sourceStatus: sources.status, sourceConnect: sources.connect, sourceSearch: sources.search, sourceRead: sources.read, importVideo: admit(importVideo), assets: () => ({ items: records('assets').map(publicAsset) }),
-    trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), coverFrame: admit(coverFrame), coverSource: admit(coverSource), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
+    trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), repackageVideo: admit(repackageVideo), repackageable, coverFrame: admit(coverFrame), coverSource: admit(coverSource), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
     list: () => ({ items: records('tasks').map(publicTask).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }), get: (id) => publicTask(read(id)),
     speechMedia: (id) => { const task = read(id); return { audioDataUrl: `data:audio/wav;base64,${fs.readFileSync(verified(task.audioFile, task.audioSha256)).toString('base64')}` }; },
     isBusy: () => active.size > 0 || admissions > 0,

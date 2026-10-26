@@ -90,6 +90,8 @@ export type ReferenceHumanApi = {
   refresh(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   resume(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   repackage(payload: { id: string; captionStyleId?: string; nextStyle?: boolean; soundEffects?: boolean; title?: string; emphasisPhrases?: string[] }): Promise<DigitalHumanResult<ReferenceTask>>;
+  repackageable(): Promise<DigitalHumanResult<{ generatedVideoIds: string[] }>>;
+  repackageVideo(payload: { generatedVideoId: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   coverFrame(payload: { id: string; seconds: number }): Promise<DigitalHumanResult<{ previewDataUrl: string }>>;
   coverQuote(payload: { id: string; design: { title: string; style: string; frameSeconds: number } }): Promise<DigitalHumanResult<ReferenceTask>>;
   generateCover(payload: { id: string; revision?: string; recover?: boolean }): Promise<DigitalHumanResult<ReferenceTask>>;
