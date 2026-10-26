@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, LogIn, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { SocialAccount, SocialAccountsResult, SocialAccountsState, SocialPlatformKey } from "./social-accounts-types";
+import { PlatformIcon } from "./PlatformIcon";
 import "./SocialAccountsPanel.css";
 
 const statusLabel: Record<SocialAccount["status"], string> = { active: "已登录", expired: "登录已失效", login_required: "待扫码登录" };
@@ -49,7 +50,7 @@ export function SocialAccountsPanel() {
       {(state?.platforms || []).map((platform) => {
         const accounts = state?.accounts.filter((account) => account.platform === platform.key) || [];
         return <section className="social-platform" key={platform.key} aria-labelledby={`social-${platform.key}`}>
-          <h2 id={`social-${platform.key}`}>{platform.name}<span>{accounts.length} 个账号</span></h2>
+          <h2 id={`social-${platform.key}`}><span className="social-platform-name"><PlatformIcon platform={platform.key} size={30} />{platform.name}</span><span>{accounts.length} 个账号</span></h2>
           {accounts.length === 0 && <p className="social-empty">还没有添加{platform.name}账号。</p>}
           <ul>
             {accounts.map((account) => <li key={account.id}>

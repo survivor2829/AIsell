@@ -734,7 +734,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_accounts") });
-    socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow,
+    socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow, copyClient: deepSeekClient,
+      ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
       resolveFinishedVideo: async (finishedVideoId) => {
         const result = await contentEngineController.resolveFinishedPath(finishedVideoId);

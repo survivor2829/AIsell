@@ -1,10 +1,12 @@
 const path = require("node:path");
 const { createSocialPublisher } = require("./social-publisher.cjs");
+const { createCoverCache, writeCopy } = require("./social-publish-copy.cjs");
 
 const FINISHED_ID = /^finished_[a-f0-9]{32}$/;
 
 // The renderer names videos by their 成片中心 id; file paths are resolved here and never sent back.
-function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, getMainWindow, publisherOptions = {} }) {
+function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {} }) {
+  const covers = createCoverCache({ dir: path.join(dataDir, "covers"), ffmpegPath });
   let publisher; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "SOCIAL_ACCOUNTS_UNAVAILABLE" });
@@ -26,6 +28,17 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
       const accountIds = Array.isArray(payload?.accountIds) ? payload.accountIds.slice(0, 40).map((id) => String(id || "")) : [];
       const result = publisher.submit({ videos, accountIds, title: text(payload?.title, 60), description: text(payload?.description, 1000), visibility: payload?.visibility === "private" ? "private" : "public" });
       return { ...result.state, created: result.created, skipped: result.skipped };
+    },
+    // Cover frames for the video picker; a video whose file is gone simply has none.
+    async covers(payload) {
+      const ids = (Array.isArray(payload?.ids) ? payload.ids : []).map(String).filter((id) => FINISHED_ID.test(id)).slice(0, 24);
+      const result = {};
+      for (const id of ids) { try { result[id] = await covers.cover(id, await resolveFinishedVideo(id)); } catch { result[id] = ""; } }
+      return result;
+    },
+    async suggest(payload) {
+      const videos = (Array.isArray(payload?.videos) ? payload.videos : []).slice(0, 5).map((video) => ({ title: text(video?.title, 80), name: text(video?.name, 80), context: text(video?.context, 200) }));
+      return writeCopy({ client: copyClient, videos, hint: text(payload?.hint, 300) });
     },
     cancel: (payload) => publisher.cancel(String(payload?.id || "")),
     retry: (payload) => publisher.retry(String(payload?.id || "")),

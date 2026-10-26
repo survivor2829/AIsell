@@ -11,7 +11,8 @@ const VERIFY = /验证码|身份验证|安全验证|本人操作|拖动滑块|�
 const shownText = async (page) => String(await page.evaluate("document.body ? document.body.innerText : ''") || "").replace(/如作品还在上传中[^。]*。?/g, "");
 const lightUploaded = async (page) => { const text = await shownText(page); return /重新上传/.test(text) && !/上传中/.test(text); };
 // Form text compared without whitespace and the zero-width spaces editors insert.
-const squash = (value) => String(value ?? "").replace(/[s​﻿]+/g, "");
+// Topics may be turned into tags by the editor, so # marks are ignored as well.
+const squash = (value) => String(value ?? "").replace(/[\s​﻿#]+/g, "");
 const sameTitle = (value, job) => squash(value) === squash(job.title);
 const titleThenText = (value, job) => squash(value).startsWith(squash(job.title)) && squash(value).includes(squash(job.description));
 
