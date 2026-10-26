@@ -2,21 +2,12 @@
 import type { FlowStage } from './flow-funnel';
 import type { ViralJob, ViralLibrary } from './reference-human-types';
 
-export function dayWord(updatedAt: string | null, now = new Date()) {
-  const time = Date.parse(updatedAt || '');
-  if (!Number.isFinite(time)) return '最近';
-  const date = new Date(time);
-  if (date.toDateString() === now.toDateString()) return '今天';
-  if (date.toDateString() === new Date(now.getTime() - 86400000).toDateString()) return '昨天';
-  return `${date.getMonth() + 1}月${date.getDate()}日`;
-}
-export function updatedText(updatedAt: string | null, now = new Date()) {
-  const time = Date.parse(updatedAt || '');
-  if (!Number.isFinite(time)) return '';
-  const date = new Date(time);
-  return `${dayWord(updatedAt, now)} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')} 已更新`;
-}
 export const formatCount = (value: number) => value.toLocaleString('en-US');
+
+// 页面大标题：只说真实条数，不说哪天扒的——文案库一次扒好能用很久，写「今天」会和事实不符。
+export function libraryHeadline(stats: ViralLibrary['stats']) {
+  return { lead: `全网扒了 ${formatCount(stats.collected)} 条清洁行业口播，`, ready: `${formatCount(stats.ready)} 条爆款` };
+}
 
 const PLATFORM_NAMES: Record<string, string> = { douyin: '抖音', xiaohongshu: '小红书' };
 const joinCounts = (parts: [string, number | undefined][]) => parts.filter(([, n]) => Number(n) > 0).map(([label, n]) => `${label} ${n}`).join(' · ');
@@ -30,14 +21,6 @@ export function libraryStages(stats: ViralLibrary['stats']): FlowStage[] {
     { no: '03', label: '筛选', value: stats.final, unit: '条够爆', note: '看点赞、评论里问价的人数、小号也能爆这些真实指标。', hint: joinCounts([['不够爆', stats.notViral], ['和清洁无关', stats.irrelevant], ['过期', stats.outdated]]) },
     { no: '04', label: '进文案库', value: stats.ready, unit: '条爆款', note: '提取出原口播。你选一条、选时长，再仿写成自己的原创稿。', accent: true }
   ];
-}
-
-// 卡片上的发布时间：今天 / 昨天 / N 天前。
-export function agoText(publishedAt: string | null, now = new Date()) {
-  const time = Date.parse(publishedAt || '');
-  if (!Number.isFinite(time)) return '';
-  const days = Math.floor((new Date(now).setHours(0, 0, 0, 0) - new Date(time).setHours(0, 0, 0, 0)) / 86400000);
-  return days <= 0 ? '今天发布' : days === 1 ? '昨天发布' : `${days} 天前发布`;
 }
 
 // 仿写时长：不能超过本人视频（主进程写稿时还会再留 3 秒余量给配音）；还没上传视频时都能选。

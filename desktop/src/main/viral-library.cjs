@@ -1,7 +1,9 @@
 // 爆款文案库：我们内部扒取、提取原口播后发布到云端，客户点「仿写」时才在云端按 ID 改写。
 // 这里负责两件事：把一次扒取结果和提取好的原口播组装成文案库（schema 2），以及读回来时逐项校验。
 // 原口播全文只给云端用；云端返回给客户的文案库里没有原文，客户端校验时也会丢掉。
-const MAX_ITEMS = 60, MAX_STRANDS = 240;
+const fs = require('node:fs');
+const path = require('node:path');
+const MAX_ITEMS = 1000, MAX_STRANDS = 240;
 const PLATFORMS = new Set(['douyin', 'xiaohongshu']);
 const TAGS = new Set(['high_likes', 'underdog', 'asking_price']);
 const problem = (code, message) => Object.assign(new Error(message), { code });
@@ -70,4 +72,28 @@ function validateLibrary(doc) {
   return { updatedAt: typeof doc.updatedAt === 'string' ? doc.updatedAt : null, days: count(doc.days) || 30, stats: { ...stats, byPlatform: st.byPlatform && typeof st.byPlatform === 'object' ? st.byPlatform : {} }, strands, items };
 }
 
-module.exports = { buildLibrary, validateLibrary, strandsFromScan, MAX_ITEMS, MAX_STRANDS };
+// 校验后的文案库还原成可存盘的 schema 2 文件（没有原口播），用于本地缓存和安装包自带的一份。
+const publicDoc = (library) => ({ schema: 2, updatedAt: library.updatedAt, days: library.days, stats: library.stats, flow: { strands: library.strands }, items: library.items });
+
+// 客户端读文案库：云端优先；读不到（断网、网关出错、云端还没有）就用上次成功读到的一份，再不行用安装包自带的一份。
+// 交付后页面永远有流图和爆款，兜底数据带 offline 标记；三处都读不到才报错。
+async function loadLibrary({ fetchRemote, cacheFile, seedFile }) {
+  try {
+    const library = validateLibrary(await fetchRemote());
+    if (cacheFile) {
+      try {
+        fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+        fs.writeFileSync(`${cacheFile}.tmp`, JSON.stringify(publicDoc(library)));
+        fs.renameSync(`${cacheFile}.tmp`, cacheFile);
+      } catch { /* 缓存写不进去不影响这次显示 */ }
+    }
+    return library;
+  } catch (error) {
+    for (const file of [cacheFile, seedFile]) {
+      try { if (file) return { ...validateLibrary(JSON.parse(fs.readFileSync(file, 'utf8'))), offline: true }; } catch { /* 换下一处 */ }
+    }
+    throw error;
+  }
+}
+
+module.exports = { buildLibrary, validateLibrary, publicDoc, loadLibrary, strandsFromScan, MAX_ITEMS, MAX_STRANDS };

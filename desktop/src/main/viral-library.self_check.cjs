@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
-const { buildLibrary, validateLibrary, strandsFromScan, MAX_STRANDS } = require('./viral-library.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { buildLibrary, validateLibrary, publicDoc, loadLibrary, strandsFromScan, MAX_STRANDS } = require('./viral-library.cjs');
 const { rankCandidates } = require('./viral-ranking.cjs');
 
 const now = Date.parse('2026-10-24T08:00:00Z'), day = 86400000;
@@ -64,4 +67,33 @@ assert.throws(() => validateLibrary({ schema: 2, items: [{ id: '1', platform: 'd
 assert.throws(() => validateLibrary({ schema: 1, items: [{ id: '1', platform: 'douyin', title: 't', script: 's' }] }), { code: 'viral_library_invalid' }, '旧格式不再认');
 assert.equal(validateLibrary({ ...library, items: [{ ...library.items[0], source: { likes: -5, publishedAt: 'not a date' } }] }).items[0].source.likes, null);
 
-console.log('viral library self-check passed: transcripts from this scan only, viral titles and real stats, transcripts never reach the client, duplicate bundles, strand cap with valid groups');
+// 兜底：云端读到就存一份到本地（没有原口播）；读不到先用本地这份，再不行用安装包自带的，页面永远有流图和爆款
+(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-viral-library-'));
+  try {
+    const cacheFile = path.join(dir, 'cache', 'cache.json'), seedFile = path.join(dir, 'seed.json');
+    const down = async () => { throw Object.assign(new Error('网关不可用'), { code: 'gateway_down' }); };
+    await assert.rejects(loadLibrary({ fetchRemote: down, cacheFile, seedFile }), { code: 'gateway_down' }, '三处都没有才报错');
+    fs.writeFileSync(seedFile, JSON.stringify({ ...publicDoc(back), items: [{ ...back.items[0], title: '安装包自带' }] }));
+    const seeded = await loadLibrary({ fetchRemote: down, cacheFile, seedFile });
+    assert.equal(seeded.offline, true);
+    assert.equal(seeded.items[0].title, '安装包自带', '没有缓存时用安装包自带的');
+    assert.equal(seeded.strands.length, back.strands.length, '自带的那份也有流图');
+    const online = await loadLibrary({ fetchRemote: async () => library, cacheFile, seedFile });
+    assert.equal(online.offline, undefined);
+    assert.ok(!fs.readFileSync(cacheFile, 'utf8').includes(T1), '本地缓存里没有原口播');
+    const cached = await loadLibrary({ fetchRemote: down, cacheFile, seedFile });
+    assert.equal(cached.offline, true);
+    assert.deepEqual({ ...cached, offline: undefined }, { ...online, offline: undefined }, '断网时用上次读到的那份');
+    const empty = await loadLibrary({ fetchRemote: async () => ({ schema: 2, items: [] }), cacheFile, seedFile });
+    assert.equal(empty.offline, true, '云端是空库也用缓存，不显示空页面');
+    fs.writeFileSync(cacheFile, '{broken');
+    assert.equal((await loadLibrary({ fetchRemote: down, cacheFile, seedFile })).items[0].title, '安装包自带', '缓存坏了用自带的');
+    // 仓库里随安装包发的那份必须能通过校验，且不含原口播
+    const shipped = fs.readFileSync(path.join(__dirname, '..', '..', 'resources', 'viral-library', 'seed.json'), 'utf8');
+    assert.ok(validateLibrary(JSON.parse(shipped)).items.length > 0);
+    assert.ok(!shipped.includes('"transcript"'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
+  console.log('viral library self-check passed: transcripts from this scan only, viral titles and real stats, transcripts never reach the client, duplicate bundles, strand cap with valid groups, cache and seed fallback');
+})().catch((error) => { console.error(error); process.exit(1); });

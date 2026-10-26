@@ -166,6 +166,10 @@ function copyAppSource(appDir, edition) {
   fs.copyFileSync(path.join(desktopDir, "product-brand.json"), path.join(appDir, "product-brand.json"));
   fs.copyFileSync(path.join(desktopDir, "installer-targets.json"), path.join(appDir, "installer-targets.json"));
   fs.cpSync(path.join(desktopDir, 'resources', 'official-materials'), path.join(appDir, 'resources', 'official-materials'), { recursive: true });
+  // 安装包自带的爆款文案库：云端读不到时客户仍能看到流图和爆款，所以缺了或校验不过就不打包。
+  const viralSeed = path.join(desktopDir, 'resources', 'viral-library', 'seed.json');
+  require(path.join(desktopDir, 'src', 'main', 'viral-library.cjs')).validateLibrary(JSON.parse(fs.readFileSync(viralSeed, 'utf8')));
+  fs.cpSync(path.dirname(viralSeed), path.join(appDir, 'resources', 'viral-library'), { recursive: true });
   const rendererSource = path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot");
   if (!fs.existsSync(path.join(rendererSource, "build-edition.json"))) throw new Error(`Missing renderer build: ${rendererSource}`);
   fs.cpSync(rendererSource, path.join(appDir, "dist"), { recursive: true });

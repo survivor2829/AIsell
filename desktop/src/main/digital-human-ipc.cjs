@@ -6,7 +6,7 @@ const { createViralPipeline, JOB_ID } = require('./viral-pipeline.cjs');
 const { createBailianVideoProvider } = require('./bailian-video-provider.cjs');
 const { renderBigtypeCover } = require('./bigtype-cover.cjs');
 const { probeMedia } = require('./reference-human-media.cjs');
-const { buildLibrary, validateLibrary } = require('./viral-library.cjs');
+const { buildLibrary, validateLibrary, loadLibrary } = require('./viral-library.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -106,12 +106,14 @@ function registerDigitalHumanIpc(options = {}) {
         industry: saved.draft?.industry, business: saved.draft?.business });
     },
     'reference-viral-pipeline-list': () => pipelineReady().list(),
-    // 客户：从云端读爆款文案库（只读），逐项校验后给页面。
+    // 客户：从云端读爆款文案库（只读），逐项校验后给页面；读不到时用本地缓存或安装包自带的一份，不让页面空着。
     'reference-viral-library': async () => {
       // 开发版预览：指定了本地文案库文件时读它，并标记为预览数据；客户版永远只读云端。
       const preview = options.developmentEdition ? String(process.env.XIAOXI_VIRAL_LIBRARY_FILE || '').trim() : '';
       if (preview) return { ...validateLibrary(JSON.parse(fs.readFileSync(preview, 'utf8'))), preview: true };
-      return validateLibrary(await gatewayProvider.request('/viral-library'));
+      return loadLibrary({ fetchRemote: () => gatewayProvider.request('/viral-library'),
+        cacheFile: options.rootDir ? path.join(options.rootDir, 'viral-library', 'cache.json') : null,
+        seedFile: options.viralLibrarySeedFile || path.join(__dirname, '..', '..', 'resources', 'viral-library', 'seed.json') });
     },
     'reference-confirm-consent': (payload) => { assertKeys(payload, ['assetId']); return reference.confirmConsent(payload.assetId); },
     'reference-viral-pipeline-start-script': (payload) => {
