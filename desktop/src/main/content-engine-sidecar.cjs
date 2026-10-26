@@ -1021,7 +1021,8 @@ function createContentEngineSidecar(options = {}) {
       { candidate_id: generatedVideoId(candidateId) }
     ),
     regenerateCover: (candidateId, design, control) => request("regenerate_cover", {
-      candidate_id: candidateId, ...(design ? { design } : {}), ...(control?.recoverOnly ? { recover_only: true } : {})
+      candidate_id: candidateId, ...(design ? { design } : {}), ...(control?.recoverOnly ? { recover_only: true } : {}),
+      ...(control?.redesign ? { redesign: true } : {})
     }),
     updateCoverTitle: (candidateId, headlineLines) => request("update_cover_title", {
       candidate_id: candidateId, headline_lines: headlineLines

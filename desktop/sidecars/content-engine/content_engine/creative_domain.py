@@ -421,7 +421,7 @@ class CreativeDomain:
             from .video_presentation import CAPTION_STYLES
             if caption_style not in CAPTION_STYLES:
                 raise ContentEngineError("invalid_video_import", "请选择有效的网感字幕样式。")
-        if template not in TEMPLATES or request.get("cover_mode", "apimart") not in {"apimart", "local_frame"}:
+        if template not in TEMPLATES or request.get("cover_mode", "apimart") not in {"apimart", "local_frame", "ai_design"}:
             raise ContentEngineError("invalid_video_import", "视频模板或封面方式无效。")
         title = self._validate_text(request.get("title"), "title", 100)
         script = self._validate_text(request.get("confirmed_script"), "confirmed_script", 5000)
@@ -6158,10 +6158,12 @@ class CreativeDomain:
                 private_state.get("video_template") or "topic_fixed")
             recipe["packaging"]["cover"]["auto_generate"] = True
         if private_state.get("narrated_original_frame"):
-            # New narrated mixes use the source image, without a second paid cover
-            # or generic course packaging. Existing recipes retain their policy.
+            # New narrated mixes start from the source image, then get one AI 3:4 cover
+            # designed from that frame (no generic course packaging). The source image
+            # stays as the cover when the AI cover fails. Existing recipes retain their policy.
             recipe["packaging"]["cover"] = {
                 "mode": "local_frame", "status": "pending", "preserve_source": True,
+                "auto_generate": True, "auto_design": {"subject": "scene"},
             }
             recipe["packaging"]["events"] = []
             if recipe.get("presentation"):
@@ -8642,7 +8644,7 @@ class CreativeDomain:
             "confirmation_required": bool(bailian_calls or calls),
         }
 
-    def regenerate_cover(self, generated_video_id, design=None, *, recover_only=False):
+    def regenerate_cover(self, generated_video_id, design=None, *, recover_only=False, redesign=False):
         row = self._generated_row(generated_video_id)
         if row["status"] != "completed":
             raise ContentEngineError(
@@ -8650,13 +8652,28 @@ class CreativeDomain:
             )
         recipe = json.loads(row["recipe_json"])
         cover = (recipe.get("packaging") or {}).get("cover") or {}
+        if design is None and cover.get("design") and recover_only:
+            # A query of the current request needs no new confirmation.
+            design = cover["design"]
+        elif design is None and redesign:
+            # 成片中心 重新生成 (the desktop confirmed the quote): finish a request that was
+            # never submitted, otherwise design the next cover.
+            pending = self.connection.execute(
+                "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (row["id"],)).fetchone()
+            if cover.get("design") and pending is not None and pending["status"] == "planned":
+                design = cover["design"]
+            else:
+                from .cover_design import next_design
+                design = next_design(row, recipe)
         if design is not None:
             from .cover_design import validate_design
             design = validate_design(design, row["duration_ms"])
-            if not recipe.get("imported_base_video"):
+            # A person cover needs the clean source video; mixed videos use their source-frame thumbnail.
+            if design.get("subject", "person") == "person" and not recipe.get("imported_base_video"):
                 raise ContentEngineError("invalid_cover_design", "整张人物封面仅用于已有口播任务。")
         elif cover.get("design"):
-            raise ContentEngineError("cover_confirmation_required", "请从本人数字分身页面确认封面费用或查询原任务。")
+            raise ContentEngineError("cover_confirmation_required", "请先查看封面费用并确认，或查询原任务。")
         latest = self.connection.execute("SELECT * FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (row["id"],)).fetchone()
         same_design = design is not None and design == cover.get("design")
         # A query must never reserve or submit a new paid request, even if the
@@ -8911,7 +8928,9 @@ class CreativeDomain:
                     raise ContentEngineError("cover_reference_missing", "人物参考图为空，尚未提交生图。")
             # Freeze the opaque reference selection before the one-way paid
             # admission. A restart can then resume without silently switching
-            # to a different source frame.
+            # to a different source frame. The model is recorded with it.
+            from .apimart_cover import cover_model_profile
+            recipe["packaging"]["cover"]["model_profile"] = cover_model_profile()
             self.connection.execute(
                 "UPDATE generated_videos SET recipe_json = ?, updated_at = ? WHERE id = ?",
                 (self._json(recipe), self._now(), video_row["id"]),
@@ -8924,6 +8943,7 @@ class CreativeDomain:
                 provider_task_id = self.cover_client.submit(
                     self._cover_prompt(video_row, recipe),
                     reference_path=reference_path,
+                    profile=recipe["packaging"]["cover"]["model_profile"],
                     **({"size": "3:4"} if recipe["packaging"]["cover"].get("design") else {}),
                 )
             except APIMartOutcomeUnknown as error:
@@ -9986,12 +10006,22 @@ class CreativeDomain:
             # completed even when analysis, provider or local cover composition fails.
             if cover.get("auto_generate") and cover.get("mode") not in {"reuse", "none"}:
                 try:
-                    cover_task = self.regenerate_cover(video_id)
+                    automatic = cover.get("auto_design")
+                    if isinstance(automatic, dict):
+                        from .cover_design import auto_design
+                        finished = self._generated_row(video_id)
+                        design = auto_design(video_id, finished["title"], automatic.get("subject"), finished["duration_ms"])
+                        cover_task = self.regenerate_cover(video_id, design)
+                    else:
+                        cover_task = self.regenerate_cover(video_id)
                     self.run_task(cover_task["task_id"])
                 except Exception as cover_error:
-                    cover["status"] = "failed"
-                    cover["issue_message"] = redact_text(str(cover_error))[:300]
-                    self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), video_id))
+                    # regenerate_cover may already have saved the design and revision; keep them.
+                    latest = json.loads(self._generated_row(video_id)["recipe_json"])
+                    latest_cover = latest.setdefault("packaging", {}).setdefault("cover", cover)
+                    latest_cover["status"] = "failed"
+                    latest_cover["issue_message"] = redact_text(str(cover_error))[:300]
+                    self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(latest), self._now(), video_id))
             return True
         except Exception as error:
             code = error.code if isinstance(error, ContentEngineError) else "render_failed"

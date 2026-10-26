@@ -33,9 +33,11 @@ export function VideoDownloadButton({ generatedId }: { generatedId: string }) {
   };
   return <><button type="button" disabled={busy} onClick={() => void download()}>{busy ? "保存中…" : "下载视频"}</button>{notice && <p role="status">{notice}</p>}</>;
 }
+type CoverQuote = { revision: string; maximumCny: number; estimatedCny: number; note: string };
 type CoverApi = {
   getGenerated: (payload: { candidateId: string }) => Promise<Result<CoverVideo>>;
-  regenerateCover: (payload: { candidateId: string }) => Promise<Result<unknown>>;
+  coverQuote: (payload: { candidateId: string }) => Promise<Result<CoverQuote>>;
+  regenerateCover: (payload: { candidateId: string; quoteRevision?: string; recover?: boolean }) => Promise<Result<unknown>>;
   updateCoverTitle: (payload: { candidateId: string; headlineLines: string[] }) => Promise<Result<CoverVideo>>;
   downloadCandidate: (payload: { candidateId: string; variant: "thumbnail" }) => Promise<Result<{ canceled?: boolean }>>;
 };
@@ -51,6 +53,7 @@ export function VideoCoverPanel({ generatedId }: { generatedId: string }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [revision, setRevision] = useState(0);
+  const [quote, setQuote] = useState<CoverQuote | null>(null);
   const api = () => (window.xiaoxiContent as unknown as { creative: CoverApi }).creative;
   useEffect(() => {
     let active = true;
@@ -75,7 +78,9 @@ export function VideoCoverPanel({ generatedId }: { generatedId: string }) {
     return () => { active = false; window.clearInterval(timer); };
   }, [generatedId]);
   const run = async (action: () => Promise<void>) => { setBusy(true); setNotice(""); try { await action(); } catch (error) { setNotice((error as Error).message); } finally { setBusy(false); } };
-  const pending = video?.coverStatus === "planned" || video?.coverStatus === "submitted";
+  // A submitted or unknown request is only queried (no new charge); anything else needs a confirmed quote.
+  const awaitingProvider = video?.coverStatus === "submitted" || video?.coverStatus === "outcome_unknown";
+  const started = (message: string) => { setVideo((previous) => previous ? { ...previous, coverStatus: "planned" } : previous); setNotice(message); };
   return <section className="video-cover-panel" aria-label="视频封面"><div className="video-cover-preview"><img src={`xiaoxi-content://generated/${generatedId}/thumbnail?v=${revision}`} alt="当前视频封面" /></div><div className="video-cover-controls"><h3>视频封面</h3>
     <button type="button" disabled={busy || !video} onClick={() => void run(async () => {
       const result = await api().downloadCandidate({ candidateId: generatedId, variant: "thumbnail" });
@@ -88,12 +93,25 @@ export function VideoCoverPanel({ generatedId }: { generatedId: string }) {
       if (result.data) setVideo(result.data);
       setRevision((count) => count + 1); setNotice("标题已更新。");
     })}>保存标题</button><small>只调整文字，沿用当前底图。</small></>}
-    <button type="button" disabled={busy || video?.coverStatus === "outcome_unknown"} onClick={() => void run(async () => {
-      const result = await api().regenerateCover({ candidateId: generatedId });
-      if (!result.ok) throw new Error(result.error || "封面暂未开始生成。");
-      setVideo((previous) => previous ? { ...previous, coverStatus: "planned" } : previous);
-      setNotice("封面正在处理，视频可以继续使用。");
-    })}>{pending ? "继续处理封面" : video?.coverStatus === "completed" ? "重新生成封面" : "生成／重试封面"}</button>
+    {awaitingProvider ? <button type="button" disabled={busy} onClick={() => void run(async () => {
+      const result = await api().regenerateCover({ candidateId: generatedId, recover: true });
+      if (!result.ok) throw new Error(result.error || "暂时无法查询原封面任务。");
+      started("正在查询原封面任务，不会重复扣费。");
+    })}>查询封面结果</button>
+    : quote ? <div className="video-cover-quote" role="group" aria-label="AI 网感封面费用">
+      <p>AI 网感封面 · 预计约 {quote.estimatedCny.toFixed(2)} 元，最多 {quote.maximumCny.toFixed(2)} 元</p><small>{quote.note}</small>
+      <button type="button" disabled={busy} onClick={() => void run(async () => {
+        const result = await api().regenerateCover({ candidateId: generatedId, quoteRevision: quote.revision });
+        setQuote(null);
+        if (!result.ok) throw new Error(result.error || "封面暂未开始生成。");
+        started("封面正在生成，视频可以继续使用。");
+      })}>确认生成</button><button type="button" disabled={busy} onClick={() => setQuote(null)}>取消</button>
+    </div>
+    : <button type="button" disabled={busy || !video} onClick={() => void run(async () => {
+      const result = await api().coverQuote({ candidateId: generatedId });
+      if (!result.ok || !result.data) throw new Error(result.error || "封面报价暂不可用，未提交生成。");
+      setQuote(result.data);
+    })}>{video?.coverStatus === "completed" ? "重新生成 AI 封面" : "生成 AI 网感封面"}</button>}
     {video?.coverIssueMessage && <p role="status">{video.coverIssueMessage}</p>}
     {notice && <p role="status">{notice}</p>}
   </div></section>;

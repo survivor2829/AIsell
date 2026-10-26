@@ -142,7 +142,10 @@ def run_imported_video(domain, task_id, payload):
               "caption_presentation": "reference_narration", "subtitle_style": {"preset": "social_pop"},
               "presentation": presentation(captions, payload["title"], payload["template_id"]),
               "packaging": {"preset_id": "knowledge_focus", "title": payload["title"], "events": [],
-                  "cover": {"mode": "local_frame", "status": "pending", "auto_generate": payload.get("cover_mode") == "apimart"},
+                  "cover": {"mode": "local_frame", "status": "pending", "auto_generate": payload.get("cover_mode") in {"apimart", "ai_design"},
+                            # ai_design: a 3:4 cover drawn from a frame of the clean source video, title included.
+                            **({"auto_design": {"subject": "product" if payload["source_id"].startswith("product_video_") else "person"}}
+                               if payload.get("cover_mode") == "ai_design" else {})},
                   "visualRenderer": {"requestedEngine": "remotion", "visualStyleId": "social_pop", "allowFallback": False}}}
     if payload.get("caption_style_id"):
         recipe["caption_style_id"] = payload["caption_style_id"]

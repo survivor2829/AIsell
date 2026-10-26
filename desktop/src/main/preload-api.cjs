@@ -706,9 +706,14 @@ function createContentEngineApi(ipcRenderer) {
         "content-engine:create-visual-comparison-task",
         { candidateId: String(payload?.candidateId || "") }
       ),
+      coverQuote: (payload) => ipcRenderer.invoke(
+        "content-engine:cover-quote",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
       regenerateCover: (payload) => ipcRenderer.invoke(
         "content-engine:regenerate-cover",
-        { candidateId: String(payload?.candidateId || "") }
+        { candidateId: String(payload?.candidateId || ""),
+          ...(payload?.recover === true ? { recover: true } : payload?.quoteRevision ? { quoteRevision: String(payload.quoteRevision) } : {}) }
       ),
       updateCoverTitle: (payload) => ipcRenderer.invoke(
         "content-engine:update-cover-title",

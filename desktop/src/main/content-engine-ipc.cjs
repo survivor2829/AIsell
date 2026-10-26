@@ -85,6 +85,7 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   repackageVideo: "content-engine:repackage-video",
   preflightVisualComparison: "content-engine:preflight-visual-comparison",
   createVisualComparisonTask: "content-engine:create-visual-comparison-task",
+  coverQuote: "content-engine:cover-quote",
   regenerateCover: "content-engine:regenerate-cover",
   updateCoverTitle: "content-engine:update-cover-title",
   getCreativeProject: "content-engine:get-creative-project",
@@ -3511,12 +3512,37 @@ function registerContentEngineIpc(options = {}) {
       )
     );
   });
-  handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
+  // A new paid cover needs a fresh quote the user confirmed for this video; querying
+  // an already submitted request (recover) costs nothing and needs no quote.
+  const coverQuotes = new Map();
+  handle(CONTENT_ENGINE_CHANNELS.coverQuote, async (payload) => {
     assertKeys(payload, new Set(["candidateId"]));
+    const candidateId = validateId(payload.candidateId, "generated_video");
+    const prices = await options.readCoverPrices?.();
+    if (!(prices?.imageUsd > 0 && prices.fxCnyPerUsd > 0)) {
+      throw Object.assign(new Error("未取得有效封面报价，未提交生成。"), { code: "cover_price_unavailable" });
+    }
+    const quote = { revision: randomBytes(16).toString("hex"), candidateId, checkedAt: new Date().toISOString(),
+      maximumCny: Math.ceil(prices.imageUsd * prices.fxCnyPerUsd * 100) / 100,
+      estimatedCny: Math.round((prices.estimatedImageUsd || prices.imageUsd) * prices.fxCnyPerUsd * 100) / 100,
+      note: "1张AI网感封面（gpt-image-2.5，1K），按美元公开价与预算汇率折算；实际扣费以账单为准。" };
+    coverQuotes.set(candidateId, quote);
+    return quote;
+  });
+  handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
+    assertKeys(payload, new Set(["candidateId", "quoteRevision", "recover"]));
+    const candidateId = validateId(payload.candidateId, "generated_video");
+    if (payload.recover === true) {
+      await options.beforeProviderWork?.(["apimart"]);
+      return publicTask(await controller.regenerateCover(candidateId, null, { recoverOnly: true }));
+    }
+    const quote = coverQuotes.get(candidateId);
+    if (!quote || quote.revision !== payload.quoteRevision || Date.now() - Date.parse(quote.checkedAt) > 3600000) {
+      throw Object.assign(new Error("请重新查看封面费用后确认。"), { code: "cover_confirmation_required" });
+    }
+    coverQuotes.delete(candidateId);
     await options.beforeProviderWork?.(["apimart"]);
-    return publicTask(await controller.regenerateCover(
-      validateId(payload.candidateId, "generated_video")
-    ));
+    return publicTask(await controller.regenerateCover(candidateId, null, { redesign: true }));
   });
   handle(CONTENT_ENGINE_CHANNELS.updateCoverTitle, async (payload) => {
     assertKeys(payload, new Set(["candidateId", "headlineLines"]));

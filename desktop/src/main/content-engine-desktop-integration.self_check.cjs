@@ -96,7 +96,7 @@ async function assertPreloadContract() {
     "volcengineTtsStatus"
   ]);
   assert.deepEqual(Object.keys(api.creative).sort(), [
-    "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate", "generateGuidedAutoMixScriptV2", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGenerated", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
+    "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "coverQuote", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate", "generateGuidedAutoMixScriptV2", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGenerated", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
     "getPackagingCostEstimate", "getProject", "importMusicCatalogTrack", "listAutoMixVoicePersonas", "listBrandProfiles", "listGenerated", "listMediaReviews", "listMusicCatalogTracks", "listOneClickCandidates", "listPackagingPresets",
     "listSegments", "mediaUrl", "open", "packageGeneratedVideos", "preflightVisualComparison", "prepareGuidedAutoMixV2", "previewAutoMixVoicePersona",
     "queue", "recordMediaReview", "regenerate", "regenerateAutoMixLayer", "regenerateCover", "reject", "repackageVideo", "reveal",

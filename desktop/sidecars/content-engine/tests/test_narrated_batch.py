@@ -149,7 +149,12 @@ class NarratedBatchTests(unittest.TestCase):
         recipe = json.loads(self.s.connection.execute("SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)).fetchone()[0])
         actual_duration = sum(s["target_duration_ms"] for s in recipe["visual_segments"])
         self.assertTrue(recipe["packaging"]["cover"].get("preserve_source"))
-        self.assertFalse(recipe["packaging"]["cover"].get("auto_generate"))
+        # Each finished mix asks for one AI 3:4 cover drawn from its source frame; without a
+        # configured image service the video still completes and keeps the local cover.
+        self.assertTrue(recipe["packaging"]["cover"].get("auto_generate"))
+        self.assertEqual({"subject": "scene"}, recipe["packaging"]["cover"].get("auto_design"))
+        self.assertEqual("full_design", recipe["packaging"]["cover"]["design"]["mode"])
+        self.assertTrue(self.s.connection.execute("SELECT thumbnail_path FROM generated_videos WHERE id=?", (video_id,)).fetchone()[0])
         self.assertFalse(recipe.get("presentation", {}).get("showTitle", False))
         self.assertEqual([], recipe["packaging"]["events"])
         run = self.s.connection.execute("SELECT * FROM auto_mix_runs_v2 WHERE generated_video_id=?", (video_id,)).fetchone()

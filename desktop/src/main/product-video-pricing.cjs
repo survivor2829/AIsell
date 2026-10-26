@@ -228,4 +228,39 @@ function quotePlan(plan, prices, budgetCny) {
   return { ready: true, estimatedCny, maximumCny, reservedCny: 0, actualCny: 0, pendingCny: 0, budgetCny,
     source: prices.source, checkedAt: prices.checkedAt, fxCnyPerUsd: prices.fxCnyPerUsd, note: '按公开标价保守预留；人民币为预算折算，实际账单另行核对。字幕识别预留非已扣费用。' };
 }
-module.exports = { createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };
+// AI covers (gpt-image-2.5-ext, 1K) are priced per version; the content engine submits "sunburst".
+const COVER_MODEL = 'gpt-image-2.5-ext', COVER_VERSION = 'sunburst';
+function parseCoverPrice(payload, now = Date.now()) {
+  const data = payload?.data;
+  const imageUsd = Number(data?.version_resolution_prices?.[COVER_VERSION]?.['1K']);
+  const paid = Number(data?.version_resolution_paid_prices?.[COVER_VERSION]?.['1K']);
+  if (payload?.success !== true || data?.model_name !== COVER_MODEL || data?.billing_type !== 'version_resolution' || !(imageUsd > 0)) {
+    throw fail('cover_price_unavailable', '未取得有效封面报价，未提交生成。');
+  }
+  return { ready: true, model: COVER_MODEL, version: COVER_VERSION, resolution: '1K', imageUsd,
+    estimatedImageUsd: paid > 0 && paid <= imageUsd ? paid : imageUsd, fxCnyPerUsd: 8,
+    fxNote: '美元公开价按预算汇率折算，非人民币账单', source: [PRICE_ORIGIN + COVER_MODEL], checkedAt: new Date(now).toISOString() };
+}
+function createCoverPriceReader({ fetchJson, fetch: fetchImpl, gatewayClient } = {}) {
+  const read = fetchJson || (fetchImpl ? (url) => readFetchJson(url, fetchImpl) : readJson);
+  let cached, pending;
+  async function readPayload() {
+    const source = PRICE_ORIGIN + COVER_MODEL;
+    if (!gatewayClient?.isEnabled?.()) return read(source);
+    const response = await gatewayClient.fetch(gatewayClient.url('/capabilities?price_model=' + COVER_MODEL),
+      { method: 'GET', timeoutMs: 20000, maxBytes: MAX_PRICE_BYTES });
+    if (!response.ok) throw fail('cover_price_unavailable', '封面报价暂不可用，未提交生成。');
+    const result = await response.json(), price = result?.apimart_pricing;
+    const age = Date.now() - Number(price?.checked_at) * 1000;
+    if (result?.ok !== true || price?.source !== source || !Number.isFinite(age) || age < -300000 || age >= MAX_AGE) {
+      throw fail('cover_price_unavailable', '封面报价来源或有效期无法核实，未提交生成。');
+    }
+    return price.payload;
+  }
+  return async () => {
+    if (cached && Date.now() - Date.parse(cached.checkedAt) < MAX_AGE) return cached;
+    if (!pending) pending = readPayload().then((payload) => { cached = parseCoverPrice(payload); return cached; }).finally(() => { pending = null; });
+    return pending;
+  };
+}
+module.exports = { createCoverPriceReader, parseCoverPrice, createPriceReader, parsePrices, validPrices, quotePlan, round, createBailianPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, createReferencePriceReader };

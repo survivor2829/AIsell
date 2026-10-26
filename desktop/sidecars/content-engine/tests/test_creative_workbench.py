@@ -1251,7 +1251,7 @@ class FakeCoverClient:
         self.download_calls = []
         self.reference_paths = []
 
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None
@@ -1271,7 +1271,7 @@ class FakeCoverClient:
 
 
 class FirstUnknownCoverClient(FakeCoverClient):
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None
@@ -1286,7 +1286,7 @@ class FirstUnknownCoverClient(FakeCoverClient):
 
 
 class FirstPollFailureCoverClient(FakeCoverClient):
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None
@@ -1320,7 +1320,7 @@ class FailingDownloadCoverClient(FakeCoverClient):
 
 
 class FailSecondDownloadCoverClient(FakeCoverClient):
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None

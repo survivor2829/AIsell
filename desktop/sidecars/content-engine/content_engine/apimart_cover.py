@@ -21,6 +21,20 @@ from .provider_tls import gateway_tls_context
 
 DEFAULT_BASE_URL = "https://api.apimart.ai/v1"
 DEFAULT_MODEL = "gpt-image-2"
+# Covers draw their own Chinese headline; gpt-image-2.5 renders text more reliably.
+DEFAULT_COVER_MODEL = "gpt-image-2.5-ext"
+COVER_MODEL_PROFILES = {
+    "gpt-image-2": {"model": "gpt-image-2", "resolution": "1k"},
+    "gpt-image-2.5-ext": {"model": "gpt-image-2.5-ext", "version": "sunburst", "resolution": "1K"},
+}
+
+
+def cover_model_profile() -> dict[str, str]:
+    """Submission fields for covers, from APIMART_COVER_MODEL (desktop sets it)."""
+    model = str(os.environ.get("APIMART_COVER_MODEL") or DEFAULT_COVER_MODEL).strip()
+    if model not in COVER_MODEL_PROFILES:
+        raise APIMartError("Unsupported cover image model.")
+    return dict(COVER_MODEL_PROFILES[model])
 ACTIVE_STATUSES = frozenset(
     {"submitted", "pending", "queued", "processing", "in_progress"}
 )
@@ -484,17 +498,17 @@ class APIMartCoverClient:
             )
         return url
 
-    def submit(self, prompt: str, *, reference_path: Path | None = None, size: str = "9:16") -> str:
+    def submit(self, prompt: str, *, reference_path: Path | None = None, size: str = "9:16",
+               profile: dict[str, str] | None = None) -> str:
         if size not in {"9:16", "3:4"}:
             raise APIMartError("Unsupported cover aspect ratio.")
         if not self.configured:
             raise APIMartError("APIMart cover generation is not configured.")
         payload = {
-            "model": self.model,
+            **(profile or {"model": self.model, "resolution": "1k"}),
             "prompt": str(prompt or "")[:5_000],
             "n": 1,
             "size": size,
-            "resolution": "1k",
         }
         if reference_path is not None:
             payload["image_urls"] = [self._upload_reference(reference_path)]

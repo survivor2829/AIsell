@@ -55,7 +55,7 @@ const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs")
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
-const { createPriceReader, createReferencePriceReader } = require("./product-video-pricing.cjs");
+const { createCoverPriceReader, createPriceReader, createReferencePriceReader } = require("./product-video-pricing.cjs");
 const { createProductAudioPreparer } = require("./product-video-audio.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
@@ -694,6 +694,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.APIMART_API_KEY = gatewayToken;
           providerEnvironment.APIMART_API_BASE_URL = providerGatewayClient.url("/apimart");
           providerEnvironment.APIMART_IMAGE_MODEL = "gpt-image-2";
+          // Covers draw their own Chinese headline; must match createCoverPriceReader.
+          providerEnvironment.APIMART_COVER_MODEL = "gpt-image-2.5-ext";
         }
         return providerEnvironment;
       }
@@ -743,10 +745,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (restarted.state !== 'ready') throw Object.assign(new Error('授权已更新，内容引擎尚未就绪。'),
                                                            { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_FAILED' });
       };
+    const readCoverPrices = createCoverPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
     contentEngineIpcRegistration = registerContentEngineIpc({
       controller: contentEngineController,
       providerCapabilityStatus: providerGatewaySupports,
       beforeProviderWork: beforeContentProviderWork,
+      readCoverPrices,
       dialog,
       shell,
       getMainWindow: () => mainWindow
@@ -798,7 +802,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
       readReferencePrices: createReferencePriceReader({ fetch: net.fetch.bind(net) }),
-      readCoverPrices: () => readVideoPrices(),
+      readCoverPrices,
       getGeneratedVideo: (id) => contentEngineController.getGeneratedVideo(id),
       // 爆款一键成片：成片文件路径、本地大字封面字体（缺字体时只影响封面）、完成提醒
       resolveGeneratedVideoPath: (id) => contentEngineController.resolveGeneratedVideoPath(id, "video"),

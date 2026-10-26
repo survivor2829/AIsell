@@ -232,7 +232,8 @@ METHODS = {
         params.get("candidate_id")
     ),
     "regenerate_cover": lambda service, params: service.regenerate_cover(
-        params.get("candidate_id"), params.get("design"), recover_only=params.get("recover_only", False)
+        params.get("candidate_id"), params.get("design"), recover_only=params.get("recover_only", False),
+        redesign=params.get("redesign", False)
     ),
     "update_cover_operation": lambda service, params: service.update_cover_operation(
         params.get("cover_operation_id"),
