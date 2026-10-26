@@ -9,21 +9,22 @@ function captureResponses(browser, sessionId, { match, onJson }) {
     if (message.sessionId !== sessionId) return;
     const { method, params } = message;
     if (method === "Network.requestWillBeSent") {
-      let operation = "";
-      if (/\/graphql/.test(params.request.url)) { try { operation = JSON.parse(params.request.postData || "{}").operationName || ""; } catch { /* Not JSON. */ } }
-      operations.set(params.requestId, operation);
+      // Only GraphQL requests are remembered: their operation and variables say what they are for.
+      if (!/\/graphql/.test(params.request.url)) return;
+      try { const body = JSON.parse(params.request.postData || "{}"); operations.set(params.requestId, { operation: String(body.operationName || ""), variables: body.variables || {} }); } catch { /* Not JSON. */ }
     } else if (method === "Network.responseReceived") {
       const url = params.response.url;
-      if (params.response.status === 200 && match(url, operations.get(params.requestId) || "")) wanted.set(params.requestId, url);
-    } else if (method === "Network.loadingFinished" && wanted.has(params.requestId)) {
-      const url = wanted.get(params.requestId); wanted.delete(params.requestId);
-      const operation = operations.get(params.requestId) || ""; operations.delete(params.requestId);
+      if (params.response.status === 200 && match(url, operations.get(params.requestId)?.operation || "")) wanted.set(params.requestId, url);
+    } else if (method === "Network.loadingFinished") {
+      const url = wanted.get(params.requestId), request = operations.get(params.requestId) || { operation: "", variables: {} };
+      wanted.delete(params.requestId); operations.delete(params.requestId);
+      if (!url) return;
       if (params.encodedDataLength > MAX_BYTES) return;
       try {
         const result = await browser.send("Network.getResponseBody", { requestId: params.requestId }, sessionId);
         const text = result.base64Encoded ? Buffer.from(result.body, "base64").toString("utf8") : result.body;
         if (text.length > MAX_BYTES) return;
-        onJson({ url, operation, json: JSON.parse(text) });
+        onJson({ url, ...request, json: JSON.parse(text) });
       } catch { /* The page went away or the body was not JSON. */ }
     } else if (method === "Network.loadingFailed") { wanted.delete(params.requestId); operations.delete(params.requestId); }
   });

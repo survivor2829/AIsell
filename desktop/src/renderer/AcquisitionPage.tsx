@@ -29,7 +29,7 @@ export function AcquisitionPage() {
     if (!api || !accountsApi) { setError("关键词获客服务尚未连接，请重新打开桌面应用。"); return; }
     let active = true;
     const off = [api.onUpdate((next) => { if (active) setState(next); }), accountsApi.onUpdate((next) => { if (active) setAccounts(next); })];
-    void api.status().then((result) => { if (active && result.state) setState(result.state); });
+    void api.status().then((result) => { if (!active) return; if (result.state) setState(result.state); if (!result.ok) setError(result.error || "关键词获客记录读取失败。"); });
     void accountsApi.status().then((result) => { if (active && result.state) setAccounts(result.state); });
     return () => { active = false; off.forEach((stop) => stop()); };
   }, [api, accountsApi]);

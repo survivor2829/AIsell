@@ -35,41 +35,57 @@ assert.deepEqual(intentOf("能租吗", ["租"]), ["含「租」"]);
 // 抖音网页搜索会拦截软件控制的浏览器：列出来但不可用，不绕过。
 assert.throws(() => acquireDriverFor("douyin"), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
 
-function world({ captchaPolls = 0, loggedOut = false } = {}) {
+function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-acquire-"));
   const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0 };
-  let captchaLeft = captchaPolls, emitJson = null;
-  const hour = 3_600_000, nowMs = Date.parse("2026-10-26T12:00:00Z");
+  let captchaLeft = captchaPolls, emitJson = null, pending = null, previous = "", hung = null;
+  const hour = 3_600_000, nowMs = Date.parse("2026-10-26T12:00:00Z"), started = Date.now();
   const commentsFor = (id) => ({ data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
     { commentId: `1${id.length}00000001`, authorId: "3xbuyer01", authorName: "买家A", content: "这个多少钱", timestamp: nowMs - hour },
     { commentId: `1${id.length}00000002`, authorId: id.endsWith("1") ? "3xauthor01" : "3xauthor02", authorName: "作者本人", content: "多少钱私信我", timestamp: nowMs - hour },
     { commentId: `1${id.length}00000003`, authorId: "3xold", authorName: "很久以前", content: "怎么买", timestamp: nowMs - 100 * 24 * hour },
     { commentId: `1${id.length}00000004`, authorId: "3xchat", authorName: "路人", content: "拍得真好", timestamp: nowMs - hour }
   ] } } });
+  // The page's data only arrives once a verification is done, and never on a logged-out page.
+  const deliver = (url) => {
+    if (loggedOut) return;
+    if (url.includes("/search/")) emitJson({ url: "https://www.kuaishou.com/rest/v/search/feed", operation: "", json: { pcursor: "no_more", feeds: [
+      { photo: { id: "3xvideo0001", caption: "洗地机测评", timestamp: nowMs }, author: { id: "3xauthor01", name: "作者本人" } },
+      { photo: { id: "3xvideo0002", caption: "洗地机推荐", timestamp: nowMs }, author: { id: "3xauthor02", name: "作者二" } }] } });
+    else {
+      const id = url.split("/").pop();
+      // A late second page from the previous video arrives first and must not be credited to this one.
+      if (previous) emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", variables: { photoId: "3xelsewhere" }, json: { data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
+        { commentId: "1999", authorId: "3xlate", authorName: "别的视频", content: "多少钱", timestamp: nowMs - hour }] } } } });
+      emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", variables: { photoId: id }, json: commentsFor(id) });
+      previous = id;
+    }
+  };
   const page = {
     navigate: async (url) => {
       log.navigations.push(url);
-      setImmediate(() => {
-        if (url.includes("/search/")) emitJson({ url: "https://www.kuaishou.com/rest/v/search/feed", operation: "", json: { pcursor: "no_more", feeds: [
-          { photo: { id: "3xvideo0001", caption: "洗地机测评", timestamp: nowMs }, author: { id: "3xauthor01", name: "作者本人" } },
-          { photo: { id: "3xvideo0002", caption: "洗地机推荐", timestamp: nowMs }, author: { id: "3xauthor02", name: "作者二" } }] } });
-        else emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", json: commentsFor(url.split("/").pop()) });
-      });
+      // Like the real browser, closing it ends a call that is still waiting.
+      if (hang) return new Promise((_resolve, reject) => { hung = reject; });
+      if (captchaLeft > 0) pending = url; else setImmediate(() => deliver(url));
     },
-    evaluate: async () => { if (captchaLeft > 0) { captchaLeft--; return "请完成安全验证 拖动滑块"; } return loggedOut ? "登录即可享受" : "洗地机"; },
+    // Captions and comments can mention 滑块; that alone is not a verification.
+    evaluate: async (expression) => {
+      if (expression.includes("captcha")) { if (captchaLeft > 0 && --captchaLeft === 0 && pending) setImmediate(() => deliver(pending)); return captchaLeft > 0; }
+      return loggedOut ? "登录即可享受" : "洗地机 拖动滑块就能拆下水箱";
+    },
     front: async () => { log.fronts++; },
     send: async (method) => { if (method === "Input.dispatchMouseEvent") log.wheels++; }
   };
-  const browser = { send: async (method) => method === "Target.createTarget" ? { targetId: "t" } : method === "Target.attachToTarget" ? { sessionId: "s" } : {}, close: async () => { log.closed++; } };
+  const browser = { send: async (method) => method === "Target.createTarget" ? { targetId: "t" } : method === "Target.attachToTarget" ? { sessionId: "s" } : {}, close: async () => { log.closed++; hung?.(Object.assign(new Error("closed"), { code: "SOCIAL_BROWSER_CLOSED" })); } };
   const accounts = {
     snapshot: () => ({ accounts: [{ id: "ks1", platform: "kuaishou", label: "快手号", status: "active" }] }),
     profileDir: () => path.join(root, "profile"),
     lease: () => { log.leases++; return () => { log.released++; }; }
   };
-  const make = () => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs,
+  const make = () => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs + (Date.now() - started),
     launch: () => { log.launches++; return browser; }, makePage: () => page,
     capture: (_browser, _session, { match, onJson }) => { emitJson = (event) => { if (match(event.url, event.operation)) onJson(event); }; return { start: async () => {} }; },
-    timing: { settle: 1, response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2 } });
+    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2 } });
   const until = async (acq) => { for (let i = 0; i < 500; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
   return { root, log, make, until };
 }
@@ -86,7 +102,8 @@ function world({ captchaPolls = 0, loggedOut = false } = {}) {
     const run = state.runs[0];
     assert.equal(run.status, "done", run.reason);
     assert.equal(run.videos, 2);
-    assert.equal(state.leads.length, 1, "同一个人在两个视频下都问价，只算一条线索");
+    assert.equal(state.leads.length, 1, "同一个人在两个视频下都问价，只算一条线索；上一个视频迟到的评论不算");
+    assert.equal(run.status, "done"); assert.equal(w.log.fronts, 0, "标题里有「滑块」不当成验证");
     assert.equal(state.leads[0].userName, "买家A"); assert.deepEqual(state.leads[0].signals, ["询价"]);
     assert.equal(state.leads[0].videoUrl, "https://www.kuaishou.com/short-video/3xvideo0001");
     assert.ok(w.log.navigations.every((url) => url.startsWith("https://www.kuaishou.com/")), "只打开快手自己的页面");
@@ -107,6 +124,17 @@ function world({ captchaPolls = 0, loggedOut = false } = {}) {
     const state = await w.until(acq); clearInterval(timer);
     assert.ok(seen.has("needs_user"), "验证期间显示等你验证"); assert.equal(w.log.fronts, 1);
     assert.equal(state.runs[0].status, "done");
+    await acq.dispose();
+  }
+  {
+    // 停下时直接关浏览器，不等卡住的页面；记录是「已停下」而不是出错。
+    const w = world({ hang: true }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 5 });
+    acq.start(acq.snapshot().tasks[0].id);
+    for (let i = 0; i < 100 && !w.log.navigations.length; i++) await sleep(2);
+    acq.stop();
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "stopped"); assert.ok(w.log.closed >= 1); assert.equal(w.log.released, 2);
     await acq.dispose();
   }
   {

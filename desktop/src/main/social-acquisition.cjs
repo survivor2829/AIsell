@@ -11,6 +11,10 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 const stamp = () => new Date().toISOString();
 const userMessage = (error, fallback) => /^(ACQUIRE|SOCIAL)_/.test(String(error?.code || "")) ? error.message : fallback;
 const CAPTCHA = /验证码|滑块|拖动|安全验证|安全检测|形状相同|完成验证/;
+// A shown verification iframe or popup; page text alone can mention 滑块 in a caption.
+const CAPTCHA_PROBE = `(() => { const shown = (el) => el.getClientRects().length > 0;
+  return [...document.querySelectorAll("iframe")].some((frame) => /captcha|verify/i.test(frame.src) && shown(frame))
+    || [...document.querySelectorAll('[class*="captcha" i],[id*="captcha" i],[class*="verify-" i]')].some(shown); })()`;
 const words = (value, max, limit) => [...new Set((Array.isArray(value) ? value : String(value || "").split(/[\n,，、\s]+/)).map((item) => String(item).trim().slice(0, max)).filter(Boolean))].slice(0, limit);
 
 // Finds people whose comments on keyword-matched videos show buying intent. This step only
@@ -18,7 +22,7 @@ const words = (value, max, limit) => [...new Set((Array.isArray(value) ? value :
 // comments or messages anyone. Platform verification is left to the user.
 function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.acquireDriverFor, capture: makeCapture = captureResponses, makePage = pageFor,
   onChange = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
-  const wait = { settle: 4000, response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, ...timing };
+  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, ...timing };
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -40,7 +44,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   function saveTask(input = {}) {
     const platform = String(input.platform || "kuaishou");
     driverFor(platform);
-    const account = accounts.snapshot().accounts.find((item) => item.id === input.accountId && item.platform === platform);
+    const account = accounts.snapshot().accounts.find((item) => item.id === input.accountId && item.platform === platform && item.status === "active");
     if (!account) throw fail("ACQUIRE_ACCOUNT_REQUIRED", "请选择一个已登录的账号。");
     const keywords = words(input.keywords, 20, 30);
     if (!keywords.length) throw fail("ACQUIRE_KEYWORDS_REQUIRED", "请至少填写一个关键词。");
@@ -69,17 +73,18 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       videoId: video.id, videoTitle: video.title, videoUrl: driverFor(task.platform).videoUrl(video.id), videoAuthor: video.authorName,
       commentId: comment.id, userId: comment.userId, userName: comment.userName, comment: comment.text, commentAt: comment.at, region: comment.region || "",
       signals, status: "new", createdAt: stamp() });
-    state.leads = state.leads.slice(0, 5000);
+    state.leads = state.leads.slice(0, 20_000);
     return true;
   }
 
-  async function execute(task, run, shouldStop) {
+  async function execute(control, shouldStop) {
+    const { task, run } = control;
     const driver = driverFor(task.platform);
     const release = accounts.lease(task.accountId);
     const update = (patch) => { Object.assign(run, patch); save(); emit(); };
     let browser;
     try {
-      browser = launch({ executable, profileDir: accounts.profileDir(task.accountId) });
+      browser = control.browser = launch({ executable, profileDir: accounts.profileDir(task.accountId) });
       const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
       const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
       await browser.send("DOM.enable", {}, sessionId);
@@ -87,53 +92,61 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       const searches = [], comments = [];
       const capture = makeCapture(browser, sessionId, {
         match: (url, operation) => driver.isSearch(url) || driver.isComments(url, operation),
-        onJson: ({ url, operation, json }) => { if (driver.isSearch(url)) searches.push(driver.parseSearch(json)); else comments.push(driver.parseComments(json)); }
+        onJson: ({ url, operation, variables, json }) => { if (driver.isSearch(url)) searches.push(driver.parseSearch(json)); else comments.push({ photoId: String(variables?.photoId || ""), ...driver.parseComments(json) }); }
       });
       await capture.start();
       const visible = async () => String(await page.evaluate("document.body ? document.body.innerText.slice(0, 4000) : ''").catch(() => "") || "");
-      // A verification shown by the platform is the user's to complete; the run waits and continues.
-      const settle = async (where) => {
-        await sleep(wait.settle);
-        const deadline = now() + wait.verify;
-        for (let first = true; CAPTCHA.test(await visible()); first = false) {
-          if (shouldStop()) return false;
-          if (first) { await page.front(); update({ status: "needs_user", detail: `${driver.name}要求验证：请在弹出的 Chrome 窗口里完成验证，完成后会自动继续。` }); }
-          if (now() > deadline) throw fail("ACQUIRE_VERIFY_TIMEOUT", `${where}的验证 10 分钟内没有完成，已停下。找到的线索都保留了。`);
+      // Waits for the page's own data. Only while it has not arrived is the page checked for a
+      // platform verification (left to the user; the run waits) or a logged-out page, so words
+      // like 滑块 in captions and comments are never mistaken for a verification.
+      const load = async (where, arrived) => {
+        let deadline = now() + wait.response, verifyUntil = 0;
+        while (!shouldStop() && !arrived()) {
+          // Text is only trusted once the data is overdue, when the page is likely showing nothing else.
+          const blocked = Boolean(await page.evaluate(CAPTCHA_PROBE).catch(() => false)) || (now() > deadline && CAPTCHA.test(await visible()));
+          if (blocked && !verifyUntil) {
+            verifyUntil = now() + wait.verify;
+            await page.front(); update({ status: "needs_user", detail: `${driver.name}要求验证：请在弹出的 Chrome 窗口里完成验证，完成后会自动继续。` });
+          } else if (blocked && now() > verifyUntil) throw fail("ACQUIRE_VERIFY_TIMEOUT", `${where}的验证 10 分钟内没有完成，已停下。找到的线索都保留了。`);
+          else if (!blocked && verifyUntil) { verifyUntil = 0; deadline = now() + wait.response; update({ status: "running", detail: "" }); }
+          else if (!blocked && now() > deadline) break;
           await sleep(wait.poll);
         }
         if (run.status === "needs_user") update({ status: "running", detail: "" });
+        if (arrived() || shouldStop()) return;
         if (driver.loggedOutText.test(await visible())) throw fail("ACQUIRE_LOGIN_REQUIRED", `${driver.name}网页版需要重新扫码登录（账号「${task.accountLabel}」）。`);
-        return true;
       };
-      const waitFor = async (list, from) => { const deadline = now() + wait.response; while (list.length <= from && now() < deadline && !shouldStop()) await sleep(300); return list.length > from; };
+      const more = async (list, from) => { const deadline = now() + wait.response; while (list.length <= from && now() < deadline && !shouldStop()) await sleep(300); };
       const since = now() - task.days * 86_400_000;
       for (const keyword of task.keywords) {
         if (shouldStop()) break;
         update({ detail: `搜索「${keyword}」` });
         const before = searches.length;
         await page.navigate(driver.searchUrl(keyword));
-        if (!await settle(`搜索「${keyword}」`)) break;
-        await waitFor(searches, before);
+        await load(`搜索「${keyword}」`, () => searches.length > before);
+        if (shouldStop()) break;
         let videos = searches.slice(before).flatMap((result) => result.videos);
         // More results load as the list scrolls, the same as a person scrolling.
         for (let i = 0; i < 4 && videos.length < task.maxVideos && searches.at(-1)?.more && !shouldStop(); i++) {
           const count = searches.length;
           await page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: 640, y: 480, deltaX: 0, deltaY: 1200 });
-          await waitFor(searches, count);
+          await more(searches, count);
           videos = searches.slice(before).flatMap((result) => result.videos);
         }
         videos = [...new Map(videos.map((video) => [video.id, video])).values()].slice(0, task.maxVideos);
-        update({ videos: run.videos + videos.length });
         for (const video of videos) {
           if (shouldStop()) break;
           // A pause between videos keeps the pace of a person reading, and the load on the platform low.
           await sleep(wait.gapMin + random() * (wait.gapMax - wait.gapMin));
           update({ detail: `「${keyword}」读评论：${video.title.slice(0, 20) || video.id}` });
           const mark = comments.length;
+          // Each comment response names its video; a late one from the previous page is not counted here.
+          const mine = () => comments.slice(mark).filter((result) => !result.photoId || result.photoId === video.id);
           await page.navigate(driver.videoUrl(video.id));
-          if (!await settle("打开视频")) break;
-          await waitFor(comments, mark);
-          for (const result of comments.slice(mark)) for (const comment of result.comments) {
+          await load("打开视频", () => mine().length > 0);
+          if (shouldStop()) break;
+          run.videos += 1;
+          for (const result of mine()) for (const comment of result.comments) {
             if (task.skipAuthor && comment.userId === video.authorId) continue;
             if (comment.at && Date.parse(comment.at) < since) continue;
             const signals = drivers.intentOf(comment.text, task.intentWords);
@@ -146,7 +159,8 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       }
       update({ status: shouldStop() ? "stopped" : "done", detail: "", reason: shouldStop() ? "已停下，找到的线索都保留了。" : "", finishedAt: stamp() });
     } catch (error) {
-      update({ status: "failed", detail: "", reason: userMessage(error, "运行中出错，找到的线索都保留了，可以再次开始。"), finishedAt: stamp() });
+      if (shouldStop()) update({ status: "stopped", detail: "", reason: "已停下，找到的线索都保留了。", finishedAt: stamp() });
+      else update({ status: "failed", detail: "", reason: userMessage(error, "运行中出错，找到的线索都保留了，可以再次开始。"), finishedAt: stamp() });
     } finally {
       await browser?.close().catch(() => {});
       release();
@@ -162,10 +176,11 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     task.lastRunAt = stamp(); save();
     const control = { task, run, stop: false };
     active = control; emit();
-    control.done = execute(task, run, () => control.stop || closed).finally(() => { if (active === control) active = null; emit(); });
+    control.done = execute(control, () => control.stop || closed).catch(() => {}).finally(() => { if (active === control) active = null; emit(); });
     return snapshot();
   }
-  function stop() { if (active) { active.stop = true; active.run.detail = "正在停下…"; emit(); } return snapshot(); }
+  // Closing the browser ends whatever page step is in flight, so stopping does not wait on it.
+  function stop() { if (active) { active.stop = true; active.run.detail = "正在停下…"; void active.browser?.close().catch(() => {}); emit(); } return snapshot(); }
   function setLead(id, status) {
     const lead = state.leads.find((item) => item.id === id);
     if (!lead) throw fail("ACQUIRE_LEAD_NOT_FOUND", "没有找到这条线索。");
@@ -180,7 +195,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     const rows = state.leads.filter((lead) => !taskId || lead.taskId === taskId).map((lead) => [names[lead.platform] || lead.platform, lead.userName, lead.comment, lead.signals.join(" "), lead.commentAt, lead.region, lead.keyword, lead.videoTitle, lead.videoUrl, statuses[lead.status]]);
     return "﻿" + [header, ...rows].map((row) => row.map(cell).join(",")).join("\r\n");
   }
-  async function dispose() { closed = true; if (active) { active.stop = true; await active.done?.catch(() => {}); } }
+  async function dispose() { closed = true; if (active) { active.stop = true; await active.browser?.close().catch(() => {}); await active.done; } }
   return { snapshot, saveTask, removeTask, start, stop, setLead, csv, dispose, isBusy: () => Boolean(active) };
 }
 
