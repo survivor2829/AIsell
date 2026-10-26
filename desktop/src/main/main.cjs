@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, protocol, safeStorage, screen, session, shell, clipboard } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, powerMonitor, protocol, safeStorage, screen, session, shell, clipboard } = require("electron");
 if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
 const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing.cjs').createStartupTiming();
@@ -966,9 +966,27 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           await productDetailController?.prepareUpdate(false).catch(() => {});
         }, quit: () => app.quit()
       });
+      // 打开即更新：新版下载校验好后，在不打断任何任务、用户没在操作时自动安装重启。
+      const autoUpdate = require("./update-auto.cjs").createAutoUpdate({
+        controller: cloudMaintenance, request: updater.request, cancel: updater.cancel,
+        idleSeconds: () => powerMonitor.getSystemIdleTime(),
+        busy: async () => {
+          const workflow = workflowController?.status();
+          if (workflow?.enabled || workflow?.phase === "pausing" || workflow?.contactSync?.running || coordinator.status().lock) return true;
+          if (productVideoRegistration?.service?.isBusy?.() || digitalHumanRegistration?.service?.isBusy?.()) return true;
+          // 地图、关键词等浏览器任务在跑，或者有登录/悬浮窗口正显示着，都算在用。
+          if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
+          if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
+          if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
+          const content = contentEngineController?.updateStatus();
+          if (content?.pending || (content?.alive && content.state !== "ready")) return true;
+          return content?.state === "ready" && (await contentEngineController.productionSummary()).active > 0;
+        }
+      });
       registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,
-        restart: updater.request, cancelUpdate: updater.cancel });
+        restart: () => { autoUpdate.userRequested(); return updater.request(); }, cancelUpdate: updater.cancel });
       cloudMaintenance.start();
+      autoUpdate.start();
     }
     productDetailDownloadRegistration = registerProductDetailDownloads({
       session: mainWindow.webContents.session,
