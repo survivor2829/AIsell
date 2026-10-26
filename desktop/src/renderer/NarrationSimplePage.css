@@ -1,12 +1,15 @@
 .ns-page { max-width: 1680px; min-height: calc(100vh - 96px); margin: 0 auto; padding: 44px 56px 0; color: #1f2937; display: flex; flex-direction: column; }
 .ns-kicker { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 900; letter-spacing: 0.16em; color: #c91739; }
-.ns-live { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 800; letter-spacing: 0; color: #166534; }
-.ns-live i { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; animation: ns-pulse 1.6s infinite; }
-@keyframes ns-pulse { 0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.5); } 100% { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); } }
 .ns-preview { padding: 3px 10px; border-radius: 999px; background: #fff4e0; color: #92400e; font-size: 13px; letter-spacing: 0; }
 .ns-h1 { margin: 16px 0 0; font-size: 54px; font-weight: 900; line-height: 1.22; letter-spacing: -0.025em; }
 .ns-h1 em { font-style: normal; color: #e60000; }
 .ns-wait { padding: 72px 0 24px; font-size: 22px; font-weight: 900; color: #6b7280; }
+/* 读取文案库时的占位：两行标题和流图的灰块，不显示「准备中」之类的文字 */
+.ns-skeleton { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+.ns-skeleton i { display: block; height: 54px; width: 72%; border-radius: 12px; background: linear-gradient(90deg, #f1f2f4 25%, #e6e8eb 50%, #f1f2f4 75%); background-size: 200% 100%; animation: ns-shimmer 1.4s infinite linear; }
+.ns-skeleton i:nth-child(2) { width: 54%; }
+.ns-skeleton i.is-flow { width: 100%; height: 320px; margin-top: 16px; border-radius: 18px; }
+@keyframes ns-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 /* 流图：铺满整行，高度随宽度放大 */
 .ns-flow { margin-top: 30px; }
@@ -95,7 +98,7 @@
   .ns-h1.is-small { font-size: 36px; }
   .ns-list { grid-template-columns: 1fr; }
 }
-@media (prefers-reduced-motion: reduce) { .ns-live i { animation: none; } .ns-progress i { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .ns-skeleton i { animation: none; } .ns-progress i { transition: none; } }
 .ns-wait.is-pending { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }
 .ns-wait.is-pending b { font-size: 30px; font-weight: 900; color: #1f2937; }
 .ns-wait.is-pending span { font-size: 17px; font-weight: 700; color: #6b7280; }

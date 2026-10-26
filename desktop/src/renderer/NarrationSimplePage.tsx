@@ -4,7 +4,7 @@ import type { ReferenceAsset, ReferenceHumanApi, ReferenceTask, ViralJob, ViralL
 import { FlowFunnel } from './FlowFunnel';
 import { tagText } from './flow-funnel';
 import { likesText } from './viral-pipeline';
-import { agoText, barText, dayWord, formatCount, libraryStages, longestScriptSeconds, SCRIPT_SECONDS, updatedText, type ScriptSeconds } from './narration-simple';
+import { barText, libraryHeadline, libraryStages, longestScriptSeconds, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
 import referencePolicy from '../shared/reference-human.json';
 import './NarrationSimplePage.css';
 
@@ -25,12 +25,11 @@ const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development
 type Draft = ViralLibraryScript & { seconds: ScriptSeconds; problems: string[] };
 function ScriptCard({ item, draft, writing, selected, onSelect }: { item: ViralLibraryItem; draft?: Draft; writing: boolean; selected: boolean; onSelect: () => void }) {
   const tag = item.source.tags.find((t) => t.id !== 'high_likes');
-  const ago = agoText(item.source.publishedAt);
   return (
     <button type="button" className={`ns-card${selected ? ' is-on' : ''}`} aria-pressed={selected} onClick={onSelect}>
       <i className="ns-pick" aria-hidden="true" />
       <span className="ns-src"><span className={`ns-pf is-${item.platform}`}>{item.platform === 'xiaohongshu' ? '红' : '抖'}</span>
-        原{item.platform === 'xiaohongshu' ? '笔记' : '视频'} {item.source.likes !== null && <b>{likesText(item.source.likes)} 赞</b>}{tag && <> · {tagText(tag)}</>}{ago && <> · {ago}</>}</span>
+        原{item.platform === 'xiaohongshu' ? '笔记' : '视频'} {item.source.likes !== null && <b>{likesText(item.source.likes)} 赞</b>}{tag && <> · {tagText(tag)}</>}</span>
       <span className="ns-title">{item.title}</span>
       {draft ? <span className="ns-draft"><span className="ns-draft-k">你的原创稿 · 约 {draft.seconds} 秒</span><b>{draft.title}</b><span className="ns-text">{draft.script}</span>
         {draft.problems.length > 0 && <span className="ns-warn">{draft.problems.join('；')}</span>}</span>
@@ -52,7 +51,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const lastJob = useRef('');
   const root = useRef<HTMLDivElement>(null);
   const [libraryTry, setLibraryTry] = useState(0);
-  // 文案库来自云端；还没准备好时显示「准备中」并可以重新加载，不把接口报错直接给客户看。
+  // 文案库来自云端；云端读不到时主进程会给本地缓存或安装包自带的一份，只有安装损坏才会读不到。
   useEffect(() => {
     let active = true;
     setLibraryError('');
@@ -100,6 +99,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const pick = library?.items.find((i) => i.id === selected);
   const draft = pick ? drafts[pick.id] : undefined;
   const flow = useMemo(() => library ? { strands: library.strands, stages: libraryStages(library.stats) } : null, [library]);
+  const headline = library ? libraryHeadline(library.stats) : null;
   // 时长不能超过本人视频（留 3 秒）；视频变短时，选中的时长自动退到能用的最长一档。
   const longest = longestScriptSeconds(ready ? person!.seconds : undefined);
   const tooLong = Boolean(draft && draft.seconds > longest);
@@ -144,18 +144,18 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
     <div className="ns-page" ref={root}>
       {page === 'pick' ? <>
         {library && flow ? <>
-          <div className="ns-kicker">爆款文案库{updatedText(library.updatedAt) && <span className="ns-live"><i />{updatedText(library.updatedAt)}</span>}{library.preview && <span className="ns-preview">预览数据，仅开发版可见</span>}</div>
-          <h1 className="ns-h1">{dayWord(library.updatedAt)}全网扒了 {formatCount(library.stats.collected)} 条清洁行业口播，<br />挑出 <em>{library.stats.ready} 条爆款</em>，选一条就能仿写成你的原创稿。</h1>
+          <div className="ns-kicker">爆款文案库{library.preview && <span className="ns-preview">预览数据，仅开发版可见</span>}{DEVELOPMENT_EDITION && library.offline && <span className="ns-preview">开发版可见：云端没读到，用的是本地兜底</span>}</div>
+          <h1 className="ns-h1">{headline!.lead}<br />挑出 <em>{headline!.ready}</em>，选一条就能仿写成你的原创稿。</h1>
           <div className="ns-flow" ref={flowBox}><FlowFunnel strands={flow.strands} stages={flow.stages} height={flowHeight} ambient showOutput outputLabel="爆款文案库" outputNote="选一条，按你要的时长仿写" emptyText=""
             caption="示意图：每条线是一条扒到的口播；搬运和重复的合成一束；经过「够爆」的闸门，只有真爆款的几束通过，汇进爆款文案库。鼠标移上去可以看每条线是什么。" /></div>
           <div className="ns-sec"><b>选一条爆款</b><span>按爆款热度排序 · 点「仿写」后只学它的结构和节奏，内容换成清洁设备</span></div>
           <div className="ns-list">{library.items.map((item) => <ScriptCard key={item.id} item={item} draft={drafts[item.id]} writing={busy === `write:${item.id}`} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
         </> : libraryError ? <div className="ns-wait is-pending">
-          <b>今天的爆款文案库正在准备中</b>
-          <span>云端每天会把抖音、小红书上的清洁行业爆款整理进文案库，准备好后这里会直接显示。</span>
+          <b>爆款文案库没有读到</b>
+          <span>软件里自带的文案库可能损坏了，请重新加载；还不行就重新安装软件。</span>
           <button type="button" className="ns-go is-quiet" onClick={() => setLibraryTry((n) => n + 1)}>重新加载</button>
           {DEVELOPMENT_EDITION && <small>开发版可见：{libraryError}</small>}
-        </div> : <div className="ns-wait">正在读取爆款文案库…</div>}
+        </div> : <div className="ns-skeleton" aria-busy="true" aria-label="正在读取爆款文案库"><i /><i /><i className="is-flow" /></div>}
         {stuckCount > 0 && onOpenPending && <button type="button" className="ns-pending" onClick={() => onOpenPending(stuckReference.length ? 'reference' : 'image')}>
           之前有 {stuckCount} 条视频需要你处理，已有结果都保留着，不会自动重新扣费<b>去处理 →</b></button>}
         <div className="ns-bar"><div className="ns-bar-in">
