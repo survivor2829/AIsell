@@ -87,7 +87,7 @@ async function main() {
           return { output: { finish_reason: 'stop', audio: { url: 'https://example.com/voice.wav' } } };
         }
         if (route === '/narration/script-quota') return { quota: { status: 'available', remaining: 2 - counts.script } };
-        if (route === '/narration/script') { counts.script++; assert.equal(input.timeoutMs, 420000, 'script wait covers one in-operation rewrite'); if (scriptReply) return scriptReply(); return { ok: true, title: '如何选', script: '测试口播。', emphasisPhrases: ['口播'], quota: { remaining: 1 } }; }
+        if (route === '/narration/script') { counts.script++; assert.equal(input.timeoutMs, 420000, 'script wait covers one in-operation rewrite'); if (scriptReply) return scriptReply(input); return { ok: true, title: '如何选', script: '测试口播。', emphasisPhrases: ['口播'], quota: { remaining: 1 } }; }
         if (route.includes('recognize')) { counts.asr++; return { result: { utterances } }; }
         if (route.includes('image2video')) {
           assert.ok(!videoOperations.has(input.operationId), 'a video operation may only be submitted once');
@@ -294,6 +294,38 @@ async function main() {
     await assert.rejects(service.writeScript({ ...scriptInput, referenceSource: viral, generationIntentId: rejectedIntent }), /这条不适合仿写/);
     await assert.rejects(service.writeScript({ ...scriptInput, referenceSource: viral, generationIntentId: rejectedIntent }), { code: 'reference_script_rejected' });
     assert.equal(counts.script, before + 1, 'an unoriginal result is never re-posted');
+    // 文案库仿写：只发文案库 ID 和时长，原文由云端补；时长不能超过本人视频（留 3 秒）；云端没改好的问题原样带回
+    let libraryBody = null;
+    scriptReply = (input) => { libraryBody = input.body; return { ok: true, title: '夜班车间没人扫', script: '你敢信吗？夜里车间一个人没有。', emphasisPhrases: [], originality: { overlapRatio: 0.04, limit: 0.15, attempts: 2 }, problems: ['正文只有14个字，太短，需要162—193个字'] }; };
+    const libraryInput = { ...scriptInput, libraryId: '7689829090550975795', targetSeconds: 45, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b3' };
+    const rewritten = await service.writeScript(libraryInput);
+    assert.deepEqual(libraryBody, { targetSeconds: 45, topic: '清洁设备', productFacts: '实际产品资料', libraryId: '7689829090550975795' }, '客户端不发原文');
+    assert.deepEqual([rewritten.libraryId, rewritten.targetSeconds, rewritten.originality.passed, rewritten.originality.attempts], ['7689829090550975795', 45, true, 2]);
+    assert.match(rewritten.problems[0], /太短/);
+    // 60 秒的视频选 60 秒：可以选，但按 57 秒的字数写，给配音留余量
+    await service.writeScript({ ...libraryInput, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b4' });
+    assert.equal(libraryBody.targetSeconds, 57);
+    const posted = counts.script;
+    await assert.rejects(service.writeScript({ ...libraryInput, targetSeconds: 50 }), { code: 'reference_script_seconds_invalid' });
+    await assert.rejects(service.writeScript({ ...libraryInput, libraryId: '../x' }), { code: 'reference_script_library_invalid' });
+    await assert.rejects(service.writeScript({ ...libraryInput, referenceSource: viral }), { code: 'reference_script_library_invalid' }, '不能一边用文案库一边塞原文');
+    await assert.rejects(service.writeScript({ ...libraryInput, targetSeconds: undefined }), { code: 'reference_script_seconds_invalid' });
+    assert.equal(counts.script, posted, '超长或不合法的请求不提交、不扣额度');
+    // 还没上传本人视频也能先仿写；60 秒照写，出片前再核对视频长度
+    await service.writeScript({ ...libraryInput, referenceAssetId: undefined, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b6' });
+    assert.equal(libraryBody.targetSeconds, 60);
+    assert.equal(counts.script, posted + 1);
+    // 视频不够选的时长：不提交、不扣额度
+    const personFile = path.join(root, 'reference', 'assets', `${automaticAsset.id}.json`);
+    const original = fs.readFileSync(personFile, 'utf8');
+    fs.writeFileSync(personFile, JSON.stringify({ ...JSON.parse(original), seconds: 46.7 }));
+    await assert.rejects(service.writeScript({ ...libraryInput, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b7' }), /只有 46 秒，不够写 60 秒/);
+    await service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b8' });
+    assert.equal(libraryBody.targetSeconds, 43, '46.7 秒的视频选 45 秒，按 43 秒写');
+    assert.equal(counts.script, posted + 2);
+    fs.writeFileSync(personFile, original);
+    scriptReply = () => { throw Object.assign(new Error('服务未完成请求：viral_library_item_missing'), { code: 'digital_human_provider_error', status: 404, outcomeUnknown: false }); };
+    await assert.rejects(service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b5' }), /不在今天的文案库里/);
     scriptReply = null;
     // 极简页面：上传时本人确认一次，人物即显示已授权；重复确认不改原时间；非法编号直接拒绝
     const consented = service.confirmConsent(automaticAsset.id);

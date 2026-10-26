@@ -12,13 +12,19 @@ from service import GatewayConfig, GatewayServer, Handler, VIRAL_LIBRARY_MAX_BYT
 import test_service
 
 
+TRANSCRIPT = "物业经理千万别再招保洁了，一台洗地机顶六个人，一年省下二十万人工，评论区都在问多少钱。"
+
+
+def item(**patch):
+    return {"id": "7400000000000000001", "platform": "douyin", "title": "物业经理别再招保洁了，一台洗地机顶六个人", "transcript": TRANSCRIPT,
+            "source": {"likes": 83900, "tags": [{"id": "high_likes", "label": "高赞", "value": 83900}]}, **patch}
+
+
 def library(**patch):
-    return {"schema": 1, "updatedAt": "2026-10-24T08:00:00Z",
-            "stats": {"collected": 64, "duplicates": 7, "final": 15, "ready": 2},
+    return {"schema": 2, "updatedAt": "2026-10-24T08:00:00Z",
+            "stats": {"collected": 64, "duplicates": 7, "final": 15, "ready": 1},
             "flow": {"strands": [{"id": "1", "title": "t", "source": "抖音", "group": "1", "outcome": "pass", "reason": "高赞"}]},
-            "items": [{"id": "7400000000000000001", "platform": "douyin", "title": "物业经理别再为招保洁发愁", "script": "夜班保洁排不开人？先看地面材质。",
-                       "emphasisPhrases": ["地面材质"], "source": {"title": "原标题", "likes": 83900, "tags": [{"id": "high_likes", "label": "高赞", "value": 83900}]}}],
-            **patch}
+            "items": [item()], **patch}
 
 
 class ViralLibraryTest(unittest.TestCase):
@@ -58,15 +64,19 @@ class ViralLibraryTest(unittest.TestCase):
         self.path.write_text(json.dumps(library(), ensure_ascii=False), encoding="utf-8")
         status, body = self.get(self.session())
         self.assertEqual(status, 200)
-        self.assertEqual(body["items"][0]["script"], "夜班保洁排不开人？先看地面材质。")
-        self.assertEqual(body["stats"]["ready"], 2)
+        self.assertEqual(body["items"][0]["title"], "物业经理别再招保洁了，一台洗地机顶六个人")
+        self.assertEqual(body["items"][0]["source"]["likes"], 83900)
+        self.assertNotIn("transcript", body["items"][0], "原文案只留在云端")
+        self.assertNotIn(TRANSCRIPT, json.dumps(body, ensure_ascii=False))
+        self.assertEqual(body["stats"]["ready"], 1)
 
     def test_rejects_incomplete_or_oversized_documents(self):
         token = self.session()
-        for bad in ("not json", json.dumps({"schema": 2, "items": []}), json.dumps(library(items=[])),
-                    json.dumps(library(items=[{"id": "1", "title": "x" * 25, "script": "s"}])),
-                    json.dumps(library(items=[{"id": "1", "title": "t", "script": ""}])), json.dumps([1, 2]),
-                    json.dumps(library(items=[{"id": "1", "title": "t", "script": "s"}] * 2)), "[" * 100000):
+        old = {"schema": 1, "items": [{"id": "1", "title": "t", "script": "s"}]}
+        for bad in ("not json", json.dumps(old), json.dumps({"schema": 2, "items": []}), json.dumps(library(items=[])),
+                    json.dumps(library(items=[item(title="x" * 61)])), json.dumps(library(items=[item(transcript="太短")])),
+                    json.dumps(library(items=[item(platform="weibo")])), json.dumps(library(items=[item(id="../x")])), json.dumps([1, 2]),
+                    json.dumps(library(items=[item()] * 2)), "[" * 100000):
             self.path.write_text(bad, encoding="utf-8")
             self.assertEqual(self.get(token), (503, {"error": "viral_library_invalid"}), bad[:40])
         self.path.write_bytes(b" " * (VIRAL_LIBRARY_MAX_BYTES + 1))

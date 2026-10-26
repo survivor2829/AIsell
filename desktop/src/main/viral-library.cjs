@@ -1,5 +1,6 @@
-// 爆款文案库：我们内部扒取、转写、改写后发布到云端，客户软件只读。
-// 这里负责两件事：把一次扒取结果和改写好的稿子组装成文案库（schema 1），以及读回来时逐项校验。
+// 爆款文案库：我们内部扒取、提取原口播后发布到云端，客户点「仿写」时才在云端按 ID 改写。
+// 这里负责两件事：把一次扒取结果和提取好的原口播组装成文案库（schema 2），以及读回来时逐项校验。
+// 原口播全文只给云端用；云端返回给客户的文案库里没有原文，客户端校验时也会丢掉。
 const MAX_ITEMS = 60, MAX_STRANDS = 240;
 const PLATFORMS = new Set(['douyin', 'xiaohongshu']);
 const TAGS = new Set(['high_likes', 'underdog', 'asking_price']);
@@ -15,7 +16,6 @@ function tagText(tag) {
 }
 const cleanTags = (tags) => (Array.isArray(tags) ? tags : []).filter((t) => t && TAGS.has(t.id) && count(t.value) !== null)
   .map((t) => ({ id: t.id, label: text(t.label, 8), value: count(t.value) })).slice(0, 3);
-const httpsUrl = (value) => { try { const u = new URL(String(value)); return u.protocol === 'https:' ? u.href.slice(0, 2000) : ''; } catch { return ''; } };
 
 // 流图的线：每条线是一次扒取里的一条真实内容。闸门是「够爆」：通过的按爆款类型合成几束粗红带（评论里问价多 / 小号也能爆 / 点赞高），
 // 最后合拢成一股汇进文案库。条数太多时保留全部通过的，没通过的均匀抽样。
@@ -24,7 +24,7 @@ const kindOf = (item) => KINDS.find(([tag]) => (item.tags || []).some((t) => t.i
 function strandsFromScan(result, readyIds) {
   const line = (item) => ({ id: String(item.id), title: text(item.title, 60), source: `${platformName(item.platform)} · ${text(item.author?.name, 40)}`, group: String(item.id) });
   const pass = result.items.map((item) => { const [, group, label] = kindOf(item); return { ...line(item), group, label, outcome: 'pass',
-    reason: `${readyIds.has(String(item.id)) ? '已改写成原创稿 · ' : ''}${item.tags.map(tagText).join(' · ')}` }; });
+    reason: `${readyIds.has(String(item.id)) ? '进了文案库 · ' : ''}${item.tags.map(tagText).join(' · ')}` }; });
   const drop = [...result.removed.map((r) => ({ id: String(r.id), title: text(r.title, 60), source: `${platformName(r.platform)} · ${text(r.author, 40)}`,
     group: String(r.twinId || r.id), outcome: 'drop', reason: text(r.label, 20) }))];
   const room = Math.max(0, MAX_STRANDS - pass.length), step = drop.length > room ? drop.length / room : 1;
@@ -34,35 +34,34 @@ function strandsFromScan(result, readyIds) {
   return [...pass.slice(0, MAX_STRANDS), ...sampled].map((s) => (kept.has(s.group) || s.group.startsWith('kind-') ? s : { ...s, group: s.id }));
 }
 
-function buildLibrary({ scan, scripts, now = new Date() }) {
+const MIN_TRANSCRIPT = 20;
+// 卡片标题用爆款原标题，去掉 #话题 标签；只剩标签时用原口播开头。
+const cardTitle = (title, transcript) => text(String(title ?? '').replace(/#[^\s#]+/gu, ' ').replace(/\s+/gu, ' '), 60) || text(transcript, 30);
+// 卡片上只显示爆款标题和真实数据，不给原视频链接。
+const publicSource = (source) => ({ likes: count(source?.likes), publishedAt: typeof source?.publishedAt === 'string' && Number.isFinite(Date.parse(source.publishedAt)) ? source.publishedAt.slice(0, 64) : null, tags: cleanTags(source?.tags) });
+
+function buildLibrary({ scan, transcripts, now = new Date() }) {
   if (!scan?.items || !scan?.removed || !scan?.stats) throw problem('viral_library_scan_missing', '还没有扒取结果，请先扒一次爆款。');
   const bySource = new Map(scan.items.map((item) => [String(item.id), item]));
-  // 同一来源只收一条（后改写的那条），文案库里的 id 不重复。
-  const latest = new Map(scripts.filter((s) => bySource.has(String(s.sourceId)) && s.script && s.title && s.originality?.passed !== false).map((s) => [String(s.sourceId), s]));
-  const items = [...latest.values()].slice(0, MAX_ITEMS).map((s) => {
-    const source = bySource.get(String(s.sourceId));
-    return { id: String(source.id), platform: source.platform, title: text(s.title, 24), script: text(s.script, 500),
-      emphasisPhrases: (s.emphasisPhrases || []).filter((p) => typeof p === 'string' && p.length <= 12 && s.script.includes(p)).slice(0, 5),
-      originality: s.originality ? { overlapRatio: Number(s.originality.overlapRatio) || 0, passed: true } : null,
-      source: { title: text(source.title, 200), author: text(source.author?.name, 120), url: httpsUrl(source.url), likes: count(source.metrics?.likes),
-        publishedAt: source.publishedAt || null, tags: cleanTags(source.tags) } };
-  });
-  if (!items.length) throw problem('viral_library_empty', '还没有改写好的稿子，不能发布空的文案库。');
+  // 同一来源只收一条（后提取的那条），文案库里的 id 不重复；顺序跟扒取结果的爆款排序一致。
+  const latest = new Map(transcripts.filter((t) => bySource.has(String(t.sourceId)) && text(t.transcript, 6000).length >= MIN_TRANSCRIPT).map((t) => [String(t.sourceId), t]));
+  const items = scan.items.filter((source) => latest.has(String(source.id))).slice(0, MAX_ITEMS).map((source) => ({
+    id: String(source.id), platform: source.platform, title: cardTitle(source.title, latest.get(String(source.id)).transcript), transcript: text(latest.get(String(source.id)).transcript, 6000),
+    source: publicSource({ likes: source.metrics?.likes, publishedAt: source.publishedAt, tags: source.tags }) }));
+  if (!items.length) throw problem('viral_library_empty', '还没有提取好的原口播，不能发布空的文案库。');
   const ready = new Set(items.map((i) => i.id));
   const s = scan.stats;
-  return { schema: 1, updatedAt: now.toISOString(), days: scan.days || 30,
+  return { schema: 2, updatedAt: now.toISOString(), days: scan.days || 30,
     stats: { collected: s.collected, byPlatform: s.byPlatform || {}, duplicates: s.duplicates, outdated: s.outdated, irrelevant: s.irrelevant, notViral: s.notViral, final: s.final, ready: items.length },
     flow: { strands: strandsFromScan(scan, ready) }, items };
 }
 
 // 客户端读回云端文案库时再校验一遍：字段不全、类型不对的整条丢掉，全部不合格就当作还没有文案库。
 function validateLibrary(doc) {
-  if (!doc || doc.schema !== 1 || !Array.isArray(doc.items)) throw problem('viral_library_invalid', '爆款文案库暂时不可用，请稍后再试。');
-  const items = doc.items.filter((i) => i && /^[A-Za-z0-9]{1,64}$/u.test(String(i.id)) && PLATFORMS.has(i.platform) && typeof i.title === 'string' && i.title.trim() && i.title.length <= 24
-    && typeof i.script === 'string' && i.script.trim() && i.script.length <= 500).filter((i, index, all) => all.findIndex((o) => String(o.id) === String(i.id)) === index).slice(0, MAX_ITEMS).map((i) => ({
-    id: String(i.id), platform: i.platform, title: text(i.title, 24), script: text(i.script, 500),
-    emphasisPhrases: (Array.isArray(i.emphasisPhrases) ? i.emphasisPhrases : []).filter((p) => typeof p === 'string' && p.length <= 12 && i.script.includes(p)).slice(0, 5),
-    source: { title: text(i.source?.title, 200), author: text(i.source?.author, 120), url: httpsUrl(i.source?.url), likes: count(i.source?.likes), tags: cleanTags(i.source?.tags) } }));
+  if (!doc || doc.schema !== 2 || !Array.isArray(doc.items)) throw problem('viral_library_invalid', '爆款文案库暂时不可用，请稍后再试。');
+  const items = doc.items.filter((i) => i && /^[A-Za-z0-9]{1,64}$/u.test(String(i.id)) && PLATFORMS.has(i.platform) && typeof i.title === 'string' && i.title.trim() && i.title.length <= 60)
+    .filter((i, index, all) => all.findIndex((o) => String(o.id) === String(i.id)) === index).slice(0, MAX_ITEMS)
+    .map((i) => ({ id: String(i.id), platform: i.platform, title: text(i.title, 60), source: publicSource(i.source) }));
   if (!items.length) throw problem('viral_library_empty', '爆款文案库还在准备中，请稍后再来。');
   const st = doc.stats || {};
   const stats = Object.fromEntries(['collected', 'duplicates', 'outdated', 'irrelevant', 'notViral', 'final', 'ready'].map((k) => [k, count(st[k]) ?? 0]));

@@ -143,7 +143,7 @@ function registerDigitalHumanIpc(options = {}) {
     'reference-viral-library-export': () => {
       if (!options.developmentEdition) throw fail('viral_library_internal_only', '这是内部功能。');
       const scan = lastScan || (scanFile && fs.existsSync(scanFile) ? JSON.parse(fs.readFileSync(scanFile, 'utf8')) : null);
-      const library = buildLibrary({ scan, scripts: pipelineReady().libraryScripts() });
+      const library = buildLibrary({ scan, transcripts: pipelineReady().libraryTranscripts() });
       const file = path.join(options.rootDir, 'viral-library', `library-${library.updatedAt.replace(/[:.]/g, '-')}.json`);
       fs.writeFileSync(file, JSON.stringify(library, null, 1));
       return { file, items: library.items.length, collected: library.stats.collected };

@@ -100,3 +100,16 @@
 .ns-wait.is-pending b { font-size: 30px; font-weight: 900; color: #1f2937; }
 .ns-wait.is-pending span { font-size: 17px; font-weight: 700; color: #6b7280; }
 .ns-wait.is-pending small { font-size: 13px; font-weight: 600; color: #9ca3af; }
+
+/* 仿写好的原创稿接在爆款标题下面；时长按钮放在底部栏 */
+.ns-draft { display: flex; flex-direction: column; margin-top: 16px; padding-top: 14px; border-top: 1px dashed #f1dfe1; }
+.ns-draft b { margin-top: 6px; font-size: 18px; font-weight: 900; }
+.ns-draft-k { font-size: 13px; font-weight: 900; letter-spacing: 0.08em; color: #c91739; }
+.ns-draft.is-writing { font-size: 15px; font-weight: 800; color: #6b7280; }
+.ns-warn { margin-top: 8px; font-size: 13px; font-weight: 800; color: #b45309; }
+.ns-dur { display: flex; gap: 8px; flex-shrink: 0; }
+.ns-dur button { height: 48px; padding: 0 16px; border: 2px solid #f1dfe1; border-radius: 12px; background: #fff; color: #4b5563; font: inherit; font-size: 16px; font-weight: 900; cursor: pointer; }
+.ns-dur button.is-on { border-color: #e60000; color: #b4122c; background: #fff5f5; }
+.ns-dur button:disabled { opacity: 0.4; cursor: default; }
+@media (max-width: 900px) { .ns-bar-in { flex-wrap: wrap; } }
+.ns-card > .ns-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

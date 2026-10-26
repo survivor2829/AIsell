@@ -15,6 +15,7 @@ const STEPS = [
 ];
 const VIDEO_STATES = new Set(['video_submitting', 'video_generating']);
 const ASR_SECONDS = 180;
+const MIN_SOURCE_SECONDS = 15;
 const DEFAULT_MAX_CNY = 6;
 // 爆款原链接只接受平台作品页。
 function postUrl(value, platform) {
@@ -82,6 +83,8 @@ function createViralPipeline(options) {
         const audio = path.join(workDir(job.id), 'source.wav');
         if (!job.asr) {
           // 下载和抽音频都在本地，失败不花钱；音频准备好之后才登记识别操作。
+          // 太短的视频讲不完一段口播，下载前就跳过。
+          if (Number(item.media?.durationSeconds) > 0 && item.media.durationSeconds < MIN_SOURCE_SECONDS) throw problem('viral_source_short', `原视频只有 ${Math.round(item.media.durationSeconds)} 秒，太短，换一条试试。`, { final: true });
           const video = path.join(workDir(job.id), 'source.mp4');
           if (!fs.existsSync(video)) { save(job, { message: '正在下载爆款视频' }); await scout.downloadMedia(item, video); }
           save(job, { message: '正在提取原声' });
@@ -187,9 +190,9 @@ function createViralPipeline(options) {
     save(job, { status: 'running', error: '', message: '' });
     try {
       if (!job.transcript && !job.script) { save(job, { step: 'extract' }); await extract(job); }
+      // 内部做文案库：只提取原口播，客户点「仿写」时才在云端改写；不配音、不生成数字人。
+      if (job.mode === 'library') return save(job, { status: 'done', step: 'done', progress: 100, message: '已提取原口播，等待发布到文案库' });
       if (!job.script) { save(job, { step: 'write' }); await write(job); }
-      // 内部做文案库：只提取和改写，不配音、不生成数字人。
-      if (job.mode === 'library') return save(job, { status: 'done', step: 'done', progress: 100, message: '已改写，等待发布到文案库' });
       if (!job.generatedVideoId) { if (!['voice', 'video', 'package'].includes(job.step)) save(job, { step: 'voice' }); await produce(job); }
       save(job, { step: 'cover', message: '正在合成大字封面' }); await cover(job);
       save(job, { status: 'done', step: 'done', progress: 100, message: '已完成，成片在成片中心' });
@@ -216,7 +219,7 @@ function createViralPipeline(options) {
     if (!item || !/^[A-Za-z0-9]{1,64}$/u.test(String(item.id || '')) || !['douyin', 'xiaohongshu'].includes(item.platform) || !postUrl(item.url, item.platform)) throw problem('viral_item_invalid', '请从爆款卡片上点「一键成片」。');
     // 人物和声音授权在开始前就核对，免得先花了识别费和写稿额度、到配音才被拦下。
     const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
-    if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先在「本人数字分身」里保存出镜人物和声音。');
+    if (mode !== 'library' && (!person || person.available === false || !person.voiceSampleReady)) throw problem('viral_person_missing', '请先在「本人数字分身」里保存出镜人物和声音。');
     if (mode !== 'library' && !person.voiceConsented) throw problem('viral_voice_consent', '这位出镜人物还没确认声音授权，请先在「本人数字分身」里做一条口播并确认授权。');
     // 文案库稿子改写完就够了，再点一次不重复花识别费和写稿额度；确定用不了的（没口播、不够原创）也不再排。
     const duplicate = all().find((j) => j.item.id === String(item.id) && (j.mode || 'post') === mode && (holdsItem(j) || (mode === 'library' && (j.status === 'done' || j.final))));
@@ -248,9 +251,9 @@ function createViralPipeline(options) {
       item: { id: itemId, platform: entry.platform, url, title: clean(entry.source?.title || entry.title).slice(0, 200), body: '', author: clean(entry.source?.author).slice(0, 120), publishedAt: null, likes: Number.isFinite(entry.source?.likes) ? entry.source.likes : null, media: null } };
     save(job); void pump(); return publicJob(job);
   }
-  // 内部：已改写好的文案库稿子（发布前汇总用）。
-  function libraryScripts() {
-    return all().filter((j) => j.mode === 'library' && j.status === 'done' && j.script).map((j) => ({ sourceId: j.item.id, ...j.script }));
+  // 内部：已提取好的爆款原口播（发布文案库时汇总用）。
+  function libraryTranscripts() {
+    return all().filter((j) => j.mode === 'library' && j.status === 'done' && j.transcript).map((j) => ({ sourceId: j.item.id, transcript: j.transcript }));
   }
 
   // 重试：已提交的付费操作都走原回执；口播任务卡住时先按原任务恢复，不新建任务。
@@ -274,7 +277,7 @@ function createViralPipeline(options) {
   }
   function coverPath(id) { const job = read(id); if (!job.coverFile || !fs.existsSync(job.coverFile)) throw problem('viral_cover_missing', '封面还没有生成。'); return job.coverFile; }
 
-  return { start, startFromScript, libraryScripts, list, retry, remove, coverPath, resume: () => { void pump(); }, isBusy: () => Boolean(pumping), close: () => { closed = true; return pumping; } };
+  return { start, startFromScript, libraryTranscripts, list, retry, remove, coverPath, resume: () => { void pump(); }, isBusy: () => Boolean(pumping), close: () => { closed = true; return pumping; } };
 }
 
 module.exports = { createViralPipeline, coverWords, textFromUtterances, STEPS, JOB_ID };

@@ -79,8 +79,9 @@ class NarrationScriptTest(unittest.TestCase):
         self.period = {"periodId": "october", "limit": 2,
                        "startsAt": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
                        "endsAt": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
+        self.library = self.directory.name + "/viral-library.json"
         self.config = GatewayConfig(keys={"deepseek": "server-key"}, session_secret="script-secret",
-                                    receipt_db_path=self.directory.name + "/receipts.db",
+                                    receipt_db_path=self.directory.name + "/receipts.db", viral_library_path=self.library,
                                     narration_script_quotas={"customer": self.period},
                                     license_validator=lambda _: {"license_id": "customer", "expires_at": self.period["endsAt"]})
         self.config.upstream_open = self.upstream
@@ -163,6 +164,60 @@ class NarrationScriptTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(self.call(body=body)[1], result)
         self.assertEqual(len(self.calls), 2)
+
+    GOOD_30S = "先看地面材质再选设备，" * 12  # 120 个字：30 秒要 108—129 字
+    LIBRARY_ITEM = {"id": "7400000000000000001", "platform": "douyin", "title": "物业经理别再招保洁了", "transcript": VIRAL + "，今天把账算给你看。"}
+
+    def publish_library(self):
+        with open(self.library, "w", encoding="utf-8") as handle:
+            json.dump({"schema": 2, "items": [self.LIBRARY_ITEM]}, handle, ensure_ascii=False)
+
+    def test_library_item_is_rewritten_from_the_server_side_transcript(self):
+        self.publish_library()
+        body = {"topic": "清洁设备渠道商", "productFacts": "", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30}
+        self.scripts = [self.GOOD_30S]
+        status, result = self.call(body=body)
+        self.assertEqual((status, result["problems"], result["originality"]["attempts"]), (200, [], 1))
+        sent = json.loads(json.loads(self.calls[0].data)["messages"][1]["content"])
+        self.assertEqual(sent["reference"]["body"], self.LIBRARY_ITEM["transcript"], "原文案由云端按 ID 补上")
+        self.assertNotIn("libraryId", sent)
+        self.assertIn("108—129", json.loads(self.calls[0].data)["messages"][0]["content"])
+        self.assertEqual(self.call(body=body)[1], result, "同一操作重放不再调用")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_missing_library_item_or_client_reference_costs_nothing(self):
+        self.assertEqual(self.call(body={"topic": "t", "libraryId": "7400000000000000001"}), (404, {"error": "viral_library_item_missing"}))
+        self.publish_library()
+        self.assertEqual(self.call("op-2", {"topic": "t", "libraryId": "999"})[0], 404)
+        self.assertEqual(self.call("op-3", {"topic": "t", "libraryId": "../x"})[0], 400)
+        self.assertEqual(self.call("op-4", {"topic": "t", "libraryId": self.LIBRARY_ITEM["id"], "reference": {"body": "客户端塞的原文"}})[0], 400)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.get("narration/script-quota")[1]["quota"]["used"], 0)
+
+    def test_short_or_english_draft_is_rewritten_once_and_reported_if_still_wrong(self):
+        self.publish_library()
+        body = {"topic": "清洁设备渠道商", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30}
+        self.scripts = ["先看地面材质再选设备，overall 成本更低。", self.GOOD_30S]
+        status, fixed = self.call(body=body)
+        self.assertEqual((status, fixed["script"], fixed["problems"], fixed["originality"]["attempts"]), (200, self.GOOD_30S, [], 2))
+        notes = json.loads(json.loads(self.calls[1].data)["messages"][1]["content"])["fixNotes"]
+        self.assertTrue(any("太短" in note for note in notes) and any("overall" in note for note in notes), notes)
+        self.assertEqual(fixed["quota"]["remaining"], 1, "检查不合格的重写不额外扣额度")
+        # 重写后还是太短：不再调用第三次，把稿子和问题一起交给客户
+        self.scripts = ["太短的稿子。", "还是太短的稿子。"]
+        status, short = self.call("script-2", body)
+        self.assertEqual(status, 200)
+        self.assertEqual(short["script"], "还是太短的稿子。")
+        self.assertIn("太短", short["problems"][0])
+        self.assertEqual(len(self.calls), 4)
+
+    def test_failed_length_rewrite_keeps_the_original_enough_first_draft(self):
+        self.publish_library()
+        body = {"topic": "清洁设备渠道商", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30}
+        self.scripts = ["先看地面材质再选设备。", FakeResponse(body=b"not json")]
+        status, result = self.call(body=body)
+        self.assertEqual((status, result["script"]), (200, "先看地面材质再选设备。"))
+        self.assertIn("太短", result["problems"][0])
 
     def test_no_quota_no_provider_and_no_client_override(self):
         self.config.narration_script_quotas = {}
