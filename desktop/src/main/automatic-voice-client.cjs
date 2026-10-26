@@ -1,8 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
-const { contained } = require('./digital-human-service.cjs');
-const { fail } = require('./digital-human-provider.cjs');
+const { contained, fail } = require('./digital-human-provider.cjs');
 const { sha256, uploadReferenceMedia } = require('./reference-human-media.cjs');
 const { ttsAudioUrl } = require('./bailian-video-provider.cjs');
 const policy = require('../shared/reference-human.json').automaticVoice;

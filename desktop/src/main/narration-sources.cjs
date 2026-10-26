@@ -1,6 +1,5 @@
 const { randomUUID } = require('node:crypto');
-const { fail } = require('./digital-human-provider.cjs');
-const { assertKeys } = require('./digital-human-service.cjs');
+const { assertKeys, fail } = require('./digital-human-provider.cjs');
 const { createNarrationBrowser } = require('./narration-browser.cjs');
 
 // Fixed, read-only browser bridge protocol (OpenCLI 1.8.8). No CLI execution,

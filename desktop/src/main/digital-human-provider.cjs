@@ -253,4 +253,14 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
     videoPayload,
   };
 }
-module.exports = { createDigitalHumanProvider, downloadMedia, isPublicAddress, safeLookup, remoteUrl, fail, cleanMessage, nodeOf, taskIdOf, resultUrl, videoPayload, SCENES, VOICES, MODEL, SAFE_ID };
+// 数字人各模块共用：只收约定的字段；本地任务文件必须在自己的目录里。
+function assertKeys(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) throw fail('digital_human_invalid_input', '请刷新页面后重试。');
+}
+function contained(root, relative) {
+  const full = path.resolve(root, relative);
+  const rel = path.relative(root, full);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw fail('digital_human_path_invalid', '本地任务文件无效。');
+  return full;
+}
+module.exports = { assertKeys, contained, createDigitalHumanProvider, downloadMedia, isPublicAddress, safeLookup, remoteUrl, fail, cleanMessage, nodeOf, taskIdOf, resultUrl, videoPayload, SCENES, VOICES, MODEL, SAFE_ID };
