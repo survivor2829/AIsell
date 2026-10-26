@@ -23,7 +23,8 @@ const LABELS = { draft: '待确认制作费用', audio_preparing: '制作本人�
   needs_attention: '需要处理', outcome_unknown: '原请求待核对' };
 const ownedSlot = (slot) => ['prepaid', 'free'].includes(slot?.slotType);
 const currentVoice = (voice) => voice?.usable === true && (voice.speakerId || voice.model === policy.automaticVoice.model);
-const needsNewNarration = (task) => ['digital_human_transcript_mismatch', 'reference_audio_too_long'].includes(task.errorCode);
+// 配音比视频长只能重写；识别对不上可以重新核对（复用已买的配音和识别，不再购买），核对规则修好后误判的任务能接着做。
+const needsNewNarration = (task) => task.errorCode === 'reference_audio_too_long';
 
 // Leave room for natural pauses; measured audio remains the authoritative duration.
 const SCRIPT_KEYS = ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly', 'libraryId', 'targetSeconds', 'mode', 'avoidTitles'];
