@@ -43,6 +43,8 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const [stuck, setStuck] = useState<{ reference: ReferenceTask[]; image: DigitalHumanTask[] }>({ reference: [], image: [] });
   const lastJob = useRef('');
   const root = useRef<HTMLDivElement>(null);
+  // 流图铺满整行，高度跟着宽度放大（宽屏更舒展），限制在 300～480。
+  const flowBox = useRef<HTMLDivElement>(null), [flowHeight, setFlowHeight] = useState(340);
 
   useEffect(() => {
     let active = true;
@@ -62,6 +64,13 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
     return () => { active = false; off(); };
   }, []);
   useEffect(() => { root.current?.scrollIntoView({ block: 'start' }); }, [page]);
+  useEffect(() => {
+    const box = flowBox.current;
+    if (!box) return;
+    const fit = () => setFlowHeight(Math.round(Math.max(300, Math.min(480, box.clientWidth * 0.3))));
+    const observer = new ResizeObserver(fit); observer.observe(box); fit();
+    return () => observer.disconnect();
+  }, [page, Boolean(library)]);
 
   const current = jobs.find((j) => ['running', 'queued'].includes(j.status)) || jobs.find((j) => j.id === lastJob.current) || undefined;
   const status = barText(current);
@@ -107,7 +116,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
         {library && flow ? <>
           <div className="ns-kicker">爆款文案库{updatedText(library.updatedAt) && <span className="ns-live"><i />{updatedText(library.updatedAt)}</span>}{library.preview && <span className="ns-preview">预览数据，仅开发版可见</span>}</div>
           <h1 className="ns-h1">{dayWord(library.updatedAt)}全网扒了 {formatCount(library.stats.collected)} 条清洁行业口播，<br />挑出 <em>{library.stats.ready} 条爆款</em>，已经改写成你的原创稿。</h1>
-          <div className="ns-flow"><FlowFunnel strands={flow.strands} stages={flow.stages} height={250} ambient summary outputLabel="爆款文案库" outputNote="已改写成原创稿，可以直接出片" emptyText="" /></div>
+          <div className="ns-flow" ref={flowBox}><FlowFunnel strands={flow.strands} stages={flow.stages} height={flowHeight} ambient summary outputLabel="爆款文案库" outputNote="已改写成原创稿，可以直接出片" emptyText="" /></div>
           <div className="ns-sec"><b>选一条文案</b><span>按爆款热度排序 · 内容已换成清洁设备，只学它的结构和节奏</span></div>
           <div className="ns-list">{library.items.map((item) => <ScriptCard key={item.id} item={item} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
         </> : <div className="ns-wait">{libraryError || '正在读取爆款文案库…'}</div>}

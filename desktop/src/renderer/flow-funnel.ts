@@ -64,7 +64,7 @@ export function layoutFlow(strands: FlowStrand[], w: number, h: number): FlowLay
   const decided = isDecided(strands);
   const drafts = bundleStrands(strands);
   const x1 = w * FLOW_STAGE_X[1], x2 = w * FLOW_STAGE_X[2], gate = w * 0.625, xo = w * 0.8, outY = h * 0.42;
-  const pw = Math.max(26, Math.min(46, w * 0.042)), ph = pw * 1.32;
+  const pw = Math.max(26, Math.min(60, w * 0.04)), ph = pw * 1.32;
   const icon = { x: w * 0.875 - pw / 2, y: outY - ph / 2, w: pw, h: ph };
   const pad = Math.max(14, h * 0.07), total = strands.length, nb = Math.max(1, drafts.length);
   const order = decided ? drafts.flatMap((d) => d.members) : strands.map((_, i) => i);
