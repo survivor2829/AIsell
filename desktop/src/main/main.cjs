@@ -456,6 +456,16 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
     const maintenanceConfig = cloudConfig({ developmentEdition });
+    // 打开即更新：检查完更新之前不启动任何业务任务（update-launch-gate.cjs）。
+    // The hold is set before any service is created so none of them resumes work early. The relaunch
+    // right after an update skips the gate: the helper is waiting for this version to report healthy.
+    const updateHolds = { install: false, launch: !productDetailReleaseSmokeMode && app.isPackaged && maintenanceConfig.enabled === true
+      && !process.argv.includes("--xiaoxi-updated-launch") };
+    const applyUpdateHold = () => { global.__xiaoxiUpdateHold = updateHolds.launch || updateHolds.install; };
+    applyUpdateHold();
+    let openLaunchGate;
+    const launchGateOpened = new Promise(resolve => { openLaunchGate = resolve; });
+    if (!updateHolds.launch) openLaunchGate();
     const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
     providerGatewayClient = createProviderGatewayClient({
       config: {
@@ -967,7 +977,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       });
       let workflowPause = null;
       const updater = require("./update-coordinator.cjs").createUpdateCoordinator({
-        controller: cloudMaintenance, setHold: value => { global.__xiaoxiUpdateHold = value; },
+        controller: cloudMaintenance, setHold: value => { updateHolds.install = value; applyUpdateHold(); },
         prepare: async () => {
           const workflow = workflowController?.status();
           if (workflow?.enabled && !workflowPause) {
@@ -1011,6 +1021,20 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       });
       registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,
         restart: () => { autoUpdate.userRequested(); return updater.request(); }, cancelUpdate: updater.cancel });
+      if (updateHolds.launch) {
+        // Started before cloudMaintenance.start(), so the gate owns the launch check.
+        void require("./update-launch-gate.cjs").createLaunchGate({
+          controller: cloudMaintenance, request: updater.request,
+          setHold: value => { updateHolds.launch = value; applyUpdateHold(); },
+          publish: state => cloudMaintenance.setLaunchGate(state),
+          onOpen: reason => {
+            logger.event("maintenance", "launch_gate_open", { reason });
+            productVideoRegistration?.service?.resumeAfterUpdate();
+            digitalHumanRegistration?.service?.resumeAfterUpdate();
+            openLaunchGate();
+          }
+        }).start();
+      }
       cloudMaintenance.start();
       autoUpdate.start();
     }
@@ -1021,9 +1045,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getDesktopPath: () => app.getPath("desktop"),
       diagnostics: logger
     });
-    momentsCampaignController?.initialize();
+    // Daily Moments automation drives WeChat, so it waits for the launch update check.
+    void launchGateOpened.then(() => momentsCampaignController?.initialize());
     logger.event("app", "ready", { window_created: true });
     const readyWindow = mainWindow;
+    // Health must not wait for the launch gate: closing during an update download would otherwise
+    // leave boot-attempt.json behind and roll back a working version on the next launch.
     Promise.resolve(readyWindow.__xiaoxiLoaded).then(() => readyWindow.webContents.executeJavaScript(
       "new Promise(resolve => { const until = Date.now() + 15000; const check = () => { if (document.getElementById('root')?.childElementCount) resolve(true); else if (Date.now() > until) resolve(false); else setTimeout(check, 100); }; check(); })"
     )).then(async ready => {
