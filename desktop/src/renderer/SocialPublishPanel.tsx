@@ -75,6 +75,10 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
   const submit = async () => {
     if (!publishApi) return;
     const chosen = videos.filter((item) => selectedVideos.includes(item.finishedVideoId));
+    // Publishing is visible to followers at once; say exactly where it goes before anything starts.
+    const targets = chosenAccounts.map((account) => `${PLATFORM_NAMES[account.platform]} · ${account.label}`).join("\n");
+    const scope = visibility === "public" ? "公开发布（所有人可见）" : "仅自己可见";
+    if (!window.confirm(`确认发布 ${chosen.length} 条视频，${scope}，发到这些账号？\n\n${targets}\n\n标题：${title.trim()}`)) return;
     const ok = await run("submit", async () => {
       const result = await publishApi.submit({ videos: chosen.map((item) => ({ finishedVideoId: item.finishedVideoId, name: item.title || item.displayName })), accountIds: selectedAccounts, title, description, visibility });
       if (result.ok && result.state) {

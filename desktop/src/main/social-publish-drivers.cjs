@@ -100,7 +100,13 @@ const DRIVERS = {
     formMatches: sameTitle,
     privateChecked: async (page) => (await page.evaluate("(document.querySelector('.permission-card-select .d-select-description') || {}).innerText || ''") || "").trim() === "仅自己可见",
     // The button lives in a closed web component and only renders a while after upload.
-    publish: async (page) => page.click(await page.find((node) => ownText(node) === "发布" && node.localName === "button")),
+    // While the cover or video is still processing the component is disabled and swallows clicks,
+    // so it is pressed only when the host says it is ready; otherwise "not clicked" and the caller waits.
+    async publish(page) {
+      const host = await page.find((node) => node.localName === "xhs-publish-btn");
+      if (!host || attr(host, "submit-disabled") !== "false" || attr(host, "submit-loading") !== "false") return false;
+      return page.click(await page.find((node) => ownText(node) === "发布" && node.localName === "button"));
+    },
     published: (url) => /publish\/success/.test(url)
   },
   channels: {
