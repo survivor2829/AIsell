@@ -3,7 +3,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { createSocialAccounts, allowedUrl, loggedIn } = require("./social-accounts.cjs");
+const { createSocialAccounts, allowedUrl, loggedIn, browserUserAgent } = require("./social-accounts.cjs");
+
+// 抖音会拒绝带应用名和 Electron 的浏览器标识；登录窗口只保留标准 Chrome 标识。
+assert.equal(browserUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) xiaoxi-active-touch-desktop/1.2.12 Chrome/128.0.6613.186 Electron/32.3.3 Safari/537.36"),
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 登录识别只看「有没有该平台、未过期、有值的登录 Cookie」，不读值；别的平台或过期的不算。

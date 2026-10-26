@@ -36,6 +36,11 @@ function loggedIn(platformKey, cookies, now = Date.now()) {
     && hosts.some((host) => { const domain = String(cookie.domain || "").replace(/^\./, ""); return domain === host || domain.endsWith(`.${host}`); })
     && (!cookie.expirationDate || cookie.expirationDate * 1000 > now));
 }
+// Electron's default agent names the app and Electron, which Douyin's login
+// rejects ("二维码失效/系统繁忙"). Keep only the standard Chrome tokens.
+function browserUserAgent(value) {
+  return String(value || "").replace(/ (?!(?:Chrome|Safari|AppleWebKit)\/)[^\s/()]+\/\S+/g, "");
+}
 function cleanLabel(value, platformKey, count) {
   const label = String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 30);
   return label || `${platformOf(platformKey).name}账号${count + 1}`;
@@ -69,6 +74,7 @@ function createSocialAccounts({ dataDir, BrowserWindow, session, onChange = () =
     const ses = session.fromPartition(account.partition);
     ses.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
+    if (ses.getUserAgent) ses.setUserAgent(browserUserAgent(ses.getUserAgent()));
     return ses;
   };
   async function check(account) {
@@ -149,4 +155,4 @@ function createSocialAccounts({ dataDir, BrowserWindow, session, onChange = () =
   return { snapshot, add, rename, login, refresh, remove, partitionOf, dispose };
 }
 
-module.exports = { createSocialAccounts, PLATFORMS, allowedUrl, loggedIn };
+module.exports = { createSocialAccounts, PLATFORMS, allowedUrl, loggedIn, browserUserAgent };
