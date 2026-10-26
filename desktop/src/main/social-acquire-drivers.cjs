@@ -43,7 +43,7 @@ const DRIVERS = {
     actions: {
       like: true, follow: true,
       profileUrl: (userId) => `https://www.kuaishou.com/profile/${userId}`,
-      // Compared without any spaces: the page shows 「🍀 吃货芸姐🪷 」 where the data says 「🍀吃货芸姐🪷」.
+      // Compared without any spaces: the page shows 「🌸 小花🌷 」 where the data says 「🌸小花🌷」.
       commentItem: (userName, content) => `[...document.querySelectorAll(".comment-list-item")].find((el) => {
         const name = (el.querySelector(".author-name")?.textContent || "").replace(/\\s+/g, "");
         const said = (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "");

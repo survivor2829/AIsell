@@ -38,13 +38,13 @@ assert.deepEqual(intentOf("这价格真合适"), []);
 assert.deepEqual(intentOf("价格多少？留个电话"), ["询价", "要联系"]);
 assert.deepEqual(intentOf("有买过的吗？效果怎么样"), ["问效果"]);
 assert.deepEqual(intentOf("能租吗", ["租"]), ["含「租」"]);
-// 在页面上找线索的那条评论：页面上的昵称会在表情后多出空格（实测「🍀 吃货芸姐🪷 」）。
+// 在页面上找线索的那条评论：页面上的昵称会在表情后多出空格（实测像「🌸 小花🌷 」这样）。
 {
   const item = (name, said) => ({ querySelector: (selector) => ({ textContent: selector === ".author-name" ? name : said }) });
-  const items = [item("别人", " 我也想买，有没有推荐的 "), item("🍀 吃货芸姐🪷 ", " 我也想买，有没有推荐的 ")], document = { querySelectorAll: () => items };
-  const found = new Function("document", `return ${ks.actions.commentItem("🍀吃货芸姐🪷", "我也想买，有没有推荐的")};`)(document);
+  const items = [item("别人", " 我也想买，有没有推荐的 "), item("🌸 小花🌷 ", " 我也想买，有没有推荐的 ")], document = { querySelectorAll: () => items };
+  const found = new Function("document", `return ${ks.actions.commentItem("🌸小花🌷", "我也想买，有没有推荐的")};`)(document);
   assert.equal(found, items[1]);
-  assert.equal(new Function("document", `return ${ks.actions.commentItem("🍀吃货芸姐🪷", "别的话")};`)(document), undefined);
+  assert.equal(new Function("document", `return ${ks.actions.commentItem("🌸小花🌷", "别的话")};`)(document), undefined);
 }
 // 抖音网页搜索会拦截软件控制的浏览器：列出来但不可用，不绕过。
 assert.throws(() => acquireDriverFor("douyin"), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
