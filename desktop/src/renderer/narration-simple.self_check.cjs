@@ -16,7 +16,7 @@ function loadTs(name) {
   compiled._compile(output, filename);
   return compiled.exports;
 }
-const { libraryHeadline, libraryStages, barText, formatCount, longestScriptSeconds } = loadTs("narration-simple.ts");
+const { libraryHeadline, libraryStages, barText, formatCount, longestScriptSeconds, libraryUsage, orderByUsage } = loadTs("narration-simple.ts");
 
 // 大标题只说真实条数，不说哪天扒的（文案库一次扒好要用很久）
 assert.equal(formatCount(1284), "1,284");
@@ -32,6 +32,11 @@ assert.equal(longestScriptSeconds(46.7), 46, "46.7 秒的视频可以选 45 秒�
 assert.equal(longestScriptSeconds(59.9), 59);
 assert.equal(longestScriptSeconds(undefined), Infinity);
 
+// 出过片的卡片记次数、排到后面，顺序在各自组内不变；没做完的和别的模式不算
+const made = libraryUsage([{ mode: "script", itemId: "lib2", status: "done" }, { mode: "script", itemId: "lib2", status: "done" }, { mode: "script", itemId: "lib3", status: "failed" }, { mode: "library", itemId: "4", status: "done" }, { mode: "post", itemId: "lib1", status: "done" }]);
+assert.deepEqual(made, { 2: 2 });
+assert.deepEqual(orderByUsage([{ id: "1" }, { id: "2" }, { id: "3" }, { id: "4" }], { 1: 1, 3: 2 }).map((i) => i.id), ["2", "4", "1", "3"]);
+
 const job = (patch) => ({ status: "running", step: "voice", progress: 0, error: "", ...patch });
 assert.equal(barText(undefined), null);
 assert.deepEqual(barText(job({ step: "video", progress: 46 })), { tone: "busy", text: "正在生成数字人 · 46%", progress: 46 });
@@ -40,4 +45,4 @@ assert.equal(barText(job({ status: "done" })).tone, "done");
 assert.equal(barText(job({ status: "failed", error: "数字人生成失败" })).text, "数字人生成失败");
 assert.equal(barText(job({ status: "queued" })).text, "马上开始");
 
-console.log("narration simple self-check passed: headline without dates, real stage numbers, progress bar text");
+console.log("narration simple self-check passed: headline without dates, usage order, real stage numbers, progress bar text");

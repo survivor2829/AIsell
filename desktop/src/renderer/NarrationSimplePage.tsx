@@ -4,7 +4,7 @@ import type { ReferenceAsset, ReferenceHumanApi, ReferenceTask, ViralJob, ViralL
 import { FlowFunnel } from './FlowFunnel';
 import { tagText } from './flow-funnel';
 import { likesText } from './viral-pipeline';
-import { barText, libraryHeadline, libraryStages, longestScriptSeconds, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
+import { barText, libraryHeadline, libraryStages, libraryUsage, longestScriptSeconds, orderByUsage, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
 import referencePolicy from '../shared/reference-human.json';
 import './NarrationSimplePage.css';
 
@@ -23,17 +23,17 @@ const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development
 
 // 一张爆款卡片：先显示爆款标题和真实数据；仿写好之后，下面接着显示客户自己的原创稿。
 type Draft = ViralLibraryScript & { seconds: ScriptSeconds; problems: string[] };
-function ScriptCard({ item, draft, writing, selected, onSelect }: { item: ViralLibraryItem; draft?: Draft; writing: boolean; selected: boolean; onSelect: () => void }) {
+function ScriptCard({ item, draft, made, writing, selected, onSelect }: { item: ViralLibraryItem; draft?: Draft; made: number; writing: boolean; selected: boolean; onSelect: () => void }) {
   const tag = item.source.tags.find((t) => t.id !== 'high_likes');
   return (
     <button type="button" className={`ns-card${selected ? ' is-on' : ''}`} aria-pressed={selected} onClick={onSelect}>
       <i className="ns-pick" aria-hidden="true" />
       <span className="ns-src"><span className={`ns-pf is-${item.platform}`}>{item.platform === 'xiaohongshu' ? '红' : '抖'}</span>
-        原{item.platform === 'xiaohongshu' ? '笔记' : '视频'} {item.source.likes !== null && <b>{likesText(item.source.likes)} 赞</b>}{tag && <> · {tagText(tag)}</>}</span>
+        原{item.platform === 'xiaohongshu' ? '笔记' : '视频'} {item.source.likes !== null && <b>{likesText(item.source.likes)} 赞</b>}{tag && <> · {tagText(tag)}</>}{made > 0 && <span className="ns-made">已出片 {made} 次</span>}</span>
       <span className="ns-title">{item.title}</span>
       {draft ? <span className="ns-draft"><span className="ns-draft-k">你的原创稿 · 约 {draft.seconds} 秒</span><b>{draft.title}</b><span className="ns-text">{draft.script}</span>
         {draft.problems.length > 0 && <span className="ns-warn">{draft.problems.join('；')}</span>}</span>
-        : writing ? <span className="ns-draft is-writing">正在仿写，大约 20～40 秒…</span> : null}
+        : writing ? <span className="ns-draft is-writing">{draft ? '正在按这条爆款的结构换一篇' : '正在仿写'}，大约 20～40 秒…</span> : null}
     </button>
   );
 }
@@ -44,6 +44,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const [person, setPerson] = useState<ReferenceAsset | null | undefined>(undefined);
   const [selected, setSelected] = useState(''), [jobs, setJobs] = useState<ViralJob[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [want, setWant] = useState<ScriptSeconds>(45);
+  const [titles, setTitles] = useState<Record<string, string[]>>({});
   const [quotaLeft, setQuotaLeft] = useState<number | null>(null), [business, setBusiness] = useState('');
   const [busy, setBusy] = useState(''), [error, setError] = useState('');
   const [cover, setCover] = useState('');
@@ -100,6 +101,8 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   const draft = pick ? drafts[pick.id] : undefined;
   const flow = useMemo(() => library ? { strands: library.strands, stages: libraryStages(library.stats) } : null, [library]);
   const headline = library ? libraryHeadline(library.stats) : null;
+  const made = useMemo(() => libraryUsage(jobs), [jobs]);
+  const items = useMemo(() => library ? orderByUsage(library.items, made) : [], [library, made]);
   // 时长不能超过本人视频（留 3 秒）；视频变短时，选中的时长自动退到能用的最长一档。
   const longest = longestScriptSeconds(ready ? person!.seconds : undefined);
   const tooLong = Boolean(draft && draft.seconds > longest);
@@ -120,11 +123,13 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
   });
   const consent = () => act('consent', async () => { if (person) setPerson(await unwrap(api().confirmConsent({ assetId: person.id }))); });
   // 仿写：每点一次是一次新的写稿（用一次套餐额度）；写好的稿子记在这张卡片上，换卡片再回来还在。
+  // 已经写过的卡片再点就是「换一篇」：按这条爆款拆好的结构另写一篇，避开这张卡片上写过的标题。
   const write = () => act(`write:${pick?.id}`, async () => {
     if (!pick) return;
-    const item = pick, seconds = want;
+    const item = pick, seconds = want, written = titles[item.id] || [];
     const result = await unwrap(api().writeScript({ referenceAssetId: ready ? person!.id : '', industry: '清洁设备渠道商', business,
-      libraryId: item.id, targetSeconds: seconds, generationIntentId: crypto.randomUUID() }));
+      libraryId: item.id, targetSeconds: seconds, generationIntentId: crypto.randomUUID(), ...(written.length ? { mode: 'structure' as const, avoidTitles: written.slice(-10) } : {}) }));
+    setTitles((all) => ({ ...all, [item.id]: [...(all[item.id] || []), result.title].slice(-10) }));
     setDrafts((all) => ({ ...all, [item.id]: { id: item.id, platform: item.platform, title: result.title, script: result.script, emphasisPhrases: result.emphasisPhrases, seconds, problems: result.problems || [] } }));
     if (typeof result.quota?.remaining === 'number') setQuotaLeft(result.quota.remaining);
   });
@@ -149,7 +154,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
           <div className="ns-flow" ref={flowBox}><FlowFunnel strands={flow.strands} stages={flow.stages} height={flowHeight} ambient showOutput outputLabel="爆款文案库" outputNote="选一条，按你要的时长仿写" emptyText=""
             caption="示意图：每条线是一条扒到的口播；搬运和重复的合成一束；经过「够爆」的闸门，只有真爆款的几束通过，汇进爆款文案库。鼠标移上去可以看每条线是什么。" /></div>
           <div className="ns-sec"><b>选一条爆款</b><span>按爆款热度排序 · 点「仿写」后只学它的结构和节奏，内容换成清洁设备</span></div>
-          <div className="ns-list">{library.items.map((item) => <ScriptCard key={item.id} item={item} draft={drafts[item.id]} writing={busy === `write:${item.id}`} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
+          <div className="ns-list">{items.map((item) => <ScriptCard key={item.id} item={item} draft={drafts[item.id]} made={made[item.id] || 0} writing={busy === `write:${item.id}`} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
         </> : libraryError ? <div className="ns-wait is-pending">
           <b>爆款文案库没有读到</b>
           <span>软件里自带的文案库可能损坏了，请重新加载；还不行就重新安装软件。</span>
@@ -160,13 +165,13 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: (kind: 
           之前有 {stuckCount} 条视频需要你处理，已有结果都保留着，不会自动重新扣费<b>去处理 →</b></button>}
         <div className="ns-bar"><div className="ns-bar-in">
           <div className="ns-sel">{draft ? `已仿写：${draft.title}` : pick ? pick.title : '选一条爆款'}
-            <small>{!pick ? '选好后挑时长，点「仿写」生成你的原创稿' : draft ? '不满意可以重写，会再用 1 次写稿额度 · 满意就下一步，上传本人视频出片'
+            <small>{!pick ? '选好后挑时长，点「仿写」生成你的原创稿' : draft ? '想要另一篇就点「换一篇」：按这条爆款的结构写一篇全新的，再用 1 次写稿额度 · 满意就下一步出片'
               : `点「仿写」生成你的原创稿，用 1 次写稿额度${quotaLeft !== null ? `（本期还剩 ${quotaLeft} 次）` : ''}`}</small></div>
           {pick && <div className="ns-dur" role="group" aria-label="稿子时长">{SCRIPT_SECONDS.map((s) => (
             <button type="button" key={s} className={s === want ? 'is-on' : ''} aria-pressed={s === want} disabled={s > longest || !!busy}
               title={s > longest ? `你的视频只有 ${longest} 秒，想要 ${s} 秒请换一段更长的视频` : ''} onClick={() => setWant(s)}>{s} 秒</button>))}</div>}
           {pick && <button type="button" className={`ns-go${draft ? ' is-quiet' : ''}`} data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy || want > longest}
-            onClick={() => void write()}>{busy.startsWith('write:') ? '正在仿写…' : draft ? '重写' : '仿写'}</button>}
+            onClick={() => void write()}>{busy.startsWith('write:') ? (draft ? '正在换…' : '正在仿写…') : draft ? '换一篇' : '仿写'}</button>}
           {draft && <button type="button" className="ns-go" disabled={!!busy} onClick={() => setPage('upload')}>下一步</button>}
         </div>{error && <p className="ns-error" role="alert">{error}</p>}</div>
       </> : <>

@@ -27,7 +27,7 @@ const currentVoice = (voice) => voice?.usable === true && (voice.speakerId || vo
 const needsNewNarration = (task) => ['digital_human_transcript_mismatch', 'reference_audio_too_long'].includes(task.errorCode);
 
 // Leave room for natural pauses; measured audio remains the authoritative duration.
-const SCRIPT_KEYS = ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly', 'libraryId', 'targetSeconds'];
+const SCRIPT_KEYS = ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly', 'libraryId', 'targetSeconds', 'mode', 'avoidTitles'];
 const SCRIPT_SECONDS = [30, 45, 60];
 // 稿子最长写到比本人视频短 3 秒：配音语速有快有慢，留出余量，不让配音超过视频。
 const scriptSecondsFor = (videoSeconds) => Math.max(15, Math.floor(videoSeconds) - 3);
@@ -166,7 +166,10 @@ function createReferenceHumanService(options = {}) {
     if (input.generationIntentId && !/^[a-f0-9-]{36}$/u.test(input.generationIntentId)) throw fail('reference_script_intent_invalid', '写稿操作标识无效，请重新进入文案页面。');
     if (input.libraryId !== undefined && (!/^[A-Za-z0-9]{1,64}$/u.test(String(input.libraryId)) || input.referenceSource)) throw fail('reference_script_library_invalid', '请从爆款文案库里选一条。');
     if ((input.targetSeconds !== undefined || input.libraryId !== undefined) && !SCRIPT_SECONDS.includes(input.targetSeconds)) throw fail('reference_script_seconds_invalid', '请选择 30、45 或 60 秒。');
-    const identity = media.sha256(Buffer.from(JSON.stringify([input.referenceAssetId, input.industry, input.business, input.referenceSource && [input.referenceSource.platform, input.referenceSource.title, input.referenceSource.body, input.referenceSource.url], input.libraryId ?? null, input.targetSeconds ?? null])));
+    // 换一篇：按这条爆款拆好的结构另写一篇，避开这张卡片上已经写过的标题；只用于文案库。
+    if ((input.mode !== undefined || input.avoidTitles !== undefined) && (input.libraryId === undefined || !['rewrite', 'structure'].includes(input.mode ?? 'rewrite')
+      || !Array.isArray(input.avoidTitles ?? []) || (input.avoidTitles ?? []).length > 10 || (input.avoidTitles ?? []).some((t) => typeof t !== 'string' || !t.trim() || t.length > 40))) throw fail('reference_script_mode_invalid', '请从爆款文案库里选一条再换一篇。');
+    const identity = media.sha256(Buffer.from(JSON.stringify([input.referenceAssetId, input.industry, input.business, input.referenceSource && [input.referenceSource.platform, input.referenceSource.title, input.referenceSource.body, input.referenceSource.url], input.libraryId ?? null, input.targetSeconds ?? null, input.mode ?? null, input.avoidTitles ?? null])));
     const intentKey = input.generationIntentId ? media.sha256(Buffer.from(JSON.stringify(['included_script_v3', input.generationIntentId]))) : null;
     const receipt = intentKey && fs.existsSync(file(`scripts/${intentKey}.json`)) ? JSON.parse(fs.readFileSync(file(`scripts/${intentKey}.json`), 'utf8')) : null;
     if (receipt?.identity && !input.recoverOnly && receipt.identity !== identity) throw fail('reference_script_intent_changed', '这次写稿资料已变更，请查询原稿或明确选择重新写稿。');
@@ -181,7 +184,7 @@ function createReferenceHumanService(options = {}) {
       // 配音不能比本人视频长：客户选的时长超过视频时不提交；没超过的按视频长度留出余量再写，避免配完音才发现超长。
       if (input.targetSeconds !== undefined && asset && input.targetSeconds > Math.floor(asset.seconds)) throw fail('reference_video_short', `你的视频只有 ${Math.floor(asset.seconds)} 秒，不够写 ${input.targetSeconds} 秒的稿子。请选短一点的时长，或换一段更长的视频。`);
       const targetSeconds = asset ? Math.min(input.targetSeconds ?? Infinity, scriptSecondsFor(asset.seconds)) : input.targetSeconds;
-      const library = input.libraryId !== undefined ? { libraryId: String(input.libraryId) } : {};
+      const library = input.libraryId !== undefined ? { libraryId: String(input.libraryId), ...(input.mode ? { mode: input.mode } : {}), ...(input.avoidTitles?.length ? { avoidTitles: input.avoidTitles.map((t) => t.trim()) } : {}) } : {};
       body = { targetSeconds, topic: String(input.industry || '').trim(), productFacts: String(input.business || '').trim(), ...library, ...(reference ? { reference: { platform: reference.platform, title: reference.title, body: reference.body, url: reference.url } } : {}) };
     }
     const key = intentKey || media.sha256(Buffer.from(JSON.stringify(['included_script_v2', body])));
@@ -194,7 +197,7 @@ function createReferenceHumanService(options = {}) {
       if (String(error.message).includes('script_response_invalid')) error.message = '云端文案未通过完整性检查，原请求已保留，未自动重试。可以先手填文案；调整资料后重新写稿会使用新的套餐额度。';
       // 云端已自动重写过一次仍和原文重复太多：这条停下，不再扣额度。
       else if (String(error.message).includes('script_not_original')) error.message = '这条不适合仿写：改写后仍和原文重复太多，已停止，不会再扣写稿额度。可以换一条爆款，或直接填写文案。';
-      else if (String(error.message).includes('viral_library_item_missing')) error.message = '这条爆款已经不在今天的文案库里了，没有扣写稿额度。请换一条。';
+      else if (String(error.message).includes('viral_library_item_missing')) error.message = '这条爆款已经不在文案库里了，没有扣写稿额度。请换一条。';
       throw error;
     }).finally(() => scriptRequests.delete(key));
     scriptRequests.set(key, { promise: pending, identity }); return pending;

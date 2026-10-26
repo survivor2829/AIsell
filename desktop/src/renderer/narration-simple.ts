@@ -1,6 +1,6 @@
 // 数字人视频（极简版）页面的纯函数：标题、四段数字、底部进度文字。数字全部来自云端文案库的真实统计。
 import type { FlowStage } from './flow-funnel';
-import type { ViralJob, ViralLibrary } from './reference-human-types';
+import type { ViralJob, ViralLibrary, ViralLibraryItem } from './reference-human-types';
 
 export const formatCount = (value: number) => value.toLocaleString('en-US');
 
@@ -27,6 +27,15 @@ export function libraryStages(stats: ViralLibrary['stats']): FlowStage[] {
 export const SCRIPT_SECONDS = [30, 45, 60] as const;
 export type ScriptSeconds = typeof SCRIPT_SECONDS[number];
 export const longestScriptSeconds = (videoSeconds?: number) => videoSeconds ? Math.floor(videoSeconds) : Infinity;
+
+// 每条爆款已经出过几次片（一键出片的任务记的是 lib + 文案库 ID）；用过的卡片留着，排到没用过的后面。
+export function libraryUsage(jobs: Pick<ViralJob, 'mode' | 'itemId' | 'status'>[]) {
+  const made: Record<string, number> = {};
+  for (const job of jobs) if (job.mode === 'script' && job.status === 'done' && job.itemId.startsWith('lib')) made[job.itemId.slice(3)] = (made[job.itemId.slice(3)] || 0) + 1;
+  return made;
+}
+export const orderByUsage = <T extends Pick<ViralLibraryItem, 'id'>>(items: T[], made: Record<string, number>) =>
+  [...items].sort((a, b) => Number(Boolean(made[a.id])) - Number(Boolean(made[b.id])));
 
 // 底部栏：选中后显示要做什么；开始后显示当前进度；完成或失败时说清楚。
 export function barText(job: ViralJob | undefined) {
