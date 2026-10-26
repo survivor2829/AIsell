@@ -17,12 +17,14 @@ const cleanTags = (tags) => (Array.isArray(tags) ? tags : []).filter((t) => t &&
   .map((t) => ({ id: t.id, label: text(t.label, 8), value: count(t.value) })).slice(0, 3);
 const httpsUrl = (value) => { try { const u = new URL(String(value)); return u.protocol === 'https:' ? u.href.slice(0, 2000) : ''; } catch { return ''; } };
 
-// 流图的线：每条线是一次扒取里的一条真实内容；进了文案库的标为通过。条数太多时保留全部通过的，没通过的均匀抽样。
+// 流图的线：每条线是一次扒取里的一条真实内容。只有改写好、进了文案库的标为通过（每条单独一束，最后合拢成一股汇进文案库）；
+// 够爆但这次没改写的归到没进的里。条数太多时保留全部通过的，没通过的均匀抽样。
 function strandsFromScan(result, readyIds) {
-  const pass = result.items.map((item) => ({ id: String(item.id), title: text(item.title, 60), source: `${platformName(item.platform)} · ${text(item.author?.name, 40)}`,
-    group: String(item.id), outcome: 'pass', reason: readyIds.has(String(item.id)) ? `已改写成原创稿 · ${item.tags.map(tagText).join(' · ')}` : item.tags.map(tagText).join(' · ') }));
-  const drop = result.removed.map((r) => ({ id: String(r.id), title: text(r.title, 60), source: `${platformName(r.platform)} · ${text(r.author, 40)}`,
-    group: String(r.twinId || r.id), outcome: 'drop', reason: text(r.label, 20) }));
+  const line = (item) => ({ id: String(item.id), title: text(item.title, 60), source: `${platformName(item.platform)} · ${text(item.author?.name, 40)}`, group: String(item.id) });
+  const pass = result.items.filter((item) => readyIds.has(String(item.id))).map((item) => ({ ...line(item), outcome: 'pass', reason: `已改写成原创稿 · ${item.tags.map(tagText).join(' · ')}` }));
+  const unused = result.items.filter((item) => !readyIds.has(String(item.id))).map((item) => ({ ...line(item), outcome: 'drop', reason: '够爆，这次没改写' }));
+  const drop = [...unused, ...result.removed.map((r) => ({ id: String(r.id), title: text(r.title, 60), source: `${platformName(r.platform)} · ${text(r.author, 40)}`,
+    group: String(r.twinId || r.id), outcome: 'drop', reason: text(r.label, 20) }))];
   const room = Math.max(0, MAX_STRANDS - pass.length), step = drop.length > room ? drop.length / room : 1;
   const sampled = room ? Array.from({ length: Math.min(room, drop.length) }, (_, i) => drop[Math.floor(i * step)]) : [];
   const kept = new Set([...pass, ...sampled].map((s) => s.id));

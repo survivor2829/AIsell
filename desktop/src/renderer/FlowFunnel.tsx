@@ -53,9 +53,10 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
       trace(c, l.ys, 0, Math.min(l.end, L.gate)); c.strokeStyle = rgba(C.ink, a); c.stroke();
       if (!b) continue;
       trace(c, l.ys, L.gate, l.end);
-      if (b.pass) c.strokeStyle = rgba(C.accent, 0.4);
+      // 单独一条进文案库的线画粗一点，几束合拢时看得清。
+      if (b.pass) { c.lineWidth = b.members.length === 1 ? 2.4 : 1; c.strokeStyle = rgba(C.accent, b.members.length === 1 ? 0.7 : 0.4); }
       else { const g = c.createLinearGradient(L.gate, 0, l.end, 0); g.addColorStop(0, rgba(C.ink, a)); g.addColorStop(1, rgba(C.ink, 0)); c.strokeStyle = g; }
-      c.stroke();
+      c.stroke(); c.lineWidth = 1;
     }
     // 闸门：判定前是一条淡线；判定后只在通过的几束处留口。
     c.lineWidth = 1; c.strokeStyle = rgba(C.line, L.decided ? 1 : 0.6); c.beginPath();
@@ -64,7 +65,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
     for (const [t, bottom] of holes) { c.moveTo(L.gate, y); c.lineTo(L.gate, t); y = bottom; }
     c.moveTo(L.gate, y); c.lineTo(L.gate, L.h * 0.95); c.stroke();
     for (const [t, bottom] of holes) for (const yy of [t, bottom]) { c.beginPath(); c.moveTo(L.gate - 4, yy); c.lineTo(L.gate + 4, yy); c.stroke(); }
-    if (holes.length) { c.beginPath(); c.moveTo(L.xo, L.outY); c.lineTo(L.icon.x, L.outY); c.lineWidth = 1.6; c.strokeStyle = rgba(C.accent, 0.95); c.stroke(); }
+    if (holes.length) { c.beginPath(); c.moveTo(L.xo, L.outY); c.lineTo(L.icon.x, L.outY); c.lineWidth = Math.min(5, 1.6 + holes.length * 0.6); c.strokeStyle = rgba(C.accent, 0.95); c.stroke(); }
     drawIcon(c, 0);
     c.save(); c.globalCompositeOperation = 'destination-out';
     const fw = Math.min(64, L.w * 0.06), g = c.createLinearGradient(0, 0, fw, 0);
