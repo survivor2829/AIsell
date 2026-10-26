@@ -1,14 +1,9 @@
 import { Check } from 'lucide-react';
-import { ExampleHelp } from './VideoExamples';
 import type { ReactNode } from 'react';
 import type { TutorialTopic } from './tutorials-types';
 import './CreationGuide.css';
 
 export type CreationTopic = TutorialTopic;
-
-export function TutorialHelp({ topic }: { topic: CreationTopic }) {
-  return <ExampleHelp topic={topic} />;
-}
 
 export function CreationSteps({ labels, current, onChange, disabled = [] }: {
   labels: readonly string[]; current: number; onChange: (step: number) => void; disabled?: readonly boolean[];

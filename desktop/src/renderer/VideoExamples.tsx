@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { PlayCircle, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, PlayCircle, X } from 'lucide-react';
 import type { TutorialTopic } from './tutorials-types';
 import './VideoExamples.css';
 
@@ -33,11 +33,53 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
   </dialog>;
 }
 
-export function ExampleHelp({ topic }: { topic: TutorialTopic }) {
-  const example = VIDEO_EXAMPLES.find(item => item.topic === topic);
-  const [selected, setSelected] = useState(false);
-  return <><button type="button" className="creation-tutorial" onClick={() => example ? setSelected(true) : openTutorial(topic)}><PlayCircle size={19} aria-hidden="true" /><span>{example ? '看成片示例' : '看操作演示'}</span></button>
-    {selected && example && <ExamplePlayer example={example} onClose={() => setSelected(false)} />}</>;
+const BANNER_TEXT: Record<VideoExample['topic'], { steps: string; result: string }> = {
+  'ai-editing': {
+    steps: '上传几段产品和现场素材，写下卖点，AI 挑镜头、写文案、配音、加字幕。',
+    result: '一次做出多条讲清卖点的获客短视频，导出后可发抖音、快手、视频号。'
+  },
+  'product-video': {
+    steps: '上传一张产品图，填几条卖点，AI 生成产品在现场使用的画面，配上讲解和字幕。',
+    result: '没有拍摄条件，也能让客户看到产品真实的使用效果。'
+  }
+};
+const collapsedKey = (topic: string) => `video-example-banner-collapsed:${topic}`;
+function readCollapsed(topic: string) { try { return localStorage.getItem(collapsedKey(topic)) === '1'; } catch { return false; } }
+function writeCollapsed(topic: string, value: boolean) { try { localStorage.setItem(collapsedKey(topic), value ? '1' : '0'); } catch { /* Only a convenience. */ } }
+
+// 模块页顶部横幅：左边示例成片（点了在原地播放，不自动播放），右边说明做出来是什么样。
+export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
+  const example = VIDEO_EXAMPLES.find(item => item.topic === topic)!;
+  const text = BANNER_TEXT[topic];
+  const video = useRef<HTMLVideoElement>(null);
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(topic));
+  const [started, setStarted] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const toggle = () => { const next = !collapsed; setCollapsed(next); writeCollapsed(topic, next); if (next) video.current?.pause(); };
+  if (collapsed) return <section className="example-banner is-collapsed" aria-label={`${example.module}成片示例`}>
+    <span><PlayCircle size={17} aria-hidden="true" />{example.module}做出来是什么样？</span>
+    <button type="button" onClick={toggle}>看成片示例<ChevronDown size={16} aria-hidden="true" /></button>
+  </section>;
+  return <section className="example-banner" aria-label={`${example.module}成片示例`}>
+    <div className="example-banner-player">
+      {failed ? <div className="example-banner-error" role="alert"><p>示例暂时无法播放</p><button type="button" onClick={() => { setFailed(false); setStarted(false); }}>重试</button></div>
+        : started ? <video ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />
+        : <button type="button" className="example-banner-poster" aria-label={`播放${example.module}成片示例`} onClick={() => setStarted(true)}>
+          <img src={asset(`${example.file}.jpg`)} alt="" /><span aria-hidden="true"><PlayCircle size={44} /></span>
+        </button>}
+    </div>
+    <div className="example-banner-copy">
+      <small>成片示例 · {example.duration}</small>
+      <h2>做出来是这样的</h2>
+      <p className="example-banner-title">「{example.title}」</p>
+      <p>{text.steps}</p>
+      <p>{text.result}</p>
+      <div className="example-banner-actions">
+        <button type="button" className="example-banner-tutorial" onClick={() => openTutorial(topic)}>看操作教程</button>
+        <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
+      </div>
+    </div>
+  </section>;
 }
 
 export function VideoExamples() {
