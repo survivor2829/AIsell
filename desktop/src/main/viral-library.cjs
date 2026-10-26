@@ -1,6 +1,7 @@
 // 爆款文案库：我们内部扒取、提取原口播后发布到云端，客户点「仿写」时才在云端按 ID 改写。
 // 这里负责两件事：把一次扒取结果和提取好的原口播组装成文案库（schema 2），以及读回来时逐项校验。
 // 原口播全文只给云端用；云端返回给客户的文案库里没有原文，客户端校验时也会丢掉。
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const MAX_ITEMS = 1000, MAX_STRANDS = 240;
@@ -53,7 +54,9 @@ function buildLibrary({ scan, transcripts, now = new Date() }) {
   if (!items.length) throw problem('viral_library_empty', '还没有提取好的原口播，不能发布空的文案库。');
   const ready = new Set(items.map((i) => i.id));
   const s = scan.stats;
-  return { schema: 2, updatedAt: now.toISOString(), days: scan.days || 30,
+  // 同一次扒取发布几次都只算一次：用这次扒到的全部内容 ID 做编号，云端按编号合并「扒到多少条」，不重复累加。
+  const scanId = crypto.createHash('sha256').update([...scan.items, ...scan.removed].map((i) => String(i.id)).sort().join(',')).digest('hex').slice(0, 32);
+  return { schema: 2, scanId, updatedAt: now.toISOString(), days: scan.days || 30,
     stats: { collected: s.collected, byPlatform: s.byPlatform || {}, duplicates: s.duplicates, outdated: s.outdated, irrelevant: s.irrelevant, notViral: s.notViral, final: s.final, ready: items.length },
     flow: { strands: strandsFromScan(scan, ready) }, items };
 }
