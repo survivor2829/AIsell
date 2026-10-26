@@ -10,6 +10,10 @@ const VERIFY = /验证码|身份验证|安全验证|本人操作|拖动滑块|�
 // Visible light-DOM text without standing hints such as 「如作品还在上传中，请勿关闭页面」.
 const shownText = async (page) => String(await page.evaluate("document.body ? document.body.innerText : ''") || "").replace(/如作品还在上传中[^。]*。?/g, "");
 const lightUploaded = async (page) => { const text = await shownText(page); return /重新上传/.test(text) && !/上传中/.test(text); };
+// Form text compared without whitespace and the zero-width spaces editors insert.
+const squash = (value) => String(value ?? "").replace(/[s​﻿]+/g, "");
+const sameTitle = (value, job) => squash(value) === squash(job.title);
+const titleThenText = (value, job) => squash(value).startsWith(squash(job.title)) && squash(value).includes(squash(job.description));
 
 async function fileInput(page) {
   const view = await page.tree();
@@ -40,8 +44,9 @@ const DRIVERS = {
         await page.type(editor, job.description);
       }
       if (job.visibility === "private") await setPrivateLabel(page, "仅自己可见");
-      return { title: await page.valueOf(title) };
+      return { read: () => page.valueOf(title) };
     },
+    formMatches: sameTitle,
     privateChecked: async (page) => Boolean(await page.evaluate("[...document.querySelectorAll('label')].some((label) => label.innerText.trim() === '仅自己可见' && label.querySelector('input')?.checked)")),
     publish: async (page) => page.click(await page.find((node) => node.localName === "button" && ownText(node) === "发布")),
     published: (url) => /content\/manage/.test(url)
@@ -58,8 +63,9 @@ const DRIVERS = {
       if (!editor) throw fail("SOCIAL_FORM_CHANGED", "没有找到快手的作品描述输入框。");
       await page.type(editor, [job.title, job.description].filter(Boolean).join(" "));
       if (job.visibility === "private") await setPrivateLabel(page, "仅自己可见");
-      return { title: await page.valueOf(editor) };
+      return { read: () => page.valueOf(editor) };
     },
+    formMatches: titleThenText,
     privateChecked: async (page) => Boolean(await page.evaluate("[...document.querySelectorAll('label.ant-radio-wrapper-checked')].some((label) => label.innerText.trim() === '仅自己可见')")),
     // The label sits in a child element of the primary button.
     publish: async (page) => page.click(await page.find((node) => classes(node).some((name) => /button-primary/.test(name)) && textOf(node).trim() === "发布")),
@@ -89,8 +95,9 @@ const DRIVERS = {
         if (!option) throw fail("SOCIAL_FORM_CHANGED", "没有找到小红书的「仅自己可见」选项。");
         await page.click(option); await sleep(600);
       }
-      return { title: await page.valueOf(title) };
+      return { read: () => page.valueOf(title) };
     },
+    formMatches: sameTitle,
     privateChecked: async (page) => (await page.evaluate("(document.querySelector('.permission-card-select .d-select-description') || {}).innerText || ''") || "").trim() === "仅自己可见",
     // The button lives in a closed web component and only renders a while after upload.
     publish: async (page) => page.click(await page.find((node) => ownText(node) === "发布" && node.localName === "button")),
@@ -109,8 +116,9 @@ const DRIVERS = {
       const editor = await page.find((node) => classes(node).includes("input-editor") && attr(node, "contenteditable") !== undefined);
       if (!editor) throw fail("SOCIAL_FORM_CHANGED", "没有找到视频号的视频描述输入框。");
       await page.type(editor, [job.title, job.description].filter(Boolean).join(" "));
-      return { title: await page.valueOf(editor) };
+      return { read: () => page.valueOf(editor) };
     },
+    formMatches: titleThenText,
     privateChecked: async () => false,
     async publish(page) {
       if (!await page.click(await page.find(page.byText("发表")))) return false;
@@ -134,10 +142,17 @@ async function findVideoInput(page, timeoutMs = 20_000) {
 async function verificationShown(page) {
   return Boolean(await page.find((node) => VERIFY.test(ownText(node)) && ownText(node).length < 60));
 }
-// The post is confirmed only when its own text shows up on the work management page.
+// The post is confirmed only when its own text shows up on the work management page;
+// the page is scanned only once the browser is really there, never on the upload form.
 async function listed(page, driver, marker) {
   await page.navigate(driver.manageUrl);
-  for (let i = 0; i < 12; i++) { await sleep(1500); if ((await page.text()).includes(marker)) return true; }
+  const target = new URL(driver.manageUrl);
+  for (let i = 0; i < 12; i++) {
+    await sleep(1500);
+    let here; try { here = new URL(await page.url()); } catch { continue; }
+    if (here.hostname !== target.hostname || !here.pathname.startsWith(target.pathname)) continue;
+    if ((await page.text()).includes(marker)) return true;
+  }
   return false;
 }
 

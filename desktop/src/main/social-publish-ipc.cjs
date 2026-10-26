@@ -38,7 +38,7 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
     if (!trusted || event.sender !== trusted || event.senderFrame !== trusted.mainFrame) return { ok: false, code: "SOCIAL_IPC_FORBIDDEN", error: "当前页面无权发布视频。" };
     if (initializationError) return initializationError;
     try { return { ok: true, state: await method(payload) }; }
-    catch (error) { return { ok: false, code: error.code || "SOCIAL_OPERATION_FAILED", error: error.code ? error.message : "操作未完成，已有发布记录保留，请稍后重试。", state: publisher.snapshot() }; }
+    catch (error) { return { ok: false, code: error.code || "SOCIAL_OPERATION_FAILED", error: /^SOCIAL_/.test(String(error.code || "")) ? error.message : "操作未完成，已有发布记录保留，请稍后重试。", state: publisher.snapshot() }; }
   });
   return { publisher, isBusy: () => Boolean(publisher?.isBusy()), async dispose() { channels.forEach((channel) => ipcMain.removeHandler(channel)); await publisher?.dispose(); } };
 }

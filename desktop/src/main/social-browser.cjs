@@ -46,11 +46,14 @@ function launchBrowser({ executable, profileDir, url = "about:blank", headless =
     }
   });
   reader.on("error", () => {}); writer.on("error", () => {});
-  function send(method, params = {}, sessionId) {
+  // Every call has a deadline: a page blocked by a dialog or a hung renderer must not hang the caller.
+  function send(method, params = {}, sessionId, timeoutMs = 30_000) {
     if (exited) return Promise.reject(fail("SOCIAL_BROWSER_CLOSED", "浏览器已关闭。"));
     return new Promise((resolve, reject) => {
       const id = ++nextId;
-      waiting.set(id, (error, result) => error ? reject(error) : resolve(result));
+      const timer = setTimeout(() => { if (waiting.delete(id)) reject(fail("SOCIAL_BROWSER_TIMEOUT", "浏览器长时间没有响应。")); }, timeoutMs);
+      timer.unref?.();
+      waiting.set(id, (error, result) => { clearTimeout(timer); return error ? reject(error) : resolve(result); });
       writer.write(`${JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })}\0`);
     });
   }

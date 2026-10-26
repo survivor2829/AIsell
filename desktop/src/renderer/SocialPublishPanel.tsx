@@ -11,6 +11,8 @@ const finishedApi = () => (window as unknown as { xiaoxiContent?: FinishedApi })
 const PLATFORM_NAMES: Record<SocialPlatformKey, string> = { douyin: "抖音", kuaishou: "快手", channels: "视频号", xiaohongshu: "小红书" };
 const TITLE_LIMITS: Partial<Record<SocialPlatformKey, number>> = { douyin: 30, xiaohongshu: 20 };
 const STATUS: Record<SocialPublishJob["status"], string> = { queued: "排队中", running: "进行中", needs_user: "等你验证", clicked: "等待平台结果", published: "已发出", unknown: "结果不明", failed: "没有发出", cancelled: "已取消" };
+// Records that still need the user or are still running are listed first, so none is hidden by older ones.
+const ATTENTION = new Set<SocialPublishJob["status"]>(["unknown", "needs_user", "running", "clicked", "queued"]);
 const GENERATED_ID = /^generated_video_[a-f0-9]{32}$/i;
 const thumbnail = (item: FinishedItem) => { const id = item.metadata?.generated_video_id; return typeof id === "string" && GENERATED_ID.test(id) ? `xiaoxi-content://generated/${id}/thumbnail` : ""; };
 
@@ -126,7 +128,7 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
     <section className="social-publish-block" aria-labelledby="publish-jobs">
       <div className="social-publish-head"><h2 id="publish-jobs">发布记录</h2></div>
       {(state?.jobs.length || 0) === 0 ? <p className="social-empty">还没有发布记录。</p> : <ul className="social-jobs">
-        {(state?.jobs || []).slice(0, 100).map((job) => <li key={job.id} className={`is-${job.status}`}>
+        {[...(state?.jobs || [])].sort((a, b) => Number(!ATTENTION.has(a.status)) - Number(!ATTENTION.has(b.status))).slice(0, 100).map((job) => <li key={job.id} className={`is-${job.status}`}>
           <div className="social-job-copy">
             <strong>{job.videoName}</strong>
             <span>{PLATFORM_NAMES[job.platform]} · {job.accountLabel} · {job.visibility === "private" ? "仅自己可见" : "公开"}</span>

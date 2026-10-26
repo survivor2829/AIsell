@@ -43,6 +43,11 @@ function hostMatches(url, host) {
 
 function createPage(browser, sessionId) {
   const send = (method, params = {}) => browser.send(method, params, sessionId);
+  // alert/confirm/beforeunload dialogs block every other call on the page; accept them so checks and navigation continue.
+  browser.onEvent?.((message) => {
+    if (message.sessionId === sessionId && message.method === "Page.javascriptDialogOpening") void send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+  });
+  void send("Page.enable").catch(() => {});
   async function tree() {
     const { root } = await send("DOM.getDocument", { depth: -1, pierce: true });
     const nodes = [], parent = new Map();
@@ -89,14 +94,14 @@ function createPage(browser, sessionId) {
     const { result } = await send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration, returnByValue: true });
     return result.value;
   }
-  // Puts the caret at the end of a field and types like a keyboard would.
+  // Selects the field's whole content and types over it like a keyboard would, so leftover or restored text is replaced.
   async function type(node, text) {
     await scrollTo(node);
     await click(node);
     await call(node, `function () {
       this.focus();
       if (typeof this.select === "function" && (this.tagName === "INPUT" || this.tagName === "TEXTAREA")) { this.select(); return; }
-      const range = document.createRange(); range.selectNodeContents(this); range.collapse(false);
+      const range = document.createRange(); range.selectNodeContents(this);
       const selection = (this.getRootNode().getSelection ? this.getRootNode() : document).getSelection(); selection.removeAllRanges(); selection.addRange(range);
     }`);
     await send("Input.insertText", { text });
@@ -108,7 +113,10 @@ function createPage(browser, sessionId) {
   // Text of the whole page including shadow roots, for status words such as 上传中 or 验证码.
   async function text() { const view = await tree(); return textOf(view.nodes[0]); }
   async function setFile(node, file) { await send("DOM.setFileInputFiles", { files: [file], backendNodeId: node.backendNodeId }); }
-  async function navigate(target) { await send("Page.navigate", { url: target }); }
+  async function navigate(target) {
+    const result = await send("Page.navigate", { url: target });
+    if (result?.errorText) throw Object.assign(new Error(result.errorText), { code: "SOCIAL_NAVIGATION_FAILED" });
+  }
   async function front() { await send("Page.bringToFront").catch(() => {}); }
   async function reload() { await send("Page.reload").catch(() => {}); }
   return { send, tree, box, visible, mouse, click, hover, find, byText, byClass, byAttr, call, type, valueOf, evaluate, url, text, setFile, navigate, front, reload };

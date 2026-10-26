@@ -12,17 +12,18 @@ function world(overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-publish-"));
   const video = path.join(root, "成片.mp4"); fs.writeFileSync(video, "mp4");
   const log = { launches: 0, closed: 0, clicks: 0, leases: 0, released: 0, typed: [] };
-  const behaviour = { login: false, typedTitle: null, privateOk: true, verifyPolls: 0, success: true, listed: true, publishFound: true, ignoreSets: 0, ...overrides };
+  const behaviour = { login: false, typedTitle: null, privateOk: true, verifyPolls: 0, success: true, listed: true, publishFound: true, ignoreSets: 0, staleDraft: false, launchError: null, editAfterFirstMiss: false, ...overrides };
   let sets = 0;
   let url = "", verifyLeft = behaviour.verifyPolls;
   const page = { url: async () => url, front: async () => {}, evaluate: async (expression) => expression === "document.readyState" ? "complete" : "" };
   const driver = {
     name: "抖音", host: "douyin.com", uploadUrl: "https://creator.douyin.com/upload", manageUrl: "https://creator.douyin.com/manage", titleLimit: 30, supportsPrivate: true,
     loginRequired: () => behaviour.login,
-    uploaded: async () => sets > behaviour.ignoreSets,
-    fill: async (_page, job) => { log.typed.push(job.title); return { title: behaviour.typedTitle ?? job.title }; },
+    uploaded: async () => behaviour.staleDraft || sets > behaviour.ignoreSets,
+    fill: async (_page, job) => { log.typed.push(job.title); return { read: async () => behaviour.typedTitle ?? job.title }; },
+    formMatches: (value, job) => value === job.title,
     privateChecked: async () => behaviour.privateOk,
-    publish: async () => { if (!behaviour.publishFound) return false; log.clicks++; if (!verifyLeft && behaviour.success) url = "https://creator.douyin.com/manage"; return true; },
+    publish: async () => { if (!behaviour.publishFound) { if (behaviour.editAfterFirstMiss) behaviour.typedTitle = "被改过的标题"; return false; } log.clicks++; if (!verifyLeft && behaviour.success) url = "https://creator.douyin.com/manage"; return true; },
     published: (current) => /manage/.test(current)
   };
   const channels = { ...driver, name: "视频号", titleLimit: 0, supportsPrivate: false };
@@ -39,11 +40,11 @@ function world(overrides = {}) {
     profileDir: (id) => path.join(root, "profiles", id),
     lease: (id) => { if (busy.has(id)) throw Object.assign(new Error("这个账号的浏览器正在使用"), { code: "SOCIAL_ACCOUNT_BUSY" }); busy.add(id); log.leases++; return () => { busy.delete(id); log.released++; }; }
   };
-  const launch = () => { log.launches++; url = "https://creator.douyin.com/upload"; return { close: async () => { log.closed++; } }; };
+  const launch = () => { if (behaviour.launchError) throw behaviour.launchError; log.launches++; sets = 0; url = "https://creator.douyin.com/upload"; return { close: async () => { log.closed++; } }; };
   const make = (extra = {}) => createSocialPublisher({ dataDir: path.join(root, "data"), accounts, launch, executable: "chrome.exe", attach: async () => page, steps,
-    driverFor: (platform) => platform === "channels" ? channels : driver, timing: { settle: 1, poll: 2, button: 1, react: 50, upload: 2000, result: 300 }, ...extra });
+    driverFor: (platform) => platform === "channels" ? channels : driver, timing: { settle: 1, poll: 2, button: 1, react: 50, upload: 2000, result: 300, busyRetry: 40 }, ...extra });
   const until = async (publisher, done) => { for (let i = 0; i < 2000; i++) { const state = publisher.snapshot(); if (done(state)) return state; await sleep(5); } throw new Error("timeout " + JSON.stringify(publisher.snapshot().jobs.map((job) => job.status))); };
-  return { root, video, log, behaviour, accounts, make, until, setBusy: (id) => busy.add(id) };
+  return { root, video, log, behaviour, accounts, make, until, setBusy: (id) => busy.add(id), clearBusy: (id) => busy.delete(id) };
 }
 const finished = (state) => state.jobs.length && state.jobs.every((job) => !["queued", "running", "clicked", "needs_user"].includes(job.status));
 
@@ -125,10 +126,14 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     p.retry(job.id);
     job = (await w.until(p, finished)).jobs[0];
     assert.equal(job.status, "failed"); assert.equal(job.clickedAt, ""); assert.match(job.reason, /发布按钮/);
+    // 账号浏览器暂时被占用（登录窗口、刷新状态）：排队等待，空出来后自动继续。
     w.setBusy("a-douyin"); w.behaviour.publishFound = true;
     p.retry(job.id);
-    job = (await w.until(p, finished)).jobs[0];
-    assert.equal(job.status, "failed"); assert.match(job.reason, /正在使用/);
+    await sleep(20);
+    job = p.snapshot().jobs[0];
+    assert.equal(job.status, "queued"); assert.match(job.reason, /稍后自动继续/);
+    w.clearBusy("a-douyin");
+    assert.equal((await w.until(p, finished)).jobs[0].status, "published");
     await p.dispose();
   }
   {
@@ -142,6 +147,39 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     const job = (await w2.until(p2, finished)).jobs[0];
     assert.equal(job.status, "failed"); assert.match(job.reason, /没有接收视频文件/); assert.equal(w2.log.clicks, 0); assert.equal(w2.log.sets, 2);
     await p2.dispose();
+  }
+  {
+    // 页面里残留着旧草稿视频：不发，也不上传。
+    const w = world({ staleDraft: true }), p = w.make();
+    p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], title: "测试" });
+    const job = (await w.until(p, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /草稿/); assert.equal(w.log.clicks, 0); assert.equal(w.log.sets, undefined);
+    await p.dispose();
+    // 结果不明的记录不能删除；系统错误不把本机路径带给界面。
+    const w2 = world({ listed: false }), p2 = w2.make();
+    p2.submit({ videos: [{ path: w2.video }], accountIds: ["a-douyin"], title: "测试" });
+    const unknown = (await w2.until(p2, finished)).jobs[0];
+    assert.throws(() => p2.remove(unknown.id), { code: "SOCIAL_JOB_BUSY" });
+    w2.behaviour.launchError = Object.assign(new Error("EPERM: operation not permitted, mkdir 'C:/Users/someone/profiles'"), { code: "EPERM" });
+    p2.submit({ videos: [{ path: w2.video }], accountIds: ["a-douyin"], title: "另一条" });
+    const failed = (await w2.until(p2, (state) => finished(state) && state.jobs.length === 2)).jobs[0];
+    assert.equal(failed.status, "failed"); assert.doesNotMatch(failed.reason, /Users|EPERM/);
+    await p2.dispose();
+  }
+  {
+    // 第一次没找到发布按钮，等待期间内容被改动：不再点击。
+    const w = world({ publishFound: false, editAfterFirstMiss: true }), p = w.make();
+    p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], title: "测试" });
+    const job = (await w.until(p, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /被改动/); assert.equal(job.clickedAt, ""); assert.equal(w.log.clicks, 0);
+    await p.dispose();
+  }
+  {
+    // 一次排太多：拒绝，而不是悄悄截断。
+    const w = world(), p = w.make();
+    const many = Array.from({ length: 101 }, () => ({ path: w.video }));
+    assert.throws(() => p.submit({ videos: many, accountIds: ["a-douyin"], title: "测试" }), { code: "SOCIAL_SUBMIT_TOO_LARGE" });
+    await p.dispose();
   }
   {
     // 提交前的检查：视频号不能仅自己可见、标题超长、视频不存在、每天上限。
