@@ -171,13 +171,14 @@ function createViralPipeline(options) {
   // ---- 6. 大字封面：本地合成，失败不影响成片 ----
   async function cover(job) {
     try {
-      const resolved = await resolveVideo(job.generatedVideoId);
-      const video = resolved?.absolute_path;
+      // 用没加字幕的原片取景、按人脸裁剪；拿不到原片时才退回成片。
+      const clean = job.taskId && reference.coverSource ? await reference.coverSource(job.taskId).catch(() => null) : null;
+      const video = clean?.path || (await resolveVideo(job.generatedVideoId))?.absolute_path;
       if (!video || !fs.existsSync(video)) throw problem('viral_cover_source', '没有找到成片文件，封面稍后可重试。');
       const size = await probe(video);
       const words = coverWords(job.script.title, job.script.emphasisPhrases);
       const target = path.join(workDir(job.id), 'cover.jpg');
-      await renderCover({ ffmpegPath: ffmpeg, source: video, seconds: 1, sourceSize: { width: size.width, height: size.height }, ...words, fontFile, target });
+      await renderCover({ ffmpegPath: ffmpeg, source: video, seconds: clean?.seconds ?? 1, sourceSize: { width: size.width, height: size.height }, face: clean?.face || null, ...words, fontFile, target });
       save(job, { coverFile: target, coverError: '' });
     } catch (error) { save(job, { coverError: error.message || '封面没有生成，成片不受影响。' }); }
   }

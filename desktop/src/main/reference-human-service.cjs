@@ -499,6 +499,13 @@ function createReferenceHumanService(options = {}) {
     if (!task.baseVideoFile || !Number.isFinite(seconds) || seconds < 0 || seconds >= task.actualDurationSeconds) throw fail('reference_cover_invalid', '请在已生成视频的时间范围内选择画面。');
     return { previewDataUrl: await media.framePreview(file(task.baseVideoFile), seconds, options.ffmpegPath || 'ffmpeg') };
   }
+  // 封面取景：用没加字幕的数字人原片，并带上本机检测到的人脸范围（有缓存，不联网、不花钱）。
+  async function coverSource(id) {
+    const task = read(id);
+    if (task.status !== 'completed' || !task.baseVideoFile) throw fail('reference_cover_invalid', '请先完成当前口播，再生成封面。');
+    const measured = await (options.analyzeNarration || vision.analyze)(file(task.baseVideoFile), file('layout-cache'), options.ffmpegPath || 'ffmpeg').catch(() => null);
+    return { path: file(task.baseVideoFile), face: measured?.portrait?.face || measured?.union || null, seconds: measured?.portrait?.seconds ?? 1 };
+  }
   async function coverQuote(id, input) {
     const task = read(id);
     if (task.status !== 'completed') throw fail('reference_cover_not_ready', '请先完成口播，再制作AI封面。');
@@ -584,7 +591,7 @@ function createReferenceHumanService(options = {}) {
   const timer = setInterval(pending, 5000); timer.unref?.();
   const startup = setTimeout(pending, 0); startup.unref?.();
   return { capabilities, workspace, saveWorkspace, confirmConsent, scriptQuota, sourceStatus: sources.status, sourceConnect: sources.connect, sourceSearch: sources.search, sourceRead: sources.read, importVideo: admit(importVideo), assets: () => ({ items: records('assets').map(publicAsset) }),
-    trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), coverFrame: admit(coverFrame), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
+    trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), coverFrame: admit(coverFrame), coverSource: admit(coverSource), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
     list: () => ({ items: records('tasks').map(publicTask).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }), get: (id) => publicTask(read(id)),
     speechMedia: (id) => { const task = read(id); return { audioDataUrl: `data:audio/wav;base64,${fs.readFileSync(verified(task.audioFile, task.audioSha256)).toString('base64')}` }; },
     isBusy: () => active.size > 0 || admissions > 0,

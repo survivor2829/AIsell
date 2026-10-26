@@ -51,13 +51,15 @@ function planBigtypeCover({ title, subtitle = '', tags = [], source, face = null
   const band = Math.max(420, Math.min(760, 70 + lines.length * lineHeight + 56));
 
   // 人物画面铺满色块下方区域；有人脸框时让脸的中心落在画面 38% 高度处，没有时取偏上的位置。
+  // 人脸框是整段视频的范围，说话时人在动、范围很大，这时以头顶为准，上方留出头发，不切头。
   const photoH = H - band;
   const scale = Math.max(W / source.width, photoH / source.height);
   const scaledW = Math.ceil(source.width * scale / 2) * 2, scaledH = Math.ceil(source.height * scale / 2) * 2;
   const faceX = face ? ((face.x + face.right) / 2) * scaledW : scaledW / 2;
   const faceY = face ? ((face.y + face.bottom) / 2) * scaledH : scaledH * 0.3;
   const cropX = Math.round(Math.min(Math.max(faceX - W / 2, 0), scaledW - W));
-  const cropY = Math.round(Math.min(Math.max(faceY - photoH * 0.38, 0), scaledH - photoH));
+  const wantY = face ? Math.min(faceY - photoH * 0.38, face.y * scaledH - photoH * 0.2) : faceY - photoH * 0.38;
+  const cropY = Math.round(Math.min(Math.max(wantY, 0), scaledH - photoH));
 
   // 竖排副标题放在色块下方、标签条上方；字多放不下时整体缩小字号。
   const tagBar = labels.length ? 128 : 0;
