@@ -17,7 +17,9 @@ async function main() {
   const text = '先了解地面，再查看通道。', visual = { status: 'measured', union: { y: .2, bottom: .6 }, busy: false };
   assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }).templateId, 'layered_v4');
   assert.equal(packaging.choose({ script: '先别比价格，不是越贵越好，而是看实际效果。' }).templateId, 'impact_v4');
-  assert.equal(packaging.choose({ script: text }, { busy: true }).templateId, 'minimal_v4');
+  // 人物动作多不再退回最素的版式（重点词和花字照常显示），只把动效放慢
+  assert.equal(packaging.choose({ script: '首先了解地面，然后检查通道，最后现场测试。' }, { busy: true }).templateId, 'layered_v4');
+  assert.equal(packaging.buildPlan({ script: text }, { ...visual, busy: true }).motion, 'quiet');
   const crowded = packaging.buildPlan({ script: text }, { ...visual, union: { y: .1, bottom: .84 } });
   assert.equal(crowded.blocked, true);
   const upper = packaging.buildPlan({ script: text }, { ...visual, union: { y: .32, bottom: .72 } }, [{ text, startMs: 0, endMs: 4000 }]);

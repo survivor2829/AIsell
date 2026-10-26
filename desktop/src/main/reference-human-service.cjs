@@ -271,13 +271,18 @@ function createReferenceHumanService(options = {}) {
       referenceSeconds: asset.seconds, status: 'draft', operations: {}, progress: 0, createdAt: previous?.createdAt || new Date().toISOString() };
     save(task); return publicTask(task);
   }
+  // 同一个人最近几条片子用过的包装组合（新的在前），包装时避开它们，连续几条不重样。
+  const recentPackaging = (task) => records('tasks')
+    .filter((other) => other.id !== task.id && other.referenceAssetId === task.referenceAssetId && other.packagingPlan?.variant)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 5)
+    .map((other) => ({ templateId: other.packagingPlan.templateId, variant: other.packagingPlan.variant }));
   async function quote(id) {
     const task = read(id);
     if (task.status !== 'draft') return publicTask(task);
     if (task.captionStyleId.endsWith('_v4')) {
       const asset = read(task.referenceAssetId, 'assets');
       const measured = await (options.analyzeNarration || vision.analyze)(verified(asset.videoFile, asset.videoSha256), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
-      task.packagingPlan = packaging.buildPlan(task, measured);
+      task.packagingPlan = packaging.buildPlan(task, measured, [], false, recentPackaging(task));
       task.captionStyleId = task.packagingPlan.templateId;
       if (task.packagingPlan.blocked) { save(task); throw fail('reference_layout_crowded', '人物占据字幕区域，请换留白更多的素材；未开始付费制作。'); }
       if (!task.coverStyleExplicit) task.coverStyle = templates.templates.find(t => t.id === task.captionStyleId).coverStyle;
@@ -449,7 +454,7 @@ function createReferenceHumanService(options = {}) {
       if (!task.packagingTaskId) {
         if (task.captionStyleId.endsWith('_v4') && !task.packagingPlan?.finalized) {
           const measured = await (options.analyzeNarration || vision.analyze)(file(task.baseVideoFile), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
-          task.packagingPlan = { ...packaging.buildPlan(task, measured, task.utterances, true), finalized: true }; save(task);
+          task.packagingPlan = { ...packaging.buildPlan(task, measured, task.utterances, true, recentPackaging(task)), finalized: true }; save(task);
         }
         if (task.packagingPlan?.blocked) throw fail('reference_layout_crowded', '画面没有足够的字幕空间，或长句缺少可靠分词时间。原片已保留，请调整素材或字幕后重新本地包装；不会重新购买人物。');
         if (!task.musicSelected) {

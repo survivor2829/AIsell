@@ -185,7 +185,9 @@ function copyAppSource(appDir, edition) {
   // Main-process quotes and renderer templates share this versioned catalog.
   fs.mkdirSync(path.join(appDir, 'remotion-packaging'), { recursive: true });
   fs.copyFileSync(path.join(desktopDir, 'remotion-packaging', 'narration-templates.json'), path.join(appDir, 'remotion-packaging', 'narration-templates.json'));
-  fs.copyFileSync(path.join(desktopDir, 'remotion-packaging', 'narration-plan.cjs'), path.join(appDir, 'remotion-packaging', 'narration-plan.cjs'));
+  for (const name of ['narration-plan.cjs', 'word-breaks.cjs', 'word-glossary.json']) {
+    fs.copyFileSync(path.join(desktopDir, 'remotion-packaging', name), path.join(appDir, 'remotion-packaging', name));
+  }
   fs.cpSync(path.join(desktopDir, 'resources', 'narration-vision'), path.join(appDir, 'resources', 'narration-vision'), { recursive: true });
   const helperTarget = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
   fs.copyFileSync(helper, helperTarget);

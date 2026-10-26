@@ -37,6 +37,8 @@ try {
   write(path.join(packagingPath, "style-packs.json"), "{}");
   write(path.join(packagingPath, "narration-templates.json"), "{}");
   write(path.join(packagingPath, "narration-plan.cjs"), "module.exports = {};");
+  write(path.join(packagingPath, "word-breaks.cjs"), "module.exports = {};");
+  write(path.join(packagingPath, "word-glossary.json"), "{\"words\":[]}");
 
   const manifest = {
     artifactType: "internal-evaluation",

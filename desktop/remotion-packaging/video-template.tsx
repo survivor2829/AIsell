@@ -173,16 +173,36 @@ const effectAttributes = (effect: EffectSelection) => ({
   "data-effect-surface": effect.surface
 });
 
-const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: number; zoomProgress: number }> = ({ manifest, pack, frame, zoomProgress }) => {
+// 本人口播的镜头推拉：按包装方案在句子结束处换景别（以脸为中心放大），换景处按方案加转场。
+function cameraState(manifest: MotionManifest, nowMs: number) {
+  const camera = manifest.narrationPlan?.camera;
+  if (!camera?.shots?.length) return null;
+  let index = 0;
+  camera.shots.forEach((shot, i) => { if (shot.startMs <= nowMs) index = i; });
+  const shot = camera.shots[index], since = nowMs - shot.startMs;
+  const transition = index > 0 ? manifest.narrationPlan?.variant?.transition : undefined;
+  const origin = `${camera.focusX * 100}% ${camera.focusY * 100}%`;
+  return {
+    origin,
+    scale: shot.scale + (transition === "push" && since < 260 ? 0.06 * (1 - since / 260) : 0),
+    flash: transition === "flash" && since < 160 ? 0.55 * (1 - since / 160) : 0,
+    iris: transition === "iris" && since < 320 ? 8 + 92 * Math.pow(since / 320, 0.8) : null
+  };
+}
+
+const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: number; zoomProgress: number; nowMs: number }> = ({ manifest, pack, frame, zoomProgress, nowMs }) => {
   const reference = manifest.captionPresentation === "reference_narration";
-  const scale = reference ? 1 : pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
+  const camera = reference ? cameraState(manifest, nowMs) : null;
+  const scale = camera ? camera.scale : reference ? 1 : pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
   return (
     <AbsoluteFill style={{ backgroundColor: pack.palette.ink, overflow: "hidden" }}>
       <OffthreadVideo
         src={staticFile(manifest.sourceFile)}
-        style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})` }}
+        style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})`, transformOrigin: camera?.origin || "50% 50%" }}
       />
       {!reference && <AbsoluteFill style={{ background: pack.video.overlay }} />}
+      {camera && camera.flash > 0 ? <AbsoluteFill style={{ background: "#fff", opacity: camera.flash }} /> : null}
+      {camera && camera.iris !== null ? <AbsoluteFill style={{ background: `radial-gradient(circle at ${camera.origin}, transparent ${camera.iris}%, #000 ${camera.iris + 1}%)` }} /> : null}
     </AbsoluteFill>
   );
 };
@@ -572,7 +592,7 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
   const narrationTemplate = narrationTemplates.templates.some((item) => item.id === manifest.captionStyleId);
   return (
     <AbsoluteFill style={{ background: pack.palette.ink, overflow: "hidden" }}>
-      <VideoBase manifest={manifest} pack={pack} frame={frame} zoomProgress={zoomProgress} />
+      <VideoBase manifest={manifest} pack={pack} frame={frame} zoomProgress={zoomProgress} nowMs={nowMs} />
       {manifest.presentation && !narrationTemplate ? <NarrationTypeface><VideoOutline manifest={manifest} nowMs={nowMs} /></NarrationTypeface> : null}
       {activeFocus ? <RegisteredFocusEffect focus={activeFocus.focus} definition={activeFocus.definition} pack={pack} frame={frame} /> : null}
       {activeEvents.map(({ event, definition }, index) => (
