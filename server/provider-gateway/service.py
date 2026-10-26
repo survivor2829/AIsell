@@ -294,7 +294,10 @@ class GatewayConfig:
     viral_library_publish_token: str = ""
     # Operator-verified existing slots; never create pay-as-you-go speaker IDs.
     voice_clone_slots: dict = field(default_factory=dict)
+    # Legacy per-license writing periods; no longer enforced (writing is open to every licensed session).
     narration_script_quotas: dict = field(default_factory=dict)
+    # Safety valve only: scripts one license may start in any 24 hours (a looping client or a leaked license).
+    narration_script_daily_limit: int = 300
 
     @classmethod
     def from_environment(cls, environ=None):
@@ -316,6 +319,7 @@ class GatewayConfig:
             keys=keys,
             voice_clone_slots=json.loads(env.get("XIAOXI_GATEWAY_VOICE_CLONE_SLOTS_JSON", "{}")),
             narration_script_quotas=json.loads(env.get("XIAOXI_GATEWAY_NARRATION_SCRIPT_QUOTAS_JSON", "{}")),
+            narration_script_daily_limit=int(env.get("XIAOXI_GATEWAY_NARRATION_SCRIPT_DAILY_LIMIT", "300")),
             viral_library_publish_token=str(env.get("XIAOXI_GATEWAY_VIRAL_LIBRARY_PUBLISH_TOKEN", "")).strip(),
             asr_app_id=str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_APP_ID", "")).strip(),
             asr_access_token=str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN", "")).strip(),
@@ -369,6 +373,8 @@ class GatewayConfig:
                 raise ValueError("narration_script_quota_config")
             if _parse_expiry(period.get("endsAt", "")) <= _parse_expiry(period.get("startsAt", "")):
                 raise ValueError("narration_script_quota_config")
+        if type(self.narration_script_daily_limit) is not int or not 0 <= self.narration_script_daily_limit <= 100000:
+            raise ValueError("narration_script_daily_limit_config")
         if self.viral_library_publish_token and len(self.viral_library_publish_token) < 32:
             raise ValueError("viral_library_publish_token_config")
 
@@ -421,6 +427,14 @@ class ReceiptStore:
     def _script_quota(self, subject_hash, period):
         if not period:
             return {"status": "disabled", "periodId": None, "limit": 0, "used": 0, "remaining": 0}
+        if "windowSeconds" in period:
+            # Rolling window: every script started in the last windowSeconds counts, whatever period it was in.
+            used = self.db.execute("""SELECT count(*) FROM narration_script_usage
+                WHERE subject_hash=? AND created_at>? AND state!='released'""",
+                (subject_hash, time.time() - period["windowSeconds"])).fetchone()[0]
+            remaining = max(0, period["limit"] - used)
+            return {"status": "available" if remaining else "exhausted", "periodId": period["periodId"], "limit": period["limit"],
+                    "windowSeconds": period["windowSeconds"], "used": used, "remaining": remaining}
         used = self.db.execute("""SELECT count(*) FROM narration_script_usage
             WHERE subject_hash=? AND period_id=? AND state!='released'""",
             (subject_hash, period["periodId"])).fetchone()[0]
@@ -1738,7 +1752,7 @@ class Handler(BaseHTTPRequestHandler):
         subject = self.config.sessions.subject(token)
         if not subject:
             return self._reply_json(401, {"error": "session_required"})
-        period = self.config.narration_script_quotas.get(subject)
+        period = {"periodId": "daily", "limit": self.config.narration_script_daily_limit, "windowSeconds": 86400}
         if method == "GET":
             quota = self.server.receipts.script_quota(subject, period)
             if not self.config.configured("deepseek") and quota["status"] == "available":

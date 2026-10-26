@@ -196,8 +196,8 @@ function createReferenceHumanService(options = {}) {
     const pending = writeScriptOnce(input, body, key, reference, identity).catch((error) => {
       if (String(error.message).includes('script_response_invalid')) error.message = '云端文案未通过完整性检查，原请求已保留，未自动重试。可以先手填文案；调整资料后重新写稿会使用新的套餐额度。';
       // 云端已自动重写过一次仍和原文重复太多：这条停下，不再扣额度。
-      else if (String(error.message).includes('script_not_original')) error.message = '这条不适合仿写：改写后仍和原文重复太多，已停止，不会再扣写稿额度。可以换一条爆款，或直接填写文案。';
-      else if (String(error.message).includes('viral_library_item_missing')) error.message = '这条爆款已经不在文案库里了，没有扣写稿额度。请换一条。';
+      else if (String(error.message).includes('script_not_original')) error.message = '这条不适合仿写：改写后仍和原文重复太多，已停止，不会自动再写。可以换一条爆款，或直接填写文案。';
+      else if (String(error.message).includes('viral_library_item_missing')) error.message = '这条爆款已经不在文案库里了，请换一条。';
       throw error;
     }).finally(() => scriptRequests.delete(key));
     scriptRequests.set(key, { promise: pending, identity }); return pending;
@@ -221,14 +221,14 @@ function createReferenceHumanService(options = {}) {
       response = await provider.request(`/operations/${record.id}`);
     } else if (!response) {
       const { quota } = await provider.request('/narration/script-quota');
-      if (quota?.status !== 'available') throw fail('reference_script_quota_unavailable', quota?.status === 'exhausted' ? '本期写稿额度已用完，可直接填写文案，不会转为付费写稿。' : '套餐写稿额度尚未就绪，可先直接填写文案。');
+      if (quota?.status !== 'available') throw fail('reference_script_quota_unavailable', quota?.status === 'exhausted' ? '今天写稿次数太多了，明天再试；也可以先直接填写文案。' : '写稿服务暂时不可用，可以先直接填写文案。');
       record = { id: randomUUID(), createdAt: new Date().toISOString(), included: true, requestHash, body, reference, identity };
       writeJsonAtomic(journal, record);
       // 云端可能在同一笔操作里重写一次（两次上游调用，各最长 180 秒），等待时间要盖住两次。
       try { response = await provider.request('/narration/script', { method: 'POST', operationId: record.id, body, timeoutMs: 420000 }); }
       catch (error) { if (!error.outcomeUnknown) { record.rejected = true; writeJsonAtomic(journal, record); } throw error; }
     }
-    if (!response || response.status === 'pending') throw fail('reference_submission_unknown', '原文案请求仍待核对，请稍后查询；不会重复扣写稿额度。', { outcomeUnknown: true });
+    if (!response || response.status === 'pending') throw fail('reference_submission_unknown', '原文案请求仍待核对，请稍后查询；不会重复写稿。', { outcomeUnknown: true });
     if (response.ok !== true || typeof response.title !== 'string' || !response.title.trim() || response.title.length > 24 || typeof response.script !== 'string' || !response.script.trim() || response.script.length > 500) throw fail('reference_script_incomplete', '原写稿结果尚未完整核实，保留原请求，可直接填写文案。');
     const emphasisPhrases = validateEmphasis(response.emphasisPhrases || [], response.script);
     record.response = response; writeJsonAtomic(journal, record);

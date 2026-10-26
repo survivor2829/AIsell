@@ -1,4 +1,4 @@
-"""Local-only included writing quota, durable receipts and fixed prompt boundaries."""
+"""Open writing with a rolling safety cap, durable receipts and fixed prompt boundaries."""
 import json
 import tempfile
 import threading
@@ -82,7 +82,7 @@ class NarrationScriptTest(unittest.TestCase):
         self.library = self.directory.name + "/viral-library.json"
         self.config = GatewayConfig(keys={"deepseek": "server-key"}, session_secret="script-secret",
                                     receipt_db_path=self.directory.name + "/receipts.db", viral_library_path=self.library,
-                                    narration_script_quotas={"customer": self.period},
+                                    narration_script_quotas={"customer": self.period}, narration_script_daily_limit=2,
                                     license_validator=lambda _: {"license_id": "customer", "expires_at": self.period["endsAt"]})
         self.config.upstream_open = self.upstream
         self.start()
@@ -187,7 +187,7 @@ class NarrationScriptTest(unittest.TestCase):
 
     def test_another_script_uses_the_stored_structure_without_the_transcript(self):
         structure = [{"part": "钩子", "method": "开头一句反常识的劝告"}, {"part": "行动号召", "method": "评论区问价引导私信"}]
-        self.period["limit"] = 5
+        self.config.narration_script_daily_limit = 5
         with open(self.library, "w", encoding="utf-8") as handle:
             json.dump({"schema": 2, "items": [{**self.LIBRARY_ITEM, "structure": structure}]}, handle, ensure_ascii=False)
         body = {"topic": "清洁设备渠道商", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30, "mode": "structure", "avoidTitles": ["物业怎样选洗地机"]}
@@ -247,12 +247,15 @@ class NarrationScriptTest(unittest.TestCase):
         self.assertEqual((status, result["script"]), (200, "先看地面材质再选设备。"))
         self.assertIn("太短", result["problems"][0])
 
-    def test_no_quota_no_provider_and_no_client_override(self):
+    def test_writing_needs_no_configured_period_and_the_client_cannot_override(self):
         self.config.narration_script_quotas = {}
-        self.assertEqual(self.get("narration/script-quota")[1]["quota"]["status"], "disabled")
-        self.assertEqual(self.call()[1]["error"], "script_quota_disabled")
+        self.assertEqual(self.get("narration/script-quota")[1]["quota"]["status"], "available", "不需要给每个授权配写稿周期")
         self.assertEqual(self.call(body={**self.body, "quota": 1000})[0], 400)
         self.assertEqual(self.calls, [])
+        self.assertEqual(self.call()[0], 200)
+        self.config.narration_script_daily_limit = 0
+        self.assertEqual(self.call("op-2")[1]["error"], "script_quota_exhausted", "安全上限仍然生效")
+        self.assertEqual(len(self.calls), 1)
 
     def test_success_fixed_prompt_replay_restart_and_mismatch(self):
         status, first = self.call()
@@ -273,13 +276,17 @@ class NarrationScriptTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
     def test_concurrent_last_credit_and_same_operation(self):
-        self.period["limit"] = 1
+        self.config.narration_script_daily_limit = 1
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(self.call, ["script-1", "script-1", "script-2", "script-3"]))
         self.assertEqual(len(self.calls), 1)
         self.assertIn(200, [status for status, _ in results])
         self.assertEqual(self.get("narration/script-quota")[1]["quota"]["remaining"], 0)
         self.assertEqual(self.call("new-operation")[1]["error"], "script_quota_exhausted")
+        # 安全上限按最近 24 小时算：一天前写的不再占名额
+        self.server.receipts.db.execute("UPDATE narration_script_usage SET created_at=created_at-90000")
+        self.server.receipts.db.commit()
+        self.assertEqual(self.get("narration/script-quota")[1]["quota"]["remaining"], 1)
 
     def test_unknown_retains_quota_does_not_retry_after_restart(self):
         self.failure = TimeoutError()
@@ -324,10 +331,12 @@ class NarrationScriptTest(unittest.TestCase):
         unauthorized.exception.close()
         token, _ = self.config.sessions.issue("other-customer", datetime.now(timezone.utc) + timedelta(hours=1))
         self.headers["Authorization"] = "Bearer " + token
-        self.assertEqual(self.call()[1]["error"], "script_quota_disabled")
+        self.assertEqual(self.call()[0], 200, "任何有授权的账号都能写稿，不用单独配额度")
         with self.assertRaises(ValueError):
             GatewayConfig(keys={}, narration_script_quotas={"customer": {**self.period, "limit": -1}})
-        self.assertEqual(self.calls, [])
+        with self.assertRaises(ValueError):
+            GatewayConfig(keys={}, narration_script_daily_limit=-1)
+        self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == "__main__":
