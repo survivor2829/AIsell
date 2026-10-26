@@ -37,6 +37,12 @@ export function libraryUsage(jobs: Pick<ViralJob, 'mode' | 'itemId' | 'status'>[
 export const orderByUsage = <T extends Pick<ViralLibraryItem, 'id'>>(items: T[], made: Record<string, number>) =>
   [...items].sort((a, b) => Number(Boolean(made[a.id])) - Number(Boolean(made[b.id])));
 
+// 底部栏跟着哪条出片任务：正在做的，刚点的，再不然是最近一条失败但能重试的——重启软件后也能在这里点「重试」。
+export function currentJob<T extends Pick<ViralJob, 'id' | 'status' | 'retryable' | 'updatedAt'>>(jobs: T[], lastId: string) {
+  return jobs.find((j) => j.status === 'running' || j.status === 'queued') || jobs.find((j) => j.id === lastId)
+    || jobs.filter((j) => j.status === 'failed' && j.retryable).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
 // 底部栏：选中后显示要做什么；开始后显示当前进度；完成或失败时说清楚。
 export function barText(job: ViralJob | undefined) {
   if (!job) return null;

@@ -16,7 +16,7 @@ function loadTs(name) {
   compiled._compile(output, filename);
   return compiled.exports;
 }
-const { libraryHeadline, libraryStages, barText, formatCount, longestScriptSeconds, libraryUsage, orderByUsage } = loadTs("narration-simple.ts");
+const { libraryHeadline, libraryStages, barText, currentJob, formatCount, longestScriptSeconds, libraryUsage, orderByUsage } = loadTs("narration-simple.ts");
 
 // 大标题只说真实条数，不说哪天扒的（文案库一次扒好要用很久）
 assert.equal(formatCount(1284), "1,284");
@@ -36,6 +36,13 @@ assert.equal(longestScriptSeconds(undefined), Infinity);
 const made = libraryUsage([{ mode: "script", itemId: "lib2", status: "done" }, { mode: "script", itemId: "lib2", status: "done" }, { mode: "script", itemId: "lib3", status: "failed" }, { mode: "library", itemId: "4", status: "done" }, { mode: "post", itemId: "lib1", status: "done" }]);
 assert.deepEqual(made, { 2: 2 });
 assert.deepEqual(orderByUsage([{ id: "1" }, { id: "2" }, { id: "3" }, { id: "4" }], { 1: 1, 3: 2 }).map((i) => i.id), ["2", "4", "1", "3"]);
+
+// 底部栏跟的任务：正在做的优先，其次刚点的；重启后没有「刚点的」，就跟最近一条能重试的失败任务
+const j = (id, status, updatedAt, retryable = status === "failed") => ({ id, status, updatedAt, retryable });
+assert.equal(currentJob([j("a", "failed", "2026-10-26T12:00:00Z"), j("b", "running", "2026-10-26T10:00:00Z")], "").id, "b");
+assert.equal(currentJob([j("a", "failed", "2026-10-26T12:00:00Z"), j("c", "done", "2026-10-26T13:00:00Z")], "c").id, "c");
+assert.equal(currentJob([j("old", "failed", "2026-10-26T10:00:00Z"), j("new", "failed", "2026-10-26T12:00:00Z"), j("dead", "failed", "2026-10-26T13:00:00Z", false)], "").id, "new");
+assert.equal(currentJob([j("c", "done", "2026-10-26T13:00:00Z")], ""), undefined);
 
 const job = (patch) => ({ status: "running", step: "voice", progress: 0, error: "", ...patch });
 assert.equal(barText(undefined), null);
