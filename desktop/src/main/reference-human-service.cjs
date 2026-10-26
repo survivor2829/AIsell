@@ -500,6 +500,14 @@ function createReferenceHumanService(options = {}) {
     if (!Array.isArray(value) || value.length > 12 || value.some((text) => typeof text !== 'string' || !text.trim() || text.length > 24 || !script.includes(text))) throw fail('reference_emphasis_invalid', '强调短语须来自口播原文，每项最多24字，最多12项。');
     return [...new Set(value)];
   }
+  // 成片中心：哪些成片是本人口播做的（可以免费换包装），以及按成片换一套新包装。
+  // 新包装用同一段数字人视频和配音，只在本机重新配字幕、配色、镜头和花字，避开这个人最近用过的组合。
+  const repackageable = () => ({ generatedVideoIds: records('tasks').filter((task) => task.status === 'completed' && task.generatedVideoId && task.baseVideoFile && task.utterances).map((task) => task.generatedVideoId) });
+  async function repackageVideo(generatedVideoId) {
+    const source = records('tasks').find((task) => task.generatedVideoId === generatedVideoId && task.status === 'completed');
+    if (!source) throw fail('reference_repackage_unavailable', '这条成片不是本人口播做的，不能换包装。');
+    return repackage(source.id, { nextStyle: true });
+  }
   async function repackage(id, input) {
     assertKeys(input, ['captionStyleId', 'emphasisPhrases', 'title', 'nextStyle', 'soundEffects']);
     const source = read(id);
@@ -620,7 +628,7 @@ function createReferenceHumanService(options = {}) {
   const timer = setInterval(pending, 5000); timer.unref?.();
   const startup = setTimeout(pending, 0); startup.unref?.();
   return { capabilities, workspace, saveWorkspace, confirmConsent, scriptQuota, sourceStatus: sources.status, sourceConnect: sources.connect, sourceSearch: sources.search, sourceRead: sources.read, importVideo: admit(importVideo), assets: () => ({ items: records('assets').map(publicAsset) }),
-    trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), coverFrame: admit(coverFrame), coverSource: admit(coverSource), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
+    trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), repackageVideo: admit(repackageVideo), repackageable, coverFrame: admit(coverFrame), coverSource: admit(coverSource), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
     list: () => ({ items: records('tasks').map(publicTask).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }), get: (id) => publicTask(read(id)),
     speechMedia: (id) => { const task = read(id); return { audioDataUrl: `data:audio/wav;base64,${fs.readFileSync(verified(task.audioFile, task.audioSha256)).toString('base64')}` }; },
     isBusy: () => active.size > 0 || admissions > 0,

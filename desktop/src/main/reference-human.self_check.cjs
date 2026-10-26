@@ -224,6 +224,16 @@ async function main() {
       assert.deepEqual(cycled.packagingPlan, service.get(cycled.id).packagingPlan, 'saved plan is deterministic');
     }
     assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage);
+    // 成片中心「换个包装 · 免费」：按成片找到本人口播任务，换一套和上一条不同的包装，不重复任何付费步骤
+    const finishedVideo = service.get(cycled.id).generatedVideoId;
+    assert.ok(service.repackageable().generatedVideoIds.includes(finishedVideo));
+    const fresh = await service.repackageVideo(finishedVideo);
+    while (service.isBusy()) await new Promise(resolve => setTimeout(resolve, 5));
+    const freshTask = service.get(fresh.id);
+    assert.equal(freshTask.status, 'completed'); assert.notEqual(freshTask.captionStyleId, cycled.captionStyleId);
+    assert.notDeepEqual(freshTask.packagingPlan.variant, service.get(cycled.id).packagingPlan.variant, '新包装和上一条组合不同');
+    assert.deepEqual({ voice: counts.voice, asr: counts.asr, video: counts.video }, paidBeforeRepackage);
+    await assert.rejects(service.repackageVideo('generated_video_00000000000000000000000000000000'), { code: 'reference_repackage_unavailable' });
     await assert.rejects(service.repackage(nextDraft.id, { captionStyleId: 'impact_v1', emphasisPhrases: ['虚构卖点'] }), { code: 'reference_emphasis_invalid' });
     let coverState = '', coverCalls = [];
     options.getGeneratedVideo = async () => ({ cover_status: coverState });

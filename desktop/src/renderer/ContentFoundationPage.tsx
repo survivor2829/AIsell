@@ -20,7 +20,11 @@ import {
   Video
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReferenceHumanApi } from "./reference-human-types";
 import "./ContentFoundationPage.css";
+
+// 本人口播的成片可以免费换一套包装（同一段数字人视频和配音，只在本机重新配字幕、配色、镜头和花字）。
+const narrationApi = () => (window as unknown as { xiaoxiDigitalHuman?: { reference?: Pick<ReferenceHumanApi, "repackageable" | "repackageVideo" | "get"> } }).xiaoxiDigitalHuman?.reference;
 
 type ContentEngineState = "unavailable" | "stopped" | "starting" | "ready" | "failed";
 type AssetProbeStatus = "pending" | "ok" | "unavailable" | "failed";
@@ -794,6 +798,8 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(FINISHED_PAGE_SIZE);
   const [brokenCovers, setBrokenCovers] = useState<Record<string, boolean>>({});
+  const [repackageable, setRepackageable] = useState<Set<string>>(new Set());
+  const [repacking, setRepacking] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async (options?: { silent?: boolean; announce?: boolean }) => {
     const api = window.xiaoxiContent;
@@ -852,6 +858,29 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
       setNotice(result?.error || "当前无法打开这条成片，文件可能已被移动或删除。");
       await refresh({ silent: true });
     }
+  };
+
+  useEffect(() => {
+    void narrationApi()?.repackageable().then((result) => { if (result.ok && result.data) setRepackageable(new Set(result.data.generatedVideoIds)); });
+  }, [items]);
+
+  const repackageVideo = async (generatedVideoId: string) => {
+    const api = narrationApi();
+    if (!api) return;
+    const done = () => setRepacking((current) => { const next = { ...current }; delete next[generatedVideoId]; return next; });
+    const result = await api.repackageVideo({ generatedVideoId });
+    if (!result.ok || !result.data) { setNotice(result.error || "换包装没有开始，请稍后再试。"); return; }
+    const taskId = result.data.id;
+    setRepacking((current) => ({ ...current, [generatedVideoId]: taskId }));
+    setNotice("正在换一套新包装：只在本机重新配字幕、配色和镜头，不花钱，大约一两分钟，做好后会出现在最前面。");
+    const poll = async () => {
+      const task = await api.get({ id: taskId });
+      const state = task.ok ? task.data?.status : "failed";
+      if (state === "completed") { done(); setNotice("新包装做好了，已经放在最前面，原来那条也保留着。"); void refresh({ silent: true }); return; }
+      if (!task.ok || state === "needs_attention" || state === "failed") { done(); setNotice(task.data?.error || task.error || "换包装没有完成，原来的成片不受影响。"); return; }
+      window.setTimeout(() => void poll(), 4000);
+    };
+    window.setTimeout(() => void poll(), 4000);
   };
 
   const revealVideo = async (item: FinishedVideoItem) => {
@@ -985,6 +1014,12 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
                       <FolderOpen size={15} />
                       定位文件
                     </button>
+                    {generatedVideoId && repackageable.has(generatedVideoId) && (
+                      <button className="secondary-button" onClick={() => void repackageVideo(generatedVideoId)} disabled={!ready || Boolean(repacking[generatedVideoId])}>
+                        <RefreshCw size={15} />
+                        {repacking[generatedVideoId] ? "正在换包装…" : "换个包装 · 免费"}
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <p className="finished-card-missing">本地文件已删除或不可访问，已从可用成片中移出。</p>
