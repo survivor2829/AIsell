@@ -34,6 +34,33 @@ const DRIVERS = {
       });
       const cursor = list?.pcursorV2 ?? list?.pcursor;
       return { comments, more: Boolean(cursor) && cursor !== "no_more" };
+    },
+    // Actions, confirmed on 2026-10-26: liking a comment answers GraphQL visionLikeComment
+    // {result: 1} and marks the icon .liked (a second click would unlike it); following answers
+    // /rest/v/relation/follow {result: 1, followStatus: 1} and the button reads 已关注. The web
+    // site has no reply-to-comment, so replies are not offered here. Commenting under peer videos
+    // was removed after the platform hid every such comment as advertising (2026-10-26).
+    actions: {
+      like: true, follow: true,
+      profileUrl: (userId) => `https://www.kuaishou.com/profile/${userId}`,
+      // Compared without any spaces: the page shows 「🌸 小花🌷 」 where the data says 「🌸小花🌷」.
+      commentItem: (userName, content) => `[...document.querySelectorAll(".comment-list-item")].find((el) => {
+        const name = (el.querySelector(".author-name")?.textContent || "").replace(/\\s+/g, "");
+        const said = (el.querySelector(".comment-item-content")?.textContent || "").replace(/\\s+/g, "");
+        return name === ${JSON.stringify(String(userName).replace(/\s+/g, ""))} && said.slice(0, 60) === ${JSON.stringify(String(content).replace(/\s+/g, "").slice(0, 60))}; })`,
+      likeIcon: ".comment-item-likeicon", likedClass: "liked",
+      followButton: ".follow-btn", followed: /已关注|互相关注/,
+      isLike: (url, operation) => /www\.kuaishou\.com\/graphql/.test(url) && operation === "visionLikeComment",
+      isFollow: (url) => /www\.kuaishou\.com\/rest\/v\/relation\/follow/.test(url),
+      // { ok, message } from an action's response; anything but result 1 is a refusal.
+      outcome(json) {
+        const body = json?.data ? Object.values(json.data)[0] : json;
+        const result = Number(body?.result ?? json?.result);
+        const message = text(body?.error_msg || json?.error_msg || json?.errors?.[0]?.message || "", 120);
+        // No result and no error says nothing either way.
+        if (!Number.isFinite(result) && !message && !json?.errors?.length) return { ok: null, message: "" };
+        return { ok: result === 1 && !json?.errors?.length, message };
+      }
     }
   },
   // Douyin's web search shows a captcha that rejects any program-driven browser, and the
@@ -64,4 +91,8 @@ function intentOf(comment, extraWords = []) {
   return [...new Set(signals)];
 }
 
-module.exports = { DRIVERS, acquireDriverFor, intentOf };
+// A platform telling the account to slow down; the account then rests until tomorrow.
+// Only wording about pace: 「评论功能已限制」 or 「已达关注上限」 are refusals, not a reason to rest.
+const TOO_FREQUENT = /频繁|太快|操作过于|稍后再试/;
+
+module.exports = { DRIVERS, acquireDriverFor, intentOf, TOO_FREQUENT };

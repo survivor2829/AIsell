@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Download, ExternalLink, Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
-import type { AcquireLead, AcquireResult, AcquireState, AcquireTask, AcquireTaskInput } from "./social-acquisition-types";
+import { Check, Download, ExternalLink, Heart, Pencil, Play, Plus, Square, Trash2, UserPlus } from "lucide-react";
+import type { AcquireAction, AcquireActionKind, AcquireCaps, AcquireLead, AcquireResult, AcquireRun, AcquireState, AcquireTask, AcquireTaskInput } from "./social-acquisition-types";
 import type { SocialAccountsState } from "./social-accounts-types";
 import { PlatformIcon } from "./PlatformIcon";
 import "./SocialAccountsPanel.css";
@@ -9,10 +9,17 @@ import "./AcquisitionPage.css";
 const DAYS = [[1, "1 天内"], [7, "7 天内"], [30, "30 天内"], [90, "90 天内"]] as const;
 const RUN_STATUS: Record<string, string> = { running: "运行中", needs_user: "等你验证", done: "已完成", stopped: "已停下", failed: "没完成" };
 const LEAD_STATUS: Record<AcquireLead["status"], string> = { new: "新线索", contacted: "已联系", ignored: "已忽略" };
+const ACTION_NAME: Record<AcquireActionKind, string> = { like: "点赞", follow: "关注" };
+const ACTION_STATUS: Record<AcquireAction["status"], string> = { queued: "排队中", running: "进行中", done: "已完成", failed: "没成功", unknown: "结果不明", cancelled: "已取消" };
+const KINDS = ["like", "follow"] as const;
 const emptyTask = (accountId = ""): AcquireTaskInput => ({ name: "", platform: "kuaishou", accountId, keywords: "", intentWords: "", days: 30, maxVideos: 10, allComments: false, skipAuthor: true });
 const when = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日`; };
+const clock = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
+const runLine = (run: AcquireRun) => run.kind === "actions" ? `做完 ${run.sent || 0} 个 · 没成功 ${run.failed || 0} 个` : `${run.videos} 个视频 · 找到 ${run.leads} 条线索`;
+const START_NOTE = "已开始：会打开 Chrome 窗口搜视频、读评论，请不要在窗口里操作。";
 
-// 关键词获客：按关键词搜视频、读评论，把有购买意向的人整理成线索。这一步只看不动，不发任何东西。
+// 关键词获客：按关键词搜视频、读评论，把有购买意向的人整理成线索；可以给线索的评论点赞、关注线索。
+// 每个动作都有每天上限，平台提示频繁就停到明天，结果不明的不会自动重做。
 export function AcquisitionPage() {
   const api = window.xiaoxiSocialAcquisition, accountsApi = window.xiaoxiSocialAccounts;
   const [state, setState] = useState<AcquireState>();
@@ -21,6 +28,8 @@ export function AcquisitionPage() {
   const [editing, setEditing] = useState(false);
   const [filter, setFilter] = useState<"all" | AcquireLead["status"]>("new");
   const [taskFilter, setTaskFilter] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [capsDraft, setCapsDraft] = useState<AcquireCaps>();
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -35,11 +44,23 @@ export function AcquisitionPage() {
   }, [api, accountsApi]);
 
   const kuaishouAccounts = (accounts?.accounts || []).filter((account) => account.platform === "kuaishou" && account.status === "active");
+  const accountName = (id: string) => (accounts?.accounts || []).find((account) => account.id === id)?.label || "快手号";
   useEffect(() => { if (!form.accountId && kuaishouAccounts[0]) setForm((current) => ({ ...current, accountId: kuaishouAccounts[0].id })); }, [kuaishouAccounts.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const runFor = (task: AcquireTask) => state?.runs.find((run) => run.taskId === task.id);
   const runningRun = state?.runs.find((run) => run.id === state.running);
+  const actions = state?.actions || [];
+  // The latest record of each action per lead (a cancelled one does not count).
+  const leadActs = useMemo(() => {
+    const map = new Map<string, Partial<Record<AcquireActionKind, AcquireAction>>>();
+    for (const action of actions) if (action.leadId && action.status !== "cancelled") { const entry = map.get(action.leadId) || {}; if (!entry[action.kind]) entry[action.kind] = action; map.set(action.leadId, entry); }
+    return map;
+  }, [actions]);
   const leads = useMemo(() => (state?.leads || []).filter((lead) => (filter === "all" || lead.status === filter) && (!taskFilter || lead.taskId === taskFilter)), [state, filter, taskFilter]);
   const counts = useMemo(() => ({ all: state?.leads.length || 0, new: state?.leads.filter((lead) => lead.status === "new").length || 0 }), [state]);
+  const queued = actions.filter((action) => action.status === "queued").length;
+  const unknown = actions.filter((action) => action.status === "unknown");
+  const visibleLeads = leads.slice(0, 300);
+  const pickedLeads = visibleLeads.filter((lead) => picked.has(lead.id));
 
   const run = async (key: string, operation: () => Promise<AcquireResult>, success = "") => {
     setPending(key); setError(""); setNotice("");
@@ -60,16 +81,33 @@ export function AcquisitionPage() {
     const latest = await api.status();
     const saved = form.id ? latest.state?.tasks.find((task) => task.id === form.id) : latest.state?.tasks.find((task) => !before.has(task.id));
     setEditing(false); setForm(emptyTask(form.accountId));
-    if (startAfter && saved) await run("start", () => api.start(saved.id), "已开始：会打开 Chrome 窗口搜视频、读评论，请不要在窗口里操作。");
+    if (startAfter && saved) await run("start", () => api.start(saved.id), START_NOTE);
   };
   const edit = (task: AcquireTask) => { setForm({ id: task.id, name: task.name, platform: task.platform, accountId: task.accountId, keywords: task.keywords.join("\n"), intentWords: task.intentWords.join(" "), days: task.days, maxVideos: task.maxVideos, allComments: task.allComments, skipAuthor: task.skipAuthor }); setEditing(true); };
+  const queue = (leadIds: string[], kinds: AcquireActionKind[]) => {
+    if (!api || !leadIds.length) return;
+    const what = kinds.map((kind) => ACTION_NAME[kind]).join("和");
+    const caps = state?.caps;
+    if (!window.confirm(`给 ${leadIds.length} 个人${kinds.includes("like") ? "的评论" : ""}${what}？\n会用找到他们的那个快手号去做，每个动作间隔半分钟到一分钟。\n每个账号每天最多点赞 ${caps?.like ?? 60} 个、关注 ${caps?.follow ?? 30} 个；平台提示频繁就停到明天。`)) return;
+    void run("queue", async () => {
+      const result = await api.queueActions(leadIds, kinds);
+      if (result.ok) { setPicked(new Set()); setNotice(!result.state?.added ? "这些人已经做过或已在排队，没有新加入的。" : result.state.running ? `已加入 ${result.state.added} 个动作，正在依次执行。` : `已加入 ${result.state.added} 个动作。账号正在使用、今天已到上限或在休息，稍后点「继续执行」。`); }
+      return result;
+    });
+  };
+  const togglePick = (id: string) => setPicked((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const allPicked = visibleLeads.length > 0 && visibleLeads.every((lead) => picked.has(lead.id));
+  const todayRows = Object.entries(state?.today || {});
+
+  const actChip = (action?: AcquireAction) => action ? <span className={`acq-act is-${action.status}`} title={action.reason || undefined}>{ACTION_NAME[action.kind]}{action.status === "done" ? "✓" : `·${ACTION_STATUS[action.status]}`}</span> : null;
 
   return <div className="acq">
     {(error || notice) && <div className={`social-feedback ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
     {runningRun && <div className={`acq-live ${runningRun.status === "needs_user" ? "is-wait" : ""}`} role="status">
       <span className="acq-live-dot" aria-hidden="true" />
-      <div><b>{RUN_STATUS[runningRun.status]}</b><span>{runningRun.detail || "处理中…"}</span></div>
-      <ul><li><b>{runningRun.videos}</b>个视频</li><li><b>{runningRun.comments}</b>条意向评论</li><li><b>{runningRun.leads}</b>条新线索</li></ul>
+      <div><b>{RUN_STATUS[runningRun.status]}{runningRun.kind === "actions" ? ` · ${runningRun.accountLabel || "快手号"}在做点赞关注` : ""}</b><span>{runningRun.detail || "处理中…"}</span></div>
+      {runningRun.kind === "actions" ? <ul><li><b>{runningRun.sent || 0}</b>个做完</li><li><b>{runningRun.failed || 0}</b>个没成功</li><li><b>{queued}</b>个排队</li></ul>
+        : <ul><li><b>{runningRun.videos}</b>个视频</li><li><b>{runningRun.comments}</b>条意向评论</li><li><b>{runningRun.leads}</b>条新线索</li></ul>}
       <button type="button" className="acq-stop" disabled={Boolean(pending)} onClick={() => api && void run("stop", () => api.stop())}><Square size={14} />停下</button>
     </div>}
 
@@ -97,7 +135,7 @@ export function AcquisitionPage() {
           <button type="button" className="secondary-button" disabled={Boolean(pending) || !api} onClick={() => void saveAndStart(false)}>保存</button>
           <button type="button" className="ns-go acq-go" disabled={Boolean(pending) || !api || Boolean(state?.running) || !form.accountId} onClick={() => void saveAndStart(true)}><Play size={18} />保存并开始</button>
         </div>
-        <p className="acq-hint">只搜视频、读评论，不点赞、不关注、不评论、不发私信。平台弹验证码时会暂停，Chrome 窗口跳到前面，请你点一下完成验证，然后自动继续。</p>
+        <p className="acq-hint">只搜视频、读评论，不对外发任何东西。找到线索后，可以在下面给他们的评论点赞、关注他们。平台弹验证码时会暂停，Chrome 窗口跳到前面，请你点一下完成验证，然后自动继续。</p>
       </section>
 
       <section className="acq-card" aria-labelledby="acq-tasks">
@@ -107,9 +145,9 @@ export function AcquisitionPage() {
             return <li key={task.id}>
               <PlatformIcon platform={task.platform} size={30} />
               <div className="acq-task-copy"><b>{task.name}</b><span>{task.accountLabel} · {task.keywords.length} 个关键词 · 每个看 {task.maxVideos} 个视频</span>
-                {last && <small className={`is-${last.status}`}>{RUN_STATUS[last.status]} · {last.videos} 个视频 · 找到 {last.leads} 条线索{last.reason ? ` · ${last.reason}` : ""}</small>}</div>
+                {last && <small className={`is-${last.status}`}>{RUN_STATUS[last.status]} · {runLine(last)}{last.reason ? ` · ${last.reason}` : ""}</small>}</div>
               <div className="acq-task-actions">
-                {!running && <button type="button" className="acq-mini is-go" disabled={Boolean(pending) || Boolean(state!.running)} onClick={() => api && void run(`start-${task.id}`, () => api.start(task.id), "已开始：会打开 Chrome 窗口搜视频、读评论，请不要在窗口里操作。")}><Play size={14} />开始</button>}
+                {!running && <button type="button" className="acq-mini is-go" disabled={Boolean(pending) || Boolean(state!.running)} onClick={() => api && void run(`start-${task.id}`, () => api.start(task.id), START_NOTE)}><Play size={14} />开始</button>}
                 <button type="button" className="acq-mini" aria-label="编辑任务" disabled={Boolean(running)} onClick={() => edit(task)}><Pencil size={14} /></button>
                 <button type="button" className="acq-mini" aria-label="删除任务" disabled={Boolean(running) || Boolean(pending)} onClick={() => api && window.confirm(`删除任务「${task.name}」？已找到的线索会保留。`) && void run(`remove-${task.id}`, () => api.removeTask(task.id))}><Trash2 size={14} /></button>
               </div>
@@ -117,6 +155,38 @@ export function AcquisitionPage() {
         </ul>}
       </section>
     </div>
+
+    <section className="acq-card" aria-labelledby="acq-today">
+      <div className="acq-sec"><h2 id="acq-today"><em>今天</em>点赞关注与上限</h2>
+        <span>{queued ? `还有 ${queued} 个排队` : "没有排队的动作"}</span>
+        <div className="acq-filters">
+          {queued > 0 && !state?.running && <button type="button" className="acq-mini is-go" disabled={Boolean(pending)} onClick={() => api && void run("resume", () => api.resume(), "继续执行排队的动作。")}><Play size={14} />继续执行</button>}
+          {queued > 0 && <button type="button" className="acq-mini" disabled={Boolean(pending)} onClick={() => api && window.confirm(`取消 ${queued} 个还没做的动作？`) && void run("cancel", () => api.cancelQueued())}>取消排队</button>}
+          <button type="button" className="social-text-button" onClick={() => setCapsDraft(capsDraft ? undefined : state?.caps)}>{capsDraft ? "收起" : "调整每天上限"}</button>
+        </div>
+      </div>
+      {capsDraft && <div className="acq-caps">
+        {KINDS.map((kind) => <label key={kind}>每个账号每天{ACTION_NAME[kind]}<input type="number" min={0} max={kind === "like" ? 200 : 100} value={capsDraft[kind]} onChange={(event) => { if (event.target.value !== "") setCapsDraft({ ...capsDraft, [kind]: Number(event.target.value) }); }} /></label>)}
+        <button type="button" className="secondary-button" disabled={Boolean(pending)} onClick={() => api && void run("caps", async () => { const result = await api.saveCaps(capsDraft); if (result.ok) setCapsDraft(undefined); return result; }, "上限已保存。")}>保存</button>
+        <small>上限设得越高，被平台限制的可能越大。平台一提示频繁，这个账号当天就会停下。</small>
+      </div>}
+      {todayRows.length === 0 ? <p className="social-empty">今天还没有点赞或关注。</p> : <ul className="acq-today">
+        {todayRows.map(([accountId, today]) => <li key={accountId}>
+          <PlatformIcon platform="kuaishou" size={24} /><b>{accountName(accountId)}</b>
+          {KINDS.map((kind) => <span key={kind}>{ACTION_NAME[kind]} <b>{today[kind]}</b>/{state?.caps[kind]}</span>)}
+          {today.pausedUntil && <em>平台提示频繁，今天已停下</em>}
+        </li>)}
+      </ul>}
+      {unknown.length > 0 && <div className="acq-unknown" role="alert">
+        <b>{unknown.length} 个动作结果不明</b><span>已经点下，但没等到平台确认。请到快手上看一下，再告诉软件结果；软件不会自己重做。</span>
+        <ul>{unknown.slice(0, 20).map((action) => <li key={action.id}>
+          <span>{ACTION_NAME[action.kind]} · {action.target.userName || action.target.videoTitle || action.target.videoId} · {clock(action.clickedAt)}</span>
+          <button type="button" className="acq-mini" onClick={() => api && void run(`open-${action.id}`, () => api.openLead(action.id))}><ExternalLink size={14} />{action.kind === "follow" ? "看主页" : "去看看"}</button>
+          <button type="button" className="acq-mini is-go" disabled={Boolean(pending)} onClick={() => api && void run(`ok-${action.id}`, () => api.resolveAction(action.id, "done"))}>已成功</button>
+          <button type="button" className="acq-mini" disabled={Boolean(pending)} onClick={() => api && void run(`no-${action.id}`, () => api.resolveAction(action.id, "failed"))}>没成功</button>
+        </li>)}</ul>
+      </div>}
+    </section>
 
     <section className="acq-card" aria-labelledby="acq-leads">
       <div className="acq-sec"><h2 id="acq-leads"><em>线索</em>意向客户</h2><span>共 {counts.all} 条，新线索 {counts.new} 条</span>
@@ -126,21 +196,33 @@ export function AcquisitionPage() {
           <button type="button" className="secondary-button" disabled={!counts.all || Boolean(pending)} onClick={() => api && void run("export", async () => { const result = await api.exportCsv(taskFilter); if (result.ok && result.state?.exported) setNotice("线索已导出成表格。"); return result; })}><Download size={15} />导出表格</button>
         </div>
       </div>
-      {leads.length === 0 ? <p className="social-empty">{counts.all ? "这个筛选下没有线索。" : "还没有线索。运行一个获客任务后，有意向的评论会出现在这里。"}</p> : <ul className="acq-leads">
-        {leads.slice(0, 300).map((lead) => <li key={lead.id} className={`is-${lead.status}`}>
-          <PlatformIcon platform={lead.platform === "douyin" ? "douyin" : "kuaishou"} size={28} />
-          <div className="acq-lead-main">
-            <div className="acq-lead-head"><b>{lead.userName || "未知昵称"}</b>{lead.signals.map((signal) => <span key={signal} className="acq-chip">{signal}</span>)}<small>{when(lead.commentAt)}{lead.region ? ` · ${lead.region}` : ""}</small></div>
-            <p>「{lead.comment}」</p>
-            <small className="acq-lead-src">关键词「{lead.keyword}」 · 来自视频：{lead.videoTitle || lead.videoId}</small>
-          </div>
-          <div className="acq-lead-actions">
-            <button type="button" className="acq-mini" onClick={() => api && void run(`open-${lead.id}`, () => api.openLead(lead.id))}><ExternalLink size={14} />看视频</button>
-            {lead.status !== "contacted" && <button type="button" className="acq-mini is-go" onClick={() => api && void run(`c-${lead.id}`, () => api.setLead(lead.id, "contacted"))}><Check size={14} />已联系</button>}
-            {lead.status === "new" && <button type="button" className="acq-mini" onClick={() => api && void run(`i-${lead.id}`, () => api.setLead(lead.id, "ignored"))}>忽略</button>}
-            {lead.status !== "new" && <button type="button" className="acq-mini" onClick={() => api && void run(`n-${lead.id}`, () => api.setLead(lead.id, "new"))}>恢复</button>}
-          </div>
-        </li>)}
+      {visibleLeads.length > 0 && <div className="acq-bulk">
+        <label className="acq-check"><input type="checkbox" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(visibleLeads.map((lead) => lead.id)))} />全选</label>
+        <span>已选 {pickedLeads.length} 人</span>
+        <button type="button" className="acq-mini" disabled={!pickedLeads.length || Boolean(pending)} onClick={() => queue(pickedLeads.map((lead) => lead.id), ["like"])}><Heart size={14} />点赞评论</button>
+        <button type="button" className="acq-mini" disabled={!pickedLeads.length || Boolean(pending)} onClick={() => queue(pickedLeads.map((lead) => lead.id), ["follow"])}><UserPlus size={14} />关注</button>
+        <button type="button" className="acq-mini is-go" disabled={!pickedLeads.length || Boolean(pending)} onClick={() => queue(pickedLeads.map((lead) => lead.id), ["like", "follow"])}>点赞 + 关注</button>
+        <small>快手网页版不能回复评论，所以没有「回复」。</small>
+      </div>}
+      {visibleLeads.length === 0 ? <p className="social-empty">{counts.all ? "这个筛选下没有线索。" : "还没有线索。运行一个获客任务后，有意向的评论会出现在这里。"}</p> : <ul className="acq-leads">
+        {visibleLeads.map((lead) => { const acts = leadActs.get(lead.id) || {};
+          return <li key={lead.id} className={`is-${lead.status}`}>
+            <input type="checkbox" className="acq-pick" aria-label={`选择 ${lead.userName}`} checked={picked.has(lead.id)} onChange={() => togglePick(lead.id)} />
+            <PlatformIcon platform={lead.platform === "douyin" ? "douyin" : "kuaishou"} size={28} />
+            <div className="acq-lead-main">
+              <div className="acq-lead-head"><b>{lead.userName || "未知昵称"}</b>{lead.signals.map((signal) => <span key={signal} className="acq-chip">{signal}</span>)}{actChip(acts.like)}{actChip(acts.follow)}<small>{when(lead.commentAt)}{lead.region ? ` · ${lead.region}` : ""}</small></div>
+              <p>「{lead.comment}」</p>
+              <small className="acq-lead-src">关键词「{lead.keyword}」 · 来自视频：{lead.videoTitle || lead.videoId}</small>
+            </div>
+            <div className="acq-lead-actions">
+              <button type="button" className="acq-mini" onClick={() => api && void run(`open-${lead.id}`, () => api.openLead(lead.id))}><ExternalLink size={14} />看视频</button>
+              {(!acts.like || acts.like.status === "failed") && <button type="button" className="acq-mini" disabled={Boolean(pending)} onClick={() => queue([lead.id], ["like"])}><Heart size={14} />点赞</button>}
+              {(!acts.follow || acts.follow.status === "failed") && <button type="button" className="acq-mini" disabled={Boolean(pending)} onClick={() => queue([lead.id], ["follow"])}><UserPlus size={14} />关注</button>}
+              {lead.status !== "contacted" && <button type="button" className="acq-mini is-go" onClick={() => api && void run(`c-${lead.id}`, () => api.setLead(lead.id, "contacted"))}><Check size={14} />已联系</button>}
+              {lead.status === "new" && <button type="button" className="acq-mini" onClick={() => api && void run(`i-${lead.id}`, () => api.setLead(lead.id, "ignored"))}>忽略</button>}
+              {lead.status !== "new" && <button type="button" className="acq-mini" onClick={() => api && void run(`n-${lead.id}`, () => api.setLead(lead.id, "new"))}>恢复</button>}
+            </div>
+          </li>; })}
       </ul>}
     </section>
   </div>;

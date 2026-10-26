@@ -11,6 +11,11 @@ function createSocialAcquisitionApi(ipcRenderer) {
     start: (id) => invoke("start", { id: String(id || "") }),
     stop: () => invoke("stop"),
     setLead: (id, status) => invoke("setLead", { id: String(id || ""), status: String(status || "") }),
+    queueActions: (leadIds, kinds) => invoke("queueActions", { leadIds: Array.isArray(leadIds) ? leadIds.map(String) : [], kinds: Array.isArray(kinds) ? kinds.map(String) : [] }),
+    resume: () => invoke("resume"),
+    cancelQueued: () => invoke("cancelQueued"),
+    resolveAction: (id, outcome) => invoke("resolveAction", { id: String(id || ""), outcome: String(outcome || "") }),
+    saveCaps: (caps) => invoke("saveCaps", { like: Number(caps?.like), follow: Number(caps?.follow) }),
     exportCsv: (taskId) => invoke("exportCsv", { taskId: String(taskId || "") }),
     openLead: (id) => invoke("openLead", { id: String(id || "") }),
     onUpdate: (callback) => { const listener = (_event, state) => callback(state); ipcRenderer.on("social-acquisition:update", listener); return () => ipcRenderer.removeListener("social-acquisition:update", listener); }

@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DRIVERS, acquireDriverFor, intentOf } = require("./social-acquire-drivers.cjs");
+const { DRIVERS, acquireDriverFor, intentOf, TOO_FREQUENT } = require("./social-acquire-drivers.cjs");
 const { createSocialAcquisition } = require("./social-acquisition.cjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -38,19 +38,31 @@ assert.deepEqual(intentOf("这价格真合适"), []);
 assert.deepEqual(intentOf("价格多少？留个电话"), ["询价", "要联系"]);
 assert.deepEqual(intentOf("有买过的吗？效果怎么样"), ["问效果"]);
 assert.deepEqual(intentOf("能租吗", ["租"]), ["含「租」"]);
+// 在页面上找线索的那条评论：页面上的昵称会在表情后多出空格（实测像「🌸 小花🌷 」这样）。
+{
+  const item = (name, said) => ({ querySelector: (selector) => ({ textContent: selector === ".author-name" ? name : said }) });
+  const items = [item("别人", " 我也想买，有没有推荐的 "), item("🌸 小花🌷 ", " 我也想买，有没有推荐的 ")], document = { querySelectorAll: () => items };
+  const found = new Function("document", `return ${ks.actions.commentItem("🌸小花🌷", "我也想买，有没有推荐的")};`)(document);
+  assert.equal(found, items[1]);
+  assert.equal(new Function("document", `return ${ks.actions.commentItem("🌸小花🌷", "别的话")};`)(document), undefined);
+}
 // 抖音网页搜索会拦截软件控制的浏览器：列出来但不可用，不绕过。
 assert.throws(() => acquireDriverFor("douyin"), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
 
-function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
+function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-acquire-"));
-  const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0 };
+  const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0, clicks: [], typed: [] };
+  // How the platform behaves for likes, follows and comments in this world.
+  const ui = { liked: false, like: "ok", follow: "ok", comment: "ok", followLabel: "关注", covered: false, boxValue: "", target: "", shown: true, closedNote: "", posted: [], ...act };
   let captchaLeft = captchaPolls, emitJson = null, pending = null, previous = "", hung = null;
   const hour = 3_600_000, nowMs = Date.parse("2026-10-26T12:00:00Z"), started = Date.now();
   const commentsFor = (id) => ({ data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
     { commentId: `1${id.length}00000001`, authorId: "3xbuyer01", authorName: "买家A", content: "这个多少钱", timestamp: nowMs - hour },
     { commentId: `1${id.length}00000002`, authorId: id.endsWith("1") ? "3xauthor01" : "3xauthor02", authorName: "作者本人", content: "多少钱私信我", timestamp: nowMs - hour },
     { commentId: `1${id.length}00000003`, authorId: "3xold", authorName: "很久以前", content: "怎么买", timestamp: nowMs - 100 * 24 * hour },
-    { commentId: `1${id.length}00000004`, authorId: "3xchat", authorName: "路人", content: "拍得真好", timestamp: nowMs - hour }
+    { commentId: `1${id.length}00000004`, authorId: "3xchat", authorName: "路人", content: "拍得真好", timestamp: nowMs - hour },
+    // Our own comments, when the platform shows them.
+    ...ui.posted.filter((item) => item.videoId === id && ui.shown).map((item, i) => ({ commentId: `19000000${i}`, authorId: "3xme", authorName: "我", content: item.text, timestamp: nowMs }))
   ] } } });
   // The page's data only arrives once a verification is done, and never on a logged-out page.
   const deliver = (url) => {
@@ -77,8 +89,31 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
     // Captions and comments can mention 滑块; that alone is not a verification.
     evaluate: async (expression) => {
       if (expression.includes("captcha")) { if (captchaLeft > 0 && --captchaLeft === 0 && pending) setImmediate(() => deliver(pending)); return captchaLeft > 0; }
+      // The element under the pointer: only the target itself counts, unless something covers it.
+      if (expression.includes("elementFromPoint")) { ui.target = expression.includes("likeicon") ? "like" : expression.includes("follow-btn") ? "follow" : expression.includes("submit-button") ? "comment" : ""; return ui.covered ? null : { x: 10, y: 20 }; }
+      if (expression.includes("scrollIntoView({ block:")) return true;
+      if (expression.includes("classList.contains")) return ui.liked;
+      if (expression.includes(".follow-btn") && expression.includes("textContent")) return ui.followLabel;
+      if (expression.includes(".follow-btn")) return true;
+      if (expression.includes(".comment-item-content") && expression.includes("some(")) return false;
+      if (expression.startsWith("Boolean(") && expression.includes("comment-list-item")) return true;
+      if (expression.includes("scrollIntoView({ block: \"end\" })")) return undefined;
       return loggedOut ? "登录即可享受" : "洗地机 拖动滑块就能拆下水箱";
     },
+    // A click answers the way the platform does; "silent" never answers, "frequent" refuses.
+    mouse: async () => {
+      const kind = ui.target; log.clicks.push(kind);
+      const answer = (url, operation, json, variables = {}) => setImmediate(() => emitJson({ url, operation, variables, json }));
+      if (kind === "like" && ui.like === "ok") { ui.liked = true; answer("https://www.kuaishou.com/graphql", "visionLikeComment", { data: { visionLikeComment: { result: 1 } } }, { commentId: ui.commentId || "" }); }
+      if (kind === "like" && ui.like === "frequent") answer("https://www.kuaishou.com/graphql", "visionLikeComment", { data: { visionLikeComment: { result: 2, error_msg: "操作太频繁，请稍后再试" } } });
+      if (kind === "follow" && ui.follow === "ok") { ui.followLabel = "已关注"; answer("https://www.kuaishou.com/rest/v/relation/follow", "", { result: 1, followStatus: 1 }); }
+      if (kind === "comment" && ui.comment === "ok") ui.posted.push({ videoId: previous, text: ui.boxValue });
+      if (kind === "comment" && ui.comment === "ok") answer("https://www.kuaishou.com/graphql", "visionAddComment", { data: { visionAddComment: { result: 1 } } });
+    },
+    find: async () => ({ localName: "textarea" }),
+    call: async () => ui.closedNote,
+    type: async (_node, value) => { log.typed.push(value); ui.boxValue = value; },
+    valueOf: async () => ui.boxValue,
     front: async () => { log.fronts++; },
     send: async (method) => { if (method === "Input.dispatchMouseEvent") log.wheels++; }
   };
@@ -91,9 +126,16 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
   const make = () => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs + (Date.now() - started),
     launch: () => { log.launches++; return browser; }, makePage: () => page,
     capture: (_browser, _session, { match, onJson }) => { emitJson = (event) => { if (match(event.url, event.operation)) onJson(event); }; return { start: async () => {} }; },
-    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2 } });
+    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1, recheck: 1 } });
   const until = async (acq) => { for (let i = 0; i < 500; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
-  return { root, log, make, until };
+  // Leads as a finished run leaves them, found by the account ks1.
+  const seed = (names) => {
+    fs.mkdirSync(path.join(root, "data"), { recursive: true });
+    const leads = names.map((name, i) => ({ id: `lead${i}`, taskId: "t", platform: "kuaishou", accountId: "ks1", keyword: "洗地机", videoId: `3xvideo000${i + 1}`, videoTitle: "洗地机测评", videoUrl: `https://www.kuaishou.com/short-video/3xvideo000${i + 1}`, videoAuthor: "作者",
+      commentId: `11800000000${i}`, userId: `3xbuyer0${i}`, userName: name, comment: "这个多少钱", commentAt: "", region: "", signals: ["询价"], status: "new", createdAt: "" }));
+    fs.writeFileSync(path.join(root, "data", "state.json"), JSON.stringify({ version: 1, tasks: [], runs: [], leads }));
+  };
+  return { root, log, ui, make, until, seed };
 }
 
 (async () => {
@@ -169,5 +211,126 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false } = {}) {
     assert.equal(fs.readFileSync(file, "utf8"), "{broken", "损坏的记录保留原样");
     fs.rmSync(w.root, { recursive: true, force: true });
   }
+  {
+    // 点赞 + 关注：排进队后自动开始；平台确认后才算完成，并计入今天的用量。
+    const w = world(); w.seed(["买家A"]); const acq = w.make();
+    assert.equal(acq.queueActions({ leadIds: ["lead0"], kinds: ["like", "follow"] }).added, 2);
+    const state = await w.until(acq);
+    assert.deepEqual(state.actions.map((action) => [action.kind, action.status]).sort(), [["follow", "done"], ["like", "done"]]);
+    assert.ok(state.actions.every((action) => action.clickedAt), "点之前先记下");
+    assert.deepEqual(w.log.clicks.sort(), ["follow", "like"]);
+    assert.deepEqual([state.today.ks1.like, state.today.ks1.follow], [1, 1]);
+    assert.equal(state.runs[0].kind, "actions"); assert.equal(state.runs[0].sent, 2);
+    assert.ok(w.log.navigations.includes("https://www.kuaishou.com/profile/3xbuyer00"));
+    assert.equal(acq.queueActions({ leadIds: ["lead0"], kinds: ["like", "follow"] }).added, 0, "做过的不再做");
+    assert.match(acq.csv(), /"已完成","已完成"/);
+    await acq.dispose();
+  }
+  {
+    // 已经点过赞的评论不再点（再点一次会取消点赞），也不占今天的用量。
+    const w = world({ act: { liked: true, followLabel: "已关注" } }); w.seed(["买家A"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["like", "follow"] });
+    const state = await w.until(acq);
+    assert.deepEqual(w.log.clicks, [], "一次都没点");
+    assert.ok(state.actions.every((action) => action.status === "done" && action.already));
+    assert.deepEqual([state.today.ks1.like, state.today.ks1.follow], [0, 0]);
+    await acq.dispose();
+  }
+  {
+    // 点了但平台没回应：标「结果不明」，不自动重做；用户看过之后再标结果。
+    const w = world({ act: { like: "silent" } }); w.seed(["买家A"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["like"] });
+    let state = await w.until(acq);
+    const action = state.actions[0];
+    assert.equal(action.status, "unknown"); assert.equal(w.log.clicks.length, 1);
+    assert.equal(acq.queueActions({ leadIds: ["lead0"], kinds: ["like"] }).added, 0, "结果不明的不会再排进去");
+    assert.throws(() => acq.resolveAction(action.id, "maybe"), { code: "ACQUIRE_ACTION_OUTCOME" });
+    state = acq.resolveAction(action.id, "failed");
+    assert.equal(state.actions[0].status, "failed");
+    assert.throws(() => acq.resolveAction(action.id, "done"), { code: "ACQUIRE_ACTION_SETTLED" });
+    await acq.dispose();
+  }
+  {
+    // 平台提示频繁：这个账号停到明天，被拒的动作留在队里，明天再做；今天点「继续」也不会开始。
+    const w = world({ act: { like: "frequent" } }); w.seed(["买家A", "买家B"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0", "lead1"], kinds: ["like"] });
+    const state = await w.until(acq);
+    assert.equal(w.log.clicks.length, 1, "第一次被拒后就停");
+    assert.ok(state.actions.every((action) => action.status === "queued" && !action.clickedAt));
+    assert.ok(state.today.ks1.pausedUntil); assert.match(state.runs[0].reason, /频繁/);
+    assert.equal(acq.resume().running, "", "今天不会再开始");
+    await acq.dispose();
+  }
+  {
+    // 每天上限：到了就停，剩下的留着；按钮被挡住时不点。
+    const w = world(); w.seed(["买家A", "买家B"]); const acq = w.make();
+    acq.saveCaps({ like: 1, follow: 999 });
+    assert.equal(acq.snapshot().caps.follow, 100, "上限不能超过允许的最大值");
+    acq.queueActions({ leadIds: ["lead0", "lead1"], kinds: ["like"] });
+    const state = await w.until(acq);
+    assert.deepEqual(state.actions.map((action) => action.status).sort(), ["done", "queued"]);
+    assert.match(state.runs[0].reason, /上限/);
+    await acq.dispose();
+    const covered = world({ act: { covered: true } }); covered.seed(["买家A"]); const blocked = covered.make();
+    blocked.queueActions({ leadIds: ["lead0"], kinds: ["like"] });
+    const after = await covered.until(blocked);
+    assert.equal(after.actions[0].status, "failed"); assert.deepEqual(covered.log.clicks, []); assert.match(after.actions[0].reason, /挡住/);
+    await blocked.dispose();
+  }
+  {
+    // 同行视频留言已下线：以前存下的留言任务和记录留在文件里，但不再显示、不能运行。
+    const w = world(); w.seed(["买家A"]);
+    const seeded = path.join(w.root, "data", "state.json"), old = JSON.parse(fs.readFileSync(seeded, "utf8"));
+    old.tasks = [{ id: "c1", mode: "comment", name: "旧留言任务", platform: "kuaishou", accountId: "ks1", keywords: ["洗地机"], texts: ["厂家直供"] }];
+    old.actions = [{ id: "m1", kind: "comment", platform: "kuaishou", accountId: "ks1", target: { videoId: "v", text: "厂家直供" }, status: "hidden", clickedAt: "2026-10-26T10:00:00Z", reason: "" }];
+    fs.writeFileSync(seeded, JSON.stringify(old));
+    const acq = w.make(), shown = acq.snapshot();
+    assert.deepEqual([shown.tasks.length, shown.actions.length, shown.caps.comment], [0, 0, undefined]);
+    assert.throws(() => acq.start("c1"), { code: "ACQUIRE_TASK_RETIRED" });
+    assert.throws(() => acq.saveTask({ id: "c1", platform: "kuaishou", accountId: "ks1", keywords: "洗地机" }), { code: "ACQUIRE_TASK_RETIRED" });
+    assert.equal(JSON.parse(fs.readFileSync(seeded, "utf8")).actions[0].id, "m1", "旧记录还在文件里");
+    assert.ok(!("comment" in DRIVERS.kuaishou.actions) && !DRIVERS.kuaishou.actions.isCommentAdd);
+    await acq.dispose();
+    // 重启：点下去还没确认的变成结果不明；没点的排队动作还在队里。
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.actions.unshift({ id: "a1", kind: "like", platform: "kuaishou", accountId: "ks1", leadId: "x", target: { videoId: "v" }, status: "running", clickedAt: "2026-10-26T12:00:00Z", reason: "" },
+      { id: "a2", kind: "follow", platform: "kuaishou", accountId: "ks1", leadId: "x", target: { videoId: "v" }, status: "running", clickedAt: "", reason: "" });
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const reopened = w.make().snapshot();
+    assert.equal(reopened.actions.find((action) => action.id === "a1").status, "unknown");
+    assert.equal(reopened.actions.find((action) => action.id === "a2").status, "queued");
+  }
+  {
+    // 排队的动作只在用户排队或点「继续」时开始：跑完一个「找客户」任务不会顺带去点赞关注。
+    const w = world(); w.seed(["买家A"]);
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.actions = [{ id: "q1", kind: "like", platform: "kuaishou", accountId: "ks1", leadId: "lead0", target: { videoId: "3xvideo0001", commentId: "118000000000", userName: "买家A", comment: "这个多少钱" }, status: "queued", clickedAt: "", reason: "" }];
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 1 });
+    acq.start(acq.snapshot().tasks[0].id);
+    let state = await w.until(acq);
+    assert.deepEqual(state.runs.map((run) => run.kind), ["collect"]); assert.deepEqual(w.log.clicks, []);
+    assert.equal(state.actions.find((action) => action.id === "q1").status, "queued");
+    acq.resume(); state = await w.until(acq);
+    assert.equal(state.actions.find((action) => action.id === "q1").status, "done", "用户点继续后才做");
+    await acq.dispose();
+  }
+  {
+    // 账号被删除：排队的动作标成没做并说明原因，「继续」不报错，也不会卡住别的账号。
+    const w = world(); w.seed(["买家A"]);
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.actions = [{ id: "g1", kind: "follow", platform: "kuaishou", accountId: "gone", leadId: "lead0", target: { videoId: "v", userId: "3xbuyer00" }, status: "queued", clickedAt: "", reason: "" }];
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const acq = w.make();
+    const state = acq.resume();
+    assert.equal(state.running, ""); assert.equal(state.actions[0].status, "failed"); assert.match(state.actions[0].reason, /已删除/);
+    await acq.dispose();
+  }
+  // 平台回应里没有结果：算「结果不明」，不当成被拒；只有说「频繁」才让账号休息。
+  assert.deepEqual(ks.actions.outcome({ data: { visionAddComment: { commentId: "1" } } }), { ok: null, message: "" });
+  assert.equal(ks.actions.outcome({ result: 1, followStatus: 1 }).ok, true);
+  assert.equal(ks.actions.outcome({ result: 109, error_msg: "评论功能已限制" }).ok, false);
+  assert.ok(!TOO_FREQUENT.test("评论功能已限制") && !TOO_FREQUENT.test("已达关注上限") && TOO_FREQUENT.test("操作太频繁，请稍后再试"));
   console.log("social acquisition self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });
