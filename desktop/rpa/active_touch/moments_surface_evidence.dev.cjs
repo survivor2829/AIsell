@@ -520,6 +520,7 @@ function Get-MomentsStructuralSelectedBandEvidence($frame, $region, $relativeSur
   $boundaryDiagnostics = New-Object System.Collections.Generic.List[object]
   $rejectedRunCount = 0
   $rejectedBoundaryCount = 0
+  $rejectedLabelCount = 0
   [double]$minimumHeight = 28.0 * $scale
   [double]$maximumHeight = 72.0 * $scale
   foreach ($group in $groups) {
@@ -547,6 +548,10 @@ function Get-MomentsStructuralSelectedBandEvidence($frame, $region, $relativeSur
       contentLeft = $contentLeft
     })
     if ($runLeft -gt ([double]$region.left + (24.0 * $scale))) { $rejectedBoundaryCount += 1; continue }
+    # WeChat 4.1 also paints the selected chat in the conversation list as a full green row, so
+    # the band alone does not mean Moments. Its label must read 朋友圈; an unreadable band is not
+    # taken as "already open" (the normal open path runs instead).
+    if (-not (Test-MomentsBandLabel $frame $bandBounds)) { $rejectedLabelCount += 1; continue }
     [void]$entries.Add(@{
       textBounds = $syntheticTextBounds
       bandBounds = $bandBounds
@@ -564,8 +569,21 @@ function Get-MomentsStructuralSelectedBandEvidence($frame, $region, $relativeSur
     groups = @($groupDiagnostics.ToArray())
     rejectedRunCount = [int]$rejectedRunCount
     rejectedBoundaryCount = [int]$rejectedBoundaryCount
+    rejectedLabelCount = [int]$rejectedLabelCount
     boundaryDiagnostics = @($boundaryDiagnostics.ToArray())
   }
+}
+
+function Test-MomentsBandLabel($frame, $bandBounds) {
+  foreach ($reader in @("native", "scaled")) {
+    $ocr = $(if ($reader -ceq "native") { Get-MomentsOcrObservation $frame $bandBounds } else { Get-MomentsScaledOcrObservation $frame $bandBounds })
+    if (-not $ocr.ok) { continue }
+    foreach ($line in @($ocr.lines)) {
+      $normalized = [Text.RegularExpressions.Regex]::Replace(([string]$line.compact).Normalize([Text.NormalizationForm]::FormKC), "\s+", "")
+      if ($normalized.Length -le 8 -and $normalized.Contains("朋友圈")) { return $true }
+    }
+  }
+  return $false
 }
 
 function Get-MomentsVisualViewportBounds($renderPaneBounds, $surfaceProof, [string]$surfaceMode) {
@@ -707,6 +725,7 @@ function Get-IntegratedMomentsEntryEvidence($frame, $relativeSurfaceBounds, [dou
       groups = @($structuralEvidence.groups)
       rejectedRunCount = [int]$structuralEvidence.rejectedRunCount
       rejectedBoundaryCount = [int]$structuralEvidence.rejectedBoundaryCount
+      rejectedLabelCount = [int]$structuralEvidence.rejectedLabelCount
       boundaryDiagnostics = @($structuralEvidence.boundaryDiagnostics)
     }
   }
