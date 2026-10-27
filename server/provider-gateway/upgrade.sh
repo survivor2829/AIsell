@@ -11,9 +11,10 @@ data_dir=/var/lib/ai-provider-gateway
 }
 [ -s "$source_dir/service.py" ] || { echo 'Missing deployment file: service.py' >&2; exit 1; }
 [ -s "$source_dir/material_search.py" ] || { echo 'Missing deployment file: material_search.py' >&2; exit 1; }
+[ -s "$source_dir/accounts.py" ] || { echo 'Missing deployment file: accounts.py' >&2; exit 1; }
 
 
-python3 - "$source_dir/service.py" "$source_dir/material_search.py" <<'PY'
+python3 - "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" <<'PY'
 from pathlib import Path
 import sys
 for filename in sys.argv[1:]:
@@ -24,6 +25,7 @@ backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup"
 cp -p "$app_dir/service.py" "$backup/service.py"
 if [ -f "$app_dir/material_search.py" ]; then cp -p "$app_dir/material_search.py" "$backup/material_search.py"; fi
+if [ -f "$app_dir/accounts.py" ]; then cp -p "$app_dir/accounts.py" "$backup/accounts.py"; fi
 for file in local_acquisition.py acquisition_sync.py precise-public-sources.json; do
   if [ -f "$app_dir/$file" ]; then cp -p "$app_dir/$file" "$backup/$file"; fi
 done
@@ -38,6 +40,7 @@ rollback() {
   systemctl stop ai-provider-gateway || { echo 'Cannot stop service; preserving live data and backup for recovery.' >&2; return 1; }
   install -m 644 "$backup/service.py" "$app_dir/service.py"
   if [ -f "$backup/material_search.py" ]; then install -m 644 "$backup/material_search.py" "$app_dir/material_search.py"; else rm -f "$app_dir/material_search.py"; fi
+  if [ -f "$backup/accounts.py" ]; then install -m 644 "$backup/accounts.py" "$app_dir/accounts.py"; else rm -f "$app_dir/accounts.py"; fi
   for file in local_acquisition.py acquisition_sync.py precise-public-sources.json; do
     if [ -f "$backup/$file" ]; then install -m 644 "$backup/$file" "$app_dir/$file"; else rm -f "$app_dir/$file"; fi
   done
@@ -74,7 +77,19 @@ PY
   fi
 done
 trap rollback EXIT
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$app_dir/"
+# Account administration token, shared with the maintenance admin through systemd
+# (read as root at start; the services never read this root-only file themselves).
+accounts_env=/etc/ai-maintenance/accounts-admin.env
+if [ ! -s "$accounts_env" ]; then
+  umask 077
+  printf '%s\n' "XIAOXI_GATEWAY_ACCOUNTS_ADMIN_TOKEN=$(openssl rand -hex 32)" > "$accounts_env"
+fi
+chmod 600 "$accounts_env"
+accounts_dropin=/etc/systemd/system/ai-provider-gateway.service.d/30-accounts-admin.conf
+install -d -m 755 /etc/systemd/system/ai-provider-gateway.service.d
+printf '%s\n' '[Service]' "EnvironmentFile=$accounts_env" > "$accounts_dropin"
+chmod 644 "$accounts_dropin"
 install -d -m 755 "$override_dir"
 printf '%s\n' '[Service]' 'ReadWritePaths=/var/lib/ai-provider-gateway' > "$override_file"
 chmod 644 "$override_file"
@@ -100,4 +115,4 @@ PY
 systemctl is-active --quiet ai-provider-gateway
 trap - EXIT
 echo "Provider gateway updated; previous code retained: $backup"
-sha256sum "$app_dir/service.py" "$app_dir/material_search.py"
+sha256sum "$app_dir/service.py" "$app_dir/material_search.py" "$app_dir/accounts.py"

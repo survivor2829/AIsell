@@ -12,7 +12,7 @@ import base64
 import collections
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
@@ -37,7 +37,16 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 from material_search import MaterialSearch
 
 
+try:
+    from .accounts import AccountError, AccountStore
+except ImportError:  # run as a script: python service.py
+    from accounts import AccountError, AccountStore
+
 PREFIX = "/v1/provider-gateway"
+# Account administration lives outside PREFIX: the public maintenance proxy only forwards
+# PREFIX + "/", so these routes are reachable on the server's loopback only.
+ADMIN_PREFIX = "/v1/accounts-admin"
+ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/(reset-password|status|sign-out)")
 APP_IDS = {
     "test": "com.aihuoke.desktop.test",
     "delivery": "com.aihuoke.desktop",
@@ -266,6 +275,14 @@ class SessionStore:
                 return entry[1]
             return self.receipts.lookup_session(digest, now) if self.receipts is not None else None
 
+    def revoke_subject(self, subject: str) -> None:
+        with self._lock:
+            for digest, (_expires, owner) in list(self._sessions.items()):
+                if owner == subject:
+                    self._sessions.pop(digest, None)
+            if self.receipts is not None:
+                self.receipts.revoke_sessions(subject)
+
     def _cleanup_locked(self, now: float) -> None:
         for digest, (expires, _license_id) in list(self._sessions.items()):
             if expires <= now:
@@ -292,6 +309,8 @@ class GatewayConfig:
     # batches with this bearer token (unset: the publish routes do not exist).
     viral_library_path: str = ""
     viral_library_publish_token: str = ""
+    # Account administration bearer (loopback admin routes); unset: those routes do not exist.
+    accounts_admin_token: str = ""
     # Operator-verified existing slots; never create pay-as-you-go speaker IDs.
     voice_clone_slots: dict = field(default_factory=dict)
     # Legacy per-license writing periods; no longer enforced (writing is open to every licensed session).
@@ -337,6 +356,7 @@ class GatewayConfig:
             ),
             runtime_revision=_runtime_revision(env.get("XIAOXI_GATEWAY_RUNTIME_REVISION", "")),
             apimart_open=_apimart_proxy_open(env.get("XIAOXI_GATEWAY_APIMART_PROXY_URL", "")),
+            accounts_admin_token=str(env.get("XIAOXI_GATEWAY_ACCOUNTS_ADMIN_TOKEN", "")).strip(),
         )
 
     def __post_init__(self):
@@ -520,6 +540,20 @@ class ReceiptStore:
                 (token_digest, expires_at, subject) VALUES (?,?,?)""", (digest, expiry, subject))
             self.db.commit()
 
+    def revoke_sessions(self, subject):
+        with self.lock:
+            self.db.execute("DELETE FROM gateway_sessions WHERE subject=?", (subject,))
+            self.db.commit()
+
+    def usage(self, subject):
+        subject_hash = self._subject(subject)
+        with self.lock:
+            operations = self.db.execute("""SELECT count(*) FROM operation_receipts
+                WHERE subject_hash=? AND created_at>?""", (subject_hash, time.time() - 30 * 86400)).fetchone()[0]
+            scripts = self.db.execute("""SELECT count(*) FROM narration_script_usage
+                WHERE subject_hash=? AND created_at>? AND state!='released'""", (subject_hash, time.time() - 86400)).fetchone()[0]
+        return {"paidOperations30d": operations, "scripts24h": scripts}
+
     def lookup_session(self, digest, now):
         with self.lock:
             row = self.db.execute("""SELECT subject FROM gateway_sessions
@@ -618,6 +652,7 @@ class GatewayServer(ThreadingHTTPServer):
         self.price_cache = {}
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
+        self.accounts = AccountStore(self.receipts.db, self.receipts.lock, config.sessions.secret)
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
 
     def apimart_public_price(self, model):
@@ -1212,6 +1247,104 @@ class Handler(BaseHTTPRequestHandler):
         value = self.headers.get("Authorization", "")
         match = re.fullmatch(r"Bearer\s+(.+)", value, re.I)
         return bool(match and self.config.sessions.validate(match.group(1).strip()))
+
+    def _session_subject(self):
+        match = re.fullmatch(r"Bearer\s+(.+)", self.headers.get("Authorization", ""), re.I)
+        return self.config.sessions.subject(match.group(1).strip()) if match else None
+
+    def _issue_account_session(self, account, device_token="", exclusive=True):
+        # One device per account: the new session replaces every other session of this account.
+        # License-code sessions (transition, older clients) never sign other computers out,
+        # or two computers sharing one license would keep knocking each other off.
+        if exclusive:
+            self.config.sessions.revoke_subject(account["subject"])
+        expiry = datetime.fromtimestamp(account["expires_at"], timezone.utc) if account["expires_at"] else datetime.now(timezone.utc) + timedelta(days=3650)
+        token, session_expiry = self.config.sessions.issue(account["subject"], expiry)
+        return self._reply_json(200, {"ok": True, "schema": 2, "token": token, "expiresAt": session_expiry.isoformat(),
+                                      "capabilities": self.config.capabilities(), "account": AccountStore.public(account),
+                                      **({"deviceToken": device_token} if device_token else {})})
+
+    def _account_session(self):
+        try:
+            body = self._read_json()
+        except (ValueError, UnicodeError, json.JSONDecodeError):
+            return self._reply_json(400, {"error": "invalid_session_request"})
+        channel = body.get("channel")
+        if (channel not in APP_IDS or body.get("appId") != APP_IDS[channel]
+                or not UUID.fullmatch(str(body.get("installId", ""))) or not VERSION.fullmatch(str(body.get("version", "")))):
+            return self._reply_json(400, {"error": "invalid_session_request"})
+        install_id = str(body["installId"])
+        accounts = self.server.accounts
+        try:
+            if isinstance(body.get("phone"), str) or isinstance(body.get("password"), str):
+                account, device = accounts.login_password(body.get("phone"), body.get("password"), install_id, self.client_address[0])
+                return self._issue_account_session(account, device)
+            if isinstance(body.get("deviceToken"), str):
+                return self._issue_account_session(accounts.login_device(body["deviceToken"], install_id))
+            # Transition: an existing license code signs in once and is turned into an account.
+            code = body.get("licenseCode")
+            if not isinstance(code, str) or not LICENSE_PART.fullmatch(code.split(".")[0]):
+                return self._reply_json(400, {"error": "invalid_session_request"})
+            try:
+                license_info = self.config.license_validator(code)
+                license_id = str(license_info["license_id"])
+                expires_at = _parse_expiry(license_info["expires_at"])
+            except Exception:
+                return self._reply_json(401, {"error": "license_invalid"})
+            account, device = accounts.login_license(license_id, expires_at.timestamp(), install_id)
+            return self._issue_account_session(account, device, exclusive=False)
+        except AccountError as error:
+            return self._reply_json(error.status, {"error": error.code})
+        except ValueError:
+            return self._reply_json(401, {"error": "account_expired"})
+
+    def _account_update(self, action):
+        subject = self._session_subject()
+        if not subject:
+            return self._reply_json(401, {"error": "session_required"})
+        try:
+            body = self._read_json()
+        except (ValueError, UnicodeError, json.JSONDecodeError):
+            return self._reply_json(400, {"error": "invalid_account_request"})
+        try:
+            if action == "setup":
+                account = self.server.accounts.setup(subject, body.get("phone"), body.get("password"))
+            else:
+                account = self.server.accounts.change_password(subject, body.get("currentPassword"), body.get("newPassword"))
+        except AccountError as error:
+            return self._reply_json(error.status, {"error": error.code})
+        return self._reply_json(200, {"ok": True, "account": AccountStore.public(account)})
+
+    def _accounts_admin(self, method, route):
+        expected = self.config.accounts_admin_token
+        supplied = self.headers.get("X-Xiaoxi-Accounts-Admin", "")
+        if not expected or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+            return self._reply_json(404, {"error": "not_found"})
+        accounts = self.server.accounts
+        try:
+            if method == "GET":
+                return self._reply_json(200, {"ok": True, "accounts": accounts.admin_list(self.server.receipts.usage)})
+            body = self._read_json()
+            if route == ADMIN_PREFIX + "/accounts":
+                expires = body.get("expiresAt")
+                account = accounts.admin_create(body.get("phone"), body.get("password"), body.get("displayName", ""), body.get("note", ""),
+                                                float(expires) if isinstance(expires, (int, float)) and not isinstance(expires, bool) else None)
+                return self._reply_json(200, {"ok": True, "id": account["id"]})
+            account_id, action = ADMIN_ACCOUNT_ROUTE.fullmatch(route).groups()
+            if action == "reset-password":
+                account = accounts.admin_reset_password(int(account_id), body.get("password"))
+            elif action == "status":
+                account = accounts.admin_set_status(int(account_id), body.get("status"))
+            else:
+                account = accounts.admin_sign_out(int(account_id))
+            # Disabling, resetting or signing out ends the customer's current session immediately.
+            if action != "status" or account["status"] == "disabled":
+                self.config.sessions.revoke_subject(account["subject"])
+            return self._reply_json(200, {"ok": True, "id": account["id"]})
+        except AccountError as error:
+            return self._reply_json(error.status, {"error": error.code})
+        except (ValueError, UnicodeError, json.JSONDecodeError):
+            return self._reply_json(400, {"error": "invalid_admin_request"})
 
     def _clone_subject_slot(self, speaker):
         token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -1866,6 +1999,14 @@ class Handler(BaseHTTPRequestHandler):
                 {"X-Xiaoxi-Error-Origin": "gateway_rate_limit", "Retry-After": str(limit["retry_after"])},
             )
         route = urlsplit(self.path).path
+        if route == PREFIX + "/account":
+            subject = self._session_subject()
+            account = self.server.accounts.by_subject(subject) if subject else None
+            if account is None:
+                return self._reply_json(401, {"error": "session_required"})
+            return self._reply_json(200, {"ok": True, "account": AccountStore.public(account)})
+        if route == ADMIN_PREFIX + "/accounts":
+            return self._accounts_admin("GET", route)
         if route == PREFIX + "/narration/script-quota":
             return self._narration_script("GET")
         if route == PREFIX + "/health":
@@ -1939,39 +2080,11 @@ class Handler(BaseHTTPRequestHandler):
         if route == PREFIX + "/viral-library/remove":
             return self._viral_library_operator("remove")
         if route == PREFIX + "/session":
-            try:
-                body = self._read_json()
-            except (ValueError, UnicodeError, json.JSONDecodeError):
-                return self._reply_json(400, {"error": "invalid_session_request"})
-            channel = body.get("channel")
-            if (
-                channel not in APP_IDS
-                or body.get("appId") != APP_IDS[channel]
-                or not UUID.fullmatch(str(body.get("installId", "")))
-                or not VERSION.fullmatch(str(body.get("version", "")))
-                or not isinstance(body.get("licenseCode"), str)
-                or not LICENSE_PART.fullmatch(body["licenseCode"].split(".")[0])
-            ):
-                return self._reply_json(400, {"error": "invalid_session_request"})
-            try:
-                license_info = self.config.license_validator(body["licenseCode"])
-            except Exception:
-                license_info = None
-            if not isinstance(license_info, dict):
-                return self._reply_json(401, {"error": "license_invalid"})
-            try:
-                license_id = str(license_info["license_id"])
-                expires_at = _parse_expiry(license_info["expires_at"])
-                token, session_expiry = self.config.sessions.issue(license_id, expires_at)
-            except Exception:
-                return self._reply_json(401, {"error": "license_invalid"})
-            return self._reply_json(200, {
-                "ok": True,
-                "schema": 1,
-                "token": token,
-                "expiresAt": session_expiry.isoformat(),
-                "capabilities": self.config.capabilities(),
-            })
+            return self._account_session()
+        if route in (PREFIX + "/account/setup", PREFIX + "/account/password"):
+            return self._account_update(route.removeprefix(PREFIX + "/account/"))
+        if route == ADMIN_PREFIX + "/accounts" or ADMIN_ACCOUNT_ROUTE.fullmatch(route):
+            return self._accounts_admin("POST", route)
         if route.startswith(PREFIX + "/volcengine/voice-clone/"):
             return self._voice_clone(route.removeprefix(PREFIX + "/volcengine/voice-clone/"))
         if route in (PREFIX + "/materials/search", PREFIX + "/materials/cancel", PREFIX + "/materials/status"):

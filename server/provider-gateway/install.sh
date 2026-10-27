@@ -14,7 +14,7 @@ install -d -o ai-gateway -g ai-gateway -m 750 "$data_dir"
 # certificate/key and provider env files remain protected by their file modes
 # and service-specific groups.
 install -d -m 751 -o root -g ai-gateway /etc/ai-maintenance
-install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$app_dir/"
+install -m 644 "$source_dir/service.py" "$source_dir/material_search.py" "$source_dir/accounts.py" "$app_dir/"
 
 if [ ! -f "$config_file" ]; then
   umask 077
