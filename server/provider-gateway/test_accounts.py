@@ -103,6 +103,17 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(200, status, again)
         self.assertEqual(401, self.session(INSTALL_A, deviceToken=second["deviceToken"])[0], "a device token only works on its own computer")
 
+    def test_an_older_client_sharing_the_license_never_signs_the_updated_computer_out(self):
+        _, updated = self.session(INSTALL_A, licenseCode="signed-license-abcd")
+        status, older = self.call("/v1/provider-gateway/session", {"appId": "com.aihuoke.desktop.test", "channel": "test", "version": "1.2.14",
+                                                                   "installId": INSTALL_B, "licenseCode": "signed-license-abcd"})
+        self.assertEqual(200, status, older)
+        self.assertNotIn("deviceToken", older, "a client without accounts gets a session, not the device binding")
+        self.call("/v1/provider-gateway/account/setup", {"phone": "13800138000", "password": "setup2026"}, token=updated["token"])
+        status, relaunch = self.session(INSTALL_A, deviceToken=updated["deviceToken"])
+        self.assertEqual(200, status, relaunch)
+        self.assertEqual("lic-abcd", relaunch["account"]["id"])
+
     def test_wrong_passwords_are_throttled(self):
         self.call("/v1/accounts-admin/accounts", {"phone": "13600136000", "password": "start2026"}, admin=ADMIN)
         codes = [self.session(phone="13600136000", password="wrong1234")[0] for _ in range(6)]

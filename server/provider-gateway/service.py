@@ -46,6 +46,9 @@ PREFIX = "/v1/provider-gateway"
 # Account administration lives outside PREFIX: the public maintenance proxy only forwards
 # PREFIX + "/", so these routes are reachable on the server's loopback only.
 ADMIN_PREFIX = "/v1/accounts-admin"
+# Clients from this version on keep the device token an account login returns; older clients only
+# know license codes and must never take the device binding away from an updated computer.
+ACCOUNT_CLIENT_VERSION = (1, 2, 15)
 ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/(reset-password|status|sign-out)")
 APP_IDS = {
     "test": "com.aihuoke.desktop.test",
@@ -1291,7 +1294,8 @@ class Handler(BaseHTTPRequestHandler):
                 expires_at = _parse_expiry(license_info["expires_at"])
             except Exception:
                 return self._reply_json(401, {"error": "license_invalid"})
-            account, device = accounts.login_license(license_id, expires_at.timestamp(), install_id)
+            account_client = tuple(int(part) for part in str(body["version"]).split(".")) >= ACCOUNT_CLIENT_VERSION
+            account, device = accounts.login_license(license_id, expires_at.timestamp(), install_id, bind=account_client)
             return self._issue_account_session(account, device, exclusive=False)
         except AccountError as error:
             return self._reply_json(error.status, {"error": error.code})
