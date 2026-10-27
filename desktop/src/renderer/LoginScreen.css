@@ -87,14 +87,14 @@
 
 /* Floating glass card with a 1px gradient edge. */
 .signin-side { display: flex; align-items: stretch; justify-content: center; padding: 40px 48px 40px 8px; }
-.signin-panel { position: relative; width: 100%; max-width: 470px; display: flex; flex-direction: column; justify-content: center; gap: 28px; padding: 56px 44px 44px; border-radius: 28px;
+.signin-panel { position: relative; width: 100%; max-width: 470px; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; gap: 28px; padding: 56px 44px 44px; border-radius: 28px;
   background: #ffffffc7; backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4);
   box-shadow: 0 30px 80px -20px #2a0a1233, 0 2px 6px #0000000d; }
 .signin-panel::before { content: ""; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none;
   background: linear-gradient(140deg, #ffffff 0%, color-mix(in srgb, var(--signin-accent) 35%, #ffffff) 50%, #ffffff00 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
 .signin-panel h2 { margin: 0; font-size: 52px; font-weight: 800; letter-spacing: -0.02em; }
-.signin-sub { margin: -14px 0 12px; color: var(--signin-muted); font-size: 17px; }
+.signin-sub { margin: -14px 0 12px; color: var(--signin-muted); font-size: clamp(14px, 1.15vw, 17px); white-space: nowrap; }
 .signin-form { display: grid; gap: 20px; }
 .signin-field { display: grid; gap: 10px; font-size: 15px; font-weight: 600; color: #3a3f4a; }
 .signin-input-wrap { position: relative; display: flex; align-items: center; }
@@ -126,12 +126,31 @@
 
 @media (max-width: 1150px) {
   .signin-scene { grid-template-columns: minmax(0, 1fr) minmax(360px, 38%); }
-  .signin-copy { width: 62%; left: 40px; }
+  .signin-copy { width: 46%; left: 40px; }
+  .signin-panel { padding: 44px 32px 32px; }
   .signin-brand { padding-left: 40px; }
   .signin-logo { width: 56px; height: 56px; }
   .signin-figure { width: 50%; height: 62%; }
   .signin-crew img { width: 44px; height: 44px; }
   .signin-crew button { width: 58px; }
+}
+/* Short windows (laptops at 125% scaling): the sign-in card keeps everything inside. */
+@media (max-height: 820px) {
+  .signin-panel { gap: 18px; padding: 36px 36px 28px; }
+  .signin-panel h2 { font-size: 40px; }
+  .signin-form { gap: 14px; }
+  .signin-field { gap: 6px; }
+  .signin-input-wrap input { height: 52px; }
+  .signin-submit { min-height: 54px; margin-top: 6px; }
+  .signin-copy h1 { font-size: clamp(52px, 6.4vw, 96px); }
+}
+@media (max-height: 720px) {
+  .signin-panel { gap: 12px; padding: 26px 32px 20px; }
+  .signin-panel h2 { font-size: 34px; }
+  .signin-sub { margin-bottom: 4px; }
+  .signin-input-wrap input { height: 48px; }
+  .signin-submit { min-height: 50px; }
+  .signin-error { padding: 8px 12px; }
 }
 @media (max-width: 820px) {
   .signin-scene { grid-template-columns: 1fr; overflow: auto; }
