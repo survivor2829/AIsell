@@ -109,7 +109,8 @@ class AccountStore:
 
     @staticmethod
     def public(account: dict) -> dict:
-        return {"phone": account["phone"] or "", "displayName": account["display_name"],
+        # id is the identity the desktop keys local data on (a converted license keeps its license id).
+        return {"id": account["subject"], "phone": account["phone"] or "", "displayName": account["display_name"],
                 "mustChangePassword": bool(account["must_change_password"]),
                 "setupRequired": not account["phone"],
                 "expiresAt": account["expires_at"]}

@@ -908,6 +908,21 @@ function createPreloadApis(ipcRenderer) {
       activate: (code) => ipcRenderer.invoke("license-auth:activate", { code: String(code || "") }),
       logout: () => ipcRenderer.invoke("license-auth:logout")
     },
+    account: {
+      status: () => ipcRenderer.invoke("account:status"),
+      login: (payload) => ipcRenderer.invoke("account:login", { phone: String(payload?.phone || ""), password: String(payload?.password || "") }),
+      update: (payload) => ipcRenderer.invoke("account:update", {
+        action: payload?.action === "setup" ? "setup" : "password",
+        phone: String(payload?.phone || ""), password: String(payload?.password || ""),
+        currentPassword: String(payload?.currentPassword || ""), newPassword: String(payload?.newPassword || "")
+      }),
+      logout: () => ipcRenderer.invoke("account:logout"),
+      onChanged: (callback) => {
+        const handler = () => callback();
+        ipcRenderer.on("account:changed", handler);
+        return () => ipcRenderer.removeListener("account:changed", handler);
+      }
+    },
     content: createContentEngineApi(ipcRenderer),
     workflow: {
       status: () => ipcRenderer.invoke("wechat-workflow:status"),

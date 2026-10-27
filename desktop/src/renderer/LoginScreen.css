@@ -125,3 +125,10 @@
 /* Low-end PCs and "reduce motion": everything holds still. */
 .signin-scene.is-still *, .signin-scene.is-still *::before, .signin-scene.is-still *::after, .signin-scene.is-still .signin-aurora { animation: none !important; transition: none !important; }
 @media (prefers-reduced-motion: reduce) { .signin-scene *, .signin-scene *::before, .signin-scene *::after { animation: none !important; transition: none !important; } }
+
+/* Account login states */
+.signin-note { margin: 0; padding: 12px 14px; border-radius: 12px; background: color-mix(in srgb, var(--signin-accent) 9%, #ffffff); color: #3a3f4a; font-size: 14px; line-height: 1.6; }
+.signin-remembered { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 12px; padding: 16px 18px; border-radius: 14px; background: #f7f7f9; border: 1px solid #e2e3e8; }
+.signin-remembered span { grid-column: 1; color: var(--signin-muted); font-size: 13px; }
+.signin-remembered strong { grid-column: 1; font-size: 20px; letter-spacing: .02em; }
+.signin-remembered .signin-switch { grid-column: 2; grid-row: 1 / span 2; }

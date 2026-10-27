@@ -3,7 +3,94 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type M
 import "./LoginScreen.css";
 import { AGENT_ROLE_IDENTITIES, AGENT_ROLE_ORDER, ROLE_CATALOG, characterAsset, type AgentRoleKey } from "./role-appearance";
 
-type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
+type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string;
+  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string };
+type AccountApi = {
+  login: (payload: { phone: string; password: string }) => Promise<LicenseStatus>;
+  update: (payload: { action: "setup" | "password"; phone?: string; password?: string; currentPassword?: string; newPassword?: string }) => Promise<LicenseStatus>;
+  logout: () => Promise<LicenseStatus>;
+};
+const accountApi = () => (window as unknown as { xiaoxiAccount?: AccountApi }).xiaoxiAccount;
+const maskPhone = (phone = "") => phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(7)}` : phone;
+
+function PasswordInput({ id, value, onChange, placeholder, disabled, autoComplete }: { id: string; value: string; onChange: (value: string) => void; placeholder: string; disabled: boolean; autoComplete: string }) {
+  const [shown, setShown] = useState(false);
+  return <div className="signin-input-wrap">
+    <input id={id} type={shown ? "text" : "password"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} disabled={disabled} autoComplete={autoComplete} spellCheck={false} />
+    <button className="signin-reveal" type="button" onClick={() => setShown((current) => !current)} aria-label={shown ? "隐藏密码" : "显示密码"} aria-pressed={shown} disabled={disabled}>{shown ? <EyeOff size={18} /> : <Eye size={18} />}</button>
+  </div>;
+}
+
+// 账号登录：记住的登录一点即进；手机号 + 密码；老授权首次设置账号，或管理员建的账号首次改密码。
+function AccountForm({ status, onLogin, onStatus }: { status: LicenseStatus; onLogin: (status: LicenseStatus) => void; onStatus: (status: LicenseStatus) => void }) {
+  const [phone, setPhone] = useState(status.phone || "");
+  const [password, setPassword] = useState("");
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [switching, setSwitching] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const remembered = status.authorized && !switching;
+  const setup = remembered && status.setupRequired;
+  const change = remembered && !status.setupRequired && status.mustChangePassword;
+
+  async function run(action: () => Promise<LicenseStatus>) {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const result = await action();
+      onStatus(result);
+      if (result.updateError || (!result.authorized && result.error)) { setError(result.updateError || result.error || ""); return; }
+      if (result.authorized && !result.setupRequired && !result.mustChangePassword) onLogin(result);
+      else { setSwitching(false); setPassword(""); }
+    } catch { setError("暂时连不上服务器，请检查网络后重试。"); }
+    finally { setBusy(false); }
+  }
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const api = accountApi();
+    if (!api) { setError("当前版本未连接账号服务，请重启软件后重试。"); return; }
+    if (setup || change) {
+      if (next !== confirm) { setError("两次输入的新密码不一样。"); return; }
+      if (setup) return void run(() => api.update({ action: "setup", phone: phone.trim(), password: next }));
+      return void run(() => api.update({ action: "password", currentPassword: current, newPassword: next }));
+    }
+    if (remembered) return onLogin(status);
+    if (!/^1[3-9]\d{9}$/u.test(phone.trim())) { setError("请填写正确的 11 位手机号。"); return; }
+    if (!password) { setError("请输入密码。"); return; }
+    void run(() => api.login({ phone: phone.trim(), password }));
+  }
+
+  const shownError = error || (!status.authorized && status.error) || "";
+  return <form className="signin-form" onSubmit={submit}>
+    {setup && <p className="signin-note">欢迎使用新的账号登录。请设置你的手机号和密码，以后用它们登录；原来的授权码会停止使用，你的数据都会保留。</p>}
+    {change && <p className="signin-note">这是管理员给你的初始密码。为了账号安全，请先改成只有你知道的密码。</p>}
+    {remembered && !setup && !change ? <div className="signin-remembered">
+      <span>已记住登录</span><strong>{maskPhone(status.phone) || status.displayName || "本机账号"}</strong>
+      <button type="button" className="signin-switch" disabled={busy} onClick={() => { setSwitching(true); setError(""); }}>切换账号</button>
+    </div> : <>
+      {!change && <label className="signin-field" htmlFor="signin-phone"><span>手机号</span>
+        <div className="signin-input-wrap"><input id="signin-phone" inputMode="numeric" maxLength={11} value={phone} onChange={(event) => { setPhone(event.target.value.replace(/\D/gu, "")); setError(""); }}
+          placeholder="请输入手机号" autoComplete="username" disabled={busy} /></div></label>}
+      {!setup && !change && <label className="signin-field" htmlFor="signin-password"><span>密码</span>
+        <PasswordInput id="signin-password" value={password} onChange={(value) => { setPassword(value); setError(""); }} placeholder="请输入密码" disabled={busy} autoComplete="current-password" /></label>}
+      {change && <label className="signin-field" htmlFor="signin-current"><span>当前密码（管理员给你的）</span>
+        <PasswordInput id="signin-current" value={current} onChange={setCurrent} placeholder="请输入当前密码" disabled={busy} autoComplete="current-password" /></label>}
+      {(setup || change) && <>
+        <label className="signin-field" htmlFor="signin-next"><span>新密码</span>
+          <PasswordInput id="signin-next" value={next} onChange={(value) => { setNext(value); setError(""); }} placeholder="8 位以上，包含字母和数字" disabled={busy} autoComplete="new-password" /></label>
+        <label className="signin-field" htmlFor="signin-confirm"><span>再输入一次</span>
+          <PasswordInput id="signin-confirm" value={confirm} onChange={(value) => { setConfirm(value); setError(""); }} placeholder="再输入一次新密码" disabled={busy} autoComplete="new-password" /></label>
+      </>}
+    </>}
+    {shownError && <p className="signin-error" role="alert">{shownError}</p>}
+    <button className="signin-submit" type="submit" disabled={busy} aria-busy={busy}>
+      {busy ? "请稍候…" : setup ? "保存并进入" : change ? "修改密码并进入" : "登录"}{!busy && <ArrowRight size={20} aria-hidden="true" />}
+    </button>
+    {switching && status.authorized && <button type="button" className="signin-switch" onClick={() => { setSwitching(false); setError(""); }}>返回已记住的账号</button>}
+  </form>;
+}
 
 // 登录页的「活人感」：一位 AI 员工站在页面里跟你打招呼，下面的头像点一下就换人。
 // 人物是抠好的透明图（public/agent-characters/login/），直接融进背景，不放卡片。
@@ -48,7 +135,7 @@ function useTyping(lines: string[]) {
   return text;
 }
 
-export function LoginScreen({ license, onLogin }: { license: LicenseStatus | null; onLogin: (status: LicenseStatus) => void }) {
+export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseStatus | null; onLogin: (status: LicenseStatus) => void; onStatus?: (status: LicenseStatus) => void }) {
   const [code, setCode] = useState("");
   const [replaceSaved, setReplaceSaved] = useState(false);
   const [revealed, setRevealed] = useState(false);
@@ -128,7 +215,9 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
     <section className="signin-panel signin-rise" style={step(5)} aria-labelledby="signin-title">
       <h2 id="signin-title">登录</h2>
       <p className="signin-sub">AI短视频获客 · 生素材 · 引客户 · 促成交</p>
-      {!license ? <p className="signin-loading" role="status">正在读取授权信息…</p> : <form className="signin-form" onSubmit={submit}>
+      {!license ? <p className="signin-loading" role="status">正在读取登录信息…</p> : license.mode === "account"
+        ? <AccountForm status={license} onLogin={onLogin} onStatus={onStatus || (() => {})} />
+        : <form className="signin-form" onSubmit={submit}>
         <label className="signin-field" htmlFor="signin-license">
           <span>{saved ? "已保存的授权" : "软件授权码"}</span>
           <div className="signin-input-wrap">
@@ -145,7 +234,7 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
         {(error || license.error) && <p className="signin-error" id="signin-error" role="alert">{error || license.error}</p>}
         <button className="signin-submit" type="submit" disabled={busy} aria-busy={busy}>{busy ? "正在验证…" : "登录"}{!busy && <ArrowRight size={20} aria-hidden="true" />}</button>
       </form>}
-      <p className="signin-help">如需开通或续期，请联系管理员 · 玺联惠会员超市出品</p>
+      <p className="signin-help">{license?.mode === "account" ? "忘记密码或需要开通账号，请联系管理员" : "如需开通或续期，请联系管理员"} · 玺联惠会员超市出品</p>
     </section>
     </div>
   </main>;

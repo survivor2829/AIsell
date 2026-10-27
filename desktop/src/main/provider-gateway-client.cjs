@@ -157,6 +157,8 @@ function createProviderGatewayClient(options = {}) {
     if (!enabled) return status();
     if (!origin) return status();
     if (closed) return { ...status(), code: "GATEWAY_CLOSED" };
+    const device = options.accountStore?.credentials?.();
+    if (device?.deviceToken) return openSession({ deviceToken: device.deviceToken });
     let licenseCode;
     try {
       licenseCode = String(options.licenseStore?.readCode?.() || "").trim();
@@ -176,6 +178,11 @@ function createProviderGatewayClient(options = {}) {
       code = "GATEWAY_LICENSE_REQUIRED";
       return status();
     }
+    return openSession({ licenseCode });
+  }
+
+  // One session request for every credential kind: device token, phone + password, or license.
+  async function openSession(credential) {
     const healthResponse = normalizeResponse(await requestImpl({
       url: endpoint("/health"),
       method: "GET",
@@ -214,7 +221,7 @@ function createProviderGatewayClient(options = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        licenseCode,
+        ...credential,
         appId: String(options.appId || ""),
         channel: String(options.channel || ""),
         version: String(options.version || ""),
@@ -229,7 +236,14 @@ function createProviderGatewayClient(options = {}) {
       token = "";
       expiresAt = "";
       capabilities = {};
-      code = response.status === 401 ? "GATEWAY_LICENSE_REJECTED" : `GATEWAY_HTTP_${response.status || "UNKNOWN"}`;
+      let reason = "";
+      try { reason = String((await response.json())?.error || ""); } catch { /* Only the status is known. */ }
+      if (/^[a-z_]{1,64}$/u.test(reason) && reason.startsWith("account_") || reason === "device_invalid" || reason === "login_throttled") {
+        options.accountStore?.reject?.(reason);
+        code = `GATEWAY_${reason.toUpperCase()}`;
+      } else {
+        code = response.status === 401 ? "GATEWAY_LICENSE_REJECTED" : `GATEWAY_HTTP_${response.status || "UNKNOWN"}`;
+      }
       return status();
     }
     let payload;
@@ -254,7 +268,36 @@ function createProviderGatewayClient(options = {}) {
     expiresAt = payload.expiresAt;
     capabilities = sanitizeCapabilities(payload.capabilities);
     code = "";
+    if (payload.account) {
+      try { options.accountStore?.remember?.({ deviceToken: payload.deviceToken, account: payload.account }); }
+      catch { /* The session works; only "remember me" failed. */ }
+    }
     return status();
+  }
+
+  // Phone + password from the login page. The password is sent once and never stored.
+  async function login({ phone, password } = {}) {
+    if (closed || !enabled || !origin) return { ...status(), code: status().code || "GATEWAY_DISABLED" };
+    initialization = null;
+    try {
+      return await openSession({ phone: String(phone || "").trim(), password: String(password || "") });
+    } catch {
+      token = ""; expiresAt = ""; capabilities = {}; code = "GATEWAY_UNAVAILABLE";
+      return status();
+    }
+  }
+
+  // First-time setup of a converted license, or a password change, with the current session.
+  async function updateAccount(action, body) {
+    if (!["setup", "password"].includes(action)) throw createError("GATEWAY_ROUTE_INVALID");
+    const response = normalizeResponse(await requestImpl({ url: endpoint(`/account/${action}`), method: "POST",
+      headers: { ...requestHeaders(), "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body || {}),
+      timeoutMs: SESSION_TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES, agent }));
+    let payload = {};
+    try { payload = await response.json(); } catch { /* Reported below. */ }
+    if (!response.ok || payload?.ok !== true) return { ok: false, error: String(payload?.error || `http_${response.status}`) };
+    try { options.accountStore?.remember?.({ account: payload.account }); } catch { /* Profile refresh only. */ }
+    return { ok: true, account: payload.account };
   }
 
   function initialize({ force = false, verify = false } = {}) {
@@ -349,6 +392,8 @@ function createProviderGatewayClient(options = {}) {
     initialize,
     isEnabled: () => enabled,
     isReady: () => sessionReady(),
+    login,
+    updateAccount,
     origin: () => origin,
     requestHeaders,
     status,
