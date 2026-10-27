@@ -367,14 +367,21 @@ function checkSearchDryRunFixture() {
   }
 }
 
-// Unattended runs: every driver that reads the last-input tick must honour XIAOXI_UNATTENDED_INPUT,
-// or a stray mouse move would abort that driver again.
+// Unattended runs: every place that reads the last-input tick (whatever the helper is called) must
+// honour XIAOXI_UNATTENDED_INPUT, or a stray mouse move would abort that driver again.
 for (const driver of fs.readdirSync(__dirname).filter((name) => name.endsWith(".cjs") && !name.includes("self_check"))) {
   const source = fs.readFileSync(path.join(__dirname, driver), "utf8");
-  const definitions = source.match(/public static uint GetLastInputTick\(\)[\s\S]*?return GetLastInputInfo/gu) || [];
-  for (const definition of definitions) {
-    assert.match(definition, /XIAOXI_UNATTENDED_INPUT/u, `${driver}: GetLastInputTick must honour unattended mode`);
+  for (const call of source.matchAll(/(?<!extern bool )GetLastInputInfo\(ref /gu)) {
+    const method = source.slice(source.lastIndexOf("static uint ", call.index), call.index);
+    assert.match(method, /XIAOXI_UNATTENDED_INPUT|Unattended\) return 1u/u, `${driver}: input tick read at ${call.index} must honour unattended mode`);
   }
+}
+{
+  // The search keystroke receipt ignores other activity when unattended but still needs our keys.
+  const searchGuard = fs.readFileSync(path.join(__dirname, "wechat_search_input.cjs"), "utf8");
+  assert.match(searchGuard, /public void Mouse\(\) \{ lock \(sync\) \{ if \(!Unattended\) external = true; \} \}/u);
+  assert.match(searchGuard, /else if \(!Unattended\) external = true;/u);
+  assert.match(searchGuard, /if \(Unattended\) \{\s*if \(active && received == expected\)/u);
 }
 
 (async () => {
