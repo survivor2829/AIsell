@@ -102,27 +102,34 @@ const LINES: Record<AgentRoleKey, string[]> = {
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
   tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
 };
-// Transparent clips (VP9 with alpha): login/<role>.webm greets once, then login/<role>-idle.webm,
-// which starts on the greeting's last frame, loops real life signs (blinks, breathing). Without an
-// idle clip the presenter holds the closing frame; without any clip it is the still cut-out.
+// Transparent clips (VP9 with alpha): login/<role>.webm greets once and the presenter then stands
+// still on its closing frame. A looping idle reads as acted, so the only life sign is a blink:
+// login/<role>-blink.webm starts and ends on that same frame and plays at irregular moments,
+// 3–9 s apart, now and then twice in a row, the way people blink. No clip: the still cut-out.
 const VIDEO_ROLES = new Set<AgentRoleKey>(["production"]);
-const IDLE_ROLES = new Set<AgentRoleKey>(["production"]);
+const BLINK_ROLES = new Set<AgentRoleKey>(["production"]);
 
 function Presenter({ role }: { role: AgentRoleKey }) {
-  const [idle, setIdle] = useState(false);
-  const idleClip = useRef<HTMLVideoElement>(null);
-  // A play() rejected while the idle clip is still buffering is retried once it can play.
-  function startIdle() {
-    const clip = idleClip.current;
-    if (!clip) return;
-    clip.play().catch(() => clip.addEventListener("canplay", () => { void clip.play().catch(() => undefined); }, { once: true }));
+  const [blinked, setBlinked] = useState(false);
+  const blink = useRef<HTMLVideoElement>(null);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  function blinkAfter(delay: number) {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      const clip = blink.current;
+      if (!clip) return;
+      clip.currentTime = 0;
+      clip.play().catch(() => blinkAfter(1000));
+    }, delay);
   }
+  const nextBlink = () => blinkAfter(Math.random() < 0.2 ? 180 : 3000 + Math.random() * 6000);
   return <>
-    {IDLE_ROLES.has(role) && <video ref={idleClip} className={idle ? "" : "is-waiting"} src={characterAsset(`login/${role}-idle.webm`)}
-      muted loop playsInline preload="auto" aria-hidden="true" onPlaying={() => setIdle(true)} />}
-    {/* The greeting stays on top until the idle loop is actually playing, so the switch never flashes. */}
-    <video className={idle ? "is-done" : ""} src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)}
-      autoPlay muted playsInline aria-hidden="true" onEnded={startIdle} />
+    {BLINK_ROLES.has(role) && <video ref={blink} className={blinked ? "" : "is-waiting"} src={characterAsset(`login/${role}-blink.webm`)}
+      muted playsInline preload="auto" aria-hidden="true" onPlaying={() => setBlinked(true)} onEnded={nextBlink} />}
+    {/* The greeting stays on top until the first blink is playing; the blink clip then holds the same frame. */}
+    <video className={blinked ? "is-done" : ""} src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)}
+      autoPlay muted playsInline aria-hidden="true" onEnded={() => blinkAfter(1500 + Math.random() * 2500)} />
   </>;
 }
 const ROLE_KEY = "xiaoxi-login-presenter";
