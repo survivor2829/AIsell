@@ -106,17 +106,23 @@ const LINES: Record<AgentRoleKey, string[]> = {
 // which starts on the greeting's last frame, loops real life signs (blinks, breathing). Without an
 // idle clip the presenter holds the closing frame; without any clip it is the still cut-out.
 const VIDEO_ROLES = new Set<AgentRoleKey>(["production"]);
-const IDLE_ROLES = new Set<AgentRoleKey>([]);
+const IDLE_ROLES = new Set<AgentRoleKey>(["production"]);
 
 function Presenter({ role }: { role: AgentRoleKey }) {
   const [idle, setIdle] = useState(false);
   const idleClip = useRef<HTMLVideoElement>(null);
+  // A play() rejected while the idle clip is still buffering is retried once it can play.
+  function startIdle() {
+    const clip = idleClip.current;
+    if (!clip) return;
+    clip.play().catch(() => clip.addEventListener("canplay", () => { void clip.play().catch(() => undefined); }, { once: true }));
+  }
   return <>
     {IDLE_ROLES.has(role) && <video ref={idleClip} className={idle ? "" : "is-waiting"} src={characterAsset(`login/${role}-idle.webm`)}
       muted loop playsInline preload="auto" aria-hidden="true" onPlaying={() => setIdle(true)} />}
     {/* The greeting stays on top until the idle loop is actually playing, so the switch never flashes. */}
     <video className={idle ? "is-done" : ""} src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)}
-      autoPlay muted playsInline aria-hidden="true" onEnded={() => { void idleClip.current?.play().catch(() => undefined); }} />
+      autoPlay muted playsInline aria-hidden="true" onEnded={startIdle} />
   </>;
 }
 const ROLE_KEY = "xiaoxi-login-presenter";
