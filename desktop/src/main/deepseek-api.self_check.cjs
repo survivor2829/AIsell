@@ -276,7 +276,7 @@ async function main() {
   const validDecisions = [
     { action: "answer", reply: "设备短租适合临时施工。", reasonCode: "business_knowledge" },
     { action: "answer", reply: "可以先清理表面铁屑，再检查涂层是否划伤。", reasonCode: "general_guidance" },
-    { action: "answer", reply: "目前资料没有公司库存信息，我可以先介绍一般选型方法。", reasonCode: "company_fact_unavailable" },
+    { action: "answer", reply: "库存要看具体型号，我帮您确认一下。方便说下您想要哪一款吗？", reasonCode: "company_fact_unavailable" },
     { action: "clarify", reply: "铁屑只是散落在表面，还是已经嵌入涂层？", reasonCode: "missing_detail" },
     { action: "handoff", reply: "好的，我为您转接人工同事。", reasonCode: "explicit_human_request" },
     { action: "handoff", reply: "收到，我请同事继续处理正式下单。", reasonCode: "transaction_commitment" },
