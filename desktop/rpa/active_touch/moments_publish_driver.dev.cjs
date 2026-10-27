@@ -11,7 +11,8 @@ const ATTEMPT_ID_PATTERN = /^[a-f0-9-]{16,64}$/u;
 const IMAGE_EXTENSIONS = new Set([".jpeg", ".jpg", ".png"]);
 const VIDEO_EXTENSIONS = new Set([".mov", ".mp4"]);
 const PUBLISH_MARKER_DIRECTORY = "publish_markers";
-const MOMENTS_PUBLISH_FILE_DIALOG_TITLE_PREFIXES = Object.freeze(["打开", "选择文件", "Open"]);
+// The picker is a Windows dialog: its wording follows the Windows display language, not WeChat's.
+const MOMENTS_PUBLISH_FILE_DIALOG_TITLE_PREFIXES = Object.freeze(["打开", "选择文件", "開啟", "選擇檔案", "Open"]);
 const MOMENTS_PUBLISH_CAMERA_PROFILE = Object.freeze({
   name: "wechat_moments_render_pane_camera_glyph",
   standaloneLogicalRight: 24,
@@ -1161,7 +1162,7 @@ function Get-PublishOpenButton($root, [IntPtr]$dialogHandle) {
   $titleText = New-Object System.Text.StringBuilder 128
   [void][Win32WechatMomentsPublish]::GetWindowText($buttonHandle, $titleText, $titleText.Capacity)
   if ($classText.ToString() -cne "Button" -or
-    $titleText.ToString().Trim() -notmatch "^(打开|Open)(?:\s*\([^)]+\))?$") {
+    $titleText.ToString().Trim() -notmatch "^(打开|開啟|开启|Open)(?:\s*\([^)]+\))?$") {
     return @{ ok = $false; reason = "moments_publish_open_button_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r045" "moments_publish_open_button_identity_mismatch") }
   }
   $button = [System.Windows.Automation.AutomationElement]::FromHandle($buttonHandle)
