@@ -147,9 +147,11 @@ class AccountStore:
             self.db.commit()
             return account
 
-    def login_license(self, license_id: str, license_expires: float, install_id: str) -> tuple[dict, str]:
+    def login_license(self, license_id: str, license_expires: float, install_id: str, bind: bool = True) -> tuple[dict, str]:
         """Transition only: a license seen for the first time becomes an account to set up.
-        Once the customer has chosen a phone and password, the license no longer logs in."""
+        Once the customer has chosen a phone and password, the license no longer logs in.
+        bind=False is for clients older than accounts: they never keep a device token, so they
+        must not take the binding away from an updated computer sharing the same license."""
         with self.lock:
             account = self._row("legacy_license_id=?", (license_id,))
             if account is None:
@@ -160,7 +162,7 @@ class AccountStore:
             if account["phone"]:
                 raise AccountError("account_use_password", 401)
             account = self._usable(account)
-            return account, self._bind_device(account["id"], install_id)
+            return account, self._bind_device(account["id"], install_id) if bind else ""
 
     def setup(self, subject: str, phone, password) -> dict:
         """A converted license chooses its phone and password once."""
