@@ -78,15 +78,19 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
         </button>}
     </div>
     <div className="example-banner-copy">
-      <small>成片示例 · {example.duration}</small>
-      <h2>做出来是这样的</h2>
-      <p className="example-banner-title">「{example.title}」</p>
-      <p>{text.result}</p>
-      <ol className="example-banner-steps">{text.steps.map((step, index) => <li key={step.title}><b>{index + 1}</b><span><strong>{step.title}</strong>{step.detail}</span></li>)}</ol>
-      <div className="example-banner-actions">
-        <button type="button" className="example-banner-tutorial" onClick={() => openTutorial(topic)}>看操作教程</button>
-        <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
+      {/* Header row spans the full width: title on the left, actions in the top-right corner. */}
+      <div className="example-banner-head">
+        <div>
+          <small>成片示例 · {example.duration} · 「{example.title}」</small>
+          <h2>做出来是这样的</h2>
+          <p>{text.result}</p>
+        </div>
+        <div className="example-banner-actions">
+          <button type="button" className="example-banner-tutorial" onClick={() => openTutorial(topic)}>看操作教程</button>
+          <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
+        </div>
       </div>
+      <ol className="example-banner-steps">{text.steps.map((step, index) => <li key={step.title}><b>{index + 1}</b><span><strong>{step.title}</strong>{step.detail}</span></li>)}</ol>
     </div>
   </section>;
 }
