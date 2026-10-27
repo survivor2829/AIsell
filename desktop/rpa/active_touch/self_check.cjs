@@ -367,6 +367,16 @@ function checkSearchDryRunFixture() {
   }
 }
 
+// Unattended runs: every driver that reads the last-input tick must honour XIAOXI_UNATTENDED_INPUT,
+// or a stray mouse move would abort that driver again.
+for (const driver of fs.readdirSync(__dirname).filter((name) => name.endsWith(".cjs") && !name.includes("self_check"))) {
+  const source = fs.readFileSync(path.join(__dirname, driver), "utf8");
+  const definitions = source.match(/public static uint GetLastInputTick\(\)[\s\S]*?return GetLastInputInfo/gu) || [];
+  for (const definition of definitions) {
+    assert.match(definition, /XIAOXI_UNATTENDED_INPUT/u, `${driver}: GetLastInputTick must honour unattended mode`);
+  }
+}
+
 (async () => {
   checkSearchDryRunFixture();
   checkSearchRecognitionMatrix();

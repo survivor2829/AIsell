@@ -39,7 +39,7 @@ public static class Win32WechatVisualAutoReply {
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
   public static bool AtomicMouseClick(int screenX, int screenY) {
     int left = GetSystemMetrics(76), top = GetSystemMetrics(77);

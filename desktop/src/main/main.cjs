@@ -32,6 +32,10 @@ const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
 const { createAccountStore } = require("./account-store.cjs");
 const { registerAccountAuthIpc } = require("./account-auth-ipc.cjs");
+// Customers run WeChat tasks unattended. The WeChat drivers (PowerShell children inherit this)
+// then stop treating any mouse or keyboard activity on the computer as a reason to abort a step;
+// the foreground window and click target are still checked before every action.
+if (!process.env.XIAOXI_UNATTENDED_INPUT) process.env.XIAOXI_UNATTENDED_INPUT = "1";
 const { createProviderGatewayClient } = require("./provider-gateway-client.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
