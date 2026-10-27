@@ -156,7 +156,7 @@ const WORKFLOW_STATUS_LABELS: Record<WorkflowTask["status"], string> = {
   running: "进行中",
   completed: "已完成",
   cancelled: "已取消",
-  needs_attention: "需处理",
+  needs_attention: "已跳过",
   missed: "已错过"
 };
 const WORKFLOW_STATUS_PRIORITY: Record<WorkflowTask["status"], number> = {
@@ -440,7 +440,6 @@ function roleStatus(
     if (workflowError) return window.xiaoxiWorkflow ? "任务状态需检查" : "微信服务未连接";
     if (workflowState.contactSync?.running) return "正在同步联系人";
     if (workflowState.enabled) return "正在执行计划";
-    if (workflowState.tasks.some((task) => task.status === "needs_attention")) return "有任务需要处理";
     return "任务服务已就绪";
   }
   if (role === "production") {
@@ -468,7 +467,7 @@ function buildWechatView(
   };
   const today = localDateKey(new Date());
   const tasks = workflowState.tasks;
-  const pendingStatuses = new Set<WorkflowTask["status"]>(["pending", "running", "needs_attention"]);
+  const pendingStatuses = new Set<WorkflowTask["status"]>(["pending", "running"]);
   const pending = tasks.filter((task) => pendingStatuses.has(task.status) && belongsToToday(task, today)).length;
   const completed = tasks.filter((task) => completedToday(task as DatedWorkflowTask, today)).length;
   const priority = [...tasks].sort((left, right) => (
@@ -479,7 +478,7 @@ function buildWechatView(
 
   const metrics: Metric[] = [
     { label: "微信客户", value: String(contactCount), unit: "位", detail: "来自最近一次联系人同步", icon: UsersRound },
-    { label: "今日待办", value: workflowLoading ? "—" : String(pending), unit: "项", detail: "待执行、进行中与需处理任务", icon: Clock3 },
+    { label: "今日待办", value: workflowLoading ? "—" : String(pending), unit: "项", detail: "待执行与进行中的任务", icon: Clock3 },
     { label: "今日完成", value: workflowLoading ? "—" : String(completed), unit: "项", detail: "按真实任务完成时间统计", icon: CheckCircle2 }
   ];
 

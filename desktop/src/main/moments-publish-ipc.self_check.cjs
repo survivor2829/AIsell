@@ -281,14 +281,14 @@ async function main() {
     publishDriver: async () => assert.fail("orphan recovery must not invoke the driver")
   });
   const laterOrphan = unknownReloadedController.initialize();
-  assert.equal(laterOrphan.state.status, "outcome_unknown");
-  assert.equal(laterOrphan.state.last_reason, "moments_publish_orphan_marker_recovered");
+  // On start an orphaned attempt is counted as published (never republished, never asked about).
+  assert.equal(laterOrphan.state.status, "resolved_published");
+  assert.equal(laterOrphan.state.outcome_unknown, false);
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(unknownRoot, "publish-state.json"), "utf8")).attempt_id,
     laterAttemptId,
     "a not_published fingerprint must not hide a later attempt's orphan marker"
   );
-  assert.equal(unknownReloadedController.resolveUnknown({ resolution: "not_published" }).ok, true);
 
   const publishedResolutionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-resolved-published-"));
   const publishedResolutionImage = writeMedia(publishedResolutionRoot, "published.jpg", Buffer.from("published-image"));
@@ -509,6 +509,38 @@ async function main() {
   assert.equal(changedDriverCalls, 0);
   assert.equal(changedLock.calls.acquire, 0);
 
+  // Unattended workflow: a post that was clicked but could not be read back is counted as
+  // published, never needs the customer and is never posted a second time.
+  const assumedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-assumed-"));
+  const assumedImage = writeMedia(assumedRoot, "assumed.jpg", Buffer.from("assumed-image"));
+  let assumedDriverCalls = 0;
+  const assumedController = createMomentsPublishController({
+    baseDir: assumedRoot,
+    coordinator: makeCoordinator("assumed-owner").coordinator,
+    now: createClock(),
+    openMoments: async () => ({ ok: true, pid: 1, hWnd: 2 }),
+    publishDriver: async ({ markerPath }) => {
+      assumedDriverCalls += 1;
+      fs.writeFileSync(markerPath, "{}");
+      return { ok: false, status: "outcome_unknown", reason: "moments_publish_outcome_unknown", actionAttempted: true };
+    }
+  });
+  assumedController.initialize();
+  const assumedChosen = await assumedController.chooseMedia([assumedImage]);
+  const assumedTaskId = crypto.randomUUID();
+  const assumedPlan = await assumedController.prepareWorkflowTask(assumedTaskId, { selectionId: assumedChosen.selection.selection_id, content: "挂机发布正文 ABC123" });
+  assert.equal(assumedPlan.ok, true);
+  const assumedTask = { id: assumedTaskId, payload: assumedPlan.payload, progress: { done: 0, total: 1 } };
+  const assumedFirst = await assumedController.runWorkflowStep(assumedTask, { isEnabled: () => true });
+  assert.equal(assumedFirst.status, "completed", "an unreadable result is counted as published, not handed to the customer");
+  assert.equal(assumedFirst.requiresGlobalAttention, undefined);
+  assert.equal(assumedFirst.result.assumedPublished, true);
+  assert.equal(assumedController.workflowOutcome(assumedTaskId)?.status, "completed");
+  const assumedAgain = await assumedController.runWorkflowStep(assumedTask, { isEnabled: () => true });
+  assert.equal(assumedAgain.status, "completed");
+  assert.equal(assumedDriverCalls, 1, "an assumed post is never published twice");
+  await assumedController.dispose();
+
   const passportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-passport-"));
   const passportEvents = [];
   const passportFailures = [];
@@ -598,10 +630,8 @@ async function main() {
     publishDriver: async () => assert.fail("initialize must not invoke the driver")
   });
   const restartSafe = restartNoMarkerController.initialize();
-  assert.equal(restartSafe.state.status, "outcome_unknown");
-  assert.equal(restartSafe.state.action_attempted, true);
-  assert.equal(restartSafe.state.outcome_unknown, true);
-  assert.equal(restartSafe.state.last_reason, "moments_publish_restarted_during_publish");
+  assert.equal(restartSafe.state.status, "resolved_published", "a post interrupted by a restart is counted as published");
+  assert.equal(restartSafe.state.outcome_unknown, false);
   assert.equal(restartOpenCalls, 0);
 
   const restartMarkerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-restart-unknown-"));
@@ -628,9 +658,8 @@ async function main() {
     publishDriver: async () => assert.fail("initialize must not invoke the driver")
   });
   const restartUnknown = restartMarkerController.initialize();
-  assert.equal(restartUnknown.state.status, "outcome_unknown");
-  assert.equal(restartUnknown.state.action_attempted, true);
-  assert.equal(restartUnknown.state.outcome_unknown, true);
+  assert.equal(restartUnknown.state.status, "resolved_published");
+  assert.equal(restartUnknown.state.outcome_unknown, false);
 
   const orphanRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-orphan-marker-"));
   const orphanMarkerDir = path.join(orphanRoot, "publish_markers");
@@ -646,15 +675,13 @@ async function main() {
     publishDriver: async () => assert.fail("orphan recovery must not invoke the driver")
   });
   const orphanRecovered = orphanController.initialize();
-  assert.equal(orphanRecovered.state.status, "outcome_unknown");
-  assert.equal(orphanRecovered.state.last_reason, "moments_publish_orphan_marker_recovered");
+  assert.equal(orphanRecovered.state.status, "resolved_published");
   assert.equal(orphanRecovered.state.fingerprint, restartFingerprint);
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(orphanRoot, "publish-state.json"), "utf8")).attempt_id,
     orphanAttemptId
   );
-  assert.equal(orphanController.resolveUnknown({ resolution: "not_published" }).ok, true);
-  assert.equal(fs.existsSync(path.join(orphanMarkerDir, orphanMarkerName)), false);
+  assert.equal(fs.existsSync(path.join(orphanMarkerDir, orphanMarkerName)), false, "the assumed post retires its marker");
 
   const corruptPublishingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-corrupt-publishing-"));
   fs.writeFileSync(path.join(corruptPublishingRoot, "publish-state.json"), JSON.stringify({ status: "publishing" }));
@@ -665,13 +692,12 @@ async function main() {
     publishDriver: async () => assert.fail("corrupt publishing recovery must not invoke the driver")
   });
   const corruptPublishing = corruptPublishingController.initialize();
-  assert.equal(corruptPublishing.state.status, "outcome_unknown");
+  assert.equal(corruptPublishing.state.status, "resolved_published");
   assert.match(corruptPublishing.state.fingerprint, /^[a-f0-9]{64}$/u);
   assert.match(
     JSON.parse(fs.readFileSync(path.join(corruptPublishingRoot, "publish-state.json"), "utf8")).attempt_id,
     /^[a-f0-9-]{36}$/u
   );
-  assert.equal(corruptPublishingController.resolveUnknown({ resolution: "not_published" }).ok, true);
 
   const restartPreparedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-restart-prepared-"));
   fs.writeFileSync(path.join(restartPreparedRoot, "publish-state.json"), JSON.stringify({

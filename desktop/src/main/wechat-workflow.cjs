@@ -51,6 +51,12 @@ function readJson(file, fallback) {
   }
 }
 
+// Customers run WeChat tasks unattended. A failure skips that task and the queue goes on; only
+// these mean nothing more can safely run on this computer until WeChat is back to the planned account.
+const RUN_STOP_REASONS = new Set(["workflow_account_changed", "account_mismatch", "wechat_account_changed",
+  "wechat_account_identity_missing", "wechat_login_required", "application_disposing"]);
+const REPLY_ERROR_RETRY_MS = [30_000, 120_000, 300_000];
+
 function createWechatWorkflowController(options) {
   const now = options.now || (() => new Date());
   const executors = options.executors || {};
@@ -74,6 +80,11 @@ function createWechatWorkflowController(options) {
   let error = "";
   let replyStatus = "尚未启动";
   let replyError = "";
+  // Automatic reply recovers on its own after an error: 30 s, then 2 min, then every 5 min.
+  let replyErrorAt = 0;
+  let replyErrorCount = 0;
+  const replyErrorActive = () => Boolean(replyError)
+    && new Date(now()).getTime() - replyErrorAt < REPLY_ERROR_RETRY_MS[Math.min(Math.max(replyErrorCount, 1), REPLY_ERROR_RETRY_MS.length) - 1];
   let replyBackoff = false;
   let replyExcludedCount = 0;
   let replyExcludedReasons = {};
@@ -435,13 +446,13 @@ function createWechatWorkflowController(options) {
       phase = nextTask() ? "working" : "scheduled";
       return;
     }
-    if (store.replyEnabled !== false && accountRecipients().length && !replyError) {
+    if (store.replyEnabled !== false && accountRecipients().length) {
       phase = "listening";
       return;
     }
     enabled = false;
     clearTimeout(timer);
-    phase = blocked.length || replyError ? "needs_attention" : store.tasks.some((task) => task.status === "completed") ? "completed" : "idle";
+    phase = blocked.length || store.tasks.some((task) => task.status === "completed") ? "completed" : "idle";
   }
 
   function assertPlanEditable() {
@@ -468,8 +479,8 @@ function createWechatWorkflowController(options) {
     task.reasonCode = reasonCode;
     task.reasonClassification = policy.classification;
     if (!policy.known) recordUnknownReason(task, reasonCode);
-    // An explicit unknown-outcome signal always outranks the local-reason whitelist.
-    if (!requiresGlobalAttention && policy.attentionScope === "task") {
+    // Unattended runs skip the task and continue unless the WeChat account itself is in doubt.
+    if (!RUN_STOP_REASONS.has(reasonCode)) {
       log("task.local_attention", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode }, { level: "warn", code: reasonCode });
       return;
     }
@@ -514,7 +525,7 @@ function createWechatWorkflowController(options) {
     // Finite work has absolute priority. Automatic reply is checked only after
     // every planned task has completed or been safely isolated. A send cooldown
     // or a future appointment is still unfinished work, not an empty queue.
-    if (!finiteWorkPending && people.length && options.reply?.runWorkflowStep && !replyError) {
+    if (!finiteWorkPending && people.length && options.reply?.runWorkflowStep && !replyErrorActive()) {
       if (await liveAccountChanged(false) || !enabled || mutating) return;
       cycleStage = "reply_step";
       const replyStarted = Date.now();
@@ -534,6 +545,7 @@ function createWechatWorkflowController(options) {
       replyExcludedReasons = reply.excludedReasons || replyExcludedReasons;
       replyBackoff = reply.status === "backoff";
       replyError = replyBackoff ? "" : reply.error || "";
+      if (replyError) { replyErrorAt = new Date(now()).getTime(); replyErrorCount += 1; } else replyErrorCount = 0;
       const replyReason = reply.reasonCode || (reply.error ? workflowFailureReason(reply.error, "reply_needs_attention") : reply.busy || reply.status === "busy" ? "reply_busy" : reply.handled ? "reply_handled" : "reply_idle");
       if (reply.status === "backoff") {
         const key = `${replyReason}:${reply.attempt}`;
@@ -553,13 +565,14 @@ function createWechatWorkflowController(options) {
       lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
-    } else if (!finiteWorkPending && replyError) {
+    } else if (!finiteWorkPending && replyErrorActive()) {
       if (lastReplySkippedReason !== "reply_error_sticky") {
         log("reply.step_skipped", { reason: "reply_error_sticky" }, { level: "warn", code: "reply_error_sticky" });
         lastReplySkippedReason = "reply_error_sticky";
       }
-    } else if (!finiteWorkPending && !replyError) {
+    } else if (!finiteWorkPending && !replyErrorActive()) {
       replyError = people.length ? "自动回复执行器不可用" : "";
+      if (replyError) { replyErrorAt = new Date(now()).getTime(); replyErrorCount += 1; }
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
       if (people.length) log("reply.blocked", { stage: "reply_step", reason: "executor_unavailable" }, { level: "warn", code: "executor_unavailable" });
     }
@@ -666,7 +679,15 @@ function createWechatWorkflowController(options) {
       lastTaskResultKey = resultKey;
     } catch (failure) {
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
-      applyTaskAttention(task, workflowFailureReason(failure), failure.message || "任务执行中断，请核对实际结果。", true);
+      const reason = workflowFailureReason(failure);
+      // One unexpected executor error is retried once after a short wait; executors keep their own
+      // send receipts, so a retry never repeats a confirmed or unconfirmed send.
+      if (!task.exceptionRetried && !RUN_STOP_REASONS.has(reason)) {
+        task.exceptionRetried = true;
+        task.status = "pending";
+        task.notBefore = new Date(now()).getTime() + 5000;
+        log("task.exception_retry", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason }, { level: "warn", code: reason });
+      } else applyTaskAttention(task, reason, failure.message || "任务执行中断，已跳过。", true);
     } finally {
       acceptingProgress = false;
       if (task.type === "publish" || task.type === "interact") afterMoments = true;

@@ -1563,10 +1563,11 @@ async function main() {
     assert.equal(rawResult.requiresGlobalAttention, true);
     await workflow.start();
     await workflow.tick();
-    assert.equal(workflow.status().enabled, false, "an unknown Moments outcome must stop the whole workflow regardless of diagnostic text");
-    assert.equal(replyCalls, 0);
+    // Unattended: the interaction with an unknown outcome is skipped (never redone) and the run goes on.
+    assert.equal(workflow.status().enabled, true, "an unknown Moments outcome no longer stops the whole workflow");
+    assert.equal(workflow.status().tasks.find((task) => task.id === added.task.id).status, "needs_attention");
     await workflow.tick();
-    assert.equal(replyCalls, 0, "auto reply must remain stopped after an unknown Moments outcome");
+    assert.equal(replyCalls, 1, "automatic reply continues after the skipped interaction");
     await workflow.dispose();
     moments.dispose();
     fs.rmSync(unknownRoot, { recursive: true, force: true });
@@ -1603,11 +1604,31 @@ async function main() {
   await forcedGlobal.addTask({ type: "interact", payload: { maxPosts: 1 } });
   await forcedGlobal.start();
   await forcedGlobal.tick();
-  assert.equal(forcedGlobal.status().enabled, false, "requiresGlobalAttention must override every local reason whitelist entry");
-  assert.equal(forcedGlobalReplyCalls, 0);
+  // Unattended: a task-level failure never stops the run, whatever flag the executor sets...
+  assert.equal(forcedGlobal.status().enabled, true, "a task failure is skipped even when flagged global");
   await forcedGlobal.tick();
-  assert.equal(forcedGlobalReplyCalls, 0);
+  assert.equal(forcedGlobalReplyCalls, 1);
   await forcedGlobal.dispose();
+  // ...only a WeChat account problem still stops everything.
+  const accountRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-account-stop-"));
+  let accountReplyCalls = 0;
+  const accountStop = createWechatWorkflowController({
+    rootDir: accountRoot, autoReplyDir: path.join(accountRoot, "reply"), activeTouchDir: path.join(accountRoot, "touch"),
+    momentsDir: path.join(accountRoot, "moments"), getAccount: () => "test-account", autoSchedule: false,
+    reply: { prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { accountReplyCalls += 1; return { handled: false }; } },
+    executors: { interact: { prepareWorkflowTask: (_id, payload) => ({ payload }),
+      runWorkflowStep: async (task) => ({ status: "needs_attention", reasonCode: "workflow_account_changed", error: "account", progress: task.progress }) } }
+  });
+  await accountStop.addRecipients(["reply-contact"]);
+  await accountStop.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await accountStop.start();
+  await accountStop.tick();
+  assert.equal(accountStop.status().enabled, false, "a changed WeChat account stops the whole run");
+  await accountStop.tick();
+  assert.equal(accountReplyCalls, 0, "nothing runs on a different WeChat account");
+  await accountStop.dispose();
+  fs.rmSync(accountRoot, { recursive: true, force: true });
   fs.rmSync(forcedGlobalRoot, { recursive: true, force: true });
 
   const emptyScanRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-empty-scan-"));

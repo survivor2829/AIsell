@@ -5030,14 +5030,13 @@ async function main() {
   await workflowController.runWorkflowStep(workflowInput);
   workflowScanFailure = "wechat_window_changed";
   workflowResult = await workflowController.runWorkflowStep(workflowInput);
-  assert.equal(workflowResult.status, "needs_attention");
-  assert.equal(workflowResult.reasonCode, "workflow_window_changed");
+  // Unattended: a changed WeChat window skips this scan only; the next step scans again by itself.
+  assert.notEqual(workflowResult.status, "needs_attention", "a window change never stops automatic reply");
   workflowScanFailure = "";
   const beforeResumeScans = workflowScans;
-  workflowController.resumeWorkflow();
   workflowResult = await workflowController.runWorkflowStep(workflowInput);
   assert.equal(workflowResult.status, "running");
-  assert.equal(workflowScans, beforeResumeScans + 1, "resume must repeat startup and reach a fresh scan");
+  assert.equal(workflowScans, beforeResumeScans + 1, "the next step reaches a fresh scan without any resume");
   for (const code of ["API_KEY_INVALID", "AI_EXPERT_NOT_READY"]) {
     workflowQueue.push(nextWorkflowCandidate(`config-${code}`));
     workflowFailure = code;

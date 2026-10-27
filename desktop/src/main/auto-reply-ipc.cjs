@@ -2974,7 +2974,12 @@ function createAutoReplyController(options = {}) {
         });
         if (contactScope.strict && STRICT_SCOPE_WINDOW_RESET_REASONS.has(candidateReason)) {
           const event = workflowMode ? "workflow_window_changed" : "test_scope_window_changed";
-          pauseWithError(event, workflowMode ? "微信窗口已变化，请检查后重新启动任务" : "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
+          // Unattended runs only skip this scan; the workflow retries the reply step on its own.
+          if (workflowMode) {
+            state.last_event = event;
+            state.last_error = "微信窗口已变化，稍后自动重试";
+            setActivity("error", { detailCode: event });
+          } else pauseWithError(event, "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
           appendDiagnostic(event, { phase: "scope", code: candidateReason });
           save();
           return publicState();
