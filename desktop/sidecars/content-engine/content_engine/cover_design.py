@@ -12,12 +12,17 @@ STYLES = {
     "contrast": "Bold yellow, black and white editorial design. Oversized Chinese headline with compact supporting composition, energetic diagonal accent, clean striking contrast.",
     "portrait": "Clean portrait editorial cover. Off-white and restrained green, confident large Chinese headline, clear hierarchy and subtle tonal separation. No busy ornament.",
     "sticker": "Eye-catching Douyin/Xiaohongshu style cover. Bright saturated background, huge Chinese headline with thick white outline and drop shadow, one or two small sticker-like badges and arrows pointing at the subject. Lively but uncluttered.",
+    "pop_yellow": "Viral Douyin/Xiaohongshu cover. Lemon-yellow background accents with black headline. Huge bold Chinese headline across the upper third, thick white outline and strong drop shadow, two lines at most, perfectly legible. The subject is large and centred. One or two small sticker badges or arrows pointing at the subject. Bright, punchy, uncluttered; no extra words.",
+    "pop_red": "Viral Douyin/Xiaohongshu cover. Vivid red background accents with white headline and a yellow highlight word. Huge bold Chinese headline across the upper third, thick white outline and strong drop shadow, two lines at most, perfectly legible. The subject is large and centred. One or two small sticker badges or arrows pointing at the subject. Bright, punchy, uncluttered; no extra words.",
+    "pop_blue": "Viral Douyin/Xiaohongshu cover. Sky-blue background accents with white headline and a yellow highlight word. Huge bold Chinese headline across the upper third, thick white outline and strong drop shadow, two lines at most, perfectly legible. The subject is large and centred. One or two small sticker badges or arrows pointing at the subject. Bright, punchy, uncluttered; no extra words.",
+    "pop_mint": "Viral Douyin/Xiaohongshu cover. Fresh mint-green background accents with black headline. Huge bold Chinese headline across the upper third, thick white outline and strong drop shadow, two lines at most, perfectly legible. The subject is large and centred. One or two small sticker badges or arrows pointing at the subject. Bright, punchy, uncluttered; no extra words.",
 }
 DESIGN_KEYS = {"mode", "aspect", "title", "style", "frame_seconds", "request_id"}
 # What the reference frame shows. Older digital-human designs carry no subject and mean a person.
 SUBJECTS = {"person", "product", "scene"}
 # Rotated per video so consecutive automatic covers do not look alike.
-AUTO_STYLES = ("sticker", "contrast", "paper")
+# One viral layout in four colourways (customers chose this style, 2026-10).
+AUTO_STYLES = ("pop_yellow", "pop_red", "pop_blue", "pop_mint")
 
 def validate_design(value, duration_ms):
     if not isinstance(value, dict) or set(value) not in (DESIGN_KEYS, DESIGN_KEYS | {"subject"}):
@@ -41,7 +46,7 @@ def cover_headline(title):
     cut = max((i for i, c in enumerate(text[:24]) if c in "，。！？；：、,.!?;: "), default=-1)
     return text[:cut] if cut >= 8 else text[:24]
 
-def auto_design(video_id, title, subject, duration_ms):
+def auto_design(video_id, title, subject, duration_ms, attempt=0):
     """The automatic cover of a finished video. The request id derives from the video,
     so a restarted render resumes the same paid request instead of adding another."""
     digest = int(hashlib.sha256(str(video_id).encode()).hexdigest(), 16)
@@ -49,7 +54,7 @@ def auto_design(video_id, title, subject, duration_ms):
     return {"mode": "full_design", "aspect": "3:4", "title": cover_headline(title) or "看完这条就懂了",
             "style": AUTO_STYLES[digest % len(AUTO_STYLES)],
             "frame_seconds": round(min(seconds * 0.3, max(0.0, seconds - 0.5)), 2),
-            "request_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "xiaoxi-auto-cover:" + str(video_id))),
+            "request_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "xiaoxi-auto-cover:" + str(video_id) + (f":retry{attempt}" if attempt else ""))),
             "subject": subject}
 
 def next_design(row, recipe):
@@ -59,11 +64,25 @@ def next_design(row, recipe):
     imported = str(recipe.get("imported_base_video") or "")
     subject = current.get("subject") or ("product" if "product_video_" in imported else "person" if imported else "scene")
     base = auto_design(row["id"], row["title"], subject, row["duration_ms"])
-    styles = AUTO_STYLES + (("portrait",) if subject == "person" else ())
+    styles = AUTO_STYLES
     style = styles[(styles.index(current["style"]) + 1) % len(styles)] if current.get("style") in styles else base["style"]
     return {**base, "title": current.get("title") or base["title"],
             "frame_seconds": current.get("frame_seconds", base["frame_seconds"]),
             "style": style, "request_id": str(uuid.uuid4())}
+
+def _clean_source_frame(domain, recipe, target):
+    """A frame of the first source clip (no captions or title bars), for mixed videos."""
+    segments = recipe.get("visual_segments") or ([recipe["voice_segment"]] if recipe.get("voice_segment") else [])
+    segment = next((item for item in segments if item.get("asset_id")), None)
+    if segment is None:
+        return False
+    try:
+        source = Path(domain._resolve_render_asset_path(segment["asset_id"]))
+        seek = [] if segment.get("media_kind") == "image" else ["-ss", f"{max(0, int(segment.get('start_ms') or 0)) / 1000 + 0.5:.3f}"]
+        domain.analyzer._command([domain.analyzer.ffmpeg_path, "-y", *seek, "-i", str(source), "-frames:v", "1", "-q:v", "2", str(target)])
+        return target.is_file() and target.stat().st_size > 0
+    except (ContentEngineError, OSError, KeyError):
+        return False
 
 def prepare_design(domain, row, recipe):
     cover = recipe["packaging"]["cover"]
@@ -81,6 +100,8 @@ def prepare_design(domain, row, recipe):
         source.relative_to(domain.data_dir.resolve())
         analyzer = domain.analyzer
         analyzer._command([analyzer.ffmpeg_path, "-y", "-ss", str(design["frame_seconds"]), "-i", str(source), "-frames:v", "1", "-q:v", "2", str(target)])
+    elif design.get("subject") in {"product", "scene"} and _clean_source_frame(domain, recipe, target):
+        pass
     elif design.get("subject") in {"product", "scene"} and plan.get("reference_path"):
         # A redesign reuses the earlier source frame; the thumbnail is the AI cover by now.
         shutil.copyfile(domain._validate_generated_path(plan["reference_path"]), target)

@@ -882,6 +882,10 @@ async function main() {
         calls.push(["updateCoverTitle", candidateId, headlineLines]);
         return generatedVideo({ cover_headline_lines: headlineLines, cover_title_editable: true });
       },
+      backfillCovers: async () => {
+        calls.push(["backfillCovers"]);
+        return { status: "skipped" };
+      },
       regenerateCover: async (candidateId, design, control) => {
         calls.push(["regenerateCover", candidateId, design, control]);
         return task({ task_id: packagingTaskId, task_type: "creative_cover", status: "queued" });
@@ -978,8 +982,7 @@ async function main() {
       beforeProviderWork: async (capabilities) => {
         providerPreflightCalls.push(capabilities);
         if (providerPreflightFailure) throw providerPreflightFailure;
-      },
-      readCoverPrices: async () => ({ imageUsd: 0.010625, estimatedImageUsd: 0.0085, fxCnyPerUsd: 8 })
+      }
     });
     assert.deepEqual(
       [...handlers.keys()].sort(),
@@ -3175,23 +3178,18 @@ async function main() {
     const editedTitle = await handlers.get(CONTENT_ENGINE_CHANNELS.updateCoverTitle)({}, { candidateId: generatedVideoId, headlineLines: ["真实产品", "看清细节"] });
     assert.deepEqual(editedTitle.data.coverHeadlineLines, ["真实产品", "看清细节"]);
     assert.equal(providerPreflightCalls.length, preflightsBeforeTitle, "Editing a saved cover title must not request a provider");
-    // A new paid cover needs the quote the user just saw; a query of the submitted request does not.
-    const unquoted = await handlers.get(CONTENT_ENGINE_CHANNELS.regenerateCover)({}, { candidateId: generatedVideoId });
-    assert.equal(unquoted.ok, false);
-    assert.equal(calls.some((call) => call[0] === "regenerateCover"), false, "no cover is bought without a confirmed quote");
-    const coverQuote = await handlers.get(CONTENT_ENGINE_CHANNELS.coverQuote)({}, { candidateId: generatedVideoId });
-    assert.deepEqual([coverQuote.data.maximumCny, coverQuote.data.estimatedCny], [0.09, 0.07]);
-    const wrongRevision = await handlers.get(CONTENT_ENGINE_CHANNELS.regenerateCover)({}, { candidateId: generatedVideoId, quoteRevision: "other" });
-    assert.equal(wrongRevision.ok, false);
-    const coverTask = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.regenerateCover
-    )({}, { candidateId: generatedVideoId, quoteRevision: coverQuote.data.revision });
+    // Covers are automatic: the renderer can never buy one directly, only query a
+    // submitted request or start the background fill for older videos.
+    const manual = await handlers.get(CONTENT_ENGINE_CHANNELS.regenerateCover)({}, { candidateId: generatedVideoId });
+    assert.equal(manual.ok, false);
+    assert.equal(calls.some((call) => call[0] === "regenerateCover"), false, "no cover is bought from the renderer");
+    const coverTask = await handlers.get(CONTENT_ENGINE_CHANNELS.regenerateCover)({}, { candidateId: generatedVideoId, recover: true });
     assert.equal(coverTask.data.taskId, packagingTaskId);
-    assert.deepEqual(calls.at(-1).slice(2), [null, { redesign: true }]);
-    const reused = await handlers.get(CONTENT_ENGINE_CHANNELS.regenerateCover)({}, { candidateId: generatedVideoId, quoteRevision: coverQuote.data.revision });
-    assert.equal(reused.ok, false, "a confirmed quote buys one cover only");
-    await handlers.get(CONTENT_ENGINE_CHANNELS.regenerateCover)({}, { candidateId: generatedVideoId, recover: true });
     assert.deepEqual(calls.at(-1).slice(2), [null, { recoverOnly: true }]);
+    assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "querying a cover still requires APIMart");
+    const backfill = await handlers.get(CONTENT_ENGINE_CHANNELS.backfillCovers)({}, undefined);
+    assert.equal(backfill.data.status, "skipped");
+    assert.equal(calls.at(-1)[0], "backfillCovers");
     assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "AI cover regeneration must require APIMart");
 
     for (const [channel, payload, expectedCode] of [

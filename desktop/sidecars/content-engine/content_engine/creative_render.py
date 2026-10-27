@@ -923,9 +923,8 @@ class FFmpegCreativeRenderer:
         if str((packaging.get("cover") or {}).get("mode") or "") == "reuse":
             Path(cover_path).touch()
             return
-        preserve_source = (packaging.get("cover") or {}).get("preserve_source")
-        source, seek = (self._cover_source(recipe, resolve_asset_path, fallback=video_path)
-                        if preserve_source else (video_path, 0.5))
+        # The local cover is always a clean frame: never the captioned output.
+        source, seek = self._cover_source(recipe, resolve_asset_path, fallback=video_path)
         self._render_cover(
             source,
             cover_path,
@@ -2253,10 +2252,6 @@ class FFmpegCreativeRenderer:
         )
         if not isinstance(packaging, dict) or not packaging or (packaging.get("cover") or {}).get("preserve_source"):
             return base
-        brand = packaging.get("brand") or {}
-        primary = self._ffmpeg_color(brand.get("primary_color") or "#6D5DFB")
-        accent = self._ffmpeg_color(brand.get("accent_color") or "#FFE45C")
-        title = self._ffmpeg_cover_text(packaging.get("title") or "课程现场价值")
         font = self._drawtext_font_option(packaging)
         plan = (packaging.get("cover") or {}).get("plan") or {}
         lines = plan.get("headline_lines") or []
@@ -2278,17 +2273,9 @@ class FFmpegCreativeRenderer:
                     filters.append(f"drawtext={font}:text='{safe}':fontcolor={color}:fontsize={font_size}:"
                                    f"x=78:y={176 + index * (font_size + 24)}:borderw=3:bordercolor={color}")
             return ",".join(filters)
-        return ",".join(
-            (
-                base,
-                "drawbox=x=0:y=0:w=1080:h=1920:color=black@0.12:t=fill",
-                f"drawbox=x=72:y=1180:w=936:h=430:color={primary}@0.86:t=fill",
-                f"drawbox=x=72:y=1180:w=18:h=430:color={accent}@1:t=fill",
-                f"drawtext={font}:"
-                f"text='{title}':fontcolor=white:fontsize=68:"
-                "x=122:y=1280:shadowcolor=black@0.7:shadowx=3:shadowy=3",
-            )
-        )
+        # No title bar: the purple "course" band looked dated. Until the AI cover
+        # lands (or if it fails) the cover is the clean frame itself.
+        return base
 
     def _cover_video_args(self, source, packaging, resolve_asset_path=None):
         args = ["-i", str(source)]
@@ -2340,8 +2327,14 @@ class FFmpegCreativeRenderer:
             timeout=120,
         )
 
-    @staticmethod
-    def _cover_source(recipe, resolve_asset_path, *, fallback):
+    def _cover_source(self, recipe, resolve_asset_path, *, fallback):
+        if recipe.get("imported_base_video"):
+            # Imported narration and product videos: the clean source before captions.
+            try:
+                return self._managed_audio_path(recipe["imported_base_video"], code="imported_video_missing",
+                                                message="基础视频已不可用。"), 1.0
+            except ContentEngineError:
+                return Path(fallback), 0.5
         kind = recipe.get("kind")
         segment = None
         if kind == "course":

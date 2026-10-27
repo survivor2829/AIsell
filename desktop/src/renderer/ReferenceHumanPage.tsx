@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Download, History, LoaderCircle, Plus, RefreshCw, Upload, Video } from 'lucide-react';
 import type { DigitalHumanResult } from './digital-human-types';
 import type { NarrationReference, ReferenceAsset, ReferenceCapabilities, ReferenceDraft, ReferenceHumanApi, ReferenceTask, ScriptQuota, ReferenceWorkspace, ScriptInput, ScriptSuggestion } from './reference-human-types';
-import { ReferenceCoverPanel } from './ReferenceCoverPanel';
 import { NarrationTemplatePicker } from './NarrationTemplatePicker';
 import { ReferenceSourcesPanel } from './ReferenceSourcesPanel';
 import narrationTemplates from '../../remotion-packaging/narration-templates.json';
@@ -49,7 +48,6 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
     ? `xiaoxi-content://generated/${task.generatedVideoId}/video` : '';
   const updateAsset = (item: ReferenceAsset) => setAssets((current) => [item, ...current.filter((old) => old.id !== item.id)]);
   const apply = (item: ReferenceTask) => { setTask(item); setTasks((current) => [item, ...current.filter((old) => old.id !== item.id)]); };
-  function applyPackaging(item: ReferenceTask) { apply(item); setDraft(taskDraft(item)); setStep(3); }
   async function run(name: string, action: () => Promise<void>) {
     if (busyRef.current) return; busyRef.current = true; setBusy(name); setNotice('');
     try { await action(); } catch (error) { setNotice((error as Error).message); } finally { busyRef.current = false; setBusy(''); }
@@ -202,7 +200,7 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
         {asset?.narrationPlan && (!task || (task.pipelineVersion || 4) >= 5) && asset.seconds >= referencePolicy.limits.narrationMinSeconds && <p className="dh-quality">当前人物视频{asset.seconds.toFixed(1)}秒，文案按约{asset.narrationPlan.minimumSeconds}—{asset.narrationPlan.maximumSeconds}秒规划，建议不超过{asset.narrationPlan.maxCharacters}个中文字。实际时长以配音为准，超长会暂停。</p>}
         <label className="dh-field rh-script-field"><span>口播正文 <small>{draft.script.length} / 500字</small></span><textarea rows={6} maxLength={500} value={draft.script} disabled={locked || !!busy} onChange={(event) => edit({ script: event.target.value })} placeholder="可以直接粘贴自己的稿，也可以选上方参考生成原创稿。确认后，数字人就照这份正文讲。" /></label>
         <label className="dh-field rh-title-field"><span>标题与封面文字</span><input value={draft.title || ''} maxLength={24} disabled={locked || !!busy} onChange={(event) => edit({ title: event.target.value })} placeholder="可留空，默认提取文案第一句" /></label>
-        <details className="rh-advanced"><summary>制作设置 <small>{selectedVoice?.name} · {draft.packagingMode === 'auto' ? '智能匹配包装' : selectedTemplate?.name}{draft.includeCover !== false ? ' · AI封面' : ''}</small></summary>
+        <details className="rh-advanced"><summary>制作设置 <small>{selectedVoice?.name} · {draft.packagingMode === 'auto' ? '智能匹配包装' : selectedTemplate?.name} · 自动AI封面</small></summary>
         <label className="dh-field"><span>声音表达</span><select value={draft.voiceStyleId || 'original'} disabled={locked || !!busy} onChange={(event) => edit({ voiceStyleId: event.target.value })}>{narrationTemplates.voiceStyles.filter((item) => item.id === 'original' || item.id === draft.voiceStyleId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="dh-field"><span>包装方式</span><select value={draft.packagingMode || 'manual'} disabled={!!busy || locked && task?.status !== 'completed'} onChange={(event) => edit({ packagingMode: event.target.value as 'auto' | 'manual', ...(event.target.value === 'auto' ? { coverStyle: undefined } : {}) })}><option value="auto">智能匹配（推荐）</option><option value="manual">自己选择风格</option></select></label>
         {draft.packagingMode === 'auto' && <p className="dh-quality">按稿件结构和画面留白选好包装，配音后按实际节奏细调；不会增加云端调用。</p>}
@@ -210,20 +208,14 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
         <label className="dh-field"><span>重点短语（选填，用顿号分隔）</span><input className="rh-emphasis" value={(draft.emphasisPhrases || []).join('、')} disabled={!!busy || locked && task?.status !== 'completed'} onChange={(event) => edit({ emphasisPhrases: event.target.value.split('、') })} placeholder="从口播原文选择，例如：别只看价格、选对机器" /></label>
         <label className="rh-consent"><input type="checkbox" checked={draft.soundEffects !== false} disabled={!!busy || locked && task?.status !== 'completed'} onChange={(event) => edit({ soundEffects: event.target.checked })} />少量点缀音效（人声优先，可关闭）</label>
         <p className="dh-quality">自动选择已有曲库配乐，人声优先，首尾淡入淡出。换模板只重新本地包装。</p>
-        <label className="rh-consent"><input type="checkbox" checked={draft.includeCover !== false} disabled={!!busy || locked} onChange={(event) => edit({ includeCover: event.target.checked })} />同时生成一张3:4 AI封面，计入总报价</label>
-        {draft.includeCover !== false && <label className="dh-field"><span>封面风格</span><select value={draft.coverStyle || 'paper'} disabled={!!busy || locked} onChange={(event) => edit({ coverStyle: event.target.value })}>{narrationTemplates.coverStyles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         <label className="rh-consent"><input type="checkbox" checked={previewFirst} disabled={!!busy || locked} onChange={(event) => setPreviewFirst(event.target.checked)} />先试听配音，再确认人物制作</label>
         </details>
-        {task?.status === 'completed' && <button className="dh-button" disabled={!!busy || !narrationTemplates.templates.some((item) => item.id === draft.captionStyleId)} onClick={() => void run('repackage', async () => {
-          applyPackaging(await unwrap(referenceApi().repackage({ id: task.id, captionStyleId: draft.captionStyleId!, soundEffects: draft.soundEffects, title: draft.title, emphasisPhrases: (draft.emphasisPhrases || []).filter(Boolean) }))); setStep(3);
-        })}>应用模板，另存成片（本地免费）</button>}
         <div className="rh-step-actions"><button className="dh-button" disabled={!!busy} onClick={() => setStep(1)}><ArrowLeft size={16} />上一步</button>{!locked && <button className="dh-button is-primary" disabled={!!busy || !asset || !draft.script.trim()} onClick={() => void quote()}>{busy === 'quote' ? '正在核实费用…' : '确认文案与费用'}<ArrowRight size={16} /></button>}</div>
         </div>
         <div id="rh-step-3" hidden={step !== 3}>
           <h2 className="rh-section-title">{working ? task!.statusLabel : task?.status === 'completed' ? '口播已完成' : task?.status === 'draft' ? '确认后自动制作' : '生成与成片'}</h2>
           {working && <NarrationWaiting title="正在为您完成这一条口播" detail="当前步骤完成后会自动继续，可以切换模块，回来查看结果。" poster={asset?.previewDataUrl} />}
           {video && <div className="dh-output-actions">
-          {video && <button className="dh-button" disabled={!!busy} onClick={() => void run('repackage', async () => { applyPackaging(await unwrap(referenceApi().repackage({ id: task!.id, nextStyle: true, soundEffects: draft.soundEffects }))); setStep(3); })}>换个风格 · 本地免费</button>}
           {video && <button className="dh-button" disabled={!!busy} onClick={() => newDraft(task!)}>改文案，再做一条</button>}
           {video && <button className="dh-button is-primary" disabled={!!busy} onClick={() => void run('download', async () => {
             const creative = (window as unknown as { xiaoxiContent: { creative: { downloadCandidate(payload: { candidateId: string }): Promise<DigitalHumanResult<unknown>> } } }).xiaoxiContent.creative;
@@ -243,7 +235,7 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
         {task && (task.status === 'draft' ? <ReferenceCostSummary task={task} previewFirst={previewFirst} /> : <details className="rh-receipt"><summary>费用与用量记录</summary><ReferenceCostSummary task={task} previewFirst={previewFirst} /></details>)}
         {speech && <details className="rh-speech" open={task?.status === 'preview_ready' || task?.status === 'needs_attention'} onToggle={(event) => { if (!event.currentTarget.open) event.currentTarget.querySelector('audio')?.pause(); }}><summary>{task?.audioPrepared ? '试听本次配音' : '已保存配音（待核对）'}</summary><audio controls src={speech} aria-label="本次本人声音配音" /></details>}
         {task?.actualDurationSeconds && <p className="dh-quality">实际口播{task.actualDurationSeconds.toFixed(1)}秒。人物驱动与字幕使用同一音轨。</p>}
-        {task?.coverError && <p className="dh-message" role="status">封面暂未完成：{task.coverError}。视频可以正常播放和保存，请先查询原封面任务。</p>}
+        {task?.coverError && <p className="dh-message" role="status">封面暂未完成，视频可以正常播放和保存。</p>}
         {task?.status === 'draft' && task.quoteRevision && <label className="rh-consent"><input type="checkbox" checked={consent} disabled={!!busy} onChange={(event) => setConsent(event.target.checked)} />人物和声音来自本人或已获授权，已核对本次文案和费用。</label>}
         {capabilities && !capabilities.ready && <p className="dh-quality" role="status">{capabilities.message} <button className="dh-text-button" disabled={!!busy} onClick={() => void run('capabilities', async () => setCapabilities(await unwrap(referenceApi().capabilities())))}>重新检查连接</button></p>}
         <div className="dh-output-actions">
@@ -261,8 +253,7 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
         {asset && <p className="dh-scene-caption">{asset.width}×{asset.height} · 参考视频{asset.seconds.toFixed(1)}秒</p>}
         {!locked && asset && asset.seconds < referencePolicy.limits.narrationMinSeconds && <p className="dh-message">当前人物视频{asset.seconds.toFixed(1)}秒，完整口播需要至少{referencePolicy.limits.narrationMinSeconds}秒。可以先保存素材；未开始付费制作。</p>}
         {!locked && asset && task && (task.pipelineVersion || 4) === 4 && asset.seconds < 45 && <p className="dh-message">这份旧草稿仍按原来的30—45秒规则制作。请点击“新建口播”，使用当前素材按实际时长重新规划；原草稿和报价保留。</p>}
-        {step === 3 && video && <details className="rh-cover-settings"><summary>封面预览与下载 <small>独立3:4图片</small></summary><ReferenceCoverPanel key={task!.id} task={task!} api={referenceApi()} onTask={apply} /></details>}
-        {step !== 3 && <div className="rh-preview-summary"><h3>{asset ? '本次制作' : '先选一个出镜人物'}</h3>{asset ? <dl><div><dt>人物素材</dt><dd>{asset.seconds.toFixed(1)}秒</dd></div><div><dt>声音</dt><dd>{selectedVoice?.name || '原始表达'}</dd></div><div><dt>字幕模板</dt><dd>{draft.packagingMode === 'auto' ? '智能匹配' : selectedTemplate?.name || '保留原模板'}</dd></div><div><dt>配乐</dt><dd>自动配乐 · 人声优先</dd></div><div><dt>封面</dt><dd>{draft.includeCover !== false ? 'AI设计 · 确认费用后制作' : '不生成AI封面'}</dd></div></dl> : <p>上传视频后，这里会显示人物画面。只检查素材，不会开始付费制作。</p>}</div>}
+        {step !== 3 && <div className="rh-preview-summary"><h3>{asset ? '本次制作' : '先选一个出镜人物'}</h3>{asset ? <dl><div><dt>人物素材</dt><dd>{asset.seconds.toFixed(1)}秒</dd></div><div><dt>声音</dt><dd>{selectedVoice?.name || '原始表达'}</dd></div><div><dt>字幕模板</dt><dd>{draft.packagingMode === 'auto' ? '智能匹配' : selectedTemplate?.name || '保留原模板'}</dd></div><div><dt>配乐</dt><dd>自动配乐 · 人声优先</dd></div><div><dt>封面</dt><dd>'AI网感封面 · 自动生成，费用已含在报价里'</dd></div></dl> : <p>上传视频后，这里会显示人物画面。只检查素材，不会开始付费制作。</p>}</div>}
       </section>
     </div>
     <details ref={history} className="dh-history rh-history"><summary>制作记录 <small>{tasks.length}条</small></summary>{!tasks.length && <p className="dh-quality">还没有口播记录。完成第一次制作后，会自动保存在这里。</p>}<div>{tasks.map((item) => <button key={item.id} data-task-id={item.id} disabled={!!busy} onClick={() => { selectTask(item); if (history.current) history.current.open = false; root.current?.scrollIntoView({ block: 'start' }); }} className={task?.id === item.id ? 'is-selected' : ''}><span><strong>{item.title}</strong><small>{item.referenceName} · {new Date(item.updatedAt).toLocaleString('zh-CN')}</small></span><span>{item.statusLabel}</span></button>)}</div></details>

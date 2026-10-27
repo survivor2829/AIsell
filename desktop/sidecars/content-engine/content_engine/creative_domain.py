@@ -95,6 +95,7 @@ CREATIVE_TASK_TYPES = frozenset(
         "creative_regeneration",
         "creative_packaging",
         "creative_cover",
+        "creative_cover_backfill",
         "creative_visual_comparison",
         "product_asset_analysis",
         "product_copy",
@@ -6850,6 +6851,8 @@ class CreativeDomain:
                 result = self._run_packaging(task_id, payload)
             elif task["task_type"] == "creative_cover":
                 result = self._run_cover(task_id, payload)
+            elif task["task_type"] == "creative_cover_backfill":
+                result = self._run_cover_backfill(task_id, payload)
             elif task["task_type"] == "creative_visual_comparison":
                 result = self._run_visual_comparison(task_id, payload)
             elif task["task_type"] == "product_asset_analysis":
@@ -8644,6 +8647,122 @@ class CreativeDomain:
             "confirmation_required": bool(bailian_calls or calls),
         }
 
+    AUTO_COVER_ATTEMPTS = 2
+
+    def _run_auto_cover(self, video_id, subject):
+        """The automatic AI cover of one finished video: one request, retried once only
+        after a definite failure. A completed, submitted or unknown request is never
+        bought again; the clean local frame stays as the cover meanwhile."""
+        from .cover_design import auto_design
+        latest_status = lambda: (self.connection.execute(
+            "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (video_id,)).fetchone() or {"status": None})["status"]
+        while True:
+            finished = self._generated_row(video_id)
+            recipe = json.loads(finished["recipe_json"])
+            cover = recipe.setdefault("packaging", {}).setdefault("cover", {})
+            status = latest_status()
+            # A paid request whose result is pending or unknown is only ever queried.
+            if status in {"submitted", "outcome_unknown"}:
+                return status
+            if status == "completed" and (cover.get("design") or {}).get("mode") == "full_design":
+                return status
+            attempt = int(cover.get("auto_attempts") or 0)
+            if attempt >= self.AUTO_COVER_ATTEMPTS:
+                return status or "failed"
+            if status == "planned":
+                # Never submitted (planned precedes any paid call), e.g. an older-style
+                # request or a local preparation failure: replace it, do not pay twice.
+                pending = self.connection.execute(
+                    "SELECT id FROM cover_generation_ledger WHERE generated_video_id=? AND status='planned'", (video_id,)).fetchall()
+                for row in pending:
+                    self.update_cover_operation(row["id"], "cancelled", error_code="superseded_by_auto_cover")
+            # Count the attempt before admission so a crash cannot grant an extra one.
+            cover["auto_attempts"] = attempt + 1
+            self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?",
+                                    (self._json(recipe), self._now(), video_id))
+            design = auto_design(video_id, finished["title"], subject, finished["duration_ms"], attempt)
+            self.run_task(self.regenerate_cover(video_id, design)["task_id"])
+            if latest_status() != "failed":
+                return latest_status()
+
+    def _auto_cover_subject(self, recipe):
+        imported = str(recipe.get("imported_base_video") or "")
+        return "product" if "product_video_" in imported else "person" if "digital_human_" in imported else "scene"
+
+    def finished_cover_states(self, video_ids):
+        """Per finished video: cover_state ai | generating | local, and a version that
+        changes whenever the cover file is replaced (renderer cache key)."""
+        backfill_active = self.connection.execute(
+            "SELECT 1 FROM content_tasks WHERE task_type='creative_cover_backfill' AND status IN ('queued','analyzing','rendering') LIMIT 1"
+        ).fetchone() is not None
+        states = {}
+        for video_id in {item for item in video_ids if item}:
+            row = self.connection.execute("SELECT recipe_json, updated_at FROM generated_videos WHERE id=?", (video_id,)).fetchone()
+            if row is None:
+                continue
+            cover = (json.loads(row["recipe_json"]).get("packaging") or {}).get("cover") or {}
+            latest = self.connection.execute(
+                "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (video_id,)).fetchone()
+            if (cover.get("design") or {}).get("mode") == "full_design" and cover.get("status") == "completed":
+                state = "ai"
+            elif latest is not None and latest["status"] in {"planned", "submitted"}:
+                state = "generating"
+            elif backfill_active and cover.get("mode") not in {"reuse", "none"} and int(cover.get("auto_attempts") or 0) < self.AUTO_COVER_ATTEMPTS:
+                state = "generating"
+            else:
+                state = "local"
+            states[video_id] = {"cover_state": state, "cover_version": row["updated_at"]}
+        return states
+
+    def create_cover_backfill_task(self):
+        """Give finished videos made before automatic covers an AI cover, newest first,
+        in one background task (the creative queue runs one task at a time)."""
+        running = self.connection.execute(
+            "SELECT id FROM content_tasks WHERE task_type='creative_cover_backfill' AND status IN ('queued','analyzing','rendering') LIMIT 1"
+        ).fetchone()
+        if running is not None:
+            return self._public_task(self._task_row(running["id"]))
+        return self._create_task("creative_cover_backfill", {"required_capabilities": ["apimart"]})
+
+    def _cover_backfill_candidates(self):
+        rows = self.connection.execute(
+            """SELECT g.id, g.recipe_json, g.output_path FROM generated_videos g
+               WHERE g.status='completed' AND EXISTS (SELECT 1 FROM finished_videos f
+                     WHERE json_extract(f.metadata_json,'$.generated_video_id')=g.id)
+               ORDER BY g.created_at DESC"""
+        ).fetchall()
+        candidates = []
+        for row in rows:
+            recipe = json.loads(row["recipe_json"])
+            cover = (recipe.get("packaging") or {}).get("cover") or {}
+            if cover.get("mode") in {"reuse", "none"} or int(cover.get("auto_attempts") or 0) >= self.AUTO_COVER_ATTEMPTS:
+                continue
+            if (cover.get("design") or {}).get("mode") == "full_design" and cover.get("status") == "completed":
+                continue
+            try:
+                self._validate_generated_path(row["output_path"])
+            except (ContentEngineError, OSError, TypeError):
+                continue
+            candidates.append((row["id"], self._auto_cover_subject(recipe)))
+        return candidates
+
+    def _run_cover_backfill(self, task_id, payload):
+        candidates = self._cover_backfill_candidates()
+        covered = 0
+        for index, (video_id, subject) in enumerate(candidates):
+            if self._should_stop(task_id):
+                break
+            self._set_task(task_id, "rendering", progress=round(0.05 + 0.9 * index / max(1, len(candidates)), 3))
+            try:
+                if self._run_auto_cover(video_id, subject) == "completed":
+                    covered += 1
+            except Exception:
+                # One video's cover never blocks the others; its clean frame stays.
+                continue
+        return {"candidates": len(candidates), "covered": covered}
+
     def regenerate_cover(self, generated_video_id, design=None, *, recover_only=False, redesign=False):
         row = self._generated_row(generated_video_id)
         if row["status"] != "completed":
@@ -10012,13 +10131,10 @@ class CreativeDomain:
                 try:
                     automatic = cover.get("auto_design")
                     if isinstance(automatic, dict):
-                        from .cover_design import auto_design
-                        finished = self._generated_row(video_id)
-                        design = auto_design(video_id, finished["title"], automatic.get("subject"), finished["duration_ms"])
-                        cover_task = self.regenerate_cover(video_id, design)
+                        self._run_auto_cover(video_id, automatic.get("subject"))
                     else:
                         cover_task = self.regenerate_cover(video_id)
-                    self.run_task(cover_task["task_id"])
+                        self.run_task(cover_task["task_id"])
                 except Exception as cover_error:
                     # regenerate_cover may already have saved the design and revision; keep them.
                     latest = json.loads(self._generated_row(video_id)["recipe_json"])

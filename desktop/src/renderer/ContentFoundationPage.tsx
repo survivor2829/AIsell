@@ -1,4 +1,3 @@
-import { VideoCoverDetails } from "./VideoPresentation";
 import {
   Archive,
   CircleAlert,
@@ -20,11 +19,14 @@ import {
   Video
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ReferenceHumanApi } from "./reference-human-types";
 import "./ContentFoundationPage.css";
 
-// 本人口播的成片可以免费换一套包装（同一段数字人视频和配音，只在本机重新配字幕、配色、镜头和花字）。
-const narrationApi = () => (window as unknown as { xiaoxiDigitalHuman?: { reference?: Pick<ReferenceHumanApi, "repackageable" | "repackageVideo" | "get"> } }).xiaoxiDigitalHuman?.reference;
+// 封面全自动：每条成片由内容引擎生成一张 AI 网感封面；打开成片中心时给以前的成片在后台补上（每次运行一次）。
+let coverBackfillRequested = false;
+const creativeCoverApi = () => (window as unknown as { xiaoxiContent?: { creative?: {
+  backfillCovers?: () => Promise<{ ok: boolean }>;
+  downloadCandidate?: (payload: { candidateId: string; variant: "thumbnail" }) => Promise<{ ok: boolean; error?: string; data?: { canceled?: boolean } }>;
+} } }).xiaoxiContent?.creative;
 
 type ContentEngineState = "unavailable" | "stopped" | "starting" | "ready" | "failed";
 type AssetProbeStatus = "pending" | "ok" | "unavailable" | "failed";
@@ -76,6 +78,8 @@ type FinishedVideoItem = {
   metadata: Record<string, unknown>;
   createdAt: string;
   available: boolean;
+  coverState?: "ai" | "generating" | "local";
+  coverVersion?: string;
 };
 
 type ContentTaskStatus = "queued" | "analyzing" | "ready_for_review" | "rendering" | "completed" | "failed" | "cancelled" | "paused";
@@ -798,8 +802,6 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(FINISHED_PAGE_SIZE);
   const [brokenCovers, setBrokenCovers] = useState<Record<string, boolean>>({});
-  const [repackageable, setRepackageable] = useState<Set<string>>(new Set());
-  const [repacking, setRepacking] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async (options?: { silent?: boolean; announce?: boolean }) => {
     const api = window.xiaoxiContent;
@@ -861,26 +863,23 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
   };
 
   useEffect(() => {
-    void narrationApi()?.repackageable().then((result) => { if (result.ok && result.data) setRepackageable(new Set(result.data.generatedVideoIds)); });
-  }, [items]);
+    if (status.state !== "ready" || coverBackfillRequested) return;
+    coverBackfillRequested = true;
+    void creativeCoverApi()?.backfillCovers?.().then(() => refresh({ silent: true })).catch(() => undefined);
+  }, [refresh, status.state]);
 
-  const repackageVideo = async (generatedVideoId: string) => {
-    const api = narrationApi();
-    if (!api) return;
-    const done = () => setRepacking((current) => { const next = { ...current }; delete next[generatedVideoId]; return next; });
-    const result = await api.repackageVideo({ generatedVideoId });
-    if (!result.ok || !result.data) { setNotice(result.error || "换包装没有开始，请稍后再试。"); return; }
-    const taskId = result.data.id;
-    setRepacking((current) => ({ ...current, [generatedVideoId]: taskId }));
-    setNotice("正在换一套新包装：只在本机重新配字幕、配色和镜头，不花钱，大约一两分钟，做好后会出现在最前面。");
-    const poll = async () => {
-      const task = await api.get({ id: taskId });
-      const state = task.ok ? task.data?.status : "failed";
-      if (state === "completed") { done(); setNotice("新包装做好了，已经放在最前面，原来那条也保留着。"); void refresh({ silent: true }); return; }
-      if (!task.ok || state === "needs_attention" || state === "failed") { done(); setNotice(task.data?.error || task.error || "换包装没有完成，原来的成片不受影响。"); return; }
-      window.setTimeout(() => void poll(), 4000);
-    };
-    window.setTimeout(() => void poll(), 4000);
+  // While covers are being drawn, refresh quietly so each card switches to its AI cover.
+  const coversGenerating = items.some((item) => item.coverState === "generating");
+  useEffect(() => {
+    if (status.state !== "ready" || !coversGenerating) return undefined;
+    const timer = window.setInterval(() => void refresh({ silent: true }), 6000);
+    return () => window.clearInterval(timer);
+  }, [coversGenerating, refresh, status.state]);
+
+  const saveCover = async (generatedVideoId: string) => {
+    const result = await creativeCoverApi()?.downloadCandidate?.({ candidateId: generatedVideoId, variant: "thumbnail" });
+    if (!result?.ok) setNotice(result?.error || "封面没有保存成功，请重试。");
+    else if (!result.data?.canceled) setNotice("封面已保存。");
   };
 
   const revealVideo = async (item: FinishedVideoItem) => {
@@ -979,7 +978,7 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
                 {coverReady ? (
                   <img
                     className="finished-card-cover-image"
-                    src={`xiaoxi-content://generated/${generatedVideoId}/thumbnail`}
+                    src={`xiaoxi-content://generated/${generatedVideoId}/thumbnail?v=${encodeURIComponent(item.coverVersion || "")}`}
                     alt={`${title}封面`}
                     loading="lazy"
                     decoding="async"
@@ -991,6 +990,7 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
                     <span>暂无封面</span>
                   </div>
                 )}
+                {item.coverState === "generating" && <span className="finished-cover-badge">封面生成中</span>}
                 {available && (
                   <button className="finished-card-play" aria-label={`播放${title}`} onClick={() => void openVideo(item)} disabled={!ready}>
                     <Play size={19} fill="currentColor" />
@@ -1002,29 +1002,24 @@ export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductio
                 <span>{formatBytes(item.sizeBytes)} · {formatDate(item.createdAt)}</span>
                 {available ? (
                   <div className="finished-card-actions">
-                    <button
-                      className="primary-button finished-download-button"
-                      onClick={() => void downloadVideo(item)}
-                      disabled={!ready || Boolean(downloadingId)}
-                    >
-                      <Download size={15} />
-                      {downloadingId === item.finishedVideoId ? "保存中…" : "下载到…"}
-                    </button>
+                    <details className="finished-download-menu">
+                      <summary className={`primary-button finished-download-button${!ready || downloadingId ? " is-disabled" : ""}`}>
+                        <Download size={15} />
+                        {downloadingId === item.finishedVideoId ? "保存中…" : "下载到…"}
+                      </summary>
+                      <div className="finished-download-options">
+                        <button onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void downloadVideo(item); }} disabled={!ready || Boolean(downloadingId)}>下载视频</button>
+                        {generatedVideoId && <button onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); void saveCover(generatedVideoId); }} disabled={!ready}>保存封面</button>}
+                      </div>
+                    </details>
                     <button className="secondary-button" onClick={() => void revealVideo(item)} disabled={!ready || Boolean(downloadingId)}>
                       <FolderOpen size={15} />
                       定位文件
                     </button>
-                    {generatedVideoId && repackageable.has(generatedVideoId) && (
-                      <button className="secondary-button" onClick={() => void repackageVideo(generatedVideoId)} disabled={!ready || Boolean(repacking[generatedVideoId])}>
-                        <RefreshCw size={15} />
-                        {repacking[generatedVideoId] ? "正在换包装…" : "换个包装 · 免费"}
-                      </button>
-                    )}
                   </div>
                 ) : (
                   <p className="finished-card-missing">本地文件已删除或不可访问，已从可用成片中移出。</p>
                 )}
-                {generatedVideoId && available && <VideoCoverDetails generatedId={generatedVideoId} />}
               </div>
             </article>
           );

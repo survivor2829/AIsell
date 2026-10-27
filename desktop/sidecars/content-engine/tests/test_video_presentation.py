@@ -32,7 +32,10 @@ class VideoPresentationTests(unittest.TestCase):
                                              lambda _: self.fail('Original frame must not resolve a logo'))
             self.assertNotIn('drawtext', ' '.join(args))
             self.assertNotIn('drawbox', ' '.join(args))
-            self.assertIn('drawtext', renderer._cover_filter({'cover': {'mode': 'local_frame'}}))
+            # The old purple "course" title band is gone: a local cover is the clean frame.
+            plain = renderer._cover_filter({'title': '课程标题', 'cover': {'mode': 'local_frame'}})
+            self.assertNotIn('drawbox', plain)
+            self.assertNotIn('drawtext', plain)
 
     def test_narration_v2_mix_has_fades_ducking_and_verified_loudness(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -458,6 +461,94 @@ class VideoPresentationTests(unittest.TestCase):
                     "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at,rowid", (old_id,))]
                 self.assertEqual(["cancelled", "planned"], statuses)
                 self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
+            finally:
+                database.close()
+
+    def test_automatic_cover_retries_once_and_backfills_older_videos(self):
+        import struct
+        import zlib
+        from content_engine.apimart_cover import APIMartTaskFailed
+        from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
+
+        def png(file, width, height):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+            Path(file).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+                + chunk(b"IDAT", zlib.compress((b"\0" + b"\0\x80\0" * width) * height)) + chunk(b"IEND", b""))
+
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source = root / "source.mp4"
+            source.write_bytes(b"cover-retry-fixture")
+            database = Database(root / "engine").open()
+
+            def render(**request):
+                target = request["output_dir"]
+                target.mkdir(parents=True)
+                (target / "video.mp4").write_bytes(source.read_bytes())
+                (target / "cover.jpg").write_bytes(b"local-cover")
+                return {"video_path": target / "video.mp4", "thumbnail_path": target / "cover.jpg"}
+            analyzer = SimpleNamespace(cloud_client=None, ffmpeg_path="fixture", _command=lambda args: png(args[-1], 300, 400))
+            renderer = SimpleNamespace(_probe_rendered_media=lambda _: {"duration_ms": 3000}, render=render,
+                                       ffprobe_path="fixture", ffmpeg_path="fixture",
+                                       _command=lambda args, **_kwargs: png(args[-1], 1080, 1440))
+            renderer.compose_cover = lambda *args, **kwargs: FFmpegCreativeRenderer.compose_cover(renderer, *args, **kwargs)
+            probe_patch = mock.patch.object(FFprobeAdapter, "probe", lambda _adapter, file, kind: ProbeOutcome(
+                status="ok", width=struct.unpack(">II", Path(file).read_bytes()[16:24])[0],
+                height=struct.unpack(">II", Path(file).read_bytes()[16:24])[1]))
+            probe_patch.start()
+            self.addCleanup(probe_patch.stop)
+            outcomes = []
+            def poll(*_args, **_kwargs):
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            submit = mock.Mock(return_value="provider-cover-id")
+            cover_client = SimpleNamespace(configured=True, submit=submit, poll=poll,
+                                           download=lambda _url, target: png(target, 768, 1024))
+            transcript = lambda: {"source_sha256": domain._sha256_file(source), "time_unit": "ms",
+                "utterances": [{"text": "看清细节。", "start_time": 100, "end_time": 2800,
+                    "words": [{"text": "看清", "start_time": 100, "end_time": 1000},
+                              {"text": "细节", "start_time": 1100, "end_time": 2800}]}]}
+            try:
+                with mock.patch.object(CreativeDomain, "_sync_configured_voice_persona"):
+                    domain = CreativeDomain(database, new_id=lambda prefix: prefix + "_" + uuid.uuid4().hex,
+                        now=lambda: "2026-10-27T12:00:00Z", analyzer=analyzer, renderer=renderer, cover_client=cover_client)
+                # 1. Two definite failures: one retry, then the clean local frame stays; no third purchase.
+                outcomes[:] = [APIMartTaskFailed("failed"), APIMartTaskFailed("failed")]
+                product = domain.import_base_video({"source_id": "product_video_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "看清细节", "confirmed_script": "看清细节。", "cover_mode": "ai_design", "prepared_transcript": transcript()})
+                product_id = domain.run_task(product["task_id"])["generated_video_id"]
+                self.assertEqual(2, submit.call_count)
+                recipe = json.loads(domain._generated_row(product_id)["recipe_json"])
+                self.assertFalse(recipe["presentation"]["showTitle"], "no topic bar over product videos")
+                self.assertEqual(2, recipe["packaging"]["cover"]["auto_attempts"])
+                self.assertEqual("local", domain.finished_cover_states([product_id])[product_id]["cover_state"])
+                # 2. An unknown result is never retried.
+                outcomes[:] = [APIMartOutcomeUnknown("provider-cover-id", "lost")]
+                unknown = domain.import_base_video({"source_id": "product_video_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "结果不明", "confirmed_script": "看清细节。", "cover_mode": "ai_design", "prepared_transcript": transcript()})
+                unknown_id = domain.run_task(unknown["task_id"])["generated_video_id"]
+                self.assertEqual(3, submit.call_count)
+                # 3. An older video without an AI cover is covered by the backfill, once.
+                old = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "老视频", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                old_id = domain.run_task(old["task_id"])["generated_video_id"]
+                self.assertEqual(3, submit.call_count, "local_frame imports do not buy a cover by themselves")
+                outcomes[:] = ["https://example.com/cover.png"]
+                backfill = domain.create_cover_backfill_task()
+                self.assertEqual(backfill["task_id"], domain.create_cover_backfill_task()["task_id"], "one backfill at a time")
+                self.assertEqual("generating", domain.finished_cover_states([old_id])[old_id]["cover_state"])
+                result = domain.run_task(backfill["task_id"])
+                self.assertEqual("completed", result["status"], result)
+                self.assertEqual(4, submit.call_count, "only the old video is bought; failed and unknown ones are not")
+                states = domain.finished_cover_states([old_id, product_id, unknown_id])
+                self.assertEqual(["ai", "local", "local"], [states[i]["cover_state"] for i in (old_id, product_id, unknown_id)])
+                self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
+                domain.run_task(domain.create_cover_backfill_task()["task_id"])
+                self.assertEqual(4, submit.call_count, "a second backfill buys nothing")
             finally:
                 database.close()
 

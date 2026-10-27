@@ -760,7 +760,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       controller: contentEngineController,
       providerCapabilityStatus: providerGatewaySupports,
       beforeProviderWork: beforeContentProviderWork,
-      readCoverPrices,
       dialog,
       shell,
       getMainWindow: () => mainWindow

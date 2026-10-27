@@ -155,8 +155,9 @@ def run_imported_video(domain, task_id, payload):
     if payload.get("audio_profile") == "narration_v2":
         recipe["imported_audio_profile"] = "narration_v2"
     recipe["confirmed_script"] = script
-    if payload["source_id"].startswith("digital_human_"):
-        recipe["presentation"]["showTitle"] = False
+    # No fixed topic bar over imported videos (digital human and product): the title
+    # belongs on the cover, and the bar read as an old course template.
+    recipe["presentation"]["showTitle"] = False
     if payload.get("music_track_id"):
         music = domain._select_auto_mix_music({}, required_duration_ms=duration, allowed_track_ids=[payload["music_track_id"]])
         if music is None:

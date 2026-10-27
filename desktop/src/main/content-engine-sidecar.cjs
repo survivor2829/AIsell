@@ -49,7 +49,7 @@ const PROVIDER_ENV_KEYS = new Set([
 ]);
 const PROVIDER_TASK_TYPES = new Set([
   "creative_analysis", "course_generation", "mix_generation", "creative_regeneration",
-  "creative_packaging", "creative_cover", "creative_visual_comparison", "product_asset_analysis",
+  "creative_packaging", "creative_cover", "creative_cover_backfill", "creative_visual_comparison", "product_asset_analysis",
   "product_copy", "product_voice", "product_generation", "auto_mix_v2_generation",
   "auto_mix_v2_regeneration", "guided_auto_mix_analysis", "guided_auto_mix_draft",
   "guided_auto_mix_supplemental_image", "narrated_batch_v1", "import_base_video"
@@ -1020,6 +1020,7 @@ function createContentEngineSidecar(options = {}) {
       "create_visual_comparison_task",
       { candidate_id: generatedVideoId(candidateId) }
     ),
+    backfillCovers: () => request("backfill_auto_covers", {}),
     regenerateCover: (candidateId, design, control) => request("regenerate_cover", {
       candidate_id: candidateId, ...(design ? { design } : {}), ...(control?.recoverOnly ? { recover_only: true } : {}),
       ...(control?.redesign ? { redesign: true } : {})

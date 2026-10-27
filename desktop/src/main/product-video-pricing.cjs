@@ -257,9 +257,12 @@ function createCoverPriceReader({ fetchJson, fetch: fetchImpl, gatewayClient } =
     }
     return price.payload;
   }
+  // The price is public and anonymous: right after launch the gateway session may not
+  // be ready yet, so fall back to the public page instead of failing the quote.
+  const readAny = () => readPayload().catch(() => read(PRICE_ORIGIN + COVER_MODEL));
   return async () => {
     if (cached && Date.now() - Date.parse(cached.checkedAt) < MAX_AGE) return cached;
-    if (!pending) pending = readPayload().then((payload) => { cached = parseCoverPrice(payload); return cached; }).finally(() => { pending = null; });
+    if (!pending) pending = readAny().then((payload) => { cached = parseCoverPrice(payload); return cached; }).finally(() => { pending = null; });
     return pending;
   };
 }

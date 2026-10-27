@@ -85,7 +85,7 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   repackageVideo: "content-engine:repackage-video",
   preflightVisualComparison: "content-engine:preflight-visual-comparison",
   createVisualComparisonTask: "content-engine:create-visual-comparison-task",
-  coverQuote: "content-engine:cover-quote",
+  backfillCovers: "content-engine:backfill-covers",
   regenerateCover: "content-engine:regenerate-cover",
   updateCoverTitle: "content-engine:update-cover-title",
   getCreativeProject: "content-engine:get-creative-project",
@@ -128,7 +128,7 @@ function providerCapabilitiesForTask(task = {}) {
     ))];
   }
   if (taskType === "narrated_batch_v1") return NARRATED_PROVIDER_CAPABILITIES;
-  if (["creative_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
+  if (["creative_cover", "creative_cover_backfill", "guided_auto_mix_supplemental_image"].includes(taskType)) {
     return ["apimart"];
   }
   // New sidecars persist an explicit list, including [] for fully local work.
@@ -849,7 +849,9 @@ function publicFinished(item = {}) {
       : 0,
     metadata: stripPrivateValue(item.metadata || {}),
     available: item.available !== false,
-    createdAt: safeText(item.created_at, 64)
+    createdAt: safeText(item.created_at, 64),
+    coverState: ["ai", "generating", "local"].includes(item.cover_state) ? item.cover_state : "local",
+    coverVersion: safeText(item.cover_version, 64)
   };
 }
 
@@ -3512,37 +3514,22 @@ function registerContentEngineIpc(options = {}) {
       )
     );
   });
-  // A new paid cover needs a fresh quote the user confirmed for this video; querying
-  // an already submitted request (recover) costs nothing and needs no quote.
-  const coverQuotes = new Map();
-  handle(CONTENT_ENGINE_CHANNELS.coverQuote, async (payload) => {
-    assertKeys(payload, new Set(["candidateId"]));
-    const candidateId = validateId(payload.candidateId, "generated_video");
-    const prices = await options.readCoverPrices?.();
-    if (!(prices?.imageUsd > 0 && prices.fxCnyPerUsd > 0)) {
-      throw Object.assign(new Error("未取得有效封面报价，未提交生成。"), { code: "cover_price_unavailable" });
-    }
-    const quote = { revision: randomBytes(16).toString("hex"), candidateId, checkedAt: new Date().toISOString(),
-      maximumCny: Math.ceil(prices.imageUsd * prices.fxCnyPerUsd * 100) / 100,
-      estimatedCny: Math.round((prices.estimatedImageUsd || prices.imageUsd) * prices.fxCnyPerUsd * 100) / 100,
-      note: "1张AI网感封面（gpt-image-2.5，1K），按美元公开价与预算汇率折算；实际扣费以账单为准。" };
-    coverQuotes.set(candidateId, quote);
-    return quote;
+  // Covers are automatic (one AI cover per finished video, drawn by the content
+  // engine). The renderer can only start the background fill for older videos and
+  // query an already submitted request; it can never buy a cover directly.
+  handle(CONTENT_ENGINE_CHANNELS.backfillCovers, async (payload) => {
+    if (payload !== undefined) assertKeys(payload, new Set());
+    await options.beforeProviderWork?.(["apimart"]);
+    const result = await controller.backfillCovers();
+    return result?.task_id ? publicTask(result) : { status: String(result?.status || "skipped") };
   });
   handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
-    assertKeys(payload, new Set(["candidateId", "quoteRevision", "recover"]));
-    const candidateId = validateId(payload.candidateId, "generated_video");
-    if (payload.recover === true) {
-      await options.beforeProviderWork?.(["apimart"]);
-      return publicTask(await controller.regenerateCover(candidateId, null, { recoverOnly: true }));
+    assertKeys(payload, new Set(["candidateId", "recover"]));
+    if (payload.recover !== true) {
+      throw Object.assign(new Error("封面会自动生成，无需手动操作。"), { code: "cover_automatic" });
     }
-    const quote = coverQuotes.get(candidateId);
-    if (!quote || quote.revision !== payload.quoteRevision || Date.now() - Date.parse(quote.checkedAt) > 3600000) {
-      throw Object.assign(new Error("请重新查看封面费用后确认。"), { code: "cover_confirmation_required" });
-    }
-    coverQuotes.delete(candidateId);
     await options.beforeProviderWork?.(["apimart"]);
-    return publicTask(await controller.regenerateCover(candidateId, null, { redesign: true }));
+    return publicTask(await controller.regenerateCover(validateId(payload.candidateId, "generated_video"), null, { recoverOnly: true }));
   });
   handle(CONTENT_ENGINE_CHANNELS.updateCoverTitle, async (payload) => {
     assertKeys(payload, new Set(["candidateId", "headlineLines"]));

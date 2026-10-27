@@ -268,7 +268,9 @@ function createReferenceHumanService(options = {}) {
       packagingMode, soundEffects: input.soundEffects !== false,
       title: String(input.title || script.split(/[，。！？\n]/u)[0]).trim().slice(0, 24), captionStyleId, emphasisPhrases,
       voiceStyleId: voiceDelivery.id, voiceDelivery: { ...voiceDelivery, sampleRate: previous?.version < 4 ? 24000 : 48000 },
-      includeCover: input.includeCover ?? !previous, coverStyle, coverStyleExplicit: Boolean(input.coverStyle), referenceSource: sources.validateReference(input.referenceSource),
+      // Covers are automatic: the content engine draws one AI cover per finished video
+      // (engineCover); the quote always reserves it. Customers make no cover choices.
+      includeCover: true, engineCover: true, coverStyle, coverStyleExplicit: Boolean(input.coverStyle), referenceSource: sources.validateReference(input.referenceSource),
       referenceSeconds: asset.seconds, status: 'draft', operations: {}, progress: 0, createdAt: previous?.createdAt || new Date().toISOString() };
     save(task); return publicTask(task);
   }
@@ -295,7 +297,7 @@ function createReferenceHumanService(options = {}) {
     let coverReserveCny = 0, coverPrices;
     if (task.includeCover) {
       coverPrices = await options.readCoverPrices?.();
-      if (!(coverPrices?.imageUsd > 0 && coverPrices.fxCnyPerUsd > 0)) throw fail('reference_cover_price_unavailable', '未取得封面报价，可取消AI封面后制作视频。');
+      if (!(coverPrices?.imageUsd > 0 && coverPrices.fxCnyPerUsd > 0)) throw fail('reference_cover_price_unavailable', '封面报价暂不可用，请稍后重试；尚未提交付费制作。');
       coverReserveCny = round(coverPrices.imageUsd * coverPrices.fxCnyPerUsd);
     }
     const asset = read(task.referenceAssetId, 'assets');
@@ -463,7 +465,8 @@ function createReferenceHumanService(options = {}) {
           task.musicSelected = true; save(task);
         }
         const result = await options.packageVideo({ source_id: `digital_human_${task.id.slice(3)}`, input_video_path: file(task.baseVideoFile),
-          title: task.title, confirmed_script: task.script, template_id: 'topic_fixed', caption_style_id: task.captionStyleId, cover_mode: 'local_frame',
+          title: task.title, confirmed_script: task.script, template_id: 'topic_fixed', caption_style_id: task.captionStyleId,
+          cover_mode: task.engineCover && !task.sourceTaskId ? 'ai_design' : 'local_frame',
           emphasis_phrases: task.emphasisPhrases || [],
           ...(task.packagingPlan ? { narration_plan: task.packagingPlan } : {}),
           ...(task.version >= 4 ? { audio_profile: 'narration_v2' } : {}),
@@ -483,12 +486,13 @@ function createReferenceHumanService(options = {}) {
       if (result?.status === 'completed') {
         const generatedVideoId = result.generated_video_id || result.result?.generated_video_id || result.output?.generated_video_id;
         if (!generatedVideoId) throw fail('reference_result_missing', '成片编号尚未登记，请继续查询包装任务。');
-        if (task.includeCover && !task.sourceTaskId) {
+        // Tasks from before automatic covers finish their own quoted cover request.
+        if (task.includeCover && !task.sourceTaskId && !task.engineCover) {
           task.coverRequest = { revision: task.approvedQuoteRevision, requestId: randomUUID(), design: coverDesign(task, { title: task.title, style: task.quote.coverStyle, frameSeconds: 0 }) };
           task.autoCoverState = 'planned';
         }
         transition(task, 'completed', { generatedVideoId, progress: 100 });
-        if (task.includeCover && !task.sourceTaskId) await automaticCover(task, false);
+        if (task.includeCover && !task.sourceTaskId && !task.engineCover) await automaticCover(task, false);
       }
     }
   }

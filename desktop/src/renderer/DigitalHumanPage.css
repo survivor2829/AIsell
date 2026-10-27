@@ -125,14 +125,6 @@
 .rh-ai-cover { border-top:1px solid #e3e5eb; padding-top:20px; }
 .rh-ai-cover h3 { font-size:16px; margin:0 0 16px; }
 .rh-ai-cover h3 small { color:#596374; font-weight:400; }
-.rh-cover-images { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-.rh-cover-images figure { margin:0; min-width:0; }
-.rh-cover-images img { display:block; width:100%; aspect-ratio:3/4; object-fit:contain; background:#eceeea; }
-.rh-cover-open { display:block; width:100%; border:0; padding:0; background:transparent; cursor:zoom-in; }
-.rh-cover-dialog { max-width:90vw; max-height:90vh; border:0; border-radius:12px; padding:16px; }
-.rh-cover-dialog::backdrop { background:#10181ebd; }
-.rh-cover-dialog > img { display:block; max-width:80vw; height:75vh; object-fit:contain; margin-top:12px; }
-.rh-cover-images figcaption { margin-top:8px; color:#596374; font-size:12px; }
 .rh-ai-cover .dh-field { margin-top:16px; }
 .rh-ai-cover input[type=range] { accent-color:#b91536; }
 .rh-steps { display:flex; gap:12px; margin:0 0 22px; border-bottom:1px solid #e3e5eb; }

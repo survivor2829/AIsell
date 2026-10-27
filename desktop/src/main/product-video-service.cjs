@@ -136,7 +136,7 @@ function createProductVideoService(options = {}) {
       hold();
       const id = `pv_${randomUUID()}`, createdAt = new Date().toISOString();
       const task = { ...input, productName: String(input.productName || '').trim(), facts: String(input.facts || '').trim(), expression: String(input.expression || '').trim(),
-        id, createdAt, updatedAt: createdAt, version: 3, audioVoicePolicy: 'workbench', presentationPolicy: 'reference_narration', autoCover: true, status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
+        id, createdAt, updatedAt: createdAt, version: 3, audioVoicePolicy: 'workbench', presentationPolicy: 'reference_narration', status: 'draft', budgetCny, budgetPolicy: automaticBudget ? 'quoted_production' : 'explicit', prices, plan, sceneIds: plan.sceneIds, currentShot: 0, shots: plan.shots.map(() => ({})), operations: {}, archivedOperations: [], autoRetryFailedVideo: true, videoRetryCount: 0 };
       save(task); return publicTask(task);
     });
   }
@@ -403,8 +403,8 @@ function createProductVideoService(options = {}) {
           const output = await options.packageVideo({ source_id: `product_video_${task.id.slice(3)}`,
             input_video_path: source, title: task.productName || '产品现场演示',
             confirmed_script: task.plan.shots.map(shot => shot.narration || '').join(''),
-            // New tasks get one AI 3:4 cover (billed in the cover ledger); older tasks keep the local frame.
-            template_id: 'topic_fixed', cover_mode: task.autoCover ? 'ai_design' : 'local_frame',
+            // Every product video gets one AI 3:4 cover (billed in the cover ledger).
+            template_id: 'topic_fixed', cover_mode: 'ai_design',
             prepared_transcript: { time_unit: 'ms', utterances: task.preparedUtterances, source_sha256: digest(fs.readFileSync(source)) } });
           if (!output?.task_id) throw fail('product_video_packaging_unavailable', '包装服务尚未返回任务编号，原镜头已保留。');
           task.packagingTaskId = output.task_id; task.projectId = output.project_id; save(task);
