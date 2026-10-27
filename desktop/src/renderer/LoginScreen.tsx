@@ -13,10 +13,10 @@ type AccountApi = {
 const accountApi = () => (window as unknown as { xiaoxiAccount?: AccountApi }).xiaoxiAccount;
 const maskPhone = (phone = "") => phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(7)}` : phone;
 
-function PasswordInput({ id, value, onChange, placeholder, disabled, autoComplete }: { id: string; value: string; onChange: (value: string) => void; placeholder: string; disabled: boolean; autoComplete: string }) {
+function PasswordInput({ id, value, onChange, placeholder, disabled, autoComplete, autoFocus = false }: { id: string; value: string; onChange: (value: string) => void; placeholder: string; disabled: boolean; autoComplete: string; autoFocus?: boolean }) {
   const [shown, setShown] = useState(false);
   return <div className="signin-input-wrap">
-    <input id={id} type={shown ? "text" : "password"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} disabled={disabled} autoComplete={autoComplete} spellCheck={false} />
+    <input id={id} type={shown ? "text" : "password"} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} disabled={disabled} autoComplete={autoComplete} autoFocus={autoFocus} spellCheck={false} />
     <button className="signin-reveal" type="button" onClick={() => setShown((current) => !current)} aria-label={shown ? "隐藏密码" : "显示密码"} aria-pressed={shown} disabled={disabled}>{shown ? <EyeOff size={18} /> : <Eye size={18} />}</button>
   </div>;
 }
@@ -72,9 +72,9 @@ function AccountForm({ status, onLogin, onStatus }: { status: LicenseStatus; onL
     </div> : <>
       {!change && <label className="signin-field" htmlFor="signin-phone"><span>手机号</span>
         <div className="signin-input-wrap"><input id="signin-phone" inputMode="numeric" maxLength={11} value={phone} onChange={(event) => { setPhone(event.target.value.replace(/\D/gu, "")); setError(""); }}
-          placeholder="请输入手机号" autoComplete="username" disabled={busy} /></div></label>}
+          placeholder="请输入手机号" autoComplete="username" autoFocus={!setup && !status.phone} disabled={busy} /></div></label>}
       {!setup && !change && <label className="signin-field" htmlFor="signin-password"><span>密码</span>
-        <PasswordInput id="signin-password" value={password} onChange={(value) => { setPassword(value); setError(""); }} placeholder="请输入密码" disabled={busy} autoComplete="current-password" /></label>}
+        <PasswordInput id="signin-password" value={password} onChange={(value) => { setPassword(value); setError(""); }} placeholder="请输入密码" disabled={busy} autoComplete="current-password" autoFocus={Boolean(status.phone)} /></label>}
       {change && <label className="signin-field" htmlFor="signin-current"><span>当前密码（管理员给你的）</span>
         <PasswordInput id="signin-current" value={current} onChange={setCurrent} placeholder="请输入当前密码" disabled={busy} autoComplete="current-password" /></label>}
       {(setup || change) && <>
@@ -102,15 +102,22 @@ const LINES: Record<AgentRoleKey, string[]> = {
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
   tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
 };
-// Roles with a transparent idle loop (login/<role>.webm, VP9 with alpha); the rest breathe as stills.
-const VIDEO_ROLES = new Set<AgentRoleKey>(["production"]);
+// Each presenter greets once in character (login/<role>.webm, VP9 with alpha) and then simply stands
+// still on the closing smile: any looping or scheduled motion read as acted. Without a clip, the still cut-out.
+const VIDEO_ROLES = new Set<AgentRoleKey>(["production", "agent", "operations", "business", "materials", "tutorials"]);
+
 const ROLE_KEY = "xiaoxi-login-presenter";
 
 function greeting(hour = new Date().getHours()) {
   return hour < 6 ? "夜深了" : hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
 }
-function readRole(): AgentRoleKey {
-  try { const saved = localStorage.getItem(ROLE_KEY) as AgentRoleKey | null; if (saved && AGENT_ROLE_ORDER.includes(saved)) return saved; } catch { /* Convenience only. */ }
+// Customers come here to sign in, not to browse: each launch the next employee greets them on their
+// own (小影 first), so the whole team gets met over time without a single click.
+function nextRole(): AgentRoleKey {
+  try {
+    const last = localStorage.getItem(ROLE_KEY) as AgentRoleKey | null;
+    if (last && AGENT_ROLE_ORDER.includes(last)) return AGENT_ROLE_ORDER[(AGENT_ROLE_ORDER.indexOf(last) + 1) % AGENT_ROLE_ORDER.length];
+  } catch { /* Convenience only. */ }
   return "production";
 }
 // Low-end PCs and "reduce motion" get the still figure: no video decoding at startup.
@@ -141,7 +148,7 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const [revealed, setRevealed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [role, setRole] = useState<AgentRoleKey>(readRole);
+  const [role, setRole] = useState<AgentRoleKey>(nextRole);
   const [still] = useState(prefersStill);
   const saved = Boolean(license?.authorized) && !replaceSaved;
   const identity = AGENT_ROLE_IDENTITIES[role];
@@ -164,9 +171,11 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
     });
   }
 
+  // Remember who greeted, so the next launch moves on to the next employee.
+  useEffect(() => { try { localStorage.setItem(ROLE_KEY, role); } catch { /* Convenience only. */ } }, [role]);
+
   function choose(next: AgentRoleKey) {
     setRole(next);
-    try { localStorage.setItem(ROLE_KEY, next); } catch { /* Convenience only. */ }
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -191,8 +200,12 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const step = (index: number) => ({ "--step": index } as CSSProperties);
   return <main ref={scene} className={`signin-scene${still ? " is-still" : ""}`} style={{ "--signin-accent": accent } as CSSProperties} onMouseMove={follow}>
     <div className="signin-aurora" aria-hidden="true" /><div className="signin-grain" aria-hidden="true" />
+    <header className="signin-brand signin-rise" style={step(0)}>
+      <img className="signin-logo" src="./xilianhui-logo.jpg" alt="" />
+      <b>玺联惠</b><span>AI短视频获客</span>
+      <small className="signin-online">6 位 AI 员工在线待命</small>
+    </header>
     <section className="signin-stage" aria-label={`${identity.name}：${identity.responsibility}`}>
-      <img className="signin-logo signin-rise" style={step(0)} src="./xilianhui-logo.jpg" alt="玺联惠" />
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>
@@ -201,14 +214,14 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
           {AGENT_ROLE_ORDER.map((key) => <button key={key} type="button" className={key === role ? "is-active" : ""} aria-pressed={key === role}
             aria-label={`${AGENT_ROLE_IDENTITIES[key].name}，${AGENT_ROLE_IDENTITIES[key].responsibility}`} onClick={() => choose(key)}>
             <img src={characterAsset(`login/${key}.webp`)} alt="" />
-            <span className="signin-card" aria-hidden="true"><b>{AGENT_ROLE_IDENTITIES[key].name}</b><small>{AGENT_ROLE_IDENTITIES[key].responsibility}</small></span>
+            <span className="signin-crew-name" aria-hidden="true"><b>{AGENT_ROLE_IDENTITIES[key].name}</b><small>{AGENT_ROLE_IDENTITIES[key].responsibility}</small></span>
           </button>)}
         </nav>
       </div>
       <figure className="signin-figure" key={role}>
         {VIDEO_ROLES.has(role) && !still
-          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted loop playsInline aria-hidden="true" />
-          : <img className={still ? "" : "is-breathing"} src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
+          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true" />
+          : <img src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>
     <div className="signin-side">
