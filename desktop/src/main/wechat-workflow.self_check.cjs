@@ -21,6 +21,31 @@ function trackedMkdtemp(prefix) {
   return dir;
 }
 
+// A customer renamed in WeChat after being added: once contact sync writes the new remark,
+// automatic reply must look for the new chat title, or the person is silently skipped.
+async function checkRecipientsFollowContactSync() {
+  const rootDir = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-recipient-rename-"));
+  const seen = [];
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "synced-account",
+    reply: {
+      prepareWorkflowRecipients: async () => [{ id: "wxid_customer", name: "A测试客户", remark: "A测试客户", wechatId: "wakeup", wechatAccountId: "synced-account" }],
+      runWorkflowStep: async ({ recipients }) => { seen.push(recipients.map((person) => person.remark)); return { handled: false, status: "waiting" }; }
+    },
+    executors: {}
+  });
+  await control.addRecipients(["wxid_customer"]);
+  await control.start();
+  await control.tick();
+  fs.mkdirSync(path.join(rootDir, "touch"), { recursive: true });
+  fs.writeFileSync(path.join(rootDir, "touch", "contacts.json"), JSON.stringify([
+    { id: "wxid_customer", name: "城胜", remark: "城胜", nickname: "若", wechatId: "wakeup", wechatAccountId: "synced-account" }]));
+  await control.tick();
+  assert.deepEqual(seen, [["A测试客户"], ["城胜"]], "after contact sync the reply looks for the renamed chat");
+  await control.pause?.();
+}
+
 // Replies and Moments act on whichever WeChat account is logged in; after a
 // switch away from the synced account the workflow must stop, not reply.
 async function checkLiveAccountGate() {
@@ -2887,6 +2912,7 @@ async function main() {
   await checkR008BoundedRecovery();
   await checkTouchCopyModes();
   await checkLiveAccountGate();
+  await checkRecipientsFollowContactSync();
   await checkR008PassportAttachmentCount();
   await checkR008PartialSend();
   await checkT5FourthReviewExits();
