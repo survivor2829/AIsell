@@ -102,15 +102,6 @@ const LINES: Record<AgentRoleKey, string[]> = {
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
   tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
 };
-// What each employee does, as short capability chips beside the presenter (no numbers: there is no customer data before login).
-const ROLE_CARDS: Record<AgentRoleKey, string[]> = {
-  production: ["一键出片", "自动配音配字幕", "封面一起做好"],
-  agent: ["精准触达老客户", "自动回复咨询", "朋友圈按计划运营"],
-  operations: ["一张图出整套详情页", "一句话换风格", "参数图自动排版"],
-  business: ["评论里找意向客户", "查企业、留线索", "点赞关注帮你跟进"],
-  materials: ["现场素材按场景分类", "做视频随手取用", "工厂、小区、设备都有"],
-  tutorials: ["一段操作一段视频", "随时暂停重看", "三分钟上手"]
-};
 // Transparent clips (VP9 with alpha): login/<role>.webm greets once, then login/<role>-idle.webm,
 // which starts on the greeting's last frame, loops real life signs (blinks, breathing). Without an
 // idle clip the presenter holds the closing frame; without any clip it is the still cut-out.
@@ -229,13 +220,10 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
           {AGENT_ROLE_ORDER.map((key) => <button key={key} type="button" className={key === role ? "is-active" : ""} aria-pressed={key === role}
             aria-label={`${AGENT_ROLE_IDENTITIES[key].name}，${AGENT_ROLE_IDENTITIES[key].responsibility}`} onClick={() => choose(key)}>
             <img src={characterAsset(`login/${key}.webp`)} alt="" />
-            <span className="signin-card" aria-hidden="true"><b>{AGENT_ROLE_IDENTITIES[key].name}</b><small>{AGENT_ROLE_IDENTITIES[key].responsibility}</small></span>
+            <span className="signin-crew-name" aria-hidden="true"><b>{AGENT_ROLE_IDENTITIES[key].name}</b><small>{AGENT_ROLE_IDENTITIES[key].responsibility}</small></span>
           </button>)}
         </nav>
       </div>
-      <ul className="signin-chips" key={`chips-${role}`} aria-label={`${identity.name}能帮你做的事`}>
-        {ROLE_CARDS[role].map((chip, index) => <li key={chip} style={step(index + 2)} className="signin-rise">{chip}</li>)}
-      </ul>
       <figure className="signin-figure" key={role}>
         {VIDEO_ROLES.has(role) && !still
           ? <Presenter role={role} />
