@@ -1,6 +1,6 @@
 // One paid Wan3 image-to-video clip for the login presenter (5 s, 720P, silent),
 // sent through the provider gateway with the test profile's saved license.
-// Usage: npx electron scripts/generate-login-presenter-loop.cjs --role production --input <frame.jpg> --output <clip.mp4>
+// Usage: npx electron scripts/generate-login-presenter-loop.cjs --role production [--kind greet|idle] --input <frame.jpg> --output <clip.mp4>
 // The operation id is written to <clip.mp4>.receipt.json before submitting. Running again
 // replays that gateway receipt and polls the same task; it never submits a second paid request.
 const fs = require("node:fs");
@@ -24,6 +24,9 @@ const PROMPTS = {
   materials: "画面中的女生把手里的平板稍微转向镜头，像在展示里面的素材，然后温柔地笑着微微歪头，轻轻眨一下眼。" + STAGE,
   tutorials: "画面中的女生用手指轻点一下平板上的播放按钮，然后看向镜头，亲切耐心地微笑，轻轻点一下头，像在说「跟我一步步来」。" + STAGE
 };
+// The idle clip starts from the greeting's last frame and loops after it: only life signs, no gestures.
+const IDLE = "画面中的人物保持现在的站姿、手势和微笑完全不变，只有非常细微的自然动作：自然地眨一两次眼，胸口和肩膀随呼吸轻轻起伏，头部和眼神有极轻微的自然移动。"
+  + "不挥手、不点头、不说话，手和手中的物品保持原位；镜头完全固定不动，背景始终是同一片纯色，不出现任何新的物体、文字或光效；人物的样貌、发型、服装和颜色保持不变；首尾姿态一致。";
 const VIDEO_ROUTE = "/bailian/api/v1/services/aigc/video-generation/video-synthesis";
 
 function readArgs(argv) {
@@ -36,6 +39,8 @@ function readArgs(argv) {
 }
 
 const args = readArgs(process.argv.slice(2));
+const kind = args.kind === "idle" ? "idle" : "greet";
+const prompt = kind === "idle" ? IDLE : PROMPTS[args.role];
 if (args.check !== "1" && !PROMPTS[args.role]) throw new Error(`--role must be one of ${Object.keys(PROMPTS).join(", ")}.`);
 if (args.check === "1") { args.input = args.input || __filename; args.output = args.output || "check"; }
 const input = path.resolve(String(args.input || "")), output = path.resolve(String(args.output || ""));
@@ -64,10 +69,10 @@ app.whenReady().then(async () => {
 
   let receipt = fs.existsSync(receiptFile) ? JSON.parse(fs.readFileSync(receiptFile, "utf8")) : null;
   if (!receipt) {
-    receipt = { role: args.role || "", operationId: `login-loop-${args.role || "presenter"}-${randomUUID()}`, model: "wan3.0-video", resolution: "720P", seconds: 5, createdAt: new Date().toISOString() };
+    receipt = { role: args.role || "", kind, operationId: `login-${kind}-${args.role || "presenter"}-${randomUUID()}`, model: "wan3.0-video", resolution: "720P", seconds: 5, createdAt: new Date().toISOString() };
     fs.writeFileSync(receiptFile, JSON.stringify(receipt, null, 2));
     const image = `data:image/jpeg;base64,${fs.readFileSync(input).toString("base64")}`;
-    const body = { model: "wan3.0-video", input: { prompt: PROMPTS[args.role], media: [{ type: "reference_image", url: image }] },
+    const body = { model: "wan3.0-video", input: { prompt, media: [{ type: "reference_image", url: image }] },
       parameters: { resolution: "720P", ratio: "9:16", duration: 5, audio: false, prompt_extend: false, watermark: false } };
     const submitted = await call(VIDEO_ROUTE, { method: "POST", body: JSON.stringify(body), headers: { "X-DashScope-Async": "enable", "X-Xiaoxi-Operation-Id": receipt.operationId } });
     receipt.taskId = submitted?.output?.task_id || "";

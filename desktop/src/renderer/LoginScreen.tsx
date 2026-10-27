@@ -102,9 +102,32 @@ const LINES: Record<AgentRoleKey, string[]> = {
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
   tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
 };
-// Roles with a transparent greeting (login/<role>.webm, VP9 with alpha). It plays once, then the
-// presenter holds the closing smile and only breathes; the rest breathe as stills.
+// What each employee does, as short capability chips beside the presenter (no numbers: there is no customer data before login).
+const ROLE_CARDS: Record<AgentRoleKey, string[]> = {
+  production: ["一键出片", "自动配音配字幕", "封面一起做好"],
+  agent: ["精准触达老客户", "自动回复咨询", "朋友圈按计划运营"],
+  operations: ["一张图出整套详情页", "一句话换风格", "参数图自动排版"],
+  business: ["评论里找意向客户", "查企业、留线索", "点赞关注帮你跟进"],
+  materials: ["现场素材按场景分类", "做视频随手取用", "工厂、小区、设备都有"],
+  tutorials: ["一段操作一段视频", "随时暂停重看", "三分钟上手"]
+};
+// Transparent clips (VP9 with alpha): login/<role>.webm greets once, then login/<role>-idle.webm,
+// which starts on the greeting's last frame, loops real life signs (blinks, breathing). Without an
+// idle clip the presenter holds the closing frame; without any clip it is the still cut-out.
 const VIDEO_ROLES = new Set<AgentRoleKey>(["production"]);
+const IDLE_ROLES = new Set<AgentRoleKey>([]);
+
+function Presenter({ role }: { role: AgentRoleKey }) {
+  const [idle, setIdle] = useState(false);
+  const idleClip = useRef<HTMLVideoElement>(null);
+  return <>
+    {IDLE_ROLES.has(role) && <video ref={idleClip} className={idle ? "" : "is-waiting"} src={characterAsset(`login/${role}-idle.webm`)}
+      muted loop playsInline preload="auto" aria-hidden="true" onPlaying={() => setIdle(true)} />}
+    {/* The greeting stays on top until the idle loop is actually playing, so the switch never flashes. */}
+    <video className={idle ? "is-done" : ""} src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)}
+      autoPlay muted playsInline aria-hidden="true" onEnded={() => { void idleClip.current?.play().catch(() => undefined); }} />
+  </>;
+}
 const ROLE_KEY = "xiaoxi-login-presenter";
 
 function greeting(hour = new Date().getHours()) {
@@ -192,8 +215,12 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const step = (index: number) => ({ "--step": index } as CSSProperties);
   return <main ref={scene} className={`signin-scene${still ? " is-still" : ""}`} style={{ "--signin-accent": accent } as CSSProperties} onMouseMove={follow}>
     <div className="signin-aurora" aria-hidden="true" /><div className="signin-grain" aria-hidden="true" />
+    <header className="signin-brand signin-rise" style={step(0)}>
+      <img className="signin-logo" src="./xilianhui-logo.jpg" alt="" />
+      <b>玺联惠</b><span>AI短视频获客</span>
+      <small className="signin-online">6 位 AI 员工在线待命</small>
+    </header>
     <section className="signin-stage" aria-label={`${identity.name}：${identity.responsibility}`}>
-      <img className="signin-logo signin-rise" style={step(0)} src="./xilianhui-logo.jpg" alt="玺联惠" />
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>
@@ -206,11 +233,13 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
           </button>)}
         </nav>
       </div>
+      <ul className="signin-chips" key={`chips-${role}`} aria-label={`${identity.name}能帮你做的事`}>
+        {ROLE_CARDS[role].map((chip, index) => <li key={chip} style={step(index + 2)} className="signin-rise">{chip}</li>)}
+      </ul>
       <figure className="signin-figure" key={role}>
         {VIDEO_ROLES.has(role) && !still
-          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true"
-            onEnded={(event) => event.currentTarget.classList.add("is-held")} />
-          : <img className={still ? "" : "is-breathing"} src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
+          ? <Presenter role={role} />
+          : <img src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>
     <div className="signin-side">
