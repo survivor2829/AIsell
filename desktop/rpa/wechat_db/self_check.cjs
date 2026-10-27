@@ -172,7 +172,11 @@ try {
   const all = db.messagesWith(friend);
   assert.deepEqual(all.map((row) => row.content), ["你好，在吗", longText, "压缩过的回复：好的，明天发货", "今天的新消息"]);
   assert.deepEqual(all.map((row) => row.sender), [friend, self, self, self], "real_sender_id maps through Name2Id");
-  assert.deepEqual(db.sentTo(friend, 2500, self).map((row) => row.content), ["今天的新消息"]);
+  assert.deepEqual(db.sentTo(friend, 2500).map((row) => row.content), ["今天的新消息"]);
+  assert.equal(db.confirmSent(friend, 2500, { text: " 今天的 新消息" }), true, "whitespace differences still match");
+  assert.equal(db.confirmSent(friend, 2500, { text: "你好，在吗" }), false, "the contact's own words are not our receipt");
+  assert.equal(db.confirmSent(friend, 2500, { kind: "image" }), false);
+  assert.equal(db.confirmSent(friend, 2100, { text: "压缩过的回复：好的，明天发货" }), true);
   assert.deepEqual(db.messagesWith("wxid_nobody"), []);
 
   // A damaged copy (WeChat mid-write) answers "unknown" instead of throwing into the workflow.
@@ -193,8 +197,20 @@ try {
   assert.equal(keyless.available(), false);
   assert.equal(keyless.unreadSessions(), null);
   assert.equal(keyless.messagesWith(friend), null, "no key means unknown, never \"nothing was sent\"");
-  assert.equal(keyless.sentTo(friend, 0, self), null);
+  assert.equal(keyless.sentTo(friend, 0), null);
+  assert.equal(keyless.confirmSent(friend, 0, { text: "今天的新消息" }), null);
   assert.equal(loadMasterKey(path.join(root, "missing")), null);
+
+  // The synced account decides which folder is read; no synced account means no receipts.
+  const { receiptsForDataRoot } = require("./wechat-db.cjs");
+  assert.equal(receiptsForDataRoot(path.join(root, "nothing-synced")), null);
+  fs.mkdirSync(path.join(root, "data", "contact_sync"), { recursive: true });
+  for (const account_name of ["../escape", "..\\escape", ".."]) {
+    fs.writeFileSync(path.join(root, "data", "contact_sync", "state.json"), JSON.stringify({ wechat_root: root, account_name }));
+    assert.equal(receiptsForDataRoot(path.join(root, "data")), null, "the account name never walks out of the WeChat folder");
+  }
+  fs.writeFileSync(path.join(root, "data", "contact_sync", "state.json"), JSON.stringify({ wechat_root: root, account_name: "account" }));
+  assert.equal(typeof receiptsForDataRoot(path.join(root, "data")).confirmSent, "function");
 
   // DPAPI round trip with the saver used by contact sync (Windows only).
   if (process.platform === "win32") {

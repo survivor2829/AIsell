@@ -184,6 +184,42 @@ async function checkTouchMessageSequence() {
   assert.equal(result.status, "completed");
   assert.deepEqual(calls.slice(beforeTwo).map(call => call.kind), ["text", "image", "text", "image"], "the unconfirmed image is not resent and the second contact still runs");
 
+  // WeChat's message database settles an unconfirmed segment: on record means verified (no
+  // internal review); not on record is still never resent, only flagged for our review.
+  const taskFile = (id) => path.join(root, "workflow-tasks", crypto.createHash("sha256").update(id).digest("hex"), "touch_task.json");
+  for (const onRecord of [true, false]) {
+    const asked = [];
+    const dbConfig = { ...config, receipts: { confirmSent: (username, sinceSeconds, part) => { asked.push({ username, kind: part.kind, since: Number.isFinite(sinceSeconds) }); return onRecord; } } };
+    const dbRecord = { ...record, id: crypto.randomUUID() };
+    failImage = true; unknown = true;
+    result = await createTouchWorkflow(dbConfig).runWorkflowStep(dbRecord, context);
+    assert.equal(result.status, "pending");
+    assert.deepEqual(asked, [{ username: contact.id, kind: "image", since: true }], "the receipt is looked up for this contact and segment");
+    failImage = false; unknown = false;
+    const beforeDb = calls.length;
+    result = await createTouchWorkflow(dbConfig).runWorkflowStep(dbRecord, context);
+    assert.equal(result.status, "completed");
+    assert.deepEqual(calls.slice(beforeDb).map(call => call.kind), ["link"], "the image is never resent either way");
+    const row = JSON.parse(fs.readFileSync(taskFile(dbRecord.id), "utf8")).results[0];
+    assert.equal(row.message_parts[1].db_confirmed === true, onRecord);
+    assert.equal(row.message_parts[1].assumed_sent === true, !onRecord);
+    assert.equal(row.needs_internal_review === true, !onRecord);
+  }
+  {
+    // A plain text whose send crashed mid-way but which WeChat recorded is an ordinary verified send.
+    const crashConfig = { ...config, receipts: { confirmSent: (username, sinceSeconds, part) => part.kind === "text" && /文字回执/u.test(part.text) },
+      execute: async (options) => { options.onTransition("clicked"); throw new Error("driver crashed after click"); } };
+    const crashWorkflow = createTouchWorkflow(crashConfig);
+    const crashRecord = { ...record, id: crypto.randomUUID(), payload: crashWorkflow.prepareWorkflowTask({ script: "文字回执测试", contactIds: [contact.id] }) };
+    result = await crashWorkflow.runWorkflowStep(crashRecord, context);
+    assert.equal(result.status, "completed");
+    assert.equal(result.result.deliveryStatus, "sent_verified");
+    assert.equal(result.result.confirmedBy, "database");
+    const row = JSON.parse(fs.readFileSync(taskFile(crashRecord.id), "utf8")).results[0];
+    assert.equal(row.status, "sent_verified");
+    assert.equal(row.needs_internal_review, undefined);
+  }
+
   const legacyCalls = [];
   const legacyConfig = { ...config, execute: async (options) => {
     legacyCalls.push(options.attemptId);

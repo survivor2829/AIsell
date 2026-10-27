@@ -156,6 +156,11 @@ function createTouchWorkflow(options = {}) {
   const now = options.now || (() => new Date());
   const passport = options.passport || null;
   const passportFailureSignatures = new Set();
+  // Injected in self-checks; the app reads the account contact sync captured.
+  const receipts = () => {
+    if (options.receipts !== undefined) return options.receipts;
+    try { return require("../../rpa/wechat_db/wechat-db.cjs").receiptsForDataRoot(path.join(contactsDir, "..")); } catch { return null; }
+  };
   let activeStep = false;
   const recoveredTaskIds = new Set();
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
@@ -472,22 +477,38 @@ function createTouchWorkflow(options = {}) {
       const verifiedPartsBefore = new Set(current.message_parts?.flatMap((part, partIndex) => part.status === "sent_verified" ? [partIndex] : []) || []);
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? index) || 0)}`;
+      const sendStartedAt = now().getTime();
+      // WeChat's own message database settles what the screen could not: true when it recorded
+      // this text or image to the contact, false when it did not, null when it cannot be read.
+      const databaseReceipt = (partIndex) => {
+        const part = partIndex === null ? { kind: "text", message: current.message } : messageParts(current.message, imageIds, link)[partIndex];
+        if (!part) return null;
+        const confirmed = receipts()?.confirmSent(current.id, Math.floor(sendStartedAt / 1000) - 5,
+          { kind: part.kind === "image" ? "image" : "text", text: part.message });
+        return typeof confirmed === "boolean" ? confirmed : null;
+      };
       // The send was attempted but its result could not be read back. The task runs unattended:
       // treat this contact as done (never send twice), keep an internal review record, go on.
       const unknownSkip = (diagnosticReason) => {
         // A multipart message counts the unconfirmed segment as sent and goes on with the rest,
         // so the contact still receives the later segments (but never that segment twice).
         const segment = unknownMessagePart(current);
+        const receipt = segment ? databaseReceipt(segment.index) : multipart ? null : databaseReceipt(null);
+        diagnostics().event("active_touch", "database_receipt", { task_id: id, current_index: index, receipt: String(receipt) },
+          { trace: true, traceId: sendOperation.traceId, code: receipt === true ? "db_confirmed" : receipt === false ? "db_not_found" : "db_unavailable" });
         if (segment) {
           const resolvedAt = now().toISOString();
           const resolved = resolveUnknownMessagePart(current, "sent", resolvedAt);
-          segment.part.assumed_sent = true;
-          current.needs_internal_review = true;
-          passport?.recordFailure("active_touch", passportTaskId, {
-            stage: "post_send", reasonCode: "outcome_unknown", traceId: sendOperation.traceId,
-            rawReading: { diagnosticReason: String(diagnosticReason || ""), partKind: resolved?.kind || "", deliveryStatus: "outcome_unknown" },
-            expected: { status: "sent_verified" }
-          });
+          if (receipt === true) segment.part.db_confirmed = true;
+          else {
+            segment.part.assumed_sent = true;
+            current.needs_internal_review = true;
+            passport?.recordFailure("active_touch", passportTaskId, {
+              stage: "post_send", reasonCode: "outcome_unknown", traceId: sendOperation.traceId,
+              rawReading: { diagnosticReason: String(diagnosticReason || ""), partKind: resolved?.kind || "", deliveryStatus: "outcome_unknown", databaseReceipt: String(receipt) },
+              expected: { status: "sent_verified" }
+            });
+          }
           if (!resolved?.allSent) {
             current.status = "generated";
             current.retry_blocked = false;
@@ -496,6 +517,24 @@ function createTouchWorkflow(options = {}) {
             persist();
             return response("pending", { result: { deliveryStatus: "outcome_unknown", assumedSent: true, partKind: resolved?.kind || "" } });
           }
+        }
+        if (receipt === true && !current.needs_internal_review) {
+          // WeChat recorded everything this contact was meant to get: an ordinary verified send.
+          delete task.identity_skip_streak;
+          delete task.pre_send_skip_streak;
+          current.status = "sent_verified";
+          current.retry_blocked = true;
+          current.send_attempted = true;
+          current.db_confirmed = true;
+          current.reason = "发送成功并已核验";
+          current.updated_at = now().toISOString();
+          task.current_index = index + 1;
+          if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+          else task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
+          persist();
+          return response(task.status === "completed" ? "completed" : "pending", task.status === "completed"
+            ? { result: { deliveryStatus: "sent_verified", contactId: current.id, confirmedBy: "database" } }
+            : { ...safetyInterval(task.next_send_not_before), result: { deliveryStatus: "sent_verified", contactId: current.id, confirmedBy: "database", nextEligibleAt: task.next_send_not_before } });
         }
         current.status = "outcome_unknown_skipped";
         current.retry_blocked = true;
@@ -508,7 +547,7 @@ function createTouchWorkflow(options = {}) {
         recordSkippedResult(current, index, { reasonCode: "outcome_unknown", blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
         passport?.recordFailure("active_touch", passportTaskId, {
           stage: "post_send", reasonCode: "outcome_unknown", traceId: sendOperation.traceId,
-          rawReading: { diagnosticReason: String(diagnosticReason || ""), deliveryStatus: "outcome_unknown" }, expected: { status: "sent_verified" }
+          rawReading: { diagnosticReason: String(diagnosticReason || ""), deliveryStatus: "outcome_unknown", databaseReceipt: String(receipt) }, expected: { status: "sent_verified" }
         });
         task.current_index = index + 1;
         if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }

@@ -156,8 +156,21 @@ function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(
         .map((row) => ({ username: row.username, unread: Number(row.unread_count), lastTimestamp: Number(row.last_timestamp), summary: String(row.summary || "") }));
     }),
     messagesWith: guarded(messagesWith),
-    // Text the logged-in account sent to this contact since a moment (seconds).
-    sentTo: guarded((username, sinceSeconds, selfUsername) => messagesWith(username, sinceSeconds).filter((row) => row.sender === selfUsername)),
+    // Messages the logged-in account sent in this one-to-one chat since a moment (seconds); in a
+    // private chat every message not from the contact is ours.
+    sentTo: guarded((username, sinceSeconds) => {
+      const rows = messagesWith(username, sinceSeconds);
+      return rows && rows.filter((row) => row.sender && row.sender !== username);
+    }),
+    // true: WeChat recorded this text (or an image) to the contact; false: it did not; null: unknown.
+    confirmSent: guarded((username, sinceSeconds, { kind = "text", text = "" } = {}) => {
+      const rows = messagesWith(username, sinceSeconds);
+      if (!rows) return null;
+      const squash = (value) => String(value || "").replace(/\s+/gu, "");
+      const wanted = squash(text);
+      return rows.some((row) => row.sender && row.sender !== username
+        && (kind === "image" ? row.localType === 3 : row.localType === 1 && Boolean(wanted) && squash(row.content) === wanted));
+    }),
     // Moments posts by the logged-in account whose content contains the given text.
     myMoments: guarded((selfUsername, containing = "") => {
       const db = open(path.join("sns", "sns.db"));
@@ -170,4 +183,18 @@ function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(
   };
 }
 
-module.exports = { createWechatDb, decryptDatabase, loadMasterKey, DB_KEY_FILE };
+// Receipts for the WeChat account contact sync last captured (<dataRoot>/contact_sync), or null
+// when there is no synced account yet.
+const receiptCache = new Map();
+function receiptsForDataRoot(dataRoot) {
+  const syncDir = path.join(String(dataRoot || ""), "contact_sync");
+  let state;
+  try { state = JSON.parse(fs.readFileSync(path.join(syncDir, "state.json"), "utf8")); } catch { return null; }
+  const root = String(state?.wechat_root || ""), account = String(state?.account_name || "");
+  if (!root || !account || /[\\/]|^\.\.?$/u.test(account)) return null;
+  const id = `${syncDir}|${root}|${account}`;
+  if (!receiptCache.has(id)) receiptCache.set(id, createWechatDb({ accountDir: path.join(root, account), contactSyncDir: syncDir }));
+  return receiptCache.get(id);
+}
+
+module.exports = { createWechatDb, decryptDatabase, loadMasterKey, receiptsForDataRoot, DB_KEY_FILE };
