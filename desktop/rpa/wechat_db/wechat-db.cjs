@@ -113,7 +113,15 @@ function cachedKeyLoader(contactSyncDir) {
   };
 }
 
-function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(contactSyncDir) }) {
+// The account folder is "<wxid>_<4 hex>"; the wxid is who our own posts and messages belong to.
+function selfUsernameOf(accountDir) {
+  return path.basename(String(accountDir || "")).replace(/_[0-9a-f]{4}$/u, "");
+}
+
+const unescapeXml = (value) => String(value || "").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gu, "$1")
+  .replace(/&lt;/gu, "<").replace(/&gt;/gu, ">").replace(/&quot;/gu, "\"").replace(/&apos;/gu, "'").replace(/&amp;/gu, "&");
+
+function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(contactSyncDir), selfUsername = selfUsernameOf(accountDir) }) {
   const master = loadKey;
   const storage = () => path.join(String(accountDir || ""), "db_storage");
   const open = (relative) => {
@@ -171,14 +179,28 @@ function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(
       return rows.some((row) => row.sender && row.sender !== username
         && (kind === "image" ? row.localType === 3 : row.localType === 1 && Boolean(wanted) && squash(row.content) === wanted));
     }),
-    // Moments posts by the logged-in account whose content contains the given text.
-    myMoments: guarded((selfUsername, containing = "") => {
+    // The logged-in account's own Moments posts since a moment (seconds): { tid, createTime, text }.
+    myMoments: guarded((sinceSeconds = 0) => {
       const db = open(path.join("sns", "sns.db"));
       if (!db) return null;
-      const needle = String(containing).replace(/\s+/gu, "");
-      return [...db.rows("SnsTimeLine")].filter((row) => row.user_name === selfUsername
-        && (!needle || String(row.content || "").replace(/\s+/gu, "").includes(needle)))
-        .map((row) => ({ tid: String(row.tid), content: String(row.content || "") }));
+      return [...db.rows("SnsTimeLine")].filter((row) => row.user_name === selfUsername).map((row) => {
+        const xml = String(row.content || "");
+        return { tid: String(row.tid), createTime: Number(/<createTime>(\d+)<\/createTime>/u.exec(xml)?.[1] || 0),
+          text: unescapeXml(/<contentDesc>([\s\S]*?)<\/contentDesc>/u.exec(xml)?.[1]) };
+      }).filter((post) => post.createTime >= sinceSeconds);
+    }),
+    // true: a post of ours since then starts like this text; false: none does; null: unknown.
+    postedMoment: guarded((text, sinceSeconds) => {
+      const head = String(text || "").replace(/\s+/gu, "").slice(0, 30);
+      if (!head || !selfUsername) return null;
+      const db = open(path.join("sns", "sns.db"));
+      if (!db) return null;
+      return [...db.rows("SnsTimeLine")].some((row) => {
+        if (row.user_name !== selfUsername) return false;
+        const xml = String(row.content || "");
+        return Number(/<createTime>(\d+)<\/createTime>/u.exec(xml)?.[1] || 0) >= sinceSeconds
+          && unescapeXml(/<contentDesc>([\s\S]*?)<\/contentDesc>/u.exec(xml)?.[1]).replace(/\s+/gu, "").startsWith(head);
+      });
     })
   };
 }
@@ -197,4 +219,4 @@ function receiptsForDataRoot(dataRoot) {
   return receiptCache.get(id);
 }
 
-module.exports = { createWechatDb, decryptDatabase, loadMasterKey, receiptsForDataRoot, DB_KEY_FILE };
+module.exports = { createWechatDb, decryptDatabase, loadMasterKey, receiptsForDataRoot, selfUsernameOf, DB_KEY_FILE };

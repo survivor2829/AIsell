@@ -192,6 +192,22 @@ try {
   fs.writeFileSync(path.join(storage, "session", "session.db"), encryptPages(sessionPages, masterHex, crypto.randomBytes(16)).file);
   assert.deepEqual(db.unreadSessions(), [{ username: friend, unread: 2, lastTimestamp: 3000, summary: "今天的新消息" }]);
 
+  // Moments: only our own posts since the attempt began count, matched on the start of the copy.
+  fs.mkdirSync(path.join(storage, "sns"), { recursive: true });
+  const post = (user, time, text) => [1, user, `<TimelineObject><username>${user}</username><createTime>${time}</createTime><contentDesc>${text}</contentDesc></TimelineObject>`];
+  const snsPages = buildPlainDb([{ name: "SnsTimeLine", sql: "CREATE TABLE SnsTimeLine(tid INTEGER, user_name TEXT, content TEXT)", rows: [
+    post(self, 5000, "新到一批普渡 CC1 Pro &amp; 配件，扫洗吸一次完成"), post(friend, 6000, "别人的帖子 新品上市"), post(self, 100, "旧帖子 新品上市")
+  ] }]);
+  fs.writeFileSync(path.join(storage, "sns", "sns.db"), encryptPages(snsPages, masterHex, crypto.randomBytes(16)).file);
+  const snsDb = createWechatDb({ accountDir: path.join(root, `${self}_3dd4`), contactSyncDir: root, loadKey: () => ({ key: masterHex, account: self }) });
+  fs.cpSync(storage, path.join(root, `${self}_3dd4`, "db_storage"), { recursive: true });
+  assert.equal(require("./wechat-db.cjs").selfUsernameOf(`D:/wx/${self}_3dd4`), self);
+  assert.deepEqual(snsDb.myMoments(1000).map((item) => item.text), ["新到一批普渡 CC1 Pro & 配件，扫洗吸一次完成"]);
+  assert.equal(snsDb.postedMoment("新到一批普渡CC1 Pro & 配件，扫洗吸一次完成", 4000), true, "spacing and escaping do not matter");
+  assert.equal(snsDb.postedMoment("新到一批普渡 CC1 Pro & 配件", 5001), false, "a post from before this attempt is not ours");
+  assert.equal(snsDb.postedMoment("别人的帖子 新品上市", 0), false, "someone else's post is not a receipt");
+  assert.equal(snsDb.postedMoment("", 0), null);
+
   // Without a key every query reports "unknown" so callers fall back to the screen checks.
   const keyless = createWechatDb({ accountDir, contactSyncDir: root, loadKey: () => null });
   assert.equal(keyless.available(), false);

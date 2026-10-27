@@ -247,6 +247,10 @@ function normalizeAttempt(value = {}) {
     started_at: safeIso(value.started_at),
     finished_at: safeIso(value.finished_at),
     resolved_at: safeIso(value.resolved_at),
+    // How an unreadable result was settled: WeChat's records ("database") or assumed published.
+    ...(["database", "assumed_published"].includes(value.resolved_by) ? { resolved_by: value.resolved_by } : {}),
+    ...(value.needs_internal_review === true ? { needs_internal_review: true } : {}),
+    ...(safeReason(value.diagnostic_reason) ? { diagnostic_reason: safeReason(value.diagnostic_reason) } : {}),
     ...normalizeFailureBreadcrumb(value),
     ...normalizeVerificationDiagnostics(value)
   };
@@ -488,6 +492,11 @@ function createMomentsPublishController(options = {}) {
     ? options.writeJsonAtomic
     : defaultWriteJsonAtomic;
   const now = typeof options.now === "function" ? options.now : () => new Date();
+  // WeChat's own Moments records (injected in self-checks); null when they cannot be read.
+  const receipts = () => {
+    if (options.receipts !== undefined) return options.receipts;
+    try { return require("../../rpa/wechat_db/wechat-db.cjs").receiptsForDataRoot(path.join(baseDir, "..")); } catch { return null; }
+  };
   const emit = typeof options.emit === "function" ? options.emit : () => undefined;
   const logger = options.logger && typeof options.logger.event === "function"
     ? options.logger
@@ -862,6 +871,17 @@ function createMomentsPublishController(options = {}) {
         // unattended and must never be asked to verify: count it as published (never post twice)
         // and keep an internal review record for us.
         const assumePublished = (diagnosticReason) => {
+          // WeChat's Moments records settle it first: a post of ours since this attempt began
+          // that starts like this copy is a verified publish, not an internal review.
+          const attempt = [...state.attempts].reverse().find((item) => item.workflow_task_id === String(taskRecord.id));
+          const startedAt = Date.parse(attempt?.started_at || "");
+          const sinceSeconds = Math.floor((Number.isFinite(startedAt) ? startedAt : now().getTime() - 2 * 60 * 60 * 1000) / 1000) - 60;
+          const posted = receipts()?.postedMoment(saved.content, sinceSeconds);
+          record("publish.database_receipt", { workflow_task_id: String(taskRecord.id), receipt: String(typeof posted === "boolean" ? posted : null) });
+          if (posted === true) {
+            const confirmed = applyResolution(state.fingerprint, "published", { confirmedBy: "database", diagnosticReason });
+            if (confirmed.ok) return result("completed", "", { result: { verified: true, confirmedBy: "database", attemptId: confirmed.state?.attempt_id } });
+          }
           const assumed = applyResolution(state.fingerprint, "published", { assumed: true, diagnosticReason });
           record("publish.outcome_assumed_published", { workflow_task_id: String(taskRecord.id),
             reason: diagnosticReason, applied: assumed.ok === true }, "warn");
@@ -1289,7 +1309,7 @@ function createMomentsPublishController(options = {}) {
   }
 
   // Shared by the manual resolution and the workflow's automatic "assume published".
-  function applyResolution(rawFingerprint, rawResolution, { assumed = false, diagnosticReason = "" } = {}) {
+  function applyResolution(rawFingerprint, rawResolution, { assumed = false, confirmedBy = "", diagnosticReason = "" } = {}) {
     const fingerprint = safeFingerprint(rawFingerprint);
     const resolution = String(rawResolution || "");
     if (!state.outcome_unknown || !fingerprint || fingerprint !== state.fingerprint) {
@@ -1317,14 +1337,16 @@ function createMomentsPublishController(options = {}) {
         status: attemptStatus,
         reason: `moments_publish_${attemptStatus}`,
         resolved_at: resolvedAt,
-        ...(assumed ? { resolved_by: "assumed_published", needs_internal_review: true, diagnostic_reason: String(diagnosticReason || "") } : {})
+        ...(assumed ? { resolved_by: "assumed_published", needs_internal_review: true, diagnostic_reason: String(diagnosticReason || "") } : {}),
+        ...(confirmedBy ? { resolved_by: confirmedBy, diagnostic_reason: String(diagnosticReason || "") } : {})
       })
     });
     record("publish.resolved", {
       attempt_id: resolvedAttemptId,
       fingerprint,
       resolution,
-      ...(assumed ? { resolved_by: "assumed_published", diagnostic_reason: String(diagnosticReason || "") } : {})
+      ...(assumed ? { resolved_by: "assumed_published", diagnostic_reason: String(diagnosticReason || "") } : {}),
+      ...(confirmedBy ? { resolved_by: confirmedBy, diagnostic_reason: String(diagnosticReason || "") } : {})
     });
     if (resolution === "published") removeMarker(resolvedMarkerName);
     removeStagingAttempt(stagingRoot, resolvedAttemptId);

@@ -540,6 +540,39 @@ async function main() {
   assert.equal(assumedAgain.status, "completed");
   assert.equal(assumedDriverCalls, 1, "an assumed post is never published twice");
   await assumedController.dispose();
+  const assumedAttempt = JSON.parse(fs.readFileSync(path.join(assumedRoot, "publish-state.json"), "utf8")).attempts.at(-1);
+  assert.equal(assumedAttempt.resolved_by, "assumed_published");
+  assert.equal(assumedAttempt.needs_internal_review, true);
+
+  // WeChat's own Moments records settle the same unreadable result: our post is there, so it is
+  // a verified publish with nothing left for review.
+  const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-receipt-"));
+  const receiptImage = writeMedia(receiptRoot, "receipt.jpg", Buffer.from("receipt-image"));
+  const receiptAsks = [];
+  const receiptController = createMomentsPublishController({
+    baseDir: receiptRoot,
+    coordinator: makeCoordinator("receipt-owner").coordinator,
+    now: createClock(),
+    receipts: { postedMoment: (text, sinceSeconds) => { receiptAsks.push({ text, since: Number.isFinite(sinceSeconds) }); return true; } },
+    openMoments: async () => ({ ok: true, pid: 1, hWnd: 2 }),
+    publishDriver: async ({ markerPath }) => {
+      fs.writeFileSync(markerPath, "{}");
+      return { ok: false, status: "outcome_unknown", reason: "moments_publish_outcome_unknown", actionAttempted: true };
+    }
+  });
+  receiptController.initialize();
+  const receiptChosen = await receiptController.chooseMedia([receiptImage]);
+  const receiptTaskId = crypto.randomUUID();
+  const receiptPlan = await receiptController.prepareWorkflowTask(receiptTaskId, { selectionId: receiptChosen.selection.selection_id, content: "数据库回执正文 ABC123" });
+  const receiptResult = await receiptController.runWorkflowStep({ id: receiptTaskId, payload: receiptPlan.payload, progress: { done: 0, total: 1 } }, { isEnabled: () => true });
+  assert.equal(receiptResult.status, "completed");
+  assert.equal(receiptResult.result.verified, true);
+  assert.equal(receiptResult.result.confirmedBy, "database");
+  assert.deepEqual(receiptAsks, [{ text: "数据库回执正文 ABC123", since: true }]);
+  const receiptAttempt = JSON.parse(fs.readFileSync(path.join(receiptRoot, "publish-state.json"), "utf8")).attempts.at(-1);
+  assert.equal(receiptAttempt.resolved_by, "database");
+  assert.equal(receiptAttempt.needs_internal_review, undefined);
+  await receiptController.dispose();
 
   const passportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-passport-"));
   const passportEvents = [];
