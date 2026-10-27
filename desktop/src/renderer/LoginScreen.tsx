@@ -102,36 +102,10 @@ const LINES: Record<AgentRoleKey, string[]> = {
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
   tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
 };
-// Transparent clips (VP9 with alpha): login/<role>.webm greets once and the presenter then stands
-// still on its closing frame. A looping idle reads as acted, so the only life sign is a blink:
-// login/<role>-blink.webm starts and ends on that same frame and plays at irregular moments,
-// 3–9 s apart, now and then twice in a row, the way people blink. No clip: the still cut-out.
-const VIDEO_ROLES = new Set<AgentRoleKey>(["production"]);
-const BLINK_ROLES = new Set<AgentRoleKey>(["production"]);
+// Each presenter greets once in character (login/<role>.webm, VP9 with alpha) and then simply stands
+// still on the closing smile: any looping or scheduled motion read as acted. Without a clip, the still cut-out.
+const VIDEO_ROLES = new Set<AgentRoleKey>(["production", "agent", "operations", "business", "materials", "tutorials"]);
 
-function Presenter({ role }: { role: AgentRoleKey }) {
-  const [blinked, setBlinked] = useState(false);
-  const blink = useRef<HTMLVideoElement>(null);
-  const timer = useRef(0);
-  useEffect(() => () => window.clearTimeout(timer.current), []);
-  function blinkAfter(delay: number) {
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => {
-      const clip = blink.current;
-      if (!clip) return;
-      clip.currentTime = 0;
-      clip.play().catch(() => blinkAfter(1000));
-    }, delay);
-  }
-  const nextBlink = () => blinkAfter(Math.random() < 0.2 ? 180 : 3000 + Math.random() * 6000);
-  return <>
-    {BLINK_ROLES.has(role) && <video ref={blink} className={blinked ? "" : "is-waiting"} src={characterAsset(`login/${role}-blink.webm`)}
-      muted playsInline preload="auto" aria-hidden="true" onPlaying={() => setBlinked(true)} onEnded={nextBlink} />}
-    {/* The greeting stays on top until the first blink is playing; the blink clip then holds the same frame. */}
-    <video className={blinked ? "is-done" : ""} src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)}
-      autoPlay muted playsInline aria-hidden="true" onEnded={() => blinkAfter(1500 + Math.random() * 2500)} />
-  </>;
-}
 const ROLE_KEY = "xiaoxi-login-presenter";
 
 function greeting(hour = new Date().getHours()) {
@@ -239,7 +213,7 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       </div>
       <figure className="signin-figure" key={role}>
         {VIDEO_ROLES.has(role) && !still
-          ? <Presenter role={role} />
+          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true" />
           : <img src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>

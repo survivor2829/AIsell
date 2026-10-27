@@ -58,7 +58,6 @@
   /* Rim light on the unmasked wrapper, so the glow is not clipped at the image box. */
   filter: drop-shadow(0 0 22px color-mix(in srgb, var(--signin-accent) 22%, transparent)); }
 .signin-figure > img, .signin-figure > video { grid-area: 1 / 1; }
-.signin-figure video.is-waiting, .signin-figure video.is-done { visibility: hidden; }
 .signin-figure::before { content: ""; position: absolute; left: 18%; right: 18%; bottom: 2%; height: 9%; border-radius: 50%; background: radial-gradient(closest-side, #00000026, transparent); filter: blur(10px); }
 .signin-figure img, .signin-figure video { position: relative; max-width: 100%; max-height: 100%; object-fit: contain; object-position: bottom center;
   /* The portraits are cropped at the shoulders and hips: fade those cuts. */

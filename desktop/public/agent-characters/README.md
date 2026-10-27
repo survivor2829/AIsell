@@ -60,8 +60,15 @@
 | `login/materials.webp` | `materials-assistant.png` | 小禾 |
 | `login/tutorials.webp` | `tutorial-assistant-idle.png` | 小丽 |
 
-会动的小视频（`login/<员工>.webm`）：先由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 以对应抠图为首帧生成 5 秒 720P 片段，再用同一个本地 IS-Net 模型逐帧抠图、只保留主体；IS-Net 逐帧独立判断，会让挥动的手时有时无，所以再用局部背景差值（只取远离人物且是背景灰的像素估计背景）补回明显不是背景的部分，静止区域取相邻三帧中位数、人物惯常区域按惯常值保留；最后正放加倒放拼成无缝循环，编码为带透明通道的 VP9 WebM。
+打招呼视频（`login/<员工>.webm`）：先由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 以对应抠图为首帧生成 5 秒 720P 片段（每位一条按人设写的提示词，结尾停在自然微笑），再用同一个本地 IS-Net 模型逐帧抠图、只保留主体；IS-Net 逐帧独立判断，会让动作中的手时有时无，所以再用局部背景差值（只取远离人物且是背景灰的像素估计背景）补回明显不是背景的部分，静止区域取相邻三帧中位数、人物惯常区域按惯常值保留；最后裁到人物外框，编码为带透明通道的 VP9 WebM。登录页只播一次，之后停在最后一帧静止（循环或定时的待机动作试过，显得刻意，已放弃）。
 
-| 文件 | 生成 | 说明 |
+| 文件 | 生成（2026-10-26/27，wan3.0-video 720P 5 秒，每条约 ¥3） | 动作 |
 | --- | --- | --- |
-| `login/production.webm` | 2026-10-26，wan3.0-video 720P 5 秒，任务 `b88bf150…`，约 ¥3 | 小影眨眼、点头、挥手，约 10 秒循环，720×820 |
+| `login/production.webm` | 任务 `b88bf150…` | 小影眨眼、点头、挥手 |
+| `login/agent.webm` | 任务 `1e962870…` | 小诚用笔点平板，抬头歪头眨眼，热情地笑 |
+| `login/operations.webm` | 任务 `d4a1ac3f…` | 小绘扶眼镜，温柔浅笑点头 |
+| `login/business.webm` | 任务 `b1cf36d1…` | 小睿看一眼平板数据，抬头自信微笑点头 |
+| `login/materials.webm` | 任务 `a5b148a2…` | 小禾把平板转向镜头，歪头微笑眨眼 |
+| `login/tutorials.webm` | 任务 `a08c2029…` | 小丽点平板上的播放键，看向镜头耐心微笑 |
+
+另生成过 6 条待机片段（任务 `f8950840…` 等，约 ¥18）用于试验，最终未使用，不入包。
