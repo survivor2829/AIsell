@@ -60,4 +60,8 @@
 | `login/materials.webp` | `materials-assistant.png` | 小禾 |
 | `login/tutorials.webp` | `tutorial-assistant-idle.png` | 小丽 |
 
-会动的小视频（`login/<员工>.mp4`）由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 生成，生成回执与费用另行记录。
+会动的小视频（`login/<员工>.webm`）：先由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 以对应抠图为首帧生成 5 秒 720P 片段，再用同一个本地 IS-Net 模型逐帧抠图、只保留主体、正放加倒放拼成无缝循环，编码为带透明通道的 VP9 WebM。
+
+| 文件 | 生成 | 说明 |
+| --- | --- | --- |
+| `login/production.webm` | 2026-10-26，wan3.0-video 720P 5 秒，任务 `b88bf150…`，约 ¥3 | 小影眨眼、点头、挥手，约 10 秒循环，720×820 |
