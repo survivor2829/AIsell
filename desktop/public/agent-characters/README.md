@@ -60,7 +60,7 @@
 | `login/materials.webp` | `materials-assistant.png` | 小禾 |
 | `login/tutorials.webp` | `tutorial-assistant-idle.png` | 小丽 |
 
-会动的小视频（`login/<员工>.webm`）：先由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 以对应抠图为首帧生成 5 秒 720P 片段，再用同一个本地 IS-Net 模型逐帧抠图、只保留主体、正放加倒放拼成无缝循环，编码为带透明通道的 VP9 WebM。
+会动的小视频（`login/<员工>.webm`）：先由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 以对应抠图为首帧生成 5 秒 720P 片段，再用同一个本地 IS-Net 模型逐帧抠图、只保留主体；IS-Net 逐帧独立判断，会让挥动的手时有时无，所以再用局部背景差值（只取远离人物且是背景灰的像素估计背景）补回明显不是背景的部分，静止区域取相邻三帧中位数、人物惯常区域按惯常值保留；最后正放加倒放拼成无缝循环，编码为带透明通道的 VP9 WebM。
 
 | 文件 | 生成 | 说明 |
 | --- | --- | --- |

@@ -56,6 +56,12 @@
   mask-image: linear-gradient(to bottom, #000 72%, transparent 100%), linear-gradient(to right, transparent 0%, #000 16%, #000 84%, transparent 100%);
   mask-composite: intersect;
   animation: signin-enter .8s cubic-bezier(.2, .8, .2, 1) both; }
+/* The loop's waving hand reaches the frame's side: fade the sides only below the hand, where the shoulders are cut. */
+.signin-figure video {
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent 100%), linear-gradient(to bottom, #000 45%, transparent 62%), linear-gradient(to right, transparent 0%, #000 16%, #000 84%, transparent 100%);
+  -webkit-mask-composite: source-in, source-over;
+  mask-image: linear-gradient(to bottom, #000 72%, transparent 100%), linear-gradient(to bottom, #000 45%, transparent 62%), linear-gradient(to right, transparent 0%, #000 16%, #000 84%, transparent 100%);
+  mask-composite: intersect, add; }
 .signin-figure img.is-breathing { animation: signin-enter .8s cubic-bezier(.2, .8, .2, 1) both, signin-breathe 6s 1s ease-in-out infinite; transform-origin: 50% 100%; }
 
 /* Crew: hover lifts the avatar and shows the employee's card. */
