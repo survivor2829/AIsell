@@ -73,16 +73,17 @@
   mask-image: linear-gradient(to bottom, #000 72%, transparent 100%), linear-gradient(to bottom, #000 45%, transparent 62%), linear-gradient(to right, transparent 0%, #000 16%, #000 84%, transparent 100%);
   mask-composite: intersect, add; }
 /* Crew: hover lifts the avatar and shows the employee's card. */
-.signin-crew { display: flex; gap: 14px; margin-top: 40px; }
-.signin-crew button { position: relative; display: grid; justify-items: center; gap: 8px; width: 76px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
+.signin-crew { display: flex; gap: 10px; margin-top: 40px; opacity: .78; transition: opacity .3s; }
+/* The team row is quiet: it shows who works for you; clicking stays possible but is not invited. */
+.signin-crew:hover { opacity: 1; }
+.signin-crew button { position: relative; display: grid; justify-items: center; gap: 6px; width: 64px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
 /* Name and job under each avatar: the crew row reads as the team, not as decoration. */
 .signin-crew-name { display: grid; justify-items: center; gap: 2px; line-height: 1.25; }
-.signin-crew-name b { font-size: 15px; font-weight: 700; }
-.signin-crew-name small { color: var(--signin-muted); font-size: 12px; white-space: nowrap; }
+.signin-crew-name b { font-size: 13px; font-weight: 700; }
+.signin-crew-name small { color: var(--signin-muted); font-size: 11px; white-space: nowrap; }
 .signin-crew button.is-active .signin-crew-name b { color: var(--signin-accent); }
-.signin-crew img { display: block; width: 72px; height: 72px; border-radius: 50%; object-fit: cover; object-position: 50% 8%; background: #fff; border: 3px solid #fff; box-shadow: 0 6px 18px #0000001a; transition: transform .3s cubic-bezier(.2, .8, .2, 1), box-shadow .3s; }
-.signin-crew button:hover img { transform: translateY(-4px) scale(1.06); }
-.signin-crew button.is-active img { border-color: var(--signin-accent); animation: signin-halo 2.8s ease-in-out infinite; }
+.signin-crew img { display: block; width: 48px; height: 48px; border-radius: 50%; object-fit: cover; object-position: 50% 8%; background: #fff; border: 3px solid #fff; box-shadow: 0 6px 18px #0000001a; transition: transform .3s cubic-bezier(.2, .8, .2, 1), box-shadow .3s; }
+.signin-crew button.is-active img { border-color: var(--signin-accent); }
 
 /* Floating glass card with a 1px gradient edge. */
 .signin-side { display: flex; align-items: stretch; justify-content: center; padding: 40px 48px 40px 8px; }
@@ -121,7 +122,6 @@
 @keyframes signin-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes signin-enter { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
 @keyframes signin-drift { 0% { transform: translate3d(-2%, -1%, 0) scale(1); } 100% { transform: translate3d(3%, 2%, 0) scale(1.08); } }
-@keyframes signin-halo { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--signin-accent) 40%, transparent), 0 6px 18px #0000001a; } 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--signin-accent) 0%, transparent), 0 6px 18px #0000001a; } }
 @keyframes signin-caret { 50% { opacity: 0; } }
 
 @media (max-width: 1150px) {
@@ -130,8 +130,8 @@
   .signin-brand { padding-left: 40px; }
   .signin-logo { width: 56px; height: 56px; }
   .signin-figure { width: 50%; height: 62%; }
-  .signin-crew img { width: 56px; height: 56px; }
-  .signin-crew button { width: 64px; }
+  .signin-crew img { width: 44px; height: 44px; }
+  .signin-crew button { width: 58px; }
 }
 @media (max-width: 820px) {
   .signin-scene { grid-template-columns: 1fr; overflow: auto; }
