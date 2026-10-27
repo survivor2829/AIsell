@@ -959,39 +959,6 @@ function capture(baseDir = __dirname, options = {}) {
   if (!tools.keyToolPath && !hasKeyInfoReader && !hasMemoryKeyReader && !hasWxKeyReader) {
     return block(baseDir, "key_tool_missing", "未找到微信 key 捕获工具", { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
   }
-  if (options.restartWechat) {
-    saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "restarting_wechat", last_error: "" });
-    const launchExecutable = findWechatExecutableDetails({ ...options, weixinProcesses: [] });
-    const executableState = executableDiscoveryState(launchExecutable);
-    const loginFlow = prepareWechatLogin({
-      ...options,
-      wechatExePath: launchExecutable.path,
-      stopOnly: hasWxKeyReader
-    });
-    saveState(baseDir, { ...loadState(baseDir),
-      ...executableState,
-      wechat_exe_prepare_candidate_available: typeof loginFlow.discoveryCandidateAvailable === "boolean" ? loginFlow.discoveryCandidateAvailable : null,
-      wechat_exe_prepare_input_exists: typeof loginFlow.discoveryInputExists === "boolean" ? loginFlow.discoveryInputExists : null,
-      wechat_exe_running_process_count: Number.isFinite(Number(loginFlow.discoveryProcessCount)) ? Number(loginFlow.discoveryProcessCount) : executableState.wechat_exe_running_process_count,
-      wechat_exe_running_path_available: typeof loginFlow.discoveryProcessPathAvailable === "boolean" ? loginFlow.discoveryProcessPathAvailable : executableState.wechat_exe_running_path_available,
-      wechat_version: /^\d+(?:\.\d+){1,3}$/u.test(String(loginFlow.wechatVersion || "").trim()) ? String(loginFlow.wechatVersion).trim() : "",
-      had_running_process: typeof loginFlow.hadRunningProcess === "boolean" ? loginFlow.hadRunningProcess : null,
-      stop_verified: typeof loginFlow.stopVerified === "boolean" ? loginFlow.stopVerified : null,
-      launch_deferred: typeof loginFlow.launchDeferred === "boolean" ? loginFlow.launchDeferred : null
-    });
-    if (!loginFlow.ok) {
-      const reason = loginFlow.reason || "wechat_start_failed";
-      const message = reason === "wechat_executable_not_found"
-        ? "未找到个人微信 4.x 的 Weixin.exe，请安装受支持版本，或在同步联系人页手动选择微信程序"
-        : reason === "wechat_stop_failed"
-        ? "微信未能退出，尚未开始重新登录。请手动退出微信后重新同步，并确认微信与本应用使用相同的运行权限"
-        : "微信未能自动重新启动";
-      return block(baseDir, reason, message, { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
-    }
-    restartWechatExe = hasWxKeyReader ? String(loginFlow.wechatExePath || findWechatExecutable(options)) : "";
-    saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "waiting_login_window", last_error: "" });
-  }
-
   const tryKeyForAccount = (account, keyHex, attemptDeadline = deadline) => {
     if (!keyHex || Date.now() >= attemptDeadline) return null;
 
@@ -1094,6 +1061,52 @@ function capture(baseDir = __dirname, options = {}) {
     const remaining = pollIntervalMs - (Date.now() - startedAt);
     if (remaining > 0) sleep(remaining);
   };
+
+  // The key saved by an earlier sync still opens the logged-in account's contacts: sync without
+  // restarting WeChat. A different account, a rotated key or no saved key falls through to capture.
+  if (!options.inspectOnly && options.reuseSavedKey !== false) {
+    const saved = require("../wechat_db/wechat-db.cjs").loadMasterKey(baseDir);
+    const processes = saved ? runningWeixinProcesses(options) : [];
+    const savedRoot = processes.length ? findWechatRoot({ ...options, weixinProcesses: processes }) : "";
+    const active = savedRoot && fs.existsSync(savedRoot) ? findAccount(savedRoot) : {};
+    if (saved && active.contactDb && (active.accountName ?? path.basename(active.accountDir || "")) === saved.account) {
+      const reused = tryKeyForAccount(active, saved.key);
+      if (reused) return { ...reused, keyReused: true };
+    }
+  }
+
+  if (options.restartWechat) {
+    saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "restarting_wechat", last_error: "" });
+    const launchExecutable = findWechatExecutableDetails({ ...options, weixinProcesses: [] });
+    const executableState = executableDiscoveryState(launchExecutable);
+    const loginFlow = prepareWechatLogin({
+      ...options,
+      wechatExePath: launchExecutable.path,
+      stopOnly: hasWxKeyReader
+    });
+    saveState(baseDir, { ...loadState(baseDir),
+      ...executableState,
+      wechat_exe_prepare_candidate_available: typeof loginFlow.discoveryCandidateAvailable === "boolean" ? loginFlow.discoveryCandidateAvailable : null,
+      wechat_exe_prepare_input_exists: typeof loginFlow.discoveryInputExists === "boolean" ? loginFlow.discoveryInputExists : null,
+      wechat_exe_running_process_count: Number.isFinite(Number(loginFlow.discoveryProcessCount)) ? Number(loginFlow.discoveryProcessCount) : executableState.wechat_exe_running_process_count,
+      wechat_exe_running_path_available: typeof loginFlow.discoveryProcessPathAvailable === "boolean" ? loginFlow.discoveryProcessPathAvailable : executableState.wechat_exe_running_path_available,
+      wechat_version: /^\d+(?:\.\d+){1,3}$/u.test(String(loginFlow.wechatVersion || "").trim()) ? String(loginFlow.wechatVersion).trim() : "",
+      had_running_process: typeof loginFlow.hadRunningProcess === "boolean" ? loginFlow.hadRunningProcess : null,
+      stop_verified: typeof loginFlow.stopVerified === "boolean" ? loginFlow.stopVerified : null,
+      launch_deferred: typeof loginFlow.launchDeferred === "boolean" ? loginFlow.launchDeferred : null
+    });
+    if (!loginFlow.ok) {
+      const reason = loginFlow.reason || "wechat_start_failed";
+      const message = reason === "wechat_executable_not_found"
+        ? "未找到个人微信 4.x 的 Weixin.exe，请安装受支持版本，或在同步联系人页手动选择微信程序"
+        : reason === "wechat_stop_failed"
+        ? "微信未能退出，尚未开始重新登录。请手动退出微信后重新同步，并确认微信与本应用使用相同的运行权限"
+        : "微信未能自动重新启动";
+      return block(baseDir, reason, message, { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
+    }
+    restartWechatExe = hasWxKeyReader ? String(loginFlow.wechatExePath || findWechatExecutable(options)) : "";
+    saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "waiting_login_window", last_error: "" });
+  }
 
   while (Date.now() < deadline) {
     const pollStartedAt = Date.now();

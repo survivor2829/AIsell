@@ -4,7 +4,10 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
-const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatExecutable, findWechatExecutableDetails, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
+const { candidateWechatRoots, capture: captureRaw, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatExecutable, findWechatExecutableDetails, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
+// Each case below exercises one capture path; reusing a key saved by an earlier case is covered
+// on its own, so it is off unless a case asks for it.
+const capture = (baseDir, options = {}) => captureRaw(baseDir, { reuseSavedKey: false, ...options });
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-"));
 const syncDir = path.join(root, "contact_sync");
@@ -451,6 +454,27 @@ fs.copyFileSync(input, output);
     assert.equal(loginFlowPrepared, true);
     assert.equal(capturedFromKeyInfo.state.last_stage, "captured_and_synced");
     assert.equal(capturedFromKeyInfo.contacts.length, 1);
+
+    // The verified key was kept (DPAPI), so the next sync of the same logged-in account needs
+    // no key capture and no WeChat restart.
+    if (process.platform === "win32") {
+      assert.equal(fs.existsSync(path.join(syncDir, "wechat-db-key.bin")), true);
+      const reuseCalls = [];
+      const reused = capture(syncDir, {
+        wechatRoot, activeTouchDir, dumpToolPath, pythonPath: builtIn.pythonPath, restartWechat: true, reuseSavedKey: true,
+        keyToolPath: path.join(root, "missing-key-tool.exe"), timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS, pollIntervalMs: 10,
+        processProvider: () => [{ id: 123, path: "Weixin.exe" }],
+        loginFlowDriver: () => { reuseCalls.push("restart"); return { ok: true, restarted: true }; },
+        keyInfoReader: () => { reuseCalls.push("key-info"); return { observed: true, keyHex: "" }; },
+        memoryKeyReader: () => { reuseCalls.push("memory"); return ""; },
+        wxKeyReader: () => { reuseCalls.push("wx-key"); return ""; }
+      });
+      assert.equal(reused.ok, true);
+      assert.equal(reused.keyReused, true);
+      assert.equal(reused.state.last_stage, "captured_and_synced");
+      assert.deepEqual(reuseCalls, [], "a reusable key restarts nothing and captures nothing");
+      fs.rmSync(path.join(syncDir, "wechat-db-key.bin"));
+    }
 
     const captureOrder = [];
     const capturedFromMemory = capture(syncDir, {
