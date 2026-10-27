@@ -816,6 +816,25 @@ function decryptContactDb(dumpToolPath, keyHex, contactDbPath, outputDbPath, tim
   return false;
 }
 
+// The database key, once verified against contact.db, is kept so later reads (sync, send and
+// post receipts) need no WeChat restart. It is encrypted for the current Windows user with DPAPI
+// and never written to logs or results.
+const DB_KEY_FILE = "wechat-db-key.bin";
+function saveDbKey(dataDir, accountName, keyHex) {
+  if (!dataDir || !/^[a-fA-F0-9]{64}$/.test(String(keyHex))) return false;
+  const payload = Buffer.from(JSON.stringify({ account: String(accountName || ""), key: String(keyHex).toLowerCase(), savedAt: new Date().toISOString() }), "utf8").toString("base64");
+  const script = "Add-Type -AssemblyName System.Security; $in = [Console]::In.ReadToEnd().Trim(); "
+    + "$bytes = [Security.Cryptography.ProtectedData]::Protect([Convert]::FromBase64String($in), $null, [Security.Cryptography.DataProtectionScope]::CurrentUser); "
+    + "[Console]::Out.Write([Convert]::ToBase64String($bytes))";
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { input: payload, encoding: "utf8", windowsHide: true, timeout: 15000 });
+  if (result.status !== 0 || !result.stdout) return false;
+  fs.mkdirSync(dataDir, { recursive: true });
+  const target = path.join(dataDir, DB_KEY_FILE);
+  fs.writeFileSync(target + ".tmp", Buffer.from(result.stdout.trim(), "base64"));
+  fs.renameSync(target + ".tmp", target);
+  return true;
+}
+
 function decryptSqlcipher4Raw(inputPath, outputPath, keyHex) {
   if (!/^[a-fA-F0-9]{64}$/.test(String(keyHex))) return false;
   const pageSize = 4096;
@@ -985,6 +1004,10 @@ function capture(baseDir = __dirname, options = {}) {
         // ponytail: temp cleanup can fail without changing the capture result.
       }
       return null;
+    }
+    if (!options.inspectOnly) {
+      try { saveDbKey(baseDir, account.accountName ?? path.basename(account.accountDir), keyHex); }
+      catch { /* Keeping the key is an optimisation; the sync itself already succeeded. */ }
     }
 
     if (options.inspectOnly) {
@@ -1410,6 +1433,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  saveDbKey,
   candidateWechatRoots,
   runningWeixinProcesses,
   installedWeixinExecutables,
