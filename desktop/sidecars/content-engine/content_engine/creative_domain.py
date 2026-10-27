@@ -8681,10 +8681,25 @@ class CreativeDomain:
             cover["auto_attempts"] = attempt + 1
             self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?",
                                     (self._json(recipe), self._now(), video_id))
-            design = auto_design(video_id, finished["title"], subject, finished["duration_ms"], attempt)
+            design = {**auto_design(video_id, finished["title"], subject, finished["duration_ms"], attempt),
+                      "style": self._next_auto_cover_style(video_id)}
             self.run_task(self.regenerate_cover(video_id, design)["task_id"])
             if latest_status() != "failed":
                 return latest_status()
+
+    def _next_auto_cover_style(self, video_id):
+        """A colourway none of the last three covers used, so neighbours never match."""
+        from .cover_design import AUTO_STYLES, auto_design
+        recent = []
+        for row in self.connection.execute(
+                "SELECT recipe_json FROM generated_videos WHERE id<>? AND recipe_json LIKE '%full_design%' ORDER BY updated_at DESC LIMIT 12",
+                (video_id,)):
+            style = ((json.loads(row["recipe_json"]).get("packaging") or {}).get("cover") or {}).get("design", {}).get("style")
+            if style in AUTO_STYLES and len(recent) < 3:
+                recent.append(style)
+        start = AUTO_STYLES.index(auto_design(video_id, "", "scene", 0)["style"])
+        rotation = AUTO_STYLES[start:] + AUTO_STYLES[:start]
+        return next((style for style in rotation if style not in recent), rotation[0])
 
     def _auto_cover_subject(self, recipe):
         imported = str(recipe.get("imported_base_video") or "")

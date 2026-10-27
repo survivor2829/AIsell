@@ -536,19 +536,24 @@ class VideoPresentationTests(unittest.TestCase):
                 old = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
                     "title": "老视频", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
                 old_id = domain.run_task(old["task_id"])["generated_video_id"]
+                older = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "更老的视频", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                older_id = domain.run_task(older["task_id"])["generated_video_id"]
                 self.assertEqual(3, submit.call_count, "local_frame imports do not buy a cover by themselves")
-                outcomes[:] = ["https://example.com/cover.png"]
+                outcomes[:] = ["https://example.com/cover.png", "https://example.com/cover.png"]
                 backfill = domain.create_cover_backfill_task()
                 self.assertEqual(backfill["task_id"], domain.create_cover_backfill_task()["task_id"], "one backfill at a time")
                 self.assertEqual("generating", domain.finished_cover_states([old_id])[old_id]["cover_state"])
                 result = domain.run_task(backfill["task_id"])
                 self.assertEqual("completed", result["status"], result)
-                self.assertEqual(4, submit.call_count, "only the old video is bought; failed and unknown ones are not")
+                self.assertEqual(5, submit.call_count, "only the old videos are bought; failed and unknown ones are not")
+                styles = [json.loads(domain._generated_row(i)["recipe_json"])["packaging"]["cover"]["design"]["style"] for i in (old_id, older_id)]
+                self.assertNotEqual(styles[0], styles[1], "neighbouring covers use different colourways")
                 states = domain.finished_cover_states([old_id, product_id, unknown_id])
                 self.assertEqual(["ai", "local", "local"], [states[i]["cover_state"] for i in (old_id, product_id, unknown_id)])
                 self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
                 domain.run_task(domain.create_cover_backfill_task()["task_id"])
-                self.assertEqual(4, submit.call_count, "a second backfill buys nothing")
+                self.assertEqual(5, submit.call_count, "a second backfill buys nothing")
             finally:
                 database.close()
 
