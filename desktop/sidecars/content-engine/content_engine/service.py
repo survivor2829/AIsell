@@ -931,10 +931,15 @@ class ContentEngineService:
     def list_media_reviews(self, candidate_id: str) -> dict[str, Any]:
         return self.creative_domain.list_media_reviews(candidate_id)
 
-    def regenerate_cover(self, candidate_id: str, design=None, *, recover_only=False) -> dict[str, Any]:
+    def regenerate_cover(self, candidate_id: str, design=None, *, recover_only=False, redesign=False) -> dict[str, Any]:
         return self._enqueue_creative_task(
-            self.creative_domain.regenerate_cover(candidate_id, design, recover_only=recover_only)
+            self.creative_domain.regenerate_cover(candidate_id, design, recover_only=recover_only, redesign=redesign)
         )
+
+    def backfill_auto_covers(self) -> dict[str, Any]:
+        if not getattr(self.creative_cover_client, "configured", False):
+            return {"status": "skipped", "reason": "apimart_not_configured"}
+        return self._enqueue_creative_task(self.creative_domain.create_cover_backfill_task())
 
     def import_base_video(self, request) -> dict[str, Any]:
         return self._enqueue_creative_task(self.creative_domain.import_base_video(request))
@@ -2346,13 +2351,15 @@ class ContentEngineService:
             (_validate_limit(limit),),
         ).fetchall()
         items = []
+        covers = self.creative_domain.finished_cover_states(
+            [str(json.loads(row["metadata_json"]).get("generated_video_id") or "") for row in rows])
         for row in rows:
             path = Path(row["output_path"])
             items.append(
-                _public_finished_row(
+                {**_public_finished_row(
                     row,
                     available=path.is_file() and not has_unsafe_component(path),
-                )
+                ), **covers.get(str(json.loads(row["metadata_json"]).get("generated_video_id") or ""), {})}
             )
         return {"items": items}
 

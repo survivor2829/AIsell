@@ -142,7 +142,10 @@ def run_imported_video(domain, task_id, payload):
               "caption_presentation": "reference_narration", "subtitle_style": {"preset": "social_pop"},
               "presentation": presentation(captions, payload["title"], payload["template_id"]),
               "packaging": {"preset_id": "knowledge_focus", "title": payload["title"], "events": [],
-                  "cover": {"mode": "local_frame", "status": "pending", "auto_generate": payload.get("cover_mode") == "apimart"},
+                  "cover": {"mode": "local_frame", "status": "pending", "auto_generate": payload.get("cover_mode") in {"apimart", "ai_design"},
+                            # ai_design: a 3:4 cover drawn from a frame of the clean source video, title included.
+                            **({"auto_design": {"subject": "product" if payload["source_id"].startswith("product_video_") else "person"}}
+                               if payload.get("cover_mode") == "ai_design" else {})},
                   "visualRenderer": {"requestedEngine": "remotion", "visualStyleId": "social_pop", "allowFallback": False}}}
     if payload.get("caption_style_id"):
         recipe["caption_style_id"] = payload["caption_style_id"]
@@ -152,8 +155,9 @@ def run_imported_video(domain, task_id, payload):
     if payload.get("audio_profile") == "narration_v2":
         recipe["imported_audio_profile"] = "narration_v2"
     recipe["confirmed_script"] = script
-    if payload["source_id"].startswith("digital_human_"):
-        recipe["presentation"]["showTitle"] = False
+    # No fixed topic bar over imported videos (digital human and product): the title
+    # belongs on the cover, and the bar read as an old course template.
+    recipe["presentation"]["showTitle"] = False
     if payload.get("music_track_id"):
         music = domain._select_auto_mix_music({}, required_duration_ms=duration, allowed_track_ids=[payload["music_track_id"]])
         if music is None:

@@ -21,7 +21,7 @@ export function NarrationTemplatePicker({ value, onChange, poster, disabled, pla
   return <fieldset className="rh-template-picker" disabled={disabled}><legend>网感模板</legend>
     <p className="dh-quality">移到模板上看动态排版。已生成的当前风格使用保存方案，其余为示例文案。</p>
     {value && catalog.templates.some((item) => item.id === value && item.version !== catalog.version) &&
-      <p className="dh-quality">当前使用旧版「{catalog.templates.find((item) => item.id === value)?.name}」，原样保留；选下方新版可免费重新包装。</p>}
+      <p className="dh-quality">当前使用旧版「{catalog.templates.find((item) => item.id === value)?.name}」，原样保留；新做的口播可选下方新版。</p>}
     <div>{catalog.templates.filter((item) => item.version === catalog.version).map((item) => <button key={item.id} type="button" aria-pressed={value === item.id}
       onMouseEnter={() => { setNow(0); setPlaying(item.id); }} onMouseLeave={() => setPlaying(null)}
       onFocus={() => { setNow(0); setPlaying(item.id); }} onBlur={() => setPlaying(null)} onClick={() => onChange(item.id)}>

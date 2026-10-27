@@ -24,14 +24,6 @@ from .remotion_render import (
 from .render_mix import discover_media_executable, _windows_process_options
 
 
-DIRECTOR_ZONE_LAYOUTS = {
-    "top_banner": (54, 76, 972, 196),
-    "upper_left": (54, 318, 470, 116),
-    "upper_right": (551, 318, 475, 116),
-    "middle_left": (54, 720, 470, 116),
-    "middle_right": (551, 720, 475, 116),
-}
-
 AUTO_MIX_MAX_SPEECH_WINDOW_GAIN_DB = 20.0
 
 
@@ -923,9 +915,8 @@ class FFmpegCreativeRenderer:
         if str((packaging.get("cover") or {}).get("mode") or "") == "reuse":
             Path(cover_path).touch()
             return
-        preserve_source = (packaging.get("cover") or {}).get("preserve_source")
-        source, seek = (self._cover_source(recipe, resolve_asset_path, fallback=video_path)
-                        if preserve_source else (video_path, 0.5))
+        # The local cover is always a clean frame: never the captioned output.
+        source, seek = self._cover_source(recipe, resolve_asset_path, fallback=video_path)
         self._render_cover(
             source,
             cover_path,
@@ -1992,14 +1983,10 @@ class FFmpegCreativeRenderer:
         return f"{filters};[slide_composed]format=yuv420p[vout]"
 
     def _overlay_filter(self, packaging, subtitle):
-        filters = []
-        packaging_filter = self._packaging_filter(packaging)
-        if packaging_filter:
-            filters.append(packaging_filter)
-        subtitle_filter = self._subtitle_filter(subtitle)
-        if subtitle_filter:
-            filters.append(subtitle_filter)
-        return ",".join(filters)
+        # The FFmpeg path draws captions only. Its old purple title/keyword/step
+        # cards and generic labels looked like a dated course template (customers
+        # rejected them, 2026-10); layout effects (split, picture-in-picture) stay.
+        return self._subtitle_filter(subtitle) or ""
 
     @staticmethod
     def _event_intervals(
@@ -2026,226 +2013,6 @@ class FFmpegCreativeRenderer:
                 break
         return intervals
 
-    @classmethod
-    def _event_enable(cls, packaging, event_types, **options):
-        intervals = cls._event_intervals(packaging, event_types, **options)
-        return cls._enable_expression(intervals) if intervals else ""
-
-    @staticmethod
-    def _event_label(event_type, index):
-        labels = {
-            "hook": "开场重点",
-            "keyword": f"观点 {index:02d}",
-            "process": f"步骤 {index:02d}",
-            "result": "结果总结",
-            "close": "本期总结",
-            "slide_focus": "课件重点",
-        }
-        return labels.get(event_type, f"重点 {index:02d}")
-
-    def _director_event_filters(self, packaging, font, primary, accent):
-        filters = []
-        events = [
-            event
-            for event in packaging.get("events") or []
-            if event.get("text") and event.get("zone") in DIRECTOR_ZONE_LAYOUTS
-        ]
-        for event in events[:12]:
-            start = max(0, int(event.get("start_ms") or 0)) / 1000
-            end = max(int(event.get("start_ms") or 0) + 1, int(event.get("end_ms") or 0)) / 1000
-            enable = self._enable_expression([(start, end)])
-            x, y, width, height = DIRECTOR_ZONE_LAYOUTS[event["zone"]]
-            size = str(event.get("size") or "chip")
-            text = self._ffmpeg_text(event.get("text") or "")
-            text_length = max(1, len(str(event.get("text") or "")))
-            if size == "hero":
-                font_size = 54 if text_length <= 14 else 44
-            elif size == "card":
-                font_size = 42 if text_length <= 12 else 34
-            else:
-                font_size = 36 if text_length <= 12 else 30
-            filters.extend(
-                (
-                    f"drawbox=x={x}:y={y}:w={width}:h={height}:"
-                    f"color={primary}@0.86:t=fill:enable='{enable}'",
-                    f"drawbox=x={x}:y={y}:w=12:h={height}:"
-                    f"color={accent}@1:t=fill:enable='{enable}'",
-                    f"drawtext={font}:text='{text}':fontcolor=white:fontsize={font_size}:"
-                    f"x={x + 34}:y={y + max(18, (height - font_size) // 2)}:"
-                    "shadowcolor=black@0.55:shadowx=2:shadowy=2:"
-                    f"enable='{enable}'",
-                )
-            )
-        return filters
-
-    def _packaging_filter(self, packaging):
-        if not isinstance(packaging, dict) or not packaging:
-            return ""
-        effects = packaging.get("effects") or {}
-        brand = packaging.get("brand") or {}
-        preset_id = str(packaging.get("preset_id") or "")
-        is_course = preset_id in {
-            "knowledge_focus", "slide_teacher", "classroom_value"
-        }
-        primary = self._ffmpeg_color(brand.get("primary_color") or "#6D5DFB")
-        accent = self._ffmpeg_color(brand.get("accent_color") or "#FFE45C")
-        title = self._ffmpeg_text(packaging.get("title") or "")
-        font = self._drawtext_font_option(packaging)
-        filters = []
-        # Do not apply `zoompan` to an already-rendered video stream here.
-        # On concatenated MP4 inputs it can collapse the input PTS timeline
-        # (for example, a 75s stream becomes ~39s) while the audio remains
-        # full length.  Still-image motion is handled in `_render_mix`, and
-        # Remotion owns dynamic motion when it is available; FFmpeg fallback
-        # must keep the video timeline stable.
-        if (packaging.get("director") or {}).get("provider"):
-            filters.extend(
-                self._director_event_filters(packaging, font, primary, accent)
-            )
-            return ",".join(filters)
-        if effects.get("title_card") and title:
-            title_enable = self._event_enable(
-                packaging, {"title"}, limit=1, maximum_duration_ms=2_400
-            ) or "lt(t,2.4)"
-            filters.extend(
-                (
-                    f"drawbox=x=54:y=76:w=972:h=196:color={primary}@0.78:t=fill:enable='{title_enable}'",
-                    f"drawbox=x=54:y=76:w=14:h=196:color={accent}@1:t=fill:enable='{title_enable}'",
-                    f"drawtext={font}:"
-                    f"text='{title}':fontcolor=white:fontsize=54:"
-                    "x=92:y=128:shadowcolor=black@0.65:shadowx=2:shadowy=2:"
-                    f"enable='{title_enable}'",
-                )
-            )
-        # Product One-Click must never replace evidence-based captions with
-        # generic labels such as "开场重点" or "步骤 01" when the dynamic
-        # renderer is temporarily unavailable.  The title is safe because it
-        # is supplied by the selected product script and it occupies a
-        # different part of the frame; semantic cards resume only when the
-        # Remotion path has rendered them from their grounded event text.
-        if packaging.get("fallback_safe_clean"):
-            return ",".join(filters)
-        if effects.get("keyword_card"):
-            for index, (start, end) in enumerate(
-                self._event_intervals(
-                    packaging, {"keyword"}, limit=3, maximum_duration_ms=2_200
-                ),
-                1,
-            ):
-                enable = self._enable_expression([(start, end)])
-                label = self._ffmpeg_text(self._event_label("keyword", index))
-                filters.extend(
-                    (
-                        f"drawbox=x=66:y=318:w=430:h=92:color={primary}@0.70:t=fill:enable='{enable}'",
-                        f"drawbox=x=66:y=318:w=10:h=92:color={accent}@1:t=fill:enable='{enable}'",
-                        f"drawtext={font}:text='{label}':fontcolor=white:fontsize=38:"
-                        f"x=98:y=342:enable='{enable}'",
-                    )
-                )
-        if effects.get("slide_focus"):
-            enable = self._event_enable(
-                packaging, {"slide_focus"}, limit=4, maximum_duration_ms=4_000
-            )
-            if enable:
-                label = self._ffmpeg_text(self._event_label("slide_focus", 1))
-                filters.extend(
-                    (
-                        f"drawbox=x=54:y=300:w=300:h=76:color={primary}@0.74:t=fill:enable='{enable}'",
-                        f"drawtext={font}:text='{label}':fontcolor=white:fontsize=34:"
-                        f"x=82:y=320:enable='{enable}'",
-                    )
-                )
-        if effects.get("classroom_broll"):
-            enable = self._event_enable(
-                packaging, {"keyword"}, limit=2, maximum_duration_ms=2_400
-            )
-            if enable:
-                label = self._ffmpeg_text("培训现场")
-                filters.extend(
-                    (
-                        f"drawbox=x=750:y=304:w=276:h=72:color={primary}@0.68:t=fill:enable='{enable}'",
-                        f"drawtext={font}:text='{label}':fontcolor=white:fontsize=32:"
-                        f"x=790:y=324:enable='{enable}'",
-                    )
-                )
-        if effects.get("hook_punch"):
-            enable = self._event_enable(
-                packaging, {"hook"}, limit=1, maximum_duration_ms=3_000
-            )
-            if enable:
-                label = self._ffmpeg_text(self._event_label("hook", 1))
-                filters.extend(
-                    (
-                        f"drawbox=x=32:y=32:w=1016:h=1856:color={accent}@0.88:t=8:enable='{enable}'",
-                        f"drawbox=x=646:y=306:w=374:h=92:color={primary}@0.82:t=fill:enable='{enable}'",
-                        f"drawtext={font}:text='{label}':fontcolor=white:fontsize=38:"
-                        f"x=686:y=330:enable='{enable}'",
-                    )
-                )
-        if effects.get("step_cards"):
-            for index, (start, end) in enumerate(
-                self._event_intervals(
-                    packaging, {"process"}, limit=3, maximum_duration_ms=2_800
-                ),
-                1,
-            ):
-                enable = self._enable_expression([(start, end)])
-                label = self._ffmpeg_text(self._event_label("process", index))
-                y = 316 + (index - 1) * 102
-                filters.extend(
-                    (
-                        f"drawbox=x=64:y={y}:w=330:h=84:color={primary}@0.78:t=fill:enable='{enable}'",
-                        f"drawbox=x=64:y={y}:w=12:h=84:color={accent}@1:t=fill:enable='{enable}'",
-                        f"drawtext={font}:text='{label}':fontcolor=white:fontsize=36:"
-                        f"x=96:y={y + 22}:enable='{enable}'",
-                    )
-                )
-        if effects.get("result_card"):
-            enable = self._event_enable(
-                packaging, {"result", "close"}, limit=2, maximum_duration_ms=2_800
-            )
-            if enable:
-                label = self._ffmpeg_text(self._event_label("result", 1))
-                filters.extend(
-                    (
-                        f"drawbox=x=92:y=330:w=896:h=132:color={primary}@0.82:t=fill:enable='{enable}'",
-                        f"drawbox=x=92:y=330:w=896:h=8:color={accent}@1:t=fill:enable='{enable}'",
-                        f"drawtext={font}:text='{label}':fontcolor=white:fontsize=46:"
-                        f"x=(w-text_w)/2:y=370:enable='{enable}'",
-                    )
-                )
-        sticker_budget = 0 if is_course else max(
-            0, min(2, int(effects.get("sticker_budget") or 0))
-        )
-        sticker_events = [
-            event
-            for event in packaging.get("events") or []
-            if str(event.get("type") or "") in {"hook", "process", "result"}
-        ]
-        for index, event in enumerate(sticker_events[:sticker_budget], 1):
-            start = max(0, int(event.get("start_ms") or 0)) / 1000
-            end = max(
-                int(event.get("start_ms") or 0) + 1,
-                min(
-                    int(event.get("end_ms") or 0),
-                    int(event.get("start_ms") or 0) + 1_600,
-                ),
-            ) / 1000
-            enable = self._enable_expression([(start, end)])
-            label = self._ffmpeg_text(
-                self._event_label(str(event.get("type") or ""), index)
-            )
-            x = 710 if index % 2 else 66
-            y = 470 + (index - 1) * 110
-            filters.extend(
-                (
-                    f"drawbox=x={x}:y={y}:w=300:h=76:color={accent}@0.92:t=fill:enable='{enable}'",
-                    f"drawtext={font}:text='{label}':fontcolor=black:fontsize=31:"
-                    f"x={x + 22}:y={y + 21}:enable='{enable}'",
-                )
-            )
-        return ",".join(filters)
-
     def _cover_filter(self, packaging):
         base = (
             "scale=1080:1920:force_original_aspect_ratio=increase,"
@@ -2253,10 +2020,6 @@ class FFmpegCreativeRenderer:
         )
         if not isinstance(packaging, dict) or not packaging or (packaging.get("cover") or {}).get("preserve_source"):
             return base
-        brand = packaging.get("brand") or {}
-        primary = self._ffmpeg_color(brand.get("primary_color") or "#6D5DFB")
-        accent = self._ffmpeg_color(brand.get("accent_color") or "#FFE45C")
-        title = self._ffmpeg_cover_text(packaging.get("title") or "课程现场价值")
         font = self._drawtext_font_option(packaging)
         plan = (packaging.get("cover") or {}).get("plan") or {}
         lines = plan.get("headline_lines") or []
@@ -2278,17 +2041,9 @@ class FFmpegCreativeRenderer:
                     filters.append(f"drawtext={font}:text='{safe}':fontcolor={color}:fontsize={font_size}:"
                                    f"x=78:y={176 + index * (font_size + 24)}:borderw=3:bordercolor={color}")
             return ",".join(filters)
-        return ",".join(
-            (
-                base,
-                "drawbox=x=0:y=0:w=1080:h=1920:color=black@0.12:t=fill",
-                f"drawbox=x=72:y=1180:w=936:h=430:color={primary}@0.86:t=fill",
-                f"drawbox=x=72:y=1180:w=18:h=430:color={accent}@1:t=fill",
-                f"drawtext={font}:"
-                f"text='{title}':fontcolor=white:fontsize=68:"
-                "x=122:y=1280:shadowcolor=black@0.7:shadowx=3:shadowy=3",
-            )
-        )
+        # No title bar: the purple "course" band looked dated. Until the AI cover
+        # lands (or if it fails) the cover is the clean frame itself.
+        return base
 
     def _cover_video_args(self, source, packaging, resolve_asset_path=None):
         args = ["-i", str(source)]
@@ -2340,8 +2095,14 @@ class FFmpegCreativeRenderer:
             timeout=120,
         )
 
-    @staticmethod
-    def _cover_source(recipe, resolve_asset_path, *, fallback):
+    def _cover_source(self, recipe, resolve_asset_path, *, fallback):
+        if recipe.get("imported_base_video"):
+            # Imported narration and product videos: the clean source before captions.
+            try:
+                return self._managed_audio_path(recipe["imported_base_video"], code="imported_video_missing",
+                                                message="基础视频已不可用。"), 1.0
+            except ContentEngineError:
+                return Path(fallback), 0.5
         kind = recipe.get("kind")
         segment = None
         if kind == "course":

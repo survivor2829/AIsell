@@ -407,7 +407,7 @@ class _GuidedSupplementalImageClient:
         self.submit_calls = []
         self.poll_calls = []
 
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(
             {"prompt": str(prompt), "reference_path": reference_path}
         )

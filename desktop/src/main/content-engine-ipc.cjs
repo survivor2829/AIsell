@@ -85,6 +85,7 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   repackageVideo: "content-engine:repackage-video",
   preflightVisualComparison: "content-engine:preflight-visual-comparison",
   createVisualComparisonTask: "content-engine:create-visual-comparison-task",
+  backfillCovers: "content-engine:backfill-covers",
   regenerateCover: "content-engine:regenerate-cover",
   updateCoverTitle: "content-engine:update-cover-title",
   getCreativeProject: "content-engine:get-creative-project",
@@ -127,7 +128,7 @@ function providerCapabilitiesForTask(task = {}) {
     ))];
   }
   if (taskType === "narrated_batch_v1") return NARRATED_PROVIDER_CAPABILITIES;
-  if (["creative_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
+  if (["creative_cover", "creative_cover_backfill", "guided_auto_mix_supplemental_image"].includes(taskType)) {
     return ["apimart"];
   }
   // New sidecars persist an explicit list, including [] for fully local work.
@@ -848,7 +849,9 @@ function publicFinished(item = {}) {
       : 0,
     metadata: stripPrivateValue(item.metadata || {}),
     available: item.available !== false,
-    createdAt: safeText(item.created_at, 64)
+    createdAt: safeText(item.created_at, 64),
+    coverState: ["ai", "generating", "local"].includes(item.cover_state) ? item.cover_state : "local",
+    coverVersion: safeText(item.cover_version, 64)
   };
 }
 
@@ -3511,12 +3514,22 @@ function registerContentEngineIpc(options = {}) {
       )
     );
   });
-  handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
-    assertKeys(payload, new Set(["candidateId"]));
+  // Covers are automatic (one AI cover per finished video, drawn by the content
+  // engine). The renderer can only start the background fill for older videos and
+  // query an already submitted request; it can never buy a cover directly.
+  handle(CONTENT_ENGINE_CHANNELS.backfillCovers, async (payload) => {
+    if (payload !== undefined) assertKeys(payload, new Set());
     await options.beforeProviderWork?.(["apimart"]);
-    return publicTask(await controller.regenerateCover(
-      validateId(payload.candidateId, "generated_video")
-    ));
+    const result = await controller.backfillCovers();
+    return result?.task_id ? publicTask(result) : { status: String(result?.status || "skipped") };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
+    assertKeys(payload, new Set(["candidateId", "recover"]));
+    if (payload.recover !== true) {
+      throw Object.assign(new Error("封面会自动生成，无需手动操作。"), { code: "cover_automatic" });
+    }
+    await options.beforeProviderWork?.(["apimart"]);
+    return publicTask(await controller.regenerateCover(validateId(payload.candidateId, "generated_video"), null, { recoverOnly: true }));
   });
   handle(CONTENT_ENGINE_CHANNELS.updateCoverTitle, async (payload) => {
     assertKeys(payload, new Set(["candidateId", "headlineLines"]));

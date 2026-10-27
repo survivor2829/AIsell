@@ -345,7 +345,7 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
             "effects": {"gentle_push": True},
             "events": [],
         }
-        self.assertNotIn("zoompan", self.renderer._packaging_filter(packaging))
+        self.assertNotIn("zoompan", self.renderer._overlay_filter(packaging, None))
 
     @unittest.skipUnless(
         shutil.which("ffmpeg") and shutil.which("ffprobe"),

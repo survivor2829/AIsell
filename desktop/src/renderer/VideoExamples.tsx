@@ -33,14 +33,23 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
   </dialog>;
 }
 
-const BANNER_TEXT: Record<VideoExample['topic'], { steps: string; result: string }> = {
+// Three steps laid out across the banner, so the right side carries the flow instead of blank space.
+const BANNER_TEXT: Record<VideoExample['topic'], { result: string; steps: { title: string; detail: string }[] }> = {
   'ai-editing': {
-    steps: '上传几段产品和现场素材，写下卖点，AI 挑镜头、写文案、配音、加字幕。',
-    result: '一次做出多条讲清卖点的获客短视频，导出后可发抖音、快手、视频号。'
+    result: '一次做出多条讲清卖点的获客短视频，导出后可发抖音、快手、视频号。',
+    steps: [
+      { title: '上传素材', detail: '几段产品和现场视频、图片，写下卖点' },
+      { title: 'AI 制作', detail: '挑镜头、写文案、配音、加字幕' },
+      { title: '一次出多条', detail: '每条带 AI 网感封面，直接下载发布' }
+    ]
   },
   'product-video': {
-    steps: '上传一张产品图，填几条卖点，AI 生成产品在现场使用的画面，配上讲解和字幕。',
-    result: '没有拍摄条件，也能让客户看到产品真实的使用效果。'
+    result: '没有拍摄条件，也能让客户看到产品真实的使用效果。',
+    steps: [
+      { title: '上传产品图', detail: '一张清楚的产品照片，填几条卖点' },
+      { title: 'AI 生成画面', detail: '产品在现场使用的效果，配讲解和字幕' },
+      { title: '拿到成片', detail: '约 30 秒，带 AI 网感封面' }
+    ]
   }
 };
 const collapsedKey = (topic: string) => `video-example-banner-collapsed:${topic}`;
@@ -69,15 +78,19 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
         </button>}
     </div>
     <div className="example-banner-copy">
-      <small>成片示例 · {example.duration}</small>
-      <h2>做出来是这样的</h2>
-      <p className="example-banner-title">「{example.title}」</p>
-      <p>{text.steps}</p>
-      <p>{text.result}</p>
-      <div className="example-banner-actions">
-        <button type="button" className="example-banner-tutorial" onClick={() => openTutorial(topic)}>看操作教程</button>
-        <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
+      {/* Header row spans the full width: title on the left, actions in the top-right corner. */}
+      <div className="example-banner-head">
+        <div>
+          <small>成片示例 · {example.duration} · 「{example.title}」</small>
+          <h2>做出来是这样的</h2>
+          <p>{text.result}</p>
+        </div>
+        <div className="example-banner-actions">
+          <button type="button" className="example-banner-tutorial" onClick={() => openTutorial(topic)}>看操作教程</button>
+          <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
+        </div>
       </div>
+      <ol className="example-banner-steps">{text.steps.map((step, index) => <li key={step.title}><b>{index + 1}</b><span><strong>{step.title}</strong>{step.detail}</span></li>)}</ol>
     </div>
   </section>;
 }

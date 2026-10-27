@@ -794,7 +794,7 @@
 .finished-grid {
   margin-top: 16px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 14px;
 }
 
@@ -814,9 +814,10 @@
   border-color: #d0d5dd;
 }
 
+/* Covers are portrait (3:4 AI covers, 9:16 frames); show the whole cover, not a strip. */
 .finished-card-cover {
   position: relative;
-  height: 200px;
+  aspect-ratio: 3 / 4;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -929,14 +930,17 @@
 .finished-card-actions {
   margin-top: 13px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
+/* Narrow portrait cards: buttons keep their label on one line and wrap as a whole. */
 .finished-card-actions button {
   min-height: 36px;
-  flex: 1;
+  flex: 1 1 auto;
   justify-content: center;
   padding: 0 10px;
+  white-space: nowrap;
 }
 
 .finished-card-missing {
@@ -1174,4 +1178,71 @@
     align-items: stretch;
     flex-direction: column;
   }
+}
+
+/* Automatic AI cover in progress: the clean frame shows meanwhile. */
+.finished-cover-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.72);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.finished-download-menu {
+  position: relative;
+  flex: 1 1 auto;
+}
+
+.finished-download-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.finished-download-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.finished-download-menu > summary.is-disabled {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.finished-download-options {
+  position: absolute;
+  z-index: 5;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  display: grid;
+  padding: 6px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.14);
+}
+
+.finished-download-options button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #1d2939;
+  text-align: left;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.finished-download-options button:hover {
+  background: #fff1f3;
 }

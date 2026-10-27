@@ -4,7 +4,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { createProductVideoService } = require('./product-video-service.cjs');
 const { planVideo } = require('./video-directors.cjs');
-const { parsePrices, createPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, validPrices, quotePlan } = require('./product-video-pricing.cjs');
+const { parseCoverPrice, parsePrices, createPriceReader, parseBailianPrices, parseDirectPrices, validBailianPrices, validPrices, quotePlan } = require('./product-video-pricing.cjs');
+// AI covers are quoted from the gpt-image-2.5-ext sunburst 1K price; anything else is refused.
+{
+  const payload = { success: true, data: { model_name: 'gpt-image-2.5-ext', billing_type: 'version_resolution',
+    version_resolution_prices: { sunburst: { '1K': 0.010625 } }, version_resolution_paid_prices: { sunburst: { '1K': 0.0085 } } } };
+  const cover = parseCoverPrice(payload);
+  assert.deepEqual([cover.imageUsd, cover.estimatedImageUsd, cover.fxCnyPerUsd, cover.version], [0.010625, 0.0085, 8, 'sunburst']);
+  assert.throws(() => parseCoverPrice({ ...payload, data: { ...payload.data, model_name: 'gpt-image-2' } }), e => e.code === 'cover_price_unavailable');
+  assert.throws(() => parseCoverPrice({ ...payload, data: { ...payload.data, billing_type: 'resolution' } }), e => e.code === 'cover_price_unavailable');
+}
 const { taskIdOf } = require('./digital-human-provider.cjs');
 
 const legacyPrices = () => parsePrices({ success: true, data: { resolution_prices: { '480P': .1201 }, resolution_paid_prices: { '480P': .09608 } } }, { success: true, data: { resolution_prices: { '1K': .2109 }, resolution_paid_prices: { '1K': .0085 } } });
@@ -98,7 +107,8 @@ async function run() {
     },
     packageVideo: async (payload) => {
       assert.match(payload.source_id, /^product_video_/u);
-      assert.equal(payload.cover_mode, 'local_frame');
+      // New tasks ask the content engine for one AI 3:4 cover drawn from the product frame.
+      assert.equal(payload.cover_mode, 'ai_design');
       assert.equal(payload.prepared_transcript.source_sha256,
         require('node:crypto').createHash('sha256').update(fs.readFileSync(payload.input_video_path)).digest('hex'));
       return { task_id: 'fixture_packaging', project_id: 'fixture_project' };

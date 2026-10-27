@@ -403,7 +403,8 @@ function createProductVideoService(options = {}) {
           const output = await options.packageVideo({ source_id: `product_video_${task.id.slice(3)}`,
             input_video_path: source, title: task.productName || '产品现场演示',
             confirmed_script: task.plan.shots.map(shot => shot.narration || '').join(''),
-            template_id: 'topic_fixed', cover_mode: 'local_frame',
+            // Every product video gets one AI 3:4 cover (billed in the cover ledger).
+            template_id: 'topic_fixed', cover_mode: 'ai_design',
             prepared_transcript: { time_unit: 'ms', utterances: task.preparedUtterances, source_sha256: digest(fs.readFileSync(source)) } });
           if (!output?.task_id) throw fail('product_video_packaging_unavailable', '包装服务尚未返回任务编号，原镜头已保留。');
           task.packagingTaskId = output.task_id; task.projectId = output.project_id; save(task);

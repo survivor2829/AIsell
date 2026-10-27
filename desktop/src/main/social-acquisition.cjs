@@ -8,7 +8,6 @@ const { captureResponses } = require("./social-capture.cjs");
 const drivers = require("./social-acquire-drivers.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
-const stamp = () => new Date().toISOString();
 const userMessage = (error, fallback) => /^(ACQUIRE|SOCIAL)_/.test(String(error?.code || "")) ? error.message : fallback;
 const CAPTCHA = /验证码|滑块|拖动|安全验证|安全检测|形状相同|完成验证/;
 // A shown verification iframe or popup; page text alone can mention 滑块 in a caption.
@@ -32,6 +31,8 @@ const nextMidnight = (ms) => { const date = new Date(ms); date.setHours(24, 0, 0
 // and an account the platform says is too busy rests until the next day.
 function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.acquireDriverFor, capture: makeCapture = captureResponses, makePage = pageFor,
   onChange = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
+  // Timestamps and "today" usage must read the same clock, or daily caps drift.
+  const stamp = () => new Date(now()).toISOString();
   const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, scroll: 600, ...timing };
   const stateFile = path.join(dataDir, "state.json");
   let state;

@@ -30,12 +30,21 @@
 .example-banner-error { display: grid; place-content: center; gap: 10px; height: 100%; padding: 12px; color: #fff; text-align: center; font-size: 13px; }
 .example-banner-error p { margin: 0; }
 .example-banner-error button { padding: 6px 12px; border: 0; border-radius: 6px; cursor: pointer; }
-.example-banner-copy { display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; max-width: 620px; }
+.example-banner-copy { display: flex; flex: 1 1 auto; flex-direction: column; gap: 16px; min-width: 0; }
+.example-banner-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.example-banner-head > div:first-child { display: grid; gap: 6px; min-width: 0; }
+/* Steps fill the rest of the banner height, so nothing is left blank below or to the right. */
+.example-banner-steps { flex: 1 1 auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.example-banner-steps li { display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 16px 18px; border: 1px solid #f1d7de; border-radius: 12px; background: #fff; }
+.example-banner-steps b { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #c91739; color: #fff; font-size: 15px; }
+.example-banner-steps span { display: grid; gap: 4px; min-width: 0; color: #5b6475; font-size: 14px; line-height: 1.55; }
+.example-banner-steps strong { color: #283344; font-size: 16px; }
+@media (max-width: 900px) { .example-banner-steps { grid-template-columns: 1fr; } }
 .example-banner-copy small { color: #b81735; font-size: 13px; font-weight: 600; }
-.example-banner-copy h2 { margin: 0; font-size: 20px; }
+.example-banner-copy h2 { margin: 0; font-size: 22px; }
 .example-banner-copy p { margin: 0; color: #4b5565; line-height: 1.65; }
 .example-banner-copy .example-banner-title { color: #283344; font-weight: 600; }
-.example-banner-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.example-banner-actions { display: flex; flex: 0 0 auto; gap: 10px; }
 .example-banner-actions button, .example-banner.is-collapsed button { display: inline-flex; align-items: center; gap: 4px; padding: 7px 14px; border: 1px solid #eadde1; border-radius: 8px; background: #fff; color: #283344; font: inherit; font-size: 14px; cursor: pointer; }
 .example-banner-actions .example-banner-tutorial { border-color: #c91739; color: #b81735; }
 .example-banner-actions button:hover, .example-banner.is-collapsed button:hover { background: #fff3f5; }

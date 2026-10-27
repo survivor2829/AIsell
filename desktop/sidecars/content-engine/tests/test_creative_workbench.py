@@ -242,26 +242,6 @@ class CreativeRendererRecipeTests(unittest.TestCase):
         self.assertIn("overlay=", graph)
 
 
-    def test_renderer_uses_ai_event_text_timing_and_zone_instead_of_generic_labels(self):
-        packaging = {
-            "preset_id": "knowledge_focus",
-            "effects": {"title_card": True, "keyword_card": True},
-            "brand": None,
-            "director": {"provider": "bailian", "model": "qwen-plus", "version": 1},
-            "events": [{
-                "type": "keyword", "text": "办公商用场景",
-                "start_ms": 4_000, "end_ms": 6_000,
-                "zone": "upper_right", "size": "card", "priority": 2,
-            }],
-        }
-
-        graph = self.renderer._packaging_filter(packaging)
-
-        self.assertIn("办公商用场景", graph)
-        self.assertIn("between(t,4.000,6.000)", graph)
-        self.assertIn("x=551", graph)
-        self.assertNotIn("观点 01", graph)
-
     def test_finishing_pass_uses_logo_outro_and_ducked_procedural_audio(self):
         logo = self.root / "logo.png"
         logo.write_bytes(b"logo")
@@ -611,21 +591,6 @@ class CreativeRendererRecipeTests(unittest.TestCase):
         self.assertTrue(cues)
         self.assertTrue(all("words" not in cue for cue in cues))
         self.assertNotIn(r"{\kf", subtitle.read_text(encoding="utf-8"))
-
-    def test_packaging_filter_adds_local_title_card_without_timeline_collapsing_zoompan(self):
-        packaging = {
-            "preset_id": "knowledge_focus",
-            "title": "三个现场判断标准",
-            "effects": {"gentle_push": True, "title_card": True},
-            "brand": {"primary_color": "#6D5DFB", "accent_color": "#FFE45C"},
-        }
-
-        rendered = self.renderer._packaging_filter(packaging)
-
-        self.assertNotIn("zoompan=", rendered)
-        self.assertIn("drawbox=", rendered)
-        self.assertIn("drawtext=", rendered)
-        self.assertNotIn("C:\\", rendered)
 
     def test_brand_font_presets_change_drawtext_and_caption_fonts(self):
         self.renderer.font_paths = {
@@ -1251,7 +1216,7 @@ class FakeCoverClient:
         self.download_calls = []
         self.reference_paths = []
 
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None
@@ -1271,7 +1236,7 @@ class FakeCoverClient:
 
 
 class FirstUnknownCoverClient(FakeCoverClient):
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None
@@ -1286,7 +1251,7 @@ class FirstUnknownCoverClient(FakeCoverClient):
 
 
 class FirstPollFailureCoverClient(FakeCoverClient):
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None
@@ -1320,7 +1285,7 @@ class FailingDownloadCoverClient(FakeCoverClient):
 
 
 class FailSecondDownloadCoverClient(FakeCoverClient):
-    def submit(self, prompt, *, reference_path=None):
+    def submit(self, prompt, *, reference_path=None, **_options):
         self.submit_calls.append(prompt)
         self.reference_paths.append(
             str(Path(reference_path)) if reference_path is not None else None

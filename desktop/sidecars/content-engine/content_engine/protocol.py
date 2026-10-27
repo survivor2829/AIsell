@@ -231,8 +231,10 @@ METHODS = {
     "list_media_reviews": lambda service, params: service.list_media_reviews(
         params.get("candidate_id")
     ),
+    "backfill_auto_covers": lambda service, params: service.backfill_auto_covers(),
     "regenerate_cover": lambda service, params: service.regenerate_cover(
-        params.get("candidate_id"), params.get("design"), recover_only=params.get("recover_only", False)
+        params.get("candidate_id"), params.get("design"), recover_only=params.get("recover_only", False),
+        redesign=params.get("redesign", False)
     ),
     "update_cover_operation": lambda service, params: service.update_cover_operation(
         params.get("cover_operation_id"),

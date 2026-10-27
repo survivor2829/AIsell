@@ -32,7 +32,10 @@ class VideoPresentationTests(unittest.TestCase):
                                              lambda _: self.fail('Original frame must not resolve a logo'))
             self.assertNotIn('drawtext', ' '.join(args))
             self.assertNotIn('drawbox', ' '.join(args))
-            self.assertIn('drawtext', renderer._cover_filter({'cover': {'mode': 'local_frame'}}))
+            # The old purple "course" title band is gone: a local cover is the clean frame.
+            plain = renderer._cover_filter({'title': '课程标题', 'cover': {'mode': 'local_frame'}})
+            self.assertNotIn('drawbox', plain)
+            self.assertNotIn('drawtext', plain)
 
     def test_narration_v2_mix_has_fades_ducking_and_verified_loudness(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -337,6 +340,220 @@ class VideoPresentationTests(unittest.TestCase):
                 with self.assertRaises(ContentEngineError) as caught:
                     domain.import_base_video({**request, "source_id": "digital_human_" + uuid.uuid4().hex})
                 self.assertEqual("invalid_video_transcript", caught.exception.code)
+            finally:
+                database.close()
+
+    def test_finished_product_video_gets_one_automatic_ai_cover(self):
+        import struct
+        import zlib
+        from content_engine.cover_design import auto_design, cover_headline, validate_design
+        from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
+
+        def png(file, width, height):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+            Path(file).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+                + chunk(b"IDAT", zlib.compress((b"\0" + b"\0\x80\0" * width) * height)) + chunk(b"IEND", b""))
+
+        # Automatic designs: headline fits 24 characters, styles rotate, the request id is stable per video.
+        self.assertEqual("清洁设备怎么选", cover_headline("清洁设备怎么选"))
+        self.assertEqual("三十五升垃圾箱的洗地机，到底值不值得买", cover_headline("三十五升垃圾箱的洗地机，到底值不值得买？我们实测了三个月给你答案"))
+        first = auto_design("generated_video_a", "看清细节", "product", 30000)
+        self.assertEqual(first, auto_design("generated_video_a", "看清细节", "product", 30000))
+        self.assertEqual(9.0, first["frame_seconds"])
+        validate_design(first, 30000)
+        self.assertGreater(len({auto_design(f"v{n}", "t", "scene", 30000)["style"] for n in range(12)}), 1)
+        with self.assertRaises(ContentEngineError):
+            validate_design({**first, "subject": "logo"}, 30000)
+
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source = root / "source.mp4"
+            source.write_bytes(b"product-video-fixture")
+            database = Database(root / "engine").open()
+
+            def render(**request):
+                target = request["output_dir"]
+                target.mkdir(parents=True)
+                (target / "video.mp4").write_bytes(source.read_bytes())
+                (target / "cover.jpg").write_bytes(b"local-cover")
+                return {"video_path": target / "video.mp4", "thumbnail_path": target / "cover.jpg"}
+            analyzer = SimpleNamespace(cloud_client=None, ffmpeg_path="fixture", _command=lambda args: png(args[-1], 300, 400))
+            renderer = SimpleNamespace(_probe_rendered_media=lambda _: {"duration_ms": 3000}, render=render,
+                                       ffprobe_path="fixture", ffmpeg_path="fixture",
+                                       _command=lambda args, **_kwargs: png(args[-1], 1080, 1440))
+            renderer.compose_cover = lambda *args, **kwargs: FFmpegCreativeRenderer.compose_cover(renderer, *args, **kwargs)
+            probe_patch = mock.patch.object(FFprobeAdapter, "probe", lambda _adapter, file, kind: ProbeOutcome(
+                status="ok", width=struct.unpack(">II", Path(file).read_bytes()[16:24])[0],
+                height=struct.unpack(">II", Path(file).read_bytes()[16:24])[1]))
+            probe_patch.start()
+            self.addCleanup(probe_patch.stop)
+            submit = mock.Mock(return_value="provider-cover-id")
+            cover_client = SimpleNamespace(configured=True, submit=submit, poll=lambda *_a, **_k: "https://example.com/cover.png",
+                                           download=lambda _url, target: png(target, 768, 1024))
+            try:
+                with mock.patch.object(CreativeDomain, "_sync_configured_voice_persona"):
+                    domain = CreativeDomain(database, new_id=lambda prefix: prefix + "_" + uuid.uuid4().hex,
+                        now=lambda: "2026-10-26T12:00:00Z", analyzer=analyzer, renderer=renderer, cover_client=cover_client)
+                task = domain.import_base_video({"source_id": "product_video_" + uuid.uuid4().hex,
+                    "input_video_path": str(source), "title": "看清细节", "confirmed_script": "看清细节。",
+                    "cover_mode": "ai_design",
+                    "prepared_transcript": {"source_sha256": domain._sha256_file(source), "time_unit": "ms",
+                        "utterances": [{"text": "看清细节。", "start_time": 100, "end_time": 2800,
+                            "words": [{"text": "看清", "start_time": 100, "end_time": 1000},
+                                      {"text": "细节", "start_time": 1100, "end_time": 2800}]}]}})
+                with mock.patch.dict("os.environ", {"APIMART_COVER_MODEL": "gpt-image-2.5-ext"}):
+                    result = domain.run_task(task["task_id"])
+                self.assertEqual("completed", result["status"], result)
+                video_id = result["generated_video_id"]
+                # One paid request, 3:4, on the cover model, with the product-specific prompt.
+                self.assertEqual(1, submit.call_count)
+                self.assertEqual("3:4", submit.call_args.kwargs["size"])
+                self.assertEqual({"model": "gpt-image-2.5-ext", "version": "sunburst", "resolution": "1K"},
+                                 submit.call_args.kwargs["profile"])
+                self.assertIn("product reference", submit.call_args.args[0])
+                self.assertIn("Exact headline: 看清细节", submit.call_args.args[0])
+                ledger = database.connection.execute("SELECT status FROM cover_generation_ledger").fetchall()
+                self.assertEqual(["completed"], [row[0] for row in ledger])
+                recipe = json.loads(domain._generated_row(video_id)["recipe_json"])
+                self.assertEqual("gpt-image-2.5-ext", recipe["packaging"]["cover"]["model_profile"]["model"])
+                self.assertEqual("product", recipe["packaging"]["cover"]["design"]["subject"])
+                thumbnail = domain._validate_generated_path(domain._generated_row(video_id)["thumbnail_path"])
+                self.assertEqual((1080, 1440), struct.unpack(">II", thumbnail.read_bytes()[16:24]))
+                # Asking again for the same automatic design never buys a second cover.
+                design = recipe["packaging"]["cover"]["design"]
+                domain.regenerate_cover(video_id, design)
+                self.assertEqual(1, submit.call_count)
+                self.assertEqual(1, database.connection.execute("SELECT count(*) FROM cover_generation_ledger").fetchone()[0])
+                # A generic regenerate without a confirmed design is refused instead of buying silently.
+                with self.assertRaises(ContentEngineError) as caught:
+                    domain.regenerate_cover(video_id)
+                self.assertEqual("cover_confirmation_required", caught.exception.code)
+                # A recovery query without a design checks the current request and never buys.
+                domain.regenerate_cover(video_id, recover_only=True)
+                self.assertEqual(1, submit.call_count)
+                # 重新生成 after a confirmed quote: next style, new request, same source frame.
+                reference = Path(recipe["packaging"]["cover"]["plan"]["reference_path"]).read_bytes()
+                redo = domain.regenerate_cover(video_id, redesign=True)
+                self.assertEqual("completed", domain.run_task(redo["task_id"])["status"])
+                self.assertEqual(2, submit.call_count)
+                redone = json.loads(domain._generated_row(video_id)["recipe_json"])["packaging"]["cover"]
+                self.assertNotEqual(design["request_id"], redone["design"]["request_id"])
+                self.assertNotEqual(design["style"], redone["design"]["style"])
+                self.assertEqual(design["title"], redone["design"]["title"])
+                self.assertEqual(reference, Path(redone["plan"]["reference_path"]).read_bytes())
+                self.assertEqual(2, database.connection.execute("SELECT count(*) FROM cover_generation_ledger").fetchone()[0])
+                # An older-style request that was never submitted does not block a confirmed redesign.
+                old = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex,
+                    "input_video_path": str(source), "title": "老封面", "confirmed_script": "看清细节。", "cover_mode": "local_frame",
+                    "prepared_transcript": {"source_sha256": domain._sha256_file(source), "time_unit": "ms",
+                        "utterances": [{"text": "看清细节。", "start_time": 100, "end_time": 2800,
+                            "words": [{"text": "看清", "start_time": 100, "end_time": 1000},
+                                      {"text": "细节", "start_time": 1100, "end_time": 2800}]}]}})
+                old_id = domain.run_task(old["task_id"])["generated_video_id"]
+                domain.cover_client = SimpleNamespace(configured=False)
+                domain.regenerate_cover(old_id)
+                stale = database.connection.execute("SELECT id,status FROM cover_generation_ledger WHERE generated_video_id=?", (old_id,)).fetchone()
+                self.assertEqual("planned", stale["status"])
+                domain.regenerate_cover(old_id, redesign=True)
+                statuses = [row[0] for row in database.connection.execute(
+                    "SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at,rowid", (old_id,))]
+                self.assertEqual(["cancelled", "planned"], statuses)
+                self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
+            finally:
+                database.close()
+
+    def test_automatic_cover_retries_once_and_backfills_older_videos(self):
+        import struct
+        import zlib
+        from content_engine.apimart_cover import APIMartTaskFailed
+        from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
+
+        def png(file, width, height):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+            Path(file).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+                + chunk(b"IDAT", zlib.compress((b"\0" + b"\0\x80\0" * width) * height)) + chunk(b"IEND", b""))
+
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            source = root / "source.mp4"
+            source.write_bytes(b"cover-retry-fixture")
+            database = Database(root / "engine").open()
+
+            def render(**request):
+                target = request["output_dir"]
+                target.mkdir(parents=True)
+                (target / "video.mp4").write_bytes(source.read_bytes())
+                (target / "cover.jpg").write_bytes(b"local-cover")
+                return {"video_path": target / "video.mp4", "thumbnail_path": target / "cover.jpg"}
+            analyzer = SimpleNamespace(cloud_client=None, ffmpeg_path="fixture", _command=lambda args: png(args[-1], 300, 400))
+            renderer = SimpleNamespace(_probe_rendered_media=lambda _: {"duration_ms": 3000}, render=render,
+                                       ffprobe_path="fixture", ffmpeg_path="fixture",
+                                       _command=lambda args, **_kwargs: png(args[-1], 1080, 1440))
+            renderer.compose_cover = lambda *args, **kwargs: FFmpegCreativeRenderer.compose_cover(renderer, *args, **kwargs)
+            probe_patch = mock.patch.object(FFprobeAdapter, "probe", lambda _adapter, file, kind: ProbeOutcome(
+                status="ok", width=struct.unpack(">II", Path(file).read_bytes()[16:24])[0],
+                height=struct.unpack(">II", Path(file).read_bytes()[16:24])[1]))
+            probe_patch.start()
+            self.addCleanup(probe_patch.stop)
+            outcomes = []
+            def poll(*_args, **_kwargs):
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            submit = mock.Mock(return_value="provider-cover-id")
+            cover_client = SimpleNamespace(configured=True, submit=submit, poll=poll,
+                                           download=lambda _url, target: png(target, 768, 1024))
+            transcript = lambda: {"source_sha256": domain._sha256_file(source), "time_unit": "ms",
+                "utterances": [{"text": "看清细节。", "start_time": 100, "end_time": 2800,
+                    "words": [{"text": "看清", "start_time": 100, "end_time": 1000},
+                              {"text": "细节", "start_time": 1100, "end_time": 2800}]}]}
+            try:
+                with mock.patch.object(CreativeDomain, "_sync_configured_voice_persona"):
+                    domain = CreativeDomain(database, new_id=lambda prefix: prefix + "_" + uuid.uuid4().hex,
+                        now=lambda: "2026-10-27T12:00:00Z", analyzer=analyzer, renderer=renderer, cover_client=cover_client)
+                # 1. Two definite failures: one retry, then the clean local frame stays; no third purchase.
+                outcomes[:] = [APIMartTaskFailed("failed"), APIMartTaskFailed("failed")]
+                product = domain.import_base_video({"source_id": "product_video_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "看清细节", "confirmed_script": "看清细节。", "cover_mode": "ai_design", "prepared_transcript": transcript()})
+                product_id = domain.run_task(product["task_id"])["generated_video_id"]
+                self.assertEqual(2, submit.call_count)
+                recipe = json.loads(domain._generated_row(product_id)["recipe_json"])
+                self.assertFalse(recipe["presentation"]["showTitle"], "no topic bar over product videos")
+                self.assertEqual(2, recipe["packaging"]["cover"]["auto_attempts"])
+                self.assertEqual("local", domain.finished_cover_states([product_id])[product_id]["cover_state"])
+                # 2. An unknown result is never retried.
+                outcomes[:] = [APIMartOutcomeUnknown("provider-cover-id", "lost")]
+                unknown = domain.import_base_video({"source_id": "product_video_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "结果不明", "confirmed_script": "看清细节。", "cover_mode": "ai_design", "prepared_transcript": transcript()})
+                unknown_id = domain.run_task(unknown["task_id"])["generated_video_id"]
+                self.assertEqual(3, submit.call_count)
+                # 3. An older video without an AI cover is covered by the backfill, once.
+                old = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "老视频", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                old_id = domain.run_task(old["task_id"])["generated_video_id"]
+                older = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "更老的视频", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                older_id = domain.run_task(older["task_id"])["generated_video_id"]
+                self.assertEqual(3, submit.call_count, "local_frame imports do not buy a cover by themselves")
+                outcomes[:] = ["https://example.com/cover.png", "https://example.com/cover.png"]
+                backfill = domain.create_cover_backfill_task()
+                self.assertEqual(backfill["task_id"], domain.create_cover_backfill_task()["task_id"], "one backfill at a time")
+                self.assertEqual("generating", domain.finished_cover_states([old_id])[old_id]["cover_state"])
+                result = domain.run_task(backfill["task_id"])
+                self.assertEqual("completed", result["status"], result)
+                self.assertEqual(5, submit.call_count, "only the old videos are bought; failed and unknown ones are not")
+                styles = [json.loads(domain._generated_row(i)["recipe_json"])["packaging"]["cover"]["design"]["style"] for i in (old_id, older_id)]
+                self.assertNotEqual(styles[0], styles[1], "neighbouring covers use different colourways")
+                states = domain.finished_cover_states([old_id, product_id, unknown_id])
+                self.assertEqual(["ai", "local", "local"], [states[i]["cover_state"] for i in (old_id, product_id, unknown_id)])
+                self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
+                domain.run_task(domain.create_cover_backfill_task()["task_id"])
+                self.assertEqual(5, submit.call_count, "a second backfill buys nothing")
             finally:
                 database.close()
 

@@ -45,6 +45,7 @@ async function main() {
     operations: [{ stage: 'voice', state: 'reused' }, { stage: 'video', state: 'unknown' }] });
   assert.equal(costs.estimate('旧任务', 45, { videoCnyPerSecond: .08 }), undefined, 'old prices must not acquire invented historical usage');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoxi-reference-check-'));
+  const packageModes = [];
   const counts = { train: 0, voice: 0, video: 0, asr: 0, recover: 0, package: 0, enroll: 0, script: 0 };
   const enrollmentReceipts = new Map(); let loseEnrollmentReply = true;
   let voiceStatusQueries = 0, measuredSeconds = 3;
@@ -125,7 +126,7 @@ async function main() {
     },
     analyzeNarration: async () => ({ status: 'measured', coverage: 1, union: { y: .2, bottom: .6 }, busy: false }),
     selectMusic: async () => musicAvailable ? { trackId: 'music_track_owned' } : { status: 'unavailable' },
-    packageVideo: async (payload) => { counts.package++; assert.ok(['moving_pill', 'layered_v1', 'layered_v2', 'layered_v3', 'layered_v4', 'impact_v4', 'minimal_v4'].includes(payload.caption_style_id)); assert.equal(payload.audio_profile, 'narration_v2'); assert.equal(payload.cover_mode, 'local_frame'); assert.equal(payload.music_track_id, 'music_track_owned'); return { task_id: 'packaging-1' }; },
+    packageVideo: async (payload) => { counts.package++; assert.ok(['moving_pill', 'layered_v1', 'layered_v2', 'layered_v3', 'layered_v4', 'impact_v4', 'minimal_v4'].includes(payload.caption_style_id)); assert.equal(payload.audio_profile, 'narration_v2'); assert.ok(['ai_design', 'local_frame'].includes(payload.cover_mode)); packageModes.push(payload.cover_mode); assert.equal(payload.music_track_id, 'music_track_owned'); return { task_id: 'packaging-1' }; },
     queryPackaging: async () => ({ status: 'completed', result: { generated_video_id: 'generated_video_test' } }),
   };
   try {
@@ -409,15 +410,12 @@ async function main() {
     assert.equal(jointQuote.quote.schemaVersion, 3); assert.equal(jointQuote.quote.maximumSeconds, person.seconds);
     await service.prepare(joint.id, jointQuote.quoteRevision, true, true);
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(service.get(joint.id).status, 'completed'); assert.equal(service.get(joint.id).autoCoverState, 'planned');
-    assert.equal(coverCalls.length, 1);
-    await service.close(); service = createReferenceHumanService(options);
-    await service.refresh(joint.id);
-    assert.equal(coverCalls.length, 1, 'queued cover survives restart without resubmission or false failure');
-    coverState = 'completed'; await service.refresh(joint.id);
-    assert.equal(coverCalls.length, 2); assert.equal(coverCalls[1].control.recoverOnly, true);
-    assert.equal(coverCalls[0].design.request_id, coverCalls[1].design.request_id);
-    assert.equal(service.get(joint.id).autoCoverState, 'completed');
+    // Covers are automatic: the content engine draws the AI cover while packaging
+    // (cover_mode ai_design); the desktop asks no questions and buys nothing itself.
+    assert.equal(service.get(joint.id).status, 'completed'); assert.equal(service.get(joint.id).autoCoverState, undefined);
+    assert.equal(packageModes.at(-1), 'ai_design');
+    assert.equal(coverCalls.length, 0);
+    assert.ok(jointQuote.quote.coverReserveCny > 0, 'the quote the customer confirms includes the cover');
     transcriptMismatch = true;
     const incomplete = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
     const incompleteQuote = await service.quote(incomplete.id), videosBeforeMismatch = counts.video;

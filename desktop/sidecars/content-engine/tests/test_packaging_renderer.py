@@ -134,35 +134,18 @@ class PackagingRendererTests(unittest.TestCase):
             recipe["packaging"] = packaging
         return recipe
 
-    def test_six_presets_have_distinct_event_driven_filtergraphs(self):
-        graphs = {
-            preset_id: self.renderer._packaging_filter(packaging_for(preset_id))
-            for preset_id in PRESET_IDS
-        }
-
-        self.assertEqual(6, len(set(graphs.values())))
-        self.assertIn("观点 01", graphs["knowledge_focus"])
-        self.assertIn("课件重点", graphs["slide_teacher"])
-        self.assertIn("培训现场", graphs["classroom_value"])
-        self.assertIn("开场重点", graphs["hook_impact"])
-        self.assertIn("步骤 01", graphs["process_rhythm"])
-        self.assertIn("结果总结", graphs["result_close"])
-        for preset_id in PRESET_IDS[:3]:
-            self.assertNotIn("fontcolor=black", graphs[preset_id])
-        self.assertEqual(2, graphs["hook_impact"].count("fontcolor=black"))
-        self.assertEqual(2, graphs["process_rhythm"].count("fontcolor=black"))
-        self.assertEqual(1, graphs["result_close"].count("fontcolor=black"))
+    def test_ffmpeg_path_draws_captions_only_never_course_cards(self):
+        # Purple title/keyword/step/result cards and generic labels were removed
+        # (customers found them dated); presets keep only their layout effects.
+        for preset_id in PRESET_IDS:
+            graph = self.renderer._overlay_filter(packaging_for(preset_id), None)
+            self.assertEqual("", graph, preset_id)
+        captions = self.renderer._overlay_filter(packaging_for("knowledge_focus"), self.root / "captions.ass")
+        self.assertTrue(captions.startswith("subtitles="))
+        self.assertNotIn("drawbox", captions)
+        self.assertNotIn("drawtext", captions)
 
     def test_product_ffmpeg_fallback_keeps_only_grounded_title_and_caption_lane(self):
-        packaging = packaging_for("hook_impact")
-        packaging["fallback_safe_clean"] = True
-        graph = self.renderer._packaging_filter(packaging)
-
-        self.assertIn("培训现场价值", graph)
-        self.assertNotIn("开场重点", graph)
-        self.assertNotIn("观点 01", graph)
-        self.assertNotIn("步骤 01", graph)
-
         recipe = {
             "voice_segment": {"start_ms": 0},
             "subtitle_style": {"preset": "dynamic_clean"},
