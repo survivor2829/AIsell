@@ -30,7 +30,13 @@
 .example-banner-error { display: grid; place-content: center; gap: 10px; height: 100%; padding: 12px; color: #fff; text-align: center; font-size: 13px; }
 .example-banner-error p { margin: 0; }
 .example-banner-error button { padding: 6px 12px; border: 0; border-radius: 6px; cursor: pointer; }
-.example-banner-copy { display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; max-width: 620px; }
+.example-banner-copy { display: flex; flex: 1 1 auto; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; }
+.example-banner-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 6px 0 0; padding: 0; list-style: none; }
+.example-banner-steps li { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #f1d7de; border-radius: 10px; background: #fff; }
+.example-banner-steps b { display: grid; place-items: center; flex: 0 0 26px; height: 26px; border-radius: 50%; background: #c91739; color: #fff; font-size: 13px; }
+.example-banner-steps span { display: grid; gap: 3px; min-width: 0; color: #5b6475; font-size: 13px; line-height: 1.5; }
+.example-banner-steps strong { color: #283344; font-size: 14px; }
+@media (max-width: 900px) { .example-banner-steps { grid-template-columns: 1fr; } }
 .example-banner-copy small { color: #b81735; font-size: 13px; font-weight: 600; }
 .example-banner-copy h2 { margin: 0; font-size: 20px; }
 .example-banner-copy p { margin: 0; color: #4b5565; line-height: 1.65; }
