@@ -5119,15 +5119,57 @@ async function main() {
       return { ok: false, blocked_reason: "visual_send_outcome_unknown", outcomeUnknown: true, send_attempted: null }; },
     runStep: async () => ({ ok: true }) });
   const unknownInput = { recipients: [workflowUniverse[0]], accountName: "wx-a", isEnabled: () => true };
+  // Unattended: an unknown reply counts as sent, is never repeated, and the run keeps going.
   const unknownFirst = await unknownWorkflowController.runWorkflowStep(unknownInput);
-  assert.equal(unknownFirst.status, "needs_attention");
-  assert.equal(unknownFirst.reasonCode, "send_outcome_unknown_paused");
-  await unknownWorkflowController.runWorkflowStep(unknownInput);
+  assert.equal(unknownFirst.status, "running", "an unknown reply never stops the unattended run");
+  const unknownState = JSON.parse(fs.readFileSync(path.join(root, "workflow_unknown_state", "auto-reply-state.json"), "utf8"));
+  assert.equal(unknownState.last_event, "send_outcome_unknown_assumed_sent");
+  assert.equal(Object.values(unknownState.processed).at(-1).status, "outcome_unknown");
+  assert.equal((await unknownWorkflowController.runWorkflowStep(unknownInput)).status, "running");
   const unknownDiagnostics = fs.readFileSync(path.join(root, "workflow_unknown_state", "auto-reply-diagnostics.jsonl"), "utf8");
-  assert.match(unknownDiagnostics, /"code":"start_pending_missing"/u);
+  assert.doesNotMatch(unknownDiagnostics, /"code":"start_pending_missing"/u);
+  assert.match(unknownDiagnostics, /"event":"reply_outcome_assumed_sent"/u);
   unknownWorkflowController.resumeWorkflow();
   await unknownWorkflowController.runWorkflowStep(unknownInput);
   assert.equal(unknownSends, 1, "an unknown send must not be attempted again after restart");
+
+  // WeChat's message records settle the same unreadable reply: on record means sent.
+  const receiptAsks = [];
+  const receiptWorkflowController = createAutoReplyController({ dataDir: path.join(root, "workflow_receipt_state"), activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    receipts: { confirmSent: (username, sinceSeconds, part) => { receiptAsks.push({ username, text: part.text, since: Number.isFinite(sinceSeconds) }); return true; } },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { await input.beforeDraft(); return { ok: false, blocked_reason: "visual_send_outcome_unknown", outcomeUnknown: true, send_attempted: null }; },
+    runStep: async () => ({ ok: true }) });
+  assert.equal((await receiptWorkflowController.runWorkflowStep(unknownInput)).status, "running");
+  assert.equal(receiptAsks.length, 1);
+  assert.equal(receiptAsks[0].since, true);
+  const receiptState = JSON.parse(fs.readFileSync(path.join(root, "workflow_receipt_state", "auto-reply-state.json"), "utf8"));
+  assert.equal(Object.values(receiptState.processed).at(-1).status, "sent_verified");
+  assert.equal(receiptState.reply_count, 1);
+  assert.equal(receiptState.last_event, "reply_sent_verified");
+
+  // A failure pause (here the AI service failing once) is not a stop: the next workflow step
+  // starts again on its own and the waiting message still gets its reply.
+  let flakyCalls = 0, flakySends = 0;
+  const flakyController = createAutoReplyController({ dataDir: path.join(root, "workflow_flaky_state"), activeTouchDir: workflowContacts,
+    coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => {
+      flakyCalls += 1;
+      if (flakyCalls === 1) throw Object.assign(new Error("AI 服务暂时不可用"), { code: "deepseek_network_error" });
+      return answerDecision("您好。");
+    } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+    scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+    send: async (input) => { await input.beforeDraft(); flakySends += 1; return { ok: true }; },
+    runStep: async () => ({ ok: true }) });
+  assert.equal((await flakyController.runWorkflowStep(unknownInput)).status, "needs_attention", "the failing step itself is reported");
+  assert.equal(flakySends, 0);
+  assert.equal((await flakyController.runWorkflowStep(unknownInput)).status, "running", "the next step restarts by itself");
+  assert.equal(flakySends, 1, "the waiting message is answered after the automatic restart");
+  assert.match(fs.readFileSync(path.join(root, "workflow_flaky_state", "auto-reply-diagnostics.jsonl"), "utf8"), /"event":"workflow_auto_restart"/u);
 
   let retryClock = workflowNow;
   let retrySends = 0;
