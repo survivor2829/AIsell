@@ -72,8 +72,18 @@ function searchObservationEvidence(observation, identity) {
   };
 }
 
+// WeChat in Traditional Chinese labels its search popup differently. Folding those phrases to
+// the Simplified labels keeps every comparison below language-independent.
+const TRADITIONAL_LABELS = Object.freeze([
+  ["搜尋網路結果", "搜索网络结果"], ["網路搜尋", "网络搜索"], ["搜尋網路", "搜索网络"], ["網路查找", "网络查找"],
+  ["微信號", "微信号"], ["最近聯絡人", "最近联系人"], ["聯絡人", "联系人"], ["群組", "群聊"],
+  ["聊天紀錄", "聊天记录"], ["聊天記錄", "聊天记录"], ["公眾號", "公众号"], ["小程式", "小程序"], ["檔案傳輸", "文件传输"], ["檔案", "文件"]
+]);
+
 function normalized(value) {
-  return String(value ?? "").normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
+  let text = String(value ?? "").normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
+  for (const [traditional, simplified] of TRADITIONAL_LABELS) text = text.split(traditional).join(simplified);
+  return text;
 }
 
 function distinctCandidates(candidates) {
@@ -261,7 +271,8 @@ function labelledWechatIdCandidates(candidates, query, webSearchTop) {
   });
 }
 
-const NETWORK_SEARCH_LABELS = Object.freeze(["搜一搜", "网络搜索", "搜索网络", "搜索网络结果"]);
+// The OCR worker matches raw screen text, so it also needs the Traditional spellings.
+const NETWORK_SEARCH_LABELS = Object.freeze(["搜一搜", "网络搜索", "搜索网络", "搜索网络结果", "網路搜尋", "搜尋網路", "搜尋網路結果"]);
 
 function isNetworkSearchLabel(candidate, query) {
   const text = normalized(candidate?.text).replace(/^[^\p{L}\p{N}]{1,2}/u, "");
@@ -613,8 +624,9 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const web = [];
   for (const line of all) {
     const words = Array.isArray(line.words) ? line.words : [];
-    const wordIndex = words.findIndex((_, index) => words.slice(index, index + 6)
-      .map((word) => normalized(word.text)).join("") === POPUP_NETWORK_LABEL);
+    // Join first, then normalize: a Traditional label only folds as a whole phrase.
+    const wordIndex = words.findIndex((_, index) => normalized(words.slice(index, index + 6)
+      .map((word) => String(word.text ?? "")).join("")) === POPUP_NETWORK_LABEL);
     if (wordIndex >= 0) searchColumns.push(column(words[wordIndex].left));
     const text = normalized(line.text);
     if (text.endsWith(POPUP_NETWORK_LABEL)) {

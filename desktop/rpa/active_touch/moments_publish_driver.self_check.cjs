@@ -38,7 +38,9 @@ assert.deepEqual(MOMENTS_PUBLISH_CAMERA_PROFILE, {
   logicalRadiusY: 13,
   logicalHeaderHeight: 80
 });
-assert.deepEqual(MOMENTS_PUBLISH_FILE_DIALOG_TITLE_PREFIXES, ["打开", "选择文件", "Open"]);
+assert.deepEqual(MOMENTS_PUBLISH_FILE_DIALOG_TITLE_PREFIXES, ["打开", "选择文件", "開啟", "選擇檔案", "Open"]);
+// The picker follows the Windows display language: a Traditional Windows labels its IDOK button 開啟(O).
+assert.match(fs.readFileSync(require.resolve("./moments_publish_driver.dev.cjs"), "utf8"), /-notmatch "\^\(打开\|開啟\|开启\|Open\)/u);
 assert.equal(PUBLISH_MARKER_DIRECTORY, "publish_markers");
 assert.ok(
   MOMENTS_PUBLISH_POWERSHELL.includes(MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL),
@@ -158,7 +160,7 @@ assert.doesNotMatch(
 );
 assert.match(fileDialogSource, /\$dialogCandidates\.Add\(/u);
 assert.match(fileDialogSource, /#32770/u);
-assert.match(fileDialogSource, /\^\(打开\|选择文件\|Open\)/u);
+assert.match(fileDialogSource, /\^\(打开\|选择文件\|開啟\|選擇檔案\|Open\)/u);
 assert.match(fileDialogSource, /GetWindow\(\$hWnd, 4\) -ne \$expectedOwner/u);
 assert.match(fileDialogSource, /AtomicKeyChord[\s\S]*AtomicUnicodeText[\s\S]*SendMessageTimeout/u);
 assert.match(

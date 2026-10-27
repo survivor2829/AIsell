@@ -35,6 +35,15 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
         assert.equal(resolve(noWords, identity).status, 'selected', '#16 readable lines without word boxes must survive');
         assert.equal(resolve(noWords, identity).diagnostics.avatar_unsegmented_line_count, 2);
       }
+      // WeChat in Traditional Chinese: the same popup with 聯絡人 / 微信號 / 搜尋網路結果.
+      const traditional = structuredClone(observation);
+      traditional.visualCandidates[0].text = '聯絡人';
+      for (const row of traditional.visualCandidates.slice(2)) { row.text = row.text.replace('微信号', '微信號'); for (const word of row.words || []) word.text = word.text.replace('微信号', '微信號'); }
+      traditional.webSearchCandidates[0] = { ...line('搜尋網路結果', webBox), words: [...'搜尋網路結果'].map((text,i) => ({ text, left:webLeft+i*14,right:webLeft+(i+1)*14 })) };
+      assert.equal(resolve(traditional,identity).status,'selected', `package #${index} Traditional WeChat ${noise}`);
+      const traditionalNetwork = structuredClone(traditional);
+      traditionalNetwork.visualCandidates[2].words[1].text = '網路查找微信號:'+query;
+      assert.notEqual(resolve(traditionalNetwork,identity).status,'selected', `package #${index} Traditional network lookup must be rejected`);
       for (const kind of ['network', 'duplicate', 'superstring']) {
         const changed = structuredClone(observation);
         if (kind === 'network') changed.visualCandidates[2].words[1].text = '网络查找微信号:'+query;
