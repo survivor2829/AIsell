@@ -102,7 +102,8 @@ const LINES: Record<AgentRoleKey, string[]> = {
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
   tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
 };
-// Roles with a transparent idle loop (login/<role>.webm, VP9 with alpha); the rest breathe as stills.
+// Roles with a transparent greeting (login/<role>.webm, VP9 with alpha). It plays once, then the
+// presenter holds the closing smile and only breathes; the rest breathe as stills.
 const VIDEO_ROLES = new Set<AgentRoleKey>(["production"]);
 const ROLE_KEY = "xiaoxi-login-presenter";
 
@@ -207,7 +208,8 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       </div>
       <figure className="signin-figure" key={role}>
         {VIDEO_ROLES.has(role) && !still
-          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted loop playsInline aria-hidden="true" />
+          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true"
+            onEnded={(event) => event.currentTarget.classList.add("is-held")} />
           : <img className={still ? "" : "is-breathing"} src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>

@@ -11,8 +11,19 @@ const { cloudConfig } = require("../src/main/cloud-config.cjs");
 const { createLicenseStore } = require("../src/main/license-auth-ipc.cjs");
 const { createProviderGatewayClient } = require("../src/main/provider-gateway-client.cjs");
 
-const PROMPT = "画面中的人物面向镜头站立，自然地眨眼、微笑，轻轻点一下头，然后抬起一只手友好地挥手打招呼，再自然放下手，回到开头的姿势。"
-  + "镜头完全固定不动，背景始终是同一片纯色，不出现任何新的物体、文字或光效；人物的样貌、发型、服装和颜色保持不变；动作轻柔自然，首尾姿态一致，便于循环播放。";
+// Each presenter greets once in their own character and the page then holds the last frame,
+// so every clip ends on a relaxed, natural smile. 小影's clip (2026-10-26) used the first prompt.
+const STAGE = "镜头完全固定不动，背景始终是同一片纯色，不出现任何新的物体、文字或光效；人物的样貌、发型、服装、颜色和手中平板的画面保持不变；"
+  + "动作轻柔自然、不夸张；最后一秒停在放松自然的微笑，看着镜头，身体保持稳定。";
+const PROMPTS = {
+  production: "画面中的人物面向镜头站立，自然地眨眼、微笑，轻轻点一下头，然后抬起一只手友好地挥手打招呼，再自然放下手，回到开头的姿势。"
+    + "镜头完全固定不动，背景始终是同一片纯色，不出现任何新的物体、文字或光效；人物的样貌、发型、服装和颜色保持不变；动作轻柔自然，首尾姿态一致，便于循环播放。",
+  agent: "画面中的女生先低头用手里的笔在平板上轻点一下，像刚回完一条消息，然后抬头看向镜头，俏皮地歪一下头、眨一下眼，露出灿烂热情的笑容。" + STAGE,
+  operations: "画面中戴眼镜的女生用空着的那只手轻轻扶一下眼镜，然后看向镜头，露出自信又温柔的浅笑，轻轻点一下头，显得专注细致。" + STAGE,
+  business: "画面中的男生先低头看一眼手中平板上的数据，然后抬起头沉稳地看向镜头，自信地微笑，轻轻点一下头，像在说「交给我」。" + STAGE,
+  materials: "画面中的女生把手里的平板稍微转向镜头，像在展示里面的素材，然后温柔地笑着微微歪头，轻轻眨一下眼。" + STAGE,
+  tutorials: "画面中的女生用手指轻点一下平板上的播放按钮，然后看向镜头，亲切耐心地微笑，轻轻点一下头，像在说「跟我一步步来」。" + STAGE
+};
 const VIDEO_ROUTE = "/bailian/api/v1/services/aigc/video-generation/video-synthesis";
 
 function readArgs(argv) {
@@ -25,6 +36,7 @@ function readArgs(argv) {
 }
 
 const args = readArgs(process.argv.slice(2));
+if (args.check !== "1" && !PROMPTS[args.role]) throw new Error(`--role must be one of ${Object.keys(PROMPTS).join(", ")}.`);
 if (args.check === "1") { args.input = args.input || __filename; args.output = args.output || "check"; }
 const input = path.resolve(String(args.input || "")), output = path.resolve(String(args.output || ""));
 if (!fs.existsSync(input)) throw new Error("--input must point to the prepared 9:16 frame.");
@@ -55,7 +67,7 @@ app.whenReady().then(async () => {
     receipt = { role: args.role || "", operationId: `login-loop-${args.role || "presenter"}-${randomUUID()}`, model: "wan3.0-video", resolution: "720P", seconds: 5, createdAt: new Date().toISOString() };
     fs.writeFileSync(receiptFile, JSON.stringify(receipt, null, 2));
     const image = `data:image/jpeg;base64,${fs.readFileSync(input).toString("base64")}`;
-    const body = { model: "wan3.0-video", input: { prompt: PROMPT, media: [{ type: "reference_image", url: image }] },
+    const body = { model: "wan3.0-video", input: { prompt: PROMPTS[args.role], media: [{ type: "reference_image", url: image }] },
       parameters: { resolution: "720P", ratio: "9:16", duration: 5, audio: false, prompt_extend: false, watermark: false } };
     const submitted = await call(VIDEO_ROUTE, { method: "POST", body: JSON.stringify(body), headers: { "X-DashScope-Async": "enable", "X-Xiaoxi-Operation-Id": receipt.operationId } });
     receipt.taskId = submitted?.output?.task_id || "";
