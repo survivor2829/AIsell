@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("xiaoxiSocialAccounts", require("./social-accoun
 contextBridge.exposeInMainWorld("xiaoxiSocialPublish", require("./social-publish-preload.cjs").createSocialPublishApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialAcquisition", require("./social-acquisition-preload.cjs").createSocialAcquisitionApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
+contextBridge.exposeInMainWorld("xiaoxiAccount", apis.account);
 contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });
 contextBridge.exposeInMainWorld('xiaoxiStartup', { mark: stage => ipcRenderer.send('startup:mark', stage) });
 contextBridge.exposeInMainWorld("xiaoxiWorkflow", apis.workflow);

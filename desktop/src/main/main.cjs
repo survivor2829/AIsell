@@ -30,6 +30,8 @@ const { createFeedbackController } = require("./feedback-controller.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
+const { createAccountStore } = require("./account-store.cjs");
+const { registerAccountAuthIpc } = require("./account-auth-ipc.cjs");
 const { createProviderGatewayClient } = require("./provider-gateway-client.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
@@ -467,6 +469,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     const launchGateOpened = new Promise(resolve => { openLaunchGate = resolve; });
     if (!updateHolds.launch) openLaunchGate();
     const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
+    // Phone + password accounts (device token on this computer); the license stays for the transition.
+    const accountStore = createAccountStore({ rootDir: runtime.rootDir, safeStorage,
+      onChange: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("account:changed"); } });
     providerGatewayClient = createProviderGatewayClient({
       config: {
         blockPaidCalls: developmentEdition && process.env.XIAOXI_DISABLE_PAID_CALLS === '1',
@@ -475,6 +480,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         caPem: maintenanceConfig.caPem
       },
       licenseStore,
+      accountStore,
       appId: maintenanceConfig.appId,
       channel: maintenanceConfig.channel,
       version: components.businessVersion(app),
@@ -496,14 +502,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       let pending;
       do { pending = providerSession; await pending; } while (pending !== providerSession);
     };
-    registerLicenseAuthIpc({
-      ipcMain,
-      store: licenseStore,
-      onChanged: async ({ action }) => {
+    // Who is signed in: the account when the gateway is on, otherwise the offline license.
+    const identityStatus = () => providerGatewayClient.isEnabled() ? accountStore.status() : licenseStore.status();
+    const onIdentityChanged = async ({ action }) => {
         contentEngineController?.invalidateCatalogs?.();
-        // A login change during startup must not reuse the former license's session.
+        // A login change during startup must not reuse the former identity's session.
+        // A password login already opened its session; logins by license or device renew it.
         providerSession = providerSession.then(() => action === 'logged_out'
-          ? providerGatewayClient.invalidate() : providerGatewayClient.initialize({ force: true }));
+          ? providerGatewayClient.invalidate() : action === 'logged_in' ? providerGatewayClient.status() : providerGatewayClient.initialize({ force: true }));
         try { await businessWorkbenchRegistration?.refreshAccount?.(); }
         catch { logger.event('map_acquisition', 'account_refresh_failed', { code: 'LOCAL_ACCOUNT_UNAVAILABLE' }); }
         await waitForProviderSession();
@@ -512,8 +518,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           code: providerGatewayClient?.status().code || ""
         });
         await restartImageProviderConsumers();
-      }
-    });
+      };
+    registerLicenseAuthIpc({ ipcMain, store: licenseStore, onChanged: onIdentityChanged });
+    registerAccountAuthIpc({ ipcMain, accountStore, licenseStore, gatewayClient: providerGatewayClient, onChanged: onIdentityChanged });
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const bailianKeyStore = createBailianApiKeyStore({
       rootDir: path.join(app.getPath("userData"), "content-engine"),
@@ -784,7 +791,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return require("./content-engine-ipc.cjs").resolvedAbsolutePath(result);
       } });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
-      dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: () => licenseStore.status() });
+      dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: identityStatus });
     const usedDigitalHumanClicks = new Set();
     const readVideoPrices = createPriceReader({ fetch: net.fetch.bind(net), gatewayClient: providerGatewayClient });
     const prepareWorkbenchNarration = async (payload) => {
@@ -964,7 +971,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         rootDir: runtime.rootDir, config: maintenanceConfig,
         version: components.businessVersion(app), buildId: build.buildId, logger,
         componentBaseRoot: app.isPackaged ? components.currentRoot() : null, userData: app.getPath("userData"),
-        getLicenseStatus: () => licenseStore.status(),
+        getLicenseStatus: identityStatus,
         canInstall: () => app.isPackaged && process.platform === "win32" && maintenanceConfig.enabled === true
           && Boolean(installerTargets[maintenanceConfig.channel])
           && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets[maintenanceConfig.channel].installDirectoryName).toLowerCase()

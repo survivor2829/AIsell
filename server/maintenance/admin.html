@@ -8,6 +8,11 @@
 <p class="muted">此后台仅通过 SSH 隧道访问。用户主动填写的反馈与处理进度单独保留；附带的脱敏诊断保留 30 天。</p>
 <div class="toolbar"><label>版本 <select id="version"><option value="">全部版本</option></select></label><input id="search" aria-label="搜索模块或错误码" placeholder="搜索模块或错误码"></div>
 <p id="notice" role="status" aria-live="polite"></p>
+<h2>客户账号</h2><p class="muted">客户用手机号和密码登录软件。新账号的初始密码由你发给客户，客户第一次登录必须改成自己的密码；一个账号同时只能在一台电脑上使用。客户忘记密码时在这里重置。</p>
+<form id="account-form"><div class="toolbar"><label>手机号 <input name="phone" required pattern="1[3-9][0-9]{9}" inputmode="numeric" maxlength="11"></label><label>初始密码 <input name="password" required minlength="8" maxlength="64" placeholder="至少 8 位，含字母和数字"></label><label>客户名称 <input name="displayName" maxlength="40" placeholder="例如：张总 · 某某保洁"></label></div>
+<div class="toolbar"><label>备注 <input name="note" maxlength="200"></label><label>到期日（可空） <input name="expiresAt" type="date" style="flex:none"></label><button type="submit">新建账号</button></div></form>
+<p id="account-notice" role="status" aria-live="polite"></p>
+<div class="table-wrap"><table><thead><tr><th>手机号 / 客户</th><th>状态</th><th>最近登录</th><th>近 30 天用量</th><th>操作</th></tr></thead><tbody id="account-items"></tbody></table></div>
 <h2>客户吐槽与建议</h2><p class="muted">这里可查看所有公开和私密反馈。回复和状态会同步给作者；公开反馈也会同步到「大家的声音」。</p><label>处理状态 <select id="feedback-filter"><option value="">全部状态</option><option value="pending">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option></select></label><div id="feedback"></div>
 <div class="feedback-pagination"><button id="feedback-prev">上一页</button><span id="feedback-count"></span><button id="feedback-next">下一页</button></div>
 <h2>待处理异常</h2><div class="table-wrap"><table><thead><tr><th>模块 / 错误</th><th>频道</th><th>记录 / 设备</th><th>最近上报</th><th>处理进度</th></tr></thead><tbody id="issues"></tbody></table></div>
@@ -38,6 +43,23 @@ const materialBase64=file=>new Promise((resolve,reject)=>{const reader=new FileR
 $('material-form').onsubmit=async event=>{event.preventDefault();const form=event.currentTarget,button=form.querySelector('button'),fields=new FormData(form),file=fields.get('file'),thumbnail=fields.get('thumbnail');button.disabled=true;try{if(file.size>24*1024*1024||!thumbnail.size||thumbnail.size>512*1024)throw Error('素材限 24 MB；必须另选不超过 512 KB 的小封面。');const body=Object.fromEntries(['id','title','category','sourceUrl','author','license','description'].map(key=>[key,fields.get(key)]));body.action='upload';body.extension='.'+file.name.split('.').pop().toLowerCase();body.kind=body.extension==='.mp4'?'video':'image';body.data=await materialBase64(file);if(thumbnail.size){body.thumbnailData=await materialBase64(thumbnail);body.thumbnailExtension='.'+thumbnail.name.split('.').pop().toLowerCase()}await materialAction(body);form.reset()}catch(error){$('material-notice').textContent=error.message}finally{button.disabled=false}};
 $('material-save-categories').onclick=async()=>{try{const categories=$('material-categories').value.split('\n').filter(row=>row.trim()).map(row=>{const [id,...label]=row.split(',');return{id:id.trim(),label:label.join(',').trim()}});await materialAction({action:'categories',categories})}catch(error){$('material-notice').textContent=error.message}};
 void loadMaterials();
+const accountErrors={phone_invalid:'手机号格式不对。',phone_taken:'这个手机号已经有账号了。',password_length:'密码需要 8 到 64 位。',password_too_simple:'密码要同时包含字母和数字。',accounts_admin_unconfigured:'服务器还没配置账号管理令牌，请先运行网关升级脚本。',provider_gateway_unavailable:'网关暂时连不上，请稍后重试。'};
+async function accountCall(path,body){const response=await fetch('/api/accounts'+path,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});const value=await response.json().catch(()=>({}));if(!response.ok)throw Error(accountErrors[value.error]||'操作没有完成（'+(value.error||response.status)+'）');return value}
+function initialPassword(){const letters='abcdefghjkmnpqrstuvwxyz',digits='23456789';let out='';for(let i=0;i<6;i++)out+=letters[Math.floor(Math.random()*letters.length)];for(let i=0;i<4;i++)out+=digits[Math.floor(Math.random()*digits.length)];return out}
+async function loadAccounts(){try{const {accounts}=await accountCall('');$('account-items').replaceChildren();for(const item of accounts){const tr=document.createElement('tr');
+ cell(tr,(item.phone||'（老授权，待客户设置手机号）')+(item.displayName?' · '+item.displayName:'')+(item.note?' · '+item.note:''));
+ cell(tr,(item.status==='active'?'正常':'已停用')+(item.mustChangePassword&&item.setUp?' · 待客户改密码':'')+(item.expiresAt?' · '+new Date(item.expiresAt*1000).toLocaleDateString('zh-CN')+'到期':''));
+ cell(tr,item.lastLoginAt?time(item.lastLoginAt)+(item.deviceActive?' · 在线设备 1 台':''):'从未登录');
+ cell(tr,'付费操作 '+item.usage.paidOperations30d+' 次 · 今日写稿 '+item.usage.scripts24h+' 篇');
+ const actions=cell(tr,''),box=document.createElement('div');box.className='issue-actions';
+ const act=(label,run)=>{const b=document.createElement('button');b.textContent=label;b.onclick=async()=>{b.disabled=true;try{await run();await loadAccounts()}catch(e){$('account-notice').textContent=e.message}finally{b.disabled=false}};box.append(b)};
+ if(item.setUp)act('重置密码',async()=>{const password=initialPassword();if(!confirm('把 '+item.phone+' 的密码重置为 '+password+'？客户的电脑会立即下线，下次登录要改成自己的密码。'))return;await accountCall('/'+item.id+'/reset-password',{password});$('account-notice').textContent='已重置。请把新密码 '+password+' 发给客户（只显示这一次）。'});
+ act(item.status==='active'?'停用':'启用',async()=>{if(item.status==='active'&&!confirm('停用后客户立即无法使用软件，确定吗？'))return;await accountCall('/'+item.id+'/status',{status:item.status==='active'?'disabled':'active'});$('account-notice').textContent='已'+(item.status==='active'?'停用':'启用')+'。'});
+ if(item.deviceActive)act('让电脑下线',async()=>{await accountCall('/'+item.id+'/sign-out',{});$('account-notice').textContent='已让这个账号的电脑下线。'});
+ actions.append(box);$('account-items').append(tr)}if(!accounts.length)empty('account-items',5,'还没有客户账号。');}catch(e){$('account-notice').textContent=e.message}}
+$('account-form').password.value=initialPassword();
+$('account-form').onsubmit=async event=>{event.preventDefault();const form=event.currentTarget,button=form.querySelector('button'),fields=new FormData(form);button.disabled=true;try{const date=fields.get('expiresAt');const body={phone:fields.get('phone').trim(),password:fields.get('password'),displayName:fields.get('displayName').trim(),note:fields.get('note').trim()};if(date)body.expiresAt=new Date(date+'T23:59:59+08:00').getTime()/1000;await accountCall('',body);$('account-notice').textContent='已新建 '+body.phone+'，初始密码 '+body.password+'，请发给客户。客户第一次登录会被要求改密码。';form.reset();form.password.value=initialPassword();await loadAccounts()}catch(e){$('account-notice').textContent=e.message}finally{button.disabled=false}};
+void loadAccounts();
 function cell(row,text){const td=document.createElement('td');td.textContent=text;row.append(td);return td}
 function empty(id,cols,text){const tr=document.createElement('tr'),td=cell(tr,text);td.colSpan=cols;td.className='empty';$(id).append(tr)}
 function renderFeedback(){

@@ -66,7 +66,15 @@ type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] 
 const productDisplayName = productBrand.displayName.replace(/版本$/u, "");
 
 type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
-type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
+type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string;
+  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string };
+type AccountApi = {
+  status: () => Promise<LicenseStatus>;
+  login: (payload: { phone: string; password: string }) => Promise<LicenseStatus>;
+  update: (payload: { action: "setup" | "password"; phone?: string; password?: string; currentPassword?: string; newPassword?: string }) => Promise<LicenseStatus>;
+  logout: () => Promise<LicenseStatus>;
+  onChanged: (callback: () => void) => () => void;
+};
 type ActiveTouchState = {
   calibrated: boolean;
   target_selected: boolean;
@@ -322,6 +330,7 @@ declare global {
   interface Window {
     xiaoxiStartup?: { mark: (stage: 'renderer_loaded' | 'login_visible' | 'login_interactive') => void };
     xiaoxiWindowChrome?: { setMode: (mode: "login" | "workspace") => void };
+    xiaoxiAccount?: AccountApi;
     xiaoxiLicenseAuth?: {
       status: () => Promise<LicenseStatus>;
       activate: (code: string) => Promise<LicenseStatus>;
@@ -628,7 +637,12 @@ export default function App() {
       return;
     }
     window.xiaoxiStartup?.mark('renderer_loaded');
-    void window.xiaoxiLicenseAuth.status().then(setLicense).catch(() => setLicense({ authorized: false, code: "license_status_failed" }));
+    const read = () => (window.xiaoxiAccount?.status() || window.xiaoxiLicenseAuth!.status())
+      .then((next) => { setLicense(next); if (!next.authorized) setSessionEntered(false); })
+      .catch(() => setLicense({ authorized: false, code: "license_status_failed" }));
+    void read();
+    // Signed out elsewhere, disabled or reset: go back to the login page with the reason.
+    return window.xiaoxiAccount?.onChanged(() => void read());
   }, []);
 
   useEffect(() => {
@@ -810,7 +824,7 @@ export default function App() {
 
 
 
-  if (!license?.authorized || !sessionEntered) return <div className="desktop-window desktop-window-login"><WindowChrome /><LoginScreen license={license} onLogin={(status) => { setLicense(status); setSessionEntered(true); }} /></div>;
+  if (!license?.authorized || !sessionEntered) return <div className="desktop-window desktop-window-login"><WindowChrome /><LoginScreen license={license} onStatus={setLicense} onLogin={(status) => { setLicense(status); setSessionEntered(true); }} /></div>;
   const identity = contactSyncState.wechat_identity;
   const identityName = identity?.nickname || "未同步微信";
   const identityInitial = identityName === "未同步微信" ? "微" : (identityName.match(/[\u4e00-\u9fff]/)?.[0] || identityName.slice(0, 1)).toUpperCase();
@@ -902,10 +916,11 @@ export default function App() {
               <ChevronDown size={15} />
             </button>
             {accountMenuOpen && <div className="account-menu" role="menu">
-              <div className="account-menu-status"><span>软件授权</span><strong>{license.licenseId || "已授权"}</strong></div>
+              <div className="account-menu-status"><span>{license.mode === "account" ? "登录账号" : "软件授权"}</span><strong>{license.mode === "account" ? (license.phone || license.displayName || "已登录") : (license.licenseId || "已授权")}</strong></div>
               <button role="menuitem" onClick={() => { setActive("contact-sync"); setAccountMenuOpen(false); }}><RefreshCw size={16} />重新同步微信</button>
               <button role="menuitem" onClick={() => { openFeedback(); setAccountMenuOpen(false); }}><MessageCircle size={16} />吐槽中心</button>
-              <button role="menuitem" onClick={() => { setSessionEntered(false); setAccountMenuOpen(false); }}><LogOut size={16} />退出登录</button>
+              <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setSessionEntered(false);
+                if (license.mode === "account") void window.xiaoxiAccount?.logout().then(setLicense); }}><LogOut size={16} />退出登录</button>
             </div>}
           </div>
           <CustomerTools onNavigate={(target) => { if (target === "diagnostics") openFeedback(); else openAgentTarget(target); }} />

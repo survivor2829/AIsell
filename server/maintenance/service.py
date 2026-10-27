@@ -37,6 +37,8 @@ INPUT_PHASES = ("preflight", "prepare_wechat_window", "click_search_result", "be
 INPUT_METRICS = ("expected_input_tick", "current_input_tick", "required_idle_ms", "observed_idle_ms",
                  "expected_hWnd", "foreground_hWnd")
 PROVIDER_GATEWAY_PREFIX = "/v1/provider-gateway"
+# Customer accounts are managed by the gateway on loopback; only this admin server forwards to it.
+ACCOUNTS_ADMIN_ROUTE = re.compile(r"/api/accounts(?:/(\d{1,9})/(reset-password|status|sign-out))?")
 PROVIDER_GATEWAY_ORIGIN = "http://127.0.0.1:8444"
 PROVIDER_GATEWAY_MAX_REQUEST_BYTES = 32 * 1024 * 1024
 PROVIDER_GATEWAY_MAX_RESPONSE_BYTES = 96 * 1024 * 1024
@@ -283,6 +285,25 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("incomplete")
         return json.loads(data)
 
+    def accounts_admin(self, method, route):
+        token = os.environ.get("XIAOXI_GATEWAY_ACCOUNTS_ADMIN_TOKEN", "").strip()
+        if not token:
+            return self.reply(503, {"error": "accounts_admin_unconfigured"})
+        body = json.dumps(self.body()).encode("utf-8") if method == "POST" else None
+        target = PROVIDER_GATEWAY_ORIGIN + "/v1/accounts-admin" + route.removeprefix("/api")
+        request = Request(target, data=body, method=method, headers={"X-Xiaoxi-Accounts-Admin": token, "Content-Type": "application/json"})
+        try:
+            with PROVIDER_GATEWAY_OPENER.open(request, timeout=30) as response:
+                return self.reply(int(getattr(response, "status", 200)), json.loads(response.read(2_000_001)))
+        except HTTPError as error:
+            try:
+                payload = json.loads(error.read(64_001) or b"{}")
+            except ValueError:
+                payload = {"error": "accounts_admin_failed"}
+            return self.reply(int(error.code or 502), payload)
+        except (TimeoutError, URLError, OSError, ValueError):
+            return self.reply(503, {"error": "provider_gateway_unavailable"})
+
     def proxy_provider_gateway(self, method):
         """Forward only the fixed gateway prefix to the loopback service."""
         self.connection.settimeout(240)
@@ -373,6 +394,8 @@ class Handler(BaseHTTPRequestHandler):
                     if len(raw) != length:
                         raise ValueError("body")
                     return self.reply(200, self.server.materials.change(json.loads(raw)))
+                if ACCOUNTS_ADMIN_ROUTE.fullmatch(urlsplit(self.path).path):
+                    return self.accounts_admin("POST", urlsplit(self.path).path)
                 if self.path == "/api/feedback/status":
                     updated = self.server.store.update_feedback(self.body())
                     return self.reply(200 if updated else 404, {"ok": updated})
@@ -439,6 +462,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {"error": "host"})
             if route == "/api/overview":
                 return self.reply(200, self.server.store.overview())
+            if route == "/api/accounts":
+                return self.accounts_admin("GET", route)
             if route == "/tutorials-admin.js":
                 data = Path(__file__).with_name("tutorials-admin.js").read_bytes()
                 self.send_response(200)

@@ -46,3 +46,22 @@
 `business-assistant.png` 为 2026-10-14 使用内置 imagegen 生成的独立虚构男性形象，默认名“小睿”。以 `materials-assistant.png` 为画风参考：约 30 岁中国男性、短发、暖燕麦色外套与米白内搭，手持平板，暖米白背景及琥珀色搜索、沟通、地球图标，无文字和品牌标识。原始生成图保留，现有角色素材未改动；这是静态形象，不含口播或动作帧。
 
 小睿于同日按用户选择使用 imagegen 编辑为暖米白与琥珀主题，保留脸部身份和姿态；`business-original.svg` 将同主题元素延续到首页与三个子模块。
+
+## 登录页抠图（`login/`）
+
+登录页出镜员工用的透明背景图，2026-10-27 由上表原图派生：本地 IS-Net 抠图（`sidecars/product-detail/app/offline_cutout.py` 的 `remove_background()`），只保留人物这一块连通区域（去掉原图里漂浮的小图标），按人物边界裁切后缩到 1100×1400 以内，存为 WebP（质量 88）。没有重绘或改动人物内容。
+
+| 文件 | 来源原图 | 员工 |
+| --- | --- | --- |
+| `login/production.webp` | `xiaoxi-integrated-idle.png` | 小影 |
+| `login/agent.webp` | `xiaohui-integrated-idle.png` | 小诚 |
+| `login/operations.webp` | `xiaolian-integrated-idle.png` | 小绘 |
+| `login/business.webp` | `business-assistant.png` | 小睿 |
+| `login/materials.webp` | `materials-assistant.png` | 小禾 |
+| `login/tutorials.webp` | `tutorial-assistant-idle.png` | 小丽 |
+
+会动的小视频（`login/<员工>.webm`）：先由 `scripts/generate-login-presenter-loop.cjs` 经网关用 `wan3.0-video` 以对应抠图为首帧生成 5 秒 720P 片段，再用同一个本地 IS-Net 模型逐帧抠图、只保留主体；IS-Net 逐帧独立判断，会让挥动的手时有时无，所以再用局部背景差值（只取远离人物且是背景灰的像素估计背景）补回明显不是背景的部分，静止区域取相邻三帧中位数、人物惯常区域按惯常值保留；最后正放加倒放拼成无缝循环，编码为带透明通道的 VP9 WebM。
+
+| 文件 | 生成 | 说明 |
+| --- | --- | --- |
+| `login/production.webm` | 2026-10-26，wan3.0-video 720P 5 秒，任务 `b88bf150…`，约 ¥3 | 小影眨眼、点头、挥手，约 10 秒循环，720×820 |

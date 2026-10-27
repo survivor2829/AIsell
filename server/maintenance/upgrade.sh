@@ -75,6 +75,13 @@ trap rollback EXIT
 for file in service.py feedback.py materials.py tutorials.py tutorials-admin.js admin.html promote.py promote_components.py legacy_releases.py; do
   install -m 644 "$source_dir/$file" "$app_dir/$file"
 done
+# Account administration: the token file is created by the provider gateway upgrade.
+if [ -s /etc/ai-maintenance/accounts-admin.env ]; then
+  install -d -m 755 /etc/systemd/system/ai-maintenance.service.d
+  printf '%s\n' '[Service]' 'EnvironmentFile=/etc/ai-maintenance/accounts-admin.env' > /etc/systemd/system/ai-maintenance.service.d/30-accounts-admin.conf
+  chmod 644 /etc/systemd/system/ai-maintenance.service.d/30-accounts-admin.conf
+  systemctl daemon-reload
+fi
 systemctl start ai-maintenance
 python3 - <<'PY'
 import json, time, urllib.request
