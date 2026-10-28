@@ -67,6 +67,8 @@ $expectedConversationEvidence = [Environment]::GetEnvironmentVariable("XIAOXI_VI
 $strictConversationMatch = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH") -eq "1"
 # WeChat's message records already confirmed who wrote this message (its title could not be read).
 $senderConfirmedByRecords = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_SENDER_CONFIRMED") -eq "1"
+# WeChat's message records show the message being answered is still the newest one in this chat.
+$incomingConfirmedByRecords = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_CONFIRMED") -eq "1"
 $messageDriven = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN") -eq "1"
 try { $allowedConversationNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { $allowedConversationNames = @() }
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
@@ -1372,7 +1374,10 @@ try {
   }
   if (@("preflight", "draft") -contains $phase) {
     $liveIncoming = Get-VisualSendLatestIncomingEvidence $frame $sidebarRight $dpi
-    $liveIncomingVerified = [string]$liveIncoming.state -ceq "matched"
+    # An unreadable latest bubble is uncertainty, not a change: WeChat's records settle it. A bubble
+    # read as ours or as a different message still stops the reply.
+    $liveIncomingVerified = [string]$liveIncoming.state -ceq "matched" -or
+      ($incomingConfirmedByRecords -and [string]$liveIncoming.state -ceq "ocr_unresolved")
     # Never reuse the occurrence observed before DeepSeek generation. Even a
     # matched header must still show the expected latest customer bubble now.
     if (-not $liveIncomingVerified) {
@@ -1486,6 +1491,7 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH: options.exactConversationMatch === true ? "1" : "",
     XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN: options.messageDriven === true ? "1" : "",
     XIAOXI_VISUAL_SEND_SENDER_CONFIRMED: options.senderConfirmedByRecords === true ? "1" : "",
+    XIAOXI_VISUAL_SEND_INCOMING_CONFIRMED: options.incomingConfirmedByRecords === true ? "1" : "",
     XIAOXI_VISUAL_SEND_ALLOWED_NAMES: JSON.stringify(Array.isArray(options.conversationAliases) ? options.conversationAliases : [options.conversation].filter(Boolean)),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),

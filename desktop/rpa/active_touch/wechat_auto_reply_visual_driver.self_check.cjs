@@ -2533,6 +2533,22 @@ await preferredDriver.observeWechatIncoming(["观察客户"], { unreadSenderHint
 assert.equal(preferredEnvironments.at(-1).XIAOXI_AUTO_REPLY_UNREAD_SENDER, "");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \$header\.ok -and \[string\]\$header\.state -cne "different" -and \$unreadSender\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Test-AutoReplyVisualHeaderBlocks\(\$header\) \{\s*return \[string\]\$header\.state -ceq "different"/u);
+{
+  // A misread glyph in a short name (城胜) is not "clearly someone else"; only two long enough,
+  // substantially different names are. Runs the production functions.
+  const pick = (name) => AUTO_REPLY_VISUAL_SCRIPT.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}\\n`, "u"))?.[0] || "";
+  const functions = ["Normalize-AutoReplyVisualText", "Get-AutoReplyVisualEditDistance", "Test-AutoReplyVisualTitleClearlyDifferent"].map(pick);
+  assert.ok(functions.every(Boolean), "title comparison functions are present");
+  const verdict = runPowerShellJson(`${functions.join("\n")}
+@{
+  oneGlyph = Test-AutoReplyVisualTitleClearlyDifferent "城月生" "城胜"
+  sameName = Test-AutoReplyVisualTitleClearlyDifferent "城胜" "城胜"
+  otherCustomer = Test-AutoReplyVisualTitleClearlyDifferent "玺联惠客户经理炎燃" "清洁机器人森妮"
+  longNearMiss = Test-AutoReplyVisualTitleClearlyDifferent "清洁机器人森泥" "清洁机器人森妮"
+} | ConvertTo-Json -Compress`);
+  assert.deepEqual(verdict, { oneGlyph: false, sameName: false, otherCustomer: true, longNearMiss: false });
+  assert.match(AUTO_REPLY_VISUAL_SCRIPT, /-not \(Test-AutoReplyVisualTitleClearlyDifferent \(\[string\]\$header\.conversation\) \$unreadSender\)\) \{\s*\$header = @\{ ok = \$false; state = "unresolved"/u);
+}
 
 console.log("wechat auto-reply visual driver self-check passed");
 }

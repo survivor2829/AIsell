@@ -4,6 +4,8 @@ const FAILURE_CLASSIFICATIONS = Object.freeze(["environment", "recoverable", "bl
 
 const workflowPolicies = Object.freeze({
   atomic_draft_changed: { classification: "recoverable", attentionScope: "task" },
+  // A chat title OCR could not read: only this scan is skipped; the next poll looks again.
+  conversation_title_unresolved: { classification: "recoverable", attentionScope: "task" },
   atomic_send_not_verified: { classification: "recoverable", attentionScope: "task" },
   message_snapshot_unavailable: { classification: "recoverable", attentionScope: "task" },
   touch_task_payload_incomplete: { classification: "blocker", attentionScope: "task" },
