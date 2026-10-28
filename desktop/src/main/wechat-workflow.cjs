@@ -266,7 +266,22 @@ function createWechatWorkflowController(options) {
     return saved.payload;
   }
   function writePayload(task, payload) { writeJsonAtomic(taskPath(task), { id: task.id, type: task.type, payload }); }
-  function accountRecipients() { return recipients.accounts[getAccount()] || []; }
+  // Recipients are saved with the names they had when added. When the customer later renames a
+  // remark in WeChat, contact sync updates contacts.json; serve people under their current
+  // names, or the chat title no longer matches and the person is silently skipped.
+  function accountRecipients() {
+    const saved = recipients.accounts[getAccount()] || [];
+    let latest = [];
+    try { latest = JSON.parse(fs.readFileSync(path.join(options.activeTouchDir, "contacts.json"), "utf8")); }
+    catch { return saved; }
+    const byId = new Map((Array.isArray(latest) ? latest : latest?.contacts || []).filter((contact) => contact?.id).map((contact) => [contact.id, contact]));
+    return saved.map((person) => {
+      const current = byId.get(person.id);
+      if (!current || (current.wechatAccountId && person.wechatAccountId && current.wechatAccountId !== person.wechatAccountId)) return person;
+      return { ...person, name: current.name ?? person.name, remark: current.remark ?? person.remark,
+        nickname: current.nickname ?? person.nickname, wechatId: current.wechatId || person.wechatId };
+    });
+  }
 
   function waitingTask() {
     const time = new Date(now()).getTime();
