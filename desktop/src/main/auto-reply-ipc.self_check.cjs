@@ -5171,6 +5171,28 @@ async function main() {
   assert.equal(flakySends, 1, "the waiting message is answered after the automatic restart");
   assert.match(fs.readFileSync(path.join(root, "workflow_flaky_state", "auto-reply-diagnostics.jsonl"), "utf8"), /"event":"workflow_auto_restart"/u);
 
+  // A chat title OCR could not read (short names such as 城胜) is not a mismatch: the reply goes
+  // out when WeChat's records show this contact's newest message as theirs, and not otherwise.
+  for (const [label, rows, expectedSends] of [
+    ["theirs", [{ sender: "wxid_self" }, { sender: workflowUniverse[0].id }], 1],
+    ["ours", [{ sender: workflowUniverse[0].id }, { sender: "wxid_self" }], 0],
+    ["no records", null, 0]
+  ]) {
+    let titleSends = 0;
+    const asked = [];
+    const titleController = createAutoReplyController({ dataDir: path.join(root, `workflow_title_${label.replace(/\s/gu, "_")}`), activeTouchDir: workflowContacts,
+      coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+      receipts: { messagesWith: (username, since) => { asked.push({ username, since: Number.isFinite(since) }); return rows; } },
+      deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+      primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+      scanIncoming: () => ({ ...workflowCandidate, headerState: "unresolved" }), verifyIncoming: () => ({ ok: true }),
+      send: async (input) => { await input.beforeDraft(); titleSends += 1; return { ok: true }; },
+      runStep: async () => ({ ok: true }) });
+    await titleController.runWorkflowStep(unknownInput);
+    assert.equal(titleSends, expectedSends, `unreadable title, newest message ${label}`);
+    assert.deepEqual(asked, [{ username: workflowUniverse[0].id, since: true }]);
+  }
+
   let retryClock = workflowNow;
   let retrySends = 0;
   let forceEmptyScan = false;

@@ -1050,6 +1050,13 @@ function Read-AutoReplyVisualHeader($frame, $lines, [string]$conversation, [doub
   return $result
 }
 
+# Never send when the title clearly names someone else. A title OCR could not read (short names
+# such as 城胜 often come back empty) is uncertainty, not a mismatch: the result carries
+# headerState "unresolved" and the main process confirms the sender from WeChat's message records.
+function Test-AutoReplyVisualHeaderBlocks($header) {
+  return [string]$header.state -ceq "different"
+}
+
 function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sidebarRight, [double]$frameWidth, $allowedSet, $frame = $null) {
   if ($null -ne $frame) { return Read-AutoReplyVisualHeader $frame $lines $conversation $sidebarRight $allowedSet $false }
   $candidates = @(Get-AutoReplyVisualHeaderCandidates $lines $sidebarRight $frameWidth)
@@ -1650,7 +1657,7 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
     # A compositor-only WeChat window can omit its title from one OCR frame.
     # That is uncertainty, not proof that the chat changed. Only an explicitly
     # different title blocks the already-bound HWND + conversation observation.
-    if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
+    if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
       return @{
         ok = $false
         reason = [string]$header.reason
@@ -1852,7 +1859,7 @@ try {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
-      if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
+      if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
         Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
@@ -1894,7 +1901,7 @@ try {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
-      if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
+      if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
         Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
@@ -2188,7 +2195,7 @@ try {
       }
     }
   }
-  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
+  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
     Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
   }
   if ([bool]$candidate.badgeOnly) {

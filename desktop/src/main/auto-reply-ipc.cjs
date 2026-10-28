@@ -13,6 +13,8 @@ const {
 } = require("./auto-reply-decision.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
+// A message whose chat title could not be read is answered only when WeChat recorded it this recently.
+const UNRESOLVED_TITLE_RECENT_SECONDS = 30 * 60;
 const FAST_RECHECK_MS = 750;
 const AUTO_REPLY_STATE_VERSION = 4;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -3105,6 +3107,27 @@ function createAutoReplyController(options = {}) {
         });
         save();
         return publicState();
+      }
+      if (normalizeText(candidate.headerState) === "unresolved") {
+        // The chat title could not be read. The conversation came from the list row this scan
+        // opened; WeChat's own records must also show this contact's newest message as theirs
+        // and recent. Otherwise (or without readable records) the message is left alone.
+        let senderConfirmed = false;
+        try {
+          const rows = /^visual-inbound-/u.test(String(contact.id)) ? null
+            : receipts()?.messagesWith(contact.id, Math.floor(now().getTime() / 1000) - UNRESOLVED_TITLE_RECENT_SECONDS);
+          const latest = Array.isArray(rows) ? rows.at(-1) : null;
+          senderConfirmed = Boolean(latest && latest.sender === contact.id);
+        } catch { senderConfirmed = false; }
+        appendDiagnostic("reply_title_unresolved", { phase: "scope", code: senderConfirmed ? "sender_confirmed_by_records" : "sender_unconfirmed", traceId: observedTraceId });
+        if (!senderConfirmed) {
+          clearPendingObservation(candidate);
+          state.last_event = "conversation_title_unresolved";
+          state.last_error = "";
+          setActivity("waiting", { traceId: observedTraceId, deliveryStatus: "not_attempted", detailCode: "conversation_title_unresolved" });
+          save();
+          return publicState();
+        }
       }
       const rawContext = normalizedContext(candidate);
       const incoming = normalizeText(candidate.message);
