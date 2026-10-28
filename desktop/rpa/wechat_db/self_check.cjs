@@ -191,6 +191,7 @@ try {
   const sessionPages = buildPlainDb([{ name: "SessionTable", sql: sessionSql, rows: [[friend, 2, 3000, "今天的新消息"], ["filehelper", 0, 2500, "x"]] }]);
   fs.writeFileSync(path.join(storage, "session", "session.db"), encryptPages(sessionPages, masterHex, crypto.randomBytes(16)).file);
   assert.deepEqual(db.unreadSessions(), [{ username: friend, unread: 2, lastTimestamp: 3000, summary: "今天的新消息" }]);
+  assert.deepEqual(db.recentSessions(2600).map((row) => row.username), [friend], "only chats active since then");
 
   // Moments: only our own posts since the attempt began count, matched on the start of the copy.
   fs.mkdirSync(path.join(storage, "sns"), { recursive: true });

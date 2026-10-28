@@ -15,6 +15,7 @@ const {
 const POLL_INTERVAL_MS = 5_000;
 // A message whose chat title could not be read is answered only when WeChat recorded it this recently.
 const UNRESOLVED_TITLE_RECENT_SECONDS = 30 * 60;
+const UNREAD_SENDER_RECENT_SECONDS = 10 * 60;
 const FAST_RECHECK_MS = 750;
 const AUTO_REPLY_STATE_VERSION = 4;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -2109,15 +2110,24 @@ function createAutoReplyController(options = {}) {
       const scope = resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
       const driverOptions = { ...scope.driverOptions, onProgress: workflowProgress,
         restoreChatSurface: restoreWorkflowChatSurface,
-        // WeChat's session records say who has unread messages. When exactly one recipient does,
-        // the driver may use that name for a chat whose title and list row OCR could not read.
+        // WeChat's records say who wrote last. When exactly one recipient's chat changed in the
+        // last minutes and its newest message is theirs, the driver may use that name for a chat
+        // whose title and list row OCR could not read. (The unread counter alone lags: WeChat
+        // writes it after the scan has already opened the chat.)
         unreadSenderHint: () => {
+          let hint = "";
           try {
-            const unread = receipts()?.unreadSessions();
-            if (!Array.isArray(unread)) return "";
-            const waiting = (scope.contacts || []).filter((contact) => unread.some((session) => session.username === contact.id));
-            return waiting.length === 1 ? normalizeText(waiting[0].remark || waiting[0].name) : "";
-          } catch { return ""; }
+            const db = receipts();
+            const since = Math.floor(now().getTime() / 1000) - UNREAD_SENDER_RECENT_SECONDS;
+            const sessions = db?.recentSessions(since);
+            if (Array.isArray(sessions)) {
+              const waiting = (scope.contacts || []).filter((contact) => sessions.some((session) => session.username === contact.id
+                && (session.unread > 0 || db.messagesWith(contact.id, since)?.at(-1)?.sender === contact.id)));
+              if (waiting.length === 1) hint = normalizeText(waiting[0].remark || waiting[0].name);
+            }
+          } catch { hint = ""; }
+          appendDiagnostic("unread_sender_hint", { phase: "scan", code: hint ? "named" : "none" });
+          return hint;
         } };
       driverOptions.onChatSurfaceRestored = () => {
         restoreWorkflowChatSurface = false;

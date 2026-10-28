@@ -163,6 +163,13 @@ function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(
       return [...db.rows("SessionTable")].filter((row) => Number(row.unread_count) > 0)
         .map((row) => ({ username: row.username, unread: Number(row.unread_count), lastTimestamp: Number(row.last_timestamp), summary: String(row.summary || "") }));
     }),
+    // Chats with any activity since a moment (seconds): { username, unread, lastTimestamp }.
+    recentSessions: guarded((sinceSeconds) => {
+      const db = open(path.join("session", "session.db"));
+      if (!db) return null;
+      return [...db.rows("SessionTable")].filter((row) => Number(row.last_timestamp) >= sinceSeconds)
+        .map((row) => ({ username: row.username, unread: Number(row.unread_count), lastTimestamp: Number(row.last_timestamp) }));
+    }),
     messagesWith: guarded(messagesWith),
     // Messages the logged-in account sent in this one-to-one chat since a moment (seconds); in a
     // private chat every message not from the contact is ours.
