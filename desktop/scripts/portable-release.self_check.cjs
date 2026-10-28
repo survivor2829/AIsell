@@ -267,7 +267,11 @@ const momentsPublishSourceMarkers = [
   "moments_publish_outcome_unknown"
 ];
 const momentsPublishUiMarkers = [
-  "data-xiaoxi-moments-publish-choose",
+  "data-xiaoxi-moments-publish-choose"
+];
+// Unattended runs never ask the customer to verify a post (1.2.16): an unreadable result is counted
+// as published and kept for internal review, so no edition may ship the verify buttons.
+const retiredCustomerVerificationMarkers = [
   "data-xiaoxi-moments-publish-resolve-published",
   "data-xiaoxi-moments-publish-resolve-not-published"
 ];
@@ -725,6 +729,9 @@ for (const marker of momentsPublishSourceMarkers) {
 }
 for (const marker of momentsPublishUiMarkers) {
   assert.equal(renderer.includes(marker), true, `every edition must contain publish UI marker ${marker}`);
+}
+for (const marker of retiredCustomerVerificationMarkers) {
+  assert.equal(renderer.includes(marker), false, `no edition may ask the customer to verify a post (${marker})`);
 }
 for (const marker of momentsActionIpcMarkers) {
   assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
