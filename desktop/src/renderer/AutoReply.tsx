@@ -1,6 +1,7 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { subscribeToStatus } from "./status-subscription";
+import { ExampleBanner } from "./VideoExamples";
 import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController, type WorkflowView, type WorkflowContact } from "./WechatWorkflow";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
@@ -510,6 +511,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
           )}
         </div>
       </div>
+      <ExampleBanner topic="wechat-reply" />
 
       {state.system_error && (
         <section className="auto-reply-system-error" role="alert" aria-labelledby="auto-reply-system-error-title">
