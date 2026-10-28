@@ -3527,6 +3527,7 @@ function createAutoReplyController(options = {}) {
         expectedConversationEvidence: candidate.conversationEvidence || candidate.conversation,
         expectedConversationAliases: conversationAliases,
         exactConversationMatch: contactScope.strict,
+        senderConfirmedByRecords: ["unresolved", "database_unread_sender"].includes(normalizeText(candidate.headerState)),
         messageDriven: candidate.messageDriven === true,
         beforeSend: () => {
           if (!isCurrentRun()) return false;
