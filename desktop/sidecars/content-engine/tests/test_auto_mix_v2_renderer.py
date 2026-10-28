@@ -429,9 +429,10 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertEqual(2, len(renderer.series_paths))
         self.assertEqual(1, sum("voice" in path.name for path in renderer.series_paths))
         self.assertEqual(1, sum("music" in path.name for path in renderer.series_paths))
-        self.assertEqual(40, len(verified_windows))
+        # The last two 0.5 s phrases sit inside the final 0.8 s music fade-out.
+        self.assertEqual(38, len(verified_windows))
         self.assertEqual(
-            [caption["captionId"] for caption in captions],
+            [caption["captionId"] for caption in captions[:38]],
             [window["captionId"] for window in verified_windows],
         )
         self.assertEqual("global", gain_plan["strategy"])
@@ -457,10 +458,10 @@ class AutoMixV2RendererTests(unittest.TestCase):
 
             def _measure_loudness_series(self, path):
                 if "voice" in Path(path).name:
-                    return [(timestamp, -16.0) for timestamp in range(0, 1_201, 100)]
+                    return [(timestamp, -16.0) for timestamp in range(0, 3_001, 100)]
                 return [
                     (timestamp, -26.0 if timestamp <= 500 else float("-inf"))
-                    for timestamp in range(0, 1_201, 100)
+                    for timestamp in range(0, 3_001, 100)
                 ]
 
         renderer = MissingMusicRenderer(self.root)
@@ -472,13 +473,57 @@ class AutoMixV2RendererTests(unittest.TestCase):
                     {"captionId": "with-music", "start_ms": 0, "end_ms": 500},
                     {"captionId": "without-music", "start_ms": 700, "end_ms": 1_100},
                 ],
-                duration=1.2,
-                music_duration=1.2,
-                fade_out=0.4,
+                duration=3.0,
+                music_duration=3.0,
+                fade_out=2.2,
                 delay_filter="",
                 output=self.root / "missing-music.mp4",
             )
         self.assertEqual("auto_mix_music_not_audible", caught.exception.code)
+
+    def test_window_margin_measurement_skips_phrases_before_music_enters_or_after_it_fades(self):
+        # Low-energy music enters 0.9 s late (plus a 0.4 s fade-in) and fades in the last 0.8 s:
+        # a short opening hook or closing line has no music by design and must not stop the render.
+        class DelayedMusicRenderer(FFmpegCreativeRenderer):
+            def __init__(self, root):
+                super().__init__(
+                    root,
+                    ffmpeg_path="fixture-ffmpeg.exe",
+                    ffprobe_path="fixture-ffprobe.exe",
+                )
+
+            def _command(self, _args, **_options):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            def measure_audio_quality(self, path):
+                return {"integrated_lufs": -16.0 if "voice" in Path(path).name else -34.0}
+
+            def _measure_loudness_series(self, path):
+                if "voice" in Path(path).name:
+                    return [(timestamp, -16.0) for timestamp in range(0, 10_001, 100)]
+                return [
+                    (timestamp, -34.0 if 900 <= timestamp <= 9_200 else float("-inf"))
+                    for timestamp in range(0, 10_001, 100)
+                ]
+
+        windows = DelayedMusicRenderer(self.root)._measure_auto_mix_window_margins(
+            self.root / "voices" / "verified.wav",
+            ["-i", str(self.root / "music" / "licensed.mp3")],
+            [
+                {"captionId": "hook", "start_ms": 0, "end_ms": 850},
+                {"captionId": "body", "start_ms": 1_000, "end_ms": 8_000},
+                {"captionId": "spans-entry", "start_ms": 600, "end_ms": 2_400},
+                {"captionId": "closing", "start_ms": 9_300, "end_ms": 10_000},
+            ],
+            duration=10.0,
+            music_duration=9.1,
+            fade_out=9.2,
+            delay_filter="adelay=900|900,",
+            output=self.root / "delayed-music.mp4",
+            music_fade_in=0.9,
+        )
+        self.assertEqual(["body", "spans-entry"], [item["captionId"] for item in windows])
+        self.assertTrue(all(item["musicLufs"] == -34.0 for item in windows))
 
     def test_window_gain_plan_targets_overall_18_lu_with_sentence_floor(self):
         windows = [

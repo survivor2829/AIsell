@@ -276,3 +276,28 @@
 
 .launch-button.workflow-launcher { padding: 0 14px; width: auto; min-width: 88px; height: 38px; border-radius: 19px; white-space: nowrap; }
 .workflow-launcher.is-active { display: flex; align-items: center; gap: 6px; width: auto; max-width: 310px; height: 38px; border-radius: 19px; padding: 0 14px; font-size: 12px; }
+/* Auto-reply page: status as three cards, reply scope as name chips with one add button. */
+.auto-reply-page .workflow-reply-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0; margin: 4px 0 24px; border: 0; }
+.auto-reply-page .workflow-reply-summary > span { display: grid; gap: 6px; padding: 16px 18px; border: 1px solid var(--workflow-line); border-radius: 12px; background: #fff; color: var(--workflow-muted); font-size: 14px; }
+.auto-reply-page .workflow-reply-summary strong { margin: 0; color: var(--workflow-ink); font-size: 22px; font-weight: 700; }
+.reply-scope { margin: 0 0 24px; padding: 20px 22px; border: 1px solid var(--workflow-line); border-radius: 12px; background: #fff; }
+.reply-scope-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.reply-scope-head h2 { display: flex; align-items: baseline; gap: 10px; margin: 0; font-size: 19px; color: var(--workflow-ink); }
+.reply-scope-head h2 > span { color: var(--workflow-muted); font-size: 14px; font-weight: 500; }
+.reply-scope-head p { margin: 6px 0 0; color: var(--workflow-muted); font-size: 14px; line-height: 1.6; }
+.reply-scope-head .secondary-button { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; font-size: 14px; }
+.reply-scope-list { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; margin: 16px 0 0; padding: 0; max-height: 300px; overflow-y: auto; }
+.reply-scope-list li { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 5px 4px 5px 6px; border: 1px solid var(--workflow-line); border-radius: 999px; background: var(--workflow-surface); font-size: 15px; color: var(--workflow-ink); }
+.reply-scope-avatar { display: grid; place-items: center; flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; background: var(--brand-red, #c91739); color: #fff; font-size: 13px; font-weight: 600; }
+.reply-scope-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.reply-scope-list .workflow-icon-button { width: 26px; height: 26px; border-radius: 50%; }
+.reply-scope-add { margin-top: 16px; padding: 16px 18px; border-radius: 10px; background: var(--workflow-surface); }
+.reply-scope-add .workflow-recipient-search { margin-top: 0; font-size: 14px; }
+.reply-scope-add .workflow-contact-options { font-size: 14px; }
+.reply-scope-add-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.reply-scope-add-actions > span { margin-right: auto; color: var(--workflow-muted); font-size: 13px; }
+.reply-scope-empty { margin: 0; color: var(--workflow-muted); font-size: 14px; }
+.reply-scope-note { margin: 14px 0 0; color: var(--workflow-muted); font-size: 13px; }
+.reply-scope .workflow-recipient-search { margin-top: 14px; }
+.reply-scope-toggle { display: flex; width: 100%; margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--workflow-line); font-size: 14px; }
+@media (max-width: 760px) { .auto-reply-page .workflow-reply-summary { grid-template-columns: 1fr; } .reply-scope-head { flex-direction: column; } }

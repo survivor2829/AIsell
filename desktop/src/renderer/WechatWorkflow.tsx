@@ -761,19 +761,39 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
   const available = contacts.filter((contact) => contact.allowed !== false && !state.recipients.some((item) => item.id === contact.id));
   const choices = available.filter((contact) => contactLabel(contact).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0, 100);
   const locked = busy || state.enabled || state.phase === "pausing";
-  return <section className="workflow-recipients">
-    <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />全部任务完成或跳过后，开启自动回复</label>
-    <div className="workflow-list-head"><h2>接待范围</h2><span>{state.recipients.length} 位客户</span></div>
-    {!!state.replyExcludedCount && <p className="workflow-small-note">{state.replyExcludedCount} 位因重名、资料变化或账号不一致暂不自动回复。</p>}
-    {!!state.replyEnrollAmbiguousCount && <p className="workflow-small-note">最近一次从触达自动加入时，{state.replyEnrollAmbiguousCount} 位因重名未加入。</p>}
-    <p className="workflow-small-note">可以直接选择接待客户，也可以从触达计划加入。保存名单后不会发送消息，启动程序才开始接待。</p>
-    <details className="workflow-details" open={state.recipients.length === 0 ? true : undefined}><summary>添加接待联系人</summary>
-      {available.length ? <><input className="workflow-recipient-search" aria-label="搜索可添加联系人" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索联系人" />
+  // Adding opens on its own when nobody is being served yet; otherwise it stays out of the way.
+  const [adding, setAdding] = useState(false);
+  const addOpen = adding || state.recipients.length === 0;
+  const excluded = (state.replyExcludedCount || 0) + (state.replyEnrollAmbiguousCount || 0);
+  return <section className="workflow-recipients reply-scope" aria-labelledby="reply-scope-title">
+    <div className="reply-scope-head">
+      <div><h2 id="reply-scope-title">接待范围<span>{state.recipients.length} 位客户</span></h2><p>只自动回复下面这些客户，群聊和其他人不会碰。</p></div>
+      {!addOpen && <button type="button" className="secondary-button" disabled={locked} onClick={() => { setAdding(true); setQuery(""); }}><Plus size={16} />添加客户</button>}
+    </div>
+    {addOpen && <div className="reply-scope-add">
+      {available.length ? <>
+        <input className="workflow-recipient-search" aria-label="搜索可添加联系人" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索客户备注或昵称" />
         <div className="workflow-contact-options">{choices.map((contact) => <label className="workflow-check" key={contact.id}><input type="checkbox" disabled={locked} checked={selected.includes(contact.id)} onChange={(event) => setSelected((ids) => event.target.checked ? [...ids, contact.id] : ids.filter((id) => id !== contact.id))} />{contactLabel(contact)}</label>)}</div>
         {!choices.length && <p className="workflow-small-note">没有匹配的联系人。</p>}
-        <button type="button" className="primary-button" data-xiaoxi-workflow-save disabled={locked || !selected.length} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.addRecipients(selected)).then((result) => { if (result?.ok) setSelected([]); })}>保存接待名单（{selected.length} 人）</button></> : <p className="workflow-small-note">{contacts.length ? "当前可选联系人均已加入。" : "请先同步微信联系人，再回来选择接待客户。"}</p>}
-    </details>
-    {state.recipients.length ? <details className="workflow-details"><summary>管理接待客户</summary><input className="workflow-recipient-search" aria-label="搜索接待客户" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(50); }} placeholder="搜索客户" /><ul className="workflow-recipient-list">{filtered.slice(0, limit).map((contact) => <li key={contact.id}><span>{contact.label}</span><button className="text-button" disabled={locked} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.removeRecipient(contact.id))}>移出接待</button></li>)}</ul>{!filtered.length && <p className="workflow-small-note">没有找到相关客户。</p>}{filtered.length > limit && <button className="text-button" onClick={() => setLimit((value) => value + 50)}>显示更多</button>}</details> : <p className="workflow-small-note">尚未保存接待客户。</p>}
+        <div className="reply-scope-add-actions">
+          <span>保存后不会发消息，点「启动程序」才开始接待。</span>
+          {state.recipients.length > 0 && <button type="button" className="secondary-button" onClick={() => { setAdding(false); setSelected([]); setQuery(""); }}>取消</button>}
+          <button type="button" className="primary-button" data-xiaoxi-workflow-save disabled={locked || !selected.length} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.addRecipients(selected)).then((result) => { if (result?.ok) { setSelected([]); setAdding(false); setQuery(""); } })}>加入接待（{selected.length} 人）</button>
+        </div>
+      </> : <p className="reply-scope-empty">{contacts.length ? "可选的联系人都已加入接待。" : "请先同步微信联系人，再回来选择接待客户。"}</p>}
+    </div>}
+    {state.recipients.length > 0 && <>
+      {state.recipients.length > 12 && !addOpen && <input className="workflow-recipient-search" aria-label="搜索接待客户" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(50); }} placeholder="搜索接待客户" />}
+      <ul className="reply-scope-list">{(addOpen ? state.recipients : filtered).slice(0, limit).map((contact) => <li key={contact.id}>
+        <span className="reply-scope-avatar" aria-hidden="true">{Array.from(contact.label.trim())[0] || "客"}</span>
+        <span className="reply-scope-name">{contact.label}</span>
+        <button type="button" className="workflow-icon-button" aria-label={`把${contact.label}移出接待`} title="移出接待" disabled={locked} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.removeRecipient(contact.id))}><X size={15} /></button>
+      </li>)}</ul>
+      {!addOpen && !filtered.length && <p className="workflow-small-note">没有找到相关客户。</p>}
+      {!addOpen && filtered.length > limit && <button type="button" className="text-button" onClick={() => setLimit((value) => value + 50)}>显示更多</button>}
+    </>}
+    {excluded > 0 && <p className="reply-scope-note">{excluded} 位客户因重名或资料变化暂不自动回复。</p>}
+    <label className="workflow-check reply-scope-toggle"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />全部任务完成或跳过后，开启自动回复</label>
   </section>;
 }
 

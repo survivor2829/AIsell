@@ -1517,6 +1517,12 @@ class FFmpegCreativeRenderer:
             music_series = self._measure_loudness_series(music_stem)
             voice_overall = self.measure_audio_quality(voice_stem)["integrated_lufs"]
             music_overall = self.measure_audio_quality(music_stem)["integrated_lufs"]
+            # Music is silent by design before the intro delay and its fade-in,
+            # and fades away in the last stretch. Phrases are judged only on the
+            # span where music is meant to play; a phrase wholly outside it
+            # (a short opening hook, a closing line) has no music to balance.
+            music_on_ms = round((music_fade_in + 0.4) * 1000) if music_fade_in > 0 else 0
+            music_off_ms = round(fade_out * 1000)
             windows = []
             for caption in captions:
                 start_ms = int(caption.get("start_ms") or 0)
@@ -1526,11 +1532,15 @@ class FFmpegCreativeRenderer:
                         "audio_quality_measure_failed", "口播字幕时间窗口无效。"
                     )
                 voice_lufs = self._window_lufs(voice_series, start_ms, end_ms)
-                music_lufs = self._window_lufs(music_series, start_ms, end_ms)
                 if not math.isfinite(voice_lufs):
                     raise ContentEngineError(
                         "audio_quality_measure_failed", "口播窗口没有可测量人声。"
                     )
+                music_start_ms = max(start_ms, music_on_ms)
+                music_end_ms = min(end_ms, music_off_ms) if music_off_ms > music_on_ms else end_ms
+                if music_end_ms - music_start_ms < 400:
+                    continue
+                music_lufs = self._window_lufs(music_series, music_start_ms, music_end_ms)
                 if not math.isfinite(music_lufs) or music_lufs <= -70:
                     raise ContentEngineError(
                         "auto_mix_music_not_audible",
