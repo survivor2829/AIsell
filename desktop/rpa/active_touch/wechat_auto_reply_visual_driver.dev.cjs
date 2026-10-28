@@ -2151,6 +2151,19 @@ try {
         recoveryOk = $true
       }
     }
+    $unreadSender = [string][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER")
+    if (-not $header.ok -and [string]$header.state -cne "different" -and $unreadSender) {
+      # Neither the title nor the list row could be read, but WeChat's session records name the
+      # one recipient with unread messages: this chat belongs to them.
+      $header = @{
+        ok = $true
+        state = "database_unread_sender"
+        conversation = $unreadSender
+        observed = $unreadSender
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
+      }
+    }
     if ($script:AutoReplyVisualExactConversationMatch) {
       $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
       if (-not $strictHeader.ok) {
@@ -3064,6 +3077,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_PID: String(sharedWindow?.pid || ""),
       XIAOXI_EXPECTED_HWND: String(sharedWindow?.hWnd || ""),
       XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH: matchOptions?.exactConversationMatch === true ? "1" : "",
+      XIAOXI_AUTO_REPLY_UNREAD_SENDER: mode === "observe" || typeof matchOptions?.unreadSenderHint !== "function" ? ""
+        : String(matchOptions.unreadSenderHint() || "").slice(0, 64),
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
       ...(preferScreen ? { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" } : {}),

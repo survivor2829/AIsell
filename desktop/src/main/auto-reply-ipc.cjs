@@ -2108,7 +2108,17 @@ function createAutoReplyController(options = {}) {
     if (workflowMode) {
       const scope = resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
       const driverOptions = { ...scope.driverOptions, onProgress: workflowProgress,
-        restoreChatSurface: restoreWorkflowChatSurface };
+        restoreChatSurface: restoreWorkflowChatSurface,
+        // WeChat's session records say who has unread messages. When exactly one recipient does,
+        // the driver may use that name for a chat whose title and list row OCR could not read.
+        unreadSenderHint: () => {
+          try {
+            const unread = receipts()?.unreadSessions();
+            if (!Array.isArray(unread)) return "";
+            const waiting = (scope.contacts || []).filter((contact) => unread.some((session) => session.username === contact.id));
+            return waiting.length === 1 ? normalizeText(waiting[0].remark || waiting[0].name) : "";
+          } catch { return ""; }
+        } };
       driverOptions.onChatSurfaceRestored = () => {
         restoreWorkflowChatSurface = false;
         driverOptions.restoreChatSurface = false;
