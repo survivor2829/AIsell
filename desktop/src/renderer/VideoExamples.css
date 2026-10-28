@@ -52,3 +52,19 @@
 .example-banner.is-collapsed > span { display: inline-flex; align-items: center; gap: 8px; color: #4b5565; }
 .example-banner button:focus-visible { outline: 2px solid #c91739; outline-offset: 3px; }
 @media (max-width: 600px) { .example-banner { flex-direction: column; } .example-banner-player { width: min(100%, 200px); margin: 0 auto; } }
+/* 微信拓客演示是宽屏录屏：封面只取左边的微信窗口，点开用大窗口看清楚；右边步骤收紧成横排小卡。 */
+.example-banner.is-wide { gap: 20px; }
+.example-banner.is-wide .example-banner-player { width: min(38%, 420px); aspect-ratio: 16 / 10; align-self: center; border: 1px solid #eadde1; background: #eef0f4; }
+.example-banner.is-wide .example-banner-poster img { object-fit: cover; object-position: 0 50%; }
+.example-banner.is-wide .example-banner-poster > span { background: #10141c1f; }
+.example-banner.is-wide .example-banner-poster > span svg { filter: drop-shadow(0 2px 6px #10141c66); }
+.example-banner.is-wide .example-banner-copy { gap: 12px; }
+.example-banner.is-wide .example-banner-copy h2 { font-size: 20px; }
+.example-banner.is-wide .example-banner-steps { gap: 10px; }
+.example-banner.is-wide .example-banner-steps li { flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px; padding: 10px 12px; }
+.example-banner.is-wide .example-banner-steps b { flex: 0 0 auto; width: 26px; height: 26px; font-size: 13px; }
+.example-banner.is-wide .example-banner-steps span { font-size: 13px; line-height: 1.45; }
+.example-banner.is-wide .example-banner-steps strong { font-size: 15px; }
+@media (max-width: 1100px) { .example-banner.is-wide { flex-direction: column; } .example-banner.is-wide .example-banner-player { width: 100%; aspect-ratio: 480 / 169; } .example-banner.is-wide .example-banner-poster img { object-position: 50% 50%; } }
+.video-example-dialog.is-wide { width: min(1280px, calc(100vw - 48px)); }
+.video-example-dialog.is-wide .video-example-stage video { height: auto; max-height: calc(100dvh - 155px); aspect-ratio: 480 / 169; }

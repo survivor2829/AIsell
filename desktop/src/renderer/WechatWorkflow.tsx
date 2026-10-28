@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
+import { ExampleBanner } from "./VideoExamples";
 import "./WechatWorkflow.css";
 
 export type WorkflowTaskType = "touch" | "publish" | "interact";
@@ -543,6 +544,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <div><h1>{title}</h1><p>{mode === "home" ? "集中安排客户联系、朋友圈和咨询接待，方便持续跟进。先完成当前可执行任务，空闲时接待新咨询。" : mode === "touch" ? "给选定客户介绍合适的产品与服务，按计划接着跟进。选好联系人和话术后加入计划。" : "让客户持续了解您的产品和案例，按计划发布朋友圈、安排互动。"}</p></div>
       <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />
     </div>
+    {mode !== "home" && <ExampleBanner topic={mode === "touch" ? "wechat-touch" : "wechat-moments"} />}
 
     <div className={`workflow-running-line ${state.enabled ? "is-on" : ""}`} role="status">
       <span className="workflow-state-dot" />
