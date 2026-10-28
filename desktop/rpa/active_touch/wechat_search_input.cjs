@@ -8,6 +8,9 @@ public sealed class WechatSearchInputReceipt {
   private readonly System.Collections.Generic.HashSet<uint> ownedTicks = new System.Collections.Generic.HashSet<uint>();
   private int expected, received;
   private bool active, external;
+  // Unattended runs (nobody at the computer): other mouse or keyboard activity is not a reason to
+  // stop; only our own keystrokes still have to arrive.
+  public static readonly bool Unattended = System.Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1";
   public bool External { get { lock (sync) { return external; } } }
   public uint OwnedTick { get { lock (sync) { return ownedTick; } } }
   public bool Begin(ulong token, uint before, int count) {
@@ -23,14 +26,18 @@ public sealed class WechatSearchInputReceipt {
       if (active && (flags & 0x10u) != 0 && extraInfo == marker && time != uint.MaxValue && received < expected) {
         ownedTick = time; ownedTicks.Add(time); received++;
       }
-      else external = true;
+      else if (!Unattended) external = true;
     }
   }
-  public void Mouse() { lock (sync) { external = true; } }
+  public void Mouse() { lock (sync) { if (!Unattended) external = true; } }
   public string Evaluate(int sent, uint currentTick, bool expired) {
     lock (sync) {
       if (external) return "wechat_external_input_detected";
       if (sent != expected) return "wechat_search_input_failed";
+      if (Unattended) {
+        if (active && received == expected) { active = false; ownedTick = currentTick; return "confirmed"; }
+        return expired ? "wechat_input_lease_unavailable" : "pending";
+      }
       if (currentTick == uint.MaxValue) return "wechat_input_lease_unavailable";
       if (currentTick != beforeTick && !ownedTicks.Contains(currentTick)) return "wechat_external_input_detected";
       if (active && received == expected && currentTick == ownedTick) { active = false; return "confirmed"; }
@@ -117,6 +124,7 @@ public static class WechatSearchInputGuard {
     // the hooks if that process terminates before the background thread returns.
   }
   private static uint ReadTick() {
+    if (WechatSearchInputReceipt.Unattended) return 1u;
     LastInput input = new LastInput(); input.size = (uint)System.Runtime.InteropServices.Marshal.SizeOf(input);
     return GetLastInputInfo(ref input) ? input.time : uint.MaxValue;
   }

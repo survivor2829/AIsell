@@ -554,7 +554,7 @@ public static class Win32WechatWindow {
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
   public static uint GetLastInputIdleMilliseconds() {
     uint tick = GetLastInputTick();
@@ -1154,7 +1154,7 @@ public static class Win32WechatRpaSurfaceInspector {
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
   public static uint GetLastInputIdleMilliseconds() {
     uint tick = GetLastInputTick();
@@ -1646,7 +1646,7 @@ public static class Win32WechatWindowSearch {
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
   public static uint GetLastInputIdleMilliseconds() {
     uint tick = GetLastInputTick();
@@ -2047,7 +2047,7 @@ public static class Win32WechatSearchResultClick {
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   [DllImport("user32.dll")] public static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
-  public static uint GetLastInputTick() { LASTINPUTINFO info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(info); return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue; }
+  public static uint GetLastInputTick() { LASTINPUTINFO info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(info); if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue; }
 }
 "@
 function Test-SearchResultClickTarget([int64]$hitHWnd, [int]$hitPid, [int]$expectedPid) {
@@ -2702,7 +2702,7 @@ public static class Win32WechatMessageDraft {
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
 }
 "@

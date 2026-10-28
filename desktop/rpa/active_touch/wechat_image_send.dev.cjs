@@ -33,7 +33,7 @@ public static class Win32WechatImage {
   [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr hWndNewOwner);
   [DllImport("user32.dll")] public static extern bool CloseClipboard();
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint command);
-  public static uint InputTick() { var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i); if (!GetLastInputInfo(ref i)) throw new Exception("image_input_unavailable"); return i.dwTime; }
+  public static uint InputTick() { if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i); if (!GetLastInputInfo(ref i)) throw new Exception("image_input_unavailable"); return i.dwTime; }
 }
 "@
 [Console]::Error.WriteLine("image_preload:image_add_type_finish elapsed_ms=" + (Get-UptimeMs - $script:imageScriptStartedAt))

@@ -529,7 +529,7 @@ function touchTaskStatusLabel(task: TouchTaskState) {
     preparing_batch: "准备触达文案",
     sending_batch: "发送中",
     waiting_for_idle: "等待电脑空闲",
-    awaiting_unknown_resolution: "等待确认发送结果"
+    awaiting_unknown_resolution: "正在继续"
   };
   return phaseLabels[task.phase ?? ""] ?? taskStatusLabel(task.status);
 }

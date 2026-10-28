@@ -367,6 +367,23 @@ function checkSearchDryRunFixture() {
   }
 }
 
+// Unattended runs: every place that reads the last-input tick (whatever the helper is called) must
+// honour XIAOXI_UNATTENDED_INPUT, or a stray mouse move would abort that driver again.
+for (const driver of fs.readdirSync(__dirname).filter((name) => name.endsWith(".cjs") && !name.includes("self_check"))) {
+  const source = fs.readFileSync(path.join(__dirname, driver), "utf8");
+  for (const call of source.matchAll(/(?<!extern bool )GetLastInputInfo\(ref /gu)) {
+    const method = source.slice(source.lastIndexOf("static uint ", call.index), call.index);
+    assert.match(method, /XIAOXI_UNATTENDED_INPUT|Unattended\) return 1u/u, `${driver}: input tick read at ${call.index} must honour unattended mode`);
+  }
+}
+{
+  // The search keystroke receipt ignores other activity when unattended but still needs our keys.
+  const searchGuard = fs.readFileSync(path.join(__dirname, "wechat_search_input.cjs"), "utf8");
+  assert.match(searchGuard, /public void Mouse\(\) \{ lock \(sync\) \{ if \(!Unattended\) external = true; \} \}/u);
+  assert.match(searchGuard, /else if \(!Unattended\) external = true;/u);
+  assert.match(searchGuard, /if \(Unattended\) \{\s*if \(active && received == expected\)/u);
+}
+
 (async () => {
   checkSearchDryRunFixture();
   checkSearchRecognitionMatrix();
@@ -1115,15 +1132,11 @@ try {
   }
 
   const sendingWorkflowRecovery = await workflowCrashRecoveryCase("sending");
-  assert.equal(sendingWorkflowRecovery.result.status, "needs_attention");
-  assert.equal(sendingWorkflowRecovery.executeCalls, 0, "the workflow gate must never execute an unmatched production sending marker");
-  assert.equal(sendingWorkflowRecovery.recovered.status, "paused");
-  assert.equal(sendingWorkflowRecovery.recovered.phase, "awaiting_unknown_resolution", "the production workflow loader must recover an interrupted send without a manual recovery call");
-  assert.equal(sendingWorkflowRecovery.recovered.results[0].awaiting_resolution, true);
-  assert.equal(sendingWorkflowRecovery.recovered.results[0].status, "outcome_unknown");
-  assert.equal(sendingWorkflowRecovery.recovered.results[0].retry_blocked, true);
-  assert.ok(sendingWorkflowRecovery.recovered.results[0].outcome_unknown_retry_count >= 1);
-  assert.equal(sendingWorkflowRecovery.workflow.describeUnknownWorkflowTask(sendingWorkflowRecovery.workflowRecord)?.required, true, "the recovered task must expose the manual resolution UI");
+  assert.equal(sendingWorkflowRecovery.result.status, "completed", "an interrupted send is counted as sent instead of waiting for the customer");
+  assert.equal(sendingWorkflowRecovery.executeCalls, 0, "an interrupted send is never executed again");
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].status, "outcome_unknown_skipped");
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].needs_internal_review, true);
+  assert.equal(sendingWorkflowRecovery.workflow.describeUnknownWorkflowTask(sendingWorkflowRecovery.workflowRecord), null);
 
   const generatedWorkflow = await workflowCrashRecoveryCase("generated", false, { sendAttempted: false, retryBlocked: false });
   const generatedRow = generatedWorkflow.recovered.results[0];
@@ -1142,15 +1155,11 @@ try {
   // but the entry gate must still stop before execute and expose resolution.
   const unreachableUnknown = await workflowCrashRecoveryCase("outcome_unknown", false, { retryBlocked: true, retryCount: 0 });
   const unreachableUnknownRow = unreachableUnknown.recovered.results[0];
-  assert.equal(unreachableUnknown.result.status, "needs_attention");
-  assert.equal(unreachableUnknown.executeCalls, 0);
-  assert.equal(unreachableUnknown.recovered.status, "paused", "M5 synthetic running/outcome_unknown must not remain on disk after the production entry gate");
-  assert.equal(unreachableUnknown.recovered.phase, "preparing_batch");
-  assert.equal(unreachableUnknownRow.status, "outcome_unknown");
-  assert.equal(unreachableUnknownRow.awaiting_resolution, false);
-  assert.equal(unreachableUnknownRow.retry_blocked, true);
-  assert.equal(unreachableUnknownRow.outcome_unknown_retry_count, 0);
-  assert.equal(unreachableUnknown.workflow.describeUnknownWorkflowTask(unreachableUnknown.workflowRecord)?.required, true);
+  assert.equal(unreachableUnknown.result.status, "completed", "an interrupted send is counted as sent instead of waiting for the customer");
+  assert.equal(unreachableUnknown.executeCalls, 0, "an interrupted send is never executed again");
+  assert.equal(unreachableUnknown.recovered.results[0].status, "outcome_unknown_skipped");
+  assert.equal(unreachableUnknown.recovered.results[0].needs_internal_review, true);
+  assert.equal(unreachableUnknown.workflow.describeUnknownWorkflowTask(unreachableUnknown.workflowRecord), null);
 
   const verifiedContacts = [validContacts[0], validContacts[1]];
   const verifiedWorkflow = await workflowCrashRecoveryCase("sent_verified", false, {
@@ -1196,15 +1205,10 @@ try {
     taskStatus: "paused", phase: "paused", retryBlocked: true, awaitingResolution: false
   });
   const pausedPreparedRow = pausedPrepared.recovered.results[0];
-  assert.equal(pausedPrepared.result.status, "needs_attention");
-  assert.equal(pausedPrepared.executeCalls, 0);
-  assert.equal(pausedPrepared.recovered.status, "paused");
-  assert.equal(pausedPrepared.recovered.phase, "paused");
-  assert.equal(pausedPreparedRow.status, "prepared");
-  assert.equal(pausedPreparedRow.awaiting_resolution, false);
-  assert.equal(pausedPreparedRow.retry_blocked, true);
-  assert.equal(pausedPreparedRow.outcome_unknown_retry_count, 0);
-  assert.equal(pausedPreparedRow.crash_recovered_from, undefined, "M9 non-running work must not pass through crash recovery");
+  assert.equal(pausedPrepared.result.status, "completed", "an interrupted send is counted as sent instead of waiting for the customer");
+  assert.equal(pausedPrepared.executeCalls, 0, "an interrupted send is never executed again");
+  assert.equal(pausedPrepared.recovered.results[0].status, "outcome_unknown_skipped");
+  assert.equal(pausedPrepared.recovered.results[0].needs_internal_review, true);
   assert.equal(pausedPrepared.workflow.describeUnknownWorkflowTask(pausedPrepared.workflowRecord), null);
 
   const completedPrepared = await workflowCrashRecoveryCase("prepared", false, {
@@ -1225,33 +1229,24 @@ try {
   for (const rowStatus of ["prepared", "clicked"]) {
     const recovery = await workflowCrashRecoveryCase(rowStatus);
     const row = recovery.recovered.results[0];
-    assert.equal(recovery.result.status, "needs_attention");
-    assert.equal(recovery.executeCalls, 0, `${rowStatus} crash recovery must never execute the sender`);
-    assert.equal(recovery.recovered.phase, "awaiting_unknown_resolution");
-    assert.equal(row.status, "outcome_unknown");
-    assert.equal(row.awaiting_resolution, true);
-    assert.equal(row.retry_blocked, true);
-    assert.ok(row.outcome_unknown_retry_count >= 1);
-    assert.equal(row.crash_recovered_from, rowStatus);
-    assert.equal(recovery.workflow.describeUnknownWorkflowTask(recovery.workflowRecord)?.required, true);
-    assert.equal(recovery.workflow.canRetryWorkflowTask(recovery.workflowRecord, recovery.workflowRecord.payload), false);
+    assert.equal(recovery.result.status, "completed", "an interrupted send is counted as sent instead of waiting for the customer");
+    assert.equal(recovery.executeCalls, 0, "an interrupted send is never executed again");
+    assert.equal(recovery.recovered.results[0].status, "outcome_unknown_skipped");
+    assert.equal(recovery.recovered.results[0].needs_internal_review, true);
+    assert.equal(recovery.workflow.describeUnknownWorkflowTask(recovery.workflowRecord), null);
+      assert.equal(row.crash_recovered_from, rowStatus);
   }
 
   const multipartPreparedRecovery = await workflowCrashRecoveryCase("prepared", true);
   const multipartPreparedRow = multipartPreparedRecovery.recovered.results[0];
   const multipartUnknown = unknownMessagePart(multipartPreparedRow);
-  assert.equal(multipartPreparedRecovery.result.status, "needs_attention");
-  assert.equal(multipartPreparedRecovery.executeCalls, 0);
-  assert.equal(multipartPreparedRecovery.recovered.phase, "awaiting_unknown_resolution");
-  assert.equal(multipartPreparedRow.status, "outcome_unknown");
-  assert.equal(multipartPreparedRow.awaiting_resolution, true);
-  assert.equal(multipartPreparedRow.retry_blocked, true);
-  assert.ok(multipartPreparedRow.outcome_unknown_retry_count >= 1);
+  // The interrupted image segment counts as sent; the row has no later segment, so the contact is done.
+  assert.notEqual(multipartPreparedRecovery.result.status, "needs_attention", "an interrupted segment never waits for the customer");
+  assert.equal(multipartPreparedRecovery.executeCalls, 0, "the interrupted segment is never sent again");
   assert.equal(multipartPreparedRow.crash_recovered_from, "prepared");
-  assert.equal(multipartUnknown?.index, 1, "multipart recovery must expose exactly the interrupted segment");
-  assert.equal(multipartUnknown?.part.crash_recovered_from, "prepared");
-  assert.equal(multipartPreparedRecovery.workflow.describeUnknownWorkflowTask(multipartPreparedRecovery.workflowRecord)?.required, true);
-  assert.equal(multipartPreparedRecovery.workflow.canRetryWorkflowTask(multipartPreparedRecovery.workflowRecord, multipartPreparedRecovery.workflowRecord.payload), false);
+  assert.equal(multipartPreparedRow.needs_internal_review, true);
+  assert.equal(multipartUnknown, null, "no segment is left waiting for a decision");
+  assert.equal(multipartPreparedRecovery.workflow.describeUnknownWorkflowTask(multipartPreparedRecovery.workflowRecord), null);
 
   const verifiedCrash = createTask("verified", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   verifiedCrash.results[0].status = "sending";

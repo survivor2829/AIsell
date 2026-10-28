@@ -7,7 +7,7 @@ const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
-const { createTouchWorkflow } = require("./touch-workflow.cjs");
+const { createTouchWorkflow, restoreWechatChatSurface } = require("./touch-workflow.cjs");
 const { classifyWechatFailure } = require("../shared/wechat-failure-policy.cjs");
 const { createClassificationQualityLedger } = require("./classification-quality-ledger.cjs");
 const {
@@ -1398,6 +1398,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     execute: realSendExecutor,
     detectDeliveryNotice,
     runStep: runActiveTouch,
+    restoreChatSurface: restoreWechatChatSurface,
     passport: taskPassportStore
   });
   return { pause: requestPause, ...workflow };

@@ -1050,6 +1050,13 @@ function Read-AutoReplyVisualHeader($frame, $lines, [string]$conversation, [doub
   return $result
 }
 
+# Never send when the title clearly names someone else. A title OCR could not read (short names
+# such as 城胜 often come back empty) is uncertainty, not a mismatch: the result carries
+# headerState "unresolved" and the main process confirms the sender from WeChat's message records.
+function Test-AutoReplyVisualHeaderBlocks($header) {
+  return [string]$header.state -ceq "different"
+}
+
 function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sidebarRight, [double]$frameWidth, $allowedSet, $frame = $null) {
   if ($null -ne $frame) { return Read-AutoReplyVisualHeader $frame $lines $conversation $sidebarRight $allowedSet $false }
   $candidates = @(Get-AutoReplyVisualHeaderCandidates $lines $sidebarRight $frameWidth)
@@ -1650,7 +1657,7 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
     # A compositor-only WeChat window can omit its title from one OCR frame.
     # That is uncertainty, not proof that the chat changed. Only an explicitly
     # different title blocks the already-bound HWND + conversation observation.
-    if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
+    if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
       return @{
         ok = $false
         reason = [string]$header.reason
@@ -1852,8 +1859,8 @@ try {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
-      if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+      if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; headerSite = "header_1"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     if ($currentMessage -eq $null -or -not $currentMessage.hasMessage) {
@@ -1894,8 +1901,8 @@ try {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
-      if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+      if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; headerSite = "header_2"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     # The sidebar and chat bubble use different font sizes. The same Chinese text
@@ -2144,10 +2151,23 @@ try {
         recoveryOk = $true
       }
     }
+    $unreadSender = [string][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER")
+    if (-not $header.ok -and [string]$header.state -cne "different" -and $unreadSender) {
+      # Neither the title nor the list row could be read, but WeChat's session records name the
+      # one recipient with unread messages: this chat belongs to them.
+      $header = @{
+        ok = $true
+        state = "database_unread_sender"
+        conversation = $unreadSender
+        observed = $unreadSender
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
+      }
+    }
     if ($script:AutoReplyVisualExactConversationMatch) {
       $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
       if (-not $strictHeader.ok) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$strictHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = $(if ($header.ok) { "different" } else { [string]$header.state }); headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$strictHeader.reason; headerSite = "strict_badge"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = $(if ($header.ok) { "different" } else { [string]$header.state }); headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
       $conversation = [string]$strictHeader.conversation
       $candidate.conversationEvidence = [string]$strictHeader.conversationEvidence
@@ -2188,8 +2208,8 @@ try {
       }
     }
   }
-  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-    Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
+    Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; headerSite = "header_3"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
   }
   if ([bool]$candidate.badgeOnly) {
     $badgeLatest = Get-AutoReplyVisualLatestMessageEvidence $openedFrame $openedObservation.lines $sidebarRight
@@ -2276,8 +2296,8 @@ try {
             recoveryOk = $true
           }
         }
-        if (-not $confirmationHeader.ok -and ([bool]$candidate.strictConversationVerified -or [string]$confirmationHeader.state -eq "different")) {
-          Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$confirmationHeader.state; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
+        if (-not $confirmationHeader.ok -and (Test-AutoReplyVisualHeaderBlocks $confirmationHeader)) {
+          Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; headerSite = "confirmation"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$confirmationHeader.state; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
         }
       }
       $confirmedLatest = Get-AutoReplyVisualLatestMessageEvidence $confirmationFrame $confirmation.lines $sidebarRight
@@ -3057,6 +3077,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_PID: String(sharedWindow?.pid || ""),
       XIAOXI_EXPECTED_HWND: String(sharedWindow?.hWnd || ""),
       XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH: matchOptions?.exactConversationMatch === true ? "1" : "",
+      XIAOXI_AUTO_REPLY_UNREAD_SENDER: mode === "observe" || typeof matchOptions?.unreadSenderHint !== "function" ? ""
+        : String(matchOptions.unreadSenderHint() || "").slice(0, 64),
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
       ...(preferScreen ? { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" } : {}),

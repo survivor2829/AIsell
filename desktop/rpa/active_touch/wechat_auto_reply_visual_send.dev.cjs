@@ -39,7 +39,7 @@ public static class Win32WechatVisualAutoReply {
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
   public static bool AtomicMouseClick(int screenX, int screenY) {
     int left = GetSystemMetrics(76), top = GetSystemMetrics(77);
@@ -65,6 +65,8 @@ $expectedHWndText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_HW
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION")
 $expectedConversationEvidence = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE")
 $strictConversationMatch = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH") -eq "1"
+# WeChat's message records already confirmed who wrote this message (its title could not be read).
+$senderConfirmedByRecords = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_SENDER_CONFIRMED") -eq "1"
 $messageDriven = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN") -eq "1"
 try { $allowedConversationNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { $allowedConversationNames = @() }
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
@@ -830,6 +832,9 @@ function Get-VisualSendConversationBinding($frame, [double]$sidebarRight, [doubl
   if ($selectedRow.ok) {
     return @{ ok = $true; proof = "selected_sidebar_row"; headerState = [string]$header.state; selectedRow = $selectedRow }
   }
+  if ($senderConfirmedByRecords -and [string]$header.state -cne "different") {
+    return @{ ok = $true; proof = "wechat_records"; headerState = [string]$header.state; selectedRow = $null }
+  }
   return @{
     ok = $false
     reason = "visual_send_conversation_not_bound"
@@ -1480,6 +1485,7 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE: String(options.conversationEvidence ?? options.conversation ?? ""),
     XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH: options.exactConversationMatch === true ? "1" : "",
     XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN: options.messageDriven === true ? "1" : "",
+    XIAOXI_VISUAL_SEND_SENDER_CONFIRMED: options.senderConfirmedByRecords === true ? "1" : "",
     XIAOXI_VISUAL_SEND_ALLOWED_NAMES: JSON.stringify(Array.isArray(options.conversationAliases) ? options.conversationAliases : [options.conversation].filter(Boolean)),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),

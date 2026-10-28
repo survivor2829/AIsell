@@ -2525,6 +2525,15 @@ assert.equal(preferredEnvironments.at(-1).XIAOXI_AUTO_REPLY_MODE, "observe");
 assert.equal(preferredEnvironments.at(-1).XIAOXI_FORCE_SCREEN_CAPTURE, "",
   "a prior successful foreground screen scan must not disable PrintWindow observation");
 
+// WeChat's session records may name the one recipient with unread messages; scans pass that name
+// along, observation never does, and only an unreadable (not a clearly different) title uses it.
+await preferredDriver.scanWechatIncoming(["观察客户"], { unreadSenderHint: () => "观察客户" });
+assert.equal(preferredEnvironments.at(-1).XIAOXI_AUTO_REPLY_UNREAD_SENDER, "观察客户");
+await preferredDriver.observeWechatIncoming(["观察客户"], { unreadSenderHint: () => "观察客户" });
+assert.equal(preferredEnvironments.at(-1).XIAOXI_AUTO_REPLY_UNREAD_SENDER, "");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \$header\.ok -and \[string\]\$header\.state -cne "different" -and \$unreadSender\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Test-AutoReplyVisualHeaderBlocks\(\$header\) \{\s*return \[string\]\$header\.state -ceq "different"/u);
+
 console.log("wechat auto-reply visual driver self-check passed");
 }
 

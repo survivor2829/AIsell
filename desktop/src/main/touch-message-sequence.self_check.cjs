@@ -69,8 +69,8 @@ async function checkTouchMessageSequence() {
   assert.doesNotMatch(IMAGE_SEND_SCRIPT, /TickCount64/u,
     "PowerShell image scripts must not use .NET Core-only TickCount64");
   assert.match(fs.readFileSync(path.join(__dirname, "../renderer/WechatWorkflow.tsx"), "utf8"),
-    /touch_pre_send_failure_streak:\s*"连续 3 位联系人因同一原因在发送前失败/u,
-    "the circuit needs an actionable user-facing label");
+    /touch_pre_send_failure_streak:\s*"这几位联系人发送前没有准备好，已跳过，没有发送。"/u,
+    "a same-cause streak reads as skipped contacts, never as a request to verify");
   const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "../shared/wechat-rule-catalog.json"), "utf8"));
   const literalReasons = [...IMAGE_SEND_SCRIPT.matchAll(/throw "(image_[a-z0-9_]+)"/g)].map((match) => match[1]);
   const classifiedReasons = new Set(catalog.filter((entry) => entry?.file === "desktop/rpa/active_touch/wechat_image_send.dev.cjs" && typeof entry.reason === "string").map((entry) => entry.reason));
@@ -161,61 +161,78 @@ async function checkTouchMessageSequence() {
   failImage = true; unknown = true;
   const uncertain = { ...record, id: crypto.randomUUID() };
   result = await workflow.runWorkflowStep(uncertain, context);
-  assert.equal(result.status, "needs_attention");
-  assert.equal(workflow.canRetryWorkflowTask(uncertain, payload), false);
+  // Unattended: the unconfirmable image counts as sent; nobody is asked, and the run goes on.
+  assert.equal(result.status, "pending", "an unknown image never stops the task");
+  assert.equal(result.result.assumedSent, true);
+  assert.equal(workflow.describeUnknownWorkflowTask(uncertain), null, "nothing is left for the customer to confirm");
   const count = calls.length;
-  await createTouchWorkflow(config).runWorkflowStep(uncertain, context);
-  assert.equal(calls.length, count, "Unknown image sends never retry after restart");
-  assert.equal(workflow.describeUnknownWorkflowTask(uncertain)?.partKind, "image");
-  assert.throws(() => workflow.updateWorkflowTask(uncertain.id, { ...payload, script: "新内容" }, payload), /尚未确认/, "editing must not downgrade an unknown image result to a partial skip");
-  assert.equal(workflow.describeUnknownWorkflowTask(uncertain)?.partKind, "image");
-  const sentResolution = workflow.resolveUnknownWorkflowTask(uncertain, "sent");
-  assert.equal(sentResolution.completed, false, "confirming one multipart segment must retain later unsent segments");
-  assert.equal(calls.length, count, "manual confirmation must not invoke the sender");
-  assert.throws(() => workflow.resolveUnknownWorkflowTask(uncertain, "sent"), /没有待确认/, "a resolved segment cannot be handled twice");
   failImage = false; unknown = false;
   result = await createTouchWorkflow(config).runWorkflowStep(uncertain, context);
   assert.equal(result.status, "completed");
-  assert.deepEqual(calls.slice(count).map(call => call.kind), ["link"], "only the segment after the confirmed image may run");
+  assert.deepEqual(calls.slice(count).map(call => call.kind), ["link"], "only the segment after the unconfirmed image runs; the image is never resent");
 
+  // Two contacts: the first contact has an unconfirmable image; the run finishes that contact
+  // and moves on to the second without anyone confirming anything.
   failImage = true; unknown = true;
-  const notSent = { ...record, id: crypto.randomUUID() };
-  result = await createTouchWorkflow(config).runWorkflowStep(notSent, context);
-  assert.equal(result.status, "needs_attention");
-  const notSentDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(notSent.id).digest("hex"));
-  const beforeNotSent = JSON.parse(fs.readFileSync(path.join(notSentDir, "touch_task.json"), "utf8"));
-  const beforeNotSentCalls = calls.length;
-  const retryResolution = workflow.resolveUnknownWorkflowTask(notSent, "not_sent");
-  const afterNotSent = JSON.parse(fs.readFileSync(path.join(notSentDir, "touch_task.json"), "utf8"));
-  assert.equal(retryResolution.completed, false);
-  assert.notEqual(afterNotSent.results[0].request_id, beforeNotSent.results[0].request_id, "confirmed-not-sent must rotate the durable send identity");
-  assert.equal(afterNotSent.results[0].message_parts[0].status, "sent_verified", "confirmed-not-sent must retain already verified segments");
-  assert.equal(afterNotSent.results[0].message_parts[1].status, "not_attempted");
-  assert.equal(afterNotSent.results[0].message_parts[2].status, "pending");
-  assert.equal(afterNotSent.results[0].manual_resolution_history.at(-1).resolution, "not_sent");
-  assert.notEqual(afterNotSent.results[0].manual_resolution_history.at(-1).next_attempt_id, afterNotSent.results[0].manual_resolution_history.at(-1).previous_attempt_id);
-  assert.equal(calls.length, beforeNotSentCalls, "restoring retry eligibility must not execute it");
+  const twoPayload = workflow.prepareWorkflowTask({ script: "未知结果继续下一位", contactIds: [contact.id, secondContact.id], imageIds: [imageId] });
+  const twoContacts = { ...record, id: crypto.randomUUID(), payload: twoPayload };
+  const beforeTwo = calls.length;
+  result = await createTouchWorkflow(config).runWorkflowStep(twoContacts, context);
+  assert.equal(result.status, "pending");
   failImage = false; unknown = false;
-  result = await createTouchWorkflow(config).runWorkflowStep(notSent, context);
+  for (let step = 0; result.status !== "completed" && step < 6; step += 1) { clock.setTime(clock.getTime() + 60 * 60 * 1000); result = await createTouchWorkflow(config).runWorkflowStep(twoContacts, context); }
   assert.equal(result.status, "completed");
-  assert.deepEqual(calls.slice(beforeNotSentCalls).map(call => call.kind), ["image", "link"], "a later explicit run retries only the confirmed-unsent segment and its successors");
+  assert.deepEqual(calls.slice(beforeTwo).map(call => call.kind), ["text", "image", "text", "image"], "the unconfirmed image is not resent and the second contact still runs");
 
-  failImage = true; unknown = true;
-  const skippedUnknownPayload = workflow.prepareWorkflowTask({ script: "未知结果跳过联系人", contactIds: [contact.id, secondContact.id], imageIds: [imageId] });
-  const skippedUnknown = { ...record, id: crypto.randomUUID(), payload: skippedUnknownPayload };
-  result = await createTouchWorkflow(config).runWorkflowStep(skippedUnknown, context);
-  assert.equal(result.status, "needs_attention");
-  const beforeSkipCalls = calls.length;
-  const skipResolution = workflow.resolveUnknownWorkflowTask(skippedUnknown, "skip");
-  assert.deepEqual(skipResolution.progress, { done: 1, total: 2 });
-  assert.equal(calls.length, beforeSkipCalls, "skipping an uncertain contact must not execute the next contact");
-  const skippedUnknownDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(skippedUnknown.id).digest("hex"));
-  const skippedUnknownTask = JSON.parse(fs.readFileSync(path.join(skippedUnknownDir, "touch_task.json"), "utf8"));
-  assert.equal(skippedUnknownTask.results[0].skip_record.reasonCode, "outcome_unknown");
-  failImage = false; unknown = false;
-  result = await createTouchWorkflow(config).runWorkflowStep(skippedUnknown, context);
-  assert.equal(result.status, "completed");
-  assert.deepEqual(calls.slice(beforeSkipCalls).map(call => call.kind), ["text", "image"], "the next explicit run starts at the next contact");
+  // WeChat's message database settles an unconfirmed segment: on record means verified (no
+  // internal review); not on record is still never resent, only flagged for our review.
+  const taskFile = (id) => path.join(root, "workflow-tasks", crypto.createHash("sha256").update(id).digest("hex"), "touch_task.json");
+  for (const onRecord of [true, false]) {
+    const asked = [];
+    const dbConfig = { ...config, receipts: { confirmSent: (username, sinceSeconds, part) => { asked.push({ username, kind: part.kind, since: Number.isFinite(sinceSeconds) }); return onRecord; } } };
+    const dbRecord = { ...record, id: crypto.randomUUID() };
+    failImage = true; unknown = true;
+    result = await createTouchWorkflow(dbConfig).runWorkflowStep(dbRecord, context);
+    assert.equal(result.status, "pending");
+    assert.deepEqual(asked, [{ username: contact.id, kind: "image", since: true }], "the receipt is looked up for this contact and segment");
+    failImage = false; unknown = false;
+    const beforeDb = calls.length;
+    result = await createTouchWorkflow(dbConfig).runWorkflowStep(dbRecord, context);
+    assert.equal(result.status, "completed");
+    assert.deepEqual(calls.slice(beforeDb).map(call => call.kind), ["link"], "the image is never resent either way");
+    const row = JSON.parse(fs.readFileSync(taskFile(dbRecord.id), "utf8")).results[0];
+    assert.equal(row.message_parts[1].db_confirmed === true, onRecord);
+    assert.equal(row.message_parts[1].assumed_sent === true, !onRecord);
+    assert.equal(row.needs_internal_review === true, !onRecord);
+  }
+  {
+    // A Moments task may leave WeChat on the Moments page: each contact first returns to the chat
+    // page, before its search. A failed return never blocks the send; the search step decides.
+    const order = [];
+    for (const restore of [async () => { order.push("restore"); return { ok: true, changed: true }; },
+      async () => { order.push("restore"); throw new Error("window gone"); }]) {
+      const chatConfig = { ...config, restoreChatSurface: restore,
+        execute: async (options) => { order.push("send"); options.onTransition("sent_verified"); return { ok: true, state: { real_send_status: "sent_verified" } }; } };
+      const chatWorkflow = createTouchWorkflow(chatConfig);
+      const chatRecord = { ...record, id: crypto.randomUUID(), payload: chatWorkflow.prepareWorkflowTask({ script: "回到聊天页测试", contactIds: [contact.id] }) };
+      assert.equal((await chatWorkflow.runWorkflowStep(chatRecord, context)).status, "completed");
+    }
+    assert.deepEqual(order, ["restore", "send", "restore", "send"]);
+  }
+  {
+    // A plain text whose send crashed mid-way but which WeChat recorded is an ordinary verified send.
+    const crashConfig = { ...config, receipts: { confirmSent: (username, sinceSeconds, part) => part.kind === "text" && /文字回执/u.test(part.text) },
+      execute: async (options) => { options.onTransition("clicked"); throw new Error("driver crashed after click"); } };
+    const crashWorkflow = createTouchWorkflow(crashConfig);
+    const crashRecord = { ...record, id: crypto.randomUUID(), payload: crashWorkflow.prepareWorkflowTask({ script: "文字回执测试", contactIds: [contact.id] }) };
+    result = await crashWorkflow.runWorkflowStep(crashRecord, context);
+    assert.equal(result.status, "completed");
+    assert.equal(result.result.deliveryStatus, "sent_verified");
+    assert.equal(result.result.confirmedBy, "database");
+    const row = JSON.parse(fs.readFileSync(taskFile(crashRecord.id), "utf8")).results[0];
+    assert.equal(row.status, "sent_verified");
+    assert.equal(row.needs_internal_review, undefined);
+  }
 
   const legacyCalls = [];
   const legacyConfig = { ...config, execute: async (options) => {
@@ -223,34 +240,33 @@ async function checkTouchMessageSequence() {
     options.onTransition("clicked");
     return { ok: false, send_attempted: true, blocked_reason: "input_draft_read_failed" };
   } };
-  for (const resolution of ["sent", "not_sent", "skip"]) {
+  // A 1.1.20 task left paused on an unknown text send (from before unattended mode) is decided
+  // automatically on the next run: counted as sent, never resent, nothing left to confirm.
+  {
     const legacyWorkflow = createTouchWorkflow(legacyConfig);
     const legacyPayload = legacyWorkflow.prepareWorkflowTask({ script: "1.1.20 单文字未知结果", contactIds: [contact.id] });
     const legacyRecord = { ...record, id: crypto.randomUUID(), payload: legacyPayload };
-    const legacyResult = await legacyWorkflow.runWorkflowStep(legacyRecord, context);
-    assert.equal(legacyResult.status, "needs_attention");
+    await legacyWorkflow.runWorkflowStep(legacyRecord, context);
     const legacyDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(legacyRecord.id).digest("hex"));
     const legacyStateFile = path.join(legacyDir, "touch_task.json");
     const legacyState = JSON.parse(fs.readFileSync(legacyStateFile, "utf8"));
     legacyState.source_build_id = "20260912T0824Z";
+    legacyState.status = "paused";
+    legacyState.current_index = 0;
+    delete legacyState.completed_at;
+    legacyState.results[0].status = "outcome_unknown";
+    legacyState.results[0].awaiting_resolution = true;
     delete legacyState.results[0].message_parts;
-    delete legacyState.results[0].awaiting_resolution;
+    delete legacyState.results[0].skip_record;
     fs.writeFileSync(legacyStateFile, JSON.stringify(legacyState, null, 2));
-    const upgradedWorkflow = createTouchWorkflow(legacyConfig);
-    assert.equal(upgradedWorkflow.describeUnknownWorkflowTask(legacyRecord)?.partKind, "text", `1.1.20 ${resolution} fixture must remain actionable`);
-    const beforeLegacyResolution = legacyCalls.length;
-    const resolutionId = crypto.randomUUID();
-    const legacyOutcome = upgradedWorkflow.resolveUnknownWorkflowTask(legacyRecord, resolution, resolutionId);
+    const beforeLegacyRun = legacyCalls.length;
+    const legacyResult = await createTouchWorkflow(legacyConfig).runWorkflowStep(legacyRecord, context);
     const resolvedLegacyState = JSON.parse(fs.readFileSync(legacyStateFile, "utf8"));
-    assert.equal(legacyCalls.length, beforeLegacyResolution, "legacy manual resolution must not invoke the sender");
-    assert.equal(resolvedLegacyState.results[0].awaiting_resolution, false, "manual resolution must clear legacy awaiting-resolution state");
-    assert.equal(resolvedLegacyState.results[0].manual_resolution_history.at(-1).resolution_id, resolutionId);
-    assert.equal(legacyOutcome.resolutionId, resolutionId);
-    if (resolution === "not_sent") {
-      assert.equal(legacyOutcome.completed, false);
-      assert.notEqual(resolvedLegacyState.results[0].request_id, legacyState.results[0].request_id);
-    } else assert.equal(legacyOutcome.completed, true);
-    assert.throws(() => upgradedWorkflow.resolveUnknownWorkflowTask(legacyRecord, resolution), /没有待确认/, "a legacy decision cannot be applied twice by the user");
+    assert.equal(legacyResult.status, "completed", "an old unknown result is no longer handed to the customer");
+    assert.equal(legacyCalls.length, beforeLegacyRun, "an old unknown text is never sent again");
+    assert.equal(resolvedLegacyState.results[0].status, "outcome_unknown_skipped");
+    assert.equal(resolvedLegacyState.results[0].needs_internal_review, true);
+    assert.equal(createTouchWorkflow(legacyConfig).describeUnknownWorkflowTask(legacyRecord), null);
   }
 
   failImage = false; unknown = false; pauseAfterText = true;
@@ -685,8 +701,9 @@ async function checkTouchMessageSequence() {
   }
   assert.equal((await checkPassportWiring("图片点击前超时", "image_send_pre_click_timeout", [contact.id], true)).status, "completed");
   assert.equal((await checkPassportWiring("环境耗尽", "wechat_login_required", [contact.id])).status, "completed");
-  assert.equal((await checkPassportWiring("连续同因熔断", "message_snapshot_unavailable",
-    [contact.id, secondContact.id, thirdContact.id])).reasonCode, "touch_pre_send_failure_streak");
+  // Three contacts failing for the same reason no longer stop the unattended run.
+  assert.equal((await checkPassportWiring("连续同因跳过", "message_snapshot_unavailable",
+    [contact.id, secondContact.id, thirdContact.id])).status, "completed");
 
   const taskState = (record) => JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks",
     crypto.createHash("sha256").update(record.id).digest("hex"), "touch_task.json"), "utf8"));
@@ -763,8 +780,10 @@ async function checkTouchMessageSequence() {
     const uncertain = await testFailure("atomic_send_not_verified", { sendAttempted,
       ...(sendAttempted === null ? { sendResult: "not_attempted" } : {}) });
     result = await uncertain.step();
-    assert.equal(result.status, "needs_attention");
-    assert.equal(result.reasonCode, "outcome_unknown");
+    // Unattended: an unconfirmable send counts as sent and the task moves on (one contact: done).
+    assert.equal(result.status, "completed");
+    assert.equal(result.result.reasonCode, "outcome_unknown");
+    assert.equal(result.result.assumedSent, true);
     const before = uncertain.attempts.length;
     await createTouchWorkflow({ ...config, readContacts: () => [contact, secondContact, thirdContact, fourthContact],
       execute: () => { throw new Error("unknown outcome must not retry"); } }).runWorkflowStep(uncertain.record, uncertain.context);
@@ -772,8 +791,8 @@ async function checkTouchMessageSequence() {
   }
   const preparedOnly = await testFailure("atomic_send_not_verified", { transitions: ["prepared"] });
   result = await preparedOnly.step();
-  assert.equal(result.reasonCode, "outcome_unknown");
-  assert.equal(preparedOnly.state().results[0].status, "outcome_unknown");
+  assert.equal(result.result.reasonCode, "outcome_unknown");
+  assert.equal(preparedOnly.state().results[0].status, "outcome_unknown_skipped");
   const preparedCallCount = preparedOnly.attempts.length;
   let restartedPreparedCalls = 0;
   await createTouchWorkflow({ ...config, readContacts: () => [contact, secondContact, thirdContact, fourthContact],
@@ -826,28 +845,14 @@ async function checkTouchMessageSequence() {
     }
     for (let attempt = 0; attempt < 2; attempt += 1) assert.equal((await test.step()).waitingReason, "wechat_pre_send_recovery");
     result = await test.step();
-    assert.equal(result.status, "needs_attention");
-    assert.equal(result.reasonCode, "touch_pre_send_failure_streak");
-    assert.equal(result.result.deliveryStatus, multipart ? "partial_sent" : "not_attempted",
-      "circuit delivery status must include already verified message parts");
-    assert.equal(classifyWechatFailureReason(result.reasonCode).attentionScope, "global");
-    assert.equal(test.state().results[2].status, "generated");
-    assert.equal(test.state().results[2].pre_send_recovery_attempts, 0);
-    assert.equal(test.state().results[2].retry_blocked, false);
-    assert.equal(test.state().results[2].send_attempted, false);
-    assert.equal(test.state().results[2].environment_recovery_started_at, undefined);
-    if (multipart) assert.deepEqual(test.state().results[2].message_parts.map((part) => part.status),
-      ["sent_verified", "not_attempted"], "the circuit retains the verified text and the unsent image");
-    assert.equal(test.state().pre_send_skip_streak, undefined);
-    assert.equal(test.workflow.canRetryWorkflowTask(test.record, test.payload), true);
-    assert.equal(test.failures.length, 3, "two final skips and one circuit pause consume one passport failure each");
-    const textBeforeResume = test.attempts.filter((call) => call.contactId === thirdContact.id && call.kind === "text").length;
-    const recovered = createTouchWorkflow({ ...config, readContacts: () => [contact, secondContact, thirdContact],
-      execute: async (part) => { test.attempts.push({ contactId: part.contactId, kind: part.image ? "image" : "text" }); part.onTransition("sent_verified"); return { ok: true, state: { real_send_status: "sent_verified" } }; } });
-    result = await recovered.runWorkflowStep(test.record, test.context);
+    // A third same-cause failure is skipped like the others; the run is not stopped.
     assert.equal(result.status, "completed");
-    assert.equal(test.attempts.filter((call) => call.contactId === thirdContact.id && call.kind === "text").length,
-      textBeforeResume + (multipart ? 0 : 1), "resume must retain already verified multipart text");
+    assert.equal(result.result.deliveryStatus, multipart ? "partial_sent" : "not_attempted",
+      "the skip delivery status must include already verified message parts");
+    assert.equal(test.state().results[2].status, "pre_send_skipped");
+    if (multipart) assert.deepEqual(test.state().results[2].message_parts.map((part) => part.status),
+      ["sent_verified", "not_attempted"], "the skip keeps the verified text and the unsent image");
+    assert.equal(test.failures.length, 3, "three final skips consume one passport failure each");
   }
   const different = await testFailure("message_snapshot_unavailable", {
     contactIds: [contact.id, secondContact.id, thirdContact.id],
@@ -877,9 +882,8 @@ async function checkTouchMessageSequence() {
   for (let person = 0; person < 2; person += 1) {
     await manualReset.step(); await manualReset.step(); await manualReset.step();
   }
-  assert.equal((await manualReset.step()).reasonCode, "outcome_unknown");
-  manualReset.workflow.resolveUnknownWorkflowTask(manualReset.record, "skip");
-  assert.equal(manualReset.state().pre_send_skip_streak, undefined, "manual disposition clears the prior pre-send streak");
+  assert.equal((await manualReset.step()).result.reasonCode, "outcome_unknown");
+  assert.equal(manualReset.state().pre_send_skip_streak, undefined, "an attempted (assumed sent) contact clears the prior pre-send streak");
   await manualReset.step(); await manualReset.step();
   assert.notEqual((await manualReset.step()).status, "needs_attention");
 
@@ -942,10 +946,9 @@ async function checkTouchMessageSequence() {
         clock.setTime(clock.getTime() + 10 * 60_000);
         result = await test.step();
       }
-      assert.equal(result.status, person === 2 ? "needs_attention" : "pending");
+      assert.equal(result.status, person === 2 ? "completed" : "pending", "the run never stops on a same-cause streak");
     }
-    assert.equal(result.reasonCode, "touch_pre_send_failure_streak");
-    assert.equal(test.state().results[2].status, "generated");
+    assert.equal(test.state().results[2].status, "pre_send_skipped");
   }
 
   atomicMismatch = true;

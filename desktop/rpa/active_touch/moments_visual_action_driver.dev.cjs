@@ -574,7 +574,7 @@ public static class Win32WechatMomentsVisualAction {
 
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO)), dwTime = 0 };
-    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+    if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
   }
 
   public static bool AtomicMouseClick(int screenX, int screenY, bool rightButton) {

@@ -898,6 +898,10 @@ const sender = createVisualAutoReplySender({
   assert.equal(invalid.send_attempted, false);
   assert.equal(invalid.reason, "visual_send_context_invalid");
 
+  // A title OCR could not read binds through WeChat's records only when the caller says they
+  // confirmed the sender; a clearly different title never binds.
+  assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$senderConfirmedByRecords -and \[string\]\$header\.state -cne "different"\) \{\s*return @\{ ok = \$true; proof = "wechat_records"/u);
+  assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$senderConfirmedByRecords = \[Environment\]::GetEnvironmentVariable\("XIAOXI_VISUAL_SEND_SENDER_CONFIRMED"\) -eq "1"/u);
   console.log("wechat auto-reply visual send self-check passed");
 })().catch((error) => {
   console.error(error);

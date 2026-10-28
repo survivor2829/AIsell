@@ -205,9 +205,10 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
       execute: async () => { throw new Error("interrupted sends must not be repeated"); } });
     const restartResult = await restarted.runWorkflowStep(taskRecord, { isEnabled: () => true });
     const recovered = loadTaskState(restartDir);
-    assert.equal(restartResult.status, "needs_attention");
-    assert.equal(recovered.status, "paused", "a real restart must still recover an interrupted send");
-    if (!multipart) assert.equal(recovered.results[0].status, "outcome_unknown");
+    // An interrupted send is counted as sent on restart: never repeated, never handed to the customer.
+    assert.notEqual(restartResult.status, "needs_attention", "a real restart recovers an interrupted send without asking anyone");
+    if (!multipart) assert.equal(recovered.results[0].status, "outcome_unknown_skipped");
+    assert.equal(recovered.results[0].needs_internal_review, true);
 
     release();
     const completed = await running;
@@ -444,28 +445,14 @@ async function checkR008BoundedRecovery() {
     assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 2);
     assert.equal(failures.length, 2);
     assert.equal((await step()).retryAfterMs, 2000);
-    const circuit = await step();
-    const paused = loadTaskState(taskDir);
-    assert.equal(circuit.status, "needs_attention");
-    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
-    assert.equal(paused.current_index, 2);
-    assert.equal(paused.results[2].status, "generated");
-    assert.equal(paused.results[2].send_attempted, false);
-    assert.equal(paused.results[2].retry_blocked, false);
-    assert.equal(workflow.canRetryWorkflowTask(record, payload), true);
-    assert.equal(failures.length, 3, "circuit captures one failure for the current contact");
-    for (const delay of [2000, 8000, 20000]) {
-      fixedHash = "";
-      const resumed = await step();
-      assert.equal(resumed.status, "pending");
-      assert.equal(resumed.retryAfterMs, delay, "resumed circuit contact must retry fully");
-    }
-    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
-    assert.equal((await step()).status, "pending");
+    // A third contact with the same unconfirmable search result does not stop the unattended run:
+    // nothing was sent, so it is skipped like the others and the streak only reaches diagnostics.
+    const third = await step();
+    assert.equal(third.status, "pending", "the run keeps going after three identity skips in a row");
     assert.equal(loadTaskState(taskDir).results[2].status, "identity_skipped");
-    assert.equal(loadTaskState(taskDir).current_index, 3, "resumed circuit must advance to the fourth contact");
-    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 1);
-    assert.equal(failures.length, 4, "resumed contact captures one final failure");
+    assert.equal(loadTaskState(taskDir).current_index, 3, "the fourth contact is next");
+    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 3);
+    assert.equal(failures.length, 3, "one final failure per skipped contact");
     succeed = true;
     assert.equal((await step()).status, "completed");
     assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined, "a verified send resets the circuit count");
@@ -657,14 +644,15 @@ async function checkT5FourthReviewExits() {
       }
       if (kind === "snapshot") changed = true;
       if (kind === "unknown") {
-        assert.equal(outcome.status, "needs_attention");
-        workflow.resolveUnknownWorkflowTask(record, "skip", require("node:crypto").randomUUID());
-        outcome = await step();
+        // Unattended: an unconfirmable image counts as sent, the contact is done, nothing is resent.
+        assert.equal(outcome.status, "completed", "an unknown result never waits for the customer");
         const row = loadTaskState(taskDir).results[0];
-        assert.equal(row.send_attempted, null, "manual unknown skip must retain uncertain send outcome");
-        assert.match(row.reason, /结果未知/u);
-        assert.doesNotMatch(row.reason, /后续内容未发/u);
+        assert.equal(row.send_attempted, null, "the uncertain send outcome is kept");
+        assert.equal(row.needs_internal_review, true);
+        assert.match(row.reason, /按已发送处理/u);
         assert.equal(bills.at(-1)[0].reasonCode, "outcome_unknown");
+        await step();
+        assert.equal(imageReads, 1, "the unconfirmed image is never sent again");
         continue;
       }
       for (let attempt = 0; outcome.status !== "completed" && attempt < 6; attempt += 1) outcome = await step();
@@ -762,7 +750,7 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     const workflow = createTouchWorkflow({
       dataDir: root, now: () => new Date(clock), readContacts: () => contacts,
       coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
-      passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence) },
+      passport: { bindTrace() {}, recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence), writeRunBill() {} },
       execute: async () => {
         const capture = reads === 0 ? unsafeCapture
           : path.join(os.tmpdir(), `xiaoxi-search-capture-${require("node:crypto").randomBytes(16).toString("hex")}.png`);
@@ -793,9 +781,9 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       clock += 60 * 60 * 1000;
       circuit = await workflow.runWorkflowStep(record, { isEnabled: () => true });
-      if (circuit.status === "needs_attention") break;
+      if (circuit.status === "completed") break;
     }
-    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
+    assert.equal(circuit.status, "completed", `all contacts are skipped without stopping the run (${circuit.reasonCode || ""} ${circuit.error || ""})`);
     assert.ok(failures.some((failure) => failure.stage === "search_identity"));
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     const task = loadTaskState(taskDir);
@@ -812,9 +800,8 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     assert.equal(JSON.stringify(circuit).includes("search_capture_file"), false);
     assert.equal(fs.existsSync(unsafeCapture), true, "an untrusted screenshot path must never be read or deleted");
     assert.equal(temporaryCaptures.every((file) => !fs.existsSync(file)), true);
-    if (ruleId === "search-r008") assert.equal(failures.some((failure) => failure.stage === "workflow_step"
-      && Buffer.isBuffer(failure.screenshotBytes)
-      && failure.screenshotBytes.equals(capturePng)), true, "r008 circuit evidence must attach OCR bytes");
+    if (ruleId === "search-r008") assert.equal(failures.some((failure) => Buffer.isBuffer(failure.screenshotBytes)
+      && failure.screenshotBytes.equals(capturePng)), true, "r008 skip evidence must attach OCR bytes");
     assert.equal(evidence.popup_candidate_count, 2, "state-only numeric evidence must survive the whitelist");
     assert.deepEqual(evidence.search_columns, [62]);
     assert.equal(evidence.popup_dpi, undefined, `non-finite ${ruleId} DPI must be omitted`);
@@ -848,14 +835,15 @@ async function checkT5FourthReviewCircuit() {
     const seeded = loadTaskState(taskDir);
     seeded.identity_skip_streak = { rule_id: "search-r008", count: 2 };
     saveTaskState(taskDir, seeded);
-    const circuit = await step();
-    assert.equal(circuit.reasonCode, "wechat_search_identity_circuit_open");
-    assert.equal(circuit.result.deliveryStatus, "partial_sent");
+    // A third same-rule identity failure no longer opens a circuit: the image is skipped, the
+    // text already sent stays sent, and the unattended run finishes.
+    const skipped = await step();
+    assert.equal(skipped.status, "completed");
+    assert.equal(skipped.result.deliveryStatus, "partial_sent");
     const row = loadTaskState(taskDir).results[0];
-    assert.equal(row.status, "generated");
     assert.equal(row.send_attempted, true);
     assert.match(row.reason, /^部分内容已发送/u);
-    assert.equal(textSends, 1);
+    assert.equal(textSends, 1, "the sent text is never repeated");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -883,16 +871,15 @@ async function checkCircuitRejoinKeepsThirdContactRecovery() {
       assert.equal((await step()).status, "pending");
     }
     assert.equal((await step()).retryAfterMs, 2000);
-    assert.equal((await step()).reasonCode, "wechat_search_identity_circuit_open");
+    assert.equal((await step()).status, "completed", "the third contact is skipped too; no circuit stops the run");
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
-    const circuitRow = loadTaskState(taskDir).results[2];
-    assert.equal(circuitRow.identity_recovery_attempts, 0);
-    assert.equal(circuitRow.search_evidence.fingerprint, undefined);
+    assert.equal(loadTaskState(taskDir).results[2].status, "identity_skipped");
     assert.equal(workflow.retrySkippedWorkflowTask(record, [contacts[0].id]).ok, true);
     allowFirst = true;
-    assert.equal((await step()).status, "pending");
-    assert.equal((await step()).status, "pending", "already skipped second contact advances without sending");
-    assert.equal((await step()).retryAfterMs, 2000, "third contact still gets full recovery after another row is rejoined");
+    let rejoined = await step();
+    for (let attempt = 0; rejoined.status !== "completed" && attempt < 4; attempt += 1) rejoined = await step();
+    assert.equal(rejoined.status, "completed");
+    assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified", "a rejoined contact is sent on the next run");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -952,10 +939,7 @@ async function checkOldSearchRuleDoesNotEnterOtherSkipBills() {
       const record = { id: `old-rule-${exit}`, payload };
       assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, 2000);
       if (exit === "snapshot") changed = true;
-      else {
-        assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "needs_attention");
-        workflow.resolveUnknownWorkflowTask(record, "skip", require("node:crypto").randomUUID());
-      }
+      // "manual" is now automatic: an unknown outcome is counted as sent without asking anyone.
       assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
       assert.equal(bills.at(-1)[0].ruleId, "", `${exit} skip must not inherit r008 rule`);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -989,9 +973,8 @@ async function checkIdentityStreakClearsAfterManualOrVerifiedContact() {
       assert.equal((await step()).status, "pending");
       assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 1);
       await step();
-      if (resolution === "sent") workflow.resolveUnknownWorkflowTask(record, "sent", require("node:crypto").randomUUID());
       assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined,
-        "a manually confirmed send or verified pre-send skip proves search is working");
+        "an attempted send (counted as sent when unconfirmed) or a verified pre-send skip proves search is working");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1730,9 +1713,9 @@ async function checkFailedRetryRecoveryGuards() {
       releaseReply(); releaseReply = null; state.replyGate = null;
       await ticking;
       await assert.rejects(retrying, /没有可重新加入/);
-      assert.equal(state.control.status().enabled, false, "reply failure must prevent reception recovery");
-      assert.equal(state.control.status().phase, "paused");
-      assert.equal(state.replyResumes, resumes);
+      // A reply failure no longer stops reception: it keeps listening and retries after a short wait.
+      assert.equal(state.control.status().enabled, true, "a reply failure keeps reception running");
+      assert.equal(state.control.status().phase, "listening");
     } finally { releaseReply?.(); state.replyGate = null; await state.control.dispose(); }
   }
 
@@ -1897,11 +1880,9 @@ async function checkWorkflowDiagnostics() {
   replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
   await control.addTask({ type: "touch", payload: {} });
   await control.start(); await control.tick();
-  assert.equal(control.status().enabled, false, "a finite task failure pauses before auto reply can run");
-  assert.equal(control.status().phase, "needs_attention");
+  // Unattended: the failed finite task is skipped and the run keeps going.
+  assert.equal(control.status().enabled, true, "a finite task failure is skipped, not a stop");
   assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "paused");
-  await control.start();
-  assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "needs_attention");
   await control.pause();
   assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), false,
     "automatic reply must not run before a due finite task");
@@ -2172,18 +2153,13 @@ async function checkRealReplyWorkflowRecovery() {
     assert.equal(controller.status().enabled, true);
     scanFailure = "wechat_window_changed";
     await controller.tick();
-    assert.equal(controller.status().phase, "needs_attention");
+    assert.equal(controller.status().phase, "listening", "a reply failure keeps the run listening and retries later");
     scanFailure = "";
-    await controller.start();
     const beforeRestartScans = scans;
     await controller.tick();
-    assert.equal(scans, beforeRestartScans + 1);
+    assert.equal(scans, beforeRestartScans + 1, "after a window change the next poll scans again by itself");
     assert.equal(controller.status().phase, "listening");
-    assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "workflow_window_changed"), true);
-    scanFailure = "wechat_window_changed";
-    await controller.tick();
-    assert.equal(events.filter((event) => event.name === "reply.result" && event.reason === "workflow_window_changed").length, 2,
-      "the same failure must be logged again in a new run");
+    // A window change is no longer a stop: it is only recorded in the auto-reply diagnostics.
     assert.doesNotMatch(JSON.stringify(events), /private-good|private-bad|private-unique|private-duplicate|private-message|private-ai-error/u);
   } finally { await controller.dispose(); }
 }
@@ -2216,14 +2192,14 @@ async function checkReplyFailureDiagnosticsAcrossRuns() {
     clock = new Date("2026-07-15T11:00:00+08:00");
     await controller.tick();
     await controller.tick();
-    assert.equal(controller.status().phase, "needs_attention");
+    assert.equal(controller.status().phase, "listening", "a reply error keeps listening and retries later");
     await controller.pause();
     await controller.start();
     await controller.tick();
     assert.equal(events.filter((entry) => entry.name === "reply.result" && entry.reason === "workflow_window_changed").length, 2,
       "the same failure must be logged again after restart without an idle result between runs");
     await controller.tick();
-    assert.equal(events.filter((entry) => entry.name === "reply.result").length, 2, "a stopped reply must not loop on its error");
+    assert.equal(events.filter((entry) => entry.name === "reply.result").length, 2, "a failed reply waits before retrying instead of looping on its error");
     assert.doesNotMatch(JSON.stringify(events), /private-contact|private-name|private-script/u);
   } finally { await controller.dispose(); }
 }
@@ -2558,7 +2534,9 @@ async function main() {
   assert.equal(batch.status().enabled, false, "completed finite work releases the computer");
   await batch.addTask({ type: "publish", title: "unknown", payload: { content: "test" } });
   await batch.start(); await batch.tick();
-  assert.equal(batch.status().phase, "needs_attention", "unfinished work must not look completed or idle");
+  // A task that could not run is skipped; the unattended run still finishes and frees the computer.
+  assert.equal(batch.status().phase, "completed", "a skipped task does not leave the run waiting for the customer");
+  assert.equal(batch.status().enabled, false);
   await batch.dispose();
 
   const contentionRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
@@ -2657,10 +2635,10 @@ async function main() {
   await globalAttention.addRecipients(["reply-contact"]);
   await globalAttention.addTask({ type: "interact", payload: { maxPosts: 1 } });
   await globalAttention.start(); await globalAttention.tick();
-  assert.equal(globalAttention.status().enabled, false, "an unknown interaction outcome must still stop the unified workflow");
-  assert.equal(globalAttentionReplyCalls, 0);
+  // Unattended: an unknown interaction outcome skips that task (never redone) and the run goes on.
+  assert.equal(globalAttention.status().enabled, true, "an unknown interaction outcome no longer stops the unified workflow");
   await globalAttention.tick();
-  assert.equal(globalAttentionReplyCalls, 0, "auto reply must remain stopped while an unknown outcome awaits review");
+  assert.equal(globalAttentionReplyCalls, 1, "automatic reply continues after the skipped interaction");
   await globalAttention.dispose();
 
   const brokenPayloadRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
@@ -2799,8 +2777,10 @@ async function main() {
   assert.equal(attentionTaskCalls, 1, "a blocked finite task must be recorded once");
   assert.equal(attentionReplyCalls, 0, "a due finite task must block automatic reply until its outcome is settled");
   assert.equal(attention.status().tasks[1].status, "pending", "later finite work must remain queued");
-  assert.equal(attention.status().enabled, false, "a blocked finite task must pause the unified workflow");
-  assert.equal(attention.status().phase, "needs_attention");
+  // Unattended: the blocked task is skipped and the next one runs; nothing waits for the customer.
+  assert.equal(attention.status().enabled, true, "a blocked finite task is skipped, not a stop");
+  await attention.tick();
+  assert.equal(attentionTaskCalls, 2, "the next finite task runs after the skipped one");
   await attention.dispose();
 
   const bulkRetryRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));

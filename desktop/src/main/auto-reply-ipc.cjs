@@ -13,6 +13,9 @@ const {
 } = require("./auto-reply-decision.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
+// A message whose chat title could not be read is answered only when WeChat recorded it this recently.
+const UNRESOLVED_TITLE_RECENT_SECONDS = 30 * 60;
+const UNREAD_SENDER_RECENT_SECONDS = 10 * 60;
 const FAST_RECHECK_MS = 750;
 const AUTO_REPLY_STATE_VERSION = 4;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -599,6 +602,9 @@ function sanitizeStructuredScanDiagnostics(value) {
     if (typeof header.recoveryAttempted === "boolean") result.header_recovery_attempted = header.recoveryAttempted;
     if (typeof header.recoveryOk === "boolean") result.header_recovery_ok = header.recoveryOk;
   }
+  // Which header check stopped a scan, and whether WeChat's records named a sender for it.
+  if (typeof source.headerSite === "string" && /^[a-z_0-9]{1,32}$/u.test(source.headerSite)) result.header_site = source.headerSite;
+  if (typeof source.unreadSenderHinted === "boolean") result.unread_sender_hinted = source.unreadSenderHinted;
   const sanitizeWindow = (rawWindow) => {
     if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)) return null;
     const window = {};
@@ -1440,6 +1446,11 @@ function handoffMetadata({ contactId, context, conversation, at }) {
 }
 
 function createAutoReplyController(options = {}) {
+  // WeChat's own message records (injected in self-checks); null when they cannot be read.
+  const receipts = () => {
+    if (options.receipts !== undefined) return options.receipts;
+    try { return require("../../rpa/wechat_db/wechat-db.cjs").receiptsForDataRoot(path.join(String(options.dataDir || ""), "..")); } catch { return null; }
+  };
   const dataDir = String(options.dataDir || "");
   const activeTouchDir = String(options.activeTouchDir || "");
   const stateFile = path.join(dataDir, "auto-reply-state.json");
@@ -2101,7 +2112,26 @@ function createAutoReplyController(options = {}) {
     if (workflowMode) {
       const scope = resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
       const driverOptions = { ...scope.driverOptions, onProgress: workflowProgress,
-        restoreChatSurface: restoreWorkflowChatSurface };
+        restoreChatSurface: restoreWorkflowChatSurface,
+        // WeChat's records say who wrote last. When exactly one recipient's chat changed in the
+        // last minutes and its newest message is theirs, the driver may use that name for a chat
+        // whose title and list row OCR could not read. (The unread counter alone lags: WeChat
+        // writes it after the scan has already opened the chat.)
+        unreadSenderHint: () => {
+          let hint = "";
+          try {
+            const db = receipts();
+            const since = Math.floor(now().getTime() / 1000) - UNREAD_SENDER_RECENT_SECONDS;
+            const sessions = db?.recentSessions(since);
+            if (Array.isArray(sessions)) {
+              const waiting = (scope.contacts || []).filter((contact) => sessions.some((session) => session.username === contact.id
+                && (session.unread > 0 || db.messagesWith(contact.id, since)?.at(-1)?.sender === contact.id)));
+              if (waiting.length === 1) hint = normalizeText(waiting[0].remark || waiting[0].name);
+            }
+          } catch { hint = ""; }
+          appendDiagnostic("unread_sender_hint", { phase: "scan", code: hint ? "named" : "none" });
+          return hint;
+        } };
       driverOptions.onChatSurfaceRestored = () => {
         restoreWorkflowChatSurface = false;
         driverOptions.restoreChatSurface = false;
@@ -2974,7 +3004,12 @@ function createAutoReplyController(options = {}) {
         });
         if (contactScope.strict && STRICT_SCOPE_WINDOW_RESET_REASONS.has(candidateReason)) {
           const event = workflowMode ? "workflow_window_changed" : "test_scope_window_changed";
-          pauseWithError(event, workflowMode ? "微信窗口已变化，请检查后重新启动任务" : "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
+          // Unattended runs only skip this scan; the workflow retries the reply step on its own.
+          if (workflowMode) {
+            state.last_event = event;
+            state.last_error = "微信窗口已变化，稍后自动重试";
+            setActivity("error", { detailCode: event });
+          } else pauseWithError(event, "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
           appendDiagnostic(event, { phase: "scope", code: candidateReason });
           save();
           return publicState();
@@ -3095,6 +3130,27 @@ function createAutoReplyController(options = {}) {
         });
         save();
         return publicState();
+      }
+      if (normalizeText(candidate.headerState) === "unresolved") {
+        // The chat title could not be read. The conversation came from the list row this scan
+        // opened; WeChat's own records must also show this contact's newest message as theirs
+        // and recent. Otherwise (or without readable records) the message is left alone.
+        let senderConfirmed = false;
+        try {
+          const rows = /^visual-inbound-/u.test(String(contact.id)) ? null
+            : receipts()?.messagesWith(contact.id, Math.floor(now().getTime() / 1000) - UNRESOLVED_TITLE_RECENT_SECONDS);
+          const latest = Array.isArray(rows) ? rows.at(-1) : null;
+          senderConfirmed = Boolean(latest && latest.sender === contact.id);
+        } catch { senderConfirmed = false; }
+        appendDiagnostic("reply_title_unresolved", { phase: "scope", code: senderConfirmed ? "sender_confirmed_by_records" : "sender_unconfirmed", traceId: observedTraceId });
+        if (!senderConfirmed) {
+          clearPendingObservation(candidate);
+          state.last_event = "conversation_title_unresolved";
+          state.last_error = "";
+          setActivity("waiting", { traceId: observedTraceId, deliveryStatus: "not_attempted", detailCode: "conversation_title_unresolved" });
+          save();
+          return publicState();
+        }
       }
       const rawContext = normalizedContext(candidate);
       const incoming = normalizeText(candidate.message);
@@ -3471,6 +3527,7 @@ function createAutoReplyController(options = {}) {
         expectedConversationEvidence: candidate.conversationEvidence || candidate.conversation,
         expectedConversationAliases: conversationAliases,
         exactConversationMatch: contactScope.strict,
+        senderConfirmedByRecords: ["unresolved", "database_unread_sender"].includes(normalizeText(candidate.headerState)),
         messageDriven: candidate.messageDriven === true,
         beforeSend: () => {
           if (!isCurrentRun()) return false;
@@ -3501,9 +3558,20 @@ function createAutoReplyController(options = {}) {
         shouldContinue,
         runStep: (command, args) => runStep(command, args, lock.lock.owner)
       });
-      const explicitOutcomeUnknown = normalizeText(result?.send_result) === "outcome_unknown"
+      const screenOutcomeUnknown = normalizeText(result?.send_result) === "outcome_unknown"
         || result?.outcomeUnknown === true;
-      const sendVerified = result?.ok === true && !explicitOutcomeUnknown;
+      const screenVerified = result?.ok === true && !screenOutcomeUnknown;
+      // A reply the screen could not confirm is settled by WeChat's message records: on record
+      // for this contact since the send began means it was sent.
+      let databaseReceipt = null;
+      if (!screenVerified && (screenOutcomeUnknown || result?.send_attempted !== false) && !/^visual-inbound-/u.test(String(contact.id))) {
+        try {
+          const confirmed = receipts()?.confirmSent(contact.id, Math.floor(sendStartedAt / 1000) - 5, { kind: "text", text: reply });
+          databaseReceipt = typeof confirmed === "boolean" ? confirmed : null;
+        } catch { databaseReceipt = null; }
+      }
+      const explicitOutcomeUnknown = screenOutcomeUnknown && databaseReceipt !== true;
+      const sendVerified = screenVerified || databaseReceipt === true;
       const sendTimings = result?.send_diagnostics?.timings || {};
       const sendWorker = result?.send_diagnostics?.worker;
       const sendReceipt = normalizeReceiptDiagnostics({ receipt: result?.send_diagnostics?.receipt });
@@ -3533,6 +3601,7 @@ function createAutoReplyController(options = {}) {
         verification_mode: result?.verification_mode || "",
         send_attempted: result?.send_attempted,
         send_result: result?.send_result,
+        database_receipt: String(databaseReceipt),
         ...(!sendVerified ? { local_raw: result } : {}),
         input_read_reason: sendEnvelope.input_read_reason,
         outcome: sendEnvelope.outcome,
@@ -3607,7 +3676,12 @@ function createAutoReplyController(options = {}) {
             recovery_action: "manual_check_required",
             ...sendReceipt
           });
-          pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
+          if (workflowMode) {
+            state.status = "paused";
+            state.last_event = "workflow_paused";
+            state.last_error = "";
+            setActivity("paused", { deliveryStatus: "outcome_unknown", detailCode: "workflow_paused" });
+          } else pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         } else if (MANUAL_REVIEW_SEND_REASONS.has(normalizeText(result?.blocked_reason || result?.error))) {
           // Someone may be typing a manual reply; as on the current-run path,
           // never answer that conversation automatically.
@@ -3813,7 +3887,12 @@ function createAutoReplyController(options = {}) {
             preflight_ms: result?.send_diagnostics?.timings?.preflight_ms,
             ...sendReceipt
           });
-          pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
+          if (workflowMode) {
+            state.last_event = "send_outcome_unknown_assumed_sent";
+            state.last_error = "";
+            appendDiagnostic("reply_outcome_assumed_sent", { phase: "send", code: normalizeText(result?.blocked_reason || result?.error) || "send_outcome_unknown",
+              traceId, database_receipt: String(databaseReceipt), needs_internal_review: true });
+          } else pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         }
         save();
         return publicState();
@@ -3986,6 +4065,12 @@ function createAutoReplyController(options = {}) {
         return stepReturn({ handled: false, status: "needs_attention", error: "接待名单与当前微信账号不一致，请重新同步" }, "workflow_account_changed");
       }
       if (!enabled()) return stepReturn({ handled: false, status: "paused" }, "workflow_paused");
+      if (state.status === "paused" && state.last_event !== "paused_by_user" && !workflowStartPending) {
+        // Unattended: a failure pause is not a stop. The workflow already spaced this call out
+        // (30 s, 2 min, 5 min), so start again instead of reporting the same pause forever.
+        appendDiagnostic("workflow_auto_restart", { phase: "workflow", code: diagnosticCode(state.system_error?.code || state.last_event, "paused") });
+        workflowStartPending = true;
+      }
       if (state.last_event === "workflow_chat_navigation_failed") {
         workflowStartPending = true;
         primeRetryNeeded = true;

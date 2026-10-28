@@ -442,11 +442,13 @@ function Get-MomentsOcrObservation($frame, $region) {
   # WinRT returns short CJK labels with inter-character whitespace on the live
   # WeChat 4.1.11.55 surface. Keep that shape in the resolver regression.
   $line = @{ compact = "◉ 朋 友 圈 >"; bounds = @{ left = 40.0; top = 30.0; width = 96.0; height = 24.0 } }
+  if ([bool]$frame.chatLabel) { $line = @{ compact = "城胜 07:50"; bounds = @{ left = 40.0; top = 30.0; width = 96.0; height = 24.0 } } }
   $lines = $(if ([bool]$frame.nativeMiss) { @() } elseif ([bool]$frame.duplicate) { @($line, $line) } else { @($line) })
   return @{ ok = $true; lines = $lines }
 }
 function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
   $line = @{ compact = "◉ 朋 友 圈 >"; bounds = @{ left = 40.0; top = 30.0; width = 96.0; height = 24.0 } }
+  if ([bool]$frame.chatLabel) { $line = @{ compact = "城胜 07:50"; bounds = @{ left = 40.0; top = 30.0; width = 96.0; height = 24.0 } } }
   $lines = $(if ([bool]$frame.duplicate) { @($line, $line) } else { @($line) })
   return @{ ok = $true; lines = $lines }
 }
@@ -603,6 +605,12 @@ $selected = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "compass" $true
 $structuralSelectedEvidence = Get-IntegratedMomentsEntryEvidence (New-StructuralSelectedFrame) $pane 1.0
 $structuralSelected = Test-IntegratedMomentsSurface (New-StructuralSelectedFrame) $pane 1.0
 $structuralDuplicate = Test-IntegratedMomentsSurface (New-StructuralSelectedFrame $true) $pane 1.0
+# WeChat 4.1 paints the selected chat row with the same green band: without the 朋友圈 label it is
+# not Moments, so the chat window is never taken for an already-open Moments page.
+$structuralChatFrame = New-StructuralSelectedFrame
+$structuralChatFrame.chatLabel = $true
+$structuralChatEvidence = Get-IntegratedMomentsEntryEvidence $structuralChatFrame $pane 1.0
+$structuralChat = Test-IntegratedMomentsSurface $structuralChatFrame $pane 1.0
 $integratedViewport = Get-MomentsVisualViewportBounds $pane $selected "integrated"
 $standalonePane = @{ left = 37.0; top = 41.0; width = 603.0; height = 319.0 }
 $standaloneViewport = Get-MomentsVisualViewportBounds $standalonePane $null "standalone"
@@ -631,6 +639,9 @@ $doubleDiscoverSurface = Test-IntegratedMomentsSurface (
   structuralSelectedOk = [bool]$structuralSelected.ok
   structuralSelectedMode = [string]$structuralSelectedEvidence.entries[0].ocrMode
   structuralSelectedGroupHeight = [double]$structuralSelectedEvidence.structuralDiagnostics.groups[0].height
+  structuralChatOk = [bool]$structuralChat.ok
+  structuralChatMatches = [int]$structuralChatEvidence.exactMatchCount
+  structuralChatRejectedLabels = [int]$structuralChatEvidence.structuralDiagnostics.rejectedLabelCount
   structuralDuplicateOk = [bool]$structuralDuplicate.ok
   structuralDuplicateReason = [string]$structuralDuplicate.reason
   selectedMode = [string]$selected.mode
@@ -799,6 +810,9 @@ assert.deepEqual(JSON.parse(integratedSurfaceProofHarness.stdout.trim()), {
   structuralSelectedOk: true,
   structuralSelectedMode: "structural",
   structuralSelectedGroupHeight: 60,
+  structuralChatOk: false,
+  structuralChatMatches: 0,
+  structuralChatRejectedLabels: 1,
   structuralDuplicateOk: false,
   structuralDuplicateReason: "moments_integrated_surface_not_proven",
   scaledSelectedEntryOcrMode: "scaled",

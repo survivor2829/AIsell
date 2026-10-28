@@ -247,6 +247,10 @@ function normalizeAttempt(value = {}) {
     started_at: safeIso(value.started_at),
     finished_at: safeIso(value.finished_at),
     resolved_at: safeIso(value.resolved_at),
+    // How an unreadable result was settled: WeChat's records ("database") or assumed published.
+    ...(["database", "assumed_published"].includes(value.resolved_by) ? { resolved_by: value.resolved_by } : {}),
+    ...(value.needs_internal_review === true ? { needs_internal_review: true } : {}),
+    ...(safeReason(value.diagnostic_reason) ? { diagnostic_reason: safeReason(value.diagnostic_reason) } : {}),
     ...normalizeFailureBreadcrumb(value),
     ...normalizeVerificationDiagnostics(value)
   };
@@ -488,6 +492,11 @@ function createMomentsPublishController(options = {}) {
     ? options.writeJsonAtomic
     : defaultWriteJsonAtomic;
   const now = typeof options.now === "function" ? options.now : () => new Date();
+  // WeChat's own Moments records (injected in self-checks); null when they cannot be read.
+  const receipts = () => {
+    if (options.receipts !== undefined) return options.receipts;
+    try { return require("../../rpa/wechat_db/wechat-db.cjs").receiptsForDataRoot(path.join(baseDir, "..")); } catch { return null; }
+  };
   const emit = typeof options.emit === "function" ? options.emit : () => undefined;
   const logger = options.logger && typeof options.logger.event === "function"
     ? options.logger
@@ -858,11 +867,27 @@ function createMomentsPublishController(options = {}) {
         if (completed) return result("completed", "", { result: { verified: true, attemptId: completed.attempt_id } });
         const attempted = state.attempts.find((attempt) => attempt.workflow_task_id === String(taskRecord.id)
           && ["publishing", "outcome_unknown"].includes(attempt.status));
-        if (attempted) return result("needs_attention", "moments_publish_outcome_unknown_requires_resolution", {
-          reasonCode: "moments_publish_outcome_unknown_requires_resolution",
-          requiresGlobalAttention: true,
-          result: { actionAttempted: true, outcomeUnknown: true }
-        });
+        // The publish click happened but the post could not be read back. Customers run this
+        // unattended and must never be asked to verify: count it as published (never post twice)
+        // and keep an internal review record for us.
+        const assumePublished = (diagnosticReason) => {
+          // WeChat's Moments records settle it first: a post of ours since this attempt began
+          // that starts like this copy is a verified publish, not an internal review.
+          const attempt = [...state.attempts].reverse().find((item) => item.workflow_task_id === String(taskRecord.id));
+          const startedAt = Date.parse(attempt?.started_at || "");
+          const sinceSeconds = Math.floor((Number.isFinite(startedAt) ? startedAt : now().getTime() - 2 * 60 * 60 * 1000) / 1000) - 60;
+          const posted = receipts()?.postedMoment(saved.content, sinceSeconds);
+          record("publish.database_receipt", { workflow_task_id: String(taskRecord.id), receipt: String(typeof posted === "boolean" ? posted : null) });
+          if (posted === true) {
+            const confirmed = applyResolution(state.fingerprint, "published", { confirmedBy: "database", diagnosticReason });
+            if (confirmed.ok) return result("completed", "", { result: { verified: true, confirmedBy: "database", attemptId: confirmed.state?.attempt_id } });
+          }
+          const assumed = applyResolution(state.fingerprint, "published", { assumed: true, diagnosticReason });
+          record("publish.outcome_assumed_published", { workflow_task_id: String(taskRecord.id),
+            reason: diagnosticReason, applied: assumed.ok === true }, "warn");
+          return result("completed", "", { result: { verified: false, assumedPublished: true, diagnosticReason } });
+        };
+        if (attempted) return assumePublished("moments_publish_previous_outcome_unknown");
         const response = await runDraft(saved, { isCurrent: isEnabled, workflowTaskId: String(taskRecord.id) });
         if (response?.verified) {
           return result("completed", "", { result: { verified: true, attemptId: response.state?.attempt_id } });
@@ -871,6 +896,7 @@ function createMomentsPublishController(options = {}) {
         const pending = ["wechat_operation_busy", "workflow_paused"].includes(reason) && response?.actionAttempted !== true;
         const actionAttempted = response?.actionAttempted === true;
         const outcomeUnknown = response?.state?.outcome_unknown === true || actionAttempted;
+        if (!pending && outcomeUnknown) return assumePublished(reason);
         return result(pending ? "pending" : "needs_attention", reason, {
           reasonCode: pending ? reason : outcomeUnknown ? "moments_publish_outcome_unknown_requires_resolution" : "moments_publish_pre_action_failed",
           diagnosticReason: reason,
@@ -1279,8 +1305,13 @@ function createMomentsPublishController(options = {}) {
     if (inFlight || confirmationTask) {
       return { ok: false, reason: "moments_publish_already_running", state: snapshot() };
     }
-    const fingerprint = safeFingerprint(payload.fingerprint || state.fingerprint);
-    const resolution = String(payload.resolution || "");
+    return applyResolution(payload.fingerprint || state.fingerprint, payload.resolution);
+  }
+
+  // Shared by the manual resolution and the workflow's automatic "assume published".
+  function applyResolution(rawFingerprint, rawResolution, { assumed = false, confirmedBy = "", diagnosticReason = "" } = {}) {
+    const fingerprint = safeFingerprint(rawFingerprint);
+    const resolution = String(rawResolution || "");
     if (!state.outcome_unknown || !fingerprint || fingerprint !== state.fingerprint) {
       return { ok: false, reason: "moments_publish_unknown_not_found", state: snapshot() };
     }
@@ -1305,13 +1336,17 @@ function createMomentsPublishController(options = {}) {
       attempts: updateAttempt(state.attempt_id, {
         status: attemptStatus,
         reason: `moments_publish_${attemptStatus}`,
-        resolved_at: resolvedAt
+        resolved_at: resolvedAt,
+        ...(assumed ? { resolved_by: "assumed_published", needs_internal_review: true, diagnostic_reason: String(diagnosticReason || "") } : {}),
+        ...(confirmedBy ? { resolved_by: confirmedBy, diagnostic_reason: String(diagnosticReason || "") } : {})
       })
     });
     record("publish.resolved", {
       attempt_id: resolvedAttemptId,
       fingerprint,
-      resolution
+      resolution,
+      ...(assumed ? { resolved_by: "assumed_published", diagnostic_reason: String(diagnosticReason || "") } : {}),
+      ...(confirmedBy ? { resolved_by: confirmedBy, diagnostic_reason: String(diagnosticReason || "") } : {})
     });
     if (resolution === "published") removeMarker(resolvedMarkerName);
     removeStagingAttempt(stagingRoot, resolvedAttemptId);
@@ -1367,15 +1402,30 @@ function createMomentsPublishController(options = {}) {
     return { ok: true, state: snapshot() };
   }
 
+  // A post interrupted or unreadable in an earlier run is counted as published when the app
+  // starts: customers are never asked to verify, and the same post is never published twice.
+  function assumeUnknownPublished(reason) {
+    if (!state.outcome_unknown) return;
+    const applied = applyResolution(state.fingerprint, "published", { assumed: true, diagnosticReason: reason });
+    record("publish.outcome_assumed_published", { reason, applied: applied.ok === true }, "warn");
+  }
+
   function initialize() {
     disposed = false;
     fs.mkdirSync(markerDir, { recursive: true });
     fs.mkdirSync(stagingRoot, { recursive: true });
     if (state.status === "publishing") {
-      return recoverUnknown(null, "moments_publish_restarted_during_publish");
+      recoverUnknown(null, "moments_publish_restarted_during_publish");
+      assumeUnknownPublished("moments_publish_restarted_during_publish");
+      return { ok: true, state: snapshot() };
     }
     const orphan = orphanMarkers()[0];
-    if (orphan) return recoverUnknown(orphan, "moments_publish_orphan_marker_recovered");
+    if (orphan) {
+      recoverUnknown(orphan, "moments_publish_orphan_marker_recovered");
+      assumeUnknownPublished("moments_publish_orphan_marker_recovered");
+      return { ok: true, state: snapshot() };
+    }
+    assumeUnknownPublished("moments_publish_unknown_from_earlier_run");
     if (["awaiting_confirmation", "prepared", "media_selected"].includes(state.status)) {
       clearSecrets();
       persist({

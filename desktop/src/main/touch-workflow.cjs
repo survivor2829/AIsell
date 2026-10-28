@@ -156,6 +156,14 @@ function createTouchWorkflow(options = {}) {
   const now = options.now || (() => new Date());
   const passport = options.passport || null;
   const passportFailureSignatures = new Set();
+  // WeChat may still show the Moments page a Moments task left open; contact search only works
+  // from the chat page. The app passes restoreWechatChatSurface; self-checks inject their own.
+  const restoreChatSurface = typeof options.restoreChatSurface === "function" ? options.restoreChatSurface : null;
+  // Injected in self-checks; the app reads the account contact sync captured.
+  const receipts = () => {
+    if (options.receipts !== undefined) return options.receipts;
+    try { return require("../../rpa/wechat_db/wechat-db.cjs").receiptsForDataRoot(path.join(contactsDir, "..")); } catch { return null; }
+  };
   let activeStep = false;
   const recoveredTaskIds = new Set();
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
@@ -359,6 +367,35 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending");
       }
       if (!current || task.current_index >= task.total) return response("completed");
+      // A send whose result cannot be known any more (left by a crash, a pause mid-send, or an
+      // earlier version waiting for a manual decision): decide it the unattended way - counted as
+      // sent, never resent, reviewed internally - and continue with the run.
+      if (current.status === "outcome_unknown"
+        || ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current, multipart))) {
+        const resolvedAt = now().toISOString();
+        current.needs_internal_review = true;
+        current.awaiting_resolution = false;
+        const resolved = resolveUnknownMessagePart(current, "sent", resolvedAt);
+        if (resolved && !resolved.allSent) {
+          current.status = "generated";
+          current.retry_blocked = false;
+          current.send_attempted = false;
+        } else {
+          current.status = "outcome_unknown_skipped";
+          current.retry_blocked = true;
+          current.send_attempted = null;
+          current.reason = "发送结果未能确认，已按已发送处理，不会重发";
+          recordSkippedResult(current, task.current_index, { reasonCode: "outcome_unknown", blockedReason: current.reason, at: resolvedAt, traceId: current.last_trace_id });
+          task.current_index += 1;
+        }
+        current.updated_at = resolvedAt;
+        task.status = task.current_index >= task.total ? "completed" : "running";
+        task.pause_reason = "";
+        if (task.status === "completed") task.completed_at = resolvedAt;
+        persist();
+        if (task.status === "completed") return response("completed", { result: { deliveryStatus: "outcome_unknown", assumedSent: true } });
+        current = task.results[task.current_index];
+      }
       if (task.status === "paused") {
         if (!resumableFreshEdit(task, multipart) && !canContinueTouchResult(current, multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
@@ -368,9 +405,6 @@ function createTouchWorkflow(options = {}) {
         current = task.results[task.current_index];
       }
       if (!isBatchAuthorized(task)) return attention("本次任务授权无效，已阻断真实发送", null, "batch_authorization_missing");
-      if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current, multipart)) {
-        return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
-      }
       if (legacyCopyMode) {
         if (task.results.slice(task.current_index).some(row => row.message && !COMPLETED_ROW_STATES.has(row.status))) {
           return attention('旧任务含历史生成文案，请暂停并编辑任务，确认文案模式后保存再继续；已发送和结果不明的内容不会重发。', { copyModeConfirmationRequired: true }, TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete);
@@ -446,26 +480,95 @@ function createTouchWorkflow(options = {}) {
       const verifiedPartsBefore = new Set(current.message_parts?.flatMap((part, partIndex) => part.status === "sent_verified" ? [partIndex] : []) || []);
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? index) || 0)}`;
+      const sendStartedAt = now().getTime();
+      // WeChat's own message database settles what the screen could not: true when it recorded
+      // this text or image to the contact, false when it did not, null when it cannot be read.
+      const databaseReceipt = (partIndex) => {
+        const part = partIndex === null ? { kind: "text", message: current.message } : messageParts(current.message, imageIds, link)[partIndex];
+        if (!part) return null;
+        const confirmed = receipts()?.confirmSent(current.id, Math.floor(sendStartedAt / 1000) - 5,
+          { kind: part.kind === "image" ? "image" : "text", text: part.message });
+        return typeof confirmed === "boolean" ? confirmed : null;
+      };
+      // The send was attempted but its result could not be read back. The task runs unattended:
+      // treat this contact as done (never send twice), keep an internal review record, go on.
+      const unknownSkip = (diagnosticReason) => {
+        // A multipart message counts the unconfirmed segment as sent and goes on with the rest,
+        // so the contact still receives the later segments (but never that segment twice).
+        const segment = unknownMessagePart(current);
+        const receipt = segment ? databaseReceipt(segment.index) : multipart ? null : databaseReceipt(null);
+        diagnostics().event("active_touch", "database_receipt", { task_id: id, current_index: index, receipt: String(receipt) },
+          { trace: true, traceId: sendOperation.traceId, code: receipt === true ? "db_confirmed" : receipt === false ? "db_not_found" : "db_unavailable" });
+        if (segment) {
+          const resolvedAt = now().toISOString();
+          const resolved = resolveUnknownMessagePart(current, "sent", resolvedAt);
+          if (receipt === true) segment.part.db_confirmed = true;
+          else {
+            segment.part.assumed_sent = true;
+            current.needs_internal_review = true;
+            passport?.recordFailure("active_touch", passportTaskId, {
+              stage: "post_send", reasonCode: "outcome_unknown", traceId: sendOperation.traceId,
+              rawReading: { diagnosticReason: String(diagnosticReason || ""), partKind: resolved?.kind || "", deliveryStatus: "outcome_unknown", databaseReceipt: String(receipt) },
+              expected: { status: "sent_verified" }
+            });
+          }
+          if (!resolved?.allSent) {
+            current.status = "generated";
+            current.retry_blocked = false;
+            current.send_attempted = false;
+            current.updated_at = resolvedAt;
+            persist();
+            return response("pending", { result: { deliveryStatus: "outcome_unknown", assumedSent: true, partKind: resolved?.kind || "" } });
+          }
+        }
+        if (receipt === true && !current.needs_internal_review) {
+          // WeChat recorded everything this contact was meant to get: an ordinary verified send.
+          delete task.identity_skip_streak;
+          delete task.pre_send_skip_streak;
+          current.status = "sent_verified";
+          current.retry_blocked = true;
+          current.send_attempted = true;
+          current.db_confirmed = true;
+          current.reason = "发送成功并已核验";
+          current.updated_at = now().toISOString();
+          task.current_index = index + 1;
+          if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+          else task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
+          persist();
+          return response(task.status === "completed" ? "completed" : "pending", task.status === "completed"
+            ? { result: { deliveryStatus: "sent_verified", contactId: current.id, confirmedBy: "database" } }
+            : { ...safetyInterval(task.next_send_not_before), result: { deliveryStatus: "sent_verified", contactId: current.id, confirmedBy: "database", nextEligibleAt: task.next_send_not_before } });
+        }
+        current.status = "outcome_unknown_skipped";
+        current.retry_blocked = true;
+        current.send_attempted = null;
+        current.reason = "发送结果未能确认，已按已发送处理，不会重发";
+        current.needs_internal_review = true;
+        current.updated_at = now().toISOString();
+        delete task.identity_skip_streak;
+        delete task.pre_send_skip_streak;
+        recordSkippedResult(current, index, { reasonCode: "outcome_unknown", blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
+        passport?.recordFailure("active_touch", passportTaskId, {
+          stage: "post_send", reasonCode: "outcome_unknown", traceId: sendOperation.traceId,
+          rawReading: { diagnosticReason: String(diagnosticReason || ""), deliveryStatus: "outcome_unknown", databaseReceipt: String(receipt) }, expected: { status: "sent_verified" }
+        });
+        task.current_index = index + 1;
+        if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+        else task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
+        persist();
+        return response(task.status === "completed" ? "completed" : "pending", {
+          result: { deliveryStatus: "outcome_unknown", skipped: true, reasonCode: "outcome_unknown", assumedSent: true }
+        });
+      };
       const preSendSkip = (reasonCode, reason, classification = "") => {
         const key = `pre_send:${reasonCode}`;
         const streak = task.pre_send_skip_streak;
         const count = (streak?.key === key ? streak.count : 0) + 1;
         current.reason = reason;
         current.updated_at = now().toISOString();
-        if (count >= 3) {
-          current.reason = "连续 3 位联系人因同一原因在发送前失败，失败的内容都没有发出，已暂停；已发出的内容不会重发。请检查微信后重新加入继续。";
-          current.status = "generated";
-          current.retry_blocked = false;
-          const deliveryStatus = skippedDelivery(current);
-          current.send_attempted = false;
-          current.pre_send_recovery_attempts = 0;
-          delete current.environment_recovery_started_at;
-          delete task.identity_skip_streak;
-          delete task.pre_send_skip_streak;
-          persist();
-          return attention(current.reason,
-            { deliveryStatus, diagnosticReason: reasonCode }, "touch_pre_send_failure_streak");
-        }
+        // Unattended runs keep going: nothing was sent, so skipping the next contact is safe.
+        // A streak of the same cause is only recorded for our own diagnostics.
+        if (count >= 3) passport?.recordEvent("active_touch", passportTaskId, { stage: "pre_send_failure_streak", direction: "out", status: "observed", reasonCode, traceId: sendOperation.traceId });
         delete task.identity_skip_streak;
         task.pre_send_skip_streak = { key, count };
         current.status = "pre_send_skipped";
@@ -502,6 +605,12 @@ function createTouchWorkflow(options = {}) {
         const executePart = async (part, partIndex, onPartTransition) => {
           const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
           reportProgress({ ...partProgress, stage: "prepare_contact" });
+          if (restoreChatSurface && !sessionAnchor) {
+            // Best effort: when this fails the search step below still decides (and skips safely).
+            const restored = await Promise.resolve().then(restoreChatSurface).catch((error) => ({ ok: false, reason: String(error?.code || error?.message || "restore_failed") }));
+            diagnostics().event("active_touch", "chat_surface_restore", { task_id: id, current_index: index, changed: restored?.changed === true },
+              { trace: true, traceId: sendOperation.traceId, level: restored?.ok === true ? "info" : "warn", code: restored?.ok === true ? (restored.changed ? "returned_to_chat" : "already_chat") : String(restored?.reason || "restore_failed") });
+          }
           const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");
           const executionDir = multipart ? path.join(taskDir, "message-parts", recipientKey, String(partIndex)) : taskDir;
           // Every part has its own CLI transaction. A text receipt must never
@@ -614,7 +723,8 @@ function createTouchWorkflow(options = {}) {
         task.results[index].status = "outcome_unknown";
         task.results[index].retry_blocked = true;
         task.results[index].send_attempted = null;
-        return attention("执行器异常，发送结果无法确认；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
+        current = task.results[index];
+        return unknownSkip(String(error?.code || error?.message || "executor_exception").slice(0, 120));
       }
       current = task.results[index];
       current.last_trace_id = sendOperation.traceId;
@@ -705,21 +815,9 @@ function createTouchWorkflow(options = {}) {
           const streak = task.identity_skip_streak;
           const countIdentityFailure = reasonCode === "search_result_identity_unverified" && Boolean(ruleId);
           const nextStreak = countIdentityFailure ? ((streak?.key || (streak?.rule_id ? `identity:${streak.rule_id}` : "")) === `identity:${ruleId}` ? streak.count : 0) + 1 : 0;
-          if (countIdentityFailure && nextStreak >= 3) {
-            current.status = "generated";
-            current.reason = "连续多位联系人的搜索结果无法确认身份，请检查微信搜索窗口";
-            current.retry_blocked = false;
-            const deliveryStatus = skippedDelivery(current);
-            current.updated_at = now().toISOString();
-            current.identity_recovery_attempts = 0;
-            current.pre_send_recovery_attempts = 0;
-            delete current.environment_recovery_started_at;
-            if (current.search_evidence) delete current.search_evidence.fingerprint;
-            delete task.identity_skip_streak;
-            delete task.pre_send_skip_streak;
-            persist();
-            return attention(current.reason, { deliveryStatus, diagnosticReason: ruleId, diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
-          }
+          // Several contacts in a row with unconfirmable search results: nothing was sent, so the
+          // run keeps skipping safely; the streak is only kept for our diagnostics.
+          if (countIdentityFailure && nextStreak >= 3) passport?.recordEvent("active_touch", passportTaskId, { stage: "search_identity_streak", direction: "out", status: "observed", reasonCode: "wechat_search_identity_circuit_open", ruleId, traceId: sendOperation.traceId });
           delete task.pre_send_skip_streak;
           if (countIdentityFailure) task.identity_skip_streak = { key: `identity:${ruleId}`, rule_id: ruleId, count: nextStreak };
           poisonSearchCandidate(current, result);
@@ -816,7 +914,7 @@ function createTouchWorkflow(options = {}) {
       current.status = "outcome_unknown";
       current.retry_blocked = true;
       current.send_attempted = null;
-      return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
+      return unknownSkip(String(result?.blocked_reason || result?.reason || "send_not_verified"));
     } catch (error) {
       recoveredTaskIds.delete(id);
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
@@ -1089,6 +1187,13 @@ function createTouchWorkflow(options = {}) {
     importImages: (paths) => options.mediaStore.importFiles(paths) };
 }
 
+async function restoreWechatChatSurface() {
+  const { prepareWechatRpaWindowAsync } = require("../../rpa/active_touch/wechat_window_driver.cjs");
+  const { returnWechatFromMomentsToChat } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
+  const prepared = await prepareWechatRpaWindowAsync({ requireFocused: true, minIdleMs: 0 });
+  return prepared?.ok === true ? returnWechatFromMomentsToChat(prepared) : prepared;
+}
+
 function workflowSignature({ script, contacts, imageIds = [], link = "", aiPolish = false }) {
   const multipart = imageIds.length > 0 || Boolean(link);
   return crypto.createHash("sha256").update(JSON.stringify({
@@ -1099,4 +1204,4 @@ function workflowSignature({ script, contacts, imageIds = [], link = "", aiPolis
   })).digest("hex");
 }
 
-module.exports = { createTouchWorkflow };
+module.exports = { createTouchWorkflow, restoreWechatChatSurface };
