@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
-const { decompress } = require("fzstd");
+const { decompress } = require("./vendor/fzstd.cjs");
 const { openDatabase } = require("./sqlite-reader.cjs");
 
 const PAGE_SIZE = 4096;
