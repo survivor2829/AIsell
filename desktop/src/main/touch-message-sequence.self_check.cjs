@@ -206,6 +206,20 @@ async function checkTouchMessageSequence() {
     assert.equal(row.needs_internal_review === true, !onRecord);
   }
   {
+    // A Moments task may leave WeChat on the Moments page: each contact first returns to the chat
+    // page, before its search. A failed return never blocks the send; the search step decides.
+    const order = [];
+    for (const restore of [async () => { order.push("restore"); return { ok: true, changed: true }; },
+      async () => { order.push("restore"); throw new Error("window gone"); }]) {
+      const chatConfig = { ...config, restoreChatSurface: restore,
+        execute: async (options) => { order.push("send"); options.onTransition("sent_verified"); return { ok: true, state: { real_send_status: "sent_verified" } }; } };
+      const chatWorkflow = createTouchWorkflow(chatConfig);
+      const chatRecord = { ...record, id: crypto.randomUUID(), payload: chatWorkflow.prepareWorkflowTask({ script: "回到聊天页测试", contactIds: [contact.id] }) };
+      assert.equal((await chatWorkflow.runWorkflowStep(chatRecord, context)).status, "completed");
+    }
+    assert.deepEqual(order, ["restore", "send", "restore", "send"]);
+  }
+  {
     // A plain text whose send crashed mid-way but which WeChat recorded is an ordinary verified send.
     const crashConfig = { ...config, receipts: { confirmSent: (username, sinceSeconds, part) => part.kind === "text" && /文字回执/u.test(part.text) },
       execute: async (options) => { options.onTransition("clicked"); throw new Error("driver crashed after click"); } };

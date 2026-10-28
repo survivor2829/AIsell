@@ -156,6 +156,9 @@ function createTouchWorkflow(options = {}) {
   const now = options.now || (() => new Date());
   const passport = options.passport || null;
   const passportFailureSignatures = new Set();
+  // WeChat may still show the Moments page a Moments task left open; contact search only works
+  // from the chat page. The app passes restoreWechatChatSurface; self-checks inject their own.
+  const restoreChatSurface = typeof options.restoreChatSurface === "function" ? options.restoreChatSurface : null;
   // Injected in self-checks; the app reads the account contact sync captured.
   const receipts = () => {
     if (options.receipts !== undefined) return options.receipts;
@@ -602,6 +605,12 @@ function createTouchWorkflow(options = {}) {
         const executePart = async (part, partIndex, onPartTransition) => {
           const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
           reportProgress({ ...partProgress, stage: "prepare_contact" });
+          if (restoreChatSurface && !sessionAnchor) {
+            // Best effort: when this fails the search step below still decides (and skips safely).
+            const restored = await Promise.resolve().then(restoreChatSurface).catch((error) => ({ ok: false, reason: String(error?.code || error?.message || "restore_failed") }));
+            diagnostics().event("active_touch", "chat_surface_restore", { task_id: id, current_index: index, changed: restored?.changed === true },
+              { trace: true, traceId: sendOperation.traceId, level: restored?.ok === true ? "info" : "warn", code: restored?.ok === true ? (restored.changed ? "returned_to_chat" : "already_chat") : String(restored?.reason || "restore_failed") });
+          }
           const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");
           const executionDir = multipart ? path.join(taskDir, "message-parts", recipientKey, String(partIndex)) : taskDir;
           // Every part has its own CLI transaction. A text receipt must never
@@ -1178,6 +1187,13 @@ function createTouchWorkflow(options = {}) {
     importImages: (paths) => options.mediaStore.importFiles(paths) };
 }
 
+async function restoreWechatChatSurface() {
+  const { prepareWechatRpaWindowAsync } = require("../../rpa/active_touch/wechat_window_driver.cjs");
+  const { returnWechatFromMomentsToChat } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
+  const prepared = await prepareWechatRpaWindowAsync({ requireFocused: true, minIdleMs: 0 });
+  return prepared?.ok === true ? returnWechatFromMomentsToChat(prepared) : prepared;
+}
+
 function workflowSignature({ script, contacts, imageIds = [], link = "", aiPolish = false }) {
   const multipart = imageIds.length > 0 || Boolean(link);
   return crypto.createHash("sha256").update(JSON.stringify({
@@ -1188,4 +1204,4 @@ function workflowSignature({ script, contacts, imageIds = [], link = "", aiPolis
   })).digest("hex");
 }
 
-module.exports = { createTouchWorkflow };
+module.exports = { createTouchWorkflow, restoreWechatChatSurface };
