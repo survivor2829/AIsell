@@ -1053,6 +1053,15 @@ function Read-AutoReplyVisualHeader($frame, $lines, [string]$conversation, [doub
 # Never send when the title clearly names someone else. A title OCR could not read (short names
 # such as 城胜 often come back empty) is uncertainty, not a mismatch: the result carries
 # headerState "unresolved" and the main process confirms the sender from WeChat's message records.
+# Same bar as elsewhere: only two long enough, substantially different names count as different.
+function Test-AutoReplyVisualTitleClearlyDifferent([string]$observed, [string]$expected) {
+  $observed = Normalize-AutoReplyVisualText $observed
+  $expected = Normalize-AutoReplyVisualText $expected
+  $maximumLength = [Math]::Max($expected.Length, $observed.Length)
+  if ([Math]::Min($expected.Length, $observed.Length) -lt 4 -or $maximumLength -eq 0) { return $false }
+  return ([double](Get-AutoReplyVisualEditDistance $expected $observed) / [double]$maximumLength) -ge 0.55
+}
+
 function Test-AutoReplyVisualHeaderBlocks($header) {
   return [string]$header.state -ceq "different"
 }
@@ -2152,6 +2161,13 @@ try {
       }
     }
     $unreadSender = [string][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER")
+    # A title read as a name that is not on the list but is not clearly someone else either (OCR
+    # misread one glyph of a short name such as 城胜) is uncertainty: WeChat's records decide.
+    if ($header.ok -and $unreadSender -and
+        -not (Resolve-AutoReplyVisualAllowedConversation ([string]$header.conversation) $allowedSet).ok -and
+        -not (Test-AutoReplyVisualTitleClearlyDifferent ([string]$header.conversation) $unreadSender)) {
+      $header = @{ ok = $false; state = "unresolved"; reason = "conversation_title_unresolved"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+    }
     if (-not $header.ok -and [string]$header.state -cne "different" -and $unreadSender) {
       # Neither the title nor the list row could be read, but WeChat's session records name the
       # one recipient with unread messages: this chat belongs to them.

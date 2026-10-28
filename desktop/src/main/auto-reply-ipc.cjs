@@ -1446,6 +1446,17 @@ function handoffMetadata({ contactId, context, conversation, at }) {
 }
 
 function createAutoReplyController(options = {}) {
+  // The message being answered is still the conversation's newest one: WeChat's records show the
+  // contact's message last, and nothing newer arrived after this occurrence was picked up. Lets the
+  // send go ahead when the screen cannot read the latest bubble back.
+  function incomingStillLatestInRecords(contact, seenAt) {
+    if (/^visual-inbound-/u.test(String(contact?.id))) return false;
+    try {
+      const rows = receipts()?.messagesWith(contact.id, Math.floor(seenAt / 1000) - UNRESOLVED_TITLE_RECENT_SECONDS);
+      const latest = Array.isArray(rows) ? rows.at(-1) : null;
+      return Boolean(latest && latest.sender === contact.id && latest.createTime * 1000 <= seenAt + 2000);
+    } catch { return false; }
+  }
   // WeChat's own message records (injected in self-checks); null when they cannot be read.
   const receipts = () => {
     if (options.receipts !== undefined) return options.receipts;
@@ -2052,6 +2063,8 @@ function createAutoReplyController(options = {}) {
         dpi: result?.dpi ?? result?.DPI ?? result?.windowDpi,
         counts: result?.counts,
         headerRead: result?.headerRead,
+        headerSite: result?.headerSite,
+        unreadSenderHinted: result?.unreadSenderHinted,
         diagnostics: result?.diagnostics,
         required_idle_ms: result?.requiredIdleMs ?? result?.required_idle_ms,
         observed_idle_ms: result?.observedIdleMs ?? result?.observed_idle_ms
@@ -3239,6 +3252,7 @@ function createAutoReplyController(options = {}) {
       }
 
       const traceId = candidateTraceId(candidate, fingerprint);
+      const candidateSeenAt = now().getTime();
       if (workflowMode) workflowHandled = true;
       appendDiagnostic("reply_candidate_detected", {
         phase: "candidate",
@@ -3528,6 +3542,7 @@ function createAutoReplyController(options = {}) {
         expectedConversationAliases: conversationAliases,
         exactConversationMatch: contactScope.strict,
         senderConfirmedByRecords: ["unresolved", "database_unread_sender"].includes(normalizeText(candidate.headerState)),
+        incomingConfirmedByRecords: incomingStillLatestInRecords(contact, candidateSeenAt),
         messageDriven: candidate.messageDriven === true,
         beforeSend: () => {
           if (!isCurrentRun()) return false;

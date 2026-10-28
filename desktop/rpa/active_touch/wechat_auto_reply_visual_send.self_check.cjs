@@ -902,6 +902,10 @@ const sender = createVisualAutoReplySender({
   // confirmed the sender; a clearly different title never binds.
   assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$senderConfirmedByRecords -and \[string\]\$header\.state -cne "different"\) \{\s*return @\{ ok = \$true; proof = "wechat_records"/u);
   assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$senderConfirmedByRecords = \[Environment\]::GetEnvironmentVariable\("XIAOXI_VISUAL_SEND_SENDER_CONFIRMED"\) -eq "1"/u);
+  // An unreadable latest customer bubble is accepted only when WeChat's records confirm it is still
+  // the newest message; a bubble read as ours or as different text still stops the reply.
+  assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$liveIncomingVerified = \[string\]\$liveIncoming\.state -ceq "matched" -or\s*\(\$incomingConfirmedByRecords -and \[string\]\$liveIncoming\.state -ceq "ocr_unresolved"\)/u);
+  assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$incomingConfirmedByRecords = \[Environment\]::GetEnvironmentVariable\("XIAOXI_VISUAL_SEND_INCOMING_CONFIRMED"\) -eq "1"/u);
   console.log("wechat auto-reply visual send self-check passed");
 })().catch((error) => {
   console.error(error);

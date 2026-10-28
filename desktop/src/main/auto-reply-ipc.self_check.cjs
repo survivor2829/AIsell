@@ -5190,7 +5190,29 @@ async function main() {
       runStep: async () => ({ ok: true }) });
     await titleController.runWorkflowStep(unknownInput);
     assert.equal(titleSends, expectedSends, `unreadable title, newest message ${label}`);
-    assert.deepEqual(asked, [{ username: workflowUniverse[0].id, since: true }]);
+    assert.equal(asked[0].username, workflowUniverse[0].id);
+  }
+
+  // The send is told when WeChat's records show the message being answered is still the newest
+  // one (so an unreadable latest bubble does not block it); a newer or own message does not count.
+  const pickedUpAt = Math.floor(workflowNow / 1000);
+  for (const [label, rows, expected] of [
+    ["customer message is newest", [{ sender: "wxid_self", createTime: pickedUpAt - 60 }, { sender: workflowUniverse[0].id, createTime: pickedUpAt - 5 }], true],
+    ["newer customer message", [{ sender: workflowUniverse[0].id, createTime: pickedUpAt + 30 }], false],
+    ["already answered", [{ sender: workflowUniverse[0].id, createTime: pickedUpAt - 60 }, { sender: "wxid_self", createTime: pickedUpAt - 5 }], false],
+    ["no records", null, false]
+  ]) {
+    let incomingFlag;
+    const incomingController = createAutoReplyController({ dataDir: path.join(root, `workflow_incoming_${label.replace(/\s/gu, "_")}`), activeTouchDir: workflowContacts,
+      coordinator, expertStore: readyExpert(), now: () => new Date(workflowNow),
+      receipts: { messagesWith: () => rows },
+      deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("您好。") },
+      primeIncoming: () => ({ ok: true, source: "session_prime", primed: true, latestRole: "assistant" }),
+      scanIncoming: () => workflowCandidate, verifyIncoming: () => ({ ok: true }),
+      send: async (input) => { await input.beforeDraft(); incomingFlag = input.incomingConfirmedByRecords; return { ok: true }; },
+      runStep: async () => ({ ok: true }) });
+    await incomingController.runWorkflowStep(unknownInput);
+    assert.equal(incomingFlag, expected, `incoming confirmed by records: ${label}`);
   }
 
   let retryClock = workflowNow;
