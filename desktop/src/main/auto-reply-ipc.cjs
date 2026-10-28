@@ -602,6 +602,9 @@ function sanitizeStructuredScanDiagnostics(value) {
     if (typeof header.recoveryAttempted === "boolean") result.header_recovery_attempted = header.recoveryAttempted;
     if (typeof header.recoveryOk === "boolean") result.header_recovery_ok = header.recoveryOk;
   }
+  // Which header check stopped a scan, and whether WeChat's records named a sender for it.
+  if (typeof source.headerSite === "string" && /^[a-z_0-9]{1,32}$/u.test(source.headerSite)) result.header_site = source.headerSite;
+  if (typeof source.unreadSenderHinted === "boolean") result.unread_sender_hinted = source.unreadSenderHinted;
   const sanitizeWindow = (rawWindow) => {
     if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)) return null;
     const window = {};

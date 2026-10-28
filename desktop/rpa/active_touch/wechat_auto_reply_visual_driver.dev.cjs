@@ -1860,7 +1860,7 @@ try {
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
       if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; headerSite = "header_1"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     if ($currentMessage -eq $null -or -not $currentMessage.hasMessage) {
@@ -1902,7 +1902,7 @@ try {
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
       if (-not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; headerSite = "header_2"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     # The sidebar and chat bubble use different font sizes. The same Chinese text
@@ -2167,7 +2167,7 @@ try {
     if ($script:AutoReplyVisualExactConversationMatch) {
       $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
       if (-not $strictHeader.ok) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$strictHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = $(if ($header.ok) { "different" } else { [string]$header.state }); headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$strictHeader.reason; headerSite = "strict_badge"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = $(if ($header.ok) { "different" } else { [string]$header.state }); headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
       $conversation = [string]$strictHeader.conversation
       $candidate.conversationEvidence = [string]$strictHeader.conversationEvidence
@@ -2209,7 +2209,7 @@ try {
     }
   }
   if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and (Test-AutoReplyVisualHeaderBlocks $header)) {
-    Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+    Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; headerSite = "header_3"; unreadSenderHinted = [bool][Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_UNREAD_SENDER"); pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
   }
   if ([bool]$candidate.badgeOnly) {
     $badgeLatest = Get-AutoReplyVisualLatestMessageEvidence $openedFrame $openedObservation.lines $sidebarRight
