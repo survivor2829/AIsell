@@ -120,10 +120,11 @@ function nextRole(): AgentRoleKey {
   } catch { /* Convenience only. */ }
   return "production";
 }
-// Low-end PCs and "reduce motion" get the still figure: no video decoding at startup.
+// Only Windows' "turn off animations" setting gets the still figure. The greeting is a few seconds,
+// played once, so CPU or memory size is no reason to skip it (a 4-thread display PC played none);
+// a clip that cannot play falls back to the still figure instead.
 function prefersStill() {
-  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || (navigator.hardwareConcurrency || 8) <= 4 || (memory !== undefined && memory <= 4);
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 }
 
 function useTyping(lines: string[]) {
@@ -150,6 +151,7 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const [error, setError] = useState("");
   const [role, setRole] = useState<AgentRoleKey>(nextRole);
   const [still] = useState(prefersStill);
+  const [clipFailed, setClipFailed] = useState(false);
   const saved = Boolean(license?.authorized) && !replaceSaved;
   const identity = AGENT_ROLE_IDENTITIES[role];
   const line = useTyping(LINES[role]);
@@ -219,8 +221,9 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
         </nav>
       </div>
       <figure className="signin-figure" key={role}>
-        {VIDEO_ROLES.has(role) && !still
-          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true" />
+        {VIDEO_ROLES.has(role) && !still && !clipFailed
+          ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true"
+              onError={() => setClipFailed(true)} />
           : <img src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>
