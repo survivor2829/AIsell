@@ -8,8 +8,11 @@ import {
   Folder,
   ListTodo,
   MessageCircle,
+  Globe2,
+  MapPin,
   Palette,
   RadioTower,
+  Search,
   Send,
   Sparkles,
   ThumbsUp,
@@ -26,12 +29,14 @@ import {
   type ComponentType
 } from "react";
 import type { WorkflowController, WorkflowTask } from "./WechatWorkflow";
-import { AGENT_ROLE_IDENTITIES, appearanceFor, appearanceStyle, type WorkspaceRoleKey as AgentRoleKey, type RolePreference } from "./role-appearance";
+import { AGENT_ROLE_IDENTITIES, appearanceFor, appearanceStyle, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import "./AgentHome.css";
 
 export { AGENT_ROLE_IDENTITIES } from "./role-appearance";
 export type { AgentRoleKey } from "./role-appearance";
+// Roles whose module home is this page: the three workspaces plus 精准获客.
+type AgentRoleKey = WorkspaceRoleKey | "business";
 
 export type AgentHomeTarget =
   | "workflow"
@@ -49,6 +54,9 @@ export type AgentHomeTarget =
   | "product-video"
   | "local-acquisition"
   | "keyword-acquisition"
+  | "business-map"
+  | "business-keyword"
+  | "business-geo"
   | "publish"
   | "ai-check"
   | "leads"
@@ -67,6 +75,8 @@ type RoleDefinition = {
   name: string;
   responsibility: string;
   portraitKey: string;
+  // A single still portrait (no idle/motion frames), e.g. business-assistant.png.
+  portraitFile?: string;
   intro: string;
   primaryLabel: string;
   primaryTarget: AgentHomeTarget;
@@ -113,6 +123,19 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryTarget: "product-detail",
     capabilities: [
       { key: "product-detail", label: "产品详情图", description: "制作可以发给客户的产品图片", icon: Sparkles }
+    ]
+  },
+  business: {
+    key: "business",
+    ...AGENT_ROLE_IDENTITIES.business,
+    portraitKey: "business-assistant",
+    intro: "从同行视频的评论和附近企业里，找出想买的人，整理成线索。",
+    primaryLabel: "开始找客户",
+    primaryTarget: "business-keyword",
+    capabilities: [
+      { key: "business-keyword", label: "关键词获客", description: "从同行视频的评论里，找出问价、想买的人", icon: Search },
+      { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin },
+      { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: false }
     ]
   }
 };
@@ -343,6 +366,11 @@ function AgentAtmosphere() {
   return <div className="agent-atmosphere" aria-hidden="true"><div className="agent-atmosphere-pattern" /></div>;
 }
 
+function portraitFrameFile(definition: RoleDefinition, frame: string) {
+  if (definition.portraitFile) return frame === "idle" ? definition.portraitFile : null;
+  return `${definition.portraitKey}-${frame}.png`;
+}
+
 function AgentPortrait({ definition }: { definition: RoleDefinition }) {
   const [availableFrames, setAvailableFrames] = useState<FrameAvailability>({});
   const framesResolved = PORTRAIT_FRAMES.every((candidate) => Object.prototype.hasOwnProperty.call(availableFrames, candidate));
@@ -362,7 +390,12 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
       probe.onerror = () => {
         if (!disposed) setAvailableFrames((current) => ({ ...current, [candidate]: false }));
       };
-      probe.src = assetUrl(`${definition.portraitKey}-${candidate}.png`);
+      const file = portraitFrameFile(definition, candidate);
+      if (!file) {
+        setAvailableFrames((current) => ({ ...current, [candidate]: false }));
+        return probe;
+      }
+      probe.src = assetUrl(file);
       return probe;
     });
     return () => {
@@ -372,7 +405,7 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
         probe.onerror = null;
       });
     };
-  }, [definition.portraitKey]);
+  }, [definition.portraitKey, definition.portraitFile]);
 
   const displayedFrame = availableFrames.idle
     ? availableFrames[frame] ? frame : "idle"
@@ -386,7 +419,7 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
             <img
               key={displayedFrame}
               className="agent-portrait-image"
-              src={assetUrl(`${definition.portraitKey}-${displayedFrame}.png`)}
+              src={assetUrl(portraitFrameFile(definition, displayedFrame) || "")}
               alt={`${definition.name}数字员工形象`}
               draggable={false}
             />
@@ -527,6 +560,21 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   return { metrics, importantTask };
 }
 
+function buildBusinessView() {
+  const metrics: Metric[] = [
+    { label: "关键词获客", value: "可进入", detail: "按关键词读同行视频评论", icon: Search },
+    { label: "地图获客", value: "可进入", detail: "查附近企业资料", icon: MapPin }
+  ];
+  const importantTask: ImportantTask = {
+    title: "从评论里找到想买的人",
+    detail: "输入产品关键词，读同行视频的评论，把问价、要联系方式的人整理成线索。",
+    status: "待开始",
+    target: "business-keyword",
+    action: "开始关键词获客"
+  };
+  return { metrics, importantTask };
+}
+
 function buildOperationsView() {
   const metrics: Metric[] = [
     { label: "产品详情图", value: "可进入", detail: "打开现有详情图制作", icon: Sparkles }
@@ -559,17 +607,18 @@ export function AgentHome({
   onOpenProduction: (item: ContentProduction) => void;
 }) {
   const appearance = appearanceFor(role, preference.appearanceId);
-  const definition = { ...ROLE_DEFINITIONS[role], name: preference.name, portraitKey: appearance.portraitKey };
+  const definition = { ...ROLE_DEFINITIONS[role], name: preference.name, portraitKey: appearance.portraitKey, portraitFile: (appearance as { portraitFile?: string }).portraitFile };
   const { snapshot, refresh } = useProductionSnapshot(role === "production");
   const workflowState = workflow.state;
   const workflowLoading = workflow.loading;
   const view = useMemo(() => {
     if (role === "agent") return buildWechatView(workflowState, workflowLoading, contactCount, workflow.error);
     if (role === "production") return buildProductionView(snapshot);
+    if (role === "business") return buildBusinessView();
     return buildOperationsView();
   }, [contactCount, role, snapshot, workflowLoading, workflowState, workflow.error, preference.name]);
   const status = roleStatus(role, workflowState, workflowLoading, snapshot, workflow.error);
-  const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : RadioTower;
+  const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : role === "business" ? Search : RadioTower;
 
   return (
     <div className={`agent-home is-${role}`} style={appearanceStyle(appearance)} data-appearance={appearance.id}>

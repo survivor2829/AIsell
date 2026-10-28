@@ -594,7 +594,8 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
         </section>
       )}
 
-      <details className="workflow-details workflow-diagnostics"><summary>运行详情与诊断</summary>
+      {/* Scan health and recovery codes are for support, not customers: the workflow page shows the summary row above, and the details stay in the diagnostics log. */}
+      {!workflow && <details className="workflow-details workflow-diagnostics"><summary>运行详情与诊断</summary>
       <div className="status-strip auto-reply-status">
         <div className="status-card"><span>运行状态</span><strong className={starting ? "warn" : ""}>{statusLabel}</strong></div>
         <div className="status-card"><span>扫描健康</span><strong className={healthClass}>{healthLabel}</strong></div>
@@ -635,7 +636,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
           已保留一条尚未确认的新消息证据并后台复核（{pendingRetries} 次）；证据明确前不会发送，也不会停止其他轮询。
         </div>
       )}
-      </details>
+      </details>}
       {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}
     </section>
   );

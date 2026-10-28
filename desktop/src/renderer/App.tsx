@@ -831,7 +831,7 @@ export default function App() {
   const activeGroup = navGroups.find(
     (group) => group.key === active || group.children.some((item) => item.key === active) || group.key === "agent" && agentSecondary.some((item) => item.key === active)
   );
-  const activeRole = activeGroup?.key === active && activeGroup.key !== "business" ? activeGroup.key : undefined;
+  const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
   const themedRole = isSupportRole(active) ? active : activeGroup?.key;
   const roleThemeClass = themedRole ? ` role-theme-${themedRole}` : "";
   const parentGroup = activeGroup && activeGroup.key !== active && activeGroup.key !== "operations" ? activeGroup : null;
@@ -937,7 +937,7 @@ export default function App() {
           {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />{returnLabel}</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
-          {activeGroup?.key === "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} />}
+          {activeGroup?.key === "business" && active !== "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
