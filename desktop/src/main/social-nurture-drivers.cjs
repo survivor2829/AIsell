@@ -24,6 +24,30 @@ const DRIVERS = {
     // Signed in, the header links to the account's own page.
     signedIn: async (page) => Boolean(await page.evaluate(`Boolean(document.querySelector('a[href*="/user/self"]'))`)),
     blocked: async (page) => Boolean(await page.evaluate(BLOCKED).catch(() => false)),
+    // The site's own prompts over the page, such as 「是否保存登录信息？」 (seen on a customer computer
+    // 2026-10-29), are declined so nothing about the account changes.
+    async dismissPrompts(page) {
+      for (let i = 0; i < 3; i++) {
+        const prompt = await page.find((node) => /是否保存登录信息/.test(node.children?.filter?.((child) => child.nodeType === 3).map((child) => child.nodeValue).join("") || ""));
+        if (!prompt) return;
+        const cancel = await page.find(page.byText("取消"));
+        if (!cancel) return;
+        await page.click(cancel); await sleep(1000);
+      }
+    },
+    // The home address now lands on 精选, a grid of covers (2026-10-29). The one-by-one player is
+    // 推荐 in the left bar; failing that, the first cover opens the player as well.
+    async openFeed(page) {
+      const playing = () => page.evaluate(`Boolean(document.querySelector('${ACTIVE}'))`);
+      if (await playing()) return true;
+      const recommend = await page.find((node) => node.localName !== "script" && (node.children || []).some((child) => child.nodeType === 3 && child.nodeValue.trim() === "推荐")
+        && !(node.localName === "span" && attr(node, "data-key")));
+      if (recommend) { await page.click(recommend); await sleep(4000); if (await playing()) return true; }
+      const opened = await page.evaluate(`(() => { const card = [...document.querySelectorAll('a[href*="/video/"], [data-e2e="scroll-list"] li a')].find((el) => el.getClientRects().length);
+        if (!card) return false; card.click(); return true; })()`);
+      if (opened) { await sleep(4000); return Boolean(await playing()); }
+      return false;
+    },
     async search(page, keyword) {
       const box = await page.find((node) => (node.localName === "input" && attr(node, "data-e2e") === "searchbar-input") || (node.localName === "textarea" && attr(node, "data-e2e") !== "comment-input"));
       if (!box) return false;

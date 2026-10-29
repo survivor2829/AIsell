@@ -14,7 +14,7 @@ const stamp = () => new Date().toISOString();
 // of the platform exists. The cookie names were taken from the platforms'
 // creator sites; guest visits to all four were checked not to set them.
 const PLATFORMS = {
-  douyin: { name: "抖音", home: "https://creator.douyin.com/", hosts: ["douyin.com"], loginCookies: ["sessionid", "sessionid_ss"] },
+  douyin: { name: "抖音", home: "https://www.douyin.com/", hosts: ["douyin.com"], loginCookies: ["sessionid", "sessionid_ss"] },
   kuaishou: { name: "快手", home: "https://cp.kuaishou.com/", hosts: ["kuaishou.com"], loginCookies: ["kuaishou.web.cp.api_st", "kuaishou.server.web_st", "userId"] },
   channels: { name: "视频号", home: "https://channels.weixin.qq.com/platform", hosts: ["channels.weixin.qq.com"], loginCookies: ["sessionid"] },
   xiaohongshu: { name: "小红书", home: "https://creator.xiaohongshu.com/", hosts: ["xiaohongshu.com"], loginCookies: ["access-token-creator.xiaohongshu.com", "galaxy_creator_session_id"] }

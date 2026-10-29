@@ -444,7 +444,7 @@ const supportNavItems: NavItem[] = supportRoles.map(key => ({ key, label: AGENT_
 function isSupportRole(key: string): key is typeof supportRoles[number] {
   return supportRoles.some(role => role === key);
 }
-const distributionNavItem: NavItem = { key: "publish", label: "一键分发", icon: Share2 };
+const distributionNavItem: NavItem = { key: "publish", label: "账号运营", icon: Share2 };
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
 const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, distributionNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
@@ -897,7 +897,7 @@ export default function App() {
           })}
         </nav>
         <div className="sidebar-system-nav">
-          <button className={`nav-item ${active === "publish" ? "active" : ""}`} onClick={() => setActive("publish")}><Share2 size={20} strokeWidth={2.5} /><span>一键分发</span></button>
+          <button className={`nav-item ${active === "publish" ? "active" : ""}`} onClick={() => setActive("publish")}><Share2 size={20} strokeWidth={2.5} /><span>账号运营</span></button>
           <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />

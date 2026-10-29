@@ -44,7 +44,7 @@ assert.equal(findBrowser(env, () => false), "");
   const first = (await accounts.add({ platform: "douyin", label: "" })).accounts[0];
   assert.equal(first.label, "抖音账号1", "没填备注名时按平台编号");
   assert.equal(first.loggingIn, true);
-  assert.equal(launches[0].url, "https://creator.douyin.com/", "打开平台官方创作者后台登录");
+  assert.equal(launches[0].url, "https://www.douyin.com/", "抖音在主站登录（养号就在主站跑；竞品同样在主站登录，2026-10-29）");
   assert.ok(!launches[0].headless, "登录用可见的 Chrome 窗口");
   assert.equal(launches[0].profileDir, path.join(dataDir, "profiles", first.id), "每个账号单独的浏览器资料目录");
 

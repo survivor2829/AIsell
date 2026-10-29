@@ -77,7 +77,8 @@ function startDesktop() {
 
   function observeViteOutput(chunk, stream) {
     stream.write(chunk);
-    viteOutput = `${viteOutput}${chunk}`.slice(-4096);
+    // Colour codes may sit inside the address (around the port) when the terminal forces colour.
+    viteOutput = `${viteOutput}${String(chunk).replace(/\x1b\[[0-9;]*m/g, "")}`.slice(-4096);
     if (viteOutput.includes(`${url}/`)) startElectron();
   }
 

@@ -17,11 +17,12 @@ function registerSocialNurtureIpc({ ipcMain, dataDir, accounts, getMainWindow, p
     status: () => nurture.snapshot(),
     savePlan: (payload) => nurture.savePlan({
       id: id(payload), platform: "douyin", accountId: String(payload?.accountId || ""), keywords: String(payload?.keywords || "").slice(0, 600),
-      comments: String(payload?.comments || "").slice(0, 2000), startTime: String(payload?.startTime || ""),
+      comments: String(payload?.comments || "").slice(0, 2000),
       testVideo: payload?.testVideo?.finishedVideoId ? { finishedVideoId: String(payload.testVideo.finishedVideoId), name: String(payload.testVideo.name || ""), title: String(payload.testVideo.title || "") } : null
     }),
     removePlan: (payload) => nurture.removePlan(id(payload)),
     setEnabled: (payload) => nurture.setEnabled(id(payload), payload?.enabled === true),
+    runNow: (payload) => nurture.runNow(id(payload)),
     stop: () => nurture.stop()
   };
   const channels = Object.keys(methods).map((name) => `social-nurture:${name}`);
