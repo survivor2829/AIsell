@@ -3305,7 +3305,7 @@ function Test-VisualReadbackCandidateFrame($frame, $seed, $context) {
   $candidateHash = Get-MomentsPixelHash $frame $seed.candidateBounds
   $avatarBounds = ConvertTo-RelativeVisualBounds $context.postSnapshot.avatar_bounds $context.expectedWindow
   $avatarHash = Get-MomentsPixelHash $frame $avatarBounds
-  $menus = @(Find-MomentsMenuDots $frame)
+  $menus = @(Find-MomentsMenuDots $frame $script:momentsVisualViewportBounds (Find-MomentsVisibleAvatars $frame $script:momentsVisualViewportBounds))
   $menuResolution = Resolve-VisualMenuAnchor $menus $seed.menuBounds 3.0
   return @{
     ok = $candidateHash -and $candidateHash -ceq [string]$seed.candidatePixelHash -and
@@ -4181,7 +4181,7 @@ function Dismiss-VisualProvenEmptyCommentComposer(
     try {
       $remainingComposer = Get-VisualCommentComposer $frame $menu
       $remainingAvatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
-      $remainingMenus = @(Find-MomentsMenuDots $frame)
+      $remainingMenus = @(Find-MomentsMenuDots $frame $script:momentsVisualViewportBounds (Find-MomentsVisibleAvatars $frame $script:momentsVisualViewportBounds))
       $remainingMenuResolution = Resolve-VisualMenuAnchor $remainingMenus $menu.bounds 3.0
       if (-not $remainingAvatarHash -or $remainingAvatarHash -cne $expectedAvatarHash -or -not $remainingMenuResolution.ok) {
         return $false

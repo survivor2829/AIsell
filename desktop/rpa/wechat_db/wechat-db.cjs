@@ -196,6 +196,28 @@ function createWechatDb({ accountDir, contactSyncDir, loadKey = cachedKeyLoader(
           text: unescapeXml(/<contentDesc>([\s\S]*?)<\/contentDesc>/u.exec(xml)?.[1]) };
       }).filter((post) => post.createTime >= sinceSeconds);
     }),
+    // true: WeChat recorded our like ("like") or this exact comment ("comment") on someone's
+    // post since then; false: not (yet); null: unknown. Each post's XML keeps its likes
+    // (type 1) and comments (type 2) as <user_comment> entries with our username.
+    momentInteraction: guarded((kind, sinceSeconds, { text = "" } = {}) => {
+      const type = kind === "like" ? "1" : kind === "comment" ? "2" : "";
+      const wanted = String(text || "").replace(/\s+/gu, "");
+      if (!type || !selfUsername || (type === "2" && !wanted)) return null;
+      const db = open(path.join("sns", "sns.db"));
+      if (!db) return null;
+      const own = `<username>${selfUsername}</username>`;
+      const field = (entry, tag) => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "u").exec(entry)?.[1] ?? "";
+      for (const row of db.rows("SnsTimeLine")) {
+        const xml = String(row.content || "");
+        if (row.user_name === selfUsername || !xml.includes(own)) continue;
+        for (const [, entry] of xml.matchAll(/<user_comment>([\s\S]*?)<\/user_comment>/gu)) {
+          if (!entry.includes(own) || field(entry, "type") !== type || field(entry, "b_deleted") === "1") continue;
+          if (Number(field(entry, "create_time")) < sinceSeconds) continue;
+          if (type === "1" || unescapeXml(field(entry, "content")).replace(/\s+/gu, "") === wanted) return true;
+        }
+      }
+      return false;
+    }),
     // true: a post of ours since then starts like this text; false: none does; null: unknown.
     postedMoment: guarded((text, sinceSeconds) => {
       const head = String(text || "").replace(/\s+/gu, "").slice(0, 30);

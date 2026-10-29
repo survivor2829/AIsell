@@ -1399,7 +1399,7 @@ async function executeMomentsExpandFullText(options = {}) {
   };
 }
 
-async function executeMomentsLike(options = {}) {
+async function executeMomentsLikeOnScreen(options = {}) {
   const baseDir = options.baseDir || __dirname;
   const action = "moments-like";
   const context = loadLockedContext(baseDir, options.observationId ?? options.observation_id);
@@ -1580,7 +1580,7 @@ async function executeMomentsLike(options = {}) {
   };
 }
 
-async function executeMomentsComment(options = {}) {
+async function executeMomentsCommentOnScreen(options = {}) {
   const baseDir = options.baseDir || __dirname;
   const action = "moments-comment";
   const context = loadLockedContext(baseDir, options.observationId ?? options.observation_id);
@@ -2031,6 +2031,97 @@ async function executeMomentsComment(options = {}) {
   };
 }
 
+// WeChat's own Moments records settle a click the screen could not prove. Our like or
+// this exact comment on any post since the attempt's first click is a verified action;
+// otherwise the result stays outcome_unknown and nothing is retried.
+const DATABASE_VERIFICATION_MODE = "wechat_database";
+const DATABASE_RECEIPT_POLLS = 8;
+
+function defaultMomentsReceipts(baseDir) {
+  try {
+    return require("../wechat_db/wechat-db.cjs").receiptsForDataRoot(path.join(baseDir, ".."));
+  } catch {
+    return null;
+  }
+}
+
+const EARLIER_ATTEMPT_REASONS = new Set([
+  "moments_attempt_already_recorded",
+  "moments_comment_text_already_attempted",
+  "moments_comment_post_already_attempted"
+]);
+
+async function settleWithWechatRecords(baseDir, result, options, startedAt) {
+  // This click, or an earlier one left unresolved on the same post (it blocks a retry).
+  const unresolvedNow = result?.status === "outcome_unknown" && result.real_action_attempted !== false;
+  const unresolvedEarlier = EARLIER_ATTEMPT_REASONS.has(result?.blocked_reason)
+    && ["clicked", "outcome_unknown"].includes(result?.previous_status);
+  if (!(unresolvedNow || unresolvedEarlier) || !result.attempt_key) return result;
+  const state = loadState(baseDir);
+  const attempt = actionState(state).attempts[result.attempt_key];
+  if (!attempt || attempt.action !== result.action) return result;
+  const kind = attempt.action === "moments-like" ? "like" : "comment";
+  const commentText = String(attempt.comment_text ?? "");
+  const firstClick = [attempt.clicked_at, attempt.send_clicked_at, attempt.prepared_at]
+    .map((value) => Date.parse(value || "")).filter(Number.isFinite);
+  const sinceSeconds = Math.floor(Math.min(startedAt, ...firstClick) / 1000) - 5;
+  const receipts = options.receipts !== undefined ? options.receipts : defaultMomentsReceipts(baseDir);
+  if (typeof receipts?.momentInteraction !== "function") return { ...result, database_receipt: "unavailable" };
+  const pollMs = Number.isFinite(options.receiptPollMs) ? options.receiptPollMs : 1000;
+  let receipt = null;
+  for (let poll = 0; poll < DATABASE_RECEIPT_POLLS; poll += 1) {
+    receipt = receipts.momentInteraction(kind, sinceSeconds, { text: commentText });
+    if (receipt !== false) break;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  if (receipt !== true) return { ...result, database_receipt: receipt === false ? "not_found" : "unavailable" };
+  const details = {
+    action: attempt.action,
+    observationId: attempt.observation_id,
+    postFingerprint: attempt.post_fingerprint,
+    postIdentityText: attempt.post_identity_text,
+    postStableAnchorText: attempt.post_stable_anchor_text,
+    postAvatarHash: attempt.post_avatar_hash,
+    commentText: attempt.comment_text,
+    attemptKey: result.attempt_key
+  };
+  try {
+    persistAttempt(baseDir, state, details, "verified", {
+      real_action_attempted: true,
+      verification_mode: DATABASE_VERIFICATION_MODE,
+      screen_outcome_reason: result.primary_reason || result.blocked_reason || "",
+      ...(kind === "comment" ? { comment_text_verified: commentText } : {})
+    });
+  } catch {
+    return { ...result, database_receipt: "found_unsaved" };
+  }
+  if (kind === "comment") removeCommentSendMarker(commentSendMarkerPath(baseDir, attempt.post_fingerprint));
+  return {
+    ok: true,
+    action: attempt.action,
+    status: "verified",
+    observation_id: attempt.observation_id,
+    attempt_key: result.attempt_key,
+    real_action_attempted: true,
+    no_op: false,
+    verification_mode: DATABASE_VERIFICATION_MODE,
+    database_receipt: "found",
+    ...(kind === "like" ? { menu_state: "取消" } : { comment_text: commentText })
+  };
+}
+
+async function executeMomentsLike(options = {}) {
+  const startedAt = Date.now();
+  const baseDir = options.baseDir || __dirname;
+  return settleWithWechatRecords(baseDir, await executeMomentsLikeOnScreen(options), options, startedAt);
+}
+
+async function executeMomentsComment(options = {}) {
+  const startedAt = Date.now();
+  const baseDir = options.baseDir || __dirname;
+  return settleWithWechatRecords(baseDir, await executeMomentsCommentOnScreen(options), options, startedAt);
+}
+
 module.exports = {
   COMMENT_SEND_VERIFIED_STAGE,
   MENU_STATES,
@@ -2043,6 +2134,7 @@ module.exports = {
   VISUAL_COMMENT_STATE_TRANSITION_MODE,
   VISUAL_COMMENT_VERIFICATION_LEVEL,
   VISUAL_COMMENT_VERIFICATION_MODE,
+  DATABASE_VERIFICATION_MODE,
   createMomentsAttemptKey,
   executeMomentsComment,
   executeMomentsExpandFullText,

@@ -23,12 +23,23 @@ const scanProfileReplay = spawnSync("powershell.exe", ["-NoProfile", "-NonIntera
   Buffer.from(`${scanProfileFunction}
 $narrow = Get-MomentsVisualFeedScanProfile @{left=9;top=0;width=550;height=700}
 $wide = Get-MomentsVisualFeedScanProfile @{left=9;top=0;width=1383;height=941}
+$integratedPane = @{left=308;top=0;width=804;height=752}
+$integratedCentred = Get-MomentsVisualFeedScanProfile $integratedPane @(@{left=452;top=236;width=52;height=52}, @{left=452;top=714;width=52;height=52})
+$integratedUnseen = Get-MomentsVisualFeedScanProfile $integratedPane
+$integratedLocked = Get-MomentsVisualFeedScanProfile $integratedPane @(@{left=452;top=236;width=52;height=52})
+$narrowSeen = Get-MomentsVisualFeedScanProfile @{left=9;top=0;width=550;height=700} @(@{left=39;top=100;width=44;height=44}, @{left=39;top=400;width=44;height=44})
 @{ narrowMenu = @($narrow.menuBands | Where-Object { $_.left -le 508 -and $_.right -ge 508 }).Count -eq 1;
-   wideMenu = @($wide.menuBands | Where-Object { $_.left -le 1100 -and $_.right -ge 1100 }).Count -eq 1 } | ConvertTo-Json -Compress`, "utf16le").toString("base64")
+   wideMenu = @($wide.menuBands | Where-Object { $_.left -le 1100 -and $_.right -ge 1100 }).Count -eq 1;
+   integratedCentredMenu = @($integratedCentred.menuBands | Where-Object { $_.left -le 947 -and $_.right -ge 947 }).Count -eq 1;
+   integratedLockedMenu = @($integratedLocked.menuBands | Where-Object { $_.left -le 947 -and $_.right -ge 947 }).Count -eq 1;
+   integratedUnseenMenu = @($integratedUnseen.menuBands | Where-Object { $_.left -le 947 -and $_.right -ge 947 }).Count -eq 1;
+   narrowSeenMenu = @($narrowSeen.menuBands | Where-Object { $_.left -le 508 -and $_.right -ge 508 }).Count -eq 1 } | ConvertTo-Json -Compress`, "utf16le").toString("base64")
 ], { encoding: "utf8", windowsHide: true, timeout: 30_000 });
 assert.equal(scanProfileReplay.status, 0, scanProfileReplay.stderr || scanProfileReplay.error?.message);
-assert.deepEqual(JSON.parse(scanProfileReplay.stdout.trim()), { narrowMenu: true, wideMenu: true },
-  "large avatars in narrow WeChat windows must retain the right-edge menu lane; wide feeds keep their centred lane");
+assert.deepEqual(JSON.parse(scanProfileReplay.stdout.trim()), { narrowMenu: true, wideMenu: true,
+  integratedCentredMenu: true, integratedLockedMenu: true, integratedUnseenMenu: false, narrowSeenMenu: true },
+  "large avatars in narrow WeChat windows must retain the right-edge menu lane; wide feeds keep their centred lane; "
+  + "an ~800 px integrated pane whose avatars sit well inside it (WeChat 4.1, 1120 px window) is a centred feed");
 const { MOMENTS_VISUAL_STABILITY_TOLERANCE_PX, MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT } = require(dryRunFile);
 const {
   MOMENTS_SURFACE_PROFILE,
