@@ -261,9 +261,13 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
           {accountsByPlatform.length === 0 ? <p className="social-empty">还没有登录任何平台账号，先到「平台账号」扫码登录。</p> : <div className="dist-accounts">
             {accountsByPlatform.map((account) => {
               const selected = selectedAccounts.includes(account.id);
-              return <button type="button" key={account.id} className={`dist-account ${selected ? "is-on" : ""}`} aria-pressed={selected} disabled={!usable(account)} onClick={() => setSelectedAccounts(toggle(selectedAccounts, account.id))}>
+              return <button type="button" key={account.id} className={`dist-account ${selected ? "is-on" : ""}`} aria-pressed={selected} disabled={!usable(account)} onClick={() => {
+                  setSelectedAccounts(toggle(selectedAccounts, account.id));
+                  if (!selected && account.uploadTroubleAt) { setError(""); setNotice(`「${account.label}」上次上传异常（账号或网络问题），这次可能还会失败；发成功后会自动去掉这个提醒。`); }
+                }}>
                 <PlatformIcon platform={account.platform} size={36} />
-                <span><b>{PLATFORM_NAMES[account.platform]}</b><small>{usable(account) ? account.label : account.status === "active" ? "登录窗口打开中" : "需要重新登录"}</small></span>
+                <span><b>{PLATFORM_NAMES[account.platform]}</b><small>{usable(account) ? account.label : account.status === "active" ? "登录窗口打开中" : "需要重新登录"}</small>
+                  {account.uploadTroubleAt && <small className="dist-account-trouble">上次上传异常</small>}</span>
                 <span className="ns-pick" aria-hidden="true" />
               </button>;
             })}

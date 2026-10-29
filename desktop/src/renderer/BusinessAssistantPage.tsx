@@ -1,7 +1,8 @@
-import { ArrowRight, Globe2, MapPin, Search, Settings2 } from "lucide-react";
+import { ArrowRight, Globe2, MapPin, Search, Settings2, Sprout } from "lucide-react";
 import { appearanceStyle, type RoleAppearance } from "./role-appearance";
 import { MapAcquisitionPanel } from './MapAcquisitionPanel';
 import { AcquisitionPage } from './AcquisitionPage';
+import { SocialNurturePage } from './SocialNurturePage';
 import "./BusinessAssistantPage.css";
 
 export const BUSINESS_MODULES = {
@@ -15,6 +16,12 @@ export const BUSINESS_MODULES = {
     label: "关键词获客", icon: Search, available: true,
     title: "从同行视频的评论里找到想买的人",
     description: "按关键词搜视频、读评论，把问价、想买、要联系方式的人整理成线索。",
+    plans: []
+  },
+  "business-nurture": {
+    label: "养号", icon: Sprout, available: true,
+    title: "新抖音号先养 8 天再发视频",
+    description: "按 8 天计划自动刷抖音、搜行业词、点赞关注评论，第 8 天发一条测试视频。",
     plans: []
   },
   "business-geo": {
@@ -46,6 +53,7 @@ export function BusinessAssistantPage({ module, appearance, onPersonalize, onOpe
     })}</nav>}
     {module === "business-map" && <MapAcquisitionPanel />}
     {module === "business-keyword" && <AcquisitionPage />}
+    {module === "business-nurture" && <SocialNurturePage />}
     {current && !current.available && <section className="business-module-plan" aria-label={`${current.label}规划`}><span className="business-stage">待开放</span><h2>{current.title}</h2><p>这里先为您介绍后续方向，当前尚未开放以下功能。</p><ul>{current.plans.map(plan => <li key={plan}>{plan}</li>)}</ul><p>开放后会在更新公告中说明使用方式。您现在可以先用地图获客整理企业资料。</p><button type="button" className="primary-button" onClick={() => onOpenModule("business-map")}>进入地图获客<ArrowRight size={16} /></button></section>}
   </section>;
 }

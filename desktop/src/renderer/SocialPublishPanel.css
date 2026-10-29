@@ -180,3 +180,4 @@
 /* 横屏视频：完整显示在中间，上下用同一画面虚化填满 */
 .dist-phone > img.dist-phone-backdrop { filter: blur(18px) brightness(.7); transform: scale(1.15); }
 .dist-phone > img.dist-phone-landscape { top: 50%; bottom: auto; height: auto; transform: translateY(-62%); object-fit: contain; }
+.dist-account small.dist-account-trouble { color: #d92d20; font-weight: 800; }

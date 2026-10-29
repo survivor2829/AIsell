@@ -192,6 +192,10 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     account.status = account.lastLoginAt ? "expired" : "login_required";
     save(); emit(); return snapshot();
   }
+  // An upload on this account stopped moving. Only a warning: the account stays selectable,
+  // and its next published post clears the mark (user decision 2026-10-29).
+  function markUploadTrouble(id) { const account = find(id); account.uploadTroubleAt = stamp(); save(); emit(); return snapshot(); }
+  function clearUploadTrouble(id) { const account = find(id); if (!account.uploadTroubleAt) return snapshot(); delete account.uploadTroubleAt; save(); emit(); return snapshot(); }
   // One browser per profile: publishing takes the account exclusively until released.
   function lease(id) {
     find(id);
@@ -201,7 +205,7 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     return () => { if (!released) { released = true; leased.delete(id); emit(); } };
   }
   async function dispose() { disposed = true; await Promise.all([...open.values()].map((browser) => browser.close())); open.clear(); }
-  return { snapshot, add, rename, login, refresh, remove, profileDir, lease, markSignedOut, dispose };
+  return { snapshot, add, rename, login, refresh, remove, profileDir, lease, markSignedOut, markUploadTrouble, clearUploadTrouble, dispose };
 }
 
 module.exports = { createSocialAccounts, PLATFORMS, loggedIn };

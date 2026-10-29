@@ -56,6 +56,8 @@ function world(overrides = {}) {
     snapshot: () => ({ accounts: accountList }),
     profileDir: (id) => path.join(root, "profiles", id),
     markSignedOut: (id) => { log.signedOut = [...(log.signedOut || []), id]; },
+    markUploadTrouble: (id) => { log.trouble = [...(log.trouble || []), id]; },
+    clearUploadTrouble: (id) => { log.cleared = [...(log.cleared || []), id]; },
     lease: (id) => { if (busy.has(id)) throw Object.assign(new Error("这个账号的浏览器正在使用"), { code: "SOCIAL_ACCOUNT_BUSY" }); busy.add(id); log.leases++; return () => { busy.delete(id); log.released++; }; }
   };
   const launch = () => { if (behaviour.launchError) throw behaviour.launchError; log.launches++; sets = 0; land("https://creator.douyin.com/upload?token=private"); return { close: async () => { log.closed++; } }; };
@@ -144,7 +146,7 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     // 2026-10-29：本机显示已登录，平台却要扫码。平台跳到登录页时，账号随即标成需要重新登录。
     assert.deepEqual(w.log.signedOut, ["a-douyin"]);
     assert.deepEqual({ ...failures[0], screenshot: Boolean(failures[0].screenshot) },
-      { platform: "douyin", code: "SOCIAL_LOGIN_REQUIRED", step: "打开平台", clicked: false, pageUrl: "https://creator.douyin.com/upload", screenshot: true, network: { failed: [], slow: [] } },
+      { platform: "douyin", code: "SOCIAL_LOGIN_REQUIRED", step: "打开平台", clicked: false, pageUrl: "https://creator.douyin.com/upload", screenshot: true, network: { failed: [], slow: [], rejected: [] }, notices: [] },
       "每次发布失败都带上平台、错误码、卡住的步骤和当时页面的截图上报；地址不带查询参数");
     w.behaviour.login = false; w.behaviour.publishFound = false;
     p.retry(job.id);
@@ -205,6 +207,24 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     p2.submit({ videos: [{ path: w2.video }], accountIds: ["a-channels"], title: "测试" });
     assert.match((await w2.until(p2, finished)).jobs[0].reason, /上传超时/);
     await p2.dispose();
+  }
+  {
+    // 用户 2026-10-29：某个视频号账号上传一直 0%，换账号就正常。这个账号本批剩下的跳过、标红，其他账号照发；
+    // 平台页面上提到限制或异常的短句随截图一起上报。
+    const failures = [];
+    const w = world({ uploadStuck: true, shown: ["取消上传", "0%", "该账号存在异常，暂时无法发表", "很长的一段与限制无关的页面文字".repeat(5)].join("\n") }), p = w.make({ onFailure: (failure) => failures.push(failure) });
+    const second = path.join(w.root, "二.mp4"); fs.writeFileSync(second, "mp4");
+    p.submit({ videos: [{ path: w.video, name: "一" }, { path: second, name: "二" }], accountIds: ["a-channels", "a-douyin"], title: "测试" });
+    await w.until(p, (state) => state.jobs.filter((job) => job.platform === "channels").every((job) => job.status === "failed"));
+    w.behaviour.uploadStuck = false;
+    const state = await w.until(p, finished);
+    const channels = state.jobs.filter((job) => job.platform === "channels");
+    assert.equal(channels.filter((job) => /没有进展/.test(job.reason)).length, 1, "只有第一条真正去上传");
+    assert.equal(channels.filter((job) => /本批剩下的已跳过/.test(job.reason)).length, 1);
+    assert.ok(state.jobs.filter((job) => job.platform === "douyin").every((job) => job.status === "published"), "其他账号照常发");
+    assert.deepEqual(w.log.trouble, ["a-channels"]); assert.ok(w.log.cleared.includes("a-douyin"), "发成功就去掉标记");
+    assert.deepEqual(failures[0].notices, ["该账号存在异常，暂时无法发表"]);
+    await p.dispose();
   }
   {
     // 现场包 8292309a（2026-10-29，1.2.24）：账号登录中途失效，刷新后是「选择视频号登录」页。

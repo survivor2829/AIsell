@@ -59,6 +59,7 @@ const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs
 const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
 const { registerSocialPublishIpc } = require("./social-publish-ipc.cjs");
 const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs");
+const { registerSocialNurtureIpc } = require("./social-nurture-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
@@ -99,6 +100,7 @@ let keywordAcquisitionRegistration = null;
 let socialAccountsRegistration = null;
 let socialPublishRegistration = null;
 let socialAcquisitionRegistration = null;
+let socialNurtureRegistration = null;
 let businessWorkbenchRegistration = null;
 let digitalHumanRegistration = null;
 let productVideoRegistration = null;
@@ -322,6 +324,7 @@ function createWindow() {
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
     void socialAcquisitionRegistration?.dispose().catch(() => undefined);
+    void socialNurtureRegistration?.dispose().catch(() => undefined);
     void socialPublishRegistration?.dispose().catch(() => undefined);
     void socialAccountsRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
@@ -812,6 +815,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         const cover = String(result.cover_path || "");
         return cover && path.isAbsolute(cover) ? require("./content-engine-ipc.cjs").resolvedAbsolutePath({ absolute_path: cover }) : "";
       } });
+    // 养号 shares the accounts and hands its day-8 test video to 一键分发.
+    socialNurtureRegistration = registerSocialNurtureIpc({ ipcMain, getMainWindow: () => mainWindow, accounts: socialAccountsRegistration.accounts,
+      dataDir: path.join(runtime.rootDir, "social_nurture"), logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence"),
+      publish: (payload) => socialPublishRegistration.submitFinished(payload) });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: identityStatus });
     const usedDigitalHumanClicks = new Set();
@@ -1045,7 +1052,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           // 地图、关键词等浏览器任务在跑，或者有登录/悬浮窗口正显示着，都算在用。
           if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
           if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
-          if (socialPublishRegistration?.isBusy() || socialAcquisitionRegistration?.isBusy()) return true;
+          if (socialPublishRegistration?.isBusy() || socialAcquisitionRegistration?.isBusy() || socialNurtureRegistration?.isBusy()) return true;
           if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
           const content = contentEngineController?.updateStatus();
           if (content?.pending || (content?.alive && content.state !== "ready")) return true;
@@ -1144,6 +1151,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
         Promise.resolve(socialAcquisitionRegistration?.dispose()),
+        Promise.resolve(socialNurtureRegistration?.dispose()),
         Promise.resolve(socialPublishRegistration?.dispose()),
         Promise.resolve(socialAccountsRegistration?.dispose()),
         Promise.resolve(businessWorkbenchRegistration?.dispose()),

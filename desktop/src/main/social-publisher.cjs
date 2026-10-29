@@ -22,13 +22,26 @@ const LOADS_PAGE = new Set(["Document", "Script", "Stylesheet", "XHR", "Fetch"])
 // Requests of the page that failed or took over 5 seconds, by host only. They tell a
 // page that never loaded (network, proxy) from a page the platform changed
 // (2026-10-29: the 视频号 form stayed blank while its scripts were aborted).
+// Short lines in which the platform itself speaks of limits or problems, kept with the screenshot.
+const NOTICE = /限制|违规|异常|频繁|无法发表|封禁|风险/;
+async function platformNotices(page) {
+  const lines = String(await page.shownText?.().catch(() => "") || "").split(/\n+/).map((line) => line.trim());
+  return [...new Set(lines.filter((line) => line.length > 0 && line.length <= 40 && NOTICE.test(line)))].slice(0, 3);
+}
+
 function watchNetwork(page) {
-  const pending = new Map(), failed = new Map(), slow = new Map();
+  const pending = new Map(), failed = new Map(), slow = new Map(), rejected = new Map();
   const hostOf = (url) => { try { return new URL(url).hostname; } catch { return ""; } };
   const count = (map, key) => { if (map.size < 30 || map.has(key)) map.set(key, (map.get(key) || 0) + 1); };
   void page.send("Network.enable").catch(() => {});
   const stop = page.onEvent?.(({ method, params = {} }) => {
     if (method === "Network.requestWillBeSent") { pending.set(params.requestId, { host: hostOf(params.request?.url), type: params.type || "", at: params.timestamp }); return; }
+    // The platform's own answers that refused a request (e.g. an upload an account may not make).
+    if (method === "Network.responseReceived") {
+      const request = pending.get(params.requestId), status = Number(params.response?.status || 0);
+      if (request && status >= 400 && /^(XHR|Fetch)$/.test(params.type || request.type)) count(rejected, `${request.host}:${params.type || request.type}:${status}`);
+      return;
+    }
     if (method !== "Network.loadingFinished" && method !== "Network.loadingFailed") return;
     const request = pending.get(params.requestId);
     pending.delete(params.requestId);
@@ -38,7 +51,7 @@ function watchNetwork(page) {
   }) || (() => {});
   // Plain identifiers (host:type:error:xN), which the diagnostic log keeps readable.
   const list = (map) => [...map].map(([key, times]) => (times > 1 ? `${key}:x${times}` : key).replace(/[^a-z0-9_.:-]/gi, "_"));
-  return { stop, troubled: () => failed.size + slow.size > 0, summary: () => ({ failed: list(failed), slow: list(slow) }) };
+  return { stop, troubled: () => failed.size + slow.size > 0, summary: () => ({ failed: list(failed), slow: list(slow), rejected: list(rejected) }) };
 }
 
 // One video on one account is one job. A job that reached the publish click
@@ -205,24 +218,35 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
         } else if (job.status === "needs_user") update(job, { status: "clicked", step: "等待平台结果", reason: "" });
       }
       update(job, { status: "clicked", step: "核对作品" });
-      if (await steps.listed(page, driver, marker(job))) return update(job, { status: "published", step: "", reason: "", finishedAt: stamp() });
+      if (await steps.listed(page, driver, marker(job))) {
+        try { accounts.clearUploadTrouble?.(job.accountId); } catch { /* The mark only warns; the post is published either way. */ }
+        return update(job, { status: "published", step: "", reason: "", finishedAt: stamp() });
+      }
       update(job, { status: "unknown", step: "", reason: done ? "平台显示已提交，但作品管理里暂时没找到这条，请稍后到平台核对；不会自动重发。" : "点击发布后没有等到平台的结果，请到平台核对是否已发出；不会自动重发。", finishedAt: stamp() });
     } catch (error) {
       const reason = job.timedOut ? "发布用时过长，已停止。" : userMessage(error, "发布过程中出错。");
       if (error?.code === "SOCIAL_LOGIN_REQUIRED") { try { accounts.markSignedOut?.(job.accountId); } catch { /* The job result below still says what to do. */ } }
       // The page as it was when the job stopped: what a diagnosis needs and a log line cannot hold.
-      let screenshot = "", pageUrl = "";
+      let screenshot = "", pageUrl = "", notices = [];
       try {
         if (page && !browser?.isClosed?.()) {
           pageUrl = String(await page.url()).replace(/[?#].*$/, "");
           screenshot = (await page.send("Page.captureScreenshot", { format: "png" }))?.data || "";
+          notices = await platformNotices(page);
         }
       } catch { /* A closed or hung page leaves the failure without a picture. */ }
       try { onFailure({ platform: job.platform, code: job.timedOut ? "SOCIAL_JOB_TIMEOUT" : String(error?.code || "SOCIAL_UNEXPECTED"), step: job.step, clicked: Boolean(job.clickedAt), pageUrl, screenshot,
-        network: network?.summary() || { failed: [], slow: [] } }); }
+        network: network?.summary() || { failed: [], slow: [], rejected: [] }, notices }); }
       catch { /* Diagnostics never change the job result. */ }
       if (job.clickedAt) update(job, { status: "unknown", step: "", reason: `${reason} 已经点过发布，请到平台核对；不会自动重发。`, finishedAt: stamp() });
       else update(job, { status: "failed", step: "", reason, finishedAt: stamp() });
+      // An account whose upload stops moving fails again the same way: the rest of its queue is
+      // skipped and the account marked, while other accounts carry on (user decision 2026-10-29).
+      if (error?.code === "SOCIAL_UPLOAD_STALLED") {
+        try { accounts.markUploadTrouble?.(job.accountId); } catch { /* The skipped jobs below still say what happened. */ }
+        for (const other of state.jobs) if (other !== job && other.accountId === job.accountId && other.status === "queued")
+          update(other, { status: "failed", step: "", reason: `账号「${job.accountLabel}」上传异常（账号或网络问题），本批剩下的已跳过，可以稍后重新发起。`, finishedAt: stamp() });
+      }
     } finally {
       clearTimeout(watchdog); delete job.timedOut;
       network?.stop();
