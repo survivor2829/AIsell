@@ -241,7 +241,9 @@ function createReferenceHumanService(options = {}) {
     // 云端字数、英文检查重写一次后仍没通过的问题，原样告诉客户，不再自动扣额度重写。
     const problems = (Array.isArray(response.problems) ? response.problems : []).filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 80)).slice(0, 4);
     return { title: response.title, script: response.script, emphasisPhrases, quota: currentQuota.quota, industry, business, referenceSource: reference,
-      ...(originality ? { originality } : {}), ...(structure.length ? { structure } : {}), ...(body.libraryId ? { libraryId: body.libraryId, targetSeconds: body.targetSeconds, problems } : {}) };
+      ...(originality ? { originality } : {}), ...(structure.length ? { structure } : {}), ...(body.libraryId ? { libraryId: body.libraryId, targetSeconds: body.targetSeconds, problems } : {}),
+      // How long the final text reads, when the cloud could not bring a short draft up to length.
+      ...(Number.isInteger(response.estimatedSeconds) && response.estimatedSeconds > 0 && response.estimatedSeconds <= 600 ? { estimatedSeconds: response.estimatedSeconds } : {}) };
   }
   function create(input) {
     assertOpen(); assertKeys(input, DRAFT_KEYS);

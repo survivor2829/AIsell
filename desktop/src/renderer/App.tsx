@@ -33,6 +33,7 @@ import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
+import { FeedbackQuickDialog } from "./FeedbackQuickDialog";
 import { CustomerTools } from "./CustomerTools";
 import { CustomerPanel } from "./CustomerPanel";
 import { TutorialsPage } from "./TutorialsPage";
@@ -58,6 +59,7 @@ import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, Workflow
 import { WechatGettingStarted } from "./WechatGettingStarted";
 import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget } from "./AgentHome";
 import { AgentOverview } from "./AgentOverview";
+import { back, remember, type Place } from "./nav-history";
 
 type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview";
 type GroupKey = WorkspaceRoleKey | "business";
@@ -573,6 +575,7 @@ export default function App() {
   const [personalizingRole, setPersonalizingRole] = useState<AgentRoleKey | null>(null);
   const [rolePreview, setRolePreview] = useState<{ role: AgentRoleKey; value: RolePreference } | null>(null);
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext | null>(null);
+  const [quickFeedback, setQuickFeedback] = useState(false);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
   const [tutorialContext, setTutorialContext] = useState<{ category: TutorialCategory; topic?: TutorialTopic } | null>(null);
@@ -602,6 +605,16 @@ export default function App() {
   };
   useEffect(() => window.xiaoxiWorkflow?.onNavigate?.(({ view }) => navigateWorkflow(view)), []);
   const [creativeView, setCreativeView] = useState<"studio" | "product" | "history" | "materials">("studio");
+  // Every move between pages (or workspace sub-views) remembers the place left, except a move made by going back.
+  const navHistory = useRef<Place[]>([]);
+  const returningRef = useRef(false);
+  const lastPlace = useRef<Place>({ active, view: creativeView });
+  useEffect(() => {
+    const here = { active, view: creativeView };
+    if (returningRef.current) returningRef.current = false;
+    else navHistory.current = remember(navHistory.current, lastPlace.current, here);
+    lastPlace.current = here;
+  }, [active, creativeView]);
   const [batchInitial, setBatchInitial] = useState<{ assetIds?: string[]; collection?: Collection; batchId?: string }>();
   const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
     taskId: string;
@@ -836,13 +849,20 @@ export default function App() {
   const roleThemeClass = themedRole ? ` role-theme-${themedRole}` : "";
   const parentGroup = activeGroup && activeGroup.key !== active && activeGroup.key !== "operations" ? activeGroup : null;
   const creativeSubview = active === "workspace" && creativeView !== "studio";
-  const returnLabel = creativeSubview ? "返回线索视频混剪" : parentGroup ? `返回${parentGroup.label}` : "返回主页面";
+  // 「返回上一级」: where the user came from; without a history, the parent section or the home page.
   const returnToParent = () => {
-    if (creativeSubview) {
+    const { place, stack } = back(navHistory.current, { active, view: creativeView });
+    navHistory.current = stack;
+    if (place) {
+      returningRef.current = true;
+      if (place.active === "workspace") setCreativeResumeTarget(null);
+      setCreativeView(place.view as typeof creativeView);
+      setActive(place.active as ModuleKey);
+    } else if (creativeSubview) {
       setCreativeResumeTarget(null);
       setCreativeView("studio");
-      contentScrollRef.current?.scrollTo({ top: 0, left: 0 });
     } else setActive(parentGroup?.key || "overview");
+    contentScrollRef.current?.scrollTo({ top: 0, left: 0 });
   };
 
   return (
@@ -934,7 +954,7 @@ export default function App() {
           <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact onOpenGuide={openTextGuide} />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
-          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />{returnLabel}</button>}
+          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />返回上一级</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
           {activeGroup?.key === "business" && active !== "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} />}
@@ -1029,6 +1049,9 @@ export default function App() {
           {!moduleIsAvailable(active) && <Placeholder title={activeTitle} />}
         </div>
 
+        {active !== "diagnostics" && <button type="button" className="fbq-launcher" onClick={() => setQuickFeedback(true)}><MessageCircle size={18} />吐槽</button>}
+        {quickFeedback && <FeedbackQuickDialog page={active} pageTitle={active === "overview" ? "主页" : activeTitle} onClose={() => setQuickFeedback(false)}
+          onOpenCenter={() => { setQuickFeedback(false); openFeedback(); }} />}
         {(["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) || workflow.state.enabled || workflow.state.contactSync?.running || workflow.state.phase === "pausing") && <WorkflowLauncher workflow={workflow} onNavigate={navigateWorkflow} />}
       </section>
     </main></div>

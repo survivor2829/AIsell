@@ -85,7 +85,7 @@ export type ReferenceHumanApi = {
   get(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   quote(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   prepare(payload: { id: string; quoteRevision: string; customerConsent: boolean; generateVideo: boolean }): Promise<DigitalHumanResult<ReferenceTask>>;
-  writeScript(payload: ScriptInput, workspace?: ReferenceWorkspace): Promise<DigitalHumanResult<ScriptSuggestion & { quota: ScriptQuota; originality?: ScriptOriginality; structure?: ScriptStructurePart[]; problems?: string[] }>>;
+  writeScript(payload: ScriptInput, workspace?: ReferenceWorkspace): Promise<DigitalHumanResult<ScriptSuggestion & { quota: ScriptQuota; originality?: ScriptOriginality; structure?: ScriptStructurePart[]; problems?: string[]; estimatedSeconds?: number }>>;
   confirm(payload: { id: string; previewRevision: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   refresh(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;
   resume(payload: { id: string }): Promise<DigitalHumanResult<ReferenceTask>>;

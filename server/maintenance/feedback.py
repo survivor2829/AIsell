@@ -52,6 +52,9 @@ def validate_feedback(body, validate_report, safe_token):
         if not isinstance(capsules, list) or not 1 <= len(capsules) <= 5 or not all(UUID.fullmatch(str(item)) for item in capsules):
             raise ValueError("feedback_capsules")
         clean["context"]["capsules"] = list(dict.fromkeys(capsules))
+    # The page the 吐槽 button was pressed on; likewise absent unless sent.
+    if context.get("page") is not None:
+        clean["context"]["page"] = safe_token(context.get("page"))
     # Schema 1's canonical object is unchanged: old retries must retain their hash.
     if body["schema"] == 2:
         if body.get("visibility") not in ("public", "private"):

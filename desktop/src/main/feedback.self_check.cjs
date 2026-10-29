@@ -48,6 +48,7 @@ async function main() {
     assert.equal(controller.status().items.length, 1, "Double submission keeps one immutable ID");
     assert.equal(requests.length, 1, "Double submission must respect the existing retry backoff");
     const sent = requests[0].body;
+    assert.equal(sent.context.page, undefined, "No page unless the feedback came from a page's 吐槽 button");
     assert.equal(sent.diagnostics.length, 2);
     assert.equal(sent.diagnostics[1].details.stage, "prepare", "Opted-in feedback retains preceding steps of the failing operation");
     assert.equal(sent.diagnostics.some(entry => entry.event === "unrelated"), false);
@@ -203,9 +204,10 @@ async function main() {
       } }
     });
     try {
-      await scanFeedback.submit({ ...scanFeedback.status().draft, text: "读取很慢没有发现消息", context: { module: "auto_reply" } });
+      await scanFeedback.submit({ ...scanFeedback.status().draft, text: "读取很慢没有发现消息", context: { module: "auto_reply", page: "reply", label: "自动回复" } });
       await scanFeedback.flush();
       assert.equal(scanBody.diagnostics.length, 1, "An empty scan without errors still needs opt-in feedback evidence");
+      assert.deepEqual(scanBody.context, { module: "auto_reply", taskId: "", page: "reply" }, "The page travels; its label stays on this computer");
       assert.equal(scanBody.diagnostics[0].details.scan_ms, 12000);
       assert.equal(scanBody.diagnostics[0].details.header_state, "unresolved");
       assert.equal(scanBody.diagnostics[0].details.header_candidate_count, 0);

@@ -325,12 +325,13 @@ async function main() {
     assert.equal(counts.script, before + 1, 'an unoriginal result is never re-posted');
     // 文案库仿写：只发文案库 ID 和时长，原文由云端补；时长不能超过本人视频（留 3 秒）；云端没改好的问题原样带回
     let libraryBody = null;
-    scriptReply = (input) => { libraryBody = input.body; return { ok: true, title: '夜班车间没人扫', script: '你敢信吗？夜里车间一个人没有。', emphasisPhrases: [], originality: { overlapRatio: 0.04, limit: 0.15, attempts: 2 }, problems: ['正文只有14个字，太短，需要162—193个字'] }; };
+    scriptReply = (input) => { libraryBody = input.body; return { ok: true, title: '夜班车间没人扫', script: '你敢信吗？夜里车间一个人没有。', emphasisPhrases: [], originality: { overlapRatio: 0.04, limit: 0.15, attempts: 2 }, problems: ['正文只有14个字，太短，需要162—193个字'], estimatedSeconds: 4 }; };
     const libraryInput = { ...scriptInput, libraryId: '7689829090550975795', targetSeconds: 45, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b3' };
     const rewritten = await service.writeScript(libraryInput);
     assert.deepEqual(libraryBody, { targetSeconds: 45, topic: '清洁设备', productFacts: '实际产品资料', libraryId: '7689829090550975795' }, '客户端不发原文');
     assert.deepEqual([rewritten.libraryId, rewritten.targetSeconds, rewritten.originality.passed, rewritten.originality.attempts], ['7689829090550975795', 45, true, 2]);
     assert.match(rewritten.problems[0], /太短/);
+    assert.equal(rewritten.estimatedSeconds, 4, 'how long a short draft reads reaches the page');
     // 60 秒的视频选 60 秒：可以选，但按 57 秒的字数写，给配音留余量
     await service.writeScript({ ...libraryInput, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b4' });
     assert.equal(libraryBody.targetSeconds, 57);

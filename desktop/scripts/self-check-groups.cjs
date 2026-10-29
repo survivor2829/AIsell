@@ -121,6 +121,7 @@ const checks = [
   "src/renderer/flow-funnel.self_check.cjs",
   "src/renderer/viral-pipeline.self_check.cjs",
   "src/renderer/narration-simple.self_check.cjs",
+  "src/renderer/nav-history.self_check.cjs",
   "src/renderer/product-one-click.self_check.cjs",
   "scripts/remotion-packaging.self_check.cjs",
   "src/renderer/moments-campaign-panel.self_check.cjs",

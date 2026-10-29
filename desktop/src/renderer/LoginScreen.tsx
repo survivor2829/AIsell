@@ -107,6 +107,9 @@ const LINES: Record<AgentRoleKey, string[]> = {
 const VIDEO_ROLES = new Set<AgentRoleKey>(["production", "agent", "operations", "business", "materials", "tutorials"]);
 
 const ROLE_KEY = "xiaoxi-login-presenter";
+// The six employees take turns on their own, in a loop (user decision 2026-10-29); the one who greets
+// first still changes from launch to launch.
+const ROTATE_MS = 9000;
 
 function greeting(hour = new Date().getHours()) {
   return hour < 6 ? "夜深了" : hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
@@ -150,6 +153,11 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [role, setRole] = useState<AgentRoleKey>(nextRole);
+  const [firstRole] = useState(role);
+  // Paused while the pointer rests on the presenters or the cursor is in the sign-in box.
+  const [hovering, setHovering] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const rotating = !hovering && !typing;
   const [still] = useState(prefersStill);
   const [clipFailed, setClipFailed] = useState(false);
   const saved = Boolean(license?.authorized) && !replaceSaved;
@@ -173,8 +181,13 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
     });
   }
 
-  // Remember who greeted, so the next launch moves on to the next employee.
-  useEffect(() => { try { localStorage.setItem(ROLE_KEY, role); } catch { /* Convenience only. */ } }, [role]);
+  // Remember who greeted first, so the next launch starts with the next employee.
+  useEffect(() => { try { localStorage.setItem(ROLE_KEY, firstRole); } catch { /* Convenience only. */ } }, [firstRole]);
+  useEffect(() => {
+    if (!rotating) return;
+    const timer = window.setTimeout(() => setRole((current) => AGENT_ROLE_ORDER[(AGENT_ROLE_ORDER.indexOf(current) + 1) % AGENT_ROLE_ORDER.length]), ROTATE_MS);
+    return () => window.clearTimeout(timer);
+  }, [role, rotating]);
 
   function choose(next: AgentRoleKey) {
     setRole(next);
@@ -207,7 +220,8 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       <b>玺联惠</b><span>AI短视频获客</span>
       <small className="signin-online">6 位 AI 员工在线待命</small>
     </header>
-    <section className="signin-stage" aria-label={`${identity.name}：${identity.responsibility}`}>
+    <section className={`signin-stage${rotating ? " is-rotating" : ""}`} aria-label={`${identity.name}：${identity.responsibility}`}
+      style={{ "--signin-rotate": `${ROTATE_MS}ms` } as CSSProperties} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>
@@ -216,6 +230,7 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
           {AGENT_ROLE_ORDER.map((key) => <button key={key} type="button" className={key === role ? "is-active" : ""} aria-pressed={key === role}
             aria-label={`${AGENT_ROLE_IDENTITIES[key].name}，${AGENT_ROLE_IDENTITIES[key].responsibility}`} onClick={() => choose(key)}>
             <img src={characterAsset(`login/${key}.webp`)} alt="" />
+            {key === role && <i className="signin-crew-timer" aria-hidden="true" key={role} />}
             <span className="signin-crew-name" aria-hidden="true"><b>{AGENT_ROLE_IDENTITIES[key].name}</b><small>{AGENT_ROLE_IDENTITIES[key].responsibility}</small></span>
           </button>)}
         </nav>
@@ -227,7 +242,7 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
           : <img src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>
-    <div className="signin-side">
+    <div className="signin-side" onFocus={() => setTyping(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTyping(false); }}>
     <section className="signin-panel signin-rise" style={step(5)} aria-labelledby="signin-title">
       <h2 id="signin-title">登录</h2>
       <p className="signin-sub">AI短视频获客 · 生素材 · 引客户 · 促成交</p>
