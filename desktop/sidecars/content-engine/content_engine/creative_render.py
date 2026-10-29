@@ -1577,6 +1577,22 @@ class FFmpegCreativeRenderer:
                     "auto_mix_music_not_audible",
                     f"背景音乐在大部分口播中听不到（{len(quiet)}/{len(quiet) + len(windows)} 句），"
                     f"正式成片已停止。{evidence}",
+                    details={
+                        "quiet": [
+                            {"captionId": caption_id, "startMs": start, "endMs": end,
+                             "musicLufs": round(lufs, 2) if math.isfinite(lufs) else None}
+                            for caption_id, start, end, lufs in quiet[:40]
+                        ],
+                        "audible": windows[:40],
+                        "quietSpanMs": quiet_span_ms,
+                        "musicOnSpanMs": music_on_span_ms,
+                        "musicOnMs": music_on_ms,
+                        "musicOffMs": music_off_ms,
+                        "voiceIntegratedLufs": voice_overall,
+                        "musicIntegratedLufs": music_overall,
+                        "durationS": round(float(duration), 3),
+                        "musicDurationS": round(float(music_duration), 3) if music_duration else None,
+                    },
                 )
             return windows
         finally:

@@ -8,6 +8,7 @@ const MAX_READY_LINE_BYTES = 64 * 1024;
 const MAX_REQUEST_LINE_BYTES = 1024 * 1024;
 const MAX_RESPONSE_LINE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const STDERR_TAIL_CHARS = 16 * 1024;
 const IMPORT_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const RENDER_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 const VOICE_DESIGN_REQUEST_TIMEOUT_MS = 6 * 60_000;
@@ -54,6 +55,17 @@ const PROVIDER_TASK_TYPES = new Set([
   "auto_mix_v2_regeneration", "guided_auto_mix_analysis", "guided_auto_mix_draft",
   "guided_auto_mix_supplemental_image", "narrated_batch_v1", "import_base_video"
 ]);
+
+// The failure capsule collector reads this file next to failures.jsonl.
+function saveStderrTail(dataDir, tail, exitCode) {
+  try {
+    const directory = path.join(dataDir, "logs");
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, "stderr.log");
+    if (fs.existsSync(file) && fs.statSync(file).size > 256 * 1024) fs.renameSync(file, path.join(directory, "stderr.1.log"));
+    fs.appendFileSync(file, `--- ${new Date().toISOString()} exit=${exitCode ?? ""}\n${tail}\n`, "utf8");
+  } catch { /* Diagnostics cannot change how the engine exit is handled. */ }
+}
 
 function isProviderTaskType(value) {
   return PROVIDER_TASK_TYPES.has(String(value || ""));
@@ -434,6 +446,7 @@ function createContentEngineSidecar(options = {}) {
         startSettled: false,
         startupTimer: null,
         stderrBytes: 0,
+        stderrTail: "",
         stdoutBuffer: "",
         stdoutDecoder: new StringDecoder("utf8"),
         stopping: false
@@ -462,6 +475,9 @@ function createContentEngineSidecar(options = {}) {
           MAX_RESPONSE_LINE_BYTES,
           run.stderrBytes + Buffer.byteLength(chunk)
         );
+        // Keep the end of Python's own output (tracebacks, native library
+        // errors) so an unexpected exit leaves something to read.
+        run.stderrTail = (run.stderrTail + String(chunk)).slice(-STDERR_TAIL_CHARS);
       });
       child.stdin?.once("error", () => {
         if (!run.stopping) fail("CONTENT_ENGINE_PIPE_FAILED");
@@ -469,8 +485,9 @@ function createContentEngineSidecar(options = {}) {
       child.once("error", () => {
         if (!run.stopping) fail("CONTENT_ENGINE_SPAWN_FAILED");
       });
-      child.once("close", () => {
+      child.once("close", (exitCode) => {
         run.closed = true;
+        if (!run.stopping && run.stderrTail) saveStderrTail(dataDir, run.stderrTail, exitCode);
         clearTimeout(run.startupTimer);
         settleCloseWaiters(run);
         rejectPending(

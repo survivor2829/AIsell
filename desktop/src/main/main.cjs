@@ -27,6 +27,7 @@ const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createRolePreferences, registerRolePreferencesIpc } = require("./role-preferences.cjs");
 const { createFeedbackController } = require("./feedback-controller.cjs");
+const { createFailureCapsules } = require("./failure-capsule.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
@@ -105,6 +106,7 @@ let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let cloudMaintenance = null;
 let feedbackController = null;
+let failureCapsules = null;
 let feedbackAdmin = null;
 let providerGatewayClient = null;
 let taskPassportStore = null;
@@ -441,8 +443,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // normal launch resumes ordinary retention.
     taskPassportStore.cleanup({ defer: process.argv.includes("--xiaoxi-updated-launch") });
     logger.subscribe((entry) => taskPassportStore.observeDiagnostic(entry));
-    process.on("uncaughtException", (error) => logger.event("app", "uncaught_exception", { error }, { level: "fatal", code: error?.code || "uncaught_exception" }));
-    process.on("unhandledRejection", (error) => logger.event("app", "unhandled_rejection", { error }, { level: "error", code: error?.code || "unhandled_rejection" }));
+    // The log keeps only a safe summary; the capsule keeps the stack that locates the bug.
+    const crashCapsule = (event, error) => failureCapsules?.record({ source: "crash", module: "app", event,
+      code: typeof error?.code === "string" ? error.code : event, level: "fatal", message: String(error?.message || error || ""), traceback: String(error?.stack || "") });
+    process.on("uncaughtException", (error) => { logger.event("app", "uncaught_exception", { error }, { level: "fatal", code: error?.code || "uncaught_exception" }); crashCapsule("uncaught_exception", error); });
+    process.on("unhandledRejection", (error) => { logger.event("app", "unhandled_rejection", { error }, { level: "error", code: error?.code || "unhandled_rejection" }); crashCapsule("unhandled_rejection", error); });
     logger.environment({
       displays: screen.getAllDisplays().map((display) => ({
         id: display.id,
@@ -967,7 +972,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     registerRolePreferencesIpc({ ipcMain, controller: createRolePreferences({ rootDir: runtime.rootDir }), getMainWindow: () => mainWindow });
     if (!productDetailReleaseSmokeMode) {
       feedbackController = createFeedbackController({ rootDir: runtime.rootDir, config: maintenanceConfig,
-        version: components.businessVersion(app), buildId: build.buildId, logger, safeStorage });
+        version: components.businessVersion(app), buildId: build.buildId, logger, safeStorage,
+        identity: () => cloudMaintenance?.identity(), relatedCapsules: query => failureCapsules?.related(query) || [] });
       feedbackAdmin = createFeedbackAdmin({ config: maintenanceConfig });
       registerFeedbackIpc({ ipcMain, admin: feedbackAdmin, controller: feedbackController, getMainWindow: () => mainWindow });
       feedbackController.start();
@@ -1051,6 +1057,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       }
       cloudMaintenance.start();
       autoUpdate.start();
+      failureCapsules = createFailureCapsules({
+        rootDir: runtime.rootDir, logger, engineLogsDir: path.join(app.getPath("userData"), "content-engine", "logs"),
+        network: maintenanceConfig.enabled ? require("./cloud-transport.cjs").createTransport(maintenanceConfig) : null,
+        identity: () => cloudMaintenance?.identity(), isEnabled: () => cloudMaintenance?.consentEnabled() === true,
+        environment: () => ({ version: components.businessVersion(app), buildId: build.buildId, edition: appInfo.edition,
+          dataProfile: appInfo.data_profile, os: require("node:os").release(), osVersion: require("node:os").version(),
+          memoryMb: Math.round(require("node:os").totalmem() / 1048576), freeMemoryMb: Math.round(require("node:os").freemem() / 1048576),
+          cpus: require("node:os").cpus().length, uptimeS: Math.round(process.uptime()),
+          displays: screen.getAllDisplays().map(display => ({ width: display.size.width, height: display.size.height, scale: display.scaleFactor })) })
+      });
+      failureCapsules.start();
     }
     productDetailDownloadRegistration = registerProductDetailDownloads({
       session: mainWindow.webContents.session,
@@ -1103,6 +1120,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     try { diagnostics().event("app", "quit_requested", { workflow_phase: workflow?.phase,
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     cloudMaintenance?.stop();
+    failureCapsules?.stop();
     feedbackController?.stop();
     feedbackAdmin?.stop();
     const cleanupTimeout = new Promise((resolve) => {

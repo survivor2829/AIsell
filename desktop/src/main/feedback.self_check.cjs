@@ -78,6 +78,18 @@ async function main() {
     const textOnly = { ...controller.status().draft, text: "希望操作更简单", includeDiagnostics: false };
     await controller.submit(textOnly); await controller.flush();
     assert.equal(requests.at(-1).body.diagnostics.length, 0, "Opting out sends no diagnostic entries");
+    assert.equal(requests.at(-1).body.context.capsules, undefined, "Opting out attaches no failure capsule");
+    const sharedId = "11111111-2222-4333-8444-555555555555", capsuleId = crypto.randomUUID();
+    const queries = [];
+    const bound = createFeedbackController({ ...options, rootDir: path.join(root, "capsules"),
+      identity: () => ({ installId: sharedId }), relatedCapsules: query => { queries.push(query); return [capsuleId, "not-a-capsule"]; } });
+    const boundDraft = { ...bound.status().draft, text: "还是卡在60%", context: { module: "content_engine", taskId: "batch_9" } };
+    await bound.submit(boundDraft); await bound.flush();
+    const boundBody = requests.at(-1).body;
+    assert.deepEqual(queries, [{ module: "content_engine", taskId: "batch_9" }], "Feedback asks for the capsules of the task it is about");
+    assert.deepEqual(boundBody.context.capsules, [capsuleId], "Only capsule identifiers travel with the feedback");
+    assert.equal(boundBody.client.installId, sharedId, "Feedback carries the same install identity as capsules and reports");
+    bound.stop();
     const failedDraft = { ...controller.status().draft, text: "下次再试" };
     transport.request = async () => { throw new Error("cloud_http_404"); };
     await controller.submit(failedDraft); await controller.flush();

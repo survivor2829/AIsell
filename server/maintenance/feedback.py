@@ -45,6 +45,13 @@ def validate_feedback(body, validate_report, safe_token):
         raise ValueError("feedback_context")
     clean = {"schema": body["schema"], "id": body["id"], "text": text, "category": body["category"], "createdAt": body["createdAt"],
              "client": report, "context": {key: safe_token(context.get(key)) for key in ("module", "taskId")}, "diagnostics": diagnostics}
+    # Failure capsules of the task the feedback is about. Absent unless sent, so
+    # retries of feedback submitted before capsules existed keep their hash.
+    capsules = context.get("capsules")
+    if capsules is not None:
+        if not isinstance(capsules, list) or not 1 <= len(capsules) <= 5 or not all(UUID.fullmatch(str(item)) for item in capsules):
+            raise ValueError("feedback_capsules")
+        clean["context"]["capsules"] = list(dict.fromkeys(capsules))
     # Schema 1's canonical object is unchanged: old retries must retain their hash.
     if body["schema"] == 2:
         if body.get("visibility") not in ("public", "private"):

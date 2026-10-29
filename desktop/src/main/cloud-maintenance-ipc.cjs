@@ -8,7 +8,8 @@ function registerCloudMaintenanceIpc({ ipcMain, controller, getMainWindow, resta
     announcements: () => controller.refreshAnnouncements(), readAnnouncement: (sequence) => controller.markAnnouncementRead(sequence),
     readAnnouncements: () => controller.markAnnouncementsRead(),
     consent: (value) => controller.setConsent(value === true),
-    upload: () => controller.flush(), restart: () => restart(), cancelUpdate: () => cancelUpdate(), acknowledgeUpdate: () => controller.acknowledgeUpdate()
+    upload: () => controller.flush(), restart: () => restart(), cancelUpdate: () => cancelUpdate(), acknowledgeUpdate: () => controller.acknowledgeUpdate(),
+    acknowledgeConsentNotice: () => controller.acknowledgeConsentNotice()
   })) {
     ipcMain.handle(`cloud:${name}`, async (event, value) => { trusted(event); return action(value); });
   }
