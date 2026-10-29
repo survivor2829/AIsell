@@ -21,7 +21,7 @@ function world(behaviour = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-nurture-"));
   const b = { signedIn: true, searchBox: true, searchBlocked: false, results: true, blockedAt: [], likeButton: true, commentShown: true, busy: false, ...behaviour };
   const log = { launches: 0, closed: 0, searches: 0, actions: [], reports: [], signedOut: [], published: [], videos: 0, fronts: 0 };
-  let offsetDays = 0, video = 0, checks = 0;
+  let offsetDays = 0, video = 0, checks = 0, justSearched = false;
   const now = () => Date.now() + offsetDays * 86_400_000;
   const page = { url: async () => "https://www.douyin.com/?recommend=1", front: async () => { log.fronts++; }, navigate: async () => {},
     send: async (method) => method === "Page.captureScreenshot" ? { data: Buffer.from("png").toString("base64") } : {} };
@@ -29,7 +29,7 @@ function world(behaviour = {}) {
     name: "抖音", host: "douyin.com", home: "https://www.douyin.com/?recommend=1",
     signedIn: async () => b.signedIn,
     blocked: async () => { checks++; return b.blockedAt.includes(checks); },
-    search: async () => { log.searches++; return b.searchBox; },
+    search: async () => { log.searches++; justSearched = true; return b.searchBox; },
     openFirstResult: async () => b.results,
     // Every other video in the feed is about the plan's keyword.
     current: async () => ({ id: `v${video}`, desc: video % 2 ? "洗地机实测" : "家常菜", author: "作者" }),
@@ -38,7 +38,8 @@ function world(behaviour = {}) {
     comment: async (_page, text) => { log.actions.push({ kind: "comments", video, text, segment: log.launches }); return b.commentShown ? "done" : "hidden"; },
     next: async () => { video++; log.videos++; }
   };
-  const searchBlocked = { ...driver, blocked: async () => { checks++; return b.searchBlocked && log.searches > 0 && checks === 1 ? true : b.blockedAt.includes(checks); } };
+  // Only the check right after a search shows the verification.
+  const searchBlocked = { ...driver, blocked: async () => { checks++; if (justSearched) { justSearched = false; return true; } return b.blockedAt.includes(checks); } };
   const accounts = {
     snapshot: () => ({ accounts: [{ id: "a1", platform: "douyin", label: "抖音号", status: "active" }, { id: "a2", platform: "kuaishou", label: "快手号", status: "active" }] }),
     profileDir: (id) => path.join(root, "profiles", id),
