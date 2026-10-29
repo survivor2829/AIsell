@@ -13,6 +13,8 @@
     "check:deepseek-api": "node src/main/deepseek-api.self_check.cjs",
     "check:provider-gateway": "node src/main/provider-gateway-client.self_check.cjs",
     "check:self": "node scripts/run-self-checks.cjs",
+    "issues:pull": "node scripts/issues-pull.cjs",
+    "issues:show": "node scripts/issues-show.cjs",
     "release:internal:prepare": "node scripts/internal-release-pipeline.cjs",
     "backup:local": "node scripts/backup-local-install.cjs",
     "check:product-detail-e2e": "node scripts/product-detail-local-e2e.cjs --cleanup-on-success",
