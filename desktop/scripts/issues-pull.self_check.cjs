@@ -3,8 +3,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { pull, originFrame } = require("./issues-pull.cjs");
-const { show, find, REPLAYS } = require("./issues-show.cjs");
+const { pull, originFrame, closure } = require("./issues-pull.cjs");
+const { show, find, completeness, REPLAYS } = require("./issues-show.cjs");
+const { replay } = require("./issues-replay.cjs");
 
 const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("x")]);
 const A = "aaaaaaaa-0000-4000-8000-000000000001", B = "bbbbbbbb-0000-4000-8000-000000000002", C = "cccccccc-0000-4000-8000-000000000003";
@@ -60,6 +61,48 @@ function detail(id, { code = "auto_mix_music_not_audible", module = "content_eng
   assert.throws(() => find(out, "ffff"), /issues:pull/);
   assert.deepEqual(originFrame("Error: x\n    at run (C:\\app\\resources\\app\\src\\main\\failure-capsule.cjs:12:5)\n    at node:internal/x:1:1"),
     { file: "src/main/failure-capsule.cjs", line: 12, function: "run" });
+  // A WeChat capsule with its flight record: the view lists each step and the
+  // verdict names what is missing; the replay reruns the recorded recognition.
+  const W = "dddddddd-0000-4000-8000-000000000004";
+  const flight = [
+    { ts: "2026-10-29T08:00:01.000Z", step: "moments.frame", image: "f1.jpg" },
+    { ts: "2026-10-29T08:00:02.000Z", step: "moments.menu_scan", image: "f2.png", lossless: true,
+      note: { fn: "Find-MomentsMenuDotsDetailed", viewport: { left: 308, top: 0, width: 804, height: 752 }, avatars: [], menus: [], counts: { components: 0 } } },
+    { ts: "2026-10-29T08:00:03.000Z", step: "failure.wx5-r001", image: "f3.jpg",
+      note: { reason: "moments_post_not_found", windows: [{ process: "Weixin", title: "朋友圈", width: 974, height: 998, foreground: true }], uia: { type: "Window" } } }];
+  const wechat = detail(W, { module: "moments", code: "moments_post_not_found", traceback: "", updatedAt: 200, attachments: ["flight.json", "f1.jpg", "f2.png", "f3.jpg"] });
+  wechat.attachments = ["flight.json", "f1.jpg", "f2.png", "f3.jpg"];
+  wechat.files = { "flight.json": Buffer.from(JSON.stringify(flight)).toString("base64"), "f1.jpg": "AA==", "f2.png": PNG.toString("base64"), "f3.jpg": "AA==", "../evil.json": "AA==" };
+  await pull({ out, collect: async ({ known: value }) => { known = value; return { ...first, capsules: [wechat] }; } });
+  assert.ok(fs.existsSync(path.join(out, "capsules", W, "attachments", "f2.png")), "attachments are stored next to the capsule");
+  assert.ok(!fs.existsSync(path.join(out, "capsules", "evil.json")), "a hostile attachment name is never written");
+  assert.deepEqual(known[`${W}:attachments`], undefined);
+  const wechatView = show(find(out, "dddd"));
+  assert.match(wechatView, /moments\.menu_scan（可回放） Find-MomentsMenuDotsDetailed → 0 个候选/);
+  assert.match(wechatView, /Weixin「朋友圈」974×998（前台），有结构树/);
+  assert.match(wechatView, /证据完整/);
+  const replays = [];
+  const replayed = replay(find(out, "dddd"), { runPowerShell: request => { replays.push(...request); return request.map(() => ({ ok: true, output: { menus: [] } })); } });
+  assert.equal(replays[0].inputs.viewport.width, 804, "the replay gets the recorded inputs");
+  assert.match(replayed.verdict, /全部与现场一致/);
+  assert.match(completeness({ module: "moments" }, flight.slice(0, 1), find(out, "dddd")), /证据不足：缺失败那一刻的整屏截图与窗口列表.*识别中间结果/);
+  assert.match(completeness({ module: "content_engine", details: {} }, [], out), /缺引擎测量值.*Python 堆栈/);
+
+  const capsuleOf = (installId, version) => ({ capsule: { module: "moments" }, client: { installId, version } });
+  const loop = closure([capsuleOf("one", "1.2.22"), capsuleOf("two", "1.2.22"), capsuleOf("two", "1.2.23"), capsuleOf("three", "1.2.22"), capsuleOf("four", "1.2.22")], [
+    { installId: "one", version: "1.2.23", taskKind: "interact" }, { installId: "three", version: "1.2.22", taskKind: "interact" },
+    { installId: "four", version: "1.2.23", taskKind: "touch" }]);
+  assert.deepEqual(loop, { fixed: 1, recurring: 1, waiting: 2 },
+    "fixed only by a later version completing the same kind of task; a success on the failing version or another kind proves nothing");
+  assert.equal(closure([{ capsule: { module: "content_engine" }, client: {} }], []), null);
+
+  // A verified fix is kept as a field replay; a later change to that decision is reported.
+  const { keep, verify } = require("./issues-verify.cjs");
+  keep(find(out, "dddd"), out, { results: [{ step: "s1", now: [] }] });
+  assert.ok(fs.existsSync(path.join(out, "fixtures", W, "attachments", "f2.png")), "a fixture keeps the field frame, outside the repository");
+  assert.deepEqual(verify(out, { run: () => ({ results: [{ step: "s1", now: [] }] }) }).failed, []);
+  assert.deepEqual(verify(out, { run: () => ({ results: [{ step: "s1", now: [[947, 300]] }] }) }).failed.map(row => row.changed), [["s1"]]);
+
   // The collector runs remotely with the server's python3; it must at least compile.
   const python = process.env.XIAOXI_SELF_CHECK_PYTHON || "python";
   try { execFileSync(python, ["-c", `compile(${JSON.stringify(require("./issues-pull.cjs").COLLECTOR)}, "collector", "exec")`], { stdio: "pipe" }); }

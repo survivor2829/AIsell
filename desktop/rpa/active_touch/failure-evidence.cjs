@@ -21,6 +21,56 @@ function Protect-XiaoxiDiagnosticText([string]$text) {
   if ($text.Length -gt 4000) { return $text.Substring(0,4000) + '[TRUNCATED]' }
   return $text
 }
+# Flight recorder: each step keeps the frame it recognised and what it read,
+# so a failure arrives with the steps before it. Kept locally for two hours;
+# only a failure capsule uploads it. Off unless XIAOXI_FLIGHT_DIR is set.
+function Save-XiaoxiFlightFrame([string]$step, $bitmap = $null, $note = $null, [switch]$Force, [switch]$Lossless) {
+  try {
+    $dir = $env:XIAOXI_FLIGHT_DIR
+    if (-not $dir -or $step -notmatch '^[a-z0-9_.:-]{1,80}$') { return }
+    $now = [DateTime]::UtcNow
+    if ($bitmap -and -not $Force -and $script:XiaoxiFlightLastFrame -and ($now - $script:XiaoxiFlightLastFrame).TotalMilliseconds -lt 400) { $bitmap = $null }
+    if (-not $bitmap -and $null -eq $note) { return }
+    [void][IO.Directory]::CreateDirectory($dir)
+    $script:XiaoxiFlightSeq = [int]$script:XiaoxiFlightSeq + 1
+    $name = $now.ToString('yyyyMMddTHHmmssfff') + '-' + $PID + '-' + ('{0:D4}' -f $script:XiaoxiFlightSeq) + '-' + ($step -replace '[^a-z0-9_.-]', '_')
+    $meta = [ordered]@{ v = 1; ts = $now.ToString('o'); step = $step; pid = $PID; trace = $env:XIAOXI_FAILURE_TRACE }
+    if ($bitmap -and $Lossless) {
+      # Replays run recognition on this exact image, so no scaling or JPEG.
+      $bitmap.Save((Join-Path $dir ($name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
+      $meta.image = $name + '.png'; $meta.width = [int]$bitmap.Width; $meta.height = [int]$bitmap.Height; $meta.scale = 1.0; $meta.lossless = $true
+      $script:XiaoxiFlightLastFrame = $now
+    } elseif ($bitmap) {
+      Add-Type -AssemblyName System.Drawing
+      $scale = [Math]::Min(1.0, 1600.0 / [Math]::Max([double]$bitmap.Width, [double]$bitmap.Height))
+      $w = [Math]::Max(1, [int]($bitmap.Width * $scale)); $h = [Math]::Max(1, [int]($bitmap.Height * $scale))
+      $copy = New-Object Drawing.Bitmap($w, $h)
+      try {
+        $g = [Drawing.Graphics]::FromImage($copy)
+        try { $g.DrawImage($bitmap, 0, 0, $w, $h) } finally { $g.Dispose() }
+        $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+        $parameters = New-Object Drawing.Imaging.EncoderParameters(1)
+        $parameters.Param[0] = New-Object Drawing.Imaging.EncoderParameter([Drawing.Imaging.Encoder]::Quality, [long]72)
+        $copy.Save((Join-Path $dir ($name + '.jpg')), $codec, $parameters)
+      } finally { $copy.Dispose() }
+      $meta.image = $name + '.jpg'; $meta.width = [int]$bitmap.Width; $meta.height = [int]$bitmap.Height; $meta.scale = $scale
+      $script:XiaoxiFlightLastFrame = $now
+    }
+    if ($null -ne $note) { $meta.note = $note }
+    $json = $meta | ConvertTo-Json -Depth 9 -Compress
+    if ($json.Length -gt 262144) { $meta.note = @{ truncated = $true; length = $json.Length }; $json = $meta | ConvertTo-Json -Depth 9 -Compress }
+    [IO.File]::WriteAllText((Join-Path $dir ($name + '.json')), $json, (New-Object Text.UTF8Encoding($false)))
+    if ($script:XiaoxiFlightSeq % 20 -eq 1) {
+      $files = @(Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -match '^\d{8}T\d{9}-\d+-\d{4}-[a-z0-9_.-]+\.(jpg|png|json)$' } | Sort-Object LastWriteTimeUtc -Descending)
+      [long]$bytes = 0
+      foreach ($file in $files) {
+        $bytes += $file.Length
+        if ($bytes -gt 120MB -or ($now - $file.LastWriteTimeUtc).TotalHours -gt 2) { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue }
+      }
+    }
+  } catch {}
+}
+function Add-XiaoxiFlightNote([string]$step, $note) { Save-XiaoxiFlightFrame $step $null $note }
 function Write-XiaoxiFailure([string]$rule, [string]$reason) {
   try {
     if (-not $env:XIAOXI_FAILURE_DIR) { return $rule }
@@ -113,4 +163,146 @@ public static class XiaoxiFailureCapture {
 }
 `;
 
-module.exports = { evidenceEnvironment, FAILURE_EVIDENCE_SCRIPT };
+// Screen, window titles and the control tree are taken by a separate process
+// the main process starts after a failure (flight-recorder.cjs). Kept out of
+// FAILURE_EVIDENCE_SCRIPT: every worker script starts with that text, and with
+// screen capture and window listing in it Defender blocked a clipboard script as
+// malicious. A blocked worker would stop the WeChat task itself.
+const FAILURE_SCREEN_SCRIPT = String.raw`
+# Flight recorder: each step keeps the frame it recognised and what it read,
+# so a failure arrives with the steps before it. Kept locally for two hours;
+# only a failure capsule uploads it. Off unless XIAOXI_FLIGHT_DIR is set.
+function Save-XiaoxiFlightFrame([string]$step, $bitmap = $null, $note = $null, [switch]$Force, [switch]$Lossless) {
+  try {
+    $dir = $env:XIAOXI_FLIGHT_DIR
+    if (-not $dir -or $step -notmatch '^[a-z0-9_.:-]{1,80}$') { return }
+    $now = [DateTime]::UtcNow
+    if ($bitmap -and -not $Force -and $script:XiaoxiFlightLastFrame -and ($now - $script:XiaoxiFlightLastFrame).TotalMilliseconds -lt 400) { $bitmap = $null }
+    if (-not $bitmap -and $null -eq $note) { return }
+    [void][IO.Directory]::CreateDirectory($dir)
+    $script:XiaoxiFlightSeq = [int]$script:XiaoxiFlightSeq + 1
+    $name = $now.ToString('yyyyMMddTHHmmssfff') + '-' + $PID + '-' + ('{0:D4}' -f $script:XiaoxiFlightSeq) + '-' + ($step -replace '[^a-z0-9_.-]', '_')
+    $meta = [ordered]@{ v = 1; ts = $now.ToString('o'); step = $step; pid = $PID; trace = $env:XIAOXI_FAILURE_TRACE }
+    if ($bitmap -and $Lossless) {
+      # Replays run recognition on this exact image, so no scaling or JPEG.
+      $bitmap.Save((Join-Path $dir ($name + '.png')), [Drawing.Imaging.ImageFormat]::Png)
+      $meta.image = $name + '.png'; $meta.width = [int]$bitmap.Width; $meta.height = [int]$bitmap.Height; $meta.scale = 1.0; $meta.lossless = $true
+      $script:XiaoxiFlightLastFrame = $now
+    } elseif ($bitmap) {
+      Add-Type -AssemblyName System.Drawing
+      $scale = [Math]::Min(1.0, 1600.0 / [Math]::Max([double]$bitmap.Width, [double]$bitmap.Height))
+      $w = [Math]::Max(1, [int]($bitmap.Width * $scale)); $h = [Math]::Max(1, [int]($bitmap.Height * $scale))
+      $copy = New-Object Drawing.Bitmap($w, $h)
+      try {
+        $g = [Drawing.Graphics]::FromImage($copy)
+        try { $g.DrawImage($bitmap, 0, 0, $w, $h) } finally { $g.Dispose() }
+        $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+        $parameters = New-Object Drawing.Imaging.EncoderParameters(1)
+        $parameters.Param[0] = New-Object Drawing.Imaging.EncoderParameter([Drawing.Imaging.Encoder]::Quality, [long]72)
+        $copy.Save((Join-Path $dir ($name + '.jpg')), $codec, $parameters)
+      } finally { $copy.Dispose() }
+      $meta.image = $name + '.jpg'; $meta.width = [int]$bitmap.Width; $meta.height = [int]$bitmap.Height; $meta.scale = $scale
+      $script:XiaoxiFlightLastFrame = $now
+    }
+    if ($null -ne $note) { $meta.note = $note }
+    $json = $meta | ConvertTo-Json -Depth 9 -Compress
+    if ($json.Length -gt 262144) { $meta.note = @{ truncated = $true; length = $json.Length }; $json = $meta | ConvertTo-Json -Depth 9 -Compress }
+    [IO.File]::WriteAllText((Join-Path $dir ($name + '.json')), $json, (New-Object Text.UTF8Encoding($false)))
+    if ($script:XiaoxiFlightSeq % 20 -eq 1) {
+      $files = @(Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -match '^\d{8}T\d{9}-\d+-\d{4}-[a-z0-9_.-]+\.(jpg|png|json)$' } | Sort-Object LastWriteTimeUtc -Descending)
+      [long]$bytes = 0
+      foreach ($file in $files) {
+        $bytes += $file.Length
+        if ($bytes -gt 120MB -or ($now - $file.LastWriteTimeUtc).TotalHours -gt 2) { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue }
+      }
+    }
+  } catch {}
+}
+function Add-XiaoxiFlightNote([string]$step, $note) { Save-XiaoxiFlightFrame $step $null $note }
+# Top-level windows in z-order: what was in front of WeChat, and where.
+function Get-XiaoxiWindowSnapshot {
+  if (-not ('XiaoxiFlightWindows' -as [type])) {
+    Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class XiaoxiFlightWindows {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  public static List<object[]> List() {
+    var rows = new List<object[]>();
+    EnumWindows((hWnd, unused) => {
+      if (!IsWindowVisible(hWnd) || rows.Count >= 80) return true;
+      var title = new StringBuilder(256); GetWindowText(hWnd, title, 256);
+      var cls = new StringBuilder(128); GetClassName(hWnd, cls, 128);
+      RECT r; GetWindowRect(hWnd, out r); uint pid; GetWindowThreadProcessId(hWnd, out pid);
+      if (r.R - r.L < 2 || r.B - r.T < 2) return true;
+      rows.Add(new object[] { hWnd.ToInt64(), title.ToString(), cls.ToString(), r.L, r.T, r.R - r.L, r.B - r.T, (int)pid, IsIconic(hWnd) });
+      return true;
+    }, IntPtr.Zero);
+    return rows;
+  }
+}
+"@
+  }
+  $foreground = [XiaoxiFlightWindows]::GetForegroundWindow().ToInt64()
+  $names = @{}
+  foreach ($row in [XiaoxiFlightWindows]::List()) {
+    $owner = [int]$row[7]
+    if (-not $names.ContainsKey($owner)) { $names[$owner] = try { (Get-Process -Id $owner -ErrorAction Stop).ProcessName } catch { '' } }
+    [ordered]@{ hwnd = $row[0]; title = $row[1]; class = $row[2]; left = $row[3]; top = $row[4]; width = $row[5]; height = $row[6]
+      pid = $owner; process = $names[$owner]; minimized = $row[8]; foreground = ($row[0] -eq $foreground) }
+  }
+}
+# The WeChat control tree, bounded: shows whether the window changed shape.
+function Get-XiaoxiUiaTree([IntPtr]$hWnd) {
+  try {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+    $script:XiaoxiUiaNodes = 0
+    function Read-XiaoxiUiaNode($element, [int]$depth) {
+      if ($null -eq $element -or $depth -gt 8 -or $script:XiaoxiUiaNodes -ge 500) { return $null }
+      $script:XiaoxiUiaNodes++
+      $current = $element.Current; $box = $current.BoundingRectangle; $label = [string]$current.Name
+      $node = [ordered]@{ type = ($current.ControlType.ProgrammaticName -replace '^ControlType\.', ''); name = $label.Substring(0, [Math]::Min(80, $label.Length))
+        class = $current.ClassName; id = $current.AutomationId; rect = @([int]$box.X, [int]$box.Y, [int]$box.Width, [int]$box.Height) }
+      $children = @(); $child = $walker.GetFirstChild($element)
+      while ($null -ne $child -and $script:XiaoxiUiaNodes -lt 500) { $children += ,(Read-XiaoxiUiaNode $child ($depth + 1)); $child = $walker.GetNextSibling($child) }
+      if ($children.Count) { $node.children = $children }
+      return $node
+    }
+    return Read-XiaoxiUiaNode ([Windows.Automation.AutomationElement]::FromHandle($hWnd)) 0
+  } catch { return @{ error = $_.Exception.GetType().Name } }
+}
+# Every monitor, so a popup or another program in front of WeChat is visible.
+function Save-XiaoxiFailureScreen([string]$rule, [string]$reason, [string]$evidenceId) {
+  if (-not $env:XIAOXI_FLIGHT_DIR -or $script:XiaoxiFlightScreenSaved) { return }
+  $script:XiaoxiFlightScreenSaved = $true
+  try {
+    Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+    $windows = @(Get-XiaoxiWindowSnapshot)
+    $wechat = $windows | Where-Object { $_.process -in @('WeChat', 'Weixin') -and -not $_.minimized } | Select-Object -First 1
+    $note = [ordered]@{ rule = $rule; reason = $reason; evidence_id = $evidenceId; windows = $windows
+      uia = $(if ($wechat) { Get-XiaoxiUiaTree ([IntPtr][int64]$wechat.hwnd) } else { $null }) }
+    $area = [Windows.Forms.SystemInformation]::VirtualScreen
+    $screen = New-Object Drawing.Bitmap($area.Width, $area.Height)
+    try {
+      $g = [Drawing.Graphics]::FromImage($screen)
+      try { $g.CopyFromScreen($area.Left, $area.Top, 0, 0, $area.Size) } finally { $g.Dispose() }
+      $note.screen = @{ left = $area.Left; top = $area.Top; width = $area.Width; height = $area.Height }
+      Save-XiaoxiFlightFrame ('failure.' + $rule) $screen $note -Force
+    } finally { $screen.Dispose() }
+  } catch { Add-XiaoxiFlightNote ('failure.' + $rule) @{ rule = $rule; reason = $reason; capture_error = $_.Exception.GetType().Name } }
+}
+`;
+
+module.exports = { evidenceEnvironment, FAILURE_EVIDENCE_SCRIPT, FAILURE_SCREEN_SCRIPT };

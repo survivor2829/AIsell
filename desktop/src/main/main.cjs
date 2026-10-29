@@ -432,6 +432,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     process.env.XIAOXI_INTERNAL_DIAGNOSTICS = logger.internalEnabled ? "1" : "0";
     // In-process RPA has no CLI --data-dir; share the same evidence directory.
     process.env.XIAOXI_FAILURE_DIR = path.join(runtime.rootDir, "failure-evidence");
+    // The per-step flight recorder keeps real screen content, so it follows the
+    // same internal profile that keeps unmasked failure screenshots.
+    if (logger.internalEnabled) process.env.XIAOXI_FLIGHT_DIR = require("./flight-recorder.cjs").flightDirectory(runtime.rootDir);
     startupTiming.attach(logger);
     startupTiming.mark('local_runtime_ready');
     taskPassportStore = createTaskPassportStore({

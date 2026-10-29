@@ -213,6 +213,14 @@ function Test-MomentsVisualViewportOwned($windowRect, [IntPtr]$expectedHWnd, [in
   return $true
 }
 
+# Flight recorder hooks stay inert where the evidence script is not loaded.
+function Test-XiaoxiFlight {
+  if ($null -eq $script:XiaoxiFlightOn) {
+    $script:XiaoxiFlightOn = [bool]$env:XIAOXI_FLIGHT_DIR -and [bool](Get-Command Save-XiaoxiFlightFrame -ErrorAction SilentlyContinue)
+  }
+  return $script:XiaoxiFlightOn
+}
+
 function Get-MomentsVisualFrame(
   [IntPtr]$hWnd,
   $windowRect,
@@ -274,6 +282,7 @@ function Get-MomentsVisualFrame(
     $bitmap.Dispose()
     return @{ ok = $false; reason = "moments_visual_capture_failed" }
   }
+  if (Test-XiaoxiFlight) { Save-XiaoxiFlightFrame 'moments.frame' $bitmap @{ left = [int]$windowRect.Left; top = [int]$windowRect.Top; hwnd = [int64]$hWnd } }
   return @{
     ok = $true
     bitmap = $bitmap
@@ -492,6 +501,7 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
   $scanProfile = Get-MomentsVisualFeedScanProfile $scanViewport $avatarCandidates
   $scanBands = @($scanProfile.menuBands)
   if ($scanBands.Count -eq 0) {
+    if (Test-XiaoxiFlight) { Add-XiaoxiFlightNote 'moments.menu_scan' @{ fn = 'Find-MomentsMenuDotsDetailed'; viewport = $scanViewport; avatars = @($avatarCandidates); localBounds = $localBounds; profile = $scanProfile; menus = @(); result = 'no_scan_band' } }
     return @{
       menus = @()
       diagnostics = @{
@@ -590,6 +600,12 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
     }
   }
   $accepted = @($menus.ToArray() | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
+  if ((Test-XiaoxiFlight) -and $frame.bitmap) {
+    # The exact frame and inputs: issues:replay reruns this function on them.
+    Save-XiaoxiFlightFrame 'moments.menu_scan' $frame.bitmap @{ fn = 'Find-MomentsMenuDotsDetailed'; viewport = $viewportBounds; scanViewport = $scanViewport
+      avatars = @($avatarCandidates); localBounds = $localBounds; profile = $scanProfile; menus = $accepted
+      counts = @{ components = [int]$components.Count; raw = [int]$rawCandidateCount; whitespace = [int]$rejectedWhitespaceCount; avatarLane = [int]$rejectedAvatarLaneCount } } -Force -Lossless
+  }
   return @{
     menus = $accepted
     diagnostics = @{
@@ -851,7 +867,12 @@ function Get-MomentsOcrObservation($frame, $rect) {
   $crop = ConvertTo-MomentsOcrBitmap $frame $rect
   if ($crop -eq $null) { return @{ ok = $false; reason = "moments_visual_ocr_region_invalid" } }
   try {
-    return Get-MomentsOcrObservationFromBitmap $crop
+    $observation = Get-MomentsOcrObservationFromBitmap $crop
+    if (Test-XiaoxiFlight) {
+      Add-XiaoxiFlightNote 'moments.ocr' @{ rect = $rect; ok = [bool]$observation.ok; reason = $observation.reason
+        lines = @($observation.lines | Select-Object -First 80 | ForEach-Object { @{ text = $_.compact; bounds = $_.bounds } }) }
+    }
+    return $observation
   } finally {
     $crop.Dispose()
   }

@@ -22,7 +22,7 @@ def get(route, raw=False):
         data = response.read()
     return data if raw else json.loads(data)
 known = json.loads(sys.stdin.read() or "{}").get("known", {})
-result = {"capsules": [], "groups": [], "feedback": [], "issues": [], "versions": []}
+result = {"capsules": [], "groups": [], "feedback": [], "issues": [], "versions": [], "health": []}
 offset = 0
 while True:
     page = get(f"/api/capsules?offset={offset}")
@@ -36,6 +36,10 @@ while True:
         for evidence in detail["evidence"]:
             if known.get(item["id"]) is None or evidence not in known.get(item["id"] + ":evidence", []):
                 detail["images"][evidence] = base64.b64encode(get(f"/api/capsules/{item['id']}/evidence/{evidence}.png", True)).decode()
+        detail["files"] = {}
+        for name in detail.get("attachments", []):
+            if name not in known.get(item["id"] + ":attachments", []):
+                detail["files"][name] = base64.b64encode(get(f"/api/capsules/{item['id']}/attachments/{name}", True)).decode()
         result["capsules"].append(detail)
     offset += len(page["items"])
     if not page["items"] or offset >= page["total"]:
@@ -49,6 +53,10 @@ while True:
         break
 overview = get("/api/overview")
 result["issues"], result["versions"] = overview["issues"], overview["versions"]
+try:
+    result["health"] = get("/api/health")["successes"]
+except Exception:
+    result["health"] = []
 sys.stdout.write(json.dumps(result, ensure_ascii=False))
 `;
 
@@ -104,12 +112,20 @@ function save(out, pulled) {
     for (const [evidence, data] of Object.entries(item.images || {})) {
       if (EVIDENCE.test(evidence)) fs.writeFileSync(path.join(folder, `${evidence}.png`), Buffer.from(data, "base64"));
     }
+    const attachmentDir = path.join(folder, "attachments");
+    for (const [name, data] of Object.entries(item.files || {})) {
+      if (!/^[a-z0-9][a-z0-9_.-]{0,140}\.(png|jpg|json)$/.test(name)) continue;
+      fs.mkdirSync(attachmentDir, { recursive: true });
+      fs.writeFileSync(path.join(attachmentDir, name), Buffer.from(data, "base64"));
+    }
     const record = { ...item };
     delete record.images;
+    delete record.files;
     if (!state.known[id]) fresh.push(id);
     fs.writeFileSync(path.join(folder, "capsule.json"), JSON.stringify(record, null, 2));
     state.known[id] = item.updatedAt;
     state.known[`${id}:evidence`] = item.evidence;
+    state.known[`${id}:attachments`] = item.attachments || [];
   }
   const present = new Set(pulled.capsules.map(item => item.id || item.capsule?.id));
   fs.writeFileSync(path.join(out, "feedback.json"), JSON.stringify(pulled.feedback, null, 2));
@@ -120,7 +136,33 @@ function save(out, pulled) {
   return { capsules, fresh: new Set(fresh) };
 }
 
-function cluster(capsules, feedback, fresh = new Set()) {
+// Which workflow task kinds show that a failure of this module is gone.
+const TASK_KINDS = { moments: ["interact", "publish"], active_touch: ["touch"], wechat_adapter: ["touch", "interact", "publish"], wechat_workflow: ["touch", "interact", "publish"] };
+
+// Per computer that hit the failure: a later version that completed the same
+// kind of task closes the loop; the failure again on a later version reopens it.
+function closure(capsules, health) {
+  const kinds = TASK_KINDS[capsules[0]?.capsule?.module];
+  if (!kinds) return null;
+  const byInstall = new Map();
+  for (const item of capsules) {
+    const install = item.client?.installId;
+    const versions = byInstall.get(install) || [];
+    versions.push(item.client?.version);
+    byInstall.set(install, versions);
+  }
+  const result = { fixed: 0, recurring: 0, waiting: 0 };
+  for (const [install, versions] of byInstall) {
+    const sorted = versions.filter(Boolean).sort(compareVersions);
+    const last = sorted.at(-1);
+    if (compareVersions(sorted[0], last) < 0) { result.recurring += 1; continue; }
+    const later = health.some(row => row.installId === install && kinds.includes(row.taskKind) && compareVersions(row.version, last) > 0);
+    result[later ? "fixed" : "waiting"] += 1;
+  }
+  return result;
+}
+
+function cluster(capsules, feedback, fresh = new Set(), health = []) {
   const latest = capsules.map(item => item.client?.version).filter(Boolean).sort(compareVersions).at(-1) || "";
   const groups = new Map();
   for (const item of capsules) {
@@ -147,7 +189,8 @@ function cluster(capsules, feedback, fresh = new Set()) {
       }
     }
   }
-  return [...groups.values()].map(group => ({ ...group, installs: group.installs.size, versions: [...group.versions].sort(compareVersions),
+  const members = id => capsules.filter(item => item.capsule.id === id);
+  return [...groups.values()].map(group => ({ ...group, closure: closure(group.capsules.flatMap(members), health), installs: group.installs.size, versions: [...group.versions].sort(compareVersions),
     inLatest: group.versions.has(latest), origins: [...group.origins].sort((a, b) => b[1] - a[1]), messages: [...group.messages] }))
     .sort((a, b) => b.fresh - a.fresh || b.installs - a.installs || b.occurrences - a.occurrences || (b.lastSeen > a.lastSeen ? 1 : -1));
 }
@@ -164,6 +207,7 @@ function report(groups, feedback, { now = new Date(), latest = "" } = {}) {
       `- 首次 ${group.firstSeen}，最近 ${group.lastSeen}`);
     for (const [origin, count] of group.origins.slice(0, 3)) lines.push(`- 出错位置 \`${origin}\`（${count} 个）`);
     for (const message of group.messages.slice(0, 2)) lines.push(`- 客户看到：${line(message, 160)}`);
+    if (group.closure) lines.push(`- 闭环：更新后同类任务已跑通 ${group.closure.fixed} 台，更新后仍复发 ${group.closure.recurring} 台，还没有更新后的记录 ${group.closure.waiting} 台`);
     for (const item of group.feedback.slice(0, 3)) lines.push(`- 关联反馈（${item.status}）：${line(item.text, 120)}`);
     lines.push(`- 查看：\`npm.cmd run issues:show -- ${group.capsules.at(-1)}\``, "");
   }
@@ -181,7 +225,7 @@ async function pull({ out = DEFAULT_OUT, collect = remoteCollect, now = new Date
   const state = readJson(path.join(out, "state.json"), { known: {} });
   const pulled = await collect({ known: state.known });
   const { capsules, fresh } = save(out, pulled);
-  const groups = cluster(capsules, pulled.feedback, fresh);
+  const groups = cluster(capsules, pulled.feedback, fresh, pulled.health || []);
   const latest = capsules.map(item => item.client?.version).filter(Boolean).sort(compareVersions).at(-1) || "";
   const text = report(groups, pulled.feedback, { now, latest });
   fs.mkdirSync(path.join(out, "reports"), { recursive: true });
@@ -198,4 +242,4 @@ if (require.main === module) {
     .catch(error => { console.error(`issues:pull failed: ${error.message}`); process.exit(1); });
 }
 
-module.exports = { pull, cluster, report, originFrame, compareVersions, DEFAULT_OUT, COLLECTOR };
+module.exports = { pull, cluster, closure, report, originFrame, compareVersions, DEFAULT_OUT, COLLECTOR };

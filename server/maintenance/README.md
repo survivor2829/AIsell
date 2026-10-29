@@ -35,6 +35,8 @@
 | `GET /api/capsules` | 仅回环管理端口；最近 100 条摘要与按模块+错误码分组，可按 `module`、`code`、`install_id` 过滤 |
 | `GET /api/capsules/{id}`、`/api/capsules/{id}/evidence/{evidenceId}.png` | 仅回环管理端口；完整现场包与截图 |
 
+1.2.23 起另有 `POST /v1/capsules/attachments`（`{client, capsuleId, name, data}`，文件名限小写字母数字与 `_.-`，扩展名 png/jpg/json，单个 ≤4MB，每包 ≤60 个，只有上报该现场包的电脑可补充），承载逐步飞行记录与任务护照；管理端 `GET /api/capsules/{id}/attachments/{name}` 读取，`GET /api/health` 按电脑、版本、任务类型汇总微信任务成功次数，用于确认修复后同一电脑已跑通。
+
 现场包与截图保留 30 天，另有 2 万条与截图总量 2GB 上限（超出先删最旧截图）。反馈的 `context.capsules` 列出同任务的现场包 ID（最多 5 个）；未带该字段的旧反馈重试哈希不变。
 
 ### 开发机拉取与查看（第 2 期）

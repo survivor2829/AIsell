@@ -20,12 +20,14 @@ function fixture(name, options = {}) {
     posts.push({ route, body });
     return route === "/v1/capsules" ? { id: body.capsule.id, evidence: [] } : { ok: true };
   } };
+  const screens = [];
   const capsules = createFailureCapsules({ rootDir: root, logger, engineLogsDir, network, settleMs: 5,
+    captureScreen: async reason => { screens.push(reason); },
     identity: () => ({ schema: 1, installId: "11111111-2222-4333-8444-555555555555", version: "1.2.22" }),
     isEnabled: () => enabled, environment: () => ({ displays: [{ width: 1920, height: 1080, scale: 1.25 }] }), home: root, ...options });
   const files = () => fs.readdirSync(capsules.directory).filter(file => /^[a-f0-9-]{36}\.json$/.test(file))
     .map(file => JSON.parse(fs.readFileSync(path.join(capsules.directory, file), "utf8")));
-  return { root, engineLogsDir, logger, capsules, posts, files,
+  return { root, engineLogsDir, logger, capsules, posts, files, screens,
     setFailing: value => { failing = value; }, setEnabled: value => { enabled = value; } };
 }
 
@@ -49,6 +51,8 @@ async function logFailureBecomesOneCapsuleWithItsSteps() {
   assert.equal(capsule.traceId, trace.traceId);
   assert.ok(capsule.breadcrumbs.some(row => row.event === "moments.post_scan"), "the steps of the same operation travel with the failure");
   assert.equal(capsule.environment.displays[0].scale, 1.25);
+  assert.deepEqual(t.screens, ["moments_post_not_found", "moments_post_not_found"],
+    "a WeChat failure with no worker screenshot gets one taken now");
   await t.capsules.flush();
   assert.ok(t.posts.every(post => post.route === "/v1/capsules" && post.body.capsule.id === capsule.id));
   assert.equal(t.posts.at(-1).body.capsule.occurrences, 2, "the server learns how often the failure repeated");
@@ -138,6 +142,80 @@ async function dailyLimitStopsAFailureLoop() {
   t.capsules.stop();
 }
 
+function stamp(ms) { return new Date(ms).toISOString().replace(/[-:]/g, "").replace(".", "").replace("Z", ""); }
+function flightStep(root, ms, seq, step, { image, note = {}, lossless = false } = {}) {
+  const dir = path.join(root, "flight-recorder");
+  fs.mkdirSync(dir, { recursive: true });
+  const name = `${stamp(ms)}-42-${String(seq).padStart(4, "0")}-${step}`;
+  const meta = { v: 1, ts: new Date(ms).toISOString(), step, pid: 42, note };
+  if (image) { fs.writeFileSync(path.join(dir, `${name}.${image}`), image === "png" ? PNG : Buffer.from([0xff, 0xd8, 0xff, 1])); meta.image = `${name}.${image}`; meta.lossless = lossless; }
+  fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(meta));
+}
+
+async function flightRecordAndPassportTravelWithTheFailure() {
+  const t = fixture("flight");
+  t.setEnabled(false);
+  const now = Date.now();
+  flightStep(t.root, now - 30 * 60_000, 1, "moments.frame", { image: "jpg" });
+  flightStep(t.root, now - 9_000, 2, "moments.frame", { image: "jpg" });
+  flightStep(t.root, now - 8_000, 3, "moments.menu_scan", { image: "png", lossless: true, note: { fn: "Find-MomentsMenuDotsDetailed", menus: [] } });
+  flightStep(t.root, now - 7_000, 4, "moments.ocr", { note: { lines: [{ text: "点赞" }], path: path.join(t.root, "x") } });
+  flightStep(t.root, now - 1_000, 5, "failure.wx5-r001", { image: "jpg", note: { windows: [{ title: "朋友圈", process: "Weixin" }] } });
+  const passports = path.join(t.root, "task-passports", "moments", "task_1");
+  fs.mkdirSync(passports, { recursive: true });
+  for (const name of ["2026-10-29-07-41-06-580Z-ab12cd34-screen.png", "2026-10-29-07-41-06-580Z-ab12cd34-raw-reading.json", "2026-10-29-07-41-06-580Z-ab12cd34-expected.json"]) {
+    fs.writeFileSync(path.join(passports, name), name.endsWith(".png") ? PNG : JSON.stringify({ at: path.join(t.root, "data") }));
+  }
+  const id = t.capsules.record({ source: "log", module: "moments", code: "moments_post_not_found", at: now });
+  const [capsule] = t.files();
+  assert.deepEqual(capsule.flight.map(step => step.step), ["moments.frame", "moments.menu_scan", "moments.ocr", "failure.wx5-r001"],
+    "the steps of the last ten minutes travel with the failure, oldest first; older ones do not");
+  assert.equal(capsule.flight[1].lossless, true, "the replay frame is kept lossless");
+  const folder = path.join(t.capsules.directory, id);
+  const attached = fs.readdirSync(folder).sort();
+  assert.deepEqual(capsule.attachments.slice().sort(), attached);
+  assert.ok(attached.includes("flight.json"));
+  assert.equal(attached.filter(name => name.startsWith("passport-")).length, 3, "the task passport of the same failure is attached");
+  assert.equal(attached.filter(name => /\.(jpg|png)$/.test(name) && !name.startsWith("passport-")).length, 3);
+  for (const name of ["flight.json", "passport-2026-10-29-07-41-06-580z-ab12cd34-raw-reading.json"]) {
+    assert.ok(!fs.readFileSync(path.join(folder, name), "utf8").includes(JSON.stringify(t.root).slice(1, -1)), `${name} carries no profile path`);
+  }
+  t.setEnabled(true);
+  await t.capsules.flush();
+  const uploaded = t.posts.filter(post => post.route === "/v1/capsules/attachments").map(post => post.body.name).sort();
+  assert.deepEqual(uploaded, attached, "every attachment is uploaded once");
+  t.capsules.stop();
+}
+
+async function maskedScreenshotsAreNotUploaded() {
+  const t = fixture("masked");
+  const evidence = path.join(t.root, "failure-evidence");
+  fs.mkdirSync(evidence);
+  const trace = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1", id = "fedcba9876543210fedcba9876543210";
+  fs.writeFileSync(path.join(evidence, `${id}.json`), JSON.stringify({ ts: new Date().toISOString(), code: "x", trace_id: trace, details: { evidence_id: id, capture_status: "saved", redaction_mode: "full_content" } }));
+  fs.writeFileSync(path.join(evidence, `${id}.png`), PNG);
+  t.capsules.record({ source: "log", module: "wechat_adapter", code: "masked_probe", traceId: trace });
+  await t.capsules.flush();
+  assert.equal(t.files()[0].evidence[0].redacted, true);
+  assert.equal(t.posts.some(post => post.route === "/v1/capsules/evidence"), false, "a grey mask is not evidence");
+  t.capsules.stop();
+}
+
+async function environmentCausesAreCountedNotFiled() {
+  const t = fixture("environment");
+  t.setEnabled(false);
+  const { classifyWechatFailureReason } = require("../shared/wechat-failure-policy.cjs");
+  const code = "message_input_failed_wechat_user_active";
+  assert.equal(classifyWechatFailureReason(code).classification, "environment");
+  const made = [];
+  for (let index = 0; index < 7; index += 1) made.push(t.capsules.record({ source: "log", module: "active_touch", code, at: Date.now() + index * 11 * 60_000 }));
+  assert.deepEqual(made.map(Boolean), [false, false, false, false, true, false, false],
+    "the customer using WeChat is handled by the app; only the fifth time in a day suggests a bug");
+  assert.equal(t.files()[0].suspected, "environment_repeated");
+  assert.ok(t.capsules.record({ source: "log", module: "content_engine", code }), "the environment rule is for WeChat modules only");
+  t.capsules.stop();
+}
+
 function profilePathVariants() {
   const home = "C:\\Users\\张三";
   const json = JSON.stringify({ a: "C:\\Users\\张三\\AppData\\x.json", b: "C:/Users/张三/x", c: "c:\\users\\张三\\y" });
@@ -151,7 +229,10 @@ function profilePathVariants() {
   await screenshotsOfTheSameOperationUploadAsOriginals();
   await uploadRetriesAndRespectsTheCustomerSwitch();
   await dailyLimitStopsAFailureLoop();
+  await flightRecordAndPassportTravelWithTheFailure();
+  await maskedScreenshotsAreNotUploaded();
+  await environmentCausesAreCountedNotFiled();
   profilePathVariants();
   await settle();
-  console.log("failure capsule: one capsule per failure with its steps, engine journal merge, screenshots, profile path removal, retry, customer switch and daily limit passed");
+  console.log("failure capsule: one capsule per failure with its steps, engine journal merge, screenshots, profile path removal, retry, customer switch and daily limit, flight record and passport attachments, masked screenshots and environment counting passed");
 })().catch(error => { console.error(error); process.exit(1); });
