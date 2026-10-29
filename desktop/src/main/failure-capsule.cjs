@@ -76,7 +76,7 @@ function tailText(file, chars) {
   } catch { return null; }
 }
 
-function createFailureCapsules({ rootDir, logger, engineLogsDir = "", network = null, identity = () => null,
+function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLogsDirs = {}, network = null, identity = () => null,
   isEnabled = () => false, environment = () => ({}), clock = Date.now, settleMs = SETTLE_MS, home = os.homedir(),
   captureScreen = captureFailureScreen }) {
   const dir = path.join(rootDir, "failure-capsules");
@@ -128,9 +128,11 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", network = 
       }).filter(Boolean).slice(0, 6);
     } catch { return []; }
   }
-  function engineStderr(at) {
-    if (!engineLogsDir) return "";
-    const tail = tailText(path.join(engineLogsDir, "stderr.log"), 4000);
+  // The local service's own output near the failure, for modules that run one.
+  function serviceStderr(module, at) {
+    const logsDir = { content_engine: engineLogsDir, ...serviceLogsDirs }[module];
+    if (!logsDir) return "";
+    const tail = tailText(path.join(logsDir, "stderr.log"), 4000);
     return tail && Math.abs(tail.modified - at) < 30 * 60_000 ? tail.text : "";
   }
 
@@ -224,7 +226,7 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", network = 
       message: text(failure.message, 2000), where: text(failure.where, 120), traceback: text(failure.traceback, 12000),
       details: failure.details || {}, context: failure.context || {},
       breadcrumbs: breadcrumbs(at, failure.traceId), internal: internalTrail(failure.traceId),
-      engineStderr: failure.module === "content_engine" ? engineStderr(at) : "",
+      engineStderr: serviceStderr(failure.module, at),
       evidence: evidence(at, failure.traceId), environment: (() => { try { return environment() || {}; } catch { return {}; } })(),
       ...(environmental === "repeated" ? { suspected: "environment_repeated" } : {})
     };

@@ -799,6 +799,20 @@ function rawDiagnosticCode(value) {
     : null;
 }
 
+// A narrated batch that finished in this session, once per batch and outcome:
+// how many items it made of how many, for success rates per version.
+function batchOutcome(batch, sessionTaskIds, reported) {
+  const status = safeText(batch?.status, 64);
+  const batchId = safeText(batch?.batch_id || batch?.batchId, 160);
+  if (!batchId || !sessionTaskIds.has(batch.task_id) || !["completed", "completed_with_errors"].includes(status)) return null;
+  const key = `${batchId}:${status}`;
+  if (reported.has(key)) return null;
+  reported.add(key);
+  const count = value => Number.isSafeInteger(value) ? Math.max(0, value) : undefined;
+  return { details: { task_kind: "narrated_batch", outcome: status, done: count(batch?.completed_count), total: count(batch?.target_count) },
+    options: { level: "info", trace: true, code: status === "completed" ? "ok" : "partial" } };
+}
+
 function opaqueId(value, prefix) {
   const id = safeText(value, 80);
   return new RegExp(`^${prefix}_[a-f0-9]{32}$`).test(id) ? id : null;
@@ -2224,7 +2238,14 @@ function registerContentEngineIpc(options = {}) {
     );
   }
 
+  const reportedBatchOutcomes = new Set();
+  function reportBatchOutcome(batch) {
+    const outcome = batchOutcome(batch, sessionTaskIds, reportedBatchOutcomes);
+    if (outcome) diagnosticLogger.event("content_engine", "batch_completed", outcome.details, outcome.options);
+  }
+
   function notifyBatchResult(batch) {
+    try { reportBatchOutcome(batch); } catch { /* Diagnostics never change the result shown. */ }
     const status = safeText(batch?.status, 64);
     const batchId = safeText(batch?.batch_id || batch?.batchId, 160);
     if (!batchId || !sessionTaskIds.has(batch.task_id) || !BATCH_NOTIFICATION_STATUSES.has(status)) return;
@@ -2413,6 +2434,15 @@ function registerContentEngineIpc(options = {}) {
     const previousStatus = observation.previousStatus;
     if (previousStatus === "failed" && rawStatus !== "failed") {
       diagnosticLogger.recover?.("content_engine");
+    }
+    // Successes per version, next to the failures in the capsules: a new
+    // version that makes a kind of production fail more shows up by number. A
+    // narrated batch task completes even when its items failed; batches report
+    // their own outcome below.
+    if (rawStatus === "completed" && previousStatus !== "completed" && item?.taskType !== "narrated_batch_v1"
+        && (previousStatus !== undefined || belongsToCurrentSession)) {
+      diagnosticLogger.event("content_engine", "task_completed", { task_kind: safeText(item?.taskType, 64) || "unknown" },
+        { level: "info", trace: true, code: "ok" });
     }
     if (rawStatus !== "failed" || previousStatus === "failed") return;
     const updatedAt = Date.parse(item?.updatedAt || "");
@@ -3865,6 +3895,7 @@ function registerContentEngineIpc(options = {}) {
 }
 
 module.exports = {
+  batchOutcome,
   CONTENT_ENGINE_CHANNELS,
   publicAsset,
   publicError,

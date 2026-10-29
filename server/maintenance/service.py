@@ -206,15 +206,20 @@ class Store(FeedbackStoreMixin, CapsuleStoreMixin):
             reports = [json.loads(row["body"]) for row in db.execute("SELECT body FROM reports ORDER BY received DESC LIMIT 200")]
             versions = [dict(row) for row in db.execute("SELECT channel,version,COUNT(DISTINCT install_id) AS installations,MAX(received) AS last_seen FROM reports GROUP BY channel,version ORDER BY last_seen DESC")]
         return {"issues": issues, "reports": reports, "versions": versions}
+    # Success events: WeChat workflow tasks, content-engine tasks and batches.
+    SUCCESS_EVENTS = (("wechat_workflow", "task.succeeded"), ("content_engine", "task_completed"), ("content_engine", "batch_completed"))
     def task_health(self):
-        """WeChat task successes per computer, version and task kind: after a fix
-        ships, they show whether the computers that failed now complete it."""
+        """Successes per computer, version, module and task kind. Next to the
+        failure capsules they show whether a version made a kind of task worse,
+        and whether the computers that failed complete it after a fix."""
+        condition = " OR ".join("(module=? AND json_extract(body, '$.entries[0].event')=?)" for _ in self.SUCCESS_EVENTS)
         with self.connect() as db:
-            return {"successes": [dict(row) for row in db.execute("""
-                SELECT install_id AS installId, version, json_extract(body, '$.entries[0].details.task_kind') AS taskKind,
+            return {"successes": [dict(row) for row in db.execute(f"""
+                SELECT install_id AS installId, version, module, json_extract(body, '$.entries[0].details.task_kind') AS taskKind,
                   COUNT(*) AS successes, MIN(received) AS firstSeen, MAX(received) AS lastSeen
-                FROM reports WHERE module='wechat_workflow' AND json_extract(body, '$.entries[0].event')='task.succeeded'
-                GROUP BY install_id, version, taskKind ORDER BY lastSeen DESC LIMIT 5000""")]}
+                FROM reports WHERE {condition}
+                GROUP BY install_id, version, module, taskKind ORDER BY lastSeen DESC LIMIT 5000""",
+                [value for pair in self.SUCCESS_EVENTS for value in pair])]}
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True

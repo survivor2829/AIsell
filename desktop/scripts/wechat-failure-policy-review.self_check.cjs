@@ -93,6 +93,19 @@ try {
   const newBranchDiff = gitDiff("4b825dc642cb6eb9a060e54bf8d69288fbee4904", { cwd: largeDiffRoot });
   assert.deepEqual(unclassifiedAddedReasons(newBranchDiff), ["large_diff_trailing_unclassified_reason"],
     "a new branch push must inspect reasons from every commit, not only HEAD^");
+  // Locally, with no base: a branch off main is reviewed over main, untracked files included.
+  runGit(["branch", "-M", "main"]);
+  runGit(["switch", "--quiet", "-c", "feature"]);
+  fs.writeFileSync(path.join(sourceDir, "committed-on-branch.cjs"), 'return { reason: "branch_committed_unclassified_reason" };\n', "utf8");
+  runGit(["add", "."]);
+  runGit(["-c", "user.name=Xiaoxi Self Check", "-c", "user.email=self-check@example.invalid", "commit", "--quiet", "-m", "branch"]);
+  fs.writeFileSync(path.join(largeDiffRoot, "README.md"), "unrelated later commit\n", "utf8");
+  runGit(["add", "."]);
+  runGit(["-c", "user.name=Xiaoxi Self Check", "-c", "user.email=self-check@example.invalid", "commit", "--quiet", "-m", "later"]);
+  fs.writeFileSync(path.join(sourceDir, "new-untracked.cjs"), 'return { reason: "untracked_file_unclassified_reason" };\n', "utf8");
+  assert.deepEqual(unclassifiedAddedReasons(gitDiff("", { cwd: largeDiffRoot })),
+    ["branch_committed_unclassified_reason", "untracked_file_unclassified_reason"],
+    "a local run sees every commit of the branch and files git does not track yet");
 } finally {
   fs.rmSync(largeDiffRoot, { recursive: true, force: true });
 }

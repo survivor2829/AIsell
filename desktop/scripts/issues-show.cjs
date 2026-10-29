@@ -62,8 +62,10 @@ function completeness(capsule, flight, directory) {
   } else if (capsule.module === "content_engine") {
     if (!Object.keys(capsule.details || {}).length) missing.push("引擎测量值（ContentEngineError.details）");
     if (!capsule.traceback) missing.push("Python 堆栈");
-  } else if (!capsule.traceback && !(capsule.breadcrumbs || []).length) {
-    missing.push("堆栈或出错前的步骤");
+  } else if (!capsule.traceback && !capsule.engineStderr) {
+    // Steps before a failure say when, not why: without a stack or the
+    // service's own output the cause is still a guess.
+    missing.push("堆栈或本地服务的输出原文");
   }
   return missing.length ? `证据不足：缺${missing.join("、")}。下一步只补取证，不改业务代码。`
     : "证据完整：运行 issues:replay 在本机复现后再修改代码。";
@@ -103,7 +105,7 @@ function show(directory) {
   const steps = capsule.breadcrumbs || [];
   if (steps.length) {
     out.push("", `出错前的步骤（${steps.length}）：`);
-    for (const row of steps.slice(-25)) out.push(`  ${String(row.ts).slice(11, 23)} ${row.level.padEnd(5)} ${row.module}.${row.event}${row.code ? ` [${row.code}]` : ""}${row.phase ? ` (${row.phase})` : ""}`);
+    for (const row of steps.slice().sort((a, b) => String(a.ts).localeCompare(String(b.ts))).slice(-25)) out.push(`  ${String(row.ts).slice(11, 23)} ${row.level.padEnd(5)} ${row.module}.${row.event}${row.code ? ` [${row.code}]` : ""}${row.phase ? ` (${row.phase})` : ""}`);
   }
   if (capsule.environment && Object.keys(capsule.environment).length) out.push("", "环境：", JSON.stringify(capsule.environment));
   if (evidence.length) out.push("", "截图：", ...evidence.map(id => `  ${path.join(directory, `${id}.png`)}`));
@@ -119,9 +121,13 @@ function show(directory) {
   }
   const passports = fs.existsSync(path.join(directory, "attachments")) ? fs.readdirSync(path.join(directory, "attachments")).filter(name => name.startsWith("passport-")) : [];
   if (passports.length) out.push("", "任务护照：", ...passports.map(name => `  ${path.join(directory, "attachments", name)}`));
+  out.push("", require("./error-code-map.cjs").describe(require("./error-code-map.cjs").lookup(capsule.code)));
   out.push("", completeness(capsule, flight, directory));
   return out.join("\n");
 }
+
+// Exported before the command runs: error-code-map.cjs reads REPLAYS back from here.
+module.exports = { show, find, completeness, REPLAYS };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
@@ -129,7 +135,6 @@ if (require.main === module) {
   const out = index >= 0 ? args[index + 1] : DEFAULT_OUT;
   const query = args.find((value, position) => !value.startsWith("--") && position !== index + 1);
   try { console.log(show(find(out, query || ""))); }
-  catch (error) { console.error(error.message); process.exit(1); }
+  catch (error) { console.error(process.env.XIAOXI_DEBUG ? error.stack : error.message); process.exit(1); }
 }
 
-module.exports = { show, find, completeness, REPLAYS };

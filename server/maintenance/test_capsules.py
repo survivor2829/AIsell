@@ -179,8 +179,12 @@ class CapsuleServiceTest(unittest.TestCase):
         report("b", "task.succeeded", "interact")
         report("c", "task.succeeded", "touch", {**CLIENT, "version": "1.2.23"})
         report("d", "task_step.finished", "interact")
-        health = {(row["installId"], row["version"], row["taskKind"]): row["successes"] for row in self.get("/api/health")["successes"]}
-        self.assertEqual({(CLIENT["installId"], "1.2.22", "interact"): 2, (CLIENT["installId"], "1.2.23", "touch"): 1}, health)
+        engine = {"id": "e" * 64, "ts": "2026-10-29T10:00:00.000Z", "level": "info", "module": "content_engine", "event": "task_completed",
+                  "code": "ok", "details": {"task_kind": "product_one_click"}}
+        self.post("/v1/reports", {**CLIENT, "entries": [engine]})
+        health = {(row["installId"], row["version"], row["module"], row["taskKind"]): row["successes"] for row in self.get("/api/health")["successes"]}
+        self.assertEqual({(CLIENT["installId"], "1.2.22", "wechat_workflow", "interact"): 2, (CLIENT["installId"], "1.2.23", "wechat_workflow", "touch"): 1,
+                          (CLIENT["installId"], "1.2.22", "content_engine", "product_one_click"): 1}, health)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(self.origin + "/api/health")
         self.assertEqual(404, caught.exception.code)

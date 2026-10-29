@@ -1062,6 +1062,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       autoUpdate.start();
       failureCapsules = createFailureCapsules({
         rootDir: runtime.rootDir, logger, engineLogsDir: path.join(app.getPath("userData"), "content-engine", "logs"),
+        serviceLogsDirs: { product_detail: path.join(app.getPath("userData"), "product-detail", "logs") },
         network: maintenanceConfig.enabled ? require("./cloud-transport.cjs").createTransport(maintenanceConfig) : null,
         identity: () => cloudMaintenance?.identity(), isEnabled: () => cloudMaintenance?.consentEnabled() === true,
         environment: () => ({ version: components.businessVersion(app), buildId: build.buildId, edition: appInfo.edition,

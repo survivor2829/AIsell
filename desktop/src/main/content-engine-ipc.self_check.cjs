@@ -1335,6 +1335,26 @@ async function main() {
       "changing the message of the same failure must not duplicate diagnostics"
     );
     assert.equal(notifications.length, 1, "changing the failure message must not duplicate notifications");
+    const completingTaskId = "task_7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c";
+    for (const status of ["analyzing", "completed", "completed"]) {
+      listedTaskItems = [task({ task_id: completingTaskId, task_type: "product_one_click", status, updated_at: status === "analyzing" ? "2026-08-21T00:03:00.000Z" : "2026-08-21T00:04:00.000Z" })];
+      await handlers.get(CONTENT_ENGINE_CHANNELS.listTasks)({}, { limit: 10 });
+    }
+    const completions = diagnosticEvents.filter((entry) => entry[1] === "task_completed");
+    assert.equal(completions.length, 1, "a task seen going from running to completed reports its success once");
+    assert.deepEqual(completions[0][2], { task_kind: "product_one_click" }, "a success carries only the kind of production");
+    assert.equal(completions[0][3]?.level, "info");
+    listedTaskItems = [task({ task_id: "task_8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d", task_type: "product_one_click", status: "completed", updated_at: "2026-08-21T00:05:00.000Z" })];
+    await handlers.get(CONTENT_ENGINE_CHANNELS.listTasks)({}, { limit: 10 });
+    assert.equal(diagnosticEvents.filter((entry) => entry[1] === "task_completed").length, 1, "history listed at startup is not a new success");
+    const { batchOutcome } = require("./content-engine-ipc.cjs");
+    const ownTasks = new Set(["task_9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"]), reported = new Set();
+    const batch = { batch_id: "narrated_batch_1", task_id: "task_9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e", status: "completed_with_errors", completed_count: 3, target_count: 5 };
+    assert.deepEqual(batchOutcome(batch, ownTasks, reported)?.details, { task_kind: "narrated_batch", outcome: "completed_with_errors", done: 3, total: 5 });
+    assert.equal(batchOutcome(batch, ownTasks, reported), null, "one report per batch and outcome");
+    assert.equal(batchOutcome({ ...batch, status: "completed" }, ownTasks, reported)?.options.code, "ok");
+    assert.equal(batchOutcome({ ...batch, batch_id: "narrated_batch_2", status: "needs_attention" }, ownTasks, reported), null, "an unfinished batch is no success");
+    assert.equal(batchOutcome({ ...batch, batch_id: "narrated_batch_3", task_id: "task_other" }, ownTasks, reported), null, "batches from earlier sessions are not counted again");
     const originalListAssets = controller.listAssets;
     controller.listAssets = async () => {
       throw Object.assign(new Error("provider detail must not leave this process"), {

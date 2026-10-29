@@ -142,8 +142,14 @@ const TASK_KINDS = { moments: ["interact", "publish"], active_touch: ["touch"], 
 // Per computer that hit the failure: a later version that completed the same
 // kind of task closes the loop; the failure again on a later version reopens it.
 function closure(capsules, health) {
-  const kinds = TASK_KINDS[capsules[0]?.capsule?.module];
-  if (!kinds) return null;
+  const module = capsules[0]?.capsule?.module;
+  const engineKind = module === "content_engine" ? String(capsules[0].capsule.where || "").replace(/^task:/, "") : "";
+  const kinds = module === "content_engine" ? null : TASK_KINDS[module];
+  if (!kinds && module !== "content_engine") return null;
+  const sameKind = row => module === "content_engine"
+    ? row.module === "content_engine" && (!engineKind || /^request:|narrated_production/.test(engineKind) || row.taskKind === engineKind
+      || (engineKind === "narrated_production" && row.taskKind === "narrated_batch"))
+    : (row.module || "wechat_workflow") === "wechat_workflow" && kinds.includes(row.taskKind);
   const byInstall = new Map();
   for (const item of capsules) {
     const install = item.client?.installId;
@@ -156,7 +162,7 @@ function closure(capsules, health) {
     const sorted = versions.filter(Boolean).sort(compareVersions);
     const last = sorted.at(-1);
     if (compareVersions(sorted[0], last) < 0) { result.recurring += 1; continue; }
-    const later = health.some(row => row.installId === install && kinds.includes(row.taskKind) && compareVersions(row.version, last) > 0);
+    const later = health.some(row => row.installId === install && sameKind(row) && compareVersions(row.version, last) > 0);
     result[later ? "fixed" : "waiting"] += 1;
   }
   return result;
@@ -195,17 +201,80 @@ function cluster(capsules, feedback, fresh = new Set(), health = []) {
     .sort((a, b) => b.fresh - a.fresh || b.installs - a.installs || b.occurrences - a.occurrences || (b.lastSeen > a.lastSeen ? 1 : -1));
 }
 
+// Which success task kinds a failure of a module belongs to.
+function familyOf(module, taskKind) {
+  if (module === "content_engine") return "视频制作";
+  if (/moments/.test(module) || taskKind === "interact" || taskKind === "publish") return "朋友圈";
+  if (/active_touch|touch/.test(module) || taskKind === "touch") return "精准触达";
+  if (/auto_reply/.test(module)) return "自动回复";
+  return /wechat/.test(module) ? "微信其他" : "其他";
+}
+
+// Per version: successes and failures of each kind of task, and the failure
+// codes first seen in that version. The newest version is compared with the
+// one before so a regression shows up as a number, to be fixed, not hidden.
+function versionHealth(capsules, health) {
+  const rows = new Map();
+  const at = (version, family) => {
+    const key = `${version} ${family}`;
+    if (!rows.has(key)) rows.set(key, { version, family, successes: 0, failures: 0, installs: new Set() });
+    return rows.get(key);
+  };
+  for (const row of health) {
+    const entry = at(row.version, familyOf(row.module || "wechat_workflow", row.taskKind));
+    entry.successes += row.successes; entry.installs.add(row.installId);
+  }
+  const firstSeen = new Map();
+  for (const item of capsules) {
+    const version = item.client?.version;
+    if (!version) continue;
+    const entry = at(version, familyOf(item.capsule.module, ""));
+    entry.failures += item.capsule.occurrences || 1; entry.installs.add(item.client.installId);
+    const key = `${item.capsule.module}:${item.capsule.code}`;
+    if (!firstSeen.has(key) || compareVersions(version, firstSeen.get(key)) < 0) firstSeen.set(key, version);
+  }
+  const versions = [...new Set([...rows.values()].map(row => row.version))].sort(compareVersions);
+  const [previous, latest] = versions.slice(-2).length === 2 ? versions.slice(-2) : [undefined, versions.at(-1)];
+  const rate = row => row && row.successes + row.failures ? row.failures / (row.successes + row.failures) : null;
+  const families = [...new Set([...rows.values()].map(row => row.family))];
+  const compare = families.map(family => {
+    const now = rows.get(`${latest} ${family}`), before = rows.get(`${previous} ${family}`);
+    const nowRate = rate(now), beforeRate = rate(before);
+    // Worse by ten points, on at least five results: a sign, not a gate.
+    const worse = nowRate !== null && beforeRate !== null && (now.successes + now.failures) >= 5 && nowRate - beforeRate >= 0.1;
+    return { family, latest: now ? { successes: now.successes, failures: now.failures, installs: now.installs.size } : null,
+      previous: before ? { successes: before.successes, failures: before.failures } : null, worse };
+  });
+  const newCodes = [...firstSeen].filter(([, version]) => version === latest && previous).map(([key]) => key);
+  return { latest, previous, compare, newCodes };
+}
+
+function healthLines(healthReport) {
+  if (!healthReport.latest) return [];
+  const percent = row => row && row.successes + row.failures ? `${Math.round(row.failures / (row.successes + row.failures) * 100)}%` : "—";
+  const lines = [`## 版本健康：${healthReport.latest}${healthReport.previous ? ` 对比 ${healthReport.previous}` : ""}`, ""];
+  for (const row of healthReport.compare) {
+    lines.push(`- ${row.worse ? "🔴 " : ""}${row.family}：成功 ${row.latest?.successes ?? 0}、失败 ${row.latest?.failures ?? 0}（失败占 ${percent(row.latest)}，${row.latest?.installs ?? 0} 台电脑）${row.previous ? `；上一版失败占 ${percent(row.previous)}` : ""}${row.worse ? " —— 新版本变差，优先修" : ""}`);
+  }
+  if (healthReport.newCodes.length) lines.push(`- 新版本第一次出现的错误：${healthReport.newCodes.join("、")}`);
+  lines.push("- 失败按现场包里的发生次数计；只有开启上报的电脑在统计内。", "");
+  return lines;
+}
+
 // One line per item: customer text often spans several lines.
 function line(value, limit) { return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, limit); }
-function report(groups, feedback, { now = new Date(), latest = "" } = {}) {
+function report(groups, feedback, { now = new Date(), latest = "", health = null } = {}) {
   const pending = feedback.filter(item => item.status !== "resolved");
   const lines = [`# 现场问题日报 ${now.toISOString().slice(0, 10)}`, "",
-    `问题类别 ${groups.length} 个，本次新增现场包的类别 ${groups.filter(group => group.fresh).length} 个；未解决反馈 ${pending.length} 条。最新版本 ${latest || "—"}。`, ""];
+    `问题类别 ${groups.length} 个，本次新增现场包的类别 ${groups.filter(group => group.fresh).length} 个；未解决反馈 ${pending.length} 条。最新版本 ${latest || "—"}。`, "",
+    ...(health ? healthLines(health) : [])];
   for (const group of groups) {
     lines.push(`## ${group.fresh ? "🆕 " : ""}${group.module} · ${group.code}`, "",
       `- 现场包 ${group.capsules.length} 个，共发生 ${group.occurrences} 次，影响 ${group.installs} 台电脑；版本 ${group.versions.join("、")}${group.inLatest ? "（最新版本仍出现）" : ""}`,
       `- 首次 ${group.firstSeen}，最近 ${group.lastSeen}`);
     for (const [origin, count] of group.origins.slice(0, 3)) lines.push(`- 出错位置 \`${origin}\`（${count} 个）`);
+    const mapped = require("./error-code-map.cjs").lookup(group.code);
+    if (mapped) lines.push(`- 错误码地图：${mapped.kindLabel}；抛出于 ${mapped.sites.slice(0, 3).map(site => `${site.file}:${site.line}`).join("、")}${mapped.sites.length > 3 ? " …" : ""}`);
     for (const message of group.messages.slice(0, 2)) lines.push(`- 客户看到：${line(message, 160)}`);
     if (group.closure) lines.push(`- 闭环：更新后同类任务已跑通 ${group.closure.fixed} 台，更新后仍复发 ${group.closure.recurring} 台，还没有更新后的记录 ${group.closure.waiting} 台`);
     for (const item of group.feedback.slice(0, 3)) lines.push(`- 关联反馈（${item.status}）：${line(item.text, 120)}`);
@@ -227,11 +296,13 @@ async function pull({ out = DEFAULT_OUT, collect = remoteCollect, now = new Date
   const { capsules, fresh } = save(out, pulled);
   const groups = cluster(capsules, pulled.feedback, fresh, pulled.health || []);
   const latest = capsules.map(item => item.client?.version).filter(Boolean).sort(compareVersions).at(-1) || "";
-  const text = report(groups, pulled.feedback, { now, latest });
+  const health = versionHealth(capsules, pulled.health || []);
+  const text = report(groups, pulled.feedback, { now, latest, health });
   fs.mkdirSync(path.join(out, "reports"), { recursive: true });
   fs.writeFileSync(path.join(out, "reports", `${now.toISOString().slice(0, 10)}.md`), text);
   fs.writeFileSync(path.join(out, "report.md"), text);
   fs.writeFileSync(path.join(out, "clusters.json"), JSON.stringify(groups, null, 2));
+  fs.writeFileSync(path.join(out, "health.json"), JSON.stringify(health, null, 2));
   return { out, capsules: capsules.length, fresh: fresh.size, groups: groups.length };
 }
 
@@ -242,4 +313,4 @@ if (require.main === module) {
     .catch(error => { console.error(`issues:pull failed: ${error.message}`); process.exit(1); });
 }
 
-module.exports = { pull, cluster, closure, report, originFrame, compareVersions, DEFAULT_OUT, COLLECTOR };
+module.exports = { pull, cluster, closure, versionHealth, report, originFrame, compareVersions, DEFAULT_OUT, COLLECTOR };
