@@ -56,6 +56,7 @@ const checks = [
   "src/main/social-publish-drivers.self_check.cjs",
   "src/main/social-publish-ipc.self_check.cjs",
   "src/main/social-acquisition.self_check.cjs",
+  "src/main/social-nurture.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",
   "src/main/deepseek-api.self_check.cjs",

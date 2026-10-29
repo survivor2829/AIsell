@@ -25,3 +25,4 @@
 .social-add input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #cdd1d7; border-radius: 6px; font: inherit; font-size: 13px; }
 .social-accounts button:focus-visible, .social-add input:focus-visible { outline: 2px solid var(--brand-red-dark); outline-offset: 2px; }
 .social-platform h2 .social-platform-name { display: inline-flex; align-items: center; gap: 10px; color: inherit; font-size: 16px; font-weight: 600; }
+.social-account-trouble { margin-left: 8px; font-style: normal; font-weight: 800; color: #d92d20; }

@@ -14,6 +14,7 @@
 | `desktop/src/main/social-accounts*`、`social-browser.cjs`、`renderer/SocialAccountsPanel.tsx`、`DistributionPage.tsx` | 一键分发入口与平台账号中心：抖音/快手/视频号/小红书多账号；每个账号一个本机 Chrome（无则 Edge）资料目录，经 --remote-debugging-pipe 控制，扫码后只按登录 Cookie 是否存在识别状态 | 读取或保存 Cookie 值；改用内嵌 Electron 窗口登录（抖音会拒绝）；开调试端口；登录期间接管页面；删除账号不删资料目录 |
 | `desktop/src/main/social-publish*`、`social-page.cjs`、`renderer/SocialPublishPanel.tsx` | 一键分发：成片中心视频按「视频×账号」排队发布；各平台驱动在账号自己的 Chrome 资料目录里操作官方创作者后台（真实鼠标点击、闭合 shadow DOM 可达）；点发布前核对标题和可见范围，点发布前落盘 clicked，结果以作品管理页核对为准 | 在点发布之后自动重发；结果不明时当作成功或失败；没核对表单就点发布；同账号并行开两个浏览器；把文件路径发给界面 |
 | `desktop/src/main/social-acquisition*`、`social-acquire-drivers.cjs`、`social-capture.cjs`、`renderer/AcquisitionPage.tsx` | 精准获客 → 关键词获客：在快手账号自己的 Chrome 里按关键词搜视频、读评论（读取页面自己收到的 JSON），按意向词/时间筛出线索、按人去重、导出表格；用户选定后给线索的评论点赞、关注线索（点前落盘、以平台回应为准、每天上限、提示频繁停到明天、结果不明不自动重做）；同行视频留言因被平台当广告屏蔽、风险高已下线；记录在 `social_acquisition/state.json`；平台弹验证就暂停并把窗口切到前面等用户自己点；抖音网页搜索会拦截软件控制的浏览器，列出但不可用 | 绕过或伪装规避平台风控/验证码；自动替用户点验证；未经用户选定就点赞或关注；自动发评论或私信；已点赞的再点（会取消）；同账号并行开两个浏览器 |
+| `desktop/src/main/social-nurture*`、`social-nurture-stages.json`、`renderer/SocialNurturePage.tsx` | 精准获客 → 养号：抖音按谷小智 8 天阶段表（数字全在 `social-nurture-stages.json`），每天开始时间之后分段在账号自己的 Chrome 里刷推荐/搜关键词、按当天区间分散点赞关注评论（同种不连做、同视频不重复），第 8 天第一段后把测试视频交给一键分发（只交一次）；搜索弹验证则该计划改刷推荐页、只和含关键词的视频互动；验证码停段并弹窗，当天两次停到明天；评论发出看不到即当天停评论；与发布共用账号互斥；每次失败带截图回传（`social_nurture`）；记录在 `social_nurture/state.json` | 自动过验证码；评论带联系方式或广告；同账号同时养号和发布；软件关着时运行或跳天 |
 | `desktop/src/main/digital-human-*`、`reference-human-*`、`viral-*`、`renderer/NarrationSimplePage.tsx` | 数字人视频：本人口播（上传本人视频和声音、写稿、配音、生成、包装）与爆款文案库（扒取、提取原口播、发布、仿写/换一篇）；`digital-human-provider.cjs`、`digital-human-audio.cjs` 是共用的网关请求与配音工具。图片数字人已于 2026-10-26 下线 | 向 renderer 暴露密钥或本地路径；重复提交结果不明的付费请求；把原口播全文发到客户电脑 |
 | `content_engine/video_presentation.py`、`desktop/remotion-packaging/`、`VideoPresentation.tsx` | 两类视频共用的字幕时间、模板、成片封面和标题修改；生成结果仍由内容引擎登记 | 在封面失败时丢弃视频；修改标题时重新调用生图 |
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
@@ -75,6 +76,7 @@
 | `keyword_acquisition/state.json` | 关键词任务、来源评论、线索、会话、联系额度及逐次发送状态；独立抖音 session partition 不复用微信状态 |
 | `social_accounts/state.json`、`social_accounts/profiles/<id>/` | 平台账号列表：平台、备注名、登录状态与时间，不含任何登录凭据；登录态只在各账号的浏览器资料目录内 |
 | `social_publish/state.json` | 发布记录：视频、账号、标题文案、可见范围、状态（排队/进行中/等你验证/已点发布/已发出/结果不明/没有发出）与原因；点击发布前写入 clickedAt |
+| `social_nurture/state.json` | 养号计划：账号、关键词、评论话术、开始时间、第 8 天测试视频、第几天、当天段数与目标/已做数量、异常次数、看过的视频标识（只存平台视频编号或作者+标题摘要）、动作记录 |
 | `digital_human/` | 图片副本、可编辑草稿、预览版本确认、供应商操作编号与返回结果、基础视频；成片编号指向内容引擎 |
 | `role-preferences.json` | 各角色已保存的名字和该角色有效形象 ID；共享目录定义默认值与可选范围 |
 | `feedback/state.json` | 反馈草稿、不可变正文/诊断快照、当前 Windows 账户加密的回执凭据、投递重试和已收到的服务端状态 |

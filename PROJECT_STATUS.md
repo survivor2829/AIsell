@@ -1,5 +1,9 @@
 # 项目状态
 
+- 1.2.26 一键分发异常账号跳过 + 抖音养号（用户 2026-10-29 决定，计划见 PRD C 模块）
+  - 一键分发：`SOCIAL_UPLOAD_STALLED` 后同账号本批排队任务改为失败（“本批剩下的已跳过”），已点发布的不动；账号记 `uploadTroubleAt`，界面标红“上次上传异常”仍可选，下次发成功清除。提示只说“账号或网络异常”，不推测风控；证据补平台以错误状态码拒绝的请求（`rejected_request_kind`）和页面上提到限制/异常的短句（随截图的 `notes`，现场包带回，`issues:show` 显示）。
+  - Chrome 启动加 `--disable-blink-features=AutomationControlled`（用户同意跟竞品一样只关这一个自动化标记；不用代理、不改设备信息），本地 headless 验证 `navigator.webdriver` 为 false。
+  - 养号：照竞品“AI超级员工”的抖音流程（搜行业词 → 视频标签 → 打开第一条 → 连播；页面元素取自其安装目录代码，自己实现、不搬代码）+ 谷小智 8 天阶段表。未在真实抖音上跑过：开发机抖音测试号无法登录，用户决定直接在客户电脑运行、靠现场回传修。页面动作在本地仿抖音页面的真实 Chrome 里验证过（识别当前视频、搜索、点赞、逐字评论并在评论区核对）；关注按钮的元素没有确切来源，找不到会带截图上报 `NURTURE_ELEMENT_MISSING`。搜索弹验证上报 `NURTURE_SEARCH_BLOCKED` 并改刷推荐页。
 - 1.2.25 一键分发报错归类（1.2.24 首批现场包，客户电脑 9ada1c61，10-29）
   - `61510fee` social_upload_ignored：截图显示视频号已开始上传、停在 0%（用户随后换账号即正常，属账号问题）。我方误判：视频号表单在 shadow DOM 里，接收判断只读 `document.body.innerText`，看不到“取消上传/0%”，于是又选一次文件并报“没有接收”。修复：`social-page.cjs` `shownText()` 读开放的 shadow root 文字（真实 Chrome 本地页已验证：旧读法漏读，新读法读到且不含样式文字）；上传等待中百分比 3 分钟不变报 `SOCIAL_UPLOAD_STALLED`（页面不显示百分比时不判卡住）。
   - `8292309a` social_page_not_loaded：截图为“选择视频号登录”页（会话中途失效）；`localhost.weixin.qq.com` 连接被拒是登录页探测本机微信，属正常。我方误判：找不到上传入口时没先看是否在登录页。修复：上传入口缺失、文件未被接收、上传等待中都先查登录页，命中即 `SOCIAL_LOGIN_REQUIRED` 并标记账号。

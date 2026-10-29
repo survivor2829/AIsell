@@ -55,7 +55,7 @@ export function SocialAccountsPanel() {
           <ul>
             {accounts.map((account) => <li key={account.id}>
               <span className={`social-dot is-${account.status}`} aria-hidden="true" />
-              <div className="social-account-copy"><strong>{account.label}</strong><small>{account.loggingIn ? "Chrome 登录窗口已打开，请扫码" : statusLabel[account.status]}</small></div>
+              <div className="social-account-copy"><strong>{account.label}</strong><small>{account.loggingIn ? "Chrome 登录窗口已打开，请扫码" : statusLabel[account.status]}{account.uploadTroubleAt && <em className="social-account-trouble">上次上传异常</em>}</small></div>
               <button type="button" className="social-text-button" disabled={!api || Boolean(pending)} onClick={() => api && void run(`login-${account.id}`, () => api.login(account.id))}><LogIn size={14} />{account.status === "active" ? "打开" : "登录"}</button>
               <button type="button" className="social-text-button is-danger" aria-label={`删除 ${account.label}`} disabled={!api || Boolean(pending)} onClick={() => remove(account)}><Trash2 size={14} /></button>
             </li>)}

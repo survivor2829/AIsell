@@ -123,8 +123,10 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
         // Outside the internal profile the worker paints the whole image grey:
         // uploading it would only look like evidence.
         const redacted = entry.details?.redaction_mode === "full_content";
+        // Short lines the platform showed on screen (e.g. a limit notice), only where the page itself may be seen.
+        const notes = !redacted && Array.isArray(entry.details?.notes) ? entry.details.notes.filter(note => typeof note === "string").slice(0, 3).map(note => note.slice(0, 40)) : [];
         return { id: name.slice(0, 32), ts: entry.ts, code: entry.code, captureStatus: entry.details?.capture_status || "", redacted,
-          hasImage: !redacted && fs.existsSync(path.join(folder, `${name.slice(0, 32)}.png`)) };
+          hasImage: !redacted && fs.existsSync(path.join(folder, `${name.slice(0, 32)}.png`)), ...(notes.length ? { notes } : {}) };
       }).filter(Boolean).slice(0, 6);
     } catch { return []; }
   }

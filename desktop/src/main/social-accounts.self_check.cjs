@@ -106,6 +106,12 @@ assert.equal(findBrowser(env, () => false), "");
   platformPage.verdict = false;
   await accounts.refresh();
 
+  // 上传卡住的账号只标红提醒，照样能选；下次发成功就去掉标记。
+  accounts.markUploadTrouble(first.id);
+  assert.ok(accounts.snapshot().accounts[0].uploadTroubleAt);
+  accounts.clearUploadTrouble(first.id);
+  assert.equal(accounts.snapshot().accounts[0].uploadTroubleAt, undefined);
+
   // 重启后记录还在；删除账号会删掉它的浏览器资料目录。
   await accounts.dispose();
   const reopened = createSocialAccounts({ dataDir, launch, executable: "chrome.exe", pollMs: 5, probe });

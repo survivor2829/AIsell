@@ -6,7 +6,7 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 
 // The user's own Chrome (or Edge) runs each platform account in its own profile
 // directory. Douyin's login refuses embedded browsers, and a real browser needs
-// no fingerprint disguise. Control goes over --remote-debugging-pipe, so no
+// no other disguise. Control goes over --remote-debugging-pipe, so no
 // port is opened and nothing attaches to a page unless a feature asks for it.
 function findBrowser(env = process.env, exists = fs.existsSync) {
   const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA].filter(Boolean);
@@ -17,11 +17,15 @@ function findBrowser(env = process.env, exists = fs.existsSync) {
   return candidates.find((file) => exists(file)) || "";
 }
 
-function launchBrowser({ executable, profileDir, url = "about:blank", headless = false, spawnProcess = spawn }) {
+// The one flag beyond a plain start is the automation marker (navigator.webdriver), off as
+// the usual automation tools and the competing products have it; no proxy and no device
+// changes (user decision 2026-10-29, Douyin's web search turned controlled browsers away).
+function launchBrowser({ executable, profileDir, url = "about:blank", headless = false, hideAutomation = true, spawnProcess = spawn }) {
   if (!executable) throw fail("SOCIAL_BROWSER_MISSING", "没有找到 Chrome 或 Edge 浏览器，请先安装 Chrome 后再登录平台账号。");
   fs.mkdirSync(profileDir, { recursive: true });
   const args = [`--user-data-dir=${profileDir}`, "--remote-debugging-pipe", "--no-first-run", "--no-default-browser-check",
-    "--disable-features=Translate", ...(headless ? ["--headless=new"] : ["--window-size=1180,820"]), url];
+    "--disable-features=Translate", ...(hideAutomation ? ["--disable-blink-features=AutomationControlled"] : []),
+    ...(headless ? ["--headless=new"] : ["--window-size=1180,820"]), url];
   const child = spawnProcess(executable, args, { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: headless });
   const writer = child.stdio[3], reader = child.stdio[4];
   const waiting = new Map(), listeners = new Set();

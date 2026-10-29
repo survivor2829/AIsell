@@ -16,7 +16,8 @@ const { createFailureCapsules } = require("./failure-capsule.cjs");
   const png = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("page")]);
   reportPublishFailure({ logger, evidenceDir: path.join(root, "failure-evidence") },
     { platform: "channels", code: "SOCIAL_PAGE_NOT_LOADED", step: "上传视频", clicked: false, pageUrl: "https://channels.weixin.qq.com/platform/post/create", screenshot: png.toString("base64"),
-      network: { failed: ["res.wx.qq.com:Script:ERR_ABORTED:x2"], slow: ["res.wx.qq.com:Stylesheet:slow"] } });
+      network: { failed: ["res.wx.qq.com:Script:ERR_ABORTED:x2"], slow: ["res.wx.qq.com:Stylesheet:slow"], rejected: ["channels.weixin.qq.com:XHR:403"] },
+      notices: ["该账号存在异常，暂时无法发表"] });
   await new Promise((resolve) => setTimeout(resolve, 80));
   const [capsule] = fs.readdirSync(capsules.directory).filter((name) => /^[a-f0-9-]{36}\.json$/.test(name)).map((name) => JSON.parse(fs.readFileSync(path.join(capsules.directory, name), "utf8")));
   assert.equal(capsule?.module, "social_publish");
@@ -24,6 +25,9 @@ const { createFailureCapsules } = require("./failure-capsule.cjs");
   // Which resources failed tells a network or proxy problem from a changed page, without a second look at the customer computer.
   assert.deepEqual(capsule.details.failed_request_kind, ["res.wx.qq.com:Script:ERR_ABORTED:x2"]);
   assert.deepEqual(capsule.details.slow_request_kind, ["res.wx.qq.com:Stylesheet:slow"]);
+  assert.deepEqual(capsule.details.rejected_request_kind, ["channels.weixin.qq.com:XHR:403"]);
+  // What the platform said on screen travels with the screenshot (the log itself keeps no free text).
+  assert.deepEqual(capsule.evidence[0].notes, ["该账号存在异常，暂时无法发表"]);
   assert.equal(capsule.details.platform_kind, "channels");
   assert.equal(capsule.details.step_code, "upload");
   assert.equal(capsule.details.page_kind, "platform.post.create");

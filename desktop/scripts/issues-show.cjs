@@ -62,7 +62,7 @@ function completeness(capsule, flight, directory) {
   } else if (capsule.module === "content_engine") {
     if (!Object.keys(capsule.details || {}).length) missing.push("引擎测量值（ContentEngineError.details）");
     if (!capsule.traceback) missing.push("Python 堆栈");
-  } else if (capsule.module === "social_publish") {
+  } else if (capsule.module === "social_publish" || capsule.module === "social_nurture") {
     // The platform page is the evidence: what it showed, where it was, which of its loads failed
     // (2026-10-29: a 0% upload and a login page were both read off the screenshot).
     if (!(capsule.evidence || []).some(item => item.hasImage)) missing.push("出错页面的截图");
@@ -114,6 +114,8 @@ function show(directory) {
   }
   if (capsule.environment && Object.keys(capsule.environment).length) out.push("", "环境：", JSON.stringify(capsule.environment));
   if (evidence.length) out.push("", "截图：", ...evidence.map(id => `  ${path.join(directory, `${id}.png`)}`));
+  const notes = (capsule.evidence || []).flatMap(item => item.notes || []);
+  if (notes.length) out.push("", "平台页面上的提示：", ...notes.map(note => `  ${note}`));
   const flightFile = path.join(directory, "attachments", "flight.json");
   const flight = fs.existsSync(flightFile) ? JSON.parse(fs.readFileSync(flightFile, "utf8")) : [];
   if (flight.length) {
