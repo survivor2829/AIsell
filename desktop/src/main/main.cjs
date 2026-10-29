@@ -729,12 +729,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return providerEnvironment;
       }
     });
-    for (const controller of [productDetailController, contentEngineController]) {
+    for (const [controller, prefix] of [[productDetailController, "resources/product-detail/"], [contentEngineController, "resources/content-engine/"]]) {
       controller.onUpdate(state => {
-        if (["failed", "unavailable"].includes(state.state)
-            && /_(?:RUNTIME_(?:UNAVAILABLE|LINK_FAILED)|SPAWN_FAILED|EXITED|PIPE_FAILED|START_TIMEOUT)$/.test(state.code || "")) {
-          components.invalidateVerification();
-        }
+        if (!["failed", "unavailable"].includes(state.state)) return;
+        const decision = components.serviceRollbackDecision(state.code, prefix);
+        if (decision.basis === "not_a_start_failure") return;
+        logger.event("app", "service_failure_version_decision", { service_kind: prefix.split("/")[1], rollback_code: decision.basis, rollback: decision.rollback },
+          { level: "warn", code: decision.rollback ? "version_rollback_requested" : "version_kept" });
+        if (decision.rollback) components.invalidateVerification();
       });
     }
     const officialMaterials = require('./official-materials-ipc.cjs').registerOfficialMaterials({
@@ -797,10 +799,18 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow, copyClient: deepSeekClient,
       ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
+      logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence"),
       resolveFinishedVideo: async (finishedVideoId) => {
         const result = await contentEngineController.resolveFinishedPath(finishedVideoId);
         if (result?.finished_video_id !== finishedVideoId) throw new Error("finished video mismatch");
         return require("./content-engine-ipc.cjs").resolvedAbsolutePath(result);
+      },
+      // The finished video's own cover, published with it; an engine without cover paths gives none.
+      resolveFinishedCover: async (finishedVideoId) => {
+        const result = await contentEngineController.resolveFinishedPath(finishedVideoId);
+        if (result?.finished_video_id !== finishedVideoId) throw new Error("finished video mismatch");
+        const cover = String(result.cover_path || "");
+        return cover && path.isAbsolute(cover) ? require("./content-engine-ipc.cjs").resolvedAbsolutePath({ absolute_path: cover }) : "";
       } });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: identityStatus });
@@ -1062,6 +1072,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       autoUpdate.start();
       failureCapsules = createFailureCapsules({
         rootDir: runtime.rootDir, logger, engineLogsDir: path.join(app.getPath("userData"), "content-engine", "logs"),
+        serviceLogsDirs: { product_detail: path.join(app.getPath("userData"), "product-detail", "logs") },
         network: maintenanceConfig.enabled ? require("./cloud-transport.cjs").createTransport(maintenanceConfig) : null,
         identity: () => cloudMaintenance?.identity(), isEnabled: () => cloudMaintenance?.consentEnabled() === true,
         environment: () => ({ version: components.businessVersion(app), buildId: build.buildId, edition: appInfo.edition,

@@ -3,6 +3,7 @@ const { randomUUID } = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
 const fs = require("node:fs");
 const path = require("node:path");
+const { saveStderrTail } = require("./sidecar-stderr-log.cjs");
 
 const MAX_READY_LINE_BYTES = 64 * 1024;
 const MAX_REQUEST_LINE_BYTES = 1024 * 1024;
@@ -56,16 +57,6 @@ const PROVIDER_TASK_TYPES = new Set([
   "guided_auto_mix_supplemental_image", "narrated_batch_v1", "import_base_video"
 ]);
 
-// The failure capsule collector reads this file next to failures.jsonl.
-function saveStderrTail(dataDir, tail, exitCode) {
-  try {
-    const directory = path.join(dataDir, "logs");
-    fs.mkdirSync(directory, { recursive: true });
-    const file = path.join(directory, "stderr.log");
-    if (fs.existsSync(file) && fs.statSync(file).size > 256 * 1024) fs.renameSync(file, path.join(directory, "stderr.1.log"));
-    fs.appendFileSync(file, `--- ${new Date().toISOString()} exit=${exitCode ?? ""}\n${tail}\n`, "utf8");
-  } catch { /* Diagnostics cannot change how the engine exit is handled. */ }
-}
 
 function isProviderTaskType(value) {
   return PROVIDER_TASK_TYPES.has(String(value || ""));
@@ -487,7 +478,8 @@ function createContentEngineSidecar(options = {}) {
       });
       child.once("close", (exitCode) => {
         run.closed = true;
-        if (!run.stopping && run.stderrTail) saveStderrTail(dataDir, run.stderrTail, exitCode);
+        // The failure capsule collector reads this file next to failures.jsonl.
+        if (!run.stopping && run.stderrTail) saveStderrTail(dataDir, run.stderrTail, `exit=${exitCode ?? ""}`);
         clearTimeout(run.startupTimer);
         settleCloseWaiters(run);
         rejectPending(

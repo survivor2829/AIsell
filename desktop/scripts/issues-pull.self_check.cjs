@@ -87,6 +87,9 @@ function detail(id, { code = "auto_mix_music_not_audible", module = "content_eng
   assert.match(replayed.verdict, /全部与现场一致/);
   assert.match(completeness({ module: "moments" }, flight.slice(0, 1), find(out, "dddd")), /证据不足：缺失败那一刻的整屏截图与窗口列表.*识别中间结果/);
   assert.match(completeness({ module: "content_engine", details: {} }, [], out), /缺引擎测量值.*Python 堆栈/);
+  assert.match(completeness({ module: "product_detail", breadcrumbs: [{ event: "started" }] }, [], out), /证据不足：缺堆栈或本地服务的输出原文/,
+    "steps alone say when a service failed, not why");
+  assert.match(completeness({ module: "product_detail", engineStderr: "TimeoutError: browser" }, [], out), /证据完整/);
 
   const capsuleOf = (installId, version) => ({ capsule: { module: "moments" }, client: { installId, version } });
   const loop = closure([capsuleOf("one", "1.2.22"), capsuleOf("two", "1.2.22"), capsuleOf("two", "1.2.23"), capsuleOf("three", "1.2.22"), capsuleOf("four", "1.2.22")], [
@@ -94,7 +97,19 @@ function detail(id, { code = "auto_mix_music_not_audible", module = "content_eng
     { installId: "four", version: "1.2.23", taskKind: "touch" }]);
   assert.deepEqual(loop, { fixed: 1, recurring: 1, waiting: 2 },
     "fixed only by a later version completing the same kind of task; a success on the failing version or another kind proves nothing");
-  assert.equal(closure([{ capsule: { module: "content_engine" }, client: {} }], []), null);
+  const engineCapsule = { capsule: { module: "content_engine", where: "task:product_one_click" }, client: { installId: "one", version: "1.2.22" } };
+  assert.deepEqual(closure([engineCapsule], [{ installId: "one", version: "1.2.23", module: "content_engine", taskKind: "product_one_click" }]), { fixed: 1, recurring: 0, waiting: 0 },
+    "a video failure is closed by a later version completing the same kind of production");
+  assert.deepEqual(closure([engineCapsule], [{ installId: "one", version: "1.2.23", module: "content_engine", taskKind: "course_generation" }]), { fixed: 0, recurring: 0, waiting: 1 });
+  assert.equal(closure([{ capsule: { module: "renderer" }, client: {} }], []), null, "no success signal exists for this module");
+  const { versionHealth } = require("./issues-pull.cjs");
+  const fail = (version, install, module = "moments", code = "moments_post_not_found", occurrences = 1) => ({ capsule: { module, code, occurrences }, client: { version, installId: install } });
+  const health = versionHealth([fail("1.2.22", "a"), fail("1.2.23", "a", "moments", "moments_post_not_found", 4), fail("1.2.23", "b", "moments", "moments_menu_ambiguous", 2)],
+    [{ installId: "a", version: "1.2.22", module: "wechat_workflow", taskKind: "interact", successes: 9 }, { installId: "a", version: "1.2.23", module: "wechat_workflow", taskKind: "interact", successes: 4 }]);
+  const moments = health.compare.find(row => row.family === "朋友圈");
+  assert.deepEqual({ latest: health.latest, previous: health.previous, failures: moments.latest.failures, successes: moments.latest.successes, worse: moments.worse },
+    { latest: "1.2.23", previous: "1.2.22", failures: 6, successes: 4, worse: true }, "60% failing against 10% before marks the newest version worse");
+  assert.deepEqual(health.newCodes, ["moments:moments_menu_ambiguous"], "a code never seen before this version is listed");
 
   // A verified fix is kept as a field replay; a later change to that decision is reported.
   const { keep, verify } = require("./issues-verify.cjs");

@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { diagnostics } = require("./diagnostics.cjs");
+const { saveStderrTail } = require("./sidecar-stderr-log.cjs");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MAX_READY_LINE_BYTES = 64 * 1024;
@@ -242,6 +243,8 @@ function createProductDetailSidecar(options = {}) {
   }
 
   function record(event, run, extra = {}) {
+    // The summary below keeps only the exception type; the capsule needs the text.
+    if (event === "failed") saveStderrTail(dataDir, run?.stderrTail, `${snapshot.code || ""} stage=${startupDiagnostics?.phase || ""}`);
     try {
       logger.event("product_detail", event, {
         stage: startupDiagnostics?.phase || "idle", elapsed_ms: startedAt ? Date.now() - startedAt : 0,

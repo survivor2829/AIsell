@@ -11,14 +11,24 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function world(overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-publish-"));
   const video = path.join(root, "成片.mp4"); fs.writeFileSync(video, "mp4");
-  const log = { launches: 0, closed: 0, clicks: 0, leases: 0, released: 0, typed: [] };
-  const behaviour = { login: false, typedTitle: null, privateOk: true, verifyPolls: 0, success: true, listed: true, publishFound: true, ignoreSets: 0, staleDraft: false, launchError: null, editAfterFirstMiss: false, ...overrides };
+  const log = { launches: 0, closed: 0, clicks: 0, leases: 0, released: 0, typed: [], navigations: 0, reloads: 0, covers: [] };
+  const behaviour = { login: false, typedTitle: null, privateOk: true, verifyPolls: 0, success: true, listed: true, publishFound: true, ignoreSets: 0, staleDraft: false, launchError: null, editAfterFirstMiss: false,
+    landOffForm: 0, noInput: false, networkTrouble: false, coverError: null, ...overrides };
   let sets = 0;
   let url = "", verifyLeft = behaviour.verifyPolls;
-  const page = { url: async () => url, front: async () => {}, evaluate: async (expression) => expression === "document.readyState" ? "complete" : "" };
+  const page = { url: async () => url, front: async () => {}, evaluate: async (expression) => expression === "document.readyState" ? "complete" : "",
+    send: async (method) => method === "Page.captureScreenshot" ? { data: Buffer.from("png-of-the-page").toString("base64") } : {} };
+  // Each landing on the upload address can end off the form (e.g. 视频号's dashboard) while landOffForm lasts.
+  const land = (target) => { url = behaviour.landOffForm > 0 ? (behaviour.landOffForm--, "https://creator.douyin.com/home") : target; };
+  const listeners = [];
+  page.navigate = async (target) => { log.navigations++; land(target); };
+  page.reload = async () => { log.reloads++; };
+  page.onEvent = (listener) => { listeners.push(listener); return () => listeners.splice(listeners.indexOf(listener), 1); };
+  const emit = (method, params) => listeners.forEach((listener) => listener({ method, params }));
   const driver = {
     name: "抖音", host: "douyin.com", uploadUrl: "https://creator.douyin.com/upload", manageUrl: "https://creator.douyin.com/manage", titleLimit: 30, supportsPrivate: true,
     loginRequired: () => behaviour.login,
+    onForm: (current) => /upload/.test(current),
     uploaded: async () => behaviour.staleDraft || sets > behaviour.ignoreSets,
     fill: async (_page, job) => { log.typed.push(job.title); return { read: async () => behaviour.typedTitle ?? job.title }; },
     formMatches: (value, job) => value === job.title,
@@ -26,9 +36,15 @@ function world(overrides = {}) {
     publish: async () => { if (!behaviour.publishFound) { if (behaviour.editAfterFirstMiss) behaviour.typedTitle = "被改过的标题"; return false; } log.clicks++; if (!verifyLeft && behaviour.success) url = "https://creator.douyin.com/manage"; return true; },
     published: (current) => /manage/.test(current)
   };
-  const channels = { ...driver, name: "视频号", titleLimit: 0, supportsPrivate: false };
+  const channels = { ...driver, name: "视频号", titleLimit: 0, supportsPrivate: false,
+    setCover: async (_page, file) => { log.covers.push(file); if (behaviour.coverError) throw behaviour.coverError; } };
   const steps = {
-    findVideoInput: async () => ({ backendNodeId: 1 }),
+    findVideoInput: async () => {
+      if (!behaviour.noInput) return { backendNodeId: 1 };
+      // The form's script was aborted on the way: the page never renders an upload input.
+      if (behaviour.networkTrouble) { emit("Network.requestWillBeSent", { requestId: "r1", type: "Script", timestamp: 1, request: { url: "https://res.wx.qq.com/t/fed_upload.js?v=1" } }); emit("Network.loadingFailed", { requestId: "r1", type: "Script", errorText: "net::ERR_ABORTED" }); }
+      return null;
+    },
     verificationShown: async () => { if (verifyLeft > 0) { verifyLeft--; if (!verifyLeft && behaviour.success) url = "https://creator.douyin.com/manage"; return true; } return false; },
     listed: async () => behaviour.listed
   };
@@ -38,9 +54,10 @@ function world(overrides = {}) {
   const accounts = {
     snapshot: () => ({ accounts: accountList }),
     profileDir: (id) => path.join(root, "profiles", id),
+    markSignedOut: (id) => { log.signedOut = [...(log.signedOut || []), id]; },
     lease: (id) => { if (busy.has(id)) throw Object.assign(new Error("这个账号的浏览器正在使用"), { code: "SOCIAL_ACCOUNT_BUSY" }); busy.add(id); log.leases++; return () => { busy.delete(id); log.released++; }; }
   };
-  const launch = () => { if (behaviour.launchError) throw behaviour.launchError; log.launches++; sets = 0; url = "https://creator.douyin.com/upload"; return { close: async () => { log.closed++; } }; };
+  const launch = () => { if (behaviour.launchError) throw behaviour.launchError; log.launches++; sets = 0; land("https://creator.douyin.com/upload?token=private"); return { close: async () => { log.closed++; } }; };
   const make = (extra = {}) => createSocialPublisher({ dataDir: path.join(root, "data"), accounts, launch, executable: "chrome.exe", attach: async () => page, steps,
     driverFor: (platform) => platform === "channels" ? channels : driver, timing: { settle: 1, poll: 2, button: 1, react: 50, upload: 2000, result: 300, busyRetry: 40 }, ...extra });
   const until = async (publisher, done) => { for (let i = 0; i < 2000; i++) { const state = publisher.snapshot(); if (done(state)) return state; await sleep(5); } throw new Error("timeout " + JSON.stringify(publisher.snapshot().jobs.map((job) => job.status))); };
@@ -118,10 +135,16 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
   }
   {
     // 需要重新登录、找不到发布按钮、账号被占用：都不发，可以重试。
-    const w = world({ login: true }), p = w.make();
+    const failures = [];
+    const w = world({ login: true }), p = w.make({ onFailure: (failure) => failures.push(failure) });
     p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], title: "测试" });
     let job = (await w.until(p, finished)).jobs[0];
     assert.equal(job.status, "failed"); assert.match(job.reason, /重新扫码登录/);
+    // 2026-10-29：本机显示已登录，平台却要扫码。平台跳到登录页时，账号随即标成需要重新登录。
+    assert.deepEqual(w.log.signedOut, ["a-douyin"]);
+    assert.deepEqual({ ...failures[0], screenshot: Boolean(failures[0].screenshot) },
+      { platform: "douyin", code: "SOCIAL_LOGIN_REQUIRED", step: "打开平台", clicked: false, pageUrl: "https://creator.douyin.com/upload", screenshot: true, network: { failed: [], slow: [] } },
+      "每次发布失败都带上平台、错误码、卡住的步骤和当时页面的截图上报；地址不带查询参数");
     w.behaviour.login = false; w.behaviour.publishFound = false;
     p.retry(job.id);
     job = (await w.until(p, finished)).jobs[0];
@@ -135,6 +158,58 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     w.clearBusy("a-douyin");
     assert.equal((await w.until(p, finished)).jobs[0].status, "published");
     await p.dispose();
+  }
+  {
+    // 2026-10-29：视频号无界面打开发布地址时停在了首页。不在发布页不等于退出登录：再打开一次发布页就继续。
+    const w = world({ landOffForm: 1 }), p = w.make();
+    p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], title: "测试" });
+    assert.equal((await w.until(p, finished)).jobs[0].status, "published");
+    assert.equal(w.log.navigations, 1); assert.equal(w.log.signedOut, undefined);
+    await p.dispose();
+    // 再打开还不在发布页：不发，也不把账号标成要重新登录。
+    const failures = [];
+    const w2 = world({ landOffForm: 2 }), p2 = w2.make({ onFailure: (failure) => failures.push(failure) });
+    p2.submit({ videos: [{ path: w2.video }], accountIds: ["a-douyin"], title: "测试" });
+    const job = (await w2.until(p2, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /没有打开发布页/); assert.equal(w2.log.signedOut, undefined);
+    assert.equal(failures[0].code, "SOCIAL_PAGE_NOT_READY");
+    await p2.dispose();
+  }
+  {
+    // 2026-10-29：发布页的脚本经代理加载失败，表单一片空白。刷新一次仍没有上传入口：
+    // 如实报「页面没加载完整」，并带上加载失败的资源（只到域名），不误报成平台改版。
+    const failures = [];
+    const w = world({ noInput: true, networkTrouble: true }), p = w.make({ onFailure: (failure) => failures.push(failure) });
+    p.submit({ videos: [{ path: w.video }], accountIds: ["a-douyin"], title: "测试" });
+    let job = (await w.until(p, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /没有加载完整/); assert.equal(w.log.reloads, 1);
+    assert.equal(failures[0].code, "SOCIAL_PAGE_NOT_LOADED");
+    assert.deepEqual(failures[0].network.failed, ["res.wx.qq.com:Script:ERR_ABORTED:x2"]);
+    // 资源都正常却没有上传入口：才算平台页面改了。
+    w.behaviour.networkTrouble = false; p.retry(job.id);
+    job = (await w.until(p, finished)).jobs[0];
+    assert.match(job.reason, /可能改版/); assert.equal(failures[1].code, "SOCIAL_FORM_CHANGED");
+    await p.dispose();
+  }
+  {
+    // 用户反馈 2026-10-29：视频号发出去没有封面。成片自己的封面在视频传完后设上；界面拿不到封面路径。
+    const w = world(), p = w.make();
+    const cover = path.join(w.root, "封面.jpg"); fs.writeFileSync(cover, "jpg");
+    p.submit({ videos: [{ path: w.video, cover }], accountIds: ["a-channels", "a-douyin"], title: "测试" });
+    assert.equal(p.snapshot().jobs[0].coverPath, undefined, "封面路径不发给界面");
+    await w.until(p, finished);
+    assert.deepEqual(w.log.covers, [cover], "支持换封面的平台才设封面");
+    await p.dispose();
+    // 封面没设上：不点发布，可以重试。不是图片的封面文件不用。
+    const w2 = world({ coverError: Object.assign(new Error("视频号的封面没有换成成片封面，没有发布，可以重新发起。"), { code: "SOCIAL_COVER_FAILED" }) }), p2 = w2.make();
+    const cover2 = path.join(w2.root, "封面.jpg"); fs.writeFileSync(cover2, "jpg");
+    p2.submit({ videos: [{ path: w2.video, cover: cover2 }], accountIds: ["a-channels"], title: "测试" });
+    const job = (await w2.until(p2, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /封面/); assert.equal(w2.log.clicks, 0);
+    p2.submit({ videos: [{ path: w2.video, cover: w2.video }], accountIds: ["a-channels"], title: "另一条" });
+    await w2.until(p2, (state) => finished(state) && state.jobs.length === 2);
+    assert.equal(w2.log.covers.length, 1);
+    await p2.dispose();
   }
   {
     // 页面第一次没接收文件：再设一次就好；两次都不接收：不发，也不点发布。

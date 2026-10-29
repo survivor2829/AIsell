@@ -3,6 +3,8 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { findBrowser, launchBrowser } = require("./social-browser.cjs");
+const { attachPage, sleep } = require("./social-page.cjs");
+const drivers = require("./social-publish-drivers.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const stamp = () => new Date().toISOString();
@@ -31,12 +33,21 @@ function loggedIn(platformKey, cookies, now = Date.now()) {
     && hosts.some((host) => { const domain = String(cookie.domain || "").replace(/^\./, ""); return domain === host || domain.endsWith(`.${host}`); })
     && (!(cookie.expires > 0) || cookie.expires * 1000 > now));
 }
+// The platform's own answer for a profile whose cookie looks signed in: its publish page
+// sends a signed-out account to the login page (or, on 快手, shows 立即登录). Checked in
+// the same hidden window that read the cookies; an unclear page leaves the cookie verdict.
+async function platformSignedOut(browser, platformKey) {
+  const driver = drivers.driverFor(platformKey);
+  const page = await attachPage(browser, driver.host, { timeoutMs: 20_000, open: driver.uploadUrl });
+  await sleep(3000);
+  return drivers.signedOut(page, driver);
+}
 function cleanLabel(value, platformKey, count) {
   const label = String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 30);
   return label || `${platformOf(platformKey).name}账号${count + 1}`;
 }
 
-function createSocialAccounts({ dataDir, launch = launchBrowser, executable = findBrowser(), onChange = () => {}, pollMs = 2000 }) {
+function createSocialAccounts({ dataDir, launch = launchBrowser, executable = findBrowser(), onChange = () => {}, pollMs = 2000, probe = platformSignedOut }) {
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -61,20 +72,30 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     return account;
   };
   // Cookies come from the open login window, or from a short headless start of
-  // the same profile. Only the browser target is used; no page is attached.
-  async function cookiesOf(account) {
+  // the same profile. With `verify`, a cookie that looks signed in is checked on the
+  // platform's own page in that headless window.
+  async function cookiesOf(account, { verify = false } = {}) {
     const running = open.get(account.id);
-    if (running) return (await running.send("Storage.getCookies")).cookies || [];
+    if (running) return { cookies: (await running.send("Storage.getCookies")).cookies || [], signedOut: false };
     if (reading.has(account.id)) return reading.get(account.id);
     const task = (async () => {
       const browser = launch({ executable, profileDir: profileOf(account), headless: true });
-      try { return (await browser.send("Storage.getCookies")).cookies || []; } finally { await browser.close(); }
+      try {
+        const cookies = (await browser.send("Storage.getCookies")).cookies || [];
+        let signedOut = false;
+        if (verify && loggedIn(account.platform, cookies)) { try { signedOut = await probe(browser, account.platform); } catch { /* Unclear: the cookie verdict stands. */ } }
+        return { cookies, signedOut };
+      } finally { await browser.close(); }
     })();
     reading.set(account.id, task);
     try { return await task; } finally { reading.delete(account.id); }
   }
   function apply(account, cookies) {
-    const active = loggedIn(account.platform, cookies);
+    // A cookie can outlive the session: once the platform itself asked for a
+    // new login, only a login made after that counts (2026-10-29: three 视频号
+    // accounts showed "logged in" while every publish window showed the QR code).
+    const signedOutByPlatform = account.platformSignedOutAt && !(account.lastLoginAt > account.platformSignedOutAt);
+    const active = loggedIn(account.platform, cookies) && !signedOutByPlatform;
     account.status = active ? "active" : account.lastLoginAt ? "expired" : "login_required";
     if (active && !account.lastLoginAt) account.lastLoginAt = stamp();
     account.checkedAt = stamp();
@@ -107,10 +128,18 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     const browser = launch({ executable, profileDir: profileOf(account), url: PLATFORMS[account.platform].home });
     open.set(id, browser);
     let closing = false;
+    // Login cookies already in the profile may belong to a session the platform
+    // ended. Only a cookie that changes while this window is open is a new login;
+    // the comparison stays in memory and no value is kept.
+    const fingerprint = (cookies) => new Set(cookies.filter((cookie) => PLATFORMS[account.platform].loginCookies.includes(cookie.name))
+      .map((cookie) => crypto.createHash("sha256").update(`${cookie.name}=${cookie.value}`).digest("hex")));
+    // Taken as the window opens, before the user can scan anything.
+    const before = fingerprint((await browser.send("Storage.getCookies").catch(() => ({})))?.cookies || []);
     const timer = setInterval(() => {
       if (closing || browser.isClosed()) return;
       void browser.send("Storage.getCookies").then(({ cookies = [] }) => {
-        if (closing || !loggedIn(account.platform, cookies)) return;
+        const renewed = [...fingerprint(cookies)].some((value) => !before.has(value));
+        if (closing || !loggedIn(account.platform, cookies) || !renewed) return;
         closing = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
         setTimeout(() => void browser.close(), 1500);
       }).catch(() => {});
@@ -120,14 +149,21 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       clearInterval(timer);
       if (open.get(id) === browser) open.delete(id);
       if (disposed || !state.accounts.includes(account)) return;
-      if (!closing) { try { apply(account, await cookiesOf(account)); } catch { /* Keep the last known status. */ } }
+      if (!closing) { try { apply(account, (await cookiesOf(account)).cookies); } catch { /* Keep the last known status. */ } }
       save(); emit();
     });
     emit();
     return snapshot();
   }
   async function refresh() {
-    for (const account of state.accounts) { if (leased.has(account.id)) continue; try { apply(account, await cookiesOf(account)); } catch { /* Keep the last known status. */ } }
+    for (const account of state.accounts) {
+      if (leased.has(account.id)) continue;
+      try {
+        const { cookies, signedOut } = await cookiesOf(account, { verify: true });
+        if (signedOut) account.platformSignedOutAt = stamp();
+        apply(account, cookies);
+      } catch { /* Keep the last known status. */ }
+    }
     save(); emit(); return snapshot();
   }
   // Deleting removes the account's whole browser profile, which signs it out here.
@@ -149,6 +185,13 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     } finally { removing.delete(id); }
   }
   function profileDir(id) { return profileOf(find(id)); }
+  // The platform redirected a publish to its login page: the account needs a new login.
+  function markSignedOut(id) {
+    const account = find(id);
+    account.platformSignedOutAt = stamp();
+    account.status = account.lastLoginAt ? "expired" : "login_required";
+    save(); emit(); return snapshot();
+  }
   // One browser per profile: publishing takes the account exclusively until released.
   function lease(id) {
     find(id);
@@ -158,7 +201,7 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     return () => { if (!released) { released = true; leased.delete(id); emit(); } };
   }
   async function dispose() { disposed = true; await Promise.all([...open.values()].map((browser) => browser.close())); open.clear(); }
-  return { snapshot, add, rename, login, refresh, remove, profileDir, lease, dispose };
+  return { snapshot, add, rename, login, refresh, remove, profileDir, lease, markSignedOut, dispose };
 }
 
 module.exports = { createSocialAccounts, PLATFORMS, loggedIn };

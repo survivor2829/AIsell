@@ -50,6 +50,20 @@ function gitDiff(base, options = {}) {
     return result.stdout;
   };
   if (base) return run(["diff", base, "--", ...paths]);
+  // Locally, review everything this branch adds over main: committed, staged,
+  // unstaged and new files git does not track yet. "git diff HEAD" alone missed
+  // a reason in a new, untracked file (2026-10-29) that CI then rejected.
+  const mainBase = ["origin/main", "main"].map(ref => {
+    try { return run(["merge-base", "HEAD", ref]).trim(); } catch { return ""; }
+  }).find(Boolean);
+  if (mainBase) {
+    const untracked = run(["ls-files", "--others", "--exclude-standard", "--", ...paths]).split(/\r?\n/u).filter(Boolean);
+    const added = untracked.map(file => {
+      try { return require("node:fs").readFileSync(require("node:path").join(cwd, file), "utf8").split(/\r?\n/u).map(line => `+${line}`).join("\n"); }
+      catch { return ""; }
+    });
+    return [run(["diff", mainBase, "--", ...paths]), ...added].join("\n");
+  }
   const staged = run(["diff", "--cached", "--", ...paths]);
   if (staged.trim()) return staged;
   const working = run(["diff", "HEAD", "--", ...paths]);

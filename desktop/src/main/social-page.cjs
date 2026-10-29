@@ -119,7 +119,9 @@ function createPage(browser, sessionId) {
   }
   async function front() { await send("Page.bringToFront").catch(() => {}); }
   async function reload() { await send("Page.reload").catch(() => {}); }
-  return { send, tree, box, visible, mouse, click, hover, find, byText, byClass, byAttr, call, type, valueOf, evaluate, url, text, setFile, navigate, front, reload };
+  // Protocol events of this tab only (e.g. network failures kept as evidence); returns the unsubscribe.
+  const onEvent = (listener) => browser.onEvent?.((message) => { if (message.sessionId === sessionId) listener(message); }) || (() => {});
+  return { send, onEvent, tree, box, visible, mouse, click, hover, find, byText, byClass, byAttr, call, type, valueOf, evaluate, url, text, setFile, navigate, front, reload };
 }
 
 // pageFor: a page on a tab the caller created and attached itself (e.g. to start network capture before navigating).

@@ -133,6 +133,20 @@ async function uploadRetriesAndRespectsTheCustomerSwitch() {
   fresh.capsules.stop();
 }
 
+async function serviceOutputTravelsWithItsFailure() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "capsule-service-"));
+  const logs = path.join(root, "product-detail", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  require("./sidecar-stderr-log.cjs").saveStderrTail(path.join(root, "product-detail"), "TimeoutError: browser check", "PRODUCT_DETAIL_START_TIMEOUT stage=browser_check");
+  const capsules = createFailureCapsules({ rootDir: root, logger: createDiagnosticLogger({ rootDir: root }), serviceLogsDirs: { product_detail: logs }, home: root });
+  capsules.record({ source: "log", module: "product_detail", code: "product_detail_start_timeout" });
+  const [file] = fs.readdirSync(capsules.directory).filter(name => /^[a-f0-9-]{36}.json$/.test(name));
+  const capsule = JSON.parse(fs.readFileSync(path.join(capsules.directory, file), "utf8"));
+  assert.match(capsule.engineStderr, /TimeoutError: browser check/, "a local service's own output travels with its failure");
+  assert.match(capsule.engineStderr, /stage=browser_check/);
+  capsules.stop();
+}
+
 async function dailyLimitStopsAFailureLoop() {
   const t = fixture("limit");
   t.setEnabled(false);
@@ -229,6 +243,7 @@ function profilePathVariants() {
   await screenshotsOfTheSameOperationUploadAsOriginals();
   await uploadRetriesAndRespectsTheCustomerSwitch();
   await dailyLimitStopsAFailureLoop();
+  await serviceOutputTravelsWithItsFailure();
   await flightRecordAndPassportTravelWithTheFailure();
   await maskedScreenshotsAreNotUploaded();
   await environmentCausesAreCountedNotFiled();
