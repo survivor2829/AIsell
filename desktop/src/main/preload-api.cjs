@@ -1038,6 +1038,7 @@ function createPreloadApis(ipcRenderer) {
       start: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.start),
       restart: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.restart),
       stop: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.stop),
+      history: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.history),
       onUpdate: (callback) => {
         const handler = (_event, payload) => callback(payload);
         ipcRenderer.on(PRODUCT_DETAIL_CHANNELS.update, handler);

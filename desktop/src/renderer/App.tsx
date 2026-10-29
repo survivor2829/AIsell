@@ -956,7 +956,8 @@ export default function App() {
         <div className="content-card" ref={contentScrollRef}>
           {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />返回上一级</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
-          {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole} />}
+          {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole}
+            onStart={() => selectChild("production", "workspace")} workflowTasks={workflow.state.tasks as unknown as Record<string, unknown>[]} />}
           {activeGroup?.key === "business" && active !== "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}

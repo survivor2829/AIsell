@@ -5,8 +5,10 @@ const {
   PRODUCT_DETAIL_DOWNLOAD_CHANNEL,
   isAllowedProductDetailUrl,
   registerProductDetailDownloads,
+  readProductDetailHistory,
   sanitizeDownloadFilename
 } = require("./product-detail-download.cjs");
+const historyFile = path.join(require("node:fs").mkdtempSync(path.join(require("node:os").tmpdir(), "pd-history-")), "made-history.json");
 
 function createItem({ url, filename }) {
   const item = new EventEmitter();
@@ -73,6 +75,8 @@ const registration = registerProductDetailDownloads({
   getProductDetailOrigin: () => "http://localhost:43123",
   getDesktopPath: () => desktopDir,
   existsSync: (candidate) => existing.has(candidate.toLowerCase()),
+  historyFile,
+  now: () => new Date("2026-10-29T08:00:00.000Z"),
   diagnostics: {
     event: (component, event, payload, options) => {
       diagnosticEvents.push({ component, event, payload, options });
@@ -122,6 +126,9 @@ assert.deepEqual(sent[1], {
   channel: PRODUCT_DETAIL_DOWNLOAD_CHANNEL,
   payload: { state: "completed", filename: "设备类_详情图 (1).png" }
 });
+// 主页统计“做好几套详情图”：每张保存成功的图只记时间，不记文件名。
+assert.deepEqual(readProductDetailHistory(historyFile), [{ at: "2026-10-29T08:00:00.000Z" }]);
+assert.equal(require("node:fs").readFileSync(historyFile, "utf8").includes("详情图"), false);
 
 const failed = createItem({
   url: "blob:http://localhost:43123/failed",

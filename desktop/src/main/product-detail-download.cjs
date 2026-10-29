@@ -45,13 +45,36 @@ function uniqueDownloadPath({ desktopPath, filename, existsSync, reservedPaths }
   }
 }
 
+// When each detail image was saved, for the home page's count of finished detail pages (2026-10-29).
+// Only times are kept, never names or content.
+const HISTORY_LIMIT = 2000;
+function readProductDetailHistory(file) {
+  try {
+    const state = JSON.parse(fs.readFileSync(file, "utf8"));
+    return Array.isArray(state?.completed) ? state.completed.filter((entry) => typeof entry?.at === "string") : [];
+  } catch { return []; }
+}
+function rememberProductDetailDownload(file, at) {
+  try {
+    const completed = [...readProductDetailHistory(file), { at }].slice(-HISTORY_LIMIT);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ version: 1, completed }));
+    fs.renameSync(temporary, file);
+  } catch {
+    // The count is a convenience; a download never fails because of it.
+  }
+}
+
 function registerProductDetailDownloads({
   session,
   getMainWindow,
   getProductDetailOrigin,
   getDesktopPath,
   existsSync = fs.existsSync,
-  diagnostics
+  diagnostics,
+  historyFile = "",
+  now = () => new Date()
 }) {
   const reservedPaths = new Set();
 
@@ -108,6 +131,7 @@ function registerProductDetailDownloads({
       if (state === "completed") {
         notify({ state: "completed", filename: target.candidateName });
         record("completed", diagnosticPayload);
+        if (historyFile) rememberProductDetailDownload(historyFile, now().toISOString());
         return;
       }
 
@@ -128,6 +152,7 @@ function registerProductDetailDownloads({
 }
 
 module.exports = {
+  readProductDetailHistory,
   PRODUCT_DETAIL_DOWNLOAD_CHANNEL,
   isAllowedProductDetailUrl,
   registerProductDetailDownloads,
