@@ -16,13 +16,37 @@ const MAX_RECORDS = 500, MAX_SUBMIT = 100;
 // Only our own messages reach the user; system errors can carry local paths.
 const userMessage = (error, fallback) => /^SOCIAL_/.test(String(error?.code || "")) ? error.message : fallback;
 const localDay = (value) => { const date = new Date(value); return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`; };
+const COVER = /\.(jpe?g|png)$/i;
+const LOADS_PAGE = new Set(["Document", "Script", "Stylesheet", "XHR", "Fetch"]);
+
+// Requests of the page that failed or took over 5 seconds, by host only. They tell a
+// page that never loaded (network, proxy) from a page the platform changed
+// (2026-10-29: the 视频号 form stayed blank while its scripts were aborted).
+function watchNetwork(page) {
+  const pending = new Map(), failed = new Map(), slow = new Map();
+  const hostOf = (url) => { try { return new URL(url).hostname; } catch { return ""; } };
+  const count = (map, key) => { if (map.size < 30 || map.has(key)) map.set(key, (map.get(key) || 0) + 1); };
+  void page.send("Network.enable").catch(() => {});
+  const stop = page.onEvent?.(({ method, params = {} }) => {
+    if (method === "Network.requestWillBeSent") { pending.set(params.requestId, { host: hostOf(params.request?.url), type: params.type || "", at: params.timestamp }); return; }
+    if (method !== "Network.loadingFinished" && method !== "Network.loadingFailed") return;
+    const request = pending.get(params.requestId);
+    pending.delete(params.requestId);
+    if (!request || !LOADS_PAGE.has(params.type || request.type)) return;
+    if (method === "Network.loadingFailed") count(failed, `${request.host}:${params.type || request.type}:${String(params.errorText || "failed").replace(/^net::/, "")}`);
+    else if (params.timestamp - request.at > 5) count(slow, `${request.host}:${request.type}:slow`);
+  }) || (() => {});
+  // Plain identifiers (host:type:error:xN), which the diagnostic log keeps readable.
+  const list = (map) => [...map].map(([key, times]) => (times > 1 ? `${key}:x${times}` : key).replace(/[^a-z0-9_.:-]/gi, "_"));
+  return { stop, troubled: () => failed.size + slow.size > 0, summary: () => ({ failed: list(failed), slow: list(slow) }) };
+}
 
 // One video on one account is one job. A job that reached the publish click
 // is never published again by this module: if its result cannot be confirmed
 // on the platform's work management page it stays `unknown` until the user
 // checks the platform and says what happened.
 function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.driverFor, attach = attachPage, steps = drivers,
-  onChange = () => {}, now = () => Date.now(), dailyLimit = 10, timing = {} }) {
+  onChange = () => {}, onFailure = () => {}, now = () => Date.now(), dailyLimit = 10, timing = {} }) {
   const wait = { upload: 15 * 60_000, result: 10 * 60_000, pageOpen: 30_000, settle: 3000, poll: 2000, button: 3000, react: 20_000, busyRetry: 30_000, ...timing };
   wait.job = timing.job ?? wait.upload + wait.result + 5 * 60_000;
   const stateFile = path.join(dataDir, "state.json");
@@ -43,7 +67,7 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
   writeJsonAtomic(stateFile, state);
   let pumping = null, closed = false, active = null, activeBrowser = null, wakeTimer = null;
   const save = () => writeJsonAtomic(stateFile, state);
-  const snapshot = () => ({ jobs: state.jobs.map((job) => ({ ...job, videoPath: undefined, notBefore: undefined })), running: active?.id || "" });
+  const snapshot = () => ({ jobs: state.jobs.map((job) => ({ ...job, videoPath: undefined, coverPath: undefined, notBefore: undefined })), running: active?.id || "" });
   const emit = () => { if (!closed) onChange(snapshot()); };
   const update = (job, patch) => { Object.assign(job, patch, { updatedAt: stamp() }); save(); emit(); };
   const find = (id) => { const job = state.jobs.find((item) => item.id === id); if (!job) throw fail("SOCIAL_JOB_NOT_FOUND", "没有找到这条发布记录。"); return job; };
@@ -81,7 +105,9 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
       const { title, description } = copyFor(account.platform);
       // The same video with the same title on the same account is never queued twice.
       if (state.jobs.some((job) => job.accountId === account.id && job.videoPath === video.path && job.title === title && KEEP.has(job.status))) { skipped.push(`${video.name} → ${account.label}`); continue; }
-      const job = { id: crypto.randomUUID(), accountId: account.id, accountLabel: account.label, platform: account.platform, videoPath: video.path, videoName: String(video.name || path.basename(video.path)).slice(0, 80),
+      // The finished video's own cover goes with it where the platform takes one.
+      const coverPath = COVER.test(String(video.cover || "")) && fs.existsSync(video.cover) ? video.cover : "";
+      const job = { id: crypto.randomUUID(), accountId: account.id, accountLabel: account.label, platform: account.platform, videoPath: video.path, coverPath, videoName: String(video.name || path.basename(video.path)).slice(0, 80),
         title, description, visibility, status: "queued", step: "", reason: "", createdAt: stamp(), updatedAt: stamp(), clickedAt: "", finishedAt: "", notBefore: 0 };
       state.jobs.unshift(job); created.push(job.id);
     }
@@ -99,7 +125,7 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
       if (error.code === "SOCIAL_ACCOUNT_BUSY") return update(job, { notBefore: now() + wait.busyRetry, reason: "账号的浏览器正在使用，稍后自动继续。" });
       return update(job, { status: "failed", reason: userMessage(error, "账号暂时不可用。"), finishedAt: stamp() });
     }
-    let browser, watchdog;
+    let browser, watchdog, page, network;
     try {
       update(job, { status: "running", step: "打开平台", reason: "" });
       browser = launch({ executable, profileDir: accounts.profileDir(job.accountId) });
@@ -107,18 +133,27 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
       // Whatever hangs, the job ends: closing the browser rejects every pending call.
       watchdog = setTimeout(() => { job.timedOut = true; void browser.close().catch(() => {}); }, wait.job);
       watchdog.unref?.();
-      const page = await attach(browser, driver.host, { timeoutMs: wait.pageOpen, open: driver.uploadUrl });
+      page = await attach(browser, driver.host, { timeoutMs: wait.pageOpen, open: driver.uploadUrl });
+      network = watchNetwork(page);
       // Pages hydrate after load; a file set before that is silently dropped.
       await sleep(wait.settle);
-      if (driver.loginRequired(await page.url())) throw fail("SOCIAL_LOGIN_REQUIRED", `${driver.name}账号「${job.accountLabel}」需要重新扫码登录。`);
+      // Landing somewhere other than the form is not a login verdict: open the form once more first.
+      const offForm = async () => !await drivers.signedOut(page, driver) && driver.onForm && !driver.onForm(String(await page.url()));
+      if (await offForm()) { await page.navigate(driver.uploadUrl); await sleep(wait.settle); }
+      if (await drivers.signedOut(page, driver)) throw fail("SOCIAL_LOGIN_REQUIRED", `${driver.name}账号「${job.accountLabel}」需要重新扫码登录。`);
+      if (await offForm()) throw fail("SOCIAL_PAGE_NOT_READY", `${driver.name}没有打开发布页，没有发布，可以重新发起。`);
       // A restored draft that already holds a video would be published instead of this one.
       if (await driver.uploaded(page)) throw fail("SOCIAL_STALE_DRAFT", `${driver.name}页面里有一条之前没发完的草稿视频，请先在平台上处理掉草稿再发。`);
       update(job, { step: "上传视频" });
       const uploadDeadline = now() + wait.upload;
       // If the page shows no reaction to the file, set it once more; choosing a file never publishes.
       for (let attempt = 0, accepted = false; ; attempt++) {
-        const input = await steps.findVideoInput(page);
-        if (!input) throw fail("SOCIAL_FORM_CHANGED", `没有找到${driver.name}的视频上传入口，平台页面可能改版了。`);
+        let input = await steps.findVideoInput(page);
+        // A form that did not render gets one reload before anything is concluded.
+        if (!input && attempt === 0) { await page.reload(); await sleep(wait.settle); input = await steps.findVideoInput(page); }
+        if (!input) throw network.troubled()
+          ? fail("SOCIAL_PAGE_NOT_LOADED", `${driver.name}的发布页没有加载完整（网络或代理不稳定），没有发布，可以重新发起。`)
+          : fail("SOCIAL_FORM_CHANGED", `没有找到${driver.name}的视频上传入口，平台页面可能改版了。`);
         await page.setFile(input, job.videoPath);
         const reactDeadline = now() + wait.react;
         while (!accepted && now() <= reactDeadline) { await sleep(wait.poll); accepted = await driver.uploaded(page) || /上传中|上传成功|\d+%/.test(String(await page.evaluate("document.body ? document.body.innerText : ''") || "")); }
@@ -129,6 +164,11 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
         if (await driver.uploaded(page)) break;
         if (now() > uploadDeadline) throw fail("SOCIAL_UPLOAD_TIMEOUT", "视频上传超时，没有发布，可以重新发起。");
         await sleep(wait.poll);
+      }
+      // A cover that did not take stops the job before publishing; it can be retried.
+      if (job.coverPath && driver.setCover && fs.existsSync(job.coverPath)) {
+        update(job, { step: "设置封面" });
+        await driver.setCover(page, job.coverPath);
       }
       update(job, { step: "填写内容" });
       const form = await driver.fill(page, job);
@@ -159,10 +199,23 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
       update(job, { status: "unknown", step: "", reason: done ? "平台显示已提交，但作品管理里暂时没找到这条，请稍后到平台核对；不会自动重发。" : "点击发布后没有等到平台的结果，请到平台核对是否已发出；不会自动重发。", finishedAt: stamp() });
     } catch (error) {
       const reason = job.timedOut ? "发布用时过长，已停止。" : userMessage(error, "发布过程中出错。");
+      if (error?.code === "SOCIAL_LOGIN_REQUIRED") { try { accounts.markSignedOut?.(job.accountId); } catch { /* The job result below still says what to do. */ } }
+      // The page as it was when the job stopped: what a diagnosis needs and a log line cannot hold.
+      let screenshot = "", pageUrl = "";
+      try {
+        if (page && !browser?.isClosed?.()) {
+          pageUrl = String(await page.url()).replace(/[?#].*$/, "");
+          screenshot = (await page.send("Page.captureScreenshot", { format: "png" }))?.data || "";
+        }
+      } catch { /* A closed or hung page leaves the failure without a picture. */ }
+      try { onFailure({ platform: job.platform, code: job.timedOut ? "SOCIAL_JOB_TIMEOUT" : String(error?.code || "SOCIAL_UNEXPECTED"), step: job.step, clicked: Boolean(job.clickedAt), pageUrl, screenshot,
+        network: network?.summary() || { failed: [], slow: [] } }); }
+      catch { /* Diagnostics never change the job result. */ }
       if (job.clickedAt) update(job, { status: "unknown", step: "", reason: `${reason} 已经点过发布，请到平台核对；不会自动重发。`, finishedAt: stamp() });
       else update(job, { status: "failed", step: "", reason, finishedAt: stamp() });
     } finally {
       clearTimeout(watchdog); delete job.timedOut;
+      network?.stop();
       activeBrowser = null;
       await browser?.close().catch(() => {});
       release?.();

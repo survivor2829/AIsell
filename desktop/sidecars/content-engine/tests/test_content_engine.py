@@ -353,6 +353,27 @@ class ServiceTests(unittest.TestCase):
         )
         self.assertEqual(str(source.resolve()), asset_resolution["absolute_path"])
         self.assertEqual(str(output.resolve()), finished_resolution["absolute_path"])
+        self.assertEqual("", finished_resolution["cover_path"], "no generated video, no cover")
+
+    def test_finished_resolution_carries_the_cover_for_publishing(self):
+        # One-click publishing uploads the finished video's own cover (2026-10-29: 视频号 posts went out with a frame instead).
+        output = self.root / "exports" / "covered.mp4"
+        output.parent.mkdir(exist_ok=True)
+        output.write_bytes(b"finished")
+        cover = self.service.creative_domain.data_dir / "generated" / "g1" / "cover.jpg"
+        cover.parent.mkdir(parents=True)
+        cover.write_bytes(b"cover")
+        connection = self.service.connection
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO generated_videos (id, project_id, kind, status, selection_signature, recipe_json, duration_ms, thumbnail_path, created_at, updated_at)"
+            " VALUES ('generated_video_c', 'project_x', 'mix', 'completed', 's', '{}', 1000, ?, 'now', 'now')", (str(cover),))
+        connection.execute("PRAGMA foreign_keys=ON")
+        finished = self.service.register_finished(str(output), metadata={"generated_video_id": "generated_video_c"})
+        resolved = self.service.resolve_finished_path(finished["finished_video_id"])
+        self.assertEqual(str(cover.resolve()), resolved["cover_path"])
+        cover.unlink()
+        self.assertEqual("", self.service.resolve_finished_path(finished["finished_video_id"])["cover_path"], "a missing cover file is left out")
 
     def test_pause_is_idempotent_and_resume_clears_restart_error(self):
         private_path = str((self.root / "private" / "lesson.mp4").resolve())

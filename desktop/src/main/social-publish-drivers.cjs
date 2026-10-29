@@ -15,6 +15,16 @@ const lightUploaded = async (page) => { const text = await shownText(page); retu
 const squash = (value) => String(value ?? "").replace(/[\s​﻿#]+/g, "");
 const sameTitle = (value, job) => squash(value) === squash(job.title);
 const titleThenText = (value, job) => squash(value).startsWith(squash(job.title)) && squash(value).includes(squash(job.description));
+// `loginRequired` is only the platform's own login page, which means the account is signed out.
+// `onForm` is the publish form itself; any other page (a dashboard, a half-loaded page) is not a login verdict.
+
+// Sources of the images shown now; a cover that took effect adds a new one.
+async function visibleImages(page) {
+  const view = await page.tree(), sources = [];
+  for (const node of view.nodes) if (node.localName === "img" && attr(node, "src") && await page.visible(node)) sources.push(attr(node, "src"));
+  return sources;
+}
+const COVER_DIALOG = (node) => node.localName === "h3" && /^(裁剪封面图|编辑封面)$/.test(ownText(node));
 
 async function fileInput(page) {
   const view = await page.tree();
@@ -33,7 +43,8 @@ const DRIVERS = {
     uploadUrl: "https://creator.douyin.com/creator-micro/content/upload",
     manageUrl: "https://creator.douyin.com/creator-micro/content/manage",
     titleLimit: 30, privateLabel: "仅自己可见", supportsPrivate: true,
-    loginRequired: (url) => /login|passport/.test(url) || !/creator\.douyin\.com\/creator-micro/.test(url),
+    loginRequired: (url) => /login|passport/.test(url),
+    onForm: (url) => /creator\.douyin\.com\/creator-micro/.test(url),
     uploaded: lightUploaded,
     async fill(page, job) {
       const title = await page.find((node) => node.localName === "input" && /作品标题/.test(attr(node, "placeholder") || ""));
@@ -57,7 +68,10 @@ const DRIVERS = {
     uploadUrl: "https://cp.kuaishou.com/article/publish/video",
     manageUrl: "https://cp.kuaishou.com/article/manage/video",
     titleLimit: 0, privateLabel: "仅自己可见", supportsPrivate: true,
-    loginRequired: (url) => !/cp\.kuaishou\.com\/article\/publish/.test(url),
+    loginRequired: (url) => /passport|\/login/.test(url),
+    onForm: (url) => /cp\.kuaishou\.com\/article\/publish/.test(url),
+    // Logged out, the publish address does not redirect; the page offers 立即登录 instead (checked 2026-10-29).
+    loginShown: async (page) => /立即登录/.test(await shownText(page)) && !await page.find((node) => attr(node, "id") === "work-description-edit"),
     uploaded: lightUploaded,
     async fill(page, job) {
       const editor = await page.find((node) => attr(node, "id") === "work-description-edit");
@@ -77,7 +91,8 @@ const DRIVERS = {
     uploadUrl: "https://creator.xiaohongshu.com/publish/publish?source=official",
     manageUrl: "https://creator.xiaohongshu.com/new/note-manager",
     titleLimit: 20, privateLabel: "仅自己可见", supportsPrivate: true,
-    loginRequired: (url) => /login/.test(url) || !/creator\.xiaohongshu\.com\/publish/.test(url),
+    loginRequired: (url) => /login/.test(url),
+    onForm: (url) => /creator\.xiaohongshu\.com\/publish/.test(url),
     uploaded: lightUploaded,
     async fill(page, job) {
       const title = await page.find((node) => node.localName === "input" && /标题/.test(attr(node, "placeholder") || ""));
@@ -115,7 +130,10 @@ const DRIVERS = {
     uploadUrl: "https://channels.weixin.qq.com/platform/post/create",
     manageUrl: "https://channels.weixin.qq.com/platform/post/list",
     titleLimit: 0, privateLabel: "", supportsPrivate: false,
-    loginRequired: (url) => /login/.test(url) || !/platform\/post\/create/.test(url),
+    // Signed out, every page goes to /login.html. Signed in, a headless window may land on
+    // /platform instead of the form (checked 2026-10-29), which is not a login verdict.
+    loginRequired: (url) => /login/.test(url),
+    onForm: (url) => /platform\/post\/create/.test(url),
     uploaded: async (page) => Boolean(await page.find(page.byText("删除"))) && !/上传中/.test(await shownText(page)),
     async fill(page, job) {
       const blocked = await page.find(page.byText("你还不能发表视频"));
@@ -124,6 +142,32 @@ const DRIVERS = {
       if (!editor) throw fail("SOCIAL_FORM_CHANGED", "没有找到视频号的视频描述输入框。");
       await page.type(editor, [job.title, job.description].filter(Boolean).join(" "));
       return { read: () => page.valueOf(editor) };
+    },
+    // The cover editor (编辑封面: 从视频中选择封面 / 上传封面, then 裁剪封面图 and 确定) sits next to
+    // the 3:4 preview, which is generated from the video first. Seen on the page 2026-10-29.
+    async setCover(page, file) {
+      for (let i = 0; i < 40 && /封面预览生成中/.test(await shownText(page)); i++) await sleep(1500);
+      const before = await visibleImages(page);
+      if (!await page.find(page.byText("上传封面"))) {
+        const opener = await page.find((node) => ownText(node) === "编辑封面" && node.localName !== "h3")
+          || await page.find(page.byText("个人主页和分享卡片(3:4)"));
+        if (opener) { await page.click(opener); await sleep(1200); }
+      }
+      const uploadTab = await page.find(page.byText("上传封面"));
+      if (uploadTab) { await page.click(uploadTab); await sleep(800); }
+      const view = await page.tree();
+      const input = view.nodes.find((node) => node.nodeType === 1 && node.localName === "input" && attr(node, "type") === "file" && /image\/(jpe?g|png)/.test(attr(node, "accept") || ""));
+      if (!input) throw fail("SOCIAL_COVER_FAILED", "没有找到视频号的封面上传入口，没有发布，可以重新发起。");
+      await page.setFile(input, file);
+      // Crop first; the editor itself may then ask for a confirmation too.
+      for (let i = 0; i < 20; i++) {
+        await sleep(1000);
+        if (!await page.find(COVER_DIALOG)) break;
+        await page.click(await page.find(page.byText("确定")));
+      }
+      await sleep(1500);
+      if (await page.find(COVER_DIALOG)) throw fail("SOCIAL_COVER_FAILED", "视频号的封面编辑框没有关闭，没有发布，可以重新发起。");
+      if (!(await visibleImages(page)).some((src) => !before.includes(src))) throw fail("SOCIAL_COVER_FAILED", "视频号的封面没有换成成片封面，没有发布，可以重新发起。");
     },
     formMatches: titleThenText,
     privateChecked: async () => false,
@@ -146,6 +190,10 @@ async function findVideoInput(page, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) { const node = await fileInput(page); if (node) return node; if (Date.now() > deadline) return null; await sleep(800); }
 }
+// The platform itself says the account is signed out: its login page, or a login prompt in place of the form.
+async function signedOut(page, driver) {
+  return driver.loginRequired(String(await page.url())) || Boolean(await driver.loginShown?.(page));
+}
 async function verificationShown(page) {
   return Boolean(await page.find((node) => VERIFY.test(ownText(node)) && ownText(node).length < 60));
 }
@@ -163,4 +211,4 @@ async function listed(page, driver, marker) {
   return false;
 }
 
-module.exports = { DRIVERS, driverFor, findVideoInput, verificationShown, listed, VERIFY };
+module.exports = { DRIVERS, driverFor, findVideoInput, signedOut, verificationShown, listed, VERIFY };

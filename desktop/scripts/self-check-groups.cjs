@@ -54,6 +54,7 @@ const checks = [
   "src/main/social-publisher.self_check.cjs",
   "src/main/social-publish-copy.self_check.cjs",
   "src/main/social-publish-drivers.self_check.cjs",
+  "src/main/social-publish-ipc.self_check.cjs",
   "src/main/social-acquisition.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",

@@ -36,7 +36,10 @@ assert.equal(findBrowser(env, () => false), "");
       isClosed: () => browser.isClosedFlag, closed };
     launches.push(browser); return browser;
   };
-  const accounts = createSocialAccounts({ dataDir, launch, executable: "chrome.exe", pollMs: 5 });
+  // The platform's own page, as the hidden refresh window sees it: signed out, signed in, or unclear (throws).
+  const platformPage = { verdict: false, probes: [] };
+  const probe = async (browser, platform) => { platformPage.probes.push({ headless: browser.headless, platform }); if (platformPage.verdict instanceof Error) throw platformPage.verdict; return platformPage.verdict; };
+  const accounts = createSocialAccounts({ dataDir, launch, executable: "chrome.exe", pollMs: 5, probe });
 
   const first = (await accounts.add({ platform: "douyin", label: "" })).accounts[0];
   assert.equal(first.label, "抖音账号1", "没填备注名时按平台编号");
@@ -70,9 +73,42 @@ assert.equal(findBrowser(env, () => false), "");
   assert.deepEqual(state.accounts.map((item) => item.status), ["expired", "login_required"]);
   assert.ok(launches.slice(before).every((browser) => browser.headless && browser.isClosed()), "刷新用无界面浏览器，读完即关");
 
+  // 2026-10-29 客户现场：本机还留着登录 Cookie，平台却要求重新扫码。平台的说法优先。
+  const staleCookie = [{ name: "sessionid", value: "old-session", domain: ".douyin.com", expires: Date.now() / 1000 + 86400 * 30 }];
+  cookies.set(launches[0].profileDir, staleCookie);
+  assert.equal((await accounts.refresh()).accounts[0].status, "active", "只有 Cookie 时仍按 Cookie 显示");
+  accounts.markSignedOut(first.id);
+  assert.equal(accounts.snapshot().accounts[0].status, "expired", "发布时平台跳到登录页，账号立刻显示需要重新登录");
+  assert.equal((await accounts.refresh()).accounts[0].status, "expired", "刷新时旧 Cookie 还在，也不能再显示已登录");
+  await accounts.login(first.id);
+  const relogin = launches[launches.length - 1];
+  await sleep(80);
+  assert.equal(relogin.isClosed(), false, "打开登录窗口时的旧 Cookie 不算登录，窗口不会自己关掉");
+  cookies.set(relogin.profileDir, [{ ...staleCookie[0], value: "new-session" }]);
+  for (let i = 0; i < 400 && !relogin.isClosed(); i++) await sleep(10);
+  assert.equal(relogin.isClosed(), true, "扫码换了新的登录 Cookie 才算重新登录");
+  await sleep(20);
+  assert.equal(accounts.snapshot().accounts[0].status, "active");
+  assert.equal(fs.readFileSync(path.join(dataDir, "state.json"), "utf8").includes("session"), false, "比较只在内存里做，不落盘凭据");
+  cookies.delete(launches[0].profileDir);
+  await accounts.refresh();
+  assert.equal(platformPage.probes.length, 2, "只有 Cookie 看起来已登录时才开平台页面核对（上面两次），Cookie 没了不再核对");
+
+  // 刷新状态时核对平台本身：Cookie 还在、平台发布页却跳到登录页，就显示需要重新登录。
+  cookies.set(launches[0].profileDir, [{ ...staleCookie[0], value: "kept-session" }]);
+  platformPage.probes.length = 0;
+  platformPage.verdict = new Error("page did not load");
+  assert.equal((await accounts.refresh()).accounts[0].status, "active", "平台页面没打开时不下结论，按 Cookie 显示");
+  platformPage.verdict = true;
+  assert.equal((await accounts.refresh()).accounts[0].status, "expired");
+  assert.deepEqual(platformPage.probes[0], { headless: true, platform: "douyin" }, "在读 Cookie 的那个无界面窗口里核对");
+  cookies.delete(launches[0].profileDir);
+  platformPage.verdict = false;
+  await accounts.refresh();
+
   // 重启后记录还在；删除账号会删掉它的浏览器资料目录。
   await accounts.dispose();
-  const reopened = createSocialAccounts({ dataDir, launch, executable: "chrome.exe", pollMs: 5 });
+  const reopened = createSocialAccounts({ dataDir, launch, executable: "chrome.exe", pollMs: 5, probe });
   assert.equal(reopened.snapshot().accounts.length, 2);
   const profile = path.join(dataDir, "profiles", first.id);
   fs.mkdirSync(profile, { recursive: true }); fs.writeFileSync(path.join(profile, "Cookies"), "x");

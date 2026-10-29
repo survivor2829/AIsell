@@ -2374,7 +2374,7 @@ class ContentEngineService:
         """Main-process-only path resolution; never expose this DTO to renderer."""
         _validate_id(finished_video_id, "finished_video_id")
         row = self.connection.execute(
-            "SELECT output_path FROM finished_videos WHERE id = ?",
+            "SELECT output_path, metadata_json FROM finished_videos WHERE id = ?",
             (finished_video_id,),
         ).fetchone()
         if row is None:
@@ -2389,7 +2389,24 @@ class ContentEngineService:
         return {
             "finished_video_id": finished_video_id,
             "absolute_path": str(path.resolve(strict=True)),
+            "cover_path": self._finished_cover_path(row["metadata_json"]),
         }
+
+    def _finished_cover_path(self, metadata_json: str) -> str:
+        """The cover shown for a finished video (its AI cover, or the clean frame
+        until one exists), for publishing it with the video; empty when there is none."""
+        try:
+            generated_id = str(json.loads(metadata_json or "{}").get("generated_video_id") or "")
+            if not generated_id:
+                return ""
+            cover = self.connection.execute(
+                "SELECT thumbnail_path FROM generated_videos WHERE id = ?", (generated_id,)
+            ).fetchone()
+            if cover is None or not cover["thumbnail_path"]:
+                return ""
+            return str(self.creative_domain._validate_generated_path(cover["thumbnail_path"]))
+        except (ContentEngineError, OSError, TypeError, ValueError):
+            return ""
 
     def get_setting(self, key: str, default: Any = None) -> dict[str, Any]:
         _validate_setting_key(key)

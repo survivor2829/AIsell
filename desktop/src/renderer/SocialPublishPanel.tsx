@@ -16,7 +16,7 @@ const ACTIVE = new Set<SocialPublishJob["status"]>(["queued", "running", "clicke
 // Records that still need the user or are still running are shown first and never folded away.
 const ATTENTION = new Set<SocialPublishJob["status"]>(["unknown", "needs_user", "running", "clicked", "queued"]);
 const STEPS = ["上传", "填文案", "点发布", "平台结果", "核对"];
-const STEP_OF: Record<string, number> = { 打开平台: 0, 上传视频: 0, 填写内容: 1, 点击发布: 2, 等待平台结果: 3, 等你验证: 3, 核对作品: 4 };
+const STEP_OF: Record<string, number> = { 打开平台: 0, 上传视频: 0, 设置封面: 1, 填写内容: 1, 点击发布: 2, 等待平台结果: 3, 等你验证: 3, 核对作品: 4 };
 const GENERATED_ID = /^generated_video_[a-f0-9]{32}$/i;
 const generatedThumb = (item: FinishedItem) => { const id = item.metadata?.generated_video_id; return typeof id === "string" && GENERATED_ID.test(id) ? `xiaoxi-content://generated/${id}/thumbnail` : ""; };
 const videoName = (item: FinishedItem) => item.title || item.displayName;

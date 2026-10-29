@@ -6,12 +6,39 @@ const FINISHED_ID = /^finished_[a-f0-9]{32}$/;
 const PLATFORMS = ["douyin", "kuaishou", "xiaohongshu", "channels"];
 
 // The renderer names videos by their 成片中心 id; file paths are resolved here and never sent back.
-function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {} }) {
+const STEP_CODES = { "打开平台": "open", "上传视频": "upload", "设置封面": "cover", "填写内容": "fill", "点击发布": "click", "等你验证": "user_verification", "等待平台结果": "result", "核对作品": "verify" };
+
+// A publish failure in the diagnostic log, which failure capsules pick up, with
+// the page screenshot saved where capsules look for same-moment evidence.
+function reportPublishFailure({ logger, evidenceDir }, failure) {
+  const crypto = require("node:crypto"), fs = require("node:fs");
+  const code = String(failure.code || "SOCIAL_UNEXPECTED").toLowerCase();
+  let evidenceId = "";
+  if (evidenceDir && failure.screenshot) {
+    try {
+      evidenceId = crypto.randomUUID().replace(/-/g, "");
+      fs.mkdirSync(evidenceDir, { recursive: true });
+      fs.writeFileSync(path.join(evidenceDir, `${evidenceId}.png`), Buffer.from(failure.screenshot, "base64"));
+      fs.writeFileSync(path.join(evidenceDir, `${evidenceId}.json`), JSON.stringify({ v: 1, ts: new Date().toISOString(), level: "error", module: "social_publish", event: "job_failed", code,
+        trace_id: "", details: { evidence_id: evidenceId, capture_status: "saved", redaction_mode: "internal_visible", rule_id: "social-publish" } }));
+    } catch { evidenceId = ""; }
+  }
+  // Asking for a new login is the platform's normal answer to an ended session: counted, not filed as a bug.
+  logger?.event?.("social_publish", "job_failed", { platform_kind: failure.platform, step_code: STEP_CODES[failure.step] || "unknown", clicked: failure.clicked,
+    // The page it stopped on as a plain identifier (platform.post.create, login.html), which the log keeps readable.
+    page_kind: failure.pageUrl ? new URL(failure.pageUrl).pathname.replace(/[^a-z0-9_.:-]+/gi, ".").replace(/^\.+|\.+$/g, "").slice(0, 100) : "", ...(evidenceId ? { evidence_id: evidenceId } : {}),
+    // Hosts whose page resources failed or were slow: a network or proxy problem shows here.
+    failed_request_kind: (failure.network?.failed || []).slice(0, 20), slow_request_kind: (failure.network?.slow || []).slice(0, 20) },
+  { level: code === "social_login_required" ? "warn" : "error", code });
+}
+
+function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, resolveFinishedCover = async () => "", getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {}, logger, evidenceDir }) {
   const covers = createCoverCache({ dir: path.join(dataDir, "covers"), ffmpegPath });
   let publisher; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "SOCIAL_ACCOUNTS_UNAVAILABLE" });
     publisher = createSocialPublisher({ dataDir, accounts, ...publisherOptions,
+      onFailure: (failure) => { try { reportPublishFailure({ logger, evidenceDir }, failure); } catch { /* Diagnostics never change the job result. */ } },
       onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-publish:update", state); } });
   } catch (error) { initializationError = { ok: false, code: error.code || "SOCIAL_PUBLISH_UNAVAILABLE", error: error.code === "SOCIAL_PUBLISH_STATE_INVALID" ? error.message : "一键分发暂时无法打开，请重新打开软件。" }; }
   const text = (value, max) => String(value ?? "").slice(0, max);
@@ -24,7 +51,7 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
         const id = String(item?.finishedVideoId || "");
         if (!FINISHED_ID.test(id)) throw Object.assign(new Error("invalid video"), { code: "SOCIAL_VIDEO_MISSING", message: "有视频已不在成片中心，请刷新后重选。" });
         const file = await resolveFinishedVideo(id).catch(() => { throw Object.assign(new Error("找不到这条成片的文件，请在成片中心确认它还在。"), { code: "SOCIAL_VIDEO_MISSING" }); });
-        videos.push({ path: file, name: text(item?.name, 80) || path.basename(file) });
+        videos.push({ path: file, name: text(item?.name, 80) || path.basename(file), cover: await resolveFinishedCover(id).catch(() => "") });
       }
       const accountIds = Array.isArray(payload?.accountIds) ? payload.accountIds.slice(0, 40).map((id) => String(id || "")) : [];
       const copies = {};
@@ -35,11 +62,16 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
       const result = publisher.submit({ videos, accountIds, title: text(payload?.title, 60), description: text(payload?.description, 1000), copies, visibility: payload?.visibility === "private" ? "private" : "public" });
       return { ...result.state, created: result.created, skipped: result.skipped };
     },
-    // Cover frames for the video picker; a video whose file is gone simply has none.
+    // Covers for the video picker: the cover that will be published, else a frame; a video whose file is gone has none.
     async covers(payload) {
       const ids = (Array.isArray(payload?.ids) ? payload.ids : []).map(String).filter((id) => FINISHED_ID.test(id)).slice(0, 24);
       const result = {};
-      for (const id of ids) { try { result[id] = await covers.cover(id, await resolveFinishedVideo(id)); } catch { result[id] = ""; } }
+      for (const id of ids) {
+        try {
+          const own = await resolveFinishedCover(id).catch(() => "");
+          result[id] = own ? `data:image/${/\.png$/i.test(own) ? "png" : "jpeg"};base64,${require("node:fs").readFileSync(own).toString("base64")}` : await covers.cover(id, await resolveFinishedVideo(id));
+        } catch { result[id] = ""; }
+      }
       return result;
     },
     async suggest(payload) {
@@ -62,4 +94,4 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
   });
   return { publisher, isBusy: () => Boolean(publisher?.isBusy()), async dispose() { channels.forEach((channel) => ipcMain.removeHandler(channel)); await publisher?.dispose(); } };
 }
-module.exports = { registerSocialPublishIpc };
+module.exports = { reportPublishFailure, registerSocialPublishIpc };
