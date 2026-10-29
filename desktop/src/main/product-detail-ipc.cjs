@@ -4,7 +4,8 @@ const PRODUCT_DETAIL_CHANNELS = Object.freeze({
   restart: "product-detail:restart",
   stop: "product-detail:stop",
   update: "product-detail:update",
-  downloadUpdate: "product-detail:download-update"
+  downloadUpdate: "product-detail:download-update",
+  history: "product-detail:history"
 });
 
 const PUBLIC_STATES = new Set([
@@ -97,6 +98,8 @@ function registerProductDetailIpc(options = {}) {
   ipcMain.handle(PRODUCT_DETAIL_CHANNELS.start, invoke("start"));
   ipcMain.handle(PRODUCT_DETAIL_CHANNELS.restart, invoke("restart"));
   ipcMain.handle(PRODUCT_DETAIL_CHANNELS.stop, invoke("stop"));
+  // Times of saved detail images (see product-detail-download.cjs); nothing else leaves the main process.
+  ipcMain.handle(PRODUCT_DETAIL_CHANNELS.history, async () => ({ ok: true, data: { completed: options.readHistory ? options.readHistory() : [] } }));
 
   const unsubscribe = controller.onUpdate((status) => {
     const mainWindow = getMainWindow();

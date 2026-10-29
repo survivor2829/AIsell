@@ -43,6 +43,17 @@ function localDate(value) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+// Every completed run of a task, so a daily task's history adds up instead of keeping only its
+// latest day (user 2026-10-29: 每天重复也要记录). One entry per occurrence: finishing the same
+// occurrence again (e.g. after re-queuing skipped contacts) updates it rather than counting twice.
+const RUN_HISTORY_LIMIT = 120;
+function recordRun(task) {
+  const occurrence = String(task.occurrenceDate || localDate(task.completedAt));
+  const run = { occurrence, completedAt: task.completedAt, done: Number(task.progress?.done) || 0, total: Number(task.progress?.total) || 0 };
+  const runs = Array.isArray(task.runs) ? task.runs.filter((entry) => entry.occurrence !== occurrence) : [];
+  task.runs = [...runs, run].slice(-RUN_HISTORY_LIMIT);
+}
+
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
   catch (error) {
@@ -203,6 +214,7 @@ function createWechatWorkflowController(options) {
     if (outcome.completed) {
       task.completedAt = String(outcome.resolvedAt || new Date(now()).toISOString());
       task.lastCompletedDate = localDate(task.completedAt);
+      recordRun(task);
     } else delete task.completedAt;
     delete task.notBefore;
     delete task.waitingReason;
@@ -415,6 +427,7 @@ function createWechatWorkflowController(options) {
         task.error = "";
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
+        recordRun(task);
         changed = true;
       } else if (receipt?.status === "not_published") {
         task.status = "cancelled";
@@ -671,6 +684,7 @@ function createWechatWorkflowController(options) {
       if (task.status === "completed") {
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
+        recordRun(task);
         // The success half of the failure loop: after a fix ships, this shows the
         // same kind of task now completes on the computer that reported it.
         log("task.succeeded", { task_kind: task.type, done: task.progress.done, total: task.progress.total }, { level: "info", code: "ok" });
@@ -829,7 +843,8 @@ function createWechatWorkflowController(options) {
       createdAt: existing?.createdAt || new Date(now()).toISOString(),
       sequence: existing?.sequence ?? Math.max(0, ...store.tasks.map((entry) => entry.sequence || 0)) + 1,
       ...normalizedSchedule({ ...existing, ...input }), accountName, status: "pending", error: "",
-      progress: { done: 0, total: 1 }, occurrenceDate: localDate(now()), enrolled: false
+      progress: { done: 0, total: 1 }, occurrenceDate: localDate(now()), enrolled: false,
+      ...(Array.isArray(existing?.runs) ? { runs: existing.runs } : {})
     };
     task.progress.total = input.type === "touch" ? payload.contacts.length : input.type === "interact" ? payload.maxPosts : 1;
     if (input.type === 'touch') task.aiPolish = payload.aiPolish === true;

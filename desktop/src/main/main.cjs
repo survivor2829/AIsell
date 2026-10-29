@@ -48,7 +48,8 @@ const {
 const { createProductDetailSidecar } = require("./product-detail-sidecar.cjs");
 const {
   isAllowedProductDetailUrl,
-  registerProductDetailDownloads
+  registerProductDetailDownloads,
+  readProductDetailHistory
 } = require("./product-detail-download.cjs");
 const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 const { runProductDetailReleaseSmoke } = require("./product-detail-release-smoke.cjs");
@@ -584,7 +585,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     productDetailIpcRegistration = registerProductDetailIpc({
       controller: productDetailController,
-      getMainWindow: () => mainWindow
+      getMainWindow: () => mainWindow,
+      readHistory: () => readProductDetailHistory(path.join(productDetailDataDir, "made-history.json"))
     });
     if (productDetailReleaseSmokeMode) {
       completeProductDetailReleaseSmoke();
@@ -1095,7 +1097,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getMainWindow: () => mainWindow,
       getProductDetailOrigin: () => productDetailController?.status().origin || "",
       getDesktopPath: () => app.getPath("desktop"),
-      diagnostics: logger
+      diagnostics: logger,
+      historyFile: path.join(app.getPath("userData"), "product-detail", "made-history.json")
     });
     // Daily Moments automation drives WeChat, so it waits for the launch update check.
     void launchGateOpened.then(() => momentsCampaignController?.initialize());

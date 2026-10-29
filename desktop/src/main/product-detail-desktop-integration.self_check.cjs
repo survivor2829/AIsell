@@ -25,6 +25,7 @@ function assertPreloadApiContract() {
 
   const api = createPreloadApis(ipcRenderer).productDetail;
   assert.deepEqual(Object.keys(api).sort(), [
+    "history",
     "onDownloadUpdate",
     "onUpdate",
     "restart",

@@ -2432,6 +2432,8 @@ async function main() {
   await restored.tick();
   assert.equal(restored.status().tasks.find((t) => t.title === "future").status, "missed");
   assert.equal(restored.status().tasks.find((t) => t.id === daily.task.id).lastCompletedDate, "2026-09-03");
+  // 用户 2026-10-29：每天重复的任务每跑一次都要留记录（主页按这个算触达人数）；中间改过任务也不丢。
+  assert.deepEqual(restored.status().tasks.find((t) => t.id === daily.task.id).runs.map((run) => run.occurrence), ["2026-09-02", "2026-09-03"]);
   await restored.pause();
   await restored.cancelTask(daily.task.id);
   assert.equal(restored.status().tasks.find((t) => t.id === daily.task.id).status, "cancelled", "completed daily tasks can stop future occurrences");

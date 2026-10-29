@@ -50,6 +50,7 @@ async function main() {
   });
 
   assert.deepEqual([...handlers.keys()].sort(), [
+    PRODUCT_DETAIL_CHANNELS.history,
     PRODUCT_DETAIL_CHANNELS.restart,
     PRODUCT_DETAIL_CHANNELS.start,
     PRODUCT_DETAIL_CHANNELS.status,
