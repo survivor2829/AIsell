@@ -280,7 +280,8 @@ try {
     diagnostics: { window_stage: "recover", window_class_code: "mmui::MainWindow", window_compile_ms: 200,
       window_candidate_count: 2, window_recovery_candidate_count: 1, window_recovery_main_count: 0,
       window_recovery_attempted: true, window_recovery_succeeded: false,
-      window_recover_ms: 300, window_total_ms: 20001, title: "private-chat-title", stderr: "private-error-text" } });
+      window_recover_ms: 300, window_total_ms: 20001, window_obstacle_kind: "moments", window_obstacle_width: 974,
+      window_obstacle_height: 998, title: "private-chat-title", stderr: "private-error-text" } });
   traceLogger.event("active_touch", "send_stage", windowDetail, { trace: true, level: "warn" });
   const windowEntry = traceLogger.readRecent(1)[0];
   const windowReport = require("../shared/cloud-report.cjs").reportEntry(windowEntry, { installId: "12345678-1234-1234-1234-123456789012" });
@@ -293,6 +294,8 @@ try {
   assert.equal(windowReport.details.window_recovery_attempted, true);
   assert.equal(windowReport.details.window_recovery_succeeded, false);
   assert.equal(windowReport.details.window_recover_ms, 300);
+  assert.equal(windowReport.details.window_obstacle_kind, "moments", "The popup standing in for the main window is named by kind, never caption");
+  assert.equal(windowReport.details.window_obstacle_width, 974);
   assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
   for (const [version, expected] of [["4.1.15.13", "4.1.15.13"], ["C:\\Weixin\\Weixin.exe", undefined], ["Weixin 4.1", undefined]]) {
     const detail = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({ ok: false, reason: "powershell_timeout",
