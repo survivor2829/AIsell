@@ -112,6 +112,13 @@ function createPage(browser, sessionId) {
   async function url() { return evaluate("location.href"); }
   // Text of the whole page including shadow roots, for status words such as 上传中 or 验证码.
   async function text() { const view = await tree(); return textOf(view.nodes[0]); }
+  // Rendered text including open shadow roots, without script or style text. 视频号 draws its
+  // form inside a shadow root, so its upload progress is missing from document.body.innerText (2026-10-29).
+  async function shownText() {
+    return String(await evaluate(`(() => { const out = [document.body ? document.body.innerText : ""];
+      const walk = (root) => { for (const element of root.querySelectorAll("*")) if (element.shadowRoot) { for (const child of element.shadowRoot.children) out.push(child.innerText || ""); walk(element.shadowRoot); } };
+      walk(document); return out.join("\\n"); })()`) || "");
+  }
   async function setFile(node, file) { await send("DOM.setFileInputFiles", { files: [file], backendNodeId: node.backendNodeId }); }
   async function navigate(target) {
     const result = await send("Page.navigate", { url: target });
@@ -121,7 +128,7 @@ function createPage(browser, sessionId) {
   async function reload() { await send("Page.reload").catch(() => {}); }
   // Protocol events of this tab only (e.g. network failures kept as evidence); returns the unsubscribe.
   const onEvent = (listener) => browser.onEvent?.((message) => { if (message.sessionId === sessionId) listener(message); }) || (() => {});
-  return { send, onEvent, tree, box, visible, mouse, click, hover, find, byText, byClass, byAttr, call, type, valueOf, evaluate, url, text, setFile, navigate, front, reload };
+  return { send, onEvent, tree, box, visible, mouse, click, hover, find, byText, byClass, byAttr, call, type, valueOf, evaluate, url, text, shownText, setFile, navigate, front, reload };
 }
 
 // pageFor: a page on a tab the caller created and attached itself (e.g. to start network capture before navigating).

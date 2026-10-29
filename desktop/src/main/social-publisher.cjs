@@ -47,7 +47,7 @@ function watchNetwork(page) {
 // checks the platform and says what happened.
 function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.driverFor, attach = attachPage, steps = drivers,
   onChange = () => {}, onFailure = () => {}, now = () => Date.now(), dailyLimit = 10, timing = {} }) {
-  const wait = { upload: 15 * 60_000, result: 10 * 60_000, pageOpen: 30_000, settle: 3000, poll: 2000, button: 3000, react: 20_000, busyRetry: 30_000, ...timing };
+  const wait = { upload: 15 * 60_000, result: 10 * 60_000, pageOpen: 30_000, settle: 3000, poll: 2000, button: 3000, react: 20_000, busyRetry: 30_000, stall: 3 * 60_000, ...timing };
   wait.job = timing.job ?? wait.upload + wait.result + 5 * 60_000;
   const stateFile = path.join(dataDir, "state.json");
   let state;
@@ -140,7 +140,9 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
       // Landing somewhere other than the form is not a login verdict: open the form once more first.
       const offForm = async () => !await drivers.signedOut(page, driver) && driver.onForm && !driver.onForm(String(await page.url()));
       if (await offForm()) { await page.navigate(driver.uploadUrl); await sleep(wait.settle); }
-      if (await drivers.signedOut(page, driver)) throw fail("SOCIAL_LOGIN_REQUIRED", `${driver.name}账号「${job.accountLabel}」需要重新扫码登录。`);
+      // The platform may end the session at any step (2026-10-29: the 视频号 login page appeared after a reload).
+      const loginWall = async () => { if (await drivers.signedOut(page, driver)) throw fail("SOCIAL_LOGIN_REQUIRED", `${driver.name}账号「${job.accountLabel}」需要重新扫码登录。`); };
+      await loginWall();
       if (await offForm()) throw fail("SOCIAL_PAGE_NOT_READY", `${driver.name}没有打开发布页，没有发布，可以重新发起。`);
       // A restored draft that already holds a video would be published instead of this one.
       if (await driver.uploaded(page)) throw fail("SOCIAL_STALE_DRAFT", `${driver.name}页面里有一条之前没发完的草稿视频，请先在平台上处理掉草稿再发。`);
@@ -151,17 +153,25 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
         let input = await steps.findVideoInput(page);
         // A form that did not render gets one reload before anything is concluded.
         if (!input && attempt === 0) { await page.reload(); await sleep(wait.settle); input = await steps.findVideoInput(page); }
+        if (!input) await loginWall();
         if (!input) throw network.troubled()
           ? fail("SOCIAL_PAGE_NOT_LOADED", `${driver.name}的发布页没有加载完整（网络或代理不稳定），没有发布，可以重新发起。`)
           : fail("SOCIAL_FORM_CHANGED", `没有找到${driver.name}的视频上传入口，平台页面可能改版了。`);
         await page.setFile(input, job.videoPath);
         const reactDeadline = now() + wait.react;
-        while (!accepted && now() <= reactDeadline) { await sleep(wait.poll); accepted = await driver.uploaded(page) || /上传中|上传成功|\d+%/.test(String(await page.evaluate("document.body ? document.body.innerText : ''") || "")); }
+        while (!accepted && now() <= reactDeadline) { await sleep(wait.poll); accepted = await driver.uploaded(page) || /上传中|上传成功|取消上传|\d+%/.test(await page.shownText()); }
         if (accepted) break;
+        await loginWall();
         if (attempt >= 1) throw fail("SOCIAL_UPLOAD_IGNORED", `${driver.name}页面没有接收视频文件，没有发布，可以重新发起。`);
       }
-      for (;;) {
+      // An upload whose progress stops moving ends early with what it showed, instead of waiting out the whole limit.
+      for (let progress = "", movedAt = now(); ;) {
         if (await driver.uploaded(page)) break;
+        await loginWall();
+        const shown = (await page.shownText()).match(/(\d{1,3})%/)?.[1] || "";
+        if (shown !== progress) { progress = shown; movedAt = now(); }
+        // Only a shown percentage that stops is a stall; a page without one waits for the upload limit.
+        if (progress && now() - movedAt > wait.stall) throw fail("SOCIAL_UPLOAD_STALLED", `视频上传 ${Math.round(wait.stall / 60_000)} 分钟没有进展（停在 ${progress}%），可能是账号或网络的问题，没有发布；可以换个账号或稍后重新发起。`);
         if (now() > uploadDeadline) throw fail("SOCIAL_UPLOAD_TIMEOUT", "视频上传超时，没有发布，可以重新发起。");
         await sleep(wait.poll);
       }

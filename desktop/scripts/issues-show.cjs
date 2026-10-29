@@ -62,6 +62,11 @@ function completeness(capsule, flight, directory) {
   } else if (capsule.module === "content_engine") {
     if (!Object.keys(capsule.details || {}).length) missing.push("引擎测量值（ContentEngineError.details）");
     if (!capsule.traceback) missing.push("Python 堆栈");
+  } else if (capsule.module === "social_publish") {
+    // The platform page is the evidence: what it showed, where it was, which of its loads failed
+    // (2026-10-29: a 0% upload and a login page were both read off the screenshot).
+    if (!(capsule.evidence || []).some(item => item.hasImage)) missing.push("出错页面的截图");
+    if (!capsule.details?.page_kind) missing.push("出错时所在的页面");
   } else if (!capsule.traceback && !capsule.engineStderr) {
     // Steps before a failure say when, not why: without a stack or the
     // service's own output the cause is still a guess.
@@ -133,7 +138,7 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const index = args.indexOf("--out");
   const out = index >= 0 ? args[index + 1] : DEFAULT_OUT;
-  const query = args.find((value, position) => !value.startsWith("--") && position !== index + 1);
+  const query = args.find((value, position) => !value.startsWith("--") && (index < 0 || position !== index + 1));
   try { console.log(show(find(out, query || ""))); }
   catch (error) { console.error(process.env.XIAOXI_DEBUG ? error.stack : error.message); process.exit(1); }
 }

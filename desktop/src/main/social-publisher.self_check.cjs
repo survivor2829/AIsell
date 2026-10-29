@@ -13,7 +13,7 @@ function world(overrides = {}) {
   const video = path.join(root, "成片.mp4"); fs.writeFileSync(video, "mp4");
   const log = { launches: 0, closed: 0, clicks: 0, leases: 0, released: 0, typed: [], navigations: 0, reloads: 0, covers: [] };
   const behaviour = { login: false, typedTitle: null, privateOk: true, verifyPolls: 0, success: true, listed: true, publishFound: true, ignoreSets: 0, staleDraft: false, launchError: null, editAfterFirstMiss: false,
-    landOffForm: 0, noInput: false, networkTrouble: false, coverError: null, ...overrides };
+    landOffForm: 0, noInput: false, networkTrouble: false, coverError: null, uploadStuck: false, shown: "", loginAfterSet: false, loginOnReload: false, ...overrides };
   let sets = 0;
   let url = "", verifyLeft = behaviour.verifyPolls;
   const page = { url: async () => url, front: async () => {}, evaluate: async (expression) => expression === "document.readyState" ? "complete" : "",
@@ -22,14 +22,15 @@ function world(overrides = {}) {
   const land = (target) => { url = behaviour.landOffForm > 0 ? (behaviour.landOffForm--, "https://creator.douyin.com/home") : target; };
   const listeners = [];
   page.navigate = async (target) => { log.navigations++; land(target); };
-  page.reload = async () => { log.reloads++; };
+  page.reload = async () => { log.reloads++; if (behaviour.loginOnReload) behaviour.login = true; };
+  page.shownText = async () => behaviour.shown;
   page.onEvent = (listener) => { listeners.push(listener); return () => listeners.splice(listeners.indexOf(listener), 1); };
   const emit = (method, params) => listeners.forEach((listener) => listener({ method, params }));
   const driver = {
     name: "抖音", host: "douyin.com", uploadUrl: "https://creator.douyin.com/upload", manageUrl: "https://creator.douyin.com/manage", titleLimit: 30, supportsPrivate: true,
     loginRequired: () => behaviour.login,
     onForm: (current) => /upload/.test(current),
-    uploaded: async () => behaviour.staleDraft || sets > behaviour.ignoreSets,
+    uploaded: async () => behaviour.staleDraft || (!behaviour.uploadStuck && sets > behaviour.ignoreSets),
     fill: async (_page, job) => { log.typed.push(job.title); return { read: async () => behaviour.typedTitle ?? job.title }; },
     formMatches: (value, job) => value === job.title,
     privateChecked: async () => behaviour.privateOk,
@@ -48,7 +49,7 @@ function world(overrides = {}) {
     verificationShown: async () => { if (verifyLeft > 0) { verifyLeft--; if (!verifyLeft && behaviour.success) url = "https://creator.douyin.com/manage"; return true; } return false; },
     listed: async () => behaviour.listed
   };
-  page.setFile = async () => { sets++; log.sets = sets; };
+  page.setFile = async () => { sets++; log.sets = sets; if (behaviour.loginAfterSet) behaviour.login = true; };
   const accountList = [{ id: "a-douyin", platform: "douyin", label: "抖音号", status: "active" }, { id: "a-channels", platform: "channels", label: "视频号", status: "active" }];
   let busy = new Set();
   const accounts = {
@@ -59,7 +60,7 @@ function world(overrides = {}) {
   };
   const launch = () => { if (behaviour.launchError) throw behaviour.launchError; log.launches++; sets = 0; land("https://creator.douyin.com/upload?token=private"); return { close: async () => { log.closed++; } }; };
   const make = (extra = {}) => createSocialPublisher({ dataDir: path.join(root, "data"), accounts, launch, executable: "chrome.exe", attach: async () => page, steps,
-    driverFor: (platform) => platform === "channels" ? channels : driver, timing: { settle: 1, poll: 2, button: 1, react: 50, upload: 2000, result: 300, busyRetry: 40 }, ...extra });
+    driverFor: (platform) => platform === "channels" ? channels : driver, timing: { settle: 1, poll: 2, button: 1, react: 50, upload: 2000, result: 300, busyRetry: 40, stall: 60 }, ...extra });
   const until = async (publisher, done) => { for (let i = 0; i < 2000; i++) { const state = publisher.snapshot(); if (done(state)) return state; await sleep(5); } throw new Error("timeout " + JSON.stringify(publisher.snapshot().jobs.map((job) => job.status))); };
   return { root, video, log, behaviour, accounts, make, until, setBusy: (id) => busy.add(id), clearBusy: (id) => busy.delete(id) };
 }
@@ -190,6 +191,31 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     job = (await w.until(p, finished)).jobs[0];
     assert.match(job.reason, /可能改版/); assert.equal(failures[1].code, "SOCIAL_FORM_CHANGED");
     await p.dispose();
+  }
+  {
+    // 现场包 61510fee（2026-10-29，1.2.24）：视频号已开始上传却一直停在 0%。进度画在页面的 shadow DOM 里，
+    // 原来只读外层文字，误报「页面没有接收视频文件」并又选了一次文件。现在认出在上传，停住不动就如实提示。
+    const w = world({ uploadStuck: true, shown: "取消上传 0%" }), p = w.make();
+    p.submit({ videos: [{ path: w.video }], accountIds: ["a-channels"], title: "测试" });
+    const job = (await w.until(p, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /没有进展（停在 0%）/); assert.equal(w.log.sets, 1, "已经在上传就不再选第二次文件");
+    await p.dispose();
+    // 页面不显示百分比时不算卡住，等到上传时限。
+    const w2 = world({ uploadStuck: true, shown: "上传中" }), p2 = w2.make({ timing: { settle: 1, poll: 2, react: 50, upload: 300, stall: 60 } });
+    p2.submit({ videos: [{ path: w2.video }], accountIds: ["a-channels"], title: "测试" });
+    assert.match((await w2.until(p2, finished)).jobs[0].reason, /上传超时/);
+    await p2.dispose();
+  }
+  {
+    // 现场包 8292309a（2026-10-29，1.2.24）：账号登录中途失效，刷新后是「选择视频号登录」页。
+    // 原来按找不到上传入口误报成「页面没加载完整」；上传中被踢到登录页也一样。现在都报需要重新扫码，并标记账号。
+    for (const behaviour of [{ noInput: true, networkTrouble: true, loginOnReload: true }, { uploadStuck: true, loginAfterSet: true }]) {
+      const w = world(behaviour), p = w.make();
+      p.submit({ videos: [{ path: w.video }], accountIds: ["a-channels"], title: "测试" });
+      const job = (await w.until(p, finished)).jobs[0];
+      assert.match(job.reason, /重新扫码登录/, JSON.stringify(behaviour)); assert.deepEqual(w.log.signedOut, ["a-channels"]);
+      await p.dispose();
+    }
   }
   {
     // 用户反馈 2026-10-29：视频号发出去没有封面。成片自己的封面在视频传完后设上；界面拿不到封面路径。
