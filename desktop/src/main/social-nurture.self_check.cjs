@@ -19,7 +19,7 @@ function seeded(seed = 7) { let value = seed; return () => { value = (value * 11
 
 function world(behaviour = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-nurture-"));
-  const b = { signedIn: true, searchBox: true, searchBlocked: false, results: true, blockedAt: [], likeButton: true, commentShown: true, busy: false, ...behaviour };
+  const b = { signedIn: true, searchBox: true, searchBlocked: false, results: true, blockedAt: [], likeButton: true, commentShown: true, busy: false, feed: true, ...behaviour };
   const log = { launches: 0, closed: 0, searches: 0, actions: [], reports: [], signedOut: [], published: [], videos: 0, fronts: 0 };
   let offsetDays = 0, video = 0, checks = 0, justSearched = false;
   const now = () => Date.now() + offsetDays * 86_400_000;
@@ -28,6 +28,9 @@ function world(behaviour = {}) {
   const driver = {
     name: "抖音", host: "douyin.com", home: "https://www.douyin.com/?recommend=1",
     signedIn: async () => b.signedIn,
+    dismissPrompts: async () => { log.prompts = (log.prompts || 0) + 1; },
+    // The home page lands on a grid; the player is reached through 推荐 (2026-10-29).
+    openFeed: async () => b.feed,
     blocked: async () => { checks++; return b.blockedAt.includes(checks); },
     search: async () => { log.searches++; justSearched = true; return b.searchBox; },
     openFirstResult: async () => b.results,
@@ -54,7 +57,7 @@ function world(behaviour = {}) {
   const runDay = async (nurture) => { for (let i = 0; i < 20; i++) { nurture.tick(); await sleep(5); while (nurture.isBusy()) await sleep(5); } };
   return { root, b, log, make, runDay, nextDay: () => { offsetDays++; } };
 }
-const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清楚\n这台效率不错", startTime: "00:00" };
+const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清楚\n这台效率不错" };
 
 (async () => {
   {
@@ -155,6 +158,44 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
     state = n.snapshot().plans[0];
     assert.equal(state.status, "active"); assert.equal(state.today.segmentsDone, 0); assert.equal(w.log.launches, 1);
     w.b.busy = false; await sleep(60); await w.runDay(n);
+    assert.equal(n.snapshot().plans[0].today.segmentsDone, 2);
+    await n.dispose();
+  }
+  {
+    // 用户 2026-10-29：不要固定开始时间。保存就立刻跑第一段；段间照阶段表休息，也可以点「现在就跑下一段」。
+    const w = world();
+    const n = w.make({ stages: { ...stages, segmentGapMinutes: [30, 30] } });
+    n.savePlan(plan);
+    await sleep(10); while (n.isBusy()) await sleep(5);
+    let state = n.snapshot().plans[0];
+    assert.equal(state.today.segmentsDone, 1, "保存后立刻跑了第一段");
+    assert.equal(state.phase, "resting"); assert.ok(state.today.nextAt > Date.now() + 25 * 60_000, "下一段约半小时后");
+    assert.equal(state.lastSegment.outcome, "completed"); assert.match(state.lastSegment.text, /这一段完成/);
+    assert.ok(w.log.prompts >= 1, "打开页面后先关掉抖音自己的弹窗");
+    n.runNow(state.id);
+    await sleep(10); while (n.isBusy()) await sleep(5);
+    state = n.snapshot().plans[0];
+    assert.equal(state.today.segmentsDone, 2, "现在就跑下一段");
+    assert.equal(state.phase, "done_today");
+    assert.throws(() => n.runNow(state.id), { code: "NURTURE_DONE_TODAY" });
+    await n.dispose();
+  }
+  {
+    // 现场包 629208b3（2026-10-29）：抖音首页跳到「精选」宫格，找不到可以逐条刷的视频，Chrome 弹出来又关掉、显示「等待中」。
+    // 现在：上报一次，2 分钟后再试一次；还不行就暂停并写清原因，不再反复弹窗口。
+    const w = world({ feed: false }), n = w.make({ timing: { settle: 1, busyRetry: 50, earlyRetry: 30 } });
+    n.savePlan(plan);
+    await sleep(10); while (n.isBusy()) await sleep(5);
+    let state = n.snapshot().plans[0];
+    assert.equal(state.lastSegment.outcome, "page_changed"); assert.match(state.lastSegment.text, /2 分钟后再试一次/);
+    assert.equal(state.status, "active");
+    await sleep(40); await w.runDay(n);
+    state = n.snapshot().plans[0];
+    assert.equal(state.status, "paused"); assert.match(state.reason, /已自动上报/);
+    assert.equal(w.log.launches, 2, "只再试一次");
+    assert.equal(w.log.reports.filter((report) => report.code === "NURTURE_ELEMENT_MISSING" && report.step === "feed").length, 2);
+    // 修好后点「继续」：重新开始尝试。
+    w.b.feed = true; n.setEnabled(state.id, true); await w.runDay(n);
     assert.equal(n.snapshot().plans[0].today.segmentsDone, 2);
     await n.dispose();
   }
