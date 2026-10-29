@@ -82,6 +82,7 @@ const checks = [
   "scripts/component-update-selftest.cjs",
   "src/main/feedback.self_check.cjs",
   "src/main/failure-capsule.self_check.cjs",
+  "src/main/component-service-rollback.self_check.cjs",
   "scripts/issues-pull.self_check.cjs",
   "scripts/error-code-map.self_check.cjs",
   "src/main/role-preferences.self_check.cjs",

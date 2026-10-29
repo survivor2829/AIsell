@@ -729,12 +729,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return providerEnvironment;
       }
     });
-    for (const controller of [productDetailController, contentEngineController]) {
+    for (const [controller, prefix] of [[productDetailController, "resources/product-detail/"], [contentEngineController, "resources/content-engine/"]]) {
       controller.onUpdate(state => {
-        if (["failed", "unavailable"].includes(state.state)
-            && /_(?:RUNTIME_(?:UNAVAILABLE|LINK_FAILED)|SPAWN_FAILED|EXITED|PIPE_FAILED|START_TIMEOUT)$/.test(state.code || "")) {
-          components.invalidateVerification();
-        }
+        if (!["failed", "unavailable"].includes(state.state)) return;
+        const decision = components.serviceRollbackDecision(state.code, prefix);
+        if (decision.basis === "not_a_start_failure") return;
+        logger.event("app", "service_failure_version_decision", { service_kind: prefix.split("/")[1], rollback_code: decision.basis, rollback: decision.rollback },
+          { level: "warn", code: decision.rollback ? "version_rollback_requested" : "version_kept" });
+        if (decision.rollback) components.invalidateVerification();
       });
     }
     const officialMaterials = require('./official-materials-ipc.cjs').registerOfficialMaterials({

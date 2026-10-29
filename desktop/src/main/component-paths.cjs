@@ -83,6 +83,31 @@ function runtimeLaunchFailed(binary, error) {
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return;
   try { invalidateVerification(); } catch { /* Keep the original actionable process error. */ }
 }
+// Whether a local service that failed should send the app back to the
+// previous version. Missing or unlaunchable files mean this generation is
+// broken. A timeout or an early exit can come from the computer (a slow first
+// browser start, antivirus scanning), and rolling back helps only when this
+// update changed that service's files: otherwise the previous version runs
+// the same files, fails the same way, and a working update is lost and then
+// downloaded again (seen 2026-10-29 with product detail at browser_check).
+const SERVICE_BROKEN = /_(?:RUNTIME_(?:UNAVAILABLE|LINK_FAILED)|SPAWN_FAILED|PIPE_FAILED)$/;
+const SERVICE_SOFT_FAILURE = /_(?:EXITED|START_TIMEOUT)$/;
+function serviceRollbackDecision(code, prefix, context = global.__xiaoxiComponents) {
+  const value = String(code || "");
+  if (SERVICE_BROKEN.test(value)) return { rollback: true, basis: "service_files_broken" };
+  if (!SERVICE_SOFT_FAILURE.test(value)) return { rollback: false, basis: "not_a_start_failure" };
+  if (!context?.paths || !context.root) return { rollback: true, basis: "generation_unknown" };
+  const selection = readJson(context.paths.selection, {});
+  if (!selection.active) return { rollback: false, basis: "no_update_to_undo" };
+  let previousRoot;
+  try { previousRoot = generationPath(context.paths, selection.previous, context.installedRoot); } catch { return { rollback: true, basis: "generation_unknown" }; }
+  const files = root => new Map((readJson(path.join(root || "", "component-base.json"), {}).files || [])
+    .filter(file => String(file.path).startsWith(prefix)).map(file => [file.path, `${file.sha256}:${file.size}`]));
+  const now = files(context.root), before = files(previousRoot);
+  if (!now.size || !before.size) return { rollback: true, basis: "generation_unknown" };
+  const changed = now.size !== before.size || [...now].some(([file, identity]) => before.get(file) !== identity);
+  return changed ? { rollback: true, basis: "service_changed_by_update" } : { rollback: false, basis: "service_unchanged_by_update" };
+}
 function saveSelection(paths, selection) {
   fs.mkdirSync(paths.directory, { recursive: true });
   writeJsonAtomic(paths.selection, selection);
@@ -117,4 +142,4 @@ function markHealthy() {
 }
 module.exports = { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection,
   applicationPath, resourcesPath, businessVersion, currentRoot, markHealthy, createRuntimeVerification, ensureRuntimeGroup, beginBoot,
-  bootVerificationReceipt, recordVerification, invalidateVerification, runtimeLaunchFailed };
+  bootVerificationReceipt, recordVerification, invalidateVerification, runtimeLaunchFailed, serviceRollbackDecision };
