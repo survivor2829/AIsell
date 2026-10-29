@@ -19,7 +19,9 @@ class NarrationScriptTest(unittest.TestCase):
         for seconds in (15, 22, 40, 60):
             inputs = _narration_script_input({"topic": "工厂选型", "targetSeconds": seconds})
             prompt = _narration_script_prompt(inputs)["messages"][0]["content"]
-            self.assertIn(f"不超过{seconds}秒", prompt)
+            low, target, high = int(seconds * 3.6), int(seconds * 4.0), int(seconds * 4.3)
+            self.assertIn(f"自然讲话约{seconds}秒：正文{low}—{high}个中文字，目标{target}个", prompt)
+            self.assertNotIn("只讲一个核心问题", prompt, "不再用会把稿子写短的说法（2026-10-29 两周内 4 稿 3 稿偏短）")
             self.assertNotIn("目标30—45秒", prompt)
         for seconds in (True, 14, 120, "22", float("nan")):
             with self.assertRaises(ValueError):
@@ -181,7 +183,7 @@ class NarrationScriptTest(unittest.TestCase):
         sent = json.loads(json.loads(self.calls[0].data)["messages"][1]["content"])
         self.assertEqual(sent["reference"]["body"], self.LIBRARY_ITEM["transcript"], "原文案由云端按 ID 补上")
         self.assertNotIn("libraryId", sent)
-        self.assertIn("108—129", json.loads(self.calls[0].data)["messages"][0]["content"])
+        self.assertIn("正文108—129个中文字", json.loads(self.calls[0].data)["messages"][0]["content"])
         self.assertEqual(self.call(body=body)[1], result, "同一操作重放不再调用")
         self.assertEqual(len(self.calls), 1)
 
@@ -227,25 +229,47 @@ class NarrationScriptTest(unittest.TestCase):
         body = {"topic": "清洁设备渠道商", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30}
         self.scripts = ["先看地面材质再选设备，overall 成本更低。", self.GOOD_30S]
         status, fixed = self.call(body=body)
+        self.assertEqual(fixed["estimatedSeconds"], 30)
         self.assertEqual((status, fixed["script"], fixed["problems"], fixed["originality"]["attempts"]), (200, self.GOOD_30S, [], 2))
         notes = json.loads(json.loads(self.calls[1].data)["messages"][1]["content"])["fixNotes"]
         self.assertTrue(any("太短" in note for note in notes) and any("overall" in note for note in notes), notes)
         self.assertEqual(fixed["quota"]["remaining"], 1, "检查不合格的重写不额外扣额度")
-        # 重写后还是太短：不再调用第三次，把稿子和问题一起交给客户
-        self.scripts = ["太短的稿子。", "还是太短的稿子。"]
-        status, short = self.call("script-2", body)
+        # 只是太短：不整篇重写，把原稿交回去按差的字数原地扩写，最多两次；扩写后够了就不报问题。
+        self.config.narration_script_daily_limit = 5
+        self.period["limit"] = 5
+        self.scripts = ["先看地面材质再选设备，" * 6, self.GOOD_30S]
+        status, longer = self.call("script-2", body)
+        self.assertEqual((status, longer["script"], longer["problems"], longer["originality"]["attempts"]), (200, self.GOOD_30S, [], 2))
+        expand = json.loads(self.calls[3].data)["messages"]
+        self.assertIn("还差约48个中文字", expand[0]["content"])
+        self.assertIn("只补充约60个中文字", expand[0]["content"], "按现在的字数补到目标，不写超上限")
+        self.assertEqual(json.loads(expand[1]["content"])["draft"]["script"], "先看地面材质再选设备，" * 6, "扩写拿到的是自己的原稿")
+        self.assertNotIn("reference", json.loads(expand[1]["content"]), "扩写不再给原爆款")
+        # 两次扩写后还是不够：不报“太短”，告诉客户这篇大约能读多少秒；不会有第四次调用。
+        self.scripts = ["太短的稿子。", "还是太短的稿子啊。", "仍旧太短的稿子啊啊。"]
+        status, short = self.call("script-3", body)
         self.assertEqual(status, 200)
-        self.assertEqual(short["script"], "还是太短的稿子。")
-        self.assertIn("太短", short["problems"][0])
-        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(short["script"], "仍旧太短的稿子啊啊。")
+        self.assertEqual(short["problems"], [])
+        self.assertEqual(short["estimatedSeconds"], 2)
+        self.assertEqual(short["originality"]["attempts"], 3)
+        self.assertEqual(len(self.calls), 7)
+        # 扩写反而没变长：保留原稿，停止扩写。
+        self.scripts = ["太短的稿子啊啊啊。", "短。"]
+        status, kept = self.call("script-4", body)
+        self.assertEqual((kept["script"], len(self.calls)), ("太短的稿子啊啊啊。", 9))
+        # 扩写过了头（超过上限）：不把“太短”变成“太长”，保留原稿。
+        self.scripts = ["先看地面材质再选设备，" * 6, "先看地面材质再选设备，" * 15]
+        status, capped = self.call("script-5", body)
+        self.assertEqual((capped["script"], capped["problems"]), ("先看地面材质再选设备，" * 6, []))
 
     def test_failed_length_rewrite_keeps_the_original_enough_first_draft(self):
         self.publish_library()
         body = {"topic": "清洁设备渠道商", "libraryId": self.LIBRARY_ITEM["id"], "targetSeconds": 30}
         self.scripts = ["先看地面材质再选设备。", FakeResponse(body=b"not json")]
         status, result = self.call(body=body)
-        self.assertEqual((status, result["script"]), (200, "先看地面材质再选设备。"))
-        self.assertIn("太短", result["problems"][0])
+        self.assertEqual((status, result["script"]), (200, "先看地面材质再选设备。"), "扩写失败时保留原稿")
+        self.assertEqual((result["problems"], result["estimatedSeconds"]), ([], 2))
 
     def test_writing_needs_no_configured_period_and_the_client_cannot_override(self):
         self.config.narration_script_quotas = {}
