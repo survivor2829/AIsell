@@ -195,6 +195,9 @@ class CapsuleServiceTest(unittest.TestCase):
                 "context": {"module": "content_engine", "taskId": "batch_9"}, "diagnostics": []}
         old, _ = validate_feedback(base, validate_report, safe_token)
         self.assertNotIn("capsules", old["context"], "feedback sent before capsules hashes exactly as before")
+        self.assertNotIn("page", old["context"], "feedback without a page hashes exactly as before")
+        paged, _ = validate_feedback({**base, "context": {**base["context"], "page": "ai-video"}}, validate_report, safe_token)
+        self.assertEqual("ai-video", paged["context"]["page"], "the page the 吐槽 button was pressed on is kept")
         bound, _ = validate_feedback({**base, "context": {**base["context"], "capsules": [CAPSULE_ID, CAPSULE_ID]}}, validate_report, safe_token)
         self.assertEqual([CAPSULE_ID], bound["context"]["capsules"])
         for invalid in ([], ["x"], [CAPSULE_ID] * 6, "x"):

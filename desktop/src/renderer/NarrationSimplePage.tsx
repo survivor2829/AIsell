@@ -20,7 +20,7 @@ const MAX_CNY = 6;
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
 // 一张爆款卡片：先显示爆款标题和真实数据；仿写好之后，下面接着显示客户自己的原创稿。
-type Draft = ViralLibraryScript & { seconds: ScriptSeconds; problems: string[] };
+type Draft = ViralLibraryScript & { seconds: ScriptSeconds; problems: string[]; estimatedSeconds?: number };
 function ScriptCard({ item, draft, made, writing, selected, onSelect }: { item: ViralLibraryItem; draft?: Draft; made: number; writing: boolean; selected: boolean; onSelect: () => void }) {
   const tag = item.source.tags.find((t) => t.id !== 'high_likes');
   return (
@@ -29,7 +29,7 @@ function ScriptCard({ item, draft, made, writing, selected, onSelect }: { item: 
       <span className="ns-src"><span className={`ns-pf is-${item.platform}`}>{item.platform === 'xiaohongshu' ? '红' : '抖'}</span>
         原{item.platform === 'xiaohongshu' ? '笔记' : '视频'} {item.source.likes !== null && <b>{likesText(item.source.likes)} 赞</b>}{tag && <> · {tagText(tag)}</>}{made > 0 && <span className="ns-made">已出片 {made} 次</span>}</span>
       <span className="ns-title">{item.title}</span>
-      {draft ? <span className="ns-draft"><span className="ns-draft-k">你的原创稿 · 约 {draft.seconds} 秒</span><b>{draft.title}</b><span className="ns-text">{draft.script}</span>
+      {draft ? <span className="ns-draft"><span className="ns-draft-k">你的原创稿 · 约 {Math.min(draft.estimatedSeconds ?? draft.seconds, draft.seconds)} 秒</span><b>{draft.title}</b><span className="ns-text">{draft.script}</span>
         {draft.problems.length > 0 && <span className="ns-warn">{draft.problems.join('；')}</span>}</span>
         : writing ? <span className="ns-draft is-writing">{draft ? '正在按这条爆款的结构换一篇' : '正在仿写'}，大约 20～40 秒…</span> : null}
     </button>
@@ -128,7 +128,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
     const result = await unwrap(api().writeScript({ referenceAssetId: ready ? person!.id : '', industry: '清洁设备渠道商', business,
       libraryId: item.id, targetSeconds: seconds, generationIntentId: crypto.randomUUID(), ...(written.length ? { mode: 'structure' as const, avoidTitles: written.slice(-10) } : {}) }));
     setTitles((all) => ({ ...all, [item.id]: [...(all[item.id] || []), result.title].slice(-10) }));
-    setDrafts((all) => ({ ...all, [item.id]: { id: item.id, platform: item.platform, title: result.title, script: result.script, emphasisPhrases: result.emphasisPhrases, seconds, problems: result.problems || [] } }));
+    setDrafts((all) => ({ ...all, [item.id]: { id: item.id, platform: item.platform, title: result.title, script: result.script, emphasisPhrases: result.emphasisPhrases, seconds, problems: result.problems || [], estimatedSeconds: result.estimatedSeconds } }));
   });
   // 开发版：把不适合口播的爆款从云端文案库删掉（以后重新发布也不会再加回来），删完重新读取。
   const removeFromLibrary = () => act('remove', async () => {

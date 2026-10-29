@@ -1,0 +1,31 @@
+/* 每页右下角的「吐槽」按钮和当前页弹窗：一屏写完、提交后不离开当前页。 */
+/* Below the WeChat workflow launcher (fixed at right 10px, bottom 64px) so the two never overlap. */
+.fbq-launcher { position: fixed; right: 14px; bottom: 14px; z-index: 60; display: inline-flex; align-items: center; gap: 6px; height: 42px; padding: 0 18px; border: 0; border-radius: 999px;
+  background: #e60000; color: #fff; font: inherit; font-size: 15px; font-weight: 900; box-shadow: 0 10px 24px rgba(230, 0, 0, .3); cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.fbq-launcher:hover { transform: translateY(-2px); box-shadow: 0 16px 32px rgba(230, 0, 0, .34); }
+.fbq-launcher:focus-visible { outline: 3px solid #fecaca; outline-offset: 3px; }
+
+.fbq-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: rgba(17, 24, 39, .42); }
+.fbq { display: grid; gap: 18px; width: min(620px, 100%); max-height: calc(100vh - 48px); overflow: auto; padding: 26px 28px; background: #fff; border-radius: 24px; box-shadow: 0 30px 80px rgba(17, 24, 39, .3); color: #1f2937; }
+.fbq header { display: flex; align-items: center; gap: 12px; }
+.fbq header h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 24px; font-weight: 900; }
+.fbq header h2 svg { color: #e60000; }
+.fbq header span { padding: 4px 12px; border-radius: 999px; background: #fff0f2; color: #b4122c; font-size: 14px; font-weight: 800; }
+.fbq-close { margin-left: auto; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 12px; background: #f6f7f9; color: #6b7280; cursor: pointer; }
+.fbq form { display: grid; gap: 14px; }
+.fbq-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.fbq-chips button { height: 40px; padding: 0 18px; border: 2px solid #f1dfe1; border-radius: 999px; background: #fff; font: inherit; font-size: 15px; font-weight: 800; color: #374151; cursor: pointer; }
+.fbq-chips button.is-on { border-color: #e60000; background: #e60000; color: #fff; }
+.fbq textarea { min-height: 180px; height: 32vh; max-height: 320px; padding: 14px 16px; border: 2px solid #f1dfe1; border-radius: 16px; resize: vertical; font: inherit; font-size: 16px; line-height: 1.7; color: #1f2937; }
+.fbq textarea:focus { outline: none; border-color: #e60000; box-shadow: 0 0 0 4px rgba(230, 0, 0, .08); }
+.fbq-options { display: grid; gap: 8px; font-size: 14px; font-weight: 600; color: #4b5563; }
+.fbq-options label { display: flex; align-items: center; gap: 8px; }
+.fbq-error { margin: 0; color: #b91c1c; font-size: 14px; font-weight: 700; }
+.fbq-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.fbq-actions > span { margin-right: auto; font-size: 13px; color: #9ca3af; }
+.fbq-actions .primary-button { display: inline-flex; align-items: center; gap: 6px; height: 46px; padding: 0 28px; font-size: 16px; }
+.fbq-done { display: grid; justify-items: center; gap: 10px; padding: 18px 0 4px; text-align: center; }
+.fbq-done svg { color: #16a34a; }
+.fbq-done h3 { margin: 0; font-size: 22px; font-weight: 900; }
+.fbq-done p { margin: 0; color: #6b7280; font-weight: 600; }
+.fbq-done .fbq-actions { justify-content: center; margin-top: 8px; }

@@ -24,8 +24,9 @@ const errorFor = (code) => ({
 
 function cleanContext(value) {
   if (!value || typeof value !== "object") return null;
-  const module = token(value.module), taskId = token(value.taskId);
-  return module || taskId ? { module, taskId } : null;
+  const module = token(value.module), taskId = token(value.taskId), page = token(value.page);
+  // `page` is the screen the feedback came from (the 吐槽 button on every page); `module` picks its logs.
+  return module || taskId ? { module, taskId, ...(page ? { page } : {}) } : null;
 }
 function validateInput(value, allowEmpty = false) {
   if (!value || typeof value !== "object" || !UUID.test(value.id || "")) throw validationError("反馈草稿已失效，请重新打开吐槽中心。");

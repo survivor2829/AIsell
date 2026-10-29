@@ -99,3 +99,23 @@
   .feedback-admin-actions { align-items: flex-start; flex-direction: column; }
   .feedback-admin-actions button { margin-left: 0; }
 }
+
+/* 一屏看到提交（用户 2026-10-29）：标题和标签同一行，类型和可见范围都和说明同一行，输入框随屏幕高度伸缩，
+   1366×768、125% 缩放下不滚动就能看到「提交反馈」。 */
+.feedback-center { display: grid; grid-template-columns: auto 1fr; column-gap: 32px; align-items: end; }
+.feedback-center > :not(.feedback-heading):not(.feedback-tabs) { grid-column: 1 / -1; }
+.feedback-heading { margin-bottom: 0; }
+.feedback-heading h1 { margin-bottom: 2px; }
+.feedback-heading p { margin: 0; font-size: 13px; }
+.feedback-tabs { margin-bottom: 14px; justify-content: flex-end; border-bottom: 0; }
+.feedback-compose { margin-top: 4px; padding: 18px 22px; }
+.feedback-categories { margin-bottom: 12px; align-items: center; }
+.feedback-categories legend { float: left; margin: 0 10px 0 0; line-height: 36px; }
+.feedback-categories label { padding: 7px 12px; }
+.feedback-body-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.feedback-center textarea { min-height: 120px; height: clamp(120px, 28vh, 260px); }
+.feedback-visibility { margin-top: 12px; }
+.feedback-visibility .feedback-note { font-size: 12px; }
+.feedback-diagnostic-option { padding-top: 10px; }
+.feedback-diagnostic-option p { margin-top: 4px; }
+.feedback-submit-row { margin-top: 12px; padding-top: 12px; }
