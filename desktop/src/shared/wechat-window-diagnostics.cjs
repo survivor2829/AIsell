@@ -2,8 +2,9 @@ const STAGES = new Set(["bootstrap", "compile", "process", "enumerate", "select"
 const MODES = new Set(["exact_hwnd", "render_child", "native_main", "shell_navigation", "visual_navigation"]);
 const MOMENTS_STAGES = new Set(["bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete"]);
 const COUNTERS = ["elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count",
-  "discovery_attempts", "discovery_retries", "discovery_wait_ms",
+  "discovery_attempts", "discovery_retries", "discovery_wait_ms", "obstacle_width", "obstacle_height",
   ...[...STAGES].map((stage) => `${stage}_ms`)];
+const OBSTACLE_KINDS = new Set(["moments", "wechat", "empty", "other"]);
 
 // A fixed technical schema: no window captions, contacts, paths or raw stderr.
 function sanitizeWechatWindowDiagnostics(source = {}) {
@@ -27,6 +28,7 @@ function sanitizeWechatWindowDiagnostics(source = {}) {
   }
   if (STAGES.has(source.window_stage)) detail.window_stage = source.window_stage;
   if (MODES.has(source.window_detection_mode)) detail.window_detection_mode = source.window_detection_mode;
+  if (OBSTACLE_KINDS.has(source.window_obstacle_kind)) detail.window_obstacle_kind = source.window_obstacle_kind;
   if (typeof source.window_class_code === "string" && /^[a-z][a-z0-9_.:]{0,119}$/i.test(source.window_class_code)) detail.window_class_code = source.window_class_code;
   if (typeof source.window_wechat_version === "string" && /^\d+(\.\d+){1,3}$/u.test(source.window_wechat_version)) {
     detail.window_wechat_version = source.window_wechat_version;

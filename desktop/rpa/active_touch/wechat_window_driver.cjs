@@ -851,6 +851,15 @@ function Update-WechatWindowCandidateDiagnostics([object[]]$candidates) {
   $windowDiagnostic.window_candidate_count = @($candidates).Count
   $windowDiagnostic.window_render_count = @($candidates | Where-Object { $_.hasMainRenderChild }).Count
   if (@($candidates).Count -gt 0) { $windowDiagnostic.window_class_code = [string]$candidates[0].windowClass }
+  # The visible window without the main render pane is what stands in for the main window
+  # (a Moments popup, a chat popup, a notice). Record its kind and size, never its caption.
+  $obstacle = @($candidates | Where-Object { $_.visible -and -not $_.hasMainRenderChild } | Sort-Object -Property area -Descending | Select-Object -First 1)
+  if ($obstacle.Count -eq 1) {
+    $obstacleTitle = [string]$obstacle[0].title
+    $windowDiagnostic.window_obstacle_kind = $(if ([string]::IsNullOrWhiteSpace($obstacleTitle)) { "empty" } elseif ($obstacleTitle -ceq "朋友圈" -or $obstacleTitle -ceq "Moments") { "moments" } elseif (@("微信", "Weixin", "WeChat") -ccontains $obstacleTitle) { "wechat" } else { "other" })
+    $windowDiagnostic.window_obstacle_width = [int]$obstacle[0].width
+    $windowDiagnostic.window_obstacle_height = [int]$obstacle[0].height
+  }
 }
 
 function Select-WechatMainCandidates([object[]]$candidates) {
@@ -940,7 +949,9 @@ if (-not $expectedHandleIsValid) {
       $windowDiagnostic.window_recovery_attempted = $true
       if (Request-PersonalWechatActivation $recoveryCandidate) {
         $nativeActivationRequested = $true
-        for ($recoveryAttempt = 0; $recoveryAttempt -lt 15; $recoveryAttempt++) {
+        # A slow PC can take several seconds to bring the tray main window back. Only the
+        # popup's own process counts: another Weixin process may be a second account.
+        for ($recoveryAttempt = 0; $recoveryAttempt -lt 30; $recoveryAttempt++) {
           Start-Sleep -Milliseconds 200
           $recoveredCandidates = @(Get-WechatWindowCandidates)
           Update-WechatWindowCandidateDiagnostics $recoveredCandidates

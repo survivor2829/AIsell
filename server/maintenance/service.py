@@ -29,7 +29,7 @@ APP_IDS = {"test": "com.aihuoke.desktop.test", "delivery": "com.aihuoke.desktop"
 WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "recover", "selected", "restore", "focus", "verify", "complete")
 MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete")
 MOMENTS_METRICS = ("moments_elapsed_ms", "moments_timeout_ms", "moments_discover_scan_ms", "moments_discover_candidate_count", "moments_discover_match_count") + tuple(f"moments_{stage}_ms" for stage in MOMENTS_STAGES)
-WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
+WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count", "obstacle_width", "obstacle_height") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
 INPUT_PHASES = ("preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
                 "search_quiet_check", "search_focus", "search_select_all", "search_query_input",
                 "search_observation", "search_result_enter", "pre_input", "after_input_click",
@@ -134,6 +134,8 @@ def validate_report(body):
                 row["details"]["window_detection_mode"] = details["window_detection_mode"]
             if safe_token(details.get("window_class_code")):
                 row["details"]["window_class_code"] = details["window_class_code"]
+            if details.get("window_obstacle_kind") in ("moments", "wechat", "empty", "other"):
+                row["details"]["window_obstacle_kind"] = details["window_obstacle_kind"]
             for suffix in WINDOW_METRICS:
                 key = f"window_{suffix}"
                 if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
