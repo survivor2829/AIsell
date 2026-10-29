@@ -81,7 +81,7 @@ function hasRecentFailureScreen(rootDir, at = Date.now()) {
 function captureFailureScreen(reason, { spawnProcess = require("node:child_process").spawn, timeoutMs = 15_000 } = {}) {
   if (!process.env.XIAOXI_FLIGHT_DIR) return Promise.resolve(false);
   const { FAILURE_SCREEN_SCRIPT } = require("../../rpa/active_touch/failure-evidence.cjs");
-  const safe = /^[a-z0-9_.:-]{1,100}$/.test(String(reason)) ? reason : "unclassified";
+  const safe = /^[a-z0-9_.:-]{1,100}$/.test(String(reason)) ? reason : "";
   const script = `${FAILURE_SCREEN_SCRIPT}\nSave-XiaoxiFailureScreen 'late' '${safe}' ''`;
   const boot = Buffer.from('$ProgressPreference="SilentlyContinue";$raw=[Console]::In.ReadToEnd();$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($raw));. ([ScriptBlock]::Create($text))', "utf16le").toString("base64");
   return new Promise(resolve => {
