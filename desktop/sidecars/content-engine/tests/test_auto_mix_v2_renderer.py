@@ -441,7 +441,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
             all(window["marginLu"] == 18.0 for window in verified_windows)
         )
 
-    def test_window_margin_measurement_rejects_any_speech_window_without_music(self):
+    def test_window_margin_measurement_rejects_music_missing_from_most_speech(self):
         class MissingMusicRenderer(FFmpegCreativeRenderer):
             def __init__(self, root):
                 super().__init__(
@@ -472,6 +472,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
                 [
                     {"captionId": "with-music", "start_ms": 0, "end_ms": 500},
                     {"captionId": "without-music", "start_ms": 700, "end_ms": 1_100},
+                    {"captionId": "still-without", "start_ms": 1_200, "end_ms": 2_000},
                 ],
                 duration=3.0,
                 music_duration=3.0,
@@ -480,6 +481,49 @@ class AutoMixV2RendererTests(unittest.TestCase):
                 output=self.root / "missing-music.mp4",
             )
         self.assertEqual("auto_mix_music_not_audible", caught.exception.code)
+        self.assertIn("2/3", caught.exception.message)
+        self.assertIn("still-without 1.2-2.0秒", caught.exception.message)
+
+    def test_window_margin_measurement_tolerates_one_phrase_with_quiet_music(self):
+        # A quiet bar of the track (or music ducked hard under one loud phrase) inside
+        # the music-on span used to stop the whole render at about 60%.
+        class QuietBarRenderer(FFmpegCreativeRenderer):
+            def __init__(self, root):
+                super().__init__(
+                    root,
+                    ffmpeg_path="fixture-ffmpeg.exe",
+                    ffprobe_path="fixture-ffprobe.exe",
+                )
+
+            def _command(self, _args, **_options):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            def measure_audio_quality(self, path):
+                return {"integrated_lufs": -16.0 if "voice" in Path(path).name else -34.0}
+
+            def _measure_loudness_series(self, path):
+                if "voice" in Path(path).name:
+                    return [(timestamp, -16.0) for timestamp in range(0, 10_001, 100)]
+                return [
+                    (timestamp, float("-inf") if 4_000 <= timestamp <= 5_100 else -48.0)
+                    for timestamp in range(0, 10_001, 100)
+                ]
+
+        windows = QuietBarRenderer(self.root)._measure_auto_mix_window_margins(
+            self.root / "voices" / "verified.wav",
+            ["-i", str(self.root / "music" / "licensed.mp3")],
+            [
+                {"captionId": "first", "start_ms": 0, "end_ms": 3_900},
+                {"captionId": "quiet-bar", "start_ms": 4_000, "end_ms": 5_000},
+                {"captionId": "last", "start_ms": 5_200, "end_ms": 9_000},
+            ],
+            duration=10.0,
+            music_duration=10.0,
+            fade_out=9.2,
+            delay_filter="",
+            output=self.root / "quiet-bar.mp4",
+        )
+        self.assertEqual(["first", "last"], [item["captionId"] for item in windows])
 
     def test_window_margin_measurement_skips_phrases_before_music_enters_or_after_it_fades(self):
         # Low-energy music enters 0.9 s late (plus a 0.4 s fade-in) and fades in the last 0.8 s:

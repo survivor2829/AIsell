@@ -1524,6 +1524,8 @@ class FFmpegCreativeRenderer:
             music_on_ms = round((music_fade_in + 0.4) * 1000) if music_fade_in > 0 else 0
             music_off_ms = round(fade_out * 1000)
             windows = []
+            quiet = []
+            music_on_span_ms = 0
             for caption in captions:
                 start_ms = int(caption.get("start_ms") or 0)
                 end_ms = int(caption.get("end_ms") or 0)
@@ -1540,12 +1542,16 @@ class FFmpegCreativeRenderer:
                 music_end_ms = min(end_ms, music_off_ms) if music_off_ms > music_on_ms else end_ms
                 if music_end_ms - music_start_ms < 400:
                     continue
+                music_on_span_ms += music_end_ms - music_start_ms
                 music_lufs = self._window_lufs(music_series, music_start_ms, music_end_ms)
                 if not math.isfinite(music_lufs) or music_lufs <= -70:
-                    raise ContentEngineError(
-                        "auto_mix_music_not_audible",
-                        "每句口播都必须有可测量的背景音乐。",
+                    # A quiet bar of the track or a phrase ducked hard under loud
+                    # speech has no music to balance; only music missing from
+                    # most of the narration means the mix itself is broken.
+                    quiet.append(
+                        (str(caption.get("captionId") or ""), music_start_ms, music_end_ms, music_lufs)
                     )
+                    continue
                 margin = voice_lufs - music_lufs
                 windows.append(
                     {
@@ -1560,10 +1566,17 @@ class FFmpegCreativeRenderer:
                         "musicIntegratedLufs": music_overall,
                     }
                 )
-            if not windows:
+            quiet_span_ms = sum(end - start for _, start, end, _ in quiet)
+            if not windows or quiet_span_ms * 2 > music_on_span_ms:
+                evidence = "；".join(
+                    f"{caption_id or '?'} {start / 1000:.1f}-{end / 1000:.1f}秒 "
+                    + (f"{lufs:.1f}LUFS" if math.isfinite(lufs) else "无声")
+                    for caption_id, start, end, lufs in quiet[:6]
+                )
                 raise ContentEngineError(
                     "auto_mix_music_not_audible",
-                    "说话窗口内未检测到可测量音乐，正式成片已停止。",
+                    f"背景音乐在大部分口播中听不到（{len(quiet)}/{len(quiet) + len(windows)} 句），"
+                    f"正式成片已停止。{evidence}",
                 )
             return windows
         finally:
