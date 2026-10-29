@@ -1,0 +1,68 @@
+/* 精准触达页头：和主页同一套浅色大卡片（白、浅粉、品牌红），尺寸随窗口放大。 */
+.touch-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); grid-template-rows: 1fr auto; column-gap: clamp(24px, 2.4vw, 56px); row-gap: clamp(18px, 2vh, 30px);
+  margin-bottom: clamp(18px, 1.6vw, 30px); padding: clamp(26px, 2.4vw, 50px) clamp(28px, 2.6vw, 56px); overflow: hidden;
+  border: 1px solid #f6dde1; border-radius: clamp(24px, 1.8vw, 36px); box-shadow: 0 18px 40px #e6000014; color: #172033;
+  background: radial-gradient(60% 75% at 6% 0%, #ffdfe5 0%, transparent 70%), radial-gradient(50% 70% at 94% 100%, #ffe7d9 0%, transparent 72%), linear-gradient(120deg, #ffffff 0%, #fff5f6 55%, #ffecef 100%); }
+.touch-hero-copy { grid-column: 1; align-self: center; }
+.touch-chip { display: inline-block; padding: .35em 1em; border-radius: 999px; border: 1px solid #f8d3d9; background: #fff0f2; color: #c91739; font-size: clamp(13px, .95vw, 18px); font-weight: 900; letter-spacing: .06em; }
+.touch-hero-copy h1 { margin: .35em 0 0; font-size: clamp(38px, 3.3vw, 74px); font-weight: 900; line-height: 1.14; letter-spacing: -.02em; }
+.touch-hero-copy h1 em { font-style: normal; background: linear-gradient(90deg, #e60000, #ff5a3c); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.touch-hero-copy p { margin: .6em 0 0; max-width: 34em; color: #3f4a5e; font-size: clamp(16px, 1.15vw, 23px); font-weight: 800; line-height: 1.6; }
+.touch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: clamp(16px, 2vh, 30px); }
+.touch-add { display: inline-flex; align-items: center; gap: .4em; height: clamp(50px, 3.4vw, 68px); padding: 0 1.3em; border: 0; border-radius: 16px; background: #e60000; color: #fff; font: inherit;
+  font-size: clamp(17px, 1.25vw, 24px); font-weight: 900; box-shadow: 0 12px 24px #e6000040; cursor: pointer; }
+.touch-add svg { width: 1.1em; height: 1.1em; }
+.touch-add:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.touch-add:focus-visible { outline: 3px solid #fecaca; outline-offset: 3px; }
+.touch-toggle { display: flex; align-items: center; }
+
+.touch-kpis { grid-column: 1; align-self: end; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: clamp(14px, 1.3vw, 26px) 6px;
+  border: 1px solid #f3dfe2; border-radius: clamp(16px, 1.3vw, 26px); background: #ffffffe6; box-shadow: 0 10px 26px #1720330d; }
+.touch-kpis > div { display: flex; flex-direction: column; padding: 0 clamp(12px, 1.2vw, 26px); border-left: 1px solid #f3e3e6; }
+.touch-kpis > div:first-child { border-left: 0; }
+.touch-kpis dt { order: 2; margin-top: .3em; color: #4b5563; font-size: clamp(13px, .95vw, 19px); font-weight: 800; }
+.touch-kpis dd { order: 1; margin: 0; display: flex; align-items: baseline; gap: .2em; }
+.touch-kpis dd b { font-size: clamp(32px, 2.6vw, 58px); font-weight: 900; line-height: 1.02; font-variant-numeric: tabular-nums; }
+.touch-kpis dd small { color: #4b5563; font-size: clamp(14px, 1vw, 21px); font-weight: 900; }
+
+/* The demo is a landscape screen recording: its left part (the WeChat window) is what matters. */
+.touch-demo { grid-column: 2; grid-row: 1 / 3; align-self: center; overflow: hidden; aspect-ratio: 16 / 10; border: clamp(4px, .35vw, 7px) solid #fff; border-radius: clamp(18px, 1.4vw, 30px);
+  background: #eef1f5; box-shadow: 0 18px 36px #17203326; }
+.touch-demo video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.touch-demo-poster { position: relative; display: block; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.touch-demo-poster img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: left top; }
+.touch-demo-poster span { position: absolute; inset: 0; display: grid; place-items: center; color: #e60000; }
+.touch-demo-poster span svg { width: clamp(52px, 4vw, 84px); height: clamp(52px, 4vw, 84px); padding: 6px; border-radius: 50%; background: #ffffffe6; box-shadow: 0 10px 24px #0003; }
+.touch-demo-poster small { position: absolute; left: 14px; bottom: 14px; padding: 4px 12px; border-radius: 999px; background: #000000a0; color: #fff; font-size: clamp(12px, .85vw, 16px); font-weight: 800; }
+.touch-demo-poster:focus-visible { outline: 3px solid #fecaca; outline-offset: -3px; }
+
+@media (max-width: 1100px) {
+  .touch-hero { grid-template-columns: 1fr; }
+  .touch-demo { grid-column: 1; grid-row: auto; max-width: 640px; }
+  .touch-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 14px; }
+  .touch-kpis > div:nth-child(3) { border-left: 0; }
+}
+
+/* The rest of the page grows with the window as well instead of stopping at 1320px. */
+.workflow-page.is-touch { max-width: none; padding-left: clamp(20px, 1.8vw, 40px); padding-right: clamp(20px, 1.8vw, 40px); }
+.workflow-page.is-touch .workflow-running-line { font-size: clamp(14px, 1vw, 19px); padding-top: clamp(12px, 1vw, 20px); padding-bottom: clamp(12px, 1vw, 20px); }
+.workflow-page.is-touch .workflow-list-head h2 { font-size: clamp(20px, 1.5vw, 30px); font-weight: 900; }
+.workflow-page.is-touch .workflow-task-row { padding-top: clamp(14px, 1.1vw, 22px); padding-bottom: clamp(14px, 1.1vw, 22px); }
+.workflow-page.is-touch .workflow-task-title strong { font-size: clamp(16px, 1.15vw, 22px); font-weight: 900; }
+.workflow-page.is-touch .workflow-task-meta { font-size: clamp(13px, .9vw, 17px); }
+.workflow-page.is-touch .workflow-add-row, .workflow-page.is-touch .workflow-check { font-size: clamp(14px, .95vw, 18px); }
+.touch-toggle .workflow-toggle { height: clamp(50px, 3.4vw, 68px); padding: 0 1.2em; border-radius: 16px; font-size: clamp(16px, 1.15vw, 22px); font-weight: 900; }
+.touch-toggle .workflow-toggle svg { width: 1em; height: 1em; }
+/* Each task as a white card, so the list reads as solidly as the hero above it. */
+.workflow-page.is-touch .workflow-task-list { display: grid; gap: clamp(10px, .9vw, 16px); }
+.workflow-page.is-touch .workflow-task-row { padding-left: clamp(16px, 1.4vw, 28px); padding-right: clamp(16px, 1.4vw, 28px); border: 1px solid #f1e1e4; border-radius: clamp(16px, 1.2vw, 24px); background: #fff; box-shadow: 0 8px 20px #1720330a; }
+.workflow-page.is-touch .workflow-task-row.is-current { border-color: #f5b5bd; background: #fff8f8; }
+.workflow-page.is-touch .workflow-task-icon { width: clamp(40px, 2.8vw, 56px); height: clamp(40px, 2.8vw, 56px); border-radius: 14px; background: #fff0f2; color: #e60000; display: grid; place-items: center; flex-shrink: 0; }
+/* Small print in the list grows with the window too. */
+.workflow-page.is-touch .workflow-task-status { font-size: clamp(12px, .8vw, 16px); padding: .15em .7em; }
+.workflow-page.is-touch .workflow-row-actions .text-button { font-size: clamp(13px, .9vw, 18px); }
+.workflow-page.is-touch .workflow-row-actions .text-button svg { width: 1em; height: 1em; }
+.workflow-page.is-touch .workflow-small-note, .workflow-page.is-touch .workflow-task-error { font-size: clamp(12px, .82vw, 16px); }
+.workflow-page.is-touch .workflow-running-line strong { font-size: 1em; }
+.workflow-page.is-touch .workflow-list-head span, .workflow-page.is-touch .workflow-history summary { font-size: clamp(13px, .9vw, 18px); }
+.workflow-page.is-touch .workflow-check input { width: 1.1em; height: 1.1em; }
