@@ -432,6 +432,16 @@ function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $
   # Large avatars also occur in narrow standalone windows at Windows scaling.
   # The centred wide feed depends on available column width, not avatar size.
   $expandedLayout = [double]$viewportBounds.width -ge ($avatarSize * 16.0)
+  # The avatar size above is an estimate capped at 52 px, so a ~800 px integrated
+  # Moments pane (WeChat 4.1 with the 发现 column) reads as narrow while its feed is
+  # centred. Avatars actually seen well inside the pane prove the centred feed; the
+  # locked post's own verified avatar alone is enough when re-finding its menu.
+  $seenAvatarOffsets = @(@($avatarCandidates) | Where-Object { $_ -ne $null -and [double]$_.width -gt 0 } |
+    ForEach-Object { [double]$_.left - [double]$viewportBounds.left } | Sort-Object)
+  if (-not $expandedLayout -and $seenAvatarOffsets.Count -ge 1 -and
+    [double]$seenAvatarOffsets[[int][Math]::Floor($seenAvatarOffsets.Count / 2)] -ge ([double]$viewportBounds.width * 0.12)) {
+    $expandedLayout = $true
+  }
   $rightGutterLeftRatio = $(if ($expandedLayout) { 0.74 } else { 0.86 })
   $rightGutterRightRatio = $(if ($expandedLayout) { 0.84 } else { 0.95 })
   $rightGutterLeft = [Math]::Floor([double]$viewportBounds.left + ([double]$viewportBounds.width * $rightGutterLeftRatio))

@@ -197,7 +197,12 @@ try {
   fs.mkdirSync(path.join(storage, "sns"), { recursive: true });
   const post = (user, time, text) => [1, user, `<TimelineObject><username>${user}</username><createTime>${time}</createTime><contentDesc>${text}</contentDesc></TimelineObject>`];
   const snsPages = buildPlainDb([{ name: "SnsTimeLine", sql: "CREATE TABLE SnsTimeLine(tid INTEGER, user_name TEXT, content TEXT)", rows: [
-    post(self, 5000, "新到一批普渡 CC1 Pro &amp; 配件，扫洗吸一次完成"), post(friend, 6000, "别人的帖子 新品上市"), post(self, 100, "旧帖子 新品上市")
+    post(self, 5000, "新到一批普渡 CC1 Pro &amp; 配件，扫洗吸一次完成"), post(friend, 6000, "别人的帖子 新品上市"), post(self, 100, "旧帖子 新品上市"),
+    [2, friend, `<SnsDataItem><TimelineObject><username>${friend}</username><createTime>6500</createTime></TimelineObject><LocalExtraInfo>`
+      + `<like_user_list><user_comment><username>${self}</username><type>1</type><create_time>7000</create_time><b_deleted>0</b_deleted></user_comment></like_user_list>`
+      + `<comment_user_list><user_comment><username>${self}</username><content>说得好 &amp; 支持</content><type>2</type><create_time>7100</create_time><b_deleted>0</b_deleted></user_comment>`
+      + `<user_comment><username>${self}</username><content>已撤回的评论</content><type>2</type><create_time>7200</create_time><b_deleted>1</b_deleted></user_comment>`
+      + `<user_comment><username>${friend}</username><content>别人的评论</content><type>2</type><create_time>7300</create_time><b_deleted>0</b_deleted></user_comment></comment_user_list></LocalExtraInfo></SnsDataItem>`]
   ] }]);
   fs.writeFileSync(path.join(storage, "sns", "sns.db"), encryptPages(snsPages, masterHex, crypto.randomBytes(16)).file);
   const snsDb = createWechatDb({ accountDir: path.join(root, `${self}_3dd4`), contactSyncDir: root, loadKey: () => ({ key: masterHex, account: self }) });
@@ -208,6 +213,14 @@ try {
   assert.equal(snsDb.postedMoment("新到一批普渡 CC1 Pro & 配件", 5001), false, "a post from before this attempt is not ours");
   assert.equal(snsDb.postedMoment("别人的帖子 新品上市", 0), false, "someone else's post is not a receipt");
   assert.equal(snsDb.postedMoment("", 0), null);
+  // Our likes and comments on someone else's post settle a click the screen could not prove.
+  assert.equal(snsDb.momentInteraction("like", 6900), true, "our like since the click");
+  assert.equal(snsDb.momentInteraction("like", 7001), false, "a like from before this attempt is not a receipt");
+  assert.equal(snsDb.momentInteraction("comment", 7000, { text: "说得好 & 支持" }), true, "exact comment, escaping and spacing ignored");
+  assert.equal(snsDb.momentInteraction("comment", 7000, { text: "说得好" }), false, "a different comment text is not a receipt");
+  assert.equal(snsDb.momentInteraction("comment", 7000, { text: "已撤回的评论" }), false, "a deleted comment is not a receipt");
+  assert.equal(snsDb.momentInteraction("comment", 7000, { text: "别人的评论" }), false, "someone else's comment is not ours");
+  assert.equal(snsDb.momentInteraction("comment", 0, { text: "" }), null);
 
   // Without a key every query reports "unknown" so callers fall back to the screen checks.
   const keyless = createWechatDb({ accountDir, contactSyncDir: root, loadKey: () => null });

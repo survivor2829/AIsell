@@ -1641,6 +1641,54 @@ async function main() {
     });
     assert.equal(badLikeProof.status, "outcome_unknown");
     assert.equal(badLikeProof.real_action_attempted, true);
+
+    // WeChat's own Moments records settle what the screen could not prove, after a short wait.
+    const likeReceiptFixture = preparedDirectory(root, "like-database-receipt");
+    const receiptQueries = [];
+    const likeReceipt = await executeMomentsLike({
+      ...likeReceiptFixture,
+      receiptPollMs: 0,
+      receipts: { momentInteraction: (kind, since, extra) => { receiptQueries.push({ kind, since, extra }); return receiptQueries.length >= 3; } },
+      driver: verifiedDriver(likeReceiptFixture.observationId, {
+        like: () => ({ ok: true, actionAttempted: true, observationId: likeReceiptFixture.observationId, menuState: "赞" })
+      })
+    });
+    assert.equal(likeReceipt.status, "verified");
+    assert.equal(likeReceipt.verification_mode, "wechat_database");
+    assert.equal(likeReceipt.real_action_attempted, true);
+    assert.equal(receiptQueries.length, 3, "the record may land a moment after the click");
+    assert.equal(receiptQueries[0].kind, "like");
+    assert.ok(receiptQueries[0].since <= Math.floor(Date.now() / 1000), "only likes since the click count");
+    const settledLike = loadState(likeReceiptFixture.baseDir).moments_test_action.attempts[likeReceipt.attempt_key];
+    assert.equal(settledLike.status, "verified");
+    assert.equal(settledLike.verification_mode, "wechat_database");
+
+    const likeNoReceiptFixture = preparedDirectory(root, "like-no-database-receipt");
+    let noReceiptClicks = 0;
+    const likeNoReceipt = await executeMomentsLike({
+      ...likeNoReceiptFixture,
+      receiptPollMs: 0,
+      receipts: { momentInteraction: () => false },
+      driver: verifiedDriver(likeNoReceiptFixture.observationId, {
+        like: () => { noReceiptClicks += 1; return { ok: true, actionAttempted: true, observationId: likeNoReceiptFixture.observationId, menuState: "赞" }; }
+      })
+    });
+    assert.equal(likeNoReceipt.status, "outcome_unknown", "no record keeps the honest unknown");
+    assert.equal(likeNoReceipt.database_receipt, "not_found");
+    assert.equal(noReceiptClicks, 1, "a missing record never triggers another click");
+
+    // An unknown left by an earlier run is settled when the same post comes up again.
+    const earlierUnknown = await executeMomentsLike({
+      ...likeThrowFixture,
+      receiptPollMs: 0,
+      receipts: { momentInteraction: () => true },
+      driver: verifiedDriver(likeThrowFixture.observationId, {
+        like: () => { thrownLikeCalls += 1; return {}; }
+      })
+    });
+    assert.equal(earlierUnknown.status, "verified");
+    assert.equal(earlierUnknown.verification_mode, "wechat_database");
+    assert.equal(thrownLikeCalls, 1, "settling an earlier click never clicks again");
     const likeUnknownDiagnosticsFixture = preparedDirectory(root, "like-unknown-diagnostics");
     const likeUnknownDiagnostics = await executeMomentsLike({
       ...likeUnknownDiagnosticsFixture,
