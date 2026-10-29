@@ -348,6 +348,7 @@ try {
     cloudMaintenance: { stop: () => { quitStopped += 1; }, installOnExit: async () => undefined },
     feedbackController: { stop: () => { quitStopped += 1; } },
     feedbackAdmin: { stop: () => { quitStopped += 1; } },
+    failureCapsules: { stop: () => { quitStopped += 1; } },
     keywordAcquisitionRegistration: undefined, socialAccountsRegistration: undefined, socialPublishRegistration: undefined, socialAcquisitionRegistration: undefined, businessWorkbenchRegistration: undefined, digitalHumanRegistration: undefined,
     productVideoRegistration: undefined, productDetailController: undefined,
     contentEngineController: undefined, momentsPublishController: undefined,
@@ -359,7 +360,7 @@ try {
   assert.doesNotThrow(() => beforeQuitHandler({ preventDefault: () => { quitPrevented = true; } }),
     "quitting must continue when diagnostics throws");
   assert.equal(quitPrevented, true);
-  assert.equal(quitStopped, 3);
+  assert.equal(quitStopped, 4);
   assert.match(fs.readFileSync(path.join(__dirname, "diagnostics.cjs"), "utf8"), /const MAX_ARCHIVES = 19;/u,
     "default retention must keep nineteen archived logs");
   const retentionRoot = path.join(root, "retention");

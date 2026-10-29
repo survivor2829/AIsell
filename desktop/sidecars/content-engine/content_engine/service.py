@@ -15,6 +15,7 @@ from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain
 from .creative_render import HybridCreativeRenderer
 from .database import Database
 from .errors import ContentEngineError
+from . import failure_journal
 from .identity import stable_full_sha256, stable_sampled_sha256
 from .instance_lock import InstanceLock
 from .public_data import redact_text, sanitize_public_value
@@ -183,6 +184,10 @@ class _CreativeJobWorker:
                         self._active_task_id = task_id
                     try:
                         domain.run_task(task_id)
+                    except Exception as error:
+                        # run_task records its own failures; anything that escapes
+                        # it must not end this thread and strand every later task.
+                        failure_journal.record(error, where="creative_job_worker", task_id=str(task_id))
                     finally:
                         with self._active_lock:
                             self._active_task_id = None
@@ -205,6 +210,7 @@ class ContentEngineService:
         start_background_jobs: bool = True,
     ):
         data_dir = Path(data_dir)
+        failure_journal.configure(data_dir)
         self.media_probe = media_probe if media_probe is not None else FFprobeAdapter()
         self.instance_lock = InstanceLock(data_dir / "content-engine.lock")
         self.instance_lock.acquire()

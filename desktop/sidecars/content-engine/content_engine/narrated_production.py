@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .errors import ContentEngineError
+from . import failure_journal
 from . import narrated_brief
 
 
@@ -1093,6 +1094,11 @@ def run_production(domain, task_id, batch):
                 break
             except ContentEngineError as error:
                 candidate = next((c for c in batch['candidates'] if c['candidate_id'] == job.get('candidate_id')), candidate)
+                # The batch absorbs most job failures (queued again, skipped), so
+                # this is the only place they are seen with their traceback.
+                failure_journal.record(error, where='narrated_production', task_id=task_id, context={
+                    'batch_id': str(batch.get('batch_id') or ''), 'production_index': job.get('production_index'),
+                    'candidate_id': str(job.get('candidate_id') or ''), 'render_retries': job.get('render_retries', 0)})
                 if _unknown(domain, batch, candidate, error):
                     job.update(status='outcome_unknown', error_code=error.code, error=error.message)
                     if candidate:

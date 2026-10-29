@@ -102,3 +102,4 @@
   .topbar-secondary-menu .topbar-tool > span { display:inline; }
   .topbar-update-caption { max-width:80px; }
 }
+.customer-consent-notice{position:fixed;z-index:129;top:108px;right:28px;width:min(520px,calc(100vw - 56px));padding:16px 20px;background:#fff;border:1px solid #ead8df;border-radius:12px;box-shadow:0 8px 32px #17203320;color:#273442}.customer-consent-notice p{margin:0;font-size:13px;line-height:1.6}.customer-consent-notice>div{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}

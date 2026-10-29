@@ -101,7 +101,17 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
   };
   const selectedAnnouncement = state?.announcements?.find((entry) => String(entry.id || entry.sequence) === announcementId)
     || state?.announcements?.[0];
+  const acknowledgeConsent = async (thenOpenSettings = false) => {
+    const api = window.xiaoxiCloudMaintenance;
+    if (!api) return;
+    try { setState(await api.acknowledgeConsentNotice()); } catch { /* Shown again next launch. */ }
+    if (thenOpenSettings) onNavigate("diagnostics");
+  };
   return <div className="topbar-tools">
+    {state?.consentNotice && !updateWorking && <section className="customer-consent-notice" aria-label="出错自动上报说明" role="status">
+      <p>软件出错时，会自动把出错现场（错误信息、出错前的操作步骤、微信操作失败时的截图）发给技术支持，用来直接定位和修复问题，不需要你再手动导出诊断。</p>
+      <div><button type="button" className="secondary-button" onClick={() => void acknowledgeConsent(true)}>去设置里关闭</button><button type="button" className="primary-button" onClick={() => void acknowledgeConsent()}>知道了</button></div>
+    </section>}
     {updateWorking && <section className="customer-update-progress" aria-label="软件更新进度" role="status">
       <div><strong>{updateLabel}</strong>{state?.stage === "downloading" && Number(state.totalBytes) > 0 && <span>{((state.downloadedBytes || 0) / 1048576).toFixed(1)} / {((state.totalBytes || 0) / 1048576).toFixed(1)} MB</span>}</div>
       {state?.stage === "downloading" ? <progress max={100} value={downloadPercent} aria-label={`正在下载 ${downloadPercent}%`} /> : <progress aria-label={updateLabel} />}

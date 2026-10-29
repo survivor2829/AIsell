@@ -7,6 +7,7 @@ from typing import Any
 
 from . import __version__
 from .errors import ContentEngineError
+from . import failure_journal
 from .service import ContentEngineService
 
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
@@ -384,6 +385,7 @@ def serve_jsonl(
 
     for raw_line in input_stream:
         request_id = None
+        method = None
         should_shutdown = False
         try:
             if len(raw_line.encode("utf-8")) > MAX_REQUEST_BYTES:
@@ -432,12 +434,14 @@ def serve_jsonl(
                 },
             }
         except ContentEngineError as error:
+            failure_journal.record(error, where=f"request:{method}")
             response = {
                 "id": request_id,
                 "ok": False,
                 "error": {"code": error.code, "message": error.message},
             }
-        except Exception:
+        except Exception as error:
+            failure_journal.record(error, where=f"request:{method}")
             response = {
                 "id": request_id,
                 "ok": False,

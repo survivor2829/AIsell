@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import traceback
 
 from content_engine.errors import ContentEngineError
 from content_engine.protocol import serve_jsonl
@@ -48,6 +49,7 @@ def main(argv=None) -> int:
         service = ContentEngineService(data_dir)
     except Exception:
         print("content-engine failed to initialize", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         return 2
     try:
         serve_jsonl(service)

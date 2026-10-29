@@ -17,6 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import urllib.request
 from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
+from capsules import CapsuleStoreMixin, validate_capsule, MAX_CAPSULE_BYTES, MAX_EVIDENCE_BYTES
 from materials import MaterialsStore, MAX_FILE
 from tutorials import TutorialsStore, serve_file as serve_tutorial_file
 from legacy_releases import LegacyReleaseRouter
@@ -143,7 +144,7 @@ def validate_report(body):
         clean["entries"].append(row)
     return clean
 
-class Store(FeedbackStoreMixin):
+class Store(FeedbackStoreMixin, CapsuleStoreMixin):
     def __init__(self, root):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -159,6 +160,7 @@ class Store(FeedbackStoreMixin):
                 CREATE TABLE IF NOT EXISTS issues (id TEXT PRIMARY KEY, status TEXT, fixed_version TEXT);
             """)
             self.initialize_feedback(db)
+            self.initialize_capsules(db)
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.database, timeout=10)
@@ -190,6 +192,7 @@ class Store(FeedbackStoreMixin):
             db.execute("DELETE FROM reports WHERE received < ?", (int(time.time()) - 30 * 86400,))
             db.execute("DELETE FROM reports WHERE id IN (SELECT id FROM reports ORDER BY received DESC LIMIT -1 OFFSET 50000)")
             db.execute("DELETE FROM issues WHERE id NOT IN (SELECT DISTINCT issue FROM reports)")
+        self.prune_capsules()
     def overview(self):
         with self.connect() as db:
             issues = [dict(row) for row in db.execute("""
@@ -278,9 +281,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(data)
-    def body(self):
+    def body(self, max_bytes=65536):
         length = int(self.headers.get("Content-Length", "0"))
-        if not 0 < length <= 65536 or self.headers.get("Content-Type") != "application/json":
+        if not 0 < length <= max_bytes or self.headers.get("Content-Type") != "application/json":
             raise ValueError("body")
         data = self.rfile.read(length)
         if len(data) != length:
@@ -421,6 +424,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, self.server.store.feedback_statuses(self.body()))
             if not self.server.admin and self.path == "/v1/feedback/visibility":
                 return self.reply(200, self.server.store.withdraw_feedback(self.body()))
+            if not self.server.admin and self.path == "/v1/capsules":
+                client, capsule, serialized = validate_capsule(self.body(MAX_CAPSULE_BYTES + 16384), validate_report, safe_token)
+                return self.reply(200, self.server.store.insert_capsule(client, capsule, serialized))
+            if not self.server.admin and self.path == "/v1/capsules/evidence":
+                self.connection.settimeout(120)
+                return self.reply(200, self.server.store.insert_evidence(self.body(MAX_EVIDENCE_BYTES * 4 // 3 + 16384), validate_report))
             if self.server.admin or self.path != "/v1/reports":
                 return self.reply(404, {"error": "not_found"})
             report = validate_report(self.body())
@@ -484,6 +493,29 @@ class Handler(BaseHTTPRequestHandler):
             if route.startswith("/api/tutorials/files/"):
                 target = self.server.tutorials.public_file(route.removeprefix("/api/tutorials/files/"), admin=True)
                 return serve_tutorial_file(self, target) if target else self.reply(404, {"error": "not_found"})
+            if route == "/api/capsules":
+                query = parse_qs(urlsplit(self.path).query)
+                raw_offset = query.get("offset", ["0"])[0]
+                filters = {key: query.get(key, [""])[0] for key in ("module", "code", "install_id")}
+                if not re.fullmatch(r"\d{1,9}", raw_offset) or any(value and not safe_token(value) for value in filters.values()):
+                    return self.reply(400, {"error": "invalid_query"})
+                return self.reply(200, self.server.store.capsule_overview(int(raw_offset), **filters))
+            match = re.fullmatch(r"/api/capsules/([a-f0-9-]{36})(?:/evidence/([a-f0-9]{32})\.png)?", route)
+            if match and match[2]:
+                target = self.server.store.evidence_file(match[1], match[2])
+                if not target:
+                    return self.reply(404, {"error": "not_found"})
+                data = target.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                return self.wfile.write(data)
+            if match:
+                detail = self.server.store.capsule_detail(match[1])
+                return self.reply(200, detail) if detail else self.reply(404, {"error": "not_found"})
             if route == "/api/feedback":
                 query = parse_qs(urlsplit(self.path).query)
                 raw_offset = query.get("offset", ["0"])[0]

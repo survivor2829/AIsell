@@ -61,6 +61,7 @@ from .narration_alignment import align_narration, attach_narration_alignment, se
 from .database import Database
 from .creative_analysis import COURSE_RANKING_BATCH_SIZE, COURSE_RANKING_CANDIDATE_LIMIT
 from .errors import ContentEngineError
+from . import failure_journal
 from .provider_usage import usage_scope, provider_usage_summary
 from .hashing import canonical_json_sha256
 from .packaging import (
@@ -335,6 +336,14 @@ def _source_speech_summary(assets):
         "recognized_asset_count": recognized_asset_count,
         "unknown_audio_count": unknown_audio_count,
     }
+
+
+def _failure_context(payload) -> dict:
+    """Identifiers that tie a journaled failure to its batch, project or run."""
+    if not isinstance(payload, dict):
+        return {}
+    return {key: str(payload[key])[:120] for key in ("batch_id", "project_id", "run_id", "session_id")
+            if payload.get(key)}
 
 
 def _canonical_hash(value: Any) -> str:
@@ -6889,6 +6898,8 @@ class CreativeDomain:
                 self._register_finished_for_project(project_id, task_id)
             return self._public_task(self._task_row(task_id))
         except ContentEngineError as error:
+            failure_journal.record(error, where=f"task:{task['task_type']}", task_id=task_id,
+                                   context=_failure_context(payload))
             state = self._task_status(task_id)
             if task["task_type"] in {
                 "auto_mix_v2_generation",
@@ -6981,6 +6992,8 @@ class CreativeDomain:
                 NarratedBatchDomain(self).mark_task_stopped(payload.get("batch_id"), task_id, error)
             return self._public_task(self._task_row(task_id))
         except Exception as error:
+            failure_journal.record(error, where=f"task:{task['task_type']}", task_id=task_id,
+                                   context=_failure_context(payload))
             state = self._task_status(task_id)
             if task["task_type"] in {
                 "auto_mix_v2_generation",

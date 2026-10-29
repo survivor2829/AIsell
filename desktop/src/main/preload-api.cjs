@@ -1026,6 +1026,7 @@ function createPreloadApis(ipcRenderer) {
       restart: () => ipcRenderer.invoke("cloud:restart"),
       cancelUpdate: () => ipcRenderer.invoke("cloud:cancelUpdate"),
       acknowledgeUpdate: () => ipcRenderer.invoke("cloud:acknowledgeUpdate"),
+      acknowledgeConsentNotice: () => ipcRenderer.invoke("cloud:acknowledgeConsentNotice"),
       onUpdate: (callback) => {
         const handler = (_event, state) => callback(state);
         ipcRenderer.on("cloud:update", handler);

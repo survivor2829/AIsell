@@ -56,7 +56,8 @@ function publicView(value) {
     status: value.status, receivedAt: value.receivedAt, updatedAt: value.updatedAt,
     officialReply: typeof value.officialReply === "string" ? value.officialReply.slice(0, 4000) : "" };
 }
-function createFeedbackController({ rootDir, config, version, buildId, logger, safeStorage, transport, clock = Date.now }) {
+function createFeedbackController({ rootDir, config, version, buildId, logger, safeStorage, transport, clock = Date.now,
+  identity = () => null, relatedCapsules = () => [] }) {
   const filename = path.join(rootDir, "feedback", "state.json");
   let saved;
   try { saved = JSON.parse(fs.readFileSync(filename, "utf8")); }
@@ -127,12 +128,21 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
       || input.context.module === 'wechat_adapter' || relatedTraces.has(entry.trace_id)).slice(0, 8);
     const selected = new Set([...priority, ...recentScans,
       ...related.filter(entry => !recentScans.includes(entry) && !priority.includes(entry)).slice(0, 20 - recentScans.length - priority.length)]);
+    // The maintenance identity lets the server join this feedback to the
+    // automatic reports and failure capsules of the same computer.
+    let shared = null;
+    try { shared = identity(); } catch {}
+    const installId = UUID.test(shared?.installId || "") ? shared.installId : state.installId;
     const diagnostics = all.filter(entry => selected.has(entry))
-      .map((entry) => reportEntry(entry, { installId: state.installId })).filter(Boolean).slice(0, 20);
+      .map((entry) => reportEntry(entry, { installId })).filter(Boolean).slice(0, 20);
+    let capsules = [];
+    if (input.includeDiagnostics) {
+      try { capsules = relatedCapsules({ module: input.context?.module || "", taskId: input.context?.taskId || "" }).filter(id => UUID.test(id)).slice(0, 5); } catch {}
+    }
     return { schema: 2, visibility: input.visibility, id: input.id, text: input.text, category: input.category,
-      createdAt: new Date(clock()).toISOString(), context: input.context || {}, diagnostics,
+      createdAt: new Date(clock()).toISOString(), context: { ...(input.context || {}), ...(capsules.length ? { capsules } : {}) }, diagnostics,
       client: { schema: 1, appId: config?.appId || "com.aihuoke.desktop.test", channel: config?.channel || "test",
-        installId: state.installId, version, buildId: token(buildId), platform: process.platform,
+        installId, version, buildId: token(buildId), platform: process.platform,
         arch: process.arch, osRelease: token(os.release()) } };
   }
   async function flushQueue() {

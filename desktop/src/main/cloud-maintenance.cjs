@@ -28,7 +28,10 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   try { installedAnnouncements = bundledAnnouncements(version); } catch {}
   const state = {
     installId: UUID.test(saved.installId || "") ? saved.installId : crypto.randomUUID(),
-    consent: saved.consent === true, sequence: Number.isSafeInteger(saved.sequence) && saved.sequence >= 0 ? saved.sequence : 0,
+    // Upload is on unless the customer turned it off (user decision 2026-10-28).
+    // An install that only ever had the old opt-in default is not a choice.
+    consent: saved.consentChosen === true ? saved.consent === true : true, consentChosen: saved.consentChosen === true,
+    consentNoticeSeen: saved.consentNoticeSeen === true, sequence: Number.isSafeInteger(saved.sequence) && saved.sequence >= 0 ? saved.sequence : 0,
     lastUpload: typeof saved.lastUpload === "string" ? saved.lastUpload : "", pending: saved.pending || null,
     announcements: [],
     readAnnouncementVersions: Array.isArray(saved.readAnnouncementVersions) ? saved.readAnnouncementVersions.filter(value => typeof value === "string").slice(-100) : [],
@@ -100,7 +103,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     const selection = userData ? readJson(componentPaths.updatePaths(userData).selection, {}) : {};
     return { ...view, lastUpdate: selection.lastUpdate || null, updateFailure: selection.failure || "", enabled: Boolean(network), version, channel: config?.channel || "", consent: state.consent, queued: queue.length,
       lastUpload: state.lastUpload, canInstall: canInstall(), announcements, unreadAnnouncements: announcements.filter((item) => !item.read).length,
-      lastAnnouncementsCheck: state.lastAnnouncementsCheck };
+      lastAnnouncementsCheck: state.lastAnnouncementsCheck, consentNotice: Boolean(network) && state.consent && !state.consentNoticeSeen };
   }
   function notify(patch = {}) { view = { ...view, ...patch }; for (const listener of listeners) { try { listener(status()); } catch {} } }
   function fullDownloadPaths(manifest) {
@@ -424,11 +427,15 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   }
   function setConsent(enabled) {
     state.consent = enabled === true;
+    state.consentChosen = true; state.consentNoticeSeen = true;
     if (!state.consent) { queue = []; saveQueue(); }
     save(); notify();
     if (state.consent) { lifecycle("diagnostics_enabled", "ok"); void flush(); }
     return status();
   }
+  function acknowledgeConsentNotice() { state.consentNoticeSeen = true; save(); notify(); return status(); }
+  // One identity for reports, capsules and feedback, so they join on the server.
+  function identity() { return network ? envelopeFor(undefined) : null; }
   function start() {
     if (!network || stopped || checkTimer) return;
     unsubscribe = logger?.subscribe?.((entry) => { try { enqueue(entry); } catch {} });
@@ -439,7 +446,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); retryArtifacts(dir, fullRetentionOptions()); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, setLaunchGate, acknowledgeUpdate, refreshLocalState: () => notify(),
+  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, acknowledgeConsentNotice, identity, consentEnabled: () => Boolean(network) && state.consent && !stopped, installId: state.installId, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, setLaunchGate, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

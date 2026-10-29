@@ -482,6 +482,11 @@ class AutoMixV2RendererTests(unittest.TestCase):
             )
         self.assertEqual("auto_mix_music_not_audible", caught.exception.code)
         self.assertIn("2/3", caught.exception.message)
+        details = caught.exception.details
+        self.assertEqual(["without-music", "still-without"], [item["captionId"] for item in details["quiet"]])
+        self.assertIsNone(details["quiet"][0]["musicLufs"])
+        self.assertEqual(["with-music"], [item["captionId"] for item in details["audible"]])
+        self.assertEqual(-34.0, details["musicIntegratedLufs"])
         self.assertIn("still-without 1.2-2.0秒", caught.exception.message)
 
     def test_window_margin_measurement_tolerates_one_phrase_with_quiet_music(self):

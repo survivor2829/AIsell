@@ -494,7 +494,20 @@ async function main() {
       controller.start();
     });
     assert.equal(controller.status().stage, "ready");
-    assert.equal(posts.length, 0, "No upload before consent");
+    // User decision 2026-10-28: upload is on unless the customer turns it off.
+    assert.equal(controller.status().consent, true, "upload is on by default");
+    assert.equal(controller.status().consentNotice, true, "the customer is told once that failures upload");
+    controller.acknowledgeConsentNotice();
+    assert.equal(controller.status().consentNotice, false);
+    assert.equal(controller.identity().installId, controller.installId, "reports, capsules and feedback share one install identity");
+    for (const [saved, expected] of [[{ consent: false }, true], [{ consent: false, consentChosen: true }, false], [{ consent: true, consentChosen: true }, true]]) {
+      const profile = fs.mkdtempSync(path.join(dir, "consent-"));
+      fs.mkdirSync(path.join(profile, "cloud-maintenance"));
+      fs.writeFileSync(path.join(profile, "cloud-maintenance", "state.json"), JSON.stringify(saved));
+      const restored = createCloudMaintenance({ rootDir: profile, config, version: "1.0.0", buildId: "test-build", transport: { request: async () => ({}), close() {} } });
+      assert.equal(restored.status().consent, expected, `${JSON.stringify(saved)}: the old opt-in default is not a choice; an explicit choice is kept`);
+      restored.stop();
+    }
     controller.setConsent(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
     logger.event("auto_reply", "send.failed", { code: "visual_send_outcome_unknown", message: "private customer", apiKey: ["sk", "PRIVATEKEY123"].join("-"), filePath: "C:/Users/private", receipt_code: "outcome_unknown" }, { level: "error", code: "visual_send_outcome_unknown" });
