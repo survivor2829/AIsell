@@ -16,10 +16,15 @@ TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
 MAX_CAPSULE_BYTES = 300 * 1024
 MAX_EVIDENCE_BYTES = 5 * 1024 * 1024
 MAX_EVIDENCE_PER_CAPSULE = 6
+# Flight record (per-step frames, recognition notes) and task passports.
+ATTACHMENT_NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,140}\.(png|jpg|json)\Z")
+MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
+MAX_ATTACHMENTS_PER_CAPSULE = 60
 MAX_CAPSULES = 20000
 MAX_EVIDENCE_TOTAL = 2 * 1024 ** 3
 RETENTION_SECONDS = 30 * 86400
 PNG = b"\x89PNG\r\n\x1a\n"
+JPEG = b"\xff\xd8\xff"
 SUMMARY = ("id", "createdAt", "lastSeenAt", "occurrences", "source", "module", "event", "code", "level", "phase", "taskId", "where", "message")
 
 
@@ -72,6 +77,10 @@ class CapsuleStoreMixin:
         folder = self.evidence_root / capsule_id
         return sorted(item.stem for item in folder.glob("*.png")) if folder.is_dir() else []
 
+    def attachment_names(self, capsule_id):
+        folder = self.evidence_root / capsule_id / "attachments"
+        return sorted(item.name for item in folder.iterdir() if ATTACHMENT_NAME.fullmatch(item.name)) if folder.is_dir() else []
+
     def insert_capsule(self, client, capsule, serialized):
         now = int(time.time())
         with self.connect() as db:
@@ -88,7 +97,7 @@ class CapsuleStoreMixin:
                     capsule["id"], now, now, client["installId"], client["version"], client["channel"],
                     capsule["module"], capsule["code"], capsule.get("taskId", ""), capsule.get("occurrences", 1),
                     json.dumps(client, ensure_ascii=False), serialized))
-        return {"id": capsule["id"], "evidence": self.evidence_ids(capsule["id"])}
+        return {"id": capsule["id"], "evidence": self.evidence_ids(capsule["id"]), "attachments": self.attachment_names(capsule["id"])}
 
     def insert_evidence(self, body, validate_report):
         client = _client(body, validate_report)
@@ -113,6 +122,33 @@ class CapsuleStoreMixin:
         partial.replace(target)
         return {"ok": True}
 
+    def insert_attachment(self, body, validate_report):
+        client = _client(body, validate_report)
+        capsule_id, name, encoded = body.get("capsuleId"), body.get("name"), body.get("data")
+        if not UUID.fullmatch(str(capsule_id or "")) or not ATTACHMENT_NAME.fullmatch(str(name or "")) or not isinstance(encoded, str):
+            raise ValueError("attachment_identity")
+        data = base64.b64decode(encoded, validate=True)
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("attachment_size")
+        kind = name.rsplit(".", 1)[1]
+        if kind == "png" and not data.startswith(PNG) or kind == "jpg" and not data.startswith(JPEG):
+            raise ValueError("attachment_image")
+        if kind == "json":
+            json.loads(data.decode("utf-8"))
+        with self.connect() as db:
+            row = db.execute("SELECT install_id FROM capsules WHERE id=?", (capsule_id,)).fetchone()
+        if not row or row["install_id"] != client["installId"]:
+            raise ValueError("attachment_capsule")
+        folder = self.evidence_root / capsule_id / "attachments"
+        target = folder / name
+        if not target.exists() and len(self.attachment_names(capsule_id)) >= MAX_ATTACHMENTS_PER_CAPSULE:
+            raise ValueError("attachment_limit")
+        folder.mkdir(parents=True, exist_ok=True)
+        partial = folder / f".{name}.part"
+        partial.write_bytes(data)
+        partial.replace(target)
+        return {"ok": True}
+
     def prune_capsules(self):
         cutoff = int(time.time()) - RETENTION_SECONDS
         with self.connect() as db:
@@ -130,7 +166,7 @@ class CapsuleStoreMixin:
             if folder.name not in kept:
                 shutil.rmtree(folder, ignore_errors=True)
                 continue
-            folders.append((ages.get(folder.name, 0), folder, sum(item.stat().st_size for item in folder.glob("*.png"))))
+            folders.append((ages.get(folder.name, 0), folder, sum(item.stat().st_size for item in folder.rglob("*") if item.is_file())))
         total = sum(size for _, _, size in folders)
         # Screenshots are the bulk of the space: drop the oldest first past the cap.
         for _, folder, size in sorted(folders, key=lambda item: item[0]):
@@ -159,7 +195,7 @@ class CapsuleStoreMixin:
             body = json.loads(row["body"])
             items.append({**{key: body.get(key) for key in SUMMARY}, "installId": row["install_id"], "version": row["version"],
                           "channel": row["channel"], "receivedAt": row["received"], "updatedAt": row["updated"],
-                          "evidence": self.evidence_ids(row["id"])})
+                          "evidence": self.evidence_ids(row["id"]), "attachments": len(self.attachment_names(row["id"]))})
         return {"items": items, "total": total, "groups": groups}
 
     def capsule_detail(self, capsule_id):
@@ -170,7 +206,13 @@ class CapsuleStoreMixin:
         if not row:
             return None
         return {"capsule": json.loads(row["body"]), "client": json.loads(row["client"]), "receivedAt": row["received"],
-                "updatedAt": row["updated"], "evidence": self.evidence_ids(capsule_id)}
+                "updatedAt": row["updated"], "evidence": self.evidence_ids(capsule_id), "attachments": self.attachment_names(capsule_id)}
+
+    def attachment_file(self, capsule_id, name):
+        if not UUID.fullmatch(str(capsule_id or "")) or not ATTACHMENT_NAME.fullmatch(str(name or "")):
+            return None
+        target = self.evidence_root / capsule_id / "attachments" / name
+        return target if target.is_file() and not target.is_symlink() else None
 
     def evidence_file(self, capsule_id, evidence_id):
         if not UUID.fullmatch(str(capsule_id or "")) or not EVIDENCE_ID.fullmatch(str(evidence_id or "")):

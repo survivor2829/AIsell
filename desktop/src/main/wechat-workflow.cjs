@@ -671,6 +671,9 @@ function createWechatWorkflowController(options) {
       if (task.status === "completed") {
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
+        // The success half of the failure loop: after a fix ships, this shows the
+        // same kind of task now completes on the computer that reported it.
+        log("task.succeeded", { task_kind: task.type, done: task.progress.done, total: task.progress.total }, { level: "info", code: "ok" });
       }
       const controlledWait = reason === "wechat_operation_busy" || /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason);
       const retryAfterMs = Number(result.retryAfterMs || (result.status === "pending" && controlledWait ? (options.pollIntervalMs ?? 2500) : 0));

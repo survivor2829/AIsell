@@ -2141,6 +2141,10 @@ async function checkRealReplyWorkflowRecovery() {
     await controller.tick();
     assert.equal(controller.status().replyError, "");
     assert.equal(controller.status().phase, "listening");
+    const succeeded = events.filter((event) => event.name === "task.succeeded");
+    assert.deepEqual(succeeded.map(({ task_kind, done, total, logCode }) => ({ task_kind, done, total, logCode })),
+      [{ task_kind: "touch", done: 2, total: 2, logCode: "ok" }], "a completed task reports its success once, for the failure loop");
+    assert.equal(/private-|wx-a/.test(JSON.stringify(succeeded)), false, "the success event carries no contact, script or account");
     assert.equal(events.filter((event) => event.name === "reply.backoff").length, 1);
     const beforeBackoffScans = scans;
     await controller.tick();

@@ -17,7 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import urllib.request
 from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
-from capsules import CapsuleStoreMixin, validate_capsule, MAX_CAPSULE_BYTES, MAX_EVIDENCE_BYTES
+from capsules import CapsuleStoreMixin, validate_capsule, MAX_CAPSULE_BYTES, MAX_EVIDENCE_BYTES, MAX_ATTACHMENT_BYTES
 from materials import MaterialsStore, MAX_FILE
 from tutorials import TutorialsStore, serve_file as serve_tutorial_file
 from legacy_releases import LegacyReleaseRouter
@@ -206,6 +206,15 @@ class Store(FeedbackStoreMixin, CapsuleStoreMixin):
             reports = [json.loads(row["body"]) for row in db.execute("SELECT body FROM reports ORDER BY received DESC LIMIT 200")]
             versions = [dict(row) for row in db.execute("SELECT channel,version,COUNT(DISTINCT install_id) AS installations,MAX(received) AS last_seen FROM reports GROUP BY channel,version ORDER BY last_seen DESC")]
         return {"issues": issues, "reports": reports, "versions": versions}
+    def task_health(self):
+        """WeChat task successes per computer, version and task kind: after a fix
+        ships, they show whether the computers that failed now complete it."""
+        with self.connect() as db:
+            return {"successes": [dict(row) for row in db.execute("""
+                SELECT install_id AS installId, version, json_extract(body, '$.entries[0].details.task_kind') AS taskKind,
+                  COUNT(*) AS successes, MIN(received) AS firstSeen, MAX(received) AS lastSeen
+                FROM reports WHERE module='wechat_workflow' AND json_extract(body, '$.entries[0].event')='task.succeeded'
+                GROUP BY install_id, version, taskKind ORDER BY lastSeen DESC LIMIT 5000""")]}
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
@@ -430,6 +439,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.server.admin and self.path == "/v1/capsules/evidence":
                 self.connection.settimeout(120)
                 return self.reply(200, self.server.store.insert_evidence(self.body(MAX_EVIDENCE_BYTES * 4 // 3 + 16384), validate_report))
+            if not self.server.admin and self.path == "/v1/capsules/attachments":
+                self.connection.settimeout(120)
+                return self.reply(200, self.server.store.insert_attachment(self.body(MAX_ATTACHMENT_BYTES * 4 // 3 + 16384), validate_report))
             if self.server.admin or self.path != "/v1/reports":
                 return self.reply(404, {"error": "not_found"})
             report = validate_report(self.body())
@@ -473,6 +485,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {"error": "host"})
             if route == "/api/overview":
                 return self.reply(200, self.server.store.overview())
+            if route == "/api/health":
+                return self.reply(200, self.server.store.task_health())
             if route == "/api/accounts":
                 return self.accounts_admin("GET", route)
             if route == "/tutorials-admin.js":
@@ -500,6 +514,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"\d{1,9}", raw_offset) or any(value and not safe_token(value) for value in filters.values()):
                     return self.reply(400, {"error": "invalid_query"})
                 return self.reply(200, self.server.store.capsule_overview(int(raw_offset), **filters))
+            attachment = re.fullmatch(r"/api/capsules/([a-f0-9-]{36})/attachments/([a-z0-9][a-z0-9_.-]{0,140}\.(png|jpg|json))", route)
+            if attachment:
+                target = self.server.store.attachment_file(attachment[1], attachment[2])
+                if not target:
+                    return self.reply(404, {"error": "not_found"})
+                data = target.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", {"png": "image/png", "jpg": "image/jpeg", "json": "application/json; charset=utf-8"}[attachment[3]])
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                return self.wfile.write(data)
             match = re.fullmatch(r"/api/capsules/([a-f0-9-]{36})(?:/evidence/([a-f0-9]{32})\.png)?", route)
             if match and match[2]:
                 target = self.server.store.evidence_file(match[1], match[2])

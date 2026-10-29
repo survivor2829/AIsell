@@ -914,7 +914,10 @@ function Get-AutoReplyVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedProc
   $forceScreenCapture = [Environment]::GetEnvironmentVariable("XIAOXI_FORCE_SCREEN_CAPTURE") -ceq "1"
   if (-not $forceScreenCapture) {
     $printed = New-AutoReplyVisualPrintWindowFrame $hWnd $width $height
-    if ($printed.ok) { return $printed }
+    if ($printed.ok) {
+      if ((Test-XiaoxiFlight) -and $printed.bitmap) { Save-XiaoxiFlightFrame 'auto_reply.frame' $printed.bitmap @{ left = [int]$windowRect.Left; top = [int]$windowRect.Top; capture = 'print_window' } }
+      return $printed
+    }
   }
   if ([Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE") -ceq "observe") {
     return @{ ok = $false; reason = "visual_capture_failed" }

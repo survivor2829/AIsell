@@ -60,7 +60,7 @@ class CapsuleServiceTest(unittest.TestCase):
             return response.read() if raw else json.load(response)
 
     def test_capsule_and_original_screenshot_reach_the_administrator(self):
-        self.assertEqual({"id": CAPSULE_ID, "evidence": []}, self.post("/v1/capsules", {"client": CLIENT, "capsule": capsule()}))
+        self.assertEqual({"id": CAPSULE_ID, "evidence": [], "attachments": []}, self.post("/v1/capsules", {"client": CLIENT, "capsule": capsule()}))
         evidence = {"client": CLIENT, "capsuleId": CAPSULE_ID, "evidenceId": EVIDENCE_ID, "png": base64.b64encode(PNG).decode()}
         self.assertEqual({"ok": True}, self.post("/v1/capsules/evidence", evidence))
         # A repeat of the same failure re-sends the capsule with a higher count.
@@ -136,6 +136,54 @@ class CapsuleServiceTest(unittest.TestCase):
             capsules.MAX_EVIDENCE_TOTAL = original
         self.assertEqual([], self.store.evidence_ids(CAPSULE_ID))
         self.assertEqual([EVIDENCE_ID], self.store.evidence_ids(newer))
+
+    def test_flight_record_and_passport_attachments_reach_the_administrator(self):
+        self.post("/v1/capsules", {"client": CLIENT, "capsule": capsule()})
+        jpeg = bytes([0xFF, 0xD8, 0xFF]) + b"frame"
+        for name, data in (("flight.json", b'[{"step": "moments.menu_scan"}]'), ("20261029t074106580-1-0001-moments.menu_scan.png", PNG),
+                           ("20261029t074107265-1-0002-failure.wx5-r001.jpg", jpeg)):
+            self.assertEqual({"ok": True}, self.post("/v1/capsules/attachments", {"client": CLIENT, "capsuleId": CAPSULE_ID, "name": name,
+                                                                                  "data": base64.b64encode(data).decode()}))
+        again = self.post("/v1/capsules", {"client": CLIENT, "capsule": capsule(occurrences=2)})
+        self.assertEqual(3, len(again["attachments"]), "attachments already received are not sent twice")
+        detail = self.get(f"/api/capsules/{CAPSULE_ID}")
+        self.assertIn("flight.json", detail["attachments"])
+        self.assertEqual(jpeg, self.get(f"/api/capsules/{CAPSULE_ID}/attachments/20261029t074107265-1-0002-failure.wx5-r001.jpg", raw=True))
+        self.assertEqual(3, self.get("/api/capsules")["items"][0]["attachments"])
+
+    def test_invalid_attachments_are_rejected(self):
+        self.post("/v1/capsules", {"client": CLIENT, "capsule": capsule()})
+        good = {"client": CLIENT, "capsuleId": CAPSULE_ID, "name": "flight.json", "data": base64.b64encode(b"[]").decode()}
+        for invalid in ({"name": "../x.json"}, {"name": ".hidden.json"}, {"name": "x.exe"}, {"name": "x.png", "data": base64.b64encode(b"GIF89a").decode()},
+                        {"name": "x.jpg", "data": base64.b64encode(PNG).decode()}, {"data": base64.b64encode(b"not json").decode()},
+                        {"client": OTHER}, {"capsuleId": "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"}):
+            self.assertEqual(400, self.rejected("/v1/capsules/attachments", {**good, **invalid}), invalid)
+        original = capsules.MAX_ATTACHMENTS_PER_CAPSULE
+        capsules.MAX_ATTACHMENTS_PER_CAPSULE = 1
+        try:
+            self.post("/v1/capsules/attachments", good)
+            self.post("/v1/capsules/attachments", good)
+            self.assertEqual(400, self.rejected("/v1/capsules/attachments", {**good, "name": "other.json"}))
+        finally:
+            capsules.MAX_ATTACHMENTS_PER_CAPSULE = original
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.origin + f"/api/capsules/{CAPSULE_ID}/attachments/flight.json")
+        self.assertEqual(404, caught.exception.code, "attachments are not public")
+
+    def test_task_successes_per_computer_and_version(self):
+        def report(entry_id, event, kind, client=CLIENT):
+            entry = {"id": entry_id * 64, "ts": "2026-10-29T10:00:00.000Z", "level": "info", "module": "wechat_workflow", "event": event,
+                     "code": "ok", "details": {"task_kind": kind}}
+            return self.post("/v1/reports", {**client, "entries": [entry]})
+        report("a", "task.succeeded", "interact")
+        report("b", "task.succeeded", "interact")
+        report("c", "task.succeeded", "touch", {**CLIENT, "version": "1.2.23"})
+        report("d", "task_step.finished", "interact")
+        health = {(row["installId"], row["version"], row["taskKind"]): row["successes"] for row in self.get("/api/health")["successes"]}
+        self.assertEqual({(CLIENT["installId"], "1.2.22", "interact"): 2, (CLIENT["installId"], "1.2.23", "touch"): 1}, health)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.origin + "/api/health")
+        self.assertEqual(404, caught.exception.code)
 
     def test_feedback_carries_capsule_ids_without_changing_old_retries(self):
         base = {"schema": 2, "id": "12345678-1234-1234-1234-123456789011", "receiptToken": "1" * 64, "text": "还是卡在60%",

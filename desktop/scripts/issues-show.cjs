@@ -44,6 +44,42 @@ function localSource(file, line) {
   return null;
 }
 
+const WECHAT_MODULES = /wechat|active_touch|auto_reply|moments|contact_sync/;
+
+// What a capsule must hold before code may change (docs/failure-evidence.md):
+// the failing step and the steps before it, what the program read, and a
+// replayable recognition record. Anything missing is an evidence gap to fix
+// first, with an evidence-only update, not a guess in business code.
+function completeness(capsule, flight, directory) {
+  const missing = [];
+  if (WECHAT_MODULES.test(capsule.module)) {
+    const failure = flight.find(step => /^failure\./.test(step.step));
+    if (!failure) missing.push("失败那一刻的整屏截图与窗口列表");
+    else if (!failure.note?.uia) missing.push("微信控件结构树（失败时微信不在前台或最小化）");
+    if (!flight.some(step => !/^failure\./.test(step.step) && step.image)) missing.push("失败前各步的画面");
+    if (!flight.some(step => step.note && (step.note.fn || step.note.lines))) missing.push("识别中间结果（候选、文字）");
+    if (!require("./issues-replay.cjs").replayable(directory).length) missing.push("可回放的识别记录（无损帧 + 识别输入）");
+  } else if (capsule.module === "content_engine") {
+    if (!Object.keys(capsule.details || {}).length) missing.push("引擎测量值（ContentEngineError.details）");
+    if (!capsule.traceback) missing.push("Python 堆栈");
+  } else if (!capsule.traceback && !(capsule.breadcrumbs || []).length) {
+    missing.push("堆栈或出错前的步骤");
+  }
+  return missing.length ? `证据不足：缺${missing.join("、")}。下一步只补取证，不改业务代码。`
+    : "证据完整：运行 issues:replay 在本机复现后再修改代码。";
+}
+
+function describeStep(step) {
+  const note = step.note || {};
+  if (note.fn) return `${note.fn} → ${(note.menus || []).length} 个候选${note.counts ? ` ${JSON.stringify(note.counts)}` : ""}${note.result ? ` ${note.result}` : ""}`;
+  if (note.lines) return `文字 ${note.lines.slice(0, 6).map(line => line.text).join(" | ")}${note.lines.length > 6 ? " …" : ""}`;
+  if (note.windows) {
+    const front = note.windows.filter(window => !window.minimized).slice(0, 4).map(window => `${window.process}「${window.title}」${window.width}×${window.height}${window.foreground ? "（前台）" : ""}`);
+    return `${note.reason || ""} 窗口：${front.join("；")}${note.uia ? "，有结构树" : ""}`;
+  }
+  return "";
+}
+
 function show(directory) {
   const { capsule, client, evidence = [] } = JSON.parse(fs.readFileSync(path.join(directory, "capsule.json"), "utf8"));
   const out = [];
@@ -71,6 +107,19 @@ function show(directory) {
   }
   if (capsule.environment && Object.keys(capsule.environment).length) out.push("", "环境：", JSON.stringify(capsule.environment));
   if (evidence.length) out.push("", "截图：", ...evidence.map(id => `  ${path.join(directory, `${id}.png`)}`));
+  const flightFile = path.join(directory, "attachments", "flight.json");
+  const flight = fs.existsSync(flightFile) ? JSON.parse(fs.readFileSync(flightFile, "utf8")) : [];
+  if (flight.length) {
+    out.push("", `逐步记录（${flight.length}）：`);
+    for (const step of flight) {
+      const image = step.image ? path.join(directory, "attachments", String(step.image).toLowerCase()) : "";
+      out.push(`  ${String(step.ts).slice(11, 23)} ${step.step}${step.lossless ? "（可回放）" : ""} ${describeStep(step)}`);
+      if (image) out.push(`      ${image}`);
+    }
+  }
+  const passports = fs.existsSync(path.join(directory, "attachments")) ? fs.readdirSync(path.join(directory, "attachments")).filter(name => name.startsWith("passport-")) : [];
+  if (passports.length) out.push("", "任务护照：", ...passports.map(name => `  ${path.join(directory, "attachments", name)}`));
+  out.push("", completeness(capsule, flight, directory));
   return out.join("\n");
 }
 
@@ -83,4 +132,4 @@ if (require.main === module) {
   catch (error) { console.error(error.message); process.exit(1); }
 }
 
-module.exports = { show, find, REPLAYS };
+module.exports = { show, find, completeness, REPLAYS };

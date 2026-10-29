@@ -100,6 +100,11 @@ function main(args = process.argv.slice(2)) {
   loadBuildConfig(configFile);
   assertCleanSource();
   console.log(componentsOnly ? "Internal update: build changed components." : "Explicit full installer build.");
+  // Field replays only report: a changed result asks for a look, not a stop.
+  try {
+    const fieldReplays = require("./issues-verify.cjs").verify();
+    if (fieldReplays.total) console.log(`Field replays: ${fieldReplays.total - fieldReplays.failed.length}/${fieldReplays.total} unchanged${fieldReplays.failed.length ? ` — changed: ${fieldReplays.failed.map(row => row.name).join(", ")}` : ""}`);
+  } catch (error) { console.log(`Field replays not run: ${error.message}`); }
   const resolvedBaseRoot = componentsOnly ? resolveAcceptedBaseRoot(baseRoot, edition) : baseRoot;
   const storage = require("./release-build-storage.cjs").resolveBuildStorage(desktopDir);
   const space = require("./space-usage.cjs").startSpaceRun("internal-release", [path.join(desktopDir, ".build"), storage.releaseRoot, storage.root]);
