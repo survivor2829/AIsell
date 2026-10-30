@@ -148,6 +148,45 @@ class APIMartCoverClientTests(unittest.TestCase):
         self.assertEqual(["https://cdn.test/reference.png"], generation["image_urls"])
         self.assertNotIn("fake-png", json.dumps(generation))
 
+    def test_reference_upload_retries_gateway_errors_and_reports_status(self):
+        # Field capsule c169ea5e: one non-JSON gateway answer failed the cover.
+        answers = iter([(502, b"<html>Bad Gateway</html>"), OSError("reset"),
+                        (200, json.dumps({"url": "https://cdn.test/reference.png"}).encode())])
+        uploads, sleeps = [], []
+
+        def request(method, url, **_kwargs):
+            if url.endswith("/uploads/images"):
+                uploads.append(url)
+                answer = next(answers)
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            return 200, json.dumps({"data": [{"task_id": "provider-ref"}]}).encode()
+
+        client = APIMartCoverClient(api_key="secret-key", base_url="https://api.test/v1",
+                                    request_fn=request, sleep=sleeps.append)
+        root = Path(tempfile.mkdtemp(prefix="xiaoxi-cover-reference-"))
+        reference = root / "teacher.png"
+        reference.write_bytes(b"fake-png")
+        try:
+            self.assertEqual("provider-ref", client.submit("x", reference_path=reference))
+            self.assertEqual(3, len(uploads))
+            self.assertEqual(2, len(sleeps))
+
+            rejected = APIMartCoverClient(
+                api_key="secret-key", base_url="https://api.test/v1", sleep=sleeps.append,
+                request_fn=lambda method, url, **_kwargs: (400, json.dumps({"message": "bad image"}).encode()))
+            with self.assertRaisesRegex(Exception, r"HTTP 400\): bad image"):
+                rejected.submit("x", reference_path=reference)
+
+            down = APIMartCoverClient(
+                api_key="secret-key", base_url="https://api.test/v1", sleep=lambda _seconds: None,
+                request_fn=lambda method, url, **_kwargs: (502, b"<html>Bad Gateway</html>"))
+            with self.assertRaisesRegex(Exception, r"HTTP 502\): provider_error"):
+                down.submit("x", reference_path=reference)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_poll_can_stop_locally_without_changing_provider_outcome(self):
         requests = []
         checks = iter((False, True))

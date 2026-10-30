@@ -177,7 +177,17 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
     state = n.snapshot().plans[0];
     assert.equal(state.today.segmentsDone, 2, "现在就跑下一段");
     assert.equal(state.phase, "done_today");
-    assert.throws(() => n.runNow(state.id), { code: "NURTURE_DONE_TODAY" });
+    // 用户 2026-10-30：想什么时候跑就什么时候跑。今天做完了、关掉了、验证后休息，点「现在就跑」都照跑。
+    n.runNow(state.id);
+    assert.ok(n.isBusy(), "今天做完了也能马上再跑");
+    await sleep(10); while (n.isBusy()) await sleep(5);
+    state = n.snapshot().plans[0];
+    assert.equal(state.today.segmentsDone, 3); assert.equal(state.lastSegment.outcome, "completed");
+    n.setEnabled(state.id, false);
+    n.runNow(state.id);
+    await sleep(10); while (n.isBusy()) await sleep(5);
+    state = n.snapshot().plans[0];
+    assert.equal(state.enabled, true, "关掉的计划点「现在就跑」会重新打开"); assert.equal(state.today.segmentsDone, 4);
     await n.dispose();
   }
   {

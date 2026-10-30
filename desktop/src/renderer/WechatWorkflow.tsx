@@ -577,7 +577,6 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <span>添加任务</span>
       {availableTypes.map((type) => <button type="button" className="secondary-button" key={type} onClick={() => void addPlannedTask(type)} disabled={busy || (planLocked && !replyOnlyActive)}><Plus size={15} />{TASK_LABELS[type]}</button>)}
     </div>}
-    <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || planLocked} onChange={(event) => api && void run(() => api.setReplyEnabled(event.target.checked))} />全部任务完成或跳过后，开启自动回复</label>
     {planLocked && !replyOnlyActive && <p className="workflow-small-note">运行中不能增删任务或修改接待范围；需要调整精准触达话术或图片时，可在对应任务上点击“暂停并编辑”。</p>}
 
     <div ref={editorAnchor} className="workflow-editor-anchor">
