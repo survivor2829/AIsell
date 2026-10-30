@@ -220,6 +220,38 @@ function momentsReadingSnapshotMatch(first, second, scrollDelta = 0) {
   return { matched: false, mode: "" };
 }
 
+// Where the 「··」 menus of posts already handled in this run sit on screen, moved along with each
+// measured scroll. A menu that shows up at one of these places belongs to that same post even when
+// scrolling cut its text differently (2026-10-30: a half-scrolled post was commented twice because
+// its visible text no longer matched). A scroll without a measured displacement forgets them.
+function shiftHandledMenus(menus, observedDelta, viewport) {
+  const delta = Number(observedDelta);
+  if (!Number.isFinite(delta) || delta === 0) return [];
+  const top = Number(viewport?.top);
+  return menus.map((menu) => ({ ...menu, top: menu.top + delta }))
+    .filter((menu) => !Number.isFinite(top) || menu.top + menu.height > top - 50);
+}
+
+function handledMenu(menus, menu) {
+  if (!menu || !Number.isFinite(Number(menu.top)) || !Number.isFinite(Number(menu.left))) return false;
+  return menus.some((seen) => Math.abs(seen.top - Number(menu.top)) <= Math.max(16, seen.height)
+    && Math.abs(seen.left - Number(menu.left)) <= Math.max(16, seen.width));
+}
+
+function rememberHandledMenu(menus, snapshot) {
+  const menu = snapshot?.menu_bounds;
+  const bounds = { top: Number(menu?.top), left: Number(menu?.left), width: Number(menu?.width), height: Number(menu?.height) };
+  return Object.values(bounds).every(Number.isFinite) ? [...menus, bounds] : menus;
+}
+
+// How far the feed still has to move up before no handled post's menu is left in view, so the next
+// post is fully shown instead of being paired with the last one's menu.
+function handledMenuOverhang(menus, viewport, scale = 1) {
+  const top = Number(viewport?.top);
+  if (!Number.isFinite(top) || menus.length === 0) return 0;
+  return Math.max(0, ...menus.map((menu) => menu.top + menu.height + 24 * scale - top));
+}
+
 function campaignPostMarker(snapshot) {
   return {
     fingerprint: String(snapshot?.post_fingerprint || ""),
@@ -533,6 +565,7 @@ function createMomentsCampaignController(options = {}) {
       };
 
       const processedPostMarkers = workflowContext ? [...workflowContext.progress.processed_posts] : [];
+      let handledMenus = [];
       let emptyScans = 0;
       let repeatedFingerprintScans = 0;
       let lastRepeatedPostMarker = null;
@@ -619,6 +652,7 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
           persist({ scroll_count: state.scroll_count + 1 });
+          handledMenus = shiftHandledMenus(handledMenus, scrolled.observedDelta, observed.window?.renderPaneBounds || observed.window);
           menuScrolls += 1;
           const target = { ...reading, expected_scroll_delta: Number(scrolled.observedDelta) || 0, expected_scroll_unit: "observed_pixels" };
           observed = await runObservation([
@@ -693,7 +727,9 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
 
-          const processedMatch = findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
+          const processedMatch = handledMenu(handledMenus, observed.post_snapshot?.menu_bounds)
+            ? { matched: true, mode: "handled_menu_position" }
+            : findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
           if (!processedMatch.matched) {
             repeatedFingerprintScans = 0;
             const preparedObservationId = observationId;
@@ -906,6 +942,7 @@ function createMomentsCampaignController(options = {}) {
             }
 
             processedPostMarkers.push(campaignPostMarker(observed.post_snapshot));
+            handledMenus = rememberHandledMenu(handledMenus, observed.post_snapshot);
             const likeSucceededForPost = !state.like_enabled || likedCount + alreadyLikedCount > 0;
             const completedPostCount = state.comment_enabled
               ? (commentedCount || (alreadyCommented && likeSucceededForPost ? 1 : 0))
@@ -957,6 +994,7 @@ function createMomentsCampaignController(options = {}) {
               && findProcessedPostMatch([lastRepeatedPostMarker], observed.post_snapshot).matched
               ? repeatedFingerprintScans + 1 : 1;
             lastRepeatedPostMarker = campaignPostMarker(observed.post_snapshot);
+            if (!handledMenu(handledMenus, observed.post_snapshot?.menu_bounds)) handledMenus = rememberHandledMenu(handledMenus, observed.post_snapshot);
             persist({ last_reason: "post_already_processed_in_run" });
             record("campaign.post_already_processed", {
               post_fingerprint: fingerprint,
@@ -988,18 +1026,30 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
         }
-        const scrolled = await scrollMoments({
-          expectedWindow: observed?.window,
-          minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
-          shouldContinue: () => !stopRequested && !pendingPauseReason
-        });
-        record("campaign.scroll_finished", { result: scrolled }, scrolled?.ok ? "info" : "warn");
-        if (!scrolled?.ok) {
-          if (shouldStop()) return;
-          finish("paused", scrolled?.reason || "moments_scroll_failed");
-          return;
-        }
-        persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
+        // Scroll until no handled post's menu is left in view (up to four scrolls), with a small step
+        // when only a little is left so a short next post is not skipped.
+        const viewport = observed?.window?.renderPaneBounds || observed?.window;
+        const scale = Number(observed?.window?.dpi || 96) / 96;
+        let advanceScrolls = 0;
+        do {
+          const overhang = handledMenuOverhang(handledMenus, viewport, scale);
+          const small = advanceScrolls > 0 || (handledMenus.length > 0 && overhang < Number(viewport?.height || 0) * 0.45);
+          const scrolled = await scrollMoments({
+            expectedWindow: observed?.window,
+            ...(small ? { scrollMode: "seek_post_menu_down" } : {}),
+            minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+            shouldContinue: () => !stopRequested && !pendingPauseReason
+          });
+          record("campaign.scroll_finished", { result: scrolled, handled_menu_overhang: Math.round(overhang) }, scrolled?.ok ? "info" : "warn");
+          if (!scrolled?.ok) {
+            if (shouldStop()) return;
+            finish("paused", scrolled?.reason || "moments_scroll_failed");
+            return;
+          }
+          persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
+          handledMenus = shiftHandledMenus(handledMenus, scrolled.observedDelta, viewport);
+          advanceScrolls += 1;
+        } while (handledMenuOverhang(handledMenus, viewport, scale) > 0 && advanceScrolls < 4 && !shouldStop());
       }
       if (state.status === "running") {
         if (successfulPostCount() >= state.max_posts) {

@@ -108,8 +108,12 @@ const VIDEO_ROLES = new Set<AgentRoleKey>(["production", "agent", "operations", 
 
 const ROLE_KEY = "xiaoxi-login-presenter";
 // The six employees take turns on their own, in a loop (user decision 2026-10-29); the one who greets
-// first still changes from launch to launch.
+// first still changes from launch to launch. Each one hands over when their greeting clip ends (user
+// decision 2026-10-30); a figure without a clip stays ROTATE_MS.
 const ROTATE_MS = 9000;
+const HANDOVER_MS = 1500;
+// A clip that never reports its end still hands over.
+const CLIP_LIMIT_MS = 20000;
 
 function greeting(hour = new Date().getHours()) {
   return hour < 6 ? "夜深了" : hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
@@ -154,12 +158,15 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const [error, setError] = useState("");
   const [role, setRole] = useState<AgentRoleKey>(nextRole);
   const [firstRole] = useState(role);
-  // Paused while the pointer rests on the presenters or the cursor is in the sign-in box.
+  // Paused only while the pointer rests on the presenters. The sign-in box takes the focus on its own,
+  // so pausing for it stopped the rotation for good (2026-10-30).
   const [hovering, setHovering] = useState(false);
-  const [typing, setTyping] = useState(false);
-  const rotating = !hovering && !typing;
+  const rotating = !hovering;
   const [still] = useState(prefersStill);
   const [clipFailed, setClipFailed] = useState(false);
+  const [clipEnded, setClipEnded] = useState(false);
+  const [clipMs, setClipMs] = useState(ROTATE_MS);
+  const playsClip = VIDEO_ROLES.has(role) && !still && !clipFailed;
   const saved = Boolean(license?.authorized) && !replaceSaved;
   const identity = AGENT_ROLE_IDENTITIES[role];
   const line = useTyping(LINES[role]);
@@ -185,11 +192,14 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   useEffect(() => { try { localStorage.setItem(ROLE_KEY, firstRole); } catch { /* Convenience only. */ } }, [firstRole]);
   useEffect(() => {
     if (!rotating) return;
-    const timer = window.setTimeout(() => setRole((current) => AGENT_ROLE_ORDER[(AGENT_ROLE_ORDER.indexOf(current) + 1) % AGENT_ROLE_ORDER.length]), ROTATE_MS);
+    const wait = !playsClip ? ROTATE_MS : clipEnded ? HANDOVER_MS : CLIP_LIMIT_MS;
+    const timer = window.setTimeout(() => choose(AGENT_ROLE_ORDER[(AGENT_ROLE_ORDER.indexOf(role) + 1) % AGENT_ROLE_ORDER.length]), wait);
     return () => window.clearTimeout(timer);
-  }, [role, rotating]);
+  }, [role, rotating, playsClip, clipEnded]);
 
   function choose(next: AgentRoleKey) {
+    setClipEnded(false);
+    setClipMs(ROTATE_MS);
     setRole(next);
   }
 
@@ -221,7 +231,7 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       <small className="signin-online">6 位 AI 员工在线待命</small>
     </header>
     <section className={`signin-stage${rotating ? " is-rotating" : ""}`} aria-label={`${identity.name}：${identity.responsibility}`}
-      style={{ "--signin-rotate": `${ROTATE_MS}ms` } as CSSProperties} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
+      style={{ "--signin-rotate": `${playsClip ? clipMs : ROTATE_MS}ms` } as CSSProperties} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>
@@ -236,13 +246,14 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
         </nav>
       </div>
       <figure className="signin-figure" key={role}>
-        {VIDEO_ROLES.has(role) && !still && !clipFailed
+        {playsClip
           ? <video src={characterAsset(`login/${role}.webm`)} poster={characterAsset(`login/${role}.webp`)} autoPlay muted playsInline aria-hidden="true"
-              onError={() => setClipFailed(true)} />
+              onLoadedMetadata={(event) => { const ms = event.currentTarget.duration * 1000; if (Number.isFinite(ms) && ms > 0) setClipMs(Math.round(ms) + HANDOVER_MS); }}
+              onEnded={() => setClipEnded(true)} onError={() => setClipFailed(true)} />
           : <img src={characterAsset(`login/${role}.webp`)} alt="" aria-hidden="true" />}
       </figure>
     </section>
-    <div className="signin-side" onFocus={() => setTyping(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTyping(false); }}>
+    <div className="signin-side">
     <section className="signin-panel signin-rise" style={step(5)} aria-labelledby="signin-title">
       <h2 id="signin-title">登录</h2>
       <p className="signin-sub">AI短视频获客 · 生素材 · 引客户 · 促成交</p>

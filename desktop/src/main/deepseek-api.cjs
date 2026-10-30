@@ -120,13 +120,14 @@ function salutationPrompt(contact = {}) {
   return [
     {
       role: "system",
-      content: `你是微信联系人称呼判定器。只判断这些字段中是否存在可以直接称呼客户的原文短称呼。
+      content: `你是微信联系人称呼判定器。从备注（优先）或昵称里找出这个人，给出发消息时开头用的尊称。
 规则：
-1. 备注优先，其次昵称，最后姓名；姓名、花名、昵称、带称谓的称呼都可以使用。
-2. 必须原样选择输入中的连续片段，不得改写、缩写、补姓、猜测或组合字段。
-3. 微信备注经常把组织、岗位、姓名或花名、手机号连续写在一起；遇到这种长字段，应提取手机号或编号前紧邻的原文姓名/花名，包括不以常见姓氏开头的艺名。
-4. 公司名、部门、产品、岗位、业务描述、编号、电话、群名和无法确定是人的内容，返回空字符串。本规则适用于任意行业，不根据具体产品词猜测。
-5. 不确定时返回空字符串；只返回 JSON：{"salutation":"原文片段或空字符串","source":"remark|nickname|name|none"}。`
+1. 先看备注，备注里找不到人再看昵称。
+2. 微信备注经常把公司、产品、岗位、姓名、手机号连在一起写，例如“清洁机器人城胜15300757695”里的人是“城胜”；要找出其中的人名或“姓+职务”。
+3. 尊称只能是“姓 + 称谓”：原文带职务就用这个职务（王经理、李老师、张主任、刘总监），“总经理/董事长/总裁”一律写“总”；只有姓名或花名时，一律写“姓 + 总”（王小明 → 王总）。复姓保留两个字（欧阳娜娜 → 欧阳总）。
+4. basis 填你依据的原文片段（必须原样出自对应字段，且包含这个姓），例如 {"salutation":"城总","source":"remark","basis":"城胜"}。
+5. 公司名、部门、产品、业务描述、编号、电话、群名、网名式昵称（如“阳光”“金色年华”）不是人名；找不到确定的人名就返回 {"salutation":"","source":"none","basis":""}。
+6. 只返回 JSON，不解释。`
     },
     { role: "user", content: `联系人字段：${JSON.stringify(fields)}` }
   ];
@@ -143,11 +144,12 @@ function parseSalutationPayload(payload) {
   }
   const value = parsed.salutation.replace(/\s+/g, " ").trim();
   const source = String(parsed.source || "none").trim();
-  if (!/^(remark|nickname|name|none)$/u.test(source) || value.length > 20
+  const basis = String(parsed.basis || "").replace(/\s+/g, " ").trim();
+  if (!/^(remark|nickname|name|none)$/u.test(source) || value.length > 20 || basis.length > 40
     || (source === "none" && value) || (source !== "none" && !value)) {
     throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 称呼判断字段无效", "salutation_value_invalid");
   }
-  return { value, source };
+  return { value, source, basis };
 }
 
 function replyPrompt({ context, expert, clarificationAllowed = true, recoveryMode = "", contextLimit = 12 }) {
