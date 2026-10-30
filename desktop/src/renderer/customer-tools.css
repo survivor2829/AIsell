@@ -103,3 +103,16 @@
   .topbar-update-caption { max-width:80px; }
 }
 .customer-consent-notice{position:fixed;z-index:129;top:108px;right:28px;width:min(520px,calc(100vw - 56px));padding:16px 20px;background:#fff;border:1px solid #ead8df;border-radius:12px;box-shadow:0 8px 32px #17203320;color:#273442}.customer-consent-notice p{margin:0;font-size:13px;line-height:1.6}.customer-consent-notice>div{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}
+
+/* 一键体检 */
+.checkup-summary { margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; background: #edf8f0; color: #1d6b38; font-weight: 600; }
+.checkup-summary.has-problems { background: #fff4e5; color: #8a4b00; }
+.checkup-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.checkup-list li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 14px; border: 1px solid #e6e8ee; border-radius: 10px; background: #fff; }
+.checkup-list li > svg { margin-top: 1px; }
+.checkup-list li.is-ok > svg { color: #1f9d55; }
+.checkup-list li.is-warn > svg { color: #d98200; }
+.checkup-list li.is-fail > svg { color: #d0342c; }
+.checkup-list strong { font-size: 15px; }
+.checkup-list p { margin: 4px 0 0; color: #4a4f5c; font-size: 14px; line-height: 1.55; }
+.checkup-list .checkup-fix { color: #1d2433; font-weight: 600; }

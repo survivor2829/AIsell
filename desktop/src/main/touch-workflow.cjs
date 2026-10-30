@@ -442,8 +442,11 @@ function createTouchWorkflow(options = {}) {
         let draft;
         try {
           draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish }, result: current,
-            onSalutationError: (error) => diagnostics().event("active_touch", "salutation.ai_failed", { task_id: id, current_index: task.current_index },
-              { trace: true, level: "warn", code: String(error?.code || "salutation_ai_failed") }) });
+            // Silent failure (user decision 2026-10-30): the message still goes out, but without the
+            // salutation the remark may hold, so it is reported as an error and becomes a capsule.
+            onSalutationError: (error) => diagnostics().event("active_touch", "salutation.ai_failed",
+              { task_id: id, current_index: task.current_index, ai_error: String(error?.code || "") },
+              { trace: true, level: "error", code: "touch_salutation_unavailable" }) });
         } catch (error) {
           try { draft = generateFixedScriptFallback({ task: { ...task, script }, result: current, error }); }
           catch (fallbackError) { return attention(fallbackError.message, { deliveryStatus:'not_attempted' }, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed); }

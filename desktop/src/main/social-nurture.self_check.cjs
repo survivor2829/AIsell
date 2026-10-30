@@ -25,8 +25,8 @@ function world(behaviour = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-nurture-"));
   const b = { signedIn: true, searchBox: true, searchBlocked: false, results: true, blockedAt: [], likeButton: true, commentShown: true, busy: false, feed: true, ...behaviour };
   const log = { launches: 0, closed: 0, searches: 0, actions: [], reports: [], signedOut: [], published: [], videos: 0, fronts: 0 };
-  let offsetDays = 0, video = 0, checks = 0, justSearched = false;
-  const now = () => Date.now() + offsetDays * 86_400_000;
+  let offsetMs = 0, video = 0, checks = 0, justSearched = false;
+  const now = () => Date.now() + offsetMs;
   const page = { url: async () => "https://www.douyin.com/?recommend=1", front: async () => { log.fronts++; }, navigate: async () => {},
     send: async (method) => method === "Page.captureScreenshot" ? { data: Buffer.from("png").toString("base64") } : {} };
   const driver = {
@@ -60,7 +60,9 @@ function world(behaviour = {}) {
     publish: async (payload) => { log.published.push(payload); }, onFailure: (failure) => log.reports.push(failure), ...extra });
   // Runs segments until nothing more is due today.
   const runDay = async (nurture) => { for (let i = 0; i < 20; i++) { nurture.tick(); await sleep(5); while (nurture.isBusy()) await sleep(5); } };
-  return { root, b, log, make, runDay, nextDay: () => { offsetDays++; } };
+  // The next calendar day at the same local time: adding 24 hours stays on the same date in the
+  // night after a daylight-saving change.
+  return { root, b, log, make, runDay, nextDay: () => { const next = new Date(now()); next.setDate(next.getDate() + 1); offsetMs = next.getTime() - Date.now(); } };
 }
 const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清楚\n这台效率不错" };
 
