@@ -41,6 +41,8 @@ ACTIVE_STATUSES = frozenset(
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REFERENCE_BYTES = 20 * 1024 * 1024
+UPLOAD_ATTEMPTS = 3
+UPLOAD_RETRY_SECONDS = 2
 REFERENCE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(?:sk|ak)-[A-Za-z0-9_-]{8,}\b"),
@@ -467,36 +469,46 @@ class APIMartCoverClient:
         ).encode("ascii") + reference_path.read_bytes() + (
             f"\r\n--{boundary}--\r\n"
         ).encode("ascii")
-        try:
-            status, raw = self._request(
-                "POST",
-                f"{self.base_url}/uploads/images",
-                body=body,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "User-Agent": "Xiaoxi-Creative-Workbench/1.0",
-                },
-                timeout=60,
-            )
-        except Exception as error:
-            raise APIMartError("APIMart reference image upload failed.") from error
-        if len(raw) > MAX_RESPONSE_BYTES:
-            raise APIMartError("APIMart reference upload response is too large.")
-        response = self._json_body(raw)
-        node = response.get("data") if isinstance(response, dict) else None
-        url = (
-            response.get("url")
-            if isinstance(response, dict)
-            else None
-        ) or (node.get("url") if isinstance(node, dict) else None)
-        if not 200 <= int(status) < 300 or not isinstance(url, str) or not url.startswith(
-            "https://"
-        ):
-            raise APIMartError(
-                f"APIMart reference image upload failed: {self._safe_detail(response)}"
-            )
-        return url
+        # Uploading a reference creates nothing billable, so a network error, a 5xx or a
+        # gateway page that is not JSON is tried again (field capsule c169ea5e, 2026-10-29:
+        # one non-JSON answer failed the whole cover). The HTTP status goes into the error.
+        for attempt in range(UPLOAD_ATTEMPTS):
+            if attempt:
+                self._sleep(UPLOAD_RETRY_SECONDS * attempt)
+            try:
+                status, raw = self._request(
+                    "POST",
+                    f"{self.base_url}/uploads/images",
+                    body=body,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "User-Agent": "Xiaoxi-Creative-Workbench/1.0",
+                    },
+                    timeout=60,
+                )
+            except Exception as error:
+                if attempt + 1 < UPLOAD_ATTEMPTS:
+                    continue
+                raise APIMartError("APIMart reference image upload failed.") from error
+            if len(raw) > MAX_RESPONSE_BYTES:
+                raise APIMartError("APIMart reference upload response is too large.")
+            response = self._json_body(raw)
+            node = response.get("data") if isinstance(response, dict) else None
+            url = (
+                response.get("url")
+                if isinstance(response, dict)
+                else None
+            ) or (node.get("url") if isinstance(node, dict) else None)
+            if 200 <= int(status) < 300 and isinstance(url, str) and url.startswith("https://"):
+                return url
+            transient = int(status) >= 500 or int(status) == 429 or not isinstance(response, dict)
+            if not transient or attempt + 1 >= UPLOAD_ATTEMPTS:
+                raise APIMartError(
+                    f"APIMart reference image upload failed (HTTP {int(status)}): "
+                    f"{self._safe_detail(response)}"
+                )
+        raise APIMartError("APIMart reference image upload failed.")
 
     def submit(self, prompt: str, *, reference_path: Path | None = None, size: str = "9:16",
                profile: dict[str, str] | None = None) -> str:

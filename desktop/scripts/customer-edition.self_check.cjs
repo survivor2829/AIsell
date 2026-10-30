@@ -104,7 +104,8 @@ function assertStageWorkflowContract() {
   assert.equal(source.includes('name: "2829347524"'), false, "packaged editions must not expose a developer account identifier as the default profile");
   assert.match(source, /if \(!license\?\.authorized \|\| !sessionEntered\) return <div[\s\S]*?<LoginScreen/u, "packaged editions must require an explicit login before entering the workspace");
   assert.match(source, /identity\?\.nickname \|\| "未同步微信"/u, "unsynchronized accounts must not show an invented customer identity");
-  assert.match(source, /DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION\s*\?/u, "business-specific outreach copy must be limited to the development edition");
+  assert.equal(source.includes("清洁设备短租"), false, "the shell must not carry business-specific outreach copy");
+  assert.equal(source.includes("内部测试工具"), false, "customers never see internal test tools on 精准触达");
   assert.equal(source.includes('<button className="guide">'), false, "the shell must not expose a non-functional onboarding button");
   assert.match(source, /<WechatWorkflowPage/, "Moments must use the unified task page");
   assert.match(source, /mode=\{active === "touch" \? "touch" : active === "moments" \? "moments" : "home"\}/, "the shared page must select the requested task category");

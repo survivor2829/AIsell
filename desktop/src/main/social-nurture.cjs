@@ -111,15 +111,22 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
   }
 
   // The next segment now instead of after the usual pause between segments.
+  // The user runs a segment whenever they want (user decision 2026-10-30): a closed or paused plan
+  // is opened again, and today's finished segments or a verification rest do not hold it back.
   function runNow(id) {
     const plan = find(id);
-    if (plan.status !== "active" || !plan.enabled) throw fail("NURTURE_PLAN_OFF", "这个计划没有打开，先点「打开」或「继续」。");
     if (active) throw fail("NURTURE_BUSY", active.plan === plan ? "这个账号正在养号。" : "另一个账号正在养号，等它这一段结束。");
+    if (plan.status === "finished") throw fail("NURTURE_FINISHED", "8 天养号已完成。");
+    if (!plan.enabled || plan.status !== "active") {
+      Object.assign(plan, { enabled: true, status: "active", reason: "" });
+      if (plan.today) plan.today.earlyMisses = 0;
+    }
     roll(plan);
-    if (plan.today?.restUntil > now()) throw fail("NURTURE_RESTING", "今天已经出现两次验证，为了账号安全停到明天。");
-    if (plan.today?.segmentsDone >= plan.today?.segments) throw fail("NURTURE_DONE_TODAY", "今天的几段已经做完，明天打开软件会自动继续。");
-    if (plan.today) plan.today.nextAt = 0;
-    save(); queueMicrotask(tick); return snapshot();
+    save();
+    if (plan.status === "finished") { emit(); throw fail("NURTURE_FINISHED", "8 天养号已完成。"); }
+    void runSegment(plan);
+    if (!active) { emit(); throw fail("NURTURE_ACCOUNT_BUSY", plan.status === "paused" ? plan.reason : "这个账号正在发布视频，等发布完再点。"); }
+    return snapshot();
   }
 
   // ---- One segment ----
@@ -195,7 +202,8 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
         control.step = "feed"; await report("NURTURE_ELEMENT_MISSING", "feed");
         throw fail("NURTURE_PAGE_CHANGED", "抖音页面上没找到可以逐条刷的视频，页面可能变了，已自动上报。");
       }
-      const segmentEnd = now() + today.minutes[today.segmentsDone] * 60_000;
+      // A segment run by hand beyond today's planned ones takes a length from the stage table.
+      const segmentEnd = now() + (today.minutes[today.segmentsDone] ?? between(stage.minutes)) * 60_000;
       const segmentsLeft = () => today.segments - today.segmentsDone - 1;
       const meanDwell = (stage.dwellSeconds[0] + stage.dwellSeconds[1]) / 2 * 1000, meanSegment = (stage.minutes[0] + stage.minutes[1]) / 2 * 60_000;
       const disabled = new Set();

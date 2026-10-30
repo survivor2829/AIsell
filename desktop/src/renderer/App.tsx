@@ -25,7 +25,7 @@ import {
   Video,
   X
 } from "lucide-react";
-import { lazy, Suspense, type ComponentType, useEffect, useMemo, useRef, useState } from "react";
+import { type ComponentType, useEffect, useMemo, useRef, useState } from "react";
 import productBrand from "../../product-brand.json";
 import packageInfo from "../../package.json";
 import { LoginScreen } from "./LoginScreen";
@@ -405,10 +405,6 @@ const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
 const DEFAULT_ACTIVE_MODULE: ModuleKey = "overview";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
-const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
-  ? "{称呼}，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
-  : "";
-const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
 const agentChildren: NavItem[] = [
   { key: "touch", label: "精准触达", icon: Send },
@@ -642,7 +638,6 @@ export default function App() {
     wechat_root: ""
   });
   const [contactSyncError, setContactSyncError] = useState("");
-  const [messageDraft, setMessageDraft] = useState(DEFAULT_TOUCH_MESSAGE);
   const [deepSeekConfigured, setDeepSeekConfigured] = useState(false);
   useEffect(() => {
     if (!window.xiaoxiLicenseAuth) {
@@ -728,13 +723,6 @@ export default function App() {
     setContactSyncError(result.error ?? "");
   };
 
-  const applyTouchTaskResult = (result: TouchTaskResult) => {
-    if (result.task) {
-      const unfinished = (result.task.status === "running" || result.task.status === "paused") && result.task.current_index < result.task.total;
-      if (unfinished && result.task.script.trim()) setMessageDraft(result.task.script);
-    }
-  };
-
   const callContactSync = async (action: string, run: () => Promise<ContactSyncResult>) => {
     if (contactSyncInFlight.current) return;
 
@@ -814,24 +802,6 @@ export default function App() {
       .catch(() => setDeepSeekConfigured(false));
   }, [license?.authorized, sessionEntered]);
 
-  useEffect(() => {
-    const api = window.xiaoxiTouchTask;
-    if (!api) return;
-    let active = true;
-    let receivedUpdate = false;
-    const unsubscribe = api.onUpdate((result) => {
-      if (!active) return;
-      receivedUpdate = true;
-      applyTouchTaskResult(result);
-    });
-    void api.status().then((result) => {
-      if (active && !receivedUpdate) applyTouchTaskResult(result);
-    }).catch(() => undefined);
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
 
 
 
@@ -954,7 +924,7 @@ export default function App() {
           <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact onOpenGuide={openTextGuide} />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
-          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />返回上一级</button>}
+          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={22} strokeWidth={2.75} aria-hidden="true" />返回上一级</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole}
             onStart={() => selectChild("production", "workspace")} workflowTasks={workflow.state.tasks as unknown as Record<string, unknown>[]} />}
@@ -1042,11 +1012,6 @@ export default function App() {
             setCreativeView("history"); setActive("workspace");
           }} />}
           {active === "diagnostics" && <FeedbackCenter appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} context={feedbackContext} />}
-          {active === "touch" && DevelopmentAcceptance && (
-            <details className="workflow-details page"><summary>内部测试工具</summary><Suspense fallback={null}>
-              <DevelopmentAcceptance contacts={contactRows} message={messageDraft} />
-            </Suspense></details>
-          )}
           {!moduleIsAvailable(active) && <Placeholder title={activeTitle} />}
         </div>
 

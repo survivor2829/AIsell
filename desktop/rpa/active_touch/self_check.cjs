@@ -3378,15 +3378,7 @@ try {
   assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
   assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*click-search-result-dry-run[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
   assert.equal(developmentIpcSource.includes("real-send-hold"), false);
-  const developmentUiSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx"), "utf8");
-  assert.match(developmentUiSource, /sendSelectedContact/);
-  assert.match(developmentUiSource, /data-xiaoxi-real-send/);
-  assert.match(developmentUiSource, /const resolvedMessage = selected \? message\.replace\(/);
-  assert.match(developmentUiSource, /setStatus\("开发执行器未连接"\)/);
-  assert.match(developmentUiSource, /const exactReason = result\.state\?\.real_send_reason;[\s\S]*`发送结果无法确认：\$\{exactReason\}`[\s\S]*result\.blocked_reason/);
-  assert.match(developmentUiSource, /<Send size=\{17\} \/>直接发送<\/button>/);
-  assert.equal(developmentUiSource.includes("按住3秒"), false);
-  assert.equal(developmentUiSource.includes("beginRealSendHold"), false);
+  assert.equal(fs.existsSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx")), false, "customers never see an internal test panel on 精准触达");
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.dev.cjs")), false);
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.self_check.cjs")), false);
   const normalizerStart = driverSource.indexOf("const NORMALIZE_WECHAT_WINDOW_SCRIPT");

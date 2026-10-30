@@ -132,7 +132,7 @@ export function SocialNurturePanel({ onManageAccounts }: { onManageAccounts: () 
           </div>
           <div className="nur-plan-actions">
             {running && <button type="button" className="nur-btn" disabled={Boolean(pending)} onClick={() => api && void run("stop", () => api.stop(), "这一段已停下，稍后会按计划继续。")}><Square size={16} />停下这段</button>}
-            {!running && plan.status === "active" && plan.enabled && ["resting", "starting"].includes(plan.phase) && <button type="button" className="nur-btn is-go" disabled={Boolean(pending) || Boolean(state?.running)} onClick={() => api && void run(`now-${plan.id}`, () => api.runNow(plan.id), "马上开始下一段。")}><Zap size={16} />现在就跑下一段</button>}
+            {!running && plan.status !== "finished" && <button type="button" className="nur-btn is-go" disabled={Boolean(pending) || Boolean(state?.running)} onClick={() => api && void run(`now-${plan.id}`, () => api.runNow(plan.id), "已开始养号，Chrome 窗口会弹出来，请不要在那个窗口里操作。")}><Zap size={16} />现在就跑</button>}
             {plan.status !== "finished" && (plan.enabled && plan.status === "active"
               ? <button type="button" className="nur-btn" disabled={Boolean(pending)} onClick={() => api && void run(`off-${plan.id}`, () => api.setEnabled(plan.id, false), "已关闭，不会再自动运行。")}><Pause size={16} />关闭</button>
               : <button type="button" className="nur-btn is-go" disabled={Boolean(pending)} onClick={() => api && void run(`on-${plan.id}`, () => api.setEnabled(plan.id, true), "已打开，马上接着跑。")}><Play size={16} />{plan.status === "paused" ? "继续" : "打开"}</button>)}
