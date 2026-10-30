@@ -924,7 +924,7 @@ export default function App() {
           <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact onOpenGuide={openTextGuide} />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
-          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={16} aria-hidden="true" />返回上一级</button>}
+          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={22} strokeWidth={2.75} aria-hidden="true" />返回上一级</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole}
             onStart={() => selectChild("production", "workspace")} workflowTasks={workflow.state.tasks as unknown as Record<string, unknown>[]} />}
