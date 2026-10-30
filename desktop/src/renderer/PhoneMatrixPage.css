@@ -47,3 +47,78 @@
 .pm-dialog footer { display: flex; justify-content: flex-end; gap: 10px; }
 .pm-dialog footer button { min-height: 42px; padding: 0 18px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; font: inherit; font-weight: 700; cursor: pointer; }
 .pm-dialog footer .is-primary { border-color: var(--brand-red, #e60012); background: var(--brand-red, #e60012); color: #fff; }
+
+/* 手机墙 (part 2): live screens, the main screen and sync. */
+.pm-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.pm-view { display: inline-flex; padding: 4px; border: 1px solid #e3e5ea; border-radius: 999px; background: #fff; }
+.pm-view button { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 16px; border: 0; border-radius: 999px; background: none; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.pm-view button[aria-pressed="true"] { background: #1d2230; color: #fff; }
+.pm-wall-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.pm-wall-layout.has-main { grid-template-columns: minmax(0, 1fr) 380px; }
+@media (max-width: 1100px) { .pm-wall-layout.has-main { grid-template-columns: 1fr; } }
+.pm-wall-area { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pm-pick-all { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.pm-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.pm-tile { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 2px solid transparent; border-radius: 14px; background: #fff; }
+.pm-tile.is-picked { border-color: #7aa7ff; }
+.pm-tile.is-main { border-color: var(--brand-red, #e60012); }
+.pm-tile-open { padding: 0; border: 0; background: none; cursor: pointer; }
+.pm-tile-label { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.pm-tile-label b { flex: 0 0 auto; padding: 1px 6px; border-radius: 6px; background: #1d2230; color: #fff; font-size: 11px; }
+.pm-tile-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone-screen { position: relative; display: grid; place-items: center; aspect-ratio: 9 / 19.5; overflow: hidden; border-radius: 10px; background: #11151f; }
+.phone-screen canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+.phone-screen.is-main canvas { cursor: crosshair; touch-action: none; }
+.phone-screen-wait { position: absolute; color: #9aa3b2; font-size: 12px; }
+.pm-main { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #ece9ef; border-radius: 20px; background: #fff; }
+.pm-main header { display: flex; align-items: center; gap: 8px; }
+.pm-main header b { padding: 2px 8px; border-radius: 8px; background: #1d2230; color: #fff; font-size: 13px; }
+.pm-main header strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The main screen keeps the phone's own shape, so a click lands where it shows (no letterbox). */
+.pm-main .phone-screen { width: 100%; min-height: 240px; aspect-ratio: auto; }
+.pm-main .phone-screen canvas { width: auto; height: auto; max-width: 100%; max-height: 62vh; object-fit: fill; }
+.pm-keys { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.pm-keys button { display: grid; place-items: center; min-height: 40px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; cursor: pointer; }
+.pm-text { display: flex; gap: 6px; }
+.pm-text input { flex: 1; min-width: 0; min-height: 42px; padding: 0 12px; border: 1px solid #d9dce3; border-radius: 10px; font: inherit; }
+.pm-text button { display: grid; place-items: center; width: 44px; border: 0; border-radius: 10px; background: var(--brand-red, #e60012); color: #fff; cursor: pointer; }
+.pm-sync { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #e3e5ea; border-radius: 14px; cursor: pointer; }
+.pm-sync input { margin-top: 3px; width: 18px; height: 18px; }
+.pm-sync span { display: flex; flex-direction: column; gap: 2px; color: #5d6573; font-size: 13px; }
+.pm-sync strong { color: #1d2230; font-size: 15px; }
+.pm-sync.is-on { border-color: var(--brand-red, #e60012); background: #fff4f5; }
+.pm-jitter { display: flex; align-items: center; gap: 8px; padding: 0 4px; color: #5d6573; font-size: 13px; }
+.pm-jitter input { width: 16px; height: 16px; }
+
+/* 批量操作 (part 4): the bar, its small panels and the progress card. */
+.pm-batch { display: flex; flex-direction: column; gap: 10px; }
+.pm-batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border: 1px solid #ece9ef; border-radius: 16px; background: #fff; }
+.pm-batch-title { margin-right: 4px; font-size: 15px; font-weight: 800; }
+.pm-batch-title small { margin-left: 4px; color: #6b7280; font-size: 13px; font-weight: 600; }
+.pm-batch-bar button, .pm-batch-panel button { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 12px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.pm-batch-bar button[aria-expanded="true"] { border-color: #1d2230; }
+.pm-batch-bar button:disabled, .pm-batch-panel button:disabled { cursor: not-allowed; opacity: .45; }
+.pm-batch-panel { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #e3e5ea; border-radius: 16px; background: #fafbfc; }
+.pm-batch-panel.is-warn { border-color: #f4d7a6; background: #fffcf6; }
+.pm-batch-panel p { margin: 0; color: #374151; font-size: 14px; line-height: 1.6; }
+.pm-batch-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pm-batch-row input { flex: 1; min-width: 200px; min-height: 40px; padding: 0 12px; border: 1px solid #d9dce3; border-radius: 10px; font: inherit; }
+.pm-batch-panel .is-primary { border-color: var(--brand-red, #e60012); background: var(--brand-red, #e60012); color: #fff; }
+.pm-batch-apps { display: flex; flex-wrap: wrap; gap: 8px; }
+.pm-batch-card { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid #c9dafc; border-radius: 16px; background: #f5f8ff; }
+.pm-batch-card.is-done { border-color: #bfe3cc; background: #f3fbf6; }
+.pm-batch-card.is-failed { border-color: #f4c7c3; background: #fff6f5; }
+.pm-batch-card header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.pm-batch-card header strong { font-size: 15px; }
+.pm-batch-card header span { flex: 1; color: #374151; font-size: 14px; font-variant-numeric: tabular-nums; }
+.pm-batch-card header > button:not(.pm-close) { display: inline-flex; align-items: center; gap: 4px; min-height: 34px; padding: 0 12px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+.pm-batch-card .pm-close { width: 34px; height: 34px; }
+.pm-batch-progress { display: block; height: 8px; overflow: hidden; border-radius: 99px; background: #e4e9f2; }
+.pm-batch-progress b { display: block; height: 100%; border-radius: 99px; background: #3b82f6; transition: width .3s; }
+.is-done .pm-batch-progress b { background: #1f9d55; }
+.is-failed .pm-batch-progress b { background: #d0342c; }
+.pm-batch-failed { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: #9f1b10; }
+.pm-batch-failed b { margin-right: 8px; color: #1d2230; }
+.pm-batch-folder { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 14px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+.pm-batch-ask { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: #fff7e8; color: #7a4a00; font-size: 14px; line-height: 1.6; }
+.pm-batch-ask p { margin: 0; font-weight: 700; }

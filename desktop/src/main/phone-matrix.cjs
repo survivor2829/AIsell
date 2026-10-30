@@ -12,10 +12,14 @@ const POLL_MS = 3000;
 const DETAIL_REFRESH_MS = 30000;
 const DETAIL_CONCURRENCY = 6;
 
-// Where adb may be: one shipped with the app, one the user pointed to, the Android SDK, PATH.
+// The scrcpy server and the ADB that ships with it (vendor/scrcpy, app/vendor/scrcpy once packaged).
+const VENDOR_DIR = path.resolve(__dirname, "../../vendor/scrcpy");
+// Where adb may be: the one shipped with the app first (one ADB version for every phone; two versions
+// keep stopping each other's service), then one the user pointed to, the Android SDK, 来喜's folder.
 function adbCandidates({ resourcesPath = process.resourcesPath || "", env = process.env } = {}) {
   return [
     env.XIAOXI_ADB_PATH,
+    path.join(VENDOR_DIR, "adb.exe"),
     resourcesPath && path.join(resourcesPath, "platform-tools", "adb.exe"),
     env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", "adb.exe"),
     env.ANDROID_HOME && path.join(env.ANDROID_HOME, "platform-tools", "adb.exe"),
@@ -162,7 +166,7 @@ function createPhoneMatrix({ dataDir, onChange = () => {}, adbPath = findAdb(), 
   }
 
   return {
-    snapshot, update, forget, poll,
+    adbPath, snapshot, update, forget, poll,
     start() { if (!timer) { void poll(); timer = setTimer(() => void poll(), POLL_MS); timer?.unref?.(); } },
     stop() { clearTimer(timer); timer = null; }
   };
@@ -182,4 +186,4 @@ function laixiRunning() {
   return runFile("tasklist.exe", ["/FI", "IMAGENAME eq Laixi.exe", "/NH"], 5000).then((out) => /Laixi\.exe/i.test(out)).catch(() => false);
 }
 
-module.exports = { createPhoneMatrix, findAdb, adbCandidates, parseDevices, parseBattery, parseSize };
+module.exports = { VENDOR_DIR, createPhoneMatrix, findAdb, adbCandidates, parseDevices, parseBattery, parseSize };

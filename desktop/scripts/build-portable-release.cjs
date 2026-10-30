@@ -31,6 +31,15 @@ const electronDir = path.join(desktopDir, "node_modules", "electron", "dist");
 const nativeLibDir = path.join(desktopDir, "rpa", "contact_sync", "libs");
 const helper = path.join(nativeLibDir, "xiaoxi-contact-helper.exe");
 const CONTACT_HELPER_SHA256 = "cbe4e98cace5d69cc395e0af21af9bd72aa59cc2a170772ac344e169e8bd3550";
+// 手机矩阵: ADB and the scrcpy server v5.0.1 (Apache 2.0) from the official scrcpy-win64-v5.0.1 release.
+const PHONE_VENDOR_SHA256 = {
+  "adb.exe": "b4a6b455702684652cccf7b46258b29e653538904359a58fd4931cf3ef286b3f",
+  "AdbWinApi.dll": "c1d653030b4bde65d3e07e4d0b0979e17be56df1436cdd15528630f27808050d",
+  "AdbWinUsbApi.dll": "0710e894d9b40f71a670c13c694079d564c92c1279da382cfe4850983aaebe1b",
+  "scrcpy-server": "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536",
+  "LICENSE.txt": "01c12035bf35af37241298dc7ad538eb2a07e5c940437bc6876feeaa9d1951d0",
+  "README.md": "df1081c7e894fbc48755020b45a70cb884bbb182a34f8942840cc0bce5215adc"
+};
 const DATABASE_DECRYPTOR_NAME = "xiaoxi-db-decrypt.exe";
 const DATABASE_DECRYPTOR_SHA256 = "2e6d190f3a0f33112cd4b7baeadea9947cb70688a94f3787a6be236287dc1815";
 const NATIVE_LIBRARY_SHA256 = Object.freeze({
@@ -179,6 +188,13 @@ function copyAppSource(appDir, edition) {
       recursive: true,
       filter: (sourcePath) => sourceAllowed(sourcePath, edition)
     });
+  }
+  const phoneVendorTarget = path.join(appDir, "vendor", "scrcpy");
+  fs.mkdirSync(phoneVendorTarget, { recursive: true });
+  for (const [name, expectedHash] of Object.entries(PHONE_VENDOR_SHA256)) {
+    const target = path.join(phoneVendorTarget, name);
+    fs.copyFileSync(path.join(desktopDir, "vendor", "scrcpy", name), target);
+    if (sha256(target) !== expectedHash) throw new Error(`Packaged phone tool ${name} hash mismatch`);
   }
   writeLauncherTrust(appDir, edition);
   copyAppRuntimeDependencies(appDir);
