@@ -441,7 +441,9 @@ function createTouchWorkflow(options = {}) {
         reportProgress({ stage: "draft_generation", partKind: "text", partIndex: 1 });
         let draft;
         try {
-          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish }, result: current });
+          draft = await generatePersonalizedDraft({ client: options.client, task: { ...task, script, aiPolish }, result: current,
+            onSalutationError: (error) => diagnostics().event("active_touch", "salutation.ai_failed", { task_id: id, current_index: task.current_index },
+              { trace: true, level: "warn", code: String(error?.code || "salutation_ai_failed") }) });
         } catch (error) {
           try { draft = generateFixedScriptFallback({ task: { ...task, script }, result: current, error }); }
           catch (fallbackError) { return attention(fallbackError.message, { deliveryStatus:'not_attempted' }, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed); }

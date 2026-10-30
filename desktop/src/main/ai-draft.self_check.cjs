@@ -1,7 +1,8 @@
 const assert = require("node:assert/strict");
 const {
   contactSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate,
-  generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage
+  generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage,
+  nicknameSalutation, checkedAiSalutation, resolveSalutation
 } = require("./ai-draft.cjs");
 
 async function main() {
@@ -102,6 +103,32 @@ async function main() {
     result: { contact: { name: "黄佳佳" } }
   }), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.equal(generateFixedScriptFallback({ task: { script: "" } }), null);
+
+  // 用户 2026-10-30：备注认不出时让 DeepSeek 读备注（城胜 → 城总），再看带职务的昵称，否则只问候。
+  const ask = (answer) => { const calls = []; return { calls, async classifySalutation(input) { calls.push(input); return { salutation: answer }; } }; };
+  const messy = { remark: "清洁机器人城胜15300757695" };
+  let ai = ask({ value: "城总", source: "remark", basis: "城胜" });
+  assert.deepEqual(await resolveSalutation(messy, ai), { type: "title", value: "城总" });
+  assert.deepEqual(await resolveSalutation(messy, ai), { type: "title", value: "城总" }); assert.equal(ai.calls.length, 1, "同一备注只问一次");
+  ai = ask({ value: "王总", source: "remark", basis: "王" });
+  assert.deepEqual(await resolveSalutation({ remark: "王总" }, ai), { type: "title", value: "王总" }); assert.equal(ai.calls.length, 0, "规整的备注不调 AI");
+  // AI 编出来的姓、依据不在备注里、称谓不是允许的，都不用。
+  for (const answer of [{ value: "李总", source: "remark", basis: "城胜" }, { value: "城总", source: "remark", basis: "城先生" },
+    { value: "城胜", source: "remark", basis: "城胜" }, { value: "城总", source: "nickname", basis: "城胜" }])
+    assert.deepEqual(checkedAiSalutation(messy, answer), { type: "generic", value: "" }, JSON.stringify(answer));
+  assert.deepEqual(await resolveSalutation({ remark: "深圳某某科技有限公司", nickname: "阳光" }, ask({ value: "", source: "none", basis: "" })), { type: "generic", value: "" });
+  // AI 不可用：退回带职务的昵称；网名式昵称不当人名。
+  const broken = { async classifySalutation() { throw Object.assign(new Error("no key"), { code: "AI_NOT_CONFIGURED" }); } };
+  const errors = [];
+  assert.deepEqual(await resolveSalutation({ remark: "某某物业公司", nickname: "李经理" }, broken, (error) => errors.push(error.code)), { type: "title", value: "李经理" });
+  assert.deepEqual(errors, ["AI_NOT_CONFIGURED"]);
+  assert.deepEqual(nicknameSalutation({ nickname: "江南" }), { type: "generic", value: "" });
+  assert.deepEqual(nicknameSalutation({ nickname: "金色年华" }), { type: "generic", value: "" });
+  const titled = await generatePersonalizedDraft({ client: ask({ value: "城总", source: "remark", basis: "城胜" }),
+    task: { script: "给您介绍设备。" }, result: { contact: { remark: "清洁机器人城胜15300757695 " } } });
+  assert.match(titled.message, /^城总，(早上好|中午好|下午好|晚上好|您好)，给您介绍设备。$/u, "不开润色也带称呼");
+  const polishFailed = generateFixedScriptFallback({ task: { script: "给您介绍设备。" }, result: { contact: messy, salutation: { type: "title", value: "城总" } } });
+  assert.match(polishFailed.message, /^城总，/u, "润色失败退回固定话术时保留称呼");
   console.log("ai-draft self-check passed");
 }
 

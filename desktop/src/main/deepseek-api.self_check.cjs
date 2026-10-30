@@ -170,8 +170,11 @@ async function main() {
   assert.match(messages[0].content, /不得额外添加/);
   assert.equal(messages[1].content, "首句问候语：张总，您好\n基础话术：我们这边有清洁设备短租方案。");
   assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "首句问候语：您好\n基础话术：欢迎了解。");
-  assert.match(salutationPrompt({ remark: "老王", nickname: "设备采购" })[0].content, /姓名、花名、昵称/);
-  assert.deepEqual(parseSalutationPayload({ choices: [{ finish_reason: "stop", message: { content: '{"salutation":"老王","source":"remark"}' } }] }), { value: "老王", source: "remark" });
+  // 用户 2026-10-30：AI 给出最终尊称（姓名 → 姓+总，带职务 → 姓+职务），并带回依据的原文片段。
+  assert.match(salutationPrompt({ remark: "清洁机器人城胜15300757695", nickname: "设备采购" })[0].content, /姓 \+ 总/);
+  assert.match(salutationPrompt({ remark: "老王" })[1].content, /清洁机器人城胜|老王/);
+  assert.deepEqual(parseSalutationPayload({ choices: [{ finish_reason: "stop", message: { content: '{"salutation":"城总","source":"remark","basis":"城胜"}' } }] }), { value: "城总", source: "remark", basis: "城胜" });
+  assert.deepEqual(parseSalutationPayload({ choices: [{ finish_reason: "stop", message: { content: '{"salutation":"","source":"none","basis":""}' } }] }), { value: "", source: "none", basis: "" });
   for (const payload of [
     { choices: [{ finish_reason: "length", message: { content: "{}" } }] },
     { choices: [{ finish_reason: "stop", message: { content: "not-json" } }] },

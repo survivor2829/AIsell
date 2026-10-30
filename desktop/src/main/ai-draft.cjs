@@ -31,6 +31,50 @@ function contactSalutation(contact) {
   return { type: "title", value: surname + (!match[3] || match[3] === "总经理" ? "总" : match[3]) };
 }
 
+// A nickname counts only when it names a person with a title (王总, 李经理): nicknames such as 江南 or
+// 金色年华 read like names but are not.
+function nicknameSalutation(contact) {
+  const generic = { type: "generic", value: "" };
+  const nickname = String(contact?.nickname || "").replace(/[㈀-㋿①-⓿]/gu, "").normalize("NFKC").trim();
+  if (!nickname || nickname.length > 24 || RELATION_RE.test(nickname)) return generic;
+  const match = nickname.match(SALUTATION_RE);
+  if (!match || (match[1] && !ORG_END_RE.test(match[1])) || !TOP_SURNAMES.has(match[2])) return generic;
+  return { type: "title", value: match[2] + (match[3] === "总经理" ? "总" : match[3]) };
+}
+
+// What DeepSeek may answer: a surname and one of these titles, the surname taken from a part of the
+// remark or nickname it quotes back, so it cannot invent a name.
+const AI_SALUTATION_RE = /^([一-龥]{1,2}?)(总|经理|总监|主任|老师|老板|医生|律师|姐|哥)$/u;
+function checkedAiSalutation(contact, answer) {
+  const value = String(answer?.value || "").trim(), basis = String(answer?.basis || "").trim();
+  const field = String((answer?.source === "nickname" ? contact?.nickname : answer?.source === "remark" ? contact?.remark : "") || "");
+  const match = value.match(AI_SALUTATION_RE);
+  if (!match || !basis || !field.includes(basis) || !basis.includes(match[1])) return { type: "generic", value: "" };
+  return { type: "title", value };
+}
+
+// User decision 2026-10-30: the remark is read first (the local rules, then DeepSeek for remarks they
+// cannot read, such as 清洁机器人城胜15300757695), then a titled nickname; otherwise only the greeting.
+// The same remark is asked once per run of the app.
+const aiSalutations = new Map();
+async function resolveSalutation(contact, client, onError = () => {}) {
+  const local = contactSalutation(contact);
+  if (local.type === "title") return local;
+  const remark = String(contact?.remark || "").trim(), nickname = String(contact?.nickname || "").trim();
+  if ((remark || nickname) && typeof client?.classifySalutation === "function") {
+    const key = `${remark}\u0000${nickname}`;
+    if (!aiSalutations.has(key)) {
+      try {
+        const { salutation } = await client.classifySalutation({ contact: { remark, nickname } });
+        aiSalutations.set(key, checkedAiSalutation({ remark, nickname }, salutation));
+        if (aiSalutations.size > 2000) aiSalutations.delete(aiSalutations.keys().next().value);
+      } catch (error) { onError(error); }
+    }
+    if (aiSalutations.get(key)?.type === "title") return aiSalutations.get(key);
+  }
+  return nicknameSalutation(contact);
+}
+
 function timeGreeting(at = new Date()) {
   const hour = at instanceof Date ? at.getHours() : NaN;
   if (!Number.isInteger(hour) || hour < 5 || hour >= 23) return "您好";
@@ -40,18 +84,17 @@ function timeGreeting(at = new Date()) {
   return "晚上好";
 }
 
-function greetingForContact(contact, at = new Date()) {
-  const title = contactSalutation(contact);
+function greetingForContact(contact, at = new Date(), title = contactSalutation(contact)) {
   const greeting = timeGreeting(at);
   if (title.type === "title") return `${title.value}，${greeting}`;
   return greeting;
 }
 
-function fillRespectfulTemplate(template, contact, at = new Date()) {
-  const greeting = greetingForContact(contact, at);
+function fillRespectfulTemplate(template, contact, at = new Date(), salutation = contactSalutation(contact)) {
+  const greeting = greetingForContact(contact, at, salutation);
   const source = String(template || "");
   if (!source.trim()) return "";
-  const title = contactSalutation(contact).value;
+  const title = salutation.value;
   let message = source.replace(/^[ \t\r\n]*\{称呼\}/u, '').replace(/\{称呼\}/gu, title);
   const names = [contact?.name, contact?.remark, contact?.nickname]
     .map((value) => String(value || "").trim())
@@ -85,12 +128,12 @@ function sanitizeAiMessage(content) {
   return text.length >= 2 && text.length <= 260 ? text : "";
 }
 
-async function generatePersonalizedDraft({ client, task, result }) {
-  const salutation = contactSalutation(result.contact);
+async function generatePersonalizedDraft({ client, task, result, onSalutationError }) {
+  const salutation = await resolveSalutation(result.contact, client, onSalutationError);
   result.salutation = salutation;
-  const greeting = greetingForContact(result.contact);
+  const greeting = greetingForContact(result.contact, new Date(), salutation);
   if (task?.aiPolish !== true) {
-    return { message: validateTouchMessage(fillRespectfulTemplate(task?.script, result.contact)), usedAi: false, reason: '' };
+    return { message: validateTouchMessage(fillRespectfulTemplate(task?.script, result.contact, new Date(), salutation)), usedAi: false, reason: '' };
   }
   const data = await client.draft({ task, result: { ...result, salutation, greeting } });
   const message = validateTouchMessage(String(data.draft ?? '').trim());
@@ -110,7 +153,9 @@ async function generatePersonalizedDraft({ client, task, result }) {
 function generateFixedScriptFallback({ task, result, error } = {}) {
   const script = String(task?.script || "");
   if (!script.trim()) return null;
-  const message = validateTouchMessage(fillRespectfulTemplate(script, result?.contact));
+  // The salutation already worked out for this contact is kept when the polish fails.
+  const salutation = result?.salutation?.type === "title" ? result.salutation : contactSalutation(result?.contact);
+  const message = validateTouchMessage(fillRespectfulTemplate(script, result?.contact, new Date(), salutation));
   const code = String(error?.code || "AI_GENERATION_FAILED");
   return {
     message,
@@ -120,4 +165,4 @@ function generateFixedScriptFallback({ task, result, error } = {}) {
   };
 }
 
-module.exports = { contactSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage, validateTouchMessage, WECHAT_TEXT_LIMIT };
+module.exports = { contactSalutation, nicknameSalutation, checkedAiSalutation, resolveSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage, validateTouchMessage, WECHAT_TEXT_LIMIT };
