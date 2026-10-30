@@ -66,3 +66,31 @@
 .workflow-page.is-touch .workflow-running-line strong { font-size: 1em; }
 .workflow-page.is-touch .workflow-list-head span, .workflow-page.is-touch .workflow-history summary { font-size: clamp(13px, .9vw, 18px); }
 .workflow-page.is-touch .workflow-check input { width: 1.1em; height: 1.1em; }
+
+/* 自动回复页同样铺满：运行状态做成按钮旁的胶囊，接待范围放大成一块白卡。 */
+.reply-hero-status { display: inline-flex; align-items: center; gap: .5em; height: clamp(44px, 3vw, 60px); padding: 0 1.1em; border: 1px solid #f3dfe2; border-radius: 999px; background: #ffffffd9; color: #3f4a5e; font-size: clamp(14px, 1vw, 20px); font-weight: 900; }
+.reply-hero-status i { width: .6em; height: .6em; border-radius: 50%; background: #9aa3b2; }
+.reply-hero-status.is-on i { background: #16a34a; box-shadow: 0 0 0 4px #16a34a26; }
+.auto-reply-page.is-full { padding-left: clamp(20px, 1.8vw, 40px); padding-right: clamp(20px, 1.8vw, 40px); }
+.auto-reply-page.is-full .reply-scope { padding: clamp(20px, 1.8vw, 36px) clamp(22px, 2vw, 40px); border-color: #f1e1e4; border-radius: clamp(18px, 1.4vw, 28px); box-shadow: 0 10px 26px #1720330a; }
+.auto-reply-page.is-full .reply-scope-head h2 { font-size: clamp(20px, 1.5vw, 30px); font-weight: 900; }
+.auto-reply-page.is-full .reply-scope-head h2 > span, .auto-reply-page.is-full .reply-scope-head p { font-size: clamp(14px, 1vw, 19px); }
+.auto-reply-page.is-full .reply-scope-head .secondary-button { height: clamp(40px, 2.6vw, 52px); padding: 0 1.1em; border-radius: 14px; font-size: clamp(14px, 1vw, 19px); font-weight: 800; }
+.auto-reply-page.is-full .reply-scope-list { gap: clamp(10px, .8vw, 16px); max-height: none; }
+.auto-reply-page.is-full .reply-scope-list li { padding: .35em .35em .35em .45em; font-size: clamp(15px, 1.05vw, 20px); background: #fff7f8; border-color: #f3dfe2; }
+.auto-reply-page.is-full .reply-scope-avatar { width: 1.9em; height: 1.9em; background: #e60000; font-size: .85em; }
+.auto-reply-page.is-full .reply-scope-name { max-width: 14em; }
+.auto-reply-page.is-full .reply-scope-add { padding: clamp(16px, 1.4vw, 28px); border-radius: clamp(14px, 1vw, 20px); background: #fff7f8; }
+.auto-reply-page.is-full .reply-scope-add .workflow-recipient-search, .auto-reply-page.is-full .reply-scope-add .workflow-contact-options,
+.auto-reply-page.is-full .reply-scope-toggle, .auto-reply-page.is-full .reply-scope-empty { font-size: clamp(14px, 1vw, 19px); }
+.auto-reply-page.is-full .reply-scope-add-actions > span, .auto-reply-page.is-full .reply-scope-note { font-size: clamp(13px, .9vw, 17px); }
+.auto-reply-page.is-full .reply-scope-add-actions .primary-button, .auto-reply-page.is-full .reply-scope-add-actions .secondary-button { height: clamp(40px, 2.6vw, 52px); padding: 0 1.2em; border-radius: 14px; font-size: clamp(14px, 1vw, 19px); font-weight: 800; }
+.auto-reply-page.is-full .reply-scope-toggle input { width: 1.1em; height: 1.1em; }
+.auto-reply-page.is-full .auto-reply-held, .auto-reply-page.is-full .auto-reply-system-error { width: 100%; margin-bottom: clamp(16px, 1.4vw, 26px); border-radius: clamp(18px, 1.4vw, 28px); }
+.auto-reply-page.is-full .auto-reply-held { border-color: #f1e1e4; box-shadow: 0 10px 26px #1720330a; }
+.auto-reply-page.is-full .auto-reply-held-head, .auto-reply-page.is-full .auto-reply-held li { padding: clamp(13px, 1.1vw, 22px) clamp(16px, 1.6vw, 32px); }
+.auto-reply-page.is-full .auto-reply-held-head { background: #fff7f8; }
+.auto-reply-page.is-full .auto-reply-held-head > span { font-size: clamp(14px, 1vw, 19px); }
+.auto-reply-page.is-full .auto-reply-held .secondary-button { height: clamp(36px, 2.4vw, 48px); font-size: clamp(14px, .95vw, 18px); }
+.auto-reply-page.is-full .auto-reply-held h2 { font-size: clamp(18px, 1.3vw, 26px); }
+.auto-reply-page.is-full .auto-reply-held p, .auto-reply-page.is-full .auto-reply-held li { font-size: clamp(14px, 1vw, 19px); }

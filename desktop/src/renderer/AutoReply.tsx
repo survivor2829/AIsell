@@ -1,6 +1,7 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { subscribeToStatus } from "./status-subscription";
+import { PageHero } from "./TouchHero";
 import { ExampleBanner } from "./VideoExamples";
 import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController, type WorkflowView, type WorkflowContact } from "./WechatWorkflow";
 
@@ -493,14 +494,24 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
   };
 
   return (
-    <section className="page agent-page auto-reply-page">
-      <div className="page-head">
+    <section className={`page agent-page auto-reply-page${workflow ? " is-full" : ""}`}>
+      {workflow ? <PageHero label="自动回复" chip="微信拓客 · 自动回复" title={<>客户来消息，<br /><em>AI 帮你</em>接待回复</>}
+        lead="按你的产品资料和话术回答客户，只回复你选的客户，群聊不碰，人不在电脑前也不漏。" video="wechat-reply" duration="1 分 10 秒"
+        actions={<><div className="touch-toggle"><WorkflowToggle workflow={workflow} onNavigate={onNavigate} /></div>
+          <span className={`reply-hero-status${workflow.state.enabled ? " is-on" : ""}`} role="status"><i aria-hidden="true" />{workflowStatusText(workflow.state)}</span></>}
+        kpis={[
+          { value: state.reply_count, unit: "条", label: "今日已回复" },
+          { value: workflow.state.recipients.length, unit: "位", label: "接待客户" },
+          { value: heldContacts.length, unit: "位", label: "待人工客户" },
+          { value: contacts.length, unit: "位", label: "已同步联系人" }
+        ]} />
+      : <><div className="page-head">
         <div>
           <h1>自动回复</h1>
           <p>{workflow ? "按您的业务资料回应客户咨询；先完成当前可执行任务，空闲时接待新消息。" : "启用后按您的业务资料回应新咨询，您可随时暂停并亲自接手。"}</p>
         </div>
         <div className="actions">
-          {workflow ? <WorkflowToggle workflow={workflow} onNavigate={onNavigate} /> : running ? (
+          {running ? (
             <button className="danger-button" onClick={pause} disabled={busy}>
               <Pause size={17} />暂停自动回复
             </button>
@@ -511,7 +522,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
           )}
         </div>
       </div>
-      <ExampleBanner topic="wechat-reply" />
+      <ExampleBanner topic="wechat-reply" /></>}
 
       {state.system_error && (
         <section className="auto-reply-system-error" role="alert" aria-labelledby="auto-reply-system-error-title">
@@ -524,7 +535,6 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
       )}
 
       {workflow && <>
-        <div className="workflow-reply-summary"><span>运行状态<strong>{workflowStatusText(workflow.state)}</strong></span><span>接待客户<strong>{workflow.state.recipients.length} 人</strong></span><span>今日已回复<strong>{state.reply_count}</strong></span></div>
         {(workflow.error || workflow.state.replyError) && <div className="workflow-alert" role="alert">{workflow.error || workflow.state.replyError}</div>}
         <WorkflowRecipients workflow={workflow} contacts={contacts} />
       </>}
