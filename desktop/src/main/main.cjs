@@ -96,6 +96,7 @@ let autoReplyController = null;
 let workflowController = null;
 // 小玺's feeds from the features that do not report to it themselves.
 let spriteFeeds = null;
+let environmentCheckup = null;
 let momentsCampaignController = null;
 let momentsPublishController = null;
 let productDetailController = null;
@@ -284,7 +285,11 @@ function productDetailWebPreferences() {
 ipcMain.on("window-chrome:set-mode", (event, mode) => {
   if (event.sender !== mainWindow?.webContents || !["login", "workspace"].includes(mode)) return;
   // 小玺 is on screen from the moment the user is in the app (user decision 2026-10-30).
-  if (mode === "workspace") void workflowController?.showSprite?.();
+  if (mode === "workspace") {
+    void workflowController?.showSprite?.();
+    // After sign-in the AI gateway is up, so the one background check sees the real state.
+    if (environmentCheckup && !environmentCheckup.last()) setTimeout(() => void environmentCheckup.run().catch(() => {}), 15000).unref?.();
+  }
   mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#f8f4f0" : "#c91739", symbolColor: mode === "login" ? "#302a2b" : "#ffffff", height: 36 });
 });
 ipcMain.on('startup:mark', (event, stage) => {
@@ -646,15 +651,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator,
       withProgress: (operation, readProgress) => workflowController.runContactSync(operation, readProgress)
     });
-    // 一键体检: what every feature needs on this computer, with a fix for each gap (user decision 2026-10-30).
-    const checkup = createEnvironmentCheckup({ rootDir: runtime.rootDir, logger,
+    // 体检 in the background: once per computer, what every feature needs is checked and only problems are
+    // reported to support; the customer sees nothing (user decision 2026-10-30: the button and window went).
+    environmentCheckup = createEnvironmentCheckup({ rootDir: runtime.rootDir, logger,
       getDisplay: () => screen.getPrimaryDisplay(), gatewayStatus: () => providerGatewayClient?.status(), findBrowser });
-    for (const [channel, method] of [["checkup:run", checkup.run], ["checkup:last", checkup.last]]) {
-      ipcMain.handle(channel, async (event) => {
-        if (!mainWindow || event.sender !== mainWindow.webContents) return null;
-        return method();
-      });
-    }
     registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir, appInfo, screen,
       passport: taskPassportStore,
       getWechatState: () => {

@@ -1,7 +1,7 @@
-// 一键体检 (user decision 2026-10-30): before a customer meets a failure in the middle of a task, the
-// app checks what every feature depends on on this computer and says how to fix what is missing.
-// Each item is ok / warn / fail with a plain fix. A result with anything not ok goes out as one
-// failure capsule (module "checkup"), so the computers that would fail are known before they do.
+// 体检 (user decisions 2026-10-30): once per computer, in the background, the app checks what every
+// feature depends on. The customer sees nothing (the button and window were taken out); a result with
+// anything not ok goes out as one failure capsule (module "checkup"), so support knows which computer
+// lacks what when its user says something does not work.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");

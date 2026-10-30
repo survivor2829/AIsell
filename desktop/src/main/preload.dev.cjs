@@ -77,7 +77,6 @@ contextBridge.exposeInMainWorld("xiaoxiAiExpert", apis.aiExpert);
 contextBridge.exposeInMainWorld("xiaoxiContactSync", apis.contactSync);
 contextBridge.exposeInMainWorld("xiaoxiDeepSeekApi", apis.deepSeekApi);
 contextBridge.exposeInMainWorld("xiaoxiDiagnostics", apis.diagnostics);
-contextBridge.exposeInMainWorld("xiaoxiCheckup", { run: () => ipcRenderer.invoke("checkup:run"), last: () => ipcRenderer.invoke("checkup:last") });
 contextBridge.exposeInMainWorld("xiaoxiCloudMaintenance", apis.cloudMaintenance);
 contextBridge.exposeInMainWorld("xiaoxiRolePreferences", apis.rolePreferences);
 contextBridge.exposeInMainWorld("xiaoxiFeedback", apis.feedback);
