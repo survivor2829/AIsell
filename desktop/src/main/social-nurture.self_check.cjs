@@ -9,10 +9,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // The real stage table's numbers are checked once; the runs below use the same table with
 // tiny durations so a whole day takes a fraction of a second.
 assert.deepEqual(realStages.stages.map((stage) => stage.days).flat(), [1, 2, 3, 4, 5, 6, 7, 8], "8 天都有阶段");
-assert.equal(realStages.stages[0].search, false); assert.deepEqual(realStages.stages[0].likes, [0, 0], "第 1 天只看不互动");
+assert.deepEqual(realStages.stages[0].likes, [0, 0], "第 1 天只看不互动");
 assert.equal(realStages.stages.at(-1).publish, true, "第 8 天发测试视频");
+// 用户 2026-10-30：第 1 天起就搜行业词；每天连续跑一次 30–60 分钟。
+assert.ok(realStages.stages.every((stage) => stage.search), "每天都搜行业词");
+assert.ok(realStages.stages.every((stage) => stage.segments[0] === 1 && stage.segments[1] === 1 && stage.minutes[0] === 30 && stage.minutes[1] === 60), "每天一次 30–60 分钟");
+// Two short segments a day here, so resuming between segments is still exercised.
 const stages = { ...realStages, segmentGapMinutes: [0, 0], skipDwellSeconds: [0.001, 0.001],
-  stages: realStages.stages.map((stage) => ({ ...stage, minutes: [0.004, 0.004], dwellSeconds: [0.002, 0.002] })) };
+  stages: realStages.stages.map((stage) => ({ ...stage, segments: [2, 2], minutes: [0.004, 0.004], dwellSeconds: [0.002, 0.002] })) };
 
 // A seeded random so the action mix is the same on every run.
 function seeded(seed = 7) { let value = seed; return () => { value = (value * 1103515245 + 12345) % 2147483648; return value / 2147483648; }; }
@@ -35,7 +39,8 @@ function world(behaviour = {}) {
     search: async () => { log.searches++; justSearched = true; return b.searchBox; },
     openFirstResult: async () => b.results,
     // Every other video in the feed is about the plan's keyword.
-    current: async () => ({ id: `v${video}`, desc: video % 2 ? "洗地机实测" : "家常菜", author: "作者" }),
+    // A live room in the feed has no playing video.
+    current: async () => b.liveAt?.includes(video) ? null : ({ id: `v${video}`, desc: video % 2 ? "洗地机实测" : "家常菜", author: "作者" }),
     like: async () => { if (!b.likeButton) return "missing"; log.actions.push({ kind: "likes", video, segment: log.launches }); return "done"; },
     follow: async () => { log.actions.push({ kind: "follows", video, segment: log.launches }); return "done"; },
     comment: async (_page, text) => { log.actions.push({ kind: "comments", video, text, segment: log.launches }); return b.commentShown ? "done" : "hidden"; },
@@ -73,13 +78,13 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
     await n.dispose();
   }
   {
-    // 8 天走完：第 1 天只看不搜不互动；之后每天搜关键词，互动只落在数量区间内、同一种不连着做；
+    // 8 天走完：每天都搜关键词（第 1 天起），第 1 天只看不互动；互动只落在数量区间内、同一种不连着做；
     // 第 8 天第一段之后把测试视频交给一键分发，只交一次；8 天完成后不再运行。
     const w = world(), n = w.make();
     n.savePlan({ ...plan, testVideo: { finishedVideoId: "finished_abc", name: "成片", title: "洗地机实测" } });
     await w.runDay(n);
     let state = n.snapshot().plans[0];
-    assert.equal(state.day, 1); assert.equal(state.today.segmentsDone, 2); assert.equal(w.log.searches, 0); assert.equal(w.log.actions.length, 0);
+    assert.equal(state.day, 1); assert.equal(state.today.segmentsDone, 2); assert.equal(w.log.searches, 2, "第 1 天也搜行业词"); assert.equal(w.log.actions.length, 0);
     assert.ok(state.today.counts.watched > 0);
     assert.equal(w.log.launches, 2, "每段单独开一次浏览器"); assert.equal(w.log.closed, 2);
     for (let day = 2; day <= 8; day++) {
@@ -193,7 +198,8 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
   {
     // 现场包 629208b3（2026-10-29）：抖音首页跳到「精选」宫格，找不到可以逐条刷的视频，Chrome 弹出来又关掉、显示「等待中」。
     // 现在：上报一次，2 分钟后再试一次；还不行就暂停并写清原因，不再反复弹窗口。
-    const w = world({ feed: false }), n = w.make({ timing: { settle: 1, busyRetry: 50, earlyRetry: 30 } });
+    // 第 1 天起先搜索；搜不到结果才回到推荐页，这里推荐页也找不到。
+    const w = world({ feed: false, results: false }), n = w.make({ timing: { settle: 1, busyRetry: 50, earlyRetry: 30 } });
     n.savePlan(plan);
     await sleep(10); while (n.isBusy()) await sleep(5);
     let state = n.snapshot().plans[0];
@@ -208,6 +214,23 @@ const plan = { accountId: "a1", keywords: "洗地机", comments: "讲得很清�
     w.b.feed = true; n.setEnabled(state.id, true); await w.runDay(n);
     assert.equal(n.snapshot().plans[0].today.segmentsDone, 2);
     await n.dispose();
+  }
+  {
+    // 现场包 68fd8773（2026-10-30）：推荐页刷到直播间，认不出正在播放的视频，这一段几分钟就停了。
+    // 现在：划到下一条接着刷，这一段照常跑完，不上报；一连好几条都认不出才算页面变了。
+    const w = world({ liveAt: [2, 5, 6] }), n = w.make({ timing: { settle: 1 } });
+    n.savePlan(plan);
+    await sleep(10); while (n.isBusy()) await sleep(5);
+    let state = n.snapshot().plans[0];
+    assert.equal(state.lastSegment.outcome, "completed", "遇到直播间跳过，这一段照常跑完");
+    assert.equal(w.log.reports.filter((report) => report.step === "player").length, 0);
+    await n.dispose();
+    const v = world({ liveAt: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] }), m = v.make({ timing: { settle: 1 } });
+    m.savePlan(plan);
+    await sleep(10); while (m.isBusy()) await sleep(5);
+    state = m.snapshot().plans[0];
+    assert.equal(state.lastSegment.outcome, "page_changed"); assert.equal(v.log.reports.filter((report) => report.step === "player").length, 1);
+    await m.dispose();
   }
   console.log("social nurture self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });

@@ -19,7 +19,8 @@ const KIND_NAMES = { likes: "点赞", follows: "关注", comments: "评论" };
 const CONTACT = /\d{6,}|微信|v信|vx|wx|加我|私信|电话|手机|联系|http|www\.|\.com|二维码|扫码|链接/i;
 const words = (value, max, limit) => [...new Set((Array.isArray(value) ? value : String(value || "").split(/[\n,，、]+/)).map((item) => String(item).trim().slice(0, max)).filter(Boolean))].slice(0, limit);
 
-// 养号: each plan walks one account through the 8-day stage table, a few segments a day,
+// 养号: each plan walks one account through the 8-day stage table, one 30–60 minute run a day
+// (user decision 2026-10-30; the table allows more),
 // starting as soon as the user starts it and only while the software is open (no fixed hour:
 // user decision 2026-10-29). A day not finished on its
 // date is done again the next date; the day after a finished one is the next stage day.
@@ -220,7 +221,11 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
           end("verification", today.anomalies >= 2 ? "抖音要求验证，今天第 2 次，停到明天。" : "抖音要求验证，这一段停下了；请在 Chrome 窗口里完成验证。");
           break;
         }
-        const video = await driver.current(page);
+        // A live room or an ad in the feed is not a playing video: move on to the next one
+        // instead of ending the run (field capsule 68fd8773, 2026-10-30: a live room stopped it).
+        let video = await driver.current(page);
+        for (let skip = 0; !video && skip < 3 && !stopped(); skip++) { await driver.next(page); await pause(wait.settle); video = await driver.current(page); }
+        if (stopped()) break;
         if (!video) { control.step = "player"; await report("NURTURE_ELEMENT_MISSING", "player"); end("page_changed", "抖音页面上没找到正在播放的视频，页面可能变了，已自动上报。"); break; }
         const fresh = !plan.seen.includes(video.id);
         const relevant = plan.day > 1 && (fromSearch || plan.keywords.some((word) => `${video.desc} ${video.author}`.includes(word)));
@@ -255,7 +260,8 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
         await pause(dwell / 2);
         if (!stopped() && now() < segmentEnd) await driver.next(page);
       }
-      segmentDone = !stopped() && now() >= segmentEnd;
+      // A run that ended on a verification or a changed page is not complete, even when its time is up.
+      segmentDone = outcome === "error" && !stopped() && now() >= segmentEnd;
       if (segmentDone) end("completed", "这一段完成，看了 " + watchedHere + " 个视频。");
       else if (stopped()) end("stopped", "已停下这一段。");
     } catch (error) {
