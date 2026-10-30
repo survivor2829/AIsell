@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("xiaoxiSocialAccounts", require("./social-accoun
 contextBridge.exposeInMainWorld("xiaoxiSocialPublish", require("./social-publish-preload.cjs").createSocialPublishApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialAcquisition", require("./social-acquisition-preload.cjs").createSocialAcquisitionApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialNurture", require("./social-nurture-preload.cjs").createSocialNurtureApi(ipcRenderer));
+contextBridge.exposeInMainWorld("xiaoxiPhoneMatrix", require("./phone-matrix-preload.cjs").createPhoneMatrixApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
 contextBridge.exposeInMainWorld("xiaoxiAccount", apis.account);
 contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });

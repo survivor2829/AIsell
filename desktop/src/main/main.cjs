@@ -65,6 +65,7 @@ const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
 const { registerSocialPublishIpc } = require("./social-publish-ipc.cjs");
 const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs");
 const { registerSocialNurtureIpc } = require("./social-nurture-ipc.cjs");
+const { registerPhoneMatrixIpc } = require("./phone-matrix-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
@@ -837,6 +838,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return cover && path.isAbsolute(cover) ? require("./content-engine-ipc.cjs").resolvedAbsolutePath({ absolute_path: cover }) : "";
       } });
     // 养号 shares the accounts and hands its day-8 test video to 一键分发.
+    // 手机矩阵: Android phones on a USB hub (user project of 2026-10-30).
+    registerPhoneMatrixIpc({ ipcMain, getMainWindow: () => mainWindow, dataDir: path.join(runtime.rootDir, "phone_matrix") });
     socialNurtureRegistration = registerSocialNurtureIpc({ ipcMain, getMainWindow: () => mainWindow, accounts: socialAccountsRegistration.accounts,
       dataDir: path.join(runtime.rootDir, "social_nurture"), logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence"),
       onState: (state) => workflowController?.setExternalActivity?.("nurture", nurtureActivity(state)),
