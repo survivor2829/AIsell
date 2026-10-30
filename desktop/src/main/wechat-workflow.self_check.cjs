@@ -1045,6 +1045,7 @@ async function checkFloatingProgress() {
   const windows = [];
   const diagnosticEvents = [];
   const handlers = new Map();
+  const listeners = new Map();
   let mainHideCount = 0;
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
@@ -1053,13 +1054,16 @@ async function checkFloatingProgress() {
   class ProgressWindow extends EventEmitter {
     constructor(settings) {
       super(); this.settings = settings; this.visible = false; this.destroyed = false;
-      this.webContents = Object.assign(new EventEmitter(), { send() {}, setWindowOpenHandler() {}, async executeJavaScript() { return true; } });
+      this.sent = [];
+      this.webContents = Object.assign(new EventEmitter(), { send: (channel, value) => this.sent.push([channel, value]), setWindowOpenHandler() {}, async executeJavaScript() { return true; } });
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
     isVisible() { return this.visible; }
     setMenu() {}
-    setPosition() {}
+    setPosition(x, y) { this.position = [x, y]; }
+    getPosition() { return this.position || [this.settings.x, this.settings.y]; }
+    setIgnoreMouseEvents(ignore) { this.ignoringMouse = ignore; }
     async loadFile() {}
     showInactive() { this.visible = true; }
     show() { throw new Error("Progress window must not steal WeChat focus"); }
@@ -1073,7 +1077,8 @@ async function checkFloatingProgress() {
     autoSchedule: false, getAccount: () => "test-account", getMainWindow: () => mainWindow,
     executors: { interact: { prepareWorkflowTask: () => ({ payload: { maxPosts: 1 } }) } },
     rendererPath: __filename, preloadPath: __filename,
-    electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, BrowserWindow: ProgressWindow, screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } }
+    spritePlaceFile: path.join(rootDir, "sprite-place.json"),
+    electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, listener) => listeners.set(name, listener) }, BrowserWindow: ProgressWindow, screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } }
   });
   const event = { sender: mainWindow.webContents };
   await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
@@ -1112,7 +1117,7 @@ async function checkFloatingProgress() {
   assert.equal(windows[0].visible, true, "returning to the main page must retain progress while work is running");
   await invoke("pause");
   await invoke("show-main");
-  assert.equal(windows[0].visible, false);
+  assert.equal(windows[0].visible, true, "小玺 stays on screen when nothing runs (user decision 2026-10-30)");
   const synced = await control.runContactSync(async () => {
     assert.equal(windows[0].visible, true, "contact synchronization also requires a visible progress window");
     return { ok: true, state: { contact_count: 3, last_stage: "synced" } };
@@ -1122,22 +1127,38 @@ async function checkFloatingProgress() {
   assert.equal(status.state.contactSync.running, false);
   assert.equal(status.state.contactSync.contactCount, 3);
   assert.equal(windows.length, 1, "all task types reuse one floating window");
-  // 小玺 (user decision 2026-10-30): 养号 / 一键分发 running in Chrome show the same sprite, without hiding
-  // the main window, and it goes away when they finish.
-  assert.equal(windows[0].settings.transparent, true);
-  await invoke("show-main");
-  windows[0].hide();
+  // 小玺 (user decisions 2026-10-30): always on screen at the right edge's middle, clicks pass through its
+  // transparent parts, it can be dragged and keeps its place, and every feature reports what runs.
+  const sprite = windows[0];
+  assert.equal(sprite.settings.transparent, true);
+  assert.equal(sprite.settings.x, 1920 - 360 - 6); assert.equal(sprite.settings.y, Math.round((1080 - 230) / 2));
+  assert.equal(sprite.ignoringMouse, true, "transparent parts let clicks through");
+  const spriteEvent = { sender: sprite.webContents };
+  listeners.get("wechat-workflow:sprite-interactive")(spriteEvent, true);
+  assert.equal(sprite.ignoringMouse, false, "小玺 and its bubble take clicks while the pointer is on them");
+  listeners.get("wechat-workflow:sprite-interactive")(event, false);
+  assert.equal(sprite.ignoringMouse, false, "only 小玺's own window can change that");
+  listeners.get("wechat-workflow:sprite-move")(spriteEvent, { dx: -300, dy: 40 });
+  listeners.get("wechat-workflow:sprite-moved")(spriteEvent);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")), { x: 1920 - 360 - 6 - 300, y: Math.round((1080 - 230) / 2) + 40 });
   const hidesBefore = mainHideCount;
+  await control.showSprite();
+  assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");
   control.setExternalActivity("nurture", { title: "正在养号 · 抖音号", detail: "正在刷视频" });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(windows[0].visible, true, "养号 shows 小玺");
-  assert.equal(mainHideCount, hidesBefore, "a Chrome run keeps the main window");
   assert.deepEqual((await invoke("status")).state.external.map((item) => item.kind), ["nurture"]);
-  await invoke("show-main");
-  assert.equal(windows[0].visible, true, "going back to the main page keeps 小玺 while 养号 runs");
   control.setExternalActivity("nurture", null);
-  assert.equal(windows[0].visible, false, "小玺 goes away when nothing runs");
+  assert.equal(sprite.visible, true, "小玺 stays when nothing runs");
+  control.say({ text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
+  assert.deepEqual(sprite.sent.find(([channel]) => channel === "wechat-workflow:sprite-say")[1], { text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
   await control.dispose();
+  // The place is used again next time.
+  const again = registerWechatWorkflowIpc({ logger: { event() {} }, rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "test-account", getMainWindow: () => mainWindow, executors: {}, rendererPath: __filename, preloadPath: __filename,
+    spritePlaceFile: path.join(rootDir, "sprite-place.json"),
+    electron: { ipcMain: { handle() {}, on() {} }, BrowserWindow: ProgressWindow, screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } } });
+  await again.showSprite();
+  assert.equal(windows.at(-1).settings.x, 1920 - 360 - 6 - 300, "小玺 comes back where it was dragged");
+  await again.dispose();
 }
 
 async function checkDiagnosticLoggerFailureIsolation() {

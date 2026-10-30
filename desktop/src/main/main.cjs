@@ -31,6 +31,7 @@ const { createFailureCapsules } = require("./failure-capsule.cjs");
 const { createEnvironmentCheckup } = require("./environment-checkup.cjs");
 const { findBrowser } = require("./social-browser.cjs");
 const { nurtureActivity, publishActivity } = require("./sprite-activity.cjs");
+const { createSpriteFeeds, tapRendererUpdates } = require("./sprite-feeds.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
@@ -93,6 +94,8 @@ let disarmRealSend = null;
 let touchTaskController = null;
 let autoReplyController = null;
 let workflowController = null;
+// 小玺's feeds from the features that do not report to it themselves.
+let spriteFeeds = null;
 let momentsCampaignController = null;
 let momentsPublishController = null;
 let productDetailController = null;
@@ -280,6 +283,8 @@ function productDetailWebPreferences() {
 
 ipcMain.on("window-chrome:set-mode", (event, mode) => {
   if (event.sender !== mainWindow?.webContents || !["login", "workspace"].includes(mode)) return;
+  // 小玺 is on screen from the moment the user is in the app (user decision 2026-10-30).
+  if (mode === "workspace") void workflowController?.showSprite?.();
   mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#f8f4f0" : "#c91739", symbolColor: mode === "login" ? "#302a2b" : "#ffffff", height: 36 });
 });
 ipcMain.on('startup:mark', (event, stage) => {
@@ -300,6 +305,7 @@ function createWindow() {
     webPreferences: productDetailWebPreferences()
   });
   keepWindowInWorkArea(mainWindow, screen);
+  tapRendererUpdates(mainWindow.webContents, (channel, state) => spriteFeeds?.onRendererUpdate(channel, state));
 
   mainWindow.setMenu(null);
   mainWindow.webContents.once('did-finish-load', () => startupTiming.mark('window_loaded'));
@@ -975,6 +981,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       isQuitting: () => quitCleanupStarted,
       preloadPath: path.join(__dirname, preloadFile),
       rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`),
+      spritePlaceFile: path.join(runtime.rootDir, "sprite-place.json"),
       getAccount: () => {
         try { return String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).account_name || ""); }
         catch { return ""; }
@@ -1004,6 +1011,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       },
       reply: autoReplyController
     });
+    spriteFeeds = createSpriteFeeds({ sprite: () => workflowController, contentEngine: () => contentEngineController,
+      productDetailHistory: () => readProductDetailHistory(path.join(app.getPath("userData"), "product-detail", "made-history.json")) });
+    spriteFeeds.start();
     createWindow();
     registerRolePreferencesIpc({ ipcMain, controller: createRolePreferences({ rootDir: runtime.rootDir }), getMainWindow: () => mainWindow });
     if (!productDetailReleaseSmokeMode) {
