@@ -2,14 +2,14 @@ const { createSocialNurture } = require("./social-nurture.cjs");
 const { reportSocialFailure } = require("./social-publish-ipc.cjs");
 
 // `publish` hands the day-8 test video to 一键分发 (its submitFinished).
-function registerSocialNurtureIpc({ ipcMain, dataDir, accounts, getMainWindow, publish, logger, evidenceDir, options = {} }) {
+function registerSocialNurtureIpc({ ipcMain, dataDir, accounts, getMainWindow, publish, logger, evidenceDir, onState = () => {}, options = {} }) {
   let nurture; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "NURTURE_ACCOUNTS_UNAVAILABLE" });
     nurture = createSocialNurture({ dataDir, accounts, ...options,
       publish: ({ accountId, finishedVideoId, name, title }) => publish({ videos: [{ finishedVideoId, name }], accountIds: [accountId], title, description: "", visibility: "public" }),
       onFailure: (failure) => { try { reportSocialFailure({ logger, evidenceDir }, "social_nurture", failure); } catch { /* Diagnostics never change the run. */ } },
-      onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-nurture:update", state); } });
+      onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-nurture:update", state); try { onState(state); } catch { /* 小玺 never changes the run. */ } } });
     nurture.start();
   } catch (error) { initializationError = { ok: false, code: error.code || "NURTURE_UNAVAILABLE", error: error.code === "NURTURE_STATE_INVALID" ? error.message : "养号暂时无法打开，请重新打开软件。" }; }
   const id = (payload) => String(payload?.id || "");

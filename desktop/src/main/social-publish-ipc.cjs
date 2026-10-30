@@ -37,14 +37,14 @@ function reportSocialFailure({ logger, evidenceDir }, module, failure) {
 }
 const reportPublishFailure = (deps, failure) => reportSocialFailure(deps, "social_publish", failure);
 
-function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, resolveFinishedCover = async () => "", getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {}, logger, evidenceDir }) {
+function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedVideo, resolveFinishedCover = async () => "", getMainWindow, ffmpegPath = "ffmpeg", copyClient, publisherOptions = {}, logger, evidenceDir, onState = () => {} }) {
   const covers = createCoverCache({ dir: path.join(dataDir, "covers"), ffmpegPath });
   let publisher; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "SOCIAL_ACCOUNTS_UNAVAILABLE" });
     publisher = createSocialPublisher({ dataDir, accounts, ...publisherOptions,
       onFailure: (failure) => { try { reportPublishFailure({ logger, evidenceDir }, failure); } catch { /* Diagnostics never change the job result. */ } },
-      onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-publish:update", state); } });
+      onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-publish:update", state); try { onState(state); } catch { /* 小玺 never changes the job. */ } } });
   } catch (error) { initializationError = { ok: false, code: error.code || "SOCIAL_PUBLISH_UNAVAILABLE", error: error.code === "SOCIAL_PUBLISH_STATE_INVALID" ? error.message : "一键分发暂时无法打开，请重新打开软件。" }; }
   const text = (value, max) => String(value ?? "").slice(0, max);
   // The renderer's submit and 养号's day-8 test video share this path, so both resolve files and covers the same way.
