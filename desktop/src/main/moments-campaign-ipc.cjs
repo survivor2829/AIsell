@@ -1026,30 +1026,34 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
         }
-        // Scroll until no handled post's menu is left in view (up to four scrolls), with a small step
-        // when only a little is left so a short next post is not skipped.
+        // While a handled post's menu is still in view, scroll in measured steps (the plain advance is
+        // not measured) until it leaves, at most six; otherwise one plain advance. A step whose
+        // displacement cannot be measured falls back to one plain advance instead of pausing the run.
         const viewport = observed?.window?.renderPaneBounds || observed?.window;
         const scale = Number(observed?.window?.dpi || 96) / 96;
-        let advanceScrolls = 0;
-        do {
+        for (let advanceScrolls = 0; advanceScrolls < 6 && !shouldStop(); advanceScrolls += 1) {
           const overhang = handledMenuOverhang(handledMenus, viewport, scale);
-          const small = advanceScrolls > 0 || (handledMenus.length > 0 && overhang < Number(viewport?.height || 0) * 0.45);
+          const measured = overhang > 0;
           const scrolled = await scrollMoments({
             expectedWindow: observed?.window,
-            ...(small ? { scrollMode: "seek_post_menu_down" } : {}),
+            ...(measured ? { scrollMode: "seek_post_menu_down" } : {}),
             minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
             shouldContinue: () => !stopRequested && !pendingPauseReason
           });
           record("campaign.scroll_finished", { result: scrolled, handled_menu_overhang: Math.round(overhang) }, scrolled?.ok ? "info" : "warn");
+          if (!scrolled?.ok && measured && scrolled?.reason === "moments_post_changed" && !shouldStop()) {
+            handledMenus = [];
+            continue;
+          }
           if (!scrolled?.ok) {
             if (shouldStop()) return;
             finish("paused", scrolled?.reason || "moments_scroll_failed");
             return;
           }
           persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
-          handledMenus = shiftHandledMenus(handledMenus, scrolled.observedDelta, viewport);
-          advanceScrolls += 1;
-        } while (handledMenuOverhang(handledMenus, viewport, scale) > 0 && advanceScrolls < 4 && !shouldStop());
+          handledMenus = measured ? shiftHandledMenus(handledMenus, scrolled.observedDelta, viewport) : [];
+          if (handledMenuOverhang(handledMenus, viewport, scale) <= 0) break;
+        }
       }
       if (state.status === "running") {
         if (successfulPostCount() >= state.max_posts) {

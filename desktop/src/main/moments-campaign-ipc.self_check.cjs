@@ -922,15 +922,15 @@ async function main() {
   assert.equal(Object.prototype.hasOwnProperty.call(commentFinished[0].details, "result"), false);
 
   // 用户 2026-10-30：往下滑不够时，上一条朋友圈只露出一截、正文读出来不一样，它的「··」被当成新帖又评论了一次。
-  // 现在：滑到已处理那条的菜单离开视野（最多 4 次）；仍露在原位置的菜单一律当已处理，不再评论。
+  // 现在：已处理那条的菜单还在视野里时，用能测出位移的小步滑，直到它离开视野（最多 6 次）；仍露在推算位置的菜单一律当已处理。
   {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-handled-menu-"));
     const window = { ...INTEGRATED_OPEN_RESULT, renderPaneBounds: { left: 0, top: 0, width: 1000, height: 800 }, dpi: 96 };
     const post = (id, text, menuTop) => ({ ok: true, window, plan: { visible_post_count: 1 },
       post_snapshot: { observation_id: id.repeat(64), post_fingerprint: id.repeat(64), identity_text: text,
         menu_bounds: { left: 840, top: menuTop, width: 40, height: 28 } } });
-    // A 的菜单在 460；每次只滑 60 像素，4 次后还在 220；这时读到 A 的后半截（正文不同）；再往下才是 B。
-    const observations = [post("a", "今天完成了新门店的设备安装，欢迎大家来参观", 460), post("c", "欢迎大家来参观", 220), post("b", "新款洗地机到货了", 500)];
+    // A 的菜单在 460；每次只滑 60 像素，6 次后还在 100；这时读到 A 的后半截（正文不同）；再往下才是 B。
+    const observations = [post("a", "今天完成了新门店的设备安装，欢迎大家来参观", 460), post("c", "欢迎大家来参观", 100), post("b", "新款洗地机到货了", 500)];
     const commented = [], scrollModes = [];
     const controller = createMomentsCampaignController({
       baseDir: root,
@@ -948,8 +948,30 @@ async function main() {
     const finished = await waitFor(() => controller.status().state, (state) => !["running", "starting"].includes(state.status));
     assert.deepEqual(commented, ["评论：今天完成", "评论：新款洗地"], "上一条露出的后半截不再评论");
     assert.equal(finished.commented_count, 2);
-    assert.deepEqual(scrollModes.slice(0, 5), ["advance_feed", "seek_post_menu_down", "seek_post_menu_down", "seek_post_menu_down", "seek_post_menu_down"],
-      "离得远先大步滑，之后小步补，每次翻页最多 4 次");
+    assert.deepEqual(scrollModes.slice(0, 6), Array(6).fill("seek_post_menu_down"), "已处理的菜单还在视野里时用测位移的小步滑，最多 6 次");
+  }
+  {
+    // 小步测不出位移时退回原来的整屏翻页，不让整轮互动停下。
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-unmeasured-"));
+    const window = { ...INTEGRATED_OPEN_RESULT, renderPaneBounds: { left: 0, top: 0, width: 1000, height: 800 }, dpi: 96 };
+    const post = (id, text) => ({ ok: true, window, plan: { visible_post_count: 1 },
+      post_snapshot: { observation_id: id.repeat(64), post_fingerprint: id.repeat(64), identity_text: text, menu_bounds: { left: 840, top: 460, width: 40, height: 28 } } });
+    const observations = [post("a", "今天完成了新门店的设备安装"), post("b", "新款洗地机到货了")];
+    const scrollModes = [];
+    const controller = createMomentsCampaignController({
+      baseDir: root,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "owner" } }), release: () => undefined },
+      openMoments: async () => INTEGRATED_OPEN_RESULT,
+      scrollMoments: async (options) => { scrollModes.push(options.scrollMode || "advance_feed");
+        return options.scrollMode ? { ok: false, reason: "moments_post_changed" } : { ok: true, observedDelta: 0 }; },
+      generateComment: async () => ({ comment: "不错" }),
+      runStep: async (args) => args[0] === "moments-dry-run" ? (observations.shift() || { ok: false, reason: "moments_post_not_found" })
+        : { ok: true, status: "verified", stage: "post_send_verified", verification_mode: "composer_consumed", real_action_attempted: true }
+    });
+    assert.equal(controller.start({ maxPosts: 2, likeEnabled: false, commentEnabled: true }).ok, true);
+    const finished = await waitFor(() => controller.status().state, (state) => !["running", "starting"].includes(state.status));
+    assert.equal(finished.status, "completed"); assert.equal(finished.commented_count, 2);
+    assert.deepEqual(scrollModes.slice(0, 2), ["seek_post_menu_down", "advance_feed"]);
   }
 
   const incompleteVisualRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-partial-visual-comment-"));

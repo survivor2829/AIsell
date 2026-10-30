@@ -158,8 +158,9 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
   const [error, setError] = useState("");
   const [role, setRole] = useState<AgentRoleKey>(nextRole);
   const [firstRole] = useState(role);
-  // Paused only while the pointer rests on the presenters. The sign-in box takes the focus on its own,
-  // so pausing for it stopped the rotation for good (2026-10-30).
+  // Paused only while the pointer rests on the row of six avatars. The sign-in box takes the focus on its
+  // own, and a resting pointer often sits over the big figure, so pausing for either stopped the rotation
+  // for good (2026-10-30).
   const [hovering, setHovering] = useState(false);
   const rotating = !hovering;
   const [still] = useState(prefersStill);
@@ -231,12 +232,12 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       <small className="signin-online">6 位 AI 员工在线待命</small>
     </header>
     <section className={`signin-stage${rotating ? " is-rotating" : ""}`} aria-label={`${identity.name}：${identity.responsibility}`}
-      style={{ "--signin-rotate": `${playsClip ? clipMs : ROTATE_MS}ms` } as CSSProperties} onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
+      style={{ "--signin-rotate": `${playsClip ? clipMs : ROTATE_MS}ms` } as CSSProperties}>
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>
         <p className="signin-role signin-rise" style={step(3)}><b>{identity.name}</b>{identity.responsibility} · 在线</p>
-        <nav className="signin-crew signin-rise" style={step(4)} aria-label="选择出镜的 AI 员工">
+        <nav className="signin-crew signin-rise" style={step(4)} aria-label="选择出镜的 AI 员工" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
           {AGENT_ROLE_ORDER.map((key) => <button key={key} type="button" className={key === role ? "is-active" : ""} aria-pressed={key === role}
             aria-label={`${AGENT_ROLE_IDENTITIES[key].name}，${AGENT_ROLE_IDENTITIES[key].responsibility}`} onClick={() => choose(key)}>
             <img src={characterAsset(`login/${key}.webp`)} alt="" />
