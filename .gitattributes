@@ -2,3 +2,5 @@ server/**/*.sh text eol=lf
 # Pinned vendor resources are verified byte-for-byte against their upstream hashes.
 desktop/resources/narration-vision/** -text
 # License evidence is verified byte-for-byte against the bundled catalog.
+# 手机矩阵 ADB and scrcpy server are packaged against their release hashes.
+desktop/vendor/** -text

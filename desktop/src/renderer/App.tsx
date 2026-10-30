@@ -53,6 +53,7 @@ import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
 import { DistributionPage } from "./DistributionPage";
+import { PhoneMatrixPage } from "./PhoneMatrixPage";
 import { DigitalHumanPage } from "./DigitalHumanPage";
 import { ProductVideoPage } from "./ProductVideoPage";
 import type { Collection } from "./batch-studio-api";
@@ -531,7 +532,7 @@ function taskStatusLabel(status: string) {
 
 function moduleIsAvailable(key: ModuleKey) {
   if (isSupportRole(key) || key === "business" || isBusinessModule(key)) return true;
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "phone-matrix", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -987,6 +988,7 @@ export default function App() {
           )}
           {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} contacts={contactRows} />}
           {active === "expert" && <AiExpert />}
+          {active === "phone-matrix" && <PhoneMatrixPage />}
           {(active === "accounts" || active === "nurture" || active === "publish") && <DistributionPage tab={active} onNavigate={(tab) => selectChild("tutorials", tab)} />}
           {(productDetailVisited || active === "product-detail") && <div className="product-detail-retained" hidden={active !== "product-detail"}><ProductDetailPage preference={visiblePreference("operations")} onPersonalize={() => setPersonalizingRole("operations")} /></div>}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}

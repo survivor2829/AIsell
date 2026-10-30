@@ -65,6 +65,7 @@ const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
 const { registerSocialPublishIpc } = require("./social-publish-ipc.cjs");
 const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs");
 const { registerSocialNurtureIpc } = require("./social-nurture-ipc.cjs");
+const { registerPhoneMatrixIpc } = require("./phone-matrix-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createVoiceCloneClient } = require("./voice-clone-client.cjs");
 const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
@@ -109,6 +110,7 @@ let socialAccountsRegistration = null;
 let socialPublishRegistration = null;
 let socialAcquisitionRegistration = null;
 let socialNurtureRegistration = null;
+let phoneMatrixRegistration = null;
 let businessWorkbenchRegistration = null;
 let digitalHumanRegistration = null;
 let productVideoRegistration = null;
@@ -341,6 +343,8 @@ function createWindow() {
     void socialAcquisitionRegistration?.dispose().catch(() => undefined);
     void socialNurtureRegistration?.dispose().catch(() => undefined);
     void socialPublishRegistration?.dispose().catch(() => undefined);
+    // Phone screens hold adb processes on the phones; closing the window ends them.
+    phoneMatrixRegistration?.screens.stopAll();
     void socialAccountsRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
@@ -837,6 +841,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return cover && path.isAbsolute(cover) ? require("./content-engine-ipc.cjs").resolvedAbsolutePath({ absolute_path: cover }) : "";
       } });
     // 养号 shares the accounts and hands its day-8 test video to 一键分发.
+    // 手机矩阵: Android phones on a USB hub (user project of 2026-10-30).
+    phoneMatrixRegistration = registerPhoneMatrixIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow, dataDir: path.join(runtime.rootDir, "phone_matrix"),
+      screenshotDir: path.join(app.getPath("pictures"), "手机矩阵截图"),
+      onActivity: (activity) => workflowController?.setExternalActivity?.("phones", activity),
+      sayDone: (line) => workflowController?.say?.(line) });
     socialNurtureRegistration = registerSocialNurtureIpc({ ipcMain, getMainWindow: () => mainWindow, accounts: socialAccountsRegistration.accounts,
       dataDir: path.join(runtime.rootDir, "social_nurture"), logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence"),
       onState: (state) => workflowController?.setExternalActivity?.("nurture", nurtureActivity(state)),
@@ -1079,6 +1088,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
           if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
           if (socialPublishRegistration?.isBusy() || socialAcquisitionRegistration?.isBusy() || socialNurtureRegistration?.isBusy()) return true;
+          if (phoneMatrixRegistration?.batch.status()?.running) return true;
           if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
           const content = contentEngineController?.updateStatus();
           if (content?.pending || (content?.alive && content.state !== "ready")) return true;
@@ -1179,6 +1189,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
         Promise.resolve(socialAcquisitionRegistration?.dispose()),
         Promise.resolve(socialNurtureRegistration?.dispose()),
+        Promise.resolve(phoneMatrixRegistration?.dispose()),
         Promise.resolve(socialPublishRegistration?.dispose()),
         Promise.resolve(socialAccountsRegistration?.dispose()),
         Promise.resolve(businessWorkbenchRegistration?.dispose()),
