@@ -40,7 +40,7 @@ const ROLE_COPY: Record<AgentRoleKey, (stats: OverviewStats | undefined) => Reac
   business: (s) => <>本周找到 <b>{s?.leads.now ?? "—"}</b> 条线索</>,
   operations: (s) => s?.details.now ? <>本周保存 <b>{s.details.now}</b> 张详情图</> : <>一张图出整套详情页</>,
   materials: (s) => s?.materials ? <>素材库 <b>{s.materials}</b> 段</> : <>现场画面随手用</>,
-  tutorials: (s) => s?.tutorials ? <><b>{s.tutorials}</b> 个教程</> : <>3 分钟跟着做</>
+  tutorials: (s) => s?.publishedToday ? <>今天发出 <b>{s.publishedToday}</b> 条</> : <>手机矩阵 · 养号 · 分发</>
 };
 
 // 主页（用户 2026-10-29 选定 B1，色调用软件自己的白、浅粉和品牌红）：上面一张效果大片，

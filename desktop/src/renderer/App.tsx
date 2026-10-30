@@ -5,6 +5,9 @@ import {
   ChevronDown,
   ChevronRight,
   CircleHelp,
+  CircleUserRound,
+  Smartphone,
+  Sprout,
   Clapperboard,
   FileText,
   Folder,
@@ -50,7 +53,6 @@ import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
 import { DistributionPage } from "./DistributionPage";
-import { SocialAccountsPanel } from "./SocialAccountsPanel";
 import { DigitalHumanPage } from "./DigitalHumanPage";
 import { ProductVideoPage } from "./ProductVideoPage";
 import type { Collection } from "./batch-studio-api";
@@ -61,8 +63,9 @@ import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget } from "./AgentH
 import { AgentOverview } from "./AgentOverview";
 import { back, remember, type Place } from "./nav-history";
 
-type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview";
-type GroupKey = WorkspaceRoleKey | "business";
+type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview" | "nurture" | "phone-matrix" | "guide";
+// 小丽 ("tutorials") leads 账号运营 since 2026-10-30; the tutorials page itself moved to the bottom as "guide".
+type GroupKey = WorkspaceRoleKey | "business" | "tutorials";
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
 const productDisplayName = productBrand.displayName.replace(/版本$/u, "");
@@ -428,23 +431,34 @@ const operationsChildren: NavItem[] = [
   { key: "product-detail", label: "产品详情图", icon: Images }
 ];
 
+// 账号运营（小丽）, user decision 2026-10-30: 手机矩阵 first, then the three parts that were tabs.
+const accountOpsChildren: NavItem[] = [
+  { key: "phone-matrix", label: "手机矩阵", icon: Smartphone },
+  { key: "accounts", label: "平台账号", icon: CircleUserRound },
+  { key: "nurture", label: "养号", icon: Sprout },
+  { key: "publish", label: "一键分发", icon: Share2 }
+];
+
 const navGroupByRole: Record<GroupKey, NavGroup> = {
   business: { key: "business", persona: AGENT_ROLE_IDENTITIES.business.name, label: AGENT_ROLE_IDENTITIES.business.responsibility, icon: Bot, children: Object.entries(BUSINESS_MODULES).map(([key, item]) => ({ key: key as BusinessModule, label: item.label, icon: item.icon })) },
   production: { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
   agent: { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
-  operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren }
+  operations: { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Images, children: operationsChildren },
+  tutorials: { key: "tutorials", persona: AGENT_ROLE_IDENTITIES.tutorials.name, label: AGENT_ROLE_IDENTITIES.tutorials.responsibility, icon: Share2, children: accountOpsChildren }
 };
+// The first page a group opens on when it has no home page of its own.
+const GROUP_LANDING: Partial<Record<GroupKey, ModuleKey>> = { operations: "product-detail", tutorials: "phone-matrix" };
 const navGroups = AGENT_ROLE_ORDER.filter((key): key is GroupKey => key in navGroupByRole).map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const supportRoles = ["materials", "tutorials"] as const;
-const supportNavItems: NavItem[] = supportRoles.map(key => ({ key, label: AGENT_ROLE_IDENTITIES[key].responsibility, icon: key === "materials" ? Folder : CircleHelp }));
+const supportRoles = ["materials"] as const;
+const supportNavItems: NavItem[] = supportRoles.map(key => ({ key, label: AGENT_ROLE_IDENTITIES[key].responsibility, icon: Folder }));
 function isSupportRole(key: string): key is typeof supportRoles[number] {
   return supportRoles.some(role => role === key);
 }
-const distributionNavItem: NavItem = { key: "publish", label: "账号运营", icon: Share2 };
+const guideNavItem: NavItem = { key: "guide", label: "操作教程", icon: CircleHelp };
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, distributionNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, guideNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -517,7 +531,7 @@ function taskStatusLabel(status: string) {
 
 function moduleIsAvailable(key: ModuleKey) {
   if (isSupportRole(key) || key === "business" || isBusinessModule(key)) return true;
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "product-detail", "materials", "tutorials", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -616,7 +630,7 @@ export default function App() {
     taskId: string;
     projectId?: string | null;
   } | null>(null);
-  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: false, business: false, operations: false });
+  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: false, business: false, operations: false, tutorials: false });
   useEffect(() => {
     const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || item.key === "agent" && agentSecondary.some((child) => child.key === active));
     if (!group) return;
@@ -665,7 +679,7 @@ export default function App() {
       return;
     }
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
-    setActive(groupKey === "operations" ? "product-detail" : groupKey);
+    setActive(GROUP_LANDING[groupKey] ?? groupKey);
   };
 
   const selectRole = (role: AgentRoleKey) => {
@@ -887,7 +901,7 @@ export default function App() {
           })}
         </nav>
         <div className="sidebar-system-nav">
-          <button className={`nav-item ${active === "publish" ? "active" : ""}`} onClick={() => setActive("publish")}><Share2 size={20} strokeWidth={2.5} /><span>账号运营</span></button>
+          <button className={`nav-item ${active === "guide" ? "active" : ""}`} onClick={() => setActive("guide")}><CircleHelp size={20} strokeWidth={2.5} /><span>操作教程</span></button>
           <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
@@ -973,13 +987,12 @@ export default function App() {
           )}
           {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} contacts={contactRows} />}
           {active === "expert" && <AiExpert />}
-          {active === "accounts" && <section className="page"><div className="page-head"><div><h1>平台账号</h1></div></div><SocialAccountsPanel /></section>}
-          {active === "publish" && <DistributionPage />}
+          {(active === "accounts" || active === "nurture" || active === "publish") && <DistributionPage tab={active} onNavigate={(tab) => selectChild("tutorials", tab)} />}
           {(productDetailVisited || active === "product-detail") && <div className="product-detail-retained" hidden={active !== "product-detail"}><ProductDetailPage preference={visiblePreference("operations")} onPersonalize={() => setPersonalizingRole("operations")} /></div>}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
           {active === "product-video" && <ProductVideoPage />}
-          {active === "tutorials" && <TutorialsPage preference={visiblePreference("tutorials")} appearance={appearanceFor("tutorials", visiblePreference("tutorials").appearanceId)} onPersonalize={() => setPersonalizingRole("tutorials")} onOpenGuide={openTextGuide} />}
+          {active === "guide" && <TutorialsPage preference={visiblePreference("tutorials")} appearance={appearanceFor("tutorials", visiblePreference("tutorials").appearanceId)} onPersonalize={() => setPersonalizingRole("tutorials")} onOpenGuide={openTextGuide} />}
           {active === "materials" && <OfficialMaterialsPage preference={visiblePreference("materials")} appearance={appearanceFor("materials", visiblePreference("materials").appearanceId)} onPersonalize={() => setPersonalizingRole("materials")} onUseMaterial={(assetIds) => {
             setBatchInitial({ assetIds }); setCreativeView("studio"); setActive("workspace");
           }} />}

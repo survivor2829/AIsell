@@ -36,7 +36,7 @@
     ]
   },
   "tutorials": {
-    "name": "小丽", "legacyNames": ["操作小教练"], "responsibility": "操作教程",
+    "name": "小丽", "legacyNames": ["操作小教练"], "responsibility": "账号运营",
     "appearances": [
       {"id": "original", "label": "小丽", "portraitKey": "tutorial-assistant", "position": "50% 23%", "accent": "#427b9f", "strong": "#275875", "surface": "#eaf3fa", "soft": "#f3f8fc", "pattern": "", "motifs": ["video", "monitor", "play"], "layout": "frames"}
     ]

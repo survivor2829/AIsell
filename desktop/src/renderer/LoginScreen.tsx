@@ -100,7 +100,7 @@ const LINES: Record<AgentRoleKey, string[]> = {
   operations: ["我是小绘，负责产品详情图。", "一张产品图进来，整套详情页我帮你排好。", "想换风格，跟我说一声就行。"],
   business: ["我是小睿，负责精准获客。", "谁在问价、谁想要联系方式，我帮你从评论里找出来。", "找到的线索，点赞关注我也能帮你跟上。"],
   materials: ["我是小禾，管着物保素材库。", "现场照片、视频按场景分好类，做视频时随手就能用。", "素材越多，我做出来的片子越好看。"],
-  tutorials: ["我是小丽，负责操作教程。", "哪一步不会用，随时叫我，三分钟带你上手。", "先看示例，再动手，不走弯路。"]
+  tutorials: ["我是小丽，负责账号运营。", "几十部手机、几个平台账号，我帮你一起管。", "养号、发视频，交给我就好。"]
 };
 // Each presenter greets once in character (login/<role>.webm, VP9 with alpha) and then simply stands
 // still on the closing smile: any looping or scheduled motion read as acted. Without a clip, the still cut-out.

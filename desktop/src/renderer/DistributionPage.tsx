@@ -14,12 +14,11 @@ import "./DistributionPage.css";
 const PLATFORMS: SocialPlatformKey[] = ["douyin", "kuaishou", "xiaohongshu", "channels"];
 const today = (value: string) => Boolean(value) && new Date(value).toDateString() === new Date().toDateString();
 
-// 账号运营：平台账号 → 养号 → 发布。账号先在「平台账号」里扫码登录；新抖音号先养 8 天，
-// 再把成片发到抖音、快手、小红书、视频号（用户 2026-10-29 决定把养号并到这里）。
-type Tab = "accounts" | "nurture" | "publish";
-const TABS: [Tab, string][] = [["accounts", "平台账号"], ["nurture", "养号"], ["publish", "发布"]];
-export function DistributionPage() {
-  const [tab, setTab] = useState<Tab>("publish");
+// 账号运营（小丽）：平台账号 → 养号 → 一键分发。账号先在「平台账号」里扫码登录；新抖音号先养 8 天，
+// 再把成片发到抖音、快手、小红书、视频号。三块是左侧导航里的子模块（用户 2026-10-30），这页只显示选中的那一块。
+export type DistributionTab = "accounts" | "nurture" | "publish";
+export function DistributionPage({ tab, onNavigate }: { tab: DistributionTab; onNavigate: (tab: DistributionTab) => void }) {
+  const setTab = onNavigate;
   const [nurture, setNurture] = useState<NurtureState>();
   const [publish, setPublish] = useState<SocialPublishState>();
   const [accounts, setAccounts] = useState<SocialAccountsState>();
@@ -59,11 +58,8 @@ export function DistributionPage() {
         })}
       </ul>
     </div>
-    <div className="dist-tabs" role="tablist" aria-label="账号运营">
-      {TABS.map(([key, label]) => <button type="button" key={key} role="tab" aria-selected={tab === key} aria-controls={`distribution-panel-${key}`} id={`distribution-tab-${key}`} onClick={() => setTab(key)}>{label}</button>)}
-    </div>
-    {tab === "publish" && <div id="distribution-panel-publish" role="tabpanel" aria-labelledby="distribution-tab-publish" className="dist-panel"><SocialPublishPanel onManageAccounts={() => setTab("accounts")} /></div>}
-    {tab === "nurture" && <div id="distribution-panel-nurture" role="tabpanel" aria-labelledby="distribution-tab-nurture" className="dist-panel"><SocialNurturePanel onManageAccounts={() => setTab("accounts")} /></div>}
-    {tab === "accounts" && <div id="distribution-panel-accounts" role="tabpanel" aria-labelledby="distribution-tab-accounts" className="dist-panel"><SocialAccountsPanel /></div>}
+    {tab === "publish" && <div className="dist-panel"><SocialPublishPanel onManageAccounts={() => setTab("accounts")} /></div>}
+    {tab === "nurture" && <div className="dist-panel"><SocialNurturePanel onManageAccounts={() => setTab("accounts")} /></div>}
+    {tab === "accounts" && <div className="dist-panel"><SocialAccountsPanel /></div>}
   </section>;
 }
