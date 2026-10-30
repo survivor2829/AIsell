@@ -931,10 +931,11 @@ async function main() {
         menu_bounds: { left: 840, top: menuTop, width: 40, height: 28 } } });
     // A 的菜单在 460；每次只滑 60 像素，6 次后还在 100；这时读到 A 的后半截（正文不同）；再往下才是 B。
     const observations = [post("a", "今天完成了新门店的设备安装，欢迎大家来参观", 460), post("c", "欢迎大家来参观", 100), post("b", "新款洗地机到货了", 500)];
-    const commented = [], scrollModes = [];
+    const commented = [], scrollModes = [], errors = [];
     const controller = createMomentsCampaignController({
       baseDir: root,
       coordinator: { acquire: () => ({ ok: true, lock: { owner: "owner" } }), release: () => undefined },
+      logger: { event: (module, event, details, options) => { if (options?.level === "error") errors.push({ event, code: options.code }); } },
       openMoments: async () => INTEGRATED_OPEN_RESULT,
       scrollMoments: async (options) => { scrollModes.push(options.scrollMode || "advance_feed"); return { ok: true, observedDelta: -60 }; },
       generateComment: async ({ postText }) => ({ comment: `评论：${postText.slice(0, 4)}` }),
@@ -947,6 +948,8 @@ async function main() {
     assert.equal(controller.start({ maxPosts: 2, likeEnabled: false, commentEnabled: true }).ok, true);
     const finished = await waitFor(() => controller.status().state, (state) => !["running", "starting"].includes(state.status));
     assert.deepEqual(commented, ["评论：今天完成", "评论：新款洗地"], "上一条露出的后半截不再评论");
+    // 暗中出错也上报（用户 2026-10-30）：差点重复评论的这一次带截图上报，方便查滚动为什么没滚够。
+    assert.deepEqual(errors, [{ event: "campaign.duplicate_prevented", code: "moments_duplicate_prevented" }]);
     assert.equal(finished.commented_count, 2);
     assert.deepEqual(scrollModes.slice(0, 6), Array(6).fill("seek_post_menu_down"), "已处理的菜单还在视野里时用测位移的小步滑，最多 6 次");
   }

@@ -398,7 +398,8 @@ function createMomentsCampaignController(options = {}) {
     return changed ? persistDaily(patch) : dailyState;
   }
 
-  function record(event, fields = {}, level = "info") {
+  // An error with a code becomes a failure capsule (with the WeChat screenshot).
+  function record(event, fields = {}, level = "info", code = "") {
     logger.event("moments", event, {
       campaign: {
         ...state,
@@ -414,7 +415,7 @@ function createMomentsCampaignController(options = {}) {
         status: dailyAutomation?.status() || "waiting"
       },
       ...fields
-    }, { level });
+    }, { level, ...(code ? { code } : {}) });
     const taskId = String(workflowContext?.taskId || state.started_at || `moments-${now().toISOString().slice(0, 10)}`);
     const reasonCode = String(fields.reasonCode || fields.reason || fields.code || state.last_reason || "");
     passport?.recordEvent("moments", taskId, {
@@ -727,9 +728,15 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
 
-          const processedMatch = handledMenu(handledMenus, observed.post_snapshot?.menu_bounds)
-            ? { matched: true, mode: "handled_menu_position" }
-            : findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
+          const textMatch = findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
+          const processedMatch = !textMatch.matched && handledMenu(handledMenus, observed.post_snapshot?.menu_bounds)
+            ? { matched: true, mode: "handled_menu_position" } : textMatch;
+          // Silent failure (user decision 2026-10-30): only the menu position recognised a handled post
+          // whose visible text changed, the exact case that used to get a second comment. It is skipped,
+          // and reported with the screen so the scrolling that caused it can be fixed.
+          if (processedMatch.mode === "handled_menu_position") {
+            record("campaign.duplicate_prevented", { post_fingerprint: fingerprint, scroll_count: state.scroll_count }, "error", "moments_duplicate_prevented");
+          }
           if (!processedMatch.matched) {
             repeatedFingerprintScans = 0;
             const preparedObservationId = observationId;

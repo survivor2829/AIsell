@@ -28,6 +28,8 @@ const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createRolePreferences, registerRolePreferencesIpc } = require("./role-preferences.cjs");
 const { createFeedbackController } = require("./feedback-controller.cjs");
 const { createFailureCapsules } = require("./failure-capsule.cjs");
+const { createEnvironmentCheckup } = require("./environment-checkup.cjs");
+const { findBrowser } = require("./social-browser.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
@@ -637,6 +639,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator,
       withProgress: (operation, readProgress) => workflowController.runContactSync(operation, readProgress)
     });
+    // 一键体检: what every feature needs on this computer, with a fix for each gap (user decision 2026-10-30).
+    const checkup = createEnvironmentCheckup({ rootDir: runtime.rootDir, logger,
+      getDisplay: () => screen.getPrimaryDisplay(), gatewayStatus: () => providerGatewayClient?.status(), findBrowser });
+    for (const [channel, method] of [["checkup:run", checkup.run], ["checkup:last", checkup.last]]) {
+      ipcMain.handle(channel, async (event) => {
+        if (!mainWindow || event.sender !== mainWindow.webContents) return null;
+        return method();
+      });
+    }
     registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir, appInfo, screen,
       passport: taskPassportStore,
       getWechatState: () => {

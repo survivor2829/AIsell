@@ -23,6 +23,8 @@ const KINDS = {
   audio: { label: "配音/配乐/混音", evidence: "details 里每句的时间与响度、配乐编号；issues:show 会用当前规则重判测量值" },
   local_service: { label: "本地服务启动/运行", evidence: "服务输出原文（现场包 engineStderr）、启动阶段与耗时、退出码、电脑环境；没有输出原文就先补取证" },
   wechat_window: { label: "微信窗口/界面识别", evidence: "逐步画面、识别结果、失败时整屏与窗口列表；issues:replay 在本机重跑识别" },
+  silent: { label: "暗中出错（任务显示成功但结果不对）", evidence: "现场包里的截图与出错前步骤：看软件为什么以为成功了（例如滚动没滚够、AI 称呼没拿到、视频没刷动），修判断，不只修这一次" },
+  checkup: { label: "一键体检发现的电脑问题", evidence: "details.items 里每一项的结果；同一项在多台电脑出现时，先看是不是体检规则太严" },
   internal: { label: "程序内部", evidence: "堆栈（Python traceback 或 JS stack）与出错前步骤；通常能直接定位到代码行" },
   unclassified: { label: "未归类", evidence: "先读抛出位置的代码，判断属于哪一类，再补进 error-code-map.cjs 的分类规则" }
 };
@@ -43,6 +45,9 @@ const WECHAT_PATTERNS = [
   new RegExp(`Write-XiaoxiFailure\\s+["'][a-z0-9.-]+["']\\s+["']${CODE}["']`, "g")
 ];
 const ENGINE_KIND_RULES = [
+  // 1.2.36: silent failures and 一键体检 results.
+  ["silent", /^(?:moments_duplicate_prevented|touch_salutation_unavailable|nurture_few_videos)$/],
+  ["checkup", /^checkup_/],
   ["network", /^(?:cloud_|provider_|deepseek_|volcengine_|apimart_|bailian_)|gateway|_(?:poll|submit|download|upload)_|_outcome_unknown$|_timeout$/],
   ["environment", /disk|_write_failed|permission|runtime_unavailable|encoder_unavailable|not_configured|_unavailable$|lock/],
   ["audio", /audio|music|voice|loudness|tts|_mix_|narration_alignment/],
@@ -175,7 +180,22 @@ let cached;
 function lookup(code) {
   cached ||= buildMap();
   // Logged codes are lower case; the source may write them in capitals.
-  return cached.get(String(code || "").toLowerCase()) || cached.get(String(code || "")) || null;
+  return cached.get(String(code || "").toLowerCase()) || cached.get(String(code || "")) || reportedCode(String(code || "").toLowerCase());
+}
+
+// Silent failures and 一键体检 codes are passed as arguments or built from the item name, so no
+// pattern above finds them; the place that reports them is found by its literal text instead.
+function reportedCode(code) {
+  const rule = ENGINE_KIND_RULES.slice(0, 2).find(([, pattern]) => pattern.test(code));
+  if (!rule) return null;
+  const needle = rule[0] === "checkup" ? "checkup_problems" : code;
+  const sites = [];
+  for (const name of fs.readdirSync(MAIN_ROOT).filter(file => file.endsWith(".cjs") && !file.includes("self_check"))) {
+    const text = fs.readFileSync(path.join(MAIN_ROOT, name), "utf8").replace(/\r\n/g, "\n");
+    const index = text.toLowerCase().indexOf(needle);
+    if (index >= 0) sites.push({ file: `desktop/src/main/${name}`, line: lineOf(text, index) });
+  }
+  return { code, modules: [rule[0]], kind: rule[0], sites, replay: [], evidence: KINDS[rule[0]].evidence, kindLabel: KINDS[rule[0]].label };
 }
 
 function describe(entry, { sites = 5 } = {}) {

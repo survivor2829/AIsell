@@ -204,7 +204,8 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
         throw fail("NURTURE_PAGE_CHANGED", "抖音页面上没找到可以逐条刷的视频，页面可能变了，已自动上报。");
       }
       // A segment run by hand beyond today's planned ones takes a length from the stage table.
-      const segmentEnd = now() + (today.minutes[today.segmentsDone] ?? between(stage.minutes)) * 60_000;
+      const plannedMinutes = today.minutes[today.segmentsDone] ?? between(stage.minutes);
+      const segmentEnd = now() + plannedMinutes * 60_000;
       const segmentsLeft = () => today.segments - today.segmentsDone - 1;
       const meanDwell = (stage.dwellSeconds[0] + stage.dwellSeconds[1]) / 2 * 1000, meanSegment = (stage.minutes[0] + stage.minutes[1]) / 2 * 60_000;
       const disabled = new Set();
@@ -263,6 +264,9 @@ function createSocialNurture({ dataDir, accounts, launch = launchBrowser, execut
       // A run that ended on a verification or a changed page is not complete, even when its time is up.
       segmentDone = outcome === "error" && !stopped() && now() >= segmentEnd;
       if (segmentDone) end("completed", "这一段完成，看了 " + watchedHere + " 个视频。");
+      // Silent failure (user decision 2026-10-30): a run that used its whole time but saw fewer videos
+      // than one a minute was stuck somewhere (one video playing on, the next key not taking).
+      if (segmentDone && watchedHere < plannedMinutes) await report("NURTURE_FEW_VIDEOS", "watch");
       else if (stopped()) end("stopped", "已停下这一段。");
     } catch (error) {
       if (error?.code === "SOCIAL_LOGIN_REQUIRED") {

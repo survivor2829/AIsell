@@ -1,6 +1,7 @@
 import { BookOpen, Bell, RefreshCw, ArrowRight, MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CustomerPanel } from "./CustomerPanel";
+import { CheckupButton } from "./CheckupPanel";
 import type { CloudStatus } from "./CloudMaintenance";
 import type { AgentHomeTarget } from "./AgentHome";
 import type { TutorialCategory } from "./tutorials-types";
@@ -128,6 +129,7 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
       {state?.updateRequested && state.stage === "waiting" && <button type="button" className="topbar-tool" onClick={() => void window.xiaoxiCloudMaintenance?.cancelUpdate().then(value => { setState(value); if (!value.updateRequested) setUpdateNotice("更新已取消；已暂停的微信任务可在今日计划中手动继续。"); }).catch(() => setUpdateError("取消未完成，请重试。"))}>取消等待</button>}
       {(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-notice is-error" role="status">{updateMessage}</span>}
     </div>
+    <CheckupButton />
     <button type="button" className="topbar-tool" aria-label="使用教程" title="使用教程" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials"))}><BookOpen size={17} /><span>使用教程</span></button>
     <details className="topbar-secondary"><summary className="topbar-tool" aria-label="更多工具" title="更多工具"><MoreHorizontal size={18} /></summary><div className="topbar-secondary-menu"><button className="topbar-tool" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); void openAnnouncements(); }}><Bell size={17} /><span>更新公告{state?.unreadAnnouncements ? ' · 有未读' : ''}</span></button><button className="topbar-tool" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); setPanel('tutorial'); }}><BookOpen size={17} /><span>使用教程</span></button></div></details>
     {panel === "announcements" && <CustomerPanel title="更新公告" description="看看这次有哪些改进。" onClose={() => setPanel(null)}>
