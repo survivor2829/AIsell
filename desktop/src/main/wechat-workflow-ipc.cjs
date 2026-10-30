@@ -259,16 +259,33 @@ function registerWechatWorkflowIpc(options) {
   ipcMain.on?.("wechat-workflow:sprite-interactive", (event, interactive) => {
     if (fromSprite(event)) floatingWindow.setIgnoreMouseEvents?.(interactive !== true, { forward: true });
   });
-  ipcMain.on?.("wechat-workflow:sprite-move", (event, delta) => {
+  // While 小玺 is held, the window follows the pointer from here (a relayed move fell behind a quick
+  // drag and lost it, 2026-10-30). Letting go without moving is a click.
+  let spriteDrag = null;
+  ipcMain.on?.("wechat-workflow:sprite-drag-start", (event) => {
     if (!fromSprite(event)) return;
-    const [x, y] = floatingWindow.getPosition();
-    const dx = Math.max(-400, Math.min(400, Math.round(Number(delta?.dx) || 0))), dy = Math.max(-400, Math.min(400, Math.round(Number(delta?.dy) || 0)));
-    floatingWindow.setPosition(x + dx, y + dy);
+    clearInterval(spriteDrag?.timer);
+    const cursor = screen.getCursorScreenPoint(), [x, y] = floatingWindow.getPosition();
+    const drag = { dx: cursor.x - x, dy: cursor.y - y, from: cursor, moved: false, started: Date.now() };
+    drag.timer = setInterval(() => {
+      if (!floatingWindow || floatingWindow.isDestroyed() || Date.now() - drag.started > 60000) { clearInterval(drag.timer); return; }
+      const point = screen.getCursorScreenPoint();
+      if (!drag.moved && Math.hypot(point.x - drag.from.x, point.y - drag.from.y) < 4) return;
+      drag.moved = true;
+      floatingWindow.setPosition(Math.round(point.x - drag.dx), Math.round(point.y - drag.dy));
+    }, 16);
+    drag.timer.unref?.();
+    spriteDrag = drag;
   });
-  ipcMain.on?.("wechat-workflow:sprite-moved", (event) => {
-    if (!fromSprite(event) || !options.spritePlaceFile) return;
-    const [x, y] = floatingWindow.getPosition();
-    try { fs.writeFileSync(options.spritePlaceFile, JSON.stringify({ x, y })); } catch { /* The place is a convenience. */ }
+  ipcMain.handle?.("wechat-workflow:sprite-drag-end", (event) => {
+    if (!fromSprite(event) || !spriteDrag) return { moved: false };
+    const drag = spriteDrag; spriteDrag = null;
+    clearInterval(drag.timer);
+    if (drag.moved && options.spritePlaceFile) {
+      const [x, y] = floatingWindow.getPosition();
+      try { fs.writeFileSync(options.spritePlaceFile, JSON.stringify({ x, y })); } catch { /* The place is a convenience. */ }
+    }
+    return { moved: drag.moved };
   });
   return {
     ...controller,

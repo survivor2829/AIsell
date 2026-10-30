@@ -950,8 +950,8 @@ function createPreloadApis(ipcRenderer) {
       showFloating: () => ipcRenderer.invoke("wechat-workflow:show-floating"),
       // 小玺's window: take clicks only on 小玺 and its bubble, move by dragging, keep the place.
       spriteInteractive: (interactive) => ipcRenderer.send("wechat-workflow:sprite-interactive", interactive === true),
-      spriteMove: (dx, dy) => ipcRenderer.send("wechat-workflow:sprite-move", { dx: Number(dx) || 0, dy: Number(dy) || 0 }),
-      spriteMoved: () => ipcRenderer.send("wechat-workflow:sprite-moved"),
+      spriteDragStart: () => ipcRenderer.send("wechat-workflow:sprite-drag-start"),
+      spriteDragEnd: () => ipcRenderer.invoke("wechat-workflow:sprite-drag-end"),
       onSpriteSay: (callback) => {
         const handler = (_event, line) => callback(line);
         ipcRenderer.on("wechat-workflow:sprite-say", handler);

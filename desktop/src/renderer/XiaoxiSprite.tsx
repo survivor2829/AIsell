@@ -49,7 +49,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   const lastKind = useRef("");
   const lastTitle = useRef("");
   const idleSince = useRef(Date.now());
-  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const drag = useRef(false);
   const lineTimer = useRef<number>();
 
   const show = (next: Line, ms = 5200) => {
@@ -126,21 +126,18 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   const percent = activity?.total ? Math.round((activity.done || 0) / activity.total * 100) : null;
   const showMain = () => { void api?.showMain(); };
   const interactive = (on: boolean) => { if (!drag.current) api?.spriteInteractive?.(on); };
+  // Holding 小玺 hands the dragging to the main process; letting go without moving opens the app.
   const down = (event: ReactPointerEvent) => {
-    drag.current = { x: event.screenX, y: event.screenY, moved: false };
+    if (event.button !== 0) return;
+    drag.current = true;
     (event.currentTarget as Element).setPointerCapture(event.pointerId);
+    api?.spriteDragStart?.();
   };
-  const move = (event: ReactPointerEvent) => {
-    const at = drag.current;
-    if (!at) return;
-    const dx = event.screenX - at.x, dy = event.screenY - at.y;
-    if (!at.moved && Math.hypot(dx, dy) < 4) return;
-    at.moved = true; at.x = event.screenX; at.y = event.screenY;
-    api?.spriteMove?.(dx, dy);
-  };
-  const up = () => {
-    const at = drag.current; drag.current = null;
-    if (at?.moved) api?.spriteMoved?.(); else showMain();
+  const up = async () => {
+    if (!drag.current) return;
+    drag.current = false;
+    const result = await api?.spriteDragEnd?.();
+    if (!result?.moved) showMain();
   };
 
   return <main className="floating-shell workflow-floating-shell xiaoxi-shell">
@@ -158,7 +155,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
         {activity?.pausable && <button type="button" className="xiaoxi-link" onClick={() => void workflow.run(() => api!.pause())}>先暂停</button>}
       </section>}
       <button type="button" className="xiaoxi-buddy" data-mood={mood} aria-label="小玺：点我回到软件，按住可以拖动"
-        onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)} onPointerDown={down} onPointerMove={move} onPointerUp={up}>
+        onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)} onPointerDown={down} onPointerUp={() => void up()} onPointerCancel={() => void up()}>
         <svg viewBox="0 0 200 220" aria-hidden="true">
           <ellipse className="xs-shadow" cx="100" cy="208" rx="52" ry="7" fill="#000" />
           <g className="xs-body">
