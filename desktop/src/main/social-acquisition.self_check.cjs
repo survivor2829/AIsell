@@ -127,7 +127,8 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     launch: () => { log.launches++; return browser; }, makePage: () => page,
     capture: (_browser, _session, { match, onJson }) => { emitJson = (event) => { if (match(event.url, event.operation)) onJson(event); }; return { start: async () => {} }; },
     timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1, recheck: 1 } });
-  const until = async (acq) => { for (let i = 0; i < 500; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
+  // Up to 15 s: a busy CI runner took longer than the old 2.5 s twice on 2026-10-30.
+  const until = async (acq) => { for (let i = 0; i < 3000; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
   // Leads as a finished run leaves them, found by the account ks1.
   const seed = (names) => {
     fs.mkdirSync(path.join(root, "data"), { recursive: true });

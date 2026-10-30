@@ -301,3 +301,25 @@
 .reply-scope .workflow-recipient-search { margin-top: 14px; }
 .reply-scope-toggle { display: flex; width: 100%; margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--workflow-line); font-size: 14px; }
 @media (max-width: 760px) { .auto-reply-page .workflow-reply-summary { grid-template-columns: 1fr; } .reply-scope-head { flex-direction: column; } }
+
+/* 小玺 (user decision 2026-10-30): the mascot on top, one small card below, on a transparent window. */
+html:has(.sprite-shell), body:has(.sprite-shell), body:has(.sprite-shell) #root { background: transparent; }
+.floating-shell.sprite-shell { align-items: center; gap: 0; padding: 4px 8px 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; -webkit-app-region: drag; }
+.sprite-mascot { position: relative; z-index: 1; flex: 0 0 auto; width: 76px; height: 76px; margin-bottom: -16px; padding: 0; overflow: hidden; border: 3px solid #fff; border-radius: 50%;
+  background: #fff; box-shadow: 0 6px 16px rgba(173, 42, 85, .3); cursor: pointer; -webkit-app-region: no-drag; }
+.sprite-mascot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.sprite-mascot.is-running { animation: sprite-bob 2.4s ease-in-out infinite; }
+.sprite-mascot.is-alert { border-color: #f59e0b; }
+@keyframes sprite-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+.sprite-card { display: flex; flex: 1; flex-direction: column; gap: 6px; width: 100%; min-height: 0; padding: 22px 12px 10px; border: 1px solid rgba(230, 0, 0, .16);
+  border-radius: 16px; background: rgba(255, 255, 255, .97); box-shadow: 0 10px 22px rgba(31, 41, 55, .16); }
+.sprite-title, .sprite-detail, .sprite-alert { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; text-align: center; overflow-wrap: anywhere; }
+.sprite-title { color: #1f2937; font-size: 14px; line-height: 1.4; }
+.sprite-detail, .sprite-alert { margin: 0; color: #5b6472; font-size: 12px; line-height: 1.45; }
+.sprite-alert { color: #b42318; }
+.sprite-progress { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; color: #5b6472; font-size: 11px; }
+.sprite-progress i { position: relative; height: 5px; overflow: hidden; border-radius: 999px; background: #eef0f4; }
+.sprite-progress i span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--brand-red, #e60000); }
+.workflow-floating-shell .sprite-actions { margin-top: auto; }
+.sprite-actions:has(> :only-child) { grid-template-columns: 1fr; }
+@media (prefers-reduced-motion: reduce) { .sprite-mascot.is-running { animation: none; } }

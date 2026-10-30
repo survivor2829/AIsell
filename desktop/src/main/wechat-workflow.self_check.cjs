@@ -1122,6 +1122,21 @@ async function checkFloatingProgress() {
   assert.equal(status.state.contactSync.running, false);
   assert.equal(status.state.contactSync.contactCount, 3);
   assert.equal(windows.length, 1, "all task types reuse one floating window");
+  // 小玺 (user decision 2026-10-30): 养号 / 一键分发 running in Chrome show the same sprite, without hiding
+  // the main window, and it goes away when they finish.
+  assert.equal(windows[0].settings.transparent, true);
+  await invoke("show-main");
+  windows[0].hide();
+  const hidesBefore = mainHideCount;
+  control.setExternalActivity("nurture", { title: "正在养号 · 抖音号", detail: "正在刷视频" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(windows[0].visible, true, "养号 shows 小玺");
+  assert.equal(mainHideCount, hidesBefore, "a Chrome run keeps the main window");
+  assert.deepEqual((await invoke("status")).state.external.map((item) => item.kind), ["nurture"]);
+  await invoke("show-main");
+  assert.equal(windows[0].visible, true, "going back to the main page keeps 小玺 while 养号 runs");
+  control.setExternalActivity("nurture", null);
+  assert.equal(windows[0].visible, false, "小玺 goes away when nothing runs");
   await control.dispose();
 }
 

@@ -1,6 +1,6 @@
 const path = require("node:path");
 const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
-const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
+const { SPRITE_WINDOW, spritePosition } = require("./floating-progress-window.cjs");
 
 function registerWechatWorkflowIpc(options) {
   const { ipcMain, BrowserWindow, screen } = options.electron || require("electron");
@@ -11,6 +11,9 @@ function registerWechatWorkflowIpc(options) {
   let contactSync = null;
   let readContactProgress = null;
   let disposed = false;
+  // 小玺 also shows the automation that runs outside this app: 养号 and 一键分发 in Chrome
+  // (user decision 2026-10-30). kind -> { title, detail, done, total }.
+  const external = new Map();
   const main = () => options.getMainWindow?.();
   function viewState(state = controller.status()) {
     const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId || state.lastTaskId));
@@ -24,7 +27,8 @@ function registerWechatWorkflowIpc(options) {
           ? { stage: syncing.last_stage || "syncing" } : {})
       },
       tasks: state.tasks.map((task) => task.id === current?.id && moments ? { ...task, progress: moments } : task),
-      momentsProgress: moments || null
+      momentsProgress: moments || null,
+      external: [...external.values()]
     };
   }
   const broadcast = (state) => {
@@ -39,18 +43,18 @@ function registerWechatWorkflowIpc(options) {
   function showMain(intent) {
     if (["start", "history", "tasks"].includes(intent?.view)) main()?.webContents.send("wechat-workflow:navigate", { view: intent.view });
     main()?.show(); main()?.focus();
-    if (!active()) floatingWindow?.hide();
+    if (!active() && !external.size) floatingWindow?.hide();
     return { ok: true, state: viewState() };
   }
 
-  async function showFloating() {
+  async function showFloating(request = {}) {
     if (disposed) throw new Error("程序正在退出。");
     if (!floatingWindow || floatingWindow.isDestroyed()) {
-      const position = floatingProgressPosition(screen.getPrimaryDisplay().workArea);
+      const position = spritePosition(screen.getPrimaryDisplay().workArea);
       const target = new BrowserWindow({
-        width: FLOATING_PROGRESS_WINDOW.width, height: FLOATING_PROGRESS_WINDOW.height, ...position,
-        title: "微信拓客进度", alwaysOnTop: true, resizable: false, show: false,
-        frame: false, autoHideMenuBar: true, skipTaskbar: true, backgroundColor: "#ffffff",
+        width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height, ...position,
+        title: "小玺", alwaysOnTop: true, resizable: false, show: false, transparent: true, hasShadow: false,
+        frame: false, autoHideMenuBar: true, skipTaskbar: true, backgroundColor: "#00000000",
         webPreferences: { preload: options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: false }
       });
       floatingWindow = target;
@@ -108,7 +112,8 @@ function registerWechatWorkflowIpc(options) {
     if (disposed || !floatingWindow || floatingWindow.isDestroyed()) throw new Error("进度悬浮窗已关闭，请重新启动应用。");
     if (typeof floatingWindow.showInactive === "function") floatingWindow.showInactive();
     else floatingWindow.show();
-    main()?.hide();
+    // A WeChat run hides the main window so it does not cover WeChat; Chrome runs keep it.
+    if (request?.keepMain !== true) main()?.hide();
     broadcast(controller.status());
     if (!progressTimer) {
       progressTimer = setInterval(() => {
@@ -229,10 +234,19 @@ function registerWechatWorkflowIpc(options) {
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));
   handle("show-main", showMain);
-  handle("show-floating", showFloating);
+  handle("show-floating", () => showFloating());
+
+  function setExternalActivity(kind, activity) {
+    if (disposed) return;
+    if (activity) external.set(kind, { kind, ...activity }); else external.delete(kind);
+    if (external.size && !(floatingWindow && !floatingWindow.isDestroyed() && floatingWindow.isVisible())) {
+      void showFloating({ keepMain: true }).catch(() => { /* The pages still show the progress. */ });
+    } else if (!external.size && !active() && floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.hide();
+    broadcast(controller.status());
+  }
   return {
     ...controller,
-    start, showFloating, runContactSync,
+    start, showFloating, runContactSync, setExternalActivity,
     dispose: async () => {
       disposed = true;
       clearInterval(progressTimer); progressTimer = null;

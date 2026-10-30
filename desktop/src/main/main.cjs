@@ -30,6 +30,7 @@ const { createFeedbackController } = require("./feedback-controller.cjs");
 const { createFailureCapsules } = require("./failure-capsule.cjs");
 const { createEnvironmentCheckup } = require("./environment-checkup.cjs");
 const { findBrowser } = require("./social-browser.cjs");
+const { nurtureActivity, publishActivity } = require("./sprite-activity.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
@@ -816,6 +817,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
       logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence"),
+      onState: (state) => workflowController?.setExternalActivity?.("publish", publishActivity(state)),
       resolveFinishedVideo: async (finishedVideoId) => {
         const result = await contentEngineController.resolveFinishedPath(finishedVideoId);
         if (result?.finished_video_id !== finishedVideoId) throw new Error("finished video mismatch");
@@ -831,6 +833,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // 养号 shares the accounts and hands its day-8 test video to 一键分发.
     socialNurtureRegistration = registerSocialNurtureIpc({ ipcMain, getMainWindow: () => mainWindow, accounts: socialAccountsRegistration.accounts,
       dataDir: path.join(runtime.rootDir, "social_nurture"), logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence"),
+      onState: (state) => workflowController?.setExternalActivity?.("nurture", nurtureActivity(state)),
       publish: (payload) => socialPublishRegistration.submitFinished(payload) });
     businessWorkbenchRegistration = registerBusinessWorkbenchIpc({ ipcMain, BrowserWindow, session, dialog, shell,
       dataDir: runtime.rootDir, getMainWindow: () => mainWindow, deepSeekClient, gatewayClient: providerGatewayClient, clipboard, getLicenseStatus: identityStatus });
