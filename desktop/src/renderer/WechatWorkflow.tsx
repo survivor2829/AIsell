@@ -104,8 +104,8 @@ declare global {
       chooseTouchImages: () => Promise<{ ok: boolean; canceled?: boolean; images?: TouchImage[]; error?: string }>;
       showFloating: () => Promise<WorkflowResult>;
       spriteInteractive?: (interactive: boolean) => void;
-      spriteMove?: (dx: number, dy: number) => void;
-      spriteMoved?: () => void;
+      spriteDragStart?: () => void;
+      spriteDragEnd?: () => Promise<{ moved: boolean }>;
       onSpriteSay?: (callback: (line: { text: string; sub?: string; mood?: "done" | "error" | "" }) => void) => () => void;
       showMain: (intent?: { view: WorkflowView }) => Promise<WorkflowResult>;
       onNavigate?: (callback: (intent: { view: WorkflowView }) => void) => () => void;

@@ -1046,6 +1046,7 @@ async function checkFloatingProgress() {
   const diagnosticEvents = [];
   const handlers = new Map();
   const listeners = new Map();
+  const cursor = { x: 0, y: 0 };
   let mainHideCount = 0;
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
@@ -1078,7 +1079,8 @@ async function checkFloatingProgress() {
     executors: { interact: { prepareWorkflowTask: () => ({ payload: { maxPosts: 1 } }) } },
     rendererPath: __filename, preloadPath: __filename,
     spritePlaceFile: path.join(rootDir, "sprite-place.json"),
-    electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, listener) => listeners.set(name, listener) }, BrowserWindow: ProgressWindow, screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } }
+    electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, listener) => listeners.set(name, listener) }, BrowserWindow: ProgressWindow,
+      screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }), getCursorScreenPoint: () => ({ ...cursor }) } }
   });
   const event = { sender: mainWindow.webContents };
   await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
@@ -1138,8 +1140,16 @@ async function checkFloatingProgress() {
   assert.equal(sprite.ignoringMouse, false, "小玺 and its bubble take clicks while the pointer is on them");
   listeners.get("wechat-workflow:sprite-interactive")(event, false);
   assert.equal(sprite.ignoringMouse, false, "only 小玺's own window can change that");
-  listeners.get("wechat-workflow:sprite-move")(spriteEvent, { dx: -300, dy: 40 });
-  listeners.get("wechat-workflow:sprite-moved")(spriteEvent);
+  // Held and let go without moving: a click, nothing saved.
+  Object.assign(cursor, { x: 1800, y: 500 });
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  assert.deepEqual(await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent), { moved: false });
+  assert.equal(fs.existsSync(path.join(rootDir, "sprite-place.json")), false);
+  // Held and moved: the window follows the pointer at the same offset (2026-10-30: a quick drag lost it before).
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  Object.assign(cursor, { x: 1500, y: 540 });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent), { moved: true });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")), { x: 1920 - 360 - 6 - 300, y: Math.round((1080 - 230) / 2) + 40 });
   const hidesBefore = mainHideCount;
   await control.showSprite();
