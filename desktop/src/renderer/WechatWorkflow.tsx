@@ -1,8 +1,7 @@
 import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
-import { ExampleBanner } from "./VideoExamples";
-import { TouchHero } from "./TouchHero";
+import { MomentsHero, TouchHero } from "./TouchHero";
 import "./WechatWorkflow.css";
 
 export type WorkflowTaskType = "touch" | "publish" | "interact";
@@ -408,7 +407,6 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const executionDetail = useExecutionDetail(state.currentExecution);
   const attentionTasks = state.tasks.filter((task) => task.status === "needs_attention");
   const waitingForSchedule = state.tasks.some((task) => task.status === "pending" && !task.accountMismatch && (task.repeat === "daily" || Boolean(task.scheduledAt && Date.parse(task.scheduledAt) > Date.now())));
-  const title = mode === "home" ? "今日计划" : mode === "touch" ? "精准触达" : "朋友圈运营";
   const planLocked = state.enabled || state.phase === "pausing";
   const replyOnlyActive = state.enabled && ["listening", "replying"].includes(state.phase) && !state.currentTaskId;
   const addPlannedTask = async (type: WorkflowTaskType) => {
@@ -540,14 +538,18 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     </li>;
   };
 
-  return <section className={`page workflow-page${mode === "touch" ? " is-touch" : ""}`}>
-    {mode === "touch" ? <TouchHero tasks={state.tasks as unknown as Record<string, unknown>[]} contactCount={contacts.length} planned={activeTasks.length}
-      toggle={<WorkflowToggle workflow={workflow} onNavigate={onNavigate} />} onAdd={() => void addPlannedTask("touch")} addDisabled={busy || (planLocked && !replyOnlyActive)} />
-    : <><div className="page-head workflow-page-head">
-      <div><h1>{title}</h1><p>{mode === "home" ? "集中安排客户联系、朋友圈和咨询接待，方便持续跟进。先完成当前可执行任务，空闲时接待新咨询。" : mode === "touch" ? "给选定客户介绍合适的产品与服务，按计划接着跟进。选好联系人和话术后加入计划。" : "让客户持续了解您的产品和案例，按计划发布朋友圈、安排互动。"}</p></div>
-      <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />
-    </div>
-    {mode !== "home" && <ExampleBanner topic="wechat-moments" />}</>}
+  const heroTasks = state.tasks as unknown as Record<string, unknown>[];
+  const heroToggle = <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />;
+  const addLocked = busy || (planLocked && !replyOnlyActive);
+  // 精准触达 and 朋友圈运营 share the full-width page style; 今日计划 keeps its plain header.
+  return <section className={`page workflow-page${mode === "home" ? "" : " is-touch"}`}>
+    {mode === "touch" ? <TouchHero tasks={heroTasks} contactCount={contacts.length} planned={activeTasks.length}
+      toggle={heroToggle} onAdd={() => void addPlannedTask("touch")} addDisabled={addLocked} />
+    : mode === "moments" ? <MomentsHero tasks={heroTasks} planned={activeTasks.length} toggle={heroToggle} onAdd={(type) => void addPlannedTask(type)} addDisabled={addLocked} />
+    : <div className="page-head workflow-page-head">
+      <div><h1>今日计划</h1><p>集中安排客户联系、朋友圈和咨询接待，方便持续跟进。先完成当前可执行任务，空闲时接待新咨询。</p></div>
+      {heroToggle}
+    </div>}
 
     <div className={`workflow-running-line ${state.enabled ? "is-on" : ""}`} role="status">
       <span className="workflow-state-dot" />
@@ -571,7 +573,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <button type="button" className="primary-button" data-xiaoxi-workflow-start onClick={() => api && void run(() => api.start())} disabled={busy}>启动已安排任务<Play size={16} /></button>
     </div>}
 
-    {mode !== "touch" && <div className="workflow-add-row">
+    {mode === "home" && <div className="workflow-add-row">
       <span>添加任务</span>
       {availableTypes.map((type) => <button type="button" className="secondary-button" key={type} onClick={() => void addPlannedTask(type)} disabled={busy || (planLocked && !replyOnlyActive)}><Plus size={15} />{TASK_LABELS[type]}</button>)}
     </div>}
