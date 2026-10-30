@@ -1,3 +1,4 @@
+const fs = require("node:fs");
 const path = require("node:path");
 const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
 const { SPRITE_WINDOW, spritePosition } = require("./floating-progress-window.cjs");
@@ -43,14 +44,13 @@ function registerWechatWorkflowIpc(options) {
   function showMain(intent) {
     if (["start", "history", "tasks"].includes(intent?.view)) main()?.webContents.send("wechat-workflow:navigate", { view: intent.view });
     main()?.show(); main()?.focus();
-    if (!active() && !external.size) floatingWindow?.hide();
     return { ok: true, state: viewState() };
   }
 
   async function showFloating(request = {}) {
     if (disposed) throw new Error("程序正在退出。");
     if (!floatingWindow || floatingWindow.isDestroyed()) {
-      const position = spritePosition(screen.getPrimaryDisplay().workArea);
+      const position = spritePosition(screen.getPrimaryDisplay().workArea, readSpritePlace());
       const target = new BrowserWindow({
         width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height, ...position,
         title: "小玺", alwaysOnTop: true, resizable: false, show: false, transparent: true, hasShadow: false,
@@ -58,6 +58,8 @@ function registerWechatWorkflowIpc(options) {
         webPreferences: { preload: options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: false }
       });
       floatingWindow = target;
+      // The transparent parts let clicks through; 小玺 and its bubble take them while the pointer is on them.
+      target.setIgnoreMouseEvents?.(true, { forward: true });
       target.setMenu(null);
       target.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       target.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -79,7 +81,7 @@ function registerWechatWorkflowIpc(options) {
         // did-finish-load only confirms HTML loading, not React/module startup.
         // Keep the main page available until the progress controls really exist.
         const waitForControls = () => target.webContents.executeJavaScript(`new Promise((resolve, reject) => {
-          const ready = () => Boolean(document.querySelector(".workflow-floating-shell .floating-actions") && window.xiaoxiWorkflow);
+          const ready = () => Boolean(document.querySelector(".workflow-floating-shell") && window.xiaoxiWorkflow);
           if (ready()) { resolve(true); return; }
           const observer = new MutationObserver(() => { if (ready()) { clearTimeout(timer); observer.disconnect(); resolve(true); } });
           const timer = setTimeout(() => { observer.disconnect(); reject(new Error("progress_renderer_not_ready")); }, 5000);
@@ -236,17 +238,41 @@ function registerWechatWorkflowIpc(options) {
   handle("show-main", showMain);
   handle("show-floating", () => showFloating());
 
+  // Every feature reports what it is doing here, so 小玺 shows it (user decision 2026-10-30).
   function setExternalActivity(kind, activity) {
     if (disposed) return;
     if (activity) external.set(kind, { kind, ...activity }); else external.delete(kind);
-    if (external.size && !(floatingWindow && !floatingWindow.isDestroyed() && floatingWindow.isVisible())) {
-      void showFloating({ keepMain: true }).catch(() => { /* The pages still show the progress. */ });
-    } else if (!external.size && !active() && floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.hide();
     broadcast(controller.status());
   }
+  // One thing 小玺 says once: a finished video, a failed job.
+  function say(line) {
+    if (disposed || !floatingWindow || floatingWindow.isDestroyed()) return;
+    floatingWindow.webContents.send("wechat-workflow:sprite-say", { text: String(line?.text || "").slice(0, 60), sub: String(line?.sub || "").slice(0, 80), mood: ["done", "error"].includes(line?.mood) ? line.mood : "" });
+  }
+  const showSprite = () => showFloating({ keepMain: true }).catch(() => { /* The app works without 小玺. */ });
+
+  // 小玺's own window: the bubble and 小玺 take clicks; dragging moves the window and the place is kept.
+  const fromSprite = (event) => floatingWindow && !floatingWindow.isDestroyed() && event.sender === floatingWindow.webContents;
+  function readSpritePlace() {
+    try { return options.spritePlaceFile ? JSON.parse(fs.readFileSync(options.spritePlaceFile, "utf8")) : null; } catch { return null; }
+  }
+  ipcMain.on?.("wechat-workflow:sprite-interactive", (event, interactive) => {
+    if (fromSprite(event)) floatingWindow.setIgnoreMouseEvents?.(interactive !== true, { forward: true });
+  });
+  ipcMain.on?.("wechat-workflow:sprite-move", (event, delta) => {
+    if (!fromSprite(event)) return;
+    const [x, y] = floatingWindow.getPosition();
+    const dx = Math.max(-400, Math.min(400, Math.round(Number(delta?.dx) || 0))), dy = Math.max(-400, Math.min(400, Math.round(Number(delta?.dy) || 0)));
+    floatingWindow.setPosition(x + dx, y + dy);
+  });
+  ipcMain.on?.("wechat-workflow:sprite-moved", (event) => {
+    if (!fromSprite(event) || !options.spritePlaceFile) return;
+    const [x, y] = floatingWindow.getPosition();
+    try { fs.writeFileSync(options.spritePlaceFile, JSON.stringify({ x, y })); } catch { /* The place is a convenience. */ }
+  });
   return {
     ...controller,
-    start, showFloating, runContactSync, setExternalActivity,
+    start, showFloating, runContactSync, setExternalActivity, say, showSprite,
     dispose: async () => {
       disposed = true;
       clearInterval(progressTimer); progressTimer = null;

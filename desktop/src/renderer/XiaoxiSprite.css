@@ -1,0 +1,62 @@
+/* 小玺 (user decisions 2026-10-30): a transparent window, 小玺 at its right, the comic bubble to its left. */
+html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root { background: transparent; overflow: hidden; }
+.floating-shell.xiaoxi-shell { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 0; padding: 10px 14px 10px 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+.xiaoxi-roam { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 12px; width: 100%; transition: transform 1.8s ease-in-out; }
+
+/* the comic bubble with its tail pointing at 小玺 */
+.xiaoxi-bubble { position: relative; display: flex; flex-direction: column; gap: 4px; max-width: 228px; padding: 10px 13px; border: 2.5px solid #1d2230; border-radius: 16px;
+  background: #fff; color: #1d2230; box-shadow: 4px 5px 0 rgba(20, 26, 38, .9); animation: xiaoxi-pop .42s cubic-bezier(.2, 1.6, .4, 1); transform-origin: 100% 60%; }
+.xiaoxi-bubble::before, .xiaoxi-bubble::after { content: ""; position: absolute; top: 50%; border-style: solid; }
+.xiaoxi-bubble::before { right: -21px; margin-top: -12px; border-width: 12px 0 12px 20px; border-color: transparent transparent transparent #1d2230; }
+.xiaoxi-bubble::after { right: -15px; margin-top: -9px; border-width: 9px 0 9px 16px; border-color: transparent transparent transparent #fff; }
+@keyframes xiaoxi-pop { 0% { transform: scale(.25) rotate(-6deg); opacity: 0 } 100% { transform: scale(1) rotate(0); opacity: 1 } }
+.xiaoxi-bubble strong { font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.xiaoxi-sub { color: #5d6573; font-size: 11.5px; font-weight: 600; line-height: 1.45; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.xiaoxi-bubble.is-done strong { color: #137a43; }
+.xiaoxi-bubble.is-error { border-color: #b45309; }
+.xiaoxi-bubble.is-error::before { border-left-color: #b45309; }
+.xiaoxi-bubble.is-error strong { color: #8a3a00; }
+.xiaoxi-ing-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.xiaoxi-ing-row b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.xiaoxi-ing { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 99px; background: #fff0f1; color: #e60012; font-weight: 800; letter-spacing: .04em; }
+.xiaoxi-ing i { width: 4px; height: 4px; border-radius: 50%; background: #e60012; animation: xiaoxi-dot 1s infinite; }
+.xiaoxi-ing i:nth-child(2) { animation-delay: .15s } .xiaoxi-ing i:nth-child(3) { animation-delay: .3s }
+@keyframes xiaoxi-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .45 } 30% { transform: translateY(-3px); opacity: 1 } }
+.xiaoxi-caret { display: inline-block; width: 1px; height: 1em; margin-left: 1px; vertical-align: -.12em; background: currentColor; animation: xiaoxi-caret .8s steps(1) infinite; }
+@keyframes xiaoxi-caret { 50% { opacity: 0 } }
+.xiaoxi-link { align-self: flex-start; padding: 0; border: 0; background: none; color: #e60012; font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+
+/* 小玺 */
+.xiaoxi-buddy { flex: 0 0 auto; width: 92px; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
+.xiaoxi-buddy:active { cursor: grabbing; }
+.xiaoxi-buddy:focus-visible { outline: 2px solid #5ee6ff; outline-offset: 2px; border-radius: 16px; }
+.xiaoxi-buddy svg { display: block; width: 100%; height: auto; overflow: visible; }
+.xiaoxi-buddy .xs-body { animation: xs-breathe 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+.xiaoxi-buddy .xs-head { transition: transform .45s cubic-bezier(.3, 1.4, .5, 1); transform-box: fill-box; transform-origin: 50% 90%; }
+.xiaoxi-buddy .xs-tuft { animation: xs-wiggle 2.6s ease-in-out infinite; transform-box: fill-box; transform-origin: 30% 100%; }
+.xiaoxi-buddy .xs-shadow { animation: xs-shadow 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.xiaoxi-buddy .xs-lid { transform-box: fill-box; transform-origin: center; transition: transform .07s; }
+.xiaoxi-buddy .xs-arm { transform-box: fill-box; transition: transform .35s cubic-bezier(.3, 1.5, .5, 1); }
+.xiaoxi-buddy .xs-arm.l { transform-origin: 100% 10%; } .xiaoxi-buddy .xs-arm.r { transform-origin: 0% 10%; }
+.xiaoxi-buddy .xs-led { animation: xs-glow 1.6s ease-in-out infinite; }
+@keyframes xs-breathe { 0%, 100% { transform: translateY(0) scale(1, 1) } 50% { transform: translateY(-3px) scale(1.01, .99) } }
+@keyframes xs-wiggle { 0%, 100% { transform: rotate(0) } 20% { transform: rotate(-12deg) } 40% { transform: rotate(6deg) } 55% { transform: rotate(0) } }
+@keyframes xs-shadow { 0%, 100% { transform: scaleX(1); opacity: .25 } 50% { transform: scaleX(.88); opacity: .16 } }
+@keyframes xs-glow { 0%, 100% { opacity: .5 } 50% { opacity: 1 } }
+.xiaoxi-buddy[data-mood="work"] .xs-arm.l { animation: xs-typeL .5s ease-in-out infinite; }
+.xiaoxi-buddy[data-mood="work"] .xs-arm.r { animation: xs-typeR .5s ease-in-out infinite; }
+@keyframes xs-typeL { 0%, 100% { transform: rotate(-8deg) } 50% { transform: rotate(6deg) } }
+@keyframes xs-typeR { 0%, 100% { transform: rotate(6deg) } 50% { transform: rotate(-8deg) } }
+.xiaoxi-buddy[data-mood="hello"] .xs-arm.r { animation: xs-wave .45s ease-in-out 5 alternate; }
+@keyframes xs-wave { from { transform: rotate(-150deg) } to { transform: rotate(-110deg) } }
+.xiaoxi-buddy[data-mood="done"] .xs-arm.l { transform: rotate(75deg); } .xiaoxi-buddy[data-mood="done"] .xs-arm.r { transform: rotate(-75deg); }
+.xiaoxi-buddy[data-mood="done"] .xs-body { animation: xs-hop .9s ease-in-out infinite; }
+@keyframes xs-hop { 0%, 100% { transform: translateY(0) scale(1, 1) } 30% { transform: translateY(-12px) scale(.97, 1.03) } 55% { transform: translateY(0) scale(1.05, .95) } }
+.xiaoxi-buddy[data-mood="error"] .xs-arm.l { transform: rotate(18deg); } .xiaoxi-buddy[data-mood="error"] .xs-arm.r { transform: rotate(-18deg); }
+.xiaoxi-buddy[data-mood="error"] .xs-drop { animation: xs-drip 1.6s ease-in infinite; }
+@keyframes xs-drip { 0%, 30% { transform: translateY(0); opacity: 0 } 45% { opacity: 1 } 100% { transform: translateY(10px); opacity: 0 } }
+.xiaoxi-buddy[data-mood="sleep"] .xs-body { animation: xs-breathe 5s ease-in-out infinite; }
+.xiaoxi-buddy[data-mood="sleep"] .xs-arm.l { transform: rotate(10deg); } .xiaoxi-buddy[data-mood="sleep"] .xs-arm.r { transform: rotate(-10deg); }
+.xiaoxi-buddy .xs-zz { animation: xs-zz 2.4s ease-out infinite; } .xiaoxi-buddy .xs-zz.b { animation-delay: 1.2s; }
+@keyframes xs-zz { 0% { transform: translate(0, 0); opacity: 0 } 30% { opacity: 1 } 100% { transform: translate(12px, -22px); opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { .xiaoxi-shell *, .xiaoxi-shell *::before { animation: none !important; transition: none !important; } }

@@ -948,6 +948,15 @@ function createPreloadApis(ipcRenderer) {
       addRecipients: (contactIds) => ipcRenderer.invoke("wechat-workflow:add-recipients", { contactIds, clickToken: consumeWorkflowSave() }),
       setReplyEnabled: (enabled) => ipcRenderer.invoke("wechat-workflow:set-reply-enabled", { enabled: enabled === true }),
       showFloating: () => ipcRenderer.invoke("wechat-workflow:show-floating"),
+      // 小玺's window: take clicks only on 小玺 and its bubble, move by dragging, keep the place.
+      spriteInteractive: (interactive) => ipcRenderer.send("wechat-workflow:sprite-interactive", interactive === true),
+      spriteMove: (dx, dy) => ipcRenderer.send("wechat-workflow:sprite-move", { dx: Number(dx) || 0, dy: Number(dy) || 0 }),
+      spriteMoved: () => ipcRenderer.send("wechat-workflow:sprite-moved"),
+      onSpriteSay: (callback) => {
+        const handler = (_event, line) => callback(line);
+        ipcRenderer.on("wechat-workflow:sprite-say", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:sprite-say", handler);
+      },
       showMain: (intent) => ipcRenderer.invoke("wechat-workflow:show-main", intent),
       onNavigate: (callback) => {
         const handler = (_event, intent) => callback(intent);

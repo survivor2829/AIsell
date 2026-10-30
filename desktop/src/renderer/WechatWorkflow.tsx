@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
+import { XiaoxiSprite, type SpriteActivity } from "./XiaoxiSprite";
 import { MomentsHero, TouchHero } from "./TouchHero";
 import "./WechatWorkflow.css";
 
@@ -102,6 +103,10 @@ declare global {
       pause: () => Promise<WorkflowResult>;
       chooseTouchImages: () => Promise<{ ok: boolean; canceled?: boolean; images?: TouchImage[]; error?: string }>;
       showFloating: () => Promise<WorkflowResult>;
+      spriteInteractive?: (interactive: boolean) => void;
+      spriteMove?: (dx: number, dy: number) => void;
+      spriteMoved?: () => void;
+      onSpriteSay?: (callback: (line: { text: string; sub?: string; mood?: "done" | "error" | "" }) => void) => () => void;
       showMain: (intent?: { view: WorkflowView }) => Promise<WorkflowResult>;
       onNavigate?: (callback: (intent: { view: WorkflowView }) => void) => () => void;
       addTask: (task: WorkflowTaskInput) => Promise<WorkflowResult>;
@@ -803,48 +808,28 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
   </section>;
 }
 
-// 小玺 (user decision 2026-10-30): a small sprite in the corner instead of the old progress card. The
-// mascot on top, one card below with what is running now, one detail line and the progress; click
-// 小玺 to go back to the main window. It also shows 养号 and 一键分发 running in Chrome.
+// 小玺 (user decisions 2026-10-30): always on screen; it shows whatever runs, WeChat first, then the
+// other features that report to it (养号, 一键分发, video work, 精准获客).
 export function FloatingWorkflowWindow() {
   const workflow = useWechatWorkflow();
-  const { state, error, run, busy } = workflow;
+  const { state, error } = workflow;
   const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId));
   const displayed = current || state.tasks.find((task) => task.id === state.lastTaskId);
-  const api = window.xiaoxiWorkflow;
-  const showMain = () => api && void run(() => api.showMain());
   const waitingSeconds = useRemainingSeconds(state.waitUntil);
   const waitingDetail = waitingDetailText(state, waitingSeconds);
   const executionDetail = useExecutionDetail(state.currentExecution);
   const sync = state.contactSync;
   const moments = sync || state.phase === "replying" ? null : state.momentsProgress;
-  const momentsLabel = (reason: string, fallback: string) => {
-    const label = momentsProgressLabel(reason, fallback);
-    return label === reason ? fallback : label;
-  };
   const wechatActive = Boolean(state.enabled || sync?.running);
   const outside = (state.external || [])[0];
-  // WeChat work first; Chrome work (养号, 一键分发) when WeChat is idle.
-  const title = workflow.loading ? "读取进度中…"
-    : sync ? (!sync.running ? (sync.error ? "联系人同步未完成" : `已同步 ${sync.contactCount} 位联系人`) : (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人"))
-    : !wechatActive && outside ? outside.title : workflowStatusText(state);
-  const detail = sync ? ""
-    : !wechatActive && outside ? outside.detail || ""
-    : moments && current ? `${momentsLabel(moments.stage, "正在处理当前帖子")} · 已赞 ${moments.liked} · 已评 ${moments.commented}`
-    : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : "");
-  const progress = !wechatActive && outside ? (outside.total ? { done: outside.done || 0, total: outside.total } : null)
-    : !sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? displayed.progress : null;
-  const alert = error || state.error || sync?.error || state.replyError || (!wechatActive && outside?.attention ? outside.detail : "");
-  const running = wechatActive || Boolean(outside);
-  return <main className="floating-shell workflow-floating-shell sprite-shell">
-    <button type="button" className={`sprite-mascot${running ? " is-running" : ""}${alert ? " is-alert" : ""}`} title="打开主页面" aria-label="小玺：打开主页面" onClick={showMain} disabled={busy}>
-      <img src="./app-icon.png" alt="" draggable={false} />
-    </button>
-    <section className="sprite-card" role="status">
-      <strong className="sprite-title">{title}</strong>
-      {alert ? <p className="sprite-alert">{alert}</p> : detail && <p className="sprite-detail">{detail}</p>}
-      {progress && <div className="sprite-progress"><i><span style={{ width: `${Math.min(100, progress.done / progress.total * 100)}%` }} /></i><b>{progress.done}/{progress.total}</b></div>}
-      <footer className="floating-actions sprite-actions">{wechatActive && (sync?.running ? <button disabled>同步中…</button> : <WorkflowToggle workflow={workflow} compact />)}<button onClick={showMain} disabled={busy}>主页面</button></footer>
-    </section>
-  </main>;
+  const activity: SpriteActivity | null = wechatActive ? {
+    kind: "wechat",
+    title: sync?.running ? (SYNC_STAGE_LABELS[sync.stage] || "正在读取微信联系人") : workflowStatusText(state),
+    detail: moments && current ? `已赞 ${moments.liked} · 已评 ${moments.commented}`
+      : executionDetail || (state.waitingTaskId ? waitingDetail : "") || (current && current.title !== TASK_LABELS[current.type] ? current.title : ""),
+    ...(!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 ? { done: displayed.progress.done, total: displayed.progress.total } : {}),
+    pausable: state.enabled && state.phase !== "pausing"
+  } : outside ? { ...outside } : null;
+  const alert = error || state.error || sync?.error || state.replyError || (!wechatActive && outside?.attention ? outside.detail || "" : "");
+  return <XiaoxiSprite workflow={workflow} activity={activity} alert={alert} />;
 }
