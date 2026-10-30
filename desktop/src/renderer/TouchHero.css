@@ -94,3 +94,5 @@
 .auto-reply-page.is-full .auto-reply-held .secondary-button { height: clamp(36px, 2.4vw, 48px); font-size: clamp(14px, .95vw, 18px); }
 .auto-reply-page.is-full .auto-reply-held h2 { font-size: clamp(18px, 1.3vw, 26px); }
 .auto-reply-page.is-full .auto-reply-held p, .auto-reply-page.is-full .auto-reply-held li { font-size: clamp(14px, 1vw, 19px); }
+/* 朋友圈运营有两种任务：发朋友圈用品牌红，朋友圈互动用白底红字。 */
+.touch-add.is-light { border: 1px solid #f5b5bd; background: #fff; color: #c91739; box-shadow: 0 8px 18px #e6000014; }
