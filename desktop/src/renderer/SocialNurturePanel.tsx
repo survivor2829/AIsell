@@ -24,10 +24,10 @@ function phaseText(plan: NurturePlan) {
   switch (plan.phase) {
     case "opening": return { text: "正在打开 Chrome", live: true };
     case "searching": return { text: "正在搜索行业关键词", live: true };
-    case "watching": return { text: `正在刷视频 · 第 ${(today?.segmentsDone || 0) + 1} 段`, live: true };
-    case "resting": return { text: `段间休息，约 ${time(today?.nextAt || 0)} 跑下一段`, live: false };
+    case "watching": return { text: "正在刷视频", live: true };
+    case "resting": return { text: `休息一会儿，约 ${time(today?.nextAt || 0)} 接着跑`, live: false };
     case "starting": return { text: "马上开始下一段", live: false };
-    case "done_today": return { text: `今天的 ${today?.segments || 0} 段已做完，明天打开软件会自动继续`, live: false };
+    case "done_today": return { text: "今天已经跑完，明天打开软件会自动继续；想再跑可以点「现在就跑」", live: false };
     case "rest_today": return { text: "今天出现两次验证，为了账号安全停到明天", live: false, warn: true };
     case "paused": return { text: plan.reason || "已暂停", live: false, warn: true };
     case "finished": return { text: "8 天养号已完成", live: false };
@@ -156,7 +156,7 @@ export function SocialNurturePanel({ onManageAccounts }: { onManageAccounts: () 
 
     {showWizard && <section className="nur-wizard" aria-label={editingId ? "编辑养号计划" : "新建养号计划"}>
       <header><h2>{editingId ? "编辑养号计划" : "新号先养 8 天，再稳定发视频"}</h2>
-        <p>第 1 天只刷推荐，第 2–7 天搜行业词、逐步加点赞关注评论，第 8 天发一条测试视频。每天 2–3 段，每段 15–25 分钟。</p>
+        <p>第 1 天起就搜行业词刷视频，第 1 天只看不互动，第 2–7 天逐步加点赞关注评论，第 8 天发一条测试视频。每天连续跑一次 30–60 分钟，也可以随时点「现在就跑」。</p>
         {plans.length > 0 && <button type="button" className="nur-close" aria-label="收起" onClick={() => { setWizard(false); setEditingId(""); }}><X size={20} /></button>}</header>
 
       <div className="nur-step"><h3><em>1</em>选一个抖音号</h3>

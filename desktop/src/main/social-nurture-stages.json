@@ -1,12 +1,12 @@
 {
-  "source": "谷小智抖音养号 8 天 5 阶段（docs/PRD-一键分发-养号-网感模板-精准获客.md 1.2 节）；所有数字都是闭区间，每天开始时随机取一次。",
+  "source": "谷小智抖音养号 8 天 5 阶段（docs/PRD-一键分发-养号-网感模板-精准获客.md 1.2 节）；用户 2026-10-30 改为：第 1 天起就搜行业词，每天连续跑一次 30–60 分钟（点「现在就跑」也是一次 30–60 分钟）。所有数字都是闭区间，每天开始时随机取一次。",
   "segmentGapMinutes": [20, 40],
   "skipDwellSeconds": [2, 4],
   "stages": [
-    { "days": [1], "name": "冷启动", "segments": [2, 2], "minutes": [15, 20], "dwellSeconds": [5, 15], "search": false, "likes": [0, 0], "follows": [0, 0], "comments": [0, 0] },
-    { "days": [2, 3], "name": "打标签", "segments": [3, 3], "minutes": [13, 17], "dwellSeconds": [6, 18], "search": true, "likes": [15, 20], "follows": [3, 4], "comments": [0, 0] },
-    { "days": [4, 5], "name": "加评论", "segments": [3, 3], "minutes": [15, 20], "dwellSeconds": [6, 18], "search": true, "likes": [20, 25], "follows": [4, 5], "comments": [3, 4] },
-    { "days": [6, 7], "name": "强化权重", "segments": [3, 3], "minutes": [20, 25], "dwellSeconds": [6, 18], "search": true, "likes": [25, 30], "follows": [5, 6], "comments": [5, 6] },
-    { "days": [8], "name": "发布测试", "segments": [2, 2], "minutes": [15, 20], "dwellSeconds": [6, 18], "search": true, "likes": [10, 15], "follows": [0, 0], "comments": [2, 3], "publish": true }
+    { "days": [1], "name": "冷启动", "segments": [1, 1], "minutes": [30, 60], "dwellSeconds": [5, 15], "search": true, "likes": [0, 0], "follows": [0, 0], "comments": [0, 0] },
+    { "days": [2, 3], "name": "打标签", "segments": [1, 1], "minutes": [30, 60], "dwellSeconds": [6, 18], "search": true, "likes": [15, 20], "follows": [3, 4], "comments": [0, 0] },
+    { "days": [4, 5], "name": "加评论", "segments": [1, 1], "minutes": [30, 60], "dwellSeconds": [6, 18], "search": true, "likes": [20, 25], "follows": [4, 5], "comments": [3, 4] },
+    { "days": [6, 7], "name": "强化权重", "segments": [1, 1], "minutes": [30, 60], "dwellSeconds": [6, 18], "search": true, "likes": [25, 30], "follows": [5, 6], "comments": [5, 6] },
+    { "days": [8], "name": "发布测试", "segments": [1, 1], "minutes": [30, 60], "dwellSeconds": [6, 18], "search": true, "likes": [10, 15], "follows": [0, 0], "comments": [2, 3], "publish": true }
   ]
 }
