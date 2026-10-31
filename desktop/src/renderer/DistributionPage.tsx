@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { SocialAccountsPanel } from "./SocialAccountsPanel";
 import { SocialPublishPanel } from "./SocialPublishPanel";
 import { SocialNurturePanel } from "./SocialNurturePanel";
 import type { NurtureState } from "./social-nurture-types";
@@ -14,11 +13,10 @@ import "./DistributionPage.css";
 const PLATFORMS: SocialPlatformKey[] = ["douyin", "kuaishou", "xiaohongshu", "channels"];
 const today = (value: string) => Boolean(value) && new Date(value).toDateString() === new Date().toDateString();
 
-// 账号运营（小丽）：平台账号 → 养号 → 一键分发。账号先在「平台账号」里扫码登录；新抖音号先养 8 天，
-// 再把成片发到抖音、快手、小红书、视频号。三块是左侧导航里的子模块（用户 2026-10-30），这页只显示选中的那一块。
-export type DistributionTab = "accounts" | "nurture" | "publish";
-export function DistributionPage({ tab, onNavigate }: { tab: DistributionTab; onNavigate: (tab: DistributionTab) => void }) {
-  const setTab = onNavigate;
+// 账号运营（小丽）的养号和一键分发。账号先在成片中心的「平台账号」里扫码登录；新抖音号先养 8 天，
+// 再把成片发到抖音、快手、小红书、视频号。两块是左侧导航里的子模块，这页只显示选中的那一块。
+export type DistributionTab = "nurture" | "publish";
+export function DistributionPage({ tab, onManageAccounts }: { tab: DistributionTab; onManageAccounts: () => void }) {
   const [nurture, setNurture] = useState<NurtureState>();
   const [publish, setPublish] = useState<SocialPublishState>();
   const [accounts, setAccounts] = useState<SocialAccountsState>();
@@ -58,8 +56,7 @@ export function DistributionPage({ tab, onNavigate }: { tab: DistributionTab; on
         })}
       </ul>
     </div>
-    {tab === "publish" && <div className="dist-panel"><SocialPublishPanel onManageAccounts={() => setTab("accounts")} /></div>}
-    {tab === "nurture" && <div className="dist-panel"><SocialNurturePanel onManageAccounts={() => setTab("accounts")} /></div>}
-    {tab === "accounts" && <div className="dist-panel"><SocialAccountsPanel /></div>}
+    {tab === "publish" && <div className="dist-panel"><SocialPublishPanel onManageAccounts={onManageAccounts} /></div>}
+    {tab === "nurture" && <div className="dist-panel"><SocialNurturePanel onManageAccounts={onManageAccounts} /></div>}
   </section>;
 }

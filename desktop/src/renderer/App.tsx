@@ -53,6 +53,7 @@ import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
 import { DistributionPage } from "./DistributionPage";
+import { SocialAccountsPanel } from "./SocialAccountsPanel";
 import { PhoneMatrixPage } from "./PhoneMatrixPage";
 import { DigitalHumanPage } from "./DigitalHumanPage";
 import { ProductVideoPage } from "./ProductVideoPage";
@@ -432,10 +433,9 @@ const operationsChildren: NavItem[] = [
   { key: "product-detail", label: "产品详情图", icon: Images }
 ];
 
-// 账号运营（小丽）, user decision 2026-10-30: 手机矩阵 first, then the three parts that were tabs.
+// 账号运营（小丽）has three parts; 平台账号 lives in 成片中心 (user decisions of 2026-10-30 and 10-31).
 const accountOpsChildren: NavItem[] = [
   { key: "phone-matrix", label: "手机矩阵", icon: Smartphone },
-  { key: "accounts", label: "平台账号", icon: CircleUserRound },
   { key: "nurture", label: "养号", icon: Sprout },
   { key: "publish", label: "一键分发", icon: Share2 }
 ];
@@ -459,7 +459,8 @@ function isSupportRole(key: string): key is typeof supportRoles[number] {
 }
 const guideNavItem: NavItem = { key: "guide", label: "操作教程", icon: CircleHelp };
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, guideNavItem, finishedNavItem, ...agentSecondary, diagnosticsNavItem];
+const accountsNavItem: NavItem = { key: "accounts", label: "平台账号", icon: CircleUserRound };
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, guideNavItem, finishedNavItem, accountsNavItem, ...agentSecondary, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -903,7 +904,7 @@ export default function App() {
         </nav>
         <div className="sidebar-system-nav">
           <button className={`nav-item ${active === "guide" ? "active" : ""}`} onClick={() => setActive("guide")}><CircleHelp size={20} strokeWidth={2.5} /><span>操作教程</span></button>
-          <button className={`nav-item ${active === "finished" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
+          <button className={`nav-item ${active === "finished" || active === "accounts" ? "active" : ""}`} onClick={() => setActive("finished")}><Video size={20} strokeWidth={2.5} /><span>成片中心</span></button>
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
             <span>{diagnosticsNavItem.label}</span>
@@ -989,7 +990,7 @@ export default function App() {
           {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} contacts={contactRows} />}
           {active === "expert" && <AiExpert />}
           {active === "phone-matrix" && <PhoneMatrixPage />}
-          {(active === "accounts" || active === "nurture" || active === "publish") && <DistributionPage tab={active} onNavigate={(tab) => selectChild("tutorials", tab)} />}
+          {(active === "nurture" || active === "publish") && <DistributionPage tab={active} onManageAccounts={() => setActive("accounts")} />}
           {(productDetailVisited || active === "product-detail") && <div className="product-detail-retained" hidden={active !== "product-detail"}><ProductDetailPage preference={visiblePreference("operations")} onPersonalize={() => setPersonalizingRole("operations")} /></div>}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
@@ -1023,6 +1024,11 @@ export default function App() {
                 onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}
                 onOpenMaterials={() => setCreativeView("materials")} />)}
+          {(active === "finished" || active === "accounts") && <div className="finished-tabs" role="group" aria-label="成片中心">
+            <button type="button" aria-pressed={active === "finished"} onClick={() => setActive("finished")}><Video size={18} />成片</button>
+            <button type="button" aria-pressed={active === "accounts"} onClick={() => setActive("accounts")}><CircleUserRound size={18} />平台账号</button>
+          </div>}
+          {active === "accounts" && <section className="ns-page distribution-page"><div className="dist-panel"><SocialAccountsPanel /></div></section>}
           {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
             setCreativeView("history"); setActive("workspace");
           }} />}

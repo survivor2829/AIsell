@@ -120,7 +120,7 @@ export function AcquisitionPage() {
         </div>
         <div className="acq-form">
           <label>用哪个账号搜{kuaishouAccounts.length ? <select value={form.accountId} onChange={(event) => setForm({ ...form, accountId: event.target.value })}>{kuaishouAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select>
-            : <p className="acq-hint is-warn">还没有已登录的快手账号，先到「一键分发 → 平台账号」添加并扫码。</p>}</label>
+            : <p className="acq-hint is-warn">还没有已登录的快手账号，先到「成片中心 → 平台账号」添加并扫码。</p>}</label>
           <label>关键词<textarea rows={3} value={form.keywords} placeholder={"每行一个，例如：\n洗地机\n商用清洁设备"} onChange={(event) => setForm({ ...form, keywords: event.target.value })} /></label>
           <label>意向词<span className="social-optional">选填</span><input value={form.intentWords} placeholder="评论里出现这些词也算意向，空格分开，例如：租 批发 代理" onChange={(event) => setForm({ ...form, intentWords: event.target.value })} />
             <small>已内置：问价、想买、要联系方式、问好不好用 这几类说法</small></label>
