@@ -88,6 +88,7 @@ const checks = [
   "src/main/sprite-activity.self_check.cjs",
   "src/main/phone-matrix.self_check.cjs",
   "src/main/phone-screens.self_check.cjs",
+  "src/main/phone-device.self_check.cjs",
   "src/main/component-service-rollback.self_check.cjs",
   "scripts/issues-pull.self_check.cjs",
   "scripts/error-code-map.self_check.cjs",
