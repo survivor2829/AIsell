@@ -27,3 +27,7 @@
 .distribution-page .dist-hero { align-items: center; }
 .dist-tabs { margin-top: 16px; }
 .dist-panel { margin-top: 16px; }
+/* 成片中心 has two parts: 成片 and 平台账号. */
+.finished-tabs { display: inline-flex; gap: 4px; margin-bottom: 16px; padding: 4px; border: 1px solid #e3e5ea; border-radius: 999px; background: #fff; }
+.finished-tabs button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 22px; border: 0; border-radius: 999px; background: none; font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; }
+.finished-tabs button[aria-pressed="true"] { background: #1d2230; color: #fff; }
