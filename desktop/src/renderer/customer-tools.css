@@ -71,15 +71,6 @@
 .announcement-entry summary > strong { margin-right: 9px; }
 .announcement-new { color: var(--brand-red-dark); background: var(--brand-soft); padding: 2px 7px; font-size: 11px; border-radius: 5px; font-weight: 500; }
 .customer-empty { margin: 32px 0; color: #676f80; font-size: 14px; line-height: 1.8; }
-.tutorial-categories { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 24px; }
-.tutorial-categories button { border: 0; background: transparent; padding: 8px 10px; color: #616a7b; border-radius: 7px; font-size: 12px; }
-.tutorial-categories button[aria-pressed="true"] { color: var(--brand-red-dark); background: var(--brand-soft); font-weight: 650; }
-.tutorial-article h3 { margin: 0 0 12px; font-size: 19px; line-height: 1.5; }
-.tutorial-article > p, .tutorial-article li { color: #525d70; font-size: 14px; line-height: 1.85; }
-.tutorial-article ol { margin: 20px 0 25px; padding-left: 22px; }
-.tutorial-article li { padding-left: 5px; margin-bottom: 13px; }
-.tutorial-links { display: flex; flex-wrap: wrap; gap: 9px; }
-.tutorial-note { padding-top: 18px; border-top: 1px solid #e5e7ed; margin-top: 28px; }
 @media (max-width: 1080px) { .topbar-tool { padding: 8px 7px; } .topbar-tools { gap: 0; } .account-trigger { max-width: 170px; } }
 @media (max-width: 860px) { .topbar-tool > span:not(.topbar-unread) { display: none; } .topbar-tool { width: 35px; justify-content: center; } }
 @media (max-width: 860px) { .topbar-update-action { width: auto; } .topbar-update-action > span { display: inline; } }

@@ -1,12 +1,9 @@
 .tutorials-page{--tutorial-accent:var(--agent-accent-strong,#31556c);padding:24px 30px 40px;color:#263342;min-width:0}
 .tutorials-hero{display:flex;align-items:center;gap:26px;min-height:178px;background:var(--workspace-role-surface,#eaf4f8);padding:0 24px 0 12px;border-radius:16px;margin-bottom:24px;overflow:hidden}
-.tutorials-persona{border:0;background:none;width:176px;height:190px;padding:0;flex:none;cursor:pointer}
-.tutorials-persona img{height:100%;width:auto;max-width:100%;margin:auto;object-fit:contain;object-position:center bottom;mix-blend-mode:darken;mask-image:linear-gradient(to right,transparent,black 22%,black 78%,transparent),linear-gradient(to bottom,transparent,black 8%,black 80%,transparent);mask-composite:intersect}
 .tutorials-hero h1{margin:0 0 10px;font-size:27px;line-height:1.2}
 .tutorials-hero p{margin:5px 0;color:var(--tutorial-accent);font-size:15px;line-height:1.6;max-width:65ch}
 .tutorials-hero .tutorials-intro{font-size:20px;font-weight:650}
 .tutorials-page button,.tutorials-page input{font:inherit}
-.tutorials-personalize{display:inline-flex;align-items:center;gap:6px;background:none;border:0;color:var(--tutorial-accent);padding:8px 0;cursor:pointer;font-size:13px!important}
 .tutorials-tools{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .tutorials-categories{display:flex;gap:8px;flex-wrap:wrap}
 .tutorials-categories button,.tutorials-refresh,.tutorials-empty button,.tutorials-buffer button{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:11px 14px;min-height:44px;background:#fff;border:1px solid #d5dce4;border-radius:9px;color:#34465b;cursor:pointer}
@@ -50,12 +47,11 @@
 .tutorials-page button:disabled{opacity:.6;cursor:default}
 .tutorials-page button:not(:disabled):hover{filter:brightness(.97)}
 .tutorials-compact{padding:16px}
-@media(max-width:1000px){.tutorials-page{padding:20px}.tutorials-hero{gap:15px}.tutorials-persona{width:142px}.tutorials-categories button{padding:10px}.tutorials-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}}
-@media(max-width:720px){.tutorials-page{padding:14px}.tutorials-hero{padding-right:15px;gap:10px}.tutorials-persona{width:110px;height:160px}.tutorials-hero h1{font-size:24px}.tutorials-hero .tutorials-intro{font-size:17px}.tutorials-hero p{font-size:13px}.tutorials-categories{gap:6px}.tutorials-categories button{font-size:13px}.tutorials-tools{align-items:flex-start}.tutorials-refresh{padding:10px;font-size:0!important;gap:0}.tutorials-list-heading>span{display:none}.tutorials-search{margin-left:0;width:100%}.tutorials-search input{width:100%}.tutorials-grid{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}}
+@media(max-width:1000px){.tutorials-page{padding:20px}.tutorials-hero{gap:15px}.tutorials-categories button{padding:10px}.tutorials-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}}
+@media(max-width:720px){.tutorials-page{padding:14px}.tutorials-hero{padding-right:15px;gap:10px}.tutorials-hero h1{font-size:24px}.tutorials-hero .tutorials-intro{font-size:17px}.tutorials-hero p{font-size:13px}.tutorials-categories{gap:6px}.tutorials-categories button{font-size:13px}.tutorials-tools{align-items:flex-start}.tutorials-refresh{padding:10px;font-size:0!important;gap:0}.tutorials-list-heading>span{display:none}.tutorials-search{margin-left:0;width:100%}.tutorials-search input{width:100%}.tutorials-grid{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}}
 
 .tutorials-heading-layout { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(340px,1fr); gap:28px; align-items:center; margin-bottom:24px; }
 .tutorials-heading-layout .tutorials-hero { margin:0; padding:0; gap:18px; background:transparent; overflow:visible; }
-.tutorials-heading-layout .tutorials-persona { width:210px; height:270px; }
 .tutorials-discovery { min-width:0; }
 .tutorials-discovery .tutorials-tools { align-items:flex-start; }
 .tutorials-discovery .tutorials-categories { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); flex:1; }
@@ -64,4 +60,3 @@
 .tutorials-discovery .tutorials-search input { width:100%; }
 .tutorials-compact .tutorials-heading-layout { display:block; }
 @media(max-width:1100px) { .tutorials-heading-layout { grid-template-columns:1fr; gap:16px; } }
-@media(max-width:760px) { .tutorials-heading-layout .tutorials-persona { width:145px; height:210px; } }

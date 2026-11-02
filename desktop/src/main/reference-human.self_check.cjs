@@ -49,6 +49,7 @@ async function main() {
   const counts = { train: 0, voice: 0, video: 0, asr: 0, recover: 0, package: 0, enroll: 0, script: 0 };
   const enrollmentReceipts = new Map(); let loseEnrollmentReply = true;
   let voiceStatusQueries = 0, measuredSeconds = 3;
+  const videoExtensions = [];
   let scriptReply = null;
   let interrupted = true, terminalFailure = false, musicAvailable = true, transcriptMismatch = false, service;
   const videoOperations = new Set();
@@ -86,7 +87,7 @@ async function main() {
           assert.equal(input.body.input.voice, 'cosyvoice-v3.5-flash-myvoice-fixture');
           assert.equal(Object.hasOwn(input.body.input, 'instruction'), false, 'default original delivery must omit the instruction field, matching the accepted voice');
           assert.equal(input.body.input.rate, 1);
-          assert.equal(input.body.input.text, '测试口播。', 'delivery instructions never change the approved spoken script');
+          assert.ok(['测试口播。', '口播'.repeat(80)].includes(input.body.input.text), 'delivery instructions never change the approved spoken script');
           return { output: { finish_reason: 'stop', audio: { url: 'https://example.com/voice.wav' } } };
         }
         if (route === '/narration/script-quota') return { quota: { status: 'available', remaining: 2 - counts.script } };
@@ -94,7 +95,7 @@ async function main() {
         if (route.includes('recognize')) { counts.asr++; return { result: { utterances } }; }
         if (route.includes('image2video')) {
           assert.ok(!videoOperations.has(input.operationId), 'a video operation may only be submitted once');
-          videoOperations.add(input.operationId); counts.video++; assert.equal(input.body.parameters.video_extension, false);
+          videoOperations.add(input.operationId); counts.video++; videoExtensions.push(input.body.parameters.video_extension);
           if (interrupted) { interrupted = false; throw Object.assign(new Error('connection lost'), { outcomeUnknown: true }); }
           return { output: { task_id: 'failed-cloud-task' } };
         }
@@ -332,9 +333,9 @@ async function main() {
     assert.deepEqual([rewritten.libraryId, rewritten.targetSeconds, rewritten.originality.passed, rewritten.originality.attempts], ['7689829090550975795', 45, true, 2]);
     assert.match(rewritten.problems[0], /太短/);
     assert.equal(rewritten.estimatedSeconds, 4, 'how long a short draft reads reaches the page');
-    // 60 秒的视频选 60 秒：可以选，但按 57 秒的字数写，给配音留余量
+    // 选 60 秒就按 60 秒写：画面会接长，不再按视频长度扣余量
     await service.writeScript({ ...libraryInput, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b4' });
-    assert.equal(libraryBody.targetSeconds, 57);
+    assert.equal(libraryBody.targetSeconds, 60);
     const posted = counts.script;
     await assert.rejects(service.writeScript({ ...libraryInput, targetSeconds: 50 }), { code: 'reference_script_seconds_invalid' });
     await assert.rejects(service.writeScript({ ...libraryInput, libraryId: '../x' }), { code: 'reference_script_library_invalid' });
@@ -349,10 +350,17 @@ async function main() {
     const personFile = path.join(root, 'reference', 'assets', `${automaticAsset.id}.json`);
     const original = fs.readFileSync(personFile, 'utf8');
     fs.writeFileSync(personFile, JSON.stringify({ ...JSON.parse(original), seconds: 46.7 }));
-    await assert.rejects(service.writeScript({ ...libraryInput, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b7' }), /只有 46 秒，不够写 60 秒/);
+    await service.writeScript({ ...libraryInput, targetSeconds: 60, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b7' });
+    assert.equal(libraryBody.targetSeconds, 60, '46.7 秒的视频也能写 60 秒：画面会自动接长');
+    fs.writeFileSync(personFile, JSON.stringify({ ...JSON.parse(original), seconds: 12 }));
     await service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b8' });
-    assert.equal(libraryBody.targetSeconds, 43, '46.7 秒的视频选 45 秒，按 43 秒写');
-    assert.equal(counts.script, posted + 2);
+    assert.equal(libraryBody.targetSeconds, 45, '读 12 秒也能写 45 秒的稿子，不再扣掉视频余量');
+    // 没选时长的写稿（爆款链接一键出片）不随本人视频长短变化，按 45 秒写。
+    await service.writeScript({ ...scriptInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683c5' });
+    assert.equal(libraryBody.targetSeconds, 45, 'a write with no chosen length is 45 seconds');
+    fs.writeFileSync(personFile, JSON.stringify({ ...JSON.parse(original), seconds: 9.5 }));
+    await assert.rejects(service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683ba' }), { code: 'reference_video_short' }, '不到 10 秒的视频不写稿');
+    assert.equal(counts.script, posted + 4);
     fs.writeFileSync(personFile, original);
     // 换一篇：把模式和这张卡片写过的标题交给云端，原文仍由云端按 ID 补
     await service.writeScript({ ...libraryInput, mode: 'structure', avoidTitles: [' 夜班车间没人扫 '], generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b9' });
@@ -360,7 +368,7 @@ async function main() {
     for (const bad of [{ mode: 'random' }, { avoidTitles: 'x' }, { avoidTitles: [''] }, { avoidTitles: Array(11).fill('t') }])
       await assert.rejects(service.writeScript({ ...libraryInput, ...bad }), { code: 'reference_script_mode_invalid' });
     await assert.rejects(service.writeScript({ ...scriptInput, mode: 'structure' }), { code: 'reference_script_mode_invalid' }, '换一篇只用于文案库');
-    assert.equal(counts.script, posted + 3);
+    assert.equal(counts.script, posted + 4);
     scriptReply = () => { throw Object.assign(new Error('服务未完成请求：viral_library_item_missing'), { code: 'digital_human_provider_error', status: 404, outcomeUnknown: false }); };
     await assert.rejects(service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b5' }), /不在文案库里/);
     scriptReply = null;
@@ -376,10 +384,20 @@ async function main() {
     fs.writeFileSync(personPath, JSON.stringify({ ...person, seconds: 21.6 }));
     const shortDraft = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
     const shortQuote = await service.quote(shortDraft.id);
-    assert.equal(shortQuote.quote.maximumSeconds, 21.6, 'quote follows the source instead of a fixed 45 seconds');
+    assert.equal(shortQuote.quote.maximumSeconds, 5, 'the quote follows the script: 5 characters at 4.2 per second, plus 3 seconds');
+    const longScript = '口播'.repeat(80);
+    const longDraft = service.create({ referenceAssetId: automaticAsset.id, script: longScript });
+    assert.equal((await service.quote(longDraft.id)).quote.maximumSeconds, 42, 'a 160-character script may run 42 seconds, longer than the 21.6-second recording');
     await service.prepare(shortDraft.id, shortQuote.quoteRevision, true, true);
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(service.get(shortDraft.id).status, 'completed');
+    assert.equal(videoExtensions.at(-1), true, 'a short recording is extended back and forth to the voice');
+    measuredSeconds = 40;
+    const extended = service.create({ referenceAssetId: automaticAsset.id, script: longScript });
+    const extendedQuote = await service.quote(extended.id);
+    await service.prepare(extended.id, extendedQuote.quoteRevision, true, true);
+    while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(service.get(extended.id).status, 'completed', 'a 40-second voice on a 21.6-second recording is fine now');
     measuredSeconds = 22;
     const tooLong = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
     const tooLongQuote = await service.quote(tooLong.id), videoBeforeLong = counts.video, asrBeforeLong = counts.asr;
@@ -393,22 +411,32 @@ async function main() {
     const legacyPath = path.join(root, 'reference', 'tasks', `${legacyDraft.id}.json`);
     fs.writeFileSync(legacyPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(legacyPath)), version: 4 }));
     assert.equal((await service.quote(legacyDraft.id)).quote.maximumSeconds, 45, 'legacy quote rules remain unchanged');
-    for (const seconds of [14.9, 15, 20, 40, 60]) {
+    // A version 5 draft has paid for nothing: it moves to the extended rules, since scripts are no longer capped to the recording.
+    fs.writeFileSync(legacyPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(legacyPath)), version: 5 }));
+    const movedQuote = await service.quote(legacyDraft.id);
+    assert.deepEqual([movedQuote.pipelineVersion, movedQuote.quote.maximumSeconds], [6, 5], 'an unpaid version 5 draft is quoted by the script');
+    // 60 秒稿约 276 字（实测每秒 4.6 字）：真实报价 2.41 + 0.08×秒，要放得进每条 8 元的上限，即不超过 69 秒。
+    const sixty = service.create({ referenceAssetId: automaticAsset.id, script: '好'.repeat(276) });
+    assert.equal((await service.quote(sixty.id)).quote.maximumSeconds, 69, 'a 276-character script is quoted at 69 seconds');
+    // 数字念出来比写出来长（1280 念「一千二百八十」），报价要留够，否则配音花了钱才发现超长。
+    const digits = service.create({ referenceAssetId: automaticAsset.id, script: '1'.repeat(40) });
+    assert.equal((await service.quote(digits.id)).quote.maximumSeconds, 18, 'digits count one and a half: 60 units at 4.2 per second, plus 3');
+    for (const seconds of [9.9, 10, 20, 40, 60]) {
       fs.writeFileSync(personPath, JSON.stringify({ ...person, seconds }));
       const item = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
       const q = await service.quote(item.id);
-      assert.equal(q.quote.maximumSeconds, seconds);
-      if (seconds < 15) {
+      assert.equal(q.quote.maximumSeconds, 5);
+      if (seconds < 10) {
         const before = JSON.stringify(counts);
         await assert.rejects(service.prepare(item.id, q.quoteRevision, true, true), { code: 'reference_video_short' });
-        assert.equal(JSON.stringify(counts), before, 'under 15 seconds stops before cloud calls');
+        assert.equal(JSON.stringify(counts), before, 'under 10 seconds stops before cloud calls');
       }
     }
     fs.writeFileSync(personPath, JSON.stringify(person));
     coverState = 'planned'; coverCalls = [];
     const joint = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
     const jointQuote = await service.quote(joint.id);
-    assert.equal(jointQuote.quote.schemaVersion, 3); assert.equal(jointQuote.quote.maximumSeconds, person.seconds);
+    assert.equal(jointQuote.quote.schemaVersion, 3); assert.equal(jointQuote.quote.maximumSeconds, 5);
     await service.prepare(joint.id, jointQuote.quoteRevision, true, true);
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
     // Covers are automatic: the content engine draws the AI cover while packaging

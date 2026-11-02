@@ -496,7 +496,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
   return (
     <section className={`page agent-page auto-reply-page${workflow ? " is-full" : ""}`}>
       {workflow ? <PageHero label="自动回复" chip="微信拓客 · 自动回复" title={<>客户来消息，<br /><em>AI 帮你</em>接待回复</>}
-        lead="按你的产品资料和话术回答客户，只回复你选的客户，群聊不碰，人不在电脑前也不漏。" video="wechat-reply" duration="1 分 10 秒"
+        lead="按你的产品资料和话术回答客户，只回复你选的客户，群聊不碰，人不在电脑前也不漏。" video="wechat-reply" seconds={70}
         actions={<><div className="touch-toggle"><WorkflowToggle workflow={workflow} onNavigate={onNavigate} /></div>
           <span className={`reply-hero-status${workflow.state.enabled ? " is-on" : ""}`} role="status"><i aria-hidden="true" />{workflowStatusText(workflow.state)}</span></>}
         kpis={[

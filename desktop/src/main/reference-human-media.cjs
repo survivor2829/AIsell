@@ -45,7 +45,7 @@ function selectVoiceReference(pcm, sampleRate = 16000) {
         activeRatio: active / length, maxQuietGapSeconds: maxGap, clippingRatio };
     }
   }
-  if (!best || best.activeSeconds < limits.voiceMinSeconds) throw fail('reference_voice_insufficient', '视频中有效声音不足5秒，请连续自然讲话20—30秒后重新上传；原视频未改动。');
+  if (!best || best.activeSeconds < limits.voiceMinSeconds) throw fail('reference_voice_insufficient', '视频中有效声音不足5秒，请照着页面上的那段话连续读一遍（10 秒以上）后重新上传；原视频未改动。');
   if (best.clippingRatio > .05) throw fail('reference_voice_clipped', '录音有明显过载失真，请降低录音音量、稍离麦克风后补录；原视频未改动。');
   const warnings = [];
   if (best.clippingRatio > .001) warnings.push('检测到少量过载，请试听确认是否有破音。');

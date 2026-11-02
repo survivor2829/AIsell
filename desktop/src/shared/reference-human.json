@@ -39,7 +39,7 @@
     "maxFps": 60,
     "voiceMinSeconds": 5,
     "voiceMaxSeconds": 30,
-    "narrationMinSeconds": 15
+    "narrationMinSeconds": 10
   },
   "captionStyles": [
     {

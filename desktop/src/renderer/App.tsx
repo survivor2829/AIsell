@@ -601,10 +601,6 @@ export default function App() {
     window.addEventListener("xiaoxi:open-tutorials", show);
     return () => window.removeEventListener("xiaoxi:open-tutorials", show);
   }, []);
-  const openTextGuide = (category: TutorialCategory) => {
-    setTutorialContext(null);
-    window.dispatchEvent(new CustomEvent("xiaoxi:open-text-guide", { detail: { category } }));
-  };
   const [productDetailVisited, setProductDetailVisited] = useState(false);
   useEffect(() => { if (active === "product-detail") setProductDetailVisited(true); }, [active]);
   const contentScrollRef = useRef<HTMLDivElement>(null);
@@ -929,7 +925,7 @@ export default function App() {
                 if (license.mode === "account") void window.xiaoxiAccount?.logout().then(setLicense); }}><LogOut size={16} />退出登录</button>
             </div>}
           </div>
-          <CustomerTools onNavigate={(target) => { if (target === "diagnostics") openFeedback(); else openAgentTarget(target); }} />
+          <CustomerTools onOpenFeedback={() => openFeedback()} />
         </header>
 
         {personalizingRole && <RoleAppearancePanel key={personalizingRole} role={personalizingRole} value={rolePreferences.preferences[personalizingRole]}
@@ -937,7 +933,7 @@ export default function App() {
           onSave={(value) => rolePreferences.save(personalizingRole, value)} onClose={closePersonalization} />}
 
         {tutorialContext && <CustomerPanel title="看操作演示" description="可以暂停、重看；关掉教程即可接着制作。" onClose={() => setTutorialContext(null)}>
-          <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact onOpenGuide={openTextGuide} />
+          <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
           {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={22} strokeWidth={2.75} aria-hidden="true" />返回上一级</button>}
@@ -995,7 +991,7 @@ export default function App() {
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
           {active === "product-video" && <ProductVideoPage />}
-          {active === "guide" && <TutorialsPage preference={visiblePreference("tutorials")} appearance={appearanceFor("tutorials", visiblePreference("tutorials").appearanceId)} onPersonalize={() => setPersonalizingRole("tutorials")} onOpenGuide={openTextGuide} />}
+          {active === "guide" && <TutorialsPage />}
           {active === "materials" && <OfficialMaterialsPage preference={visiblePreference("materials")} appearance={appearanceFor("materials", visiblePreference("materials").appearanceId)} onPersonalize={() => setPersonalizingRole("materials")} onUseMaterial={(assetIds) => {
             setBatchInitial({ assetIds }); setCreativeView("studio"); setActive("workspace");
           }} />}

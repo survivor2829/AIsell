@@ -84,7 +84,7 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
   const [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [person, setPerson] = useState<ReferenceAsset | null | undefined>(undefined);
   const [jobs, setJobs] = useState<ViralJob[]>([]);
-  const [maxCny, setMaxCny] = useState(6);
+  const [maxCny, setMaxCny] = useState(8);
   const scanningRef = useRef(false);
 
   useEffect(() => referenceApi().onViralProgress((event) => { if (scanningRef.current) setScan((current) => applyProgress(current, event)); }), []);
@@ -108,7 +108,7 @@ export function ViralPipelinePage({ onImitate, onManagePerson }: { onImitate: (r
   const top = result?.items.slice(0, TOP_COUNT) || [];
   const personReady = Boolean(person && person.available !== false && person.voiceSampleReady && person.seconds >= referencePolicy.limits.narrationMinSeconds);
   const blockedPlatforms = PLATFORMS.filter((p) => scan.blocked[p.id] || result?.platforms.some((r) => r.platform === p.id && r.status === 'blocked'));
-  const estimate = estimateCny(person?.narrationPlan?.maximumSeconds);
+  const estimate = estimateCny(45); // 写稿按 45 秒，画面接长到配音长度，费用不随本人视频长短变化。
   const oneClickBlocked = !personReady ? '先在「本人数字分身」里准备好出镜人物和声音'
     : !person?.voiceConsented ? '先在「本人数字分身」里做一条口播并确认声音授权' : '';
   const queuedIds = new Set(jobs.filter((j) => j.holdsItem).map((j) => j.itemId));

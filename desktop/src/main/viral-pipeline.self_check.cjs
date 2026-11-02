@@ -85,11 +85,15 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
   }
   // 2. 报价超过每条上限：不配音、不生成数字人
   {
-    const w = world({ quoteCny: 8 }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const w = world({ quoteCny: 8.5 }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
     const failed = await until(pipeline, start(pipeline).id, ['done', 'failed']);
-    assert.match(failed.error, /超过每条 6 元的上限/);
+    assert.match(failed.error, /超过每条 8 元的上限/, '默认上限 8 元（用户 2026-11-02）');
     assert.equal(failed.retryable, false);
     assert.equal(w.calls.prepare, 0);
+    // 从爆款链接出片：停下前已经花了识别费和写稿额度，再点一次不能重新花一遍。
+    assert.equal(failed.holdsItem, true, "链接出片超预算后仍占着这条爆款");
+    assert.equal(start(pipeline).id, failed.id, "再点一次拿回原任务，不重新识别和写稿");
+    assert.deepEqual([w.calls.asr.length, w.calls.write.length], [1, 1], "识别和写稿都只花了一次");
     await pipeline.close();
   }
   // 3. 仿写不达标：停在仿写，不建口播任务
@@ -223,6 +227,33 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.equal(pipeline.startFromScript({ libraryItem, assetId: 'rha_1', maxCny: 6 }).id === job.id, false, '做完可以再做一条');
     assert.throws(() => pipeline.startFromScript({ libraryItem: { ...libraryItem, script: 'x'.repeat(501) }, assetId: 'rha_1' }), { code: 'viral_item_invalid' });
     assert.throws(() => pipeline.startFromScript({ libraryItem: { ...libraryItem, id: '../x' }, assetId: 'rha_1' }), { code: 'viral_item_invalid' });
+    await pipeline.close();
+  }
+  // 13. 文案库出片失败后：同一个人同一篇稿子再点是重试原任务；换了视频或换了稿子才是新的一条（2026-11-02 实测：重录也拿回旧任务）
+  {
+    const w = world({ attentionOnce: true }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    w.deps.reference.assets = () => ({ items: ['rha_1', 'rha_2'].map((id) => ({ id, available: true, voiceSampleReady: true, voiceConsented: true })) });
+    const libraryItem = { id: '7400000000000000002', platform: 'douyin', title: '买还是租', script: '第一版稿子，先看地面材质。', emphasisPhrases: [], source: {} };
+    const failed = await until(pipeline, pipeline.startFromScript({ libraryItem, assetId: 'rha_1', maxCny: 6 }).id, ['done', 'failed']);
+    assert.equal(failed.status, 'failed');
+    assert.equal(pipeline.startFromScript({ libraryItem, assetId: 'rha_1', maxCny: 6 }).id, failed.id, '同一个人同一篇：拿回原任务，不重复付费');
+    const newPerson = pipeline.startFromScript({ libraryItem, assetId: 'rha_2', maxCny: 6 });
+    assert.notEqual(newPerson.id, failed.id, '重录了视频：是新的一条');
+    assert.equal(pipeline.startFromScript({ libraryItem, assetId: 'rha_2', maxCny: 6 }).id, newPerson.id, '正在做时不并行开第二条');
+    assert.equal((await until(pipeline, newPerson.id, ['done', 'failed'])).status, 'done');
+    const newScript = pipeline.startFromScript({ libraryItem: { ...libraryItem, script: '第二版稿子，先算一笔账。' }, assetId: 'rha_1', maxCny: 6 });
+    assert.notEqual(newScript.id, failed.id, '换了稿子：是新的一条');
+    await until(pipeline, newScript.id, ['done', 'failed']);
+    await pipeline.close();
+  }
+  // 14. 文案库出片超预算：什么都没买，可以删掉，也可以再出一条（2026-11-02 实测卡住）
+  {
+    const w = world({ quoteCny: 8.5 }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const libraryItem = { id: '7400000000000000003', platform: 'douyin', title: '买还是租', script: '一篇很长的稿子。', emphasisPhrases: [], source: {} };
+    const stopped = await until(pipeline, pipeline.startFromScript({ libraryItem, assetId: 'rha_1' }).id, ['done', 'failed']);
+    assert.equal(stopped.holdsItem, false);
+    assert.equal(w.calls.prepare, 0);
+    assert.deepEqual(pipeline.remove(stopped.id), { removed: true });
     await pipeline.close();
   }
   {
