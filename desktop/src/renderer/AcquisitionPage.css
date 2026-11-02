@@ -101,3 +101,11 @@
 .acq-bulk > span { font-size: 13px; font-weight: 800; color: var(--muted); }
 .acq-bulk small { margin-left: auto; font-size: 12px; font-weight: 600; color: #9ca3af; }
 .acq-pick { margin-top: 6px; width: 16px; height: 16px; accent-color: var(--red); flex: 0 0 auto; }
+
+/* 三步式首屏：大字、少选项，更多设置收起来 */
+.acq-step { display: grid; gap: 8px; }
+.acq-step > b { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 900; }
+.acq-step > b i { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--red); color: #fff; font-style: normal; font-size: 13px; }
+.acq-step textarea { width: 100%; min-width: 0; padding: 12px 14px; border: 2px solid var(--rose); border-radius: 12px; background: #fffdfd; font: inherit; font-size: 16px; line-height: 1.7; resize: vertical; color: var(--ink); }
+.acq-step textarea:focus { outline: none; border-color: var(--red); box-shadow: 0 0 0 4px rgba(230, 0, 0, .08); }
+.acq-more summary { cursor: pointer; font-size: 14px; font-weight: 800; color: var(--muted); padding: 2px 0 10px; }

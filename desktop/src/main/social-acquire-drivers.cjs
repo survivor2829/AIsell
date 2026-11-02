@@ -6,6 +6,10 @@ const ID = /^[A-Za-z0-9_-]{4,64}$/;
 const text = (value, max) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const iso = (ms) => { const n = Number(ms); return Number.isFinite(n) && n > 0 ? new Date(n < 1e12 ? n * 1000 : n).toISOString() : ""; };
 const count = (value) => { const n = Number(String(value ?? "").replace(/[^\d.]/g, "")); return Number.isFinite(n) ? n : 0; };
+// Douyin's public user id is longer than other platforms' ids, and it is what its profile links use.
+const DOUYIN_USER = /^[A-Za-z0-9_-]{4,128}$/;
+const douyinUser = (user) => String(user?.sec_uid || "");
+const douyinWords = (comment) => String(comment || "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, "");
 
 const DRIVERS = {
   kuaishou: {
@@ -15,6 +19,10 @@ const DRIVERS = {
     loggedOutText: /登录即可享受|扫码登录/,
     isSearch: (url) => /www\.kuaishou\.com\/rest\/v\/search\/feed/.test(url),
     isComments: (url, operation) => /www\.kuaishou\.com\/graphql/.test(url) && operation === "commentListQuery",
+    commentItems: ".comment-list-item",
+    commentVideoId: (_url, variables) => String(variables?.photoId || ""),
+    link: /^https:\/\/www\.kuaishou\.com\/(short-video|profile)\/[A-Za-z0-9_-]+$/,
+    profileUrl: (userId) => `https://www.kuaishou.com/profile/${userId}`,
     parseSearch(json) {
       const videos = (Array.isArray(json?.feeds) ? json.feeds : []).flatMap((feed) => {
         const photo = feed?.photo, author = feed?.author;
@@ -63,9 +71,70 @@ const DRIVERS = {
       }
     }
   },
-  // Douyin's web search shows a captcha that rejects any program-driven browser, and the
-  // app does not disguise itself to get past platform checks, so Douyin is listed but off.
-  douyin: { name: "抖音", available: false, unavailable: "抖音网页版搜索会拦截软件控制的浏览器（弹出验证码且无法通过），暂不支持；快手可以正常使用。" }
+  // Shapes confirmed on 2026-11-01 with a logged-in test account: search answers /aweme/v1/web/search/item/
+  // (data[].aweme_info), comments /aweme/v1/web/comment/list/ (aweme_id in the query, cursor paging), and
+  // no verification appeared at that low pace. The app still leaves any verification to the user.
+  douyin: {
+    name: "抖音", host: "douyin.com", available: true,
+    searchUrl: (keyword) => `https://www.douyin.com/search/${encodeURIComponent(keyword)}?type=video`,
+    videoUrl: (id) => `https://www.douyin.com/video/${id}`,
+    profileUrl: (userId) => `https://www.douyin.com/user/${userId}`,
+    link: /^https:\/\/www\.douyin\.com\/(video|user)\/[A-Za-z0-9_-]+$/,
+    loggedOutText: /扫码登录|登录后免费|验证码登录|手机号登录/,
+    isSearch: (url) => /douyin\.com\/aweme\/v1\/web\/search\/item\/?(\?|$)/.test(url),
+    isComments: (url) => /douyin\.com\/aweme\/v1\/web\/comment\/list\/?(\?|$)/.test(url),
+    commentItems: '[data-e2e="comment-item"]',
+    commentVideoId: (url) => { try { return String(new URL(url).searchParams.get("aweme_id") || ""); } catch { return ""; } },
+    parseSearch(json) {
+      const videos = (Array.isArray(json?.data) ? json.data : []).flatMap((entry) => {
+        const aweme = entry?.aweme_info, author = aweme?.author;
+        if (!/^\d{4,32}$/.test(String(aweme?.aweme_id || ""))) return [];
+        return [{ id: String(aweme.aweme_id), title: text(aweme.desc, 200), authorId: douyinUser(author), authorName: text(author?.nickname, 60),
+          likes: count(aweme.statistics?.digg_count), comments: count(aweme.statistics?.comment_count), publishedAt: iso(aweme.create_time) }];
+      });
+      const refused = Number(json?.status_code || 0) !== 0 || /verify/i.test(String(json?.search_nil_info?.search_nil_type || ""));
+      return { videos, more: Number(json?.has_more) === 1, refused };
+    },
+    parseComments(json) {
+      const raw = Array.isArray(json?.comments) ? json.comments : [];
+      const comments = raw.flatMap((item) => {
+        const id = String(item?.cid || ""), userId = douyinUser(item?.user);
+        if (!/^\d{4,32}$/.test(id) || !DOUYIN_USER.test(userId) || !text(item?.text, 500)) return [];
+        return [{ id, userId, userName: text(item.user?.nickname, 60), text: text(item.text, 500), at: iso(item.create_time), region: text(item.ip_label, 20), liked: Number(item.user_digged) === 1 }];
+      });
+      return { comments, more: Number(json?.has_more) === 1, refused: Number(json?.status_code || 0) !== 0, unreadable: raw.length > 0 && !comments.length };
+    },
+    // Actions, confirmed on 2026-11-01: a like answers /aweme/v1/web/comment/digg {status_code: 0} and turns
+    // the heart #FE2C55 (a second click would take it back); a follow answers /aweme/v1/web/commit/follow/user/
+    // {status_code: 0, follow_status: 1} and the button reads 已关注. The page's class names are generated, so
+    // the heart is found by its place in the comment's stats row.
+    actions: {
+      like: true, follow: true,
+      profileUrl: (userId) => `https://www.douyin.com/user/${userId}`,
+      // Emoji show as pictures on the page, so they are left out of the comparison. A comment with no
+      // words left cannot be told apart from the person's other comments and is reported as not found.
+      commentItem: (userName, content) => !douyinWords(content) ? "undefined" : `[...document.querySelectorAll('[data-e2e="comment-item"]')].find((el) => {
+        const name = (el.querySelector(".comment-item-info-wrap a")?.textContent || "").replace(/\\s+/g, "");
+        return name === ${JSON.stringify(String(userName).replace(/\s+/g, ""))} && (el.innerText || el.textContent || "").replace(/\\s+/g, "").includes(${JSON.stringify(douyinWords(content).slice(0, 60))}); })`,
+      likeIcon: ".comment-item-stats-container > div:first-child > p:first-child",
+      likedExpression: (icon) => `(() => { const path = (${icon})?.querySelector("svg path"); return Boolean(path) && /254,\\s*44,\\s*85/.test(getComputedStyle(path).fill); })()`,
+      followButton: 'button[data-e2e="user-info-follow-btn"]', followed: /已关注|互相关注|相互关注|已请求/,
+      // 回关 is how the button reads when the person already follows this account.
+      followable: /^(\+\s*)?(关注|回关)$/,
+      // The request names the comment, so an answer about another comment is not credited to this one.
+      likeAnswer: (url, commentId) => { try { return new URL(url).searchParams.get("cid") === String(commentId); } catch { return false; } },
+      isLike: (url) => /douyin\.com\/aweme\/v1\/web\/comment\/digg\/?(\?|$)/.test(url),
+      isFollow: (url) => /douyin\.com\/aweme\/v1\/web\/commit\/follow\/user\/?(\?|$)/.test(url),
+      outcome(json) {
+        const code = Number(json?.status_code), message = text(json?.status_msg, 120);
+        if (!Number.isFinite(code)) return { ok: null, message: "" };
+        if (code !== 0) return { ok: false, message };
+        // A follow answer that still says "not following" says nothing either way.
+        return "follow_status" in json && !Number(json.follow_status) ? { ok: null, message: "" } : { ok: true, message };
+      }
+    }
+  }
+
 };
 
 function acquireDriverFor(platform) {
