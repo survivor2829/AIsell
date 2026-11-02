@@ -368,7 +368,7 @@ async function main() {
     for (const bad of [{ mode: 'random' }, { avoidTitles: 'x' }, { avoidTitles: [''] }, { avoidTitles: Array(11).fill('t') }])
       await assert.rejects(service.writeScript({ ...libraryInput, ...bad }), { code: 'reference_script_mode_invalid' });
     await assert.rejects(service.writeScript({ ...scriptInput, mode: 'structure' }), { code: 'reference_script_mode_invalid' }, '换一篇只用于文案库');
-    assert.equal(counts.script, posted + 4);
+    assert.equal(counts.script, posted + 5);
     scriptReply = () => { throw Object.assign(new Error('服务未完成请求：viral_library_item_missing'), { code: 'digital_human_provider_error', status: 404, outcomeUnknown: false }); };
     await assert.rejects(service.writeScript({ ...libraryInput, generationIntentId: 'e57a06f7-700d-44ca-8a13-6707c58683b5' }), /不在文案库里/);
     scriptReply = null;
