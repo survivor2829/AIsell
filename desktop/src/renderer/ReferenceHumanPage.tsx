@@ -1,5 +1,6 @@
 import { ReferenceCostSummary } from './ReferenceCostSummary';
 import { useEffect, useRef, useState } from 'react';
+import { useSlowFlag } from './use-slow-flag';
 import { ArrowLeft, ArrowRight, Check, Download, History, LoaderCircle, Plus, RefreshCw, Upload, Video } from 'lucide-react';
 import type { DigitalHumanResult } from './digital-human-types';
 import type { NarrationReference, ReferenceAsset, ReferenceCapabilities, ReferenceDraft, ReferenceHumanApi, ReferenceTask, ScriptQuota, ReferenceWorkspace, ScriptInput, ScriptSuggestion } from './reference-human-types';
@@ -31,6 +32,7 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
   const [step, setStep] = useState(1), [previewFirst, setPreviewFirst] = useState(false);
   const [quota, setQuota] = useState<ScriptQuota | null>(null), [quotaError, setQuotaError] = useState('');
   const [ready, setReady] = useState(false);
+  const slowLoading = useSlowFlag(!ready);
   const [preferences, setPreferences] = useState<ReferenceWorkspace['preferences']>({});
   const [pendingScript, setPendingScript] = useState<ScriptInput>();
   const [suggestion, setSuggestion] = useState<ScriptSuggestion>();
@@ -164,7 +166,7 @@ export function ReferenceHumanPage({ incoming }: { incoming?: { id: number; refe
       aria-current={step === index + 1 ? 'step' : undefined} aria-controls={`rh-step-${index + 1}`} disabled={!!busy || index === 1 && !personReady && !locked || index === 2 && !task}
       onClick={() => setStep(index + 1)}><span>{index + 1}</span>{label}</button>)}</nav>
     {step !== 1 && asset && <div className="rh-current-person"><img src={asset.previewDataUrl} alt="" /><span><strong>{asset.name}</strong><small>本人声音 · {asset.seconds.toFixed(1)}秒素材</small></span><button className="dh-text-button" disabled={!!busy} onClick={() => setStep(1)}>{locked ? '查看人物' : '更换人物'}</button></div>}
-    {!ready && <p role="status">正在读取人物与制作记录…</p>}
+    {slowLoading && <p role="status">正在读取人物与制作记录…</p>}
     <div className={`dh-workspace${step === 3 && working || busy === 'script' ? ' is-producing' : ''}`}>
       <section className="dh-form" aria-label="人物与口播设置">
         <div id="rh-step-1" hidden={step !== 1}>

@@ -13,6 +13,7 @@ import {
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSlowFlag } from "./use-slow-flag";
 import {
   type AutoMixVoicePersona,
   type AutoMixVoicePreview,
@@ -424,6 +425,7 @@ export function ProductOneClickPage({
   const [legacyCandidates, setLegacyCandidates] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState("");
   const [initialLoading, setInitialLoading] = useState(true);
+  const slowLoading = useSlowFlag(initialLoading);
   const [loadError, setLoadError] = useState("");
   const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; text: string } | null>(null);
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
@@ -1304,7 +1306,7 @@ export function ProductOneClickPage({
         </div>
       </header>
 
-      {initialLoading && (
+      {slowLoading && (
         <div className="product-notice is-info" role="status" aria-live="polite">
           <LoaderCircle className="is-spinning" size={17} />正在读取素材与任务记录…
         </div>

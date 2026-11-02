@@ -2,6 +2,7 @@ function createPhoneMatrixApi(ipcRenderer) {
   const invoke = (name, payload) => ipcRenderer.invoke(`phone-matrix:${name}`, payload);
   return {
     status: () => invoke("status"),
+    checkPhones: (on) => invoke("checkPhones", { on: on === true }),
     refresh: () => invoke("refresh"),
     update: (serial, fields) => invoke("update", { serial: String(serial || ""), ...fields }),
     forget: (serial) => invoke("forget", { serial: String(serial || "") }),
