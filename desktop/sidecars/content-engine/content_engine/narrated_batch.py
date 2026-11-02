@@ -23,7 +23,7 @@ from .errors import ContentEngineError
 from .provider_usage import usage_scope
 from .public_data import redact_text
 from .narration_alignment import rebind_sentence_copy
-from . import narrated_production, narrated_script_drafts, narrated_brief
+from . import narrated_production, narrated_script_drafts, narrated_brief, failure_journal
 
 GROUPS = ("opening", "middle", "ending")
 LIMIT = 300
@@ -113,6 +113,12 @@ FRAME_SEEK_BACKOFF_MS = (0, 50, 150, 400, 1000, 2500)
 # The remainder an analysis window leaves at a file's end: a flash on screen, and
 # possibly no picture at all, found out only at render time after voice was bought.
 MIN_USABLE_SHOT_MS = 500
+# A material this computer cannot read (damaged, an unusual encoding, a share that went away).
+# One such file must not end the batch: it is left out and the rest are used (user decision
+# 2026-11-02: whatever materials a customer brings, the mix has to come out). Provider errors are
+# not here: a paid request with an unknown outcome still stops rather than being sent again.
+LOCAL_MATERIAL_ERRORS = frozenset({"analysis_failed", "analysis_stalled", "asset_path_unavailable",
+                                   "media_metadata_unavailable", "source_video_missing"})
 UNREADABLE_MATERIAL_REASON = "有一段素材读取失败，处理已停止。可以换掉这段素材后重试；详细原因已记入诊断日志。"
 
 
@@ -1640,6 +1646,7 @@ class NarratedBatchDomain:
 
     def _analysis(self, task_id, b, observe=True):
         ids = list(dict.fromkeys(a for values in b["groups"].values() for a in values))
+        skipped = []
         snapshots = self.d._auto_mix_asset_snapshots(ids)
         profile = self.d._auto_mix_v2_analysis_profile()
         versions = {}
@@ -1695,7 +1702,14 @@ class NarratedBatchDomain:
                         b.pop('_planning_request', None)
                     b.pop('_analysis_inflight', None)
                     self._store(b)
-                    raise
+                    if error.code not in LOCAL_MATERIAL_ERRORS:
+                        raise
+                    # The journal keeps FFmpeg's words; the customer gets the file name.
+                    failure_journal.record(error, where="narrated_material_skipped", task_id=task_id,
+                                           context={"batch_id": b["batch_id"], "asset_id": asset_id})
+                    skipped.append(asset_name or asset_id)
+                    completed_weight += weights[index]
+                    continue
                 b.pop('_planning_inflight', None)
                 b.pop('_planning_request', None)
                 b.pop('_analysis_inflight', None)
@@ -1706,6 +1720,17 @@ class NarratedBatchDomain:
             self._activity(b, activity, index + 1, len(ids), phase="analysis", phase_label="素材理解",
                            overall_percent=round(45 * phase_percent / 100), phase_percent=phase_percent,
                            item_index=index + 1, item_total=len(ids), item_name=asset_name)
+        if skipped:
+            require(versions, "narrated_materials_unreadable",
+                    "所选素材这台电脑都读不出来，请换几段素材再试。读不出的素材：" + "、".join(skipped[:5]))
+            ids = [asset_id for asset_id in ids if asset_id in versions]
+            snapshots = [item for item in snapshots if item.get("asset_id") in versions]
+            notice = f"有 {len(skipped)} 段素材读不出来，已跳过，用其余素材继续：" + "、".join(skipped[:5])
+            b["skipped_materials"] = skipped[:20]
+            b["reasons"] = [reason for reason in b.get("reasons") or [] if not reason.startswith("有 ") or "已跳过" not in reason] + [notice]
+            self._store(b)
+        else:
+            b.pop("skipped_materials", None)
         key = canonical_hash({"snapshots": snapshots, "versions": versions,
                               "visual_facts": VISUAL_FACTS_VERSION})
         # Follow-script production needs no frame facts. Its unobserved shots carry
@@ -1940,7 +1965,14 @@ class NarratedBatchDomain:
             elif checkpoint is not None:
                 checkpoints.pop(asset_id, None)
             if facts is None or not valid_cached_facts(facts, source_shots):
-                source = self.d._resolve_asset_path(asset_id)
+                try:
+                    source = self.d._resolve_asset_path(asset_id)
+                except ContentEngineError as error:
+                    # The file went away after analysis (a network share, a moved folder): its shots
+                    # carry no observation; the other materials still make the video.
+                    if error.code not in LOCAL_MATERIAL_ERRORS:
+                        raise
+                    continue
                 directory = self.d.data_dir / "narrated-evidence" / cache_key
                 directory.mkdir(parents=True, exist_ok=True)
                 frames = []
