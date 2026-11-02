@@ -64,6 +64,7 @@ const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs
 const { registerSocialAccountsIpc } = require("./social-accounts-ipc.cjs");
 const { registerSocialPublishIpc } = require("./social-publish-ipc.cjs");
 const { registerSocialAcquisitionIpc } = require("./social-acquisition-ipc.cjs");
+const { registerGeoWorkbenchIpc } = require("./geo-workbench-ipc.cjs");
 const { registerSocialNurtureIpc } = require("./social-nurture-ipc.cjs");
 const { registerPhoneMatrixIpc } = require("./phone-matrix-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
@@ -109,6 +110,7 @@ let keywordAcquisitionRegistration = null;
 let socialAccountsRegistration = null;
 let socialPublishRegistration = null;
 let socialAcquisitionRegistration = null;
+let geoWorkbenchRegistration = null;
 let socialNurtureRegistration = null;
 let phoneMatrixRegistration = null;
 let businessWorkbenchRegistration = null;
@@ -341,6 +343,7 @@ function createWindow() {
       workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
     void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
     void socialAcquisitionRegistration?.dispose().catch(() => undefined);
+    void geoWorkbenchRegistration?.dispose().catch(() => undefined);
     void socialNurtureRegistration?.dispose().catch(() => undefined);
     void socialPublishRegistration?.dispose().catch(() => undefined);
     // Phone screens hold adb processes on the phones; closing the window ends them.
@@ -823,6 +826,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: path.join(runtime.rootDir, "social_accounts") });
     socialAcquisitionRegistration = registerSocialAcquisitionIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_acquisition"), accounts: socialAccountsRegistration.accounts });
+    geoWorkbenchRegistration = registerGeoWorkbenchIpc({ ipcMain, shell, deepSeekClient, getMainWindow: () => mainWindow,
+      dataDir: path.join(runtime.rootDir, "geo_workbench") });
     socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow, copyClient: deepSeekClient,
       ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
@@ -1087,7 +1092,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           // 地图、关键词等浏览器任务在跑，或者有登录/悬浮窗口正显示着，都算在用。
           if (businessWorkbenchRegistration?.controllers?.get("map-acquisition")?.snapshot().busy) return true;
           if (keywordAcquisitionRegistration?.snapshot?.().runs?.some(run => run.status === "running")) return true;
-          if (socialPublishRegistration?.isBusy() || socialAcquisitionRegistration?.isBusy() || socialNurtureRegistration?.isBusy()) return true;
+          if (socialPublishRegistration?.isBusy() || socialAcquisitionRegistration?.isBusy() || geoWorkbenchRegistration?.isBusy() || socialNurtureRegistration?.isBusy()) return true;
           if (phoneMatrixRegistration?.batch.status()?.running) return true;
           if (BrowserWindow.getAllWindows().some(window => window !== mainWindow && !window.isDestroyed() && window.isVisible())) return true;
           const content = contentEngineController?.updateStatus();
@@ -1188,6 +1193,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
         Promise.resolve(socialAcquisitionRegistration?.dispose()),
+        Promise.resolve(geoWorkbenchRegistration?.dispose()),
         Promise.resolve(socialNurtureRegistration?.dispose()),
         Promise.resolve(phoneMatrixRegistration?.dispose()),
         Promise.resolve(socialPublishRegistration?.dispose()),

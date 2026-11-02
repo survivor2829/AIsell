@@ -328,13 +328,14 @@ try {
     mainWindow: { on: (name, handler) => { if (name === "close") closeHandler = handler; } },
     workflowController: { controlSnapshot: () => ({ phase: "listening", enabled: true }) },
     diagnostics: () => ({ event: () => { throw new Error("logger_down"); } }),
-    keywordAcquisitionRegistration: undefined, socialAccountsRegistration: undefined, socialPublishRegistration: undefined, socialAcquisitionRegistration: undefined, socialNurtureRegistration: undefined, phoneMatrixRegistration: undefined,
+    keywordAcquisitionRegistration: undefined, socialAccountsRegistration: undefined, socialPublishRegistration: undefined, socialAcquisitionRegistration: undefined, geoWorkbenchRegistration: undefined, socialNurtureRegistration: undefined, phoneMatrixRegistration: undefined,
     autoReplyController: { pause: () => { closePaused += 1; } },
     touchTaskController: { pause: () => { closePaused += 1; } },
     momentsCampaignController: { pauseForAppClose: () => { closePaused += 1; } },
     disarmRealSend: () => { closePaused += 1; },
     developmentEdition: false
   });
+  assert.ok(mainSource.slice(closeStart, closeEnd).includes("geoWorkbenchRegistration?.dispose()"), "closing the window stops any GEO publish in flight");
   assert.doesNotThrow(closeHandler, "closing must continue when diagnostics throws");
   assert.equal(closePaused, 4);
   const quitEnd = mainSource.indexOf("\n  });\n}", quitHandler);
@@ -349,7 +350,7 @@ try {
     feedbackController: { stop: () => { quitStopped += 1; } },
     feedbackAdmin: { stop: () => { quitStopped += 1; } },
     failureCapsules: { stop: () => { quitStopped += 1; } },
-    keywordAcquisitionRegistration: undefined, socialAccountsRegistration: undefined, socialPublishRegistration: undefined, socialAcquisitionRegistration: undefined, socialNurtureRegistration: undefined, phoneMatrixRegistration: undefined, businessWorkbenchRegistration: undefined, digitalHumanRegistration: undefined,
+    keywordAcquisitionRegistration: undefined, socialAccountsRegistration: undefined, socialPublishRegistration: undefined, socialAcquisitionRegistration: undefined, geoWorkbenchRegistration: undefined, socialNurtureRegistration: undefined, phoneMatrixRegistration: undefined, businessWorkbenchRegistration: undefined, digitalHumanRegistration: undefined,
     productVideoRegistration: undefined, productDetailController: undefined,
     contentEngineController: undefined, momentsPublishController: undefined,
     providerGatewayClient: undefined, productDetailIpcRegistration: undefined,

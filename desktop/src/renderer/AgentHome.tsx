@@ -135,7 +135,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     capabilities: [
       { key: "business-keyword", label: "关键词获客", description: "从同行视频的评论里，找出问价、想买的人", icon: Search },
       { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin },
-      { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: false }
+      { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: true }
     ]
   }
 };

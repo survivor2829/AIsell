@@ -47,15 +47,6 @@ else {
     await waitFor("document.querySelector('.business-module-nav')!==null");
     assert.equal(await evaluate("document.querySelectorAll('.business-module-nav > button').length"), 3);
     await capture('business-overview.png');
-    for (const [label, name] of [['企微助手', 'wecom'], ['GEO推广', 'geo']]) {
-      await evaluate(`document.querySelector('[aria-label="打开${label}"]').click()`);
-      await waitFor("document.querySelector('.business-module-plan')!==null");
-      assert.equal(await evaluate("document.querySelector('.business-module-plan').textContent.includes('待开放')"), true);
-      assert.equal(await evaluate("document.querySelector('.business-module-plan input,.business-module-plan form')===null"), true);
-      await capture(`business-${name}-planned.png`);
-      await click('返回精准获客');
-      await waitFor("document.querySelector('.business-module-nav')!==null");
-    }
     await evaluate("document.querySelector('[aria-label=\"打开地图获客\"]').click()");
     await waitFor("document.querySelector('.map-toolbar')!==null");
     await waitFor("document.querySelector('.map-company')!==null");
@@ -80,7 +71,7 @@ else {
     await click('返回精准获客');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
     await capture('business-overview-compact.png');
-    fs.writeFileSync(path.join(directory, 'acceptance.json'), JSON.stringify({ passed: true, network: 'blocked', checks: ['three acquisition framework entries', 'wecom and GEO remain planned only', 'return to acquisition overview', 'real IPC persistence', 'map paid generation gate closed', 'favorite preserved', 'map default range empty', '1024px no horizontal overflow'], runtime: process.versions.electron }, null, 2));
+    fs.writeFileSync(path.join(directory, 'acceptance.json'), JSON.stringify({ passed: true, network: 'blocked', checks: ['three acquisition framework entries', 'return to acquisition overview', 'real IPC persistence', 'map paid generation gate closed', 'favorite preserved', 'map default range empty', '1024px no horizontal overflow'], runtime: process.versions.electron }, null, 2));
     await registration.dispose();
     app.exit(0);
   }).catch(error => { console.error(error); app.exit(1); });

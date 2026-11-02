@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("xiaoxiKeywordAcquisition", require("./keyword-a
 contextBridge.exposeInMainWorld("xiaoxiSocialAccounts", require("./social-accounts-preload.cjs").createSocialAccountsApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialPublish", require("./social-publish-preload.cjs").createSocialPublishApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialAcquisition", require("./social-acquisition-preload.cjs").createSocialAcquisitionApi(ipcRenderer));
+contextBridge.exposeInMainWorld("xiaoxiGeo", require("./geo-preload.cjs").createGeoApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiSocialNurture", require("./social-nurture-preload.cjs").createSocialNurtureApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiPhoneMatrix", require("./phone-matrix-preload.cjs").createPhoneMatrixApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
