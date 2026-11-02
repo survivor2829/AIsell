@@ -4,7 +4,7 @@ import type { ReferenceAsset, ReferenceHumanApi, ReferenceTask, ViralJob, ViralL
 import { FlowFunnel } from './FlowFunnel';
 import { tagText } from './flow-funnel';
 import { likesText } from './viral-pipeline';
-import { barText, currentJob, libraryHeadline, libraryStages, libraryUsage, longestScriptSeconds, orderByUsage, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
+import { barText, currentJob, libraryHeadline, libraryStages, libraryUsage, orderByUsage, READ_ALOUD, SCRIPT_SECONDS, type ScriptSeconds } from './narration-simple';
 import referencePolicy from '../shared/reference-human.json';
 import './NarrationSimplePage.css';
 
@@ -16,7 +16,8 @@ const STUCK = new Set(['needs_attention', 'outcome_unknown']);
 async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
   const value = await result; if (!value.ok || value.data === undefined) throw new Error(value.error || '操作未完成，请稍后重试。'); return value.data;
 }
-const MAX_CNY = 6;
+// 每条最多花 8 元（用户 2026-11-02：短素材接长后 45、60 秒都要能出片）；超过仍然拦下。
+const MAX_CNY = 8;
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
 // 一张爆款卡片：先显示爆款标题和真实数据；仿写好之后，下面接着显示客户自己的原创稿。
@@ -86,25 +87,21 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
     return () => observer.disconnect();
   }, [page, Boolean(library)]);
 
-  const current = currentJob<ViralJob>(jobs, lastJob.current);
+  const ready = Boolean(person && person.available !== false && person.voiceSampleReady && person.seconds >= referencePolicy.limits.narrationMinSeconds);
+  const consented = Boolean(person?.voiceConsented);
+  const pick = library?.items.find((i) => i.id === selected);
+  const draft = pick ? drafts[pick.id] : undefined;
+  const current = currentJob<ViralJob>(jobs, lastJob.current, { newDraft: page === 'upload' && Boolean(draft) });
   const status = barText(current);
   useEffect(() => {
     setCover('');
     if (current?.status === 'done' && current.coverReady) void unwrap(api().viralPipelineCover({ id: current.id })).then((r) => setCover(r.dataUrl)).catch(() => {});
   }, [current?.id, current?.status, current?.coverReady]);
 
-  const ready = Boolean(person && person.available !== false && person.voiceSampleReady && person.seconds >= referencePolicy.limits.narrationMinSeconds);
-  const consented = Boolean(person?.voiceConsented);
-  const pick = library?.items.find((i) => i.id === selected);
-  const draft = pick ? drafts[pick.id] : undefined;
   const flow = useMemo(() => library ? { strands: library.strands, stages: libraryStages(library.stats) } : null, [library]);
   const headline = library ? libraryHeadline(library.stats) : null;
   const made = useMemo(() => libraryUsage(jobs), [jobs]);
   const items = useMemo(() => library ? orderByUsage(library.items, made) : [], [library, made]);
-  // 时长不能超过本人视频（留 3 秒）；视频变短时，选中的时长自动退到能用的最长一档。
-  const longest = longestScriptSeconds(ready ? person!.seconds : undefined);
-  const tooLong = Boolean(draft && draft.seconds > longest);
-  useEffect(() => { if (want > longest) { const fit = [...SCRIPT_SECONDS].reverse().find((s) => s <= longest); if (fit) setWant(fit); } }, [longest, want]);
 
   async function act(name: string, work: () => Promise<void>) {
     if (busy) return;
@@ -171,9 +168,9 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
             <small>{!pick ? '选好后挑时长，点「仿写」生成你的原创稿' : draft ? '想要另一篇就点「换一篇」：按这条爆款的结构写一篇全新的 · 满意就下一步出片'
               : '点「仿写」生成你的原创稿，只学它的结构和节奏'}</small></div>
           {pick && <div className="ns-dur" role="group" aria-label="稿子时长">{SCRIPT_SECONDS.map((s) => (
-            <button type="button" key={s} className={s === want ? 'is-on' : ''} aria-pressed={s === want} disabled={s > longest || !!busy}
-              title={s > longest ? `你的视频只有 ${longest} 秒，想要 ${s} 秒请换一段更长的视频` : ''} onClick={() => setWant(s)}>{s} 秒</button>))}</div>}
-          {pick && <button type="button" className={`ns-go${draft ? ' is-quiet' : ''}`} data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy || want > longest}
+            <button type="button" key={s} className={s === want ? 'is-on' : ''} aria-pressed={s === want} disabled={!!busy}
+              onClick={() => setWant(s)}>{s} 秒</button>))}</div>}
+          {pick && <button type="button" className={`ns-go${draft ? ' is-quiet' : ''}`} data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy}
             onClick={() => void write()}>{busy.startsWith('write:') ? (draft ? '正在换…' : '正在仿写…') : draft ? '换一篇' : '仿写'}</button>}
           {DEVELOPMENT_EDITION && pick && !library?.preview && !library?.offline && <button type="button" className="ns-go is-quiet" disabled={!!busy} onClick={() => void removeFromLibrary()}>从文案库删除</button>}
           {draft && <button type="button" className="ns-go" disabled={!!busy} onClick={() => setPage('upload')}>下一步</button>}
@@ -181,13 +178,14 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
       </> : <>
         <button type="button" className="ns-back" disabled={working} onClick={() => setPage('pick')}>← 换一条爆款</button>
         <h1 className="ns-h1 is-small">上传本人视频</h1>
-        <p className="ns-lead">正面出镜、清晰讲话 15 秒以上。声音自动用你本人的，以后不用再传。</p>
+        <p className="ns-lead">用手机竖着拍，正对镜头，照着下面这段读一遍，10 秒以上就行。读完上传，45 秒、60 秒的视频都能做。</p>
+        <div className="ns-read"><span>照着读这段</span><b>{READ_ALOUD}</b><small>拍摄时：竖屏、正脸、身体少动、找个安静的地方。画面会自动接长到稿子的时长。</small></div>
         {draft && <div className="ns-chosen"><span>你的原创稿 · 约 {draft.seconds} 秒</span><b>{draft.title}</b><p>{draft.script}</p></div>}
         <div className="ns-person">
           {person?.previewDataUrl ? <img src={person.previewDataUrl} alt="" /> : <i className="ns-ph" aria-hidden="true" />}
           <div className="ns-person-text">
             {ready ? <><b>{person!.name}</b><span>{Math.round(person!.seconds)} 秒 · 本人声音已就绪</span></>
-              : <><b>{person ? '这段视频不够用' : '还没有上传视频'}</b><span>{person ? '需要正面出镜、清晰讲话 15 秒以上，请换一段' : '支持 mp4、mov，建议 30—60 秒'}</span></>}
+              : <><b>{person ? '这段视频不够用' : '还没有上传视频'}</b><span>{person ? `需要正面出镜、清晰讲话 ${referencePolicy.limits.narrationMinSeconds} 秒以上，请照着上面那段重新录一段` : `支持 mp4、mov，${referencePolicy.limits.narrationMinSeconds} 秒以上就行`}</span></>}
             {ready && !consented && <label className="ns-consent" data-xiaoxi-digital-human-action="reference-confirm-consent">
               <input type="checkbox" disabled={!!busy} onChange={(event) => { if (event.target.checked) void consent(); }} />视频和声音是我本人的</label>}
             {ready && consented && <span className="ns-ok">✓ 已确认是本人</span>}
@@ -202,10 +200,9 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
             {status.tone === 'failed' && current.retryable && <button type="button" className="ns-go is-quiet" data-xiaoxi-digital-human-action="reference-viral-pipeline-retry" disabled={!!busy} onClick={() => void retry()}>重试</button>}
             {!working && <button type="button" className="ns-go" onClick={() => { lastJob.current = ''; setPage('pick'); }}>再出一条</button>}
           </> : <>
-            <div className={`ns-sel${tooLong ? ' is-failed' : ''}`}>{draft ? draft.title : '先选一条爆款并仿写'}
-              <small>{tooLong ? `这条稿子约 ${draft!.seconds} 秒，你的视频只有 ${longest} 秒。请回去选短一点的时长重写，或换一段更长的视频。`
-                : `${draft ? `约 ${draft.seconds} 秒 · ` : ''}本人出镜、本人声音 · 字幕、配乐、封面自动完成`}</small></div>
-            <button type="button" className="ns-go" data-xiaoxi-digital-human-action="reference-viral-pipeline-start-script" disabled={!draft || tooLong || !ready || !consented || !!busy} onClick={() => void go()}>{busy === 'go' ? '正在开始…' : '一键出片'}</button>
+            <div className="ns-sel">{draft ? draft.title : '先选一条爆款并仿写'}
+              <small>{`${draft ? `约 ${draft.seconds} 秒 · ` : ''}本人出镜、本人声音 · 字幕、配乐、封面自动完成`}</small></div>
+            <button type="button" className="ns-go" data-xiaoxi-digital-human-action="reference-viral-pipeline-start-script" disabled={!draft || !ready || !consented || !!busy} onClick={() => void go()}>{busy === 'go' ? '正在开始…' : '一键出片'}</button>
           </>}
         </div>{error && <p className="ns-error" role="alert">{error}</p>}</div>
       </>}

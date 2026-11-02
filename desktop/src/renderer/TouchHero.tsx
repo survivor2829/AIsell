@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ImagePlus, PlayCircle, Plus, ThumbsUp } from "lucide-react";
 import { weekCount } from "./overview-stats";
+import { SpeedVideo, atTutorialSpeed } from "./SpeedVideo";
 import "./TouchHero.css";
 
 type Loose = Record<string, unknown>;
@@ -21,9 +22,9 @@ export function runNumbers(tasks: Loose[], type: string, now = Date.now()) {
 
 // 微信拓客各页的页头（用户 2026-10-29：页面放大后太空，要饱满、大气）：和主页同一套浅色大卡片，
 // 左边标题、按钮和数字，右边是真实操作录屏，点一下就播。
-export function PageHero({ label, chip, title, lead, actions, kpis, video, duration }: {
+export function PageHero({ label, chip, title, lead, actions, kpis, video, seconds }: {
   label: string; chip: string; title: ReactNode; lead: string; actions: ReactNode;
-  kpis: { value: ReactNode; unit: string; label: string }[]; video: string; duration: string;
+  kpis: { value: ReactNode; unit: string; label: string }[]; video: string; seconds: number;
 }) {
   const [playing, setPlaying] = useState(false);
   return <section className="touch-hero" aria-label={label}>
@@ -38,9 +39,9 @@ export function PageHero({ label, chip, title, lead, actions, kpis, video, durat
     </dl>
     <div className="touch-demo">
       {playing
-        ? <video src={asset(`${video}.mp4`)} poster={asset(`${video}.jpg`)} controls autoPlay playsInline />
+        ? <SpeedVideo src={asset(`${video}.mp4`)} poster={asset(`${video}.jpg`)} controls autoPlay playsInline />
         : <button type="button" className="touch-demo-poster" aria-label={`播放${label}操作演示`} onClick={() => setPlaying(true)}>
-          <img src={asset(`${video}.jpg`)} alt="" /><span><PlayCircle size={56} aria-hidden="true" /></span><small>真实操作录屏 · {duration}</small>
+          <img src={asset(`${video}.jpg`)} alt="" /><span><PlayCircle size={56} aria-hidden="true" /></span><small>真实操作录屏 · {atTutorialSpeed(seconds)}</small>
         </button>}
     </div>
   </section>;
@@ -51,7 +52,7 @@ export function TouchHero({ tasks, contactCount, planned, toggle, onAdd, addDisa
 }) {
   const numbers = runNumbers(tasks, "touch");
   return <PageHero label="精准触达" chip="微信拓客 · 精准触达" title={<>选好客户，<br /><em>AI 帮你</em>挨个聊</>}
-    lead="按你的话术和图片，一个个发给选定的客户，发完自动接着跟进。" video="wechat-touch" duration="1 分 08 秒"
+    lead="按你的话术和图片，一个个发给选定的客户，发完自动接着跟进。" video="wechat-touch" seconds={68}
     actions={<><button type="button" className="touch-add" onClick={onAdd} disabled={addDisabled}><Plus size={20} />新建触达任务</button><div className="touch-toggle">{toggle}</div></>}
     kpis={[
       { value: numbers.week, unit: "人", label: "本周已触达" },
@@ -67,7 +68,7 @@ export function MomentsHero({ tasks, planned, toggle, onAdd, addDisabled }: {
   const posts = runNumbers(tasks, "publish");
   const interactions = runNumbers(tasks, "interact");
   return <PageHero label="朋友圈运营" chip="微信拓客 · 朋友圈运营" title={<>朋友圈天天有动静，<br /><em>AI 帮你</em>发和互动</>}
-    lead="写好文案、选好图片，按时间自动发朋友圈；再给客户的动态点赞评论，让客户常常看到你。" video="wechat-moments" duration="1 分 05 秒"
+    lead="写好文案、选好图片，按时间自动发朋友圈；再给客户的动态点赞评论，让客户常常看到你。" video="wechat-moments" seconds={65}
     actions={<><button type="button" className="touch-add" onClick={() => onAdd("publish")} disabled={addDisabled}><ImagePlus size={20} />发朋友圈</button>
       <button type="button" className="touch-add is-light" onClick={() => onAdd("interact")} disabled={addDisabled}><ThumbsUp size={20} />朋友圈互动</button>
       <div className="touch-toggle">{toggle}</div></>}

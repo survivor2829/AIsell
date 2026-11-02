@@ -30,8 +30,15 @@ const needsNewNarration = (task) => task.errorCode === 'reference_audio_too_long
 // Leave room for natural pauses; measured audio remains the authoritative duration.
 const SCRIPT_KEYS = ['referenceAssetId', 'industry', 'business', 'referenceSource', 'generationIntentId', 'recoverOnly', 'libraryId', 'targetSeconds', 'mode', 'avoidTitles'];
 const SCRIPT_SECONDS = [30, 45, 60];
-// 稿子最长写到比本人视频短 3 秒：配音语速有快有慢，留出余量，不让配音超过视频。
-const scriptSecondsFor = (videoSeconds) => Math.max(15, Math.floor(videoSeconds) - 3);
+// 版本 6（用户 2026-11-02）：客户只录 10 秒以上，画面由对口型服务按「倒放-正放」交替接长到配音长度
+// （video_extension，按生成视频时长计费），稿子按客户选的时长写，不再受视频长度限制。
+const EXTENDED_VERSION = 6;
+// 没有指定时长的写稿（爆款链接一键出片、完整页）按 45 秒写。
+const DEFAULT_SCRIPT_SECONDS = 45;
+// 报价按稿子估的最长配音：每秒 4.2 个字再加 3 秒（实测 171 字的稿子配出 37 秒，每秒 4.6 字，2026-11-02），不超过对口型服务的上限。
+// 实际报价约为 2.41 元加每秒 0.08 元，所以 276 字的 60 秒稿报 69 秒、7.93 元，放得进每条 8 元的上限。
+// 数字按一个半字算：1280 念「一千二百八十」，念出来比写出来长。
+const voiceSecondsFor = (script) => { const text = String(script || ''); return Math.min(policy.limits.maxSeconds - 1, Math.ceil(([...text].length + (text.match(/[0-9]/gu) || []).length / 2) / 4.2) + 3); };
 function libraryOriginality(reported) {
   const ratio = Number(reported?.overlapRatio), limit = Number(reported?.limit) || 0.15;
   if (!Number.isFinite(ratio) || ratio < 0) return null;
@@ -182,9 +189,7 @@ function createReferenceHumanService(options = {}) {
       // 文案库仿写可以在上传本人视频之前做：没有视频时按客户选的时长写，出片前再核对视频够不够长。
       const asset = input.libraryId !== undefined && !input.referenceAssetId ? null : read(input.referenceAssetId, 'assets');
       if (asset && asset.seconds < policy.limits.narrationMinSeconds) throw fail('reference_video_short', `完整口播需要至少${policy.limits.narrationMinSeconds}秒人物视频，未提交写稿。`);
-      // 配音不能比本人视频长：客户选的时长超过视频时不提交；没超过的按视频长度留出余量再写，避免配完音才发现超长。
-      if (input.targetSeconds !== undefined && asset && input.targetSeconds > Math.floor(asset.seconds)) throw fail('reference_video_short', `你的视频只有 ${Math.floor(asset.seconds)} 秒，不够写 ${input.targetSeconds} 秒的稿子。请选短一点的时长，或换一段更长的视频。`);
-      const targetSeconds = asset ? Math.min(input.targetSeconds ?? Infinity, scriptSecondsFor(asset.seconds)) : input.targetSeconds;
+      const targetSeconds = input.targetSeconds ?? DEFAULT_SCRIPT_SECONDS;
       const library = input.libraryId !== undefined ? { libraryId: String(input.libraryId), ...(input.mode ? { mode: input.mode } : {}), ...(input.avoidTitles?.length ? { avoidTitles: input.avoidTitles.map((t) => t.trim()) } : {}) } : {};
       body = { targetSeconds, topic: String(input.industry || '').trim(), productFacts: String(input.business || '').trim(), ...library, ...(reference ? { reference: { platform: reference.platform, title: reference.title, body: reference.body, url: reference.url } } : {}) };
     }
@@ -252,7 +257,7 @@ function createReferenceHumanService(options = {}) {
     const previous = input.id ? read(input.id) : null;
     if (previous && previous.status !== 'draft') throw fail('reference_task_locked', '任务已开始，请新建口播；原任务与费用记录保留。');
     const script = String(input.script || '').trim();
-    if (!script || [...script].length > 500) throw fail('reference_script_invalid', '请填写1—500字的完整口播；实际配音不能长于参考视频。');
+    if (!script || [...script].length > 500) throw fail('reference_script_invalid', '请填写1—500字的完整口播。');
     if (String(input.industry || '').length > 80 || String(input.business || '').length > 2000) throw fail('reference_business_invalid', '行业最多80字，产品资料最多2000字。');
     let captionStyleId = input.captionStyleId || templates.defaultTemplateId;
     const packagingMode = input.packagingMode || (input.captionStyleId && !input.captionStyleId.endsWith('_v4') ? 'manual' : 'auto');
@@ -266,7 +271,7 @@ function createReferenceHumanService(options = {}) {
     const coverStyle = input.coverStyle || templates.templates.find((item) => item.id === captionStyleId)?.coverStyle || 'paper';
     if (!templates.coverStyles.some((item) => item.id === coverStyle)) throw fail('reference_cover_invalid', '请选择有效封面风格。');
     if (input.musicTrackId && !/^music_track_[A-Za-z0-9_-]{1,120}$/u.test(input.musicTrackId)) throw fail('reference_music_invalid', '请选择已有曲库中的配乐。');
-    const task = { ...input, id: previous?.id || `rh_${randomUUID()}`, version: previous?.version || 5, script,
+    const task = { ...input, id: previous?.id || `rh_${randomUUID()}`, version: previous?.version === 5 ? EXTENDED_VERSION : previous?.version || EXTENDED_VERSION, script,
       packagingMode, soundEffects: input.soundEffects !== false,
       title: String(input.title || script.split(/[，。！？\n]/u)[0]).trim().slice(0, 24), captionStyleId, emphasisPhrases,
       voiceStyleId: voiceDelivery.id, voiceDelivery: { ...voiceDelivery, sampleRate: previous?.version < 4 ? 24000 : 48000 },
@@ -284,6 +289,8 @@ function createReferenceHumanService(options = {}) {
   async function quote(id) {
     const task = read(id);
     if (task.status !== 'draft') return publicTask(task);
+    // Nothing is paid for on a draft, and scripts are no longer capped to the recording: version 5 drafts move to the extended rules.
+    if (task.version === 5) task.version = EXTENDED_VERSION;
     if (task.captionStyleId.endsWith('_v4')) {
       const asset = read(task.referenceAssetId, 'assets');
       const measured = await (options.analyzeNarration || vision.analyze)(verified(asset.videoFile, asset.videoSha256), file('layout-cache'), options.ffmpegPath || 'ffmpeg');
@@ -294,7 +301,7 @@ function createReferenceHumanService(options = {}) {
     }
     const prices = options.readReferencePrices ? await options.readReferencePrices() : policy.price;
     if (!(prices.videoCnyPerSecond > 0) || !Number.isFinite(Date.parse(prices.checkedAt || prices.checkedOn)) || Date.now() - Date.parse(prices.checkedAt || prices.checkedOn) > 30 * 86400000) throw fail('reference_price_unavailable', '人物驱动报价已过期或无法核实，未提交付费制作。');
-    const maximumSeconds = task.version >= 5 ? task.referenceSeconds : task.version >= 4 ? 45 : task.referenceSeconds;
+    const maximumSeconds = task.version >= EXTENDED_VERSION ? voiceSecondsFor(task.script) : task.version >= 5 ? task.referenceSeconds : task.version >= 4 ? 45 : task.referenceSeconds;
     const videoCny = round(maximumSeconds * prices.videoCnyPerSecond), voiceReserveCny = round(Math.max(1, [...task.script].length * prices.voiceReserveCnyPer10kChars / 10000));
     let coverReserveCny = 0, coverPrices;
     if (task.includeCover) {
@@ -348,12 +355,12 @@ function createReferenceHumanService(options = {}) {
     if (Date.now() - Date.parse(task.quote?.checkedAt) > 86400000 || !Number.isFinite(Date.parse(task.quote?.checkedAt))) throw fail('reference_price_unavailable', '这份报价已过期，请重新核价后确认。');
     const asset = read(task.referenceAssetId, 'assets');
     if (![2, 3].includes(task.quote?.schemaVersion) || task.quote.voiceProvider !== task.voiceProvider) throw fail('reference_quote_confirmation_required', '声音制作方式已更新，请重新查看费用后确认。');
-    const minimumReferenceSeconds = task.version >= 5 ? policy.limits.narrationMinSeconds : 45;
+    const minimumReferenceSeconds = task.version >= EXTENDED_VERSION ? policy.limits.narrationMinSeconds : task.version >= 5 ? 15 : 45;
     if (task.version >= 4 && generateVideo && asset.seconds < minimumReferenceSeconds) throw fail('reference_video_short', `本任务需要至少${minimumReferenceSeconds}秒人物视频，未提交配音或人物生成。旧草稿可新建口播，按素材时长重新规划。`);
     if (task.packagingPlan?.blocked) throw fail('reference_layout_crowded', '当前素材没有足够字幕空间，未开始付费制作。');
     if (task.voiceProvider === 'bailian' && task.quote.voiceModel !== policy.automaticVoice.model) throw fail('reference_quote_confirmation_required', '本人配音服务已更新，请重新查看费用后确认。');
     if (!customerConsent && !asset.voice?.consentAt && !asset.consentAt) throw fail('voice_clone_consent_required', '请确认视频和声音来自本人或已获授权。');
-    if (Math.min(asset.seconds, policy.limits.voiceMaxSeconds) < policy.limits.voiceMinSeconds) throw fail('reference_voice_short', '声音样本需要至少5秒清晰讲话，建议上传10—30秒本人视频。');
+    if (Math.min(asset.seconds, policy.limits.voiceMaxSeconds) < policy.limits.voiceMinSeconds) throw fail('reference_voice_short', '声音样本需要至少5秒清晰讲话，请照着页面上的那段话读一遍，10 秒以上就行。');
     if (task.voiceProvider === 'volcengine') {
       const slots = await options.voiceCloneClient.list();
       if (!asset.voice?.usable || !ownedSlot(slots.items.find((s) => s.speakerId === asset.voice.speakerId))) throw fail('reference_voice_billing_unknown', '已有本人声音状态无法核实，未开始付费制作。');
@@ -370,7 +377,7 @@ function createReferenceHumanService(options = {}) {
     }
     // This page uses automatic music. Re-select from the current validated
     // catalog even when a historical draft carried an old track ID.
-    const music = await options.selectMusic?.({ durationSeconds: task.referenceSeconds });
+    const music = await options.selectMusic?.({ durationSeconds: task.version >= EXTENDED_VERSION ? Math.max(task.referenceSeconds, task.quote?.maximumSeconds || 0) : task.referenceSeconds });
     if (!music?.trackId) throw fail('reference_music_not_ready', '没有可用配乐，请先在曲库中准备可用音乐；未提交配音或人物生成。');
     task.musicTrackId = music.trackId;
     task.musicSelected = true;
@@ -415,7 +422,10 @@ function createReferenceHumanService(options = {}) {
         task.asrAudioFile = relativeAsr; task.asrAudioSha256 = copy.sha256; save(task);
       }
       const measured = await audio.measureAudio({ source: verified(task.audioFile, task.audioSha256), ffmpegPath: options.ffmpegPath || 'ffmpeg' });
-      if (measured.seconds <= policy.limits.minSeconds || measured.seconds >= policy.limits.maxSeconds || measured.seconds > Math.min(task.referenceSeconds, task.quote.maximumSeconds || task.referenceSeconds)) throw fail('reference_audio_too_long', `实际配音${measured.seconds.toFixed(1)}秒，可用人物时长${Math.min(task.referenceSeconds, task.quote.maximumSeconds || task.referenceSeconds).toFixed(1)}秒。请缩短文案或补充更长参考视频；已有配音保留，未购买人物视频，不会加速或倒放人物。`);
+      // Version 6 checks the voice against the confirmed quote only; the recording is extended to fit it.
+      if (task.version >= EXTENDED_VERSION && measured.seconds <= policy.limits.minSeconds) throw fail('reference_audio_too_long', `实际配音只有${measured.seconds.toFixed(1)}秒，太短了。请把文案写长一些再确认；已有配音保留，未购买人物视频。`);
+      if (task.version >= EXTENDED_VERSION && measured.seconds > task.quote.maximumSeconds) throw fail('reference_audio_too_long', `实际配音${measured.seconds.toFixed(1)}秒，超过了确认费用时的${task.quote.maximumSeconds}秒。请把文案改短一些再确认；已有配音保留，未购买人物视频。`);
+      if (task.version < EXTENDED_VERSION && (measured.seconds <= policy.limits.minSeconds || measured.seconds >= policy.limits.maxSeconds || measured.seconds > Math.min(task.referenceSeconds, task.quote.maximumSeconds || task.referenceSeconds))) throw fail('reference_audio_too_long', `实际配音${measured.seconds.toFixed(1)}秒，可用人物时长${Math.min(task.referenceSeconds, task.quote.maximumSeconds || task.referenceSeconds).toFixed(1)}秒。请缩短文案或补充更长参考视频；已有配音保留，未购买人物视频，不会加速或倒放人物。`);
       task.actualDurationSeconds = measured.seconds; save(task);
       const asr = await operation(task, 'asr', (operationId) => provider.request('/volcengine/asr/recognize/flash', { method: 'POST', operationId,
         headers: { 'X-Api-Resource-Id': 'volc.bigasr.auc_turbo', 'X-Api-Sequence': '-1', 'X-Api-Request-Id': operationId },
@@ -434,7 +444,7 @@ function createReferenceHumanService(options = {}) {
       }
       const response = await operation(task, 'video', (operationId) => provider.request('/bailian/api/v1/services/aigc/image2video/video-synthesis', {
         method: 'POST', operationId, headers: { ...ASYNC_HEADERS, 'X-DashScope-OssResourceResolve': 'enable' },
-        body: { model: policy.model, input: { video_url: task.videoUpload.url, audio_url: task.audioUpload.url }, parameters: { video_extension: false } } }), round(task.actualDurationSeconds * task.quote.videoCnyPerSecond));
+        body: { model: policy.model, input: { video_url: task.videoUpload.url, audio_url: task.audioUpload.url }, parameters: { video_extension: task.version >= EXTENDED_VERSION } } }), round(task.actualDurationSeconds * task.quote.videoCnyPerSecond));
       const taskId = provider.taskIdOf(response);
       if (!taskId) throw fail('reference_submission_unknown', '生成请求已发出但未取得任务编号，请查询原回执；不会重提。', { outcomeUnknown: true });
       transition(task, 'video_generating', { videoTaskId: taskId, progress: 40 });

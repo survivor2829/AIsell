@@ -23,10 +23,11 @@ export function libraryStages(stats: ViralLibrary['stats']): FlowStage[] {
   ];
 }
 
-// 仿写时长：不能超过本人视频（主进程写稿时还会再留 3 秒余量给配音）；还没上传视频时都能选。
+// 仿写时长：画面由云端倒放-正放接长到配音长度，不受本人视频长短限制（用户 2026-11-02）。
 export const SCRIPT_SECONDS = [30, 45, 60] as const;
 export type ScriptSeconds = typeof SCRIPT_SECONDS[number];
-export const longestScriptSeconds = (videoSeconds?: number) => videoSeconds ? Math.floor(videoSeconds) : Infinity;
+// 客户照着读的那一段：约 15 秒、口语、不带行业词，读完声音和画面都够用。
+export const READ_ALOUD = "大家好，欢迎来到我的视频。今天想和大家聊聊我每天在做的事情，也说说我对这份工作的感受。如果你也感兴趣，记得关注我，我们下次见。";
 
 // 每条爆款已经出过几次片（一键出片的任务记的是 lib + 文案库 ID）；用过的卡片留着，排到没用过的后面。
 export function libraryUsage(jobs: Pick<ViralJob, 'mode' | 'itemId' | 'status'>[]) {
@@ -38,9 +39,10 @@ export const orderByUsage = <T extends Pick<ViralLibraryItem, 'id'>>(items: T[],
   [...items].sort((a, b) => Number(Boolean(made[a.id])) - Number(Boolean(made[b.id])));
 
 // 底部栏跟着哪条出片任务：正在做的，刚点的，再不然是最近一条失败但能重试的——重启软件后也能在这里点「重试」。
-export function currentJob<T extends Pick<ViralJob, 'id' | 'status' | 'retryable' | 'updatedAt'>>(jobs: T[], lastId: string) {
+// 旧的失败任务只在没有选好新稿子时提示；选好新稿子就让客户一键出片，不必先重试旧的。
+export function currentJob<T extends Pick<ViralJob, 'id' | 'status' | 'retryable' | 'updatedAt'>>(jobs: T[], lastId: string, { newDraft = false }: { newDraft?: boolean } = {}) {
   return jobs.find((j) => j.status === 'running' || j.status === 'queued') || jobs.find((j) => j.id === lastId)
-    || jobs.filter((j) => j.status === 'failed' && j.retryable).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    || (newDraft ? undefined : jobs.filter((j) => j.status === 'failed' && j.retryable).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]);
 }
 
 // 底部栏：选中后显示要做什么；开始后显示当前进度；完成或失败时说清楚。

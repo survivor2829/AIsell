@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, PlayCircle, X } from 'lucide-react';
 import type { TutorialTopic } from './tutorials-types';
+import { SpeedVideo } from './SpeedVideo';
 import './VideoExamples.css';
 
 export const VIDEO_EXAMPLES = [
@@ -22,6 +23,7 @@ function openTutorial(example: VideoExample) {
 }
 
 function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: () => void }) {
+  const Player = isWechatDemo(example) ? SpeedVideo : 'video';
   const dialog = useRef<HTMLDialogElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const [failed, setFailed] = useState(false);
@@ -37,7 +39,7 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
     <header><div><strong>{example.title}</strong><span>{example.module} · {example.duration} · {isWechatDemo(example) ? '真实操作录屏' : '离线示例'}</span></div><button type="button" aria-label={`关闭${label}`} onClick={onClose}><X size={22} /></button></header>
     <div className="video-example-stage">
       {failed ? <div className="video-example-error" role="alert"><p>这段示例暂时无法播放，请重试。</p><button type="button" onClick={() => setFailed(false)}>重新播放</button><button type="button" onClick={() => { onClose(); openTutorial(example); }}>查看操作教程</button></div>
-        : <video ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />}
+        : <Player ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />}
     </div>
   </dialog>;
 }

@@ -16,7 +16,7 @@ function loadTs(name) {
   compiled._compile(output, filename);
   return compiled.exports;
 }
-const { libraryHeadline, libraryStages, barText, currentJob, formatCount, longestScriptSeconds, libraryUsage, orderByUsage } = loadTs("narration-simple.ts");
+const { libraryHeadline, libraryStages, barText, currentJob, formatCount, libraryUsage, orderByUsage } = loadTs("narration-simple.ts");
 
 // 大标题只说真实条数，不说哪天扒的（文案库一次扒好要用很久）
 assert.equal(formatCount(1284), "1,284");
@@ -28,9 +28,6 @@ assert.deepEqual(libraryStages({ collected: 1284, duplicates: 237, final: 92, re
 assert.equal(libraryStages({ collected: 1, duplicates: 5, final: 0, ready: 0 })[1].value, 0);
 
 // 仿写时长不超过本人视频，没上传视频时不限制
-assert.equal(longestScriptSeconds(46.7), 46, "46.7 秒的视频可以选 45 秒，不能选 60 秒");
-assert.equal(longestScriptSeconds(59.9), 59);
-assert.equal(longestScriptSeconds(undefined), Infinity);
 
 // 出过片的卡片记次数、排到后面，顺序在各自组内不变；没做完的和别的模式不算
 const made = libraryUsage([{ mode: "script", itemId: "lib2", status: "done" }, { mode: "script", itemId: "lib2", status: "done" }, { mode: "script", itemId: "lib3", status: "failed" }, { mode: "library", itemId: "4", status: "done" }, { mode: "post", itemId: "lib1", status: "done" }]);
@@ -43,6 +40,10 @@ assert.equal(currentJob([j("a", "failed", "2026-10-26T12:00:00Z"), j("b", "runni
 assert.equal(currentJob([j("a", "failed", "2026-10-26T12:00:00Z"), j("c", "done", "2026-10-26T13:00:00Z")], "c").id, "c");
 assert.equal(currentJob([j("old", "failed", "2026-10-26T10:00:00Z"), j("new", "failed", "2026-10-26T12:00:00Z"), j("dead", "failed", "2026-10-26T13:00:00Z", false)], "").id, "new");
 assert.equal(currentJob([j("c", "done", "2026-10-26T13:00:00Z")], ""), undefined);
+// 已经选好新稿子时，旧的失败任务不能挡住「一键出片」（2026-11-02 实测：只能重试，换不了视频重新出片）。
+assert.equal(currentJob([j("old", "failed", "2026-10-26T10:00:00Z")], "", { newDraft: true }), undefined);
+assert.equal(currentJob([j("old", "failed", "2026-10-26T10:00:00Z"), j("b", "running", "2026-10-26T11:00:00Z")], "", { newDraft: true }).id, "b", "正在做的仍然显示");
+assert.equal(currentJob([j("mine", "failed", "2026-10-26T10:00:00Z")], "mine", { newDraft: true }).id, "mine", "刚出的这一条失败了照样显示");
 
 const job = (patch) => ({ status: "running", step: "voice", progress: 0, error: "", ...patch });
 assert.equal(barText(undefined), null);
