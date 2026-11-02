@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { createGeoBrowserAdapter, GEO_CHANNELS, DRIVERS, sameArticle, paragraphs } = require("./geo-publish-drivers.cjs");
+const { coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, sameArticle, paragraphs } = require("./geo-publish-drivers.cjs");
 
 // 文字比对：空白和编辑器插入的零宽字符不算差别；少一段、改一个字都算不一致。
 const job = { title: "洗地机怎么选", body: "第一段。\n\n第二段。\n" };
@@ -30,8 +30,32 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
   // 标题只是别的文章标题的一部分：不算。
   assert.equal(tt.published(list, "洗地机怎么选购指南\n11-01 21:52\n已发布", clicked), null, "标题要整行相同");
   assert.ok(GEO_CHANNELS.find((channel) => channel.id === "toutiao").titleLimit === 30);
-  assert.ok(!GEO_CHANNELS.find((channel) => channel.id === "sohu").available, "搜狐号账号未实名，没发成过，不开放");
-  assert.ok(!GEO_CHANNELS.find((channel) => channel.id === "baijiahao").available, "百家号没有测试账号，不开放");
+  // 搜狐号、百家号应用户要求先开放（2026-11-02）：没有真实发过，必须标成试用，而且永远不能自己报“已发出”。
+  for (const id of ["sohu", "baijiahao"]) {
+    const channel = GEO_CHANNELS.find((item) => item.id === id), driver = DRIVERS[id];
+    assert.ok(channel.available && channel.trial, `${id} 开放但标为试用`);
+    assert.ok(GEO_ACCOUNT_PLATFORMS[id]?.loginCookies.length, `${id} 可以登录`);
+    const lists = id === "sohu" ? "https://mp.sohu.com/mpfe/v4/contentManagement/news/list" : "https://baijiahao.baidu.com/builder/rc/content";
+    assert.equal(driver.published(lists, "别的文章\n已发布", { title: "这篇" }), null, "列表里没有这篇不算");
+    assert.equal(driver.published(lists, "这篇的后续\n已发布", { title: "这篇" }), null, "标题要整行相同");
+    assert.equal(driver.published(lists, "这篇\n已发布", { title: "这篇" }).status, "unknown", "没验证过的渠道结果一律由用户核对");
+    assert.equal(driver.published(lists, "旧文章\n正在审核中", { title: "这篇" }).status, "unknown", "别的文章的审核状态不能算到这篇头上");
+    assert.equal(driver.published(driver.editorUrl, "这篇", { title: "这篇" }), null, "还在写文章页不算");
+  }
+  // 搜狐号没实名时，发文地址会跳回首页（2026-11-02 真实账号上看到的）：说清楚原因，不当成页面改版。
+  assert.match(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "实名认证可解锁发布文章"), /实名认证/);
+  assert.equal(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "请先实名认证的提示 标题"), "", "已经在写文章页就不算被挡");
+  assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "账号已被平台禁言，暂无法发布文章"), /禁言/);
+  assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "账号今日发布额度已用完"), /额度/);
+  assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "仅支持发布动态"), /动态/);
+  assert.equal(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "实名认证\n已认证\n发布内容"), "", "菜单里有这几个字不算没实名");
+  assert.ok(!DRIVERS.sohu.holdText.test("为了账号安全，请不要泄露密码"), "常驻提示不算验证");
+  assert.ok(DRIVERS.sohu.holdText.test("为了账号安全，需要短信验证") && DRIVERS.baijiahao.holdText.test("百度安全验证"));
+  assert.ok(DRIVERS.sohu.confirmButton.includes("确认发布") && DRIVERS.baijiahao.confirmButton.includes("确认发布"), "点发布后还有一步确认");
+  assert.equal(DRIVERS.baijiahao.published(DRIVERS.baijiahao.editorUrl.replace("edit?type=news", "success"), "提交成功，正在审核中", { title: "这篇" }).status, "unknown");
+  // 百家号必须有封面：封面用标题生成，标题里的符号不能变成网页代码。
+  assert.ok(DRIVERS.baijiahao.needsCover);
+  assert.ok(coverHtml("<img src=x>洗地机").includes("&#60;img src=x&#62;洗地机"));
 }
 
 // 假页面走一遍发布：内容对不上不点；按钮点不到不点；点了等不到确认是结果不明。
@@ -42,7 +66,7 @@ function world({ readBack, point = { x: 1, y: 2 }, urlAfter = "https://zhuanlan.
   const page = {
     navigate: async () => {}, url: async () => current, find: async () => node, byClass: () => () => true,
     type: async (_node, text) => { log.typed.push(text); }, click: async () => true,
-    send: async (method, params) => { if (method === "Input.insertText") log.typed.push(params.text); },
+    send: async (method, params) => { if (method === "Input.insertText") log.typed.push(params.text); return method === "Page.captureScreenshot" ? { data: Buffer.from("png").toString("base64") } : {}; },
     valueOf: async () => "", front: async () => {},
     evaluate: async (expression) => expression.includes("elementFromPoint") ? point : expression.includes("captcha") ? false : "",
     mouse: async () => { log.clicks++; current = urlAfter; }
@@ -51,7 +75,7 @@ function world({ readBack, point = { x: 1, y: 2 }, urlAfter = "https://zhuanlan.
   DRIVERS.zhihu.fill = async (_page, wanted) => { log.typed.push(wanted.title); return { read: async () => readBack || { title: wanted.title, body: wanted.body } }; };
   return { log, adapter: createGeoBrowserAdapter({ launch: () => browser, executable: "chrome.exe", makePage: () => page }) };
 }
-const realFill = DRIVERS.zhihu.fill, realTimeout = global.setTimeout;
+const realFill = DRIVERS.toutiao.fill, realFillToutiao = (page) => realFill.call(DRIVERS.toutiao, page, { title: "标题", body: "正文" }), realZhihuFill = DRIVERS.zhihu.fill, realTimeout = global.setTimeout;
 // 真实等待都很长；这里把等待压短，只测判断。
 global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...rest);
 
@@ -87,7 +111,46 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
     assert.equal(w.log.clicks, 0);
   }
   await assert.rejects(world().adapter.publish({ ...input, platform: "weibo" }), { code: "GEO_CHANNEL_UNAVAILABLE" });
-  DRIVERS.zhihu.fill = realFill;
+  {
+    // 试用渠道的 AI 标注方式还没确认：AI 写的文章不发，一次都不点。
+    for (const platform of ["sohu", "baijiahao"]) {
+      const w = world();
+      await assert.rejects(w.adapter.publish({ ...input, platform, aiWritten: true }), { code: "GEO_TRIAL_AI" });
+      assert.equal(w.log.clicks, 0);
+    }
+  }
+  {
+    // 点发布后才出现的文字验证：窗口切到前面并继续等，验证结束后才判断结果；页面读不出来不算验证结束。
+    const { waitThroughVerify } = require("./geo-publish-drivers.cjs");
+    let reads = 0, fronts = 0;
+    const page = { front: async () => { fronts++; }, evaluate: async (expression) => { if (expression.includes("captcha")) return false; reads++; if (reads === 2) throw new Error("page is navigating"); return reads < 4 ? "为了账号安全，需要短信验证" : "列表页"; } };
+    const result = await waitThroughVerify(page, async () => ({ doneAt: reads }), { ms: 1, hold: /需要短信验证/ });
+    assert.equal(fronts, 1, "窗口切到前面一次"); assert.ok(result.doneAt >= 4, "验证还在时不算完成");
+  }
+  {
+    // 百家号封面上传不成功：不碰发布按钮；生成的临时封面用完删掉。
+    const fsCheck = require("node:fs");
+    let coverPath = "";
+    const realFillB = DRIVERS.baijiahao.fill;
+    DRIVERS.baijiahao.fill = async (_page, job) => { coverPath = job.coverFile; assert.ok(fsCheck.existsSync(coverPath), "发布时封面文件在"); throw Object.assign(new Error("封面没传成功"), { code: "GEO_FORM_CHANGED" }); };
+    const w = world({ url: "https://baijiahao.baidu.com/builder/rc/edit?type=news" });
+    await assert.rejects(w.adapter.publish({ ...input, platform: "baijiahao" }), { code: "GEO_FORM_CHANGED" });
+    assert.equal(w.log.clicks, 0, "封面失败不点发布"); assert.ok(coverPath && !fsCheck.existsSync(coverPath), "临时封面删掉");
+    DRIVERS.baijiahao.fill = realFillB;
+  }
+  {
+    // 头条：默认勾着的「发布得更多收益」要取消；取消不掉就不发。
+    const fake = (stuck, missing = false) => { const log = { clicks: [], typed: 0 }; let ticked = true; const label = (text, cls) => ({ nodeType: 1, localName: "label", attributes: ["class", cls], children: [{ nodeType: 3, nodeValue: text }] });
+      return { log, page: { evaluate: async () => undefined, type: async () => {}, click: async (node) => { log.clicks.push(node.children?.[0]?.nodeValue || "editor"); if (!stuck && node.children?.[0]?.nodeValue === "发布得更多收益") ticked = false; return true; }, send: async () => {}, call: async () => {}, valueOf: async () => "", byClass: () => (node) => node.localName === "editor",
+        find: async (predicate) => [{ localName: "textarea", attributes: ["placeholder", "请输入文章标题"] }, { localName: "editor" }, label("无封面", "byte-radio"), ...(missing ? [] : [label("发布得更多收益", ticked ? "byte-checkbox byte-checkbox-checked" : "byte-checkbox")])].find((node) => predicate(node)) || null } }; };
+    const ok = fake(false);
+    await realFillToutiao(ok.page);
+    assert.ok(ok.log.clicks.includes("发布得更多收益"), "默认勾选的要取消");
+    const stuck = fake(true);
+    await assert.rejects(realFillToutiao(stuck.page), { code: "GEO_FORM_CHANGED" }, "取消不掉就不发");
+    await assert.rejects(realFillToutiao(fake(false, true).page), { code: "GEO_FORM_CHANGED" }, "找不到这个选项不能当成已取消");
+  }
+  DRIVERS.zhihu.fill = realZhihuFill;
   console.log("geo publish drivers self-check passed");
   process.exit(0);
 })().catch((error) => { console.error(error); process.exit(1); });

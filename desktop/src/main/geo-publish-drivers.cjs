@@ -1,7 +1,10 @@
 // GEO: publishing an article on a media platform's own editor and asking Doubao a question, in the
-// account's own Chrome profile. A channel opens only after a real article went out on a real account
-// (`available`). Every step reports what it could not find instead of guessing; a verification is left to
+// account's own Chrome profile. A channel opens after a real article went out on a real account, or as a marked
+// trial at the user's request (`trial`). Every step reports what it could not find instead of guessing; a verification is left to
 // the person at the window.
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { findBrowser, launchBrowser } = require("./social-browser.cjs");
 const { pageFor, attr, textOf, sleep } = require("./social-page.cjs");
 
@@ -24,7 +27,7 @@ async function typeBody(page, editor, body) {
   await page.click(editor);
   await sleep(300);
   // An autosaved draft can be restored here; the confirmed text replaces it.
-  await page.call(editor, `function () { this.focus(); const range = document.createRange(); range.selectNodeContents(this); const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range); }`);
+  await page.call(editor, `function () { this.focus(); const doc = this.ownerDocument; const range = doc.createRange(); range.selectNodeContents(this); const selection = doc.getSelection(); selection.removeAllRanges(); selection.addRange(range); }`);
   const lines = paragraphs(body);
   for (const [index, line] of lines.entries()) {
     await page.send("Input.insertText", { text: line });
@@ -39,13 +42,15 @@ function sameArticle({ title, body }, job) {
 }
 
 // While a verification is on screen the window comes to the front and the wait goes on; only the person passes it.
-async function waitThroughVerify(page, done, { ms = 30_000, verifyMs = 10 * 60_000, shouldStop = () => false, onDetail = () => {} } = {}) {
+async function waitThroughVerify(page, done, { ms = 30_000, verifyMs = 10 * 60_000, shouldStop = () => false, onDetail = () => {}, hold = null } = {}) {
   let until = Date.now() + ms, waiting = false;
   for (;;) {
     if (shouldStop()) throw fail("GEO_STOPPED", "已停下。");
-    const result = await done();
-    if (result) return result;
-    const blocked = Boolean(await page.evaluate(VERIFY_PROBE).catch(() => false));
+    // While a check is on screen nothing counts as finished, and a page that cannot be read does not end the wait.
+    const words = hold ? await page.evaluate("document.body ? document.body.innerText : ''").then(String).catch(() => null) : "";
+    const held = hold ? (words === null ? waiting : hold.test(words)) : false;
+    if (!held) { const result = await done(); if (result) return result; }
+    const blocked = held || Boolean(await page.evaluate(VERIFY_PROBE).catch(() => false));
     if (blocked && !waiting) { waiting = true; until = Date.now() + verifyMs; await page.front(); onDetail("平台要求验证：请在弹出的 Chrome 窗口里完成，完成后会自动继续。"); }
     if (!blocked && waiting) { waiting = false; until = Date.now() + ms; onDetail(""); }
     if (Date.now() > until) { if (blocked) throw fail("GEO_VERIFY_TIMEOUT", "平台的验证 10 分钟内没有完成，已停下。"); return null; }
@@ -97,6 +102,15 @@ const TOUTIAO = {
     if (!noCover) throw fail("GEO_FORM_CHANGED", "没有找到头条的「无封面」选项，平台页面可能改版了。");
     await page.click(noCover);
     await sleep(600);
+    // User decision 2026-11-02: 发布得更多收益 stays off. It is ticked by default, and an article published with it
+    // carried a 首发 mark although it was also on Zhihu. Refusing here beats publishing a claim that is not true.
+    const income = () => page.find((node) => node.localName === "label" && /发布得更多收益/.test(textOf(node)));
+    const isOn = (node) => String(attr(node, "class") || "").includes("byte-checkbox-checked");
+    let option = await income();
+    for (let tries = 0; !option && tries < 3; tries++) { await sleep(1000); option = await income(); }
+    if (!option) throw fail("GEO_FORM_CHANGED", "没有找到头条的「发布得更多收益」选项，确认不了它是否关闭，这篇没有发布。");
+    if (isOn(option)) { await page.click(option); await sleep(400); option = await income(); }
+    if (!option || isOn(option)) throw fail("GEO_FORM_CHANGED", "没能取消头条的「发布得更多收益」，这篇没有发布。");
     // 头条首发 claims the article appears nowhere else, which the software cannot know: it stays off.
     const claim = await page.find((node) => node.localName === "label" && attr(node, "class")?.includes("byte-checkbox-checked") && /头条首发/.test(textOf(node)));
     if (claim) { await page.click(claim); await sleep(300); }
@@ -133,7 +147,105 @@ const TOUTIAO = {
   linkOf: (job) => `[...document.querySelectorAll("a[href]")].find((a) => (a.innerText || "").trim() === ${JSON.stringify(job.title)} && /toutiao\\.com\\/(item|article)\\//.test(a.href))?.href.split("?")[0] || ""`
 };
 
-const DRIVERS = { zhihu: ZHIHU, toutiao: TOUTIAO };
+// Sohu and Baijiahao have not published on a real account yet. Their addresses, fields and steps were learned from
+// another product's publisher, used with the user's word that the two companies have an agreement (2026-11-02); this
+// is our own code. They refuse to click unless the page reads back the confirmed text, and only ever report
+// "submitted, please check": the user settles the result on the platform until a real article has gone through.
+const titleField = (page, name) => page.find((node) => (["input", "textarea"].includes(node.localName) || attr(node, "contenteditable") === "true") && /标题/.test(attr(node, "placeholder") || ""))
+  .then((node) => { if (!node) throw fail("GEO_FORM_CHANGED", `没有找到${name}的标题输入框，平台页面可能和预想的不同。`); return node; });
+const pressByWords = async (page, words) => {
+  const node = await page.find((item) => ["button", "a", "span", "div", "label"].includes(item.localName) && words.includes(textOf(item).trim()));
+  if (node) { await page.click(node); await sleep(800); }
+  return Boolean(node);
+};
+const submitted = (name) => ({ status: "unknown", reason: `页面显示已提交。${name}还没有真实验证过，请到平台上看一下是否发出，再告诉软件结果。` });
+const listedOrSaid = (pattern, name) => (url, text, job) => {
+  if (!pattern.test(url)) return null;
+  const said = /提交成功|发布成功|正在审核中/.test(text);
+  return said || String(text).split(/\n/).some((line) => line.trim() === job.title) ? submitted(name) : null;
+};
+const BUTTON = (label) => `[...document.querySelectorAll("button,[role=button]")].find((el) => (el.innerText || "").trim() === ${JSON.stringify(label)} && el.getClientRects().length)`;
+
+const SOHU = {
+  id: "sohu", name: "搜狐号", titleLimit: 72, trial: true,
+  // ppinf and pprdig appeared on logging in with a real account (2026-11-02).
+  home: "https://mp.sohu.com/", hosts: ["sohu.com"], loginCookies: ["ppinf", "pprdig"],
+  editorUrl: "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle",
+  loginRequired: (url) => /passport\.sohu|\/login/.test(url),
+  holdText: /为了账号安全，需要短信验证/,
+  // The first of these was seen on a real account (2026-11-02): without real-name verification the editor address goes back.
+  blocked(url, text) {
+    if (/账号已被平台禁言/.test(text)) return "这个搜狐号已被平台禁言，暂时不能发文章。";
+    if (/今日发布额度已用完/.test(text)) return "这个搜狐号今天的发布额度用完了，明天再发。";
+    if (/仅支持发布动态/.test(text)) return "这个搜狐号目前只能发动态，不能发文章。";
+    return /实名认证可解锁|实名认证后可解锁|您的账号未实名/.test(text) && !/addarticle/.test(url) ? "这个搜狐号还没有实名认证，平台不允许发文章。请先到搜狐号后台完成实名认证。" : "";
+  },
+  async fill(page, job) {
+    let title = await page.find((node) => node.localName === "input" && /标题/.test(attr(node, "placeholder") || ""));
+    // The editor can also be reached from the site's own 发布内容 entry.
+    if (!title && await pressByWords(page, ["发布内容"])) await sleep(4000);
+    const refusal = this.blocked(String(await page.url()), await shownText(page));
+    if (refusal) throw fail("GEO_ACCOUNT_NOT_READY", refusal);
+    title = title || await titleField(page, this.name);
+    await page.type(title, job.title);
+    const editor = await page.find((node) => attr(node, "contenteditable") === "true" && String(attr(node, "class") || "").includes("ql-editor"));
+    if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到搜狐号的正文输入框，平台页面可能和预想的不同。");
+    await typeBody(page, editor, job.body);
+    // The creation statement. Only articles the user wrote come here: AI-written ones stop earlier.
+    if (!await pressByWords(page, ["无需声明"])) throw fail("GEO_FORM_CHANGED", "没有找到搜狐号的创作声明，这篇没有发布。");
+    const chosen = await page.evaluate(`[...document.querySelectorAll("section#info-source-signature label, label[role=radio]")].some((el) => (el.innerText || "").trim() === "无需声明" && (el.getAttribute("aria-checked") === "true" || el.querySelector("input:checked") || /checked/i.test(el.className)))`);
+    if (!chosen) throw fail("GEO_FORM_CHANGED", "没能选中搜狐号的「无需声明」，这篇没有发布。");
+    return { read: async () => ({ title: await page.valueOf(title), body: await page.valueOf(editor) }) };
+  },
+  publishButton: BUTTON("发布"),
+  confirmButton: BUTTON("确认发布"),
+  published: listedOrSaid(/mp\.sohu\.com\/mpfe\/v4\/contentManagement\/(?!news\/addarticle)/, "搜狐号")
+};
+
+const BAIJIAHAO = {
+  id: "baijiahao", name: "百家号", titleLimit: 64, trial: true, needsCover: true,
+  home: "https://baijiahao.baidu.com/", hosts: ["baidu.com"], loginCookies: ["BDUSS", "BDUSS_BFESS"],
+  editorUrl: "https://baijiahao.baidu.com/builder/rc/edit?type=news",
+  loginRequired: (url) => /passport\.baidu|\/login/.test(url),
+  holdText: /百度安全验证|请完成下方验证/,
+  blocked: (_url, text) => /注册百家号|申请入驻/.test(text) ? "这个账号还没有开通百家号，请先到百家号后台完成注册和认证。" : "",
+  async fill(page, job) {
+    const title = await titleField(page, this.name);
+    await page.type(title, job.title);
+    // The article body is the body of an iframe.
+    const editor = await page.find((node) => node.localName === "body" && attr(node, "contenteditable") === "true");
+    if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到百家号的正文输入框，平台页面可能和预想的不同。");
+    await typeBody(page, editor, job.body);
+    await this.setCover(page, job.coverFile);
+    return { read: async () => ({ title: await page.valueOf(title), body: await page.valueOf(editor) }) };
+  },
+  // A cover is required. A missing step stops here, before the publish button is touched.
+  async setCover(page, file) {
+    const opened = await page.evaluate(`(() => { const el = document.querySelector("#bjhNewsCover [class*='item']") || document.querySelector("#bjhNewsCover"); if (!el) return false; el.scrollIntoView({ block: "center" }); el.click(); return true; })()`);
+    if (!opened) throw fail("GEO_FORM_CHANGED", "没有找到百家号的封面入口，平台页面可能和预想的不同。");
+    await sleep(1500);
+    const view = await page.tree();
+    const input = view.nodes.find((node) => node.localName === "input" && attr(node, "type") === "file" && view.ancestors(node).some((item) => String(attr(item, "class") || "").includes("cheetah-modal")));
+    if (!input) throw fail("GEO_FORM_CHANGED", "没有找到百家号的封面上传入口，平台页面可能和预想的不同。");
+    await page.setFile(input, file);
+    let pressed = false;
+    for (let tries = 0; !pressed && tries < 20; tries++) {
+      await sleep(1000);
+      pressed = await page.evaluate(`(() => { const el = [...document.querySelectorAll(".cheetah-modal button")].find((item) => (item.innerText || "").replace(/\\s/g, "") === "确定" && item.getClientRects().length && !item.disabled); if (!el) return false; el.click(); return true; })()`);
+    }
+    let shown = false;
+    for (let tries = 0; pressed && !shown && tries < 10; tries++) {
+      await sleep(800);
+      shown = await page.evaluate(`(() => { const box = document.querySelector("#bjhNewsCover"); return Boolean(box) && !document.querySelector(".cheetah-modal .cheetah-upload-select")?.getClientRects().length && (Boolean(box.querySelector("img")) || /更换封面/.test(box.innerText || "")); })()`);
+    }
+    if (!shown) throw fail("GEO_FORM_CHANGED", "百家号的封面没有传成功，这篇没有发布。");
+  },
+  publishButton: BUTTON("发布"),
+  confirmButton: BUTTON("确认发布"),
+  published: listedOrSaid(/baijiahao\.baidu\.com\/builder\/rc\/(?!edit)/, "百家号")
+};
+
+const DRIVERS = { zhihu: ZHIHU, toutiao: TOUTIAO, sohu: SOHU, baijiahao: BAIJIAHAO };
 
 const DOUBAO = {
   name: "豆包", url: "https://www.doubao.com/chat/", hosts: ["doubao.com"], loginCookies: ["sessionid", "sessionid_ss"],
@@ -150,16 +262,29 @@ const DOUBAO = {
 const GEO_CHANNELS = [
   // Confirmed by a real article on 2026-11-02.
   { id: "toutiao", name: "今日头条", available: true, titleLimit: TOUTIAO.titleLimit },
-  { id: "baijiahao", name: "百家号", available: false, reason: "待开放" },
-  { id: "sohu", name: "搜狐号", available: false, reason: "待开放" },
+  // Open at the user's request (2026-11-02) before any real article went through; shown as trial.
+  { id: "baijiahao", name: "百家号", available: true, trial: true, titleLimit: BAIJIAHAO.titleLimit },
+  { id: "sohu", name: "搜狐号", available: true, trial: true, titleLimit: SOHU.titleLimit },
   // Confirmed by a real article on 2026-11-02.
   { id: "zhihu", name: "知乎", available: true, titleLimit: ZHIHU.titleLimit }
 ];
 const GEO_ACCOUNT_PLATFORMS = {
   zhihu: { name: "知乎", home: ZHIHU.home, hosts: ZHIHU.hosts, loginCookies: ZHIHU.loginCookies },
   toutiao: { name: "今日头条", home: TOUTIAO.home, hosts: TOUTIAO.hosts, loginCookies: TOUTIAO.loginCookies },
+  sohu: { name: SOHU.name, home: SOHU.home, hosts: SOHU.hosts, loginCookies: SOHU.loginCookies },
+  baijiahao: { name: BAIJIAHAO.name, home: BAIJIAHAO.home, hosts: BAIJIAHAO.hosts, loginCookies: BAIJIAHAO.loginCookies },
   doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies }
 };
+
+const coverHtml = (title) => `<!doctype html><meta charset="utf-8"><body style="margin:0;width:900px;height:560px;display:flex;align-items:center;padding:0 70px;box-sizing:border-box;background:linear-gradient(135deg,#fff5f6,#ffe3e6);font-family:'Microsoft YaHei',sans-serif"><h1 style="margin:0;font-size:56px;line-height:1.4;color:#1f2937">${String(title).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</h1></body>`;
+async function makeCover(page, title) {
+  await page.navigate(`data:text/html;charset=utf-8,${encodeURIComponent(coverHtml(title))}`);
+  await sleep(800);
+  const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 900, height: 560, scale: 1 } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "geo-cover-")), file = path.join(dir, "cover.png");
+  fs.writeFileSync(file, Buffer.from(data, "base64"));
+  return { file, remove: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
 
 function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrowser(), makePage = pageFor } = {}) {
   const open = new Set();
@@ -176,12 +301,20 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   async function publish({ platform, profileDir, title, body, aiWritten = false, shouldStop = () => false, onDetail = () => {}, beforeClick = () => {} }) {
     const driver = DRIVERS[platform];
     if (!driver) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个平台还没开放发布。");
+    if (driver.trial && aiWritten) throw fail("GEO_TRIAL_AI", `${driver.name}的 AI 内容标注方式还没确认，暂时只能发你自己写的文章。`);
     return withPage(profileDir, async (page) => {
       const job = { title, body, aiWritten };
+      const cover = driver.needsCover ? await makeCover(page, title) : null;
+      job.coverFile = cover?.file;
+      try {
       onDetail(`打开${driver.name}的写文章页面`);
       await page.navigate(driver.editorUrl);
       await sleep(8000);
+      // A check only the person can pass (a text message, say) may stand before the editor.
+      if (driver.holdText) await waitThroughVerify(page, async () => Boolean(await shownText(page)), { ms: 3000, shouldStop, onDetail, hold: driver.holdText });
       if (driver.loginRequired(String(await page.url()))) throw fail("GEO_LOGIN_REQUIRED", `${driver.name}需要重新扫码登录。`);
+      const refusal = driver.blocked?.(String(await page.url()), await shownText(page));
+      if (refusal) throw fail("GEO_ACCOUNT_NOT_READY", refusal);
       onDetail("填写标题和正文");
       const form = await driver.fill(page, job);
       if (!sameArticle(await form.read(), job)) throw fail("GEO_FORM_MISMATCH", `${driver.name}页面上的内容和你确认的不一致，没有发布。`);
@@ -195,13 +328,14 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       onDetail("已点发布，等平台确认");
       if (driver.confirmButton) {
         await sleep(3000);
-        const confirm = await waitThroughVerify(page, () => pointOf(page, driver.confirmButton), { ms: 12_000, shouldStop, onDetail });
+        const confirm = await waitThroughVerify(page, () => pointOf(page, driver.confirmButton), { ms: 12_000, shouldStop, onDetail, hold: driver.holdText });
         if (confirm) await page.mouse(confirm);
       }
-      const result = await waitThroughVerify(page, async () => driver.published(String(await page.url()), await shownText(page), job), { ms: 40_000, shouldStop, onDetail });
+      const result = await waitThroughVerify(page, async () => driver.published(String(await page.url()), await shownText(page), job), { ms: 40_000, shouldStop, onDetail, hold: driver.holdText });
       if (result) return driver.linkOf ? { ...result, url: String(await page.evaluate(driver.linkOf(job)).catch(() => "") || result.url || "") } : result;
       const hint = (await shownText(page)).match(/[^\n]{0,30}(话题|必填|失败|审核|违规|频繁)[^\n]{0,30}/)?.[0] || "";
       return { status: "unknown", reason: hint ? `已点发布，页面提示：${hint.slice(0, 100)}。请到平台上看一下，不会自动重发。` : "已点发布，但没等到平台确认。请到平台上看一下，不会自动重发。" };
+      } finally { cover?.remove(); }
     });
   }
   // The page first shows a placeholder textarea and swaps in a rich-text box a few seconds later. Enter sends
@@ -247,4 +381,4 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   return { publish, ask, stop, dispose: stop };
 }
 
-module.exports = { createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, VERIFY };
+module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, VERIFY };
