@@ -20,6 +20,8 @@ const KINDS = ["like", "follow"];
 const DEFAULT_CAPS = { like: 60, follow: 30 }, MAX_CAPS = { like: 200, follow: 100 };
 const ACTION_NAMES = { like: "点赞", follow: "关注" };
 const KEEP = { collect: "找到的线索都保留了", comment: "已发的留言都有记录", actions: "做过的都有记录" };
+// Pages of comments read per video: enough to reach real questions, without reading a whole hot video.
+const COMMENT_PAGES = 5;
 const dayOf = (ms) => { const date = new Date(ms); return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`; };
 const nextMidnight = (ms) => { const date = new Date(ms); date.setHours(24, 0, 0, 0); return date.toISOString(); };
 
@@ -33,7 +35,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   onChange = () => {}, now = () => Date.now(), timing = {}, random = Math.random }) {
   // Timestamps and "today" usage must read the same clock, or daily caps drift.
   const stamp = () => new Date(now()).toISOString();
-  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, scroll: 600, ...timing };
+  const wait = { response: 15_000, verify: 10 * 60_000, poll: 1500, gapMin: 5000, gapMax: 10_000, actionGapMin: 25_000, actionGapMax: 60_000, scroll: 600, wheel: 900, ...timing };
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -64,7 +66,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     const today = {};
     const actions = state.actions.filter((action) => action.kind !== "comment");
     for (const accountId of new Set(actions.map((action) => action.accountId))) today[accountId] = { like: used(accountId, "like"), follow: used(accountId, "follow"), pausedUntil: paused(accountId) ? state.pauses[accountId] : "" };
-    return { tasks: state.tasks.filter((task) => task.mode !== "comment"), runs: state.runs.filter((run) => run.kind !== "comment").slice(0, 50), leads: state.leads.slice(0, 2000), actions: actions.filter((action, index) => index < 3000 || ["queued", "running", "unknown"].includes(action.status)), caps: state.settings.caps, today, running: active?.run.id || "" };
+    return { platforms: Object.fromEntries(Object.entries(drivers.DRIVERS).map(([key, driver]) => [key, { name: driver.name, like: Boolean(driver.actions?.like), follow: Boolean(driver.actions?.follow) }])), tasks: state.tasks.filter((task) => task.mode !== "comment"), runs: state.runs.filter((run) => run.kind !== "comment").slice(0, 50), leads: state.leads.slice(0, 2000), actions: actions.filter((action, index) => index < 3000 || ["queued", "running", "unknown"].includes(action.status)), caps: state.settings.caps, today, running: active?.run.id || "" };
   }
   const emit = () => { if (!closed) onChange(snapshot()); };
   const findTask = (id) => { const task = state.tasks.find((item) => item.id === id); if (!task) throw fail("ACQUIRE_TASK_NOT_FOUND", "没有找到这个任务。"); return task; };
@@ -127,7 +129,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       match: (url, operation) => driver.isSearch(url) || driver.isComments(url, operation) || isAction(url, operation),
       onJson: ({ url, operation, variables, json }) => {
         if (driver.isSearch(url)) searches.push(driver.parseSearch(json));
-        else if (driver.isComments(url, operation)) comments.push({ photoId: String(variables?.photoId || ""), ...driver.parseComments(json) });
+        else if (driver.isComments(url, operation)) comments.push({ photoId: driver.commentVideoId(url, variables), ...driver.parseComments(json) });
         else results.push({ url, operation, variables: variables || {}, json });
       }
     });
@@ -137,29 +139,29 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     // Waits for the page's own data. Only while it has not arrived is the page checked for a
     // platform verification (left to the user; the run waits) or a logged-out page, so words
     // like 滑块 in captions and comments are never mistaken for a verification.
-    const load = async (where, arrived) => {
-      let deadline = now() + wait.response, verifyUntil = 0;
+    const load = async (where, arrived, { trustText = true, trustLogin = true, patience = wait.response } = {}) => {
+      let deadline = now() + patience, verifyUntil = 0;
       while (!shouldStop() && !await arrived()) {
         // Text is only trusted once the data is overdue, when the page is likely showing nothing else.
-        const blocked = Boolean(await page.evaluate(CAPTCHA_PROBE).catch(() => false)) || (now() > deadline && CAPTCHA.test(await visible()));
+        const blocked = Boolean(await page.evaluate(CAPTCHA_PROBE).catch(() => false)) || (trustText && now() > deadline && CAPTCHA.test(await visible()));
         if (blocked && !verifyUntil) {
           verifyUntil = now() + wait.verify;
           await page.front(); update({ status: "needs_user", detail: `${driver.name}要求验证：请在弹出的 Chrome 窗口里完成验证，完成后会自动继续。` });
         } else if (blocked && now() > verifyUntil) throw fail("ACQUIRE_VERIFY_TIMEOUT", `${where}的验证 10 分钟内没有完成，已停下。${KEEP[run.kind]}。`);
-        else if (!blocked && verifyUntil) { verifyUntil = 0; deadline = now() + wait.response; update({ status: "running", detail: "" }); }
+        else if (!blocked && verifyUntil) { verifyUntil = 0; deadline = now() + patience; update({ status: "running", detail: "" }); }
         else if (!blocked && now() > deadline) break;
         await sleep(wait.poll);
       }
       if (run.status === "needs_user") update({ status: "running", detail: "" });
       if (await arrived() || shouldStop()) return true;
-      if (driver.loggedOutText.test(await visible())) throw fail("ACQUIRE_LOGIN_REQUIRED", `${driver.name}网页版需要重新扫码登录（账号「${control.accountLabel}」）。`);
+      if (trustLogin && driver.loggedOutText.test(await visible())) throw fail("ACQUIRE_LOGIN_REQUIRED", `${driver.name}网页版需要重新扫码登录（账号「${control.accountLabel}」）。`);
       return false;
     };
     const more = async (list, from) => { const deadline = now() + wait.response; while (list.length <= from && now() < deadline && !shouldStop()) await sleep(300); };
     async function search(keyword, max) {
       const before = searches.length;
       await page.navigate(driver.searchUrl(keyword));
-      await load(`搜索「${keyword}」`, () => searches.length > before);
+      if (!await load(`搜索「${keyword}」`, () => searches.slice(before).some((result) => !result.refused))) throw fail("ACQUIRE_SEARCH_NO_DATA", `搜索「${keyword}」没有收到结果，平台页面可能打不开或改版了。${KEEP[run.kind]}，可以稍后再试。`);
       let videos = searches.slice(before).flatMap((result) => result.videos);
       // More results load as the list scrolls, the same as a person scrolling.
       for (let i = 0; i < 4 && videos.length < max && searches.at(-1)?.more && !shouldStop(); i++) {
@@ -170,12 +172,29 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       }
       return [...new Map(videos.map((video) => [video.id, video])).values()].slice(0, max);
     }
+    // Later comments load as a person wheels down the list with the pointer over it. Jumping straight
+    // to the end does not load them on Kuaishou (2026-11-01). The page is full of comment text by now,
+    // so only a shown verification counts as one here.
+    async function scrollComments(grown) {
+      const spot = await page.evaluate(`/* LOAD_MORE_COMMENTS */ (() => { const items = document.querySelectorAll(${JSON.stringify(driver.commentItems)}); const last = items[items.length - 1]; if (!last) return null; const r = last.getBoundingClientRect(); return { x: r.x + r.width / 2, y: innerHeight / 2 }; })()`).catch(() => null);
+      if (spot?.x) for (let step = 0; step < 16 && !grown() && !shouldStop(); step++) {
+        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: spot.x, y: spot.y });
+        await page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: spot.x, y: spot.y, deltaX: 0, deltaY: 300 });
+        await sleep(wait.wheel);
+      }
+      return load("继续读评论", grown, { trustText: false, trustLogin: false, patience: wait.wheel * 4 });
+    }
     // Each comment response names its video; a late one from the previous page is not counted.
-    async function openVideo(videoId) {
+    // A caption can mention 滑块 and a video can have comments off, so only a shown verification waits here.
+    async function openVideo(videoId, { pages = COMMENT_PAGES } = {}) {
       const mark = comments.length;
-      const mine = () => comments.slice(mark).filter((result) => !result.photoId || result.photoId === videoId);
+      const mine = () => comments.slice(mark).filter((result) => !result.refused && (!result.photoId || result.photoId === videoId));
       await page.navigate(driver.videoUrl(videoId));
-      await load("打开视频", () => mine().length > 0);
+      await load("打开视频", () => mine().length > 0, { trustText: false });
+      for (let read = 1; read < pages && mine().at(-1)?.more && !shouldStop(); read++) {
+        const count = mine().length;
+        if (!await scrollComments(() => mine().length > count)) break;
+      }
       return mine();
     }
     // The element's centre, but only where the element itself is on top: the video page can lay
@@ -193,10 +212,10 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     // The platform's answer to the action clicked after `mark`, waiting through a verification.
     async function answer(mark, predicate, where) {
       const found = () => results.slice(mark).find(predicate);
-      await load(where, () => Boolean(found()));
+      await load(where, () => Boolean(found()), { trustText: false });
       return found();
     }
-    return { page, update, load, search, openVideo, pointOf, answer, results, comments, more };
+    return { page, update, load, search, openVideo, scrollComments, pointOf, answer, results, comments };
   }
 
   const ensureNotBusy = () => { if (active) throw fail("ACQUIRE_BUSY", "已经有一个任务在运行，等它结束或先停下。"); };
@@ -222,7 +241,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
       session = await openSession(control);
       await body(session, control);
       const stopped = control.stop || closed;
-      session.update({ status: stopped ? "stopped" : "done", detail: "", reason: control.rest || (stopped ? `已停下，${KEEP[run.kind]}。` : ""), finishedAt: stamp() });
+      session.update({ status: stopped ? "stopped" : "done", detail: "", reason: control.rest || (stopped ? `已停下，${KEEP[run.kind]}。` : control.note || ""), finishedAt: stamp() });
     } catch (error) {
       const patch = control.stop || closed ? { status: "stopped", reason: `已停下，${KEEP[run.kind]}。` } : { status: "failed", reason: userMessage(error, `运行中出错，${KEEP[run.kind]}，可以再次开始。`) };
       Object.assign(run, patch, { detail: "", finishedAt: stamp() }); save(); emit();
@@ -236,10 +255,19 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   async function collect(session, control) {
     const { task, run } = control;
     const since = now() - task.days * 86_400_000;
+    let unread = 0;
+    const missed = [];
     for (const keyword of task.keywords) {
       if (control.shouldStop()) break;
       session.update({ detail: `搜索「${keyword}」` });
-      const videos = await session.search(keyword, task.maxVideos);
+      let videos;
+      // One keyword with no answer does not cost the others; only all of them failing fails the run.
+      try { videos = await session.search(keyword, task.maxVideos); }
+      catch (error) {
+        if (error.code !== "ACQUIRE_SEARCH_NO_DATA") throw error;
+        if (missed.length + 1 === task.keywords.length) throw error;
+        missed.push(keyword); continue;
+      }
       for (const video of videos) {
         if (control.shouldStop()) break;
         // A pause between videos keeps the pace of a person reading, and the load on the platform low.
@@ -248,6 +276,8 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
         session.update({ detail: `「${keyword}」读评论：${video.title.slice(0, 20) || video.id}` });
         const found = await session.openVideo(video.id);
         if (control.shouldStop()) break;
+        // A video can have comments turned off; it is not counted as read, and the run says so.
+        if (!found.length || found.every((result) => result.unreadable)) { unread += 1; session.update({}); continue; }
         run.videos += 1;
         for (const result of found) for (const comment of result.comments) {
           if (task.skipAuthor && comment.userId === video.authorId) continue;
@@ -260,6 +290,8 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
         session.update({});
       }
     }
+    if (unread && !run.videos && !control.shouldStop()) throw fail("ACQUIRE_COMMENTS_NO_DATA", `打开了 ${unread} 个视频，都没有收到评论，平台页面可能改版了，可以稍后再试。`);
+    control.note = [missed.length ? `「${missed.join("、")}」没有搜到结果，可以稍后再试。` : "", unread ? `有 ${unread} 个视频没读到评论（可能关了评论），已跳过。` : ""].join("");
   }
 
   // ---- Outward actions ----
@@ -288,27 +320,29 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
 
   async function likeComment(session, control, action) {
     const { page } = session, acts = control.driver.actions, t = action.target;
-    await session.openVideo(t.videoId);
+    // The list below scrolls only as far as this comment needs.
+    await session.openVideo(t.videoId, { pages: 1 });
     if (control.shouldStop()) return;
     const item = acts.commentItem(t.userName, t.comment);
     // Older comments sit further down the list; scroll it the way a reader would.
     for (let i = 0; i < 8 && !await page.evaluate(`Boolean(${item})`) && !control.shouldStop(); i++) {
       const count = session.comments.length;
-      await page.evaluate(`[...document.querySelectorAll(".comment-list-item")].at(-1)?.scrollIntoView({ block: "end" })`);
-      await session.more(session.comments, count);
+      await session.scrollComments(() => session.comments.length > count);
       if (session.comments.length === count) break;
     }
     if (!await page.evaluate(`Boolean(${item})`)) return settleAction(session, action, { status: "failed", reason: "视频下没找到这条评论，可能已被删除。" });
     const icon = `(${item})?.querySelector(${JSON.stringify(acts.likeIcon)})`;
-    const isLiked = () => page.evaluate(`Boolean(${icon}?.classList.contains(${JSON.stringify(acts.likedClass)}))`);
+    const isLiked = () => page.evaluate(acts.likedExpression ? acts.likedExpression(icon) : `Boolean(${icon}?.classList.contains(${JSON.stringify(acts.likedClass)}))`);
     // A second click would take the like back, so an already liked comment is left alone.
-    if (await isLiked()) return settleAction(session, action, { status: "done", already: true, reason: "之前已经点过赞。" });
+    // The platform's own data counts too, in case the page's look has changed.
+    const known = session.comments.flatMap((result) => result.comments).find((comment) => comment.id === t.commentId);
+    if (known?.liked || await isLiked()) return settleAction(session, action, { status: "done", already: true, reason: "之前已经点过赞。" });
     const point = await session.pointOf(icon);
     if (!point) return settleAction(session, action, { status: "failed", reason: "点赞按钮被页面挡住了，没有点。" });
     const mark = session.results.length;
     clicked(session, action);
     await page.mouse(point);
-    const response = await session.answer(mark, (result) => acts.isLike(result.url, result.operation) && String(result.variables.commentId || t.commentId) === t.commentId, "点赞");
+    const response = await session.answer(mark, (result) => acts.isLike(result.url, result.operation) && (acts.likeAnswer ? acts.likeAnswer(result.url, t.commentId) : String(result.variables.commentId || t.commentId) === t.commentId), "点赞");
     await confirm(session, control, action, response, isLiked);
   }
   async function follow(session, control, action) {
@@ -319,7 +353,7 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
     if (control.shouldStop()) return;
     const label = () => page.evaluate(`(${button}?.textContent || "").trim()`);
     if (acts.followed.test(await label())) return settleAction(session, action, { status: "done", already: true, reason: "之前已经关注了。" });
-    if (!/关注/.test(await label())) return settleAction(session, action, { status: "failed", reason: "主页上没有关注按钮。" });
+    if (!(acts.followable || /关注/).test(await label())) return settleAction(session, action, { status: "failed", reason: "主页上没有关注按钮。" });
     const point = await session.pointOf(button);
     if (!point) return settleAction(session, action, { status: "failed", reason: "关注按钮被页面挡住了，没有点。" });
     const mark = session.results.length;
@@ -423,10 +457,14 @@ function createSocialAcquisition({ dataDir, accounts, launch = launchBrowser, ex
   // Spreadsheet-safe CSV (UTF-8 with BOM, quoted, formulas neutralised).
   function csv(taskId = "") {
     const cell = (value) => { let text = String(value ?? ""); if (/^[=+\-@]/.test(text)) text = `'${text}`; return `"${text.replace(/"/g, '""')}"`; };
-    const header = ["平台", "昵称", "评论", "意向", "评论时间", "地区", "关键词", "视频", "视频链接", "状态", "点赞", "关注"];
+    const allHeader = ["平台", "昵称", "评论", "意向", "评论时间", "地区", "关键词", "视频", "视频链接", "状态", "点赞", "关注"];
     const names = { kuaishou: "快手", douyin: "抖音" }, statuses = { new: "新线索", contacted: "已联系", ignored: "已忽略" };
     const done = (lead, kind) => { const action = state.actions.find((item) => item.leadId === lead.id && item.kind === kind && item.status !== "cancelled"); return action ? { queued: "排队中", running: "进行中", done: "已完成", failed: "没成功", unknown: "结果不明" }[action.status] : ""; };
-    const rows = state.leads.filter((lead) => !taskId || lead.taskId === taskId).map((lead) => [names[lead.platform] || lead.platform, lead.userName, lead.comment, lead.signals.join(" "), lead.commentAt, lead.region, lead.keyword, lead.videoTitle, lead.videoUrl, statuses[lead.status], done(lead, "like"), done(lead, "follow")]);
+    const allRows = state.leads.filter((lead) => !taskId || lead.taskId === taskId).map((lead) => [names[lead.platform] || lead.platform, lead.userName, lead.comment, lead.signals.join(" "), lead.commentAt, lead.region, lead.keyword, lead.videoTitle, lead.videoUrl, statuses[lead.status], done(lead, "like"), done(lead, "follow")]);
+    // Kuaishou's web data has no region: an always empty column only confuses people.
+    const regionAt = allHeader.indexOf("地区"), keep = allRows.some((row) => row[regionAt]);
+    const shown = (row) => keep ? row : row.filter((_cell, index) => index !== regionAt);
+    const header = shown(allHeader), rows = allRows.map(shown);
     return "﻿" + [header, ...rows].map((row) => row.map(cell).join(",")).join("\r\n");
   }
   async function dispose() { closed = true; if (active) { active.stop = true; await active.browser?.close().catch(() => {}); await active.done; } }

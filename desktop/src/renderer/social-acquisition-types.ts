@@ -16,7 +16,7 @@ export type AcquireLead = {
   id: string; taskId: string; platform: string; accountId: string; keyword: string; videoId: string; videoTitle: string; videoUrl: string; videoAuthor: string;
   commentId: string; userId: string; userName: string; comment: string; commentAt: string; region: string; signals: string[]; status: "new" | "contacted" | "ignored"; createdAt: string;
 };
-export type AcquireState = { tasks: AcquireTask[]; runs: AcquireRun[]; leads: AcquireLead[]; actions: AcquireAction[]; caps: AcquireCaps; today: AcquireToday; running: string; exported?: boolean; added?: number };
+export type AcquireState = { platforms?: Record<string, { name: string; like: boolean; follow: boolean }>; tasks: AcquireTask[]; runs: AcquireRun[]; leads: AcquireLead[]; actions: AcquireAction[]; caps: AcquireCaps; today: AcquireToday; running: string; exported?: boolean; added?: number };
 export type AcquireResult = { ok: boolean; code?: string; error?: string; state?: AcquireState };
 export type AcquireTaskInput = { id?: string; name: string; platform: string; accountId: string; keywords: string; intentWords: string; days: number; maxVideos: number; allComments: boolean; skipAuthor: boolean };
 type AcquireApi = {

@@ -46,15 +46,61 @@ assert.deepEqual(intentOf("能租吗", ["租"]), ["含「租」"]);
   assert.equal(found, items[1]);
   assert.equal(new Function("document", `return ${ks.actions.commentItem("🌸小花🌷", "别的话")};`)(document), undefined);
 }
-// 抖音网页搜索会拦截软件控制的浏览器：列出来但不可用，不绕过。
-assert.throws(() => acquireDriverFor("douyin"), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
+// 抖音解析：字段形状来自 2026-11-01 测试号实测，内容是编的。sec_uid 比普通 id 长；不合法的丢弃。
+{
+  const dy = acquireDriverFor("douyin"), longUser = "MS4wLjABAAAA" + "x".repeat(64);
+  const found = dy.parseSearch({ has_more: 1, data: [
+    { type: 1, aweme_info: { aweme_id: "7300000000000000001", desc: "洗地机  怎么选", create_time: 1786966694, author: { uid: "1", sec_uid: longUser, nickname: "清洁小王" }, statistics: { digg_count: 288, comment_count: 12 } } },
+    { type: 999, sub_card_list: [] }, { aweme_info: { aweme_id: "../evil" } }] });
+  assert.equal(found.videos.length, 1, "不是视频的卡片和不合法的 id 丢弃"); assert.equal(found.more, true);
+  assert.deepEqual({ ...found.videos[0], publishedAt: undefined }, { id: "7300000000000000001", title: "洗地机 怎么选", authorId: longUser, authorName: "清洁小王", likes: 288, comments: 12, publishedAt: undefined });
+  const said = dy.parseComments({ has_more: 0, comments: [
+    { cid: "7400000000000000001", text: "这个多少钱", create_time: 1791930655, ip_label: "四川", user: { uid: "2", sec_uid: longUser, nickname: "买家A" } },
+    { cid: "bad", text: "id 不对", user: { sec_uid: longUser } }, { cid: "7400000000000000002", text: "  ", user: { sec_uid: longUser } }, { cid: "7400000000000000003", text: "没有用户", user: {} }] });
+  assert.equal(said.comments.length, 1); assert.equal(said.more, false);
+  assert.deepEqual([said.comments[0].userId, said.comments[0].region], [longUser, "四川"]);
+  assert.ok(dy.isSearch("https://www.douyin.com/aweme/v1/web/search/item/?keyword=a")); assert.ok(dy.isComments("https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=1"));
+  assert.ok(!dy.isComments("https://www.douyin.com/aweme/v1/web/comment/list/reply/?aweme_id=1"), "子评论接口不当成视频评论");
+  assert.equal(dy.commentVideoId("https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=73&cursor=0"), "73", "按接口参数认视频，迟到的不算到下一个视频");
+  assert.ok(dy.link.test(dy.videoUrl("73")) && dy.link.test(dy.profileUrl(longUser)) && !dy.link.test("https://evil.example/video/73"));
+  // 点赞、关注：回应形状来自同一次实测。
+  assert.deepEqual(dy.actions.outcome({ status_code: 0, msg: "" }), { ok: true, message: "" });
+  assert.equal(dy.actions.outcome({ status_code: 0, follow_status: 1 }).ok, true);
+  assert.equal(dy.actions.outcome({ status_code: 0, follow_status: 0 }).ok, null, "关注回应说没关注上，算结果不明");
+  assert.equal(dy.actions.outcome({}).ok, null);
+  assert.deepEqual(dy.actions.outcome({ status_code: 2096, status_msg: "操作太频繁" }), { ok: false, message: "操作太频繁" });
+  assert.ok(dy.actions.isLike("https://www.douyin.com/aweme/v1/web/comment/digg?cid=1") && dy.actions.isFollow("https://www.douyin.com/aweme/v1/web/commit/follow/user/?a=1"));
+  // 找评论：昵称要一致；评论里的表情在页面上是图片，只比表情前面的字。
+  const item = (name, said) => ({ innerText: `${name} ${said}`, querySelector: () => ({ textContent: name }) });
+  const items = [item("别人", "多少钱"), item("买 家A", "这个多少钱 ")], document = { querySelectorAll: () => items };
+  assert.equal(new Function("document", `return ${dy.actions.commentItem("买家A", "这个多少钱[比心]")};`)(document), items[1]);
+  assert.equal(new Function("document", `return ${dy.actions.commentItem("买家A", "别的话")};`)(document), undefined);
+  assert.equal(dy.parseComments({ comments: [{ cid: "7400000000000000001", text: "多少钱", user_digged: 1, user: { sec_uid: longUser } }] }).comments[0].liked, true);
+  // 评论开头或全部是表情：比对不到文字就算没找到，不能点到这个人的另一条评论上。
+  assert.equal(new Function("document", `return ${dy.actions.commentItem("买家A", "[赞]")};`)(document), undefined, "全是表情不能匹配任意评论");
+  const emojiFirst = [item("买家A", "别的话"), item("买家A", "多少钱")], emojiDoc = { querySelectorAll: () => emojiFirst };
+  assert.equal(new Function("document", `return ${dy.actions.commentItem("买家A", "[比心]多少钱")};`)(emojiDoc), emojiFirst[1], "表情开头的比后面的字");
+  // 平台拒绝的回应不算收到数据；条目全被丢弃说明字段变了，不算读过。
+  assert.equal(dy.parseSearch({ status_code: 2484, data: [] }).refused, true);
+  assert.equal(dy.parseSearch({ status_code: 0, data: [], search_nil_info: { search_nil_type: "verify_check" } }).refused, true);
+  assert.ok(!dy.parseSearch({ status_code: 0, data: [] }).refused, "确实没结果不算拒绝");
+  assert.equal(dy.parseComments({ status_code: 5, comments: [] }).refused, true);
+  assert.equal(dy.parseComments({ status_code: 0, comments: [{ cid: "bad", text: "x", user: {} }] }).unreadable, true);
+  assert.ok(!dy.parseComments({ status_code: 0, comments: [] }).unreadable, "没有评论不算读不了");
+  // 平台的点赞回应要对得上这条评论；回关也是可以点的关注按钮，取消关注不能点。
+  const digg = "https://www.douyin.com/aweme/v1/web/comment/digg?cid=74&aweme_id=73&digg_type=1";
+  assert.ok(dy.actions.likeAnswer(digg, "74")); assert.ok(!dy.actions.likeAnswer(digg, "75"), "别的评论的回应不算");
+  assert.ok(dy.actions.followable.test("回关") && dy.actions.followable.test("关注") && !dy.actions.followable.test("取消关注"));
+  assert.ok(dy.actions.followed.test("已请求"));
+}
+assert.throws(() => acquireDriverFor("weibo"), { code: "ACQUIRE_PLATFORM_INVALID" });
 
-function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } = {}) {
+function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {}, silent = "", commentPages = 1, stallPaging = false, pageText = "", silentKeyword = "" } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-acquire-"));
   const log = { launches: 0, closed: 0, navigations: [], fronts: 0, leases: 0, released: 0, wheels: 0, clicks: [], typed: [] };
   // How the platform behaves for likes, follows and comments in this world.
   const ui = { liked: false, like: "ok", follow: "ok", comment: "ok", followLabel: "关注", covered: false, boxValue: "", target: "", shown: true, closedNote: "", posted: [], ...act };
-  let captchaLeft = captchaPolls, emitJson = null, pending = null, previous = "", hung = null;
+  let captchaLeft = captchaPolls, emitJson = null, pending = null, previous = "", hung = null, pagesLeft = 0;
   const hour = 3_600_000, nowMs = Date.parse("2026-10-26T12:00:00Z"), started = Date.now();
   const commentsFor = (id) => ({ data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
     { commentId: `1${id.length}00000001`, authorId: "3xbuyer01", authorName: "买家A", content: "这个多少钱", timestamp: nowMs - hour },
@@ -67,6 +113,9 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
   // The page's data only arrives once a verification is done, and never on a logged-out page.
   const deliver = (url) => {
     if (loggedOut) return;
+    if (silent === "search" && url.includes("/search/")) return;
+    if (silentKeyword && url.includes(encodeURIComponent(silentKeyword))) return;
+    if (silent === "comments" && !url.includes("/search/")) return;
     if (url.includes("/search/")) emitJson({ url: "https://www.kuaishou.com/rest/v/search/feed", operation: "", json: { pcursor: "no_more", feeds: [
       { photo: { id: "3xvideo0001", caption: "洗地机测评", timestamp: nowMs }, author: { id: "3xauthor01", name: "作者本人" } },
       { photo: { id: "3xvideo0002", caption: "洗地机推荐", timestamp: nowMs }, author: { id: "3xauthor02", name: "作者二" } }] } });
@@ -75,7 +124,9 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
       // A late second page from the previous video arrives first and must not be credited to this one.
       if (previous) emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", variables: { photoId: "3xelsewhere" }, json: { data: { visionCommentList: { pcursorV2: "no_more", rootCommentsV2: [
         { commentId: "1999", authorId: "3xlate", authorName: "别的视频", content: "多少钱", timestamp: nowMs - hour }] } } } });
-      emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", variables: { photoId: id }, json: commentsFor(id) });
+      const first = commentsFor(id);
+      if (commentPages > 1) { first.data.visionCommentList.pcursorV2 = "next"; pagesLeft = commentPages - 1; }
+      emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", variables: { photoId: id }, json: first });
       previous = id;
     }
   };
@@ -88,6 +139,14 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     },
     // Captions and comments can mention 滑块; that alone is not a verification.
     evaluate: async (expression) => {
+      // Scrolling to the last comment loads the next page, as it does for a person reading.
+      if (expression.includes("LOAD_MORE_COMMENTS")) {
+        log.commentScrolls = (log.commentScrolls || 0) + 1;
+        if (!stallPaging && pagesLeft > 0) { pagesLeft--; const id = previous, left = pagesLeft;
+          setImmediate(() => emitJson({ url: "https://www.kuaishou.com/graphql", operation: "commentListQuery", variables: { photoId: id }, json: { data: { visionCommentList: { pcursorV2: left ? "next" : "no_more", rootCommentsV2: [
+            { commentId: `17${left}0000001`, authorId: `3xdeep${left}0`, authorName: `翻页买家${left}`, content: "怎么买", timestamp: nowMs - hour }] } } } })); }
+        return { x: 900, y: 360 };
+      }
       if (expression.includes("captcha")) { if (captchaLeft > 0 && --captchaLeft === 0 && pending) setImmediate(() => deliver(pending)); return captchaLeft > 0; }
       // The element under the pointer: only the target itself counts, unless something covers it.
       if (expression.includes("elementFromPoint")) { ui.target = expression.includes("likeicon") ? "like" : expression.includes("follow-btn") ? "follow" : expression.includes("submit-button") ? "comment" : ""; return ui.covered ? null : { x: 10, y: 20 }; }
@@ -98,6 +157,8 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
       if (expression.includes(".comment-item-content") && expression.includes("some(")) return false;
       if (expression.startsWith("Boolean(") && expression.includes("comment-list-item")) return true;
       if (expression.includes("scrollIntoView({ block: \"end\" })")) return undefined;
+      if (pageText) return pageText;
+      if (silent) return "页面已打开";
       return loggedOut ? "登录即可享受" : "洗地机 拖动滑块就能拆下水箱";
     },
     // A click answers the way the platform does; "silent" never answers, "frequent" refuses.
@@ -123,10 +184,10 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     profileDir: () => path.join(root, "profile"),
     lease: () => { log.leases++; return () => { log.released++; }; }
   };
-  const make = () => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs + (Date.now() - started),
+  const make = (extra = {}) => createSocialAcquisition({ dataDir: path.join(root, "data"), accounts, executable: "chrome.exe", now: () => nowMs + (Date.now() - started),
     launch: () => { log.launches++; return browser; }, makePage: () => page,
     capture: (_browser, _session, { match, onJson }) => { emitJson = (event) => { if (match(event.url, event.operation)) onJson(event); }; return { start: async () => {} }; },
-    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1, recheck: 1 } });
+    timing: { response: 200, verify: 5000, poll: 2, gapMin: 1, gapMax: 2, actionGapMin: 1, actionGapMax: 2, commentGapMin: 1, commentGapMax: 2, scroll: 1, recheck: 1, wheel: 2 }, ...extra });
   // Up to 15 s: a busy CI runner took longer than the old 2.5 s twice on 2026-10-30.
   const until = async (acq) => { for (let i = 0; i < 3000; i++) { if (!acq.snapshot().running) return acq.snapshot(); await sleep(5); } throw new Error("timeout"); };
   // Leads as a finished run leaves them, found by the account ks1.
@@ -196,9 +257,98 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     await acq.dispose();
   }
   {
+    // 搜索一直没收到数据：明确报没完成，不能显示「已完成，0 个视频」。
+    const w = world({ silent: "search" }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 5 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "failed", "搜索没拿到数据不算完成"); assert.match(state.runs[0].reason, /没有收到|搜索/);
+    await acq.dispose();
+  }
+  {
+    // 所有视频都读不到评论：同样不算完成；读到的视频数如实是 0。
+    const w = world({ silent: "comments" }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 5 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "failed"); assert.equal(state.runs[0].videos, 0); assert.match(state.runs[0].reason, /评论/);
+    await acq.dispose();
+  }
+  {
+    // 评论不止一页：滚动读后面几页，第二页里的买家也要算线索；最多读到页数上限。
+    const w = world({ commentPages: 2 }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 1 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "done", state.runs[0].reason);
+    assert.ok(state.leads.some((lead) => lead.userName.startsWith("翻页买家")), "第二页的线索不能漏");
+    assert.equal(w.log.commentScrolls, 1, "没有下一页就不再滚");
+    assert.ok(w.log.wheels >= 1, "翻页靠滚轮一步步滚，直接跳到底快手不加载");
+    await acq.dispose();
+    const deep = world({ commentPages: 50 }), many = deep.make();
+    many.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 1 });
+    many.start(many.snapshot().tasks[0].id);
+    await deep.until(many);
+    assert.ok(deep.log.commentScrolls <= 5, "翻页有上限，不会无限读");
+    await many.dispose();
+  }
+  {
+    // 翻页没等到下一页时，页面上的文字（评论里可能写着「扫码登录」）不算没登录：已读到的线索照常保留。
+    const w = world({ commentPages: 2, stallPaging: true, pageText: "教大家怎么扫码登录 拖动滑块" }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 1 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "done", state.runs[0].reason); assert.equal(state.leads.length, 1); assert.equal(w.log.fronts, 0);
+    await acq.dispose();
+  }
+  {
+    // 关了评论的视频，标题里写着滑块也不当成验证：不弹窗、不等 10 分钟。
+    const w = world({ silent: "comments", pageText: "拖动滑块就能拆下水箱" }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 2 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(w.log.fronts, 0, "不把窗口切到前面等验证"); assert.match(state.runs[0].reason, /评论/);
+    await acq.dispose();
+  }
+  {
+    // 一个词没搜到数据不影响其他词，结果里写明；全部没搜到才算没完成（上面已测）。
+    const w = world({ silentKeyword: "坏词", pageText: "页面已打开" }), acq = w.make();
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "坏词\n洗地机", days: 30, maxVideos: 5 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "done", state.runs[0].reason); assert.equal(state.runs[0].videos, 2); assert.match(state.runs[0].reason, /坏词/);
+    await acq.dispose();
+  }
+  {
+    // 平台回了拒绝（200 但没有内容）：不算搜索成功，也不能显示「已完成，0 个视频」。
+    const w = world({ pageText: "页面已打开" }), acq = w.make({ driverFor: () => ({ ...ks, parseSearch: () => ({ videos: [], more: false, refused: true }) }) });
+    acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: "洗地机", days: 30, maxVideos: 5 });
+    acq.start(acq.snapshot().tasks[0].id);
+    const state = await w.until(acq);
+    assert.equal(state.runs[0].status, "failed", "被拒绝不算完成");
+    await acq.dispose();
+  }
+  {
+    // 点赞只打开视频，不额外翻完所有评论页；目标就在第一页时一次都不滚。
+    const w = world({ commentPages: 3 }); w.seed(["买家A"]); const acq = w.make();
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["like"] });
+    await w.until(acq);
+    assert.ok(!w.log.commentScrolls, "点赞不多读评论页");
+    await acq.dispose();
+  }
+  {
+    // 按钮写着「回关」也能关注（对方已关注你时抖音这样显示）。
+    const w = world({ act: { followLabel: "回关" } }); w.seed(["买家A"]);
+    const acq = w.make({ driverFor: () => ({ ...ks, actions: { ...ks.actions, followable: /关注|回关/ } }) });
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["follow"] });
+    const state = await w.until(acq);
+    assert.equal(state.actions[0].status, "done", state.actions[0].reason); assert.deepEqual(w.log.clicks, ["follow"]);
+    await acq.dispose();
+  }
+  {
     // 提交前的检查；重启后运行中的记录变成已停下，线索保留。
     const w = world(), acq = w.make();
-    assert.throws(() => acq.saveTask({ platform: "douyin", accountId: "ks1", keywords: "a" }), { code: "ACQUIRE_PLATFORM_UNAVAILABLE" });
+    assert.throws(() => acq.saveTask({ platform: "douyin", accountId: "ks1", keywords: "a" }), { code: "ACQUIRE_ACCOUNT_REQUIRED" }, "快手号不能跑抖音任务");
     assert.throws(() => acq.saveTask({ platform: "kuaishou", accountId: "nobody", keywords: "a" }), { code: "ACQUIRE_ACCOUNT_REQUIRED" });
     assert.throws(() => acq.saveTask({ platform: "kuaishou", accountId: "ks1", keywords: " " }), { code: "ACQUIRE_KEYWORDS_REQUIRED" });
     await acq.dispose();
@@ -235,6 +385,17 @@ function world({ captchaPolls = 0, loggedOut = false, hang = false, act = {} } =
     assert.deepEqual(w.log.clicks, [], "一次都没点");
     assert.ok(state.actions.every((action) => action.status === "done" && action.already));
     assert.deepEqual([state.today.ks1.like, state.today.ks1.follow], [0, 0]);
+    await acq.dispose();
+  }
+  {
+    // 平台数据说这条评论已经点过赞：就算页面上看不出来也不点（再点一次会取消点赞）。
+    const w = world(); w.seed(["买家A"]);
+    const file = path.join(w.root, "data", "state.json"), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.leads[0].commentId = "11100000001"; fs.writeFileSync(file, JSON.stringify(saved));
+    const acq = w.make({ driverFor: () => ({ ...ks, parseComments: (json) => { const read = ks.parseComments(json); read.comments.forEach((comment) => { comment.liked = true; }); return read; } }) });
+    acq.queueActions({ leadIds: ["lead0"], kinds: ["like"] });
+    const state = await w.until(acq);
+    assert.deepEqual(w.log.clicks, [], "一次都没点"); assert.equal(state.actions[0].already, true);
     await acq.dispose();
   }
   {
