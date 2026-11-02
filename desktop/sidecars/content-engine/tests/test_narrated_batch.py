@@ -1737,6 +1737,24 @@ class NarratedBatchTests(unittest.TestCase):
             output.write_bytes(b"test-frame")
         return command
 
+    def test_task_progress_follows_the_percent_the_page_shows(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        task = domain.d._create_task("narrated_batch_v1", {"batch_id": batch["batch_id"]})
+        domain.d._set_task(task["task_id"], "analyzing", progress=0.01)
+        state["task_id"] = task["task_id"]
+        progress = lambda: domain.d._task_row(task["task_id"])["progress"]
+        domain._activity(state, "正在理解素材", overall_percent=14)
+        self.assertAlmostEqual(0.14, progress())
+        domain._activity(state, "正在理解素材", overall_percent=9)
+        self.assertAlmostEqual(0.14, progress(), msg="进度不能倒退")
+        domain._activity(state, "正在核对画面")
+        self.assertAlmostEqual(0.14, progress())
+        domain.d._set_task(task["task_id"], "failed", error_code="x", error_message="x")
+        domain._activity(state, "处理已停止", overall_percent=60)
+        self.assertAlmostEqual(0.14, progress(), msg="已结束的任务不再改进度")
+
     def test_analysis_window_remainder_is_not_offered_as_a_shot(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = {"batch_id": "batch-tail", "project_id": "project-test", "version": 1, "status": "draft",

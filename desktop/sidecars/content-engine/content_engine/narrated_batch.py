@@ -393,6 +393,11 @@ class NarratedBatchDomain:
             "item_name": item_name,
             "heartbeat_at": now,
         }
+        if isinstance(overall_percent, (int, float)) and b.get("task_id"):
+            # The page shows this percent; 小玺 and the task list read the task row. Keep them one number.
+            self.db.execute("UPDATE content_tasks SET progress = MAX(COALESCE(progress, 0), ?) "
+                            "WHERE id = ? AND status IN ('queued', 'analyzing', 'rendering')",
+                            (overall_percent / 100, b["task_id"]))
         self._store(b)
 
     def mark_task_stopped(self, batch_id, task_id, error):
