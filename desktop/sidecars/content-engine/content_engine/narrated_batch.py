@@ -107,6 +107,41 @@ def near_duplicate(shots, previous):
                 SequenceMatcher(None, keys, old, autojunk=False).ratio() >= .84)
 
 
+# Container durations include the audio track, which often outlasts the picture
+# (DJI files by tens of milliseconds), so a seek can land after the last frame.
+FRAME_SEEK_BACKOFF_MS = (0, 50, 150, 400, 1000, 2500)
+# The remainder an analysis window leaves at a file's end: a flash on screen, and
+# possibly no picture at all, found out only at render time after voice was bought.
+MIN_USABLE_SHOT_MS = 500
+UNREADABLE_MATERIAL_REASON = "有一段素材读取失败，处理已停止。可以换掉这段素材后重试；详细原因已记入诊断日志。"
+
+
+def extract_evidence_frame(analyzer, source, timestamp_ms, path, floor_ms=0):
+    """Write the picture at or just before timestamp_ms; False if there is none.
+
+    Never reaches back past floor_ms: a frame from a neighbouring shot would be
+    false evidence about this one.
+    """
+    seeks = [timestamp_ms - back for back in FRAME_SEEK_BACKOFF_MS if timestamp_ms - back > floor_ms]
+    for seek_ms in seeks + [min(floor_ms, timestamp_ms)]:
+        try:
+            # V, not v: the first video stream may be an embedded cover picture.
+            analyzer._command([analyzer.ffmpeg_path, "-y", "-ss", f"{seek_ms / 1000:.3f}", "-i", source,
+                               "-map", "0:V:0", "-an", "-sn", "-dn", "-frames:v", "1",
+                               "-vf", "scale=480:-2", "-q:v", "3", str(path)], timeout=60)
+        except ContentEngineError as error:
+            if error.code != "analysis_failed":
+                raise
+        if path.is_file() and path.stat().st_size > 0:
+            return True
+    return False
+
+
+def customer_stop_reason(code, message):
+    """FFmpeg's log is for the failure journal, not for the person making a video."""
+    return UNREADABLE_MATERIAL_REASON if code == "analysis_failed" else message
+
+
 def timeline_for(shots):
     selected, cursor = [], 0
     for item in shots:
@@ -373,7 +408,8 @@ class NarratedBatchDomain:
         b['status'] = 'outcome_unknown' if unknown else (
             'needs_attention' if task['status'] == 'failed' or b.get('status') == 'needs_attention'
             else task['status'])
-        b['reasons'] = [error.message if error else task['error_message'] or '处理已停止。']
+        b['reasons'] = [customer_stop_reason(error.code, error.message) if error
+                        else customer_stop_reason(task['error_code'], task['error_message']) or '处理已停止。']
         self._activity(b, '请求结果待核对，已停止重复提交。' if unknown else
                        '处理已停止：' + b['reasons'][0],
                        phase_label='结果待核对' if unknown else '处理已停止')
@@ -766,10 +802,11 @@ class NarratedBatchDomain:
                                else task["status"])
                 if task["error_code"] and "unknown" in task["error_code"]:
                     b["status"] = "outcome_unknown"
-                if task["error_message"]:
-                    b["reasons"] = [redact_text(task["error_message"])]
+                stop_reason = customer_stop_reason(task["error_code"], task["error_message"])
+                if stop_reason:
+                    b["reasons"] = [redact_text(stop_reason)]
                 if task["status"] == "failed":
-                    b["activity"] = {**(b.get("activity") or {}), "message": "处理已停止：" + redact_text(task["error_message"] or "请查看项目详情。"),
+                    b["activity"] = {**(b.get("activity") or {}), "message": "处理已停止：" + redact_text(stop_reason or "请查看项目详情。"),
                                      "completed": None, "total": None}
         if (b.get("_planning_inflight") or b.get("_planning_request")) and b.get("task_status") not in {"queued", "analyzing", "rendering"}:
             b["status"] = "outcome_unknown"
@@ -1692,6 +1729,8 @@ class NarratedBatchDomain:
             for interval in card["usable_intervals"]:
                 timeline = build_material_timeline([{**card, "usable_intervals": [interval]}])
                 for shot in timeline["selected_segments"]:
+                    if shot["source_end_ms"] - shot["source_start_ms"] < MIN_USABLE_SHOT_MS:
+                        continue
                     shot["segment_id"] = "shot_" + canonical_hash([shot["asset_id"], shot["source_start_ms"], shot["source_end_ms"], versions[shot["asset_id"]]])[:24]
                     shot["source_evidence_ref"] = shot.get("evidence_ref")
                     shot["evidence_ref"] = shot["segment_id"]
@@ -1910,11 +1949,11 @@ class NarratedBatchDomain:
                             return None
                         timestamp = int(start + (end - start) * fraction)
                         path = directory / f"frame-{timestamp}.jpg"
-                        if not path.is_file():
-                            self.d.analyzer._command([self.d.analyzer.ffmpeg_path, "-y", "-ss", f"{timestamp / 1000:.3f}",
-                                "-i", source, "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "3", str(path)], timeout=60)
-                        require(path.is_file() and path.stat().st_size > 0, "narrated_frames_missing", "无法读取素材区间画面。")
-                        frames.append((timestamp, path))
+                        # An unreadable moment costs this shot its frame, not the whole batch.
+                        if (path.is_file() and path.stat().st_size > 0) or extract_evidence_frame(self.d.analyzer, source, timestamp, path, start):
+                            frames.append((timestamp, path))
+                if not frames:
+                    continue
                 if facts is None:
                     facts = []
                 for offset in range(0, len(source_shots), group_size):
@@ -2984,9 +3023,7 @@ class NarratedBatchDomain:
             path = self.d.data_dir / "narrated-evidence" / cache_key / f"frame-{timestamp}.jpg"
             if not path.is_file():
                 path.parent.mkdir(parents=True, exist_ok=True)
-                self.d.analyzer._command([self.d.analyzer.ffmpeg_path, "-y", "-ss", f"{timestamp / 1000:.3f}",
-                    "-i", self.d._resolve_asset_path(shot["asset_id"]), "-frames:v", "1",
-                    "-vf", "scale=480:-2", "-q:v", "3", str(path)], timeout=60)
+                extract_evidence_frame(self.d.analyzer, self.d._resolve_asset_path(shot["asset_id"]), timestamp, path, shot["source_start_ms"])
             require(path.is_file() and path.stat().st_size > 0, "narrated_frames_missing", "无法读取文案对应的原始取证帧。")
             labels.append({"index": len(frames), "shot_id": fact["shot_id"],
                            "fact_id": fact["fact_id"], "source_ms": timestamp})
@@ -3033,9 +3070,7 @@ class NarratedBatchDomain:
             path = self.d.data_dir / "narrated-evidence" / cache_key / f"frame-{timestamp}.jpg"
             if not path.is_file():
                 path.parent.mkdir(parents=True, exist_ok=True)
-                self.d.analyzer._command([self.d.analyzer.ffmpeg_path, "-y", "-ss", f"{timestamp / 1000:.3f}",
-                    "-i", self.d._resolve_asset_path(shot["asset_id"]), "-frames:v", "1",
-                    "-vf", "scale=480:-2", "-q:v", "3", str(path)], timeout=60)
+                extract_evidence_frame(self.d.analyzer, self.d._resolve_asset_path(shot["asset_id"]), timestamp, path, shot["source_start_ms"])
             require(path.is_file() and path.stat().st_size > 0, "narrated_frames_missing", "无法读取最终剪辑会保留的画面。")
             frames.append(path)
             labels.append({"shot_id": shot["segment_id"], "position": shot_index, "source_ms": timestamp})

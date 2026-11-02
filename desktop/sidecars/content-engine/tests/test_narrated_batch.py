@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 import test_auto_mix_v2 as fixtures
@@ -14,6 +14,7 @@ from content_engine.narrated_batch import (
     closing_action_cache_key,
     compact_claim_semantics, semantic_review_cache_key,
     typed_visual_review_cache_key, visual_findings_error, normalize_confirmed_user_visual_findings,
+    extract_evidence_frame, customer_stop_reason, UNREADABLE_MATERIAL_REASON,
 )
 from content_engine.errors import ContentEngineError
 from content_engine.creative_analysis import DashScopeMediaClient
@@ -1721,6 +1722,109 @@ class NarratedBatchTests(unittest.TestCase):
         with self.assertRaises(ContentEngineError) as title_overflow:
             domain._compile_claim_reset_candidate(result(scene=long_scene), wide)
         self.assertIn("标题", str(title_overflow.exception))
+
+    def _frames_end_at(self, last_frame_ms, seeks=None):
+        """FFmpeg's real behaviour: a seek after the last frame writes nothing and fails."""
+        def command(args, timeout):
+            del timeout
+            seek_ms = round(float(args[args.index("-ss") + 1]) * 1000)
+            if seeks is not None:
+                seeks.append(seek_ms)
+            if seek_ms > last_frame_ms:
+                raise ContentEngineError("analysis_failed", "Conversion failed!")
+            output = Path(args[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"test-frame")
+        return command
+
+    def test_analysis_window_remainder_is_not_offered_as_a_shot(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = {"batch_id": "batch-tail", "project_id": "project-test", "version": 1, "status": "draft",
+                 "groups": {"opening": ["asset-v2"], "middle": [], "ending": []}}
+        interval = lambda start, end: {"start_ms": start, "end_ms": end, "quality_score": .9, "role": "process"}
+        card = {"asset_id": "asset-v2", "media_kind": "video", "quality_score": .9,
+                "usable_intervals": [interval(35000, 39999), interval(39999, 40128)]}
+        with patch.object(domain.d, "_auto_mix_asset_snapshots", return_value=[]), \
+                patch.object(domain.d, "_auto_mix_v2_analysis_profile", return_value={}), \
+                patch.object(domain.d, "_asset_row", return_value={"id": "asset-v2", "display_name": "尾巴.mp4"}), \
+                patch.object(domain.d, "_analyze_asset", return_value="tail-analysis-v1"), \
+                patch.object(domain.d, "_auto_mix_asset_cards", return_value=[card]), \
+                patch.object(domain.d, "_should_stop", return_value=False), \
+                patch.object(domain, "_store"):
+            domain._analysis("task-tail", batch, observe=False)
+        self.assertEqual([(35000, 39999)], [(shot["source_start_ms"], shot["source_end_ms"]) for shot in batch["available_shots"]])
+
+    def test_frame_seek_past_the_last_frame_backs_off_inside_the_shot(self):
+        # 0168: the file says 40128 ms because audio outlasts the picture.
+        analyzer = SimpleNamespace(ffmpeg_path="fake-ffmpeg")
+        seeks = []
+        analyzer._command = self._frames_end_at(40060, seeks)
+        path = Path(self.s.creative_domain.data_dir) / "backoff" / "frame.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.assertTrue(extract_evidence_frame(analyzer, "clip.mp4", 40115, path, 39999))
+        self.assertEqual([40115, 40065, 39999], seeks)
+
+    def test_frame_seek_never_borrows_a_picture_from_the_previous_shot(self):
+        analyzer = SimpleNamespace(ffmpeg_path="fake-ffmpeg")
+        analyzer._command = self._frames_end_at(39000)
+        path = Path(self.s.creative_domain.data_dir) / "backoff" / "gone.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(extract_evidence_frame(analyzer, "clip.mp4", 40115, path, 39999))
+        self.assertFalse(path.exists())
+
+    def test_frame_seek_does_not_retry_a_stalled_source(self):
+        analyzer = SimpleNamespace(ffmpeg_path="fake-ffmpeg", _command=Mock(
+            side_effect=ContentEngineError("analysis_stalled", "stalled")))
+        path = Path(self.s.creative_domain.data_dir) / "backoff" / "stall.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.assertRaises(ContentEngineError):
+            extract_evidence_frame(analyzer, "clip.mp4", 5000, path, 0)
+        self.assertEqual(1, analyzer._command.call_count)
+
+    def test_ffmpeg_log_is_not_the_reason_shown_to_the_customer(self):
+        self.assertEqual(UNREADABLE_MATERIAL_REASON, customer_stop_reason("analysis_failed", "[0x2](und): Audio: aac"))
+        self.assertEqual("素材不够", customer_stop_reason("narrated_facts_invalid", "素材不够"))
+
+    def _ground_with_last_frame(self, name, last_frame_ms, shots):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        task = domain.d._create_task("narrated_batch_v1", {"batch_id": batch["batch_id"]})
+        snapshots = [{"asset_id": "asset-v2", "fingerprint": name}]
+        cloud = self.analyzer.cloud_client
+        cloud.vision_model = "fake-vision"
+        self.analyzer.ffmpeg_path = "fake-ffmpeg"
+
+        def complete(*, messages, **kwargs):
+            payload = json.loads(messages[-1]["content"][0]["text"])
+            return {"frames": [{"index": item["index"], "medium": "real", "visible_objects": "绿色设备",
+                                "visible_attributes": {"颜色": "绿色"}, "spatial_relations": [],
+                                "visible_text": [], "uncertainties": []} for item in payload["frames"]]}
+
+        cloud._structured_completion = complete
+        with patch.object(self.analyzer, "_command", side_effect=self._frames_end_at(last_frame_ms), create=True):
+            return ORIGINAL_GROUND_SHOTS(domain, task["task_id"], state, shots, snapshots, {"asset-v2": name})
+
+    def test_grounding_survives_a_tail_shot_ending_after_the_last_frame(self):
+        shots = [{"segment_id": "shot-body", "asset_id": "asset-v2", "source_start_ms": 30000, "source_end_ms": 39999,
+                  "target_duration_ms": 9999, "evidence_ref": "body"},
+                 {"segment_id": "shot-tail", "asset_id": "asset-v2", "source_start_ms": 39999, "source_end_ms": 40128,
+                  "target_duration_ms": 129, "evidence_ref": "tail"}]
+        grounded = self._ground_with_last_frame("tail-after-picture", 40100, shots)
+        self.assertEqual({"shot-body", "shot-tail"}, {shot["segment_id"] for shot in grounded})
+
+    def test_grounding_drops_only_the_shot_with_no_picture_at_all(self):
+        shots = [{"segment_id": "shot-body", "asset_id": "asset-v2", "source_start_ms": 30000, "source_end_ms": 39999,
+                  "target_duration_ms": 9999, "evidence_ref": "body"},
+                 {"segment_id": "shot-gap", "asset_id": "asset-v2", "source_start_ms": 40100, "source_end_ms": 40128,
+                  "target_duration_ms": 28, "evidence_ref": "gap"}]
+        grounded = self._ground_with_last_frame("gap-after-picture", 40000, shots)
+        self.assertEqual({"shot-body"}, {shot["segment_id"] for shot in grounded})
+
+    def test_grounding_skips_a_wholly_unreadable_material_without_stopping(self):
+        shots = [{"segment_id": "shot-broken", "asset_id": "asset-v2", "source_start_ms": 1000, "source_end_ms": 2000,
+                  "target_duration_ms": 1000, "evidence_ref": "broken"}]
+        self.assertEqual([], self._ground_with_last_frame("unreadable", -1, shots))
 
     def test_grounding_normalizes_fields_covers_shots_and_replaces_bad_cache(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
