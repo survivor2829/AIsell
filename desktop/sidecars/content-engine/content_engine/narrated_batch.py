@@ -4757,7 +4757,17 @@ class NarratedBatchDomain:
         if c.get('_confirmed_script'):
             updated['_confirmed_script'] = copy.deepcopy(c['_confirmed_script'])
         audit = {"rejections": []}
-        reviewed = self._review([updated], b, audit)
+        if narrated_production.follows_script(b):
+            # Default mode: the customer's copy is the script, edited or not (user decision 2026-11-02:
+            # whatever copy they bring has to make a video). Only the local format check applies; the
+            # paid visual review stays for batches that opt into strict_visual_review.
+            issue = narrated_brief.issue(updated, b)
+            require(not issue, "narrated_brief_invalid", issue)
+            updated.update(status="planned", review_version=2, review_mode="follow_script",
+                           review_reason=narrated_production.FOLLOW_SCRIPT_REASON)
+            reviewed = [updated]
+        else:
+            reviewed = self._review([updated], b, audit)
         c["_edit_review_audit"] = audit
         require(reviewed, "narrated_edit_rejected", '；'.join(
             str(item.get('reason') or '') for item in audit.get('rejections', []))[:1000]

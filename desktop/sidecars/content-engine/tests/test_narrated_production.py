@@ -807,6 +807,8 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual(39, len(selected))
 
     def test_local_copy_edit_reuses_runtime_mapping_and_confirmation_still_requires_review(self):
+        # Strict mode only; the default mode keeps an edit as the script (see the test below).
+        self.strict()
         initial = self.domain._load(self.batch['batch_id'])
         initial['_story_planning_version'] = 2
         refs = [shot['segment_id'] for shot in list({s['asset_id']: s for s in initial['available_shots']}.values())[:3]]
@@ -861,6 +863,25 @@ class NarratedProductionTests(unittest.TestCase):
                     self.assertTrue(seed.get('_user_supplied'))
                     review.assert_called_once()
                     cloud.assert_not_called()
+
+    def test_default_mode_keeps_an_edited_script_without_a_paid_review(self):
+        # 2026-10-07: the paid review rejected an edited script for addressing "清洁设备渠道商老板们",
+        # and the batch ended with no video. In the default mode an edit is the customer's script too.
+        state = self.domain._load(self.batch['batch_id'])
+        self.assertFalse(strict_visual_review(state))
+        state['_story_planning_version'] = 2
+        ref = state['available_shots'][0]['segment_id']
+        text = '清洁设备渠道商老板们，客户问完价转头就走，说明你没让他看明白能省多少钱。'
+        candidate = {'candidate_id': 'candidate-edit', 'revision': 2, 'title': '渠道商困境', 'narration': text,
+                     'shots': [state['available_shots'][0]], 'phrases': [{'text': text, 'shot_ids': [ref]}],
+                     '_user_supplied': True, '_confirmed_script': {'narration': text}}
+        with patch.object(self.domain, '_review', side_effect=AssertionError('no paid review in default mode')), \
+                patch.object(self.domain, '_cloud', side_effect=AssertionError('no paid mapping')):
+            self.domain._review_edit(candidate, state)
+        self.assertEqual('candidate-edit', candidate['candidate_id'])
+        self.assertEqual(text, candidate['narration'])
+        self.assertEqual(('planned', 'follow_script'), (candidate['status'], candidate['review_mode']))
+        self.assertTrue(candidate.get('_user_supplied'))
 
     def test_local_mapping_rejects_cross_paragraph_changes_and_source_range_drift(self):
         state = self.domain._load(self.batch['batch_id'])
