@@ -385,7 +385,7 @@ class _HappyRenderer(_FakeRenderer):
             "video_path": video,
             "thumbnail_path": cover,
             "audioQualityReport": {
-                "integrated_lufs": -15.1,
+                "integrated_lufs": -16.5,
                 "true_peak_dbtp": -1.2,
                 "speech_music_margin_lu": 18.0,
             },
@@ -1486,7 +1486,7 @@ class AutoMixV2ContractTests(unittest.TestCase):
 
         report = validate_quality_report(
             {
-                "integrated_lufs": -15.1,
+                "integrated_lufs": -16.5,
                 "true_peak_dbtp": -1.2,
                 "speech_music_margin_lu": 18.0,
             }

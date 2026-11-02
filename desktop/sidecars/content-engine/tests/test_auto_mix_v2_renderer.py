@@ -86,6 +86,12 @@ class CapturingV2Renderer(FFmpegCreativeRenderer):
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         Path(output).write_bytes(b"mezzanine")
 
+    def measure_audio_quality(self, path):
+        # The licensed track before its fixed gain; the finished mix already at the target.
+        if Path(path).suffix.lower() in {".mp3", ".wav", ".m4a"}:
+            return {"integrated_lufs": -26.0, "true_peak_dbtp": -3.0}
+        return {"integrated_lufs": -16.5, "true_peak_dbtp": -1.5}
+
     def _measure_auto_mix_window_margins(self, *_args, **_kwargs):
         return [
             {
@@ -160,7 +166,7 @@ class FakeHybridFFmpeg:
 
     def measure_audio_quality(self, path):
         return {
-            "integrated_lufs": -15.1,
+            "integrated_lufs": -16.5,
             "true_peak_dbtp": -1.2,
         }
 
@@ -250,7 +256,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertIn('0:a:0', command)
         report = renderer.read_auto_mix_speech_music_report(output)
         self.assertIsNone(report['speech_music_margin_lu'])
-        report.update(integrated_lufs=-15, true_peak_dbtp=-1.2)
+        report.update(integrated_lufs=-16.5, true_peak_dbtp=-1.2)
         normalized = HybridCreativeRenderer._normalized_audio_quality_report(report)
         self.assertTrue(validate_quality_report(normalized)['passed'])
         with self.assertRaises(ContentEngineError):
@@ -307,9 +313,14 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertNotIn("aevalsrc", all_args)
         self.assertNotIn("volume=-24", all_args)
         self.assertNotIn("lowpass=f=1200", all_args)
-        self.assertIn("sidechaincompress", final_graph)
+        # 2026-11-02: the music no longer ducks around every phrase (it jumped 358 times a
+        # minute on a real mix) and the master has no frame-by-frame loudness stage that
+        # lifted every pause. The music is one measured fixed gain plus a slow leveler.
+        self.assertNotIn("sidechaincompress", final_graph)
+        self.assertNotIn("loudnorm=I=-15", final_graph)
+        self.assertNotIn("loudnorm=I=-34", final_graph)
+        self.assertRegex(final_graph, r"\[1:a\]asetpts=PTS-STARTPTS,volume=-?[\d.]+dB,acompressor=")
         self.assertIn("[music_duck]volume=", final_graph)
-        self.assertIn("loudnorm=I=-15:LRA=8:TP=-1.2", final_graph)
         self.assertIn("adelay=900|900", final_graph)
         self.assertIn(
             "adelay=900|900,afade=t=in:st=0.900:d=0.4,afade=t=out:st=4.200:d=0.8",
@@ -808,7 +819,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
             output_dir=output_dir,
             resolve_asset_path=lambda asset_id: self.root / f"{asset_id}.mp4",
         )
-        self.assertEqual(-15.1, result["audioQualityReport"]["integrated_lufs"])
+        self.assertEqual(-16.5, result["audioQualityReport"]["integrated_lufs"])
         manifest = json.loads((output_dir / "candidate-manifest.json").read_text("utf-8"))
         self.assertEqual(result["audioQualityReport"], manifest["audioQualityReport"])
 

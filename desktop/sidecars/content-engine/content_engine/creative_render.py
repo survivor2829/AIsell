@@ -25,6 +25,15 @@ from .render_mix import discover_media_executable, _windows_process_options
 
 
 AUTO_MIX_MAX_SPEECH_WINDOW_GAIN_DB = 20.0
+# Finished mixes (user decision 2026-11-02): the voice a little quieter than the old -15 LUFS,
+# and the music at one steady level under it instead of ducking in and out around every phrase.
+AUTO_MIX_TARGET_LUFS = -16.5
+AUTO_MIX_LOUDNESS_TOLERANCE_LU = 1.0
+AUTO_MIX_MUSIC_LEVEL_LUFS = -34.0
+# Evens out the track's own loud and quiet bars slowly, so it neither pumps nor swells.
+AUTO_MIX_MUSIC_LEVELER = "acompressor=threshold=0.05:ratio=3:attack=200:release=1500:makeup=1"
+# A phrase-by-phrase duck made the music jump hundreds of times a minute; it now stays put.
+AUTO_MIX_MUSIC_UNDER_VOICE = "anull"
 
 
 class FFmpegCreativeRenderer:
@@ -670,10 +679,11 @@ class FFmpegCreativeRenderer:
             "true_peak_dbtp": round(true_peak, 2),
         }
 
-    def calibrate_final_loudness(self, path, *, target_lufs=-15, max_true_peak=-1):
+    def calibrate_final_loudness(self, path, *, target_lufs=AUTO_MIX_TARGET_LUFS, max_true_peak=-1):
         """Calibrate the completed mix; measure both loudness and peak again."""
         measured = self.measure_audio_quality(path)
-        if target_lufs - 1 <= measured["integrated_lufs"] <= target_lufs + 1 and measured["true_peak_dbtp"] <= max_true_peak:
+        tolerance = AUTO_MIX_LOUDNESS_TOLERANCE_LU
+        if target_lufs - tolerance <= measured["integrated_lufs"] <= target_lufs + tolerance and measured["true_peak_dbtp"] <= max_true_peak:
             return measured
         gain = min(target_lufs - measured["integrated_lufs"], max_true_peak - .1 - measured["true_peak_dbtp"])
         audio_filter = f"volume={gain:.4f}dB"
@@ -1461,6 +1471,7 @@ class FFmpegCreativeRenderer:
         music_envelope_filter="",
         post_duck_gain_filter="",
         music_fade_in=0.0,
+        music_level_filter="loudnorm=I=-34:LRA=11:TP=-2.0",
     ):
         voice_stem = Path(output).parent / f".auto-mix-voice-{uuid.uuid4().hex}.wav"
         music_stem = Path(output).parent / f".auto-mix-music-{uuid.uuid4().hex}.wav"
@@ -1468,11 +1479,11 @@ class FFmpegCreativeRenderer:
             (
                 "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2,asplit=2[voice_meter][voice_side]",
                 "[1:a]asetpts=PTS-STARTPTS,"
-                "loudnorm=I=-34:LRA=11:TP=-2.0,"
+                f"{music_level_filter},"
                 f"{delay_filter}afade=t=in:st={music_fade_in:.3f}:d=0.4,"
                 f"afade=t=out:st={fade_out:.3f}:d=0.8"
                 f"{music_envelope_filter}[music_norm]",
-                "[music_norm][voice_side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250[music_duck]",
+                f"[voice_side]anullsink;[music_norm]{AUTO_MIX_MUSIC_UNDER_VOICE}[music_duck]",
                 f"[music_duck]{post_duck_gain_filter or 'anull'}[music_meter]",
             )
         )
@@ -1598,6 +1609,17 @@ class FFmpegCreativeRenderer:
         finally:
             voice_stem.unlink(missing_ok=True)
             music_stem.unlink(missing_ok=True)
+
+    def _auto_mix_steady_music_filter(self, music_input):
+        """One measured, fixed gain to the music level plus a slow leveler; no frame-by-frame riding."""
+        try:
+            measured = float(self.measure_audio_quality(Path(music_input[-1]))["integrated_lufs"])
+        except (ContentEngineError, KeyError, TypeError, ValueError) as error:
+            raise ContentEngineError("audio_quality_measure_failed", "背景音乐响度无法测量。") from error
+        if not math.isfinite(measured) or measured < -70:
+            raise ContentEngineError("auto_mix_music_not_audible", "背景音乐几乎无声，正式成片已停止。")
+        gain = max(-40.0, min(30.0, AUTO_MIX_MUSIC_LEVEL_LUFS - measured))
+        return f"volume={gain:.2f}dB,{AUTO_MIX_MUSIC_LEVELER}"
 
     @staticmethod
     def _auto_mix_music_gain_plan(windows, *, duration_ms):
@@ -1739,7 +1761,7 @@ class FFmpegCreativeRenderer:
             voice = recipe.get('voice_segment') or {}
             duration = (int(voice.get('end_ms') or 0) - int(voice.get('start_ms') or 0)) / 1000
             self._encode_mezzanine(['-i', str(source), '-map', '0:v:0', '-map', '0:a:0',
-                '-af', 'highpass=f=70,loudnorm=I=-15:LRA=8:TP=-1.2,alimiter=limit=0.86:attack=5:release=50:level=false',
+                '-af', f'highpass=f=70,loudnorm=I={AUTO_MIX_TARGET_LUFS}:LRA=8:TP=-1.2,alimiter=limit=0.86:attack=5:release=50:level=false',
                 '-t', f'{duration:.3f}'], output)
             self._auto_mix_margin_report_path(output).write_text(
                 json.dumps({'music_mode': 'none', 'speech_music_margin_lu': None}), encoding='utf-8')
@@ -1778,6 +1800,7 @@ class FFmpegCreativeRenderer:
             music_path, recipe, round(duration * 1000), output
         )
         try:
+            music_level_filter = self._auto_mix_steady_music_filter(music_input)
             baseline_windows = self._measure_auto_mix_window_margins(
                 source,
                 music_input,
@@ -1789,6 +1812,7 @@ class FFmpegCreativeRenderer:
                 output=output,
                 music_envelope_filter=music_envelope_filter,
                 music_fade_in=music_fade_in,
+                music_level_filter=music_level_filter,
             )
             gain_plan = self._auto_mix_music_gain_plan(
                 baseline_windows, duration_ms=round(duration * 1000)
@@ -1810,6 +1834,7 @@ class FFmpegCreativeRenderer:
                 music_envelope_filter=music_envelope_filter,
                 post_duck_gain_filter=post_duck_gain_filter,
                 music_fade_in=music_fade_in,
+                music_level_filter=music_level_filter,
             )
             for _ in range(2):
                 margins = [float(item["rawMarginLu"]) for item in measured_windows]
@@ -1849,22 +1874,24 @@ class FFmpegCreativeRenderer:
                     music_envelope_filter=music_envelope_filter,
                     post_duck_gain_filter=post_duck_gain_filter,
                     music_fade_in=music_fade_in,
+                    music_level_filter=music_level_filter,
                 )
             measured_windows = self._validate_auto_mix_window_margins(
                 measured_windows, speech_window_gains
             )
             graph = ";".join(
                 (
-                    "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2,asplit=2[voice_mix][voice_side]",
+                    "[0:a]highpass=f=70,loudnorm=I=-16:LRA=7:TP=-1.2[voice_mix]",
                     "[1:a]asetpts=PTS-STARTPTS,"
-                    "loudnorm=I=-34:LRA=11:TP=-2.0,"
+                    f"{music_level_filter},"
                     f"{delay_filter}afade=t=in:st={music_fade_in:.3f}:d=0.4,"
                     f"afade=t=out:st={fade_out:.3f}:d=0.8"
                     f"{music_envelope_filter}[music_norm]",
-                    "[music_norm][voice_side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250[music_duck]",
+                    f"[music_norm]{AUTO_MIX_MUSIC_UNDER_VOICE}[music_duck]",
                     f"[music_duck]{post_duck_gain_filter}[music_mix]",
+                    # The level is set afterwards by one measured, fixed gain (calibrate_final_loudness).
                     "[voice_mix][music_mix]amix=inputs=2:duration=first:"
-                    "dropout_transition=0,loudnorm=I=-15:LRA=8:TP=-1.2,"
+                    "dropout_transition=0:normalize=0,"
                     "alimiter=limit=0.86:attack=5:release=50:level=false[aout]",
                 )
             )
@@ -1891,8 +1918,8 @@ class FFmpegCreativeRenderer:
                 "windows": measured_windows,
             }
             report_path = self._auto_mix_margin_report_path(output)
-            if recipe.get("narrated_preserve_shot_duration"):
-                self.calibrate_final_loudness(output)
+            # Always: the mix above has no master loudness stage of its own.
+            self.calibrate_final_loudness(output)
             temporary = report_path.with_name(f"{report_path.name}.tmp")
             try:
                 temporary.write_text(
@@ -3307,7 +3334,9 @@ class HybridCreativeRenderer:
                 paths, manifest = adopted
                 if auto_mix_v2 and recipe.get("narrated_preserve_shot_duration"):
                     audio = manifest.get("audioQualityReport") or {}
-                    if not -16 <= float(audio.get("integrated_lufs", -100)) <= -14:
+                    if not (AUTO_MIX_TARGET_LUFS - AUTO_MIX_LOUDNESS_TOLERANCE_LU
+                            <= float(audio.get("integrated_lufs", -100))
+                            <= AUTO_MIX_TARGET_LUFS + AUTO_MIX_LOUDNESS_TOLERANCE_LU):
                         video = output_dir / "video.mp4"
                         backup = output_dir / "video.before-loudness.mp4"
                         if backup.exists() and self._sha256_file(backup) != self._sha256_file(video):

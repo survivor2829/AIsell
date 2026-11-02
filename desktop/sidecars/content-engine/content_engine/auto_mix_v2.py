@@ -1696,9 +1696,9 @@ def validate_quality_report(value: Any) -> dict[str, Any]:
         "音频质量指标不是有限数值。",
     )
     _contract(
-        -16.0 <= integrated <= -14.0,
+        -17.5 <= integrated <= -15.5,
         "auto_mix_loudness_failed",
-        "成片综合响度未达到 -16 到 -14 LUFS。",
+        "成片综合响度未达到 -17.5 到 -15.5 LUFS。",
     )
     _contract(
         true_peak <= -1.0,
