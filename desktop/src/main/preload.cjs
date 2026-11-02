@@ -22,7 +22,8 @@ contextBridge.exposeInMainWorld("xiaoxiSocialNurture", require("./social-nurture
 contextBridge.exposeInMainWorld("xiaoxiPhoneMatrix", require("./phone-matrix-preload.cjs").createPhoneMatrixApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
 contextBridge.exposeInMainWorld("xiaoxiAccount", apis.account);
-contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });
+contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode),
+  onShownChange: (callback) => { const listener = (_event, shown) => callback(shown === true); ipcRenderer.on("window-chrome:shown", listener); return () => ipcRenderer.removeListener("window-chrome:shown", listener); } });
 contextBridge.exposeInMainWorld('xiaoxiStartup', { mark: stage => ipcRenderer.send('startup:mark', stage) });
 contextBridge.exposeInMainWorld("xiaoxiWorkflow", apis.workflow);
 const momentsCampaign = createMomentsCampaignApi(ipcRenderer);

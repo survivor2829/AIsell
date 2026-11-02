@@ -360,6 +360,11 @@ function createWindow() {
   mainWindow.on("minimize", () => {
     if (developmentEdition) disarmRealSend?.();
   });
+  // With backgroundThrottling off the page cannot tell it is minimized; say so, or animations and decoding never rest.
+  const reportShown = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("window-chrome:shown", mainWindow.isVisible() && !mainWindow.isMinimized());
+  };
+  for (const change of ["minimize", "restore", "hide", "show"]) mainWindow.on(change, reportShown);
   mainWindow.on("closed", () => {
     mainWindow = null;
     // The hidden workflow window must not keep Windows running after exit.

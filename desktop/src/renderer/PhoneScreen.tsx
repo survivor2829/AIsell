@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { isWindowShown } from "./window-shown";
 
 // One phone's live screen: the H.264 stream from the main process decoded with WebCodecs onto a
 // canvas. With `onTouch`, pointer presses, drags and releases become touches at the same spot (0–1).
@@ -56,6 +57,9 @@ export function PhoneScreen({ serial, className = "", onTouch }: { serial: strin
         return;
       }
       if (packet.type !== "frame" || !packet.data || !decoder || decoder.state !== "configured") return;
+      // Minimized: nobody sees these frames, so do not spend the computer on them. The stream itself keeps
+      // running (it keeps the phones awake); the picture catches up at the next key frame on return.
+      if (!isWindowShown()) { waitingForKey = true; return; }
       if (waitingForKey && !packet.key) return;
       let data = new Uint8Array(packet.data);
       if (packet.key && config) { const joined = new Uint8Array(config.length + data.length); joined.set(config); joined.set(data, config.length); data = joined; }

@@ -16,7 +16,7 @@ function loadTs(name) {
   compiled._compile(output, filename);
   return compiled.exports;
 }
-const { viralFlow, layoutFlow, bundleStrands, describeHover, tagText } = loadTs("flow-funnel.ts");
+const { flowCanvasDpr, flowFrameDue, viralFlow, layoutFlow, bundleStrands, describeHover, tagText } = loadTs("flow-funnel.ts");
 const { rankCandidates } = require("../main/viral-ranking.cjs");
 
 const now = Date.parse("2026-10-23T12:00:00Z"), day = 86400000;
@@ -95,5 +95,18 @@ assert.equal(a, b);
 assert.equal(tagText({ id: "underdog", label: "小号爆", value: 37 }), "小号爆 ×37");
 assert.equal(tagText({ id: "high_likes", label: "高赞", value: 120000 }), "高赞 12w");
 assert.equal(tagText({ id: "high_likes", label: "高赞", value: 8000 }), "高赞 8000");
+
+// 大屏不拖慢软件：普通屏一比一不糊，高分屏封顶约 200 万像素，每秒最多 30 帧。
+assert.equal(flowCanvasDpr(2436, 480, 1), 1, "普通屏不能因为窗口宽就变糊");
+assert.equal(flowCanvasDpr(1000, 300, 2), 2, "小画布在高分屏上保持清晰");
+{
+  const dpr = flowCanvasDpr(1800, 480, 2), pixels = 1800 * 480 * dpr * dpr;
+  assert.ok(dpr < 2 && dpr >= 1, "4K 大屏要降低画布倍率");
+  assert.ok(pixels <= 2_000_100, "画布像素要封顶，实际 " + pixels);
+}
+assert.equal(flowCanvasDpr(10, 10, 0), 1, "读不到倍率时按一倍");
+assert.equal(flowFrameDue(1000, 0), true, "第一帧马上画");
+assert.equal(flowFrameDue(1010, 1000), false, "100Hz 屏不能每次刷新都重画");
+assert.equal(flowFrameDue(1033, 1000), true, "到了 30 帧的间隔就画");
 
 console.log("flow funnel self-check passed: live strands without invented counts, every strand routed after ranking, duplicate bundles, stage numbers match stats, bundle cap, stable shapes, hover text");

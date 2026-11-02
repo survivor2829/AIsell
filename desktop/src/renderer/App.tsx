@@ -336,7 +336,7 @@ type ProductDetailAiSettingsResult = {
 declare global {
   interface Window {
     xiaoxiStartup?: { mark: (stage: 'renderer_loaded' | 'login_visible' | 'login_interactive') => void };
-    xiaoxiWindowChrome?: { setMode: (mode: "login" | "workspace") => void };
+    xiaoxiWindowChrome?: { setMode: (mode: "login" | "workspace") => void; onShownChange?: (callback: (shown: boolean) => void) => () => void };
     xiaoxiAccount?: AccountApi;
     xiaoxiLicenseAuth?: {
       status: () => Promise<LicenseStatus>;
