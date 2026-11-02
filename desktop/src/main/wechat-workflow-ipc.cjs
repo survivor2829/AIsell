@@ -54,12 +54,17 @@ function registerWechatWorkflowIpc(options) {
       const target = new BrowserWindow({
         width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height, ...position,
         title: "小玺", alwaysOnTop: true, resizable: false, show: false, transparent: true, hasShadow: false,
+        // A maximized 小玺 sticks at the top-left corner, cannot be dragged and loses its transparency
+        // (a white block; user report 2026-11-02). It is never meant to be maximized or full screen.
+        maximizable: false, minimizable: false, fullscreenable: false,
         frame: false, autoHideMenuBar: true, skipTaskbar: true, backgroundColor: "#00000000",
         webPreferences: { preload: options.preloadPath, contextIsolation: true, nodeIntegration: false, sandbox: false }
       });
       floatingWindow = target;
       // The transparent parts let clicks through; 小玺 and its bubble take them while the pointer is on them.
       target.setIgnoreMouseEvents?.(true, { forward: true });
+      target.on("maximize", () => target.unmaximize());
+      target.on("enter-full-screen", () => target.setFullScreen(false));
       target.setMenu(null);
       target.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       target.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -265,6 +270,7 @@ function registerWechatWorkflowIpc(options) {
   ipcMain.on?.("wechat-workflow:sprite-drag-start", (event) => {
     if (!fromSprite(event)) return;
     clearInterval(spriteDrag?.timer);
+    if (floatingWindow.isMaximized?.()) floatingWindow.unmaximize();
     const cursor = screen.getCursorScreenPoint(), [x, y] = floatingWindow.getPosition();
     const drag = { dx: cursor.x - x, dy: cursor.y - y, from: cursor, moved: false, started: Date.now() };
     drag.timer = setInterval(() => {
@@ -281,7 +287,7 @@ function registerWechatWorkflowIpc(options) {
     if (!fromSprite(event) || !spriteDrag) return { moved: false };
     const drag = spriteDrag; spriteDrag = null;
     clearInterval(drag.timer);
-    if (drag.moved && options.spritePlaceFile) {
+    if (drag.moved && options.spritePlaceFile && !floatingWindow.isMaximized?.()) {
       const [x, y] = floatingWindow.getPosition();
       try { fs.writeFileSync(options.spritePlaceFile, JSON.stringify({ x, y })); } catch { /* The place is a convenience. */ }
     }

@@ -1065,6 +1065,10 @@ async function checkFloatingProgress() {
     setPosition(x, y) { this.position = [x, y]; }
     getPosition() { return this.position || [this.settings.x, this.settings.y]; }
     setIgnoreMouseEvents(ignore) { this.ignoringMouse = ignore; }
+    maximize() { this.maximized = true; this.emit("maximize"); }
+    unmaximize() { this.maximized = false; }
+    isMaximized() { return this.maximized === true; }
+    setFullScreen(on) { this.fullScreen = on; }
     async loadFile() {}
     showInactive() { this.visible = true; }
     show() { throw new Error("Progress window must not steal WeChat focus"); }
@@ -1135,6 +1139,11 @@ async function checkFloatingProgress() {
   assert.equal(sprite.settings.transparent, true);
   assert.equal(sprite.settings.x, 1920 - 360 - 6); assert.equal(sprite.settings.y, Math.round((1080 - 230) / 2));
   assert.equal(sprite.ignoringMouse, true, "transparent parts let clicks through");
+  // 2026-11-02: a maximized 小玺 sat at the top-left, would not drag and turned into a white block.
+  assert.equal(sprite.settings.maximizable, false, "小玺 cannot be maximized");
+  assert.equal(sprite.settings.fullscreenable, false, "小玺 cannot go full screen");
+  sprite.maximize();
+  assert.equal(sprite.isMaximized(), false, "a maximize that slips through is undone at once");
   const spriteEvent = { sender: sprite.webContents };
   listeners.get("wechat-workflow:sprite-interactive")(spriteEvent, true);
   assert.equal(sprite.ignoringMouse, false, "小玺 and its bubble take clicks while the pointer is on them");
