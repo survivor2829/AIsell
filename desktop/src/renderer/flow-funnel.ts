@@ -14,6 +14,16 @@ export type FlowLayout = {
 
 export const FLOW_STEP = 3;
 export const FLOW_STAGE_X = [0, 0.25, 0.5, 0.75, 1];
+// 这张图是装饰性动画：每帧都重画整块画布，开销随屏幕大小和刷新率上涨，大屏上会拖慢整个软件。
+// 每秒 30 帧、最多约 200 万像素，看起来没有差别。
+export const FLOW_FRAME_MS = 1000 / 30;
+const FLOW_MAX_PIXELS = 2_000_000;
+export const flowFrameDue = (now: number, last: number) => !last || now - last >= FLOW_FRAME_MS - 2;
+// 普通屏保持一比一不糊；只有高分屏才会降到上限以内。
+export function flowCanvasDpr(w: number, h: number, deviceDpr: number) {
+  const device = Math.min(2, deviceDpr || 1);
+  return Math.min(device, Math.max(1, Math.sqrt(FLOW_MAX_PIXELS / Math.max(1, w * h))));
+}
 const MAX_BUNDLES = 12;
 
 const smooth = (t: number) => t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t);

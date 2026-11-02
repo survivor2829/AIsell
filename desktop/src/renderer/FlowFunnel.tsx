@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { describeHover, FLOW_STAGE_X, FLOW_STEP, isDecided, layoutFlow, type FlowLayout, type FlowStage, type FlowStrand } from './flow-funnel';
+import { describeHover, flowCanvasDpr, flowFrameDue, FLOW_STAGE_X, FLOW_STEP, isDecided, layoutFlow, type FlowLayout, type FlowStage, type FlowStrand } from './flow-funnel';
+import { isWindowShown, onWindowShownChange } from './window-shown';
 import './FlowFunnel.css';
 
 // 通用流图：线条和光点全部由调用方给的真实数据驱动。
@@ -74,7 +75,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
   function relayout() {
     const w = host.clientWidth, h = host.clientHeight;
     if (w < 10 || h < 10) { L = null; return; }
-    dpr = Math.min(2, window.devicePixelRatio || 1);
+    dpr = flowCanvasDpr(w, h, window.devicePixelRatio);
     for (const c of [canvas, base]) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
     L = strands.length ? layoutFlow(strands, w, h) : null;
     index = new Map(L ? L.lines.map((l, i) => [l.strand.id, i]) : []);
@@ -129,6 +130,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
   function tick(now: number) {
     raf = 0;
     if (!L || !alive) return;
+    if (!flowFrameDue(now, last)) { schedule(); return; }
     const dt = Math.min(0.05, last ? (now - last) / 1000 : 0); last = now;
     if (now - introAt >= INTRO * 0.8) {
       // 一次来很多条（比如扒完统一判定）时加快放行，几秒内流完。
@@ -155,7 +157,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
     frame(now);
     if (busy(now)) schedule(); else last = 0;
   }
-  function schedule() { if (!raf && alive && !reduce && visible && !document.hidden && L) raf = requestAnimationFrame(tick); }
+  function schedule() { if (!raf && alive && !reduce && visible && isWindowShown() && L) raf = requestAnimationFrame(tick); }
   const redraw = () => frame(performance.now());
 
   function showTip(x: number, y: number, title: string, detail: string) {
@@ -185,8 +187,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
   resizer.observe(host);
   const watcher = new IntersectionObserver(([entry]) => { visible = Boolean(entry?.isIntersecting); last = 0; schedule(); });
   watcher.observe(host);
-  const onVisibility = () => { last = 0; schedule(); };
-  document.addEventListener('visibilitychange', onVisibility);
+  const offShown = onWindowShownChange(() => { last = 0; schedule(); });
 
   return {
     setStrands(next) {
@@ -210,7 +211,7 @@ function createEngine(host: HTMLDivElement, canvas: HTMLCanvasElement, tip: HTML
     destroy() {
       alive = false; if (raf) cancelAnimationFrame(raf);
       host.removeEventListener('pointermove', onMove); host.removeEventListener('pointerleave', onLeave);
-      resizer.disconnect(); watcher.disconnect(); document.removeEventListener('visibilitychange', onVisibility);
+      resizer.disconnect(); watcher.disconnect(); offShown();
     }
   };
 }
