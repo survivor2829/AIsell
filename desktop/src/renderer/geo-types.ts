@@ -4,7 +4,7 @@ export type GeoArticle = { id: string; revision: number; title: string; body: st
 export type GeoPublication = { id: string; articleId: string; title: string; platform: string; accountId: string; accountLabel: string; status: "queued" | "running" | "public" | "reviewing" | "failed" | "unknown" | "cancelled"; reason: string; url: string; detail?: string; clickedAt: string; finishedAt: string };
 export type GeoReference = { title: string; url: string; association: "confirmed" | "suspected" | "unmatched"; articleId: string | null };
 export type GeoVisibilityRun = { id: string; question: string; status: "running" | "completed" | "failed"; reason?: string; answer?: string; mentioned?: boolean; hits?: { name: string; snippet: string }[]; references?: GeoReference[]; referenceStatus?: string; startedAt: string; finishedAt: string };
-export type GeoChannel = { id: string; name: string; available: boolean; reason: string };
+export type GeoChannel = { id: string; name: string; available: boolean; reason: string; trial?: boolean };
 export type GeoAccount = { id: string; platform: string; label: string; status: string; loggingIn?: boolean };
 export type GeoState = {
   brand: GeoBrand; questions: GeoQuestion[]; articles: GeoArticle[]; publications: GeoPublication[]; visibilityRuns: GeoVisibilityRun[];

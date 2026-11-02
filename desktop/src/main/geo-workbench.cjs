@@ -61,7 +61,7 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
   for (const run of state.visibilityRuns) if (run.status === "running") Object.assign(run, { status: "failed", reason: "软件中断，可以再查一次。", finishedAt: stamp() });
   let busy = "", closed = false, stopping = false, current = null, running = Promise.resolve();
   const save = () => writeJsonAtomic(file, state, { mode: 0o600 });
-  const channelList = () => channels.map(({ id, name, available, reason }) => ({ id, name, available: available === true, reason: reason || "" }));
+  const channelList = () => channels.map(({ id, name, available, reason, trial }) => ({ id, name, available: available === true, reason: reason || "", trial: trial === true }));
   const usage = () => {
     const today = dayOf(stamp());
     return { ai: state.ledger.filter((entry) => entry.status !== "not_sent" && dayOf(entry.startedAt) === today).length, aiLimit: AI_DAILY_LIMIT, publishLimit: PUBLISH_DAILY_LIMIT };

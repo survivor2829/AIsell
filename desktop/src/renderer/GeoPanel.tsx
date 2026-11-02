@@ -16,6 +16,7 @@ export function GeoPanel() {
   const [brand, setBrand] = useState({ name: "", services: "", regions: "", cases: "", aliases: "", restrictions: "" });
   const [newQuestion, setNewQuestion] = useState("");
   const [pasted, setPasted] = useState({ title: "", body: "" });
+  const [links, setLinks] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<{ id: string; title: string; body: string }>();
   const [articleId, setArticleId] = useState("");
   const [targets, setTargets] = useState<Set<string>>(new Set());
@@ -132,7 +133,8 @@ export function GeoPanel() {
       <h2>把文章发到你的账号上</h2>
       {!article ? <p className="geo-muted">还没有文章，先去上一步写一篇。</p> : <>
         <label>发哪一篇<select value={article.id} onChange={(event) => { setArticleId(event.target.value); setTargets(new Set()); }}>{state.articles.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
-        {openChannels.map((channel) => <div className="geo-channel" key={channel.id}><b>{channel.name}</b>
+        {openChannels.map((channel) => <div className="geo-channel" key={channel.id}><b>{channel.name}{channel.trial && <small className="geo-trial">试用</small>}</b>
+          {channel.trial && <p className="geo-muted">这个平台刚接入，暂时只能发你自己写的文章。发完请到平台上看一下，再回来告诉软件结果。</p>}
           {accountChip(channel.id, channel.name)}
           {accountsOf(channel.id).filter((account) => account.status === "active").map((account) => <label className="geo-check" key={account.id}><input type="checkbox" checked={targets.has(`${channel.id}|${account.id}`)} onChange={() => setTargets(toggle(targets, `${channel.id}|${account.id}`))} />发到「{account.label}」</label>)}
         </div>)}
@@ -150,7 +152,8 @@ export function GeoPanel() {
       </li>)}</ul></>}
       {unknown.length > 0 && <div className="geo-warn" role="alert"><b>{unknown.length} 篇需要你看一下</b>：请到平台上确认是否发出，软件不会自己重发。
         <ul>{unknown.map((item) => <li key={item.id}>《{item.title}》
-          <button type="button" className="geo-mini is-go" disabled={busy} onClick={() => void run(`ok-${item.id}`, "resolve-publication", { id: item.id, outcome: "public" })}>发出了</button>
+          <input className="geo-link" aria-label="文章链接" value={links[item.id] || ""} placeholder="文章链接（选填，填了才能看出豆包有没有引用它）" onChange={(event) => setLinks({ ...links, [item.id]: event.target.value })} />
+          <button type="button" className="geo-mini is-go" disabled={busy} onClick={() => void run(`ok-${item.id}`, "resolve-publication", { id: item.id, outcome: "public", url: (links[item.id] || "").trim() })}>发出了</button>
           <button type="button" className="geo-mini" disabled={busy} onClick={() => void run(`no-${item.id}`, "resolve-publication", { id: item.id, outcome: "failed" })}>没发出</button></li>)}</ul></div>}
     </section>}
 
