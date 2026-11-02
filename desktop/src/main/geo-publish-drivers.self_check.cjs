@@ -34,7 +34,7 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
   // 搜狐号、百家号应用户要求先开放（2026-11-02）：没有真实发过，必须标成试用，而且永远不能自己报“已发出”。
   for (const id of ["sohu", "baijiahao"]) {
     const channel = GEO_CHANNELS.find((item) => item.id === id), driver = DRIVERS[id];
-    assert.ok(channel.available && channel.trial, `${id} 开放但标为试用`);
+    assert.ok(channel.available && !channel.trial, `${id} 开放，不再标试用（用户 2026-11-02）`);
     assert.ok(GEO_ACCOUNT_PLATFORMS[id]?.loginCookies.length, `${id} 可以登录`);
     const lists = id === "sohu" ? "https://mp.sohu.com/mpfe/v4/contentManagement/news/list" : "https://baijiahao.baidu.com/builder/rc/content";
     assert.equal(driver.published(lists, "别的文章\n已发布", { title: "这篇" }), null, "列表里没有这篇不算");
