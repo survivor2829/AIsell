@@ -134,7 +134,7 @@ export function GeoPanel() {
       {!article ? <p className="geo-muted">还没有文章，先去上一步写一篇。</p> : <>
         <label>发哪一篇<select value={article.id} onChange={(event) => { setArticleId(event.target.value); setTargets(new Set()); }}>{state.articles.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
         {openChannels.map((channel) => <div className="geo-channel" key={channel.id}><b>{channel.name}{channel.trial && <small className="geo-trial">试用</small>}</b>
-          {channel.trial && <p className="geo-muted">这个平台刚接入，暂时只能发你自己写的文章。发完请到平台上看一下，再回来告诉软件结果。</p>}
+          {channel.trial && <p className="geo-muted">这个平台刚接入。发完请到平台上看一下，再回来告诉软件结果。</p>}
           {accountChip(channel.id, channel.name)}
           {accountsOf(channel.id).filter((account) => account.status === "active").map((account) => <label className="geo-check" key={account.id}><input type="checkbox" checked={targets.has(`${channel.id}|${account.id}`)} onChange={() => setTargets(toggle(targets, `${channel.id}|${account.id}`))} />发到「{account.label}」</label>)}
         </div>)}

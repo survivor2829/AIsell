@@ -5,6 +5,7 @@ const { coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS,
 const job = { title: "洗地机怎么选", body: "第一段。\n\n第二段。\n" };
 assert.deepEqual(paragraphs(job.body), ["第一段。", "第二段。"]);
 assert.ok(sameArticle({ title: "洗地机怎么选 ", body: "第一段。\n​第二段。" }, job));
+assert.ok(sameArticle({ title: "洗地机怎么选", body: "第一段。\n\n第二段。\n\n\u200d" }, job), "百家号在正文末尾插入的零宽字符不算差别");
 assert.ok(!sameArticle({ title: "洗地机怎么选", body: "第一段。" }, job), "少一段不算一致");
 assert.ok(!sameArticle({ title: "别的标题", body: "第一段。第二段。" }, job));
 
@@ -52,7 +53,15 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
   assert.ok(!DRIVERS.sohu.holdText.test("为了账号安全，请不要泄露密码"), "常驻提示不算验证");
   assert.ok(DRIVERS.sohu.holdText.test("为了账号安全，需要短信验证") && DRIVERS.baijiahao.holdText.test("百度安全验证"));
   assert.ok(DRIVERS.sohu.confirmButton.includes("确认发布") && DRIVERS.baijiahao.confirmButton.includes("确认发布"), "点发布后还有一步确认");
-  assert.equal(DRIVERS.baijiahao.published(DRIVERS.baijiahao.editorUrl.replace("edit?type=news", "success"), "提交成功，正在审核中", { title: "这篇" }).status, "unknown");
+  assert.equal(DRIVERS.baijiahao.published("https://baijiahao.baidu.com/builder/rc/success", "提交成功，正在审核中", { title: "这篇" }).status, "unknown");
+  // 搜狐通行证的 Cookie 不算登录了搜狐号：要等网站自己的登录凭据（2026-11-02 实测）。
+  assert.deepEqual(DRIVERS.sohu.loginCookies, ["umab_access_token"]);
+  // 百家号的编辑地址会跳回首页，要从首页入口进。
+  assert.equal(typeof DRIVERS.baijiahao.enter, "function");
+  assert.equal(DRIVERS.baijiahao.published("https://baijiahao.baidu.com/builder/rc/edit", "这篇", { title: "这篇" }), null, "还在编辑页不算");
+  assert.ok(DRIVERS.baijiahao.publishButton.includes("publish-btn"));
+  // 搜狐号的发布按钮是列表项，内容没填好时带 disable-button。
+  assert.ok(DRIVERS.sohu.publishButton.includes(":not(.disable-button)"));
   // 百家号必须有封面：封面用标题生成，标题里的符号不能变成网页代码。
   assert.ok(DRIVERS.baijiahao.needsCover);
   assert.ok(coverHtml("<img src=x>洗地机").includes("&#60;img src=x&#62;洗地机"));
@@ -111,14 +120,6 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
     assert.equal(w.log.clicks, 0);
   }
   await assert.rejects(world().adapter.publish({ ...input, platform: "weibo" }), { code: "GEO_CHANNEL_UNAVAILABLE" });
-  {
-    // 试用渠道的 AI 标注方式还没确认：AI 写的文章不发，一次都不点。
-    for (const platform of ["sohu", "baijiahao"]) {
-      const w = world();
-      await assert.rejects(w.adapter.publish({ ...input, platform, aiWritten: true }), { code: "GEO_TRIAL_AI" });
-      assert.equal(w.log.clicks, 0);
-    }
-  }
   {
     // 点发布后才出现的文字验证：窗口切到前面并继续等，验证结束后才判断结果；页面读不出来不算验证结束。
     const { waitThroughVerify } = require("./geo-publish-drivers.cjs");

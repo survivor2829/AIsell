@@ -14,7 +14,7 @@ const VERIFY_PROBE = `(() => { const shown = (el) => { const r = el.getBoundingC
   return [...document.querySelectorAll("iframe")].some((frame) => /captcha|verify/i.test(frame.src) && shown(frame))
     || [...document.querySelectorAll('[class*="captcha" i],[id*="captcha" i],[class*="verify-" i]')].some(shown); })()`;
 // Compared without whitespace and the zero-width spaces editors insert.
-const squash = (value) => String(value ?? "").replace(/[\s​﻿]+/g, "");
+const squash = (value) => String(value ?? "").replace(/[\s\u200b\u200c\u200d\u2060\ufeff]+/g, "");
 const paragraphs = (body) => String(body || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
 const shownText = async (page) => String(await page.evaluate("document.body ? document.body.innerText : ''").catch(() => "") || "");
 
@@ -168,8 +168,9 @@ const BUTTON = (label) => `[...document.querySelectorAll("button,[role=button]")
 
 const SOHU = {
   id: "sohu", name: "搜狐号", titleLimit: 72, trial: true,
-  // ppinf and pprdig appeared on logging in with a real account (2026-11-02).
-  home: "https://mp.sohu.com/", hosts: ["sohu.com"], loginCookies: ["ppinf", "pprdig"],
+  // ppinf is only the Sohu passport: acting on it interrupted the sign-in and the site still said 登录 (2026-11-02).
+  // The site's own token comes after it.
+  home: "https://mp.sohu.com/", hosts: ["sohu.com"], loginCookies: ["umab_access_token"],
   editorUrl: "https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle",
   loginRequired: (url) => /passport\.sohu|\/login/.test(url),
   holdText: /为了账号安全，需要短信验证/,
@@ -191,13 +192,14 @@ const SOHU = {
     const editor = await page.find((node) => attr(node, "contenteditable") === "true" && String(attr(node, "class") || "").includes("ql-editor"));
     if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到搜狐号的正文输入框，平台页面可能和预想的不同。");
     await typeBody(page, editor, job.body);
-    // The creation statement. Only articles the user wrote come here: AI-written ones stop earlier.
-    if (!await pressByWords(page, ["无需声明"])) throw fail("GEO_FORM_CHANGED", "没有找到搜狐号的创作声明，这篇没有发布。");
-    const chosen = await page.evaluate(`[...document.querySelectorAll("section#info-source-signature label, label[role=radio]")].some((el) => (el.innerText || "").trim() === "无需声明" && (el.getAttribute("aria-checked") === "true" || el.querySelector("input:checked") || /checked/i.test(el.className)))`);
-    if (!chosen) throw fail("GEO_FORM_CHANGED", "没能选中搜狐号的「无需声明」，这篇没有发布。");
+    // The required creation statement says what the article is.
+    const statement = job.aiWritten ? "含有AI生成内容" : "无需声明";
+    if (!await pressByWords(page, [statement])) throw fail("GEO_FORM_CHANGED", `没有找到搜狐号的「${statement}」声明，这篇没有发布。`);
+    const chosen = await page.evaluate(`[...document.querySelectorAll("section#info-source-signature label, label[role=radio]")].some((el) => (el.innerText || "").trim() === ${JSON.stringify(statement)} && (el.getAttribute("aria-checked") === "true" || el.querySelector("input:checked") || /checked/i.test(el.className)))`);
+    if (!chosen) throw fail("GEO_FORM_CHANGED", `没能选中搜狐号的「${statement}」，这篇没有发布。`);
     return { read: async () => ({ title: await page.valueOf(title), body: await page.valueOf(editor) }) };
   },
-  publishButton: BUTTON("发布"),
+  publishButton: `document.querySelector("li.publish-report-btn.active:not(.disable-button)")`,
   confirmButton: BUTTON("确认发布"),
   published: listedOrSaid(/mp\.sohu\.com\/mpfe\/v4\/contentManagement\/(?!news\/addarticle)/, "搜狐号")
 };
@@ -205,23 +207,55 @@ const SOHU = {
 const BAIJIAHAO = {
   id: "baijiahao", name: "百家号", titleLimit: 64, trial: true, needsCover: true,
   home: "https://baijiahao.baidu.com/", hosts: ["baidu.com"], loginCookies: ["BDUSS", "BDUSS_BFESS"],
-  editorUrl: "https://baijiahao.baidu.com/builder/rc/edit?type=news",
+  // The edit address sends a signed-in account back to the home page; the site's own 发布作品 entry opens the editor (2026-11-02).
+  editorUrl: "https://baijiahao.baidu.com/",
+  async enter(page) {
+    if (/\/builder\/rc\/edit/.test(String(await page.url()))) return;
+    const entry = await pointOf(page, `document.querySelector("#home-publish-btn")`);
+    if (!entry) throw fail("GEO_FORM_CHANGED", "没有找到百家号的「发布作品」入口，平台页面可能和预想的不同。");
+    await page.mouse(entry);
+    await sleep(8000);
+    if (!/\/builder\/rc\/edit/.test(String(await page.url()))) throw fail("GEO_FORM_CHANGED", "点了「发布作品」没有进入写文章页面。");
+  },
   loginRequired: (url) => /passport\.baidu|\/login/.test(url),
   holdText: /百度安全验证|请完成下方验证/,
   blocked: (_url, text) => /注册百家号|申请入驻/.test(text) ? "这个账号还没有开通百家号，请先到百家号后台完成注册和认证。" : "",
   async fill(page, job) {
-    const title = await titleField(page, this.name);
+    const findTitle = () => page.find((node) => node.localName === "div" && attr(node, "contenteditable") === "true" && /-editor\b/.test(String(attr(node, "class") || "")));
+    let title = await findTitle();
+    for (let tries = 0; !title && tries < 15; tries++) { await sleep(1000); title = await findTitle(); }
+    if (!title) throw fail("GEO_FORM_CHANGED", "没有找到百家号的标题输入框，平台页面可能和预想的不同。");
     await page.type(title, job.title);
     // The article body is the body of an iframe.
     const editor = await page.find((node) => node.localName === "body" && attr(node, "contenteditable") === "true");
     if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到百家号的正文输入框，平台页面可能和预想的不同。");
     await typeBody(page, editor, job.body);
     await this.setCover(page, job.coverFile);
+    // AI-written articles say so, on the page's own 创作声明.
+    if (job.aiWritten) {
+      const label = await page.find((node) => node.localName === "label" && /采用AI生成内容/.test(textOf(node)));
+      if (!label) throw fail("GEO_FORM_CHANGED", "没有找到百家号的「采用AI生成内容」声明，这篇没有发布。");
+      if (!String(attr(label, "class") || "").includes("checkbox-wrapper-checked")) await page.click(label);
+      await sleep(500);
+      const on = await page.find((node) => node.localName === "label" && /采用AI生成内容/.test(textOf(node)) && String(attr(node, "class") || "").includes("checkbox-wrapper-checked"));
+      if (!on) throw fail("GEO_FORM_CHANGED", "没能勾选百家号的「采用AI生成内容」，这篇没有发布。");
+    }
     return { read: async () => ({ title: await page.valueOf(title), body: await page.valueOf(editor) }) };
   },
   // A cover is required. A missing step stops here, before the publish button is touched.
   async setCover(page, file) {
-    const opened = await page.evaluate(`(() => { const el = document.querySelector("#bjhNewsCover [class*='item']") || document.querySelector("#bjhNewsCover"); if (!el) return false; el.scrollIntoView({ block: "center" }); el.click(); return true; })()`);
+    // A scripted click does not open the dialog; a real one on 选择封面 does (2026-11-02). 点击本地上传 is left alone:
+    // it would open a Windows file dialog, and the dialog's own input takes the file directly.
+    let opened = await pointOf(page, `[...document.querySelectorAll("#bjhNewsCover *")].filter((el) => (el.innerText || "").trim() === "选择封面" && el.getClientRects().length).at(-1)`);
+    if (opened) await page.mouse(opened);
+    else {
+      // A restored draft already has a cover, possibly another article's: its 更换 button shows on hovering over it.
+      const held = await pointOf(page, `document.querySelector("#bjhNewsCover img")`);
+      if (held) { await page.mouse(held, false); await sleep(800); }
+      const change = await pointOf(page, `[...document.querySelectorAll("#bjhNewsCover button")].find((el) => (el.innerText || "").trim() === "更换" && el.getClientRects().length)`);
+      if (change) await page.mouse(change);
+      opened = change;
+    }
     if (!opened) throw fail("GEO_FORM_CHANGED", "没有找到百家号的封面入口，平台页面可能和预想的不同。");
     await sleep(1500);
     const view = await page.tree();
@@ -231,7 +265,7 @@ const BAIJIAHAO = {
     let pressed = false;
     for (let tries = 0; !pressed && tries < 20; tries++) {
       await sleep(1000);
-      pressed = await page.evaluate(`(() => { const el = [...document.querySelectorAll(".cheetah-modal button")].find((item) => (item.innerText || "").replace(/\\s/g, "") === "确定" && item.getClientRects().length && !item.disabled); if (!el) return false; el.click(); return true; })()`);
+      pressed = await page.evaluate(`(() => { const el = [...document.querySelectorAll(".cheetah-modal button")].find((item) => /^确定/.test((item.innerText || "").trim()) && item.getClientRects().length && !item.disabled); if (!el) return false; el.click(); return true; })()`);
     }
     let shown = false;
     for (let tries = 0; pressed && !shown && tries < 10; tries++) {
@@ -240,7 +274,7 @@ const BAIJIAHAO = {
     }
     if (!shown) throw fail("GEO_FORM_CHANGED", "百家号的封面没有传成功，这篇没有发布。");
   },
-  publishButton: BUTTON("发布"),
+  publishButton: `document.querySelector('[data-testid="publish-btn"]')`,
   confirmButton: BUTTON("确认发布"),
   published: listedOrSaid(/baijiahao\.baidu\.com\/builder\/rc\/(?!edit)/, "百家号")
 };
@@ -276,11 +310,11 @@ const GEO_ACCOUNT_PLATFORMS = {
   doubao: { name: DOUBAO.name, home: DOUBAO.url, hosts: DOUBAO.hosts, loginCookies: DOUBAO.loginCookies }
 };
 
-const coverHtml = (title) => `<!doctype html><meta charset="utf-8"><body style="margin:0;width:900px;height:560px;display:flex;align-items:center;padding:0 70px;box-sizing:border-box;background:linear-gradient(135deg,#fff5f6,#ffe3e6);font-family:'Microsoft YaHei',sans-serif"><h1 style="margin:0;font-size:56px;line-height:1.4;color:#1f2937">${String(title).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</h1></body>`;
+const coverHtml = (title) => `<!doctype html><meta charset="utf-8"><body style="margin:0;width:800px;height:600px;display:flex;align-items:center;padding:0 70px;box-sizing:border-box;background:linear-gradient(135deg,#fff5f6,#ffe3e6);font-family:'Microsoft YaHei',sans-serif"><h1 style="margin:0;font-size:50px;line-height:1.4;color:#1f2937">${String(title).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</h1></body>`;
 async function makeCover(page, title) {
   await page.navigate(`data:text/html;charset=utf-8,${encodeURIComponent(coverHtml(title))}`);
   await sleep(800);
-  const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 900, height: 560, scale: 1 } });
+  const { data } = await page.send("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 } });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "geo-cover-")), file = path.join(dir, "cover.png");
   fs.writeFileSync(file, Buffer.from(data, "base64"));
   return { file, remove: () => fs.rmSync(dir, { recursive: true, force: true }) };
@@ -301,7 +335,6 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   async function publish({ platform, profileDir, title, body, aiWritten = false, shouldStop = () => false, onDetail = () => {}, beforeClick = () => {} }) {
     const driver = DRIVERS[platform];
     if (!driver) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个平台还没开放发布。");
-    if (driver.trial && aiWritten) throw fail("GEO_TRIAL_AI", `${driver.name}的 AI 内容标注方式还没确认，暂时只能发你自己写的文章。`);
     return withPage(profileDir, async (page) => {
       const job = { title, body, aiWritten };
       const cover = driver.needsCover ? await makeCover(page, title) : null;
@@ -315,6 +348,7 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       if (driver.loginRequired(String(await page.url()))) throw fail("GEO_LOGIN_REQUIRED", `${driver.name}需要重新扫码登录。`);
       const refusal = driver.blocked?.(String(await page.url()), await shownText(page));
       if (refusal) throw fail("GEO_ACCOUNT_NOT_READY", refusal);
+      await driver.enter?.(page);
       onDetail("填写标题和正文");
       const form = await driver.fill(page, job);
       if (!sameArticle(await form.read(), job)) throw fail("GEO_FORM_MISMATCH", `${driver.name}页面上的内容和你确认的不一致，没有发布。`);
