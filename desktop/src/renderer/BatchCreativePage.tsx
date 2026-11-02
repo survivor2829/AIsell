@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSlowFlag } from "./use-slow-flag";
 import { AssetPicker, AssetPreview, AssetThumb } from "./BatchAssets";
 import { Asset, Batch, Candidate, Collection, Group, Groups, batchStatus, callBatch, groupNames, videoUrl } from "./batch-studio-api";
 import "./BatchCreativePage.css";
@@ -45,6 +46,8 @@ function scriptBody(candidate: Candidate) {
 }
 
 
+const RESOURCE_READING = "正在读取";
+
 export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, onOpenMaterials, onOpenDiagnostics }: Props) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -74,7 +77,9 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const [editing, setEditing] = useState<Candidate | null>(null);
   const [busy, setBusy] = useState(false);
   const [restoring, setRestoring] = useState(true);
-  const [resources, setResources] = useState<Record<string, string>>({ 素材: "正在读取", 制作记录: "正在读取", 素材集: "正在读取", 声音: "正在读取", 品牌: "正在读取" });
+  const [resources, setResources] = useState<Record<string, string>>({ 素材: RESOURCE_READING, 制作记录: RESOURCE_READING, 素材集: RESOURCE_READING, 声音: RESOURCE_READING, 品牌: RESOURCE_READING });
+  // Reading is routine and does not lock the page: only failures, or a read that is really slow, get a note.
+  const slowResources = useSlowFlag(Object.values(resources).includes(RESOURCE_READING));
   const [moreBatches, setMoreBatches] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -464,11 +469,13 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     ? Math.max(0, Math.floor((now - Date.parse(activity.provider_started_at)) / 1000))
     : null;
   const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
+  const resourceFailures = Object.entries(resources).filter(([, message]) => message && message !== RESOURCE_READING);
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
     <header className="batch-page-header"><div><h1>线索视频混剪</h1><p>把零散素材，做成讲清卖点的获客短视频。</p></div><div className="batch-header-actions"><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || restoring || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}><Plus size={15} />新建视频</button></div></header>
     <ExampleBanner topic="ai-editing" />
     {restoring && <p className="batch-hint" role="status">正在恢复上次编辑；可以继续切换页面。</p>}
-    {Object.entries(resources).some(([, message]) => message) && <div className="batch-hint" role="status">{Object.entries(resources).filter(([, message]) => message).map(([name, message]) => <p key={name}>{name}：{message}</p>)}</div>}
+    {slowResources && <p className="batch-hint" role="status">资料还在读取，不影响继续操作。</p>}
+    {resourceFailures.length > 0 && <div className="batch-hint" role="status">{resourceFailures.map(([name, message]) => <p key={name}>{name}：{message}</p>)}</div>}
     {visualFlow && <CreationSteps labels={flowSteps.map(item => item.label)} current={Math.max(0, flowSteps.findIndex(item => item.step === (flowStep === 1 ? 2 : flowStep)))} disabled={flowSteps.map(item => !item.enabled || submitting)} onChange={index => setFlowView(flowSteps[index].step)} />}
     <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving || restoring} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); const owner = ++draftOwner.current; const next = await callBatch<Batch>("get", { batch_id: id }); if (mounted.current && owner === draftOwner.current) load(next); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>{moreBatches && <button disabled={busy || saving} onClick={() => void run(() => refreshBatches(batches.length))}>加载更早记录</button>}
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {

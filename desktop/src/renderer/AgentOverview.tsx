@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type Rea
 import { Play } from "lucide-react";
 import { AGENT_ROLE_ORDER, AGENT_ROLE_IDENTITIES, appearanceFor, characterAsset, type AgentRoleKey, type RolePreferences } from "./role-appearance";
 import { gain, overviewStats, type OverviewStats } from "./overview-stats";
+import { HomeReel } from "./HomeReel";
 import "./AgentOverview.css";
 
 type Loose = Record<string, unknown>;
@@ -77,10 +78,7 @@ export function AgentOverview({ preferences, onOpenRole, onStart, workflowTasks 
       <dl className="home-kpis">
         {kpis.map((kpi) => <div key={kpi.label}><dt>{kpi.label}</dt><dd><b>{kpi.value}</b><small>{kpi.unit}</small></dd>{kpi.note && <i>{kpi.note}</i>}</div>)}
       </dl>
-      <div className="home-reel" aria-hidden="true">
-        <div className="home-phone is-small"><img src="./video-examples/cc1-pro.jpg" alt="" /></div>
-        <div className="home-phone"><video src="./video-examples/lead-mix.mp4" poster="./video-examples/lead-mix.jpg" autoPlay muted loop playsInline /><span>示例成片</span></div>
-      </div>
+      <HomeReel />
     </section>
     <section className="home-crew-wrap" aria-label="6 位 AI 员工">
     <div className="home-crew-title"><h2>你的 6 位 AI 员工</h2><span>点一位，让她开始干活</span></div>

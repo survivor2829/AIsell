@@ -59,4 +59,5 @@ html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root 
 .xiaoxi-buddy[data-mood="sleep"] .xs-arm.l { transform: rotate(10deg); } .xiaoxi-buddy[data-mood="sleep"] .xs-arm.r { transform: rotate(-10deg); }
 .xiaoxi-buddy .xs-zz { animation: xs-zz 2.4s ease-out infinite; } .xiaoxi-buddy .xs-zz.b { animation-delay: 1.2s; }
 @keyframes xs-zz { 0% { transform: translate(0, 0); opacity: 0 } 30% { opacity: 1 } 100% { transform: translate(12px, -22px); opacity: 0 } }
+.xiaoxi-shell.is-resting * { animation-play-state: paused !important; }
 @media (prefers-reduced-motion: reduce) { .xiaoxi-shell *, .xiaoxi-shell *::before { animation: none !important; transition: none !important; } }

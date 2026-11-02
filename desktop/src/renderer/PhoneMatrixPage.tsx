@@ -12,7 +12,7 @@ type Phone = { serial: string; state: PhoneState; number: number | null; name: s
 type MatrixState = { adb: boolean; error: string; laixiRunning: boolean; groups: string[]; devices: Phone[] };
 type Result = { ok: boolean; state?: MatrixState; error?: string };
 type PhoneMatrixApi = BatchApi & {
-  status: () => Promise<Result>; refresh: () => Promise<Result>;
+  status: () => Promise<Result>; refresh: () => Promise<Result>; checkPhones: (on: boolean) => Promise<Result>;
   update: (serial: string, fields: Partial<Pick<Phone, "name" | "note" | "group">> & { number?: number }) => Promise<Result>;
   forget: (serial: string) => Promise<Result>;
   watch: (serials: string[], main: string) => Promise<Result>;
@@ -44,7 +44,8 @@ export function PhoneMatrixPage() {
     let active = true;
     const off = api.onUpdate((next) => { if (active) setState(next); });
     void api.status().then((result) => { if (active && result.state) setState(result.state); });
-    return () => { active = false; off(); };
+    void api.checkPhones(true);
+    return () => { active = false; off(); void api.checkPhones(false); };
   }, [api]);
 
   const devices = state?.devices || [];

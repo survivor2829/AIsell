@@ -15,6 +15,8 @@ function registerPhoneMatrixIpc({ ipcMain, dialog, shell, dataDir, screenshotDir
   const fromPage = (event) => { const trusted = getMainWindow()?.webContents; return Boolean(trusted && event.sender === trusted); };
   const methods = {
     status: () => matrix.snapshot(),
+    // Checking for phones starts tasklist and adb every 3 seconds, so it runs only while the page is open.
+    checkPhones: (payload) => { if (payload?.on === true) matrix.start(); else matrix.stop(); return matrix.snapshot(); },
     refresh: async () => { await matrix.poll(); return matrix.snapshot(); },
     update: (payload) => matrix.update(String(payload?.serial || ""), {
       ...(payload?.name !== undefined ? { name: payload.name } : {}), ...(payload?.note !== undefined ? { note: payload.note } : {}),
@@ -68,7 +70,6 @@ function registerPhoneMatrixIpc({ ipcMain, dialog, shell, dataDir, screenshotDir
     try { return { ok: true, state: await method(payload, event) }; }
     catch (error) { return { ok: false, code: error.code || "PHONE_OPERATION_FAILED", error: /^PHONE_/.test(String(error.code || "")) ? error.message : "操作未完成，请稍后重试。" }; }
   });
-  matrix.start();
   return { matrix, screens, batch, dispose() { matrix.stop(); screens.stopAll(); batch.stop(); ipcMain.removeListener("phone-matrix:input", onInput); channels.forEach((channel) => ipcMain.removeHandler(channel)); } };
 }
 

@@ -53,6 +53,31 @@ assert.equal(findAdb({ env: {}, resourcesPath: "" }, () => false), "");
   assert.throws(() => matrix.forget("P1"), { code: "PHONE_STILL_CONNECTED" });
   assert.equal(matrix.forget("P2").devices.some((d) => d.serial === "P2"), false);
   // 没有 ADB、来喜在运行：都告诉用户。
+  // 手机页没打开时不查手机：每 3 秒起 tasklist 和 adb，低配电脑上是实打实的负担（2026-11-02 实测）。
+  {
+    const { registerPhoneMatrixIpc } = require("./phone-matrix-ipc.cjs");
+    const handlers = new Map(), sender = { send() {} };
+    const ipcMain = { handle: (name, fn) => handlers.set(name, fn), removeHandler: (name) => handlers.delete(name), removeHandle: (name) => handlers.delete(name), on() {}, removeListener() {} };
+    let adbCalls = 0, ticker = null;
+    const setTimer = (fn) => { ticker = fn; return { unref() {} }; };
+    const clearTimer = () => { ticker = null; };
+    const registered = registerPhoneMatrixIpc({ ipcMain, dialog: {}, shell: {}, dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "phone-matrix-ipc-")), screenshotDir: os.tmpdir(), getMainWindow: () => ({ isDestroyed: () => false, webContents: sender }),
+      options: { adbPath: "adb.exe", isLaixiRunning: () => false, setTimer, clearTimer, run: async () => { adbCalls += 1; return "List of devices attached\n"; } } });
+    const call = (name, payload) => handlers.get(`phone-matrix:${name}`)({ sender }, payload);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    await settle();
+    assert.deepEqual([adbCalls, ticker], [0, null], "软件打开时不查手机");
+    assert.equal((await call("checkPhones", { on: true })).ok, true);
+    await settle();
+    assert.equal(adbCalls, 1, "打开手机页马上查一次");
+    assert.equal(typeof ticker, "function", "手机页开着时定时查，插上手机能自动出现");
+    await call("checkPhones", { on: false });
+    assert.equal(ticker, null, "离开手机页就不再查");
+    // 屏幕推流用的是 watch，两个能力不能共用一个名字（写重过一次，后者把前者盖掉）。
+    assert.deepEqual(Object.keys(require("./phone-matrix-preload.cjs").createPhoneMatrixApi({ invoke: async () => ({}) })).filter((name) => name === "checkPhones" || name === "watch").sort(), ["checkPhones", "watch"]);
+    registered.dispose();
+
+  }
   const none = createPhoneMatrix({ dataDir, adbPath: "", run, isLaixiRunning: () => true, setTimer: () => null, clearTimer: () => {} });
   await none.poll();
   assert.equal(none.snapshot().adb, false); assert.match(none.snapshot().error, /ADB/); assert.equal(none.snapshot().laixiRunning, true);

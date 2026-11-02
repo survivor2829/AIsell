@@ -36,8 +36,13 @@ const CHATTER = [
 const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
 const greetingFor = (title: string) => (GREETINGS.find(([pattern]) => pattern.test(title)) || GREETINGS[GREETINGS.length - 1])[1];
 
+const LIVELY_MS = 8000, REST_MS = 22000;
+
 export function XiaoxiSprite({ workflow, activity, alert }: { workflow: WorkflowController; activity: SpriteActivity | null; alert: string }) {
   const api = window.xiaoxiWorkflow;
+  const [resting, setResting] = useState(false);
+  const restingNow = useRef(false);
+  restingNow.current = resting;
   const [line, setLine] = useState<Line | null>(null);
   const [greeting, setGreeting] = useState("");
   const [typed, setTyped] = useState("");
@@ -83,23 +88,36 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     setMood(next);
   }, [alert, line, greeting, activity]);
 
+  // A floating window that never stops moving costs about a tenth of a core all day (measured 2026-11-02), which low-end
+  // computers feel. With nothing going on it moves for a while, then rests; anything happening wakes it at once.
+  const calm = !alert && !line && !greeting && !activity;
+  useEffect(() => {
+    if (!calm) { setResting(false); return; }
+    let timer = 0;
+    const turn = (rest: boolean) => { setResting(rest); timer = window.setTimeout(() => turn(!rest), rest ? REST_MS : LIVELY_MS); };
+    timer = window.setTimeout(() => turn(true), LIVELY_MS);
+    return () => window.clearTimeout(timer);
+  }, [calm]);
+
   // Alive: blinks at uneven intervals, glances around, tilts its head, wanders a little.
   useEffect(() => {
     let alive = true;
     const timers: number[] = [];
     const later = (fn: () => void, ms: number) => timers.push(window.setTimeout(() => alive && fn(), ms));
     const doBlink = () => {
+      later(doBlink, 1800 + Math.random() * 3800);
+      if (restingNow.current) return;
       setBlink(true); later(() => setBlink(false), 110);
       if (Math.random() < .25) later(() => { setBlink(true); later(() => setBlink(false), 100); }, 260);
-      later(doBlink, 1800 + Math.random() * 3800);
     };
     const glance = () => {
+      if (restingNow.current) { later(glance, 2000); return; }
       setLook({ x: (Math.random() - .5) * 10, y: (Math.random() - .5) * 5 });
       setTilt(Math.random() < .35 ? (Math.random() - .5) * 10 : 0);
       later(glance, 900 + Math.random() * 2200);
     };
     const wander = () => {
-      if (!drag.current) setRoam({ x: (Math.random() - .5) * 22, y: (Math.random() - .5) * 26 });
+      if (!drag.current && !restingNow.current) setRoam({ x: (Math.random() - .5) * 22, y: (Math.random() - .5) * 26 });
       later(wander, 3600 + Math.random() * 3000);
     };
     // Small talk now and then, never over something important.
@@ -140,7 +158,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     if (!result?.moved) showMain();
   };
 
-  return <main className="floating-shell workflow-floating-shell xiaoxi-shell">
+  return <main className={`floating-shell workflow-floating-shell xiaoxi-shell${resting ? " is-resting" : ""}`}>
     <div className="xiaoxi-roam" style={{ transform: `translate(${roam.x}px, ${roam.y}px)` }}>
       {(message || activity) && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}`} key={message?.text || activity?.title} role="status" aria-live="polite"
         onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)}>
