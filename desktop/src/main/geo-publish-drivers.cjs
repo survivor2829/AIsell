@@ -1,6 +1,6 @@
 // GEO: publishing an article on a media platform's own editor and asking Doubao a question, in the
-// account's own Chrome profile. A channel opens after a real article went out on a real account, or as a marked
-// trial at the user's request (`trial`). Every step reports what it could not find instead of guessing; a verification is left to
+// account's own Chrome profile. A channel opens after a real article went out on a real account, or at the
+// user's request (Sohu, 2026-11-02). Every step reports what it could not find instead of guessing; a verification is left to
 // the person at the window.
 const fs = require("node:fs");
 const os = require("node:os");
@@ -167,7 +167,7 @@ const listedOrSaid = (pattern, name) => (url, text, job) => {
 const BUTTON = (label) => `[...document.querySelectorAll("button,[role=button]")].find((el) => (el.innerText || "").trim() === ${JSON.stringify(label)} && el.getClientRects().length)`;
 
 const SOHU = {
-  id: "sohu", name: "搜狐号", titleLimit: 72, trial: true,
+  id: "sohu", name: "搜狐号", titleLimit: 72,
   // ppinf is only the Sohu passport: acting on it interrupted the sign-in and the site still said 登录 (2026-11-02).
   // The site's own token comes after it.
   home: "https://mp.sohu.com/", hosts: ["sohu.com"], loginCookies: ["umab_access_token"],
@@ -205,7 +205,7 @@ const SOHU = {
 };
 
 const BAIJIAHAO = {
-  id: "baijiahao", name: "百家号", titleLimit: 64, trial: true, needsCover: true,
+  id: "baijiahao", name: "百家号", titleLimit: 64, needsCover: true,
   home: "https://baijiahao.baidu.com/", hosts: ["baidu.com"], loginCookies: ["BDUSS", "BDUSS_BFESS"],
   // The edit address sends a signed-in account back to the home page; the site's own 发布作品 entry opens the editor (2026-11-02).
   editorUrl: "https://baijiahao.baidu.com/",
@@ -296,9 +296,10 @@ const DOUBAO = {
 const GEO_CHANNELS = [
   // Confirmed by a real article on 2026-11-02.
   { id: "toutiao", name: "今日头条", available: true, titleLimit: TOUTIAO.titleLimit },
-  // Open at the user's request (2026-11-02) before any real article went through; shown as trial.
-  { id: "baijiahao", name: "百家号", available: true, trial: true, titleLimit: BAIJIAHAO.titleLimit },
-  { id: "sohu", name: "搜狐号", available: true, trial: true, titleLimit: SOHU.titleLimit },
+  // Baijiahao: confirmed by a real article on 2026-11-02. Sohu: open without the trial mark at the user's request
+  // (2026-11-02) while its account's real-name check was pending; its results are still left for the user to settle.
+  { id: "baijiahao", name: "百家号", available: true, titleLimit: BAIJIAHAO.titleLimit },
+  { id: "sohu", name: "搜狐号", available: true, titleLimit: SOHU.titleLimit },
   // Confirmed by a real article on 2026-11-02.
   { id: "zhihu", name: "知乎", available: true, titleLimit: ZHIHU.titleLimit }
 ];
