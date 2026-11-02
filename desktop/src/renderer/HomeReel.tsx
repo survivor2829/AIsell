@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-// 首页示例成片轮播（用户 2026-11-02）：产品效果、数字人、线索混剪交替播放。
+// 首页示例成片轮播（用户 2026-11-02）：产品效果、线索混剪交替播放；用户决定本人数字人先不上首页。
 // 文件是首页专用的 15 秒 480p 无声短片；任何时候只解码一个视频，另一块手机只放下一条的封面图，低配电脑也跑得动。
-const CLIPS = ["cc1-pro", "digital-human", "lead-mix"] as const;
+const CLIPS = ["cc1-pro", "lead-mix"] as const;
 const clip = (name: string, kind: "mp4" | "jpg") => `./home-reel/${name}.${kind}`;
 // 不放视频时封面图也照样轮换。
 const STILL_MS = 6000;
