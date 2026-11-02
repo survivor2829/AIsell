@@ -280,6 +280,8 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual([], self.events)
 
     def test_insufficient_unique_footage_stops_before_production_is_created(self):
+        # Strict review still needs unique pictures; the default mode replays them (see below).
+        self.strict()
         state = self.domain._load(self.batch['batch_id'])
         state['settings']['minimum_duration_seconds'] = 30
         state['available_shots'] = [{
@@ -293,6 +295,53 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual('narrated_insufficient_unique_footage', error.exception.code)
         self.assertIn('最多可制作 0 条', error.exception.message)
         self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+
+    def test_default_mode_copy_longer_than_all_footage_replays_it(self):
+        # User decision 2026-11-02: whatever copy a customer brings makes a video, even past the footage.
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings']['minimum_duration_seconds'] = 15   # 5 s of footage: the old gate refused this
+        shots = [{'segment_id': f'only-{number}', 'asset_id': self.fixture.ids[0], 'source_start_ms': number * 2500,
+                  'source_end_ms': (number + 1) * 2500, 'target_duration_ms': 2500, 'content_signature': f'sig-{number}',
+                  'evidence_ref': f'only-{number}'}
+                 for number in range(2)]
+        state['available_shots'] = copy.deepcopy(shots)
+        self.domain._store(state)
+        narration = '这一段话比五秒素材长得多。' * 8   # about 36 s of speech over 5 s of footage
+        with patch.object(self.domain, '_phrase_budget_ms', side_effect=lambda batch, text: len(text.strip()) * 300), \
+             patch.object(self.domain, '_max_narration_chars', return_value=80):
+            state = self.domain._load(self.batch['batch_id'])
+            phrases = follow_script_phrases(self.domain, state, narration)
+            refs = [ref for phrase in phrases for ref in phrase['shot_ids']]
+            self.assertEqual(narration, ''.join(phrase['text'] for phrase in phrases))
+            self.assertEqual(len(refs), len(set(refs)), 'every placed shot has its own id')
+            index = {shot['segment_id']: shot for shot in state['available_shots']}
+            placed = [index[ref] for ref in refs]
+            self.assertTrue(any(shot.get('replay_round') for shot in placed), 'later passes are marked replays')
+            self.assertGreaterEqual(sum(shot['target_duration_ms'] for shot in placed), len(narration.strip()) * 300)
+            for shot in placed:
+                self.assertEqual(self.fixture.ids[0], shot['asset_id'])
+                original = shot.get('replay_of') or shot['segment_id']
+                self.assertEqual(next(s for s in shots if s['segment_id'] == original)['source_start_ms'], shot['source_start_ms'])
+            # The normalizer's no-repeat checks accept the marked replays as one candidate.
+            candidate = self.domain._normalize_candidate({'title': '重播', 'shot_ids': refs, 'phrases': phrases}, state, [])
+            self.assertEqual(refs, [shot['segment_id'] for shot in candidate['shots']])
+        # And the up-front footage gate lets it through in the default mode, not in strict review.
+        from content_engine.narrated_production import _require_unique_footage_capacity
+        _require_unique_footage_capacity(state, 1)
+        strict = {**state, 'settings': {**state['settings'], 'strict_visual_review': True}}
+        with self.assertRaises(ContentEngineError):
+            _require_unique_footage_capacity(strict, 1)
+
+    def test_replays_do_not_hide_a_real_repeat_inside_one_pass(self):
+        state = self.domain._load(self.batch['batch_id'])
+        shot = {'segment_id': 'one', 'asset_id': self.fixture.ids[0], 'source_start_ms': 0, 'source_end_ms': 3000,
+                'target_duration_ms': 3000, 'content_signature': 'sig', 'evidence_ref': 'one'}
+        overlapping = {**shot, 'segment_id': 'two', 'source_start_ms': 1000, 'source_end_ms': 4000, 'content_signature': 'sig2', 'evidence_ref': 'two'}
+        state['available_shots'] = [shot, overlapping]
+        with self.assertRaises(ContentEngineError) as error:
+            self.domain._normalize_candidate({'title': 'x', 'shot_ids': ['one', 'two'],
+                                              'phrases': [{'text': '一句。', 'shot_ids': ['one', 'two']}]}, state, [])
+        self.assertIn('同一作品不能重复画面区间', error.exception.message)
 
     def test_missing_analysis_defers_unique_footage_gate_until_production(self):
         state = self.domain._load(self.batch['batch_id'])
@@ -1362,7 +1411,7 @@ class NarratedProductionTests(unittest.TestCase):
              patch.object(self.domain, '_max_narration_chars', return_value=80):
             groups = [phrase['shot_ids'] for phrase in follow_script_phrases(self.domain, uneven, '甲甲甲甲甲。甲甲。甲甲。甲。')]
         self.assertEqual([['s0', 's1'], ['s3'], ['s5'], ['s6']], groups)
-        # Shortage: two short windows. The job waits for the user before any voice or model call.
+        # Shortage: two short windows. The default mode replays them instead of stopping (2026-11-02).
         state = self.domain._load(self.batch['batch_id'])
         self.draft_options(state)
         state['available_shots'] = state['available_shots'][:1] + state['available_shots'][3:4]
@@ -1373,12 +1422,10 @@ class NarratedProductionTests(unittest.TestCase):
             result = self.run_selection(self.request(first_count=1))
         for name, mock in mocks.items():
             self.assertEqual(0, mock.call_count, name)
-        self.assertEqual('needs_attention', result['status'])
-        self.assertIn('素材总时长不够配完这段口播', result['reasons'][0])
-        self.assertIn('请补充素材或缩短文案', result['reasons'][0])
-        self.assertEqual(('queued', 'narrated_insufficient_unique_footage'),
-                         (result['production_jobs'][0]['status'], result['production_jobs'][0]['error_code']))
-        self.assertFalse(any(kind == 'render' for kind, _ in self.events))
+        self.assertNotEqual('narrated_insufficient_unique_footage', result['production_jobs'][0].get('error_code'), result.get('reasons'))
+        self.assertTrue(any(kind == 'render' for kind, _ in self.events), result.get('reasons'))
+        saved = self.domain._load(self.batch['batch_id'])
+        self.assertTrue(any(shot.get('replay_round') for shot in saved['candidates'][0]['shots']))
 
     def test_long_confirmed_copy_uses_more_than_forty_unique_windows(self):
         state = self.domain._load(self.batch['batch_id'])
@@ -1879,7 +1926,7 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual(original, dict(self.domain.d._auto_mix_run_row(run_id=first)))
 
     def test_variation_capacity_is_checked_inside_the_rewrite_request(self):
-        """An overlong rewrite is corrected in the same request, not queued as needs_attention after the paid call."""
+        """A rewrite a little past the footage is kept: the default mode replays footage (2026-11-02)."""
         state = self.domain._load(self.batch['batch_id'])
         self.draft_options(state)
         self.footage(state, durations=(5000, 5000))
@@ -1903,7 +1950,7 @@ class NarratedProductionTests(unittest.TestCase):
                 {'script_id': self.options[0]['candidate_id'], 'revision': self.options[0]['revision'], 'count': 2}]})
         self.assertEqual(['文案改写'], calls)
         self.assertEqual(['completed', 'completed'], [job['status'] for job in result['production_jobs']], result.get('reasons'))
-        self.assertEqual([source, '第1个问题怎么弄懂？'], rendered)
+        self.assertEqual([source, '第1个问题我想弄懂吗？'], rendered)
 
     def test_variation_avoids_published_sequences_before_any_voice_request(self):
         state = self.domain._load(self.batch['batch_id'])

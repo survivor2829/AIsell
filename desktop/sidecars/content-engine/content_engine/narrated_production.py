@@ -127,7 +127,8 @@ def _available_unique_duration_ms(batch):
 
 def _require_unique_footage_capacity(batch, requested_count):
     minimum_seconds = int(batch.get('settings', {}).get('minimum_duration_seconds') or 0)
-    if minimum_seconds <= 0:
+    # The default mode replays footage when the copy outruns it; only strict review needs unique pictures.
+    if minimum_seconds <= 0 or follows_script(batch):
         return
     available_ms = _available_unique_duration_ms(batch)
     maximum_count = available_ms // (minimum_seconds * 1000)
@@ -139,7 +140,7 @@ def _require_source_duration_upper_bound(domain, batch, requested_count):
     """Reject a video-only batch when even its raw duration cannot cover the target."""
     minimum_seconds = int(batch.get('settings', {}).get('minimum_duration_seconds') or 0)
     ids = set(asset for group in batch['groups'].values() for asset in group)
-    if not minimum_seconds or not ids:
+    if not minimum_seconds or not ids or follows_script(batch):
         return
     rows = [domain.d._asset_row(asset_id) for asset_id in ids]
     if any(row['media_kind'] != 'video' or not row['duration_ms'] for row in rows):
@@ -367,6 +368,37 @@ def confirmed_narration_units(domain, batch, narration):
             for number, text in enumerate(units)]
 
 
+MAX_REPLAY_ROUNDS = 12
+
+
+def replay_footage(batch, pool, needed_ms):
+    """Copy longer than all the footage (user decision 2026-11-02: it still makes a video).
+
+    Each further pass over the same pictures is a marked replay shot of its own: a new
+    segment id, ``replay_round``, and the same source range. The no-repeat checks still hold
+    inside each pass; a pass starts elsewhere in the footage so it does not open the same way.
+    """
+    total = sum(int(shot['target_duration_ms']) for shot in pool)
+    if not pool or total <= 0:
+        return pool
+    # Packing paragraphs into whole shots leaves gaps, so one pass more than the bare ratio.
+    rounds = min(MAX_REPLAY_ROUNDS, max(1, math.ceil(needed_ms / total)))
+    known = {shot['segment_id'] for shot in batch.get('available_shots', [])}
+    extended = list(pool)
+    for number in range(1, rounds + 1):
+        turn = (len(pool) * number) // (rounds + 1)
+        for shot in pool[turn:] + pool[:turn]:
+            replay = {**copy.deepcopy(shot), 'segment_id': f"{shot['segment_id']}~r{number}",
+                      'replay_of': shot['segment_id'], 'replay_round': number}
+            replay['evidence_ref'] = replay['segment_id']
+            if replay['segment_id'] not in known:
+                batch.setdefault('available_shots', []).append(replay)
+                known.add(replay['segment_id'])
+            extended.append(replay)
+    batch['_footage_replayed'] = True
+    return extended
+
+
 def follow_script_footage(batch):
     """Material order first, then source time; each visual window appears once."""
     from .narrated_batch import visual_key
@@ -434,6 +466,12 @@ def follow_script_phrases(domain, batch, narration, *, avoid=(), history=(), hea
         return groups
 
     tight = pack(0, 0)
+    if tight is None:
+        pool = replay_footage(batch, pool, sum(required))
+        prefix = [0]
+        for shot in pool:
+            prefix.append(prefix[-1] + int(shot['target_duration_ms']))
+        tight = pack(0, 0)
     require(tight is not None, 'narrated_insufficient_unique_footage',
             f'素材总时长不够配完这段口播：约需 {math.ceil(sum(required) / 1000)} 秒不重复画面，'
             f'现有约 {prefix[-1] // 1000} 秒；请补充素材或缩短文案。')
@@ -561,8 +599,9 @@ def arrange_follow_script(domain, batch, candidate):
                      'production_index', '_brief_review_hash', '_user_supplied') if key in candidate})
     candidate.clear()
     candidate.update(updated)
-    domain._activity(batch, '已按文案顺序安排镜头', phase='script', phase_label='按文案安排镜头',
-                     overall_percent=60, phase_percent=100)
+    replayed = any(shot.get('replay_round') for shot in candidate.get('shots', []))
+    domain._activity(batch, '素材比文案短，部分画面会重复出现' if replayed else '已按文案顺序安排镜头',
+                     phase='script', phase_label='按文案安排镜头', overall_percent=60, phase_percent=100)
     domain._store(batch)
 
 

@@ -92,8 +92,15 @@ def validate_count(value):
 
 def visual_key(shot):
     # Fine crops of the same evidence window are not new footage.
-    return str(shot.get("content_signature") or shot.get("evidence_ref") or
-               canonical_hash([shot["asset_id"], shot["source_start_ms"], shot["source_end_ms"]]))
+    key = str(shot.get("content_signature") or shot.get("evidence_ref") or
+              canonical_hash([shot["asset_id"], shot["source_start_ms"], shot["source_end_ms"]]))
+    # A deliberate replay (copy longer than all the footage) is its own pass over the material.
+    return f"{key}#replay{shot['replay_round']}" if shot.get("replay_round") else key
+
+
+def same_pass(a, b):
+    """Two shots from the same material in the same pass: their source ranges must not overlap."""
+    return a["asset_id"] == b["asset_id"] and (a.get("replay_round") or 0) == (b.get("replay_round") or 0)
 
 
 def near_duplicate(shots, previous):
@@ -2848,7 +2855,7 @@ class NarratedBatchDomain:
                     continue
                 evidence = shot.get("source_evidence_ref")
                 compatible = [s for s in b["available_shots"]
-                              if s["asset_id"] == shot["asset_id"] and (
+                              if same_pass(s, shot) and (
                                   evidence and s.get("source_evidence_ref") == evidence
                                   or shot.get("description") and s.get("description") == shot["description"])]
                 start, end = shot["source_start_ms"], shot["source_end_ms"]
@@ -2864,12 +2871,12 @@ class NarratedBatchDomain:
                         break
                     start, end = left, right
                 following = [s["source_start_ms"] for s in shots
-                             if s["asset_id"] == shot["asset_id"]
+                             if same_pass(s, shot)
                              and s["source_start_ms"] > shot["source_start_ms"]]
                 if following:
                     end = min(end, min(following))
                 preceding = [s["source_end_ms"] for s in shots
-                             if s["asset_id"] == shot["asset_id"]
+                             if same_pass(s, shot)
                              and s["source_start_ms"] < shot["source_start_ms"]]
                 if preceding:
                     start = max(start, max(preceding))
@@ -2886,7 +2893,7 @@ class NarratedBatchDomain:
         selected_index = {s["segment_id"]: s for s in shots}
         for i, shot in enumerate(shots):
             for previous in shots[:i]:
-                overlap = (shot["asset_id"] == previous["asset_id"] and
+                overlap = (same_pass(shot, previous) and
                            shot["source_start_ms"] < previous["source_end_ms"] and previous["source_start_ms"] < shot["source_end_ms"])
                 require(not overlap and visual_key(shot) != visual_key(previous), "narrated_candidate_invalid", "同一作品不能重复画面区间。")
         duplicate_history = self._history(b["batch_id"]) if b.get("_preparing_scripts") else history
