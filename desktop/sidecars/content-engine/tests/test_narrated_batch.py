@@ -1755,6 +1755,71 @@ class NarratedBatchTests(unittest.TestCase):
         domain._activity(state, "处理已停止", overall_percent=60)
         self.assertAlmostEqual(0.14, progress(), msg="已结束的任务不再改进度")
 
+    def _analyse_two_materials(self, broken_error):
+        """Two materials; the first cannot be analysed on this computer."""
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = {"batch_id": "batch-two", "project_id": "project-test", "version": 1, "status": "draft",
+                 "groups": {"opening": ["asset-broken"], "middle": ["asset-good"], "ending": []}}
+        snapshots = [{"asset_id": "asset-broken", "fingerprint": "b"}, {"asset_id": "asset-good", "fingerprint": "g"}]
+        rows = {"asset-broken": {"id": "asset-broken", "display_name": "DJI_0168.MP4", "duration_ms": 40128},
+                "asset-good": {"id": "asset-good", "display_name": "好素材.mp4", "duration_ms": 20000}}
+        cards_seen = []
+
+        def analyze(_task_id, asset_id, _profile, **_kwargs):
+            if asset_id == "asset-broken" and broken_error:
+                raise broken_error
+            return "analysis-v1"
+
+        def cards(ids, analysis_versions):
+            cards_seen.append((list(ids), dict(analysis_versions)))
+            return [{"asset_id": asset_id, "media_kind": "video", "quality_score": .9,
+                     "usable_intervals": [{"start_ms": 0, "end_ms": 5000, "quality_score": .9, "role": "process"}]}
+                    for asset_id in ids]
+
+        with patch.object(domain.d, "_auto_mix_asset_snapshots", return_value=snapshots), \
+                patch.object(domain.d, "_auto_mix_v2_analysis_profile", return_value={}), \
+                patch.object(domain.d, "_asset_row", side_effect=lambda asset_id: rows[asset_id]), \
+                patch.object(domain.d, "_analyze_asset", side_effect=analyze), \
+                patch.object(domain.d, "_auto_mix_asset_cards", side_effect=cards), \
+                patch.object(domain.d, "_should_stop", return_value=False), \
+                patch.object(domain, "_store"):
+            result = domain._analysis("task-two", batch, observe=False)
+        return batch, result, cards_seen
+
+    def test_one_unreadable_material_is_skipped_and_the_rest_make_the_video(self):
+        for code in ("analysis_failed", "analysis_stalled", "asset_path_unavailable", "media_metadata_unavailable"):
+            with self.subTest(code=code):
+                batch, result, cards = self._analyse_two_materials(ContentEngineError(code, "Conversion failed!"))
+                self.assertTrue(result)
+                self.assertEqual([(["asset-good"], {"asset-good": "analysis-v1"})], cards)
+                self.assertEqual({"asset-good"}, {shot["asset_id"] for shot in batch["available_shots"]})
+                self.assertEqual(["asset-good"], [item["asset_id"] for item in batch["_snapshots"]])
+                self.assertEqual(["DJI_0168.MP4"], batch["skipped_materials"])
+                self.assertIn("DJI_0168.MP4", batch["reasons"][-1])
+                self.assertNotIn("Conversion failed", batch["reasons"][-1])
+
+    def test_every_material_unreadable_says_so_plainly(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = {"batch_id": "batch-none", "project_id": "project-test", "version": 1, "status": "draft",
+                 "groups": {"opening": ["asset-broken"], "middle": [], "ending": []}}
+        with patch.object(domain.d, "_auto_mix_asset_snapshots", return_value=[{"asset_id": "asset-broken"}]), \
+                patch.object(domain.d, "_auto_mix_v2_analysis_profile", return_value={}), \
+                patch.object(domain.d, "_asset_row", return_value={"id": "asset-broken", "display_name": "坏文件.mp4", "duration_ms": 1000}), \
+                patch.object(domain.d, "_analyze_asset", side_effect=ContentEngineError("analysis_failed", "x")), \
+                patch.object(domain.d, "_should_stop", return_value=False), \
+                patch.object(domain, "_store"):
+            with self.assertRaises(ContentEngineError) as error:
+                domain._analysis("task-none", batch, observe=False)
+        self.assertEqual("narrated_materials_unreadable", error.exception.code)
+        self.assertIn("坏文件.mp4", error.exception.message)
+
+    def test_a_paid_request_with_an_unknown_outcome_still_stops(self):
+        # Getting a video out never justifies sending a paid request twice.
+        for code in ("cloud_request_failed", "volcengine_outcome_unknown"):
+            with self.subTest(code=code), self.assertRaises(ContentEngineError) as error:
+                self._analyse_two_materials(ContentEngineError(code, "x"))
+            self.assertEqual(code, error.exception.code)
+
     def test_analysis_window_remainder_is_not_offered_as_a_shot(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = {"batch_id": "batch-tail", "project_id": "project-test", "version": 1, "status": "draft",
