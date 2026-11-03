@@ -236,10 +236,32 @@ function profilePathVariants() {
   assert.ok(!withoutProfilePath(json, home).includes("张三"));
 }
 
+async function productDetailJournalOpensItsOwnCapsule() {
+  const productLogs = fs.mkdtempSync(path.join(os.tmpdir(), "capsule-product-logs-"));
+  const t = fixture("product", { serviceLogsDirs: { product_detail: productLogs } });
+  const file = path.join(productLogs, "failures.jsonl");
+  t.capsules.pollJournal();
+  journal(productLogs, { where: "refine:pipeline_v2", code: "reference_upload", type: "APIMartNotSubmitted",
+    message: "生图通道未连通，未购买策划。", task_id: "refine_9", context: { status: "failed", stage: "reference_upload" } });
+  t.capsules.pollJournal();
+  const [capsule, ...extra] = t.files();
+  assert.equal(extra.length, 0);
+  assert.equal(capsule.module, "product_detail", "a failed detail picture is reported, not only shown on its own page");
+  assert.equal(capsule.code, "reference_upload");
+  assert.equal(capsule.context.stage, "reference_upload");
+  // The service rotates a full journal; the shorter new file must still be read.
+  fs.writeFileSync(file, "");
+  journal(productLogs, { where: "request:ai_refine_v2_execute", code: "http_500" });
+  t.capsules.pollJournal();
+  assert.ok(t.files().some(item => item.code === "http_500"), "a rotated journal is not skipped");
+  t.capsules.stop();
+}
+
 (async () => {
   await logFailureBecomesOneCapsuleWithItsSteps();
   await engineJournalAndTaskLogMergeIntoOneCapsule();
   await journalHistoryIsNotReplayedAndOffsetsPersist();
+  await productDetailJournalOpensItsOwnCapsule();
   await screenshotsOfTheSameOperationUploadAsOriginals();
   await uploadRetriesAndRespectsTheCustomerSwitch();
   await dailyLimitStopsAFailureLoop();

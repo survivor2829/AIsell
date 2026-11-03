@@ -90,7 +90,9 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     daily: saved.daily && typeof saved.daily === "object" ? saved.daily : { day: "", count: 0 },
     environment: saved.environment && typeof saved.environment === "object" ? saved.environment : { day: "", counts: {} }
   };
-  const journal = engineLogsDir ? path.join(engineLogsDir, "failures.jsonl") : "";
+  // Each local service keeps a journal of failures the desktop would otherwise never see.
+  const journals = [["content_engine", engineLogsDir], ["product_detail", serviceLogsDirs.product_detail]]
+    .filter(([, logsDir]) => logsDir).map(([module, logsDir]) => ({ module, file: path.join(logsDir, "failures.jsonl") }));
   let timers = new Set(), stopped = false, uploading = null, uploadAgain = false, retryAt = 0, attempts = 0, unsubscribe, pollTimer, uploadTimer;
   const save = () => { try { writeJsonAtomic(stateFile, state); } catch { /* Next save retries. */ } };
   const capsuleFile = capsuleId => path.join(dir, `${capsuleId}.json`);
@@ -250,7 +252,7 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
       timers.delete(timer);
       // The engine writes its journal before replying, so read it first and let
       // the richer journal record open the capsule.
-      if (entry.module === "content_engine") pollJournal();
+      if (journals.some(journal => journal.module === entry.module)) pollJournal();
       if (WECHAT_MODULES.test(entry.module || "") && !hasRecentFailureScreen(rootDir, clock())
         && classifyWechatFailureReason(entry.code).classification !== "environment") {
         try { await captureScreen(entry.code); } catch { /* The capsule goes out with what exists. */ }
@@ -264,23 +266,26 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
   }
 
   function pollJournal() {
-    if (!journal || stopped) return;
-    try {
-      const size = fs.statSync(journal).size;
-      const known = state.offsets[journal];
-      // First sight of a journal: only the last day matters, not its whole history.
-      const start = Number.isSafeInteger(known) ? known : Math.max(0, size - 64 * 1024);
-      const { lines, end } = readJsonLines(journal, start);
-      state.offsets[journal] = end;
-      save();
-      for (const row of lines) {
-        const at = Date.parse(row.ts);
-        if (!Number.isFinite(at) || clock() - at > 86400000) continue;
-        record({ source: "engine", module: "content_engine", event: row.where || "", code: String(row.code || "internal_error"),
-          message: row.message, where: row.where, traceback: row.traceback, details: row.details, context: row.context,
-          taskId: row.task_id || "", at });
-      }
-    } catch (error) { if (error?.code !== "ENOENT") { /* Journal unreadable this time; the offset stays. */ } }
+    if (stopped) return;
+    for (const { module, file } of journals) {
+      try {
+        const size = fs.statSync(file).size;
+        const known = state.offsets[file];
+        // First sight of a journal: only the last day matters, not its whole history.
+        // A rotated journal is shorter than the saved offset: read its recent tail again.
+        const start = Number.isSafeInteger(known) && known <= size ? known : Math.max(0, size - 64 * 1024);
+        const { lines, end } = readJsonLines(file, start);
+        state.offsets[file] = end;
+        save();
+        for (const row of lines) {
+          const at = Date.parse(row.ts);
+          if (!Number.isFinite(at) || clock() - at > 86400000) continue;
+          record({ source: "engine", module, event: row.where || "", code: String(row.code || "internal_error"),
+            message: row.message, where: row.where, traceback: row.traceback, details: row.details, context: row.context,
+            taskId: row.task_id || "", at });
+        }
+      } catch (error) { if (error?.code !== "ENOENT") { /* Journal unreadable this time; the offset stays. */ } }
+    }
   }
 
   function prune() {
