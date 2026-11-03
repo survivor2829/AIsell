@@ -269,6 +269,7 @@ async function main() {
         },
         getTrustedRuntimeEnvironment: () => ({
           XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: browserPath,
+          PLAYWRIGHT_NODEJS_PATH: process.execPath,
           PATH: "must-be-ignored"
         }),
         startupTimeoutMs: 100,
@@ -295,6 +296,8 @@ async function main() {
       assert.equal(spawnOptions.env.GPT_IMAGE_API_KEY, "");
       assert.notEqual(spawnOptions.env.PATH, "must-be-ignored");
       assert.equal(spawnOptions.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH, browserPath);
+      assert.equal(spawnOptions.env.PLAYWRIGHT_NODEJS_PATH, process.execPath,
+        "the package has no Node.js of its own for Playwright; the desktop executable runs its driver");
       ready(child, { capabilities: { paid_ai_ready: true } });
       const status = await started;
       assert.equal(status.capabilities.paid_ai_ready, true);
