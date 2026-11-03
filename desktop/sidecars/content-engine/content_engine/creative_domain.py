@@ -3671,7 +3671,8 @@ class CreativeDomain:
                     required_duration_ms=voice_bundle["duration_ms"],
                     excluded_id=str(private_state.get("excluded_music_track_id") or ""),
                     allowed_track_ids=allowed_track_ids,
-                    prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
+                    recently_used_track_ids=private_state.get("used_music_track_ids") or [],
+                    run_id=run_id,
                 )
             if music is None:
                 # TTS is already paid and saved. A late catalog/duration mismatch
@@ -5817,15 +5818,19 @@ class CreativeDomain:
         return result
 
     def _select_auto_mix_music(self, brief, *, required_duration_ms, excluded_id="",
-                               allowed_track_ids=None, prefer_unused_track_ids=()):
+                               allowed_track_ids=None, recently_used_track_ids=(), run_id=""):
         tracks = [
             item
             for item in self._music_catalog_rows(automatic=allowed_track_ids is None)
             if (not excluded_id or item["track_id"] != excluded_id)
         ]
+        # Recent videos from any batch count, so a new batch does not restart on the same track.
+        recent = [row[0] for row in reversed(self.connection.execute(
+            "SELECT selected_music_track_id FROM auto_mix_runs_v2 WHERE selected_music_track_id IS NOT NULL "
+            "AND id != ? ORDER BY updated_at DESC LIMIT 20", (run_id,)).fetchall())]
         selected = select_licensed_music(
             tracks, brief, required_duration_ms=required_duration_ms,
-            allowed_track_ids=allowed_track_ids, prefer_unused_track_ids=prefer_unused_track_ids,
+            allowed_track_ids=allowed_track_ids, recently_used_track_ids=[*recent, *recently_used_track_ids],
         )
         if selected is None:
             return None

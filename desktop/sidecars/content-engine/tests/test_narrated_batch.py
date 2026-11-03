@@ -238,6 +238,20 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertTrue(recipe.get("music_track_id"))
         self.assertTrue(recipe.get("licensed_music_relative_path"))
 
+    def test_a_new_batch_does_not_restart_on_the_previous_videos_track(self):
+        tracks = []
+        for title in ("第一批", "第二批"):
+            batch = self.s.save_narrated_batch({
+                "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},
+                "title": title, "target_count": 1,
+                "settings": {"voice_persona_id": "natural-life@1", "music_mode": "auto", "music_track_ids": []},
+            })
+            video_id = self.run_samples(batch)["candidates"][0]["generated_video_id"]
+            tracks.append(json.loads(self.s.connection.execute(
+                "SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)).fetchone()[0])["music_track_id"])
+        self.assertTrue(all(tracks))
+        self.assertNotEqual(tracks[0], tracks[1])
+
     def test_unavailable_automatic_music_preserves_narration_and_finishes(self):
         domain = self.s.creative_domain
         rows = self.s.connection.execute("SELECT * FROM music_catalog_tracks_v1").fetchall()

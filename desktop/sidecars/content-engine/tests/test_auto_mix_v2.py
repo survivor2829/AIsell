@@ -1152,6 +1152,32 @@ class AutoMixV2ContractTests(unittest.TestCase):
                                          allowed_track_ids=["z-other"])
         self.assertEqual("z-other", selected["track_id"])
 
+    def test_music_rotates_to_the_track_played_longest_ago(self):
+        common = {
+            "license_status": "valid", "commercial_use_allowed": True,
+            "evidence_present": True, "analysis_status": "ready",
+            "duration_ms": 60_000, "bpm": 100, "energy": 0.4,
+        }
+        tracks = [
+            {**common, "track_id": "a", "moods": ["calm", "warm"]},
+            {**common, "track_id": "b", "moods": ["calm", "warm"], "energy": 0.3},
+            {**common, "track_id": "c", "moods": ["steady"]},
+            {**common, "track_id": "loud", "moods": ["energetic"], "energy": 1.0, "bpm": 180},
+        ]
+        brief = {"moods": ["credible"], "targetEnergy": 0.4, "bpmRange": [95, 110]}
+        history, picks = [], []
+        for _ in range(7):
+            pick = select_licensed_music(tracks, brief, required_duration_ms=30_000,
+                                         recently_used_track_ids=history)["track_id"]
+            picks.append(pick)
+            history.append(pick)
+        self.assertNotIn("loud", picks, "a poor match never wins just for being unplayed")
+        self.assertEqual({"a", "b", "c"}, set(picks[:3]))
+        self.assertEqual(picks[:3] * 2 + picks[:1], picks, "a steady cycle, never the same twice in a row")
+        # Only one suitable track left: it may repeat rather than fall back to a poor match.
+        self.assertEqual("a", select_licensed_music([tracks[0], tracks[3]], brief, required_duration_ms=30_000,
+                                                    recently_used_track_ids=["a"])["track_id"])
+
     def test_material_structure_changes_music_brief_and_selected_track(self):
         energetic_signals = [
             {

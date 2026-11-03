@@ -1532,8 +1532,9 @@ def select_licensed_music(
     required_duration_ms: int,
     now: datetime | None = None,
     allowed_track_ids: Iterable[str] | None = None,
-    prefer_unused_track_ids: Iterable[str] | None = None,
+    recently_used_track_ids: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
+    """recently_used_track_ids lists earlier picks, oldest first."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     bpm_min, bpm_max = [int(item) for item in brief.get("bpmRange") or (0, 999)]
     target_energy = float(brief.get("targetEnergy") or 0.5)
@@ -1554,7 +1555,8 @@ def select_licensed_music(
     ]
     candidates = []
     allowed = set(allowed_track_ids) if allowed_track_ids is not None else None
-    used = set(prefer_unused_track_ids or [])
+    # Position of each track's latest use; a never-used track ranks before all of them.
+    last_use = {track_id: index for index, track_id in enumerate(recently_used_track_ids or [])}
     for track in tracks:
         if not isinstance(track, dict):
             continue
@@ -1612,14 +1614,14 @@ def select_licensed_music(
         )
     if not candidates:
         return None
-    # Rotate only among suitable tracks; a very poor mood match should not win
-    # merely because it has not played in this batch yet.
-    if used:
+    # Rotate only among suitable tracks (a very poor mood match should not win merely
+    # because it has not played recently): the one played longest ago comes next, so
+    # consecutive videos never repeat a track while another suitable one exists.
+    if last_use:
         best_score = max(float(item["selection_score"]) for item in candidates)
-        fresh = [item for item in candidates if item.get("track_id") not in used
-                 and float(item["selection_score"]) >= best_score - 12]
-        if fresh:
-            candidates = fresh
+        suitable = [item for item in candidates if float(item["selection_score"]) >= best_score - 12]
+        oldest = min(last_use.get(item.get("track_id"), -1) for item in suitable)
+        candidates = [item for item in suitable if last_use.get(item.get("track_id"), -1) == oldest]
     return max(
         candidates,
         key=lambda item: (
