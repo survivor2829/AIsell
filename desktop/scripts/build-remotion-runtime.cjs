@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { replaceWithRetry } = require("../src/main/atomic-file.cjs");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { keepsBrowserFile } = require("./runtime-slimming.cjs");
 const { canonicalJson, sha256Text } = require("./release-trust-record.cjs");
 
 const ARTIFACT_TYPES = Object.freeze(["development", "internal-evaluation", "delivery"]);
@@ -527,7 +528,7 @@ function browserSummary(artifactType, browserPath, record) {
     sourceUrl: record.browser.sourceUrl,
     terms: record.browser.terms,
     termsUrl: record.browser.termsUrl,
-    treeSha256: treeSha256(path.dirname(browserPath)),
+    treeSha256: treeSha256(path.dirname(browserPath), keepsBrowserFile),
     version: record.browser.version
   };
 }
@@ -566,7 +567,8 @@ function copyBrowserRuntime(browserPath, targetRoot, browser) {
   if (path.basename(browserPath).toLowerCase() !== "chrome.exe") throw new Error("Packaged Remotion runtime requires a Chrome chrome.exe source");
   const target = path.resolve(targetRoot);
   if (fs.existsSync(target)) throw new Error(`Browser runtime target already exists: ${target}`);
-  fs.cpSync(sourceRoot, target, { recursive: true, errorOnExist: true, force: false });
+  fs.cpSync(sourceRoot, target, { recursive: true, errorOnExist: true, force: false,
+    filter: source => keepsBrowserFile(path.relative(sourceRoot, source).replaceAll("\\", "/")) });
   const copiedBrowser = assertFile(path.join(target, path.basename(browserPath)), "Copied browser executable");
   if (sha256(copiedBrowser) !== browser.sha256) throw new Error("Copied browser executable hash mismatch");
   if (treeSha256(target) !== browser.treeSha256) throw new Error("Copied browser runtime tree hash mismatch");
