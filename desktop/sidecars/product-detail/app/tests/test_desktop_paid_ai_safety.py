@@ -55,7 +55,7 @@ const vm = require('node:vm');
     vm.runInContext(SOURCE, context);
     await context.pollAiRefineTask({task_id:'paid-original',input_summary:{product_category:'original-category'}}, {loading:{style:{}},results:{},bar:{style:{}},subText:{}});
     assert.equal(recoveries, scenario==='slow-generation'?0:scenario==='persistent'?3:1);
-    if(scenario==='slow-generation') assert.equal(queries,300);
+    if(scenario==='slow-generation') assert.equal(queries,1800);
     assert.equal(rendered, ['transient','lost-response'].includes(scenario)?'success':'recovery');
     assert.equal(saved, rendered==='success'?1:0);
   }
@@ -144,11 +144,11 @@ before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in task_dir.i
 starts = []
 pipeline_runner._apply_safety_valve = lambda a, b: (a, b)
 pipeline_runner._detect_mode = lambda a, b: "real"
-pipeline_runner.start_task = lambda **kwargs: starts.append(kwargs) or "new-confirmed-task"
+pipeline_runner.start_task = lambda **kwargs: starts.append(kwargs) or f"new-confirmed-task-{phase}"
 original_status = pipeline_runner.get_task_status
 pipeline_runner.get_task_status = lambda tid: ({"task_id": tid, "user_id": uid,
     "status": "failed", "error": "test stops before any provider call"}
-    if tid == "new-confirmed-task" else original_status(tid))
+    if tid.startswith("new-confirmed-task") else original_status(tid))
 server = make_server("127.0.0.1", 0, app, threaded=True)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
@@ -168,12 +168,11 @@ with sync_playwright() as pw:
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.goto(origin + "/")
-    if phase == "archive":
-        expect(page.get_by_role("button", name="核对后归档并解除阻塞")).to_be_visible(timeout=30000)
-    else:
+    # An unknown earlier task never asks the customer to unblock anything.
+    if phase == "restart":
         assert "new-confirmed-task" not in page.locator("#ai_img_results").inner_text()
         assert page.evaluate("loadPersistedAiRefineTask()") is None
-        assert not page.get_by_role("button", name="核对后归档并解除阻塞").count()
+    assert not page.get_by_role("button", name="核对后归档并解除阻塞").count()
     page.locator("#product_title_input").fill("全新产品")
     page.locator("#text_input").fill("全新产品资料，清洁宽度500mm")
     image = root / "new-product.png"
@@ -183,27 +182,12 @@ with sync_playwright() as pw:
     image_url = page.evaluate("productImageUrl")
     page.locator("#btn_ai_html_v2").click()
     page.get_by_role("button", name="开始付费生成", exact=True).click()
-    if phase == "archive":
-        expect(page.locator("#ai_img_results")).to_contain_text("新任务尚未提交", timeout=30000)
-        expect(page.locator("#ai_img_results")).to_contain_text(task_id)
-        old_title = json.loads((task_dir / "_input.json").read_text(encoding="utf-8"))["product_title"]
-        expect(page.locator("#ai_img_results")).to_contain_text(old_title)
-        assert starts == []
-        page.screenshot(path=str(root / "blocked.png"))
-        page.get_by_role("button", name="核对后归档并解除阻塞").click()
-        page.screenshot(path=str(root / "confirmation.png"))
-        page.get_by_role("button", name="我已核对，归档并解除阻塞", exact=True).click()
-        expect(page.locator("#ai_img_results")).to_contain_text("旧任务已归档")
-        assert starts == []
-        assert page.evaluate("productImageUrl") == image_url
-        expect(page.locator("#product_title_input")).to_have_value("全新产品")
-        expect(page.locator("#text_input")).to_have_value("全新产品资料，清洁宽度500mm")
-        page.screenshot(path=str(root / "archived.png"))
-    else:
-        expect(page.locator("#ai_img_results")).to_contain_text("AI 精修没有完成")
-        assert len(starts) == 1
-        assert starts[0]["product_title"] == "全新产品"
-        assert starts[0]["product_text"] == "全新产品资料，清洁宽度500mm"
+    # The customer's click starts the new task straight away, in both phases.
+    expect(page.locator("#ai_img_results")).to_contain_text("AI 精修没有完成", timeout=30000)
+    assert len(starts) == 1
+    assert starts[0]["product_title"] == "全新产品"
+    assert starts[0]["product_text"] == "全新产品资料，清洁宽度500mm"
+    assert page.evaluate("productImageUrl") == image_url
     assert not errors, errors
     browser.close()
 server.shutdown()
@@ -222,7 +206,7 @@ print(json.dumps({"phase": phase, "port": server.server_port, "starts": len(star
         )
         assert completed.returncode == 0, completed.stderr
         results.append(json.loads(completed.stdout.strip().splitlines()[-1]))
-    assert results[0]["starts"] == 0 and results[1]["starts"] == 1
+    assert results[0]["starts"] == 1 and results[1]["starts"] == 1
     assert results[0]["port"] != results[1]["port"]
 
 
@@ -300,20 +284,14 @@ payload = {
     "schema_mode": "v2",
 }
 
-# Corrupt/unreadable ledgers fail closed. They never silently become an empty ledger.
+# An unreadable record never stops a customer who asks for new pictures.
 ledger_path.parent.mkdir(parents=True, exist_ok=True)
 ledger_path.write_text("{broken", encoding="utf-8")
 corrupt = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
-assert corrupt.status_code == 409, corrupt.data
-assert corrupt.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
-assert start_calls == []
-resolved = post(
-    client_one,
-    csrf_one,
-    "/desktop/ai-refine-v2/resolve-unknown",
-    {"confirm_new_task": True},
-)
-assert resolved.status_code == 200, resolved.data
+assert corrupt.status_code == 200, corrupt.data
+assert len(start_calls) == 1
+ledger_path.unlink()
+start_calls.clear()
 
 payload_one = dict(payload)
 payload_two = dict(payload)
@@ -341,7 +319,7 @@ thread.start()
 assert entered.wait(5)
 second = post(client_two, csrf_two, "/api/ai-refine-v2/execute", payload_two)
 assert second.status_code == 409, second.data
-assert second.get_json()["code"] == "DESKTOP_AI_REFINE_ALREADY_RUNNING"
+assert second.get_json()["code"] == "DESKTOP_AI_REFINE_STARTING"
 release.set()
 thread.join(5)
 assert not thread.is_alive()
@@ -389,12 +367,6 @@ assert lost_unknown.get_json()["task_id"] == "task-atomic-1"
 ordinary_missing = client_one.get("/api/ai-refine-v2/status/task-not-in-ledger")
 assert ordinary_missing.status_code == 404, ordinary_missing.data
 assert ordinary_missing.get_json().get("code") != "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
-blocked_unknown = post(
-    client_one, csrf_one, "/api/ai-refine-v2/execute", payload
-)
-assert blocked_unknown.status_code == 409, blocked_unknown.data
-assert blocked_unknown.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
-assert len(start_calls) == 1
 stale_resolve = post(client_one, csrf_one, "/desktop/ai-refine-v2/resolve-unknown",
                      {"confirm_new_task": True, "task_id": "different-old-task"})
 assert stale_resolve.status_code == 409
@@ -472,12 +444,8 @@ assert failed.status_code == 500, failed.data
 ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
 assert ledger["state"] == "outcome_unknown"
 assert ledger["reason"] == "server_error_after_admission"
-blocked = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
-assert blocked.status_code == 409, blocked.data
-assert blocked.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
 assert len(server_calls) == 1
 
-# Recovery-required keeps the original paid task locked and never starts a replacement.
 resolved_after_crash = post(
     client_one,
     csrf_one,
@@ -502,22 +470,15 @@ pipeline_runner.get_task_status = lambda task_id: {
 recovery_poll = client_one.get("/api/ai-refine-v2/status/task-recovery-4")
 assert recovery_poll.status_code == 200, recovery_poll.data
 assert recovery_poll.get_json()["status"] == "recovery_required"
-blocked_recovery = post(
-    client_one, csrf_one, "/api/ai-refine-v2/execute", payload
-)
-assert blocked_recovery.status_code == 409, blocked_recovery.data
-assert blocked_recovery.get_json()["task_id"] == "task-recovery-4"
 assert len(start_calls) == 4
 
-# A preserved unpriced plan blocks replacement orders; its existing recovery
-# endpoint resumes the same task. Once resumed, update quiescence sees it busy.
+# A preserved unpriced plan resumes through its recovery endpoint.
+# Once resumed, update quiescence sees it busy.
 current_pricing_state = {"task_id": "task-recovery-4", "user_id": user_id,
                          "status": "pricing_required", "error": "quote unavailable"}
 pipeline_runner.get_task_status = lambda task_id: dict(current_pricing_state)
 pricing_poll = client_one.get("/api/ai-refine-v2/status/task-recovery-4")
 assert pricing_poll.status_code == 200 and pricing_poll.get_json()["status"] == "pricing_required"
-blocked_pricing = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
-assert blocked_pricing.status_code == 409
 assert len(start_calls) == 4
 resumes = []
 def resume_pricing(task_id, image_key, planner_key):
@@ -565,7 +526,6 @@ assert not stale_thread.is_alive()
 assert stale_result["response"].get_json()["status"] == "failed"
 flask_app.after_request_funcs[None].remove(hold_stale_poll)
 assert json.loads(ledger_path.read_text(encoding="utf-8"))["state"] == "pending"
-assert post(client_two, csrf_two, "/api/ai-refine-v2/execute", payload).status_code == 409
 # Explicit resolution must rearchive a formerly reopened task.
 pipeline_runner.get_task_status = lambda tid: {"task_id": tid, "user_id": user_id, "status": "outcome_unknown"}
 client_one.get("/api/ai-refine-v2/status/reopened-plan")
@@ -593,14 +553,14 @@ following = threading.Thread(target=lambda: blocked_result.update(
 following.start()
 following.join(5)
 assert not following.is_alive(), "recovery teardown leaked admission lock"
-assert blocked_result["response"].status_code == 409
-assert blocked_result["response"].get_json()["task_id"] == "recovery-crash"
-assert len(start_calls) == 4
+# The customer's new request starts; the unknown task stays on record.
+assert blocked_result["response"].status_code == 200, blocked_result["response"].data
+assert len(start_calls) == 5
+assert "recovery-crash" in json.loads(archive_path.read_text(encoding="utf-8"))
 
 print(json.dumps({
     "corrupt": corrupt.status_code,
     "concurrent": second.status_code,
-    "blocked_unknown": blocked_unknown.status_code,
     "direct_after_resolve": direct_after_resolve.status_code,
     "poll_task_id": poll.get_json()["task_id"],
     "poll_status": poll.get_json()["status"],
@@ -610,8 +570,6 @@ print(json.dumps({
     "partial_ledger": "partial_success",
     "post_admission": failed.status_code,
     "recovery_status": recovery_poll.get_json()["status"],
-    "recovery_blocked": blocked_recovery.status_code,
-    "recovery_task_id": blocked_recovery.get_json()["task_id"],
 }))
 '''
     env = os.environ.copy()
@@ -643,9 +601,8 @@ print(json.dumps({
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        "corrupt": 409,
+        "corrupt": 200,
         "concurrent": 409,
-        "blocked_unknown": 409,
         "direct_after_resolve": 200,
         "poll_task_id": "task-atomic-1",
         "poll_status": "running_generator",
@@ -655,8 +612,6 @@ print(json.dumps({
         "partial_ledger": "partial_success",
         "post_admission": 500,
         "recovery_status": "recovery_required",
-        "recovery_blocked": 409,
-        "recovery_task_id": "task-recovery-4",
     }
 
 def test_startup_reopens_only_current_replayable_auto_archived_plan(tmp_path):

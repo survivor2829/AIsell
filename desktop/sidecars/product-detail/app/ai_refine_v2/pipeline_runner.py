@@ -67,6 +67,8 @@ class TaskState:
     progress_pct: int = 0     # 0-100
     progress_msg: str = "排队中..."
     started_at: float = field(default_factory=time.time)
+    # Last time the worker reported anything; a long silence means it is stuck.
+    updated_at: float = field(default_factory=time.time)
     elapsed_s: float = 0.0
     cost_rmb: float = 0.0
     # 结果
@@ -201,6 +203,7 @@ def _set(task_id: str, **fields):
             return
         for k, v in fields.items():
             setattr(st, k, v)
+        st.updated_at = time.time()
         st.elapsed_s = round(time.time() - st.started_at, 1)
 
 
