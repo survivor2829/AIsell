@@ -131,8 +131,7 @@ function replaceImmutableFile(source, destination) {
   }
 }
 
-// `include(relative)` limits the tree to the files a release actually ships.
-function treeSha256(root, include = () => true) {
+function treeSha256(root) {
   const absoluteRoot = path.resolve(root);
   const digest = crypto.createHash("sha256");
   const visit = (current) => {
@@ -140,7 +139,6 @@ function treeSha256(root, include = () => true) {
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const relative = path.relative(absoluteRoot, absolute).replaceAll("\\", "/");
-      if (!include(relative)) continue;
       if (entry.isDirectory()) {
         digest.update(`directory\0${relative}\0`);
         visit(absolute);

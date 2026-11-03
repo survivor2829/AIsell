@@ -182,10 +182,7 @@ function productDetailRuntimeEnvironment() {
         "content-engine",
         "browser",
         "chrome.exe"
-      ),
-      // The package carries no Node.js of its own for Playwright; this
-      // executable runs its driver (the sidecar sets ELECTRON_RUN_AS_NODE).
-      PLAYWRIGHT_NODEJS_PATH: process.execPath
+      )
     };
   }
   const configured = String(process.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH || "").trim();

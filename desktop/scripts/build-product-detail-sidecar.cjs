@@ -389,9 +389,6 @@ async function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null 
   if (!fs.existsSync(path.join(paths.pyInstallerOutputDir, "product-detail-server.exe"))) {
     throw new Error("PyInstaller did not produce product-detail-server.exe");
   }
-  // Playwright's own 86 MB Node.js: the desktop runs its driver with the
-  // application executable instead (PLAYWRIGHT_NODEJS_PATH, ELECTRON_RUN_AS_NODE).
-  fs.rmSync(path.join(paths.pyInstallerOutputDir, "_internal", "playwright", "driver", "node.exe"), { force: true });
 
   const referenceFile = process.env.XIAOXI_PYTHON_BASE_REFERENCE;
   const library = await require("./python-library-archive.cjs").stabilizePythonLibrary(

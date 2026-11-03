@@ -202,9 +202,6 @@ def _configure_environment(paths: RuntimePaths) -> None:
     os.environ["XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR"] = str(paths.resource_dir)
     os.environ["DATABASE_URL"] = f"sqlite:///{paths.database_file.as_posix()}"
     os.environ["SECRET_KEY"] = secrets.token_hex(32)
-    if os.environ.get("PLAYWRIGHT_NODEJS_PATH"):
-        # The desktop passes its own executable as Playwright's Node.js.
-        os.environ["ELECTRON_RUN_AS_NODE"] = "1"
 
 
 def _token_digest(token: str) -> bytes:
