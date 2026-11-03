@@ -128,7 +128,7 @@ function providerCapabilitiesForTask(task = {}) {
     ))];
   }
   if (taskType === "narrated_batch_v1") return NARRATED_PROVIDER_CAPABILITIES;
-  if (["creative_cover", "creative_cover_backfill", "guided_auto_mix_supplemental_image"].includes(taskType)) {
+  if (["creative_cover", "creative_cover_backfill", "creative_auto_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
     return ["apimart"];
   }
   // New sidecars persist an explicit list, including [] for fully local work.

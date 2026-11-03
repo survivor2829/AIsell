@@ -59,6 +59,13 @@ def prepare(domain, task_id, batch):
         domain._activity(batch, '正在准备一份完整文案' if not attempt else '正在定向修正文案中的具体问题')
 
         def validate_drafts(result):
+            issue = draft_issue(result)
+            if issue:
+                # Kept so a recurring paid correction can be traced to its cause.
+                batch.setdefault('_script_draft_issues', []).append(issue[:200])
+            return issue
+
+        def draft_issue(result):
             scripts = result.get('scripts') if isinstance(result, dict) else None
             if not isinstance(scripts, list) or len(scripts) != count:
                 return f'scripts须包含{count}份完整文案。'
@@ -78,8 +85,8 @@ def prepare(domain, task_id, batch):
                         return f'第{number}份{field}须为1至{limit}字的文字。'
                 length = domain._spoken_char_count(script['narration'])
                 if modern:
-                    if script['audience'] != batch['target_audience']:
-                        return '受众必须与target_audience一致。'
+                    # Known locally, so a different wording never costs a paid correction.
+                    script['audience'] = batch['target_audience']
                     script.setdefault('framework', 'free')
                     if not isinstance(script.get('summary'), str) or not 0 < len(script['summary'].strip()) <= 60:
                         return 'summary须为60字以内的一句话思路，只说核心看点，不复述制作流程。'

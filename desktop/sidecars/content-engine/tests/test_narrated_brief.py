@@ -254,6 +254,34 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual(len(batch['script_options']), 2)
         self.assertEqual(counts, [1, 1, 1])
 
+    def test_a_reworded_audience_does_not_cost_a_paid_correction(self):
+        batch = copy.deepcopy(self.batch)
+        batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '现场设备试用', 'visual_facts': {'observation': '设备试用'}, 'target_duration_ms': 60000}]
+        script = dict(self.candidate(), audience='做物业保洁的负责人', source_ids=['S1'])
+        def cloud(payload, instruction, **kwargs):
+            result = {'scripts': [script]}
+            self.assertIsNone(kwargs['validation_error'](result))
+            return result
+        with patch.object(self.domain, '_initialize_speech_budget'), patch.object(self.domain, '_minimum_spoken_chars', return_value=10), \
+             patch.object(self.domain, '_source_evidence_for', return_value={}), patch.object(self.domain, '_cloud', side_effect=cloud), \
+             patch.object(self.domain.d, '_should_stop', return_value=False):
+            narrated_script_drafts.prepare(self.domain, 'test-task', batch)
+        self.assertEqual('物业保洁负责人', batch['script_options'][0]['audience'])
+
+    def test_a_rejected_draft_records_why_for_later_diagnosis(self):
+        batch = copy.deepcopy(self.batch)
+        batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '现场设备试用', 'visual_facts': {'observation': '设备试用'}, 'target_duration_ms': 60000}]
+        script = dict(self.candidate(), source_ids=['S1'])
+        issues = []
+        def cloud(payload, instruction, **kwargs):
+            issues.append(kwargs['validation_error']({'scripts': []}))
+            return {'scripts': [script]}
+        with patch.object(self.domain, '_initialize_speech_budget'), patch.object(self.domain, '_minimum_spoken_chars', return_value=10), \
+             patch.object(self.domain, '_source_evidence_for', return_value={}), patch.object(self.domain, '_cloud', side_effect=cloud), \
+             patch.object(self.domain.d, '_should_stop', return_value=False):
+            narrated_script_drafts.prepare(self.domain, 'test-task', batch)
+        self.assertEqual(issues, batch['_script_draft_issues'])
+
     def test_short_draft_does_not_discard_other_valid_choices(self):
         batch = copy.deepcopy(self.batch)
         batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '培训现场', 'visual_facts': {'observation': '培训现场'}, 'target_duration_ms': 60000}]
