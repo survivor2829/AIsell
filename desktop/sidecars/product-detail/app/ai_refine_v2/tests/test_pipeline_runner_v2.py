@@ -402,8 +402,7 @@ class TestV2MockMode(unittest.TestCase):
         finally:
             pipeline_runner._TASKS.pop(task_id, None)
 
-    def test_worker_v2_keeps_incomplete_counts_recoverable_without_terminal_summary(self):
-        """只有 Hero 成功时可保留结果，但绝不能冒充完整多屏成功。"""
+    def _run_partial(self, undownloaded):
         from PIL import Image
 
         task_id = f"test_v2_partial_{uuid.uuid4().hex[:6]}"
@@ -427,7 +426,8 @@ class TestV2MockMode(unittest.TestCase):
             {
                 "block_id": "screen_02_brand", "visual_type": "brand_quality",
                 "is_hero": False, "file": "brand.png", "image_url": "/brand.png",
-                "raw_url": "", "success": False, "placeholder": True,
+                "raw_url": "https://cdn.invalid/brand.png" if undownloaded else "",
+                "success": False, "placeholder": True,
             },
             {
                 "block_id": "screen_03_faq", "visual_type": "faq",
@@ -461,20 +461,35 @@ class TestV2MockMode(unittest.TestCase):
                     )
 
                 state = pipeline_runner._TASKS[task_id]
-                self.assertEqual(state.status, "recovery_required")
                 self.assertEqual(state.planned_count, 3)
                 self.assertEqual(state.success_count, 1)
                 self.assertEqual(state.failed_count, 2)
-                summary = json.loads(
-                    (task_dir / "_recovery.json").read_text(encoding="utf-8")
-                )
-                self.assertEqual(summary["status"], "recovery_required")
-                self.assertFalse((task_dir / "_summary.json").exists())
-                self.assertEqual(summary["planned_count"], 3)
-                self.assertEqual(summary["success_count"], 1)
-                self.assertEqual(summary["failed_count"], 2)
+                if undownloaded:
+                    # A generated, paid picture that did not download must be fetched: recovery.
+                    self.assertEqual(state.status, "recovery_required")
+                    summary = json.loads((task_dir / "_recovery.json").read_text(encoding="utf-8"))
+                    self.assertEqual(summary["status"], "recovery_required")
+                    self.assertFalse((task_dir / "_summary.json").exists())
+                else:
+                    # Screens the provider plainly failed are just missing: the customer gets
+                    # the finished pictures, never presented as a complete success.
+                    self.assertEqual(state.status, "partial_success")
+                    summary = json.loads((task_dir / "_summary.json").read_text(encoding="utf-8"))
+                    self.assertEqual(summary["terminal_status"], "partial_success")
+                    self.assertEqual(summary["failed_count"], 2)
+                    self.assertIs(summary["finished_with_missing_screens"], True)
+                    pipeline_runner._TASKS.pop(task_id, None)
+                    with mock.patch.object(pipeline_runner, "_OUTPUT_BASE", Path(td)):
+                        restored = pipeline_runner.get_task_status(task_id)
+                    self.assertEqual(restored["status"], "partial_success", "a restart keeps it finished")
         finally:
             pipeline_runner._TASKS.pop(task_id, None)
+
+    def test_worker_v2_finishes_with_the_screens_it_has_when_others_plainly_failed(self):
+        self._run_partial(undownloaded=False)
+
+    def test_worker_v2_keeps_an_undownloaded_paid_picture_recoverable(self):
+        self._run_partial(undownloaded=True)
 
 
 # ────────────────────────────────────────────────────────────────

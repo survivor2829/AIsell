@@ -116,7 +116,10 @@ def _with_costs(task_id: str, result: dict) -> dict:
     result["can_replay_planner"] = (
         result.get("status") == "failed" and _can_replay_failed_planner(_OUTPUT_BASE / task_id, result)
     )
-    if result.get("status") == "partial_success":
+    # Older partial results were unfinished; one finished with plainly failed
+    # screens carries finished_with_missing_screens and stays finished.
+    if (result.get("status") == "partial_success"
+            and (_read_json(_OUTPUT_BASE / task_id / "_summary.json") or {}).get("finished_with_missing_screens") is not True):
         result.update(status="recovery_required", progress_pct=90,
                       progress_msg=f"尚未完成，已保存 {result.get('success_count', 0)}/{result.get('planned_count', 0)} 屏")
     if result.get("status") in {"success", "recovery_required", "pricing_required"}:
@@ -374,7 +377,8 @@ def get_task_status(task_id: str) -> dict | None:
     summary_data = _read_json(task_dir / "_summary.json")
     if summary_data is not None:
         result = _status_from_record(task_id, summary_data, terminal=True)
-        if result["failed_count"]:
+        # A finished task that simply lacks a failed screen stays finished.
+        if result["failed_count"] and summary_data.get("finished_with_missing_screens") is not True:
             # Old partial summaries are previews, never a completion marker.
             # Prefer newer continuation checkpoints over that stale preview.
             recovery = _read_json(task_dir / "_recovery.json")
@@ -911,8 +915,8 @@ def _run_real_generator(planning: dict, product_image_url: str,
         api_key=gpt_image_key,
         api_call_fn=wrapped_api_call,
         concurrency=3,
-        max_retries_hero=0,
-        max_retries_sp=0,
+        max_retries_hero=1,
+        max_retries_sp=1,
         cost_per_call_rmb=quote["image_unit_cny"],
         lifecycle_callback=provider_checkpoint,
     )
@@ -1047,8 +1051,8 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
         api_key=gpt_image_key,
         api_call_fn=wrapped_api_call,
         concurrency=3,
-        max_retries_hero=0,
-        max_retries_sp=0,
+        max_retries_hero=1,
+        max_retries_sp=1,
         cost_per_call_rmb=quote["image_unit_cny"],
         lifecycle_callback=provider_checkpoint,
         completed_blocks=completed,
@@ -1127,10 +1131,23 @@ def _write_terminal_summary(
     width, height = _validate_assembled_png(task_dir / "assembled.png")
     planned, success, failed = _result_counts(blocks, planned_count)
     if failed:
-        _persist_recovery(task_dir, blocks, total_cost_rmb, planned, status="recovery_required",
-                          error=f"尚未完成，已保存 {success}/{planned} 屏，请继续原方案。", schema_mode=schema_mode)
-        raise PaidResultRecoveryRequired(f"尚未完成，已保存 {success}/{planned} 屏，请继续原方案。")
-    terminal_status = "success"
+        from ai_refine_v2.pricing import CostJournal
+        operations = CostJournal(task_dir).load()["operations"].values()
+        # Only a paid result that may still be fetched needs the recovery flow: an
+        # unknown request, or a generated picture that did not download. A screen
+        # the provider plainly failed is simply missing; the customer gets the
+        # finished pictures and can redo that one screen.
+        paid_result_pending = (any(op.get("status") == "outcome_unknown" for op in operations)
+                               or any(b.get("raw_url") and not b.get("success") for b in blocks))
+        if paid_result_pending:
+            _persist_recovery(task_dir, blocks, total_cost_rmb, planned, status="recovery_required",
+                              error=f"尚未完成，已保存 {success}/{planned} 屏，请继续原方案。", schema_mode=schema_mode)
+            raise PaidResultRecoveryRequired(f"尚未完成，已保存 {success}/{planned} 屏，请继续原方案。")
+        import failure_journal
+        failure_journal.record(None, where="refine:partial", code="screen_generation_failed",
+                               message="; ".join(str(b.get("error") or "")[:200] for b in blocks if not b.get("success")),
+                               task_id=task_id, context={"planned": planned, "success": success})
+    terminal_status = "partial_success" if failed else "success"
     payload = {
         "schema_version": 2,
         "user_id": _task_identity(task_id)[0],
@@ -1145,6 +1162,7 @@ def _write_terminal_summary(
         "raw_urls": [str(block.get("raw_url") or "") for block in blocks],
         "blocks": blocks,
         "assembled_url": assembled_url,
+        "finished_with_missing_screens": bool(failed),
         "assembled_width": width,
         "assembled_height": height,
         "assembled_bytes": (task_dir / "assembled.png").stat().st_size,

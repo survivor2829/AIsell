@@ -23,6 +23,9 @@ from ai_refine_v2.image_profile import normalize_profile
 IMAGE_PRICE_URL = "https://apimart.ai/api/pricing/model?model=gpt-image-2"
 PLANNER_PRICE_URL = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing"
 MAX_QUOTE_AGE = 60 * 60
+# A screen the provider plainly failed (or that was never sent) gets one more
+# try. An unknown outcome is never retried.
+MAX_ATTEMPTS_PER_SCREEN = 2
 _LOCK = threading.RLock()
 
 
@@ -411,13 +414,19 @@ class CostJournal:
             existing = [(name, op) for name, op in data["operations"].items()
                         if name.startswith("image:") and block_id and op.get("block_id") == block_id]
             retry = (len(existing) == 1 and retry_not_submitted and self.is_unsubmitted(existing[0][1]))
-            if existing and not retry:
+            # Every earlier attempt at this screen plainly failed: try it again.
+            # Continuing a task is the customer's own request, so it may try again.
+            another_try = (bool(existing) and not retry
+                           and (retry_not_submitted or len(existing) < MAX_ATTEMPTS_PER_SCREEN)
+                           and all(op["status"] == "failed" for _, op in existing))
+            if existing and not (retry or another_try):
                 raise RequestOutcomeUnknown("该屏已有付费记录，只能恢复原结果，不能重复提交。")
             if any(op["status"] == "outcome_unknown" for op in previous):
                 raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。", not_submitted=True)
-            if not retry_not_submitted and any(op.get("not_submitted") for op in previous):
-                raise PricingRequired("原生图步骤在提交前失败，已停止后续请求；不会自动重新购买。")
-            if not retry and len(previous) >= data.get("image_count", 0):
+            # A plainly failed attempt does not use up one of the planned screens;
+            # the per-task cost cap still bounds every attempt.
+            used = [op for op in previous if op["status"] != "failed"]
+            if not retry and len(used) >= data.get("image_count", 0):
                 raise PricingRequired("生成张数超出已核价方案，已停止新增请求。")
             operation = existing[0][0] if retry else f"image:{len(previous) + 1}"
             self.begin(operation, quote, quote["image_unit_cny"], block_id=str(block_id), retry_not_submitted=retry)
