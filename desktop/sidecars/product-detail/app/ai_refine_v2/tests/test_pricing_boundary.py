@@ -215,11 +215,39 @@ def test_image_journal_preserves_submission_boundary_and_safe_diagnostic(tmp_pat
     assert "https://cdn.invalid" not in json.dumps(operation.get("diagnostic"))
     assert bool(operation.get("provider_task_id")) is (case == "poll_timeout")
     assert post.call_count == (0 if case in {"invalid_reference", "upload_rejected", "upload_unavailable"} else 1)
-    # Reopening the journal must not silently buy another image after either outcome.
-    again = Mock()
-    with pytest.raises(Exception):
-        pricing.CostJournal(tmp_path).image_call(quote(), again, "prompt")
-    again.assert_not_called()
+    # After an unknown outcome nothing more is bought. A request that plainly never
+    # reached the provider stops nothing: the next screen goes ahead.
+    again = Mock(return_value="https://cdn.invalid/next.png")
+    if known_unsubmitted:
+        assert pricing.CostJournal(tmp_path).image_call(quote(), again, "prompt", block_id="next") == "https://cdn.invalid/next.png"
+        again.assert_called_once()
+    else:
+        with pytest.raises(Exception):
+            pricing.CostJournal(tmp_path).image_call(quote(), again, "prompt")
+        again.assert_not_called()
+
+
+def test_a_plainly_failed_screen_gets_one_more_try_and_an_unknown_one_none(tmp_path):
+    from ai_image_apimart import APIMartTaskFailed
+    ledger = pricing.CostJournal(tmp_path)
+    ledger.set_plan(quote(), 2)
+    with pytest.raises(APIMartTaskFailed):
+        ledger.image_call(quote(), Mock(side_effect=APIMartTaskFailed("provider failed")), "prompt", block_id="s2")
+    # The retry does not use up the other planned screen.
+    assert ledger.image_call(quote(), Mock(return_value="https://cdn.invalid/s2.png"), "prompt", block_id="s2")
+    assert ledger.image_call(quote(), Mock(return_value="https://cdn.invalid/s1.png"), "prompt", block_id="s1")
+    # Two plain failures are the limit for one run; continuing the task tries again.
+    other = pricing.CostJournal(tmp_path / "other")
+    other.set_plan(quote(), 1)
+    for _ in range(2):
+        with pytest.raises(APIMartTaskFailed):
+            other.image_call(quote(), Mock(side_effect=APIMartTaskFailed("provider failed")), "prompt", block_id="s1")
+    third = Mock()
+    with pytest.raises(pricing.RequestOutcomeUnknown):
+        other.image_call(quote(), third, "prompt", block_id="s1")
+    third.assert_not_called()
+    assert other.image_call(quote(), Mock(return_value="https://cdn.invalid/ok.png"), "prompt",
+                            block_id="s1", retry_not_submitted=True)
 
 
 def test_untyped_local_exception_is_not_assumed_free(tmp_path):

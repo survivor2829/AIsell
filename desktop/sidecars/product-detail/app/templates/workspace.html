@@ -2013,7 +2013,7 @@
       : `${successCount || totalCount} 屏`;
     const info = `${restored}AI 精修版 · ${screenInfo} · ${elapsed}s · ${billedInfo}`;
     const partialHint = isPartial
-      ? '<div style="margin:8px 0 0; color:#92400e; font-size:13px;">部分屏生成成功，未成功屏不会自动补单。</div>'
+      ? `<div style="margin:8px 0 0; color:#92400e; font-size:13px;">有 ${Math.max(totalCount - successCount, 1)} 屏没有生成出来，已自动重试过。可以点那一屏的「重做这张」单独补，只收这一张的费用。</div>`
       : '';
     const screens = result.planning?.screens || [];
     const tiles = blocks.map((block, index) => {
