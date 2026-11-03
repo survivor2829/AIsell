@@ -283,6 +283,8 @@ def _install_desktop_contract(
     update_state = {"hold": False, "requests": 0}
     refine_terminal_states = {"success", "partial_success", "failed"}
     refine_blocking_states = {"outcome_unknown", "recovery_required", "pricing_required"}
+    # A running task that reports nothing for this long is treated as stuck.
+    refine_stall_seconds = 5 * 60
 
     def read_refine_archive(*, include_reopened: bool = False) -> dict:
         try:
@@ -478,42 +480,32 @@ def _install_desktop_contract(
                 abort(401)
             with ledger_lock:
                 ledger = refresh_refine_ledger()
-                if ledger.get("state") == "pending":
-                    return jsonify(
-                        {
-                            "ok": False,
-                            "code": "DESKTOP_AI_REFINE_ALREADY_RUNNING",
-                            "error": "已有 AI 精修任务正在运行，请等待当前任务结束。",
-                            "task_id": ledger.get("task_id") or "",
-                            "product_title": ledger.get("product_title") or "",
-                        }
-                    ), 409
-                if ledger.get("state") == "outcome_unknown":
-                    return jsonify(
-                        {
-                            "ok": False,
-                            "code": "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN",
-                            "error": "上次付费任务结果不明。为避免重复扣费，已停止新建任务。",
-                            "task_id": ledger.get("task_id") or "",
-                            "product_title": ledger.get("product_title") or "",
-                        }
-                    ), 409
-                if ledger.get("state") in {"recovery_required", "pricing_required"}:
-                    return jsonify(
-                        {
-                            "ok": False,
-                            "code": "DESKTOP_AI_REFINE_RECOVERY_REQUIRED",
-                            "error": "已有任务待继续，请恢复原任务，避免重复策划或生图。",
-                            "task_id": ledger.get("task_id") or "",
-                            "product_title": ledger.get("product_title") or "",
-                        }
-                    ), 409
                 request_bytes = request.get_data(cache=True) or b""
+                fingerprint = hashlib.sha256(request_bytes).hexdigest()
+                if ledger.get("state") == "pending":
+                    current = task_state(str(ledger.get("task_id") or "")) or {}
+                    progressing = time.time() - float(current.get("updated_at") or 0) < refine_stall_seconds
+                    # A second click on the same, still-working request is a double
+                    # click: show that task instead of paying for it twice.
+                    if (progressing and ledger.get("task_id")
+                            and hmac.compare_digest(str(ledger.get("request_fingerprint") or ""), fingerprint)):
+                        return jsonify({"ok": True, "task_id": ledger["task_id"], "mode": "real", "attached": True,
+                                        "poll_url": f"/api/ai-refine-v2/status/{ledger['task_id']}", "notes": []})
+                    if not ledger.get("task_id") and time.time() - float(ledger.get("started_at") or 0) < 60:
+                        # The first request is still being admitted; it owns this click.
+                        return jsonify({"ok": False, "code": "DESKTOP_AI_REFINE_STARTING",
+                                        "error": "上一个任务正在提交，请稍候。"}), 409
+                # The customer asked for new pictures: an earlier task never blocks
+                # them. It stays on record with its receipts; if it is still
+                # working it may finish in the background.
+                if ledger.get("task_id") and ledger.get("state") in {
+                        "pending", "outcome_unknown", "recovery_required", "pricing_required", "partial_success"}:
+                    archive_refine_task({**ledger, "superseded_at": int(time.time())})
                 write_refine_ledger(
                     {
                         "state": "pending",
                         "task_id": "",
-                        "request_fingerprint": hashlib.sha256(request_bytes).hexdigest(),
+                        "request_fingerprint": fingerprint,
                         "product_title": str((request.get_json(silent=True) or {}).get("product_title") or "")[:120],
                         "user_id": current_user.id,
                         "started_at": int(time.time()),

@@ -1044,7 +1044,7 @@
     if (code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
       return '付费任务结果暂时无法确认。系统已停止新建任务，避免重复扣费。';
     }
-    if (code === 'DESKTOP_AI_REFINE_ALREADY_RUNNING') return '旧任务仍在运行，新任务尚未提交。请等待旧任务结束。';
+    if (code === 'DESKTOP_AI_REFINE_STARTING') return '上一个任务正在提交，请稍等几秒再点。';
     if (code === 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED') return '旧任务尚待恢复，新任务尚未提交。请先处理旧任务。';
     if (code === 'AI_REFINE_RECOVERY_REQUIRED') {
       return '任务尚未完成，已保存的图片和原方案会保留。请继续原任务，不要重新下单。';
@@ -1097,21 +1097,10 @@
     results.innerHTML = `
       <div role="alert" style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7; overflow-wrap:anywhere;">
         <div style="font-weight:700;">${escapeHtml(aiRefineUserMessage(error))}</div>
-        ${error?.newTaskBlocked ? '<div style="margin-top:8px; font-weight:700;">新任务尚未提交。当前上传的图片和文案已保留。</div>' : ''}
         ${taskId ? `<div style="margin-top:8px;">待处理产品：${escapeHtml(oldTitle)}<br>任务编号：${escapeHtml(taskId)}</div>` : ''}
-        <div style="margin-top:6px; color:#7f1d1d; font-size:13px;">失败或结果不明时不会自动重提。</div>
-        <div style="color:#7f1d1d; font-size:13px;">旧任务与费用回执保留；新任务需单独确认生成。</div>
+        <div style="margin-top:6px; color:#7f1d1d; font-size:13px;">再点一次生成会直接开始新任务，当前资料已保留。</div>
         ${technicalDetails}
       </div>`;
-    if (error?.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
-      const action = document.createElement('button');
-      action.type = 'button';
-      action.className = 'btn-generate';
-      action.style.cssText = 'margin-top:16px; width:auto; padding:10px 18px; background:#047857; color:white;';
-      action.textContent = '核对后归档并解除阻塞';
-      action.addEventListener('click', () => resolveAiRefineUnknown(error, results, action));
-      results.appendChild(action);
-    }
   }
 
   async function postJson(url, data) {
@@ -2184,8 +2173,9 @@
     let taskRecord = initialTask;
     const taskId = taskRecord.task_id;
     const modeBadge = aiRefineModeBadge(taskRecord.mode);
-    // 保留 10 分钟当前页面主动轮询窗口；超时后任务仍持久化，可继续接管，绝不自动重提。
-    const maxIter = 300;
+    // 任务还在出图就一直等，出完直接显示结果；只有长时间没有任何进展（卡住）才停下。
+    const maxIter = 1800;  // 每 2 秒一次，最多约 1 小时
+    const stallMs = 5 * 60 * 1000;
     let finalState = null;
     let lastState = null;
     let consecutiveNotFound = 0;
@@ -2268,12 +2258,16 @@
         finalState = state;
         break;
       }
+      if (String(state.status || '').startsWith('running_') && state.updated_at
+          && Date.now() - Number(state.updated_at) * 1000 > stallMs) {
+        break;  // 卡住了：停下，客户再点生成会直接开始新任务。
+      }
       await new Promise(r => setTimeout(r, 2000));
     }
 
     if (!finalState) {
       const deferred = { ...lastState, task_id: taskId,
-        error: '等待时间较长，原任务仍被保留。可继续查询原任务，已提交的请求不会重提。' };
+        error: '这个任务长时间没有进展，可能卡住了。再点一次生成会直接开始新任务。' };
       if (ui.loading) ui.loading.style.display = 'none';
       renderAiRefineRecoveryRequired(deferred, taskRecord);
       return deferred;
@@ -2407,6 +2401,7 @@
             ...inputMeta,
             started_at: Date.now(),
           });
+          if (startResp.attached && ui.subText) ui.subText.textContent = '这份资料刚才已在生成，继续显示它的进度，不会重复扣费…';
         } catch (startError) {
           if ([
             'DESKTOP_AI_REFINE_ALREADY_RUNNING', 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED',
