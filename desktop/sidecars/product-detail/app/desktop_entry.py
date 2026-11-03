@@ -540,6 +540,35 @@ def _install_desktop_contract(
             g.xiaoxi_refine_recovery_admitted = task_id
         return None
 
+    import failure_journal
+    from flask import got_request_exception
+
+    def journal_request_exception(sender, exception, **extra):
+        g.xiaoxi_failure_journaled = True
+        failure_journal.record(exception, where=f"request:{request.endpoint or ''}",
+                               context={"method": request.method})
+
+    got_request_exception.connect(journal_request_exception, flask_app, weak=False)
+
+    @flask_app.after_request
+    def desktop_journal_failed_response(response):
+        endpoint = request.endpoint or ""
+        # Server faults anywhere, and any refusal of a generation request: both
+        # mean the customer did not get the picture they asked for.
+        # The page polls status; the task itself journals how it ended.
+        refine = (endpoint.startswith("ai_refine") and not endpoint.endswith("_status")
+                  and response.status_code not in (401, 404))
+        if (response.status_code >= 500 or (refine and response.status_code >= 400)) \
+                and not getattr(g, "xiaoxi_failure_journaled", False):
+            payload = response.get_json(silent=True) if response.is_json else None
+            payload = payload if isinstance(payload, dict) else {}
+            failure_journal.record(None, where=f"request:{endpoint}",
+                                   code=str(payload.get("code") or f"http_{response.status_code}"),
+                                   message=str(payload.get("error") or payload.get("message") or ""),
+                                   task_id=str(payload.get("task_id") or (request.view_args or {}).get("task_id") or ""),
+                                   context={"method": request.method, "status": response.status_code})
+        return response
+
     @flask_app.after_request
     def desktop_track_ai_refine(response):
         endpoint = request.endpoint or ""

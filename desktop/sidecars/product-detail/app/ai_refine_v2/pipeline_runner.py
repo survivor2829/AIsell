@@ -1242,6 +1242,11 @@ def _record_worker_exception(
         error_trace=tb,
         progress_msg=progress_msg,
     )
+    # The desktop turns this into a failure report; the page alone tells no one.
+    import failure_journal
+    failure_journal.record(exc, where=f"refine:{log_prefix}", code=error_code or type(exc).__name__,
+                           task_id=task_id, context={"status": terminal_status,
+                                                     "stage": str(getattr(exc, "stage", "") or "")[:60]})
 
 
 def _run_assembler(task_dir: Path, blocks: list[dict],
