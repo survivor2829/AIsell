@@ -176,10 +176,16 @@ function run(root) {
 
   let observedCall = null;
   const dataDir = path.join(root, "fresh-product-detail-data");
+  const electronExecutable = path.join(releaseTarget, "fixture-electron.exe");
+  fs.writeFileSync(electronExecutable, "fixture-electron", "utf8");
+  assert.throws(() => runPackagedProductDetailSelfCheck({ releaseTarget, resourcesDir, descriptor,
+    dataDir: path.join(root, "no-node-data"), spawn: () => { throw new Error("must not start"); } }),
+  /Application executable for the Playwright driver/, "without the app executable Playwright has no Node.js");
   const payload = runPackagedProductDetailSelfCheck({
     releaseTarget,
     resourcesDir,
     descriptor,
+    electronExecutable,
     dataDir,
     spawn: (executable, args, options) => {
       observedCall = { executable, args, options };
@@ -202,12 +208,12 @@ function run(root) {
   assert.equal(observedCall.options.cwd, packagedDir);
   assert.equal(observedCall.options.env.PYTHONUTF8, "1");
   assert.equal(observedCall.options.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH, sharedBrowser);
+  assert.equal(observedCall.options.env.PLAYWRIGHT_NODEJS_PATH, path.resolve(electronExecutable),
+    "the self-check runs Playwright the way the installed app does");
   assert.equal(payload.verifiedResourcesTreeSha256, treeSha256(resourcesDir));
 
   const packagedAppDir = path.join(resourcesDir, "app", "src", "main");
-  const electronExecutable = path.join(releaseTarget, "fixture-electron.exe");
   fs.mkdirSync(packagedAppDir, { recursive: true });
-  fs.writeFileSync(electronExecutable, "fixture-electron", "utf8");
   const lifecycleDataDir = path.join(root, "lifecycle-product-detail-data");
   const lifecycleResult = {
     ok: true,
@@ -342,6 +348,7 @@ function run(root) {
       releaseTarget,
       resourcesDir,
       descriptor,
+      electronExecutable,
       dataDir: path.join(root, "mutating-product-detail-data"),
       spawn: () => {
         fs.writeFileSync(path.join(resourcesDir, "mutated.txt"), "changed", "utf8");

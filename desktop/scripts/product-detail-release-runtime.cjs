@@ -261,9 +261,14 @@ function runPackagedProductDetailSelfCheckFresh({
   releaseTarget,
   resourcesDir,
   descriptor,
+  electronExecutable,
   dataDir,
   spawn = spawnSync
 }) {
+  // The package has no Node.js for Playwright: like the installed app, the
+  // application executable runs its driver.
+  if (!electronExecutable) throw new Error("Application executable for the Playwright driver is missing");
+  assertFile(electronExecutable, "Application executable for the Playwright driver");
   if (fs.existsSync(dataDir)) {
     throw new Error(`Product-detail self-check data directory must be fresh: ${dataDir}`);
   }
@@ -281,6 +286,7 @@ function runPackagedProductDetailSelfCheckFresh({
       env: {
         ...process.env,
         XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: sharedBrowser,
+        PLAYWRIGHT_NODEJS_PATH: path.resolve(electronExecutable),
         PYTHONUTF8: "1"
       },
       maxBuffer: 16 * 1024 * 1024,
@@ -395,6 +401,7 @@ function runPackagedProductDetailReleaseGate({
     releaseTarget,
     resourcesDir,
     descriptor,
+    electronExecutable,
     dataDir: path.join(dataDir, "self-check")
   });
   const lifecycle = runLifecycleSmoke({
