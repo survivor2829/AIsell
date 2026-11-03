@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import test_narrated_batch as fixtures
 from content_engine import narrated_brief, narrated_script_drafts
+from content_engine.narrated_sources import source_index
 from content_engine.errors import ContentEngineError
 
 
@@ -253,6 +254,37 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual(batch['script_options'][0], first)
         self.assertEqual(len(batch['script_options']), 2)
         self.assertEqual(counts, [1, 1, 1])
+
+    def test_default_drafts_do_not_buy_frame_facts_strict_ones_do(self):
+        observed = []
+        def analysis(task_id, batch, observe=True):
+            observed.append(observe)
+            return False  # stop before drafting; only the decision is under test
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                batch = copy.deepcopy(self.batch)
+                batch['settings']['strict_visual_review'] = strict
+                with patch.object(self.domain, '_analysis', side_effect=analysis):
+                    self.domain._run_script_workflow('test-task', batch, 'scripts')
+        self.assertEqual([False, True], observed)
+
+    def test_default_sources_say_what_is_on_screen_from_the_analysis_tags(self):
+        shot = {'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 5000,
+                'description': '', 'visual_facts': {}, 'evidence_scope': 'not_observed',
+                'tags': ['清洁机器人', '讲解人员', '演示讲解']}
+        for strict, expected in ((False, '画面标签：清洁机器人、讲解人员、演示讲解'), (True, None)):
+            with self.subTest(strict=strict):
+                batch = copy.deepcopy(self.batch)
+                batch['settings']['strict_visual_review'] = strict
+                batch['available_shots'] = [shot]
+                with patch.object(self.domain, '_source_evidence_for', return_value={}):
+                    sources, index = source_index(self.domain, batch)
+                if expected is None:
+                    self.assertEqual([], sources, 'strict mode never treats analysis tags as visual proof')
+                else:
+                    self.assertEqual(expected, sources[0]['observation'])
+                    self.assertEqual('analysis_tags', sources[0]['evidence_class'])
+                    self.assertIs(shot, index['S1'])
 
     def test_a_reworded_audience_does_not_cost_a_paid_correction(self):
         batch = copy.deepcopy(self.batch)

@@ -5083,7 +5083,9 @@ class NarratedBatchDomain:
                 source_identity = canonical_hash({'snapshots': b.get('_snapshots'), 'versions': b.get('_versions')})
                 from .provider_usage import request_budget
                 with request_budget(lambda record: self._admit_request(b, record)):
-                    analyzed = self._analysis(task_id, b)
+                    # Default mode drafts from the material analysis and the recorded speech; the
+                    # paid frame-by-frame fact extraction is only needed for strict visual review.
+                    analyzed = self._analysis(task_id, b, observe=narrated_production.strict_visual_review(b))
                 if not analyzed or self.d._should_stop(task_id):
                     return {"batch_id": b["batch_id"]}
                 self._activity(b, "正在整理素材理解结果并起草文案", phase="script",
