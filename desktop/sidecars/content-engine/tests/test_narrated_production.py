@@ -1840,6 +1840,12 @@ class NarratedProductionTests(unittest.TestCase):
                 old['production_jobs'][1].update(status='skipped', candidate_id=variation['candidate_id'],
                                                  error_code='narrated_edit_rejected', error='缺少画面证据')
                 old['status'] = 'completed_with_errors'
+                if strict:
+                    # Drafted in strict mode: the frame facts for these drafts were already bought.
+                    from content_engine.auto_mix_v2 import canonical_hash
+                    from content_engine.narrated_batch import VISUAL_FACTS_VERSION
+                    old['_analysis_key'] = canonical_hash({'snapshots': old['_snapshots'], 'versions': old['_versions'],
+                                                           'visual_facts': VISUAL_FACTS_VERSION})
                 self.domain._store(old)
                 self.domain.db.execute("UPDATE content_tasks SET status='completed' WHERE id=?", (task['task_id'],))
                 self.assertEqual(1, len(retryable_planning_jobs(old)))
