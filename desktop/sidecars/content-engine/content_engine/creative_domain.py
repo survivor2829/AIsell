@@ -17,6 +17,7 @@ from .apimart_cover import (
     APIMartError,
     APIMartOutcomeUnknown,
     APIMartPollingStopped,
+    APIMartReferenceUploadFailed,
     APIMartTaskFailed,
 )
 from .auto_mix_v2 import (
@@ -97,6 +98,7 @@ CREATIVE_TASK_TYPES = frozenset(
         "creative_packaging",
         "creative_cover",
         "creative_cover_backfill",
+        "creative_auto_cover",
         "creative_visual_comparison",
         "product_asset_analysis",
         "product_copy",
@@ -6862,6 +6864,8 @@ class CreativeDomain:
                 result = self._run_cover(task_id, payload)
             elif task["task_type"] == "creative_cover_backfill":
                 result = self._run_cover_backfill(task_id, payload)
+            elif task["task_type"] == "creative_auto_cover":
+                result = self._run_deferred_auto_cover(task_id, payload)
             elif task["task_type"] == "creative_visual_comparison":
                 result = self._run_visual_comparison(task_id, payload)
             elif task["task_type"] == "product_asset_analysis":
@@ -8661,6 +8665,8 @@ class CreativeDomain:
         }
 
     AUTO_COVER_ATTEMPTS = 2
+    # Set by the job worker; without a queue a cover runs inside the producing task.
+    enqueue_background_task = None
 
     def _run_auto_cover(self, video_id, subject):
         """The automatic AI cover of one finished video: one request, retried once only
@@ -8694,11 +8700,54 @@ class CreativeDomain:
             cover["auto_attempts"] = attempt + 1
             self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?",
                                     (self._json(recipe), self._now(), video_id))
-            design = {**auto_design(video_id, finished["title"], subject, finished["duration_ms"], attempt),
+            # Each request is a new design, also after an unbilled upload failure of the same attempt.
+            requests = self.connection.execute(
+                "SELECT COUNT(*) AS total FROM cover_generation_ledger WHERE generated_video_id=?", (video_id,)).fetchone()["total"]
+            design = {**auto_design(video_id, finished["title"], subject, finished["duration_ms"], requests),
                       "style": self._next_auto_cover_style(video_id)}
             self.run_task(self.regenerate_cover(video_id, design)["task_id"])
             if latest_status() != "failed":
                 return latest_status()
+            failure = self.connection.execute(
+                "SELECT error_code FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (video_id,)).fetchone()["error_code"]
+            if failure == "reference_upload_failed":
+                # Nothing was bought and the upload was already retried. Give the attempt back
+                # and wait for the next backfill rather than hammering a service that is down.
+                unbilled = json.loads(self._generated_row(video_id)["recipe_json"])
+                unbilled.setdefault("packaging", {}).setdefault("cover", {})["auto_attempts"] = attempt
+                self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?",
+                                        (self._json(unbilled), self._now(), video_id))
+                return "failed"
+
+    def _start_auto_cover(self, task_id, video_id, subject):
+        """A finished mix is ready now; its AI cover follows in the background, so the customer
+        does not wait for it. Other video kinds keep their existing in-task cover."""
+        defer = self.enqueue_background_task
+        producing = self._task_row(task_id)["task_type"] if task_id else None
+        if defer is None or producing != "narrated_batch_v1" or not getattr(self.cover_client, "configured", False):
+            self._run_auto_cover(video_id, subject)
+            return
+        task = self._create_task("creative_auto_cover", {"generated_video_id": video_id, "subject": subject,
+                                                         "required_capabilities": ["apimart"]})
+        defer(task["task_id"])
+
+    def _run_deferred_auto_cover(self, task_id, payload):
+        video_id = str(payload.get("generated_video_id") or "")
+        self._set_task(task_id, "rendering", progress=0.1)
+        try:
+            return {"generated_video_id": video_id, "cover_status": self._run_auto_cover(video_id, payload.get("subject"))}
+        except Exception as error:
+            self._mark_auto_cover_failed(video_id, error)
+            return {"generated_video_id": video_id, "cover_status": "failed"}
+
+    def _mark_auto_cover_failed(self, video_id, error):
+        # regenerate_cover may already have saved the design and revision; keep them.
+        latest = json.loads(self._generated_row(video_id)["recipe_json"])
+        cover = latest.setdefault("packaging", {}).setdefault("cover", {})
+        cover["status"] = "failed"
+        cover["issue_message"] = redact_text(str(error))[:300]
+        self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(latest), self._now(), video_id))
 
     def _next_auto_cover_style(self, video_id):
         """A colourway none of the last three covers used, so neighbours never match."""
@@ -8736,6 +8785,10 @@ class CreativeDomain:
             if (cover.get("design") or {}).get("mode") == "full_design" and cover.get("status") == "completed":
                 state = "ai"
             elif latest is not None and latest["status"] in {"planned", "submitted"}:
+                state = "generating"
+            elif self.connection.execute(
+                    "SELECT 1 FROM content_tasks WHERE task_type='creative_auto_cover' AND status IN ('queued','analyzing','rendering') "
+                    "AND json_extract(payload_json,'$.generated_video_id')=? LIMIT 1", (video_id,)).fetchone() is not None:
                 state = "generating"
             elif backfill_active and cover.get("mode") not in {"reuse", "none"} and int(cover.get("auto_attempts") or 0) < self.AUTO_COVER_ATTEMPTS:
                 state = "generating"
@@ -9108,6 +9161,12 @@ class CreativeDomain:
                     "cover_outcome_unknown",
                     "APIMart cover submission outcome is unknown; it will not be resubmitted.",
                 ) from error
+            except APIMartReferenceUploadFailed as error:
+                # Happens before the paid request, so this one cost nothing.
+                self.update_cover_operation(
+                    operation["id"], "failed", error_code="reference_upload_failed"
+                )
+                raise ContentEngineError("cover_submit_failed", str(error)) from error
             except APIMartError as error:
                 self.update_cover_operation(
                     operation["id"], "failed", error_code="submit_rejected"
@@ -10159,17 +10218,12 @@ class CreativeDomain:
                 try:
                     automatic = cover.get("auto_design")
                     if isinstance(automatic, dict):
-                        self._run_auto_cover(video_id, automatic.get("subject"))
+                        self._start_auto_cover(task_id, video_id, automatic.get("subject"))
                     else:
                         cover_task = self.regenerate_cover(video_id)
                         self.run_task(cover_task["task_id"])
                 except Exception as cover_error:
-                    # regenerate_cover may already have saved the design and revision; keep them.
-                    latest = json.loads(self._generated_row(video_id)["recipe_json"])
-                    latest_cover = latest.setdefault("packaging", {}).setdefault("cover", cover)
-                    latest_cover["status"] = "failed"
-                    latest_cover["issue_message"] = redact_text(str(cover_error))[:300]
-                    self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(latest), self._now(), video_id))
+                    self._mark_auto_cover_failed(video_id, cover_error)
             return True
         except Exception as error:
             code = error.code if isinstance(error, ContentEngineError) else "render_failed"

@@ -64,6 +64,10 @@ class APIMartOutcomeUnknown(APIMartError):
         super().__init__(message)
 
 
+class APIMartReferenceUploadFailed(APIMartError):
+    """The reference image never reached the service: the paid request was not sent."""
+
+
 class APIMartTaskFailed(APIMartError):
     pass
 
@@ -490,7 +494,7 @@ class APIMartCoverClient:
             except Exception as error:
                 if attempt + 1 < UPLOAD_ATTEMPTS:
                     continue
-                raise APIMartError("APIMart reference image upload failed.") from error
+                raise APIMartReferenceUploadFailed("APIMart reference image upload failed.") from error
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise APIMartError("APIMart reference upload response is too large.")
             response = self._json_body(raw)
@@ -504,11 +508,11 @@ class APIMartCoverClient:
                 return url
             transient = int(status) >= 500 or int(status) == 429 or not isinstance(response, dict)
             if not transient or attempt + 1 >= UPLOAD_ATTEMPTS:
-                raise APIMartError(
+                raise APIMartReferenceUploadFailed(
                     f"APIMart reference image upload failed (HTTP {int(status)}): "
                     f"{self._safe_detail(response)}"
                 )
-        raise APIMartError("APIMart reference image upload failed.")
+        raise APIMartReferenceUploadFailed("APIMart reference image upload failed.")
 
     def submit(self, prompt: str, *, reference_path: Path | None = None, size: str = "9:16",
                profile: dict[str, str] | None = None) -> str:

@@ -169,6 +169,7 @@ class _CreativeJobWorker:
             renderer=self.renderer,
             cover_client=self.cover_client,
         )
+        domain.enqueue_background_task = self.enqueue
         try:
             while True:
                 task_id = self._queue.get()

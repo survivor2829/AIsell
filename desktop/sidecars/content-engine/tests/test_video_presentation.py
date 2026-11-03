@@ -467,7 +467,7 @@ class VideoPresentationTests(unittest.TestCase):
     def test_automatic_cover_retries_once_and_backfills_older_videos(self):
         import struct
         import zlib
-        from content_engine.apimart_cover import APIMartTaskFailed
+        from content_engine.apimart_cover import APIMartReferenceUploadFailed, APIMartTaskFailed
         from content_engine.media_probe import FFprobeAdapter, ProbeOutcome
 
         def png(file, width, height):
@@ -554,6 +554,47 @@ class VideoPresentationTests(unittest.TestCase):
                 self.assertEqual("person", json.loads(domain._generated_row(old_id)["recipe_json"])["packaging"]["cover"]["design"]["subject"])
                 domain.run_task(domain.create_cover_backfill_task()["task_id"])
                 self.assertEqual(5, submit.call_count, "a second backfill buys nothing")
+                # 4. A finished mix does not wait for its cover: it follows in its own queued task.
+                mix = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "混剪成片", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                mix_id = domain.run_task(mix["task_id"])["generated_video_id"]
+                producing = domain._create_task("narrated_batch_v1", {})["task_id"]
+                queued = []
+                domain.enqueue_background_task = queued.append
+                domain._start_auto_cover(producing, mix_id, "scene")
+                self.assertEqual(5, submit.call_count, "nothing is bought while the mix finishes")
+                self.assertEqual(1, len(queued))
+                self.assertEqual("generating", domain.finished_cover_states([mix_id])[mix_id]["cover_state"])
+                outcomes[:] = ["https://example.com/cover.png"]
+                domain.run_task(queued[0])
+                self.assertEqual(6, submit.call_count)
+                self.assertEqual("ai", domain.finished_cover_states([mix_id])[mix_id]["cover_state"])
+                # Other video kinds keep their cover inside the producing task.
+                other = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "口播成片", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                other_id = domain.run_task(other["task_id"])["generated_video_id"]
+                outcomes[:] = ["https://example.com/cover.png"]
+                domain._start_auto_cover(other["task_id"], other_id, "person")
+                self.assertEqual(1, len(queued))
+                self.assertEqual(7, submit.call_count)
+                domain.enqueue_background_task = None
+                # 5. A reference upload that failed bought nothing: no second try now, none of the
+                # two purchases used up, and the next backfill tries again.
+                down = domain.import_base_video({"source_id": "digital_human_" + uuid.uuid4().hex, "input_video_path": str(source),
+                    "title": "上传失败", "confirmed_script": "看清细节。", "cover_mode": "local_frame", "prepared_transcript": transcript()})
+                down_id = domain.run_task(down["task_id"])["generated_video_id"]
+                submit.side_effect = APIMartReferenceUploadFailed("HTTP 503")
+                calls = submit.call_count
+                self.assertEqual("failed", domain._run_auto_cover(down_id, "person"))
+                self.assertEqual(calls + 1, submit.call_count)
+                self.assertEqual(0, json.loads(domain._generated_row(down_id)["recipe_json"])["packaging"]["cover"].get("auto_attempts"))
+                self.assertEqual("reference_upload_failed", database.connection.execute(
+                    "SELECT error_code FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                    (down_id,)).fetchone()[0])
+                submit.side_effect = None
+                outcomes[:] = ["https://example.com/cover.png"]
+                domain.run_task(domain.create_cover_backfill_task()["task_id"])
+                self.assertEqual("ai", domain.finished_cover_states([down_id])[down_id]["cover_state"])
             finally:
                 database.close()
 

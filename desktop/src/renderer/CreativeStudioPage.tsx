@@ -89,6 +89,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   creative_regeneration: "重新生成成片",
   creative_packaging: "动态包装",
   creative_cover: "AI 封面",
+  creative_auto_cover: "AI 封面",
   creative_visual_comparison: "三风格对比",
   product_asset_analysis: "商品素材分析",
   product_copy: "商品文案",
