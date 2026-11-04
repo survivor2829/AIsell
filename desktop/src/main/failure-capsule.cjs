@@ -233,7 +233,7 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     const capsule = {
       schema: 1, id: crypto.randomUUID(), createdAt: new Date(at).toISOString(), lastSeenAt: new Date(at).toISOString(), occurrences: 1,
       source: failure.source, module: failure.module, event: failure.event || "", code: failure.code, level: failure.level || "error",
-      phase: failure.phase || "", taskId: failure.taskId || "", traceId: failure.traceId || "",
+      phase: failure.phase || "", taskId: taskIdText(failure.taskId), traceId: failure.traceId || "",
       message: text(failure.message, 2000), where: text(failure.where, 120), traceback: text(failure.traceback, 12000),
       details: failure.details || {}, context: failure.context || {},
       breadcrumbs: breadcrumbs(at, failure.traceId), internal: internalTrail(failure.traceId),
@@ -338,6 +338,7 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
   async function uploadOne(capsuleId, client) {
     const capsule = readJson(capsuleFile(capsuleId), null);
     if (!capsule) return;
+    capsule.taskId = taskIdText(capsule.taskId); // Capsules queued before the fix.
     const result = await network.request("/v1/capsules", { body: { client, capsule } });
     if (result?.id !== capsuleId) throw Object.assign(new Error("capsule_ack_invalid"), { code: "capsule_ack_invalid" });
     for (const item of capsule.evidence || []) {
@@ -350,13 +351,15 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
         image = fs.readFileSync(file);
         if (!image.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) continue;
       } catch { continue; }
-      await network.request("/v1/capsules/evidence", { body: { client, capsuleId, evidenceId: item.id, png: image.toString("base64") } });
+      try { await network.request("/v1/capsules/evidence", { body: { client, capsuleId, evidenceId: item.id, png: image.toString("base64") } }); }
+      catch (error) { if (!refused(error)) throw error; }
     }
     for (const name of capsule.attachments || []) {
       if ((result.attachments || []).includes(name)) continue;
       let data;
       try { data = fs.readFileSync(path.join(dir, capsuleId, name)); } catch { continue; }
-      await network.request("/v1/capsules/attachments", { body: { client, capsuleId, name, data: data.toString("base64") } });
+      try { await network.request("/v1/capsules/attachments", { body: { client, capsuleId, name, data: data.toString("base64") } }); }
+      catch (error) { if (!refused(error)) throw error; }
     }
   }
 
@@ -369,6 +372,17 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     })().finally(() => { uploading = null; });
     return uploading;
   }
+  // The server accepts only a short text task id. A redacted log field turned it
+  // into {present,length,sha256_16}; the server refused that capsule (400) and,
+  // being first in the queue, it blocked every later capsule on that computer
+  // (development machine since 2026-10-30; customer computers on 11-04).
+  function taskIdText(value) {
+    return typeof value === "string" && value.length <= 120 ? value : "";
+  }
+  // A 4xx other than 429 is a refusal that resending cannot change.
+  const refused = (error) => /^cloud_http_4\d\d$/u.test(String(error?.code || error?.message || ""))
+    && !/_429$/u.test(String(error?.code || error?.message || ""));
+
   async function upload() {
     if (!network || stopped || clock() < retryAt || !state.outbox.length || !isEnabled()) return;
     const client = identity();
@@ -376,7 +390,13 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     try {
       while (state.outbox.length && !stopped && isEnabled()) {
         const next = state.outbox[0];
-        await uploadOne(next, client);
+        try {
+          await uploadOne(next, client);
+        } catch (error) {
+          if (!refused(error)) throw error;
+          // Never let one refused capsule hold back the rest of the queue.
+          state.refused = [...(state.refused || []), { id: next, code: String(error.code || error.message || "").slice(0, 40), at: clock() }].slice(-50);
+        }
         state.outbox = state.outbox.filter(value => value !== next);
         save();
       }
