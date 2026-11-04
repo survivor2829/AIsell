@@ -242,14 +242,16 @@ async function checkWrongConversationTitleGate() {
     const noCapture = openWechatSearchResult(expected, { pid: 81, hWnd: "91",
       searchIdentity: { expectedName: expected },
       runner: () => ({ ok: true, searchCapturePng: png.toString("base64"),
-        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null } })
+        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null,
+          popupBounds: null, popupDpi: null, captureSource: "formula_crop" } })
     });
     assert.equal(noCapture.diagnostics.search_capture_file, undefined,
       "default search callers, including auto reply and development IPC, must not write a transient screenshot");
     const noCaptureAsync = await openWechatSearchResultAsync(expected, { pid: 81, hWnd: "91",
       searchIdentity: { expectedName: expected },
       runner: async () => ({ ok: true, searchCapturePng: png.toString("base64"),
-        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null } })
+        searchResultObservation: { ...observation, webSearchCandidates: [], webSearchTop: null,
+          popupBounds: null, popupDpi: null, captureSource: "formula_crop" } })
     });
     assert.equal(noCaptureAsync.diagnostics.search_capture_file, undefined);
     const captureNames = () => new Set(fs.readdirSync(os.tmpdir()).filter((name) => /^xiaoxi-search-capture-[a-f0-9]{32}\.png$/u.test(name)));
