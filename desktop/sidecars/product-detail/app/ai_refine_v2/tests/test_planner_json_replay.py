@@ -152,3 +152,39 @@ def test_failed_reply_replay_requires_completed_planner_only_and_full_valid_plan
     assert state["can_replay_planner"] is False
     with pytest.raises(ValueError, match="不可恢复"):
         runner.start_task_recovery(directory.name, "image-key")
+
+def test_failed_new_policy_plan_retries_from_saved_replies_without_buying_again(tmp_path, monkeypatch):
+    # Field case 2026-11-03: both paid replies saved, then a one-page part check
+    # failed the whole plan. A retry replays the saved replies under the
+    # current rules and reaches the image stage with no new planning charge.
+    from ai_refine_v2 import visual_merchandising
+    from ai_refine_v2.tests.test_visual_merchandising import FAN_DRYER, fan_dryer_draft
+    from ai_refine_v2.tests.test_product_driven_planning import response
+    monkeypatch.setattr(runner, "_OUTPUT_BASE", tmp_path)
+    monkeypatch.setattr(runner, "_TASKS", {})
+    monkeypatch.setattr(runner, "_RECOVERY_TASK_IDS", set())
+    monkeypatch.setenv("V2_ALLOW_REAL_API", "true")
+    monkeypatch.setattr(pricing, "read_quote", lambda **kw: quote())
+    paid = Mock(return_value=response(fan_dryer_draft()))
+    monkeypatch.setattr(planner, "_http_post_deepseek", paid)
+    images = Mock(side_effect=pricing.PricingRequired("test stops before images"))
+    monkeypatch.setattr(runner, "_run_real_generator_v2", images)
+    monkeypatch.setattr(runner, "_preflight_before_paid_planner", lambda *a, **kw: None)
+    salvage = visual_merchandising.compile_with_salvage
+    monkeypatch.setattr(visual_merchandising, "compile_with_salvage", Mock(
+        side_effect=ValueError("部件字段引用了原文未明确的部件，文案编辑不能改变部件")))
+    task = "v2_field_fan_dryer"
+    runner._TASKS[task] = runner.TaskState(task_id=task, user_id=7)
+    runner._worker_v2(task, FAN_DRYER, "", "坦虎商用风干机H533B", "ds-key", "image-key", product_category="设备类")
+    assert paid.call_count == 2 and images.call_count == 0
+    state = runner.get_task_status(task)
+    assert state["status"] == "failed" and state["can_replay_planner"] is True
+
+    monkeypatch.setattr(visual_merchandising, "compile_with_salvage", salvage)
+    paid.side_effect = AssertionError("saved planning replies must not be bought again")
+    monkeypatch.setattr(runner.threading, "Thread", lambda *, target, args, **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    runner.start_task_recovery(task, "image-key", "ds-key")
+    assert paid.call_count == 2
+    assert images.call_count == 1 and images.call_args.args[0]["screen_count"] == 9
+    assert set(pricing.CostJournal(tmp_path / task).load()["operations"]) == {"planner", "semantic_review"}

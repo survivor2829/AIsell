@@ -662,7 +662,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计最多15张，超额候选不生图，可下载单张和长图；点击会调用 APIMart，实际费用以账单为准。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计最多15张，超额候选不生图，可下载单张和长图。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -677,7 +677,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计最多15张，超额候选不生图，可下载单张和长图；实际费用以账单为准，结果不明不会自动重提。</p>
+      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计最多15张，超额候选不生图，可下载单张和长图。</p>
       <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
@@ -1026,81 +1026,37 @@
       .slice(0, 2000);
   }
 
+  // Customers see one plain sentence and a retry button. Codes, task ids and
+  // technical detail stay in the failure log and the field report.
   function aiRefineUserMessage(error) {
     const code = String(error?.code || '');
     const status = Number(error?.httpStatus || 0);
-    if (code === 'AI_REFINE_SAVED_PLAN_READY') {
-      return '已保存的策划可以继续使用，无需再次购买策划。后续生图仍按原任务额度计费。';
-    }
-    if (code === 'AI_REFINE_PRICING_REQUIRED') {
-      return String(error.message || '报价待核实，资料和已有方案已保留。');
-    }
-    if (code === 'AI_REFINE_TOO_MANY_SCREENS') {
-      return '独立卖点加封面和参数图超过15张，请精简或分批提供资料；尚未提交生图。';
-    }
-    if (code === 'AI_REFINE_REROLL_INVALID') {
-      return String(error.message || '原任务或原图不可用，请先恢复原任务再重做指定图片。');
-    }
-    if (code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
-      return '付费任务结果暂时无法确认。系统已停止新建任务，避免重复扣费。';
-    }
-    if (code === 'DESKTOP_AI_REFINE_STARTING') return '上一个任务正在提交，请稍等几秒再点。';
-    if (code === 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED') return '旧任务尚待恢复，新任务尚未提交。请先处理旧任务。';
-    if (code === 'AI_REFINE_RECOVERY_REQUIRED') {
-      return '任务尚未完成，已保存的图片和原方案会保留。请继续原任务，不要重新下单。';
-    }
-    if (code === 'AI_REFINE_POLL_DEFERRED') {
-      return '任务仍可能在后台生成。系统已记住任务，可稍后继续检查原任务。';
-    }
-    if (code === 'DESKTOP_AI_REFINE_NOT_CONFIGURED') {
-      return 'AI 精修尚未配置完成。请在桌面软件“API密钥”中配置 DeepSeek 与 APIMart 后重启服务。';
-    }
-    if (status === 401 || status === 403) {
-      return '当前登录状态已失效或无权查看该任务。请重启产品详情图服务后继续检查原任务。';
-    }
-    if (status === 429) {
-      return '服务当前请求过多。原任务已保留，请稍后继续检查，不要重新下单。';
-    }
-    if (status === 400) {
-      if (code.startsWith('AI_REFINE_POLL_HTTP_')) {
-        return '原任务状态请求未通过校验。任务编号已保留，请重启服务后继续检查。';
-      }
-      return '任务信息未通过服务校验。系统没有提交新的付费任务，请检查输入后重试。';
-    }
-    if (code === 'AI_REFINE_TASK_NOT_FOUND') {
-      return '暂时找不到原任务。系统已保留任务编号，请重启服务或前往日志诊断排查。';
-    }
-    if (code === 'AI_REFINE_PLANNER_TRUNCATED') {
-      return '制作方案返回不完整，尚未开始生成图片。你的资料已保留；系统不会自动重新提交。';
-    }
-    if (code === 'AI_REFINE_PLANNER_FORMAT_ERROR') {
-      return '制作方案格式异常，尚未开始生成图片。你的资料和费用记录已保留；系统不会自动重新提交。';
-    }
-    return 'AI 精修没有完成。系统没有自动重提，请前往日志诊断查看原因。';
+    if (error?.resumable) return '这次还没做完，已完成的部分都保存着。点“重试”接着做，不会重复扣费。';
+    if (code === 'AI_REFINE_TOO_MANY_SCREENS') return '资料里的卖点太多，超过了15张图。请删减一些后再点“重试”。';
+    if (code === 'AI_REFINE_REROLL_INVALID') return '这张图暂时不能单独重做，请点“重试”重新生成。';
+    if (code === 'DESKTOP_AI_REFINE_STARTING') return '上一个任务正在提交，请稍等几秒再点“重试”。';
+    if (code === 'DESKTOP_AI_REFINE_NOT_CONFIGURED') return 'AI 精修暂时不可用，请重启软件后再点“重试”。';
+    if (status === 401 || status === 403) return '登录状态过期了，请重启软件后再点“重试”。';
+    if (status === 429) return '现在使用的人比较多，请稍等一会儿再点“重试”。';
+    return '这次没有生成成功，资料都保存着，点“重试”重新生成。';
   }
 
-  function renderAiRefineError(error, target = null) {
+  function renderAiRefineError(error, target = null, onRetry = null) {
     const results = target || document.getElementById('ai_img_results');
     if (!results) return;
-    const taskId = String(error?.taskId || '');
-    const previous = loadPersistedAiRefineTask();
-    const oldTitle = error?.productTitle || (previous?.task_id === taskId ? previous.input_summary?.product_title : '') ||
-      (SERVER_AI_REFINE_BOOTSTRAP?.task?.task_id === taskId ? SERVER_AI_REFINE_BOOTSTRAP.inputs?.product_title : '') || '未记录产品名';
-    const detailParts = [error?.technicalDetail || error?.message || ''];
-    if (taskId) detailParts.push(`task_id=${taskId}`);
-    const detail = sanitizeAiRefineTechnicalDetail(detailParts.filter(Boolean).join('\n'));
-    const technicalDetails = detail ? `
-      <details style="margin-top:14px; text-align:left; color:#6b7280;">
-        <summary style="cursor:pointer;">技术详情</summary>
-        <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; font:12px/1.6 ui-monospace,monospace;">${escapeHtml(detail)}</pre>
-      </details>` : '';
+    const detail = sanitizeAiRefineTechnicalDetail([error?.technicalDetail || error?.message || '',
+      error?.taskId ? `task_id=${error.taskId}` : ''].filter(Boolean).join('\n'));
+    if (detail) console.warn('[ai-refine] not finished', error?.code || '', detail);
     results.innerHTML = `
-      <div role="alert" style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7; overflow-wrap:anywhere;">
+      <div role="alert" style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7; overflow-wrap:anywhere; text-align:center;">
         <div style="font-weight:700;">${escapeHtml(aiRefineUserMessage(error))}</div>
-        ${taskId ? `<div style="margin-top:8px;">待处理产品：${escapeHtml(oldTitle)}<br>任务编号：${escapeHtml(taskId)}</div>` : ''}
-        <div style="margin-top:6px; color:#7f1d1d; font-size:13px;">再点一次生成会直接开始新任务，当前资料已保留。</div>
-        ${technicalDetails}
+        <button type="button" data-ai-refine-retry
+          style="margin-top:14px; padding:8px 28px; border:none; border-radius:7px; background:#047857; color:#fff; font-size:15px; cursor:pointer;">重试</button>
       </div>`;
+    results.querySelector('[data-ai-refine-retry]')?.addEventListener('click', () => {
+      if (onRetry) onRetry();
+      else void generateAiHtmlV2();
+    });
   }
 
   async function postJson(url, data) {
@@ -2061,33 +2017,18 @@
   }
 
   function renderAiRefineRecoveryRequired(state, taskRecord) {
-    taskRecord = { ...taskRecord, requires_paid_confirmation: true };
     const recoveryError = new Error(state.error || state.progress_msg || 'local recovery required');
-    const pricingRequired = state.status === 'pricing_required';
-    const replayPlanner = state.can_replay_planner === true;
-    recoveryError.code = replayPlanner ? 'AI_REFINE_SAVED_PLAN_READY' : pricingRequired ? 'AI_REFINE_PRICING_REQUIRED' :
-      (state.status === 'outcome_unknown' ? 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN' : 'AI_REFINE_RECOVERY_REQUIRED');
+    recoveryError.code = state.can_replay_planner === true ? 'AI_REFINE_SAVED_PLAN_READY'
+      : state.status === 'pricing_required' ? 'AI_REFINE_PRICING_REQUIRED'
+      : (state.status === 'outcome_unknown' ? 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN' : 'AI_REFINE_RECOVERY_REQUIRED');
+    recoveryError.resumable = true;
     recoveryError.taskId = state.task_id || taskRecord.task_id;
-    recoveryError.newTaskBlocked = taskRecord.newTaskBlocked === true;
     recoveryError.technicalDetail = state.technical_detail || state.error || '';
-    renderAiRefineError(recoveryError);
+    // Retrying continues the original task: saved replies and images are
+    // reused and nothing already submitted is bought again.
+    renderAiRefineError(recoveryError, null, () => resumeAiRefineTask(taskRecord, true));
     const results = document.getElementById('ai_img_results');
     if (!results) return;
-    const incomplete = document.createElement('p');
-    incomplete.style.cssText = 'text-align:center;color:#92400e;';
-    incomplete.textContent = (state.planned_count ? `尚未完成，已保存 ${Number(state.success_count || 0)}/${Number(state.planned_count)} 屏。` : '') +
-      '已提交的请求先查询恢复，仅未提交的屏会新增费用。';
-    results.appendChild(incomplete);
-    const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:12px;';
-    actions.innerHTML = `
-      <button type="button" data-ai-refine-query class="btn btn-ghost">查询原任务（不新增费用）</button>
-      <button type="button" data-ai-refine-resume
-        style="padding:8px 16px; border:none; border-radius:7px; background:#047857; color:#fff; cursor:pointer;">
-        确认费用并继续原方案
-      </button>
-      <span style="align-self:center; color:#6b7280; font-size:12px;">如仍无法恢复，请返回桌面软件“日志诊断”导出报告。</span>`;
-    results.appendChild(actions);
     if (Array.isArray(state.blocks) && state.blocks.some(block => block?.success && block.image_url)) {
       const available = document.createElement('section');
       available.setAttribute('aria-label', '已保存的精修图片');
@@ -2095,12 +2036,6 @@
       results.appendChild(available);
       renderAiRefineResult(state, { target: available, recovery: true });
     }
-    actions.querySelector('[data-ai-refine-resume]')?.addEventListener('click', () => {
-      resumeAiRefineTask(taskRecord, true);
-    });
-    actions.querySelector('[data-ai-refine-query]')?.addEventListener('click', () => {
-      resumeAiRefineTask(taskRecord);
-    });
   }
 
   async function rememberAiRefineResult(taskId, productCategory) {
@@ -2132,8 +2067,7 @@
         if (status.ok) result = { ...result, ...await status.json() };
       }
       if (['recovery_required', 'outcome_unknown', 'pricing_required'].includes(result.status)) {
-        const record = persistAiRefineTask({ task_id: result.task_id, status: result.status,
-          requires_paid_confirmation: true });
+        const record = persistAiRefineTask({ task_id: result.task_id, status: result.status });
         renderAiRefineRecoveryRequired(result, record);
       } else {
         renderAiRefineResult(result, { restored: true });
@@ -2242,7 +2176,6 @@
           continue;
         } catch (error) {
           if (error.code === 'AI_REFINE_CONFIRM_CONTINUATION_REQUIRED') {
-            taskRecord = persistAiRefineTask({ ...taskRecord, requires_paid_confirmation: true }) || taskRecord;
             state.error = error.message;
           }
           // A lost recovery response can still have started the original worker.
@@ -2340,13 +2273,6 @@
     let productTitle = '';
     let inputMeta = null;
     const reroll = options.reroll;
-    if (taskRecord?.requires_paid_confirmation && options.recoverOriginal) {
-      const confirmed = await confirmInWorkspace(
-        '已保存方案可以继续，但尚未提交的图片会产生生图费用。将重新核价并沿用原任务预算，已提交的请求不会重复购买。',
-        { title: '继续原方案', confirmLabel: '确认费用并继续' },
-      );
-      if (!confirmed) return;
-    }
     if (reroll && !taskRecord?.task_id) {
       const confirmed = await confirmInWorkspace(
         `只重新生成第 ${reroll.block_index + 1} 张，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
@@ -2366,10 +2292,7 @@
       }
       inputMeta = buildAiRefineTaskMeta(productText, productTitle);
       const confirmed = await confirmInWorkspace(
-        `根据产品图片和资料自动策划，结合购买理由、整机展示、部件特写和使用场景安排画面，合计最多15张，超额方案不生图。\n` +
-        `每张由 APIMart 生成并计费，不为了凑数量加图。\n` +
-        `先核对策划与生图报价，超出后台上限时保留方案。实际费用以供应商账单为准。\n` +
-        `失败或结果不明时不会自动重提。\n\n` +
+        `根据产品图片和资料自动策划并生成详情图，合计最多15张，按实际生成的张数计费。\n\n` +
         `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
         { title: '确认 AI 精修任务', confirmLabel: '开始付费生成' },
       );
@@ -2377,9 +2300,7 @@
     }
 
     const ui = prepareAiRefineWorkspace(
-      taskRecord?.status === 'pricing_required' ? '正在核价，已有方案会保留…' :
-      (taskRecord?.can_replay_planner ? '正在读取已保存的策划…' :
-      (taskRecord ? '正在接管上次付费任务，不会创建新订单…' : '提交中…'))
+      taskRecord ? '正在接着上次继续，不会重复扣费…' : '提交中…'
     );
 
     try {
@@ -2434,9 +2355,7 @@
         throw missingTask;
       }
       if (options.recoverOriginal) {
-        if (ui.subText) ui.subText.textContent = taskRecord.status === 'pricing_required'
-          ? '核价后继续原方案，已完成步骤会保留…' : taskRecord.can_replay_planner
-            ? '复用已保存的策划，核价后继续生图…' : '正在继续检查原任务，不会创建新订单…';
+        if (ui.subText) ui.subText.textContent = '正在接着上次继续，已完成的部分会保留…';
         const recovered = await postJson(
           `/api/ai-refine-v2/recover/${encodeURIComponent(taskRecord.task_id)}`,
           {},

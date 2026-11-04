@@ -14,25 +14,19 @@ from ai_refine_v2.tests.test_pricing_boundary import quote
 READ_QUOTE = pricing.read_quote
 
 
-def test_ext_price_uses_version_and_resolution_without_account_discount(monkeypatch):
-    monkeypatch.setenv("REFINE_API_BASE_URL", "https://api.apimart.ai/v1")
-    payload = {"success": True, "data": {
-        "model_name": "gpt-image-2.5-ext",
-        "billing_type": "version_resolution",
-        "version_resolution_prices": {"sunburst": {"1K": .010625, "2K": .0175}, "flare": {"2K": .01}},
-        "resolution_prices": {"2K": .001}, "group_ratio": .8,
-    }}
-    urls = []
-    def read(url):
-        urls.append(url)
-        return json.dumps(payload)
-    result = READ_QUOTE(include_planner=False, image_profile=DEFAULT_PROFILE, read=read)
-    assert result["image_unit_cny"] == .14
+def test_quote_is_built_in_and_never_blocks_on_the_network(monkeypatch):
+    # A slow or changed supplier price page once stopped customers with
+    # "报价尚未核实"; prices are now a built-in table and nothing is fetched.
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", Mock(side_effect=AssertionError("network")))
+    monkeypatch.delenv("REFINE_API_BASE_URL", raising=False)
+    result = READ_QUOTE(include_planner=True, image_profile=DEFAULT_PROFILE)
+    assert result["image_unit_cny"] == .3
     assert result["image_version"] == "sunburst" and result["image_resolution"] == "2K"
-    assert urls == ["https://apimart.ai/api/pricing/model?model=gpt-image-2.5-ext"]
-    del payload["data"]["version_resolution_prices"]["sunburst"]["2K"]
+    assert result["planner_per_million_cny"] == {"input": 2.0, "cache": .04, "output": 8.0}
+    assert READ_QUOTE(include_planner=False)["image_unit_cny"] == 1.6872
     with pytest.raises(pricing.PricingRequired):
-        READ_QUOTE(include_planner=False, image_profile=DEFAULT_PROFILE, read=read)
+        READ_QUOTE(include_planner=False, image_profile={"model": "unknown", "resolution": "2K"})
 
 
 @pytest.mark.parametrize("stored_profile", [None, DEFAULT_PROFILE])

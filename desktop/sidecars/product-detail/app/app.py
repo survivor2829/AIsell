@@ -2077,7 +2077,7 @@ def batch_ai_refine_start(batch_id):
     from pricing_config import compute_estimate, MAX_REFINE_COST_PER_RUN
     est = compute_estimate(len(candidates))
     if not est.get("ready"):
-        return jsonify({"error": est.get("error", "报价尚未核实，未提交付费请求。"),
+        return jsonify({"error": est.get("error", "暂时无法开始，请稍后重试。"),
                         "action": "pricing_required"}), 503
     if est["est_cost_yuan"] > MAX_REFINE_COST_PER_RUN:
         return jsonify({

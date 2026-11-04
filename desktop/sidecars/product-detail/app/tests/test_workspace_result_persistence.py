@@ -267,7 +267,7 @@ class TestWorkspaceFrontendPaidTaskSafety:
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert "/api/ai-refine-v2/recover/" in content
         assert "recoverOriginal" in content
-        assert "继续检查原任务" in content
+        assert "正在接着上次继续" in content
 
     def test_polling_fails_fast_for_nonretryable_http_statuses(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
@@ -326,8 +326,11 @@ class TestWorkspaceFrontendPaidTaskSafety:
     def test_user_error_summary_does_not_leak_raw_technical_details(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert "function renderAiRefineError(" in content
-        assert "技术详情" in content
         assert "sanitizeAiRefineTechnicalDetail" in content
+        # Customers get one sentence and a retry button (user decision 2026-11-03).
+        assert "data-ai-refine-retry" in content
+        for internal in ("技术详情", "日志诊断", "报价尚未核实", "确认费用并继续", "查询原任务", "任务编号：${escapeHtml"):
+            assert internal not in content, internal
         assert "AI 精修失败: ${escapeHtml(e.message)}" not in content
 
     def test_hidden_recovery_bar_and_template_images_are_accessible(self):
