@@ -676,6 +676,7 @@ async function executeVerifiedContactSendCore(options = {}) {
         exactConversationMatch: options.exactConversationMatch === true,
         senderConfirmedByRecords: options.senderConfirmedByRecords === true,
         incomingConfirmedByRecords: options.incomingConfirmedByRecords === true,
+        recordedEarlierOutgoing: Array.isArray(options.recordedEarlierOutgoing) ? options.recordedEarlierOutgoing : [],
         messageDriven: options.messageDriven === true,
         incomingMessage: String(options.expectedIncomingMessage || ""),
         incomingMessageSignature: String(options.expectedIncomingMessageSignature || ""),

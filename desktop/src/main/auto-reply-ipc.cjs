@@ -1457,6 +1457,21 @@ function createAutoReplyController(options = {}) {
       return Boolean(latest && latest.sender === contact.id && latest.createTime * 1000 <= seenAt + 2000);
     } catch { return false; }
   }
+  // Our own texts WeChat recorded before the customer's latest message. On WeChat
+  // 4.2 a screen read can miss a short customer bubble ("您好") and see one of
+  // these older green bubbles as the latest message (2026-11-04); with the
+  // records confirming the customer spoke last, that is unread text, not a reply.
+  function outgoingBeforeLatestIncoming(contact, seenAt) {
+    if (/^visual-inbound-/u.test(String(contact?.id))) return [];
+    try {
+      const rows = receipts()?.messagesWith(contact.id, Math.floor(seenAt / 1000) - 24 * 60 * 60);
+      const latest = Array.isArray(rows) ? rows.at(-1) : null;
+      if (!latest || latest.sender !== contact.id || latest.createTime * 1000 > seenAt + 2000) return [];
+      return rows.filter((row) => row.sender && row.sender !== contact.id && Number(row.localType) === 1
+        && row.createTime <= latest.createTime && String(row.content || "").trim())
+        .slice(-3).map((row) => String(row.content).slice(0, 500));
+    } catch { return []; }
+  }
   // WeChat's own message records (injected in self-checks); null when they cannot be read.
   const receipts = () => {
     if (options.receipts !== undefined) return options.receipts;
@@ -3543,6 +3558,7 @@ function createAutoReplyController(options = {}) {
         exactConversationMatch: contactScope.strict,
         senderConfirmedByRecords: ["unresolved", "database_unread_sender"].includes(normalizeText(candidate.headerState)),
         incomingConfirmedByRecords: incomingStillLatestInRecords(contact, candidateSeenAt),
+        recordedEarlierOutgoing: outgoingBeforeLatestIncoming(contact, candidateSeenAt),
         messageDriven: candidate.messageDriven === true,
         beforeSend: () => {
           if (!isCurrentRun()) return false;

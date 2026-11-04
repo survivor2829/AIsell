@@ -69,6 +69,14 @@ $strictConversationMatch = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_
 $senderConfirmedByRecords = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_SENDER_CONFIRMED") -eq "1"
 # WeChat's message records show the message being answered is still the newest one in this chat.
 $incomingConfirmedByRecords = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_CONFIRMED") -eq "1"
+$recordedEarlierOutgoing = @()
+try {
+  $earlierOutgoingText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_EARLIER_OUTGOING")
+  if (-not [string]::IsNullOrWhiteSpace($earlierOutgoingText)) {
+    $parsedEarlierOutgoing = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($earlierOutgoingText)))
+    $recordedEarlierOutgoing = @($parsedEarlierOutgoing)
+  }
+} catch { $recordedEarlierOutgoing = @() }
 $messageDriven = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN") -eq "1"
 try { $allowedConversationNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { $allowedConversationNames = @() }
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
@@ -662,6 +670,20 @@ function Get-VisualSendMessageBlocks($frame, $messageLines, [double]$sidebarRigh
   return @($blocks.ToArray())
 }
 
+function Test-VisualSendRecordedEarlierOutgoing([string]$observed) {
+  $fold = { param([string]$value) [Text.RegularExpressions.Regex]::Replace((Normalize-VisualSendText $value), "[^\p{L}\p{N}]", "") }
+  $seen = & $fold $observed
+  if ($seen.Length -lt 4) { return $false }
+  foreach ($text in @($recordedEarlierOutgoing)) {
+    $recorded = & $fold ([string]$text)
+    if ($recorded.Length -lt 4) { continue }
+    $longest = [Math]::Max($seen.Length, $recorded.Length)
+    # Bounded OCR drift on a known text, e.g. "城总，您好，测试" read as "瞠茜到您好。测试".
+    if ((Get-VisualSendEditDistance $seen $recorded) -le [Math]::Floor($longest * 0.5)) { return $true }
+  }
+  return $false
+}
+
 function Get-VisualSendLatestIncomingEvidence($frame, [double]$sidebarRight, [double]$dpi) {
   if ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch "^[a-f0-9]{64}$") {
     return @{ state = "ocr_unresolved" }
@@ -693,7 +715,16 @@ function Get-VisualSendLatestIncomingEvidence($frame, [double]$sidebarRight, [do
   if ($messageBlocks.Count -eq 0) { return @{ state = "ocr_unresolved" } }
   $latest = $messageBlocks[-1]
   $latestRole = Get-VisualSendMessageRole $frame $latest $sidebarRight $logicalScale
-  if ($latestRole -ceq "assistant") { return @{ state = "proven_different" } }
+  if ($latestRole -ceq "assistant") {
+    # WeChat's records say the customer spoke last, and this green bubble is one
+    # of our earlier recorded texts: OCR missed the short customer bubble below
+    # it. Leave it unresolved so the records decide. A new reply of ours would be
+    # the latest record, so the records would not confirm and this stays a stop.
+    if ($incomingConfirmedByRecords -and (Test-VisualSendRecordedEarlierOutgoing ([string]$latest.text))) {
+      return @{ state = "ocr_unresolved" }
+    }
+    return @{ state = "proven_different" }
+  }
   if ($latestRole -cne "user") { return @{ state = "ocr_unresolved" } }
   $bubbleRect = Get-VisualSendBubbleRect $frame $latest $sidebarRight $logicalScale
   $observedText = Get-VisualSendRefinedBubbleText $frame $bubbleRect ([string]$latest.text)
@@ -1492,6 +1523,8 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN: options.messageDriven === true ? "1" : "",
     XIAOXI_VISUAL_SEND_SENDER_CONFIRMED: options.senderConfirmedByRecords === true ? "1" : "",
     XIAOXI_VISUAL_SEND_INCOMING_CONFIRMED: options.incomingConfirmedByRecords === true ? "1" : "",
+    XIAOXI_VISUAL_SEND_EARLIER_OUTGOING: Buffer.from(JSON.stringify((Array.isArray(options.recordedEarlierOutgoing) ? options.recordedEarlierOutgoing : [])
+      .slice(-3).map((text) => String(text).slice(0, 500))), "utf8").toString("base64"),
     XIAOXI_VISUAL_SEND_ALLOWED_NAMES: JSON.stringify(Array.isArray(options.conversationAliases) ? options.conversationAliases : [options.conversation].filter(Boolean)),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),
@@ -1753,5 +1786,6 @@ module.exports = {
   WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
   createVisualAutoReplySender,
   sanitizeVisualSendReceipt,
-  sendVisualAutoReply
+  sendVisualAutoReply,
+  visualSendEnvironment
 };
