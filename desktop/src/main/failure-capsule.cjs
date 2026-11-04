@@ -16,7 +16,6 @@ const FAILURE_LEVELS = new Set(["error", "fatal"]);
 // Not failures: the customer closed a dialog, or upload itself is offline.
 const IGNORED_CODES = new Set(["CONTENT_DIALOG_CANCELLED", "cancelled", "cloud_stopped"]);
 const IGNORED_MODULES = new Set(["maintenance", "feedback"]);
-const MERGE_WINDOW_MS = 10 * 60_000;
 // Evidence a task writes just after its failure is logged (the touch search
 // screenshot goes into the passport seconds later) is collected once more.
 const LATE_ATTACH_MS = 15_000;
@@ -205,7 +204,12 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     const environmental = environmentCause(failure, at);
     if (environmental === "counted") return null;
     const key = `${failure.module}:${failure.code}`;
-    state.recent = state.recent.filter(item => at - item.at < MERGE_WINDOW_MS);
+    // One capsule per module and code per day; repeats only count. With a 10-minute
+    // window, one skipped-contact code repeating through a long touch task used up
+    // the 40 daily capsules, and a later product-detail failure left no capsule
+    // at all (customer computer, 2026-11-04).
+    const day = new Date(at).toISOString().slice(0, 10);
+    state.recent = state.recent.filter(item => new Date(item.at).toISOString().slice(0, 10) === day);
     const prior = state.recent.find(item => item.key === key);
     if (prior) {
       const capsule = readJson(capsuleFile(prior.id), null);

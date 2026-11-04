@@ -721,15 +721,23 @@ function resolveSectionedPopup(visual, popup, identity, column) {
   });
   const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 24 && column(line.left) <= 60)
     .sort((left, right) => Number(left.top) - Number(right.top));
-  if (!headers.length) return reject("search-r022");
-  const header = headers[0];
+  // Customer computer, WeChat 4.2.0.8 at 100% (2026-11-04, 1.2.49): OCR read no
+  // light-gray caption at all, so every contact stopped as search-r022. 4.2 lists
+  // contacts first, so for a WeChat-ID search without a readable caption the
+  // contact section runs from the popup top down to the first other caption
+  // (群聊/聊天记录...) or the first group-member line ("包含：…微信号…"). The
+  // exact, unique WeChat-ID rule below is unchanged.
+  if (!headers.length && identity.queryType !== "wechat_id") return reject("search-r022");
+  const header = headers[0] || null;
+  const sectionTop = header ? Number(header.bottom) - 2 : Number(popup.top);
   const sectionEnd = Math.min(Number(popup.bottom),
-    ...visual.filter((line) => isOtherSearchSection(line.text) && Number(line.top) >= Number(header.bottom) - 2)
+    ...visual.filter((line) => Number(line.top) >= sectionTop && (isOtherSearchSection(line.text)
+      || (!header && (isUnsafeVisualText(line.text) || isNetworkLookupText(line.text)))))
       .map((line) => Number(line.top)));
   const rows = mergeVisualLines(visual.filter((line) => line !== header
     && !isLocalContactSection(line.text)
     && column(line.left) > 60
-    && Number(line.top) >= Number(header.bottom) - 2
+    && Number(line.top) >= sectionTop
     && Number(line.bottom) <= sectionEnd + 2));
   if (rows.some((line) => isUnsafeVisualText(line.text) || isNetworkLookupText(line.text))) return reject("search-r024");
   const idRows = rows.filter((line) => wechatIdLabelValue(line) !== null);
@@ -737,7 +745,8 @@ function resolveSectionedPopup(visual, popup, identity, column) {
     const query = foldedWechatId(identity.query);
     const exact = idRows.filter((line) => foldedWechatId(wechatIdLabelValue(line)) === query);
     if (idRows.length > 1) return reject("search-r007");
-    if (exact.length === 1) return { status: "selected", mode: "sectioned_wechat_id_visual", candidate: exact[0] };
+    if (exact.length === 1) return { status: "selected", mode: "sectioned_wechat_id_visual", candidate: exact[0],
+      ...(header ? {} : { diagnostics: { popup_layout: "sectioned", section_caption: "unread" } }) };
     return reject("search-r015", "exact_search_result_not_found");
   }
   const names = rows.filter((line) => wechatIdLabelValue(line) === null
