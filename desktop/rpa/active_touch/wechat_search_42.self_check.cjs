@@ -98,6 +98,23 @@ assert.equal(networkNoCaption.mode, "sectioned_wechat_id_visual", JSON.stringify
 assert.notEqual(resolveWechatSearchResultObservation(withNetworkRow(memberOnly), byId("wakeup2829")).status, "selected",
   "with the network row too, an ID only in a group-member line is never clicked");
 
+// Customer 4.2.0.8 capture (2026-11-04, contact "测试客户", ID Abc12345678): OCR read
+// neither the name nor the caption; avatar specks joined the ID line, which so
+// starts in the caption column; "搜索网络结果" came back as 5 characters. Box
+// positions are the field passport's. The 1.2.52 caption rule refused it (r022).
+const word = (text, left, right) => ({ text, left, right });
+const fieldLines = [
+  { ...line("· 微 信 号 ： Abc12345678", 93, 139, 254, 154),
+    words: [word("·", 93, 99), word("微", 136, 147), word("信", 148, 159), word("号", 160, 171), word("：", 172, 177), word("Abc12345678", 178, 254)] },
+  { ...line("搜 索 网 络 结", 117, 176, 188, 188), words: [word("搜索网络结", 117, 188)] },
+  line("2", 92, 204, 104, 217),
+  { ...line("Abc12345678", 112, 208, 187, 220), words: [word("Abc12345678", 112, 187)] },
+  line("i", 398, 209, 420, 222)
+];
+const fieldFound = resolveWechatSearchResultObservation(observe(fieldLines), { query: "Abc12345678", expectedName: "测试客户", queryType: "wechat_id" });
+assert.equal(fieldFound.mode, "sectioned_wechat_id_visual", JSON.stringify(fieldFound));
+assert.ok(fieldFound.candidate.y > 139 && fieldFound.candidate.y < 160, "the click lands on the contact's ID line");
+
 // WeChat 4.1 popups with the network row keep their original rules.
 const legacy = resolveWechatSearchResultObservation({ ...observe(realLines()),
   webSearchCandidates: [line("搜索网络结果", 118, 262, 220, 276)], webSearchTop: 262 }, byId("wakeup2829"));
