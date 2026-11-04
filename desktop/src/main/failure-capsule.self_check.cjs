@@ -147,6 +147,21 @@ async function serviceOutputTravelsWithItsFailure() {
   capsules.stop();
 }
 
+async function aRepeatingCodeTakesOneSlotPerDay() {
+  const t = fixture("repeat-day");
+  t.setEnabled(false);
+  const start = Date.parse("2026-11-04T01:00:00.000Z");
+  const ids = new Set();
+  for (let hour = 0; hour < 80; hour += 1) {
+    const at = start + hour * 20 * 60_000; // every 20 minutes, past one UTC day
+    ids.add(t.capsules.record({ source: "log", module: "active_touch", code: "search_result_identity_unverified", at }));
+  }
+  assert.equal(ids.size, 2, "the same code opens one capsule per day, not one per ten minutes");
+  assert.ok(t.capsules.record({ source: "log", module: "product_detail", code: "PlannerError", at: start + 6 * 3_600_000 }),
+    "a different failure later the same day still gets its own capsule");
+  t.capsules.stop();
+}
+
 async function dailyLimitStopsAFailureLoop() {
   const t = fixture("limit");
   t.setEnabled(false);
@@ -285,6 +300,7 @@ async function productDetailJournalOpensItsOwnCapsule() {
   await productDetailJournalOpensItsOwnCapsule();
   await screenshotsOfTheSameOperationUploadAsOriginals();
   await uploadRetriesAndRespectsTheCustomerSwitch();
+  await aRepeatingCodeTakesOneSlotPerDay();
   await dailyLimitStopsAFailureLoop();
   await serviceOutputTravelsWithItsFailure();
   await flightRecordAndPassportTravelWithTheFailure();

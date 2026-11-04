@@ -50,9 +50,24 @@ assert.notEqual(resolveWechatSearchResultObservation(observe(longer), byId("wake
 const lookup = [...realLines(), line("网 络 查 找 微 信 号", 136, 160, 260, 172)];
 assert.notEqual(resolveWechatSearchResultObservation(observe(lookup), byId("wakeup2829")).status, "selected");
 
-// No contact header read at all: no click.
+// Customer computer, WeChat 4.2.0.8 (2026-11-04, 1.2.49): OCR read no caption at
+// all and every contact stopped as search-r022. Contacts come first in 4.2, so
+// the exact, unique WeChat ID above the first other section is still clicked.
 const noHeader = realLines().filter((item) => item.text !== "常 便 用");
-assert.notEqual(resolveWechatSearchResultObservation(observe(noHeader), byId("wakeup2829")).status, "selected");
+const noHeaderFound = resolveWechatSearchResultObservation(observe(noHeader), byId("wakeup2829"));
+assert.equal(noHeaderFound.mode, "sectioned_wechat_id_visual", JSON.stringify(noHeaderFound));
+assert.ok(noHeaderFound.candidate.y < 179, "the click stays above 群聊");
+// Neither caption read: a group-member line ends the contact section, and the ID
+// that appears only there is never a contact.
+const captionless = noHeader.filter((item) => item.text !== "群 聊");
+assert.equal(resolveWechatSearchResultObservation(observe(captionless), byId("wakeup2829")).mode, "sectioned_wechat_id_visual");
+const memberOnly = captionless.filter((item) => !item.text.startsWith("微 信"))
+  .map((item) => item.text.startsWith("包 含") ? line("包 含 ： 城 胜 （ 微 信 号 ： wakeup2829)", 136, 238, 309, 251) : item);
+assert.notEqual(resolveWechatSearchResultObservation(observe(memberOnly), byId("wakeup2829")).status, "selected",
+  "an ID inside a group-member line is never clicked");
+// A name search without a caption still does not click from OCR (the Enter
+// fallback and the exact title gate handle it).
+assert.equal(resolveWechatSearchResultObservation(observe([line("城 胜", 136, 118, 170, 131)]), byName("城胜")).rule_id, "search-r022");
 
 // Name search: the name row under 联系人, with one OCR-misread character allowed
 // only for names of three or more characters; the chat title is checked later.
