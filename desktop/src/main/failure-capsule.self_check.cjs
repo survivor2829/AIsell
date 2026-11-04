@@ -162,6 +162,30 @@ async function aRepeatingCodeTakesOneSlotPerDay() {
   t.capsules.stop();
 }
 
+async function aRefusedCapsuleDoesNotBlockTheQueue() {
+  // Development machine since 2026-10-30 and customer computers on 2026-11-04:
+  // a redacted task id ({present,length,sha256_16}) made the server refuse the
+  // first queued capsule (400) and every later capsule waited behind it forever.
+  const sent = [];
+  const network = { async request(route, { body }) {
+    if (route !== "/v1/capsules") return { ok: true };
+    if (body.capsule.code === "refused_by_server") throw Object.assign(new Error("cloud_http_400"), { code: "cloud_http_400" });
+    if (typeof body.capsule.taskId !== "string") throw Object.assign(new Error("cloud_http_400"), { code: "cloud_http_400" });
+    sent.push(body.capsule.code);
+    return { id: body.capsule.id, evidence: [], attachments: [] };
+  } };
+  const t = fixture("refused", { network });
+  t.setEnabled(false);
+  t.capsules.record({ source: "log", module: "wechat_workflow", code: "refused_by_server" });
+  t.capsules.record({ source: "log", module: "wechat_workflow", code: "redacted_task", taskId: { present: true, length: 36, sha256_16: "2c5d36a9ede0cf5a" } });
+  t.capsules.record({ source: "log", module: "product_detail", code: "PlannerError" });
+  t.setEnabled(true);
+  await t.capsules.flush();
+  assert.deepEqual(sent, ["redacted_task", "PlannerError"], "later capsules still go out; a redacted task id is sent as text");
+  assert.equal(t.capsules.status().queued, 0, "the refused capsule leaves the queue instead of blocking it");
+  t.capsules.stop();
+}
+
 async function dailyLimitStopsAFailureLoop() {
   const t = fixture("limit");
   t.setEnabled(false);
@@ -301,6 +325,7 @@ async function productDetailJournalOpensItsOwnCapsule() {
   await screenshotsOfTheSameOperationUploadAsOriginals();
   await uploadRetriesAndRespectsTheCustomerSwitch();
   await aRepeatingCodeTakesOneSlotPerDay();
+  await aRefusedCapsuleDoesNotBlockTheQueue();
   await dailyLimitStopsAFailureLoop();
   await serviceOutputTravelsWithItsFailure();
   await flightRecordAndPassportTravelWithTheFailure();
