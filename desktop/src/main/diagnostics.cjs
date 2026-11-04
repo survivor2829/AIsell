@@ -10,12 +10,14 @@ const { internalDiagnosticsEnabled, scrubInternalDetails } = require("../shared/
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ARCHIVES = 19;
-const MAX_DEPTH = 4;
+// Search failures keep their OCR boxes at details.diagnostics.ocr_observation.ocr_boxes[i]:
+// depth 4 and 160 nodes cut every box to "[MAX_DEPTH]" in 2026-11-04 customer capsules.
+const MAX_DEPTH = 6;
 const MAX_ARRAY = 20;
 const MAX_OBJECT_KEYS = 40;
 const MAX_STRING = 800;
 const MAX_DETAILS_BYTES = 4 * 1024;
-const MAX_SANITIZE_NODES = 160;
+const MAX_SANITIZE_NODES = 320;
 const MAX_SUMMARY_INPUT = MAX_STRING;
 const MAX_DEDUPE_MODULES = 64;
 const ACTIONABLE_LEVELS = new Set(["warn", "error", "fatal"]);

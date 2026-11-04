@@ -494,6 +494,8 @@ def test_new_paid_planner_requires_fresh_reference_upload_first(task, monkeypatc
     (task / "_input.json").unlink()
     reference = task / "reference.png"
     Image.new("RGB", (80, 80), "#7bad12").save(reference)
+    journal_dir = task.parent / f"{task.name}-data"
+    monkeypatch.setenv("XIAOXI_PRODUCT_DETAIL_DATA_DIR", str(journal_dir))
     events = []
     def read_quote(**kwargs):
         events.append("quote")
@@ -524,6 +526,12 @@ def test_new_paid_planner_requires_fresh_reference_upload_first(task, monkeypatc
         saved = (task / "_recovery.json").read_text(encoding="utf-8")
         assert "secret upstream body" not in saved
         assert json.loads(saved)["diagnostic"]["http_status"] == 503
+        # The failure journal (the capsule source) carries the same bounded
+        # diagnostic; a 2026-11-04 customer capsule had none.
+        journal = (journal_dir / "logs" / "failures.jsonl").read_text(encoding="utf-8")
+        assert "secret upstream body" not in journal
+        entries = [json.loads(line) for line in journal.splitlines() if line.strip()]
+        assert any(entry["details"].get("http_status") == 503 and entry["details"].get("stage") == "reference_upload" for entry in entries)
 
 
 def test_repricing_new_task_still_uploads_reference_before_buying_planner(task, monkeypatch):

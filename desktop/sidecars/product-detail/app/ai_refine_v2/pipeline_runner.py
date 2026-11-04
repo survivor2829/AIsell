@@ -1468,7 +1468,11 @@ def _preflight_before_paid_planner(task_dir: Path, product_image_url: str, image
         record = _persist_recovery(task_dir, [], 0.0, 0, status="failed", error=message)
         record["diagnostic"] = _image_failure_diagnostic(exc)
         _atomic_write_json(task_dir / "_recovery.json", record)
-        raise ai_image_apimart.APIMartNotSubmitted(message, stage="reference_upload") from None
+        failure = ai_image_apimart.APIMartNotSubmitted(message, stage="reference_upload")
+        # The failure journal and capsule read .details; without it a customer
+        # capsule (2026-11-04) said only "通道未连通" with no type or HTTP status.
+        failure.details = dict(record["diagnostic"])
+        raise failure from None
 
 
 def _worker_v1(task_id: str, product_text: str, product_image_url: str,

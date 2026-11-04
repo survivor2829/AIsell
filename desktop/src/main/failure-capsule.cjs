@@ -224,6 +224,9 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
         try { write(capsule); } catch {}
         // Re-send so the server sees the new count; it skips screenshots it already has.
         if (!state.outbox.includes(prior.id)) state.outbox.push(prior.id);
+        // A capsule kept for the whole day may have opened with no evidence (e.g.
+        // on an older version); take this occurrence's screenshots and passports.
+        if (!(capsule.attachments || []).length && !(capsule.evidence || []).length) lateAttach(prior.id, at, failure.traceId || "");
       }
       save();
       void flush();

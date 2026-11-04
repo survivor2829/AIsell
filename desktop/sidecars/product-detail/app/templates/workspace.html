@@ -1028,10 +1028,22 @@
 
   // Customers see one plain sentence and a retry button. Codes, task ids and
   // technical detail stay in the failure log and the field report.
+  function aiRefineCategoryMismatch(error) {
+    if (String(error?.code || '') !== 'AI_REFINE_CATEGORY_MISMATCH') return null;
+    const match = /所选(设备类|耗材类|配件类|工具类)与资料中的(设备类|耗材类|配件类|工具类)不一致/u
+      .exec(String(error?.technicalDetail || error?.message || ''));
+    return match ? { selected: match[1], detected: match[2] } : null;
+  }
+
   function aiRefineUserMessage(error) {
     const code = String(error?.code || '');
     const status = Number(error?.httpStatus || 0);
     if (error?.resumable) return '这次还没做完，已完成的部分都保存着。点“重试”接着做，不会重复扣费。';
+    // The product text says another category than the one selected (2026-11-04:
+    // a fan dryer selected as 工具类 failed five times behind a generic sentence).
+    const categories = aiRefineCategoryMismatch(error);
+    if (categories) return `资料内容属于“${categories.detected}”，你选的是“${categories.selected}”。点“重试”会自动改成“${categories.detected}”重新生成。`;
+    if (code === 'AI_REFINE_CATEGORY_UNCLEAR') return '资料不足以判断产品品类，请在文案里补充产品用途后再点“重试”。';
     if (code === 'AI_REFINE_TOO_MANY_SCREENS') return '资料里的卖点太多，超过了15张图。请删减一些后再点“重试”。';
     if (code === 'AI_REFINE_REROLL_INVALID') return '这张图暂时不能单独重做，请点“重试”重新生成。';
     if (code === 'DESKTOP_AI_REFINE_STARTING') return '上一个任务正在提交，请稍等几秒再点“重试”。';
@@ -1055,7 +1067,11 @@
       </div>`;
     results.querySelector('[data-ai-refine-retry]')?.addEventListener('click', () => {
       if (onRetry) onRetry();
-      else void generateAiHtmlV2();
+      else {
+        const categories = aiRefineCategoryMismatch(error);
+        if (categories) selectCategory(categories.detected);
+        void generateAiHtmlV2();
+      }
     });
   }
 

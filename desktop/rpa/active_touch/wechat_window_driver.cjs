@@ -2468,7 +2468,8 @@ function allowsNameEnterFallback(observed, resolution, context) {
   const lines = Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [];
   return ["name", "name_fallback"].includes(String(context.searchQueryType || ""))
     && observation.captureSource === "popup" && observation.ocrOk === true
-    && !(Array.isArray(observation.webSearchCandidates) && observation.webSearchCandidates.length)
+    // The popup may also end with a "搜索网络结果" row (customer 4.2.0.8): Enter still
+    // opens the highlighted first result at the top; the exact title gate decides.
     && NAME_ENTER_FALLBACK_RULES.has(String(resolution.rule_id || ""))
     && lines.length > 0
     && !lines.some((line) => /查找/u.test(String(line?.text || "").normalize("NFKC").replace(/\s+/gu, "")));
