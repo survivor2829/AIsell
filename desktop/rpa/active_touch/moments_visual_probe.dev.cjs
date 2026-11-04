@@ -636,7 +636,7 @@ function Resolve-MomentsInteractionAnchor(
     return @{ ok = $false; reason = "moments_visual_target_lock_invalid"; diagnostics = @{ rawCandidateCount = 0; acceptedCandidateCount = 0 } }
   }
   if ($expectedAvatarBounds -ne $null -and $expectedAvatarHash) {
-    $avatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
+    $avatarHash = Get-MomentsAvatarHash $frame $expectedAvatarBounds
     $avatarHashMatched = [bool]($avatarHash -and [string]$avatarHash -ceq $expectedAvatarHash)
   } else {
     $avatarHash = ""
@@ -745,6 +745,45 @@ function Find-MomentsVisibleAvatars($frame, $viewportBounds) {
   return @($avatars.ToArray() | Sort-Object { [double]$_.top }, { [double]$_.left })
 }
 
+function Get-MomentsTightAvatarRect($frame, $rect) {
+  # WeChat 4.2 draws ~40 px avatars where detection uses a 52 px estimate on a
+  # 4 px scan step, so the detected box drifts a few pixels between frames and
+  # its pixel hash changes (2026-11-04: the locked post was never found again
+  # after scrolling to its menu). Hash the avatar's own extent instead: the
+  # pixels that differ from the feed background around the detected box.
+  # When that extent is unclear the detected box is used unchanged.
+  $pad = 6
+  $left = [int][Math]::Max(0, [Math]::Floor([double]$rect.left) - $pad)
+  $top = [int][Math]::Max(0, [Math]::Floor([double]$rect.top) - $pad)
+  $right = [int][Math]::Min($frame.width, [Math]::Ceiling([double]$rect.left + [double]$rect.width) + $pad)
+  $bottom = [int][Math]::Min($frame.height, [Math]::Ceiling([double]$rect.top + [double]$rect.height) + $pad)
+  if (($right - $left) -lt 24 -or ($bottom - $top) -lt 24) { return $rect }
+  $corner = ($top * $frame.stride) + ($left * 4)
+  $bgB = [int]$frame.bytes[$corner]; $bgG = [int]$frame.bytes[$corner + 1]; $bgR = [int]$frame.bytes[$corner + 2]
+  $minX = $right; $minY = $bottom; $maxX = -1; $maxY = -1
+  for ($y = $top; $y -lt $bottom; $y++) {
+    $row = $y * $frame.stride
+    for ($x = $left; $x -lt $right; $x++) {
+      $i = $row + ($x * 4)
+      $difference = [Math]::Abs([int]$frame.bytes[$i] - $bgB) + [Math]::Abs([int]$frame.bytes[$i + 1] - $bgG) + [Math]::Abs([int]$frame.bytes[$i + 2] - $bgR)
+      if ($difference -gt 30) {
+        if ($x -lt $minX) { $minX = $x }; if ($x -gt $maxX) { $maxX = $x }
+        if ($y -lt $minY) { $minY = $y }; if ($y -gt $maxY) { $maxY = $y }
+      }
+    }
+  }
+  if ($maxX -lt 0) { return $rect }
+  $width = $maxX - $minX + 1; $height = $maxY - $minY + 1
+  # Touching the searched border means the extent continues outside it.
+  if ($minX -le $left -or $minY -le $top -or $maxX -ge ($right - 1) -or $maxY -ge ($bottom - 1)) { return $rect }
+  if ($width -lt 24 -or $height -lt 24 -or [Math]::Abs($width - $height) -gt [Math]::Max(3, $width * 0.15)) { return $rect }
+  return @{ left = [double]$minX; top = [double]$minY; width = [double]$width; height = [double]$height }
+}
+
+function Get-MomentsAvatarHash($frame, $rect) {
+  return Get-MomentsPixelHash $frame (Get-MomentsTightAvatarRect $frame $rect)
+}
+
 function Get-MomentsPixelHash($frame, $rect) {
   $left = [int][Math]::Max(0, [Math]::Floor([double]$rect.left))
   $top = [int][Math]::Max(0, [Math]::Floor([double]$rect.top))
@@ -765,6 +804,7 @@ function Get-MomentsPixelHash($frame, $rect) {
 
 function Get-MomentsAvatarAnchorHashes($frame, $rect) {
   # Keep exact interior pixels, allowing only a one-pixel detection offset.
+  $rect = Get-MomentsTightAvatarRect $frame $rect
   $size = [Math]::Floor([Math]::Min([double]$rect.width, [double]$rect.height)) - 8
   if ($size -lt 24) { return @() }
   $hashes = @()
@@ -1154,7 +1194,7 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$include
     if ($postRight -le $postLeft -or $postBottom -le $postTop) { continue }
     $postRect = @{ left = $postLeft; top = $postTop; width = $postRight - $postLeft; height = $postBottom - $postTop }
     $menuHash = Get-MomentsPixelHash $frame $menu.bounds
-    $avatarHash = Get-MomentsPixelHash $frame $avatar.bounds
+    $avatarHash = Get-MomentsAvatarHash $frame $avatar.bounds
     if (-not $menuHash -or -not $avatarHash) { continue }
     [void]$interactionPosts.Add(@{
       text = ""
@@ -1254,7 +1294,7 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
     $stableAnchorText = Get-MomentsPostStableAnchorText $ocr $postRect $avatar
     if (-not $stableAnchorText -or $stableAnchorText.Length -gt 2000) { continue }
     $regionHash = Get-MomentsPixelHash $frame $postRect
-    $avatarHash = Get-MomentsPixelHash $frame $avatar
+    $avatarHash = Get-MomentsAvatarHash $frame $avatar
     if (-not $regionHash -or -not $avatarHash) { continue }
     [void]$readingCandidates.Add(@{
       text = [string]$ocr.text

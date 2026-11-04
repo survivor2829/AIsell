@@ -63,7 +63,7 @@ const IDENTITY_SKIP_REASONS = new Set([
 const TOUCH_PRE_SEND_STOP_REASONS = new Set([
   "batch_authorization_missing", "contact_identity_ambiguous", "contact_or_message_missing", "contact_snapshot_changed",
   "executor_contact_mismatch", "image_attempt_context_missing", "invalid_unclassified_reason", "prepared_task_persist_failed",
-  "real_send_already_attempted", "real_send_explicit_allow_missing", "real_send_final_confirmation_missing",
+  "powershell_blocked_by_antivirus", "real_send_already_attempted", "real_send_explicit_allow_missing", "real_send_final_confirmation_missing",
   "real_send_gate_failed", "real_send_not_armed", "real_send_session_not_verified", "send_gate_not_passed",
   "task_attention_reason_missing", "task_context_mismatch", "task_context_missing", "touch_image_changed",
   "touch_sequence_changed", "wechat_account_ambiguous", "wechat_account_changed", "wechat_account_directory_missing",
@@ -911,7 +911,9 @@ function createTouchWorkflow(options = {}) {
         persist();
         if (!enabled()) return response("pending", { result: { deliveryStatus: "not_attempted" } });
         return attention(
-          String(result.error || result.blocked_reason || "触达未执行，请检查微信后处理任务"),
+          failurePolicy.reasonCode === "powershell_blocked_by_antivirus"
+            ? "电脑的杀毒软件拦住了发送这一步，消息没有发出。请联系我们处理后再启动任务。"
+            : String(result.error || result.blocked_reason || "触达未执行，请检查微信后处理任务"),
           { deliveryStatus: "not_attempted" },
           String(result?.blocked_reason || result?.reason || "")
         );

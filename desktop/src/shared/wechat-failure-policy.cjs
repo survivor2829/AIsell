@@ -75,6 +75,9 @@ const workflowPolicies = Object.freeze({
   moments_render_pane_not_found: { classification: "environment", attentionScope: "task" },
   moments_surface_read_failed: { classification: "environment", attentionScope: "task" },
   powershell_failed: { classification: "environment", attentionScope: "global" },
+  // Antivirus refused the script before it ran: nothing was done, and retrying
+  // cannot help until the script itself no longer trips the scanner.
+  powershell_blocked_by_antivirus: { classification: "blocker", attentionScope: "global" },
   powershell_output_invalid: { classification: "blocker", attentionScope: "global" },
   powershell_timeout: { classification: "environment", attentionScope: "global" },
   wechat_operation_failed: { classification: "blocker", attentionScope: "global" },

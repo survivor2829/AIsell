@@ -365,6 +365,16 @@ function ensureWechatWindowVisible() {
   }
 }
 
+// Defender (AMSI) refuses the whole script while PowerShell is still loading
+// it, so none of its code ran: nothing was typed, clicked or sent. Report that
+// plainly instead of a generic failure the send path must treat as "maybe sent".
+// Field 2026-11-04: the send script was blocked on the development machine.
+function powershellBlockedByAntivirus(stderr) {
+  return /ScriptContainedMaliciousContent|malicious content and has been blocked/iu.test(String(stderr || ""));
+}
+const ANTIVIRUS_BLOCKED_RESULT = Object.freeze({ ok: false, reason: "powershell_blocked_by_antivirus",
+  scriptStarted: false, sendAttempted: false });
+
 function workerEvidence(value, { evidence, script, stdout, stderr, elapsedMs, exitCode, error } = {}) {
   if (process.env.XIAOXI_INTERNAL_DIAGNOSTICS !== "1") return value;
   const detail = {
@@ -419,6 +429,9 @@ function runPowerShell(script, env = {}, options = {}) {
 
   if (result.error) {
     return withWindowDiagnostics({ ok: false, reason: result.error.code === "ETIMEDOUT" ? "powershell_timeout" : "powershell_failed" });
+  }
+  if (result.status !== 0 && powershellBlockedByAntivirus(result.stderr)) {
+    return withWindowDiagnostics({ ...ANTIVIRUS_BLOCKED_RESULT });
   }
   if (result.status !== 0) {
     const diagnostics = options.diagnostics === true && options.windowDiagnostics !== true
@@ -2366,6 +2379,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
             }
           : unconfirmedTermination());
       }
+      if (status !== 0 && powershellBlockedByAntivirus(stderr)) return finish({ ...ANTIVIRUS_BLOCKED_RESULT });
       if (status !== 0) {
         const diagnostics = options.diagnostics === true && options.windowDiagnostics !== true
           ? { ...terminationDiagnostics("powershell_exit_nonzero"), exit_code: status, stderr: stderr.trim().slice(-5000) }
@@ -3047,6 +3061,7 @@ function inputWechatMessageDraftAsync(message, context = {}) {
 }
 
 module.exports = {
+  powershellBlockedByAntivirus,
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
   WECHAT_MAIN_WINDOW_RULES_SCRIPT,
   WECHAT_MOMENTS_STANDALONE_WINDOW_LAYOUT_MODE,

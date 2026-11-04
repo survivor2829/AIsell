@@ -1056,7 +1056,7 @@ assert.match(script, /\[Windows\.Media\.Ocr\.OcrEngine\]::TryCreateFromLanguage\
 assert.doesNotMatch(script, /TryCreateFromUserProfileLanguages/u);
 assert.match(script, /\$digest = \$sha\.ComputeHash\(\$buffer\)/u);
 assert.match(script, /\$layoutDigest = \$sha\.ComputeHash\(\$layoutBytes\)/u);
-assert.match(script, /\$avatarHash = Get-MomentsPixelHash \$frame \$avatar\.bounds/u);
+assert.match(script, /\$avatarHash = Get-MomentsAvatarHash \$frame \$avatar\.bounds/u);
 assert.match(script, /regionHash = \$regionHash/u);
 assert.match(script, /avatarHash = \$avatarHash/u);
 assert.match(script, /layoutHash = \[string\]\$ocr\.layoutHash/u);
