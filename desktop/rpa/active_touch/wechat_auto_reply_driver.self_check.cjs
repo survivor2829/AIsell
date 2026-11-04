@@ -484,7 +484,7 @@ assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("unread_preview_mismatch"), true, "
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("wechat_window_ambiguous"), true, "multiple visible personal WeChat windows must fail closed instead of selecting a different account");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$bubbleCandidates.Count -gt 0"), true, "exact message bubbles must take priority over legacy text nodes");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("Add-Type -AssemblyName System.Drawing"), true, "avatar-side detection must use an in-memory screenshot");
-assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("CopyFromScreen"), true, "the screenshot must be captured in memory without a file");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("[XiaoxiScreenPixels]::Copy("), true, "the screenshot must be captured in memory without a file");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("SetThreadDpiAwarenessContext"), true, "screenshot and UIA coordinates must share the per-monitor physical DPI coordinate space");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("SetProcessDPIAware"), false);
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes(".Save("), false, "chat screenshots must never be saved");

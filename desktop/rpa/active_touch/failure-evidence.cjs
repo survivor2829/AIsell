@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -297,7 +298,8 @@ function Save-XiaoxiFailureScreen([string]$rule, [string]$reason, [string]$evide
     $screen = New-Object Drawing.Bitmap($area.Width, $area.Height)
     try {
       $g = [Drawing.Graphics]::FromImage($screen)
-      try { $g.CopyFromScreen($area.Left, $area.Top, 0, 0, $area.Size) } finally { $g.Dispose() }
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+      try { if (-not [XiaoxiScreenPixels]::Copy($screen, $area.Left, $area.Top)) { throw "screen_copy_failed" } } finally { $g.Dispose() }
       $note.screen = @{ left = $area.Left; top = $area.Top; width = $area.Width; height = $area.Height }
       Save-XiaoxiFlightFrame ('failure.' + $rule) $screen $note -Force
     } finally { $screen.Dispose() }

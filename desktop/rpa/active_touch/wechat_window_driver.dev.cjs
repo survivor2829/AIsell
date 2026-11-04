@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const {
   runPowerShell,
   runPowerShellAsync
@@ -156,7 +157,8 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
     if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
       $bitmap = New-Object System.Drawing.Bitmap($captureWidth, $captureHeight)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-      $graphics.CopyFromScreen($captureLeft, $captureTop, 0, 0, $bitmap.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+      if (-not [XiaoxiScreenPixels]::Copy($bitmap, $captureLeft, $captureTop)) { throw "screen_copy_failed" }
       $stream = New-Object System.IO.MemoryStream
       $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
       $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -625,7 +627,8 @@ try {
   if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
     $bitmap = New-Object System.Drawing.Bitmap($captureWidth, $captureHeight)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen($captureLeft, $captureTop, 0, 0, $bitmap.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, $captureLeft, $captureTop)) { throw "screen_copy_failed" }
     $stream = New-Object System.IO.MemoryStream
     $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
     $sha = [System.Security.Cryptography.SHA256]::Create()

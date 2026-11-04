@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 const path = require("node:path");
@@ -175,7 +176,8 @@ function Test-SendButtonActive {
   $sample = New-Object System.Drawing.Bitmap(($halfW * 2), ($halfH * 2))
   try {
     $graphics = [System.Drawing.Graphics]::FromImage($sample)
-    try { $graphics.CopyFromScreen(($point.x - $halfW), ($point.y - $halfH), 0, 0, $sample.Size) } finally { $graphics.Dispose() }
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    try { if (-not [XiaoxiScreenPixels]::Copy($sample, ($point.x - $halfW), ($point.y - $halfH))) { throw "screen_copy_failed" } } finally { $graphics.Dispose() }
     $green = 0; $total = 0; $r = 0; $g = 0; $b = 0
     for ($y = 0; $y -lt $sample.Height; $y += 2) { for ($x = 0; $x -lt $sample.Width; $x += 2) {
       $pixel = $sample.GetPixel($x, $y); $total++; $r += $pixel.R; $g += $pixel.G; $b += $pixel.B

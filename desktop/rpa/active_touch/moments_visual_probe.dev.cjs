@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const MOMENTS_VISUAL_READONLY_POWERSHELL = String.raw`
 Add-Type -AssemblyName System.Drawing
@@ -254,14 +255,8 @@ function Get-MomentsVisualFrame(
   try {
     $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen(
-      [int]$windowRect.Left,
-      [int]$windowRect.Top,
-      0,
-      0,
-      [System.Drawing.Size]::new($width, $height),
-      [System.Drawing.CopyPixelOperation]::SourceCopy
-    )
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, [int]$windowRect.Left, [int]$windowRect.Top)) { throw "screen_copy_failed" }
   } catch {
     if ($bitmap) { $bitmap.Dispose() }
     return @{ ok = $false; reason = "moments_visual_capture_failed" }

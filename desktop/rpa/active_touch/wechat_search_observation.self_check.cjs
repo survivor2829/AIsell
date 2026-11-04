@@ -402,7 +402,7 @@ ${script.slice(start, end)}
 
   const popupStartInObservation = productionSearchScript.indexOf("      $popup = Find-SearchPopup");
   const bitmapStart = productionSearchScript.indexOf("      $bitmap = [System.Drawing.Bitmap]::new", popupStartInObservation);
-  const screenCopy = productionSearchScript.indexOf("$graphics.CopyFromScreen", bitmapStart);
+  const screenCopy = productionSearchScript.indexOf("[XiaoxiScreenPixels]::Copy($bitmap,", bitmapStart);
   const captureSave = productionSearchScript.indexOf("$bitmap.Save($captureStream", screenCopy);
   const ocrRecognize = productionSearchScript.indexOf("$ocrResult = Read-SearchOcrBitmap", captureSave);
   assert.ok(screenCopy > bitmapStart && captureSave > screenCopy && ocrRecognize > captureSave,

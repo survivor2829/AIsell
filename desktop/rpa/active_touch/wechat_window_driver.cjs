@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
@@ -1937,7 +1938,8 @@ if ($observeLocalResults) {
       $cropBounds = @{ left = $cropLeft; top = $cropTop; right = $cropLeft + $cropWidth; bottom = $cropTop + $cropHeight }
       $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-      $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+      if (-not [XiaoxiScreenPixels]::Copy($bitmap, $cropLeft, $cropTop)) { throw "screen_copy_failed" }
       $captureStream = [IO.MemoryStream]::new()
       try { $bitmap.Save($captureStream, [System.Drawing.Imaging.ImageFormat]::Png); if ($captureStream.Length -le 5MB) { $searchCapturePng = [Convert]::ToBase64String($captureStream.ToArray()) } }
       finally { $captureStream.Dispose() }
@@ -2096,7 +2098,8 @@ function Get-ConversationHeaderHash([int64]$hWnd) {
   $stream = [System.IO.MemoryStream]::new()
   $sha = [System.Security.Cryptography.SHA256]::Create()
   try {
-    $graphics.CopyFromScreen($left, $top, 0, 0, $bitmap.Size)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { throw "screen_copy_failed" }
     $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
     return [Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))
   } finally { $sha.Dispose(); $stream.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
