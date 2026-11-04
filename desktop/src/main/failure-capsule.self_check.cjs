@@ -261,6 +261,23 @@ async function passportWrittenAfterTheFailureStillTravels() {
   t.capsules.stop();
 }
 
+async function aDayCapsuleWithoutEvidenceTakesALaterOccurrence() {
+  // 2026-11-04: a skipped-contact capsule opened at 08:08 with nothing attached;
+  // its 17 later repeats (with search screenshots) added only a count.
+  const t = fixture("day-evidence", { lateAttachMs: 30 });
+  const first = Date.now() - 60_000;
+  const id = t.capsules.record({ source: "log", module: "wechat_adapter", code: "exact_search_result_not_found", at: first });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.deepEqual(t.files()[0].attachments, []);
+  const passports = path.join(t.root, "task-passports", "active_touch", "task_2");
+  fs.mkdirSync(passports, { recursive: true });
+  fs.writeFileSync(path.join(passports, "2026-11-04-09-24-46-000Z-cc33dd44-screen.png"), PNG);
+  assert.equal(t.capsules.record({ source: "log", module: "wechat_adapter", code: "exact_search_result_not_found", at: Date.now() }), id);
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(t.files()[0].attachments.filter(name => name.startsWith("passport-")).length, 1, "the later occurrence brings its screenshot");
+  t.capsules.stop();
+}
+
 async function maskedScreenshotsAreNotUploaded() {
   const t = fixture("masked");
   const evidence = path.join(t.root, "failure-evidence");
@@ -330,6 +347,7 @@ async function productDetailJournalOpensItsOwnCapsule() {
   await serviceOutputTravelsWithItsFailure();
   await flightRecordAndPassportTravelWithTheFailure();
   await passportWrittenAfterTheFailureStillTravels();
+  await aDayCapsuleWithoutEvidenceTakesALaterOccurrence();
   await maskedScreenshotsAreNotUploaded();
   await environmentCausesAreCountedNotFiled();
   profilePathVariants();

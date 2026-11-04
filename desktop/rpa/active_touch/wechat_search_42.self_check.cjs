@@ -57,6 +57,11 @@ const noHeader = realLines().filter((item) => item.text !== "常 便 用");
 const noHeaderFound = resolveWechatSearchResultObservation(observe(noHeader), byId("wakeup2829"));
 assert.equal(noHeaderFound.mode, "sectioned_wechat_id_visual", JSON.stringify(noHeaderFound));
 assert.ok(noHeaderFound.candidate.y < 179, "the click stays above 群聊");
+// A logo avatar read as text ("玺联惠") sits beside the contact row; it is not a caption.
+const logoAvatar = [...noHeader, line("玺 联 惠", 92, 140, 128, 156)];
+assert.equal(resolveWechatSearchResultObservation(observe(logoAvatar), byId("wakeup2829")).mode, "sectioned_wechat_id_visual");
+// Unrecognized text alone in the caption column could be another section: no click.
+assert.notEqual(resolveWechatSearchResultObservation(observe([...noHeader, line("群 聊 龘", 92, 100, 128, 112)]), byId("wakeup2829")).status, "selected");
 // Neither caption read: a group-member line ends the contact section, and the ID
 // that appears only there is never a contact.
 const captionless = noHeader.filter((item) => item.text !== "群 聊");
@@ -82,6 +87,16 @@ assert.notEqual(resolveWechatSearchResultObservation(observe(twoChar), byName("�
   "two-character names must match exactly");
 const twoNames = [...nameLines, line("向 锦 涛", 136, 150, 190, 163)];
 assert.equal(resolveWechatSearchResultObservation(observe(twoNames), byName("向锦涛")).rule_id, "search-r021");
+
+// Customer 4.2.0.8 (2026-11-04, 1.2.51): the popup ended with "搜索网络结果" but
+// no caption was read; every WeChat-ID hit became search-r015.
+// The driver reports word positions; the label word starts in the label column (62 at 96 DPI).
+const networkRow = { ...line("搜索网络结果", 118, 262, 220, 276), words: [{ text: "搜索网络结果", left: 118, right: 220 }] };
+const withNetworkRow = (lines) => ({ ...observe(lines), webSearchCandidates: [networkRow], webSearchTop: 262 });
+const networkNoCaption = resolveWechatSearchResultObservation(withNetworkRow(noHeader), byId("wakeup2829"));
+assert.equal(networkNoCaption.mode, "sectioned_wechat_id_visual", JSON.stringify(networkNoCaption));
+assert.notEqual(resolveWechatSearchResultObservation(withNetworkRow(memberOnly), byId("wakeup2829")).status, "selected",
+  "with the network row too, an ID only in a group-member line is never clicked");
 
 // WeChat 4.1 popups with the network row keep their original rules.
 const legacy = resolveWechatSearchResultObservation({ ...observe(realLines()),

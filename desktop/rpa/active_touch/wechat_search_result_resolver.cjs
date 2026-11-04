@@ -645,12 +645,20 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   if (web.some((line) => line.text === "untrusted_network_boundary")) return withEvidence(reject("search-r011"));
   if (!web.length && observation.captureSource === "popup") {
     // No network boundary at all: the WeChat 4.2 popup layout.
-    return withEvidence(superstringVeto(classified, resolveSectionedPopup(visual, popup, identity, column)));
+    return withEvidence(superstringVeto(classified, resolveSectionedPopup(visual, popup, identity, column, all)));
   }
   let result = resolveBaselineObservation(classified, identity);
 
   const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
   if (!headers.length) {
+    // Customer computer, WeChat 4.2.0.8 (2026-11-04, 1.2.51): the popup did end
+    // with "搜索网络结果", but OCR read no caption, so every WeChat-ID hit was
+    // turned into search-r015. Apply the same caption-less rule as the 4.2 popup
+    // without that row: the section above the network row, exactly one exact ID.
+    if (identity.queryType === "wechat_id" && web.length) {
+      const bounded = { ...popup, bottom: Math.min(Number(popup.bottom), Number(classified.webSearchTop ?? popup.bottom)) };
+      return withEvidence(superstringVeto(classified, resolveSectionedPopup(visual, bounded, identity, column, all)));
+    }
     if (result.status === "selected" || (web.length && ["search-r014", "search-r019"].includes(result.rule_id))) {
       return withEvidence(reject("search-r015", "exact_search_result_not_found"));
     }
@@ -714,7 +722,7 @@ function sameDisplayName(text, expected) {
   return differences <= 1;
 }
 
-function resolveSectionedPopup(visual, popup, identity, column) {
+function resolveSectionedPopup(visual, popup, identity, column, rawLines = visual) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
     diagnostics: { rule_id, candidate_count: 0, visual_candidate_count: visual.length, ocr_ok: true, popup_layout: "sectioned" }
@@ -734,6 +742,16 @@ function resolveSectionedPopup(visual, popup, identity, column) {
     ...visual.filter((line) => Number(line.top) >= sectionTop && (isOtherSearchSection(line.text)
       || (!header && (isUnsafeVisualText(line.text) || isNetworkLookupText(line.text)))))
       .map((line) => Number(line.top)));
+  // "No caption" means the caption column is empty, as on the customer computer.
+  // Unrecognized text there (e.g. a misread "群聊龘") could be another section's
+  // caption: do not guess. One or two characters are avatar OCR fragments.
+  // Avatar text (e.g. a "玺联惠" logo avatar) sits beside a row's name or ID line;
+  // a caption has nothing to its right on the same line.
+  const besideRow = (line) => rawLines.some((other) => other !== line && column(other.left) > 60
+    && Math.min(Number(line.bottom), Number(other.bottom)) - Math.max(Number(line.top), Number(other.top)) > 0);
+  if (!header && rawLines.some((line) => column(line.left) >= 24 && column(line.left) <= 60
+    && Number(line.top) < sectionEnd && !isLocalContactSection(line.text) && !isOtherSearchSection(line.text)
+    && [...normalized(line.text)].length >= 3 && !besideRow(line))) return reject("search-r022");
   const rows = mergeVisualLines(visual.filter((line) => line !== header
     && !isLocalContactSection(line.text)
     && column(line.left) > 60
