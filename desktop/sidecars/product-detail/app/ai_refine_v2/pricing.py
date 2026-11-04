@@ -49,6 +49,9 @@ def _image_failure_diagnostic(exc):
     status = getattr(exc, "http_status", None)
     if type(status) is int and 100 <= status <= 599:
         diagnostic["http_status"] = status
+    poll_reason = getattr(exc, "poll_reason", None)
+    if poll_reason in {"timeout", "connection"}:
+        diagnostic["poll_reason"] = poll_reason
     return diagnostic
 
 

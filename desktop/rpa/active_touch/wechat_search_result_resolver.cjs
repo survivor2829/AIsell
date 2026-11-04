@@ -749,7 +749,11 @@ function resolveSectionedPopup(visual, popup, identity, column, rawLines = visua
   // a caption has nothing to its right on the same line.
   const besideRow = (line) => rawLines.some((other) => other !== line && column(other.left) > 60
     && Math.min(Number(line.bottom), Number(other.bottom)) - Math.max(Number(line.top), Number(other.top)) > 0);
+  // A caption is a short label inside the caption column. Customer 4.2.0.8
+  // (2026-11-04, 1.2.52): OCR joined avatar specks with "微信号：Zsc…" into one
+  // line starting in that column; it runs far right, so it is the contact row.
   if (!header && rawLines.some((line) => column(line.left) >= 24 && column(line.left) <= 60
+    && column(Number(line.right)) <= 110
     && Number(line.top) < sectionEnd && !isLocalContactSection(line.text) && !isOtherSearchSection(line.text)
     && [...normalized(line.text)].length >= 3 && !besideRow(line))) return reject("search-r022");
   const rows = mergeVisualLines(visual.filter((line) => line !== header

@@ -41,7 +41,13 @@ _SIZE_DEFAULT = "1:1"
 _POLL_INTERVAL_S = 3
 # 480s = 8min, 给 v2 Hero 12 屏 + APIMart 偶发 503 重试边界, env 可覆盖
 _POLL_TIMEOUT_S = int(os.environ.get("REFINE_POLL_TIMEOUT_S", "480"))
-_MAX_CONSECUTIVE_POLL_ERRORS = 3
+# Polling only reads the status of an already submitted task: it never buys
+# anything, so a shaky network is waited out (bounded by _POLL_TIMEOUT_S) instead
+# of giving up after three failures in ~9 s. Customer computer 2026-11-04: the
+# last screen of a set stopped as "结果不明" this way, minutes after the same
+# computer had failed a reference upload.
+_MAX_CONSECUTIVE_POLL_ERRORS = 40
+_MAX_POLL_BACKOFF_S = 15
 _ACTIVE_TASK_STATUSES = frozenset({
     "submitted",
     "pending",
@@ -628,7 +634,9 @@ def poll_image_task(task_id: str, api_key: str,
     consecutive_poll_errors = 0
     while True:
         if time.time() - started_at > poll_timeout:
-            raise APIMartOutcomeUnknown(task_id, "APIMart 轮询超时，结果不明")
+            unknown = APIMartOutcomeUnknown(task_id, "APIMart 轮询超时，结果不明")
+            unknown.poll_reason = "timeout"
+            raise unknown
         try:
             if direct:
                 data = _http_get_json(
@@ -641,10 +649,10 @@ def poll_image_task(task_id: str, api_key: str,
         except Exception as exc:
             consecutive_poll_errors += 1
             if consecutive_poll_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
-                raise APIMartOutcomeUnknown(
-                    task_id, "APIMart 连续轮询连接失败，结果不明"
-                ) from exc
-            time.sleep(poll_interval)
+                unknown = APIMartOutcomeUnknown(task_id, "APIMart 连续轮询连接失败，结果不明")
+                unknown.poll_reason = "connection"
+                raise unknown from exc
+            time.sleep(min(_MAX_POLL_BACKOFF_S, poll_interval * 2 ** min(consecutive_poll_errors - 1, 4)))
             continue
         consecutive_poll_errors = 0
         if not isinstance(data, dict):
