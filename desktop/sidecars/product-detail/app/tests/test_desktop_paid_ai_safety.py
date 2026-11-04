@@ -44,10 +44,7 @@ const vm = require('node:vm');
         return {status:'running_recovery'};
       },
       renderAiRefineResult: () => {rendered='success'},
-      renderAiRefineRecoveryRequired: (state, record) => {
-        rendered='recovery';
-        if(scenario==='requires-payment') assert.equal(record.requires_paid_confirmation,true);
-      },
+      renderAiRefineRecoveryRequired: () => {rendered='recovery'},
       currentProductType: 'new-category',
       rememberAiRefineResult: async (id,category) => {assert.equal(id,'paid-original');assert.equal(category,'original-category');saved++;return true},
     };
@@ -59,14 +56,15 @@ const vm = require('node:vm');
     assert.equal(rendered, ['transient','lost-response'].includes(scenario)?'success':'recovery');
     assert.equal(saved, rendered==='success'?1:0);
   }
-  for (const accepted of [false, true]) {
+  // Retrying an existing task asks no fee question (user decision 2026-11-03):
+  // it only continues the original task, so nothing submitted is bought again.
+  {
+    const accepted = true;
     let confirmations = 0, prepared = 0, posts = 0, polls = 0;
     const context = {
-      confirmInWorkspace: async () => {confirmations++;return accepted},
+      confirmInWorkspace: async () => {confirmations++;return false},
       prepareAiRefineWorkspace: () => {prepared++;return {subText:{},loading:{style:{}},results:{}}},
       postJson: async (url, body) => {
-        assert.equal(accepted,true);
-        assert.equal(confirmations,1);
         assert.equal(url,'/api/ai-refine-v2/recover/paid-original');
         assert.deepEqual(JSON.parse(JSON.stringify(body)),{});
         posts++;
@@ -78,8 +76,8 @@ const vm = require('node:vm');
     };
     vm.createContext(context);
     vm.runInContext(SOURCE_RUN,context);
-    await context.runAiHtmlV2({resumeTask:{task_id:'paid-original',requires_paid_confirmation:true},recoverOriginal:true});
-    assert.equal(confirmations,1);
+    await context.runAiHtmlV2({resumeTask:{task_id:'paid-original'},recoverOriginal:true});
+    assert.equal(confirmations,0);
     assert.equal(prepared,Number(accepted));
     assert.equal(posts,Number(accepted));
     assert.equal(polls,Number(accepted));

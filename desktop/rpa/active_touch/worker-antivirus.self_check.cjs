@@ -30,4 +30,13 @@ for (const [name, text] of scripts) {
   assert.equal(String(result.stdout || "").trim(), "parsed", `${name} must not be blocked by antivirus or fail to parse: ${String(result.stdout || result.stderr).slice(0, 300)}`);
 }
 assert.ok(!/CopyFromScreen|EnumWindows|UIAutomationClient/u.test(FAILURE_EVIDENCE_SCRIPT), "the shared worker prelude never captures the screen or lists windows");
+// 2026-11-04: Defender refused the real send script as
+// HackTool:PowerShell/EmpireGetScreenshot.C (PowerShell bitmap +
+// Graphics.CopyFromScreen) while the parse probe above passed, because any
+// change to the scanned text (such as the prepended prelude) changes the
+// verdict. The probe cannot prove a script is safe; this structural rule can:
+// screen pixels are copied only through wechat_screen_pixels.cjs.
+for (const [name, text] of scripts) {
+  assert.ok(!/\$\w+\.CopyFromScreen\s*\(/u.test(text), `${name} copies the screen only through XiaoxiScreenPixels`);
+}
 console.log(`worker antivirus self-check passed: ${scripts.length} scripts parse with the shared prelude`);

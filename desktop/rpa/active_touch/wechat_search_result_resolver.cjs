@@ -83,7 +83,8 @@ const TRADITIONAL_LABELS = Object.freeze([
 function normalized(value) {
   let text = String(value ?? "").normalize("NFKC").replace(/\s+/gu, "").toLowerCase();
   for (const [traditional, simplified] of TRADITIONAL_LABELS) text = text.split(traditional).join(simplified);
-  return text;
+  // WeChat 4.2 OCR reads the gray label as "微信．号"; it is still the label.
+  return text.replace(/微信[.·・。,，]号/gu, "微信号");
 }
 
 function distinctCandidates(candidates) {
@@ -642,6 +643,10 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const classified = { ...observation, visualCandidates: visual, webSearchCandidates: web,
     webSearchTop: web.length ? Math.min(...web.map((line) => Number(line.top))) : null };
   if (web.some((line) => line.text === "untrusted_network_boundary")) return withEvidence(reject("search-r011"));
+  if (!web.length && observation.captureSource === "popup") {
+    // No network boundary at all: the WeChat 4.2 popup layout.
+    return withEvidence(superstringVeto(classified, resolveSectionedPopup(visual, popup, identity, column)));
+  }
   let result = resolveBaselineObservation(classified, identity);
 
   const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
@@ -688,8 +693,62 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   return withEvidence(superstringVeto(classified, result));
 }
 
+// WeChat 4.2 (field 2026-11-03 on 4.2.0.8, reproduced on 4.2.0.12): the search
+// popup no longer ends with a "搜索网络结果" row, so the network boundary that
+// 4.1 relied on never appears. Local results are bounded by their own section
+// instead: rows under a contact header (最常使用/联系人/好友) and above the next
+// section (群聊/聊天记录/...) or the popup bottom. Exactly one row there must
+// carry the searched WeChat ID, or the expected name for a name search. The
+// opened chat title is still verified after the click.
+function sameDisplayName(text, expected) {
+  const fold = (value) => normalized(value).replace(/[^\p{L}\p{N}]/gu, "");
+  const left = fold(text);
+  const right = fold(expected);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  // Windows OCR misreads about one character in short Chinese names; allow it
+  // only for names of three or more characters with equal length.
+  if (right.length < 3 || left.length !== right.length) return false;
+  let differences = 0;
+  for (let index = 0; index < right.length; index += 1) if (left[index] !== right[index]) differences += 1;
+  return differences <= 1;
+}
+
+function resolveSectionedPopup(visual, popup, identity, column) {
+  const reject = (rule_id, reason = "search_result_identity_unverified") => ({
+    status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
+    diagnostics: { rule_id, candidate_count: 0, visual_candidate_count: visual.length, ocr_ok: true, popup_layout: "sectioned" }
+  });
+  const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 24 && column(line.left) <= 60)
+    .sort((left, right) => Number(left.top) - Number(right.top));
+  if (!headers.length) return reject("search-r022");
+  const header = headers[0];
+  const sectionEnd = Math.min(Number(popup.bottom),
+    ...visual.filter((line) => isOtherSearchSection(line.text) && Number(line.top) >= Number(header.bottom) - 2)
+      .map((line) => Number(line.top)));
+  const rows = mergeVisualLines(visual.filter((line) => line !== header
+    && !isLocalContactSection(line.text)
+    && column(line.left) > 60
+    && Number(line.top) >= Number(header.bottom) - 2
+    && Number(line.bottom) <= sectionEnd + 2));
+  if (rows.some((line) => isUnsafeVisualText(line.text) || isNetworkLookupText(line.text))) return reject("search-r024");
+  const idRows = rows.filter((line) => wechatIdLabelValue(line) !== null);
+  if (identity.queryType === "wechat_id") {
+    const query = foldedWechatId(identity.query);
+    const exact = idRows.filter((line) => foldedWechatId(wechatIdLabelValue(line)) === query);
+    if (idRows.length > 1) return reject("search-r007");
+    if (exact.length === 1) return { status: "selected", mode: "sectioned_wechat_id_visual", candidate: exact[0] };
+    return reject("search-r015", "exact_search_result_not_found");
+  }
+  const names = rows.filter((line) => wechatIdLabelValue(line) === null
+    && (sameDisplayName(line.text, identity.expectedName) || sameDisplayName(line.text, identity.query)));
+  if (names.length === 1) return { status: "selected", mode: "sectioned_name_visual", candidate: names[0] };
+  return reject(names.length ? "search-r021" : "search-r015",
+    names.length ? "search_result_identity_unverified" : "exact_search_result_not_found");
+}
+
 function isVerifiedWechatSearchResultMode(mode) {
-  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual", "exact_name_contact_section_visual"].includes(mode);
+  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual", "exact_name_contact_section_visual", "sectioned_wechat_id_visual", "sectioned_name_visual"].includes(mode);
 }
 
 module.exports = { NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation, searchObservationEvidence };

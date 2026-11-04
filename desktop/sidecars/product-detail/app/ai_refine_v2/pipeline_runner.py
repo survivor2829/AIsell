@@ -133,8 +133,22 @@ def _can_replay_failed_planner(task_dir: Path, state: dict) -> bool:
     """Offer the existing recovery action only for a locally repairable paid reply."""
     if state.get("status") != "failed":
         return False
-    if (_read_json(task_dir / "_quality_policy.json") or {}).get("version") in (13, 14, 15, 16):
-        # No implicit extra editorial purchase after a failed new-policy run.
+    policy = (_read_json(task_dir / "_quality_policy.json") or {}).get("version")
+    if policy in (14, 15, 16):
+        # Both paid replies are saved: a retry replays them under the current
+        # local rules (a page with an unnamed part is now redrawn, not fatal).
+        # Nothing is bought again; a missing reply means no replay at all.
+        from ai_refine_v2.pricing import CostJournal
+        try:
+            operations = CostJournal(task_dir).load()["operations"]
+        except RuntimeError:
+            return False
+        return (set(operations) == {"planner", "semantic_review"}
+                and all(op["status"] == "completed" for op in operations.values())
+                and (task_dir / "_planner_response.json").is_file()
+                and (task_dir / "_semantic_review_response.json").is_file())
+    if policy == 13:
+        # No implicit extra editorial purchase after a failed copy-edit run.
         return False
     if (_read_json(task_dir / "_quality_policy.json") or {}).get("version") in (10, 11, 12):
         # The independent editor has not run yet. It can read the saved raw

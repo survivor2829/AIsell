@@ -636,10 +636,14 @@ def run():
                 confirmation_message = workspace.locator(
                     "#ai_refine_confirm_message"
                 ).inner_text()
-                if not all(text in confirmation_message for text in ["自动策划", "部件特写", "最多15张", "APIMart", "先核对策划与生图报价", "不会自动重提"]):
+                # User 2026-11-03: customers see the image limit and per-image billing,
+                # not supplier names or internal price checks.
+                if not all(text in confirmation_message for text in ["自动策划", "最多15张", "按实际生成的张数计费"]):
                     raise AssertionError(
-                        "AI refine preflight must disclose product-driven image count, quote checks and APIMart billing"
+                        "AI refine preflight must disclose the image limit and per-image billing"
                     )
+                if any(text in confirmation_message for text in ["APIMart", "报价", "核价"]):
+                    raise AssertionError("AI refine preflight must not show supplier or price-check wording")
                 confirm_button = workspace.locator("#ai_refine_confirm_submit")
                 if confirm_button.inner_text().strip() != "开始付费生成":
                     raise AssertionError("AI refine preflight confirmation label is incorrect")

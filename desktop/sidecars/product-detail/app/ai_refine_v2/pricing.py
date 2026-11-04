@@ -1,28 +1,21 @@
-"""Read-only supplier quotes and a per-task cost journal, never a billing system.
+"""Built-in supplier list prices and a per-task cost journal, never a billing system.
 
-Published prices bound requests; only a provider bill can establish actual cost.
+List prices bound requests; only a provider bill can establish actual cost.
 The journal is written before POST, so an interrupted request cannot be repeated.
 """
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import math
 import os
-import re
 import threading
 import time
-import urllib.request
 import urllib.error
 import uuid
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 from ai_refine_v2.image_profile import normalize_profile
 
-IMAGE_PRICE_URL = "https://apimart.ai/api/pricing/model?model=gpt-image-2"
-PLANNER_PRICE_URL = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing"
-MAX_QUOTE_AGE = 60 * 60
 # A screen the provider plainly failed (or that was never sent) gets one more
 # try. An unknown outcome is never retried.
 MAX_ATTEMPTS_PER_SCREEN = 2
@@ -70,125 +63,36 @@ def _positive(value):
     return number
 
 
-def _read(url):
-    from provider_transport import build_provider_opener
-    gateway = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
-    base = os.environ.get("REFINE_API_BASE_URL", "").strip().rstrip("/")
-    parsed = urlsplit(url)
-    via_gateway = (gateway and base == gateway + "/v1/provider-gateway/apimart"
-                   and parsed.scheme == "https" and parsed.netloc == "apimart.ai"
-                   and parsed.path == "/api/pricing/model")
-    headers = {"User-Agent": "xiaoxi-price-check/1.0"}
-    target = url
-    if via_gateway:
-        models = parse_qs(parsed.query).get("model", [])
-        token = os.environ.get("REFINE_API_KEY", "").strip()
-        if len(models) != 1 or models[0] not in {"gpt-image-2", "gpt-image-2.5-ext"} or not token:
-            raise ValueError("invalid gateway price request")
-        target = gateway + "/v1/provider-gateway/capabilities?price_model=" + models[0]
-        headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request(target, headers=headers)
-    with build_provider_opener(target, proxies={}).open(request, timeout=20) as response:
-        if response.status != 200:
-            raise ValueError("price status")
-        content = response.read(1_000_001)
-    if len(content) > 1_000_000:
-        raise ValueError("price response too large")
-    document = content.decode("utf-8")
-    if via_gateway:
-        result = json.loads(document)
-        price = result.get("apimart_pricing", {})
-        if (result.get("ok") is not True or price.get("source") != url
-                or not isinstance(price.get("payload"), dict)
-                or not -300 <= time.time() - float(price.get("checked_at", 0)) <= MAX_QUOTE_AGE):
-            raise ValueError("gateway price unavailable or stale")
-        return json.dumps(price["payload"], ensure_ascii=False)
-    return document
+# Built-in list prices (USD per image / CNY per million tokens), read 2026-11-03
+# from the suppliers' public price pages. Used only to bound spend against the
+# per-task cap; the supplier bill is the real cost. Prices are no longer fetched
+# live: a slow or changed price page must never block the customer.
+IMAGE_LIST_USD = {
+    ("gpt-image-2", None, "1K"): 0.2109,
+    ("gpt-image-2.5-ext", "sunburst", "2K"): 0.0375,
+}
+PLANNER_PER_MILLION_CNY = {"input": 2.0, "cache": 0.04, "output": 8.0}
+PRICE_TABLE_DATE = "2026-11-03"
 
 
-def parse_planner_prices(document, model):
-    # Models are matched by table columns. Legacy aliases are accepted only when
-    # the current supplier page explicitly says they use Flash pricing.
-    priced_model = model
-    if model in {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}:
-        if model not in document or "Flash 价格计费" not in document:
-            raise ValueError("unverified model alias")
-        priced_model = "deepseek-flash"
-    table = re.search(r"<table\b[^>]*>(.*?)</table>", document, re.S)
-    if not table:
-        raise ValueError("missing pricing table")
-    rows = []
-    for row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", table[1], re.S):
-        cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row, re.S)
-        rows.append([html.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in cells])
-    columns = [re.sub(r"\(\d+\)$", "", c) for c in rows[0][1:]]
-    column = columns.index(priced_model)
-    rates = {}
-    kind = None
-    for row in rows:
-        label = "".join(row)
-        if "百万tokens输入" in label:
-            kind = "input" if "缓存未命中" in label else "cache"
-        elif "百万tokens输出" in label:
-            kind = "output"
-        if kind and "高峰时段" in row:
-            values = row[row.index("高峰时段") + 1:]
-            if len(values) != len(columns):
-                raise ValueError("ambiguous price columns")
-            match = re.fullmatch(r"([0-9.]+)元", values[column])
-            if not match:
-                raise ValueError("invalid planner price")
-            rates[kind] = _positive(match[1])
-    if set(rates) != {"input", "cache", "output"}:
-        raise ValueError("incomplete planner price")
-    return rates
-
-
-def read_quote(*, include_planner=True, image_profile=None, read=_read):
+def read_quote(*, include_planner=True, image_profile=None):
     from ai_refine_v2 import refine_planner
     try:
         profile = normalize_profile(image_profile)
-        # A quote from a different supplier is not a quote for this connection.
-        image = urlsplit(os.environ.get("REFINE_API_BASE_URL", ""))
-        planner = urlsplit(refine_planner._API_URL)
-        gateway = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").rstrip("/")
-        def official_or_gateway(parsed, host, suffix):
-            return parsed.hostname == host or (
-                gateway and f"{parsed.scheme}://{parsed.netloc}" == gateway
-                and parsed.path.rstrip("/").endswith(suffix)
-            )
-        if not official_or_gateway(image, "api.apimart.ai", "/apimart"):
-            raise ValueError("unsupported image supplier")
-        if include_planner and not official_or_gateway(planner, "api.deepseek.com", "/deepseek/v1/chat/completions"):
-            raise ValueError("unsupported planner supplier")
-        image_price_url = f"https://apimart.ai/api/pricing/model?model={profile['model']}"
-        image_text = read(image_price_url)
-        image_payload = json.loads(image_text)
-        data = image_payload["data"]
-        if image_payload.get("success") is not True or data.get("model_name") != profile["model"]:
-            raise ValueError("image model mismatch")
-        if profile.get("version") and data.get("billing_type") != "version_resolution":
-            raise ValueError("image billing type changed")
-        prices = data["version_resolution_prices"][profile["version"]] if profile.get("version") else data["resolution_prices"]
-        usd = _positive(prices[profile["resolution"]])
+        usd = _positive(IMAGE_LIST_USD[(profile["model"], profile.get("version"), profile["resolution"])])
         fx = _positive(os.environ.get("REFINE_BUDGET_CNY_PER_USD", "8"))
-        quote = {"version": 1, "checked_at": time.time(), "image_model": profile["model"],
-                 "image_resolution": profile["resolution"], "image_unit_usd": usd,
-                 **({"image_version": profile["version"]} if profile.get("version") else {}),
-                 "fx_cny_per_usd": fx, "image_unit_cny": money(usd * fx),
-                 "sources": [image_price_url], "image_price_hash": hashlib.sha256(image_text.encode()).hexdigest(),
-                 "note": "公开标价保守估算；美元采用预算汇率折算，优惠和实际扣款以供应商账单为准"}
-        if include_planner:
-            document = read(PLANNER_PRICE_URL)
-            quote.update(planner_model=refine_planner._MODEL_DEFAULT,
-                         planner_per_million_cny=parse_planner_prices(document, refine_planner._MODEL_DEFAULT),
-                         planner_price_hash=hashlib.sha256(document.encode()).hexdigest())
-            quote["sources"].append(PLANNER_PRICE_URL)
-        return quote
-    except Exception as exc:
-        if isinstance(exc, PricingRequired):
-            raise
-        raise PricingRequired("当前供应商报价尚未核实，资料和已有方案已保留，未提交新的付费请求。") from None
+    except Exception:
+        raise PricingRequired("生图配置不可识别，未提交新的付费请求。") from None
+    quote = {"version": 1, "checked_at": time.time(), "image_model": profile["model"],
+             "image_resolution": profile["resolution"], "image_unit_usd": usd,
+             **({"image_version": profile["version"]} if profile.get("version") else {}),
+             "fx_cny_per_usd": fx, "image_unit_cny": money(usd * fx),
+             "sources": [f"built-in:{PRICE_TABLE_DATE}"],
+             "note": "内置公开标价保守估算；实际扣款以供应商账单为准"}
+    if include_planner:
+        quote.update(planner_model=refine_planner._MODEL_DEFAULT,
+                     planner_per_million_cny=dict(PLANNER_PER_MILLION_CNY))
+    return quote
 
 
 def _write(path, data):
@@ -302,8 +206,6 @@ class CostJournal:
             previous = data["operations"].get(name)
             if previous and not (retry_not_submitted and self.is_unsubmitted(previous)):
                 raise RequestOutcomeUnknown("原请求已有费用记录，只能核对原结果，不能重复提交。")
-            if not 0 <= time.time() - quote["checked_at"] < MAX_QUOTE_AGE:
-                raise PricingRequired("报价已过期，方案已保留，请重新核价。")
             self._ensure_room(data, reserve)
             data["operations"][name] = {"status": "submitting", "reserved_cny": money(reserve), "started_at": time.time(), **context}
             if previous:

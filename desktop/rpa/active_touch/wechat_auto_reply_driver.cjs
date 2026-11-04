@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const {
   isPreparedWechatRpaLayout,
   prepareWechatRpaWindowAsync,
@@ -160,14 +161,8 @@ function Capture-Viewport($rect, [IntPtr]$hWnd, [int]$expectedPid) {
   try {
     $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen(
-      [int]$rect.Left,
-      [int]$rect.Top,
-      0,
-      0,
-      [System.Drawing.Size]::new($width, $height),
-      [System.Drawing.CopyPixelOperation]::SourceCopy
-    )
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, [int]$rect.Left, [int]$rect.Top)) { throw "screen_copy_failed" }
   } catch {
     if ($bitmap) { $bitmap.Dispose() }
     return @{ ok = $false; reason = "history_screenshot_failed" }

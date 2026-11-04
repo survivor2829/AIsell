@@ -3445,7 +3445,7 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
   assert.deepEqual(composerPointResult, { ok: true, sharedPointVerified: true });
   assert.doesNotMatch(imageScript, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
     "image sending must not depend on copying the WeChat draft back out");
-  assert.match(imageScript, /function Test-SendButtonActive[\s\S]*CopyFromScreen[\s\S]*\$green -gt \(\$total \* 0\.3\)/u,
+  assert.match(imageScript, /function Test-SendButtonActive[\s\S]*XiaoxiScreenPixels\]::Copy[\s\S]*\$green -gt \(\$total \* 0\.3\)/u,
     "image draft state must be read from the send button colour");
   assert.match(imageScript, /function Get-UptimeMs\s*\{\s*return \$script:imageClock\.ElapsedMilliseconds/u,
     "image budgets must use a monotonic Stopwatch, without double-counting the fractional second");

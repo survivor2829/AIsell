@@ -410,13 +410,18 @@ def test_automatic_editor_repairs_visual_and_caption_in_existing_two_calls():
     assert plan['screens'][1]['component'] == '清水箱'
     assert plan['screens'][1]['title'] == final['pages'][0]['title']
     assert '独立部件不要复制整机' in generator._build_blocks_v2(plan)[1]['prompt']
-    # Invalid final model output must fail, never fall back to this good draft.
+    # A final page with an unknown part and an unsupported promise is dropped,
+    # not the whole paid plan; it never falls back to the first draft either.
     first, second = Mock(return_value=response(final)), Mock(return_value=response(broken))
-    with pytest.raises(planner.PlannerError):
-        planner.plan_v2(source, product_category='设备类', api_key='offline',
-                        http_fn=first, semantic_http_fn=second, require_automatic_visual=True,
-                        max_retries=5)
+    plan = planner.plan_v2(source, product_category='设备类', api_key='offline',
+                           http_fn=first, semantic_http_fn=second, require_automatic_visual=True,
+                           max_retries=5)
     assert first.call_count == second.call_count == 1
+    titles = [s['title'] for s in plan['screens']]
+    assert '自动补水，无需人工' not in titles and final['pages'][0]['title'] not in titles
+    assert [d['title'] for d in plan['dropped_pages']] == ['自动补水，无需人工']
+    assert len(plan['screens']) == len(final['pages']) + 1  # cover + rest + table - dropped
+    assert all('未知配套部件' not in s['prompt'] for s in plan['screens'])
 
 
 @pytest.mark.parametrize('category,name,fact,component', [
@@ -662,3 +667,46 @@ def test_source_rhetoric_is_tempered_in_all_printed_copy_without_changing_facts(
 def test_rhetoric_edit_is_generic_and_preserves_limits(text, expected):
     from ai_refine_v2.visual_merchandising import _temper_caption
     assert _temper_caption(text) == expected
+
+
+# Field case 2026-11-03 (task v2_1793759261666_7728ec): spec-only copy names no
+# parts, the editor still drew a "motor" close-up, and the whole paid plan failed.
+FAN_DRYER = ("风量:1900m/h最大风量:18m/s转速:/1250r/min\n适用面积:100平方米\n噪音:75db净重:11.5Kg\n\n"
+             "功率:800W电压:220V50HZ\n\n包装尺寸:460*460*475mm\n适用酒店宾馆，服务区，车站。")
+
+
+def fan_dryer_draft():
+    _, data = fixture()
+    brief = data["cover"]["visual_brief"]
+    data["category_check"] = {"category": "设备类", "evidence": ["适用酒店宾馆，服务区，车站。"]}
+    data["product_meta"].update(name="坦虎商用风干机H533B")
+    data["cover"].update(title="坦虎商用风干机H533B", evidence=["适用酒店宾馆，服务区，车站。"])
+    facts = [("大风量快速吹干", "风量:1900m/h"), ("覆盖100平方米", "适用面积:100平方米"),
+             ("轻便好搬运", "净重:11.5Kg"), ("常用电源即插即用", "电压:220V50HZ"),
+             ("酒店宾馆适用", "适用酒店宾馆"), ("服务区车站适用", "服务区，车站。"),
+             ("强劲电机", "功率:800W")]
+    data["pages"] = [{"kind": "display", "role": "detail_zoom", "title": title, "evidence": [fact],
+                      "technical_support": [], "visual_brief": dict(brief, scene=title)}
+                     for title, fact in facts]
+    motor = data["pages"][-1]
+    motor["component"] = "电机"  # Not named anywhere in the copy.
+    motor["visual_brief"].update(product_presentation="concept_detail", framing="电机特写")
+    data["specifications"] = [{"name": "功率", "value": "800W", "evidence": "功率:800W"}]
+    return data
+
+
+def test_spec_only_copy_with_an_unnamed_part_still_delivers_every_screen():
+    from ai_refine_v2.visual_merchandising import normalize_components
+    data = fan_dryer_draft()
+    with pytest.raises(ValueError, match="部件字段引用了原文未明确的部件"):
+        normalize_components(data)  # The strict check the old final pass used.
+    first, second = Mock(return_value=response(data)), Mock(return_value=response(data))
+    plan = planner.plan_v2(FAN_DRYER, product_title="坦虎商用风干机H533B", product_category="设备类",
+                          api_key="offline", http_fn=first, semantic_http_fn=second,
+                          require_automatic_visual=True, allow_visual_advisories=True,
+                          repair_unsupported_captions=True)
+    assert first.call_count == second.call_count == 1
+    assert plan["screen_count"] == 9 and not plan.get("dropped_pages")
+    motor = next(s for s in plan["screens"] if s["title"] == "强劲电机")
+    assert motor["visual_brief"]["product_presentation"] == "whole_product"
+    assert not motor.get("component") and "电机特写" not in motor["prompt"]

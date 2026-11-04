@@ -14,36 +14,6 @@ def quote():
             "planner_per_million_cny": {"input": 2, "cache": .04, "output": 8}}
 
 
-@pytest.mark.parametrize("age,valid", [(0, True), (-10, True), (3601, False), (-301, False), (None, False)])
-def test_gateway_price_requires_current_quote_without_customer_proxy(monkeypatch, age, valid):
-    import provider_transport
-    from unittest.mock import MagicMock
-    gateway = "https://gateway.invalid"
-    source = "https://apimart.ai/api/pricing/model?model=gpt-image-2.5-ext"
-    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", gateway)
-    monkeypatch.setenv("REFINE_API_BASE_URL", gateway + "/v1/provider-gateway/apimart")
-    monkeypatch.setenv("REFINE_API_KEY", "session-test")
-    payload = {"success": True, "data": {"model_name": "gpt-image-2.5-ext"}}
-    result = {"ok": True, "apimart_pricing": {"source": source, "checked_at": time.time() - age, "payload": payload}} if age is not None else {"ok": True, "capabilities": {"apimart": True}}
-    response = MagicMock(status=200)
-    response.read.return_value = json.dumps(result).encode()
-    response.__enter__.return_value = response
-    opener = Mock()
-    opener.open.return_value = response
-    factory = Mock(return_value=opener)
-    monkeypatch.setattr(provider_transport, "build_provider_opener", factory)
-    if valid:
-        assert json.loads(pricing._read(source)) == payload
-    else:
-        with pytest.raises(ValueError, match="unavailable"):
-            pricing._read(source)
-    target = gateway + "/v1/provider-gateway/capabilities?price_model=gpt-image-2.5-ext"
-    factory.assert_called_once_with(target, proxies={})
-    request = opener.open.call_args.args[0]
-    assert request.full_url == target
-    assert request.get_header("Authorization") == "Bearer session-test"
-
-
 def test_actual_screen_count_and_missing_quote_stop_before_image_post(tmp_path, monkeypatch):
     from ai_refine_v2 import refine_generator
     calls = Mock()
@@ -313,16 +283,3 @@ def test_resuming_preserved_plan_does_not_pay_planner_again(tmp_path, monkeypatc
     runner._worker_v2(task, "资料", "image.png", "产品", "key", "key")
     planner.assert_not_called()
     assert images.call_args.args[0] == planning
-
-
-def test_supplier_table_matches_model_column_and_peak_price():
-    document = '<table><tr><td colspan="3">模型</td><td>deepseek-flash<sup>(1)</sup></td><td>other-model</td></tr>'
-    for label, idle, peak in (("百万tokens输入（缓存命中）", ".02", ".04"),
-                              ("百万tokens输入（缓存未命中）", "1", "2"),
-                              ("百万tokens输出", "4", "8")):
-        document += f'<tr><td rowspan="2">{label}</td><td>空闲时段</td><td>{idle}元</td><td>90元</td></tr>'
-        document += f'<tr><td>高峰时段</td><td>{peak}元</td><td>99元</td></tr>'
-    document += '</table>旧模型名 deepseek-v4-flash 按 Flash 价格计费'
-    assert pricing.parse_planner_prices(document, "deepseek-v4-flash") == {"cache": .04, "input": 2, "output": 8}
-    with pytest.raises(ValueError):
-        pricing.parse_planner_prices(document, "unpriced-model")

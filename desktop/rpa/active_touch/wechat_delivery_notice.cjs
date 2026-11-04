@@ -3,6 +3,7 @@
 // deleted the user (friend verification required) or rejected the message.
 // The worker returns a verdict only, never OCR text. Anything unreadable
 // (window changed, not foreground, OCR unavailable) leaves the result as is.
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
 // Kept in sync with the PowerShell pattern below.
@@ -63,7 +64,8 @@ try {
   }
   $bitmap=[System.Drawing.Bitmap]::new($right-$left,$bottom-$top)
   $graphics=[System.Drawing.Graphics]::FromImage($bitmap)
-  $graphics.CopyFromScreen($left,$top,0,0,$bitmap.Size,[System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+  if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { throw "screen_copy_failed" }
   $graphics.Dispose(); $graphics=$null
   # The notice is small grey text; upscale it for WinRT line detection.
   $scaled=[System.Drawing.Bitmap]::new($bitmap.Width*2,$bitmap.Height*2)

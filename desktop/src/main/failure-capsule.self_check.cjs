@@ -201,6 +201,27 @@ async function flightRecordAndPassportTravelWithTheFailure() {
   t.capsules.stop();
 }
 
+async function passportWrittenAfterTheFailureStillTravels() {
+  // 2026-11-03 field capsules for skipped touch contacts carried no attachments:
+  // the touch task stores its search screenshot seconds after the failure log.
+  const t = fixture("late", { lateAttachMs: 40 });
+  const now = Date.now();
+  const id = t.capsules.record({ source: "log", module: "active_touch", code: "search_result_identity_unverified", at: now });
+  assert.deepEqual(t.files()[0].attachments, [], "nothing exists yet when the failure is logged");
+  const passports = path.join(t.root, "task-passports", "active_touch", "task_1");
+  fs.mkdirSync(passports, { recursive: true });
+  for (const name of ["2026-11-03-02-46-20-000Z-aa11bb22-screen.png", "2026-11-03-02-46-20-000Z-aa11bb22-raw-reading.json"]) {
+    fs.writeFileSync(path.join(passports, name), name.endsWith(".png") ? PNG : JSON.stringify({ rule_id: "search-r008" }));
+  }
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const [capsule] = t.files();
+  assert.equal(capsule.id, id);
+  assert.equal(capsule.attachments.filter(name => name.startsWith("passport-")).length, 2, "the later passport is attached");
+  const uploaded = t.posts.filter(post => post.route === "/v1/capsules/attachments").map(post => post.body.name);
+  assert.equal(uploaded.length, 2, "and sent");
+  t.capsules.stop();
+}
+
 async function maskedScreenshotsAreNotUploaded() {
   const t = fixture("masked");
   const evidence = path.join(t.root, "failure-evidence");
@@ -267,6 +288,7 @@ async function productDetailJournalOpensItsOwnCapsule() {
   await dailyLimitStopsAFailureLoop();
   await serviceOutputTravelsWithItsFailure();
   await flightRecordAndPassportTravelWithTheFailure();
+  await passportWrittenAfterTheFailureStillTravels();
   await maskedScreenshotsAreNotUploaded();
   await environmentCausesAreCountedNotFiled();
   profilePathVariants();

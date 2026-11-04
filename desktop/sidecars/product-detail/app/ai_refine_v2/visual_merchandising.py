@@ -234,24 +234,57 @@ def components_supported(component, evidence):
     return all(part.strip() and any(part.strip() in q for q in proof) for part in parts)
 
 
-def normalize_components(data):
-    """Accept a misplaced, evidenced component; never infer or invent one."""
+def _whole_product_visual(page):
+    """Draw the whole product instead of a part the copy never names."""
+    brief = page.setdefault("visual_brief", {})
+    brief.pop("component", None)
+    page.pop("component", None)
+    brief.update(product_presentation="whole_product", framing="整机主体清晰完整",
+                 product_action="静态展示")
+
+
+def normalize_components(data, *, degrade=False):
+    """Accept a misplaced, evidenced component; never infer or invent one.
+
+    With degrade, a page whose part has no source proof is redrawn as the
+    whole product (recorded in visual_degradations) instead of failing the
+    whole plan: plain spec copy names no parts, and that must still deliver.
+    """
     result = copy.deepcopy(data)
-    for page in [result["cover"], *result["pages"]]:
+    # Only our code records these; a model draft cannot set them.
+    result.pop("visual_degradations", None)
+    result.pop("dropped_pages", None)
+    degraded = []
+    for index, page in enumerate([result["cover"], *result["pages"]], 1):
         brief = page.get("visual_brief") or {}
         nested = brief.get("component")
+        evidence = page.get("evidence", [])
         if nested is None:
             if brief.get("product_presentation") == "concept_detail" and not components_supported(
-                page.get("component"), page.get("evidence", [])
+                page.get("component"), evidence
             ):
-                raise ValueError("部件字段引用了原文未明确的部件，文案编辑不能改变部件")
+                if not degrade:
+                    raise ValueError("部件字段引用了原文未明确的部件，文案编辑不能改变部件")
+                degraded.append({"page": index, "component": page.get("component"),
+                                 "reason": "component_not_in_source"})
+                _whole_product_visual(page)
             continue
-        if page.get("component") not in (None, "", nested):
-            raise ValueError("部件字段内外冲突，需确认该页主体")
-        if not components_supported(nested, page.get("evidence", [])):
-            raise ValueError("部件字段引用了原文未明确的部件，需替换画面而非只移动字段")
+        outer = page.get("component")
+        if outer not in (None, "", nested):
+            if not degrade:
+                raise ValueError("部件字段内外冲突，需确认该页主体")
+            # Keep whichever named part the copy actually supports.
+            nested = outer if components_supported(outer, evidence) else nested
+        if not components_supported(nested, evidence):
+            if not degrade:
+                raise ValueError("部件字段引用了原文未明确的部件，需替换画面而非只移动字段")
+            degraded.append({"page": index, "component": nested, "reason": "component_not_in_source"})
+            _whole_product_visual(page)
+            continue
         page["component"] = nested
         del brief["component"]
+    if degraded:
+        result["visual_degradations"] = degraded
     return result
 
 
@@ -414,7 +447,7 @@ def render(plan):
         )
 
 
-def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outline=False, delivery=False, repair_copy=False):
+def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outline=False, delivery=False, repair_copy=False, check=True):
     from .refine_planner import PLANNING_VERSION
     plan = normalize_components(data) if buyer_outline else copy.deepcopy(data)
     plan.pop('caption_repair_version', None)
@@ -459,31 +492,61 @@ def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outl
     plan["screen_count"] = len(plan["screens"])
     plan["input_evidence"] = {"product_text": source, "product_title": title, "product_category": category}
     render(plan)
-    validate(plan, source, title, category)
+    if check:
+        validate(plan, source, title, category)
     return plan
 
 
 def validate(plan, source, title="", category=None):
+    issues = plan_issues(plan, source, title, category)
+    if issues:
+        raise ValueError("视觉策划未通过，尚未提交生图：" + "; ".join(message for _, message in issues))
+
+
+def _screen_of(location, plan):
+    """Map an issue location (screen_3, screens[2], p1.text) to a screen idx."""
+    match = re.match(r"screen_(\d+)", location or "")
+    if match:
+        return int(match.group(1))
+    match = re.match(r"screens\[(\d+)\]", location or "")
+    if match:
+        return int(match.group(1)) + 1
+    pid = (location or "").split(".")[0]
+    return next((s.get("idx") for s in plan.get("screens", []) if pid and s.get("selling_point_id") == pid), None)
+
+
+def plan_issues(plan, source, title="", category=None):
+    """Return [(screen idx or None, message)]; None concerns the whole plan."""
     from .refine_planner import _validate_schema_v2, _check_product_category
     from .planning_quality import check_plan_quality
     if plan.get("merchandising_version") != VERSION or not source:
         raise ValueError("缺少视觉策划版本或原始资料，尚未提交生图")
     _check_product_category(plan, category, source, title)
-    issues = _validate_schema_v2(plan, source, title, require_visual_strategy=True)
+    issues = [(_screen_of(message, plan), message)
+              for message in _validate_schema_v2(plan, source, title, require_visual_strategy=True)]
     buyer_value = plan.get("buyer_value_version") == BUYER_VERSION
     delivery = plan.get("visual_delivery_version") == DELIVERY_VERSION
-    if buyer_value and len(plan["screens"]) < screen_budget(source)["minimum_total_screens"]:
-        issues.append("正常资料整套至少8屏，包含展示与参数页；需展开有依据的画面，不要求8个独立买点")
+    minimum = screen_budget(source)["minimum_total_screens"]
+    if plan.get("dropped_pages"):
+        minimum = min(minimum, MIN_SALVAGED_SCREENS)
+    if buyer_value and len(plan["screens"]) < minimum:
+        issues.append((None, "正常资料整套至少8屏，包含展示与参数页；需展开有依据的画面，不要求8个独立买点"))
     content_pages = [s for s in plan["screens"] if s.get("role") not in ("hero", "spec_table")]
     if not buyer_value and len(content_pages) >= 3 and all(
         (s.get("visual_brief") or {}).get("product_presentation") == "whole_product"
         for s in content_pages
     ):
-        issues.append("内容页全部重复整机主视觉，应按部件、性能或使用内容设计画面")
-    signatures = [json.dumps([s.get("title"), s.get("body") or "", s.get("technical_support") or []],
-                             ensure_ascii=False) for s in content_pages]
-    if len(signatures) != len(set(signatures)):
-        issues.append("存在重复文案页面，不能仅换背景凑图")
+        issues.append((None, "内容页全部重复整机主视觉，应按部件、性能或使用内容设计画面"))
+    seen_signatures = set()
+    for s in content_pages:
+        signature = json.dumps([s.get("title"), s.get("body") or "", s.get("technical_support") or []],
+                               ensure_ascii=False)
+        if signature in seen_signatures:
+            # Reported once, as before: the text feeds the paid review request,
+            # and a saved review is reused only for an identical request.
+            issues.append((s.get("idx"), "存在重复文案页面，不能仅换背景凑图"))
+            break
+        seen_signatures.add(signature)
     # Caption values must exist in supplied facts. This guards units/values,
     # not semantic attribution; the editor still checks which value means what.
     numeric = re.compile(
@@ -498,32 +561,33 @@ def validate(plan, source, title="", category=None):
         return value
     source_values = {m.group().lower() for m in numeric.finditer(compact(source))}
     for screen in plan["screens"]:
+        idx = screen.get("idx")
         body = screen.get("body", "")
         if not isinstance(body, str) or len(body) > 40:
-            issues.append("正文必须为空或一句40字以内的简短解释")
+            issues.append((idx, "正文必须为空或一句40字以内的简短解释"))
         for key in ("title", "body"):
             for match in numeric.finditer(compact(str(screen.get(key) or ""))):
                 if match.group().lower() not in source_values:
-                    issues.append("标题或解释出现原文没有的参数值/单位：" + match.group())
+                    issues.append((idx, "标题或解释出现原文没有的参数值/单位：" + match.group()))
         proof = screen.get("technical_support", [])
         if not isinstance(proof, list) or not all(
             isinstance(q, str) and any(q == e
                                       for e in (screen.get("evidence") or [])) for q in proof
         ):
-            issues.append("大字参数必须来自该页的完整原文依据")
+            issues.append((idx, "大字参数必须来自该页的完整原文依据"))
         brief = screen.get("visual_brief") or {}
         if plan.get("buyer_outline_version") == OUTLINE_VERSION:
             from .planning_quality import _SPEC_TITLE
             if screen.get("kind") == "benefit" and _SPEC_TITLE.fullmatch(
                 re.sub(r"[\s，,：:、]", "", str(screen.get("title", "")))
             ):
-                issues.append("购买理由标题仍仅列参数，应表达实际作用；性能展示需明确其展示身份")
+                issues.append((idx, "购买理由标题仍仅列参数，应表达实际作用；性能展示需明确其展示身份"))
             if brief.get("product_presentation") == "visible_detail" and screen.get("component"):
-                issues.append("文字策划未观察部件外观，有依据的部件改为拟真示意，不假装已看见内部结构")
+                issues.append((idx, "文字策划未观察部件外观，有依据的部件改为拟真示意，不假装已看见内部结构"))
         if brief.get("product_presentation") == "concept_detail":
             component = screen.get("component")
             if not components_supported(component, screen.get("evidence", [])):
-                issues.append("部件示意必须引用资料明确存在的部件")
+                issues.append((idx, "部件示意必须引用资料明确存在的部件"))
     quality = check_plan_quality(plan, source, grounded_copy=True)
     advisories = []
     for issue in quality:
@@ -536,11 +600,53 @@ def validate(plan, source, title="", category=None):
             if mentions and all(word in source for word in mentions):
                 advisories.append({**issue, 'message': '资料已明确配套设备；其外观为示意演绎，成图需核对，不能增添功能'})
                 continue
-        issues.append(f"{issue['location']}: {issue['message']}")
+        issues.append((_screen_of(issue['location'], plan), f"{issue['location']}: {issue['message']}"))
     if delivery:
         plan['planning_advisories'] = advisories
-    if issues:
-        raise ValueError("视觉策划未通过，尚未提交生图：" + "; ".join(issues))
+    return issues
+
+
+# Below this a salvaged set is too thin; the plan fails as before instead.
+MIN_SALVAGED_SCREENS = 4
+
+
+def compile_with_salvage(data, source, title, category, **options):
+    """Compile; if only some pages fail, drop just those pages and deliver.
+
+    Whole-plan problems (category, schema, cover, parameter table, too few
+    pages left) still fail with the original message. Nothing is re-planned
+    or re-purchased: this only removes pages from the paid final draft.
+    """
+    try:
+        return compile_plan(data, source, title, category, **options)
+    except ValueError as exc:
+        original = exc
+    remaining = copy.deepcopy(data)
+    dropped = []
+    for _ in range(3):
+        pages = remaining["pages"]
+        bad = {i for i, page in enumerate(pages)
+               if page.get("kind") not in ("benefit", "display") or page.get("role") in ("hero", "spec_table")}
+        reasons = {i: "页面类型无效" for i in bad}
+        if not bad:
+            remaining["dropped_pages"] = dropped
+            plan = compile_plan(remaining, source, title, category, **options, check=False)
+            planned = sum(1 for s in plan["screens"] if s.get("role") not in ("hero", "spec_table"))
+            for idx, message in plan_issues(plan, source, title, category):
+                page_index = (idx or 0) - 2  # Screen 1 is the cover.
+                if idx is None or not 0 <= page_index < planned:
+                    raise original  # A whole-plan, cover or table problem.
+                bad.add(page_index)
+                reasons.setdefault(page_index, message)
+        if not bad:
+            break
+        dropped.extend({"title": pages[i].get("title"), "issue": reasons[i]} for i in sorted(bad))
+        remaining["pages"] = [page for i, page in enumerate(pages) if i not in bad]
+    remaining["dropped_pages"] = dropped
+    try:
+        return compile_plan(remaining, source, title, category, **options)
+    except ValueError:
+        raise original from None
 
 
 def repair_captions(data, source):
@@ -637,12 +743,14 @@ def run(source, title, category, image_available, key, model, first_http, review
             context["local_issues_to_correct"] = str(exc)
         final_raw = call(prompt(automatic=True) + AUTO_REVIEW,
                          {**inputs, **context, "draft_to_edit": draft}, review_http)
-        final = normalize_components(read_draft(final_raw, source, delivery=delivery))
+        # Problems confined to one page degrade or drop that page; they no
+        # longer fail the whole paid plan.
+        final = normalize_components(read_draft(final_raw, source, delivery=delivery), degrade=True)
         # The provider's raw response remains untouched in the cost journal.
         if repair_copy:
             final = repair_captions(final, source)
-        plan = compile_plan(final, source, title, category, buyer_value=True, delivery=delivery,
-                            repair_copy=repair_copy)
+        plan = compile_with_salvage(final, source, title, category, buyer_value=True, delivery=delivery,
+                                    repair_copy=repair_copy)
         plan["automatic_planning_version"] = AUTO_VERSION
         render(plan)
         return plan

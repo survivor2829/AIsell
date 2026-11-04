@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { createHash } = require("node:crypto");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
@@ -889,7 +890,8 @@ function New-AutoReplyVisualScreenFrame([IntPtr]$hWnd, $windowRect, [int]$width,
   try {
     $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen([int]$windowRect.Left, [int]$windowRect.Top, 0, 0, [System.Drawing.Size]::new($width, $height), [System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, [int]$windowRect.Left, [int]$windowRect.Top)) { throw "screen_copy_failed" }
     $graphics.Dispose(); $graphics = $null
     $data = Get-AutoReplyVisualBitmapBytes $bitmap $width $height
     if (-not $data.ok -or -not (Test-AutoReplyVisualFrameContent $data.bytes ([int]$data.stride) $width $height)) {

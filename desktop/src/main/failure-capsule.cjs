@@ -17,6 +17,9 @@ const FAILURE_LEVELS = new Set(["error", "fatal"]);
 const IGNORED_CODES = new Set(["CONTENT_DIALOG_CANCELLED", "cancelled", "cloud_stopped"]);
 const IGNORED_MODULES = new Set(["maintenance", "feedback"]);
 const MERGE_WINDOW_MS = 10 * 60_000;
+// Evidence a task writes just after its failure is logged (the touch search
+// screenshot goes into the passport seconds later) is collected once more.
+const LATE_ATTACH_MS = 15_000;
 const DAILY_LIMIT = 40;
 const KEEP_FILES = 100;
 const KEEP_DAYS = 30;
@@ -78,7 +81,7 @@ function tailText(file, chars) {
 
 function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLogsDirs = {}, network = null, identity = () => null,
   isEnabled = () => false, environment = () => ({}), clock = Date.now, settleMs = SETTLE_MS, home = os.homedir(),
-  captureScreen = captureFailureScreen }) {
+  captureScreen = captureFailureScreen, lateAttachMs = LATE_ATTACH_MS }) {
   const dir = path.join(rootDir, "failure-capsules");
   fs.mkdirSync(dir, { recursive: true });
   const stateFile = path.join(dir, "state.json");
@@ -241,7 +244,33 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     state.outbox.push(capsule.id);
     prune(); save();
     void flush();
+    lateAttach(capsule.id, at, capsule.traceId);
     return capsule.id;
+  }
+
+  // 2026-11-03 field capsules for skipped touch contacts had no attachments at
+  // all: the capsule was built the moment the failure was logged, before the
+  // touch task stored its search screenshot. Collect again shortly after, and
+  // send again if anything new appeared (uploads skip what the server has).
+  function lateAttach(id, at, traceId) {
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (stopped) return;
+      try {
+        const capsule = readJson(capsuleFile(id), null);
+        if (!capsule) return;
+        const before = JSON.stringify([capsule.attachments || [], (capsule.evidence || []).map(item => item.id)]);
+        capsule.evidence = evidence(at, traceId);
+        attach(capsule, at);
+        if (JSON.stringify([capsule.attachments || [], (capsule.evidence || []).map(item => item.id)]) === before) return;
+        write(capsule);
+        if (!state.outbox.includes(id)) state.outbox.push(id);
+        save();
+        void flush();
+      } catch { /* The capsule already went out with what existed. */ }
+    }, lateAttachMs);
+    timer.unref?.();
+    timers.add(timer);
   }
 
   function fromLog(entry) {

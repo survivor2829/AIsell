@@ -60,6 +60,17 @@ function summarizeSendResult(result = {}, context = {}) {
   const proof = result?.proofDiagnostics || result?.send_diagnostics || state.send_diagnostics || {};
   const detail = sanitizeWechatWindowDiagnostics({ ...result?.diagnostics, ...proof });
   Object.assign(detail, sanitizeFailureDiagnostics({ ...result, ...result?.diagnostics, ...proof }));
+  // The worker's own exit code and output tail (internal diagnostics only; the
+  // runner already scrubbed secrets). 2026-11-04 the touch send was refused by
+  // Defender and this summary dropped the one line that said so.
+  const rawWorker = result?.diagnostics?.raw_worker;
+  if (rawWorker && typeof rawWorker === "object") {
+    detail.raw_worker = {
+      ...(Number.isInteger(rawWorker.exit_code) ? { exit_code: rawWorker.exit_code } : {}),
+      stderr_tail: String(rawWorker.stderr_tail || "").slice(-1200),
+      stdout_tail: String(rawWorker.stdout_tail || "").slice(-600)
+    };
+  }
   const blocked = result?.blocked_reason || state.blocked_reason;
   const reason = result?.primary_reason || result?.reason || proof.reason || proof.input_read_reason
     || result?.diagnostics?.reason

@@ -2781,6 +2781,7 @@ async function main() {
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;
   let replyCalls = 0;
+  const gapOrder = [];
   const cooldown = createWechatWorkflowController({
     rootDir: cooldownRoot, autoReplyDir: path.join(cooldownRoot, "reply"), activeTouchDir: path.join(cooldownRoot, "touch"), momentsDir: path.join(cooldownRoot, "moments"),
     now: () => cooldownClock, getAccount: () => "test-account", autoSchedule: false,
@@ -2792,14 +2793,19 @@ async function main() {
       prepareWorkflowTask: () => ({ contacts: [{ id: "a" }, { id: "b" }], script: "test" }),
       runWorkflowStep: async () => {
         touchCalls += 1;
+        gapOrder.push("touch");
         return touchCalls === 1
           ? { status: "pending", progress: { done: 1, total: 2 }, retryAfterMs: 10_000, waitingReason: "touch_safety_interval" }
           : { status: "completed", progress: { done: 2, total: 2 } };
       }
+    }, interact: {
+      prepareWorkflowTask: () => ({ payload: { maxPosts: 1 } }),
+      runWorkflowStep: async () => { gapOrder.push("interact"); return { status: "completed", progress: { done: 1, total: 1 } }; }
     } }
   });
   await cooldown.addRecipients(["reply-contact"]);
   await cooldown.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "test" } });
+  await cooldown.addTask({ type: "interact", payload: { maxPosts: 1 } });
   await cooldown.start(); await cooldown.tick();
   assert.equal(cooldown.status().phase, "waiting_safety_interval");
   assert.equal(cooldown.status().nextTaskId, null, "the known contact interval must remove the task from the ready queue");
@@ -2807,10 +2813,13 @@ async function main() {
   assert.equal(cooldown.status().waitUntil, cooldownClock.getTime() + 10_000);
   await cooldown.tick();
   assert.equal(touchCalls, 1, "a contact must not be retried while its safety interval is still active");
+  assert.deepEqual(gapOrder, ["touch"], "Moments must not run in the gap between two touch contacts (user 2026-11-04)");
   assert.equal(replyCalls, 0, "a deferred contact is unfinished finite work; reply must wait");
   cooldownClock = new Date(cooldownClock.getTime() + 10_000);
   await cooldown.tick();
   assert.equal(touchCalls, 2, "the deferred task resumes when its known interval ends");
+  await cooldown.tick();
+  assert.deepEqual(gapOrder, ["touch", "touch", "interact"], "Moments runs only after every touch contact");
   await cooldown.tick();
   assert.equal(replyCalls, 1, "reply begins only after the last contact finishes");
   assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");

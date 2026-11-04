@@ -1,3 +1,4 @@
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
@@ -365,6 +366,16 @@ function ensureWechatWindowVisible() {
   }
 }
 
+// Defender (AMSI) refuses the whole script while PowerShell is still loading
+// it, so none of its code ran: nothing was typed, clicked or sent. Report that
+// plainly instead of a generic failure the send path must treat as "maybe sent".
+// Field 2026-11-04: the send script was blocked on the development machine.
+function powershellBlockedByAntivirus(stderr) {
+  return /ScriptContainedMaliciousContent|malicious content and has been blocked/iu.test(String(stderr || ""));
+}
+const ANTIVIRUS_BLOCKED_RESULT = Object.freeze({ ok: false, reason: "powershell_blocked_by_antivirus",
+  scriptStarted: false, sendAttempted: false });
+
 function workerEvidence(value, { evidence, script, stdout, stderr, elapsedMs, exitCode, error } = {}) {
   if (process.env.XIAOXI_INTERNAL_DIAGNOSTICS !== "1") return value;
   const detail = {
@@ -419,6 +430,9 @@ function runPowerShell(script, env = {}, options = {}) {
 
   if (result.error) {
     return withWindowDiagnostics({ ok: false, reason: result.error.code === "ETIMEDOUT" ? "powershell_timeout" : "powershell_failed" });
+  }
+  if (result.status !== 0 && powershellBlockedByAntivirus(result.stderr)) {
+    return withWindowDiagnostics({ ...ANTIVIRUS_BLOCKED_RESULT });
   }
   if (result.status !== 0) {
     const diagnostics = options.diagnostics === true && options.windowDiagnostics !== true
@@ -1924,7 +1938,8 @@ if ($observeLocalResults) {
       $cropBounds = @{ left = $cropLeft; top = $cropTop; right = $cropLeft + $cropWidth; bottom = $cropTop + $cropHeight }
       $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-      $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+      if (-not [XiaoxiScreenPixels]::Copy($bitmap, $cropLeft, $cropTop)) { throw "screen_copy_failed" }
       $captureStream = [IO.MemoryStream]::new()
       try { $bitmap.Save($captureStream, [System.Drawing.Imaging.ImageFormat]::Png); if ($captureStream.Length -le 5MB) { $searchCapturePng = [Convert]::ToBase64String($captureStream.ToArray()) } }
       finally { $captureStream.Dispose() }
@@ -2083,7 +2098,8 @@ function Get-ConversationHeaderHash([int64]$hWnd) {
   $stream = [System.IO.MemoryStream]::new()
   $sha = [System.Security.Cryptography.SHA256]::Create()
   try {
-    $graphics.CopyFromScreen($left, $top, 0, 0, $bitmap.Size)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { throw "screen_copy_failed" }
     $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
     return [Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))
   } finally { $sha.Dispose(); $stream.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
@@ -2366,6 +2382,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
             }
           : unconfirmedTermination());
       }
+      if (status !== 0 && powershellBlockedByAntivirus(stderr)) return finish({ ...ANTIVIRUS_BLOCKED_RESULT });
       if (status !== 0) {
         const diagnostics = options.diagnostics === true && options.windowDiagnostics !== true
           ? { ...terminationDiagnostics("powershell_exit_nonzero"), exit_code: status, stderr: stderr.trim().slice(-5000) }
@@ -2440,6 +2457,42 @@ function detachedSearchCapture(observed, resolution, captureFailure = false) {
   } catch { return { observed: safeObserved, diagnostics: resolution.diagnostics }; }
 }
 
+// WeChat 4.2 highlights the matched name in green and draws section captions in
+// light gray; Windows OCR often reads neither (dev machine 4.2.0.12, 2026-11-04).
+// For a name search the popup's own first, highlighted result is then opened
+// with Enter. Nothing is sent from this: the opened chat must still pass the
+// exact-title gate before any draft is typed or sent.
+const NAME_ENTER_FALLBACK_RULES = new Set(["search-r015", "search-r022"]);
+function allowsNameEnterFallback(observed, resolution, context) {
+  const observation = observed?.searchResultObservation || {};
+  const lines = Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [];
+  return ["name", "name_fallback"].includes(String(context.searchQueryType || ""))
+    && observation.captureSource === "popup" && observation.ocrOk === true
+    && !(Array.isArray(observation.webSearchCandidates) && observation.webSearchCandidates.length)
+    && NAME_ENTER_FALLBACK_RULES.has(String(resolution.rule_id || ""))
+    && lines.length > 0
+    && !lines.some((line) => /查找/u.test(String(line?.text || "").normalize("NFKC").replace(/\s+/gu, "")));
+}
+
+function nameEnterFallbackEnvironment(query, observed, context) {
+  return {
+    XIAOXI_SEARCH_QUERY: String(query),
+    XIAOXI_PRESS_ENTER: "1",
+    XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
+    XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0)
+  };
+}
+
+function nameEnterFallbackResult(entered, capture, query, context, searchEvidence) {
+  if (!entered?.ok || entered.exactSearchOpened !== true) return null;
+  discardSearchCapture({ diagnostics: capture.diagnostics });
+  return { ...capture.observed, ...entered, searchQuery: String(query),
+    searchQueryType: String(context.searchQueryType || "unknown"), searchFallbackReason: String(context.searchFallbackReason || ""),
+    searchResultMode: "name_enter_first_result",
+    searchEvidence: { ...searchEvidence, resolver_mode: "name_enter_first_result", enter_fallback_rule_id: searchEvidence.rule_id } };
+}
+
 function discardSearchCapture(result) {
   const file = String(result?.diagnostics?.search_capture_file || "");
   if (!file) return;
@@ -2485,6 +2538,11 @@ function openWechatSearchResult(query, context = {}) {
     const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
     if (resolution.status !== "selected") {
+      if (allowsNameEnterFallback(observed, resolution, context)) {
+        const opened = nameEnterFallbackResult(runner(SEARCH_SCRIPT, nameEnterFallbackEnvironment(query, observed, context), { ensure: false }),
+          capture, query, context, searchEvidence);
+        if (opened) return opened;
+      }
       if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
         try { runPowerShell(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
       }
@@ -2536,6 +2594,11 @@ function openWechatSearchResultAsync(query, context = {}) {
       const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       const capture = detachedSearchCapture(observed, resolution, context.captureSearchFailure === true);
       if (resolution.status !== "selected") {
+        if (allowsNameEnterFallback(observed, resolution, context)) {
+          const opened = nameEnterFallbackResult(await runner(SEARCH_SCRIPT, nameEnterFallbackEnvironment(query, observed, context), { ensure: false }),
+            capture, query, context, searchEvidence);
+          if (opened) return opened;
+        }
         if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
         }
@@ -3001,6 +3064,7 @@ function inputWechatMessageDraftAsync(message, context = {}) {
 }
 
 module.exports = {
+  powershellBlockedByAntivirus,
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
   WECHAT_MAIN_WINDOW_RULES_SCRIPT,
   WECHAT_MOMENTS_STANDALONE_WINDOW_LAYOUT_MODE,

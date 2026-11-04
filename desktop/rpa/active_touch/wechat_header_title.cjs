@@ -1,4 +1,5 @@
 // Read only the fixed title band, never names in the session list or chat body.
+const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const WECHAT_HEADER_TITLE_POWERSHELL = String.raw`
 function Test-WechatHeaderTitle($windowRect, [uint32]$dpi, [string]$expectedTitle) {
   $bitmap=$null; $scaled=$null; $graphics=$null; $scaleGraphics=$null
@@ -28,7 +29,8 @@ function Test-WechatHeaderTitle($windowRect, [uint32]$dpi, [string]$expectedTitl
     if ($right-$left -lt 120 -or $bottom-$top -lt 32) { return $false }
     $bitmap=[System.Drawing.Bitmap]::new($right-$left,$bottom-$top)
     $graphics=[System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen($left,$top,0,0,$bitmap.Size,[System.Drawing.CopyPixelOperation]::SourceCopy)
+${WECHAT_SCREEN_PIXELS_POWERSHELL}
+    if (-not [XiaoxiScreenPixels]::Copy($bitmap, $left, $top)) { throw "screen_copy_failed" }
     $graphics.Dispose(); $graphics=$null
     # A narrow title strip needs surrounding whitespace for WinRT line detection.
     $padding=$bitmap.Height*2

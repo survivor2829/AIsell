@@ -445,6 +445,13 @@ function createWechatWorkflowController(options) {
 
   function nextTask() {
     const time = new Date(now()).getTime();
+    // A touch task waiting out its gap between contacts keeps the turn: Moments
+    // must not run in that gap (user 2026-11-04: touch all contacts, then
+    // Moments). Other waits, such as recovering WeChat, still let work proceed.
+    const touchInGap = store.tasks.some((task) => task.type === "touch" && task.status === "pending"
+      && task.waitingReason === "touch_safety_interval" && Number(task.notBefore) > time
+      && (!task.accountName || task.accountName === getAccount()));
+    if (touchInGap) return undefined;
     return store.tasks.filter((task) => task.status === "pending" && (!task.notBefore || task.notBefore <= time)
       && (!task.accountName || task.accountName === getAccount()) && (dueAt(task) === null || dueAt(task) <= time))
       .sort((left, right) => {
