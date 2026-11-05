@@ -1,4 +1,5 @@
 import { VideoExamples } from './VideoExamples';
+import { PhoneMatrixDemo } from './PhoneMatrixDemo';
 import {
   ArrowRight,
   Bot,
@@ -14,7 +15,10 @@ import {
   RadioTower,
   Search,
   Send,
+  Share2,
+  Smartphone,
   Sparkles,
+  Sprout,
   ThumbsUp,
   UserRound,
   UsersRound,
@@ -35,11 +39,13 @@ import "./AgentHome.css";
 
 export { AGENT_ROLE_IDENTITIES } from "./role-appearance";
 export type { AgentRoleKey } from "./role-appearance";
-// Roles whose module home is this page: the three workspaces plus 精准获客.
-type AgentRoleKey = WorkspaceRoleKey | "business";
+// Roles whose module home is this page: the three workspaces plus 精准获客 and 账号运营 (小丽, 2026-11-04).
+type AgentRoleKey = WorkspaceRoleKey | "business" | "tutorials";
 
 export type AgentHomeTarget =
   | "workflow"
+  | "phone-matrix"
+  | "nurture"
   | "reply"
   | "expert"
   | "contact-sync"
@@ -136,6 +142,20 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
       { key: "business-keyword", label: "关键词获客", description: "从同行视频的评论里，找出问价、想买的人", icon: Search },
       { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin },
       { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: true }
+    ]
+  },
+  // 账号运营（用户 2026-11-04）：点开先见小丽，手机矩阵放第一位，养号、一键分发照旧。
+  tutorials: {
+    key: "tutorials",
+    ...AGENT_ROLE_IDENTITIES.tutorials,
+    portraitKey: "tutorial-assistant",
+    intro: "一台电脑管好几十部手机，新号养起来，视频一键发出去。",
+    primaryLabel: "打开手机矩阵",
+    primaryTarget: "phone-matrix",
+    capabilities: [
+      { key: "phone-matrix", label: "手机矩阵", description: "集线器插上电脑，几十部手机一起看、一起操作", icon: Smartphone },
+      { key: "nurture", label: "养号", description: "新抖音号按 8 天计划自动刷、自动互动", icon: Sprout },
+      { key: "publish", label: "一键分发", description: "一条视频同时发到抖音、快手、小红书、视频号", icon: Share2 }
     ]
   }
 };
@@ -575,6 +595,22 @@ function buildBusinessView() {
   return { metrics, importantTask };
 }
 
+function buildAccountOpsView() {
+  const metrics: Metric[] = [
+    { label: "手机矩阵", value: "可进入", detail: "插上集线器，手机自动出现", icon: Smartphone },
+    { label: "养号", value: "可进入", detail: "新号 8 天自动养", icon: Sprout },
+    { label: "一键分发", value: "可进入", detail: "一条视频发四个平台", icon: Share2 }
+  ];
+  const importantTask: ImportantTask = {
+    title: "先把手机接上电脑",
+    detail: "安卓手机插到集线器上，集线器连到这台电脑，手机就会出现在手机矩阵里，可以一起回桌面、打开微信、一键息屏。",
+    status: "待开始",
+    target: "phone-matrix",
+    action: "打开手机矩阵"
+  };
+  return { metrics, importantTask };
+}
+
 function buildOperationsView() {
   const metrics: Metric[] = [
     { label: "产品详情图", value: "可进入", detail: "打开现有详情图制作", icon: Sparkles }
@@ -615,10 +651,11 @@ export function AgentHome({
     if (role === "agent") return buildWechatView(workflowState, workflowLoading, contactCount, workflow.error);
     if (role === "production") return buildProductionView(snapshot);
     if (role === "business") return buildBusinessView();
+    if (role === "tutorials") return buildAccountOpsView();
     return buildOperationsView();
   }, [contactCount, role, snapshot, workflowLoading, workflowState, workflow.error, preference.name]);
   const status = roleStatus(role, workflowState, workflowLoading, snapshot, workflow.error);
-  const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : role === "business" ? Search : RadioTower;
+  const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : role === "business" ? Search : role === "tutorials" ? Smartphone : RadioTower;
 
   return (
     <div className={`agent-home is-${role}`} style={appearanceStyle(appearance)} data-appearance={appearance.id}>
@@ -671,6 +708,7 @@ export function AgentHome({
       </section>
       </div>
       {role === 'production' && <VideoExamples />}
+      {role === 'tutorials' && <PhoneMatrixDemo compact />}
       </div>
         <section className="agent-important-task">
           <div className="agent-section-heading">

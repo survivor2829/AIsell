@@ -661,13 +661,14 @@
 .agent-home-top .agent-introduction h1 { font-size:clamp(26px,2.4vw,36px); }
 .agent-home-top .agent-introduction h2 { font-size:22px; }
 .agent-home-top .agent-capability-copy small { white-space:normal; overflow:visible; }
-.is-production .agent-home-top { align-items:start; row-gap:20px; }
-.is-production .agent-home-top .agent-hero { grid-column:1; grid-row:1; padding-bottom:0; }
-.is-production .agent-home-actions { grid-column:1; grid-row:2; }
-.is-production .agent-home-top .video-examples { grid-column:2; grid-row:1 / span 2; }
+.is-production .agent-home-top, .is-tutorials .agent-home-top { align-items:start; row-gap:20px; }
+.is-production .agent-home-top .agent-hero, .is-tutorials .agent-home-top .agent-hero { grid-column:1; grid-row:1; padding-bottom:0; }
+.is-production .agent-home-actions, .is-tutorials .agent-home-actions { grid-column:1; grid-row:2; }
+.is-production .agent-home-top .video-examples, .is-tutorials .agent-home-top .pm-demo { grid-column:2; grid-row:1 / span 2; }
 @media(max-width:1100px) {
  .agent-home-top { grid-template-columns:1fr; gap:4px; }
- .is-production .agent-home-top .agent-hero, .is-production .agent-home-actions, .is-production .agent-home-top .video-examples { grid-area:auto; }
+ .is-production .agent-home-top .agent-hero, .is-production .agent-home-actions, .is-production .agent-home-top .video-examples,
+ .is-tutorials .agent-home-top .agent-hero, .is-tutorials .agent-home-actions, .is-tutorials .agent-home-top .pm-demo { grid-area:auto; }
  .agent-home-top .agent-hero { grid-template-columns:220px minmax(0,1fr); }
  .agent-home-actions .agent-capability-list { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }

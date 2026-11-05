@@ -46,6 +46,7 @@ const ROLE_COPY: Record<AgentRoleKey, (stats: OverviewStats | undefined) => Reac
 
 // 主页（用户 2026-10-29 选定 B1，色调用软件自己的白、浅粉和品牌红）：上面一张效果大片，
 // 本周数字压在大片底部；下面 6 位 AI 员工一排，每位写着她自己的数字，点了就去找她。
+// 2026-11-04：去掉「本周成绩」标签、那句小字和「新线索」，只留 3 个数字，把地方让给两条示例视频。
 export function AgentOverview({ preferences, onOpenRole, onStart, workflowTasks = [] }: {
   preferences: RolePreferences;
   onOpenRole: (role: AgentRoleKey) => void;
@@ -63,16 +64,13 @@ export function AgentOverview({ preferences, onOpenRole, onStart, workflowTasks 
   }, [refresh]);
   const kpis: { value: number | string; unit: string; label: string; note: string }[] = [
     { value: stats?.finished.now ?? "—", unit: "条", label: "本周成片", note: stats && gain(stats.finished) ? `↑ ${gain(stats.finished)}` : "" },
-    { value: stats?.leads.now ?? "—", unit: "条", label: "新线索", note: stats && gain(stats.leads) ? `↑ ${gain(stats.leads)}` : "" },
-    { value: stats?.reached.now ?? "—", unit: "人", label: "微信已触达", note: stats && gain(stats.reached) ? `↑ ${gain(stats.reached)}` : "" },
+    { value: stats?.reached.now ?? "—", unit: "人", label: "微信触达", note: stats && gain(stats.reached) ? `↑ ${gain(stats.reached)}` : "" },
     { value: stats?.publishedToday ?? "—", unit: "条", label: "今天已发出", note: stats?.platformsToday ? `${stats.platformsToday} 个平台` : "" }
   ];
   return <div className="home">
-    <section className="home-hero" aria-label="本周成绩">
+    <section className="home-hero" aria-label="素材进来，客户跟着来">
       <div className="home-hero-copy">
-        <span className="home-chip">本周成绩</span>
         <h1>素材进来，<br /><em>客户</em>跟着来</h1>
-        <p>剪辑、配音、字幕、封面，一次做好。</p>
         <button type="button" className="home-start" onClick={onStart}><Play size={18} fill="currentColor" />马上做一条</button>
       </div>
       <dl className="home-kpis">

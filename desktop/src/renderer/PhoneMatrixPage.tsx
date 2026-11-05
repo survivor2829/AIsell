@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { BatteryCharging, BatteryMedium, ChevronLeft, Circle, House, LayoutGrid, List, Pencil, RefreshCw, Send, ShieldAlert, Smartphone, Square, Sun, Unplug, Volume1, Volume2, X } from "lucide-react";
+import { BatteryCharging, BatteryMedium, ChevronLeft, Circle, House, LayoutGrid, List, Pencil, PlayCircle, RefreshCw, Send, ShieldAlert, Smartphone, Square, Sun, Unplug, Volume1, Volume2, X } from "lucide-react";
 import { PhoneScreen } from "./PhoneScreen";
 import { PhoneBatchBar, type BatchApi } from "./PhoneBatchBar";
+import { PhoneMatrixDemo } from "./PhoneMatrixDemo";
 import "./PhoneMatrixPage.css";
 
 // 手机矩阵 (user project of 2026-10-30): every phone on the USB hub with the name / number / note /
@@ -39,6 +40,8 @@ export function PhoneMatrixPage() {
   const [syncOn, setSyncOn] = useState(false);
   const [jitter, setJitter] = useState(false);
   const [text, setText] = useState("");
+  // 示例（用户 2026-11-04）：没手机时直接放在手机墙的位置；有手机后收起，顶部「看示例」随时可看。
+  const [demoOpen, setDemoOpen] = useState(false);
   useEffect(() => {
     if (!api) return;
     let active = true;
@@ -89,6 +92,7 @@ export function PhoneMatrixPage() {
         <div><dt>在线</dt><dd>{online}</dd></div>
         <div><dt>等待授权</dt><dd className={waiting ? "is-warn" : ""}>{waiting}</dd></div>
         <div><dt>已断开</dt><dd>{gone}</dd></div>
+        <button type="button" className="pm-refresh" onClick={() => setDemoOpen(true)}><PlayCircle size={16} />看示例</button>
         <button type="button" className="pm-refresh" onClick={() => api && void api.refresh().then((result) => result.state && setState(result.state))}><RefreshCw size={16} />刷新</button>
       </dl>
     </div>
@@ -113,7 +117,7 @@ export function PhoneMatrixPage() {
         {onlineShown.length > 0 && api && <PhoneBatchBar api={api} serials={pickedOnline} names={phoneNames} />}
         {onlineShown.length > 0 && <label className="pm-pick-all"><input type="checkbox" checked={allPicked}
           onChange={() => setPicked(allPicked ? new Set() : new Set(onlineShown.map((phone) => phone.serial)))} />全选（已选 {pickedOnline.length} 部）</label>}
-        {!onlineShown.length ? <div className="pm-empty"><Smartphone size={34} /><p>还没有在线的手机。手机授权后会自动出现在这里。</p></div>
+        {!onlineShown.length ? <>{!online && <PhoneMatrixDemo />}<div className="pm-empty"><Smartphone size={34} /><p>还没有在线的手机。手机授权后会自动出现在这里。</p></div></>
           : <ul className="pm-wall">
             {onlineShown.map((phone) => <li key={phone.serial} className={`pm-tile${main === phone.serial ? " is-main" : ""}${picked.has(phone.serial) ? " is-picked" : ""}`}>
               <button type="button" className="pm-tile-open" aria-label={`打开 ${phone.name}`} onClick={() => setMain(main === phone.serial ? "" : phone.serial)}>
@@ -146,7 +150,7 @@ export function PhoneMatrixPage() {
     </div>}
 
     {view === "list" && (!state ? <p className="pm-empty">正在读取手机…</p>
-      : !devices.length ? <div className="pm-empty"><Smartphone size={34} /><p>还没有发现手机。把集线器插到这台电脑上，打开手机的「USB 调试」，手机就会出现在这里。</p></div>
+      : !devices.length ? <><PhoneMatrixDemo /><div className="pm-empty"><Smartphone size={34} /><p>还没有发现手机。把集线器插到这台电脑上，打开手机的「USB 调试」，手机就会出现在这里。</p></div></>
         : <ul className="pm-grid">
           {shown.map((phone) => <li key={phone.serial} className={`pm-card is-${phone.state === "device" ? "online" : phone.state === "unauthorized" ? "waiting" : "gone"}`}>
             <div className="pm-card-top">
@@ -166,6 +170,12 @@ export function PhoneMatrixPage() {
           </li>)}
         </ul>)}
 
+    {demoOpen && <div className="pm-dialog-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setDemoOpen(false); }}>
+      <div className="pm-demo-dialog" role="dialog" aria-modal="true" aria-label="手机矩阵示例">
+        <header><h2>手机矩阵示例</h2><button type="button" className="pm-close" aria-label="关闭示例" onClick={() => setDemoOpen(false)}><X size={18} /></button></header>
+        <PhoneMatrixDemo />
+      </div>
+    </div>}
     {editing && <PhoneEditor phone={editing} groups={state?.groups || []} message={message} onCancel={() => setEditing(null)} onSave={(fields) => void save(fields)} />}
   </section>;
 }

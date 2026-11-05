@@ -246,6 +246,28 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     await until(pipeline, newScript.id, ['done', 'failed']);
     await pipeline.close();
   }
+  // 13b. 客户自己写的稿（2026-11-04）：不要文案库编号和平台，不编爆款来源；同一篇正在做不开第二条；超长或空着拦下
+  {
+    const w = world(), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
+    const own = { own: true, title: '夜班保洁怎么排', script: '夜班保洁排不开人？一台洗地机顶两个人，先看地面材质。', emphasisPhrases: ['地面材质', '没有的词'] };
+    const job = pipeline.startFromScript({ libraryItem: own, assetId: 'rha_1', maxCny: 6 });
+    assert.equal(job.mode, 'script');
+    assert.equal(job.platform, 'manual');
+    assert.equal(pipeline.startFromScript({ libraryItem: own, assetId: 'rha_1', maxCny: 6 }).id, job.id, '同一篇正在做：不并行开第二条');
+    const done = await until(pipeline, job.id, ['done', 'failed']);
+    assert.equal(done.status, 'done', done.error);
+    assert.deepEqual([w.calls.download, w.calls.asr.length, w.calls.write.length, w.calls.create, w.calls.prepare], [0, 0, 0, 1, 1]);
+    const task = w.tasks.get(done.taskId);
+    assert.equal(task.input.script, own.script, '照着客户自己写的稿出片');
+    assert.equal(task.input.referenceSource, undefined, '自己写的稿不编爆款来源');
+    assert.deepEqual(task.input.emphasisPhrases, ['地面材质']);
+    const other = pipeline.startFromScript({ libraryItem: { ...own, script: '另一篇自己写的稿。' }, assetId: 'rha_1', maxCny: 6 });
+    assert.notEqual(other.id, job.id, '换一篇是新的一条');
+    await until(pipeline, other.id, ['done', 'failed']);
+    for (const bad of [{ ...own, title: '标'.repeat(25) }, { ...own, script: 'x'.repeat(501) }, { ...own, script: '  ' }, { ...own, title: '' }, { ...own, own: 'yes' }])
+      assert.throws(() => pipeline.startFromScript({ libraryItem: bad, assetId: 'rha_1' }), { code: 'viral_item_invalid' });
+    await pipeline.close();
+  }
   // 14. 文案库出片超预算：什么都没买，可以删掉，也可以再出一条（2026-11-02 实测卡住）
   {
     const w = world({ quoteCny: 8.5 }), pipeline = createViralPipeline({ root: newRoot(), ...w.deps });
