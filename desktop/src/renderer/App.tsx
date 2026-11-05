@@ -533,7 +533,8 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  if (isSupportRole(key) || key === "business" || isBusinessModule(key)) return true;
+  // 账号运营（小丽）自 1.2.58 有自己的首页；漏了它会在首页下面多出一整屏「下一阶段开放」。
+  if (isSupportRole(key) || key === "business" || key === "tutorials" || isBusinessModule(key)) return true;
   return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "phone-matrix", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 

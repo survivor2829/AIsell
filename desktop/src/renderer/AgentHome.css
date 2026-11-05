@@ -647,34 +647,156 @@
   }
 }
 
-.agent-home-top { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(320px,1fr); gap:30px; align-items:center; padding-top:16px; }
-.agent-home-top .agent-hero { grid-template-columns:minmax(160px,.85fr) minmax(0,1fr); gap:18px; align-items:center; }
-.agent-home-actions { min-width:0; }
-.agent-home-actions .agent-capabilities { margin-top:0; }
-.agent-home-actions .agent-capability-list { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
-.agent-home > .agent-important-task { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 24px; margin-top:18px; }
-.agent-home > .agent-important-task .agent-section-heading { grid-column:1 / -1; }
-.agent-home > .agent-important-task h3 { margin:8px 0 0; }
-.agent-home > .agent-important-task > p { grid-column:1; min-height:0; }
-.agent-home > .agent-important-task .agent-task-action { grid-column:2; grid-row:2 / span 2; width:auto; margin:0; align-self:center; }
-.agent-home > .agent-important-task .agent-text-action { justify-self:start; }
-.agent-home-top .agent-introduction h1 { font-size:clamp(26px,2.4vw,36px); }
-.agent-home-top .agent-introduction h2 { font-size:22px; }
-.agent-home-top .agent-capability-copy small { white-space:normal; overflow:visible; }
-.is-production .agent-home-top, .is-tutorials .agent-home-top { align-items:start; row-gap:20px; }
-.is-production .agent-home-top .agent-hero, .is-tutorials .agent-home-top .agent-hero { grid-column:1; grid-row:1; padding-bottom:0; }
-.is-production .agent-home-actions, .is-tutorials .agent-home-actions { grid-column:1; grid-row:2; }
-.is-production .agent-home-top .video-examples, .is-tutorials .agent-home-top .pm-demo { grid-column:2; grid-row:1 / span 2; }
-@media(max-width:1100px) {
- .agent-home-top { grid-template-columns:1fr; gap:4px; }
- .is-production .agent-home-top .agent-hero, .is-production .agent-home-actions, .is-production .agent-home-top .video-examples,
- .is-tutorials .agent-home-top .agent-hero, .is-tutorials .agent-home-actions, .is-tutorials .agent-home-top .pm-demo { grid-area:auto; }
- .agent-home-top .agent-hero { grid-template-columns:220px minmax(0,1fr); }
- .agent-home-actions .agent-capability-list { grid-template-columns:repeat(3,minmax(0,1fr)); }
+
+/* 员工首页（用户 2026-11-05）：一屏看完、不留白、字大字粗。
+   上：左人物、右视频（没有视频的员工右边放能做的事）；中：能做的事一整行；下：接下来做什么 + 数字并排。 */
+.agent-home { display: flex; flex-direction: column; gap: clamp(10px, 1.4vh, 18px); padding: 8px 28px 16px; }
+/* 上面有「返回上一级」（上边距 14 + 高 46）时，首页只撑满剩下的高度，否则永远要多滑这一截。 */
+.module-return ~ .agent-home { min-height: calc(100% - 60px); }
+.agent-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.agent-status-row .agent-personalize { margin: 0; }
+.agent-home-top { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(320px, 1fr); gap: 26px; align-items: center; }
+.agent-home-top .agent-hero { min-height: 0; grid-template-columns: minmax(170px, .78fr) minmax(0, 1fr); gap: 18px; align-items: center; padding: 0; }
+.agent-home-actions { min-width: 0; }
+.agent-home-actions .agent-capabilities { margin-top: 0; }
+.agent-home-actions .agent-capability-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+/* 人物介绍：大字、粗字 */
+.agent-home-top .agent-introduction { padding: 0; }
+.agent-home-top .agent-live-status { min-height: 32px; padding: 0 14px; font-size: 14px; }
+.agent-home-top .agent-introduction h1 { margin: 14px 0 6px; font-size: clamp(34px, min(3.2vw, 5.4vh), 56px); font-weight: 900; letter-spacing: -0.01em; }
+.agent-home-top .agent-introduction h2 { font-size: clamp(22px, min(1.8vw, 3vh), 30px); font-weight: 900; }
+.agent-home-top .agent-introduction > p { margin: 12px 0 18px; color: #3f4a5e; font-size: clamp(15px, min(1.15vw, 2vh), 19px); font-weight: 700; line-height: 1.65; }
+.agent-home .agent-primary-action { min-height: clamp(46px, 6vh, 56px); padding: 0 24px; border-radius: 14px; font-size: clamp(16px, min(1.25vw, 2.1vh), 20px); font-weight: 900; }
+.agent-home .agent-portrait-name strong { font-size: 20px; font-weight: 900; }
+.agent-home .agent-portrait-name span { font-size: 13px; font-weight: 800; }
+
+/* 能做的事、接下来做什么、数字：都加大加粗 */
+.agent-home .agent-capabilities, .agent-home .agent-important-task { padding: 14px 18px; border-radius: 18px; }
+.agent-home .agent-section-heading h2 { font-size: 18px; font-weight: 900; }
+.agent-home .agent-section-heading > span { padding: 5px 10px; font-size: 13px; }
+.agent-home .agent-capability-list { margin-top: 12px; }
+.agent-home .agent-capability-list button { min-height: 64px; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; padding: 10px 14px; border-radius: 14px; }
+.agent-home .agent-capability-icon { width: 44px; height: 44px; border-radius: 12px; }
+.agent-home .agent-capability-copy { gap: 4px; }
+.agent-home .agent-capability-copy strong { color: #172033; font-size: 17px; font-weight: 900; }
+.agent-home .agent-capability-copy small { color: #4b5568; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.45; }
+.agent-home-bottom { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 18px; align-items: stretch; }
+.agent-home-bottom .agent-metric-strip { margin-top: 0; border-radius: 18px; }
+.agent-home-bottom .agent-important-task { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 20px; align-content: center; }
+.agent-home-bottom .agent-important-task .agent-section-heading { grid-column: 1 / -1; }
+.agent-home-bottom .agent-important-task h3 { grid-column: 1; margin: 4px 0 0; font-size: 20px; font-weight: 900; }
+.agent-home-bottom .agent-important-task > p { grid-column: 1; min-height: 0; color: #4b5568; font-size: 14px; font-weight: 700; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.agent-home-bottom .agent-important-task .agent-task-action { grid-column: 2; grid-row: 2 / span 2; width: auto; min-height: 48px; margin: 0; padding: 0 20px; align-self: center; font-size: 16px; font-weight: 900; }
+.agent-home-bottom .agent-important-task .agent-text-action { grid-column: 1; justify-self: start; margin: 0; }
+.agent-home-bottom .agent-metric { align-items: center; padding: 16px 18px; }
+.agent-home-bottom .agent-metric span { color: #4b5568; font-size: 14px; font-weight: 800; }
+.agent-home-bottom .agent-metric p strong { font-size: 30px; font-weight: 900; }
+.agent-home-bottom .agent-metric p small { font-size: 14px; }
+.agent-home-bottom .agent-metric em { color: #5b6476; font-size: 12px; font-weight: 700; }
+
+/* 右边视频：高度跟左边人物对齐，下面不留白 */
+.has-media .agent-home-top { align-items: stretch; }
+.has-media .agent-home-media { min-width: 0; min-height: 0; display: flex; }
+.has-media .agent-home-media > * { flex: 1; min-width: 0; }
+.has-media > .agent-home-actions .agent-capability-list { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.is-agent.has-media > .agent-home-actions .agent-capability-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* 短视频获客：两条成片横着放，图在左、字在右 */
+.agent-home-media .video-examples { display: flex; flex-direction: column; padding: 16px 18px; border-radius: 18px; background: var(--agent-panel); }
+.agent-home-media .video-examples h2 { font-size: 20px; font-weight: 900; }
+.agent-home-media .video-examples > p { margin: 4px 0 12px; font-size: 14px; font-weight: 700; color: #4b5568; }
+.agent-home-media .video-example-cards { flex: 1; min-height: 0; }
+.agent-home-media .video-example-cards > button { min-height: 0; gap: 8px; padding: 8px; }
+.agent-home-media .video-example-cards img { flex: 1 1 auto; width: 100%; height: 0; min-height: 0; aspect-ratio: auto; margin: 0; object-fit: cover; object-position: top center; }
+.agent-home-media .video-example-cards span { gap: 4px; }
+.agent-home-media .video-example-cards strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-home-media .video-example-cards strong { font-size: 17px; font-weight: 900; }
+.agent-home-media .video-example-cards small { font-size: 13px; font-weight: 700; }
+.agent-home-media .video-example-cards em { font-size: 14px; font-weight: 800; }
+
+/* 账号运营：示例录像撑满右边，三步紧贴在下面 */
+.agent-home-media .pm-demo.is-compact { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 18px; }
+.agent-home-media .pm-demo.is-compact .pm-demo-stage { flex: 1; min-height: 0; aspect-ratio: auto; }
+.agent-home-media .pm-demo.is-compact .pm-demo-copy strong { margin-bottom: 8px; font-size: 18px; }
+.agent-home-media .pm-demo.is-compact .pm-demo-copy li { flex-direction: row; align-items: center; gap: 8px; }
+.agent-home-media .pm-demo.is-compact .pm-demo-copy li b { font-size: 15px; font-weight: 900; }
+.agent-home-media .pm-demo.is-compact .pm-demo-copy li small { font-size: 12px; font-weight: 700; }
+
+/* 微信拓客：三段操作录屏轮流播放 */
+.wechat-demo-reel { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 18px; background: var(--agent-panel); box-shadow: 0 12px 32px color-mix(in srgb, var(--agent-accent) 8%, rgba(38, 46, 72, 0.06)); }
+.wechat-demo-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.wechat-demo-tabs button { min-height: 42px; border: 1px solid color-mix(in srgb, var(--agent-accent) 22%, #e6e9f0); border-radius: 12px; background: #fff; color: #273044; font: inherit; font-size: 16px; font-weight: 900; cursor: pointer; }
+.wechat-demo-tabs button.is-on { border-color: var(--agent-accent-strong); background: var(--agent-accent-strong); color: #fff; }
+.wechat-demo-stage { position: relative; flex: 1; min-height: 0; padding: 0; overflow: hidden; border: 0; border-radius: 12px; background: #eef0f5; cursor: zoom-in; }
+.wechat-demo-stage video, .wechat-demo-stage img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+.wechat-demo-tag, .wechat-demo-zoom { position: absolute; display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 999px; background: #000000a6; color: #fff; font-size: 13px; font-weight: 800; pointer-events: none; }
+.wechat-demo-tag { left: 10px; top: 10px; }
+.wechat-demo-zoom { right: 10px; bottom: 10px; }
+.wechat-demo-caption { display: flex; align-items: baseline; gap: 10px; margin: 0; color: #273044; font-size: 17px; font-weight: 900; }
+.wechat-demo-caption b { padding: 2px 10px; border-radius: 999px; background: var(--agent-surface); color: var(--agent-accent-strong); font-size: 14px; }
+.wechat-demo-tabs button:focus-visible, .wechat-demo-stage:focus-visible { outline: 3px solid color-mix(in srgb, var(--agent-accent) 35%, transparent); outline-offset: 2px; }
+
+@media (max-width: 1100px) {
+  .agent-home-top, .agent-home-bottom { grid-template-columns: 1fr; }
+  .has-media .agent-home-media { min-height: 360px; }
+  .agent-home-top .agent-hero { grid-template-columns: 200px minmax(0, 1fr); }
+  .agent-home-actions .agent-capability-list, .is-agent.has-media > .agent-home-actions .agent-capability-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media(max-width:760px) {
- .agent-home-top .agent-hero { grid-template-columns:160px minmax(0,1fr); }
- .agent-home-actions .agent-capability-list { grid-template-columns:1fr; }
- .agent-home > .agent-important-task { grid-template-columns:1fr; }
- .agent-home > .agent-important-task .agent-task-action { grid-column:1; grid-row:auto; width:100%; }
+@media (max-width: 760px) {
+  .agent-home-top .agent-hero { grid-template-columns: 1fr; }
+  .agent-home-actions .agent-capability-list, .is-agent.has-media > .agent-home-actions .agent-capability-list { grid-template-columns: 1fr; }
+  .agent-home-bottom .agent-important-task { grid-template-columns: 1fr; }
+  .agent-home-bottom .agent-important-task .agent-task-action { grid-column: 1; grid-row: auto; width: 100%; }
 }
+
+/* 撑满一屏：上半部分吃掉剩余高度，人物跟着放大；底部数字不截断。 */
+.agent-home-top { flex: 1 0 auto; }
+.agent-home-top .agent-portrait-canvas { width: min(100%, clamp(220px, 36vh, 340px)); }
+.agent-home-top .agent-hero { grid-template-columns: minmax(200px, .9fr) minmax(0, 1fr); }
+.agent-home:not(.is-agent) .agent-capability-copy small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.agent-home-bottom .agent-metric { grid-template-columns: minmax(0, 1fr); }
+.agent-home-bottom .agent-metric > svg { display: none; }
+.agent-home-bottom .agent-metric em { white-space: normal; text-overflow: clip; }
+.agent-home-bottom.is-single { grid-template-columns: minmax(0, 1fr); }
+
+/* 没有视频的员工（精准获客、产品详情图）：右边能做的事竖排、每项加高，和左边人物一样高。 */
+.agent-home:not(.has-media) .agent-home-top { align-items: stretch; }
+.agent-home:not(.has-media) .agent-home-actions, .agent-home:not(.has-media) .agent-home-actions .agent-capabilities { display: flex; flex-direction: column; }
+.agent-home:not(.has-media) .agent-home-actions .agent-capabilities { flex: 1; }
+.agent-home:not(.has-media) .agent-home-actions .agent-capability-list { flex: 1; grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(72px, 1fr); }
+.agent-home:not(.has-media) .agent-capability-copy strong { font-size: 20px; }
+.agent-home:not(.has-media) .agent-capability-copy small { font-size: 14px; -webkit-line-clamp: 2; }
+.agent-home:not(.has-media) .agent-capability-list button { grid-template-columns: 60px minmax(0, 1fr) auto; gap: 16px; padding: 14px 20px; }
+.agent-home:not(.has-media) .agent-capability-icon { width: 60px; height: 60px; border-radius: 16px; }
+.agent-home:not(.has-media) .agent-capability-icon svg { width: 30px; height: 30px; }
+.agent-home:not(.has-media) .agent-capability-copy strong { font-size: 23px; }
+.agent-home:not(.has-media) .agent-capability-copy small { font-size: 15px; }
+
+/* 矮窗口（如 1280×800）：说明文字收一收，保证一屏看完。 */
+@media (max-height: 860px) and (min-width: 1101px) {
+  .agent-home-media .pm-demo.is-compact .pm-demo-copy li small, .agent-home-media .pm-demo.is-compact .pm-demo-copy strong { display: none; }
+  .agent-home-media .pm-demo.is-compact .pm-demo-copy li { flex-direction: row; }
+  .agent-home-media .video-examples > p { display: none; }
+  .agent-home .agent-capability-copy small, .agent-home:not(.is-agent) .agent-capability-copy small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent-home-bottom .agent-important-task > p { display: none; }
+  .agent-home-top .agent-introduction > p { margin: 8px 0 12px; }
+  .agent-home .agent-capability-list button { min-height: 58px; }
+}
+@media (max-height: 860px) and (min-width: 1101px) {
+  .is-agent.has-media > .agent-home-actions .agent-capability-list { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+  .is-agent .agent-capability-list button { grid-template-columns: 40px minmax(0, 1fr); min-height: 54px; padding: 8px 10px; }
+  .is-agent .agent-capability-list button > svg, .is-agent .agent-capability-copy small { display: none !important; }
+  .is-agent .agent-capability-icon { width: 40px; height: 40px; }
+  .is-agent .agent-capability-copy strong { font-size: 16px; }
+}
+@media (max-height: 780px) and (min-width: 1101px) {
+  .agent-home { gap: 8px; padding-bottom: 8px; }
+  .agent-home-top .agent-portrait-canvas { width: min(100%, 30vh); }
+  .agent-home-top .agent-introduction h1 { margin: 8px 0 4px; }
+  .agent-home .agent-capabilities, .agent-home .agent-important-task { padding: 10px 16px; }
+  .agent-home .agent-capability-list { margin-top: 8px; }
+  .agent-home-bottom .agent-metric { padding: 10px 14px; }
+  .agent-home-bottom .agent-metric p strong { font-size: 26px; }
+}
+@media (max-height: 740px) and (min-width: 1101px) { .agent-home-top .agent-portrait-canvas { width: min(100%, 26vh); } .agent-home-top .agent-introduction > p { font-size: 15px; } }
