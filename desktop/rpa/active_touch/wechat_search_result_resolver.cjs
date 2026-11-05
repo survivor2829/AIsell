@@ -27,6 +27,23 @@ function unicodeClass(character) {
   return "other";
 }
 
+// A "微信号：…" line that is not the query: how far it is, without its text. A
+// customer computer (1.2.55, 2026-11-05) showed the contact's ID line yet stopped
+// as search-r015, and the capsule could not tell an OCR misread from a stale ID.
+function wechatIdComparison(candidate, identity) {
+  if (identity?.queryType !== "wechat_id") return {};
+  const value = wechatIdLabelValue(candidate);
+  if (value === null) return {};
+  const id = [...value], query = [...normalized(identity.query)];
+  const index = id.findIndex((character, position) => character !== query[position]);
+  const first = index < 0 ? (id.length === query.length ? -1 : id.length) : index;
+  return {
+    id_length: id.length, query_length: query.length,
+    id_query_distance: Math.min(9, editDistance(value, normalized(identity.query))),
+    ...(first >= 0 ? { id_first_mismatch: { index: first, query_class: unicodeClass(query[first]), ocr_class: unicodeClass(id[first]) } } : {})
+  };
+}
+
 function searchObservationEvidence(observation, identity) {
   const visual = Array.isArray(observation.visualCandidates) ? observation.visualCandidates : [];
   const uia = Array.isArray(observation.uiaCandidates) ? observation.uiaCandidates : [];
@@ -39,7 +56,8 @@ function searchObservationEvidence(observation, identity) {
       char_count: characters.length, first_class: unicodeClass(characters[0]), last_class: unicodeClass(characters.at(-1)),
       boundary_distance: EVIDENCE_BOUNDARIES.map((label) => editDistance(text, label)),
       starts_with_wechat_id: text.startsWith("微信号"), contains_network_lookup: text.includes("网络查找"),
-      equals_query: text === normalized(identity.query)
+      equals_query: text === normalized(identity.query),
+      ...wechatIdComparison(candidate, identity)
     };
   };
   const ocrBoxes = [...visual, ...web].map(box);

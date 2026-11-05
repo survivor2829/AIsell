@@ -229,6 +229,12 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
         for (const field of ["message", "traceback", "where", "taskId", "traceId", "phase"]) if (!capsule[field] && failure[field]) capsule[field] = failure[field];
         if (failure.details && Object.keys(failure.details).length && !Object.keys(capsule.details || {}).length) capsule.details = failure.details;
         if (failure.context && !Object.keys(capsule.context || {}).length) capsule.context = failure.context;
+        // The first occurrence of the day keeps its place; the latest one is kept beside it.
+        // Field 2026-11-05: an afternoon failure on 1.2.55 merged into the morning's 1.2.54
+        // capsule and the server saw only the morning's details and trail.
+        capsule.latest = { at: new Date(at).toISOString(), traceId: failure.traceId || "", event: failure.event || "",
+          appVersion: (() => { try { return String(identity?.()?.version || ""); } catch { return ""; } })(),
+          message: text(failure.message, 2000), details: failure.details || {}, internal: internalTrail(failure.traceId).slice(-10) };
         try { write(capsule); } catch {}
         // Re-send so the server sees the new count; it skips screenshots it already has.
         if (!state.outbox.includes(prior.id)) state.outbox.push(prior.id);
