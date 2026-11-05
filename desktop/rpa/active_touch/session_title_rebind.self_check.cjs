@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { loadState, saveState } = require("./state_machine.cjs");
-const { refreshRealSendSession } = require("./state_machine.dev.cjs");
+const { refreshRealSendSession, verifyRealSendSessionAsync } = require("./state_machine.dev.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-title-rebind-"));
 const baseDir = path.join(root, "active_touch");
@@ -42,8 +42,20 @@ saveState(baseDir, { ...loadState(baseDir), real_send_status: "clicked" });
 assert.equal(refreshRealSendSession(baseDir, observed({ titleVerified: true })).reason, "atomic_conversation_changed",
   "once the send was clicked the bound token is never replaced");
 
-fs.rmSync(root, { recursive: true, force: true });
-console.log("session title rebind self-check passed");
+// The workflow's verify_session stage (executeVerifiedContactSend) uses this function; the
+// field failure came from here, and 1.2.56 had changed only refreshRealSendSession.
+(async () => {
+  fresh();
+  const verified = await verifyRealSendSessionAsync(baseDir, async () => observed({ titleVerified: true })());
+  assert.equal(verified.ok, true, JSON.stringify(verified).slice(0, 400));
+  assert.equal(loadState(baseDir).conversation_token, "conversation:v2:81:91:visual:settled");
+  fresh();
+  const unread = await verifyRealSendSessionAsync(baseDir, async () => observed({ titleVerified: false })());
+  assert.equal(unread.ok, false);
+  assert.equal(unread.blocked_reason || unread.reason, "atomic_conversation_changed");
+  fs.rmSync(root, { recursive: true, force: true });
+  console.log("session title rebind self-check passed");
+})().catch((error) => { console.error(error); process.exit(1); });
 
 // The ID-line comparison travels with the search evidence, without the ID text.
 const { searchObservationEvidence } = require("./wechat_search_result_resolver.cjs");
@@ -55,4 +67,18 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
   assert.deepEqual(box.id_first_mismatch, { index: 4, query_class: "number", ocr_class: "letter" });
   assert.ok(!JSON.stringify(evidence).includes("abc"), "the ID itself is never in the evidence");
   console.log("search ID comparison evidence passed");
+}
+
+// Header title OCR (dev machine, WeChat 4.2.0.13, 2026-11-05): a two-character title in the
+// narrow strip gave no OCR line at all and a three-character one was misread now and then.
+// The fallback reads a taller area at a few scales, keeps only lines inside the title band,
+// and still requires one exact match. Checked live on the development machine; here its shape.
+{
+  const { WECHAT_HEADER_TITLE_POWERSHELL: header } = require("./wechat_header_title.cjs");
+  assert.match(header, /if \(-not \(& \$matches \$lines\)\)/u, "the taller read runs only when the strip did not match");
+  assert.match(header, /Where-Object \{ \$_\.x -ge \$bandLeft-2 -and \$_\.y -ge -2 -and \$_\.bottom -le \$bandHeight\+2 \}/u,
+    "only lines inside the title band count, never the session list or chat body");
+  assert.match(header, /\$found\.Count -eq 1 -and \$found\[0\]\.text -ceq \$expected/u, "one exact, case-sensitive match");
+  assert.doesNotMatch(header, /editDistance|-like/u, "no fuzzy title match");
+  console.log("header title fallback shape passed");
 }
