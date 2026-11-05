@@ -159,6 +159,15 @@ async function aRepeatingCodeTakesOneSlotPerDay() {
   assert.equal(ids.size, 2, "the same code opens one capsule per day, not one per ten minutes");
   assert.ok(t.capsules.record({ source: "log", module: "product_detail", code: "PlannerError", at: start + 6 * 3_600_000 }),
     "a different failure later the same day still gets its own capsule");
+  const later = fixture("repeat-latest");
+  later.setEnabled(false);
+  later.capsules.record({ source: "log", module: "active_touch", code: "search_result_identity_unverified", details: { rule_id: "search-r022" }, at: start });
+  const merged = later.capsules.record({ source: "log", module: "active_touch", code: "search_result_identity_unverified",
+    details: { rule_id: "search-r015" }, traceId: "afternoon-trace", at: start + 6 * 3_600_000 });
+  const latest = later.files().find(item => item.id === merged).latest;
+  later.capsules.stop();
+  assert.deepEqual([latest.traceId, latest.details.rule_id, latest.appVersion], ["afternoon-trace", "search-r015", "1.2.22"],
+    "the latest occurrence's details and version travel beside the first one");
   t.capsules.stop();
 }
 

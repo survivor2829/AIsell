@@ -834,6 +834,8 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
     ...observation,
     ok: true,
     title: observation.title || String(expectedTitle),
+    // True only when this observation itself read the expected title (UIA or header OCR).
+    titleVerified: Boolean(String(observation.title ?? "").trim()),
     verificationMode
   };
   const account = detectActiveWechatAccount({
@@ -859,6 +861,8 @@ async function verifyWechatCurrentConversationAsync(expectedTitle, context = {})
     ...observation,
     ok: true,
     title: observation.title || String(expectedTitle),
+    // True only when this observation itself read the expected title (UIA or header OCR).
+    titleVerified: Boolean(String(observation.title ?? "").trim()),
     verificationMode
   };
   const account = await detectActiveWechatAccountAsync({

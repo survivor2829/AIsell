@@ -20,6 +20,7 @@ const checks = [
   "rpa/active_touch/worker_antivirus_block.self_check.cjs",
   "rpa/active_touch/wechat_search_observation.self_check.cjs",
   "rpa/active_touch/wechat_search_42.self_check.cjs",
+  "rpa/active_touch/session_title_rebind.self_check.cjs",
   "rpa/active_touch/wechat_search_capture_chain.self_check.cjs",
   "rpa/active_touch/wechat_search_input.self_check.cjs",
   "rpa/active_touch/wechat_render_surface.self_check.cjs",

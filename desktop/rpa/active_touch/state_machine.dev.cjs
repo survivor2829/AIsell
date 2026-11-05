@@ -83,7 +83,13 @@ function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir =
   }
   const observedToken = String(result.conversationToken ?? "").trim();
   if (allowExactSearchFallback && !observedToken && !state.conversation_token) return { ok: false, reason: "conversation_token_missing" };
-  if (!options.allowWindowRebind && !allowExactSearchFallback && state.conversation_token && observedToken && observedToken !== String(state.conversation_token)) return { ok: false, reason: "atomic_conversation_changed" };
+  // Before anything is typed, a fresh observation that read the contact's title itself
+  // re-binds the conversation. The token bound at the search click is a hash of the
+  // header pixels; on a customer computer (WeChat 4.2.0.8, 1.2.54-1.2.55, 2026-11-05)
+  // it never matched the settled header, so a correctly opened chat failed three
+  // recoveries as atomic_conversation_changed. The send itself still checks this token.
+  const titleRebind = options.rebindVerifiedTitle === true && result.verificationMode === "conversation_title" && result.titleVerified === true;
+  if (!options.allowWindowRebind && !allowExactSearchFallback && !titleRebind && state.conversation_token && observedToken && observedToken !== String(state.conversation_token)) return { ok: false, reason: "atomic_conversation_changed" };
   if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
   if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
   if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
@@ -121,7 +127,13 @@ async function sessionCheckAsync(state, driver = verifyWechatCurrentConversation
   }
   const observedToken = String(result.conversationToken ?? "").trim();
   if (allowExactSearchFallback && !observedToken && !state.conversation_token) return { ok: false, reason: "conversation_token_missing" };
-  if (!options.allowWindowRebind && !allowExactSearchFallback && state.conversation_token && observedToken && observedToken !== String(state.conversation_token)) return { ok: false, reason: "atomic_conversation_changed" };
+  // Before anything is typed, a fresh observation that read the contact's title itself
+  // re-binds the conversation. The token bound at the search click is a hash of the
+  // header pixels; on a customer computer (WeChat 4.2.0.8, 1.2.54-1.2.55, 2026-11-05)
+  // it never matched the settled header, so a correctly opened chat failed three
+  // recoveries as atomic_conversation_changed. The send itself still checks this token.
+  const titleRebind = options.rebindVerifiedTitle === true && result.verificationMode === "conversation_title" && result.titleVerified === true;
+  if (!options.allowWindowRebind && !allowExactSearchFallback && !titleRebind && state.conversation_token && observedToken && observedToken !== String(state.conversation_token)) return { ok: false, reason: "atomic_conversation_changed" };
   if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
   if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
   if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
@@ -361,7 +373,8 @@ function refreshRealSendSession(baseDir = __dirname, driver = verifyWechatCurren
   const result = sessionCheck(state, driver, baseDir, {
     allowWindowRebind,
     expectedPid: recoveryWindow?.pid,
-    expectedHWnd: recoveryWindow?.hWnd
+    expectedHWnd: recoveryWindow?.hWnd,
+    rebindVerifiedTitle: !allowWindowRebind && !["prepared", "clicked", "sent_verified"].includes(state.real_send_status)
   });
   if (!result.ok) return result;
   const nextState = refreshedSessionState(state, result);
