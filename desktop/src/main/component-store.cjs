@@ -121,9 +121,16 @@ function inspectZip(buffer, expectedCount) {
   }
   if (at !== end) fail("component_archive_directory_invalid");
 }
+// Name the file when the running program (installed base or current generation) is incomplete,
+// e.g. quarantined by security software. Retrying the download never repairs it; reinstalling
+// the same base does (a full install resets the component selection to the installed program).
+function baseFileFailure(code, file) { throw Object.assign(new Error(code), { code, path: file.path }); }
 async function copyVerified(sourceRoot, targetRoot, file) {
-  const { full: source, stat } = await checkedFile(sourceRoot, file.path);
-  if (stat.size !== file.size) fail("component_file_corrupt");
+  let checked;
+  try { checked = await checkedFile(sourceRoot, file.path); }
+  catch (error) { if (error?.code === "ENOENT") baseFileFailure("component_base_file_missing", file); throw error; }
+  const { full: source, stat } = checked;
+  if (stat.size !== file.size) baseFileFailure("component_base_file_damaged", file);
   const target = path.join(targetRoot, safePath(file.path));
   await fsp.mkdir(path.dirname(target), { recursive: true });
   // Hardlink only immutable generations/base; updater never edits linked files in place.

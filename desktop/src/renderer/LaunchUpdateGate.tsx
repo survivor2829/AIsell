@@ -7,6 +7,8 @@ export function LaunchUpdateGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CloudStatus | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [now, setNow] = useState(Date.now());
+  // The reason shown when the gate let the customer in; later background checks must not blink or replace it.
+  const [notice, setNotice] = useState<{ text: string; closed: boolean } | null>(null);
   useEffect(() => {
     const api = window.xiaoxiCloudMaintenance;
     if (!api) { setUnavailable(true); return; }
@@ -22,6 +24,18 @@ export function LaunchUpdateGate({ children }: { children: ReactNode }) {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [gate?.phase]);
+  // 程序文件缺失时放行进入当前版本，并说明原因和修复办法（重试补不回被删的文件）。
+  useEffect(() => {
+    if (!notice && gate?.phase === "open" && gate.reason === "base_damaged" && state?.error) setNotice({ text: state.error, closed: false });
+  }, [notice, gate?.phase, gate?.reason, state?.error]);
+  if (open && notice && !notice.closed) return <>
+    {children}
+    <aside className="launch-update-notice" role="alert">
+      <strong>暂时无法自动更新</strong>
+      <p>{notice.text}</p>
+      <button type="button" onClick={() => setNotice({ ...notice, closed: true })}>知道了</button>
+    </aside>
+  </>;
   if (open) return <>{children}</>;
   if (!state || !gate) return <main className="launch-update" aria-busy="true" />;
 

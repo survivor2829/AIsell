@@ -1,6 +1,6 @@
 // 打开即更新：发现新版就先装好再进入，不能跳过；失败自动重试直到装好。
-// 只在三种情况下直接进入当前版本：连不上更新服务器、这台电脑不能自动安装、
-// 上次更新失败已回滚（避免反复安装同一个装不上的版本）。
+// 只在这些情况下直接进入当前版本：连不上更新服务器、这台电脑不能自动安装、
+// 上次更新失败已回滚（避免反复安装同一个装不上的版本）、已安装的程序文件缺失或损坏（重试无法修复）。
 // The gate keeps the update hold on while it runs, so no business work starts before it opens.
 const SETTLED = new Set(["current", "ready", "error", "blocked", "idle", "disabled"]);
 
@@ -51,6 +51,9 @@ function createLaunchGate({ controller, request, setHold, onOpen = () => {}, pub
           if (next?.updateRequested) await settle(value => !value.updateRequested);
         } else if (state.stage === "error") {
           if (/full_upgrade_required/u.test(state.error || "")) return open("not_ready");
+          // A file missing from the installed program never comes back by retrying; let the
+          // customer keep working on the current version and show how to reinstall.
+          if (/component_base_file_(?:missing|damaged)/u.test(state.error || "")) return open("base_damaged");
           if (!state.nextVersion) return open("offline");
         } else {
           return open("unsupported");

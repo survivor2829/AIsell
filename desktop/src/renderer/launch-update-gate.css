@@ -5,3 +5,8 @@
 .launch-update-card p{margin:12px 0 0;font-size:14px;line-height:1.6;font-variant-numeric:tabular-nums}
 .launch-update-card .launch-update-error{color:#b42318}
 .launch-update-card .launch-update-note{color:#64748b;font-size:13px}
+
+.launch-update-notice{position:fixed;top:64px;left:50%;z-index:2000;transform:translateX(-50%);width:min(620px,calc(100vw - 32px));padding:18px 20px;background:#fff;border:1px solid #f1c0c8;border-left:4px solid #e83458;border-radius:12px;box-shadow:0 12px 36px #17203329;color:#273442;-webkit-app-region:no-drag}
+.launch-update-notice strong{font-size:15px}
+.launch-update-notice p{margin:8px 0 12px;font-size:13.5px;line-height:1.65;user-select:text}
+.launch-update-notice button{padding:6px 16px;border:0;border-radius:8px;background:#e83458;color:#fff;font-size:13px;cursor:pointer}

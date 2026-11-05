@@ -483,6 +483,59 @@ test("full generation matches signed target, reuses base and unchanged component
   await fs.access(path.join(legacyRoot, "generations", path.basename(replacement.generationRoot)));
   for (const archive of await fs.readdir(path.join(recoveryRoot, "archives"))) await fs.access(path.join(legacyRoot, "archives", archive));
 });
+test("a base file removed or altered in the installed program is reported by name instead of a bare ENOENT", async t => {
+  const { root, source, base } = await fixture(t);
+  const nextSource = path.join(root, "next"); await fs.cp(source, nextSource, { recursive: true });
+  await fs.writeFile(path.join(nextSource, "版本清单.json"), JSON.stringify({ version: "1.1.1", remotionRuntime: {} }));
+  await fs.writeFile(path.join(nextSource, "resources/app/src/main/main.cjs"), "application v2");
+  const target = await buildComponentRelease({ sourceRoot: nextSource, outputDir: path.join(root, "target-artifacts"), version: "1.1.1", ...config });
+  const transport = { async request(route, options) {
+    const archive = target.artifacts.find(a => route === `/components/${a.sha256}.zip`);
+    await fs.copyFile(archive.path, options.destination); options.onProgress(archive.size);
+  } };
+  // Security software quarantining one installed DLL must not look like a network failure.
+  // A missing parent folder is reported the same way, naming the absent file.
+  const nested = path.join(source, "resources/app/node_modules/native");
+  await fs.rename(nested, nested + ".away");
+  const nestedStore = createComponentStore({ rootDir: path.join(root, "nested"), baseRoot: source, config, transport });
+  await assert.rejects(nestedStore.prepare(sign(target.manifest)), error => error.code === "component_base_file_missing" && error.path === "resources/app/node_modules/native/index.node");
+  await fs.rename(nested + ".away", nested);
+  await fs.rm(path.join(source, "electron.exe"));
+  const missing = createComponentStore({ rootDir: path.join(root, "missing"), baseRoot: source, config, transport });
+  await assert.rejects(missing.prepare(sign(target.manifest)), error => error.code === "component_base_file_missing" && error.path === "electron.exe");
+  await fs.writeFile(path.join(source, "electron.exe"), "stable electron but truncated");
+  const damaged = createComponentStore({ rootDir: path.join(root, "damaged"), baseRoot: source, config, transport });
+  await assert.rejects(damaged.prepare(sign(target.manifest)), error => error.code === "component_base_file_damaged" && error.path === "electron.exe");
+  // Through the real controller and diagnostics filter: the customer sees which file and what to do,
+  // and the log keeps the relative file name (never a local profile path).
+  await fs.rm(path.join(source, "electron.exe"));
+  const logger = createDiagnosticLogger({ rootDir: path.join(root, "client") });
+  const controller = createCloudMaintenance({ logger, rootDir: path.join(root, "client"), userData: path.join(root, "user-data"),
+    componentBaseRoot: source, config, version: "1.1.0", buildId: "base-missing", canInstall: () => true,
+    transport: { async request(route, options) {
+      if (route.startsWith("/v1/")) return { empty: true };
+      if (route.startsWith("/v2/")) return sign(target.manifest);
+      return transport.request(route, options);
+    }, close() {} } });
+  t.after(() => controller.stop());
+  await controller.check();
+  assert.equal(controller.status().stage, "error");
+  assert.match(controller.status().error, /缺少：electron\.exe/);
+  assert.match(controller.status().error, /一键修复工具/);
+  assert.match(controller.status().error, /component_base_file_missing/, "the launch gate recognises this code and stops retrying");
+  const failed = logger.readRecent(50).find(entry => entry.module === "maintenance" && entry.event === "update.failed");
+  assert.equal(failed?.code, "component_base_file_missing");
+  // Only the file name passes the diagnostics allowlist (key suffix + safe identifier), never a directory.
+  assert.equal(failed?.details?.base_entry_kind, "electron.exe");
+  // JSON doubles Windows backslashes, so look for the unique fixture folder name instead of the raw path.
+  assert.ok(!JSON.stringify(failed).includes(path.basename(root)), "diagnostics never carry the local install path");
+  for (const dir of ["missing", "damaged", "nested", "client"]) {
+    const left = await fs.readdir(path.join(root, dir, "generations")).catch(() => []);
+    assert.deepEqual(left.filter(name => name.startsWith(".prepare-")), [], `${dir}: the failed staging folder is removed`);
+  }
+  void base;
+});
+
 test("new component metadata invalidates ready and in-flight older updates", async t => {
   const { root, source, base } = await fixture(t);
   let latest = sign({ ...base.manifest, version: "1.1.1", sequence: 100 });
