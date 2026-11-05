@@ -86,141 +86,6 @@ const packagingTaskId = "task_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const comparisonTaskId = "task_dddddddddddddddddddddddddddddddd";
 const brandProfileId = "brand_profile_cccccccccccccccccccccccccccccccc";
 const creativeProjectId = "creative_project_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-const autoMixRunId = "auto_mix_run_ffffffffffffffffffffffffffffffff";
-const parentAutoMixRunId = "auto_mix_run_0123456789abcdef0123456789abcdef";
-const guidedAnalysisTaskId = "task_01010101010101010101010101010101";
-const staleGuidedSessionId = "guided_auto_mix_session_02020202020202020202020202020202";
-const liveGuidedSessionId = "guided_auto_mix_session_03030303030303030303030303030303";
-const autoMixInputAssetIds = Object.freeze([
-  "asset_11111111111111111111111111111111",
-  "asset_22222222222222222222222222222222",
-  "asset_33333333333333333333333333333333",
-  "asset_44444444444444444444444444444444",
-  "asset_55555555555555555555555555555555"
-]);
-const autoMixSelectedAssetIds = autoMixInputAssetIds.slice(0, 3);
-
-function autoMixPlan(overrides = {}) {
-  return {
-    specVersion: "2",
-    runId: autoMixRunId,
-    projectId: creativeProjectId,
-    taskId: task().task_id,
-    parentRunId: null,
-    generation: 1,
-    state: "selecting_music",
-    usableMaterialDurationMs: 32_000,
-    estimatedDurationRangeMs: { min: 18_000, max: 32_000 },
-    selectedDurationMs: 24_000,
-    inputAssetIds: [
-      ...autoMixInputAssetIds,
-      "C:\\must-not-leak\\input.mp4",
-      null,
-      autoMixInputAssetIds[0]
-    ],
-    selectedSegments: autoMixSelectedAssetIds.map((assetId, index) => ({
-      segmentId: `segment-${index + 1}`,
-      assetId,
-      mediaKind: "video",
-      sourceStartMs: 1_000 + index * 6_000,
-      sourceEndMs: 7_000 + index * 6_000,
-      timelineStartMs: index * 6_000,
-      timelineEndMs: (index + 1) * 6_000,
-      targetDurationMs: 6_000,
-      role: "hook",
-      sourceTag: "产品近景",
-      qualityScore: 0.92,
-      absolutePath: "C:\\must-not-leak\\clip.mp4"
-    })),
-    spokenPhrases: [{
-      phraseId: "phrase-1",
-      text: "真实素材，真实表达。",
-      evidenceRefs: ["copyFramework"],
-      apiKey: "must-not-leak-key"
-    }],
-    speechCaptions: [{
-      captionId: "phrase-1",
-      startMs: 0,
-      endMs: 2_400,
-      text: "真实素材，真实表达。",
-      captionSource: "tts_voiceover",
-      timing: "audio_measured",
-      sourcePath: "C:\\must-not-leak\\voice.wav"
-    }],
-    visualTextItems: [{
-      textItemId: "visual-hook",
-      type: "hook",
-      text: "产品标题",
-      startMs: 0,
-      endMs: 6_000,
-      absolutePath: "C:\\must-not-leak\\font.ttf"
-    }],
-    voicePersona: {
-      voicePersonaId: "natural-life@1",
-      displayName: "自然生活",
-      catalogVersion: "2026.08",
-      category: "natural",
-      approvalStatus: "approved",
-      provider: "bailian",
-      providerVoiceId: "must-not-leak-voice-id"
-    },
-    music: {
-      trackId: "music-track-1",
-      displayName: "轻快生活",
-      source: "用户授权曲库",
-      licenseSummary: {
-        status: "valid",
-        commercialScope: "commercial",
-        commercialUseAllowed: true,
-        expiresAt: "2027-08-24T00:00:00Z",
-        evidencePresent: true,
-        credentialPath: "C:\\must-not-leak\\license.pdf"
-      },
-      bpm: 104,
-      moods: ["steady", "credible"],
-      energy: 0.56,
-      selectionScore: 93.5,
-      absolutePath: "C:\\must-not-leak\\music.wav"
-    },
-    musicBrief: {
-      moods: ["steady"],
-      targetEnergy: 0.56,
-      bpmRange: [92, 116],
-      instrumentPreferences: ["light_drums"],
-      transitionPointsMs: [6_000],
-      introDelayMs: 900,
-      energyCurve: [{ position: 0, energy: 0.44 }]
-    },
-    qualityWarnings: [{
-      code: "license_review",
-      message: "检查授权 api_key=secret-value-123",
-      layer: "music"
-    }],
-    qualityReport: {
-      passed: true,
-      integratedLufs: -15,
-      truePeakDbtp: -1.2,
-      speechMusicMarginLu: 10,
-      rawReportPath: "C:\\must-not-leak\\report.json"
-    },
-    generatedVideoId,
-    outputCount: 300,
-    cache: {
-      inputHash: "a".repeat(64),
-      reusedStages: ["analysis"],
-      analysisReused: true,
-      artifactPath: "C:\\must-not-leak\\cache"
-    },
-    attention: {
-      code: "music_required",
-      message: "需要授权音乐 sk-secret-value-123",
-      layer: "music"
-    },
-    apiKey: "must-not-leak-key",
-    ...overrides
-  };
-}
-
 function musicCatalogTrack(overrides = {}) {
   return {
     trackId: "music_track_1234567890abcdef1234567890abcdef",
@@ -586,88 +451,6 @@ async function main() {
         calls.push(["setSetting", key, value]);
         return { key, value };
       },
-      createOneClickProject: async (name, assetIds, options) => {
-        calls.push(["createOneClickProject", name, assetIds, options]);
-        return {
-          project_id: creativeProjectId,
-          workflow: "product_one_click",
-          name,
-          status: "draft",
-          target_count: options.target_count,
-          generated_count: 0,
-          product_asset_count: assetIds.length
-        };
-      },
-      createAutoMixV2: async (input) => {
-        calls.push(["createAutoMixV2", input]);
-        return autoMixPlan({ state: "analyzing" });
-      },
-      getGuidedAutoMixSessionV2: async (input) => {
-        calls.push(["getGuidedAutoMixSessionV2", input]);
-        return {
-          session_id: liveGuidedSessionId,
-          status: "ready_for_answers",
-          asset_ids: [asset().asset_id],
-          analysis_task: task({ task_id: guidedAnalysisTaskId, task_type: "guided_auto_mix_analysis" }),
-          draft_task: null,
-          analysis: {
-            usable_material_duration_ms: 18_000,
-            selected_duration_ms: 18_000,
-            selected_segment_count: 1,
-            material_facts: [{ text: "机器人、清洁、室内", kind: "visual" }]
-          },
-          answers: {},
-          prefill: {
-            title: "室内清洁机器人展示",
-            answers: { productName: "清洁机器人" }
-          },
-          draft: { revision: 0 }
-        };
-      },
-      generateGuidedAutoMixScriptV2: async (input) => {
-        if (!input || typeof input !== "object" || Array.isArray(input)) {
-          throw Object.assign(new Error("guided script input must be an object"), {
-            code: "invalid_guided_auto_mix_input"
-          });
-        }
-        const { sessionId, title, answers } = input;
-        calls.push(["generateGuidedAutoMixScriptV2", input]);
-        return {
-          session_id: sessionId,
-          status: "drafting",
-          asset_ids: [asset().asset_id],
-          analysis_task: task({ task_id: guidedAnalysisTaskId, task_type: "guided_auto_mix_analysis" }),
-          draft_task: task({ task_type: "guided_auto_mix_draft", status: "queued" }),
-          analysis: {},
-          answers,
-          prefill: { title: "室内清洁机器人展示", answers: { productName: "清洁机器人" } },
-          draft: { revision: 0 }
-        };
-      },
-      createGuidedAutoMixSupplementalImageV2: async (input) => {
-        calls.push(["createGuidedAutoMixSupplementalImageV2", input]);
-        return {
-          operation_id: "guided_auto_mix_supplemental_image_04040404040404040404040404040404",
-          session_id: input.sessionId,
-          script_revision: input.scriptRevision,
-          status: "submitted",
-          estimated_image_calls: 1,
-          provider: "apimart",
-          paid_call_performed: true
-        };
-      },
-      getAutoMixPlanV2: async (options) => {
-        calls.push(["getAutoMixPlanV2", options]);
-        return autoMixPlan();
-      },
-      regenerateAutoMixLayer: async (projectId, layer, expectedRunId) => {
-        calls.push(["regenerateAutoMixLayer", projectId, layer, expectedRunId]);
-        return autoMixPlan({
-          parentRunId: parentAutoMixRunId,
-          generation: 2,
-          state: "synthesizing"
-        });
-      },
       importMusicCatalogTrack: async (input) => {
         calls.push(["importMusicCatalogTrack", input]);
         return musicCatalogTrack();
@@ -699,70 +482,6 @@ async function main() {
           voicePersonaId,
           approvalStatus: "approved"
         });
-      },
-      getCreativeProject: async (projectId) => ({
-        project_id: projectId,
-        workflow: "product_one_click",
-        name: "商品测试",
-        status: "draft",
-        target_count: 1,
-        generated_count: 0,
-        product_asset_count: 1,
-        voice_status: "pending",
-        voice_mode: "tts",
-        voice_metadata: {
-          provider: "bailian",
-          status: "pending",
-          reason: "source_speech_below_threshold",
-          source_coverage: 0.12,
-          absolute_path: "C:\\must-not-leak\\voice.wav"
-        },
-        audio_strategy: {
-          recognized_speech_ms: 7_200,
-          source_media_ms: 60_000,
-          source_coverage: 0.12,
-          source_coverage_threshold: 0.7,
-          recognized_asset_count: 1,
-          unknown_audio_count: 4,
-          reason: "source_speech_below_threshold",
-          source_audio_policy: "duck"
-        },
-        analysis_context: {
-          stage: "asset_analysis",
-          asset_id: asset().asset_id,
-          asset_name: "清洁机器人.mp4",
-          index: 1,
-          total: 5,
-          local_path: "C:\\must-not-leak\\robot.mp4"
-        },
-        analysis_skipped_assets: [{
-          asset_id: asset().asset_id,
-          asset_name: "片段.mp4",
-          stage: "asset_analysis",
-          error_code: "cloud_transcription_failed",
-          error_message: "识别失败",
-          source_path: "C:\\must-not-leak\\clip.mp4"
-        }]
-      }),
-      analyzeProductAssets: async (projectId) => {
-        calls.push(["analyzeProductAssets", projectId]);
-        return task({ task_type: "product_asset_analysis", project_id: projectId });
-      },
-      generateProductCopy: async (projectId, brief) => {
-        calls.push(["generateProductCopy", projectId, brief]);
-        return task({ task_type: "product_copy", project_id: projectId });
-      },
-      generateProductVoice: async (projectId, scriptId) => {
-        calls.push(["generateProductVoice", projectId, scriptId]);
-        return task({ task_type: "product_voice", project_id: projectId });
-      },
-      generateOneClickCandidates: async (projectId, options) => {
-        calls.push(["generateOneClickCandidates", projectId, options]);
-        return task({ task_type: "product_generation", project_id: projectId });
-      },
-      listOneClickCandidates: async (projectId, limit) => {
-        calls.push(["listOneClickCandidates", projectId, limit]);
-        return { items: [generatedVideo({ project_id: projectId })] };
       },
       regenerateVideo: async (candidateId) => {
         calls.push(["regenerateVideo", candidateId]);
@@ -2021,187 +1740,11 @@ async function main() {
     assert.equal(opened.includes(fs.realpathSync(exportDirectory)), true);
     assert.equal(shown.includes(fs.realpathSync(exportDirectory)), true);
 
-    const createdAutoMixV2 = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.createAutoMixV2
-    )({ sender: mainWindow.webContents }, {
-      specVersion: "2",
-      assetIds: [asset().asset_id],
-      title: "产品标题",
-      copyFramework: "真实素材，真实表达。",
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.createAutoMixV2,
-        "11111111-1111-4111-8111-111111111111"
-      )
-    });
-    assert.equal(createdAutoMixV2.ok, true);
-    assert.equal(createdAutoMixV2.data.state, "analyzing");
-    assert.equal(createdAutoMixV2.data.outputCount, 1);
-    assert.equal(createdAutoMixV2.data.voicePersona.voicePersonaId, "natural-life@1");
-    assert.equal(createdAutoMixV2.data.music.licenseSummary.evidencePresent, true);
-    assert.equal(createdAutoMixV2.data.music.licenseSummary.commercialUseAllowed, true);
-    assert.deepEqual(
-      calls.find((call) => call[0] === "createAutoMixV2"),
-      ["createAutoMixV2", {
-        specVersion: "2",
-        assetIds: [asset().asset_id],
-        title: "产品标题",
-        copyFramework: "真实素材，真实表达。"
-      }]
-    );
-
-    const generatedGuidedScript = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateGuidedAutoMixScriptV2
-    )({ sender: mainWindow.webContents }, {
-      sessionId: staleGuidedSessionId,
-      analysisTaskId: guidedAnalysisTaskId,
-      title: "室内清洁机器人展示",
-      answers: {
-        companyName: "",
-        productName: "清洁机器人",
-        targetScene: "室内环境",
-        keyMessage: "展示清洁过程",
-        extraNotes: "不补写未展示信息"
-      },
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.generateGuidedAutoMixScriptV2,
-        "33333333-3333-4333-8333-333333333333"
-      )
-    });
-    assert.equal(generatedGuidedScript.ok, true);
-    assert.equal(generatedGuidedScript.data.sessionId, liveGuidedSessionId);
-    assert.equal(generatedGuidedScript.data.prefill.answers.productName, "清洁机器人");
-    assert.deepEqual(
-      calls.find((call) => call[0] === "getGuidedAutoMixSessionV2"),
-      ["getGuidedAutoMixSessionV2", { taskId: guidedAnalysisTaskId }]
-    );
-    assert.deepEqual(
-      calls.find((call) => call[0] === "generateGuidedAutoMixScriptV2"),
-      ["generateGuidedAutoMixScriptV2", {
-        sessionId: liveGuidedSessionId,
-        title: "室内清洁机器人展示",
-        answers: {
-          companyName: "",
-          productName: "清洁机器人",
-          targetScene: "室内环境",
-          keyMessage: "展示清洁过程",
-          extraNotes: "不补写未展示信息"
-        }
-      }]
-    );
-    const supplementalImage = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2
-    )({ sender: mainWindow.webContents }, {
-      sessionId: liveGuidedSessionId,
-      scriptRevision: 1,
-      draftHash: "a".repeat(64),
-      confirmPaidCalls: true,
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2,
-        "34343434-3434-4434-8434-343434343434"
-      )
-    });
-    assert.equal(supplementalImage.ok, true);
-    assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "supplemental image submission must require APIMart");
-    const replayedAutoMixV2 = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.createAutoMixV2
-    )({ sender: mainWindow.webContents }, {
-      specVersion: "2",
-      assetIds: [asset().asset_id],
-      title: "产品标题",
-      copyFramework: "真实素材，真实表达。",
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.createAutoMixV2,
-        "11111111-1111-4111-8111-111111111111"
-      )
-    });
-    assert.equal(replayedAutoMixV2.ok, false);
-    assert.equal(replayedAutoMixV2.code, "trusted_user_click_required");
-    const createCallCount = calls.filter((call) => call[0] === "createAutoMixV2").length;
+    // The voice preview token is created here and used for the real preview below; first it is tried on another
+    // click-gated channel, which must refuse it without consuming it.
     const previewClickToken = autoMixClickToken(
       CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona,
       "88888888-8888-4888-8888-888888888888"
-    );
-    const crossOperationAutoMixV2 = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.createAutoMixV2
-    )({ sender: mainWindow.webContents }, {
-      specVersion: "2",
-      assetIds: [asset().asset_id],
-      title: "产品标题",
-      copyFramework: "真实素材，真实表达。",
-      clickToken: previewClickToken
-    });
-    assert.equal(crossOperationAutoMixV2.ok, false);
-    assert.equal(crossOperationAutoMixV2.code, "trusted_user_click_required");
-    assert.equal(
-      calls.filter((call) => call[0] === "createAutoMixV2").length,
-      createCallCount,
-      "声音试听 token 不得跨 channel 创建成片"
-    );
-    const overlongAutoMixTitle = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.createAutoMixV2
-    )({ sender: mainWindow.webContents }, {
-      specVersion: "2",
-      assetIds: [asset().asset_id],
-      title: "标".repeat(101),
-      copyFramework: "真实素材，真实表达。",
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.createAutoMixV2,
-        "12121212-1212-4212-8212-121212121212"
-      )
-    });
-    assert.equal(overlongAutoMixTitle.ok, false);
-    assert.equal(overlongAutoMixTitle.code, "auto_mix_title_missing");
-    const serializedAutoMixV2 = JSON.stringify(createdAutoMixV2);
-    for (const forbidden of [
-      "must-not-leak", "secret-value-123", "apiKey", "providerVoiceId",
-      "credentialPath", "absolutePath"
-    ]) {
-      assert.equal(serializedAutoMixV2.includes(forbidden), false);
-    }
-
-    const loadedAutoMixByProject = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getAutoMixPlanV2
-    )({}, { projectId: creativeProjectId });
-    assert.equal(loadedAutoMixByProject.ok, true);
-    assert.equal(loadedAutoMixByProject.data.runId, autoMixRunId);
-    assert.deepEqual(
-      loadedAutoMixByProject.data.inputAssetIds,
-      autoMixInputAssetIds,
-      "恢复计划必须安全透传全部 5 条原始输入素材，不能退化为 3 条成片采用素材"
-    );
-    assert.equal(
-      new Set(loadedAutoMixByProject.data.selectedSegments.map((item) => item.assetId)).size,
-      3,
-      "测试夹具必须保留原始输入 5 条、成片采用 3 条的差异"
-    );
-    assert.deepEqual(
-      calls.find((call) => call[0] === "getAutoMixPlanV2"),
-      ["getAutoMixPlanV2", { projectId: creativeProjectId }]
-    );
-    const loadedAutoMixByRun = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getAutoMixPlanV2
-    )({}, { runId: autoMixRunId });
-    assert.equal(loadedAutoMixByRun.ok, true);
-    assert.equal(loadedAutoMixByRun.data.projectId, creativeProjectId);
-
-    const regeneratedAutoMix = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer
-    )({ sender: mainWindow.webContents }, {
-      projectId: creativeProjectId,
-      expectedRunId: autoMixRunId,
-      layer: "voice",
-      clickToken: autoMixClickToken(
-        CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer,
-        "22222222-2222-4222-8222-222222222222"
-      )
-    });
-    assert.equal(regeneratedAutoMix.ok, true);
-    assert.equal(regeneratedAutoMix.data.state, "synthesizing");
-    assert.equal(regeneratedAutoMix.data.generation, 2);
-    assert.equal(regeneratedAutoMix.data.parentRunId, parentAutoMixRunId);
-    assert.deepEqual(
-      calls.find((call) => call[0] === "regenerateAutoMixLayer"),
-      ["regenerateAutoMixLayer", creativeProjectId, "voice", autoMixRunId]
     );
 
     dialogQueue.push(
@@ -2378,6 +1921,19 @@ async function main() {
       calls.filter((call) => call[0] === "designAutoMixVoicePersona").length,
       voiceDesignCallCount + 1,
       "声音生成点击 token 重放不得到达内容引擎"
+    );
+    const crossOperationVoiceDesign = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.designAutoMixVoicePersona
+    )({ sender: mainWindow.webContents }, {
+      voicePersonaId: "natural-life@1",
+      clickToken: previewClickToken
+    });
+    assert.equal(crossOperationVoiceDesign.ok, false);
+    assert.equal(crossOperationVoiceDesign.code, "trusted_user_click_required");
+    assert.equal(
+      calls.filter((call) => call[0] === "designAutoMixVoicePersona").length,
+      voiceDesignCallCount + 1,
+      "声音试听 token 不得跨 channel 生成声音"
     );
     const rejectedPrivateVoiceDesignField = await handlers.get(
       CONTENT_ENGINE_CHANNELS.designAutoMixVoicePersona
@@ -2751,21 +2307,6 @@ async function main() {
     assert.equal(rejectedPrivateMusicField.ok, false);
 
     for (const [channel, payload] of [
-      [CONTENT_ENGINE_CHANNELS.createAutoMixV2, {
-        specVersion: "2",
-        assetIds: [asset().asset_id],
-        title: "标题",
-        copyFramework: "框架",
-        durationMs: 60_000
-      }],
-      [CONTENT_ENGINE_CHANNELS.getAutoMixPlanV2, {
-        projectId: creativeProjectId,
-        runId: autoMixRunId
-      }],
-      [CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer, {
-        projectId: creativeProjectId,
-        layer: "all"
-      }],
       [CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack, {
         displayName: "稳健节奏",
         source: "用户授权曲库",
@@ -2792,129 +2333,66 @@ async function main() {
       assert.equal(rejected.ok, false);
     }
 
-    // Product projects use the same creative_project_* identity returned by
-    // creation. The follow-up generation/list handlers must accept that exact
-    // opaque id instead of applying the legacy project_* prefix.
-    const createdProduct = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.createOneClickProject
-    )({}, {
-      name: "商品测试",
-      assetIds: [asset().asset_id],
-      options: { durationMs: 75_000, targetCount: 1 }
-    });
-    assert.equal(createdProduct.ok, true);
-    assert.equal(createdProduct.data.projectId, creativeProjectId);
-    const loadedProduct = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
-    assert.equal(loadedProduct.ok, true);
-    assert.equal(loadedProduct.data.audioStrategy.sourceCoverage, 0.12);
-    assert.equal(loadedProduct.data.audioStrategy.sourceCoverageThreshold, 0.7);
-    assert.equal(loadedProduct.data.voiceMetadata.reason, "source_speech_below_threshold");
-    assert.equal(loadedProduct.data.analysisContext.assetName, "清洁机器人.mp4");
-    assert.equal(loadedProduct.data.analysisSkippedAssets[0].errorCode, "cloud_transcription_failed");
-    assert.equal(JSON.stringify(loadedProduct).includes("must-not-leak"), false);
-    const productGeneration = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateOneClickCandidates
-    )({}, {
-      projectId: createdProduct.data.projectId,
-      options: { durationMs: 75_000, targetCount: 1 }
-    });
-    assert.equal(productGeneration.ok, true);
-    assert.deepEqual(
-      providerPreflightCalls.at(-1),
-      ["apimart"],
-      "one-click AI cover generation must use the registration-level provider preflight"
-    );
-    assert.deepEqual(
-      calls.find((call) => call[0] === "generateOneClickCandidates"),
-      ["generateOneClickCandidates", creativeProjectId, { targetCount: 1, durationMs: 75_000, coverMode: "ai_generate" }]
-    );
-    const generationCallsBeforeRejectedPreflight = calls.filter(
-      (call) => call[0] === "generateOneClickCandidates"
-    ).length;
-    providerPreflightFailure = Object.assign(new Error("gateway unavailable"), {
-      code: "provider_gateway_unavailable"
-    });
-    const rejectedProductGeneration = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.generateOneClickCandidates
-    )({}, {
-      projectId: createdProduct.data.projectId,
-      options: { durationMs: 75_000, targetCount: 1, coverMode: "ai_generate" }
-    });
-    providerPreflightFailure = null;
-    assert.equal(rejectedProductGeneration.ok, false);
-    assert.equal(rejectedProductGeneration.code, "provider_gateway_unavailable");
-    assert.equal(
-      calls.filter((call) => call[0] === "generateOneClickCandidates").length,
-      generationCallsBeforeRejectedPreflight,
-      "failed one-click preflight must reject before task submission"
-    );
-    const productCandidates = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.listOneClickCandidates
-    )({}, { projectId: creativeProjectId, limit: 5 });
-    assert.equal(productCandidates.ok, true);
-    assert.equal(productCandidates.data.items[0].projectId, creativeProjectId);
     assert.equal(
       diagnosticOperations.length,
       0,
       "successful IPC operations must not create repair diagnostics"
     );
 
-    const getCreativeProject = controller.getCreativeProject;
-    controller.getCreativeProject = async () => {
-      throw Object.assign(new Error("read failed"), { code: "creative_project_not_found" });
+    const getGeneratedVideo = controller.getGeneratedVideo;
+    controller.getGeneratedVideo = async () => {
+      throw Object.assign(new Error("read failed"), { code: "generated_video_not_found" });
     };
     const failedProjectRead = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
     assert.equal(failedProjectRead.ok, false);
     const repeatedFailedProjectRead = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
     assert.equal(repeatedFailedProjectRead.ok, false);
     const readFailureEvents = diagnosticEvents.filter(
-      (entry) => entry[1] === "get-creative-project.failed"
+      (entry) => entry[1] === "get-generated-video.failed"
     );
     assert.equal(
       readFailureEvents.length,
       1,
       "a continuous polling failure must retain one actionable error log"
     );
-    assert.equal(readFailureEvents[0][2]?.error_code, "creative_project_not_found");
+    assert.equal(readFailureEvents[0][2]?.error_code, "generated_video_not_found");
     assert.equal(readFailureEvents[0][3]?.level, "error");
-    controller.getCreativeProject = getCreativeProject;
+    controller.getGeneratedVideo = getGeneratedVideo;
     const recoveredProjectRead = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
     assert.equal(recoveredProjectRead.ok, true);
-    controller.getCreativeProject = async () => {
-      throw Object.assign(new Error("read failed again"), { code: "creative_project_not_found" });
+    controller.getGeneratedVideo = async () => {
+      throw Object.assign(new Error("read failed again"), { code: "generated_video_not_found" });
     };
     const failedAfterRecovery = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
-    controller.getCreativeProject = getCreativeProject;
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
+    controller.getGeneratedVideo = getGeneratedVideo;
     assert.equal(failedAfterRecovery.ok, false);
     assert.equal(
       diagnosticEvents.filter(
-        (entry) => entry[1] === "get-creative-project.failed"
+        (entry) => entry[1] === "get-generated-video.failed"
       ).length,
       2,
       "the same failure after a successful recovery must create a new diagnostic"
     );
 
-    const listOneClickCandidates = controller.listOneClickCandidates;
-    controller.listOneClickCandidates = async () => {
+    const listGeneratedVideos = controller.listGeneratedVideos;
+    controller.listGeneratedVideos = async () => {
       throw Object.assign(new Error("candidate read failed"), { code: "generated_video_not_found" });
     };
     const failedCandidateRead = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.listOneClickCandidates
+      CONTENT_ENGINE_CHANNELS.listGeneratedVideos
     )({}, { projectId: creativeProjectId, limit: 5 });
-    controller.listOneClickCandidates = listOneClickCandidates;
+    controller.listGeneratedVideos = listGeneratedVideos;
     assert.equal(failedCandidateRead.ok, false);
     const candidateReadFailureEvents = diagnosticEvents.filter(
-      (entry) => entry[1] === "list-one-click-candidates.failed"
+      (entry) => entry[1] === "list-generated-videos.failed"
     );
     assert.equal(
       candidateReadFailureEvents.length,
@@ -2924,39 +2402,39 @@ async function main() {
     assert.equal(candidateReadFailureEvents[0][2]?.error_code, "generated_video_not_found");
     assert.equal(candidateReadFailureEvents[0][3]?.level, "error");
 
-    controller.getCreativeProject = async () => {
+    controller.getGeneratedVideo = async () => {
       throw Object.assign(new Error("sk-secret must not leak"), {
         code: "C:\\private\\sk-secret"
       });
     };
     const unsafeReadFailure = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
-    controller.getCreativeProject = getCreativeProject;
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
+    controller.getGeneratedVideo = getGeneratedVideo;
     assert.equal(unsafeReadFailure.ok, false);
     const sanitizedReadFailure = diagnosticEvents.filter(
-      (entry) => entry[1] === "get-creative-project.failed"
+      (entry) => entry[1] === "get-generated-video.failed"
     ).at(-1);
     assert.equal(sanitizedReadFailure[2]?.error_code, "unknown_error");
     assert.equal(JSON.stringify(sanitizedReadFailure).includes("sk-secret"), false);
     assert.equal(JSON.stringify(sanitizedReadFailure).includes("C:\\private"), false);
 
     const recoveredAfterUnsafeCode = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
     assert.equal(recoveredAfterUnsafeCode.ok, true);
-    controller.getCreativeProject = async () => {
+    controller.getGeneratedVideo = async () => {
       throw Object.assign(new Error("key-shaped code must not leak"), {
         code: "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
       });
     };
     const keyShapedFailure = await handlers.get(
-      CONTENT_ENGINE_CHANNELS.getCreativeProject
-    )({}, { projectId: creativeProjectId });
-    controller.getCreativeProject = getCreativeProject;
+      CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+    )({}, { candidateId: generatedVideoId });
+    controller.getGeneratedVideo = getGeneratedVideo;
     assert.equal(keyShapedFailure.ok, false);
     const sanitizedKeyShapedFailure = diagnosticEvents.filter(
-      (entry) => entry[1] === "get-creative-project.failed"
+      (entry) => entry[1] === "get-generated-video.failed"
     ).at(-1);
     assert.equal(sanitizedKeyShapedFailure[2]?.error_code, "unknown_error");
     assert.equal(JSON.stringify(sanitizedKeyShapedFailure).includes("sk-ABC"), false);
@@ -2966,21 +2444,21 @@ async function main() {
       "sk_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
     ]) {
       const recoveredBeforeSecretShape = await handlers.get(
-        CONTENT_ENGINE_CHANNELS.getCreativeProject
-      )({}, { projectId: creativeProjectId });
+        CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+      )({}, { candidateId: generatedVideoId });
       assert.equal(recoveredBeforeSecretShape.ok, true);
-      controller.getCreativeProject = async () => {
+      controller.getGeneratedVideo = async () => {
         throw Object.assign(new Error("secret-shaped code must not leak"), {
           code: secretShapedCode
         });
       };
       const secretShapedFailure = await handlers.get(
-        CONTENT_ENGINE_CHANNELS.getCreativeProject
-      )({}, { projectId: creativeProjectId });
-      controller.getCreativeProject = getCreativeProject;
+        CONTENT_ENGINE_CHANNELS.getGeneratedVideo
+      )({}, { candidateId: generatedVideoId });
+      controller.getGeneratedVideo = getGeneratedVideo;
       assert.equal(secretShapedFailure.ok, false);
       const sanitizedSecretShapedFailure = diagnosticEvents.filter(
-        (entry) => entry[1] === "get-creative-project.failed"
+        (entry) => entry[1] === "get-generated-video.failed"
       ).at(-1);
       assert.equal(sanitizedSecretShapedFailure[2]?.error_code, "unknown_error");
       assert.equal(

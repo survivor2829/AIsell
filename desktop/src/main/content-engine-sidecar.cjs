@@ -767,86 +767,6 @@ function createContentEngineSidecar(options = {}) {
         seed: optionsForGeneration.seed
       }
     ),
-    createOneClickProject: (name, assetIds, options = {}) => request(
-      "create_one_click_project",
-      {
-        name: String(name || "商品展示一键成片"),
-        asset_ids: assetIds,
-        options: {
-          brief: options.brief,
-          ratio: options.ratio,
-          duration_ms: options.durationMs,
-          target_count: options.targetCount,
-          cover_mode: options.coverMode,
-          bgm_asset_id: options.bgmAssetId
-        }
-      }
-    ),
-    createAutoMixV2: (input = {}) => request(
-      "create_auto_mix_v2",
-      input.guidedSessionId
-        ? {
-          specVersion: input.specVersion,
-          guidedSessionId: input.guidedSessionId,
-          scriptRevision: input.scriptRevision
-        }
-        : {
-          specVersion: input.specVersion,
-          assetIds: input.assetIds,
-          title: input.title,
-          copyFramework: input.copyFramework
-        }
-    ),
-    prepareGuidedAutoMixV2: (assetIds) => request(
-      "prepare_guided_auto_mix_v2",
-      { asset_ids: assetIds }
-    ),
-    getGuidedAutoMixSessionV2: (input = {}) => request(
-      "get_guided_auto_mix_session_v2",
-      {
-        session_id: input.sessionId,
-        task_id: input.taskId
-      }
-    ),
-    generateGuidedAutoMixScriptV2: (input = {}) => request(
-      "generate_guided_auto_mix_script_v2",
-      {
-        session_id: input.sessionId,
-        title: input.title,
-        answers: input.answers
-      }
-    ),
-    getGuidedAutoMixSupplementalImageV2: (input = {}) => request(
-      "get_guided_auto_mix_supplemental_image_v2",
-      {
-        session_id: input.sessionId,
-        script_revision: input.scriptRevision
-      }
-    ),
-    createGuidedAutoMixSupplementalImageV2: (input = {}) => request(
-      "create_guided_auto_mix_supplemental_image_v2",
-      {
-        session_id: input.sessionId,
-        script_revision: input.scriptRevision,
-        draft_hash: input.draftHash,
-        confirm_paid_calls: input.confirmPaidCalls === true
-      }
-    ),
-    getAutoMixPlanV2: (options = {}) => request(
-      "get_auto_mix_plan_v2",
-      {
-        project_id: options.projectId,
-        run_id: options.runId
-      }
-    ),
-    regenerateAutoMixLayer: (projectId, layer, expectedRunId) => request(
-      "regenerate_auto_mix_layer",
-      {
-        project_id: projectId,
-        layer,
-        ...(expectedRunId ? { expected_run_id: expectedRunId } : {})
-      }
-    ),
     importMusicCatalogTrack: (input = {}) => request(
       "import_music_catalog_track",
       {
@@ -913,32 +833,6 @@ function createContentEngineSidecar(options = {}) {
       "approve_auto_mix_voice_persona",
       { voice_persona_id: voicePersonaId }
     ),
-    analyzeProductAssets: (projectId) => request(
-      "analyze_product_assets", { project_id: projectId }
-    ),
-    generateProductCopy: (projectId, brief) => request(
-      "generate_product_copy", { project_id: projectId, brief }
-    ),
-    generateProductVoice: (projectId, scriptId) => request(
-      "generate_product_voice", { project_id: projectId, script_id: scriptId }
-    ),
-    generateOneClickCandidates: (projectId, options = {}) => request(
-      "generate_one_click_candidates",
-      {
-        project_id: projectId,
-        options: {
-          target_count: options.targetCount,
-          duration_ms: options.durationMs,
-          cover_mode: options.coverMode
-        }
-      }
-    ),
-    listOneClickCandidates: (projectId, limit = 20, taskId) => request(
-      "list_one_click_candidates", { project_id: projectId, limit, ...(taskId ? { task_id: taskId } : {}) }
-    ),
-    getCreativeProject: (projectId) => request("get_creative_project", {
-      project_id: projectId
-    }),
     importFiles: (paths) => request(
       "import_files",
       { paths },

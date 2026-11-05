@@ -605,28 +605,7 @@ async function main() {
       const packageId = "export_package_77777777777777777777777777777777";
       const generatedVideoId = "generated_video_88888888888888888888888888888888";
       const brandProfileId = "brand_profile_99999999999999999999999999999999";
-      const creativeProjectId = "creative_project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-      const autoMixRunId = "auto_mix_run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
       const mixCalls = [
-        [controller.createAutoMixV2({
-          specVersion: "2",
-          assetIds: [assetId],
-          title: "产品标题",
-          copyFramework: "真实素材，真实表达。"
-        }), "create_auto_mix_v2", {
-          specVersion: "2",
-          assetIds: [assetId],
-          title: "产品标题",
-          copyFramework: "真实素材，真实表达。"
-        }],
-        [controller.getAutoMixPlanV2({ runId: autoMixRunId }), "get_auto_mix_plan_v2", {
-          run_id: autoMixRunId
-        }],
-        [controller.regenerateAutoMixLayer(creativeProjectId, "music", autoMixRunId), "regenerate_auto_mix_layer", {
-          project_id: creativeProjectId,
-          layer: "music",
-          expected_run_id: autoMixRunId
-        }],
         [controller.importMusicCatalogTrack({
           sourcePath: "C:\\fixtures\\licensed.wav",
           displayName: "稳健节奏",

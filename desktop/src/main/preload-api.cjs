@@ -9,11 +9,6 @@ const { createRolePreferencesApi } = require("./role-preferences.cjs");
 const { createFeedbackApi } = require("./feedback-preload.cjs");
 
 const AUTO_MIX_TRUSTED_CLICK_CHANNELS = Object.freeze({
-  create: CONTENT_ENGINE_CHANNELS.createAutoMixV2,
-  prepare: CONTENT_ENGINE_CHANNELS.prepareGuidedAutoMixV2,
-  generateGuidedScript: CONTENT_ENGINE_CHANNELS.generateGuidedAutoMixScriptV2,
-  generateSupplementalImage: CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2,
-  regenerate: CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer,
   importMusic: CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack,
   designVoice: CONTENT_ENGINE_CHANNELS.designAutoMixVoicePersona,
   previewVoice: CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona,
@@ -171,26 +166,6 @@ function createContentEngineApi(ipcRenderer) {
   const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "voice-resolve", "samples", "continue"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
-  const consumeAutoMixCreateClick = createTrustedClickGate(
-    "[data-xiaoxi-auto-mix-create]",
-    AUTO_MIX_TRUSTED_CLICK_CHANNELS.create
-  );
-  const consumeAutoMixPrepareClick = createTrustedClickGate(
-    "[data-xiaoxi-auto-mix-prepare]",
-    AUTO_MIX_TRUSTED_CLICK_CHANNELS.prepare
-  );
-  const consumeAutoMixGenerateScriptClick = createTrustedClickGate(
-    "[data-xiaoxi-auto-mix-script]",
-    AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateGuidedScript
-  );
-  const consumeAutoMixSupplementalImageClick = createTrustedClickGate(
-    "[data-xiaoxi-auto-mix-supplemental-image]",
-    AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateSupplementalImage
-  );
-  const consumeAutoMixRegenerateClick = createTrustedClickGate(
-    "[data-xiaoxi-auto-mix-regenerate]",
-    AUTO_MIX_TRUSTED_CLICK_CHANNELS.regenerate
-  );
   const consumeAutoMixMusicImportClick = createTrustedClickGate(
     "[data-xiaoxi-auto-mix-music-import]",
     AUTO_MIX_TRUSTED_CLICK_CHANNELS.importMusic
@@ -414,114 +389,6 @@ function createContentEngineApi(ipcRenderer) {
           limit: Number(payload?.limit || 2_000)
         }
       ),
-      createOneClickProject: (payload) => ipcRenderer.invoke(
-        "content-engine:create-one-click-project",
-        {
-          name: String(payload?.name || "商品展示一键成片"),
-          assetIds: Array.isArray(payload?.assetIds)
-            ? payload.assetIds.map((item) => String(item || ""))
-            : [],
-          options: {
-            brief: payload?.brief && typeof payload.brief === "object" ? payload.brief : {},
-            ratio: String(payload?.ratio || "9:16"),
-            durationMs: Number(payload?.durationMs || 75_000),
-            targetCount: Number(payload?.targetCount || 3),
-            coverMode: String(payload?.coverMode || "ai_generate"),
-            ...(payload?.bgmAssetId == null ? {} : { bgmAssetId: String(payload.bgmAssetId || "") })
-          }
-        }
-      ),
-      createAutoMixV2: (payload) => {
-        const base = {
-          specVersion: String(payload?.specVersion || ""),
-          clickToken: consumeAutoMixCreateClick()
-        };
-        const request = payload?.guidedSessionId == null
-          ? {
-            ...base,
-            assetIds: Array.isArray(payload?.assetIds)
-              ? payload.assetIds.map((item) => String(item || ""))
-              : [],
-            title: String(payload?.title || ""),
-            copyFramework: String(payload?.copyFramework || "")
-          }
-          : {
-            ...base,
-            guidedSessionId: String(payload.guidedSessionId || ""),
-            scriptRevision: Number(payload?.scriptRevision || 0)
-          };
-        return ipcRenderer.invoke(AUTO_MIX_TRUSTED_CLICK_CHANNELS.create, request);
-      },
-      prepareGuidedAutoMixV2: (payload) => ipcRenderer.invoke(
-        AUTO_MIX_TRUSTED_CLICK_CHANNELS.prepare,
-        {
-          assetIds: Array.isArray(payload?.assetIds)
-            ? payload.assetIds.map((item) => String(item || ""))
-            : [],
-          clickToken: consumeAutoMixPrepareClick()
-        }
-      ),
-      getGuidedAutoMixSessionV2: (payload) => ipcRenderer.invoke(
-        CONTENT_ENGINE_CHANNELS.getGuidedAutoMixSessionV2,
-        payload?.sessionId == null
-          ? { taskId: String(payload?.taskId || "") }
-          : { sessionId: String(payload.sessionId || "") }
-      ),
-      generateGuidedAutoMixScriptV2: (payload) => ipcRenderer.invoke(
-        AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateGuidedScript,
-        {
-          sessionId: String(payload?.sessionId || ""),
-          ...(payload?.analysisTaskId
-            ? { analysisTaskId: String(payload.analysisTaskId) }
-            : {}),
-          title: String(payload?.title || ""),
-          answers: {
-            companyName: String(payload?.answers?.companyName || ""),
-            productName: String(payload?.answers?.productName || ""),
-            targetScene: String(payload?.answers?.targetScene || ""),
-            keyMessage: String(payload?.answers?.keyMessage || ""),
-            extraNotes: String(payload?.answers?.extraNotes || "")
-          },
-          clickToken: consumeAutoMixGenerateScriptClick()
-        }
-      ),
-      getGuidedAutoMixSupplementalImageV2: (payload) => ipcRenderer.invoke(
-        CONTENT_ENGINE_CHANNELS.getGuidedAutoMixSupplementalImageV2,
-        {
-          sessionId: String(payload?.sessionId || ""),
-          scriptRevision: Number(payload?.scriptRevision || 0)
-        }
-      ),
-      createGuidedAutoMixSupplementalImageV2: (payload) => ipcRenderer.invoke(
-        AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateSupplementalImage,
-        {
-          sessionId: String(payload?.sessionId || ""),
-          scriptRevision: Number(payload?.scriptRevision || 0),
-          draftHash: String(payload?.draftHash || ""),
-          confirmPaidCalls: payload?.confirmPaidCalls === true,
-          clickToken: consumeAutoMixSupplementalImageClick()
-        }
-      ),
-      getAutoMixPlanV2: (payload) => ipcRenderer.invoke(
-        "content-engine:get-auto-mix-plan-v2",
-        {
-          ...(payload?.projectId == null
-            ? {}
-            : { projectId: String(payload.projectId || "") }),
-          ...(payload?.runId == null ? {} : { runId: String(payload.runId || "") })
-        }
-      ),
-      regenerateAutoMixLayer: (payload) => ipcRenderer.invoke(
-        AUTO_MIX_TRUSTED_CLICK_CHANNELS.regenerate,
-        {
-          projectId: String(payload?.projectId || ""),
-          ...(payload?.expectedRunId == null
-            ? {}
-            : { expectedRunId: String(payload.expectedRunId || "") }),
-          layer: String(payload?.layer || ""),
-          clickToken: consumeAutoMixRegenerateClick()
-        }
-      ),
       importMusicCatalogTrack: (payload) => ipcRenderer.invoke(
         AUTO_MIX_TRUSTED_CLICK_CHANNELS.importMusic,
         {
@@ -572,43 +439,6 @@ function createContentEngineApi(ipcRenderer) {
         {
           voicePersonaId: String(payload?.voicePersonaId || ""),
           clickToken: consumeAutoMixVoiceApproveClick()
-        }
-      ),
-      analyzeProductAssets: (payload) => ipcRenderer.invoke(
-        "content-engine:analyze-product-assets",
-        { projectId: String(payload?.projectId || "") }
-      ),
-      generateProductCopy: (payload) => ipcRenderer.invoke(
-        "content-engine:generate-product-copy",
-        {
-          projectId: String(payload?.projectId || ""),
-          brief: payload?.brief && typeof payload.brief === "object" ? payload.brief : {}
-        }
-      ),
-      generateProductVoice: (payload) => ipcRenderer.invoke(
-        "content-engine:generate-product-voice",
-        {
-          projectId: String(payload?.projectId || ""),
-          ...(payload?.scriptId == null ? {} : { scriptId: String(payload.scriptId || "") })
-        }
-      ),
-      generateOneClickCandidates: (payload) => ipcRenderer.invoke(
-        "content-engine:generate-one-click-candidates",
-        {
-          projectId: String(payload?.projectId || ""),
-          options: {
-            targetCount: Number(payload?.targetCount || 3),
-            durationMs: Number(payload?.durationMs || 75_000),
-            coverMode: String(payload?.coverMode || "ai_generate")
-          }
-        }
-      ),
-      listOneClickCandidates: (payload) => ipcRenderer.invoke(
-        "content-engine:list-one-click-candidates",
-        {
-          projectId: String(payload?.projectId || ""),
-          limit: Number(payload?.limit || 20),
-          ...(payload?.taskId ? { taskId: String(payload.taskId) } : {})
         }
       ),
       listPackagingPresets: (payload) => ipcRenderer.invoke(
@@ -714,10 +544,6 @@ function createContentEngineApi(ipcRenderer) {
       updateCoverTitle: (payload) => ipcRenderer.invoke(
         "content-engine:update-cover-title",
         { candidateId: String(payload?.candidateId || ""), headlineLines: payload?.headlineLines }
-      ),
-      getProject: (payload) => ipcRenderer.invoke(
-        "content-engine:get-creative-project",
-        { projectId: String(payload?.projectId || "") }
       ),
       getGenerated: (payload) => ipcRenderer.invoke(CONTENT_ENGINE_CHANNELS.getGeneratedVideo, payload),
       listGenerated: (payload) => ipcRenderer.invoke(

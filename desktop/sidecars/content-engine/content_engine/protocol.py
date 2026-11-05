@@ -132,38 +132,6 @@ METHODS = {
         role=params.get("role"),
         limit=params.get("limit", 2_000),
     ),
-    "create_one_click_project": lambda service, params: service.create_one_click_project(
-        params.get("name"),
-        params.get("asset_ids"),
-        params.get("options"),
-    ),
-    "create_auto_mix_v2": lambda service, params: service.create_auto_mix_v2(params),
-    "prepare_guided_auto_mix_v2": lambda service, params: service.prepare_guided_auto_mix_v2(
-        params.get("asset_ids")
-    ),
-    "get_guided_auto_mix_session_v2": lambda service, params: service.get_guided_auto_mix_session_v2(
-        session_id=params.get("session_id"), task_id=params.get("task_id")
-    ),
-    "generate_guided_auto_mix_script_v2": lambda service, params: service.generate_guided_auto_mix_script_v2(
-        params.get("session_id"), params.get("title"), params.get("answers")
-    ),
-    "get_guided_auto_mix_supplemental_image_v2": lambda service, params: service.get_guided_auto_mix_supplemental_image_v2(
-        params.get("session_id"), params.get("script_revision")
-    ),
-    "create_guided_auto_mix_supplemental_image_v2": lambda service, params: service.create_guided_auto_mix_supplemental_image_v2(
-        params.get("session_id"),
-        params.get("script_revision"),
-        params.get("draft_hash"),
-        confirm_paid_calls=params.get("confirm_paid_calls", False),
-    ),
-    "get_auto_mix_plan_v2": lambda service, params: service.get_auto_mix_plan_v2(
-        project_id=params.get("project_id"), run_id=params.get("run_id")
-    ),
-    "regenerate_auto_mix_layer": lambda service, params: service.regenerate_auto_mix_layer(
-        params.get("project_id"),
-        params.get("layer"),
-        expected_run_id=params.get("expected_run_id"),
-    ),
     "import_music_catalog_track": lambda service, params: service.import_music_catalog_track(
         params
     ),
@@ -180,21 +148,6 @@ METHODS = {
     ),
     "approve_auto_mix_voice_persona": lambda service, params: service.approve_auto_mix_voice_persona(
         params.get("voice_persona_id")
-    ),
-    "analyze_product_assets": lambda service, params: service.analyze_product_assets(
-        params.get("project_id")
-    ),
-    "generate_product_copy": lambda service, params: service.generate_product_copy(
-        params.get("project_id"), params.get("brief")
-    ),
-    "generate_product_voice": lambda service, params: service.generate_product_voice(
-        params.get("project_id"), params.get("script_id")
-    ),
-    "generate_one_click_candidates": lambda service, params: service.generate_one_click_candidates(
-        params.get("project_id"), params.get("options")
-    ),
-    "list_one_click_candidates": lambda service, params: service.list_one_click_candidates(
-        params.get("project_id"), params.get("limit", 20), params.get("task_id")
     ),
     "list_packaging_presets": lambda service, params: service.list_packaging_presets(
         params.get("kind")
@@ -245,9 +198,6 @@ METHODS = {
     ),
     "resume_creative_task": lambda service, params: service.resume_creative_task(
         params.get("task_id")
-    ),
-    "get_creative_project": lambda service, params: service.get_creative_project(
-        params.get("project_id")
     ),
     "get_generated_video": lambda service, params: service.get_generated_video(params.get("generated_video_id")),
     "list_generated_videos": lambda service, params: service.list_generated_videos(
