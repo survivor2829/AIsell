@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const {
-  contactSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate,
+  refreshGreeting, contactSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate,
   generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage,
   nicknameSalutation, checkedAiSalutation, resolveSalutation
 } = require("./ai-draft.cjs");
@@ -129,6 +129,12 @@ async function main() {
   assert.match(titled.message, /^城总，(早上好|中午好|下午好|晚上好|您好)，给您介绍设备。$/u, "不开润色也带称呼");
   const polishFailed = generateFixedScriptFallback({ task: { script: "给您介绍设备。" }, result: { contact: messy, salutation: { type: "title", value: "城总" } } });
   assert.match(polishFailed.message, /^城总，/u, "润色失败退回固定话术时保留称呼");
+  // A draft kept from the afternoon is corrected the next morning; the body is untouched.
+  const nextMorning = new Date(2026, 10, 5, 9, 34);
+  assert.equal(refreshGreeting("下午好，第5期课程收官", nextMorning), "早上好，第5期课程收官");
+  assert.equal(refreshGreeting("王总，下午好，第5期课程收官", nextMorning), "王总，早上好，第5期课程收官");
+  assert.equal(refreshGreeting("早上好，第5期", nextMorning), "早上好，第5期");
+  assert.equal(refreshGreeting("第5期课程下午好", nextMorning), "第5期课程下午好", "only the opening greeting");
   console.log("ai-draft self-check passed");
 }
 

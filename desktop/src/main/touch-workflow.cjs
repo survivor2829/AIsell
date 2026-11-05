@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { cleanupStaleSearchCaptures } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
-const { generateFixedScriptFallback, generatePersonalizedDraft, validateTouchMessage, fillRespectfulTemplate } = require("./ai-draft.cjs");
+const { generateFixedScriptFallback, generatePersonalizedDraft, validateTouchMessage, fillRespectfulTemplate, refreshGreeting } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
@@ -313,7 +313,28 @@ function createTouchWorkflow(options = {}) {
       return { status, progress: progress(), ...extra, ...(recovery ? { recovery } : {}) };
     };
     const persist = () => { task = saveTaskState(taskDir, task); };
+    // A contact that ends unsent (skipped, needs attention, outcome unknown) becomes one
+    // field capsule: the final reason code, the recoveries tried before it, the steps
+    // leading there (breadcrumbs) and a screenshot. The recoveries themselves stay
+    // warnings and are not uploaded. Before, a pre-send skip was a warning plus a local
+    // passport, and window or login causes were held back as "environment", so a contact
+    // that took three recoveries and was never sent left nothing on the server
+    // (customer computer, 1.2.53, 2026-11-05).
+    const reportContact = (kind, reasonCode, details = {}, traceId = "") => {
+      const row = task?.results?.[task?.current_index] || {};
+      const reason = String(reasonCode || "unspecified").replace(/[^a-z0-9_]/giu, "_").slice(0, 48);
+      try {
+        diagnostics().event("active_touch", `contact_${kind}`,
+          { task_id: id, current_index: task?.current_index, reason_code: reason,
+            identity_recoveries: Number(row.identity_recovery_attempts) || 0,
+            pre_send_recoveries: Number(row.pre_send_recovery_attempts) || 0,
+            environment_recovery: Boolean(row.environment_recovery_started_at),
+            rule_id: String(row.search_evidence?.rule_id || ""), ...details },
+          { trace: true, ...(traceId ? { traceId } : {}), level: "error", code: `touch_${kind}_${reason}` });
+      } catch { /* Diagnostics never stop the task. */ }
+    };
     const attention = (error, result, reasonCode = "") => {
+      if (task) reportContact("needs_attention", reasonCode || result?.reasonCode || "unspecified", { delivery_status: String(result?.deliveryStatus || "") });
       task.status = "paused";
       task.pause_reason = error;
       persist();
@@ -426,6 +447,7 @@ function createTouchWorkflow(options = {}) {
         current.status = "identity_skipped";
         current.reason = "联系人已变化或不再允许触达，已跳过";
         const deliveryStatus = skippedDelivery(current);
+        reportContact("skipped", "contact_snapshot_changed");
         recordSkippedResult(current, task.current_index, {
           reasonCode: "contact_snapshot_changed",
           blockedReason: current.reason,
@@ -470,6 +492,14 @@ function createTouchWorkflow(options = {}) {
       owner = lock.lock.owner;
       const index = task.current_index;
       current = task.results[index];
+      // A kept draft (retried skip, resumed task) opens with the greeting of when it was
+      // written. Correct it while nothing of this contact's message has been sent.
+      const greeted = refreshGreeting(current.message, now());
+      if (greeted !== current.message && !current.message_parts?.some((part) => !["pending", "not_attempted"].includes(part?.status))) {
+        current.message = greeted;
+        delete current.message_parts;
+        persist();
+      }
       // The legacy CLI reads its contact list relative to its runtime. Give it
       // this fresh snapshot without changing the global runtime or its task.
       writeJsonAtomic(path.join(taskDir, "contacts.json"), liveContacts);
@@ -511,6 +541,7 @@ function createTouchWorkflow(options = {}) {
           else {
             segment.part.assumed_sent = true;
             current.needs_internal_review = true;
+            reportContact("outcome_unknown", diagnosticReason, { part_index: segment.index, database_receipt: String(receipt), passport_recorded: true }, sendOperation.traceId);
             passport?.recordFailure("active_touch", passportTaskId, {
               stage: "post_send", reasonCode: "outcome_unknown", traceId: sendOperation.traceId,
               rawReading: { diagnosticReason: String(diagnosticReason || ""), partKind: resolved?.kind || "", deliveryStatus: "outcome_unknown", databaseReceipt: String(receipt) },
@@ -544,6 +575,7 @@ function createTouchWorkflow(options = {}) {
             ? { result: { deliveryStatus: "sent_verified", contactId: current.id, confirmedBy: "database" } }
             : { ...safetyInterval(task.next_send_not_before), result: { deliveryStatus: "sent_verified", contactId: current.id, confirmedBy: "database", nextEligibleAt: task.next_send_not_before } });
         }
+        reportContact("outcome_unknown", diagnosticReason, { database_receipt: String(receipt), passport_recorded: true }, sendOperation.traceId);
         current.status = "outcome_unknown_skipped";
         current.retry_blocked = true;
         current.send_attempted = null;
@@ -580,6 +612,7 @@ function createTouchWorkflow(options = {}) {
         current.retry_blocked = true;
         const deliveryStatus = skippedDelivery(current);
         recordSkippedResult(current, index, { reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
+        reportContact("skipped", reasonCode, { stage: "pre_send", classification, passport_recorded: true }, sendOperation.traceId);
         passport?.recordFailure("active_touch", passportTaskId, {
           stage: "pre_send", reasonCode, traceId: sendOperation.traceId,
           rawReading: { reasonCode, deliveryStatus }, expected: { status: "sent_verified" }
@@ -831,6 +864,7 @@ function createTouchWorkflow(options = {}) {
           current.retry_blocked = true;
           const deliveryStatus = skippedDelivery(current);
           current.updated_at = now().toISOString();
+          reportContact("skipped", reasonCode, { stage: "search_identity", rule_id: ruleId, passport_recorded: true }, sendOperation.traceId);
           recordSkippedResult(current, index, {
             reasonCode,
             ruleId,
