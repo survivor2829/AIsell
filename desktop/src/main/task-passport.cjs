@@ -280,7 +280,8 @@ function createTaskPassportStore(options = {}) {
         ruleId: entry.details?.rule_id,
         traceId
       });
-      if ((entry.level === "error" || entry.level === "fatal") && event.ok) {
+      // A task that records its own passport failure says so; one failure, one attachment.
+      if ((entry.level === "error" || entry.level === "fatal") && event.ok && entry.details?.passport_recorded !== true) {
         recordFailure(entry.module, taskId, {
           stage: entry.event,
           reasonCode: entry.code,

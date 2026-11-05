@@ -592,8 +592,10 @@ async function checkTouchMessageSequence() {
   const genericPayload = genericFailureWorkflow.prepareWorkflowTask({ script: "明确未发送恢复测试", contactIds: [contact.id, secondContact.id] });
   const genericRecord = { id: crypto.randomUUID(), payload: genericPayload, progress: { done: 0 }, status: "running" };
   const genericDiagnostics = [];
+  const genericCapsules = [];
   const stopGenericDiagnostics = require("./diagnostics.cjs").diagnostics().subscribe((entry) => {
     if (entry.event === "workflow_contact_send.failed") genericDiagnostics.push(entry);
+    if (entry.module === "active_touch" && String(entry.code || "").startsWith("touch_")) genericCapsules.push(entry);
   });
   result = await genericFailureWorkflow.runWorkflowStep(genericRecord, context);
   assert.equal(result.status, "pending");
@@ -607,6 +609,11 @@ async function checkTouchMessageSequence() {
   assert.equal(result.progress.done, 1);
   assert.deepEqual(genericDiagnostics.map((entry) => entry.level), ["warn", "warn", "warn"],
     "the bounded pre-send path logs warnings; its final failure is recorded once by the passport");
+  // Field 2026-11-05: the skipped contact left no capsule. Only the unsent outcome is an
+  // error (the capsule trigger), carrying the recoveries that came before it.
+  assert.deepEqual(genericCapsules.map((entry) => [entry.level, entry.code]), [["error", "touch_skipped_message_snapshot_unavailable"]],
+    "recoveries stay warnings; the final skip reaches the field capsules once");
+  assert.equal(genericCapsules[0].details.pre_send_recoveries, 3, "the capsule says how many recoveries were tried");
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(genericRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0].status, "pre_send_skipped");
 
   let genericScreenshots = 0;

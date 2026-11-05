@@ -84,6 +84,19 @@ function timeGreeting(at = new Date()) {
   return "晚上好";
 }
 
+// A draft is written once and kept until it is sent. A contact skipped in the
+// afternoon and retried the next morning still opened with 下午好 (customer
+// computer, 1.2.53, 2026-11-05). Every draft starts with the greeting of the
+// moment it was written, optionally after a salutation; swap only that word.
+const STALE_GREETING_RE = /^((?:[^，,s]{1,8}[，,])?)(早上好|中午好|下午好|晚上好|您好)/u;
+function refreshGreeting(message, at = new Date()) {
+  const text = String(message ?? "");
+  const match = text.match(STALE_GREETING_RE);
+  const greeting = timeGreeting(at);
+  if (!match || match[2] === greeting) return text;
+  return match[1] + greeting + text.slice(match[0].length);
+}
+
 function greetingForContact(contact, at = new Date(), title = contactSalutation(contact)) {
   const greeting = timeGreeting(at);
   if (title.type === "title") return `${title.value}，${greeting}`;
@@ -165,4 +178,4 @@ function generateFixedScriptFallback({ task, result, error } = {}) {
   };
 }
 
-module.exports = { contactSalutation, nicknameSalutation, checkedAiSalutation, resolveSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage, validateTouchMessage, WECHAT_TEXT_LIMIT };
+module.exports = { refreshGreeting, contactSalutation, nicknameSalutation, checkedAiSalutation, resolveSalutation, timeGreeting, greetingForContact, fillRespectfulTemplate, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage, validateTouchMessage, WECHAT_TEXT_LIMIT };
