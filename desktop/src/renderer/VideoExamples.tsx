@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, PlayCircle, X } from 'lucide-react';
 import type { TutorialTopic } from './tutorials-types';
 import { SpeedVideo } from './SpeedVideo';
+import { isWindowShown, onWindowShownChange } from './window-shown';
 import './VideoExamples.css';
 
 export const VIDEO_EXAMPLES = [
@@ -131,6 +132,47 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
       <ol className="example-banner-steps">{text.steps.map((step, index) => <li key={step.title}><b>{index + 1}</b><span><strong>{step.title}</strong>{step.detail}</span></li>)}</ol>
     </div>
     {enlarged && <ExamplePlayer example={example} onClose={() => setEnlarged(false)} />}
+  </section>;
+}
+
+// 微信拓客首页右边（用户 2026-11-05）：三段真实操作录屏轮流播放（2 倍速、无声），上面的标签可以点着切换，
+// 点画面放大看（带声音控制和倍速）。只在画面露出来、窗口在前台时播放。
+export function WechatDemoReel() {
+  const [index, setIndex] = useState(0);
+  const [enlarged, setEnlarged] = useState<VideoExample | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [seen, setSeen] = useState(false);
+  const [foreground, setForeground] = useState(isWindowShown);
+  const box = useRef<HTMLElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const current = WECHAT_DEMOS[index];
+  useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => setSeen(entry.isIntersecting));
+    if (box.current) observer.observe(box.current);
+    const off = onWindowShownChange(() => setForeground(isWindowShown()));
+    return () => { observer.disconnect(); off(); };
+  }, []);
+  useEffect(() => {
+    const element = video.current;
+    if (!element || failed) return;
+    if (seen && foreground && !enlarged) void element.play().catch(() => {});
+    else element.pause();
+  }, [index, seen, foreground, enlarged, failed]);
+  const next = () => setIndex((value) => (value + 1) % WECHAT_DEMOS.length);
+  return <section ref={box} className="wechat-demo-reel" aria-label="微信拓客操作演示">
+    <div className="wechat-demo-tabs" role="tablist" aria-label="选择要看的功能">
+      {WECHAT_DEMOS.map((demo, position) => <button type="button" role="tab" key={demo.topic} aria-selected={position === index}
+        className={position === index ? "is-on" : ""} onClick={() => { setFailed(false); setIndex(position); }}>{demo.module}</button>)}
+    </div>
+    <button type="button" className="wechat-demo-stage" aria-label={`放大看「${current.title}」`} onClick={() => setEnlarged(current)}>
+      {failed ? <img src={asset(`${current.file}.jpg`)} alt="" />
+        : <video key={current.file} ref={video} src={asset(`${current.file}.mp4`)} poster={asset(`${current.file}.jpg`)} muted playsInline preload="metadata"
+          onLoadedMetadata={(event) => { event.currentTarget.playbackRate = 2; }} onEnded={next} onError={() => setFailed(true)} />}
+      <span className="wechat-demo-tag">真实操作录屏 · 2 倍速</span>
+      <span className="wechat-demo-zoom"><PlayCircle size={18} />点画面放大看</span>
+    </button>
+    <p className="wechat-demo-caption"><b>{current.module}</b>{current.title}</p>
+    {enlarged && <ExamplePlayer example={enlarged} onClose={() => setEnlarged(null)} />}
   </section>;
 }
 

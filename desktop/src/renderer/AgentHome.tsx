@@ -1,4 +1,4 @@
-import { VideoExamples } from './VideoExamples';
+import { VideoExamples, WechatDemoReel } from './VideoExamples';
 import { PhoneMatrixDemo } from './PhoneMatrixDemo';
 import {
   ArrowRight,
@@ -596,11 +596,8 @@ function buildBusinessView() {
 }
 
 function buildAccountOpsView() {
-  const metrics: Metric[] = [
-    { label: "手机矩阵", value: "可进入", detail: "插上集线器，手机自动出现", icon: Smartphone },
-    { label: "养号", value: "可进入", detail: "新号 8 天自动养", icon: Sprout },
-    { label: "一键分发", value: "可进入", detail: "一条视频发四个平台", icon: Share2 }
-  ];
+  // 三个「可进入」没有实际数字，不占地方（用户 2026-11-05：一屏看完）。
+  const metrics: Metric[] = [];
   const importantTask: ImportantTask = {
     title: "先把手机接上电脑",
     detail: "安卓手机插到集线器上，集线器连到这台电脑，手机就会出现在手机矩阵里，可以一起回桌面、打开微信、一键息屏。",
@@ -657,18 +654,50 @@ export function AgentHome({
   const status = roleStatus(role, workflowState, workflowLoading, snapshot, workflow.error);
   const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : role === "business" ? Search : role === "tutorials" ? Smartphone : RadioTower;
 
+  // 右边放视频的员工（用户 2026-11-05：左边人物、右边视频，图文并茂；能做的事挪到下面一整行，一屏看完）。
+  const media = role === "production" ? <VideoExamples /> : role === "agent" ? <WechatDemoReel /> : role === "tutorials" ? <PhoneMatrixDemo compact /> : null;
+  const capabilities = (
+      <div className="agent-home-actions">
+      <section className="agent-capabilities">
+        <div className="agent-section-heading">
+          <div><Sparkles size={22} strokeWidth={2.4} /><h2>这里可以做什么</h2></div>
+        </div>
+        <div className="agent-capability-list">
+          {definition.capabilities.map((capability) => {
+              const Icon = capability.icon;
+              const available = capability.available !== false;
+              return (
+                <button
+                  type="button"
+                  key={capability.key}
+                  disabled={!available}
+                  onClick={() => onOpen(capability.key)}
+                >
+                  <span className="agent-capability-icon"><Icon size={22} strokeWidth={2.3} /></span>
+                  <span className="agent-capability-copy"><strong>{capability.label}</strong><small>{capability.description}</small></span>
+                  {available ? <ArrowRight size={18} strokeWidth={2.4} /> : <em>待连接</em>}
+                </button>
+              );
+          })}
+        </div>
+      </section>
+      </div>
+  );
+
   return (
-    <div className={`agent-home is-${role}`} style={appearanceStyle(appearance)} data-appearance={appearance.id}>
+    <div className={`agent-home is-${role}${media ? " has-media" : ""}`} style={appearanceStyle(appearance)} data-appearance={appearance.id}>
       <AgentAtmosphere />
-      <div className="agent-personalize"><button type="button" onClick={onPersonalize}><Palette size={15} />形象与名字</button></div>
       <div className="agent-home-top">
       <section className="agent-hero">
         <AgentPortrait key={definition.portraitKey} definition={definition} />
 
         <div className="agent-introduction">
-          <div className="agent-live-status" role="status">
-            <span aria-hidden="true" />
-            {status}
+          <div className="agent-status-row">
+            <div className="agent-live-status" role="status">
+              <span aria-hidden="true" />
+              {status}
+            </div>
+            <div className="agent-personalize"><button type="button" onClick={onPersonalize}><Palette size={15} />形象与名字</button></div>
           </div>
           <h1>我是{definition.name}</h1>
           <h2>{definition.responsibility}</h2>
@@ -682,34 +711,10 @@ export function AgentHome({
 
       </section>
 
-      <div className="agent-home-actions">
-      <section className="agent-capabilities">
-        <div className="agent-section-heading">
-          <div><Sparkles size={20} strokeWidth={2.3} /><h2>这里可以做什么</h2></div>
-        </div>
-        <div className="agent-capability-list">
-          {definition.capabilities.map((capability) => {
-              const Icon = capability.icon;
-              const available = capability.available !== false;
-              return (
-                <button
-                  type="button"
-                  key={capability.key}
-                  disabled={!available}
-                  onClick={() => onOpen(capability.key)}
-                >
-                  <span className="agent-capability-icon"><Icon size={18} strokeWidth={2.2} /></span>
-                  <span className="agent-capability-copy"><strong>{capability.label}</strong><small>{capability.description}</small></span>
-                  {available ? <ArrowRight size={16} strokeWidth={2.3} /> : <em>待连接</em>}
-                </button>
-              );
-          })}
-        </div>
-      </section>
+      {media ? <div className="agent-home-media">{media}</div> : capabilities}
       </div>
-      {role === 'production' && <VideoExamples />}
-      {role === 'tutorials' && <PhoneMatrixDemo compact />}
-      </div>
+      {media && capabilities}
+      <div className={`agent-home-bottom${view.metrics.length ? "" : " is-single"}`}>
         <section className="agent-important-task">
           <div className="agent-section-heading">
             <div><ListTodo size={20} strokeWidth={2.3} /><h2>接下来做什么</h2></div>
@@ -724,7 +729,8 @@ export function AgentHome({
             {view.importantTask.action}<ArrowRight size={16} strokeWidth={2.4} />
           </button>
         </section>
-      <MetricStrip metrics={view.metrics} />
+      {view.metrics.length > 0 && <MetricStrip metrics={view.metrics} />}
+      </div>
     </div>
   );
 }

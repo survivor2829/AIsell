@@ -10,11 +10,12 @@
   background: radial-gradient(60% 75% at 6% 0%, #ffdfe5 0%, transparent 70%), radial-gradient(50% 70% at 94% 100%, #ffe7d9 0%, transparent 72%), linear-gradient(120deg, #ffffff 0%, #fff5f6 55%, #ffecef 100%); }
 .home-hero-copy { grid-column: 1; align-self: center; }
 .home-chip { display: inline-block; padding: .35em 1em; border-radius: 999px; border: 1px solid #f8d3d9; background: #fff0f2; color: #c91739; font-size: clamp(13px, .95vw, 18px); font-weight: 900; letter-spacing: .06em; }
-.home-hero-copy h1 { margin: 0; font-size: clamp(26px, min(2.8vw, 4.2vh), 60px); font-weight: 900; line-height: 1.1; letter-spacing: -.02em; }
+/* 2026-11-05：大标题加大加粗，把左边撑满。 */
+.home-hero-copy h1 { margin: 0; font-size: clamp(38px, min(4.6vw, 7.2vh), 104px); font-weight: 900; line-height: 1.08; letter-spacing: 0; -webkit-text-stroke: .012em currentColor; }
 .home-hero-copy h1 em { font-style: normal; background: linear-gradient(90deg, #e60000, #ff5a3c); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .home-hero-copy p { margin: .5em 0 0; color: #3f4a5e; font-size: clamp(16px, min(1.3vw, 2.2vh), 26px); font-weight: 800; }
-.home-start { display: inline-flex; align-items: center; gap: .45em; margin-top: clamp(10px, 2vh, 34px); height: clamp(44px, min(3.6vw, 6vh), 72px); padding: 0 1.4em; border: 0; border-radius: 16px;
-  background: #e60000; color: #fff; font: inherit; font-size: clamp(17px, min(1.35vw, 2.4vh), 26px); font-weight: 900; box-shadow: 0 12px 24px #e6000040; cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.home-start { display: inline-flex; align-items: center; gap: .45em; margin-top: clamp(14px, 2.6vh, 40px); height: clamp(48px, min(4.2vw, 7vh), 80px); padding: 0 1.5em; border: 0; border-radius: 18px;
+  background: #e60000; color: #fff; font: inherit; font-size: clamp(19px, min(1.6vw, 2.8vh), 30px); font-weight: 900; box-shadow: 0 12px 24px #e6000040; cursor: pointer; transition: transform .15s, box-shadow .15s; }
 .home-start svg { width: 1em; height: 1em; }
 .home-start:hover { transform: translateY(-1px); box-shadow: 0 16px 28px #e600004d; }
 .home-start:focus-visible { outline: 3px solid #fecaca; outline-offset: 3px; }
@@ -23,9 +24,9 @@
   border: 1px solid #f3dfe2; border-radius: clamp(16px, 1.3vw, 26px); background: #ffffffe6; box-shadow: 0 10px 26px #1720330d; }
 .home-kpis > div { display: flex; flex-direction: column; padding: 0 clamp(14px, 1.4vw, 30px); border-left: 1px solid #f3e3e6; }
 .home-kpis > div:first-child { border-left: 0; }
-.home-kpis dt { order: 2; margin-top: .25em; color: #374151; font-size: clamp(17px, 1.3vw, 22px); font-weight: 800; }
+.home-kpis dt { order: 2; margin-top: .25em; color: #374151; font-size: clamp(17px, 1.4vw, 24px); font-weight: 900; }
 .home-kpis dd { order: 1; margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: .2em; }
-.home-kpis dd b { font-size: clamp(30px, min(3vw, 5vh), 66px); font-weight: 900; line-height: 1.02; font-variant-numeric: tabular-nums; }
+.home-kpis dd b { font-size: clamp(34px, min(3.6vw, 5.8vh), 76px); font-weight: 900; line-height: 1.02; font-variant-numeric: tabular-nums; }
 .home-kpis dd small { color: #4b5563; font-size: clamp(15px, 1.05vw, 22px); font-weight: 900; }
 .home-kpis > div > i { order: 3; align-self: flex-start; margin-top: .35em; padding: .1em .65em; border-radius: 999px; background: #dcfce7; color: #15803d; font-size: clamp(12px, .85vw, 16px); font-style: normal; font-weight: 900; }
 
@@ -64,7 +65,7 @@
 /* Short windows: the headline takes one line and the staff numbers sit tight, so the faces stay visible. */
 @media (max-height: 820px) {
   .home-hero-copy h1 br { display: none; }
-  .home-hero-copy h1 { font-size: clamp(28px, min(3vw, 4.6vh), 60px); }
+  .home-hero-copy h1 { font-size: clamp(32px, min(3.8vw, 6vh), 80px); }
   .home-mate-stat { padding: .4em .6em; border-radius: 10px; }
   .home-mate img { height: 80%; }
 }
@@ -79,3 +80,11 @@
   .home-reel { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .home-start, .home-mate { transition: none; } }
+/* 很矮的窗口（如 1366×768）：大标题和数字略收，仍然一屏看到 6 位员工。 */
+@media (max-height: 780px) {
+  .home-kpis dd b { font-size: clamp(28px, 4.6vh, 60px); }
+  .home-start { height: clamp(44px, 6vh, 64px); margin-top: 10px; }
+  .home-hero { row-gap: 8px; }
+  .home-phone { width: clamp(130px, min(14vw, 25vh), 260px); }
+}
+@media (max-height: 740px) { .home-phone { width: clamp(120px, min(13vw, 22vh), 230px); } }
