@@ -5,7 +5,9 @@ establish ownership; sharing a project is deliberately not a relationship.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
+import sqlite3
 
 from .errors import ContentEngineError
 from .public_data import redact_text
@@ -31,6 +33,20 @@ INTERNAL_TYPES = {
     "guided_auto_mix_supplemental_image",
 }
 VIEWS = {"pending", "active", "needs_attention", "history", "archived", "all"}
+# 清理没做完的任务时，最近这么久还有进度的视为正在做，不清（用户 2026-11-05）。
+ACTIVE_GRACE = timedelta(hours=24)
+
+
+def dismissed_ids(connection):
+    """Productions the user cleared; they leave every list and count. Older test databases may lack the table."""
+    try:
+        return {row[0] for row in connection.execute("SELECT production_id FROM dismissed_productions_v1")}
+    except sqlite3.OperationalError:
+        return set()
+
+
+def _iso(moment):
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
 def _object(value):
@@ -144,7 +160,23 @@ class ProductionSummary:
                 owner = group("task", task_id)
             if owner is not None:
                 owner["tasks"][task_id] = task
-        return [self._production(item, payloads) for item in groups.values()]
+        dismissed = dismissed_ids(self.db)
+        return [self._production(item, payloads) for key, item in groups.items() if key not in dismissed]
+
+    def dismiss_unfinished(self, *, reason, now=None):
+        """Clear every unfinished production (needs attention, or active but idle for a day).
+
+        Only records the clearing: tasks, paid receipts and finished videos stay untouched, nothing is
+        retried or resubmitted. Returns how many productions were cleared."""
+        moment = now or datetime.now(timezone.utc)
+        cutoff, stamp = _iso(moment - ACTIVE_GRACE), _iso(moment)
+        chosen = [item for item in self._groups()
+                  if item["category"] == "needs_attention"
+                  or item["category"] == "active" and (item["updated_at"] or "") < cutoff]
+        self.db.executemany(
+            "INSERT OR IGNORE INTO dismissed_productions_v1(production_id, kind, state, dismissed_at, reason) VALUES (?, ?, ?, ?, ?)",
+            [(item["production_id"], item["kind"], str(item["state"]), stamp, reason) for item in chosen])
+        return len(chosen)
 
     def _production(self, group, payloads):
         steps = sorted(group["tasks"].values(), key=lambda t: (t["updated_at"], t["created_at"], t["id"]), reverse=True)

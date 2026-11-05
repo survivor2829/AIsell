@@ -869,6 +869,15 @@ def _migration_019_music_catalog_active(connection):
     connection.execute("ALTER TABLE music_catalog_tracks_v1 ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))")
 
 
+def _migration_020_dismissed_productions(connection):
+    # 用户 2026-11-05：没做完的旧任务直接清掉（客户电脑更新后自动清一次）。只登记“已清理”，
+    # 不改、不删原任务和收费回执：成片、用量账本和更新数据核对都不受影响，列表里不再出现。
+    connection.execute("CREATE TABLE dismissed_productions_v1 (production_id TEXT PRIMARY KEY, kind TEXT NOT NULL, "
+                       "state TEXT NOT NULL, dismissed_at TEXT NOT NULL, reason TEXT NOT NULL)")
+    from .production_summary import ProductionSummary
+    ProductionSummary(connection).dismiss_unfinished(reason="cleared_on_update_1_2_60")
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "initial_content_engine_schema", _migration_001_initial_schema),
     (2, "asset_probe_metadata", _migration_002_asset_probe_metadata),
@@ -889,6 +898,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (17, "narrated_batches", _migration_017_narrated_batches),
     (18, "narrated_visual_facts", _migration_018_narrated_visual_facts),
     (19, "music_catalog_active", _migration_019_music_catalog_active),
+    (20, "dismissed_productions", _migration_020_dismissed_productions),
 )
 
 def _retry_when_locked(operation, timeout_seconds: float = 5):
