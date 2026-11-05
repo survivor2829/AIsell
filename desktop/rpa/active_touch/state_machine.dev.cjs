@@ -318,9 +318,13 @@ function persistOutcomeUnknown(baseDir, state, reason, sendAttempted = null, onT
   return output(false, "send", nextState, { baseDir, blocked_reason: "outcome_unknown", send_attempted: sendAttempted, send_result: "outcome_unknown" });
 }
 
+// The pre-send check after the search click (the workflow's verify_session stage) may
+// re-bind a conversation whose title this observation read itself; never after a click.
+const mayRebindVerifiedTitle = (state) => !["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(String(state?.real_send_status || ""));
+
 function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrentConversation) {
   const state = loadState(baseDir);
-  const result = sessionCheck(state, driver, baseDir);
+  const result = sessionCheck(state, driver, baseDir, { rebindVerifiedTitle: mayRebindVerifiedTitle(state) });
   if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
   const nextState = refreshedSessionState(state, result);
   saveState(baseDir, nextState);
@@ -330,7 +334,7 @@ function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrent
 
 async function verifyRealSendSessionAsync(baseDir = __dirname, driver = verifyWechatCurrentConversationAsync) {
   const state = loadState(baseDir);
-  const result = await sessionCheckAsync(state, driver, baseDir);
+  const result = await sessionCheckAsync(state, driver, baseDir, { rebindVerifiedTitle: mayRebindVerifiedTitle(state) });
   if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
   const nextState = refreshedSessionState(state, result);
   saveState(baseDir, nextState);
@@ -374,7 +378,7 @@ function refreshRealSendSession(baseDir = __dirname, driver = verifyWechatCurren
     allowWindowRebind,
     expectedPid: recoveryWindow?.pid,
     expectedHWnd: recoveryWindow?.hWnd,
-    rebindVerifiedTitle: !allowWindowRebind && !["prepared", "clicked", "sent_verified"].includes(state.real_send_status)
+    rebindVerifiedTitle: !allowWindowRebind && mayRebindVerifiedTitle(state)
   });
   if (!result.ok) return result;
   const nextState = refreshedSessionState(state, result);
@@ -1043,4 +1047,4 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }
 
-module.exports = { executeVerifiedContactSend, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession };
+module.exports = { executeVerifiedContactSend, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession, verifyRealSendSessionAsync };
