@@ -12,11 +12,9 @@ for (const contract of [
   /系统状态/u,
   /当前没有待处理的制作/u,
   /读取创作任务失败/u,
-  /onOpenProduct/u,
   /onOpenMaterials/u,
   /onOpenFinished/u,
   /onOpenDiagnostics/u,
-  /onContinueProduct/u,
   /content\.status\(\)/u,
   /content\.productions\.list\(\{ view, offset, limit: pageSize \}\)/u,
   /content\.settings\.volcengineArkStatus\(\)/u,
@@ -31,6 +29,9 @@ for (const contract of [
 ]) assert.match(page, contract);
 
 for (const removedContract of [
+  // 旧版一键成片页面已删除（用户 2026-11-05）。
+  /onOpenProduct/u,
+  /onContinueProduct/u,
   /studio-workbench/u,
   /studio-preview/u,
   /studio-timeline/u,

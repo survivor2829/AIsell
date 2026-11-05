@@ -58,7 +58,6 @@ import { PhoneMatrixPage } from "./PhoneMatrixPage";
 import { DigitalHumanPage } from "./DigitalHumanPage";
 import { ProductVideoPage } from "./ProductVideoPage";
 import type { Collection } from "./batch-studio-api";
-import { ProductOneClickPage } from "./ProductOneClickPage";
 import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher, type WorkflowView, type EditorRequest, type WorkflowController } from "./WechatWorkflow";
 import { WechatGettingStarted } from "./WechatGettingStarted";
 import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget } from "./AgentHome";
@@ -614,7 +613,8 @@ export default function App() {
     setWorkflowView(view); setWorkflowEditor(null); setGuideOpen(view === "start"); setActive("workflow");
   };
   useEffect(() => window.xiaoxiWorkflow?.onNavigate?.(({ view }) => navigateWorkflow(view)), []);
-  const [creativeView, setCreativeView] = useState<"studio" | "product" | "history" | "materials">("studio");
+  // 旧版「一键成片」页面已删除（用户 2026-11-05），创作区只剩批量创作、历史和素材集。
+  const [creativeView, setCreativeView] = useState<"studio" | "history" | "materials">("studio");
   // Every move between pages (or workspace sub-views) remembers the place left, except a move made by going back.
   const navHistory = useRef<Place[]>([]);
   const returningRef = useRef(false);
@@ -626,10 +626,6 @@ export default function App() {
     lastPlace.current = here;
   }, [active, creativeView]);
   const [batchInitial, setBatchInitial] = useState<{ assetIds?: string[]; collection?: Collection; batchId?: string }>();
-  const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
-    taskId: string;
-    projectId?: string | null;
-  } | null>(null);
   const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: false, business: false, operations: false, tutorials: false });
   useEffect(() => {
     const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || item.key === "agent" && agentSecondary.some((child) => child.key === active));
@@ -689,10 +685,7 @@ export default function App() {
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
-    if (key === "workspace") {
-      setCreativeView("studio");
-      setCreativeResumeTarget(null);
-    }
+    if (key === "workspace") setCreativeView("studio");
     setActive(key);
   };
 
@@ -711,10 +704,6 @@ export default function App() {
     setOpenGroups((current) => ({ ...current, production: true }));
     if (item.batchId) {
       setBatchInitial({ batchId: item.batchId }); setCreativeView("studio");
-    } else if (item.taskId && ["course_generation", "mix_generation"].includes(item.taskType)) {
-      setCreativeView("history");
-    } else if (item.taskId) {
-      setCreativeResumeTarget({ taskId: item.taskId, projectId: item.projectId }); setCreativeView("product");
     } else {
       setCreativeView("history");
     }
@@ -839,11 +828,9 @@ export default function App() {
     navHistory.current = stack;
     if (place) {
       returningRef.current = true;
-      if (place.active === "workspace") setCreativeResumeTarget(null);
       setCreativeView(place.view as typeof creativeView);
       setActive(place.active as ModuleKey);
     } else if (creativeSubview) {
-      setCreativeResumeTarget(null);
       setCreativeView("studio");
     } else setActive(parentGroup?.key || "overview");
     contentScrollRef.current?.scrollTo({ top: 0, left: 0 });
@@ -999,20 +986,7 @@ export default function App() {
           }} />}
           {active === "workspace" && (creativeView === "materials" ? <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
                 setBatchInitial({ assetIds, collection }); setCreativeView("studio");
-              }} /> : creativeView === "product"
-              ? <ProductOneClickPage
-                initialTaskId={creativeResumeTarget?.taskId}
-                initialProjectId={creativeResumeTarget?.projectId}
-              />
-              : creativeView === "history" ? <CreativeStudioPage
-                onOpenProduct={() => {
-                  setCreativeResumeTarget(null);
-                  setCreativeView("product");
-                }}
-                onContinueProduct={(taskId, projectId) => {
-                  setCreativeResumeTarget({ taskId, projectId });
-                  setCreativeView("product");
-                }}
+              }} /> : creativeView === "history" ? <CreativeStudioPage
                 onOpenBatch={(batchId) => { setBatchInitial({ batchId }); setCreativeView("studio"); }}
                 onOpenMaterials={() => setCreativeView("materials")}
                 onOpenFinished={() => setActive("finished")}

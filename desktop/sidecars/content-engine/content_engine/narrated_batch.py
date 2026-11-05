@@ -887,6 +887,7 @@ class NarratedBatchDomain:
             FROM narrated_batches_v1 b
             LEFT JOIN content_tasks t ON t.id=json_extract(b.state_json,'$.task_id')
             WHERE json_extract(b.state_json,'$._archived_at') IS NULL
+              AND ('narrated_batch:' || b.id) NOT IN (SELECT production_id FROM dismissed_productions_v1)
             ORDER BY b.updated_at DESC, b.rowid DESC LIMIT ? OFFSET ?
         """, (limit + 1, offset)).fetchall()
         items = []

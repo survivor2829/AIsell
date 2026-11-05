@@ -70,12 +70,10 @@ type ContentApi = {
 };
 
 type CreativeStudioPageProps = {
-  onOpenProduct: () => void;
   onOpenMaterials: () => void;
   onOpenFinished: () => void;
   onOpenDiagnostics: (context?: { module: string; taskId?: string }) => void;
   onOpenBatch?: (batchId: string) => void;
-  onContinueProduct?: (taskId: string, projectId?: string | null, runId?: string | null, sessionId?: string | null) => void;
 };
 
 type RefreshMode = "initial" | "manual" | "background";
@@ -121,18 +119,6 @@ const TASK_STATUS_LABELS: Record<string, string> = {
 };
 
 const RUNNING_STATUSES = new Set(["queued", "analyzing", "rendering"]);
-const PRODUCT_TASK_TYPES = new Set([
-  "product_asset_analysis",
-  "product_copy",
-  "product_voice",
-  "product_generation",
-  "auto_mix_v2_generation",
-  "auto_mix_v2_regeneration",
-  "guided_auto_mix_analysis",
-  "guided_auto_mix_draft",
-  "guided_auto_mix_supplemental_image"
-]);
-
 function apiForWindow() {
   return (window as unknown as { xiaoxiContent?: ContentApi }).xiaoxiContent;
 }
@@ -256,12 +242,10 @@ function TaskRow({
 }
 
 export function CreativeStudioPage({
-  onOpenProduct,
   onOpenMaterials,
   onOpenFinished,
   onOpenDiagnostics,
-  onOpenBatch,
-  onContinueProduct
+  onOpenBatch
 }: CreativeStudioPageProps) {
   const [tasks, setTasks] = useState<ContentProduction[]>([]);
   const [summary, setSummary] = useState<ProductionSummary | null>(null);
@@ -407,18 +391,9 @@ export function CreativeStudioPage({
       onOpenMaterials();
       return;
     }
-    if (PRODUCT_TASK_TYPES.has(task.taskType)) {
-      if (onContinueProduct && task.taskId) {
-        onContinueProduct(task.taskId, task.projectId, task.runId, task.sessionId);
-      } else if (task.state === "completed") {
-        onOpenFinished();
-      } else {
-        onOpenProduct();
-      }
-      return;
-    }
+    // 旧版一键成片已删除（用户 2026-11-05）：它的历史记录只剩成片可看。
     onOpenFinished();
-  }, [onContinueProduct, onOpenBatch, onOpenFinished, onOpenMaterials, onOpenProduct]);
+  }, [onOpenBatch, onOpenFinished, onOpenMaterials]);
 
   const hasAnyTasks = tasks.length > 0;
   const engineReady = Boolean(engineStatus?.available && engineStatus.state === "ready");

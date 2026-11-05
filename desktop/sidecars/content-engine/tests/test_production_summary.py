@@ -124,6 +124,34 @@ class ProductionSummaryTests(unittest.TestCase):
         pending = self.summary.list()["items"][0]
         self.assertEqual((pending["task_id"], pending["run_id"], pending["category"]), ("draft", None, "needs_attention"))
 
+    def test_clearing_unfinished_hides_them_everywhere_but_keeps_running_work_and_every_row(self):
+        from datetime import datetime, timezone
+        now = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+        self.task("failed_cover", "creative_cover", "failed", date="2026-11-03T01:59:00.000Z", error="APIMart 503")
+        self.task("unknown_task", payload={"batch_id": "unknown"}, status="paused", date="2026-10-01T00:00:00.000Z")
+        self.batch("unknown", "unknown_task", "needs_attention", _planning_inflight=True)
+        self.task("stale_task", status="rendering", payload={"batch_id": "stale"}, date="2026-10-10T00:00:00.000Z")
+        self.batch("stale", "stale_task", "planning")
+        self.task("live_task", status="rendering", payload={"batch_id": "live"}, date="2026-11-05T11:00:00.000Z")
+        self.batch("live", "live_task", "planning")
+        self.task("done_task", payload={"batch_id": "done"})
+        self.batch("done", "done_task")
+        before = self.summary.summary()
+        self.assertEqual((before["needs_attention"], before["active"]), (2, 2))
+
+        self.assertEqual(self.summary.dismiss_unfinished(reason="test", now=now), 3)
+        after = self.summary.summary()
+        # Running work from the last day stays; finished history is untouched; nothing is deleted.
+        self.assertEqual((after["needs_attention"], after["active"], after["history"], after["pending"]), (0, 1, 1, 1))
+        self.assertEqual([item["batch_id"] for item in self.summary.list()["items"]], ["live"])
+        self.assertEqual({item["production_id"] for item in self.summary.list(view="all")["items"]}, {"narrated_batch:live", "narrated_batch:done"})
+        self.assertEqual(self.db.execute("SELECT count(*) FROM content_tasks").fetchone()[0], 5)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM narrated_batches_v1").fetchone()[0], 4)
+        self.assertEqual(json.loads(self.db.execute("SELECT state_json FROM narrated_batches_v1 WHERE id='unknown'").fetchone()[0])["_planning_inflight"], True)
+        # Clearing again changes nothing.
+        self.assertEqual(self.summary.dismiss_unfinished(reason="test", now=now), 0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM dismissed_productions_v1").fetchone()[0], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
