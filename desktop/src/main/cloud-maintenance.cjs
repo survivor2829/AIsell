@@ -338,7 +338,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
       const message = baseDamaged
-        ? `软件程序文件不完整（${error.code === "component_base_file_missing" ? "缺少" : "损坏"}：${String(error.path || "").split("/").pop()}），无法自动更新，常见原因是被杀毒软件删除或隔离。请从官网 http://124.221.181.185 下载安装包重新安装（客户资料和设置会保留），安装后会自动更新到最新版。故障编号：${error.code}`
+        ? `软件程序文件不完整（${error.code === "component_base_file_missing" ? "缺少" : "损坏"}：${String(error.path || "").split("/").pop()}），无法自动更新，常见原因是被杀毒软件删除或隔离。请联系客服获取一键修复工具，修复后会自动更新到最新版（客户资料和设置会保留）。故障编号：${error.code}`
         : ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
         : error?.code === "full_upgrade_required" ? "新版正在准备，请稍后重试。故障编号：full_upgrade_required"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";

@@ -128,5 +128,5 @@ function harness(controller, { request } = {}) {
     assert.doesNotMatch(source, /launchGateOpened\)\.then\(\(\) => readyWindow/u, "health never waits for the gate");
     assert.match(source, /setHold: value => \{ updateHolds\.install = value; applyUpdateHold\(\); \}/u, "an install retry cannot release the launch hold");
   }
-  console.log("update launch gate self-check passed: install before entry, retry with backoff, bypass only offline/rolled back/unsupported");
+  console.log("update launch gate self-check passed: install before entry, retry with backoff, bypass only offline/rolled back/unsupported/damaged base");
 })().catch(error => { console.error(error); process.exitCode = 1; });

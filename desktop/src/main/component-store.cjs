@@ -121,8 +121,9 @@ function inspectZip(buffer, expectedCount) {
   }
   if (at !== end) fail("component_archive_directory_invalid");
 }
-// Name the installed file when the base is incomplete (e.g. quarantined by security
-// software); retrying the download can never repair it, a reinstall of the base can.
+// Name the file when the running program (installed base or current generation) is incomplete,
+// e.g. quarantined by security software. Retrying the download never repairs it; reinstalling
+// the same base does (a full install resets the component selection to the installed program).
 function baseFileFailure(code, file) { throw Object.assign(new Error(code), { code, path: file.path }); }
 async function copyVerified(sourceRoot, targetRoot, file) {
   let checked;
