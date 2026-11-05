@@ -55,26 +55,12 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   deleteBailianKey: "content-engine:delete-bailian-key",
   analyzeAssets: "content-engine:analyze-assets",
   listMediaSegments: "content-engine:list-media-segments",
-  createOneClickProject: "content-engine:create-one-click-project",
-  createAutoMixV2: "content-engine:create-auto-mix-v2",
-  prepareGuidedAutoMixV2: "content-engine:prepare-guided-auto-mix-v2",
-  getGuidedAutoMixSessionV2: "content-engine:get-guided-auto-mix-session-v2",
-  generateGuidedAutoMixScriptV2: "content-engine:generate-guided-auto-mix-script-v2",
-  getGuidedAutoMixSupplementalImageV2: "content-engine:get-guided-auto-mix-supplemental-image-v2",
-  createGuidedAutoMixSupplementalImageV2: "content-engine:create-guided-auto-mix-supplemental-image-v2",
-  getAutoMixPlanV2: "content-engine:get-auto-mix-plan-v2",
-  regenerateAutoMixLayer: "content-engine:regenerate-auto-mix-layer",
   importMusicCatalogTrack: "content-engine:import-music-catalog-track",
   listMusicCatalogTracks: "content-engine:list-music-catalog-tracks",
   listAutoMixVoicePersonas: "content-engine:list-auto-mix-voice-personas",
   designAutoMixVoicePersona: "content-engine:design-auto-mix-voice-persona",
   previewAutoMixVoicePersona: "content-engine:preview-auto-mix-voice-persona",
   approveAutoMixVoicePersona: "content-engine:approve-auto-mix-voice-persona",
-  analyzeProductAssets: "content-engine:analyze-product-assets",
-  generateProductCopy: "content-engine:generate-product-copy",
-  generateProductVoice: "content-engine:generate-product-voice",
-  generateOneClickCandidates: "content-engine:generate-one-click-candidates",
-  listOneClickCandidates: "content-engine:list-one-click-candidates",
   listPackagingPresets: "content-engine:list-packaging-presets",
   listBrandProfiles: "content-engine:list-brand-profiles",
   saveBrandProfile: "content-engine:save-brand-profile",
@@ -88,7 +74,6 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   backfillCovers: "content-engine:backfill-covers",
   regenerateCover: "content-engine:regenerate-cover",
   updateCoverTitle: "content-engine:update-cover-title",
-  getCreativeProject: "content-engine:get-creative-project",
   listGeneratedVideos: "content-engine:list-generated-videos",
   getGeneratedVideo: "content-engine:get-generated-video",
   regenerateVideo: "content-engine:regenerate-video",
@@ -255,12 +240,6 @@ const AUTO_MIX_V2_STATES = new Set([
   "needs_attention", "failed", "outcome_unknown"
 ]);
 const AUTO_MIX_V2_LAYERS = new Set(["text", "voice", "music"]);
-const GUIDED_AUTO_MIX_SESSION_STATES = new Set([
-  "analyzing", "ready_for_answers", "drafting", "ready_for_render", "failed", "outcome_unknown"
-]);
-const GUIDED_AUTO_MIX_SUPPLEMENTAL_IMAGE_STATES = new Set([
-  "not_requested", "planned", "submitted", "completed", "failed", "outcome_unknown", "cancelled"
-]);
 const MUSIC_LICENSE_STATUSES = new Set(["valid", "expired", "restricted", "unknown"]);
 const MUSIC_ANALYSIS_STATUSES = new Set(["pending", "ready", "failed"]);
 const MUSIC_IMPORT_FIELDS = new Set([
@@ -979,30 +958,6 @@ function validateText(value, maxLength, code = "invalid_params", optional = fals
   return result;
 }
 
-function validateGuidedAutoMixAnswers(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    invalid("invalid_guided_auto_mix_answers");
-  }
-  const limits = {
-    companyName: 80,
-    productName: 100,
-    targetScene: 180,
-    keyMessage: 300,
-    extraNotes: 240
-  };
-  assertKeys(value, new Set(Object.keys(limits)), "invalid_guided_auto_mix_answers");
-  const answers = {};
-  for (const [key, limit] of Object.entries(limits)) {
-    const raw = value[key] == null ? "" : value[key];
-    if (typeof raw !== "string" || raw.length > limit) {
-      invalid("invalid_guided_auto_mix_answers");
-    }
-    answers[key] = raw.trim();
-  }
-  if (!answers.productName) invalid("guided_auto_mix_product_missing");
-  return answers;
-}
-
 function validateVoicePersonaId(value) {
   const id = String(value || "");
   if (!/^[a-z][a-z0-9-]{1,63}@[1-9][0-9]{0,5}$/iu.test(id)) {
@@ -1296,114 +1251,6 @@ function publicMediaSegment(value = {}) {
     quality_score: value.quality_score,
     provider: value.provider,
     thumbnail_ready: value.thumbnail_ready
-  });
-}
-
-function publicCoverageNumber(value, { ratio = false } = {}) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 0) return 0;
-  if (ratio) return Math.min(1, numeric);
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.round(numeric));
-}
-
-function publicVoiceMetadata(value = {}) {
-  if (!value || typeof value !== "object") return null;
-  return camelizePublic({
-    provider: ["bailian", "source", "none"].includes(value.provider) ? value.provider : null,
-    status: ["pending", "completed", "failed", "not_requested"].includes(value.status)
-      ? value.status
-      : null,
-    reason: publicCode(value.reason),
-    error_code: publicCode(value.error_code),
-    recognized_speech_ms: publicCoverageNumber(value.recognized_speech_ms),
-    source_media_ms: publicCoverageNumber(value.source_media_ms),
-    source_coverage: publicCoverageNumber(value.source_coverage, { ratio: true })
-  });
-}
-
-function publicAudioStrategy(value = {}) {
-  if (!value || typeof value !== "object") return null;
-  return camelizePublic({
-    recognized_speech_ms: publicCoverageNumber(value.recognized_speech_ms),
-    source_media_ms: publicCoverageNumber(value.source_media_ms),
-    source_coverage: publicCoverageNumber(value.source_coverage, { ratio: true }),
-    source_coverage_threshold: publicCoverageNumber(value.source_coverage_threshold, { ratio: true }),
-    recognized_asset_count: publicCoverageNumber(value.recognized_asset_count),
-    unknown_audio_count: publicCoverageNumber(value.unknown_audio_count),
-    reason: publicCode(value.reason),
-    source_audio_policy: ["preserve", "duck", "none"].includes(value.source_audio_policy)
-      ? value.source_audio_policy
-      : null
-  });
-}
-
-function publicAnalysisContext(value = {}) {
-  if (!value || typeof value !== "object") return null;
-  return camelizePublic({
-    stage: publicCode(value.stage),
-    asset_id: opaqueId(value.asset_id, "asset"),
-    asset_name: safePublicText(value.asset_name, 240),
-    index: publicCoverageNumber(value.index),
-    total: publicCoverageNumber(value.total),
-    analyzed_count: publicCoverageNumber(value.analyzed_count),
-    skipped_count: publicCoverageNumber(value.skipped_count),
-    asset_total: publicCoverageNumber(value.asset_total)
-  });
-}
-
-function publicSkippedAnalysisAssets(value) {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, 200).map((item) => camelizePublic({
-    asset_id: opaqueId(item?.asset_id, "asset"),
-    asset_name: safePublicText(item?.asset_name, 240),
-    stage: publicCode(item?.stage),
-    error_code: publicCode(item?.error_code),
-    error_message: safePublicText(item?.error_message ?? item?.message, 500)
-  }));
-}
-
-function publicCreativeProject(value = {}) {
-  return camelizePublic({
-    project_id: value.project_id,
-    mode: value.mode,
-    name: value.name,
-    theme: value.theme,
-    status: value.status,
-    required_roles: value.required_roles,
-    target_count: value.target_count,
-    packaging_mode: value.packaging_mode,
-    packaging_preset_id: value.packaging_preset_id,
-    brand_profile_id: value.brand_profile_id,
-    cover_mode: value.cover_mode,
-    workflow: value.workflow,
-    ratio: value.ratio,
-    duration_ms: value.duration_ms,
-    bgm_asset_id: value.bgm_asset_id,
-    product_asset_count: value.product_asset_count,
-    product_assets: Array.isArray(value.product_assets) ? value.product_assets : [],
-    product_brief: value.product_brief && typeof value.product_brief === "object"
-      ? value.product_brief
-      : null,
-    copy_status: value.copy_status,
-    voice_status: value.voice_status,
-    copy_mode: value.copy_mode,
-    voice_mode: value.voice_mode,
-    voice_metadata: publicVoiceMetadata(value.voice_metadata),
-    audio_strategy: publicAudioStrategy(value.audio_strategy),
-    copy_error_code: value.copy_error_code,
-    analysis_context: publicAnalysisContext(value.analysis_context),
-    analysis_skipped_assets: publicSkippedAnalysisAssets(value.analysis_skipped_assets),
-    product_family: value.product_family,
-    generated_count: value.generated_count,
-    maximum_qualified_count: value.maximum_qualified_count,
-    count_is_exact: value.count_is_exact,
-    missing_roles: value.missing_roles,
-    skeleton_ids: Array.isArray(value.skeleton_ids)
-      ? value.skeleton_ids.filter((item) => /^[a-z0-9_-]{1,64}$/i.test(String(item || ""))).slice(0, 300)
-      : [],
-    skeleton_count: Number.isSafeInteger(value.skeleton_count) ? value.skeleton_count : 0,
-    created_at: value.created_at,
-    updated_at: value.updated_at
   });
 }
 
@@ -1885,158 +1732,6 @@ function publicAutoMixPlanV2(value = {}) {
     outputCount: 1,
     cache: publicAutoMixCache(autoMixField(value, "cache")),
     attention: publicAutoMixAttention(autoMixField(value, "attention"))
-  };
-}
-
-function publicGuidedAutoMixAnswers(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {
-    companyName: "",
-    productName: "",
-    targetScene: "",
-    keyMessage: "",
-    extraNotes: ""
-  };
-  return {
-    companyName: safeAutoMixText(autoMixField(value, "companyName"), 80),
-    productName: safeAutoMixText(autoMixField(value, "productName"), 100),
-    targetScene: safeAutoMixText(autoMixField(value, "targetScene"), 180),
-    keyMessage: safeAutoMixText(autoMixField(value, "keyMessage"), 300),
-    extraNotes: safeAutoMixText(autoMixField(value, "extraNotes"), 240)
-  };
-}
-
-function publicGuidedAutoMixPrefill(value) {
-  const source = value && typeof value === "object" && !Array.isArray(value)
-    ? value
-    : {};
-  return {
-    title: safeAutoMixText(autoMixField(source, "title"), 100),
-    answers: publicGuidedAutoMixAnswers(autoMixField(source, "answers"))
-  };
-}
-
-function publicGuidedAutoMixSession(value = {}) {
-  const sessionId = String(autoMixField(value, "sessionId") || autoMixField(value, "session_id") || "");
-  const state = String(autoMixField(value, "status") || "");
-  const analysis = autoMixField(value, "analysis");
-  const draft = autoMixField(value, "draft");
-  const publicAnalysis = analysis && typeof analysis === "object" && !Array.isArray(analysis)
-    ? analysis
-    : {};
-  const publicDraft = draft && typeof draft === "object" && !Array.isArray(draft)
-    ? draft
-    : {};
-  return {
-    sessionId: /^guided_auto_mix_session_[a-f0-9]{32}$/u.test(sessionId) ? sessionId : null,
-    status: GUIDED_AUTO_MIX_SESSION_STATES.has(state) ? state : "failed",
-    assetIds: Array.isArray(autoMixField(value, "assetIds"))
-      ? [...new Set(
-        autoMixField(value, "assetIds")
-          .slice(0, 120)
-          .map((item) => opaqueId(item, "asset"))
-          .filter(Boolean)
-      )]
-      : [],
-    analysisTask: autoMixField(value, "analysisTask")
-      ? publicTask(autoMixField(value, "analysisTask"))
-      : null,
-    draftTask: autoMixField(value, "draftTask")
-      ? publicTask(autoMixField(value, "draftTask"))
-      : null,
-    analysis: {
-      usableMaterialDurationMs: publicAutoMixInteger(
-        autoMixField(publicAnalysis, "usableMaterialDurationMs"), 120_000
-      ),
-      selectedDurationMs: publicAutoMixInteger(
-        autoMixField(publicAnalysis, "selectedDurationMs"), 120_000
-      ),
-      selectedSegmentCount: publicAutoMixInteger(
-        autoMixField(publicAnalysis, "selectedSegmentCount"), 500
-      ),
-      durationPlan: publicAutoMixDurationPlan(
-        autoMixField(publicAnalysis, "durationPlan")
-      ),
-      materialFacts: Array.isArray(autoMixField(publicAnalysis, "materialFacts"))
-        ? autoMixField(publicAnalysis, "materialFacts").slice(0, 8).map((item) => ({
-          text: safeAutoMixText(autoMixField(item, "text"), 72),
-          kind: safeAutoMixText(autoMixField(item, "kind"), 32)
-        })).filter((item) => item.text)
-        : []
-    },
-    answers: publicGuidedAutoMixAnswers(autoMixField(value, "answers")),
-    prefill: publicGuidedAutoMixPrefill(autoMixField(value, "prefill")),
-    draft: {
-      scriptRevision: publicAutoMixInteger(
-        autoMixField(publicDraft, "scriptRevision"), 1_000_000
-      ),
-      draftHash: /^[a-f0-9]{64}$/iu.test(
-        String(autoMixField(publicDraft, "draftHash") || "")
-      ) ? String(autoMixField(publicDraft, "draftHash")).toLowerCase() : null,
-      title: safeAutoMixText(autoMixField(publicDraft, "title"), 100),
-      provider: safeAutoMixText(autoMixField(publicDraft, "provider"), 64) || null,
-      hook: safeAutoMixText(autoMixField(publicDraft, "hook"), 80),
-      voiceover: safeAutoMixText(autoMixField(publicDraft, "voiceover"), 2_400),
-      cta: safeAutoMixText(autoMixField(publicDraft, "cta"), 80),
-      durationPlan: publicAutoMixDurationPlan(
-        autoMixField(publicDraft, "durationPlan")
-      ),
-      spokenPhrases: Array.isArray(autoMixField(publicDraft, "spokenPhrases"))
-        ? autoMixField(publicDraft, "spokenPhrases").slice(0, 80).map((item) => ({
-          text: safeAutoMixText(autoMixField(item, "text"), 80)
-        })).filter((item) => item.text)
-        : [],
-      visualTextItems: Array.isArray(autoMixField(publicDraft, "visualTextItems"))
-        ? autoMixField(publicDraft, "visualTextItems").slice(0, 16).map((item) => ({
-          type: ["hook", "callout", "cta"].includes(String(autoMixField(item, "type") || ""))
-            ? String(autoMixField(item, "type"))
-            : null,
-          text: safeAutoMixText(autoMixField(item, "text"), 80)
-        })).filter((item) => item.text)
-        : []
-    }
-  };
-}
-
-function publicGuidedAutoMixSupplementalImage(value = {}) {
-  const nested = autoMixField(value, "operation");
-  const operation = nested && typeof nested === "object" && !Array.isArray(nested)
-    ? nested
-    : value;
-  const operationId = String(
-    autoMixField(operation, "operationId") || autoMixField(operation, "operation_id") || ""
-  );
-  const sessionId = String(
-    autoMixField(value, "sessionId") || autoMixField(operation, "sessionId")
-      || autoMixField(operation, "session_id") || ""
-  );
-  const status = String(
-    autoMixField(operation, "status") || autoMixField(value, "status") || "not_requested"
-  );
-  return {
-    operationId: /^guided_auto_mix_supplemental_image_[a-f0-9]{32}$/u.test(operationId)
-      ? operationId
-      : null,
-    sessionId: /^guided_auto_mix_session_[a-f0-9]{32}$/u.test(sessionId)
-      ? sessionId
-      : null,
-    scriptRevision: publicAutoMixInteger(
-      autoMixField(value, "scriptRevision") || autoMixField(operation, "scriptRevision"),
-      1_000_000
-    ) || 0,
-    status: GUIDED_AUTO_MIX_SUPPLEMENTAL_IMAGE_STATES.has(status)
-      ? status
-      : "failed",
-    estimatedImageCalls: publicAutoMixInteger(
-      autoMixField(value, "estimatedImageCalls") || autoMixField(operation, "estimatedImageCalls"), 1
-    ) || 0,
-    provider: safeAutoMixText(
-      autoMixField(value, "provider") || autoMixField(operation, "provider"), 64
-    ) || null,
-    paidCallPerformed: autoMixField(value, "paidCallPerformed") === true
-      || autoMixField(operation, "paidCallPerformed") === true,
-    errorCode: publicCode(
-      autoMixField(value, "errorCode") || autoMixField(operation, "errorCode")
-    )
   };
 }
 
@@ -2960,214 +2655,6 @@ function registerContentEngineIpc(options = {}) {
     });
     return { items: (result?.items || []).map(publicMediaSegment) };
   });
-  handle(CONTENT_ENGINE_CHANNELS.createOneClickProject, async (payload) => {
-    assertKeys(payload, new Set(["name", "assetIds", "options"]));
-    if (!Array.isArray(payload.assetIds) || payload.assetIds.length < 1 || payload.assetIds.length > 200) {
-      invalid("invalid_params");
-    }
-    const assetIds = [...new Set(payload.assetIds.map((item) => validateId(item, "asset")))];
-    const options = payload.options == null ? {} : payload.options;
-    if (!options || typeof options !== "object" || Array.isArray(options)) invalid("invalid_params");
-    const ratio = String(options.ratio ?? "9:16");
-    const durationMs = Number(options.durationMs ?? 75_000);
-    const targetCount = Number(options.targetCount ?? 3);
-    if (ratio !== "9:16") invalid("invalid_product_ratio");
-    if (!Number.isInteger(durationMs) || durationMs < 60_000 || durationMs > 90_000) invalid("invalid_product_duration");
-    if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 3) invalid("invalid_limit");
-    const result = await controller.createOneClickProject(
-      String(payload.name ?? "商品展示一键成片").slice(0, 100),
-      assetIds,
-      {
-        brief: options.brief && typeof options.brief === "object" ? options.brief : {},
-        ratio,
-        durationMs,
-        targetCount,
-        coverMode: String(options.coverMode ?? "ai_generate"),
-        bgmAssetId: options.bgmAssetId == null ? null : validateId(options.bgmAssetId, "asset")
-      }
-    );
-    return camelizePublic(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.createAutoMixV2, async (payload, event) => {
-    assertKeys(payload, new Set([
-      "specVersion", "assetIds", "title", "copyFramework",
-      "guidedSessionId", "scriptRevision", "clickToken"
-    ]));
-    requireTrustedAutoMixClick(
-      event,
-      payload.clickToken,
-      CONTENT_ENGINE_CHANNELS.createAutoMixV2
-    );
-    if (payload.specVersion !== "2") invalid("unsupported_auto_mix_spec");
-    const fields = new Set(Object.keys(payload).filter((key) => key !== "clickToken"));
-    const guidedFields = new Set(["specVersion", "guidedSessionId", "scriptRevision"]);
-    const legacyFields = new Set(["specVersion", "assetIds", "title", "copyFramework"]);
-    const sameFields = (left, right) => left.size === right.size && [...left].every((item) => right.has(item));
-    let result;
-    if (sameFields(fields, guidedFields)) {
-      const scriptRevision = Number(payload.scriptRevision);
-      if (!Number.isInteger(scriptRevision) || scriptRevision < 1 || scriptRevision > 1_000_000) {
-        invalid("invalid_guided_auto_mix_script_revision");
-      }
-      result = await controller.createAutoMixV2({
-        specVersion: "2",
-        guidedSessionId: validateId(payload.guidedSessionId, "guided_auto_mix_session"),
-        scriptRevision
-      });
-    } else if (sameFields(fields, legacyFields)) {
-      if (!Array.isArray(payload.assetIds) || payload.assetIds.length < 1 || payload.assetIds.length > 120) {
-        invalid("invalid_auto_mix_assets");
-      }
-      const assetIds = [...new Set(
-        payload.assetIds.map((item) => validateId(item, "asset"))
-      )];
-      result = await controller.createAutoMixV2({
-        specVersion: "2",
-        assetIds,
-        title: validateText(payload.title, 100, "auto_mix_title_missing"),
-        copyFramework: validateText(
-          payload.copyFramework,
-          2_400,
-          "auto_mix_copy_framework_missing"
-        )
-      });
-    } else {
-      invalid("auto_mix_v2_fields_missing");
-    }
-    return publicAutoMixPlanV2(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.prepareGuidedAutoMixV2, async (payload, event) => {
-    assertKeys(payload, new Set(["assetIds", "clickToken"]));
-    requireTrustedAutoMixClick(
-      event,
-      payload.clickToken,
-      CONTENT_ENGINE_CHANNELS.prepareGuidedAutoMixV2
-    );
-    if (!Array.isArray(payload.assetIds) || payload.assetIds.length < 1 || payload.assetIds.length > 120) {
-      invalid("invalid_auto_mix_assets");
-    }
-    const assetIds = [...new Set(
-      payload.assetIds.map((item) => validateId(item, "asset"))
-    )];
-    return publicGuidedAutoMixSession(
-      await controller.prepareGuidedAutoMixV2(assetIds)
-    );
-  });
-  handle(CONTENT_ENGINE_CHANNELS.getGuidedAutoMixSessionV2, async (payload) => {
-    assertKeys(payload, new Set(["sessionId", "taskId"]));
-    const hasSessionId = payload.sessionId !== undefined && payload.sessionId !== null;
-    const hasTaskId = payload.taskId !== undefined && payload.taskId !== null;
-    if (hasSessionId === hasTaskId) invalid("guided_auto_mix_lookup_invalid");
-    return publicGuidedAutoMixSession(
-      await controller.getGuidedAutoMixSessionV2(hasSessionId
-        ? { sessionId: validateId(payload.sessionId, "guided_auto_mix_session") }
-        : { taskId: validateId(payload.taskId, "task") })
-    );
-  });
-  handle(CONTENT_ENGINE_CHANNELS.generateGuidedAutoMixScriptV2, async (payload, event) => {
-    assertKeys(payload, new Set(["sessionId", "analysisTaskId", "title", "answers", "clickToken"]));
-    requireTrustedAutoMixClick(
-      event,
-      payload.clickToken,
-      CONTENT_ENGINE_CHANNELS.generateGuidedAutoMixScriptV2
-    );
-    const suppliedSessionId = validateId(payload.sessionId, "guided_auto_mix_session");
-    const analysisTaskId = payload.analysisTaskId == null
-      ? null
-      : validateId(payload.analysisTaskId, "task");
-    let sessionId = suppliedSessionId;
-    if (analysisTaskId) {
-      const resolved = await controller.getGuidedAutoMixSessionV2({ taskId: analysisTaskId });
-      const resolvedSessionId = String(
-        resolved?.session_id || resolved?.sessionId || ""
-      );
-      if (!resolvedSessionId) invalid("guided_auto_mix_session_not_found");
-      sessionId = validateId(resolvedSessionId, "guided_auto_mix_session");
-    }
-    return publicGuidedAutoMixSession(
-      await controller.generateGuidedAutoMixScriptV2(
-        {
-          sessionId,
-          title: validateText(payload.title, 100, "guided_auto_mix_title_missing"),
-          answers: validateGuidedAutoMixAnswers(payload.answers)
-        }
-      )
-    );
-  });
-  handle(CONTENT_ENGINE_CHANNELS.getGuidedAutoMixSupplementalImageV2, async (payload) => {
-    assertKeys(payload, new Set(["sessionId", "scriptRevision"]));
-    const scriptRevision = Number(payload.scriptRevision);
-    if (!Number.isInteger(scriptRevision) || scriptRevision < 1 || scriptRevision > 1_000_000) {
-      invalid("invalid_guided_auto_mix_script_revision");
-    }
-    return publicGuidedAutoMixSupplementalImage(
-      await controller.getGuidedAutoMixSupplementalImageV2({
-        sessionId: validateId(payload.sessionId, "guided_auto_mix_session"),
-        scriptRevision
-      })
-    );
-  });
-  handle(CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2, async (payload, event) => {
-    assertKeys(payload, new Set(["sessionId", "scriptRevision", "draftHash", "confirmPaidCalls", "clickToken"]));
-    requireTrustedAutoMixClick(
-      event,
-      payload.clickToken,
-      CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2
-    );
-    const scriptRevision = Number(payload.scriptRevision);
-    if (!Number.isInteger(scriptRevision) || scriptRevision < 1 || scriptRevision > 1_000_000) {
-      invalid("invalid_guided_auto_mix_script_revision");
-    }
-    const draftHash = String(payload.draftHash || "").toLowerCase();
-    if (!/^[a-f0-9]{64}$/u.test(draftHash)) invalid("invalid_guided_auto_mix_draft_hash");
-    if (payload.confirmPaidCalls !== true) invalid("guided_auto_mix_supplemental_image_confirmation_required");
-    await options.beforeProviderWork?.(["apimart"]);
-    return publicGuidedAutoMixSupplementalImage(
-      await controller.createGuidedAutoMixSupplementalImageV2({
-        sessionId: validateId(payload.sessionId, "guided_auto_mix_session"),
-        scriptRevision,
-        draftHash,
-        confirmPaidCalls: true
-      })
-    );
-  });
-  handle(CONTENT_ENGINE_CHANNELS.getAutoMixPlanV2, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "runId"]));
-    const hasProjectId = payload.projectId !== undefined && payload.projectId !== null;
-    const hasRunId = payload.runId !== undefined && payload.runId !== null;
-    if (hasProjectId === hasRunId) invalid("invalid_params");
-    let runId;
-    if (hasRunId) {
-      const candidate = String(payload.runId || "");
-      if (!/^(?:auto_mix_run|run)_[a-f0-9]{32}$/u.test(candidate)) invalid("invalid_id");
-      runId = candidate;
-    }
-    const result = await controller.getAutoMixPlanV2(hasProjectId
-      ? { projectId: validateId(payload.projectId, "creative_project") }
-      : { runId });
-    return publicAutoMixPlanV2(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer, async (payload, event) => {
-    assertKeys(payload, new Set(["projectId", "expectedRunId", "layer", "clickToken"]));
-    requireTrustedAutoMixClick(
-      event,
-      payload.clickToken,
-      CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer
-    );
-    const layer = String(payload.layer || "");
-    if (!AUTO_MIX_V2_LAYERS.has(layer)) invalid("invalid_auto_mix_layer");
-    const expectedRunId = payload.expectedRunId == null || payload.expectedRunId === ""
-      ? undefined
-      : String(payload.expectedRunId || "");
-    if (expectedRunId && !/^(?:auto_mix_run|run)_[a-f0-9]{32}$/u.test(expectedRunId)) {
-      invalid("invalid_id");
-    }
-    return publicAutoMixPlanV2(await controller.regenerateAutoMixLayer(
-      validateId(payload.projectId, "creative_project"),
-      layer,
-      expectedRunId
-    ));
-  });
   handle(CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack, async (payload, event) => {
     assertKeys(payload, MUSIC_IMPORT_FIELDS, "invalid_music_track_fields");
     requireTrustedAutoMixClick(
@@ -3355,53 +2842,6 @@ function registerContentEngineIpc(options = {}) {
       await controller.approveAutoMixVoicePersona(voicePersonaId)
     );
   });
-  handle(CONTENT_ENGINE_CHANNELS.analyzeProductAssets, async (payload) => {
-    assertKeys(payload, new Set(["projectId"]));
-    const result = await controller.analyzeProductAssets(validateId(payload.projectId, "creative_project"));
-    return publicTask(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.generateProductCopy, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "brief"]));
-    const result = await controller.generateProductCopy(
-      validateId(payload.projectId, "creative_project"),
-      payload.brief && typeof payload.brief === "object" ? payload.brief : {}
-    );
-    return publicTask(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.generateProductVoice, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "scriptId"]));
-    const result = await controller.generateProductVoice(
-      validateId(payload.projectId, "creative_project"),
-      payload.scriptId == null ? null : String(payload.scriptId)
-    );
-    return publicTask(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.generateOneClickCandidates, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "options"]));
-    const generationOptions = payload.options == null ? {} : payload.options;
-    if (!generationOptions || typeof generationOptions !== "object" || Array.isArray(generationOptions)) invalid("invalid_params");
-    const targetCount = Number(generationOptions.targetCount ?? 3);
-    const durationMs = Number(generationOptions.durationMs ?? 75_000);
-    if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 3) invalid("invalid_limit");
-    if (!Number.isInteger(durationMs) || durationMs < 60_000 || durationMs > 90_000) invalid("invalid_product_duration");
-    const coverMode = String(generationOptions.coverMode ?? "ai_generate");
-    if (coverMode === "ai_generate") await options.beforeProviderWork?.(["apimart"]);
-    const result = await controller.generateOneClickCandidates(
-      validateId(payload.projectId, "creative_project"),
-      { targetCount, durationMs, coverMode }
-    );
-    return publicTask(result);
-  });
-  handle(CONTENT_ENGINE_CHANNELS.listOneClickCandidates, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "limit", "taskId"]));
-    const limit = Number(payload.limit ?? 20);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) invalid("invalid_limit");
-    const result = await controller.listOneClickCandidates(validateId(payload.projectId, "creative_project"), limit, payload.taskId ? validateId(payload.taskId, "task") : undefined);
-    return {
-      workflow: "product_one_click",
-      items: (result?.items || []).map(publicGeneratedVideo)
-    };
-  });
   handle(CONTENT_ENGINE_CHANNELS.listPackagingPresets, async (payload) => {
     assertKeys(payload, new Set(["kind"]));
     const kind = payload.kind == null ? undefined : String(payload.kind);
@@ -3569,12 +3009,6 @@ function registerContentEngineIpc(options = {}) {
     const lines = payload.headlineLines.map((line) => validateText(line, 12));
     return publicGeneratedVideo(await controller.updateCoverTitle(
       validateId(payload.candidateId, "generated_video"), lines
-    ));
-  });
-  handle(CONTENT_ENGINE_CHANNELS.getCreativeProject, async (payload) => {
-    assertKeys(payload, new Set(["projectId"]));
-    return publicCreativeProject(await controller.getCreativeProject(
-      validateId(payload.projectId, "creative_project")
     ));
   });
   handle(CONTENT_ENGINE_CHANNELS.listGeneratedVideos, async (payload) => {

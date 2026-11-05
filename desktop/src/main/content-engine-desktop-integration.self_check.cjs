@@ -96,11 +96,10 @@ async function assertPreloadContract() {
     "volcengineTtsStatus"
   ]);
   assert.deepEqual(Object.keys(api.creative).sort(), [
-    "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "backfillCovers", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate", "generateGuidedAutoMixScriptV2", "generateOneClickCandidates", "generateProductCopy", "generateProductVoice", "getAutoMixPlanV2", "getGenerated", "getGuidedAutoMixSessionV2", "getGuidedAutoMixSupplementalImageV2",
-    "getPackagingCostEstimate", "getProject", "importMusicCatalogTrack", "listAutoMixVoicePersonas", "listBrandProfiles", "listGenerated", "listMediaReviews", "listMusicCatalogTracks", "listOneClickCandidates", "listPackagingPresets",
-    "listSegments", "mediaUrl", "open", "packageGeneratedVideos", "preflightVisualComparison", "prepareGuidedAutoMixV2", "previewAutoMixVoicePersona",
-    "queue", "recordMediaReview", "regenerate", "regenerateAutoMixLayer", "regenerateCover", "reject", "repackageVideo", "reveal",
-    "saveBrandProfile", "updateCoverTitle"
+    "analyzeAssets", "approveAutoMixVoicePersona", "backfillCovers", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate", "getGenerated",
+    "getPackagingCostEstimate", "importMusicCatalogTrack", "listAutoMixVoicePersonas", "listBrandProfiles", "listGenerated", "listMediaReviews", "listMusicCatalogTracks", "listPackagingPresets",
+    "listSegments", "mediaUrl", "open", "packageGeneratedVideos", "preflightVisualComparison", "previewAutoMixVoicePersona", "queue", "recordMediaReview",
+    "regenerate", "regenerateCover", "reject", "repackageVideo", "reveal", "saveBrandProfile", "updateCoverTitle"
   ]);
   assert.deepEqual(Object.keys(api.mix).sort(), [
     "calculateCombinations", "createProject", "generateCandidates", "getProject",
@@ -145,55 +144,6 @@ async function assertPreloadContract() {
   api.settings.deleteBailianKey();
   api.creative.analyzeAssets({ assetIds: ["asset_one"], path: "C:\\bad" });
   api.creative.listSegments({ assetId: "asset_one", role: "hook", limit: 20, path: "C:\\bad" });
-  api.creative.createAutoMixV2({
-    specVersion: "2",
-    assetIds: ["asset_one"],
-    title: "产品标题",
-    copyFramework: "真实素材，真实表达。",
-    durationMs: 60_000,
-    apiKey: "must-not-pass",
-    path: "C:\\bad"
-  });
-  api.creative.prepareGuidedAutoMixV2({ assetIds: ["asset_one"], path: "C:\\bad" });
-  api.creative.getGuidedAutoMixSessionV2({ sessionId: "guided_session_one", path: "C:\\bad" });
-  api.creative.getGuidedAutoMixSupplementalImageV2({
-    sessionId: "guided_session_one",
-    scriptRevision: 1,
-    path: "C:\\bad"
-  });
-  api.creative.createGuidedAutoMixSupplementalImageV2({
-    sessionId: "guided_session_one",
-    scriptRevision: 1,
-    draftHash: "a".repeat(64),
-    confirmPaidCalls: true,
-    path: "C:\\bad"
-  });
-  api.creative.generateGuidedAutoMixScriptV2({
-    sessionId: "guided_session_one",
-    title: "产品标题",
-    answers: {
-      companyName: "示例公司",
-      productName: "清洁机器人",
-      targetScene: "工厂车间",
-      keyMessage: "减少人工看守",
-      extraNotes: "不夸大效果"
-    },
-    apiKey: "must-not-pass",
-    path: "C:\\bad"
-  });
-  api.creative.getAutoMixPlanV2({
-    projectId: "creative_project_one",
-    apiKey: "must-not-pass",
-    path: "C:\\bad"
-  });
-  api.creative.regenerateAutoMixLayer({
-    projectId: "creative_project_one",
-    expectedRunId: "auto_mix_run_11111111111111111111111111111111",
-    layer: "voice",
-    inputAssetIds: ["asset_should_not_be_resubmitted"],
-    providerVoiceId: "must-not-pass",
-    path: "C:\\bad"
-  });
   api.creative.importMusicCatalogTrack({
     sourcePath: "C:\\music-canary\\licensed.wav",
     displayName: "稳健节奏",
@@ -248,7 +198,6 @@ async function assertPreloadContract() {
   api.creative.packageGeneratedVideos({ candidateIds: ["generated_video_one"], packagingMode: "auto", brandProfileId: "brand_one", path: "C:\\bad" });
   api.creative.repackageVideo({ candidateId: "generated_video_one", packagingMode: "preset", packagingPresetId: "knowledge_focus", brandProfileId: "brand_one", visualRenderer: { requestedEngine: "remotion", visualStyleId: "social_pop", requestedStyleVersion: 1, allowFallback: true, apiKey: "must-not-pass" }, path: "C:\\bad" });
   api.creative.regenerateCover({ candidateId: "generated_video_one", path: "C:\\bad" });
-  api.creative.getProject({ projectId: "creative_project_one", path: "C:\\bad" });
   api.creative.listGenerated({ projectId: "creative_project_one", limit: 30, path: "C:\\bad" });
   api.creative.regenerate({ candidateId: "generated_video_one", path: "C:\\bad" });
   api.creative.reject({ candidateId: "generated_video_one", path: "C:\\bad" });
@@ -381,66 +330,6 @@ async function assertPreloadContract() {
       payload: { assetId: "asset_one", role: "hook", limit: 20 }
     },
     {
-      channel: "content-engine:create-auto-mix-v2",
-      payload: {
-        specVersion: "2",
-        assetIds: ["asset_one"],
-        title: "产品标题",
-        copyFramework: "真实素材，真实表达。",
-        clickToken: ""
-      }
-    },
-    {
-      channel: "content-engine:prepare-guided-auto-mix-v2",
-      payload: { assetIds: ["asset_one"], clickToken: "" }
-    },
-    {
-      channel: "content-engine:get-guided-auto-mix-session-v2",
-      payload: { sessionId: "guided_session_one" }
-    },
-    {
-      channel: "content-engine:get-guided-auto-mix-supplemental-image-v2",
-      payload: { sessionId: "guided_session_one", scriptRevision: 1 }
-    },
-    {
-      channel: "content-engine:create-guided-auto-mix-supplemental-image-v2",
-      payload: {
-        sessionId: "guided_session_one",
-        scriptRevision: 1,
-        draftHash: "a".repeat(64),
-        confirmPaidCalls: true,
-        clickToken: ""
-      }
-    },
-    {
-      channel: "content-engine:generate-guided-auto-mix-script-v2",
-      payload: {
-        sessionId: "guided_session_one",
-        title: "产品标题",
-        answers: {
-          companyName: "示例公司",
-          productName: "清洁机器人",
-          targetScene: "工厂车间",
-          keyMessage: "减少人工看守",
-          extraNotes: "不夸大效果"
-        },
-        clickToken: ""
-      }
-    },
-    {
-      channel: "content-engine:get-auto-mix-plan-v2",
-      payload: { projectId: "creative_project_one" }
-    },
-    {
-      channel: "content-engine:regenerate-auto-mix-layer",
-      payload: {
-        projectId: "creative_project_one",
-        expectedRunId: "auto_mix_run_11111111111111111111111111111111",
-        layer: "voice",
-        clickToken: ""
-      }
-    },
-    {
       channel: "content-engine:import-music-catalog-track",
       payload: {
         displayName: "稳健节奏",
@@ -499,10 +388,6 @@ async function assertPreloadContract() {
     {
       channel: "content-engine:regenerate-cover",
       payload: { candidateId: "generated_video_one" }
-    },
-    {
-      channel: "content-engine:get-creative-project",
-      payload: { projectId: "creative_project_one" }
     },
     {
       channel: "content-engine:list-generated-videos",
@@ -753,14 +638,8 @@ function assertMainLifecycle() {
   assert.match(source, /contentEngineIpcRegistration\?\.dispose\(\)/);
   assert.match(ipcSource, /preflightVisualComparison: "content-engine:preflight-visual-comparison"/);
   assert.match(ipcSource, /createVisualComparisonTask: "content-engine:create-visual-comparison-task"/);
-  assert.match(ipcSource, /createAutoMixV2: "content-engine:create-auto-mix-v2"/);
-  assert.match(ipcSource, /prepareGuidedAutoMixV2: "content-engine:prepare-guided-auto-mix-v2"/);
-  assert.match(ipcSource, /getGuidedAutoMixSessionV2: "content-engine:get-guided-auto-mix-session-v2"/);
-  assert.match(ipcSource, /generateGuidedAutoMixScriptV2: "content-engine:generate-guided-auto-mix-script-v2"/);
-  assert.match(ipcSource, /getGuidedAutoMixSupplementalImageV2: "content-engine:get-guided-auto-mix-supplemental-image-v2"/);
-  assert.match(ipcSource, /createGuidedAutoMixSupplementalImageV2: "content-engine:create-guided-auto-mix-supplemental-image-v2"/);
-  assert.match(ipcSource, /getAutoMixPlanV2: "content-engine:get-auto-mix-plan-v2"/);
-  assert.match(ipcSource, /regenerateAutoMixLayer: "content-engine:regenerate-auto-mix-layer"/);
+  // 旧版一键成片和引导式一键成片的接口已删除（用户 2026-11-05）。
+  assert.doesNotMatch(ipcSource, /create-auto-mix-v2|guided-auto-mix|get-auto-mix-plan-v2|regenerate-auto-mix-layer|one-click|get-creative-project|product-assets|product-copy|product-voice/u);
   assert.match(ipcSource, /importMusicCatalogTrack: "content-engine:import-music-catalog-track"/);
   assert.match(ipcSource, /listMusicCatalogTracks: "content-engine:list-music-catalog-tracks"/);
   assert.match(ipcSource, /listAutoMixVoicePersonas: "content-engine:list-auto-mix-voice-personas"/);
@@ -768,8 +647,6 @@ function assertMainLifecycle() {
   assert.match(ipcSource, /previewAutoMixVoicePersona: "content-engine:preview-auto-mix-voice-persona"/);
   assert.match(ipcSource, /approveAutoMixVoicePersona: "content-engine:approve-auto-mix-voice-persona"/);
   assert.match(ipcSource, /function publicAutoMixPlanV2/u);
-  assert.match(ipcSource, /function publicGuidedAutoMixSession/u);
-  assert.match(ipcSource, /function publicGuidedAutoMixSupplementalImage/u);
   assert.match(ipcSource, /function publicMusicCatalogTrack/u);
   assert.match(ipcSource, /function publicAutoMixVoicePersona/u);
   assert.match(ipcSource, /function publicAutoMixVoicePreview/u);
@@ -836,20 +713,16 @@ async function assertAutoMixTrustedClickBinding() {
     };
 
     dispatchTrustedClick("data-xiaoxi-auto-mix-voice-preview");
-    await api.creative.createAutoMixV2({
-      specVersion: "2",
-      assetIds: ["asset_one"],
-      title: "产品标题",
-      copyFramework: "真实素材，真实表达。"
-    });
+    await api.creative.designAutoMixVoicePersona({ voicePersonaId: "natural-life@1" });
     await api.creative.previewAutoMixVoicePersona({ voicePersonaId: "natural-life@1" });
     await api.creative.previewAutoMixVoicePersona({ voicePersonaId: "natural-life@1" });
 
-    const [crossOperationCreate, intendedPreview, replayedPreview] = calls;
+    const [crossOperationDesign, intendedPreview, replayedPreview] = calls;
+    assert.equal(crossOperationDesign.channel, "content-engine:design-auto-mix-voice-persona");
     assert.equal(
-      crossOperationCreate.payload.clickToken,
+      crossOperationDesign.payload.clickToken,
       "",
-      "声音试听点击不得授权创建成片"
+      "声音试听点击不得授权生成声音"
     );
     assert.match(
       intendedPreview.payload.clickToken,
@@ -876,54 +749,6 @@ async function assertAutoMixTrustedClickBinding() {
         "data-xiaoxi-auto-mix-voice-design",
         () => api.creative.designAutoMixVoicePersona({ voicePersonaId: "natural-life@1" }),
         "content-engine:design-auto-mix-voice-persona"
-      ],
-      [
-        "data-xiaoxi-auto-mix-create",
-        () => api.creative.createAutoMixV2({
-          specVersion: "2",
-          assetIds: ["asset_one"],
-          title: "产品标题",
-          copyFramework: "真实素材，真实表达。"
-        }),
-        "content-engine:create-auto-mix-v2"
-      ],
-      [
-        "data-xiaoxi-auto-mix-prepare",
-        () => api.creative.prepareGuidedAutoMixV2({ assetIds: ["asset_one"] }),
-        "content-engine:prepare-guided-auto-mix-v2"
-      ],
-      [
-        "data-xiaoxi-auto-mix-script",
-        () => api.creative.generateGuidedAutoMixScriptV2({
-          sessionId: "guided_session_one",
-          title: "产品标题",
-          answers: {
-            companyName: "",
-            productName: "清洁机器人",
-            targetScene: "",
-            keyMessage: "",
-            extraNotes: ""
-          }
-        }),
-        "content-engine:generate-guided-auto-mix-script-v2"
-      ],
-      [
-        "data-xiaoxi-auto-mix-supplemental-image",
-        () => api.creative.createGuidedAutoMixSupplementalImageV2({
-          sessionId: "guided_session_one",
-          scriptRevision: 1,
-          draftHash: "a".repeat(64),
-          confirmPaidCalls: true
-        }),
-        "content-engine:create-guided-auto-mix-supplemental-image-v2"
-      ],
-      [
-        "data-xiaoxi-auto-mix-regenerate",
-        () => api.creative.regenerateAutoMixLayer({
-          projectId: "creative_project_one",
-          layer: "voice"
-        }),
-        "content-engine:regenerate-auto-mix-layer"
       ],
       [
         "data-xiaoxi-auto-mix-music-import",
