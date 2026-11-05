@@ -3,7 +3,7 @@
 // 本模块只负责排队、把每一步的进度记到磁盘、在重启后从断点继续。
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
@@ -142,7 +142,9 @@ function createViralPipeline(options) {
     stopIfClosing();
     if (!job.taskId) {
       const task = reference.create({ referenceAssetId: job.assetId, script: job.script.script, title: chars(job.script.title).slice(0, 24).join(''), emphasisPhrases: job.script.emphasisPhrases,
-        industry: job.industry, business: job.business, includeCover: false, packagingMode: 'auto', soundEffects: true, referenceSource: { platform: job.item.platform, title: chars(job.item.title).slice(0, 200).join(''), body: '', url: job.item.url, author: job.item.author || '', provenance: '扒爆款' } });
+        industry: job.industry, business: job.business, includeCover: false, packagingMode: 'auto', soundEffects: true,
+        // 客户自己写的稿没有爆款来源，不编一个出来。
+        referenceSource: job.item.platform === 'manual' ? undefined : { platform: job.item.platform, title: chars(job.item.title).slice(0, 200).join(''), body: '', url: job.item.url, author: job.item.author || '', provenance: '扒爆款' } });
       save(job, { taskId: task.id });
     }
     let task = await reference.get(job.taskId);
@@ -234,25 +236,29 @@ function createViralPipeline(options) {
     save(job); void pump(); return publicJob(job);
   }
 
-  // 客户从爆款文案库选了一条原创稿：跳过提取和改写，直接从配音开始（不扣写稿额度）。
+  // 客户从爆款文案库选了一条原创稿（可以自己改过），或者自己写了一篇（own，用户 2026-11-04）：
+  // 跳过提取和改写，直接从配音开始（不扣写稿额度）。
   function startFromScript({ libraryItem: entry, assetId, industry, business, maxCny }) {
-    const valid = entry && /^[A-Za-z0-9]{1,64}$/u.test(String(entry.id || '')) && ['douyin', 'xiaohongshu'].includes(entry.platform)
+    const own = entry?.own === true;
+    const valid = entry && (own || (/^[A-Za-z0-9]{1,64}$/u.test(String(entry.id || '')) && ['douyin', 'xiaohongshu'].includes(entry.platform)))
       && typeof entry.title === 'string' && entry.title.trim() && chars(entry.title).length <= 24 && typeof entry.script === 'string' && entry.script.trim() && chars(entry.script).length <= 500;
-    if (!valid) throw problem('viral_item_invalid', '请从文案库里选一条文案。');
+    if (!valid) throw problem('viral_item_invalid', own ? '标题要在 24 个字以内，正文要在 500 个字以内，都不能空着。' : '请从文案库里选一条文案。');
     const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
     if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先上传本人视频。');
     if (!person.voiceConsented) throw problem('viral_voice_consent', '请先确认视频和声音是你本人的。');
-    const itemId = `lib${entry.id}`.slice(0, 64);
-    // 同一个人念同一篇才算重复；客户重录了视频或换了稿子，是新的一条。正在做的不并行开第二条。
     const scriptText = clean(entry.script).slice(0, 500);
+    // 自己写的稿按正文区分：同一篇正在做就不再开第二条，换一篇就是新的一条。
+    const itemId = own ? `own${createHash('sha256').update(scriptText).digest('hex').slice(0, 24)}` : `lib${entry.id}`.slice(0, 64);
+    // 同一个人念同一篇才算重复；客户重录了视频或换了稿子，是新的一条。正在做的不并行开第二条。
     const duplicate = all().find((j) => j.item.id === itemId && holdsItem(j) && (['queued', 'running'].includes(j.status) || (j.assetId === assetId && j.script?.script === scriptText)));
     if (duplicate) return publicJob(duplicate);
-    const url = postUrl(entry.source?.url, entry.platform) ? String(entry.source.url) : '';
+    const url = !own && postUrl(entry.source?.url, entry.platform) ? String(entry.source.url) : '';
     const phrases = (Array.isArray(entry.emphasisPhrases) ? entry.emphasisPhrases : []).filter((p) => typeof p === 'string' && chars(p).length <= 12 && entry.script.includes(p)).slice(0, 5);
     const job = { id: `vp_${randomUUID()}`, mode: 'script', createdAt: new Date().toISOString(), status: 'queued', step: 'voice', progress: 0,
       maxCny: Number(maxCny) > 0 ? Math.min(Number(maxCny), 50) : DEFAULT_MAX_CNY, assetId, industry: clean(industry).slice(0, 80) || '清洁设备渠道商', business: clean(business).slice(0, 2000),
-      transcriptSource: 'library', script: { title: clean(entry.title).slice(0, 24), script: scriptText, emphasisPhrases: phrases, originality: null, structure: [] },
-      item: { id: itemId, platform: entry.platform, url, title: clean(entry.source?.title || entry.title).slice(0, 200), body: '', author: clean(entry.source?.author).slice(0, 120), publishedAt: null, likes: Number.isFinite(entry.source?.likes) ? entry.source.likes : null, media: null } };
+      transcriptSource: own ? 'own' : 'library', script: { title: clean(entry.title).slice(0, 24), script: scriptText, emphasisPhrases: phrases, originality: null, structure: [] },
+      item: own ? { id: itemId, platform: 'manual', url: '', title: clean(entry.title).slice(0, 200), body: '', author: '', publishedAt: null, likes: null, media: null }
+        : { id: itemId, platform: entry.platform, url, title: clean(entry.source?.title || entry.title).slice(0, 200), body: '', author: clean(entry.source?.author).slice(0, 120), publishedAt: null, likes: Number.isFinite(entry.source?.likes) ? entry.source.likes : null, media: null } };
     save(job); void pump(); return publicJob(job);
   }
   // 内部：已提取好的爆款原口播（发布文案库时汇总用）。

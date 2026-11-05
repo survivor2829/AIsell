@@ -123,3 +123,16 @@
 .ns-read span { color: #c91739; font-size: 14px; font-weight: 900; }
 .ns-read b { font-size: 19px; line-height: 1.8; font-weight: 800; color: #1f2937; }
 .ns-read small { color: #6b7280; font-size: 14px; font-weight: 700; }
+
+/* 改稿 / 自己写（2026-11-04）：出片前在这里定稿。 */
+.ns-edit { display: grid; gap: 14px; margin-bottom: 8px; }
+.ns-edit label { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 6px 12px; align-items: start; }
+.ns-edit label em { padding-top: 10px; font-size: 15px; font-style: normal; font-weight: 900; color: #374151; }
+.ns-edit input, .ns-edit textarea { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 1px solid #ead7da; border-radius: 12px; background: #fffdfd; font: inherit; font-size: 17px; line-height: 1.75; color: #172033; }
+.ns-edit input { font-weight: 900; }
+.ns-edit textarea { min-height: 160px; resize: vertical; }
+.ns-edit input:focus, .ns-edit textarea:focus { outline: 2px solid #fecaca; border-color: #e60000; }
+.ns-edit label small { grid-column: 2; justify-self: end; font-size: 13px; font-weight: 700; color: #6b7280; }
+.ns-edit label small.is-over { color: #c91739; }
+.ns-card.is-own { border-style: dashed; }
+.ns-card.is-own .ns-src { color: #c91739; font-weight: 900; }

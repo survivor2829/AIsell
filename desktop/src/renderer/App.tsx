@@ -434,6 +434,7 @@ const operationsChildren: NavItem[] = [
 ];
 
 // 账号运营（小丽）has three parts; 平台账号 lives in 成片中心 (user decisions of 2026-10-30 and 10-31).
+// Since 2026-11-04 the group opens on 小丽's own home page (like 精准获客), 手机矩阵 first.
 const accountOpsChildren: NavItem[] = [
   { key: "phone-matrix", label: "手机矩阵", icon: Smartphone },
   { key: "nurture", label: "养号", icon: Sprout },
@@ -448,7 +449,7 @@ const navGroupByRole: Record<GroupKey, NavGroup> = {
   tutorials: { key: "tutorials", persona: AGENT_ROLE_IDENTITIES.tutorials.name, label: AGENT_ROLE_IDENTITIES.tutorials.responsibility, icon: Share2, children: accountOpsChildren }
 };
 // The first page a group opens on when it has no home page of its own.
-const GROUP_LANDING: Partial<Record<GroupKey, ModuleKey>> = { operations: "product-detail", tutorials: "phone-matrix" };
+const GROUP_LANDING: Partial<Record<GroupKey, ModuleKey>> = { operations: "product-detail" };
 const navGroups = AGENT_ROLE_ORDER.filter((key): key is GroupKey => key in navGroupByRole).map((key) => navGroupByRole[key]);
 
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };

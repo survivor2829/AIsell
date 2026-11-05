@@ -20,6 +20,14 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
 const MAX_CNY = 8;
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
+// 「自己写一篇」（用户 2026-11-04）：不用文案库，下一步里自己写或粘贴；仿写出来的稿在下一步里也能直接改。
+const OWN = '__own__';
+const TITLE_MAX = 24, SCRIPT_MAX = 500;
+const count = (text: string) => [...text.trim()].length;
+// 口播大约每秒 4 个字，只用来提示时长。
+const speakSeconds = (text: string) => Math.max(1, Math.round(count(text) / 4));
+type Edit = { title: string; script: string };
+
 // 一张爆款卡片：先显示爆款标题和真实数据；仿写好之后，下面接着显示客户自己的原创稿。
 type Draft = ViralLibraryScript & { seconds: ScriptSeconds; problems: string[]; estimatedSeconds?: number };
 function ScriptCard({ item, draft, made, writing, selected, onSelect }: { item: ViralLibraryItem; draft?: Draft; made: number; writing: boolean; selected: boolean; onSelect: () => void }) {
@@ -44,6 +52,7 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
   const [selected, setSelected] = useState(''), [jobs, setJobs] = useState<ViralJob[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({}), [want, setWant] = useState<ScriptSeconds>(45);
   const [titles, setTitles] = useState<Record<string, string[]>>({});
+  const [edits, setEdits] = useState<Record<string, Edit>>({});
   const [business, setBusiness] = useState('');
   const [busy, setBusy] = useState(''), [error, setError] = useState('');
   const [cover, setCover] = useState('');
@@ -89,9 +98,14 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
 
   const ready = Boolean(person && person.available !== false && person.voiceSampleReady && person.seconds >= referencePolicy.limits.narrationMinSeconds);
   const consented = Boolean(person?.voiceConsented);
+  const own = selected === OWN;
   const pick = library?.items.find((i) => i.id === selected);
   const draft = pick ? drafts[pick.id] : undefined;
-  const current = currentJob<ViralJob>(jobs, lastJob.current, { newDraft: page === 'upload' && Boolean(draft) });
+  // 最终要念的稿：自己写的，或仿写稿加上客户的改动。
+  const final: Edit | undefined = own ? edits[OWN] || { title: '', script: '' } : draft && pick ? edits[pick.id] || { title: draft.title, script: draft.script } : undefined;
+  const finalOk = Boolean(final && count(final.title) > 0 && count(final.title) <= TITLE_MAX && count(final.script) > 0 && count(final.script) <= SCRIPT_MAX);
+  const edit = (fields: Partial<Edit>) => { if (final) setEdits((all) => ({ ...all, [own ? OWN : pick!.id]: { ...final, ...fields } })); };
+  const current = currentJob<ViralJob>(jobs, lastJob.current, { newDraft: page === 'upload' && Boolean(final) });
   const status = barText(current);
   useEffect(() => {
     setCover('');
@@ -125,6 +139,8 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
     const result = await unwrap(api().writeScript({ referenceAssetId: ready ? person!.id : '', industry: '清洁设备渠道商', business,
       libraryId: item.id, targetSeconds: seconds, generationIntentId: crypto.randomUUID(), ...(written.length ? { mode: 'structure' as const, avoidTitles: written.slice(-10) } : {}) }));
     setTitles((all) => ({ ...all, [item.id]: [...(all[item.id] || []), result.title].slice(-10) }));
+    // 换了一篇新稿，之前在旧稿上的改动作废。
+    setEdits((all) => { const { [item.id]: _old, ...rest } = all; return rest; });
     setDrafts((all) => ({ ...all, [item.id]: { id: item.id, platform: item.platform, title: result.title, script: result.script, emphasisPhrases: result.emphasisPhrases, seconds, problems: result.problems || [], estimatedSeconds: result.estimatedSeconds } }));
   });
   // 开发版：把不适合口播的爆款从云端文案库删掉（以后重新发布也不会再加回来），删完重新读取。
@@ -135,8 +151,12 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
     setSelected(''); setLibraryTry((n) => n + 1);
   });
   const go = () => act('go', async () => {
-    if (!draft || !person) return;
-    const { seconds: _seconds, problems: _problems, ...libraryItem } = draft;
+    if (!final || !finalOk || !person) return;
+    const words = { title: final.title.trim(), script: final.script.trim() };
+    let libraryItem: Parameters<ReferenceHumanApi['viralStartScript']>[0]['libraryItem'];
+    if (own) libraryItem = { own: true, ...words, emphasisPhrases: [] };
+    else if (draft) { const { seconds: _seconds, problems: _problems, estimatedSeconds: _estimated, ...item } = draft; libraryItem = { ...item, ...words }; }
+    else return;
     const job = await unwrap(api().viralStartScript({ libraryItem, assetId: person.id, maxCny: MAX_CNY }));
     lastJob.current = job.id;
   });
@@ -154,7 +174,12 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
           <div className="ns-flow" ref={flowBox}><FlowFunnel strands={flow.strands} stages={flow.stages} height={flowHeight} ambient showOutput outputLabel="爆款文案库" outputNote="选一条，按你要的时长仿写" emptyText=""
             caption="示意图：每条线是一条扒到的口播；搬运和重复的合成一束；经过「够爆」的闸门，只有真爆款的几束通过，汇进爆款文案库。鼠标移上去可以看每条线是什么。" /></div>
           <div className="ns-sec"><b>选一条爆款</b><span>按爆款热度排序 · 点「仿写」后只学它的结构和节奏，内容换成清洁设备</span></div>
-          <div className="ns-list">{items.map((item) => <ScriptCard key={item.id} item={item} draft={drafts[item.id]} made={made[item.id] || 0} writing={busy === `write:${item.id}`} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
+          <div className="ns-list"><button type="button" className={`ns-card is-own${own ? ' is-on' : ''}`} aria-pressed={own} onClick={() => setSelected(OWN)}>
+            <i className="ns-pick" aria-hidden="true" />
+            <span className="ns-src">不用文案库</span>
+            <span className="ns-title">自己写一篇</span>
+            <span className="ns-text">有现成的稿子就直接粘贴，也可以自己写；下一步上传本人视频就能出片。</span>
+          </button>{items.map((item) => <ScriptCard key={item.id} item={item} draft={drafts[item.id]} made={made[item.id] || 0} writing={busy === `write:${item.id}`} selected={item.id === selected} onSelect={() => setSelected(item.id)} />)}</div>
         </> : libraryError ? <div className="ns-wait is-pending">
           <b>爆款文案库没有读到</b>
           <span>软件里自带的文案库可能损坏了，请重新加载；还不行就重新安装软件。</span>
@@ -164,8 +189,8 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
         {stuckCount > 0 && onOpenPending && <button type="button" className="ns-pending" onClick={onOpenPending}>
           有 {stuckCount} 条以前的视频没做完，软件不会自己重做（免得重复花钱）<b>去看看 →</b></button>}
         <div className="ns-bar"><div className="ns-bar-in">
-          <div className="ns-sel">{draft ? `已仿写：${draft.title}` : pick ? pick.title : '选一条爆款'}
-            <small>{!pick ? '选好后挑时长，点「仿写」生成你的原创稿' : draft ? '想要另一篇就点「换一篇」：按这条爆款的结构写一篇全新的 · 满意就下一步出片'
+          <div className="ns-sel">{own ? '自己写一篇' : draft ? `已仿写：${draft.title}` : pick ? pick.title : '选一条爆款'}
+            <small>{own ? '下一步里写稿或粘贴，再上传本人视频' : !pick ? '选好后挑时长，点「仿写」生成你的原创稿，或者自己写一篇' : draft ? '想要另一篇就点「换一篇」 · 满意就下一步，下一步里还能改字'
               : '点「仿写」生成你的原创稿，只学它的结构和节奏'}</small></div>
           {pick && <div className="ns-dur" role="group" aria-label="稿子时长">{SCRIPT_SECONDS.map((s) => (
             <button type="button" key={s} className={s === want ? 'is-on' : ''} aria-pressed={s === want} disabled={!!busy}
@@ -173,14 +198,20 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
           {pick && <button type="button" className={`ns-go${draft ? ' is-quiet' : ''}`} data-xiaoxi-digital-human-action="reference-write-script" disabled={!!busy}
             onClick={() => void write()}>{busy.startsWith('write:') ? (draft ? '正在换…' : '正在仿写…') : draft ? '换一篇' : '仿写'}</button>}
           {DEVELOPMENT_EDITION && pick && !library?.preview && !library?.offline && <button type="button" className="ns-go is-quiet" disabled={!!busy} onClick={() => void removeFromLibrary()}>从文案库删除</button>}
-          {draft && <button type="button" className="ns-go" disabled={!!busy} onClick={() => setPage('upload')}>下一步</button>}
+          {(draft || own) && <button type="button" className="ns-go" disabled={!!busy} onClick={() => setPage('upload')}>下一步</button>}
         </div>{error && <p className="ns-error" role="alert">{error}</p>}</div>
       </> : <>
-        <button type="button" className="ns-back" disabled={working} onClick={() => setPage('pick')}>← 换一条爆款</button>
+        <button type="button" className="ns-back" disabled={working} onClick={() => setPage('pick')}>{own ? '← 返回' : '← 换一条爆款'}</button>
+        {final && <div className="ns-chosen ns-edit">
+          <span>{own ? '你的口播稿 · 自己写或粘贴' : '你的原创稿 · 可以直接改'}</span>
+          <label><em>标题</em><input value={final.title} disabled={working} placeholder="例如：夜班保洁排不开人怎么办" aria-label="口播稿标题" onChange={(event) => edit({ title: event.target.value })} />
+            <small className={count(final.title) > TITLE_MAX ? 'is-over' : ''}>{count(final.title)}/{TITLE_MAX}</small></label>
+          <label><em>正文</em><textarea value={final.script} disabled={working} rows={6} placeholder="把要念的话写在这里，500 字以内。" aria-label="口播稿正文" onChange={(event) => edit({ script: event.target.value })} />
+            <small className={count(final.script) > SCRIPT_MAX ? 'is-over' : ''}>{count(final.script)}/{SCRIPT_MAX} 字{count(final.script) > 0 && ` · 念出来约 ${speakSeconds(final.script)} 秒`}</small></label>
+        </div>}
         <h1 className="ns-h1 is-small">上传本人视频</h1>
         <p className="ns-lead">用手机竖着拍，正对镜头，照着下面这段读一遍，10 秒以上就行。读完上传，45 秒、60 秒的视频都能做。</p>
         <div className="ns-read"><span>照着读这段</span><b>{READ_ALOUD}</b><small>拍摄时：竖屏、正脸、身体少动、找个安静的地方。画面会自动接长到稿子的时长。</small></div>
-        {draft && <div className="ns-chosen"><span>你的原创稿 · 约 {draft.seconds} 秒</span><b>{draft.title}</b><p>{draft.script}</p></div>}
         <div className="ns-person">
           {person?.previewDataUrl ? <img src={person.previewDataUrl} alt="" /> : <i className="ns-ph" aria-hidden="true" />}
           <div className="ns-person-text">
@@ -200,9 +231,9 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
             {status.tone === 'failed' && current.retryable && <button type="button" className="ns-go is-quiet" data-xiaoxi-digital-human-action="reference-viral-pipeline-retry" disabled={!!busy} onClick={() => void retry()}>重试</button>}
             {!working && <button type="button" className="ns-go" onClick={() => { lastJob.current = ''; setPage('pick'); }}>再出一条</button>}
           </> : <>
-            <div className="ns-sel">{draft ? draft.title : '先选一条爆款并仿写'}
-              <small>{`${draft ? `约 ${draft.seconds} 秒 · ` : ''}本人出镜、本人声音 · 字幕、配乐、封面自动完成`}</small></div>
-            <button type="button" className="ns-go" data-xiaoxi-digital-human-action="reference-viral-pipeline-start-script" disabled={!draft || !ready || !consented || !!busy} onClick={() => void go()}>{busy === 'go' ? '正在开始…' : '一键出片'}</button>
+            <div className="ns-sel">{final?.title.trim() || (own ? '先写好口播稿' : '先选一条爆款并仿写')}
+              <small>{`${final && count(final.script) ? `约 ${speakSeconds(final.script)} 秒 · ` : ''}本人出镜、本人声音 · 字幕、配乐、封面自动完成`}</small></div>
+            <button type="button" className="ns-go" data-xiaoxi-digital-human-action="reference-viral-pipeline-start-script" disabled={!finalOk || !ready || !consented || !!busy} onClick={() => void go()}>{busy === 'go' ? '正在开始…' : '一键出片'}</button>
           </>}
         </div>{error && <p className="ns-error" role="alert">{error}</p>}</div>
       </>}

@@ -1,0 +1,25 @@
+/* 手机矩阵示例（2026-11-04）：左边真实操作录像，右边三步说明；窄了上下排。 */
+.pm-demo { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(220px, 1fr); gap: 22px; align-items: center; padding: 20px; border: 1px solid #ece9ef; border-radius: 22px; background: #fff; }
+.pm-demo-stage { position: relative; overflow: hidden; border-radius: 14px; background: #eef1f6; aspect-ratio: 1440 / 802; box-shadow: 0 10px 26px #1720331a; }
+.pm-demo-stage video, .pm-demo-stage img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pm-demo-tag { position: absolute; left: 10px; top: 10px; padding: 3px 10px; border-radius: 999px; background: #000000a0; color: #fff; font-size: 12px; font-weight: 800; pointer-events: none; }
+.pm-demo-copy strong { display: block; margin-bottom: 14px; color: #172033; font-size: 18px; font-weight: 900; line-height: 1.4; }
+.pm-demo-copy ol { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; counter-reset: pm-step; }
+.pm-demo-copy li { display: flex; align-items: flex-start; gap: 10px; }
+.pm-demo-copy li > svg { flex: 0 0 auto; box-sizing: content-box; padding: 8px; border-radius: 12px; background: #fff0f2; color: var(--brand-red, #e60012); }
+.pm-demo-copy li span { display: grid; gap: 2px; }
+.pm-demo-copy li b { color: #172033; font-size: 15px; }
+.pm-demo-copy li small { color: #5d6573; font-size: 13px; line-height: 1.5; }
+/* 小丽首页上的紧凑版：上下排，录像在上。 */
+.pm-demo.is-compact { grid-template-columns: 1fr; gap: 14px; padding: 14px; }
+.pm-demo.is-compact .pm-demo-copy strong { margin-bottom: 10px; font-size: 16px; }
+.pm-demo.is-compact .pm-demo-copy ol { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.pm-demo.is-compact .pm-demo-copy li { flex-direction: column; gap: 6px; }
+@media (max-width: 900px) {
+  .pm-demo { grid-template-columns: 1fr; }
+}
+/* 「看示例」弹窗 */
+.pm-demo-dialog { width: min(1100px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; padding: 16px; border-radius: 22px; background: #fff; box-shadow: 0 20px 50px rgba(0, 0, 0, .25); }
+.pm-demo-dialog header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.pm-demo-dialog header h2 { margin: 0; font-size: 18px; }
+.pm-demo-dialog .pm-demo { padding: 0; border: 0; }

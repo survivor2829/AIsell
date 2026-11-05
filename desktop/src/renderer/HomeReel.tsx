@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { isWindowShown, onWindowShownChange } from "./window-shown";
 
-// 首页示例成片轮播（用户 2026-11-02）：产品效果、线索混剪交替播放；用户决定本人数字人先不上首页。
-// 文件是首页专用的 15 秒 480p 无声短片；任何时候只解码一个视频，另一块手机只放下一条的封面图，低配电脑也跑得动。
+// 首页示例成片（用户 2026-11-02 / 11-04）：产品效果、线索混剪两只手机一样大。
+// 默认轮播：任何时候只解码一个视频，另一只手机放下一条的封面图，低配电脑也跑得动。
+// 点一下两条同时播（循环），再点一下回到轮播。文件是首页专用的 15 秒 480p 无声短片。
 const CLIPS = ["cc1-pro", "lead-mix"] as const;
 const clip = (name: string, kind: "mp4" | "jpg") => `./home-reel/${name}.${kind}`;
 // 不放视频时封面图也照样轮换。
@@ -12,13 +13,17 @@ const prefersStill = () => window.matchMedia?.("(prefers-reduced-motion: reduce)
 export function HomeReel() {
   const [index, setIndex] = useState(0);
   const [still, setStill] = useState(prefersStill);
+  const [broken, setBroken] = useState(false);
+  const [together, setTogether] = useState(false);
   // Only plays while it is really on screen: a hidden reel (small window, minimized app) must not keep decoding.
   const [seen, setSeen] = useState(false);
   const [foreground, setForeground] = useState(isWindowShown);
   const box = useRef<HTMLDivElement>(null);
-  const video = useRef<HTMLVideoElement>(null);
+  const videos = useRef<(HTMLVideoElement | null)[]>([]);
   const next = () => setIndex((current) => (current + 1) % CLIPS.length);
   const running = seen && foreground;
+  // 用户点了「同时播」就照样播，哪怕默认是静图（低配 / 减少动效）；视频坏了才只放图。
+  const playing = !broken && (together || !still);
 
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => setSeen(entry.isIntersecting));
@@ -27,23 +32,32 @@ export function HomeReel() {
     return () => { observer.disconnect(); offShown(); };
   }, []);
   useEffect(() => {
-    if (still) return;
-    if (running) void video.current?.play().catch(() => {});
-    else video.current?.pause();
-  }, [index, running, still]);
+    for (const video of videos.current) {
+      if (!video) continue;
+      if (running && playing) void video.play().catch(() => {});
+      else video.pause();
+    }
+  }, [index, running, playing, together]);
   useEffect(() => {
-    if (!still || !running) return;
+    if (playing || !running) return;
     const timer = window.setTimeout(next, STILL_MS);
     return () => window.clearTimeout(timer);
-  }, [index, running, still]);
+  }, [index, running, playing]);
 
-  const current = CLIPS[index], upcoming = CLIPS[(index + 1) % CLIPS.length];
-  return <div className="home-reel" aria-hidden="true" ref={box}>
-    <div className="home-phone is-small"><img key={upcoming} src={clip(upcoming, "jpg")} alt="" /></div>
-    <div className="home-phone">
-      {still ? <img key={current} src={clip(current, "jpg")} alt="" />
-        : <video ref={video} src={clip(current, "mp4")} poster={clip(current, "jpg")} muted playsInline preload="metadata" onEnded={next} onError={() => setStill(true)} />}
-      <span>示例成片</span>
-    </div>
+  const toggle = () => setTogether((on) => !on);
+  // 同时播：两只手机各放各的、循环。轮播：右边大手机放当前这条，左边放下一条的封面。
+  const slots = together ? CLIPS.map((name) => ({ name, live: true }))
+    : [{ name: CLIPS[(index + 1) % CLIPS.length], live: false }, { name: CLIPS[index], live: true }];
+  videos.current = [];
+  return <div className="home-reel" ref={box} role="button" tabIndex={0} aria-pressed={together}
+    aria-label={together ? "两条示例成片同时播放中，点一下回到轮播" : "示例成片轮播中，点一下两条同时播放"}
+    onClick={toggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}>
+    {slots.map(({ name, live }, slot) => <div key={slot} className={`home-phone${live ? "" : " is-waiting"}`}>
+      {live && playing ? <video key={`${name}-${together}`} ref={(element) => { videos.current.push(element); }} src={clip(name, "mp4")} poster={clip(name, "jpg")}
+        muted playsInline preload="metadata" loop={together} onEnded={together ? undefined : next} onError={() => setBroken(true)} />
+        : <img key={name} src={clip(name, "jpg")} alt="" />}
+      {live && <span>示例成片</span>}
+      {slot === 0 && <em className="home-reel-hint">{together ? "点一下回到轮播" : "点一下两条一起播"}</em>}
+    </div>)}
   </div>;
 }
