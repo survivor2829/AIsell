@@ -96,7 +96,10 @@ function harness(controller, { request } = {}) {
     ["rolled back", fakeController([], { updateFailure: "新版上次未能完成启动，已恢复上一版本。" }), "rolled_back"],
     ["not installable", fakeController([], { canInstall: false }), "unsupported"],
     ["full package pending", fakeController([{ stage: "error", error: "新版正在准备，请稍后重试。故障编号：full_upgrade_required" }]), "not_ready"],
-    ["license blocked", fakeController([{ stage: "blocked", nextVersion: "1.2.14" }]), "blocked"]
+    ["license blocked", fakeController([{ stage: "blocked", nextVersion: "1.2.14" }]), "blocked"],
+    // 程序文件被杀毒软件删除：重试永远补不回来，放行并提示重新安装，而不是无限重试
+    ["base file missing", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整（缺少：d3dcompiler_47.dll）。故障编号：component_base_file_missing" }]), "base_damaged"],
+    ["base file damaged", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整。故障编号：component_base_file_damaged" }]), "base_damaged"]
   ]) {
     const run = harness(controller);
     await run.gate.start();

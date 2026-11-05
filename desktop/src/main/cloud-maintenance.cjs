@@ -333,10 +333,13 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       retainFullDownload(manifest, true);
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
-      try { logger?.event?.("maintenance", "update.failed", { stage: view.stage }, {
+      const baseDamaged = ["component_base_file_missing", "component_base_file_damaged"].includes(error?.code);
+      try { logger?.event?.("maintenance", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
-      const message = ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
+      const message = baseDamaged
+        ? `软件程序文件不完整（${error.code === "component_base_file_missing" ? "缺少" : "损坏"}：${String(error.path || "").split("/").pop()}），无法自动更新，常见原因是被杀毒软件删除或隔离。请从官网 http://124.221.181.185 下载安装包重新安装（客户资料和设置会保留），安装后会自动更新到最新版。故障编号：${error.code}`
+        : ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
         : error?.code === "full_upgrade_required" ? "新版正在准备，请稍后重试。故障编号：full_upgrade_required"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
       notify({ stage: "error", error: message });
