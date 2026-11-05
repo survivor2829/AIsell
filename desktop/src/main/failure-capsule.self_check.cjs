@@ -334,8 +334,34 @@ async function productDetailJournalOpensItsOwnCapsule() {
   t.capsules.stop();
 }
 
+async function longTrailsNeverCostTheScreenshots() {
+  // Customer computer, 1.2.54 (2026-11-05): a touch failure's breadcrumbs and internal
+  // trail filled the size budget, and every field after them (evidence, environment,
+  // flight, attachments) was dropped: five capsules reached the server without one
+  // screenshot. The trails are what gets shortened; the evidence lists never are.
+  const t = fixture("trails");
+  t.setEnabled(false);
+  const now = Date.now();
+  flightStep(t.root, now - 2_000, 1, "failure.search-r022", { image: "png" });
+  const trace = t.logger.begin("active_touch", "workflow_contact_send", {}, { trace: true });
+  for (let index = 0; index < 60; index += 1) {
+    t.logger.event("active_touch", "search.observed", { rows: Array.from({ length: 40 }, (_, row) => ({ text: `row ${row} ${"字".repeat(30)}`, left: row, top: row })) },
+      { level: "info", traceId: trace.traceId, trace: true, dedupeKey: `r${index}` });
+  }
+  const id = t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_identity_unverified", traceId: trace.traceId, at: Date.now() });
+  const capsule = t.files().find(item => item.id === id);
+  assert.ok(capsule.breadcrumbs.length > 0, "the steps still travel");
+  assert.ok(Array.isArray(capsule.attachments) && capsule.attachments.length >= 2, "the screenshot and flight record stay listed: " + JSON.stringify(Object.keys(capsule)));
+  assert.equal(capsule.environment.displays[0].scale, 1.25, "the computer's display stays in the capsule");
+  t.setEnabled(true);
+  await t.capsules.flush();
+  assert.ok(t.posts.some(post => post.route === "/v1/capsules/attachments" && /.png$/.test(post.body.name)), "the screenshot is uploaded");
+  t.capsules.stop();
+}
+
 (async () => {
   await logFailureBecomesOneCapsuleWithItsSteps();
+  await longTrailsNeverCostTheScreenshots();
   await engineJournalAndTaskLogMergeIntoOneCapsule();
   await journalHistoryIsNotReplayedAndOffsetsPersist();
   await productDetailJournalOpensItsOwnCapsule();
