@@ -148,17 +148,25 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
     return state.daily.count < DAILY_LIMIT;
   }
 
+  // The failure and its evidence lists are kept whole; the trails (breadcrumbs, internal)
+  // take the room that is left, newest first. One size budget over the whole capsule
+  // dropped every field after the trails once they filled it: touch capsules from a
+  // customer computer (1.2.54, 2026-11-05) arrived without evidence, environment,
+  // flight or attachments, so not one screenshot was uploaded.
   function write(capsule) {
-    let json = withoutProfilePath(JSON.stringify(scrubInternalDetails(capsule, { maxBytes: MAX_CAPSULE_BYTES }).value), home);
-    // Steps that led here are the first thing to shorten; the failure itself never is.
-    for (const key of ["internal", "breadcrumbs"]) {
-      if (Buffer.byteLength(json) <= MAX_CAPSULE_BYTES) break;
-      const value = JSON.parse(json);
-      value[key] = (value[key] || []).slice(-10);
-      value.truncated = true;
-      json = JSON.stringify(value);
+    const scrub = (value, maxBytes) => JSON.parse(withoutProfilePath(JSON.stringify(scrubInternalDetails(value, { maxBytes }).value), home));
+    const { breadcrumbs, internal, ...core } = capsule;
+    const kept = scrub(core, MAX_CAPSULE_BYTES);
+    const room = Math.max(1024, MAX_CAPSULE_BYTES - Buffer.byteLength(JSON.stringify(kept)) - 256);
+    let value = kept;
+    for (const keep of [60, 20, 5, 0]) {
+      const trails = scrub({ breadcrumbs: (breadcrumbs || []).slice(-keep || Infinity), internal: (internal || []).slice(-keep || Infinity) }, room);
+      if (!keep) trails.breadcrumbs = trails.internal = [];
+      value = { ...kept, breadcrumbs: trails.breadcrumbs || [], internal: trails.internal || [],
+        ...((breadcrumbs || []).length > keep || (internal || []).length > keep ? { truncated: true } : {}) };
+      if (Buffer.byteLength(JSON.stringify(trails)) < room - 64) break;
     }
-    writeJsonAtomic(capsuleFile(capsule.id), JSON.parse(json));
+    writeJsonAtomic(capsuleFile(capsule.id), value);
   }
 
   function environmentCause(failure, at) {
