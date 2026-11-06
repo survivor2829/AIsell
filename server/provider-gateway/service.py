@@ -641,6 +641,13 @@ class ReceiptStore:
                  self._subject(subject), operation_id, fingerprint))
             self.db.commit()
 
+    def discard(self, subject, operation_id, fingerprint):
+        """Drop a pending receipt for a request that was refused before reaching the supplier."""
+        with self.lock:
+            self.db.execute("""DELETE FROM operation_receipts WHERE subject_hash=? AND operation_id=?
+                AND fingerprint=? AND state='pending'""", (self._subject(subject), operation_id, fingerprint))
+            self.db.commit()
+
     def lookup(self, subject, operation_id):
         now = time.time()
         with self.lock:
@@ -1320,19 +1327,34 @@ class Handler(BaseHTTPRequestHandler):
         feature = self.headers.get("X-Xiaoxi-Billing-Feature", "") or default_feature
         return job, Billing.clean_feature(feature)
 
-    def _credit_refused(self, subject, operation_id="", default_feature="other"):
-        """None when paid work may start; otherwise the 402 reply already sent.
-        A request whose operation already has a receipt is a replay, never a new purchase."""
+    def _credit_check(self, subject, default_feature="other"):
+        """None when paid work may start, else the 402 result to send. A billing fault never
+        blocks or breaks a request: it is let through (metered as usual) rather than refused."""
         if not subject:
             return None
-        if operation_id and OPERATION_ID.fullmatch(operation_id):
-            if self.server.receipts.lookup(subject, operation_id)[0] != "missing":
+        try:
+            job, feature = self._billing_tags(default_feature)
+            if self.server.billing.admit(subject, job, feature):
                 return None
-        job, feature = self._billing_tags(default_feature)
-        if self.server.billing.admit(subject, job, feature):
+            balance = self.server.billing.balance(subject)["balance"]
+        except Exception:
             return None
-        balance = self.server.billing.balance(subject)["balance"]
-        self._reply_json(402, {"error": "credit_exhausted", "message": CREDIT_MESSAGE, "balance": balance})
+        return self._json_result(402, {"error": "credit_exhausted", "message": CREDIT_MESSAGE, "balance": balance},
+                                 {"Content-Type": "application/json; charset=utf-8"})
+
+    def _credit_refused(self, subject, operation_id="", default_feature="other"):
+        """For routes that bind an operation id to one payload themselves (script writing, voice
+        clone): a known operation is a replay and is never refused. Returns True after replying 402."""
+        if subject and operation_id and OPERATION_ID.fullmatch(operation_id):
+            try:
+                if self.server.receipts.lookup(subject, operation_id)[0] != "missing":
+                    return None
+            except Exception:
+                return None
+        refused = self._credit_check(subject, default_feature)
+        if refused is None:
+            return None
+        self._send_result(refused)
         return True
 
     def _meter(self, subject, provider, method, path, body, result, default_feature="other", headers=None):
@@ -1456,7 +1478,8 @@ class Handler(BaseHTTPRequestHandler):
                 if billing_action.group(2) == "recharge":
                     amount, points = body.get("amountCny"), body.get("points")
                     balance = billing.recharge(subject, amount_cny=amount if amount is not None else None,
-                                               points=points if amount is None else None, note=body.get("note", ""))
+                                               points=points if amount is None else None, note=body.get("note", ""),
+                                               request_id=body.get("requestId", ""))
                     return self._reply_json(200, {"ok": True, "balance": balance})
                 if not isinstance(body.get("unblocked"), bool):
                     raise ValueError("unblocked")
@@ -1820,9 +1843,11 @@ class Handler(BaseHTTPRequestHandler):
 
         operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "").strip()
         billing_subject = self._session_subject()
-        if method == "POST" and not parsed.path.endswith(UNMETERED_POST):
-            if self._credit_refused(billing_subject, operation_id):
-                return None
+        gated = method == "POST" and not parsed.path.endswith(UNMETERED_POST)
+        if gated and not OPERATION_ID.fullmatch(operation_id):
+            refused = self._credit_check(billing_subject)
+            if refused is not None:
+                return self._send_result(refused)
         key = None
         entry = None
         owner = True
@@ -1836,7 +1861,8 @@ class Handler(BaseHTTPRequestHandler):
             # credentials and tenant identifiers out of the in-flight map and logs.
             parameters = {name.lower(): value for name, value in self.headers.items()
                           if name.lower() not in {'authorization', 'connection', 'content-length',
-                              'host', 'user-agent', 'x-request-id', 'x-xiaoxi-operation-id'}}
+                              'host', 'user-agent', 'x-request-id', 'x-xiaoxi-operation-id',
+                              'x-xiaoxi-billing-job', 'x-xiaoxi-billing-feature'}}
             key = hashlib.sha256(json.dumps([subject, operation_id, method, provider, target,
                 parameters, hashlib.sha256(body or b'').hexdigest()], sort_keys=True).encode()).hexdigest()
             state, entry, stored = self.server.begin_operation(subject, operation_id, key)
@@ -1845,6 +1871,14 @@ class Handler(BaseHTTPRequestHandler):
             if state in {"expired", "unrecoverable"} or state == "pending" and entry is None:
                 return self._reply_json(409, {"error": "operation_outcome_unknown"})
             owner = state == "new"
+            if owner and gated:
+                # Checked only for a genuinely new (subject, operation, payload): a replay of a known
+                # request is never refused, and a reused id with a new payload cannot skip the check.
+                refused = self._credit_check(subject)
+                if refused is not None:
+                    self.server.receipts.discard(subject, operation_id, key)
+                    self.server.finish_inflight(key, entry, refused)
+                    return self._send_result(refused)
             if not owner:
                 if not entry["event"].wait(self.config.upstream_timeout_seconds + 60):
                     return self._send_result(self._json_result(

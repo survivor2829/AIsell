@@ -153,6 +153,44 @@ class BillingTest(unittest.TestCase):
         self.assertEqual(192_000, body["balance"])
         self.assertEqual(200, self.chat()[0])
 
+    def test_a_rerun_of_a_failed_task_is_charged_when_it_succeeds(self):
+        self.chat(job="ce:rerun")
+        self.call(PREFIX + "/billing/settle", {"jobId": "ce:rerun", "outcome": "failed"}, self.token)
+        self.chat(job="ce:rerun")
+        self.call(PREFIX + "/billing/settle", {"jobId": "ce:rerun", "outcome": "succeeded"}, self.token)
+        self.assertEqual(20_000_000 - 104_000, self.balance(), "only the successful run is charged")
+
+    def test_a_reused_operation_id_with_new_content_cannot_skip_an_empty_balance(self):
+        account = self.account_id()
+        headers = {"X-Xiaoxi-Operation-Id": "op-1"}
+        route = PREFIX + "/deepseek/chat/completions"
+        self.assertEqual(200, self.call(route, {"model": "deepseek-v4-flash", "messages": []}, self.token, headers=headers)[0])
+        self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -20_000_000}, admin=ADMIN)
+        sent = len(self.sent)
+        status, replay = self.call(route, {"model": "deepseek-v4-flash", "messages": []}, self.token, headers=headers)
+        self.assertEqual(200, status, "the same request replays its receipt")
+        status, _ = self.call(route, {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "new"}]},
+                              self.token, headers=headers)
+        self.assertEqual(402, status)
+        self.assertEqual(sent, len(self.sent), "nothing reached the supplier")
+        status, _ = self.call(route, {"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "new"}]},
+                              self.token, headers=headers)
+        self.assertEqual(402, status, "a refused request leaves no receipt behind")
+
+    def test_a_repeated_recharge_request_is_applied_once(self):
+        account = self.account_id()
+        for _ in range(2):
+            self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"amountCny": 10, "requestId": "rc-1"}, admin=ADMIN)
+        self.assertEqual(20_400_000, self.balance())
+
+    def test_async_transcription_is_never_priced_as_video(self):
+        self.replies = [FakeResponse({"output": {"task_id": "asr-1", "task_status": "PENDING"}}),
+                        FakeResponse({"output": {"task_id": "asr-1", "task_status": "SUCCEEDED"}, "usage": {"duration": 60}})]
+        self.call(PREFIX + "/bailian/api/v1/services/audio/asr/transcription", {"model": "paraformer-v2"},
+                  self.token, headers={"X-DashScope-Async": "enable"})
+        self.call(PREFIX + "/bailian/api/v1/tasks/asr-1", token=self.token)
+        self.assertEqual(20_000_000, self.balance())
+
     def test_unblocked_accounts_are_metered_but_never_refused(self):
         account = self.account_id()
         self.call(f"/v1/accounts-admin/accounts/{account}/recharge", {"points": -20_000_000}, admin=ADMIN)

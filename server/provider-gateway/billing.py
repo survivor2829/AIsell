@@ -223,7 +223,10 @@ class Meter:
             payload = _json(raw)
         output = payload.get("output") if isinstance(payload.get("output"), dict) else {}
         model = request.get("model") or ""
-        if method == "POST" and output.get("task_id") and headers.get("X-DashScope-Async") == "enable":
+        # Only video models are priced by output seconds; other async jobs (e.g. paraformer
+        # transcription) must never fall back to a video rate.
+        if (method == "POST" and output.get("task_id") and headers.get("X-DashScope-Async") == "enable"
+                and re.search(r"wan|video|i2v|t2v|retalk", str(model), re.I)):
             parameters = request.get("parameters") if isinstance(request.get("parameters"), dict) else {}
             return [], {"task_id": str(output["task_id"])[:255], "model": str(model)[:80],
                         "detail": {"resolution": parameters.get("resolution"), "duration": parameters.get("duration")}}
@@ -308,6 +311,8 @@ class Billing:
                 CREATE TABLE IF NOT EXISTS billing_jobs (
                     subject TEXT NOT NULL, job_id TEXT NOT NULL, feature TEXT NOT NULL, state TEXT NOT NULL,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY(subject, job_id));
+                CREATE TABLE IF NOT EXISTS billing_requests (
+                    request_id TEXT PRIMARY KEY, created_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS billing_async (
                     provider TEXT NOT NULL, task_id TEXT NOT NULL, subject TEXT NOT NULL, job_id TEXT,
                     feature TEXT NOT NULL, model TEXT NOT NULL, detail_json TEXT NOT NULL,
@@ -379,7 +384,10 @@ class Billing:
                 if job is None:
                     self.db.execute("""INSERT INTO billing_jobs (subject, job_id, feature, state, created_at, updated_at)
                         VALUES (?,?,?,'open',?,?)""", (subject, job_id, feature, now, now))
-                elif job[0] in ("open", "expired"):
+                else:
+                    # New paid work on a settled job is a rerun of the same task (the content engine
+                    # requeues failed tasks under their old id): open it again so the rerun is held
+                    # and settled on its own. Charges already settled stay as they are.
                     self.db.execute("UPDATE billing_jobs SET state='open', updated_at=? WHERE subject=? AND job_id=?",
                                     (now, subject, job_id))
             self.db.commit()
@@ -463,7 +471,7 @@ class Billing:
         return {"jobId": job_id, "outcome": outcome, "charged": charged, "balance": balance}
 
     # -- operator -------------------------------------------------------------------------
-    def recharge(self, subject, amount_cny=None, points=None, note=""):
+    def recharge(self, subject, amount_cny=None, points=None, note="", request_id=""):
         if amount_cny is not None:
             if isinstance(amount_cny, bool) or not isinstance(amount_cny, (int, float)) or not 0 < amount_cny <= 1_000_000:
                 raise ValueError("amount")
@@ -473,8 +481,14 @@ class Billing:
                 raise ValueError("points")
             kind = "adjust"
         now = time.time()
+        request_id = self.clean_job(request_id)
         with self.lock:
             self._account(subject)
+            if request_id and not self.db.execute("INSERT OR IGNORE INTO billing_requests (request_id, created_at) VALUES (?,?)",
+                                                  (request_id, now)).rowcount:
+                # The same recharge click arrived twice (e.g. a retried admin request): apply it once.
+                self.db.commit()
+                return self.db.execute("SELECT balance FROM billing_accounts WHERE subject=?", (subject,)).fetchone()[0]
             self.db.execute("UPDATE billing_accounts SET balance=balance+? WHERE subject=?", (points, subject))
             self.db.execute("INSERT INTO billing_ledger (subject, kind, points, amount_cny, note, created_at) VALUES (?,?,?,?,?,?)",
                             (subject, kind, points, amount_cny, str(note or "")[:200], now))
