@@ -638,7 +638,7 @@ def run():
                 ).inner_text()
                 # User 2026-11-03: customers see the image limit and per-image billing,
                 # not supplier names or internal price checks.
-                if not all(text in confirmation_message for text in ["自动策划", "最多15张", "按实际生成的张数计费"]):
+                if not all(text in confirmation_message for text in ["自动策划", "最多13张", "按实际生成的张数计费"]):
                     raise AssertionError(
                         "AI refine preflight must disclose the image limit and per-image billing"
                     )
