@@ -720,3 +720,23 @@ def test_spec_only_copy_with_an_unnamed_part_still_delivers_every_screen():
     motor = next(s for s in plan["screens"] if s["title"] == "强劲电机")
     assert motor["visual_brief"]["product_presentation"] == "whole_product"
     assert not motor.get("component") and "电机特写" not in motor["prompt"]
+
+
+@pytest.mark.parametrize("normal_pages", [11, 14])
+def test_salvage_drops_the_flagged_person_scene_not_its_neighbour(monkeypatch, normal_pages):
+    from ai_refine_v2 import visual_merchandising as vm
+    monkeypatch.setattr(vm, "render", lambda plan: None)
+    flagged = lambda plan, *a, **k: [(s["idx"], "画面问题") for s in plan["screens"]
+                                     if s.get("role") == "lifestyle_demo" and s.get("title") == "人物"]
+    monkeypatch.setattr(vm, "plan_issues", flagged)
+
+    def validate(plan, *args, **kwargs):
+        if flagged(plan):
+            raise ValueError("人物页有问题")
+    monkeypatch.setattr(vm, "validate", validate)
+    pages = [{"kind": "display", "title": f"P{i}", "evidence": []} for i in range(normal_pages)]
+    pages.append({"kind": "display", "role": "lifestyle_demo", "title": "人物", "evidence": []})
+    data = {"cover": {"title": "封面"}, "pages": pages, "specifications": [{"evidence": "e"}]}
+    plan = vm.compile_with_salvage(data, "src", "t", None)
+    assert [d["title"] for d in plan["dropped_pages"]] == ["人物"]
+    assert all(s["title"] != "人物" for s in plan["screens"])

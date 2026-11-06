@@ -52,6 +52,17 @@ function narrationPlan(seconds) {
     maxCharacters: Math.floor((maximumSeconds - 1) * 3.5) };
 }
 
+// Live price pages (help.aliyun.com, apimart.ai) only feed the estimate shown before paying; the
+// gateway meters what is actually charged. When they cannot be read, the price bundled in
+// reference-human.json is used, but only while it is under half a year old.
+const BUNDLED_PRICE_MAX_AGE_MS = 180 * 86400000;
+function bundledPriceUsable(checkedOn, code) {
+  const age = Date.now() - Date.parse(checkedOn);
+  if (!(age >= 0 && age <= BUNDLED_PRICE_MAX_AGE_MS)) {
+    throw fail(code, '暂时读不到最新价格，软件内置价格也已超过半年未更新，请升级软件后再试；未提交付费制作。');
+  }
+}
+
 function createReferenceHumanService(options = {}) {
   const root = path.join(options.rootDir, 'reference');
   const provider = options.referenceProvider || createBailianVideoProvider(options);
@@ -63,6 +74,13 @@ function createReferenceHumanService(options = {}) {
   const DRAFT_KEYS = ['id', 'referenceAssetId', 'script', 'title', 'captionStyleId', 'musicTrackId', 'industry', 'business', 'voiceStyleId', 'emphasisPhrases', 'referenceSource', 'includeCover', 'coverStyle', 'remakeOfTaskId', 'packagingMode', 'soundEffects'];
   const assertOpen = () => { if (closed || held || global.__xiaoxiUpdateHold) throw fail('UPDATE_IN_PROGRESS', '软件正在更新，请稍后继续。'); };
   const admit = (fn) => async (...args) => { assertOpen(); admissions++; try { return await fn(...args); } finally { admissions--; } };
+  async function coverPricesOrBundled() {
+    let prices;
+    try { prices = await options.readCoverPrices?.(); } catch { prices = undefined; }
+    if (prices?.imageUsd > 0 && prices.fxCnyPerUsd > 0) return prices;
+    bundledPriceUsable(policy.coverPriceFallback.checkedOn, 'reference_cover_price_unavailable');
+    return { ...policy.coverPriceFallback, fallback: true };
+  }
   function read(id, kind = 'tasks') {
     if (!(kind === 'tasks' ? TASK_ID : ASSET_ID).test(String(id || ''))) throw fail('reference_not_found', '请重新选择人物或任务。');
     const item = JSON.parse(fs.readFileSync(contained(root, `${kind}/${id}.json`), 'utf8'));
@@ -303,21 +321,21 @@ function createReferenceHumanService(options = {}) {
     // The live price page is only for the estimate shown before paying; actual charges are metered
     // by the gateway. A slow or blocked network to help.aliyun.com must not stop the video, so a
     // failed read falls back to the price published in reference-human.json.
-    let prices;
+    let prices, priceFallback = false;
     try { prices = options.readReferencePrices ? await options.readReferencePrices() : policy.price; }
     catch { prices = undefined; }
     if (!(prices?.videoCnyPerSecond > 0) || !Number.isFinite(Date.parse(prices.checkedAt || prices.checkedOn))
       || Date.now() - Date.parse(prices.checkedAt || prices.checkedOn) > 30 * 86400000) {
-      prices = { ...policy.price, checkedAt: new Date().toISOString(), fallback: true };
+      // The bundled price keeps its real date (priceCheckedOn) and is trusted for half a year at most.
+      bundledPriceUsable(policy.price.checkedOn, 'reference_price_unavailable');
+      prices = { ...policy.price, checkedAt: new Date().toISOString() }; priceFallback = true;
     }
     if (!(prices.videoCnyPerSecond > 0) || !Number.isFinite(Date.parse(prices.checkedAt || prices.checkedOn)) || Date.now() - Date.parse(prices.checkedAt || prices.checkedOn) > 30 * 86400000) throw fail('reference_price_unavailable', '人物驱动报价已过期或无法核实，未提交付费制作。');
     const maximumSeconds = task.version >= EXTENDED_VERSION ? voiceSecondsFor(task.script) : task.version >= 5 ? task.referenceSeconds : task.version >= 4 ? 45 : task.referenceSeconds;
     const videoCny = round(maximumSeconds * prices.videoCnyPerSecond), voiceReserveCny = round(Math.max(1, [...task.script].length * prices.voiceReserveCnyPer10kChars / 10000));
     let coverReserveCny = 0, coverPrices;
     if (task.includeCover) {
-      try { coverPrices = await options.readCoverPrices?.(); } catch { coverPrices = undefined; }
-      // Same as above: a cover price that cannot be read uses the published fallback.
-      if (!(coverPrices?.imageUsd > 0 && coverPrices.fxCnyPerUsd > 0)) coverPrices = { ...policy.coverPriceFallback, fallback: true };
+      coverPrices = await coverPricesOrBundled();
       if (!(coverPrices?.imageUsd > 0 && coverPrices.fxCnyPerUsd > 0)) throw fail('reference_cover_price_unavailable', '封面报价暂不可用，请稍后重试；尚未提交付费制作。');
       coverReserveCny = round(coverPrices.imageUsd * coverPrices.fxCnyPerUsd);
     }
@@ -328,7 +346,8 @@ function createReferenceHumanService(options = {}) {
       maximumCny: round(videoCny + voiceReserveCny + prices.asrReserveCny + enrollmentReserveCny + coverReserveCny), videoCny, voiceReserveCny,
       asrReserveCny: prices.asrReserveCny, videoCnyPerSecond: prices.videoCnyPerSecond,
       estimate: costs.estimate(task.script, maximumSeconds, prices, coverPrices, task.voiceProvider === 'bailian', task.version >= 5 ? narrationPlan(maximumSeconds).minimumSeconds : undefined),
-      note: prices.note, source: prices.source, checkedAt: prices.checkedAt || prices.checkedOn };
+      note: prices.note, source: prices.source, checkedAt: prices.checkedAt || prices.checkedOn,
+      ...(priceFallback || coverPrices?.fallback ? { priceFallback: true, priceCheckedOn: policy.price.checkedOn } : {}) };
     task.quoteRevision = media.sha256(Buffer.from(JSON.stringify([task.script, task.referenceAssetId, task.captionStyleId, task.title, task.musicTrackId || '', task.voiceDelivery || null, task.emphasisPhrases || [], task.packagingMode || null, task.packagingPlan || null, task.soundEffects ?? null, task.quote])));
     save(task); return publicTask(task);
   }
@@ -591,8 +610,8 @@ function createReferenceHumanService(options = {}) {
     const status = current.cover_status || current.coverStatus;
     const design = coverDesign(task, input);
     if (['submitted', 'outcome_unknown'].includes(status) || status === 'planned' && JSON.stringify(task.coverRequest?.design) !== JSON.stringify(design)) throw fail('reference_cover_pending', '原封面仍需处理，请先查询原任务或继续原方案。');
-    const prices = await options.readCoverPrices();
-    if (!(prices.imageUsd > 0 && prices.fxCnyPerUsd > 0)) throw fail('reference_cover_price_unavailable', '未取得有效封面报价，未提交生成。');
+    const prices = await coverPricesOrBundled();
+    if (!(prices?.imageUsd > 0 && prices.fxCnyPerUsd > 0)) throw fail('reference_cover_price_unavailable', '未取得有效封面报价，未提交生成。');
     task.coverQuote = { revision: randomUUID(), design, maximumCny: round(prices.imageUsd * prices.fxCnyPerUsd),
       estimatedCny: (prices.estimatedImageUsd || prices.imageUsd) * prices.fxCnyPerUsd,
       checkedAt: new Date().toISOString(), note: '1张AI整图，按美元公开价与预算汇率折算；实际扣费以账单为准。',

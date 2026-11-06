@@ -109,7 +109,7 @@ RULES = """
 pages混排：benefit是真实购买理由；display是部件、工艺、性能等展示，不硬编成收益。
 整机封面和参数表由程序添加。中间pages不要再放hero或spec_table。
 按依据、购买重要性和视觉信息量排序；有多少值得展示的内容就做多少，不凑数量；
-整套最多15张，未入选内容只保留文字，不提交生图。
+整套最多13张，未入选内容只保留文字，不提交生图。
 
 画面跟内容走：部件可独占画面，容量可用立体示意，作业效果用场景，参数用醒目数字。
 不要求每屏放整机、小整机或同一正面照。不同页面用不同构图，不靠换背景伪装变化。
@@ -457,6 +457,16 @@ def render(plan):
         )
 
 
+def keep_person_scene(pages, slots):
+    """The person-at-work scene feeds the square e-commerce 场景图; never let the cap defer it.
+    Salvage maps screen numbers back to page positions, so it applies the same order first."""
+    pages = list(pages)
+    scene = next((i for i, page in enumerate(pages) if page.get("role") == "lifestyle_demo"), None)
+    if scene is not None and slots > 0 and scene >= slots:
+        pages.insert(slots - 1, pages.pop(scene))
+    return pages
+
+
 def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outline=False, delivery=False, repair_copy=False, check=True):
     from .refine_planner import PLANNING_VERSION
     plan = normalize_components(data) if buyer_outline else copy.deepcopy(data)
@@ -478,11 +488,7 @@ def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outl
     cover = plan.pop("cover")
     plan["screens"].append({**cover, "role": "hero", "selling_point_id": None})
     slots = PLANNED_SCREEN_LIMIT - 1 - int(bool(plan["specifications"]))
-    pages = plan.pop("pages")
-    # The person-at-work scene feeds the square e-commerce 场景图; never let the cap defer it.
-    scene = next((i for i, page in enumerate(pages) if page.get("role") == "lifestyle_demo"), None)
-    if scene is not None and slots > 0 and scene >= slots:
-        pages.insert(slots - 1, pages.pop(scene))
+    pages = keep_person_scene(plan.pop("pages"), slots)
     plan["deferred_pages"] = pages[slots:]  # Text only, never passed to the image queue.
     for page in pages[:slots]:
         if page.get("kind") not in ("benefit", "display") or page.get("role") in ("hero", "spec_table"):
@@ -636,6 +642,9 @@ def compile_with_salvage(data, source, title, category, **options):
     except ValueError as exc:
         original = exc
     remaining = copy.deepcopy(data)
+    # Same page order compile_plan uses, so screen idx - 2 names the right page below.
+    remaining["pages"] = keep_person_scene(remaining.get("pages") or [],
+                                           PLANNED_SCREEN_LIMIT - 1 - int(bool(remaining.get("specifications"))))
     dropped = []
     for _ in range(3):
         pages = remaining["pages"]

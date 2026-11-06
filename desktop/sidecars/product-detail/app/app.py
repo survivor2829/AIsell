@@ -5335,7 +5335,8 @@ def ai_refine_v2_square(task_id: str):
     if state.get("status") not in ("success", "partial_success"):
         return jsonify({"ok": False, "error": "详情图生成完成后才能制作 1:1 主图"}), 409
     task_dir = pipeline_runner._OUTPUT_BASE / task_id
-    return jsonify({"ok": True, "images": square_set.build(task_dir)})
+    uploads_root = STATIC_UPLOADS / str(state.get("user_id"))  # the task owner's own uploads
+    return jsonify({"ok": True, "images": square_set.build(task_dir, uploads_root=uploads_root)})
 
 
 @app.route("/api/ai-refine-v2/recover/<task_id>", methods=["POST"])

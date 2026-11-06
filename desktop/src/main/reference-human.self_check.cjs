@@ -396,6 +396,8 @@ async function main() {
     const offlineDraft = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
     const offlineQuote = await service.quote(offlineDraft.id);
     assert.ok(offlineQuote.quoteRevision, 'the quote falls back to the published prices');
+    assert.equal(service.get(offlineDraft.id).quote.priceFallback, true, 'a bundled-price quote says so');
+    assert.equal(service.get(offlineDraft.id).quote.priceCheckedOn, require('../shared/reference-human.json').price.checkedOn, 'and keeps the bundled price date');
     options.readReferencePrices = liveReference; options.readCoverPrices = liveCover;
     await service.prepare(shortDraft.id, shortQuote.quoteRevision, true, true);
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));

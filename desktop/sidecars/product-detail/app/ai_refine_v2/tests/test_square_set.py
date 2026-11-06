@@ -45,3 +45,19 @@ def test_missing_parameter_screen_is_reported_not_invented(tmp_path):
     task = _task(tmp_path, with_spec=False)
     spec = square_set.build(task)[-1]
     assert spec["url"] is None and "参数" in spec["reason"]
+
+
+def test_product_photo_outside_the_upload_folder_is_not_read(tmp_path):
+    task = _task(tmp_path)
+    uploads = tmp_path / "uploads" / "1"
+    uploads.mkdir(parents=True)
+    white = square_set.build(task, uploads_root=uploads)[0]
+    assert white["url"] is None and not (task / "square_white.jpg").exists()
+
+
+def test_bad_block_numbers_do_not_break_the_set(tmp_path):
+    task = _task(tmp_path)
+    summary = json.loads((task / "_summary.json").read_text(encoding="utf-8"))
+    summary["blocks"][0]["idx"] = "first"
+    (task / "_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    assert [i["kind"] for i in square_set.build(task)] == ["white", "main", "scene", "spec"]
