@@ -29,6 +29,33 @@ async function main() {
   assert.ok(audio.verifyTranscript(wan, '凌晨两点，一万平车间没一个人。', 15));
   for (const changed of ['凌晨两点，十万平车间没一个人。', '凌晨两点，一千平车间没一个人。', '凌晨两点，两万平车间没一个人。'])
     assert.throws(() => audio.verifyTranscript(wan, changed, 15), /不一致/);
+  // 真实失败任务：配音把「11月20、21、22」读成「11月20日、21、22」，品牌名同音字、四个→4个
+  const dateSpeech = [{ text: '那就一定是喜联汇 AI 获客软件，4个 AI 员工。', start_time: 0, end_time: 7000 },
+    { text: '11月20日、21、 22，现场实操。', start_time: 7200, end_time: 14500,
+      words: [{ text: '11', start_time: 7200, end_time: 7500 }, { text: '月', start_time: 7500, end_time: 7700 }, { text: '20', start_time: 7700, end_time: 8000 },
+        { text: '日', start_time: 8000, end_time: 8240 }, { text: '21', start_time: 8300, end_time: 8800 }, { text: '22', start_time: 8900, end_time: 9400 },
+        { text: '现场实操', start_time: 9500, end_time: 14500 }] }];
+  const dateScript = '那就一定是，玺联惠AI获客软件！四个AI员工，11月20、21、22，现场实操';
+  const dated = audio.verifyTranscript(dateSpeech, dateScript, 15);
+  assert.equal(dated.spokenDateSuffixes, 1);
+  assert.equal(dated.alignedUtterances[0].text, '那就一定是玺联惠 AI 获客软件，四个 AI 员工。');
+  // 包装要求对齐后的文字与确认文案逐字一致，所以放行的「日」不进字幕文字
+  const packagingKey = text => Array.from(text).filter(char => /[\p{L}\p{N}]/u.test(char)).join('').toLowerCase();
+  assert.equal(packagingKey(dated.alignedUtterances.map(item => item.text).join('')), packagingKey(dateScript));
+  assert.equal(packagingKey(dated.alignedUtterances.flatMap(item => item.words || []).map(word => word.text).join('')), packagingKey('11月20、21、22，现场实操'));
+  assert.equal(dated.alignedUtterances[1].words.length, 6);
+  // 文案本身有「日活」，配音多读了日期的「日」
+  assert.ok(audio.verifyTranscript([{ text: '11月20日日活翻倍。', start_time: 0, end_time: 14500 }], '11月20，日活翻倍。', 15));
+  // 不是「数字+月」日期的位置，多出的「号」照样拦下
+  assert.throws(() => audio.verifyTranscript([{ text: '包用3个月20号单起。', start_time: 0, end_time: 14500 }], '包用3个月20单起。', 15), /不一致/);
+  assert.throws(() => audio.verifyTranscript([{ text: '每月20号结算。', start_time: 0, end_time: 14500 }], '每月20结算。', 15), /不一致/);
+  // 识别把日期拆到两句时，相邻数字不会粘成一个数
+  assert.ok(audio.verifyTranscript([{ text: '11月20', start_time: 0, end_time: 7000 }, { text: '21、22现场。', start_time: 7100, end_time: 14500 }], '11月20、21、22现场。', 15));
+  assert.ok(audio.verifyTranscript(dateSpeech, dateScript.replace('20、', '20日、'), 15), 'Script that already says 日 still matches.');
+  // 日期数字本身变了、或「日」不跟在「X月」日期后，照样拦下
+  assert.throws(() => audio.verifyTranscript(dateSpeech, dateScript.replace('20、', '19、'), 15), /文案“.*”，配音读成“.*”/);
+  assert.throws(() => audio.verifyTranscript([{ text: '每天20日用量。', start_time: 0, end_time: 14500 }], '每天20用量。', 15), /不一致/);
+  assert.throws(() => audio.verifyTranscript([{ text: '漏了后面', end_time: 14500 }], '漏了后面完整的一句话。', 15), /文案“漏了后面完整的一句话。”，配音读成“漏了后面”/);
   const exact = '先看地面是否适合使用清洁机器人，再看现场需要清理什么污物，把现场情况发来一起安排合适的清洁方案。';
   assert.throws(() => audio.verifyTranscript([{ text: exact.replace('地面', '地棉'), start_time: 0, end_time: 14500 }], exact, 15), /不一致/, 'Even one substitution must stop before paid video; packaging needs exact anchors.');
   assert.throws(() => audio.verifyTranscript([{ text: 'CC1 Pro', start_time: 0, end_time: 14500 }], 'ＣＣ1 Pro', 15), /不一致/, 'Packaging does not normalize compatibility characters.');
