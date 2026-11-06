@@ -5320,6 +5320,24 @@ def ai_refine_v2_status(task_id: str):
     return jsonify(state)
 
 
+@app.route("/api/ai-refine-v2/square/<task_id>", methods=["GET"])
+@login_required
+def ai_refine_v2_square(task_id: str):
+    """1:1 电商主图 (白底/主图/场景/参数) made locally from the finished screens. Never calls AI."""
+    from ai_refine_v2 import pipeline_runner, square_set
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", task_id):
+        return jsonify({"error": "任务编号无效"}), 404
+    state = pipeline_runner.get_task_status(task_id)
+    if state is None:
+        return jsonify({"error": f"任务不存在或已过期: {task_id}"}), 404
+    if state.get("user_id") != current_user.id and not current_user.is_admin:
+        abort(403)
+    if state.get("status") not in ("success", "partial_success"):
+        return jsonify({"ok": False, "error": "详情图生成完成后才能制作 1:1 主图"}), 409
+    task_dir = pipeline_runner._OUTPUT_BASE / task_id
+    return jsonify({"ok": True, "images": square_set.build(task_dir)})
+
+
 @app.route("/api/ai-refine-v2/recover/<task_id>", methods=["POST"])
 @login_required
 def ai_refine_v2_recover(task_id: str):
