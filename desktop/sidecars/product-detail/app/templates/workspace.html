@@ -2029,9 +2029,8 @@
       const ready = block.success && block.image_url;
       if (options.recovery && !ready) return '';
       return `<article class="air-tile">
-        <span class="air-index">${index + 1}</span>
         ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" loading="lazy" />` : '<p class="air-missing">这张尚未完成</p>'}
-        <h4>${escapeHtml(title)}</h4>
+        <h4><span class="air-index">${index + 1}</span>${escapeHtml(title)}</h4>
         <div class="air-actions">
           ${ready ? `<button type="button" data-ai-single-download="${index}" class="btn btn-ghost">下载这张</button>` : ''}
           ${result.task_id && !options.recovery ? `<button type="button" data-ai-single-redo="${index}" class="btn btn-ghost">重做这张 · 计费</button>` : ''}
@@ -2061,7 +2060,7 @@
         .air-tile { position:relative; border:1px solid #e5e7eb; border-radius:12px; padding:10px; min-width:0; background:#fff; display:flex; flex-direction:column; gap:8px; }
         .air-tile img { display:block; width:100%; aspect-ratio:3/4; object-fit:cover; border-radius:8px; background:#f2f4f7; }
         .air-tile h4 { font-size:14px; line-height:1.4; margin:0; overflow-wrap:anywhere; color:#101828; }
-        .air-index { position:absolute; top:16px; left:16px; min-width:24px; height:24px; padding:0 6px; border-radius:999px; background:rgba(16,24,40,.72); color:#fff; font-size:12px; display:grid; place-items:center; }
+        .air-index { display:inline-grid; place-items:center; min-width:20px; height:20px; padding:0 5px; margin-right:6px; border-radius:999px; background:#ecfdf3; color:#067647; font-size:12px; vertical-align:1px; }
         .air-missing { aspect-ratio:3/4; display:grid; place-items:center; margin:0; color:#98a2b3; background:#f9fafb; border-radius:8px; }
         .air-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:auto; }
         .air-long { position:sticky; top:0; }
