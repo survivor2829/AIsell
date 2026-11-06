@@ -52,7 +52,7 @@ const checks = [
   "src/main/bigtype-cover.self_check.cjs",
   "src/main/viral-pipeline.self_check.cjs",
   "src/main/viral-library.self_check.cjs",
-  "src/main/digital-human-audio.self_check.cjs",
+  "src/main/digital-human-audio.self_check.cjs", "src/main/h264-encoder.self_check.cjs",
   "src/main/voice-clone.self_check.cjs",
   "src/main/keyword-acquisition.self_check.cjs",
   "src/main/social-accounts.self_check.cjs",
