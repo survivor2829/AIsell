@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const { normalize, reconcileNarrationSpelling } = require('./narration-transcript.cjs');
+const { normalize, reconcileNarrationSpelling, describeNarrationMismatch } = require('./narration-transcript.cjs');
 const { fail } = require('./digital-human-provider.cjs');
 const { videoEncoderArgs } = require('./product-video-media.cjs');
 
@@ -136,7 +136,9 @@ function verifyTranscript(utterances, script, durationSeconds) {
   // words, changed tones, numerical values and IDs still fail.
   const aligned = reconcileNarrationSpelling(utterances, script);
   if (!aligned) {
-    throw fail('digital_human_transcript_mismatch', '实际配音识别与确认文案不一致，可能漏句或读音需要核对。音轨与识别结果已保留，尚未生成视频。');
+    const where = describeNarrationMismatch(utterances, script);
+    const detail = where ? `：文案“${where.expected}”，配音读成“${where.heard}”。请改写这一处（如数字、日期、英文缩写）后新建口播；` : '，可能漏句或读音需要核对。';
+    throw fail('digital_human_transcript_mismatch', `实际配音识别与确认文案不一致${detail}音轨与识别结果已保留，尚未生成视频。`);
   }
   // Use the same millisecond fields consumed by asr_sentences/_aligned_units.
   // Reject malformed or overlapping sentences before a video is purchased.
