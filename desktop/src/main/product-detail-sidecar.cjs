@@ -178,6 +178,11 @@ function createProductDetailSidecar(options = {}) {
     ? options.getTrustedRuntimeEnvironment
     : () => ({});
   const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
+  // The first Chromium launch on a slow computer, or while antivirus scans
+  // it, can take well over 30 seconds (field case 2026-11-06 timed out at
+  // browser_check). That stage gets its own budget; later stages start a
+  // fresh normal budget once it passes.
+  const browserCheckTimeoutMs = Math.max(1, Number(options.browserCheckTimeoutMs) || 90_000);
   const stopTimeoutMs = Math.max(1, Number(options.stopTimeoutMs) || 3_000);
   const listeners = new Set();
 
@@ -485,7 +490,12 @@ function createProductDetailSidecar(options = {}) {
           if (!line.startsWith('{"event": "product_detail_startup"')) continue;
           try {
             const value = JSON.parse(line);
-            if (!run.ready && value.event === "product_detail_startup" && STARTUP_STAGES.has(value.stage)) setStage(value.stage);
+            if (!run.ready && value.event === "product_detail_startup" && STARTUP_STAGES.has(value.stage)) {
+              const leavingBrowserCheck = startupDiagnostics?.phase === "browser_check" && value.stage !== "browser_check";
+              setStage(value.stage);
+              if (value.stage === "browser_check") armStartupTimer(browserCheckTimeoutMs);
+              else if (leavingBrowserCheck) armStartupTimer(startupTimeoutMs);
+            }
           } catch { /* stderr is not the readiness protocol. */ }
         }
       });
@@ -524,9 +534,14 @@ function createProductDetailSidecar(options = {}) {
         settleStart(result);
       });
 
-      run.startupTimer = setTimeout(() => {
-        failStart("PRODUCT_DETAIL_START_TIMEOUT");
-      }, startupTimeoutMs);
+      function armStartupTimer(ms) {
+        clearTimeout(run.startupTimer);
+        if (run.ready || run.closed || run.settled) return;
+        run.startupTimer = setTimeout(() => {
+          failStart("PRODUCT_DETAIL_START_TIMEOUT");
+        }, ms);
+      }
+      armStartupTimer(startupTimeoutMs);
     });
   }
 
