@@ -300,13 +300,24 @@ function createReferenceHumanService(options = {}) {
       if (task.packagingPlan.blocked) { save(task); throw fail('reference_layout_crowded', '人物占据字幕区域，请换留白更多的素材；未开始付费制作。'); }
       if (!task.coverStyleExplicit) task.coverStyle = templates.templates.find(t => t.id === task.captionStyleId).coverStyle;
     }
-    const prices = options.readReferencePrices ? await options.readReferencePrices() : policy.price;
+    // The live price page is only for the estimate shown before paying; actual charges are metered
+    // by the gateway. A slow or blocked network to help.aliyun.com must not stop the video, so a
+    // failed read falls back to the price published in reference-human.json.
+    let prices;
+    try { prices = options.readReferencePrices ? await options.readReferencePrices() : policy.price; }
+    catch { prices = undefined; }
+    if (!(prices?.videoCnyPerSecond > 0) || !Number.isFinite(Date.parse(prices.checkedAt || prices.checkedOn))
+      || Date.now() - Date.parse(prices.checkedAt || prices.checkedOn) > 30 * 86400000) {
+      prices = { ...policy.price, checkedAt: new Date().toISOString(), fallback: true };
+    }
     if (!(prices.videoCnyPerSecond > 0) || !Number.isFinite(Date.parse(prices.checkedAt || prices.checkedOn)) || Date.now() - Date.parse(prices.checkedAt || prices.checkedOn) > 30 * 86400000) throw fail('reference_price_unavailable', '人物驱动报价已过期或无法核实，未提交付费制作。');
     const maximumSeconds = task.version >= EXTENDED_VERSION ? voiceSecondsFor(task.script) : task.version >= 5 ? task.referenceSeconds : task.version >= 4 ? 45 : task.referenceSeconds;
     const videoCny = round(maximumSeconds * prices.videoCnyPerSecond), voiceReserveCny = round(Math.max(1, [...task.script].length * prices.voiceReserveCnyPer10kChars / 10000));
     let coverReserveCny = 0, coverPrices;
     if (task.includeCover) {
-      coverPrices = await options.readCoverPrices?.();
+      try { coverPrices = await options.readCoverPrices?.(); } catch { coverPrices = undefined; }
+      // Same as above: a cover price that cannot be read uses the published fallback.
+      if (!(coverPrices?.imageUsd > 0 && coverPrices.fxCnyPerUsd > 0)) coverPrices = { ...policy.coverPriceFallback, fallback: true };
       if (!(coverPrices?.imageUsd > 0 && coverPrices.fxCnyPerUsd > 0)) throw fail('reference_cover_price_unavailable', '封面报价暂不可用，请稍后重试；尚未提交付费制作。');
       coverReserveCny = round(coverPrices.imageUsd * coverPrices.fxCnyPerUsd);
     }

@@ -206,8 +206,10 @@ function createViralPipeline(options) {
       notify('一键成片完成', job.script.title);
     } catch (error) {
       if (error.paused) return save(job, { status: 'queued', message: error.message });
-      save(job, { status: 'failed', error: error.message || '这一步没有完成，已有结果保留。', final: Boolean(error.final), taskStatus: error.taskStatus || null });
-      notify('一键成片停下了', `${chars(job.item.title).slice(0, 20).join('')}：${error.message || ''}`);
+      // Internal errors (e.g. a bare network code) are never shown raw to the customer.
+      const message = /[一-鿿]/u.test(error.message || '') ? error.message : '这一步没有完成，请点「重试」；已有结果已保留。';
+      save(job, { status: 'failed', error: message, final: Boolean(error.final), taskStatus: error.taskStatus || null });
+      notify('一键成片停下了', `${chars(job.item.title).slice(0, 20).join('')}：${message}`);
     }
   }
 
