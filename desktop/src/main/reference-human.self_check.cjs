@@ -389,6 +389,16 @@ async function main() {
     const longScript = '口播'.repeat(80);
     const longDraft = service.create({ referenceAssetId: automaticAsset.id, script: longScript });
     assert.equal((await service.quote(longDraft.id)).quote.maximumSeconds, 42, 'a 160-character script may run 42 seconds, longer than the 21.6-second recording');
+    // A price page that times out (slow network to help.aliyun.com or apimart.ai) must not stop the video.
+    const liveReference = options.readReferencePrices, liveCover = options.readCoverPrices;
+    options.readReferencePrices = async () => { throw new Error('price_timeout'); };
+    options.readCoverPrices = async () => { throw new Error('price_timeout'); };
+    const offlineDraft = service.create({ referenceAssetId: automaticAsset.id, script: '测试口播。' });
+    const offlineQuote = await service.quote(offlineDraft.id);
+    assert.ok(offlineQuote.quoteRevision, 'the quote falls back to the published prices');
+    assert.equal(service.get(offlineDraft.id).quote.priceFallback, true, 'a bundled-price quote says so');
+    assert.equal(service.get(offlineDraft.id).quote.priceCheckedOn, require('../shared/reference-human.json').price.checkedOn, 'and keeps the bundled price date');
+    options.readReferencePrices = liveReference; options.readCoverPrices = liveCover;
     await service.prepare(shortDraft.id, shortQuote.quoteRevision, true, true);
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(service.get(shortDraft.id).status, 'completed');

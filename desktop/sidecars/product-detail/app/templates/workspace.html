@@ -662,7 +662,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计最多15张，超额候选不生图，可下载单张和长图。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计8至13张，另附4张1:1电商主图（白底、主图、场景、参数，由已生成的图排版，不另收费），可下载单张和长图。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -677,7 +677,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计最多15张，超额候选不生图，可下载单张和长图。</p>
+      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计8至13张，另附4张1:1电商主图（白底、主图、场景、参数，由已生成的图排版，不另收费），可下载单张和长图。</p>
       <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
@@ -1956,6 +1956,42 @@
     }
   }
 
+  // 1:1 电商主图：后台用已生成的分屏和抠好的产品图排版，不调用 AI，不收费。
+  async function loadAiSquareImages(taskId, results) {
+    const grid = results.querySelector('[data-ai-squares]');
+    const all = results.querySelector('[data-ai-square-all]');
+    if (!grid) return;
+    let images = [];
+    try {
+      const response = await fetch(`/api/ai-refine-v2/square/${encodeURIComponent(taskId)}`, { credentials: 'include' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) throw new Error(data.error || `(${response.status})`);
+      images = data.images || [];
+    } catch (error) {
+      grid.querySelectorAll('.air-square-frame').forEach(frame => { frame.textContent = '1:1 主图暂时做不出来：' + error.message; });
+      return;
+    }
+    if (!results.contains(grid)) return;
+    grid.innerHTML = images.map((image, index) => `<article class="air-square">
+      <div class="air-square-frame">${image.url ? `<img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.label)}" />` : escapeHtml(image.reason || '暂无')}</div>
+      <div class="air-square-foot"><b>${escapeHtml(image.label)}</b>${image.url ? `<button type="button" class="btn btn-ghost" data-ai-square-download="${index}">下载</button>` : ''}</div>
+    </article>`).join('');
+    const name = image => `${currentProductType}_电商主图_${image.label}.jpg`;
+    grid.querySelectorAll('[data-ai-square-download]').forEach(button => {
+      button.addEventListener('click', () => {
+        const image = images[Number(button.dataset.aiSquareDownload)];
+        downloadAiRefineResult(image.url, button, name(image));
+      });
+    });
+    const ready = images.filter(image => image.url);
+    if (all && ready.length) {
+      all.disabled = false;
+      all.addEventListener('click', async () => {
+        for (const image of ready) await downloadAiRefineResult(image.url, all, name(image));
+      });
+    }
+  }
+
   function renderAiRefineResult(result, options = {}) {
     const results = options.target || document.getElementById('ai_img_results');
     const imageUrl = options.recovery ? '' : (result.image_url || result.assembled_url);
@@ -1992,30 +2028,75 @@
       const title = screens[index]?.title || `第 ${index + 1} 张`;
       const ready = block.success && block.image_url;
       if (options.recovery && !ready) return '';
-      return `<article style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;min-width:0;background:#fff;">
-        ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" style="display:block;width:100%;aspect-ratio:3/4;object-fit:contain;" />` : '<p style="min-height:120px;display:grid;place-items:center;">这张尚未完成</p>'}
-        <h4 style="font-size:17px;margin:12px 0 8px;overflow-wrap:anywhere;">${escapeHtml(title)}</h4>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      return `<article class="air-tile">
+        ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" loading="lazy" />` : '<p class="air-missing">这张尚未完成</p>'}
+        <h4><span class="air-index">${index + 1}</span>${escapeHtml(title)}</h4>
+        <div class="air-actions">
           ${ready ? `<button type="button" data-ai-single-download="${index}" class="btn btn-ghost">下载这张</button>` : ''}
           ${result.task_id && !options.recovery ? `<button type="button" data-ai-single-redo="${index}" class="btn btn-ghost">重做这张 · 计费</button>` : ''}
         </div></article>`;
     }).join('');
 
+    const squaresWanted = Boolean(result.task_id && !options.recovery && (result.status === 'success' || result.status === 'partial_success' || options.restored));
     results.innerHTML = `
-      <div style="text-align:center; margin-bottom:16px;">
-        <span style="font-size:14px; color:#555; margin-right:12px;">${escapeHtml(info)}</span>
-        ${downloadUrl ? `<button type="button" data-ai-refine-download
-          style="padding:6px 16px; background:#10b981; color:#fff;
-          border:none; border-radius:6px; font-size:13px; cursor:pointer;">
-          下载完整长图
-        </button>` : ''}
-        ${partialHint}
-      </div>
-      ${tiles ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr));gap:14px;width:100%;max-width:960px;margin:0 auto 24px;">${tiles}</div>` : ''}
-      ${displayUrl ? `<div style="position:relative; width:375px; max-width:100%; margin:0 auto; border-radius:8px; overflow:hidden;
-        box-shadow:0 4px 18px rgba(0,0,0,0.12);">
-        <img src="${escapeHtml(displayUrl)}" alt="AI 精修详情长图预览" style="width:100%; display:block;" />
-      </div>` : ''}`;
+      <style>
+        .air-wrap { width:100%; max-width:1320px; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+        .air-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 16px; padding:14px 18px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px; }
+        .air-head .air-info { font-size:14px; color:#475467; }
+        .air-head .air-buttons { display:flex; gap:8px; flex-wrap:wrap; }
+        .air-primary { padding:8px 16px; background:#10b981; color:#fff; border:none; border-radius:8px; font-size:13px; cursor:pointer; }
+        .air-primary:disabled { opacity:.6; cursor:default; }
+        .air-section { display:flex; flex-direction:column; gap:12px; }
+        .air-section-title { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:0; font-size:17px; color:#101828; }
+        .air-section-title small { font-size:13px; font-weight:400; color:#667085; }
+        .air-squares { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:14px; }
+        .air-square { position:relative; border:1px solid #e5e7eb; border-radius:12px; background:#fff; padding:10px; display:flex; flex-direction:column; gap:8px; min-width:0; }
+        .air-square-frame { aspect-ratio:1/1; border-radius:8px; overflow:hidden; background:#f2f4f7; display:grid; place-items:center; color:#98a2b3; font-size:13px; text-align:center; }
+        .air-square-frame img { width:100%; height:100%; object-fit:cover; display:block; }
+        .air-square-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .air-square-foot b { font-size:14px; color:#101828; }
+        .air-body { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:20px; align-items:start; }
+        .air-tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:14px; }
+        .air-tile { position:relative; border:1px solid #e5e7eb; border-radius:12px; padding:10px; min-width:0; background:#fff; display:flex; flex-direction:column; gap:8px; }
+        .air-tile img { display:block; width:100%; aspect-ratio:3/4; object-fit:cover; border-radius:8px; background:#f2f4f7; }
+        .air-tile h4 { font-size:14px; line-height:1.4; margin:0; overflow-wrap:anywhere; color:#101828; }
+        .air-index { display:inline-grid; place-items:center; min-width:20px; height:20px; padding:0 5px; margin-right:6px; border-radius:999px; background:#ecfdf3; color:#067647; font-size:12px; vertical-align:1px; }
+        .air-missing { aspect-ratio:3/4; display:grid; place-items:center; margin:0; color:#98a2b3; background:#f9fafb; border-radius:8px; }
+        .air-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:auto; }
+        .air-long { position:sticky; top:0; }
+        .air-long-frame { max-height:72vh; overflow-y:auto; border-radius:10px; box-shadow:0 4px 18px rgba(0,0,0,0.12); background:#fff; }
+        .air-long-frame img { width:100%; display:block; }
+        @media (max-width: 1100px) { .air-body { grid-template-columns:minmax(0,1fr); } .air-long { position:static; } .air-long-frame { max-height:none; max-width:375px; margin:0 auto; } }
+        @media (max-width: 760px) { .air-squares { grid-template-columns:repeat(2, minmax(0,1fr)); } }
+      </style>
+      <div class="air-wrap">
+        <div class="air-head">
+          <span class="air-info">${escapeHtml(info)}</span>
+          <span class="air-buttons">
+            ${squaresWanted ? '<button type="button" class="air-primary" data-ai-square-all disabled>下载全部 1:1 主图</button>' : ''}
+            ${downloadUrl ? '<button type="button" class="air-primary" data-ai-refine-download>下载完整长图</button>' : ''}
+          </span>
+          ${partialHint}
+        </div>
+        ${squaresWanted ? `<section class="air-section">
+          <h3 class="air-section-title">电商主图 · 1:1 <small>直接上传电商平台用；由已生成的图排版而成，不另收费</small></h3>
+          <div class="air-squares" data-ai-squares>
+            ${['白底图', '主图', '场景图', '参数图'].map(label => `<article class="air-square"><div class="air-square-frame">正在制作${label}…</div>
+              <div class="air-square-foot"><b>${label}</b></div></article>`).join('')}
+          </div>
+        </section>` : ''}
+        <div class="air-body">
+          <section class="air-section">
+            <h3 class="air-section-title">详情页分屏 <small>共 ${blocks.length} 屏，可单张下载或重做</small></h3>
+            ${tiles ? `<div class="air-tiles">${tiles}</div>` : ''}
+          </section>
+          ${displayUrl ? `<aside class="air-section air-long">
+            <h3 class="air-section-title">完整长图 <small>可滚动预览</small></h3>
+            <div class="air-long-frame"><img src="${escapeHtml(displayUrl)}" alt="AI 精修详情长图预览" /></div>
+          </aside>` : ''}
+        </div>
+      </div>`;
+    if (squaresWanted) loadAiSquareImages(result.task_id, results);
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
       downloadAiRefineResult(downloadUrl, event.currentTarget);
     });
@@ -2308,7 +2389,7 @@
       }
       inputMeta = buildAiRefineTaskMeta(productText, productTitle);
       const confirmed = await confirmInWorkspace(
-        `根据产品图片和资料自动策划并生成详情图，合计最多15张，按实际生成的张数计费。\n\n` +
+        `根据产品图片和资料自动策划并生成详情图，合计最多13张，按实际生成的张数计费。\n\n` +
         `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
         { title: '确认 AI 精修任务', confirmLabel: '开始付费生成' },
       );

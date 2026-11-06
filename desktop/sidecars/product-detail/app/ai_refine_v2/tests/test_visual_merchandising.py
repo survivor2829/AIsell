@@ -93,13 +93,23 @@ def test_four_categories_remain_isolated(category):
         compile_plan(data, source, "测试产品", other)
 
 
-def test_more_than_fifteen_text_pages_are_selected_without_image_calls():
+def test_more_than_thirteen_text_pages_are_selected_without_image_calls():
     source, data = fixture()
     data["pages"] = [{**copy.deepcopy(data["pages"][0]), "title": f"部件展示{i}"} for i in range(20)]
     plan = compile_plan(data, source, "测试产品", "设备类")
-    assert plan["screen_count"] == 15
-    assert len(plan["deferred_pages"]) == 7
+    assert plan["screen_count"] == 13
+    assert len(plan["deferred_pages"]) == 9
     assert all("prompt" not in p for p in plan["deferred_pages"])
+
+
+def test_person_scene_is_kept_inside_the_screen_cap():
+    source, data = fixture()
+    pages = [{**copy.deepcopy(data["pages"][0]), "title": f"部件展示{i}"} for i in range(20)]
+    pages[-1]["role"] = "lifestyle_demo"
+    data["pages"] = pages
+    plan = compile_plan(data, source, "测试产品", "设备类")
+    assert any(s["role"] == "lifestyle_demo" for s in plan["screens"])
+    assert all(p.get("role") != "lifestyle_demo" for p in plan["deferred_pages"])
 
 
 @pytest.mark.parametrize("fault", ["unit", "component", "body", "mapping"])
@@ -710,3 +720,23 @@ def test_spec_only_copy_with_an_unnamed_part_still_delivers_every_screen():
     motor = next(s for s in plan["screens"] if s["title"] == "强劲电机")
     assert motor["visual_brief"]["product_presentation"] == "whole_product"
     assert not motor.get("component") and "电机特写" not in motor["prompt"]
+
+
+@pytest.mark.parametrize("normal_pages", [11, 14])
+def test_salvage_drops_the_flagged_person_scene_not_its_neighbour(monkeypatch, normal_pages):
+    from ai_refine_v2 import visual_merchandising as vm
+    monkeypatch.setattr(vm, "render", lambda plan: None)
+    flagged = lambda plan, *a, **k: [(s["idx"], "画面问题") for s in plan["screens"]
+                                     if s.get("role") == "lifestyle_demo" and s.get("title") == "人物"]
+    monkeypatch.setattr(vm, "plan_issues", flagged)
+
+    def validate(plan, *args, **kwargs):
+        if flagged(plan):
+            raise ValueError("人物页有问题")
+    monkeypatch.setattr(vm, "validate", validate)
+    pages = [{"kind": "display", "title": f"P{i}", "evidence": []} for i in range(normal_pages)]
+    pages.append({"kind": "display", "role": "lifestyle_demo", "title": "人物", "evidence": []})
+    data = {"cover": {"title": "封面"}, "pages": pages, "specifications": [{"evidence": "e"}]}
+    plan = vm.compile_with_salvage(data, "src", "t", None)
+    assert [d["title"] for d in plan["dropped_pages"]] == ["人物"]
+    assert all(s["title"] != "人物" for s in plan["screens"])

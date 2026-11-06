@@ -194,7 +194,7 @@ function createViralPipeline(options) {
   }
 
   async function runJob(job) {
-    save(job, { status: 'running', error: '', message: '' });
+    save(job, { status: 'running', error: '', message: '', internalError: '' });
     try {
       if (!job.transcript && !job.script) { save(job, { step: 'extract' }); await extract(job); }
       // 内部做文案库：只提取原口播，客户点「仿写」时才在云端改写；不配音、不生成数字人。
@@ -206,8 +206,13 @@ function createViralPipeline(options) {
       notify('一键成片完成', job.script.title);
     } catch (error) {
       if (error.paused) return save(job, { status: 'queued', message: error.message });
-      save(job, { status: 'failed', error: error.message || '这一步没有完成，已有结果保留。', final: Boolean(error.final), taskStatus: error.taskStatus || null });
-      notify('一键成片停下了', `${chars(job.item.title).slice(0, 20).join('')}：${error.message || ''}`);
+      // Internal errors (e.g. a bare network code) are never shown raw to the customer.
+      // The raw cause stays on the job (internalError) for diagnosis.
+      const message = /[一-鿿]/u.test(error.message || '') ? error.message
+        : error.final ? '这一步没有完成，已有结果已保留；请联系客服并导出日志。' : '这一步没有完成，请点「重试」；已有结果已保留。';
+      save(job, { status: 'failed', error: message, final: Boolean(error.final), taskStatus: error.taskStatus || null,
+        internalError: String(error.code || error.message || '').slice(0, 200) });
+      notify('一键成片停下了', `${chars(job.item.title).slice(0, 20).join('')}：${message}`);
     }
   }
 

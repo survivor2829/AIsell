@@ -27,8 +27,13 @@ AUTO_RULES = """
 好懂的容量、尺寸、续航直接突出，难懂术语才用一句话解释。不要强制每屏三段式或问句。
 body默认空，有需要仅一句40字以内。标题让客户一眼知道用途，technical_support保留关键参数。
 pages按购买重要性混排benefit和display；展示页可以解释部件、适用条件或性能，不必虚构独立收益。
-正常资料整套8至15屏，包含cover及自动添加的参数表；极少资料按screen_budget例外。
+正常资料整套8至13屏，包含cover及自动添加的参数表；极少资料按screen_budget例外。
 不足时从资料中补遗漏的重要作用、部件、操作和条件，不能重复标题换背景凑数。
+由人使用或在现场管理的设备、工具、耗材，pages中必须有一页role=lifestyle_demo的作业场景：
+一位成年工作人员自然使用产品或在旁配合作业，产品和作业效果仍是视觉重点，人物不遮挡作用区域；
+把人、产品、作用区域的关系写进visual_brief的scene、product_action和layout。
+自主作业设备不画成人推着走，可让人员在旁管理或巡视；不添加原图没有的推杆、座椅或配套设备。
+这一页仍要讲资料中有依据的用途，不为放人物编造新卖点；纯图解类产品可不放人物。
 cover为封面，pages不包含hero或spec_table，specifications集中收录其他有用参数。
 
 为每页选择最能说明该内容的主视觉：作业场景、部件特写、局部结构示意、整机或参数信息图。
@@ -104,7 +109,7 @@ RULES = """
 pages混排：benefit是真实购买理由；display是部件、工艺、性能等展示，不硬编成收益。
 整机封面和参数表由程序添加。中间pages不要再放hero或spec_table。
 按依据、购买重要性和视觉信息量排序；有多少值得展示的内容就做多少，不凑数量；
-整套最多15张，未入选内容只保留文字，不提交生图。
+整套最多13张，未入选内容只保留文字，不提交生图。
 
 画面跟内容走：部件可独占画面，容量可用立体示意，作业效果用场景，参数用醒目数字。
 不要求每屏放整机、小整机或同一正面照。不同页面用不同构图，不靠换背景伪装变化。
@@ -133,7 +138,7 @@ BUYER_RULES = """
 多个参数可以支撑同一个购买理由；一个理由也可以用不同页面展开作用、部件、范围和操作。
 不要求8个独立买点，也不能只换人群或场所冒充不同收益。优先操作劳动、清洁或作业结果、
 使用便利等实际帮助，不能编造管理排班或采购流程作为收益。
-正常资料整套8至15屏，包括封面、部件、场景、性能支撑和参数表。
+正常资料整套8至13屏，包括封面、部件、场景、性能支撑和参数表。
 资料特别少时遵循screen_budget的例外；不能把丰富材料说成稀少以缩减画面。
 先补有依据的展示维度和遗漏内容，再去掉实质重复；不复制页面凑数。
 pages混排benefit与display。展示页不虚构买点，不能整套只把参数改写为广告。
@@ -155,11 +160,16 @@ evidence和technical_support逐条引用原文，保留限定词、单位、范�
 """
 
 
+# New plans hold at most 13 screens (user 2026-11-06: 8–13). Older plans of up to 15 screens
+# remain valid for resume and single-screen redo, so acceptance limits elsewhere stay at 15.
+PLANNED_SCREEN_LIMIT = 13
+
+
 def screen_budget(source):
     from .buyer_copy import screen_budget as legacy_budget
     sparse = legacy_budget(source, False)["sparse_exception_eligible"]
     return {"minimum_total_screens": 1 if sparse else 8,
-            "maximum_total_screens": 15, "sparse_exception_eligible": sparse}
+            "maximum_total_screens": PLANNED_SCREEN_LIMIT, "sparse_exception_eligible": sparse}
 
 
 def prompt(buyer_value=False, *, automatic=False):
@@ -447,6 +457,16 @@ def render(plan):
         )
 
 
+def keep_person_scene(pages, slots):
+    """The person-at-work scene feeds the square e-commerce 场景图; never let the cap defer it.
+    Salvage maps screen numbers back to page positions, so it applies the same order first."""
+    pages = list(pages)
+    scene = next((i for i, page in enumerate(pages) if page.get("role") == "lifestyle_demo"), None)
+    if scene is not None and slots > 0 and scene >= slots:
+        pages.insert(slots - 1, pages.pop(scene))
+    return pages
+
+
 def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outline=False, delivery=False, repair_copy=False, check=True):
     from .refine_planner import PLANNING_VERSION
     plan = normalize_components(data) if buyer_outline else copy.deepcopy(data)
@@ -467,8 +487,8 @@ def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outl
         plan["buyer_outline_version"] = OUTLINE_VERSION
     cover = plan.pop("cover")
     plan["screens"].append({**cover, "role": "hero", "selling_point_id": None})
-    slots = 15 - 1 - int(bool(plan["specifications"]))
-    pages = plan.pop("pages")
+    slots = PLANNED_SCREEN_LIMIT - 1 - int(bool(plan["specifications"]))
+    pages = keep_person_scene(plan.pop("pages"), slots)
     plan["deferred_pages"] = pages[slots:]  # Text only, never passed to the image queue.
     for page in pages[:slots]:
         if page.get("kind") not in ("benefit", "display") or page.get("role") in ("hero", "spec_table"):
@@ -622,6 +642,9 @@ def compile_with_salvage(data, source, title, category, **options):
     except ValueError as exc:
         original = exc
     remaining = copy.deepcopy(data)
+    # Same page order compile_plan uses, so screen idx - 2 names the right page below.
+    remaining["pages"] = keep_person_scene(remaining.get("pages") or [],
+                                           PLANNED_SCREEN_LIMIT - 1 - int(bool(remaining.get("specifications"))))
     dropped = []
     for _ in range(3):
         pages = remaining["pages"]
@@ -756,7 +779,7 @@ def run(source, title, category, image_available, key, model, first_http, review
         return plan
     if copy_only:
         visual_prompt = prompt(False) + """
-正常资料整套8至15屏（含封面与参数表），极少资料按screen_budget例外。
+正常资料整套8至13屏（含封面与参数表），极少资料按screen_budget例外。
 先完成成熟、直观的视觉方案：整机、作业、已知部件示意和性能页面混排。
 不必编买家工作分析。参数保持原值；未提供外观的配套物只作文字配置，不画其未知实物。
 """

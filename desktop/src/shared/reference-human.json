@@ -9,6 +9,13 @@
     "source": "https://help.aliyun.com/zh/model-studio/voice-clone-design-http-api"
   },
   "scriptReserveCny": 0.1,
+  "coverPriceFallback": {
+    "imageUsd": 0.010625,
+    "estimatedImageUsd": 0.0085,
+    "fxCnyPerUsd": 8,
+    "checkedOn": "2026-11-06",
+    "source": "https://apimart.ai/api/pricing/model?model=gpt-image-2.5-ext"
+  },
   "industries": [
     "清洁设备",
     "清洁耗材",

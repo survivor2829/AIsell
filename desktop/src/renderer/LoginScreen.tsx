@@ -241,8 +241,8 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
           {AGENT_ROLE_ORDER.map((key) => <button key={key} type="button" className={key === role ? "is-active" : ""} aria-pressed={key === role}
             aria-label={`${AGENT_ROLE_IDENTITIES[key].name}，${AGENT_ROLE_IDENTITIES[key].responsibility}`} onClick={() => choose(key)}>
             <img src={characterAsset(`login/${key}.webp`)} alt="" />
-            {key === role && <i className="signin-crew-timer" aria-hidden="true" key={role} />}
             <span className="signin-crew-name" aria-hidden="true"><b>{AGENT_ROLE_IDENTITIES[key].name}</b><small>{AGENT_ROLE_IDENTITIES[key].responsibility}</small></span>
+            {key === role ? <i className="signin-crew-timer" aria-hidden="true" key={role} /> : <i className="signin-crew-timer is-idle" aria-hidden="true" />}
           </button>)}
         </nav>
       </div>

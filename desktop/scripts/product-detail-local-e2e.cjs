@@ -77,6 +77,7 @@ def run():
     dialogs = []
     failed_responses = []
     validated_execute_requests = []
+    squares_requested = []
     route_violations = []
     result = {
         "ok": False,
@@ -187,6 +188,23 @@ def run():
                         status=200,
                         content_type="application/json",
                         body=json.dumps({"ok": True}),
+                    )
+                    return
+                if (
+                    phase == "ai_direct"
+                    and request_is_allowed
+                    and request_path
+                    == "/api/ai-refine-v2/square/LOCAL_E2E_INTERCEPTED"
+                ):
+                    # The finished result asks for its 1:1 e-commerce squares (made locally, no AI).
+                    squares_requested.append(request_path)
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({"ok": True, "images": [
+                            {"kind": kind, "label": label, "url": "/static/e2e/ai-result.png", "reason": ""}
+                            for kind, label in (("white", "白底图"), ("main", "主图"), ("scene", "场景图"), ("spec", "参数图"))
+                        ]}),
                     )
                     return
                 if request_is_allowed:
@@ -638,7 +656,7 @@ def run():
                 ).inner_text()
                 # User 2026-11-03: customers see the image limit and per-image billing,
                 # not supplier names or internal price checks.
-                if not all(text in confirmation_message for text in ["自动策划", "最多15张", "按实际生成的张数计费"]):
+                if not all(text in confirmation_message for text in ["自动策划", "最多13张", "按实际生成的张数计费"]):
                     raise AssertionError(
                         "AI refine preflight must disclose the image limit and per-image billing"
                     )
@@ -651,6 +669,10 @@ def run():
                 confirmation_dialog.wait_for(state="hidden", timeout=10_000)
                 download_button = workspace.locator("[data-ai-refine-download]")
                 download_button.wait_for(state="visible", timeout=30_000)
+                # The 1:1 e-commerce section shows the four squares (白底/主图/场景/参数).
+                workspace.locator("[data-ai-squares] img").nth(3).wait_for(state="visible", timeout=30_000)
+                if not squares_requested:
+                    raise AssertionError("finished AI result did not request its 1:1 squares")
                 embedded_frame.wait_for_function(
                     "() => !document.querySelector('#btn_ai_html_v2')?.disabled"
                 )

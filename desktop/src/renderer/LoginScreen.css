@@ -169,7 +169,10 @@
 .signin-remembered .signin-switch { grid-column: 2; grid-row: 1 / span 2; }
 
 /* 六位员工自动轮流出场：打招呼的视频播完就换下一位（小进度条跟视频时长走）；只有鼠标停在下面那排头像上时暂停。 */
-.signin-crew-timer { position: absolute; top: 54px; left: 12px; width: 40px; height: 3px; border-radius: 2px; background: #00000014; overflow: hidden; }
+/* 进度条在名字下方，作为按钮最后一行：任何窗口宽度都不会压住名字。没轮到的员工只留一个淡色小点占位，整排不跳动。 */
+.signin-crew-timer { position: relative; justify-self: center; width: 28px; height: 3px; margin-top: 2px; border-radius: 999px; background: #0000001a; overflow: hidden; }
+.signin-crew-timer.is-idle { width: 6px; background: #00000012; }
+.signin-crew-timer.is-idle::after { display: none; }
 .signin-crew-timer::after { content: ""; position: absolute; inset: 0; background: var(--signin-accent); transform-origin: left; transform: scaleX(0);
   animation: signin-rotate var(--signin-rotate, 9s) linear forwards; animation-play-state: paused; }
 .signin-stage.is-rotating .signin-crew-timer::after { animation-play-state: running; }
