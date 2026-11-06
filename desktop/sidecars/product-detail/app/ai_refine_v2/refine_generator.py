@@ -920,8 +920,8 @@ def _generate_one_block_v2(
 
     if block.get("square"):
         # Same verified captions and brief, composed for a square marketplace frame.
-        effective_prompt = re.sub(r"3:4 portrait composition", "1:1 square composition", effective_prompt)
-        effective_prompt = re.sub(r"3\s*[:：]\s*4", "1:1", effective_prompt)
+        from .visual_merchandising import square_wording
+        effective_prompt = square_wording(effective_prompt)
         effective_prompt += (
             "\nSQUARE FORMAT OVERRIDE: the output is a 1:1 square e-commerce main image. Compose for the square "
             "itself; the background continues naturally to every edge, with no borders, frames, bands or letterboxing. "

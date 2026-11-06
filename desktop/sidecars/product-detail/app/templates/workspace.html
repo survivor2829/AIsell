@@ -1986,6 +1986,7 @@
     grid.querySelectorAll('[data-ai-square-redo]').forEach(button => {
       button.addEventListener('click', () => generateAiHtmlV2({ reroll: {
         source_task_id: result.task_id, block_index: Number(button.dataset.aiSquareRedo),
+        label: '1:1 ' + (images.find(image => image.block_index === Number(button.dataset.aiSquareRedo))?.label || '电商主图'),
       }}));
     });
     const ready = images.filter(image => image.url);
@@ -2006,13 +2007,16 @@
     const downloadUrl = options.recovery ? '' : (result.assembled_url || imageUrl);
     const sep = imageUrl?.includes('?') ? '&' : '?';
     const displayUrl = imageUrl ? `${imageUrl}${sep}t=${Date.now()}` : '';
-    const successCount = Number(
+    // Counts describe the detail screens; the 1:1 e-commerce images have their own section.
+    const detailBlocks = blocks.filter(block => !String(block?.block_id || '').includes('_square_'));
+    const hasSquares = detailBlocks.length !== blocks.length;
+    const successCount = Number(hasSquares ? detailBlocks.filter(block => block && block.success !== false).length : (
       result.success_count ?? result.blocks_count ??
       blocks.filter(block => block && block.success !== false).length
-    );
-    const totalCount = Number(
+    ));
+    const totalCount = Number(hasSquares ? detailBlocks.length : (
       result.planned_count ?? result.blocks_count ?? blocks.length
-    );
+    ));
     const elapsed = Number(result.elapsed_s || 0);
     const cost = Number(result.cost_rmb || 0);
     const restored = options.restored ? '上次生成 · ' : '';
@@ -2020,7 +2024,9 @@
     const billedInfo = costs?.version === 1
       ? `${Number.isFinite(costs.estimated_cny) ? `预计 ¥${costs.estimated_cny.toFixed(2)} · ` : ''}实际账单待核对`
       : `历史估算 ¥${cost.toFixed(2)} · 非实际扣款`;
-    const isPartial = result.status === 'partial_success' || Number(result.failed_count || 0) > 0;
+    // A failed 1:1 image shows in its own card with redo; only missing detail screens count here.
+    const isPartial = hasSquares ? successCount < totalCount
+      : result.status === 'partial_success' || Number(result.failed_count || 0) > 0;
     const screenInfo = isPartial
       ? `成功 ${successCount}/${totalCount} 屏`
       : `${successCount || totalCount} 屏`;
@@ -2379,7 +2385,7 @@
     const reroll = options.reroll;
     if (reroll && !taskRecord?.task_id) {
       const confirmed = await confirmInWorkspace(
-        `只重新生成第 ${reroll.block_index + 1} 张，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
+        `只重新生成${reroll.label ? `「${escapeHtml(reroll.label)}」` : `第 ${reroll.block_index + 1} 张`}，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
         { title: '重做指定图片', confirmLabel: '重做这张' },
       );
       if (!confirmed) return;

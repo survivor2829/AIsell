@@ -525,6 +525,15 @@ def detail_screens(plan):
     return [s for s in plan.get("screens") or [] if not s.get("square")]
 
 
+def square_wording(text):
+    """Rewrite the portrait wording of a detail-screen prompt for a square picture."""
+    text = re.sub(r"3\s*[:：]\s*4", "1:1", text)
+    for portrait, square in (("竖版详情图", "1:1方形电商主图"), ("竖版", "方形"), ("竖构图", "方形构图"),
+                             ("detail image", "e-commerce main image"), ("portrait", "square"), ("Portrait", "Square")):
+        text = text.replace(portrait, square)
+    return text
+
+
 def add_square_screens(plan):
     """Append the 1:1 主图/场景图/参数图 as extra screens of the same plan, so they share the
     paid pipeline's quote, receipts and recovery. Each copies its source screen's verified
@@ -540,8 +549,10 @@ def add_square_screens(plan):
 
     sources = {
         "main": first(lambda s: s.get("role") == "hero"),
+        # Never the cover: that would buy a near copy of the 主图.
         "scene": first(lambda s: s.get("role") == "lifestyle_demo")
-                 or first(lambda s: s.get("role") == "scenario" or presentation(s) == "working_scene"),
+                 or first(lambda s: s.get("role") != "hero"
+                          and (s.get("role") == "scenario" or presentation(s) == "working_scene")),
         "spec": first(lambda s: s.get("role") == "spec_table"),
     }
     squares = []
@@ -553,7 +564,7 @@ def add_square_screens(plan):
         square["prompt"] = (
             "1:1 SQUARE E-COMMERCE MAIN IMAGE (" + SQUARE_KINDS[kind] + "): redesign this screen for a square "
             "marketplace listing frame; product large and fully visible, every supplied word inside the square, "
-            "nothing cropped at the edges. " + re.sub(r"3\s*[:：]\s*4", "1:1", str(source.get("prompt") or ""))
+            "nothing cropped at the edges. " + square_wording(str(source.get("prompt") or ""))
         )
         squares.append(square)
     plan["screens"] = screens + squares

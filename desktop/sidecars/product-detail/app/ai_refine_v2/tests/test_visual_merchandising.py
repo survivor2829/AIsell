@@ -761,7 +761,8 @@ def test_square_ecommerce_images_are_appended_and_still_validate():
     assert [s["square"] for s in squares] == ["main", "scene", "spec"]
     assert len(detail_screens(plan)) == details and [s["idx"] for s in plan["screens"]] == list(range(1, details + 4))
     assert squares[1]["square_source_idx"] == next(s["idx"] for s in plan["screens"] if s["role"] == "lifestyle_demo")
-    assert all("1:1" in s["prompt"] and "3:4" not in s["prompt"] for s in squares)
+    assert all("1:1" in s["prompt"] and "3:4" not in s["prompt"] and "竖版" not in s["prompt"] for s in squares)
+    assert squares[1]["square_source_idx"] != 1, "the scene image never copies the cover"
     validate(plan, source, "测试产品", "设备类")  # squares are checked apart from the detail screens
     squares[0]["square_source_idx"] = 99
     with pytest.raises(ValueError, match="1:1"):
@@ -780,7 +781,7 @@ def test_square_blocks_are_requested_at_one_to_one(tmp_path):
                           calls.append((size, prompt)) or "https://example.invalid/result.png")
     squares = [(size, prompt) for size, prompt in calls if "SQUARE FORMAT OVERRIDE" in prompt]
     assert len(squares) == 3 and all(size == "1:1" for size, _ in squares)
-    assert all("3:4" not in prompt for _, prompt in squares)
+    assert all("3:4" not in prompt and "portrait" not in prompt and "竖版" not in prompt for _, prompt in squares)
     assert sum(size == "3:4" for size, _ in calls) == len(calls) - 3
 
 

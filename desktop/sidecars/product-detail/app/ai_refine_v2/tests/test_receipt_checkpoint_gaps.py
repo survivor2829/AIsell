@@ -642,3 +642,26 @@ def test_repeated_recovery_without_checkpoint_never_downgrades_paid_image(task, 
         assert ledger.path.read_bytes() == before
     assert runner._read_json(task / "_recovery.json")["blocks"] == []
     submit.assert_not_called()
+
+
+def test_plainly_failed_square_image_does_not_hold_recovery(task, monkeypatch):
+    """A 1:1 e-commerce image the provider failed is just missing, as in normal generation."""
+    def noise(destination):
+        Image.effect_noise((600, 800), 40).convert("RGB").save(destination)
+    noise(task / "block_01_hero.jpg")
+    blocks = [
+        {"block_id": "hero", "is_hero": True, "file": "block_01_hero.jpg", "success": True,
+         "raw_url": "https://example.invalid/hero.jpg", "image_url": "/static/ai_refine_v2/interrupted/block_01_hero.jpg"},
+        {"block_id": "screen_02_square_main", "file": "block_02_screen_02_square_main.jpg", "success": False,
+         "raw_url": "", "provider_status": "failed", "error": "provider failed"},
+    ]
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73, mode="real")
+    runner._persist_recovery(task, blocks, 0.0, 2, status="recovery_required", schema_mode="v2")
+    runner._TASKS.clear()
+
+    def assemble(directory, blocks):
+        noise(directory / "assembled.png")
+        return "/static/ai_refine_v2/interrupted/assembled.png"
+    monkeypatch.setattr(runner, "_run_assembler_v2", assemble)
+    state = runner._recover_task(task.name, "image-key")
+    assert state["status"] == "partial_success", state.get("error")
