@@ -303,6 +303,7 @@ def _http_post_json(url: str, payload: dict, api_key: str,
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": _UA,
+            "X-Xiaoxi-Billing-Feature": "product_detail",
         },
     )
     root = _gateway_receipt_base()
@@ -386,6 +387,7 @@ def _http_post_image_upload(url: str, image_bytes: bytes, mime: str,
             "Authorization": f"Bearer {api_key}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             "User-Agent": _UA,
+            "X-Xiaoxi-Billing-Feature": "product_detail",
         },
     )
     try:

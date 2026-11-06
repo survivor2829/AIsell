@@ -64,6 +64,7 @@ from .creative_analysis import COURSE_RANKING_BATCH_SIZE, COURSE_RANKING_CANDIDA
 from .errors import ContentEngineError
 from . import failure_journal
 from .provider_usage import usage_scope, provider_usage_summary
+from .provider_tls import settle_billing_job
 from .hashing import canonical_json_sha256
 from .packaging import (
     COVER_PROMPT_VERSION,
@@ -6826,7 +6827,22 @@ class CreativeDomain:
         payload = json.loads(task["payload_json"])
         with usage_scope(self.data_dir, task_id=task_id, task_type=task["task_type"],
                          **{key: payload.get(key) for key in ("batch_id", "project_id", "run_id", "session_id")}):
-            return self._run_task_with_usage(task_id)
+            try:
+                return self._run_task_with_usage(task_id)
+            finally:
+                self._settle_task_billing(task_id)
+
+    def _settle_task_billing(self, task_id):
+        """A completed task's AI usage is charged; a failed or cancelled one is free.
+        A paused or interrupted task keeps its charges open (the gateway frees them after a day)."""
+        try:
+            status = self._task_status(task_id)
+        except Exception:
+            return
+        if status == "completed":
+            settle_billing_job(task_id, "succeeded")
+        elif status in {"failed", "cancelled"}:
+            settle_billing_job(task_id, "failed")
 
     def get_provider_usage(self, *, task_id=None, batch_id=None, limit=100):
         if task_id is not None:

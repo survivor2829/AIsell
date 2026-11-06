@@ -549,6 +549,24 @@ button:focus-visible {
   justify-self: center;
 }
 
+/* 算力余额：顶栏账号左侧的小标签 */
+.billing-badge {
+  flex: none;
+  align-self: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #45634f;
+  background: rgba(69, 99, 79, 0.1);
+  white-space: nowrap;
+}
+.billing-badge.empty {
+  color: #9a4a10;
+  background: rgba(214, 120, 40, 0.14);
+  font-weight: 600;
+}
+
 .account-trigger {
   min-width: 0;
   max-width: 260px;

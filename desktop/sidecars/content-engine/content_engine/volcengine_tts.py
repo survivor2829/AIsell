@@ -31,7 +31,7 @@ from .provider_usage import (
     retry_delay_seconds,
     usage_scope,
 )
-from .provider_tls import gateway_tls_context
+from .provider_tls import gateway_tls_context, tag_billing
 
 
 TTS_ENDPOINT = os.environ.get(
@@ -235,6 +235,7 @@ class VolcengineTTSProvider:
                 headers=request_headers,
                 method="POST",
             )
+            tag_billing(operation)
             meter = None
             try:
                 with usage_scope(data_dir=self.usage_data_dir, operation_id=operation_id):

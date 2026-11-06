@@ -20,7 +20,7 @@ from .provider_usage import (
     retry_delay_seconds,
     usage_scope,
 )
-from .provider_tls import gateway_tls_context
+from .provider_tls import gateway_tls_context, tag_billing
 from .volcengine_tts import VolcengineTTSProvider, _NoRedirect
 
 ARK_ENDPOINT = os.environ.get(
@@ -135,6 +135,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
         for attempt in range(1, MAX_429_ATTEMPTS + 1):
             op = request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                  headers=request_headers, method="POST")
+            tag_billing(op)
             meter = None
             try:
                 with usage_scope(

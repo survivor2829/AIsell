@@ -70,6 +70,13 @@ APIMart 请求内容仍在 CONNECT 内通过 TLS 加密。`https://` 代理需�
 `XIAOXI_GATEWAY_VOLCENGINE_ASR_APP_ID` 与 `XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN`
 （旧版控制台）。ASR 资源 `volc.bigasr.auc_turbo` 也必须在火山语音控制台开通。
 
+## 客户算力（billing.py）
+
+- 每次转发后按供应商返回的用量（token、字数、音频时长、视频秒数、生图张数或 APIMart 回报的 cost）和服务器价格表算成本，扣 `成本 × XIAOXI_GATEWAY_BILLING_MARKUP（默认 1.3）× 40,000` 算力。价格表可用 `XIAOXI_GATEWAY_BILLING_PRICES_JSON` 按型号前缀覆盖，开户赠送量用 `XIAOXI_GATEWAY_BILLING_GRANT_POINTS`（默认 2000 万）。估价不是供应商账单，上线后按月对账校准。
+- 带 `X-Xiaoxi-Billing-Job` 的请求先挂在该视频下；客户端 `POST /billing/settle {jobId, outcome}` 回报 `succeeded` 才扣，`failed` 或 24 小时无动静都不扣。异步视频/生图在提交时登记型号，完成查询时只计一次。
+- 余额 ≤0 时，新的付费 POST 返回 `402 credit_exhausted`；已开着的视频编号、已有回执的重放不受影响。后台“不拦截”的账号照常记账但不拦截。充值先抵负数。
+- 客户端 `GET /billing/balance` 读余额；后台经 `/v1/accounts-admin/accounts/<id>/{recharge,billing-access,billing}` 充值、切换拦截、看明细。
+
 ## 初次部署和更新
 
 ### 数字人口播套餐写稿额度（默认关闭）

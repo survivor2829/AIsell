@@ -223,6 +223,10 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
     let payload;
     try { payload = await response.json(); } catch { throw fail('digital_human_response_invalid', '服务返回的数据无法识别。', { outcomeUnknown: method === 'POST', status: response.status }); }
     if (!response.ok) {
+      // The company gateway refuses new paid work once this customer's 算力 is used up.
+      if (response.status === 402 && payload?.error === 'credit_exhausted') {
+        throw fail('credit_exhausted', '算力已用完，请联系客服充值后继续使用。', { outcomeUnknown: false, status: 402 });
+      }
       const detail = cleanMessage(payload?.error?.message || payload?.error || payload?.message);
       const receiptQuery = method === 'GET' && /^\/operations\/[A-Za-z0-9_.:-]+$/u.test(route);
       // A receipt endpoint replays the upstream response. Only an identifiable

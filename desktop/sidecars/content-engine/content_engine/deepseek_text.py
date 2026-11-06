@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 
 from .creative_analysis import DashScopeMediaClient, MAX_PROVIDER_JSON_BYTES, _json_bytes, _read_bounded
 from .errors import ContentEngineError
-from .provider_tls import gateway_tls_context
+from .provider_tls import gateway_tls_context, tag_billing
 from .provider_usage import ProviderRequest, current_usage_context, observe_http_error
 from .volcengine_tts import _NoRedirect
 
@@ -52,6 +52,7 @@ class DeepSeekTextClient(DashScopeMediaClient):
         if context.get("operation_id"):
             request_headers["X-Xiaoxi-Operation-Id"] = context["operation_id"]
         op = request.Request(url, data=_json_bytes({**payload, "thinking": {"type": "disabled"}}), headers=request_headers, method="POST")
+        tag_billing(op)
         meter = ProviderRequest(provider=self.provider, kind="llm", model=payload.get("model", ""),
                                 purpose=operation_label, data_dir=getattr(self, "usage_data_dir", None),
                                 attempt=context.get("correction_attempt", 1))

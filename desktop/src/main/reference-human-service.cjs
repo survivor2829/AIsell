@@ -10,6 +10,7 @@ const policy = require('../shared/reference-human.json');
 const templates = require('../../remotion-packaging/narration-templates.json');
 const { round } = require('./product-video-pricing.cjs');
 const { createAutomaticVoiceClient } = require('./automatic-voice-client.cjs');
+const { withBillingJob } = require('./provider-gateway-client.cjs');
 const { createNarrationSources } = require('./narration-sources.cjs');
 const costs = require('./reference-human-costs.cjs');
 const packaging = require('../../remotion-packaging/narration-plan.cjs');
@@ -511,13 +512,17 @@ function createReferenceHumanService(options = {}) {
   }
   function schedule(id) {
     if (closed || held || global.__xiaoxiUpdateHold || active.has(id)) return active.get(id);
-    const promise = Promise.resolve().then(async () => {
+    // 算力: this video's AI calls are held under one job and charged only when it completes.
+    const promise = withBillingJob(`dh:${id}`, 'digital_human', () => Promise.resolve().then(async () => {
       const task = read(id);
       if (task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState)) return automaticCover(task, true);
       if (!RUNNING.has(task.status)) return;
-      try { await advance(task); }
+      try {
+        await advance(task);
+        if (read(id).status === 'completed') void options.gatewayClient?.settleBillingJob?.(`dh:${id}`, 'succeeded');
+      }
       catch (error) { const resumeStatus = task.status; transition(task, error.outcomeUnknown ? 'outcome_unknown' : 'needs_attention', { resumeStatus, error: cleanMessage(error.message), errorCode: error.code || 'reference_step_failed' }); }
-    }).finally(() => active.delete(id));
+    })).finally(() => active.delete(id));
     active.set(id, promise); void promise.catch(() => {}); return promise;
   }
   function validateEmphasis(value = [], script) {

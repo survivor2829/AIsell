@@ -151,6 +151,7 @@ def _http_post_deepseek(body: dict, api_key: str, operation_id: str = "") -> dic
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": _UA,
+            "X-Xiaoxi-Billing-Feature": "product_detail",
             **({"X-Xiaoxi-Operation-Id": operation_id} if operation_id else {}),
         },
     )

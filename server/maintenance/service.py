@@ -39,7 +39,8 @@ INPUT_METRICS = ("expected_input_tick", "current_input_tick", "required_idle_ms"
                  "expected_hWnd", "foreground_hWnd")
 PROVIDER_GATEWAY_PREFIX = "/v1/provider-gateway"
 # Customer accounts are managed by the gateway on loopback; only this admin server forwards to it.
-ACCOUNTS_ADMIN_ROUTE = re.compile(r"/api/accounts(?:/(\d{1,9})/(reset-password|status|sign-out))?")
+ACCOUNTS_ADMIN_ROUTE = re.compile(r"/api/accounts(?:/(\d{1,9})/(reset-password|status|sign-out|recharge|billing-access))?")
+ACCOUNTS_BILLING_ROUTE = re.compile(r"/api/accounts/\d{1,9}/billing")
 PROVIDER_GATEWAY_ORIGIN = "http://127.0.0.1:8444"
 PROVIDER_GATEWAY_MAX_REQUEST_BYTES = 32 * 1024 * 1024
 PROVIDER_GATEWAY_MAX_RESPONSE_BYTES = 96 * 1024 * 1024
@@ -492,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, self.server.store.overview())
             if route == "/api/health":
                 return self.reply(200, self.server.store.task_health())
-            if route == "/api/accounts":
+            if route == "/api/accounts" or ACCOUNTS_BILLING_ROUTE.fullmatch(route):
                 return self.accounts_admin("GET", route)
             if route == "/tutorials-admin.js":
                 data = Path(__file__).with_name("tutorials-admin.js").read_bytes()

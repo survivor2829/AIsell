@@ -203,6 +203,13 @@ class AccountStore:
             return self._row("subject=?", (subject,))
 
     # ---- administration ------------------------------------------------------------------
+    def admin_subject(self, account_id: int) -> str:
+        with self.lock:
+            account = self._row("id=?", (account_id,))
+        if account is None:
+            raise AccountError("account_not_found", 404)
+        return account["subject"]
+
     def admin_list(self, usage) -> list[dict]:
         with self.lock:
             self.db.row_factory = sqlite3.Row

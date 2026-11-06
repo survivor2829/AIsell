@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const { cleanSpokenScript } = require('./spoken-script.cjs');
 const { normalize } = require('./narration-transcript.cjs');
+const { withBillingFeature } = require('./provider-gateway-client.cjs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
@@ -215,7 +216,7 @@ function createViralPipeline(options) {
     pumping = (async () => {
       for (let next; !closed && (next = all().find((j) => j.status === 'running') || all().find((j) => j.status === 'queued'));) {
         // 记录写不进磁盘时停下排队，不在同一条任务上反复空转。
-        try { await runJob(next); } catch { break; }
+        try { await withBillingFeature('digital_human', () => runJob(next)); } catch { break; }
       }
     })().finally(() => { pumping = null; });
     return pumping;

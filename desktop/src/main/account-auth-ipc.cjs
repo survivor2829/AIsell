@@ -36,6 +36,11 @@ function registerAccountAuthIpc({ ipcMain, accountStore, licenseStore, gatewayCl
     try { await onChanged?.({ action, status: status() }); } catch { /* The login itself already completed. */ }
   }
   ipcMain.handle("account:status", () => status());
+  // 算力余额 for the top bar; null when it cannot be read (offline, license mode).
+  ipcMain.handle("account:billing", async () => {
+    if (!accountMode() || typeof gatewayClient?.billingBalance !== "function") return null;
+    try { return await gatewayClient.billingBalance(); } catch { return null; }
+  });
   ipcMain.handle("account:login", async (_event, payload) => {
     if (!accountMode()) return { ...status(), authorized: false, error: "当前版本使用授权码登录。" };
     const phone = String(payload?.phone || "").trim(), password = String(payload?.password || "");
