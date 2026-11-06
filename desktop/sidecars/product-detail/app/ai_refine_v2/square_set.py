@@ -1,13 +1,11 @@
-"""1:1 e-commerce main images (电商主图) derived locally from a finished AI精修 task.
+"""1:1 e-commerce main images (电商主图) for a finished AI精修 task.
 
-No AI call and no cost: the four squares reuse what the task already has.
-- white: the uploaded product photo (already cut out on upload) on a plain white square.
-- main:  the hero screen.
-- scene: the person-at-work screen (lifestyle_demo), else a working-scene screen.
-- spec:  the parameter screen (spec_table).
-The AI screens are 3:4 with text painted in by the model, so they are never cropped:
-each is placed whole in the square, and the side bands are filled with a soft,
-blurred copy of the same picture.
+- white: the uploaded product photo (already cut out on upload) on a plain white square,
+  made locally at no cost.
+- main / scene / spec: newer tasks generate these with the AI as true 1:1 pictures (extra
+  screens whose block id ends in _square_<kind>); they are shown as they are.
+Older tasks without them fall back to a local layout: the 3:4 hero, person-scene or
+parameter screen placed whole in the square with soft blurred side bands.
 """
 from __future__ import annotations
 
@@ -152,10 +150,39 @@ def build(task_dir: Path, *, force: bool = False, uploads_root: Path | None = No
         return _build(task_dir, force, uploads_root)
 
 
+def _ai_squares(task_dir: Path) -> dict[str, dict]:
+    """1:1 images the AI generated with the task (block ids end in _square_<kind>)."""
+    summary = _read_json(task_dir / "_summary.json") or {}
+    found = {}
+    for index, block in enumerate(summary.get("blocks") or []):
+        if not isinstance(block, dict):
+            continue
+        match = str(block.get("block_id") or "").rsplit("_square_", 1)
+        if len(match) == 2 and match[1] in ("main", "scene", "spec"):
+            found[match[1]] = {"index": index, "file": _block_file(task_dir, block)}
+    return found
+
+
 def _build(task_dir: Path, force: bool, uploads_root: Path | None) -> list[dict]:
     sources = _pick_sources(task_dir, uploads_root)
+    generated = _ai_squares(task_dir)
     results = []
     for kind, label in KINDS:
+        if kind in generated:
+            # Newer tasks: the square was drawn by the AI as a true 1:1 picture; use it as is.
+            ai = generated[kind]
+            entry = {"kind": kind, "label": label, "url": None, "reason": "", "block_index": ai["index"]}
+            if ai["file"]:
+                entry["url"] = f"/static/ai_refine_v2/{task_dir.name}/{ai['file'].name}?v={int(ai['file'].stat().st_mtime)}"
+            else:
+                entry["reason"] = "这张没有生成成功，可以点「重做这张」"
+            results.append(entry)
+            continue
+        if generated and kind != "white":
+            # A newer task planned no screen for this module; never fall back to the blurred layout.
+            results.append({"kind": kind, "label": label, "url": None,
+                            "reason": {"scene": "这套图没有合适的使用场景屏", "spec": "这套图没有参数屏"}.get(kind, "这套图没有对应的屏")})
+            continue
         source = sources.get(kind)
         target = task_dir / f"square_{kind}.jpg"
         entry = {"kind": kind, "label": label, "url": None, "reason": ""}

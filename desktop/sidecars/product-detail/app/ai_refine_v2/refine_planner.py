@@ -437,6 +437,8 @@ _MAX_TOKENS_V2 = 65536
 _MIN_PROMPT_LEN_V2 = 200  # screens[i].prompt 短于此即"SEO 列表非导演视角"
 _MIN_SCREEN_COUNT_V2 = 8   # v3 (PRD AI_refine_v3.1): 6 → 8
 _MAX_SCREEN_COUNT_V2 = 15  # v3 (PRD AI_refine_v3.1): 10 → 15
+# Images one plan may submit: up to 15 detail screens plus 3 square e-commerce images.
+_MAX_PLANNED_IMAGES_V2 = 18
 
 # v3 (PRD AI_refine_v3.1) 新增: role 白名单
 # v3.iter2 (2026-04-29 Scott 4/9 反馈): 11 → 12 屏型, +lifestyle_demo (B2B 必备)

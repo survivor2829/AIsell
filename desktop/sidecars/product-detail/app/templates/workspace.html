@@ -662,7 +662,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计8至13张，另附4张1:1电商主图（白底、主图、场景、参数，由已生成的图排版，不另收费），可下载单张和长图。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。详情图合计8至15张，另生成3张1:1电商主图（主图、场景图、参数图，按张计费），白底图免费排版；可下载单张和长图。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -677,7 +677,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。合计8至13张，另附4张1:1电商主图（白底、主图、场景、参数，由已生成的图排版，不另收费），可下载单张和长图。</p>
+      <p class="text-hint" style="margin-top:8px;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。详情图合计8至15张，另生成3张1:1电商主图（主图、场景图、参数图，按张计费），白底图免费排版；可下载单张和长图。</p>
       <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
@@ -1957,7 +1957,7 @@
   }
 
   // 1:1 电商主图：后台用已生成的分屏和抠好的产品图排版，不调用 AI，不收费。
-  async function loadAiSquareImages(taskId, results) {
+  async function loadAiSquareImages(taskId, results, result) {
     const grid = results.querySelector('[data-ai-squares]');
     const all = results.querySelector('[data-ai-square-all]');
     if (!grid) return;
@@ -1974,7 +1974,7 @@
     if (!results.contains(grid)) return;
     grid.innerHTML = images.map((image, index) => `<article class="air-square">
       <div class="air-square-frame">${image.url ? `<img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.label)}" />` : escapeHtml(image.reason || '暂无')}</div>
-      <div class="air-square-foot"><b>${escapeHtml(image.label)}</b>${image.url ? `<button type="button" class="btn btn-ghost" data-ai-square-download="${index}">下载</button>` : ''}</div>
+      <div class="air-square-foot"><b>${escapeHtml(image.label)}</b><span class="air-actions">${image.url ? `<button type="button" class="btn btn-ghost" data-ai-square-download="${index}">下载</button>` : ''}${Number.isInteger(image.block_index) ? `<button type="button" class="btn btn-ghost" data-ai-square-redo="${image.block_index}">重做这张 · 计费</button>` : ''}</span></div>
     </article>`).join('');
     const name = image => `${currentProductType}_电商主图_${image.label}.jpg`;
     grid.querySelectorAll('[data-ai-square-download]').forEach(button => {
@@ -1982,6 +1982,12 @@
         const image = images[Number(button.dataset.aiSquareDownload)];
         downloadAiRefineResult(image.url, button, name(image));
       });
+    });
+    grid.querySelectorAll('[data-ai-square-redo]').forEach(button => {
+      button.addEventListener('click', () => generateAiHtmlV2({ reroll: {
+        source_task_id: result.task_id, block_index: Number(button.dataset.aiSquareRedo),
+        label: '1:1 ' + (images.find(image => image.block_index === Number(button.dataset.aiSquareRedo))?.label || '电商主图'),
+      }}));
     });
     const ready = images.filter(image => image.url);
     if (all && ready.length) {
@@ -2001,13 +2007,16 @@
     const downloadUrl = options.recovery ? '' : (result.assembled_url || imageUrl);
     const sep = imageUrl?.includes('?') ? '&' : '?';
     const displayUrl = imageUrl ? `${imageUrl}${sep}t=${Date.now()}` : '';
-    const successCount = Number(
+    // Counts describe the detail screens; the 1:1 e-commerce images have their own section.
+    const detailBlocks = blocks.filter(block => !String(block?.block_id || '').includes('_square_'));
+    const hasSquares = detailBlocks.length !== blocks.length;
+    const successCount = Number(hasSquares ? detailBlocks.filter(block => block && block.success !== false).length : (
       result.success_count ?? result.blocks_count ??
       blocks.filter(block => block && block.success !== false).length
-    );
-    const totalCount = Number(
+    ));
+    const totalCount = Number(hasSquares ? detailBlocks.length : (
       result.planned_count ?? result.blocks_count ?? blocks.length
-    );
+    ));
     const elapsed = Number(result.elapsed_s || 0);
     const cost = Number(result.cost_rmb || 0);
     const restored = options.restored ? '上次生成 · ' : '';
@@ -2015,7 +2024,9 @@
     const billedInfo = costs?.version === 1
       ? `${Number.isFinite(costs.estimated_cny) ? `预计 ¥${costs.estimated_cny.toFixed(2)} · ` : ''}实际账单待核对`
       : `历史估算 ¥${cost.toFixed(2)} · 非实际扣款`;
-    const isPartial = result.status === 'partial_success' || Number(result.failed_count || 0) > 0;
+    // A failed 1:1 image shows in its own card with redo; only missing detail screens count here.
+    const isPartial = hasSquares ? successCount < totalCount
+      : result.status === 'partial_success' || Number(result.failed_count || 0) > 0;
     const screenInfo = isPartial
       ? `成功 ${successCount}/${totalCount} 屏`
       : `${successCount || totalCount} 屏`;
@@ -2027,6 +2038,7 @@
     const tiles = blocks.map((block, index) => {
       const title = screens[index]?.title || `第 ${index + 1} 张`;
       const ready = block.success && block.image_url;
+      if (String(block.block_id || '').includes('_square_')) return '';  // shown in the 1:1 section
       if (options.recovery && !ready) return '';
       return `<article class="air-tile">
         ${ready ? `<img src="${escapeHtml(block.image_url)}" alt="${escapeHtml(title)}" loading="lazy" />` : '<p class="air-missing">这张尚未完成</p>'}
@@ -2053,8 +2065,9 @@
         .air-square { position:relative; border:1px solid #e5e7eb; border-radius:12px; background:#fff; padding:10px; display:flex; flex-direction:column; gap:8px; min-width:0; }
         .air-square-frame { aspect-ratio:1/1; border-radius:8px; overflow:hidden; background:#f2f4f7; display:grid; place-items:center; color:#98a2b3; font-size:13px; text-align:center; }
         .air-square-frame img { width:100%; height:100%; object-fit:cover; display:block; }
-        .air-square-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-        .air-square-foot b { font-size:14px; color:#101828; }
+        .air-square-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 8px; }
+        .air-square-foot b { font-size:14px; color:#101828; white-space:nowrap; }
+        .air-square-foot .air-actions { margin-top:0; justify-content:flex-end; }
         .air-body { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:20px; align-items:start; }
         .air-tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:14px; }
         .air-tile { position:relative; border:1px solid #e5e7eb; border-radius:12px; padding:10px; min-width:0; background:#fff; display:flex; flex-direction:column; gap:8px; }
@@ -2079,7 +2092,7 @@
           ${partialHint}
         </div>
         ${squaresWanted ? `<section class="air-section">
-          <h3 class="air-section-title">电商主图 · 1:1 <small>直接上传电商平台用；由已生成的图排版而成，不另收费</small></h3>
+          <h3 class="air-section-title">电商主图 · 1:1 <small>正方形，可直接上传电商平台；主图、场景图、参数图按 1:1 单独生成</small></h3>
           <div class="air-squares" data-ai-squares>
             ${['白底图', '主图', '场景图', '参数图'].map(label => `<article class="air-square"><div class="air-square-frame">正在制作${label}…</div>
               <div class="air-square-foot"><b>${label}</b></div></article>`).join('')}
@@ -2087,7 +2100,7 @@
         </section>` : ''}
         <div class="air-body">
           <section class="air-section">
-            <h3 class="air-section-title">详情页分屏 <small>共 ${blocks.length} 屏，可单张下载或重做</small></h3>
+            <h3 class="air-section-title">详情页分屏 <small>共 ${blocks.filter(block => !String(block.block_id || '').includes('_square_')).length} 屏，可单张下载或重做</small></h3>
             ${tiles ? `<div class="air-tiles">${tiles}</div>` : ''}
           </section>
           ${displayUrl ? `<aside class="air-section air-long">
@@ -2096,7 +2109,7 @@
           </aside>` : ''}
         </div>
       </div>`;
-    if (squaresWanted) loadAiSquareImages(result.task_id, results);
+    if (squaresWanted) loadAiSquareImages(result.task_id, results, result);
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
       downloadAiRefineResult(downloadUrl, event.currentTarget);
     });
@@ -2372,7 +2385,7 @@
     const reroll = options.reroll;
     if (reroll && !taskRecord?.task_id) {
       const confirmed = await confirmInWorkspace(
-        `只重新生成第 ${reroll.block_index + 1} 张，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
+        `只重新生成${reroll.label ? `「${escapeHtml(reroll.label)}」` : `第 ${reroll.block_index + 1} 张`}，会产生一次生图计费。其余图片沿用，原版本保留。\n历史任务如缺原图，将使用当前上传的同一产品图片。\n实际费用以 APIMart 账单为准；结果不明时不重提。`,
         { title: '重做指定图片', confirmLabel: '重做这张' },
       );
       if (!confirmed) return;
@@ -2389,7 +2402,7 @@
       }
       inputMeta = buildAiRefineTaskMeta(productText, productTitle);
       const confirmed = await confirmInWorkspace(
-        `根据产品图片和资料自动策划并生成详情图，合计最多13张，按实际生成的张数计费。\n\n` +
+        `根据产品图片和资料自动策划并生成详情图，详情图合计最多15张，另加3张1:1电商主图，按实际生成的张数计费。\n\n` +
         `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
         { title: '确认 AI 精修任务', confirmLabel: '开始付费生成' },
       );

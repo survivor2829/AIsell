@@ -93,12 +93,12 @@ def test_four_categories_remain_isolated(category):
         compile_plan(data, source, "测试产品", other)
 
 
-def test_more_than_thirteen_text_pages_are_selected_without_image_calls():
+def test_more_than_fifteen_text_pages_are_selected_without_image_calls():
     source, data = fixture()
     data["pages"] = [{**copy.deepcopy(data["pages"][0]), "title": f"部件展示{i}"} for i in range(20)]
     plan = compile_plan(data, source, "测试产品", "设备类")
-    assert plan["screen_count"] == 13
-    assert len(plan["deferred_pages"]) == 9
+    assert plan["screen_count"] == 15
+    assert len(plan["deferred_pages"]) == 7
     assert all("prompt" not in p for p in plan["deferred_pages"])
 
 
@@ -430,7 +430,9 @@ def test_automatic_editor_repairs_visual_and_caption_in_existing_two_calls():
     titles = [s['title'] for s in plan['screens']]
     assert '自动补水，无需人工' not in titles and final['pages'][0]['title'] not in titles
     assert [d['title'] for d in plan['dropped_pages']] == ['自动补水，无需人工']
-    assert len(plan['screens']) == len(final['pages']) + 1  # cover + rest + table - dropped
+    from ai_refine_v2.visual_merchandising import detail_screens
+    assert len(detail_screens(plan)) == len(final['pages']) + 1  # cover + rest + table - dropped
+    assert [s['square'] for s in plan['screens'] if s.get('square')] == ['main', 'spec']  # no person scene here
     assert all('未知配套部件' not in s['prompt'] for s in plan['screens'])
 
 
@@ -740,3 +742,61 @@ def test_salvage_drops_the_flagged_person_scene_not_its_neighbour(monkeypatch, n
     plan = vm.compile_with_salvage(data, "src", "t", None)
     assert [d["title"] for d in plan["dropped_pages"]] == ["人物"]
     assert all(s["title"] != "人物" for s in plan["screens"])
+
+
+def _plan_with_scene():
+    source, data = fixture()
+    scene = copy.deepcopy(data["pages"][1])
+    scene.update(role="lifestyle_demo", title="工作人员日常使用")
+    data["pages"].append(scene)
+    return source, compile_plan(data, source, "测试产品", "设备类")
+
+
+def test_square_ecommerce_images_are_appended_and_still_validate():
+    from ai_refine_v2.visual_merchandising import add_square_screens, detail_screens
+    source, plan = _plan_with_scene()
+    details = len(plan["screens"])
+    add_square_screens(plan)
+    squares = [s for s in plan["screens"] if s.get("square")]
+    assert [s["square"] for s in squares] == ["main", "scene", "spec"]
+    assert len(detail_screens(plan)) == details and [s["idx"] for s in plan["screens"]] == list(range(1, details + 4))
+    assert squares[1]["square_source_idx"] == next(s["idx"] for s in plan["screens"] if s["role"] == "lifestyle_demo")
+    assert all("1:1" in s["prompt"] and "3:4" not in s["prompt"] and "竖版" not in s["prompt"] for s in squares)
+    assert squares[1]["square_source_idx"] != 1, "the scene image never copies the cover"
+    validate(plan, source, "测试产品", "设备类")  # squares are checked apart from the detail screens
+    squares[0]["square_source_idx"] = 99
+    with pytest.raises(ValueError, match="1:1"):
+        validate(plan, source, "测试产品", "设备类")
+
+
+def test_square_blocks_are_requested_at_one_to_one(tmp_path):
+    from ai_refine_v2.visual_merchandising import add_square_screens
+    _source, plan = _plan_with_scene()
+    add_square_screens(plan)
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (40, 40), "white").save(reference)
+    calls = []
+    generator.generate_v2(plan, str(reference), api_key="fake", concurrency=1,
+                          api_call_fn=lambda prompt, image, key, thinking, size, **kw:
+                          calls.append((size, prompt)) or "https://example.invalid/result.png")
+    squares = [(size, prompt) for size, prompt in calls if "SQUARE FORMAT OVERRIDE" in prompt]
+    assert len(squares) == 3 and all(size == "1:1" for size, _ in squares)
+    assert all("3:4" not in prompt and "portrait" not in prompt and "竖版" not in prompt for _, prompt in squares)
+    assert sum(size == "3:4" for size, _ in calls) == len(calls) - 3
+
+
+def test_long_image_leaves_out_square_images(tmp_path):
+    blocks = []
+    for i, bid in enumerate(["screen_01_hero", "screen_02_feature_wall", "screen_03_square_main"], 1):
+        name = f"block_{i:02d}_{bid}.jpg"
+        Image.new("RGB", (750, 1000), (i * 60, 90, 160)).save(tmp_path / name)
+        blocks.append({"block_id": bid, "file": name, "success": True})
+    blocks[2]["success"] = False  # a failed square never blocks the long image
+    original = runner._validate_assembled_png
+    runner._validate_assembled_png = lambda path: (750, 2000)
+    try:
+        runner._run_assembler_v2(tmp_path, blocks)
+    finally:
+        runner._validate_assembled_png = original
+    with Image.open(tmp_path / "assembled.png") as long_image:
+        assert long_image.size == (750, 2000)

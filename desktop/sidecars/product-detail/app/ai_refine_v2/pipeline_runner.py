@@ -1372,6 +1372,8 @@ def _run_assembler_v2(task_dir: Path, blocks: list[dict]) -> str:
     """
     from PIL import Image
 
+    # The 1:1 e-commerce images are separate pictures, never part of the long detail image.
+    blocks = [b for b in blocks if "_square_" not in str(b.get("block_id") or "")]
     if any(not b.get("success") for b in blocks):
         raise PaidResultRecoveryRequired("无可用 block 图或详情图尚未生成完整，已保存的图片保留，请继续原方案。")
 
@@ -1719,8 +1721,8 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
         # ── Stage 2: Generator (generate_v2) ──
         n_screens = len(planning.get("screens") or [])
-        if not 1 <= n_screens <= refine_planner._MAX_SCREEN_COUNT_V2:
-            raise ValueError("生图前张数检查失败：封面、买点图和参数图合计必须为1至15张")
+        if not 1 <= n_screens <= refine_planner._MAX_PLANNED_IMAGES_V2:
+            raise ValueError("生图前张数检查失败：详情图最多15张，另加最多3张1:1电商图")
         _set(task_id, status="running_generator", progress_pct=25,
              progress_msg=f"开始生成 {n_screens} 张 v2 AI 精修图...")
 
@@ -2071,7 +2073,13 @@ def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = 
     if download_errors:
         return persist("recovery_required", "; ".join(download_errors))
 
-    if any(not b.get("success") for b in blocks) or len(blocks) < planned_count:
+    # A 1:1 e-commerce image the provider plainly failed is just missing, as in the normal
+    # generation path: it never holds back the detail screens or the long image.
+    def settled_square_failure(block):
+        return ("_square_" in str(block.get("block_id") or "") and not block.get("success")
+                and not block.get("raw_url") and block.get("provider_status") in {"failed", "cancelled", "canceled"})
+
+    if any(not b.get("success") and not settled_square_failure(b) for b in blocks) or len(blocks) < planned_count:
         if not continue_missing:
             return persist("recovery_required", f"尚未完成，已保存 {sum(bool(b.get('success')) for b in blocks)}/{planned_count} 屏。继续原方案只生成未提交的屏，新增屏按报价计费。")
         from ai_refine_v2 import refine_generator
@@ -2083,7 +2091,7 @@ def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = 
         expected = [b["block_id"] for b in refine_generator._build_blocks_v2(planning)]
         if expected != [b.get("block_id") for b in blocks] or len(expected) != planned_count:
             return persist("recovery_required", "原方案与图片断点不一致，未提交新请求。")
-        if any(not b.get("success") and (b.get("provider_task_id") or b.get("raw_url")
+        if any(not b.get("success") and not settled_square_failure(b) and (b.get("provider_task_id") or b.get("raw_url")
                                          or b.get("provider_status") in {"failed", "outcome_unknown"}) for b in blocks):
             return persist("recovery_required", "缺失屏已有付费或失败记录，需核对原结果；未重复购买。")
         inputs = _read_json(task_dir / "_input.json") or {}
@@ -2092,7 +2100,7 @@ def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = 
             lambda pct, msg: _set(task_id, progress_pct=pct, progress_msg=msg), resume_blocks=blocks,
         )
         persist("running_recovery")
-        if any(not b.get("success") for b in blocks):
+        if any(not b.get("success") and not settled_square_failure(b) for b in blocks):
             return persist("recovery_required", "仍有图片未完成，已生成图片保留，未重复购买。")
 
     successful = [block for block in blocks if block.get("success")]
