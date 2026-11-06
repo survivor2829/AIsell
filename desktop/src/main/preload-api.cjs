@@ -736,6 +736,7 @@ function createPreloadApis(ipcRenderer) {
     },
     account: {
       status: () => ipcRenderer.invoke("account:status"),
+      billing: () => ipcRenderer.invoke("account:billing"),
       login: (payload) => ipcRenderer.invoke("account:login", { phone: String(payload?.phone || ""), password: String(payload?.password || "") }),
       update: (payload) => ipcRenderer.invoke("account:update", {
         action: payload?.action === "setup" ? "setup" : "password",

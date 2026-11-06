@@ -38,6 +38,7 @@
 | `desktop/sidecars/content-engine/content_engine/production_summary.py` | 完整数据库记录的业务制作归并、分类、统计和分页；与精确任务/候选查询配合恢复历史制作 | 截取前 N 条原任务再推算总数；改写历史失败或把同项目所有任务合为一项 |
 | `desktop/sidecars/content-engine/content_engine/provider_usage.py` | 已接入供应商的真实请求开始/结果事件、上下文关联和用量汇总 | 记录提示词/正文/密钥；把缺失用量当零或自行推定账单金额 |
 | `server/maintenance/` | 测试更新分发、诊断聚合、`feedback.py` 私有回执与处理状态，以及 SSH 隧道后台 | 公网列出反馈；接管微信操作、客户密钥或计费授权 |
+| `server/provider-gateway/billing.py`、`desktop/src/renderer/BillingBadge.tsx` | 客户算力：网关按供应商返回的用量和服务器价格表记账（成本×1.3，1 元=4 万算力），开户送 2000 万；视频的调用按“视频编号”（`X-Xiaoxi-Billing-Job`）挂起，客户端回报成功才扣、失败或一天没回报不扣；余额 ≤0 拒绝新的付费请求（已开始的视频做完），后台可充值、看明细、设“不拦截”；顶栏显示余额 | 在客户端计算或保存余额；把估价当供应商账单；为扣费重发结果不明的请求 |
 | `release/` | 从源码生成的便携目录与 ZIP | 手工修改后回灌源码或作为唯一真相 |
 
 正常入口由 `wechat-workflow.cjs` 统一安排触达、朋友圈发布／互动和客户回复优先级，`wechat-workflow-ipc.cjs` 管理统一进度浮窗。各业务执行器完成一个工作单元后交还调度权，不把业务发送账本搬进协调层。朋友圈的 `moments-daily-automation.cjs` 仅保留旧独立模式；统一工作流接管时停止其调度，避免双重执行。

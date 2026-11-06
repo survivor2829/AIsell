@@ -259,12 +259,17 @@ class ProviderRequest:
 def observe_http_error(meter, error):
     """Read a bounded rejection only to extract approved counters and codes."""
     meter.observe(headers=getattr(error, "headers", None), http_status=getattr(error, "code", None))
+    payload = None
     try:
         raw = error.read(65536)
         if len(raw) < 65536:
-            meter.observe(json.loads(raw))
+            payload = json.loads(raw)
+            meter.observe(payload)
     except (ValueError, OSError, AttributeError, TypeError):
         pass
+    # The company gateway refuses new paid work once this customer's 算力 is used up.
+    if getattr(error, "code", None) == 402 and isinstance(payload, dict) and payload.get("error") == "credit_exhausted":
+        raise ContentEngineError("credit_exhausted", "算力已用完，请联系客服充值后继续使用。")
 
 
 def provider_usage_summary(data_dir, *, task_ids=None, batch_id=None, limit=100):

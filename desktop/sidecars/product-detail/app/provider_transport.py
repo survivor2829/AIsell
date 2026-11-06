@@ -41,7 +41,7 @@ def build_provider_opener(url: str, *, proxies=None):
 def post_provider_json(url: str, payload: dict, *, headers: dict, timeout: int):
     request = urllib.request.Request(
         url, method="POST", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
+        headers={"Content-Type": "application/json", "X-Xiaoxi-Billing-Feature": "product_detail", **headers},
     )
     with build_provider_opener(url, proxies={}).open(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))

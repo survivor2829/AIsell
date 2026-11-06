@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from .provider_tls import gateway_tls_context
+from .provider_tls import gateway_tls_context, tag_billing
 
 
 DEFAULT_BASE_URL = "https://api.apimart.ai/v1"
@@ -266,6 +266,8 @@ def provider_urlopen(operation, *, timeout):
         return opener.open(operation, timeout=timeout)
     context = gateway_tls_context(url, method=method)
     if context is not None:
+        if isinstance(operation, urllib.request.Request):
+            tag_billing(operation)
         opener = urllib.request.build_opener(
             _ProviderRedirectHandler(), urllib.request.HTTPSHandler(context=context)
         )

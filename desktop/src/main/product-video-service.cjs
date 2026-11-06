@@ -5,6 +5,7 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
 const { createDigitalHumanProvider, cleanMessage, fail, remoteUrl } = require('./digital-human-provider.cjs');
+const { withBillingJob } = require('./provider-gateway-client.cjs');
 const wan = require('./bailian-video-provider.cjs');
 const { planVideo, SCENES, SURFACES, DIRT, GOALS, FACT_LIMIT } = require('./video-directors.cjs');
 const { createPriceReader, validPrices, quotePlan, round } = require('./product-video-pricing.cjs');
@@ -466,11 +467,13 @@ function createProductVideoService(options = {}) {
   function schedule(id) {
     if (closed || updatePaused || active.has(id) || global.__xiaoxiUpdateHold) return;
     if (timers.has(id)) { clearTimeout(timers.get(id)); timers.delete(id); }
-    const promise = Promise.resolve().then(async () => {
+    // 算力: this video's AI calls are held under one job and charged only when it completes.
+    const promise = withBillingJob(`pv:${id}`, 'product_video', () => Promise.resolve().then(async () => {
       const task = read(id); if (!runnable(task)) return;
       try {
         if (task.status === 'outcome_unknown') await recoverReceipt(task);
         if (RUNNING.has(task.status)) await advance(task);
+        if (task.status === 'completed') void options.gatewayClient?.settleBillingJob?.(`pv:${id}`, 'succeeded');
       } catch (error) {
         if (error.code === 'product_video_update_pending') return;
         if (task.autoRetryFailedVideo && error.code === 'product_video_video_failed' && (task.videoRetryCount || 0) < 1) {
@@ -482,7 +485,7 @@ function createProductVideoService(options = {}) {
         }
         pause(task, error);
       }
-    }).finally(() => {
+    })).finally(() => {
       active.delete(id);
       if (!closed && !updatePaused && !global.__xiaoxiUpdateHold) {
         const task = read(id);

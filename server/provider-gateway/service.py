@@ -39,8 +39,10 @@ from material_search import MaterialSearch
 
 try:
     from .accounts import AccountError, AccountStore
+    from .billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, Billing, merge_prices
 except ImportError:  # run as a script: python service.py
     from accounts import AccountError, AccountStore
+    from billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, Billing, merge_prices
 
 PREFIX = "/v1/provider-gateway"
 # Account administration lives outside PREFIX: the public maintenance proxy only forwards
@@ -49,7 +51,10 @@ ADMIN_PREFIX = "/v1/accounts-admin"
 # Clients from this version on keep the device token an account login returns; older clients only
 # know license codes and must never take the device binding away from an updated computer.
 ACCOUNT_CLIENT_VERSION = (1, 2, 15)
-ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/(reset-password|status|sign-out)")
+ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/(reset-password|status|sign-out|recharge|billing-access)")
+ADMIN_BILLING_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/billing")
+# Free supplier routes never need credit: uploads, voice enrollment and avatar asset registration.
+UNMETERED_POST = ("/apimart/uploads/images", "/apimart/seedance2/private-avatar/assets", "/services/audio/tts/customization")
 APP_IDS = {
     "test": "com.aihuoke.desktop.test",
     "delivery": "com.aihuoke.desktop",
@@ -320,6 +325,10 @@ class GatewayConfig:
     narration_script_quotas: dict = field(default_factory=dict)
     # Safety valve only: scripts one license may start in any 24 hours (a looping client or a leaked license).
     narration_script_daily_limit: int = 300
+    # Customer compute credit (算力): charge = supplier cost x markup, new accounts get the grant.
+    billing_markup: float = DEFAULT_MARKUP
+    billing_grant_points: int = DEFAULT_GRANT_POINTS
+    billing_prices: dict = field(default_factory=dict)
 
     @classmethod
     def from_environment(cls, environ=None):
@@ -360,6 +369,9 @@ class GatewayConfig:
             runtime_revision=_runtime_revision(env.get("XIAOXI_GATEWAY_RUNTIME_REVISION", "")),
             apimart_open=_apimart_proxy_open(env.get("XIAOXI_GATEWAY_APIMART_PROXY_URL", "")),
             accounts_admin_token=str(env.get("XIAOXI_GATEWAY_ACCOUNTS_ADMIN_TOKEN", "")).strip(),
+            billing_markup=float(env.get("XIAOXI_GATEWAY_BILLING_MARKUP", DEFAULT_MARKUP)),
+            billing_grant_points=int(env.get("XIAOXI_GATEWAY_BILLING_GRANT_POINTS", DEFAULT_GRANT_POINTS)),
+            billing_prices=json.loads(env.get("XIAOXI_GATEWAY_BILLING_PRICES_JSON", "{}")),
         )
 
     def __post_init__(self):
@@ -400,6 +412,10 @@ class GatewayConfig:
             raise ValueError("narration_script_daily_limit_config")
         if self.viral_library_publish_token and len(self.viral_library_publish_token) < 32:
             raise ValueError("viral_library_publish_token_config")
+        if (not isinstance(self.billing_markup, (int, float)) or not 1 <= self.billing_markup <= 10
+                or type(self.billing_grant_points) is not int or not 0 <= self.billing_grant_points <= 4_000_000_000
+                or not isinstance(self.billing_prices, dict)):
+            raise ValueError("billing_config")
 
     def capabilities(self) -> dict[str, bool]:
         return {
@@ -656,6 +672,8 @@ class GatewayServer(ThreadingHTTPServer):
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
         self.accounts = AccountStore(self.receipts.db, self.receipts.lock, config.sessions.secret)
+        self.billing = Billing(self.receipts.db, self.receipts.lock, markup=config.billing_markup,
+                               grant_points=config.billing_grant_points, prices=merge_prices(config.billing_prices))
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
 
     def apimart_public_price(self, model):
@@ -1296,6 +1314,62 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"Bearer\s+(.+)", self.headers.get("Authorization", ""), re.I)
         return self.config.sessions.subject(match.group(1).strip()) if match else None
 
+    # ---- compute credit ---------------------------------------------------------------
+    def _billing_tags(self, default_feature="other"):
+        job = Billing.clean_job(self.headers.get("X-Xiaoxi-Billing-Job", ""))
+        feature = self.headers.get("X-Xiaoxi-Billing-Feature", "") or default_feature
+        return job, Billing.clean_feature(feature)
+
+    def _credit_refused(self, subject, operation_id="", default_feature="other"):
+        """None when paid work may start; otherwise the 402 reply already sent.
+        A request whose operation already has a receipt is a replay, never a new purchase."""
+        if not subject:
+            return None
+        if operation_id and OPERATION_ID.fullmatch(operation_id):
+            if self.server.receipts.lookup(subject, operation_id)[0] != "missing":
+                return None
+        job, feature = self._billing_tags(default_feature)
+        if self.server.billing.admit(subject, job, feature):
+            return None
+        balance = self.server.billing.balance(subject)["balance"]
+        self._reply_json(402, {"error": "credit_exhausted", "message": CREDIT_MESSAGE, "balance": balance})
+        return True
+
+    def _meter(self, subject, provider, method, path, body, result, default_feature="other", headers=None):
+        """Record what one finished upstream exchange cost. Billing problems never fail the request."""
+        if not subject:
+            return
+        try:
+            job, feature = self._billing_tags(default_feature)
+            request_headers = headers if headers is not None else self.headers  # case-insensitive lookups
+            items, registration = self.server.billing.meter.measure(provider, method, path, request_headers, body, result)
+            for item in items:
+                self.server.billing.record(subject, job, feature, provider, item)
+            if registration:
+                self.server.billing.register_async(provider, registration, subject, job, feature)
+            if method == "GET" and 200 <= int(result.get("status", 0)) < 300:
+                match = re.search(r"/(?:api/v1/tasks|apimart/tasks)/([A-Za-z0-9._-]{1,255})", path)
+                if match:
+                    self.server.billing.complete_async(provider, match.group(1), result.get("raw") or b"")
+        except Exception:
+            pass
+
+    def _billing_customer(self, method):
+        subject = self._session_subject()
+        if not subject:
+            return self._reply_json(401, {"error": "session_required"})
+        if method == "GET":
+            return self._reply_json(200, {"ok": True, **self.server.billing.balance(subject)})
+        try:
+            body = self._read_json(4096)
+            job = Billing.clean_job(body.get("jobId"))
+            if not job:
+                raise ValueError("job")
+            settled = self.server.billing.settle(subject, job, body.get("outcome"))
+        except (ValueError, UnicodeError, json.JSONDecodeError):
+            return self._reply_json(400, {"error": "invalid_billing_request"})
+        return self._reply_json(200, {"ok": True, **settled})
+
     def _issue_account_session(self, account, device_token="", exclusive=True):
         # One device per account: the new session replaces every other session of this account.
         # License-code sessions (transition, older clients) never sign other computers out,
@@ -1366,10 +1440,28 @@ class Handler(BaseHTTPRequestHandler):
         if not expected or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
             return self._reply_json(404, {"error": "not_found"})
         accounts = self.server.accounts
+        billing = self.server.billing
         try:
             if method == "GET":
-                return self._reply_json(200, {"ok": True, "accounts": accounts.admin_list(self.server.receipts.usage)})
+                detail = ADMIN_BILLING_ROUTE.fullmatch(route)
+                if detail:
+                    subject = accounts.admin_subject(int(detail.group(1)))
+                    return self._reply_json(200, {"ok": True, **billing.summary(subject), **billing.detail(subject)})
+                return self._reply_json(200, {"ok": True, "accounts": accounts.admin_list(
+                    lambda subject: {**self.server.receipts.usage(subject), "billing": billing.summary(subject)})})
             body = self._read_json()
+            billing_action = ADMIN_ACCOUNT_ROUTE.fullmatch(route)
+            if billing_action and billing_action.group(2) in ("recharge", "billing-access"):
+                subject = accounts.admin_subject(int(billing_action.group(1)))
+                if billing_action.group(2) == "recharge":
+                    amount, points = body.get("amountCny"), body.get("points")
+                    balance = billing.recharge(subject, amount_cny=amount if amount is not None else None,
+                                               points=points if amount is None else None, note=body.get("note", ""))
+                    return self._reply_json(200, {"ok": True, "balance": balance})
+                if not isinstance(body.get("unblocked"), bool):
+                    raise ValueError("unblocked")
+                billing.set_unblocked(subject, body["unblocked"])
+                return self._reply_json(200, {"ok": True, **billing.summary(subject)})
             if route == ADMIN_PREFIX + "/accounts":
                 expires = body.get("expiresAt")
                 account = accounts.admin_create(body.get("phone"), body.get("password"), body.get("displayName", ""), body.get("note", ""),
@@ -1482,6 +1574,8 @@ class Handler(BaseHTTPRequestHandler):
         if not OPERATION_ID.fullmatch(operation_id):
             return self._reply_json(400, {"error": "operation_id_required"})
         fingerprint = hashlib.sha256(json.dumps([subject, action, speaker, hashlib.sha256(body).hexdigest()]).encode()).hexdigest()
+        if action == "synthesize" and self._credit_refused(subject, operation_id, "digital_human"):
+            return None
         # Bind the operation ID to one payload atomically before any paid work.
         with self.server.inflight_lock:
             prior_state, _prior_result, prior_fingerprint = self.server.receipts.lookup(subject, operation_id)
@@ -1504,6 +1598,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = self._json_result(409, {"error": "voice_clone_not_ready"})
             else:
                 result = self._proxy_upstream("POST", "volcengine_tts", target, body)
+                self._meter(subject, "volcengine_tts", "POST", target, body, result, "digital_human",
+                            headers={"X-Api-Resource-Id": "seed-icl-2.0"})
         except (ValueError, TypeError, KeyError, UnicodeError, RuntimeError):
             pass
         finally:
@@ -1723,6 +1819,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._reply_json(400, {"error": "invalid_avatar_submission"})
 
         operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "").strip()
+        billing_subject = self._session_subject()
+        if method == "POST" and not parsed.path.endswith(UNMETERED_POST):
+            if self._credit_refused(billing_subject, operation_id):
+                return None
         key = None
         entry = None
         owner = True
@@ -1780,6 +1880,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError, AttributeError):
                     return self._reply_json(502, {"error": "avatar_group_response_invalid"})
             result = self._proxy_upstream(method, provider, target, body)
+            self._meter(billing_subject, provider, method, parsed.path, body, result)
             if avatar_library and method == "GET" and 200 <= result["status"] < 300:
                 try:
                     payload = json.loads(result["raw"])
@@ -1957,6 +2058,16 @@ class Handler(BaseHTTPRequestHandler):
             # Without an extracted structure, 换一篇 falls back to imitating the transcript (which also decomposes it).
             if inputs.get("mode") == "structure" and "structure" in item:
                 inputs["structure"] = item["structure"]
+        if self._credit_refused(subject, operation, "digital_human"):
+            return None
+        deepseek_path = PREFIX + "/deepseek/chat/completions"
+
+        def call_deepseek(prompt_body):
+            sent = json.dumps(prompt_body, ensure_ascii=False).encode()
+            answer = self._proxy_upstream("POST", "deepseek", self.config.origins["deepseek"] + "/chat/completions", sent)
+            self._meter(subject, "deepseek", "POST", deepseek_path, sent, answer, "digital_human")
+            return answer
+
         with self.server.inflight_lock:
             if not self.config.configured("deepseek"):
                 return self._reply_json(503, {"error": "script_service_unavailable"})
@@ -1977,8 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
         usage_state = "unknown"
         result = self._json_result(503, {"error": "operation_outcome_unknown", "operationId": operation}, headers)
         try:
-            upstream = self._proxy_upstream("POST", "deepseek", self.config.origins["deepseek"] + "/chat/completions",
-                                            json.dumps(_narration_script_prompt(inputs), ensure_ascii=False).encode())
+            upstream = call_deepseek(_narration_script_prompt(inputs))
             if 200 <= upstream["status"] < 300:
                 usage_state = "consumed"
                 try:
@@ -1994,8 +2104,7 @@ class Handler(BaseHTTPRequestHandler):
                         first = (output, ratio, problems) if ratio <= SCRIPT_ORIGINALITY_LIMIT else (None, None, [])
                         attempts, output, ratio, retry = 2, None, None, None
                         try:
-                            retry = self._proxy_upstream("POST", "deepseek", self.config.origins["deepseek"] + "/chat/completions",
-                                                         json.dumps(_narration_script_prompt(inputs, fragments if fragments and first[0] is None else None, problems), ensure_ascii=False).encode())
+                            retry = call_deepseek(_narration_script_prompt(inputs, fragments if fragments and first[0] is None else None, problems))
                             if 200 <= retry["status"] < 300:
                                 evidence["retryEvidence"] = _narration_script_evidence(retry["raw"])
                                 output = _narration_script_output(retry["raw"])
@@ -2012,8 +2121,7 @@ class Handler(BaseHTTPRequestHandler):
                            and _script_shortfall(output["script"], inputs) > 0 and all(problem.startswith("正文只有") for problem in problems)):
                         expansions += 1
                         try:
-                            more = self._proxy_upstream("POST", "deepseek", self.config.origins["deepseek"] + "/chat/completions",
-                                                        json.dumps(_narration_expand_prompt(inputs, output, _script_shortfall(output["script"], inputs)), ensure_ascii=False).encode())
+                            more = call_deepseek(_narration_expand_prompt(inputs, output, _script_shortfall(output["script"], inputs)))
                             if not 200 <= more["status"] < 300:
                                 break
                             evidence.setdefault("expandEvidence", []).append(_narration_script_evidence(more["raw"]))
@@ -2079,8 +2187,10 @@ class Handler(BaseHTTPRequestHandler):
             if account is None:
                 return self._reply_json(401, {"error": "session_required"})
             return self._reply_json(200, {"ok": True, "account": AccountStore.public(account)})
-        if route == ADMIN_PREFIX + "/accounts":
+        if route == ADMIN_PREFIX + "/accounts" or ADMIN_BILLING_ROUTE.fullmatch(route):
             return self._accounts_admin("GET", route)
+        if route == PREFIX + "/billing/balance":
+            return self._billing_customer("GET")
         if route == PREFIX + "/narration/script-quota":
             return self._narration_script("GET")
         if route == PREFIX + "/health":
@@ -2155,6 +2265,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._viral_library_operator("remove")
         if route == PREFIX + "/session":
             return self._account_session()
+        if route == PREFIX + "/billing/settle":
+            return self._billing_customer("POST")
         if route in (PREFIX + "/account/setup", PREFIX + "/account/password"):
             return self._account_update(route.removeprefix(PREFIX + "/account/"))
         if route == ADMIN_PREFIX + "/accounts" or ADMIN_ACCOUNT_ROUTE.fullmatch(route):

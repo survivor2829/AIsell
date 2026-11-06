@@ -1,4 +1,5 @@
 const https = require("node:https");
+const { AsyncLocalStorage } = require("node:async_hooks");
 
 const PREFIX = "/v1/provider-gateway";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/u;
@@ -7,6 +8,18 @@ const VERSION_PATTERN = /^(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/u;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const SESSION_TIMEOUT_MS = 20_000;
+const BILLING_JOB_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
+const BILLING_FEATURES = new Set(["mix", "product_video", "digital_human", "product_detail", "wechat", "geo", "writing", "other"]);
+// 算力: requests made inside withBillingJob carry the video's job id, so the gateway can
+// hold their charges until the video is settled (charged on success, free on failure).
+const billingScope = new AsyncLocalStorage();
+function withBillingJob(job, feature, fn) {
+  if (!BILLING_JOB_PATTERN.test(String(job || ""))) return fn();
+  return billingScope.run({ job: String(job), feature: BILLING_FEATURES.has(feature) ? feature : "other" }, fn);
+}
+function withBillingFeature(feature, fn) {
+  return billingScope.run({ job: "", feature: BILLING_FEATURES.has(feature) ? feature : "other" }, fn);
+}
 
 function createError(code, message = code) {
   const error = new Error(message);
@@ -354,6 +367,9 @@ function createProviderGatewayClient(options = {}) {
     } else {
       await initialize();
       Object.assign(headers, requestHeaders());
+      const billing = billingScope.getStore();
+      if (billing?.job) headers["X-Xiaoxi-Billing-Job"] = billing.job;
+      if (billing?.feature && !headers["X-Xiaoxi-Billing-Feature"]) headers["X-Xiaoxi-Billing-Feature"] = billing.feature;
     }
     const result = await requestImpl({
       url,
@@ -366,6 +382,29 @@ function createProviderGatewayClient(options = {}) {
       agent
     });
     return normalizeResponse(result);
+  }
+
+  // Settling is best effort: a job nobody settles is treated as failed (free) by the gateway.
+  async function settleBillingJob(job, outcome) {
+    if (!enabled || !BILLING_JOB_PATTERN.test(String(job || "")) || !["succeeded", "failed"].includes(outcome)) return null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await fetchGateway(endpoint("/billing/settle"), { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ jobId: String(job), outcome }) });
+        if (response.ok) return await response.json();
+        if (response.status >= 400 && response.status < 500) return null;
+      } catch { /* retried below */ }
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+    }
+    return null;
+  }
+
+  async function billingBalance() {
+    if (!enabled) return null;
+    const response = await fetchGateway(endpoint("/billing/balance"), { method: "GET", headers: { Accept: "application/json" } });
+    if (!response.ok) throw createError(response.status === 401 ? "GATEWAY_SESSION_REQUIRED" : "BILLING_UNAVAILABLE", "暂时查不到算力余额。");
+    const value = await response.json();
+    return { balance: Number(value.balance) || 0, blocked: value.blocked === true, unblocked: value.unblocked === true };
   }
 
   async function close() {
@@ -386,6 +425,7 @@ function createProviderGatewayClient(options = {}) {
   }
 
   return {
+    billingBalance,
     close,
     fetch: fetchGateway,
     invalidate,
@@ -396,6 +436,7 @@ function createProviderGatewayClient(options = {}) {
     updateAccount,
     origin: () => origin,
     requestHeaders,
+    settleBillingJob,
     status,
     token: () => token,
     url: endpoint
@@ -404,6 +445,8 @@ function createProviderGatewayClient(options = {}) {
 
 module.exports = {
   createProviderGatewayClient,
+  withBillingFeature,
+  withBillingJob,
   normalizeResponse,
   sanitizeCapabilities,
   validGatewayHealth,

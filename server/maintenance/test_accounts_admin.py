@@ -84,6 +84,15 @@ class AccountsAdminTest(unittest.TestCase):
         self.assertEqual(200, self.login("13800000001", "fresh2026")[0])
         self.assertEqual(200, self.call(self.admin_origin, f"/api/accounts/{account_id}/status", {"status": "disabled"})[0])
         self.assertEqual(403, self.login("13800000001", "fresh2026")[0])
+        # Compute credit: the grant shows in the list; recharge, the no-block switch and the detail go through.
+        self.assertEqual(20_000_000, listed["accounts"][0]["usage"]["billing"]["balance"])
+        status, recharged = self.call(self.admin_origin, f"/api/accounts/{account_id}/recharge", {"amountCny": 500, "note": "转账"})
+        self.assertEqual((200, 40_000_000), (status, recharged.get("balance")), recharged)
+        self.assertEqual(200, self.call(self.admin_origin, f"/api/accounts/{account_id}/billing-access", {"unblocked": True})[0])
+        status, detail = self.call(self.admin_origin, f"/api/accounts/{account_id}/billing")
+        self.assertEqual(200, status, detail)
+        self.assertTrue(detail["unblocked"])
+        self.assertEqual(["recharge", "grant"], [row["kind"] for row in detail["ledger"]])
 
     def test_gateway_admin_routes_need_the_token(self):
         self.assertEqual(404, self.call(self.gateway_origin, "/v1/accounts-admin/accounts", origin=False)[0])

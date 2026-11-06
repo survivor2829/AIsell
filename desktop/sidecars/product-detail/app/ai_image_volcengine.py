@@ -65,6 +65,7 @@ def generate_background(prompt: str, api_key: str,
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "X-Xiaoxi-Billing-Feature": "product_detail",
     }
 
     try:

@@ -63,6 +63,7 @@ import { WechatGettingStarted } from "./WechatGettingStarted";
 import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget } from "./AgentHome";
 import { AgentOverview } from "./AgentOverview";
 import { back, remember, type Place } from "./nav-history";
+import BillingBadge from "./BillingBadge";
 
 type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview" | "nurture" | "phone-matrix" | "guide";
 // 小丽 ("tutorials") leads 账号运营 since 2026-10-30; the tutorials page itself moved to the bottom as "guide".
@@ -901,6 +902,7 @@ export default function App() {
         <header className="topbar">
           <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productDisplayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
+            <BillingBadge enabled={license.mode === "account" && Boolean(license.authorized)} />
             <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
               <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
               <span className="account-name">{identityName}</span>
