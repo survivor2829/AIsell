@@ -361,6 +361,54 @@ async function main() {
       assert.deepEqual(child.killedSignals, ["SIGTERM"]);
     }
 
+    // Field case 2026-11-06: a slow first Chromium start passed 30 s at
+    // browser_check. That stage gets its own longer budget; once it passes,
+    // the remaining stages get the normal budget again.
+    {
+      let child;
+      const stage = (name) => child.stderr.emit("data", Buffer.from(`{"event": "product_detail_startup", "stage": "${name}"}\n`, "utf8"));
+      const controller = createProductDetailSidecar({
+        runtimePath,
+        dataDir,
+        startupTimeoutMs: 40,
+        browserCheckTimeoutMs: 200,
+        spawnProcess: () => {
+          child = new FakeChild();
+          return child;
+        }
+      });
+      const started = controller.start();
+      await waitFor(() => Boolean(child));
+      stage("prepare_data");
+      stage("browser_check");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(controller.status().state, "starting", "browser check may run past the normal budget");
+      assert.equal(controller.status().diagnostics.phase, "browser_check");
+      stage("load_app");
+      const result = await started;
+      assert.equal(result.code, "PRODUCT_DETAIL_START_TIMEOUT", "later stages still time out on the normal budget");
+      assert.equal(result.diagnostics.phase, "load_app");
+    }
+    {
+      let child;
+      const controller = createProductDetailSidecar({
+        runtimePath,
+        dataDir,
+        startupTimeoutMs: 40,
+        browserCheckTimeoutMs: 80,
+        spawnProcess: () => {
+          child = new FakeChild();
+          return child;
+        }
+      });
+      const started = controller.start();
+      await waitFor(() => Boolean(child));
+      child.stderr.emit("data", Buffer.from('{"event": "product_detail_startup", "stage": "browser_check"}\n', "utf8"));
+      const result = await started;
+      assert.equal(result.code, "PRODUCT_DETAIL_START_TIMEOUT", "a browser that never starts still fails");
+      assert.equal(result.diagnostics.phase, "browser_check");
+    }
+
     {
       let child;
       let shutdownRequest;

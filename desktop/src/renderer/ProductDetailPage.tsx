@@ -55,6 +55,8 @@ const EMPTY_STATUS: ProductDetailStatus = {
   code: "PRODUCT_DETAIL_RUNTIME_UNAVAILABLE"
 };
 
+const BROWSER_CHECK_COPY = "正在准备浏览器。第一次打开，或杀毒软件正在检查时，可能需要一两分钟，请稍候。";
+
 const STATE_COPY: Record<ProductDetailState, { title: string; description: string }> = {
   unavailable: { title: "工作台暂不可用", description: "请重试打开工作台。如果仍无法打开，可复制下方故障信息联系支持。" },
   stopped: {
@@ -241,7 +243,8 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
         <div>
           <strong>{copy.title}</strong>
           <p>{displayState === "failed" ? FAILURE_COPY[status.code] || copy.description
-            : copy.description}</p>
+            : displayState === "starting" && status.diagnostics?.phase === "browser_check" ? BROWSER_CHECK_COPY
+              : copy.description}</p>
 
           {(displayState === "failed" || displayState === "unavailable") && <details className="product-detail-diagnostics">
             <summary>故障信息</summary>
