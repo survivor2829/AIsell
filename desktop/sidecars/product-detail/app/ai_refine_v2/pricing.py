@@ -183,7 +183,7 @@ class CostJournal:
             raise PricingRequired(f"当前方案保守预留约 ¥{committed + addition:.2f}，超过后台单任务上限 ¥{cap:.2f}；方案已保留，尚未提交后续生图。")
 
     def set_plan(self, quote, count, *, completed_blocks=None):
-        if type(count) is not int or not 1 <= count <= 15:
+        if type(count) is not int or not 1 <= count <= 18:  # 15 detail screens + 3 squares
             raise PricingRequired("方案图片数量无效，尚未提交生图。")
         with _LOCK:
             data = self.load()

@@ -61,3 +61,18 @@ def test_bad_block_numbers_do_not_break_the_set(tmp_path):
     summary["blocks"][0]["idx"] = "first"
     (task / "_summary.json").write_text(json.dumps(summary), encoding="utf-8")
     assert [i["kind"] for i in square_set.build(task)] == ["white", "main", "scene", "spec"]
+
+
+def test_ai_generated_squares_are_used_as_they_are(tmp_path):
+    task = _task(tmp_path)
+    summary = json.loads((task / "_summary.json").read_text(encoding="utf-8"))
+    Image.new("RGB", (1024, 1024), (10, 200, 10)).save(task / "block_05_screen_05_square_main.jpg")
+    summary["blocks"] += [{"idx": 5, "block_id": "screen_05_square_main", "file": "block_05_screen_05_square_main.jpg", "success": True},
+                          {"idx": 6, "block_id": "screen_06_square_scene", "file": "block_06_screen_06_square_scene.jpg", "success": False}]
+    (task / "_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    images = {i["kind"]: i for i in square_set.build(task)}
+    assert images["main"]["url"].split("?")[0].endswith("block_05_screen_05_square_main.jpg")
+    assert images["main"]["block_index"] == 4
+    assert images["scene"]["url"] is None and images["scene"]["block_index"] == 5 and "重做" in images["scene"]["reason"]
+    assert images["spec"]["url"] is None and "参数" in images["spec"]["reason"], "a newer task never falls back to the blurred layout"
+    assert images["white"]["url"], "the white square is always made locally"

@@ -1372,6 +1372,8 @@ def _run_assembler_v2(task_dir: Path, blocks: list[dict]) -> str:
     """
     from PIL import Image
 
+    # The 1:1 e-commerce images are separate pictures, never part of the long detail image.
+    blocks = [b for b in blocks if "_square_" not in str(b.get("block_id") or "")]
     if any(not b.get("success") for b in blocks):
         raise PaidResultRecoveryRequired("无可用 block 图或详情图尚未生成完整，已保存的图片保留，请继续原方案。")
 
@@ -1719,8 +1721,8 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
         # ── Stage 2: Generator (generate_v2) ──
         n_screens = len(planning.get("screens") or [])
-        if not 1 <= n_screens <= refine_planner._MAX_SCREEN_COUNT_V2:
-            raise ValueError("生图前张数检查失败：封面、买点图和参数图合计必须为1至15张")
+        if not 1 <= n_screens <= refine_planner._MAX_PLANNED_IMAGES_V2:
+            raise ValueError("生图前张数检查失败：详情图最多15张，另加最多3张1:1电商图")
         _set(task_id, status="running_generator", progress_pct=25,
              progress_msg=f"开始生成 {n_screens} 张 v2 AI 精修图...")
 

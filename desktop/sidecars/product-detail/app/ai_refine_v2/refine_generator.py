@@ -602,7 +602,8 @@ def generate(
 #   - 第 1 屏 (idx=1) 严格视为 hero (整单 fail), 其他屏 SP best-effort
 
 _V2_SIZE_DEFAULT = "3:4"  # provider 真实合同: 1K + 3:4
-_V2_MAX_SCREENS = 15
+_V2_MAX_SCREENS = 15  # detail screens
+_V2_MAX_SQUARES = 3   # plus up to three 1:1 e-commerce images (主图/场景图/参数图)
 
 # v3 (PRD AI_refine_v3.1 §5.2): 喂 cutout 屏的 prompt 开头注入注入语,
 # 让 gpt-image-2 知道 image_urls[0] 是产品参考图, 必须保留产品 silhouette / 主色 / 关键部件.
@@ -696,7 +697,11 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
         idx = s.get("idx")
         role = (s.get("role") or "").strip() or "screen"
         # block_id 用 idx + role 组合, 易识别 + 唯一 (assembler / pipeline_runner 引用按它)
-        if isinstance(idx, int):
+        square = s.get("square")
+        if isinstance(idx, int) and square:
+            # 1:1 e-commerce images are recognised everywhere by "_square_" in the id and file name.
+            bid = f"screen_{idx:02d}_square_{square}"
+        elif isinstance(idx, int):
             bid = f"screen_{idx:02d}_{role}"
         else:
             bid = f"screen_{role}"
@@ -742,6 +747,8 @@ def _build_blocks_v2(planning_v2: dict) -> list[dict]:
             ),
             "evidence": s.get("evidence") or [],
             "specifications": specifications,
+            "square": square or None,
+            "size": "1:1" if square else None,
         })
     return blocks
 
@@ -911,6 +918,17 @@ def _generate_one_block_v2(
                           "source_evidence": block.get("evidence") or []}, ensure_ascii=False)
         )
 
+    if block.get("square"):
+        # Same verified captions and brief, composed for a square marketplace frame.
+        effective_prompt = re.sub(r"3:4 portrait composition", "1:1 square composition", effective_prompt)
+        effective_prompt = re.sub(r"3\s*[:：]\s*4", "1:1", effective_prompt)
+        effective_prompt += (
+            "\nSQUARE FORMAT OVERRIDE: the output is a 1:1 square e-commerce main image. Compose for the square "
+            "itself; the background continues naturally to every edge, with no borders, frames, bands or letterboxing. "
+            "Keep the product large and fully visible and every supplied word inside the frame."
+        )
+        size = "1:1"
+
     last_err = None
     attempts = 0
     while attempts <= max_retries:
@@ -1024,8 +1042,9 @@ def generate_v2(
         raise ValueError("planning_v2 必须是非空 dict")
     if "screens" not in planning_v2 or not isinstance(planning_v2["screens"], list):
         raise ValueError("planning_v2 缺 'screens' 字段或不是 list (期望 v2 schema)")
-    if len(planning_v2["screens"]) > _V2_MAX_SCREENS:
-        raise ValueError(f"planning_v2.screens 最多允许 {_V2_MAX_SCREENS} 屏")
+    squares = sum(1 for s in planning_v2["screens"] if isinstance(s, dict) and s.get("square"))
+    if len(planning_v2["screens"]) - squares > _V2_MAX_SCREENS or squares > _V2_MAX_SQUARES:
+        raise ValueError(f"planning_v2.screens 最多允许 {_V2_MAX_SCREENS} 屏详情图和 {_V2_MAX_SQUARES} 张 1:1 电商图")
 
     use_key = _resolve_refine_api_key(api_key)
     if not use_key and api_call_fn is None:
@@ -1099,7 +1118,7 @@ def generate_v2(
             return BlockResult(block_id=block["block_id"], visual_type=block["visual_type"],
                                prompt=block.get("prompt", ""), image_url=saved_url), 0.0
         return _generate_one_block_v2(
-            block, _cutout_for(block), use_key, call_fn, retries, thinking, size,
+            block, _cutout_for(block), use_key, call_fn, retries, thinking, block.get("size") or size,
             color_anchor=color_anchor, lifecycle_callback=lifecycle_callback,
         )
 

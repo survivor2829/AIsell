@@ -27,7 +27,7 @@ AUTO_RULES = """
 好懂的容量、尺寸、续航直接突出，难懂术语才用一句话解释。不要强制每屏三段式或问句。
 body默认空，有需要仅一句40字以内。标题让客户一眼知道用途，technical_support保留关键参数。
 pages按购买重要性混排benefit和display；展示页可以解释部件、适用条件或性能，不必虚构独立收益。
-正常资料整套8至13屏，包含cover及自动添加的参数表；极少资料按screen_budget例外。
+正常资料整套8至15屏，包含cover及自动添加的参数表；极少资料按screen_budget例外。
 不足时从资料中补遗漏的重要作用、部件、操作和条件，不能重复标题换背景凑数。
 由人使用或在现场管理的设备、工具、耗材，pages中必须有一页role=lifestyle_demo的作业场景：
 一位成年工作人员自然使用产品或在旁配合作业，产品和作业效果仍是视觉重点，人物不遮挡作用区域；
@@ -109,7 +109,7 @@ RULES = """
 pages混排：benefit是真实购买理由；display是部件、工艺、性能等展示，不硬编成收益。
 整机封面和参数表由程序添加。中间pages不要再放hero或spec_table。
 按依据、购买重要性和视觉信息量排序；有多少值得展示的内容就做多少，不凑数量；
-整套最多13张，未入选内容只保留文字，不提交生图。
+整套最多15张，未入选内容只保留文字，不提交生图。
 
 画面跟内容走：部件可独占画面，容量可用立体示意，作业效果用场景，参数用醒目数字。
 不要求每屏放整机、小整机或同一正面照。不同页面用不同构图，不靠换背景伪装变化。
@@ -138,7 +138,7 @@ BUYER_RULES = """
 多个参数可以支撑同一个购买理由；一个理由也可以用不同页面展开作用、部件、范围和操作。
 不要求8个独立买点，也不能只换人群或场所冒充不同收益。优先操作劳动、清洁或作业结果、
 使用便利等实际帮助，不能编造管理排班或采购流程作为收益。
-正常资料整套8至13屏，包括封面、部件、场景、性能支撑和参数表。
+正常资料整套8至15屏，包括封面、部件、场景、性能支撑和参数表。
 资料特别少时遵循screen_budget的例外；不能把丰富材料说成稀少以缩减画面。
 先补有依据的展示维度和遗漏内容，再去掉实质重复；不复制页面凑数。
 pages混排benefit与display。展示页不虚构买点，不能整套只把参数改写为广告。
@@ -160,9 +160,12 @@ evidence和technical_support逐条引用原文，保留限定词、单位、范�
 """
 
 
-# New plans hold at most 13 screens (user 2026-11-06: 8–13). Older plans of up to 15 screens
-# remain valid for resume and single-screen redo, so acceptance limits elsewhere stay at 15.
-PLANNED_SCREEN_LIMIT = 13
+# Detail screens per plan (user 2026-11-06: 8–15, as many as the material supports).
+PLANNED_SCREEN_LIMIT = 15
+# Three extra 1:1 e-commerce images (主图/场景图/参数图), redrawn square from the matching
+# detail screens and generated with them; they never enter the long detail image.
+SQUARE_KINDS = {"main": "主图", "scene": "场景图", "spec": "参数图"}
+SQUARE_VERSION = "square-ecommerce-v1"
 
 
 def screen_budget(source):
@@ -517,7 +520,58 @@ def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outl
     return plan
 
 
+def detail_screens(plan):
+    """The detail screens without the appended 1:1 e-commerce images."""
+    return [s for s in plan.get("screens") or [] if not s.get("square")]
+
+
+def add_square_screens(plan):
+    """Append the 1:1 主图/场景图/参数图 as extra screens of the same plan, so they share the
+    paid pipeline's quote, receipts and recovery. Each copies its source screen's verified
+    captions and visual brief and is generated square instead of 3:4."""
+    screens = detail_screens(plan)
+
+    def first(test):
+        return next((s for s in screens if test(s)), None)
+
+    def presentation(screen):
+        brief = screen.get("visual_brief") if isinstance(screen.get("visual_brief"), dict) else {}
+        return brief.get("product_presentation")
+
+    sources = {
+        "main": first(lambda s: s.get("role") == "hero"),
+        "scene": first(lambda s: s.get("role") == "lifestyle_demo")
+                 or first(lambda s: s.get("role") == "scenario" or presentation(s) == "working_scene"),
+        "spec": first(lambda s: s.get("role") == "spec_table"),
+    }
+    squares = []
+    for kind, source in sources.items():
+        if source is None:
+            continue
+        square = copy.deepcopy(source)
+        square.update(square=kind, square_source_idx=source.get("idx"), selling_point_id=None)
+        square["prompt"] = (
+            "1:1 SQUARE E-COMMERCE MAIN IMAGE (" + SQUARE_KINDS[kind] + "): redesign this screen for a square "
+            "marketplace listing frame; product large and fully visible, every supplied word inside the square, "
+            "nothing cropped at the edges. " + re.sub(r"3\s*[:：]\s*4", "1:1", str(source.get("prompt") or ""))
+        )
+        squares.append(square)
+    plan["screens"] = screens + squares
+    for i, s in enumerate(plan["screens"], 1):
+        s["idx"] = i
+    plan["square_version"] = SQUARE_VERSION if squares else None
+    return plan
+
+
 def validate(plan, source, title="", category=None):
+    squares = [s for s in plan.get("screens") or [] if s.get("square")]
+    if squares:
+        core = detail_screens(plan)
+        indices = {s.get("idx") for s in core}
+        if (len(squares) > len(SQUARE_KINDS) or len({s["square"] for s in squares}) != len(squares)
+                or any(s["square"] not in SQUARE_KINDS or s.get("square_source_idx") not in indices for s in squares)):
+            raise ValueError("1:1 电商图方案异常，尚未提交生图")
+        plan = {**plan, "screens": core, "screen_count": len(core)}
     issues = plan_issues(plan, source, title, category)
     if issues:
         raise ValueError("视觉策划未通过，尚未提交生图：" + "; ".join(message for _, message in issues))
@@ -776,10 +830,10 @@ def run(source, title, category, image_available, key, model, first_http, review
                                     repair_copy=repair_copy)
         plan["automatic_planning_version"] = AUTO_VERSION
         render(plan)
-        return plan
+        return add_square_screens(plan)
     if copy_only:
         visual_prompt = prompt(False) + """
-正常资料整套8至13屏（含封面与参数表），极少资料按screen_budget例外。
+正常资料整套8至15屏（含封面与参数表），极少资料按screen_budget例外。
 先完成成熟、直观的视觉方案：整机、作业、已知部件示意和性能页面混排。
 不必编买家工作分析。参数保持原值；未提供外观的配套物只作文字配置，不画其未知实物。
 """
