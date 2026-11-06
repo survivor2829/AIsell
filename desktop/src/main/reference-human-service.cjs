@@ -326,7 +326,8 @@ function createReferenceHumanService(options = {}) {
     task.videoFailure = { taskId: task.videoTaskId, requestId: text(response?.request_id),
       code: text(output?.code), message: text(output?.message), observedAt: new Date().toISOString() };
     const reason = task.videoFailure.code === 'DataInspectionFailed'
-      ? '供应商输入内容审核未通过（DataInspectionFailed），未说明具体触发项。请先提供云端任务号核查，不要直接重复生成。'
+      ? // 2026-11-06：背景有大字标语、LED 屏的出镜视频两次被拦，同一篇稿换背景简单的视频就通过。
+      '这段出镜视频没通过平台内容审核，平台不说明具体原因。请换一段背景简单的正面讲话视频再出片：背景里不要有大字标语、广告屏幕或其他人。（故障编号：DataInspectionFailed，云端任务号已保存）'
       : `人物生成失败：${task.videoFailure.message || task.videoFailure.code || '服务未说明原因'}。`;
     task.error = `${reason} 原配音和回执已保留，不会自动重试扣费。`;
     save(task); return task.error;

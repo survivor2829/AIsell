@@ -19,9 +19,15 @@ const DEVELOPER_GPL = ' V....D libx264  libx264 H.264\n V....D libopenh264  Open
     return name;
   }, list(SHIPPED));
   assert.equal(used, 'libopenh264'); assert.deepEqual(tried, ['h264_mf', 'libopenh264']);
-  // 3. When every encoder fails, the real last error surfaces; no encoder at all is a clear code.
+  // 3. When every encoder fails, the real last error surfaces; no encoder at all is a Chinese message
+  //    without a raw code (the import would otherwise show the identifier to the customer).
   await assert.rejects(withH264Encoder('ffmpeg', async () => { throw new Error('boom'); }, list(SHIPPED)), /boom/);
-  await assert.rejects(withH264Encoder('ffmpeg', async () => 'x', list(' V..... mpeg4  MPEG-4\n')), { code: 'h264_encoder_unavailable' });
+  await assert.rejects(withH264Encoder('ffmpeg', async () => 'x', list(' V..... mpeg4  MPEG-4\n')),
+    (error) => error.code === undefined && /编码组件未就绪/u.test(error.message));
+  // 3b. A timeout is not retried with the next encoder (review 2026-11-06: up to twice the long timeout).
+  const timedTried = [];
+  await assert.rejects(withH264Encoder('ffmpeg', async (args, name) => { timedTried.push(name); throw Object.assign(new Error('timeout'), { killed: true, signal: 'SIGTERM' }); }, list(SHIPPED)), /timeout/);
+  assert.deepEqual(timedTried, ['h264_mf']);
   // 4. No JS media path may hard-code libx264 again.
   const fs = require('node:fs'), path = require('node:path');
   for (const file of ['reference-human-media.cjs', 'video-upscale.cjs']) {

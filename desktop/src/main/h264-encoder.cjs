@@ -40,13 +40,17 @@ async function h264Encoders(ffmpegPath = 'ffmpeg', { list = listEncoders, profil
 // Runs `attempt(encoderArgs, name)` with each available encoder until one succeeds.
 // A listed encoder can still fail at run time (e.g. Media Foundation missing on
 // Windows N editions), so the next one is tried; the last error is rethrown.
+// A timed-out or killed run is not an encoder problem: trying the next encoder would
+// only make the customer wait the whole timeout again, so it is rethrown at once.
+const timedOut = (error) => Boolean(error?.killed || error?.signal || error?.code === 'ETIMEDOUT');
 async function withH264Encoder(ffmpegPath, attempt, options = {}) {
   const encoders = await h264Encoders(ffmpegPath, options);
-  if (!encoders.length) throw Object.assign(new Error('h264_encoder_unavailable'), { code: 'h264_encoder_unavailable' });
+  // No `code`: callers show their own Chinese message instead of a raw identifier.
+  if (!encoders.length) throw new Error('本地视频编码组件未就绪（没有可用的 H.264 编码器），请重新安装软件后再试。');
   let lastError;
   for (const encoder of encoders) {
     try { return await attempt(encoder.args, encoder.name); }
-    catch (error) { lastError = error; }
+    catch (error) { if (timedOut(error)) throw error; lastError = error; }
   }
   throw lastError;
 }

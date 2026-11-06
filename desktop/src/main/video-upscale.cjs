@@ -15,7 +15,8 @@ async function upscaleTo1080Size({ source, destination, ffmpegPath = 'ffmpeg' })
     let detail = '';
     child.stderr.on('data', (chunk) => { detail = (detail + chunk.toString()).slice(-1000); });
     child.on('error', reject);
-    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(detail || `FFmpeg ${code}`)));
+    // Keep the kill signal so a timeout is not retried with another encoder.
+    child.on('close', (code, signal) => code === 0 ? resolve() : reject(Object.assign(new Error(detail || `FFmpeg ${code ?? signal}`), { signal })));
   }));
   if (!fs.existsSync(destination) || fs.statSync(destination).size < 1024) throw new Error('本地放大后的视频文件无效。');
   return destination;

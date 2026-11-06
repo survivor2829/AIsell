@@ -276,6 +276,11 @@ const start = (pipeline, extra = {}) => pipeline.start({ item: item('74000000000
     assert.equal(spoken.title, '玺联惠AI获客');
     assert.ok(!/[\p{Extended_Pictographic}\[\]—]/u.test(spoken.script + spoken.title), '不把表情、表情码、破折号交给配音');
     assert.throws(() => pipeline.startFromScript({ libraryItem: { own: true, title: '标题', script: '💪💪[月亮]' }, assetId: 'rha_1' }), { code: 'viral_item_invalid' }, '只有表情：拦下，不花钱');
+    // 审查（2026-11-06）：真字、日期、区间、产品名不能被改掉或删掉。
+    const { cleanSpokenScript } = require('./spoken-script.cjs');
+    for (const [input, expected] of [['[重要]三点，[AI]时代', '[重要]三点，[AI]时代'], ['2026/11/06开课', '2026/11/06开课'], ['10–20元，9:00—18:00', '10到20元，9:00到18:00'],
+      ['C++开发，1+1=2', 'C++开发，1+1=2'], ['清洁机器人+AI，AI+清洁', '清洁机器人加AI，AI加清洁'], ['[月亮]晚上[呲牙]好', '晚上好']])
+      assert.equal(cleanSpokenScript(input), expected, input);
     await pipeline.close();
   }
   // 14. 文案库出片超预算：什么都没买，可以删掉，也可以再出一条（2026-11-02 实测卡住）
