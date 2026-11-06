@@ -177,6 +177,7 @@ async function main() {
     while (service.isBusy()) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(service.get(failing.id).status, 'needs_attention');
     assert.match(service.get(failing.id).error, /DataInspectionFailed/u);
+    assert.match(service.get(failing.id).error, /换一段背景简单的正面讲话视频/u, '客户看得懂、照着能做：换视频');
     assert.equal(service.get(failing.id).videoFailure.code, 'DataInspectionFailed');
     const failedPath = path.join(root, 'reference', 'tasks', `${failing.id}.json`);
     const failedRecord = JSON.parse(fs.readFileSync(failedPath)); delete failedRecord.videoFailure;

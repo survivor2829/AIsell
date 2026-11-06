@@ -84,7 +84,14 @@ async function prepareReference(source, destination, ffmpegPath = 'ffmpeg') {
   const video = path.join(destination, 'reference.mp4'), audio = path.join(destination, 'voice.wav'), poster = path.join(destination, 'poster.jpg');
   // Normalize only the managed copy. Keep reference footage silent: original
   // speech must never leak into the new narration or its music mix.
-  await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-i', source, '-map', '0:v:0', '-an', '-c:v', 'libx264', '-preset', 'fast', '-crf', '19', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', video], { windowsHide: true, timeout: 180000 });
+  // The shipped FFmpeg has no libx264 (LGPL build); pick an encoder it provides. High-bitrate
+  // camera footage (e.g. DJI 10-bit HEVC 60 fps) needs more than a fixed 3 minutes on slow PCs.
+  // Cap at 30 fps: lip-sync gains nothing from 60 fps and the copy is uploaded to the provider.
+  const encodeTimeout = Math.max(180000, Math.ceil(input.seconds) * 8000);
+  await require('./h264-encoder.cjs').withH264Encoder(ffmpegPath, async (encoder) => {
+    fs.rmSync(video, { force: true });
+    await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-i', source, '-map', '0:v:0', '-an', '-fpsmax', '30', ...encoder, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', video], { windowsHide: true, timeout: encodeTimeout });
+  }, { profile: 'reference' });
   await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-i', source, '-ss', String(audioQuality.startSeconds), '-t', String(audioQuality.seconds), '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '24000', '-c:a', 'pcm_s16le', audio], { windowsHide: true, timeout: 60000 });
   await run(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-ss', '0.2', '-i', video, '-frames:v', '1', '-vf', 'scale=320:-2', poster], { windowsHide: true, timeout: 30000 });
   return { ...(await probeMedia(video, ffmpegPath)), audioQuality, sourceSha256: sha256(fs.readFileSync(source)), videoSha256: sha256(fs.readFileSync(video)), audioSha256: sha256(fs.readFileSync(audio)) };
