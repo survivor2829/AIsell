@@ -2,6 +2,8 @@
 // 付费环节全部复用已有的写稿回执和本人口播任务（同一操作只提交一次，失败重试不重复扣费）；
 // 本模块只负责排队、把每一步的进度记到磁盘、在重启后从断点继续。
 const fs = require('node:fs');
+const { cleanSpokenScript } = require('./spoken-script.cjs');
+const { normalize } = require('./narration-transcript.cjs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
@@ -246,17 +248,19 @@ function createViralPipeline(options) {
     const person = assetId ? reference.assets().items.find((a) => a.id === assetId) : null;
     if (!person || person.available === false || !person.voiceSampleReady) throw problem('viral_person_missing', '请先上传本人视频。');
     if (!person.voiceConsented) throw problem('viral_voice_consent', '请先确认视频和声音是你本人的。');
-    const scriptText = clean(entry.script).slice(0, 500);
+    // Pasted WeChat copy: emoji and [表情] are read as extra words and fail the transcript check.
+    const scriptText = cleanSpokenScript(entry.script).slice(0, 500), titleText = cleanSpokenScript(entry.title).slice(0, 24);
+    if (!normalize(scriptText) || !normalize(titleText)) throw problem('viral_item_invalid', '去掉表情符号后标题或正文是空的，请写上要念的文字。');
     // 自己写的稿按正文区分：同一篇正在做就不再开第二条，换一篇就是新的一条。
     const itemId = own ? `own${createHash('sha256').update(scriptText).digest('hex').slice(0, 24)}` : `lib${entry.id}`.slice(0, 64);
     // 同一个人念同一篇才算重复；客户重录了视频或换了稿子，是新的一条。正在做的不并行开第二条。
     const duplicate = all().find((j) => j.item.id === itemId && holdsItem(j) && (['queued', 'running'].includes(j.status) || (j.assetId === assetId && j.script?.script === scriptText)));
     if (duplicate) return publicJob(duplicate);
     const url = !own && postUrl(entry.source?.url, entry.platform) ? String(entry.source.url) : '';
-    const phrases = (Array.isArray(entry.emphasisPhrases) ? entry.emphasisPhrases : []).filter((p) => typeof p === 'string' && chars(p).length <= 12 && entry.script.includes(p)).slice(0, 5);
+    const phrases = (Array.isArray(entry.emphasisPhrases) ? entry.emphasisPhrases : []).filter((p) => typeof p === 'string' && chars(p).length <= 12 && scriptText.includes(p)).slice(0, 5);
     const job = { id: `vp_${randomUUID()}`, mode: 'script', createdAt: new Date().toISOString(), status: 'queued', step: 'voice', progress: 0,
       maxCny: Number(maxCny) > 0 ? Math.min(Number(maxCny), 50) : DEFAULT_MAX_CNY, assetId, industry: clean(industry).slice(0, 80) || '清洁设备渠道商', business: clean(business).slice(0, 2000),
-      transcriptSource: own ? 'own' : 'library', script: { title: clean(entry.title).slice(0, 24), script: scriptText, emphasisPhrases: phrases, originality: null, structure: [] },
+      transcriptSource: own ? 'own' : 'library', script: { title: titleText, script: scriptText, emphasisPhrases: phrases, originality: null, structure: [] },
       item: own ? { id: itemId, platform: 'manual', url: '', title: clean(entry.title).slice(0, 200), body: '', author: '', publishedAt: null, likes: null, media: null }
         : { id: itemId, platform: entry.platform, url, title: clean(entry.source?.title || entry.title).slice(0, 200), body: '', author: clean(entry.source?.author).slice(0, 120), publishedAt: null, likes: Number.isFinite(entry.source?.likes) ? entry.source.likes : null, media: null } };
     save(job); void pump(); return publicJob(job);

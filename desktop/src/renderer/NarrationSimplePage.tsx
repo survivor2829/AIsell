@@ -18,6 +18,8 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
 }
 // 每条最多花 8 元（用户 2026-11-02：短素材接长后 45、60 秒都要能出片）；超过仍然拦下。
 const MAX_CNY = 8;
+// 和主进程 spoken-script.cjs 一致：从微信复制的表情和表情码出片时自动去掉，这里只提示。
+const UNSPOKEN = /\p{Extended_Pictographic}|\[[\p{Script=Han}A-Za-z]{1,6}\]/u;
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === 'development';
 
 // 「自己写一篇」（用户 2026-11-04）：不用文案库，下一步里自己写或粘贴；仿写出来的稿在下一步里也能直接改。
@@ -207,11 +209,11 @@ export function NarrationSimplePage({ onOpenPending }: { onOpenPending?: () => v
           <label><em>标题</em><input value={final.title} disabled={working} placeholder="例如：夜班保洁排不开人怎么办" aria-label="口播稿标题" onChange={(event) => edit({ title: event.target.value })} />
             <small className={count(final.title) > TITLE_MAX ? 'is-over' : ''}>{count(final.title)}/{TITLE_MAX}</small></label>
           <label><em>正文</em><textarea value={final.script} disabled={working} rows={6} placeholder="把要念的话写在这里，500 字以内。" aria-label="口播稿正文" onChange={(event) => edit({ script: event.target.value })} />
-            <small className={count(final.script) > SCRIPT_MAX ? 'is-over' : ''}>{count(final.script)}/{SCRIPT_MAX} 字{count(final.script) > 0 && ` · 念出来约 ${speakSeconds(final.script)} 秒`}</small></label>
+            <small className={count(final.script) > SCRIPT_MAX ? 'is-over' : ''}>{count(final.script)}/{SCRIPT_MAX} 字{count(final.script) > 0 && ` · 念出来约 ${speakSeconds(final.script)} 秒`}{UNSPOKEN.test(final.script) && ' · 表情符号和 [表情] 会自动去掉，不会念出来'}</small></label>
         </div>}
         <h1 className="ns-h1 is-small">上传本人视频</h1>
-        <p className="ns-lead">用手机竖着拍，正对镜头，照着下面这段读一遍，10 秒以上就行。读完上传，45 秒、60 秒的视频都能做。</p>
-        <div className="ns-read"><span>照着读这段</span><b>{READ_ALOUD}</b><small>拍摄时：竖屏、正脸、身体少动、找个安静的地方。画面会自动接长到稿子的时长。</small></div>
+        <p className="ns-lead">用手机竖着拍，正对镜头自然说一段话，10 秒以上就行，说什么都可以；不知道说什么，可以参考下面这段。45 秒、60 秒的稿子都能做。</p>
+        <div className="ns-read"><span>可以参考这段（不用照着读）</span><b>{READ_ALOUD}</b><small>拍摄时：竖屏、正脸、身体少动、找个安静的地方。画面会自动接长到稿子的时长。</small></div>
         <div className="ns-person">
           {person?.previewDataUrl ? <img src={person.previewDataUrl} alt="" /> : <i className="ns-ph" aria-hidden="true" />}
           <div className="ns-person-text">
