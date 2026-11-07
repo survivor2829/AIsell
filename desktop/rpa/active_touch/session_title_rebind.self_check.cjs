@@ -78,7 +78,15 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
   assert.match(header, /if \(-not \(& \$matches \$lines\)\)/u, "the taller read runs only when the strip did not match");
   assert.match(header, /Where-Object \{ \$_\.x -ge \$bandLeft-2 -and \$_\.y -ge -2 -and \$_\.bottom -le \$bandHeight\+2 \}/u,
     "only lines inside the title band count, never the session list or chat body");
-  assert.match(header, /\$found\.Count -eq 1 -and \$found\[0\]\.text -ceq \$expected/u, "one exact, case-sensitive match");
+  // 1.2.72 (user 2026-11-07): exactly one line; exact match, or equal once symbols,
+  // punctuation and spaces are dropped, or a "…"-cut title of 4+ letters/digits that
+  // begins the name. Letters and digits are never relaxed (checked live: one character
+  // more, less or different still fails).
+  assert.match(header, /if \(\$found\.Count -ne 1\) \{ return \$false \}/u, "exactly one title line");
+  assert.match(header, /if \(\$text -ceq \$expected\) \{ return \$true \}/u, "the exact match still passes");
+  assert.match(header, /\[\\p\{P\}\\p\{S\}\\p\{Cs\}\\p\{Cf\}\\p\{Mn\}\\s\]/u, "only symbols, punctuation and spaces are ignored");
+  assert.match(header, /\$textFolded\.Length -ge 4 -and \$expectedFolded\.StartsWith\(\$textFolded, \[StringComparison\]::Ordinal\)/u,
+    "a cut title must show at least 4 letters/digits of the name");
   assert.doesNotMatch(header, /editDistance|-like/u, "no fuzzy title match");
   console.log("header title fallback shape passed");
 }

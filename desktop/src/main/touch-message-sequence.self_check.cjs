@@ -377,7 +377,7 @@ async function checkTouchMessageSequence() {
   const skipTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(skipRecord.id).digest("hex"));
   const skippedTask = JSON.parse(fs.readFileSync(path.join(skipTaskDir, "touch_task.json"), "utf8"));
   assert.equal(skippedTask.results[0].status, "identity_skipped");
-  assert.deepEqual(Object.keys(skippedTask.results[0].skip_record), ["contactId", "displayName", "index", "reasonCode", "ruleId", "blockedReason", "at", "traceId"]);
+  assert.deepEqual(Object.keys(skippedTask.results[0].skip_record), ["contactId", "displayName", "index", "reasonCode", "ruleId", "blockedReason", "at", "traceId", "identityLogic"]);
   assert.equal(skippedTask.results[0].skip_record.reasonCode, "exact_search_result_not_found");
   searchUnavailable = false;
   result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context);
@@ -448,6 +448,23 @@ async function checkTouchMessageSequence() {
   assert.deepEqual(mixedRetry.excludedReasons, { retry_skipped_poisoned_forbidden: 1 });
   assert.equal(mixedRetry.task.results[0].status, "identity_skipped");
   assert.equal(mixedRetry.task.results[1].status, "generated");
+  // 用户 2026-11-07：同样的识别方式下被跳过的联系人，「全部重试」结果必然一样，不再重新加入；
+  // 识别方式更新后（旧记录）照常加入；手动单独勾选的仍可重试。
+  const { IDENTITY_LOGIC_VERSION } = require("../../rpa/active_touch/touch_task_state.cjs");
+  const unchangedTask = JSON.parse(fs.readFileSync(path.join(poisonedTaskDir, "touch_task.json"), "utf8"));
+  unchangedTask.results[1].status = "identity_skipped";
+  unchangedTask.results[1].skip_record = { contactId: unchangedTask.results[1].id, displayName: "认不准", index: 1,
+    reasonCode: "search_result_not_opened", identityLogic: IDENTITY_LOGIC_VERSION };
+  unchangedTask.status = "completed";
+  assert.equal(skippedTaskSummary(unchangedTask).records[1].bulk_retryable, false);
+  assert.equal(skippedTaskSummary(unchangedTask).records[1].retryable, true, "it can still be picked by hand");
+  const unchangedBulk = retrySkippedResults(JSON.parse(JSON.stringify(unchangedTask)));
+  assert.equal(unchangedBulk.ok, false, "retry all must not re-run a contact whose result cannot change");
+  assert.equal(unchangedBulk.excludedReasons.retry_skipped_identity_unchanged, 1);
+  assert.match(unchangedBulk.error, /判断方式没变/u);
+  const handPicked = retrySkippedResults(JSON.parse(JSON.stringify(unchangedTask)), [unchangedTask.results[1].id]);
+  assert.equal(handPicked.ok, true, "a contact picked by hand is retried");
+  assert.equal(handPicked.task.results[1].status, "generated");
 
   const completedUnverified = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
   const completedUnverifiedBytes = fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8");

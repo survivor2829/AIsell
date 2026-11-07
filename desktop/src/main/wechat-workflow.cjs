@@ -994,7 +994,7 @@ function createWechatWorkflowController(options) {
   function retryAllEligible(task) {
     if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) return null;
     const skipped = ["completed", "needs_attention"].includes(task.status)
-      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => row.retryable === true);
+      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => (row.bulk_retryable ?? row.retryable) === true);
     return skipped ? "skipped" : canRetry(task) ? "task" : null;
   }
 
@@ -1003,7 +1003,7 @@ function createWechatWorkflowController(options) {
     const generation = await pauseForRetry("retry_all");
     try { return await serialize(() => {
       assertPlanEditable();
-      let taskCount = 0, contactCount = 0, excludedCount = 0;
+      let taskCount = 0, contactCount = 0, excludedCount = 0, unchangedCount = 0;
       for (const task of store.tasks) {
         const eligible = retryAllEligible(task);
         if (!eligible) continue;
@@ -1012,6 +1012,7 @@ function createWechatWorkflowController(options) {
             const retried = requeueSkipped(task);
             contactCount += Number(retried.retriedCount || 0);
             excludedCount += Number(retried.excludedCount || 0);
+            unchangedCount += Number(retried.excludedReasons?.retry_skipped_identity_unchanged || 0);
           } else {
             const remainingContacts = task.type === "touch" ? Math.max(0, Number(task.progress?.total || 0) - Number(task.progress?.done || 0)) : 0;
             requeueTask(task);
@@ -1025,7 +1026,7 @@ function createWechatWorkflowController(options) {
       persist(); emit();
       log("task.retry_all_requested", { task_count: taskCount, contact_count: contactCount,
         excluded_count: excludedCount, and_start_requested: andStart === true }, { code: "retry_all_requested" });
-      return { ok: true, state: status(), taskCount, contactCount, excludedCount };
+      return { ok: true, state: status(), taskCount, contactCount, excludedCount, unchangedCount };
     }); }
     catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
   }

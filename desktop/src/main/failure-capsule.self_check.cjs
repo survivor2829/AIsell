@@ -199,8 +199,8 @@ async function dailyLimitStopsAFailureLoop() {
   const t = fixture("limit");
   t.setEnabled(false);
   let made = 0;
-  for (let index = 0; index < 60; index += 1) if (t.capsules.record({ source: "log", module: "app", code: `code_${index}` })) made += 1;
-  assert.equal(made, 40, "a failure loop cannot flood the server or the disk");
+  for (let index = 0; index < 250; index += 1) if (t.capsules.record({ source: "log", module: "app", code: `code_${index}` })) made += 1;
+  assert.equal(made, 200, "a failure loop cannot flood the server or the disk");
   t.capsules.stop();
 }
 

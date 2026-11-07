@@ -67,7 +67,23 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     if ($expected.Length -eq 0) { return $false }
     # A narrow title strip needs surrounding whitespace for WinRT line detection.
     $lines=@(Read-HeaderArea $left $top $right $bottom 3 (($bottom-$top)*2))
-    $matches={ param($found) $found.Count -eq 1 -and $found[0].text -ceq $expected }
+    # Customer names carry emoji, punctuation and spaces that OCR drops or misreads,
+    # and a long name is cut with "…": an exact match skipped about half of the
+    # opened chats (customer 1.2.71, 2026-11-07). Letters and digits must still be
+    # identical; only symbols/punctuation/spaces are ignored, and a cut title must
+    # show at least the first 4 letters/digits of the name.
+    $fold={ param([string]$value) [Text.RegularExpressions.Regex]::Replace($value.Normalize([Text.NormalizationForm]::FormKC),'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
+    $expectedFolded=& $fold $expectedTitle
+    $matches={ param($found)
+      if ($found.Count -ne 1) { return $false }
+      $text=[string]$found[0].text
+      if ($text -ceq $expected) { return $true }
+      if ($expectedFolded.Length -lt 2) { return $false }
+      $textFolded=& $fold $text
+      if ($textFolded -ceq $expectedFolded) { return $true }
+      $cut=$text -match '(…|\.\.\.|。。。)$'
+      return $cut -and $textFolded.Length -ge 4 -and $expectedFolded.StartsWith($textFolded, [StringComparison]::Ordinal)
+    }
     if (-not (& $matches $lines)) {
       # Windows OCR finds no line at all in a strip holding only a short title (a two-character
       # name on the development machine, WeChat 4.2.0.13, 2026-11-05: the chat was open and the
