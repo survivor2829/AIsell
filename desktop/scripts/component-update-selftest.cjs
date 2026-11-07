@@ -483,6 +483,30 @@ test("full generation matches signed target, reuses base and unchanged component
   await fs.access(path.join(legacyRoot, "generations", path.basename(replacement.generationRoot)));
   for (const archive of await fs.readdir(path.join(recoveryRoot, "archives"))) await fs.access(path.join(legacyRoot, "archives", archive));
 });
+test("an unchanged component missing a file in the running program is downloaded again instead of failing", async t => {
+  // Field 2026-11-07: a content-engine asset vanished from the active program after a switch;
+  // the engine could not start and the next update refused to reuse the component.
+  const { root, source } = await fixture(t);
+  const nextSource = path.join(root, "next"); await fs.cp(source, nextSource, { recursive: true });
+  await fs.writeFile(path.join(nextSource, "版本清单.json"), JSON.stringify({ version: "1.1.1", remotionRuntime: {} }));
+  await fs.writeFile(path.join(nextSource, "resources/app/src/main/main.cjs"), "application v2");
+  const target = await buildComponentRelease({ sourceRoot: nextSource, outputDir: path.join(root, "target-artifacts"), version: "1.1.1", ...config });
+  const requested = [];
+  const transport = { async request(route, options) {
+    const archive = target.artifacts.find(a => route === `/components/${a.sha256}.zip`);
+    requested.push(archive.component || archive.name || route);
+    await fs.copyFile(archive.path, options.destination); options.onProgress(archive.size);
+  } };
+  const engine = target.artifacts.find(a => (a.component || a.name) === "content-engine");
+  assert.ok(engine, "fixture publishes a content-engine archive");
+  await fs.rm(path.join(source, "resources/content-engine/content-engine-worker.exe"));
+  const store = createComponentStore({ rootDir: path.join(root, "heal"), baseRoot: source, config, transport });
+  const prepared = await store.prepare(sign(target.manifest));
+  assert.ok(requested.includes("content-engine"), "the incomplete unchanged component is fetched again");
+  assert.equal(await fs.readFile(path.join(prepared.generationRoot, "resources/content-engine/content-engine-worker.exe"), "utf8"), "python owncode v1");
+  assert.equal(await fs.readFile(path.join(prepared.generationRoot, "resources/app/src/main/main.cjs"), "utf8"), "application v2");
+});
+
 test("a base file removed or altered in the installed program is reported by name instead of a bare ENOENT", async t => {
   const { root, source, base } = await fixture(t);
   const nextSource = path.join(root, "next"); await fs.cp(source, nextSource, { recursive: true });

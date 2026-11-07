@@ -3,7 +3,7 @@ const { randomUUID } = require("node:crypto");
 const { StringDecoder } = require("node:string_decoder");
 const fs = require("node:fs");
 const path = require("node:path");
-const { saveStderrTail } = require("./sidecar-stderr-log.cjs");
+const { saveStderrTail, programIntegrityNote } = require("./sidecar-stderr-log.cjs");
 
 const MAX_READY_LINE_BYTES = 64 * 1024;
 const MAX_REQUEST_LINE_BYTES = 1024 * 1024;
@@ -479,7 +479,10 @@ function createContentEngineSidecar(options = {}) {
       child.once("close", (exitCode) => {
         run.closed = true;
         // The failure capsule collector reads this file next to failures.jsonl.
-        if (!run.stopping && run.stderrTail) saveStderrTail(dataDir, run.stderrTail, `exit=${exitCode ?? ""}`);
+        if (!run.stopping && run.stderrTail) {
+          const integrity = programIntegrityNote(runtimePath, run.stderrTail);
+          saveStderrTail(dataDir, integrity ? `${run.stderrTail}\n${integrity}` : run.stderrTail, `exit=${exitCode ?? ""}`);
+        }
         clearTimeout(run.startupTimer);
         settleCloseWaiters(run);
         rejectPending(
