@@ -665,3 +665,41 @@ def test_plainly_failed_square_image_does_not_hold_recovery(task, monkeypatch):
     monkeypatch.setattr(runner, "_run_assembler_v2", assemble)
     state = runner._recover_task(task.name, "image-key")
     assert state["status"] == "partial_success", state.get("error")
+
+
+@pytest.mark.parametrize("failures", [2, 3])
+def test_transient_reference_upload_drop_is_retried_before_planning(task, monkeypatch, failures):
+    # 2026-11-06 (1.2.66): one dropped upload connection stopped the order with
+    # "生图通道未连通" and the capsule carried no underlying cause.
+    import ai_image_apimart as adapter
+    (task / "_input.json").unlink()
+    reference = task / "reference.png"
+    Image.new("RGB", (80, 80), "#7bad12").save(reference)
+    monkeypatch.setenv("XIAOXI_PRODUCT_DETAIL_DATA_DIR", str(task.parent / f"{task.name}-data"))
+    monkeypatch.setattr(pricing, "read_quote", lambda **kwargs: quote())
+    waits, events = [], []
+    monkeypatch.setattr(runner.time, "sleep", waits.append)
+    def upload(data_url, key, *, force_refresh=False):
+        events.append("upload")
+        if events.count("upload") <= failures:
+            try:
+                raise TimeoutError("timed out")
+            except TimeoutError as socket_error:
+                raise adapter.APIMartReferenceUploadTransportError("upload failed") from socket_error
+        return "https://example.invalid/reference.png"
+    monkeypatch.setattr(adapter, "upload_data_url", upload)
+    def planner(*args, **kwargs):
+        events.append("planner")
+        raise pricing.PricingRequired("fixture stops before any real purchase")
+    monkeypatch.setattr(refine_planner, "plan_v2", planner)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    runner._worker(task.name, TEXT, str(reference), "产品", "planner-key", "image-key", mode="v2")
+    assert waits == [3, 8][:min(failures, 2)]
+    assert pricing.CostJournal(task).load()["operations"] == {}
+    if failures == 2:
+        assert events == ["upload"] * 3 + ["planner"]
+    else:
+        assert events == ["upload"] * 3  # Never buys planning without a working channel.
+        diagnostic = json.loads((task / "_recovery.json").read_text(encoding="utf-8"))["diagnostic"]
+        assert diagnostic == {"error_type": "APIMartReferenceUploadTransportError",
+                              "stage": "reference_upload", "cause_type": "TimeoutError"}

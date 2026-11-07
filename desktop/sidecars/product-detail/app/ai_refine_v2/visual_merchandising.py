@@ -325,6 +325,162 @@ def source_quote(quote, source):
     raise ValueError("原文引用内容不匹配，不能用格式兼容补造事实")
 
 
+# Full-width and half-width spellings of the same punctuation mark.
+_PUNCT_EQUIV = {'，': ',', '；': ';', '（': '(', '）': ')', '！': '!', '？': '?',
+                '／': '/', '＞': '>', '＜': '<', '～': '~', '＋': '+', '％': '%'}
+_LABEL_GAP = r'[\s：:]*'
+
+
+def _punct_canonical(text):
+    return ''.join(_PUNCT_EQUIV.get(c, c) for c in text)
+
+
+def _quote_char(c):
+    canonical = _PUNCT_EQUIV.get(c, c)
+    spellings = {canonical, *(k for k, v in _PUNCT_EQUIV.items() if v == canonical)}
+    if len(spellings) == 1:
+        return re.escape(c)
+    return '[' + ''.join(re.escape(s) for s in sorted(spellings)) + ']'
+
+
+def final_source_quote(quote, source):
+    """source_quote, plus a missing/extra label colon and full-width punctuation.
+
+    Used only on the editor's final draft. Only whitespace, a label colon or the
+    width of a punctuation mark may differ; every character of every fact must
+    appear in order, digits the source separates stay separated, and the
+    returned text is always the exact source span.
+    """
+    try:
+        return source_quote(quote, source)
+    except ValueError:
+        if not isinstance(quote, str):
+            raise
+    chars = [c for c in quote if not c.isspace() and c not in ':：']
+    if len(chars) < 2:
+        raise ValueError("原文引用内容不匹配，不能用格式兼容补造事实")
+    match = re.search(_LABEL_GAP.join(_quote_char(c) for c in chars), source)
+    if match:
+        def protected(text):
+            text = re.sub(r'(?<=\d)[\s：:]+(?=\d)', '|', _punct_canonical(text))
+            return re.sub(r'[\s：:]', '', text)
+        if protected(match.group()) == protected(quote):
+            return match.group()
+    raise ValueError("原文引用内容不匹配，不能用格式兼容补造事实")
+
+
+_DEFAULT_BRIEF = {"product_presentation": "whole_product", "scene": "干净背景下的产品主视觉",
+                  "framing": "整机主体清晰完整", "product_action": "静态展示",
+                  "visual_evidence": "产品原图外观", "layout": "大标题、关键参数与产品主体"}
+
+
+def _first_source_line(source, title):
+    if isinstance(title, str) and title.strip() and title.strip() in source:
+        return title.strip()
+    return next((line.strip() for line in source.splitlines() if line.strip()), source.strip())
+
+
+_SALVAGE_RECORDS = ("quote_repairs", "salvage_dropped_pages", "planning_source", "final_draft_issue")
+
+
+def salvage_draft(data, source, title=""):
+    """Keep what the paid final draft can prove; drop only the unproven part.
+
+    A quote that is not in the source is removed, never rewritten. A page left
+    with no source proof, title or usable shape is removed; a parameter row
+    without proof is removed. The cover keeps the product, falling back to the
+    customer's own title or a source line. Nothing is invented or re-purchased.
+    """
+    from .refine_planner import _normalize_claim_text
+    result = copy.deepcopy(data)
+    removed, dropped = [], []
+
+    # Category proof: keep the provable items; the customer's own title (which
+    # the category check already counts as source) stands in if none remain.
+    check = result["category_check"]
+    known = _normalize_claim_text(source + " " + (title or ""))
+    proof = check.get("evidence") if isinstance(check.get("evidence"), list) else []
+    kept_proof = [q for q in proof if isinstance(q, str) and q.strip() and _normalize_claim_text(q) in known]
+    if len(kept_proof) != len(proof) or not kept_proof:
+        removed.extend({"where": "category_check", "field": "evidence", "quote": str(q)[:80]}
+                       for q in proof if q not in kept_proof)
+        check["evidence"] = kept_proof or [_first_source_line(source, title)]
+
+    def quotes(row, key, where):
+        values = row.get(key)
+        if values is None:
+            return []
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            removed.append({"where": where, "field": key, "quote": str(values)[:80]})
+            return []
+        kept = []
+        for quote in values:
+            try:
+                kept.append(final_source_quote(quote, source))
+            except ValueError:
+                removed.append({"where": where, "field": key, "quote": str(quote)[:80]})
+        return list(dict.fromkeys(kept))
+
+    def clean(row, where):
+        evidence = quotes(row, "evidence", where)
+        support = quotes(row, "technical_support", where)
+        # A proven big-number fact is also proof for its own page.
+        evidence += [q for q in support if not any(q in e for e in evidence)]
+        row["evidence"] = evidence
+        # A bare value must retain the mode/maximum qualifiers in its evidence.
+        row["technical_support"] = list(dict.fromkeys(
+            min((e for e in evidence if q in e), key=len) for q in support))
+        brief = row.get("visual_brief")
+        if not isinstance(brief, dict):
+            brief = row["visual_brief"] = {}
+        for key, default in _DEFAULT_BRIEF.items():
+            if not isinstance(brief.get(key), str) or not brief[key].strip():
+                brief[key] = default
+        if '无人值守' not in source and '无人清扫' in source:
+            for key, value in brief.items():
+                if isinstance(value, str):
+                    brief[key] = value.replace('无人值守', '无人清扫')
+
+    cover = result["cover"]
+    clean(cover, "cover")
+    if not cover["evidence"]:
+        cover["evidence"] = [_first_source_line(source, title)]
+    if not isinstance(cover.get("title"), str) or not cover["title"].strip():
+        cover["title"] = title.strip() if isinstance(title, str) and title.strip() else cover["evidence"][0][:20]
+    pages = []
+    for index, page in enumerate(result["pages"], 1):
+        if not isinstance(page, dict):
+            dropped.append({"title": None, "issue": "页面格式无效"})
+            continue
+        clean(page, f"page{index}")
+        if not isinstance(page.get("title"), str) or not page["title"].strip():
+            dropped.append({"title": None, "issue": "展示页缺少标题"})
+        elif not page["evidence"]:
+            dropped.append({"title": page["title"], "issue": "展示页缺原文依据"})
+        else:
+            pages.append(page)
+    result["pages"] = pages
+    specs = []
+    for spec in result["specifications"]:
+        if not isinstance(spec, dict) or not all(
+            isinstance(spec.get(k), str) and spec[k].strip() for k in ("name", "value", "evidence")
+        ):
+            removed.append({"where": "specifications", "field": "row", "quote": str(spec)[:80]})
+            continue
+        try:
+            spec["evidence"] = final_source_quote(spec["evidence"], source)
+        except ValueError:
+            removed.append({"where": "specifications", "field": "evidence", "quote": spec["evidence"][:80]})
+            continue
+        specs.append(spec)
+    result["specifications"] = specs
+    result["quote_repairs"] = removed
+    result["salvage_dropped_pages"] = dropped
+    return result
+
+
 def normalize_quotes(data, source):
     result = copy.deepcopy(data)
     for row in [result["cover"], *result["pages"]]:
@@ -355,11 +511,23 @@ def _check_capacity(data):
         raise ProductInputError("AI_REFINE_TOO_MANY_SCREENS", "独立卖点加封面和参数图超过15张，请精简或分批提供资料；尚未提交生图")
 
 
-def read_draft(raw, source, *, delivery=False):
+def read_draft(raw, source, *, delivery=False, salvage=False, title=""):
+    """Parse and check a draft. With salvage (final delivery draft only), an
+    unprovable quote, page or parameter row is removed instead of failing."""
     from .refine_planner import _extract_json
     from .candidate_plan import restore_spec_values
     data = _extract_json(raw)
     _check_capacity(data)
+    for key in _SALVAGE_RECORDS:
+        data.pop(key, None)  # Only our code records these; a model draft cannot set them.
+    if salvage:
+        if not isinstance(data.get("cover"), dict):
+            data["cover"] = {}
+        for key in ("category_check", "product_meta", "style_dna"):
+            if not isinstance(data.get(key), dict):
+                raise ValueError(f"{key}必须为对象")
+        if data.get("specifications") is None:
+            data["specifications"] = []
     for key in ("category_check", "product_meta", "style_dna", "cover"):
         if not isinstance(data.get(key), dict):
             raise ValueError(f"{key}必须为对象")
@@ -368,7 +536,10 @@ def read_draft(raw, source, *, delivery=False):
         raise ValueError("pages与specifications必须为数组")
     if len(pages) > 40:
         raise ValueError("文字候选异常过多")
-    if delivery:
+    if delivery and salvage:
+        data = salvage_draft(data, source, title)
+        pages, specs = data["pages"], data["specifications"]
+    elif delivery:
         data = normalize_quotes(data, source)
         pages, specs = data["pages"], data["specifications"]
     for page in [data["cover"], *pages]:
@@ -702,6 +873,9 @@ def compile_with_salvage(data, source, title, category, **options):
     pages left) still fail with the original message. Nothing is re-planned
     or re-purchased: this only removes pages from the paid final draft.
     """
+    data = copy.deepcopy(data)
+    if data.get("salvage_dropped_pages"):
+        data["dropped_pages"] = list(data["salvage_dropped_pages"])
     try:
         return compile_plan(data, source, title, category, **options)
     except ValueError as exc:
@@ -710,24 +884,44 @@ def compile_with_salvage(data, source, title, category, **options):
     # Same page order compile_plan uses, so screen idx - 2 names the right page below.
     remaining["pages"] = keep_person_scene(remaining.get("pages") or [],
                                            PLANNED_SCREEN_LIMIT - 1 - int(bool(remaining.get("specifications"))))
-    dropped = []
-    for _ in range(3):
+    dropped = list(data.get("salvage_dropped_pages") or [])  # Pages the final read already removed.
+    cover_reset = False
+    for _ in range(5):
         pages = remaining["pages"]
         bad = {i for i, page in enumerate(pages)
                if page.get("kind") not in ("benefit", "display") or page.get("role") in ("hero", "spec_table")}
         reasons = {i: "页面类型无效" for i in bad}
+        fix_cover = fix_table = None
         if not bad:
             remaining["dropped_pages"] = dropped
             plan = compile_plan(remaining, source, title, category, **options, check=False)
             planned = sum(1 for s in plan["screens"] if s.get("role") not in ("hero", "spec_table"))
+            roles = {s.get("idx"): s.get("role") for s in plan["screens"]}
             for idx, message in plan_issues(plan, source, title, category):
                 page_index = (idx or 0) - 2  # Screen 1 is the cover.
-                if idx is None or not 0 <= page_index < planned:
-                    raise original  # A whole-plan, cover or table problem.
-                bad.add(page_index)
-                reasons.setdefault(page_index, message)
-        if not bad:
+                if roles.get(idx) == "hero" and not cover_reset and (title or "").strip():
+                    fix_cover = message
+                elif roles.get(idx) == "spec_table" and remaining.get("specifications"):
+                    fix_table = message
+                elif idx is None or not 0 <= page_index < planned:
+                    raise original  # A whole-plan problem, or the cover again.
+                else:
+                    bad.add(page_index)
+                    reasons.setdefault(page_index, message)
+        if fix_cover:
+            # The cover only shows the product under the customer's own title.
+            cover_reset = True
+            remaining["cover"] = {**remaining["cover"], "title": (title or "").strip(), "body": "",
+                                  "technical_support": []}
+            dropped.append({"title": "封面文案", "issue": fix_cover})
+        if fix_table:
+            # Without a provable parameter table the detail set still ships.
+            remaining["specifications"] = []
+            dropped.append({"title": "产品参数", "issue": fix_table})
+        if not bad and not fix_cover and not fix_table:
             break
+        if not bad:
+            continue
         dropped.extend({"title": pages[i].get("title"), "issue": reasons[i]} for i in sorted(bad))
         remaining["pages"] = [page for i, page in enumerate(pages) if i not in bad]
     remaining["dropped_pages"] = dropped
@@ -831,14 +1025,30 @@ def run(source, title, category, image_available, key, model, first_http, review
             context["local_issues_to_correct"] = str(exc)
         final_raw = call(prompt(automatic=True) + AUTO_REVIEW,
                          {**inputs, **context, "draft_to_edit": draft}, review_http)
-        # Problems confined to one page degrade or drop that page; they no
-        # longer fail the whole paid plan.
-        final = normalize_components(read_draft(final_raw, source, delivery=delivery), degrade=True)
-        # The provider's raw response remains untouched in the cost journal.
-        if repair_copy:
-            final = repair_captions(final, source)
-        plan = compile_with_salvage(final, source, title, category, buyer_value=True, delivery=delivery,
-                                    repair_copy=repair_copy)
+        # Problems confined to one page, quote or parameter row degrade or drop
+        # just that part; they no longer fail the whole paid plan.
+        def deliver(text):
+            draft_ = normalize_components(
+                read_draft(text, source, delivery=delivery, salvage=delivery, title=title or ""),
+                degrade=True)
+            # The provider's raw response remains untouched in the cost journal.
+            if repair_copy:
+                draft_ = repair_captions(draft_, source)
+            return compile_with_salvage(draft_, source, title, category, buyer_value=True,
+                                        delivery=delivery, repair_copy=repair_copy)
+        try:
+            plan = deliver(final_raw)
+        except (ValueError, KeyError, TypeError, PlannerError) as exc:
+            if not delivery or isinstance(exc, ProductInputError):
+                raise
+            # The editor's reply is unusable as a whole (e.g. broken JSON). The
+            # first paid draft passes the same local checks; nothing is bought.
+            try:
+                plan = deliver(raw)
+            except (ValueError, KeyError, TypeError, PlannerError):
+                raise exc from None
+            plan["planning_source"] = "first_draft_salvaged"
+            plan["final_draft_issue"] = str(exc)[:200]
         plan["automatic_planning_version"] = AUTO_VERSION
         render(plan)
         return add_square_screens(plan)
