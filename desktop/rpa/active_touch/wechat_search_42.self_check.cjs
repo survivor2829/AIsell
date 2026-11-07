@@ -115,7 +115,7 @@ const fieldFound = resolveWechatSearchResultObservation(observe(fieldLines), { q
 assert.equal(fieldFound.mode, "sectioned_wechat_id_visual", JSON.stringify(fieldFound));
 assert.ok(fieldFound.candidate.y > 139 && fieldFound.candidate.y < 160, "the click lands on the contact's ID line");
 
-// Customer 4.2 (2026-11-07, 1.2.69, c19d34bf; ID and name below are stand-ins): one contact listed, but the
+// Customer 4.2 (2026-11-07, 1.2.69; ID and name below are stand-ins): one contact listed, but the
 // "🔍 ABC1234" suggestion row had no info icon beside it, so it was taken for an
 // unknown caption (search-r022) and the contact was skipped. Box positions are the
 // field capsule's; the ID line carried one extra OCR character.
