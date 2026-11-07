@@ -87,6 +87,16 @@ async function verifyStructure(root, files, group) {
     if ((await checkedFile(root, file.path, checkedDirectories)).stat.size !== file.size) fail("component_file_corrupt");
   }
 }
+// Presence and size only (as copyVerified checks); contents are hashed later.
+async function componentFilesPresent(root, files) {
+  const directories = new Map();
+  try {
+    for (const file of files) {
+      if ((await checkedFile(root, file.path, directories)).stat.size !== file.size) return false;
+    }
+    return true;
+  } catch { return false; }
+}
 async function verifyGeneration(root, files, group) {
   await verifyStructure(root, files, group);
   const { groupForPath } = require("../shared/component-verification.cjs");
@@ -258,7 +268,10 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
       const reused = new Set(), cached = new Set(), createdMarkers = [];
       for (const name of names) {
         const files = baseline.files.filter(f => f.component === name);
-        if (treeHash(files) === manifest.components[name].treeSha256) reused.add(name);
+        // An unchanged component is reused only while its files are still in the
+        // running program; one removed after install (field 2026-11-07: a
+        // content-engine asset vanished after a switch) is downloaded again.
+        if (treeHash(files) === manifest.components[name].treeSha256 && await componentFilesPresent(baseRoot, files)) reused.add(name);
         else {
           const component = manifest.components[name];
           try {
