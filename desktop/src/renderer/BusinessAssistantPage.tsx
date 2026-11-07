@@ -5,7 +5,13 @@ import { AcquisitionPage } from './AcquisitionPage';
 import { GeoPanel } from './GeoPanel';
 import "./BusinessAssistantPage.css";
 
+// GEO first under 精准获客 (user 2026-11-07).
 export const BUSINESS_MODULES = {
+  "business-geo": {
+    label: "GEO推广", icon: Globe2, available: true,
+    title: "让有需求的客户更容易了解您",
+    description: "客户在豆包这些 AI 里问问题时，让他们更容易看到你。"
+  },
   "business-map": {
     label: "地图获客", icon: MapPin, available: true,
     title: "找到附近值得联系的企业",
@@ -15,11 +21,6 @@ export const BUSINESS_MODULES = {
     label: "关键词获客", icon: Search, available: true,
     title: "从同行视频的评论里找到想买的人",
     description: "按关键词搜视频、读评论，把问价、想买、要联系方式的人整理成线索。"
-  },
-  "business-geo": {
-    label: "GEO推广", icon: Globe2, available: true,
-    title: "让有需求的客户更容易了解您",
-    description: "客户在豆包这些 AI 里问问题时，让他们更容易看到你。"
   }
 } as const;
 export type BusinessModule = keyof typeof BUSINESS_MODULES;

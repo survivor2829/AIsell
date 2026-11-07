@@ -168,6 +168,19 @@ async function aRepeatingCodeTakesOneSlotPerDay() {
   later.capsules.stop();
   assert.deepEqual([latest.traceId, latest.details.rule_id, latest.appVersion], ["afternoon-trace", "search-r015", "1.2.22"],
     "the latest occurrence's details and version travel beside the first one");
+  // A service that keeps exiting after an update: the repeat carries its own engine tail
+  // (2026-11-07: the morning's tail alone hid why it still failed on the newer version).
+  const engine = fixture("repeat-engine");
+  engine.setEnabled(false);
+  const now = Date.now();
+  fs.writeFileSync(path.join(engine.engineLogsDir, "stderr.log"), "--- morning exit=2\nFileNotFoundError: first\n");
+  engine.capsules.record({ source: "log", module: "content_engine", code: "content_engine_exited", at: now - 60_000 });
+  fs.appendFileSync(path.join(engine.engineLogsDir, "stderr.log"), "--- later exit=2\nprogram_missing_files=3/3834\nsecurity_software=360\n");
+  const engineMerged = engine.capsules.record({ source: "log", module: "content_engine", code: "content_engine_exited", at: now });
+  const engineLatest = engine.files().find(item => item.id === engineMerged).latest;
+  engine.capsules.stop();
+  assert.match(engineLatest.engineStderr, /program_missing_files=3\/3834[\s\S]*security_software=360/u,
+    "the latest occurrence carries the engine's newest output");
   t.capsules.stop();
 }
 

@@ -139,9 +139,9 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryLabel: "开始找客户",
     primaryTarget: "business-keyword",
     capabilities: [
+      { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: true },
       { key: "business-keyword", label: "关键词获客", description: "从同行视频的评论里，找出问价、想买的人", icon: Search },
-      { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin },
-      { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: true }
+      { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin }
     ]
   },
   // 账号运营（用户 2026-11-04）：点开先见小丽，手机矩阵放第一位，养号、一键分发照旧。

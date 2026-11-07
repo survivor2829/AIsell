@@ -235,7 +235,10 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
         // capsule and the server saw only the morning's details and trail.
         capsule.latest = { at: new Date(at).toISOString(), traceId: failure.traceId || "", event: failure.event || "",
           appVersion: (() => { try { return String(identity?.()?.version || ""); } catch { return ""; } })(),
-          message: text(failure.message, 2000), details: failure.details || {}, internal: internalTrail(failure.traceId).slice(-10) };
+          message: text(failure.message, 2000), details: failure.details || {}, internal: internalTrail(failure.traceId).slice(-10),
+          // A service that keeps exiting after an update writes a new tail each time; the
+          // morning's tail alone hid why it still failed on the newer version (2026-11-07).
+          engineStderr: serviceStderr(failure.module, at) };
         try { write(capsule); } catch {}
         // Re-send so the server sees the new count; it skips screenshots it already has.
         if (!state.outbox.includes(prior.id)) state.outbox.push(prior.id);

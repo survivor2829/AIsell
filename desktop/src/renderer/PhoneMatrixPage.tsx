@@ -84,7 +84,7 @@ export function PhoneMatrixPage() {
   return <section className="ns-page phone-matrix">
     <div className="pm-hero">
       <div>
-        <div className="ns-kicker">账号运营 · 手机矩阵</div>
+        <div className="ns-kicker">账号矩阵 · 手机矩阵</div>
         <h1 className="ns-h1">{online ? <><em>{online} 部</em>手机在线</> : <>插上集线器，手机<em>自动出现</em></>}</h1>
         <p className="pm-lead">集线器上的安卓手机都在这里：每部手机的实时画面，点开一部就能直接操作；打开「同步操作」，勾选的手机跟着一起动；装 App、传视频、发文字、截图也能一次做完。</p>
       </div>
