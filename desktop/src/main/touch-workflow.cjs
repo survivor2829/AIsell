@@ -38,12 +38,12 @@ function sentWindow(executionDir) {
     return state.window_pid && state.window_handle ? { pid: state.window_pid, hWnd: String(state.window_handle), inputPoint: state.message_input_point } : null;
   } catch { return null; }
 }
-const PRE_SEND_RECOVERY_ATTEMPTS = 2;
-const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
+const PRE_SEND_RECOVERY_ATTEMPTS = 1; // One retry, then skip and move on (user 2026-11-07).
+const PRE_SEND_RECOVERY_DELAYS_MS = [3_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
 const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
-const IDENTITY_RECOVERY_DELAYS_MS = Object.freeze([2_000, 8_000, 20_000]);
+const IDENTITY_RECOVERY_DELAYS_MS = Object.freeze([2_000]); // One retry, then skip (user 2026-11-07).
 const IDENTITY_RECOVERY_ATTEMPTS = IDENTITY_RECOVERY_DELAYS_MS.length;
 const SEARCH_CAPTURE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 let lastSearchCaptureSweepAt = null;

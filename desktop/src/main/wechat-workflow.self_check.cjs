@@ -426,7 +426,7 @@ async function checkR008BoundedRecovery() {
     const record = { id: `r008-${multipart}`, payload };
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
-    for (const delay of [2000, 8000, 20000]) {
+    for (const delay of [2000]) { // one retry, then skip (user 2026-11-07)
       const result = await step();
       assert.equal(result.status, "pending");
       assert.equal(result.retryAfterMs, delay);
@@ -437,7 +437,7 @@ async function checkR008BoundedRecovery() {
     assert.equal(loadTaskState(taskDir).results[0].status, "identity_skipped");
     assert.equal(loadTaskState(taskDir).results[0].search_evidence.rule_id, "search-r008");
     assert.equal(failures.length, 1, "one final failure per skipped contact");
-    assert.equal(failures[0].rawReading.diagnostics.candidate_set_hash, "candidate-4");
+    assert.equal(failures[0].rawReading.diagnostics.candidate_set_hash, "candidate-2");
     fixedHash = "stable-candidate-set";
     assert.equal((await step()).retryAfterMs, 2000);
     assert.equal((await step()).status, "pending", "unchanged evidence skips after the second read");
@@ -505,7 +505,7 @@ async function checkR008PassportAttachmentCount() {
       });
       const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id] });
       const record = { id: `passport-count-${ruleId}`, payload };
-      for (const delay of reasonCode === "search_result_identity_unverified" ? [2000, 8000, 20000] : []) {
+      for (const delay of reasonCode === "search_result_identity_unverified" ? [2000] : []) { // one retry, then skip
         clock += 60 * 60 * 1000;
         assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, delay);
         assert.equal(screenshots, 0, "bounded retries must not consume passport attachments");
@@ -579,7 +579,7 @@ async function checkR008PartialSend() {
     const seededTask = loadTaskState(seededDir);
     seededTask.identity_skip_streak = { rule_id: "search-r008", count: 1 };
     saveTaskState(seededDir, seededTask);
-    for (const delay of [2000, 8000, 20000]) {
+    for (const delay of [2000]) { // one retry, then skip (user 2026-11-07)
       clock += 60 * 60 * 1000;
       result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
       assert.equal(result.retryAfterMs, delay);
@@ -598,7 +598,7 @@ async function checkR008PartialSend() {
     assert.equal(row.message_parts[0].status, "sent_verified");
     assert.equal(row.status, "identity_skipped");
     assert.equal(row.send_attempted, true);
-    assert.equal(row.identity_recovery_attempts, 3);
+    assert.equal(row.identity_recovery_attempts, 1);
     assert.match(row.skip_record.blockedReason, /部分内容已发送/u);
     assert.equal(bills.at(-1).reason_counts.partial_sent_search_result_identity_unverified, 1);
   } finally {

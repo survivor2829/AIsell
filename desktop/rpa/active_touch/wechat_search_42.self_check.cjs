@@ -115,6 +115,30 @@ const fieldFound = resolveWechatSearchResultObservation(observe(fieldLines), { q
 assert.equal(fieldFound.mode, "sectioned_wechat_id_visual", JSON.stringify(fieldFound));
 assert.ok(fieldFound.candidate.y > 139 && fieldFound.candidate.y < 160, "the click lands on the contact's ID line");
 
+// Customer 4.2 (2026-11-07, 1.2.69, c19d34bf; ID and name below are stand-ins): one contact listed, but the
+// "🔍 ABC1234" suggestion row had no info icon beside it, so it was taken for an
+// unknown caption (search-r022) and the contact was skipped. Box positions are the
+// field capsule's; the ID line carried one extra OCR character.
+const echoPopup = { left: 56, top: 64, right: 424, bottom: 258 };
+const echoLines = [
+  line("测 试 甲", 138, 112, 176, 126),
+  line("微 信 号 ： ABC1234 .", 137, 137, 228, 152),
+  { ...line("搜 索 网 络 结", 116, 172, 188, 186), words: [word("搜索网络结", 116, 188)] },
+  line("ABC1234", 111, 204, 158, 216)
+];
+const echoObserve = { ...observe(echoLines), popupBounds: echoPopup, cropBounds: echoPopup };
+const echoFound = resolveWechatSearchResultObservation(echoObserve, { query: "ABC1234", expectedName: "测试甲", queryType: "wechat_id" });
+assert.equal(echoFound.mode, "sectioned_wechat_id_visual", JSON.stringify(echoFound));
+assert.ok(echoFound.candidate.y > 137 && echoFound.candidate.y < 152, "the click lands on the contact's ID line");
+// The suggestion row alone (no contact) is still not a contact: name fallback runs next.
+const echoOnly = resolveWechatSearchResultObservation({ ...echoObserve, visualCandidates: echoLines.filter((item) => !item.text.startsWith("微")) },
+  { query: "ABC1234", expectedName: "测试甲", queryType: "wechat_id" });
+assert.notEqual(echoOnly.status, "selected");
+// A different ID, even one differing only by a digit, is never clicked.
+const otherId = resolveWechatSearchResultObservation({ ...echoObserve, visualCandidates: echoLines.map((item) => item.text.startsWith("微") ? line("微 信 号 ： ABC1235", 137, 137, 228, 152) : item) },
+  { query: "ABC1234", expectedName: "测试甲", queryType: "wechat_id" });
+assert.notEqual(otherId.status, "selected");
+
 // WeChat 4.1 popups with the network row keep their original rules.
 const legacy = resolveWechatSearchResultObservation({ ...observe(realLines()),
   webSearchCandidates: [line("搜索网络结果", 118, 262, 220, 276)], webSearchTop: 262 }, byId("wakeup2829"));

@@ -57,8 +57,8 @@ const taskPassportFailureSignatures = new Set();
 const taskPassportAttachments = new Map();
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
-const PRE_SEND_RECOVERY_ATTEMPTS = 2;
-const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
+const PRE_SEND_RECOVERY_ATTEMPTS = 1; // One retry, then skip and move on (user 2026-11-07).
+const PRE_SEND_RECOVERY_DELAYS_MS = [3_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
 const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 
