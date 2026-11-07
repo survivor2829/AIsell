@@ -1446,6 +1446,10 @@ def _freeze_task_input(task_dir: Path, inputs: dict) -> dict:
     return selected
 
 
+# Seconds to wait before each reference-upload retry; None ends the attempts.
+_REFERENCE_UPLOAD_RETRY_WAITS = (3, 8, None)
+
+
 def _preflight_before_paid_planner(task_dir: Path, product_image_url: str, image_key: str,
                                    *, saved_response, journal) -> None:
     """Exercise a new task's upload route before buying planning; never touch recovery."""
@@ -1462,7 +1466,18 @@ def _preflight_before_paid_planner(task_dir: Path, product_image_url: str, image
         if not reference.startswith("data:image/"):
             raise ai_image_apimart.APIMartNotSubmitted("预检需要已保存的原产品图")
         # A 71-hour cached URL cannot prove today's network; refresh only this image.
-        ai_image_apimart.upload_data_url(reference, image_key, force_refresh=True)
+        # Uploading creates no billable task, so a dropped connection is retried
+        # briefly before telling the customer the channel is down (2026-11-06:
+        # one transient failure stopped an order before planning).
+        for wait in _REFERENCE_UPLOAD_RETRY_WAITS:
+            try:
+                ai_image_apimart.upload_data_url(reference, image_key, force_refresh=True)
+                break
+            except ai_image_apimart.APIMartReferenceUploadTransportError:
+                if wait is None:
+                    raise
+                _set(task_dir.name, progress_msg="网络不稳，正在重试上传产品参考图...")
+                time.sleep(wait)
         inputs.pop("reference_preflight_required", None)
         _atomic_write_json(task_dir / "_input.json", inputs)
     except Exception as exc:

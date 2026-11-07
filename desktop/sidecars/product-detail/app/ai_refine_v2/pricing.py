@@ -52,6 +52,22 @@ def _image_failure_diagnostic(exc):
     poll_reason = getattr(exc, "poll_reason", None)
     if poll_reason in {"timeout", "connection"}:
         diagnostic["poll_reason"] = poll_reason
+    # The underlying network error (type and OS code only, never its text), so a
+    # field capsule can tell a timeout from a refused, reset or TLS failure.
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        reason = getattr(cause, "reason", None)  # URLError wraps the socket error.
+        inner = reason if isinstance(reason, BaseException) else cause
+        cause_types = {"TimeoutError", "URLError", "OSError", "ConnectionError", "ConnectionResetError",
+                       "ConnectionRefusedError", "ConnectionAbortedError", "SSLError",
+                       "SSLEOFError", "SSLCertVerificationError", "socket.gaierror", "gaierror",
+                       "RemoteDisconnected", "IncompleteRead", "timeout"}
+        name = type(inner).__name__
+        diagnostic["cause_type"] = name if name in cause_types else "Exception"
+        for key in ("winerror", "errno"):
+            code = getattr(inner, key, None)
+            if type(code) is int and -(2 ** 31) <= code < 2 ** 32:
+                diagnostic[f"cause_{key}"] = code
     return diagnostic
 
 
