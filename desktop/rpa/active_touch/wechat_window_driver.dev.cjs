@@ -434,6 +434,33 @@ try {
   $sendY = [int]($clickRect.Bottom - [Math]::Round($sendBottomOffsetDip * $dpiScale))
   $clickWidth = $clickRect.Width
   $clickHeight = $clickRect.Height
+  # WeChat's side panel (e.g. 搜一搜, opened by a name search with no exact
+  # friend) widens the window, so the send button sits at the chat panel's right
+  # edge, not the window's (field 2026-11-07). The panel is a child of this
+  # WeChat window drawn by WeChat's embedded browser process (WeChatAppEx).
+  # Only then walk left along the send row to where WeChat's own surface
+  # begins; anything else keeps the obscured stop below.
+  $panelProbe = New-Object Win32WechatSendMessage+POINT
+  $panelProbe.X = $sendX
+  $panelProbe.Y = $sendY
+  $panelWindow = [Win32WechatSendMessage]::WindowFromPoint($panelProbe)
+  [uint32]$panelPid = 0
+  if ($panelWindow -ne [IntPtr]::Zero -and [Win32WechatSendMessage]::GetWindowThreadProcessId($panelWindow, [ref]$panelPid) -ne 0 -and
+      $panelPid -ne [uint32][int]$expectedPid -and [Win32WechatSendMessage]::GetAncestor($panelWindow, 2).ToInt64() -eq [int64]$matched.hWnd -and
+      (Get-Process -Id $panelPid -ErrorAction SilentlyContinue).ProcessName -eq "WeChatAppEx") {
+    for ($edgeX = $sendX; $edgeX -gt ($clickRect.Left + $clickWidth * 0.40); $edgeX -= 2) {
+      $panelProbe.X = $edgeX
+      $edgeWindow = [Win32WechatSendMessage]::WindowFromPoint($panelProbe)
+      [uint32]$edgePid = 0
+      if ($edgeWindow -eq [IntPtr]::Zero -or [Win32WechatSendMessage]::GetWindowThreadProcessId($edgeWindow, [ref]$edgePid) -eq 0 -or
+          [Win32WechatSendMessage]::GetAncestor($edgeWindow, 2).ToInt64() -ne [int64]$matched.hWnd) { break }
+      if ($edgePid -eq [uint32][int]$expectedPid) {
+        $sendX = [int]($edgeX + 1 - [Math]::Round($sendRightOffsetDip * $dpiScale))
+        $clickWidth = $edgeX + 1 - $clickRect.Left
+        break
+      }
+    }
+  }
   $sendPointValid = $sendX -ge ($clickRect.Left + ($clickWidth * 0.70)) -and $sendX -lt $clickRect.Right -and
     $sendY -ge ($clickRect.Top + ($clickHeight * 0.65)) -and $sendY -lt $clickRect.Bottom
   if (-not $sendPointValid) {
