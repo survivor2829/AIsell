@@ -594,7 +594,58 @@ const isUnsafeVisualText = (value) => normalized(value).includes("查找")
 // the gray ID line (a stray "." or ")") is noise, not a different ID.
 const foldedWechatId = (value) => normalized(value).replace(/[^a-z0-9_|\-]/gu, "").replace(/[|il1]/gu, "1").replace(/[o0]/gu, "0");
 
+// Name searches: OCR reads a long name cut with "…" (as junk like "“."), and "-" as "一"
+// or "·", so no row matched exactly and Enter opened whatever came first: on the
+// customer computer (1.2.72, 2026-11-07) that was another chat, every time. Click the
+// one row that is the start of the name instead; the opened chat title is still checked.
+const NAME_PREFIX_OVERRIDABLE_RULES = new Set(["search-r008", "search-r014", "search-r015", "search-r019", "search-r022"]);
+const DASH_LIKE = /[-‐‑‒–—―－]/u;
+function foldDisplayName(value, expectedHasDash) {
+  let text = normalized(value);
+  if (expectedHasDash) text = text.replace(/[一·・•]/gu, "");
+  return text.replace(/[\p{P}\p{S}]/gu, "");
+}
+function uniqueNamePrefixRow(observation, identity) {
+  const popup = validRectangle(observation?.popupBounds);
+  const dpi = Number(observation.popupDpi);
+  const expectedRaw = String(identity.expectedName || identity.query || "");
+  if (!popup || !(dpi > 0) || !expectedRaw) return null;
+  const hasDash = DASH_LIKE.test(expectedRaw);
+  const expected = foldDisplayName(expectedRaw, hasDash);
+  if ([...expected].length < 2) return null;
+  const column = (left) => (Number(left) - popup.left) / (dpi / 96);
+  const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])];
+  const boundaryTops = all.filter((line) => normalized(line.text).includes(POPUP_NETWORK_LABEL) || isNetworkLookupText(line.text)
+    || isOtherSearchSection(line.text)).map((line) => Number(line.top));
+  const bottom = Math.min(Number(popup.bottom), ...boundaryTops);
+  const rows = distinctCandidates((observation.visualCandidates || []).filter((line) => hasValidBounds(line) && isInside(line, popup)
+    && column(line.left) > 60 && Number(line.top) < bottom
+    && wechatIdLabelValue(line) === null && !isLocalContactSection(line.text) && !isUnsafeVisualText(line.text)
+    // Icon specks (the row's info icon reads as "G)") are not rows.
+    && [...foldDisplayName(line.text, hasDash)].length >= 2));
+  const matches = rows.filter((line) => {
+    const text = foldDisplayName(line.text, hasDash);
+    // Exact, or a cut-off name: at least 10 characters that begin the expected name.
+    return text === expected || ([...text].length >= 10 && expected.startsWith(text));
+  });
+  if (matches.length !== 1) return null;
+  // Without a readable "联系人" caption, a same-named group could sit under an unread
+  // "群聊" caption. WeChat 4.2 lists contacts first, so the match must be the first row.
+  const captionRead = all.some((line) => isLocalContactSection(line.text));
+  const firstRow = [...rows].sort((a, b) => Number(a.top) - Number(b.top))[0];
+  return captionRead || matches[0] === firstRow ? matches[0] : null;
+}
+
 function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
+  const result = resolveWechatSearchResultObservationStrict(observation, identity);
+  if (result.status === "selected" || !["name", "name_fallback"].includes(String(identity.queryType || ""))
+    || !NAME_PREFIX_OVERRIDABLE_RULES.has(String(result.rule_id || ""))) return result;
+  const row = uniqueNamePrefixRow(observation, identity);
+  return row ? { status: "selected", mode: "name_prefix_visual", candidate: row,
+    diagnostics: { ...(result.diagnostics || {}), prior_rule_id: result.rule_id } } : result;
+}
+
+function resolveWechatSearchResultObservationStrict(observation = {}, identity = {}) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
     diagnostics: { rule_id, candidate_count: 0,

@@ -82,7 +82,10 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
   // punctuation and spaces are dropped, or a "…"-cut title of 4+ letters/digits that
   // begins the name. Letters and digits are never relaxed (checked live: one character
   // more, less or different still fails).
-  assert.match(header, /if \(\$found\.Count -ne 1\) \{ return \$false \}/u, "exactly one title line");
+  assert.match(header, /if \(\$found\.Count -ne 1\) \{[\s\S]*?return \$false\s*\}/u, "exactly one title line");
+  // Mismatch evidence carries lengths, the first differing position and character kinds only.
+  assert.match(header, /first_diff_index=\$diff/u);
+  assert.doesNotMatch(header, /headerTitleEvidence=@\{[^}]*text=/u, "the evidence never carries the title text");
   assert.match(header, /if \(\$text -ceq \$expected\) \{ return \$true \}/u, "the exact match still passes");
   assert.match(header, /\[\\p\{P\}\\p\{S\}\\p\{Cs\}\\p\{Cf\}\\p\{Mn\}\\s\]/u, "only symbols, punctuation and spaces are ignored");
   assert.match(header, /\$textFolded\.Length -ge 4 -and \$expectedFolded\.StartsWith\(\$textFolded, \[StringComparison\]::Ordinal\)/u,

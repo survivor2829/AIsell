@@ -72,14 +72,38 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     # opened chats (customer 1.2.71, 2026-11-07). Letters and digits must still be
     # identical; only symbols/punctuation/spaces are ignored, and a cut title must
     # show at least the first 4 letters/digits of the name.
-    $fold={ param([string]$value) [Text.RegularExpressions.Regex]::Replace($value.Normalize([Text.NormalizationForm]::FormKC),'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
+    # OCR reads "-" as "一" or "·": when the name itself has a dash, those count as it.
+    $expectedHasDash=$expectedTitle -match '[-‐‑‒–—―－]'
+    $fold={ param([string]$value)
+      $folded=$value.Normalize([Text.NormalizationForm]::FormKC)
+      if ($expectedHasDash) { $folded=[Text.RegularExpressions.Regex]::Replace($folded,'[一·・•]','') }
+      [Text.RegularExpressions.Regex]::Replace($folded,'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
     $expectedFolded=& $fold $expectedTitle
+    # Where a mismatch is, without the name itself: lengths, the first differing
+    # position and the kind of character on each side (customer 1.2.72 skips left no
+    # way to tell which characters OCR got wrong).
+    $charClass={ param([string]$s, [int]$i)
+      if ($i -ge $s.Length) { return 'end' }
+      $c=$s[$i]
+      if ([char]::IsDigit($c)) { return 'digit' }
+      if ($c -match '[a-z]') { return 'latin' }
+      if ($c -match '\p{IsCJKUnifiedIdeographs}') { return $(if ($c -eq [char]0x4E00) { 'han_yi' } else { 'han' }) }
+      return 'other' }
+    $script:headerTitleEvidence=@{ lines=0; expected_length=$expectedFolded.Length }
     $matches={ param($found)
-      if ($found.Count -ne 1) { return $false }
+      # Several readings are tried; keep the one that saw a single title line.
+      if ($found.Count -ne 1) {
+        if ($script:headerTitleEvidence.lines -ne 1) { $script:headerTitleEvidence=@{ lines=[int]$found.Count; expected_length=$expectedFolded.Length } }
+        return $false
+      }
       $text=[string]$found[0].text
       if ($text -ceq $expected) { return $true }
       if ($expectedFolded.Length -lt 2) { return $false }
       $textFolded=& $fold $text
+      $diff=0; while ($diff -lt $textFolded.Length -and $diff -lt $expectedFolded.Length -and $textFolded[$diff] -ceq $expectedFolded[$diff]) { $diff++ }
+      $script:headerTitleEvidence=@{ lines=1; expected_length=$expectedFolded.Length; observed_length=$textFolded.Length; first_diff_index=$diff
+        expected_class=(& $charClass $expectedFolded $diff); observed_class=(& $charClass $textFolded $diff)
+        cut=[bool]($text -match '(…|\.\.\.|。。。)$') }
       if ($textFolded -ceq $expectedFolded) { return $true }
       $cut=$text -match '(…|\.\.\.|。。。)$'
       return $cut -and $textFolded.Length -ge 4 -and $expectedFolded.StartsWith($textFolded, [StringComparison]::Ordinal)

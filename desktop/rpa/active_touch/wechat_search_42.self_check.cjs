@@ -70,9 +70,12 @@ const memberOnly = captionless.filter((item) => !item.text.startsWith("微 信")
   .map((item) => item.text.startsWith("包 含") ? line("包 含 ： 城 胜 （ 微 信 号 ： wakeup2829)", 136, 238, 309, 251) : item);
 assert.notEqual(resolveWechatSearchResultObservation(observe(memberOnly), byId("wakeup2829")).status, "selected",
   "an ID inside a group-member line is never clicked");
-// A name search without a caption still does not click from OCR (the Enter
-// fallback and the exact title gate handle it).
-assert.equal(resolveWechatSearchResultObservation(observe([line("城 胜", 136, 118, 170, 131)]), byName("城胜")).rule_id, "search-r022");
+// A name search without a caption: the strict rules still refuse (search-r022), but the one
+// row that is exactly the name is clicked rather than pressing Enter on whatever comes first
+// (1.2.73, 2026-11-07). The opened chat title is still checked.
+const captionlessName = resolveWechatSearchResultObservation(observe([line("甲 乙", 136, 118, 170, 131)]), byName("甲乙"));
+assert.equal(captionlessName.mode, "name_prefix_visual");
+assert.equal(captionlessName.diagnostics.prior_rule_id, "search-r022");
 
 // Name search: the name row under 联系人, with one OCR-misread character allowed
 // only for names of three or more characters; the chat title is checked later.
@@ -143,5 +146,33 @@ assert.notEqual(otherId.status, "selected");
 const legacy = resolveWechatSearchResultObservation({ ...observe(realLines()),
   webSearchCandidates: [line("搜索网络结果", 118, 262, 220, 276)], webSearchTop: 262 }, byId("wakeup2829"));
 assert.notEqual(legacy.mode, "sectioned_wechat_id_visual", "the 4.2 path is used only without a network row");
+
+// Name search, long name with a dash (dev machine 4.2.0.13, 2026-11-07; text below is a
+// stand-in, positions are the real OCR boxes): the row reads the dash as "一" and is cut
+// off ("“." for the ellipsis), and no caption is read. Enter used to open the first result,
+// which on the customer computer was another chat. The one row that begins the name is clicked.
+{
+  const prefixPopup = { left: 56, top: 63, right: 424, bottom: 257 };
+  const networkRow = { ...line("搜 索 网 络 结 果", 118, 178, 190, 190), words: [word("搜索网络结果", 118, 190)] };
+  const contactRow = line("示 例 公 司 扫 地 机 一 张 三 13800001 “ .", 136, 130, 343, 143);
+  const echoRow = line("Q 示 例 公 司 扫 地 机 · 张 三 13800001238", 94, 208, 304, 222);
+  const prefixObserve = (lines) => ({ ...observe(lines), popupBounds: prefixPopup, cropBounds: prefixPopup,
+    webSearchCandidates: [networkRow], webSearchTop: 178 });
+  const byLongName = { query: "示例公司扫地机-张三13800001234", expectedName: "示例公司扫地机-张三13800001234", queryType: "name_fallback" };
+  const prefixFound = resolveWechatSearchResultObservation(prefixObserve([contactRow, echoRow, line("G)", 368, 128, 383, 142)]), byLongName);
+  assert.equal(prefixFound.mode, "name_prefix_visual", JSON.stringify(prefixFound));
+  assert.ok(prefixFound.candidate.y > 128 && prefixFound.candidate.y < 145, "the contact row, not the search suggestion");
+  // The search suggestion alone is never clicked.
+  assert.notEqual(resolveWechatSearchResultObservation(prefixObserve([echoRow]), byLongName).status, "selected");
+  // Two rows that both begin the name: never guess.
+  const second = line("示 例 公 司 扫 地 机 - 张 三 13800001 …", 136, 150, 343, 163);
+  assert.notEqual(resolveWechatSearchResultObservation(prefixObserve([contactRow, second, echoRow]), byLongName).status, "selected");
+  // A different name, or a short name that is only similar, is not clicked.
+  assert.notEqual(resolveWechatSearchResultObservation(prefixObserve([line("示 例 工 厂 扫 地 机 一 李 四 13800001", 136, 130, 343, 143), echoRow]), byLongName).status, "selected");
+  assert.notEqual(resolveWechatSearchResultObservation(prefixObserve([line("张 三 丰", 136, 130, 200, 143)]),
+    { query: "张三", expectedName: "张三", queryType: "name_fallback" }).status, "selected");
+  // WeChat-ID searches keep their own rules.
+  assert.notEqual(resolveWechatSearchResultObservation(prefixObserve([contactRow, echoRow]), { ...byLongName, queryType: "wechat_id" }).mode, "name_prefix_visual");
+}
 
 console.log("WeChat 4.2 search popup self-check passed");

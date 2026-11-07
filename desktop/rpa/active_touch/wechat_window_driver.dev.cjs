@@ -683,7 +683,8 @@ $windowText = New-Object System.Text.StringBuilder 512
   verificationMode = $verificationMode
   conversationTitleMode = $(if ($titleVisible) { "uia_header" } else { "visual_header" })
   conversationToken = $(if ($titleVisible) { $titleToken } else { $visualToken })
-} | ConvertTo-Json -Compress
+  titleComparison = $(if ($verified -or $titleVisible) { $null } else { @{ header = $script:headerTitleEvidence } })
+} | ConvertTo-Json -Compress -Depth 5
 `;
 
 function observationEnvironment(expectedTitle, context = {}) {
