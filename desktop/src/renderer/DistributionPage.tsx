@@ -37,7 +37,7 @@ export function DistributionPage({ tab, onManageAccounts }: { tab: DistributionT
   return <section className="ns-page distribution-page">
     <div className="dist-hero">
       <div>
-        <div className="ns-kicker">账号运营{busy && <span className="ns-live"><i />正在发布</span>}{nurture?.running && <span className="ns-live"><i />正在养号</span>}</div>
+        <div className="ns-kicker">账号矩阵{busy && <span className="ns-live"><i />正在发布</span>}{nurture?.running && <span className="ns-live"><i />正在养号</span>}</div>
         <h1 className="ns-h1">{tab === "nurture"
           ? nurturing ? <>正在养 <em>{nurturing} 个</em>抖音号</> : <>新号先养 <em>8 天</em>，再稳定发视频</>
           : sent.length

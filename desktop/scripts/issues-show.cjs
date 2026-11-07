@@ -107,6 +107,7 @@ function show(directory) {
     }
   }
   if (capsule.engineStderr) out.push("", "视频引擎输出尾部：", capsule.engineStderr.trim().slice(-1500));
+  if (capsule.latest?.engineStderr && capsule.latest.engineStderr !== capsule.engineStderr) out.push("", `视频引擎输出尾部（最近一次，${capsule.latest.at || ""}）：`, capsule.latest.engineStderr.trim().slice(-1500));
   const steps = capsule.breadcrumbs || [];
   if (steps.length) {
     out.push("", `出错前的步骤（${steps.length}）：`);
