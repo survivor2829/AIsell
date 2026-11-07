@@ -2814,7 +2814,11 @@ function Restore-DraftClipboardIfOwned {
         -not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) { return }
     $currentClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
     if ($currentClipboard -ceq [string]$script:draftOwnedClipboardValue) {
-      Restore-WechatClipboardSnapshot $script:draftOldClipboard
+      if ([string]::IsNullOrEmpty([string]$script:draftOldClipboard)) {
+        [System.Windows.Forms.Clipboard]::Clear()
+      } else {
+        [System.Windows.Forms.Clipboard]::SetText([string]$script:draftOldClipboard, [System.Windows.Forms.TextDataFormat]::UnicodeText)
+      }
       $script:draftOwnedClipboardValue = $null
     }
   } catch {}
@@ -2908,12 +2912,16 @@ $script:draftInputLeaseActive = $exactWindowBinding
 if ($exactWindowBinding -and $script:draftInputLeaseTick -eq [uint32]::MaxValue) { Stop-DraftForActiveUser }
 Start-Sleep -Milliseconds 300
 Assert-ExactDraftLease
+# Keep and put back only the user's text, as the send step does. Reading every
+# format of another program's clipboard stopped input (78x, unsupported format)
+# and then killed this script before the input click on a customer PC
+# (2026-11-07); a non-text clipboard is simply not restored.
+$oldClipboard = $null
 try {
-  $oldClipboard = Get-WechatClipboardSnapshot
-} catch {
-  @{ ok = $false; reason = $(if ($_.Exception.Message -eq "wechat_clipboard_restore_unsupported") { "wechat_clipboard_restore_unsupported" } else { "wechat_clipboard_read_failed" }); pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
-  exit
-}
+  if ([System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) {
+    $oldClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
+  }
+} catch { $oldClipboard = $null }
 $ownedClipboardValue = $null
 $script:draftOldClipboard = $oldClipboard
 $script:draftClipboardCaptured = $true
