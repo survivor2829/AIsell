@@ -19,7 +19,8 @@ const IGNORED_MODULES = new Set(["maintenance", "feedback"]);
 // Evidence a task writes just after its failure is logged (the touch search
 // screenshot goes into the passport seconds later) is collected once more.
 const LATE_ATTACH_MS = 15_000;
-const DAILY_LIMIT = 40;
+// A 400-contact touch run can skip dozens; 40 a day left the rest without evidence (2026-11-07).
+const DAILY_LIMIT = 200;
 const KEEP_FILES = 100;
 const KEEP_DAYS = 30;
 const MAX_CAPSULE_BYTES = 240 * 1024;

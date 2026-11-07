@@ -12,6 +12,11 @@ const STALE_TASK_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH_SIZE = 50;
 const CURRENT_TASK_VERSION = 4;
 const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipped", "pre_send_skipped"]);
+// Bump whenever how a contact is found or recognised changes (search resolver,
+// title check). A contact skipped as not found / not recognised under the same
+// logic gets the same result again, so "retry all" leaves it out until then
+// (user 2026-11-07: retrying those only clicked the avatar and wasted time).
+const IDENTITY_LOGIC_VERSION = "2026-11-07.2";
 
 function nowIso() {
   return new Date().toISOString();
@@ -194,9 +199,19 @@ function recordSkippedResult(result, index, details = {}) {
     ruleId: String(details.ruleId || result?.search_evidence?.rule_id || ""),
     blockedReason: String(details.blockedReason || result?.reason || ""),
     at,
-    traceId: String(details.traceId || result?.last_trace_id || "")
+    traceId: String(details.traceId || result?.last_trace_id || ""),
+    identityLogic: IDENTITY_LOGIC_VERSION
   };
   return result;
+}
+
+// "Retry all" only: an identity skip recorded under the current identity logic
+// would fail the same way. A contact picked by hand can still be retried.
+function bulkRetryBlockedReason(result) {
+  const blocked = skippedRetryBlockedReason(result);
+  if (blocked) return blocked;
+  return String(result?.status || "") === "identity_skipped"
+    && result?.skip_record?.identityLogic === IDENTITY_LOGIC_VERSION ? "retry_skipped_identity_unchanged" : "";
 }
 
 function poisonedSearchCandidate(result, at = nowIso()) {
@@ -230,11 +245,14 @@ function skippedTaskSummary(task) {
     breakdown[category] = Number(breakdown[category] || 0) + 1;
     const record = result.skip_record || recordSkippedResult({ ...result }, index).skip_record;
     const retryBlockedReason = skippedRetryBlockedReason(result);
+    const bulkBlockedReason = bulkRetryBlockedReason(result);
     records.push({
       ...record,
       status: result.status,
       retryable: !retryBlockedReason,
-      retry_blocked_reason: retryBlockedReason
+      retry_blocked_reason: retryBlockedReason,
+      bulk_retryable: !bulkBlockedReason,
+      bulk_retry_blocked_reason: bulkBlockedReason
     });
   }
   return { breakdown, records };
@@ -269,11 +287,12 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
     return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试明确未发送的跳过联系人" };
   }
 
-  const selected = requestedRows.filter(({ result }) => !skippedRetryBlockedReason(result));
+  const blockedReason = requested ? skippedRetryBlockedReason : bulkRetryBlockedReason;
+  const selected = requestedRows.filter(({ result }) => !blockedReason(result));
   const excludedReasons = {};
   if (!requested) {
     for (const { result } of requestedRows) {
-      const reason = skippedRetryBlockedReason(result);
+      const reason = blockedReason(result);
       if (reason) excludedReasons[reason] = Number(excludedReasons[reason] || 0) + 1;
     }
   }
@@ -281,7 +300,9 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
   if (!selected.length) return {
     ok: false,
     blocked_reason: "retry_skipped_empty",
-    error: "当前没有可安全重试的跳过联系人",
+    error: excludedReasons.retry_skipped_identity_unchanged
+      ? "剩下的联系人上次是搜不到或认不准，判断方式没变，重试结果也一样，所以没有重新加入；软件更新改进识别后会自动再试。"
+      : "当前没有可安全重试的跳过联系人",
     retriedCount: 0,
     excludedCount,
     excludedReasons
@@ -822,6 +843,7 @@ function cleanupTaskCache(baseDir = __dirname, nowMs = Date.now()) {
 
 module.exports = {
   BATCH_SIZE,
+  IDENTITY_LOGIC_VERSION,
   CURRENT_TASK_VERSION,
   TASK_FILE,
   TASK_BACKUP_FILE,

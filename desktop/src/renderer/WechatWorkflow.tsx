@@ -92,7 +92,7 @@ export type WorkflowState = {
   // Automation running outside the app in Chrome (养号, 一键分发), shown by 小玺 as well.
   external?: Array<{ kind: string; title: string; detail?: string; done?: number; total?: number; attention?: boolean }>;
 };
-export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; taskCount?: number; contactCount?: number; excludedCount?: number; excludedReasons?: Record<string, number> };
+export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; taskCount?: number; contactCount?: number; excludedCount?: number; unchangedCount?: number; excludedReasons?: Record<string, number> };
 export type WorkflowContact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
 
 declare global {
@@ -473,19 +473,22 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   };
 
 
+  // Contacts skipped as not found / not recognised under unchanged logic would fail the same way.
+  const unchangedNote = (count: number) => count > 0 ? `，${count} 位上次搜不到或认不准、判断方式没变，重试结果也一样，没有重复加入` : "";
   const retrySkipped = async (task: WorkflowTask, contactIds?: string[], andStart = false) => {
     if (!api) return;
     const result = await run(() => api.retrySkipped(task.id, contactIds, andStart));
     if (result?.ok) {
-      const excluded = Number(result.excludedCount || 0);
-      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${excluded ? `，另有 ${excluded} 位因安全原因未加入` : ""}${andStart ? "并继续。" : "；点击启动程序后一次补跑。"}`);
+      const unchanged = Number(result.excludedReasons?.retry_skipped_identity_unchanged || 0);
+      const excluded = Number(result.excludedCount || 0) - unchanged;
+      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${unchangedNote(unchanged)}${excluded > 0 ? `，另有 ${excluded} 位因安全原因未加入` : ""}${andStart ? "并继续。" : "；点击启动程序后一次补跑。"}`);
     }
   };
 
   const retryAll = async () => {
     if (!api) return;
     const result = await run(() => api.retryAllAndStart());
-    if (result?.ok) setNotice(`已重新加入 ${Number(result.contactCount || 0)} 位联系人、${Number(result.taskCount || 0)} 项任务并继续。`);
+    if (result?.ok) setNotice(`已重新加入 ${Number(result.contactCount || 0)} 位联系人、${Number(result.taskCount || 0)} 项任务并继续${unchangedNote(Number(result.unchangedCount || 0))}。`);
   };
   const retrySingle = async (task: WorkflowTask) => {
     if (!api) return;
