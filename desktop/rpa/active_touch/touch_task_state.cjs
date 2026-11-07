@@ -16,7 +16,7 @@ const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipp
 // title check). A contact skipped as not found / not recognised under the same
 // logic gets the same result again, so "retry all" leaves it out until then
 // (user 2026-11-07: retrying those only clicked the avatar and wasted time).
-const IDENTITY_LOGIC_VERSION = "2026-11-07.2";
+const IDENTITY_LOGIC_VERSION = "2026-11-07.3";
 
 function nowIso() {
   return new Date().toISOString();

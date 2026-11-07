@@ -72,7 +72,12 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     # opened chats (customer 1.2.71, 2026-11-07). Letters and digits must still be
     # identical; only symbols/punctuation/spaces are ignored, and a cut title must
     # show at least the first 4 letters/digits of the name.
-    $fold={ param([string]$value) [Text.RegularExpressions.Regex]::Replace($value.Normalize([Text.NormalizationForm]::FormKC),'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
+    # OCR reads "-" as "一" or "·": when the name itself has a dash, those count as it.
+    $expectedHasDash=$expectedTitle -match '[-‐‑‒–—―－]'
+    $fold={ param([string]$value)
+      $folded=$value.Normalize([Text.NormalizationForm]::FormKC)
+      if ($expectedHasDash) { $folded=[Text.RegularExpressions.Regex]::Replace($folded,'[一·・•]','') }
+      [Text.RegularExpressions.Regex]::Replace($folded,'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
     $expectedFolded=& $fold $expectedTitle
     $matches={ param($found)
       if ($found.Count -ne 1) { return $false }

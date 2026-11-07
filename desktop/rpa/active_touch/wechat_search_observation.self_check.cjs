@@ -72,7 +72,15 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
       const row = input.visualCandidates.find(line => line.top === 160);
       input.visualCandidates.push({ ...row, top: 190, bottom: 208, y: 199 });
     }
-    assert.notEqual(resolveWechatSearchResultObservation(input, identity).status, "selected", change);
+    const decided = resolveWechatSearchResultObservation(input, identity);
+    if (change === "missing_header") {
+      // 1.2.73: the one row that is exactly the name and the first result is clicked
+      // (contacts come first in 4.2), never the group "Contains" row or chat history.
+      assert.equal(decided.mode, "name_prefix_visual", change);
+      assert.equal(decided.candidate.top, 160, change);
+      continue;
+    }
+    assert.notEqual(decided.status, "selected", change);
   }
 }
 
