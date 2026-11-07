@@ -590,7 +590,9 @@ function resolveBaselineObservation(observation = {}, identity = {}) {
 const POPUP_NETWORK_LABEL = "搜索网络结果";
 const isUnsafeVisualText = (value) => normalized(value).includes("查找")
   || (normalized(value).includes("微信号") && !normalized(value).startsWith("微信号"));
-const foldedWechatId = (value) => normalized(value).replace(/[|il1]/gu, "1").replace(/[o0]/gu, "0");
+// A WeChat ID is letters, digits, "_" and "-": any other character OCR adds to
+// the gray ID line (a stray "." or ")") is noise, not a different ID.
+const foldedWechatId = (value) => normalized(value).replace(/[^a-z0-9_|\-]/gu, "").replace(/[|il1]/gu, "1").replace(/[o0]/gu, "0");
 
 function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
@@ -756,7 +758,16 @@ function resolveSectionedPopup(visual, popup, identity, column, rawLines = visua
   if (!headers.length && identity.queryType !== "wechat_id") return reject("search-r022");
   const header = headers[0] || null;
   const sectionTop = header ? Number(header.bottom) - 2 : Number(popup.top);
-  const sectionEnd = Math.min(Number(popup.bottom),
+  // WeChat 4.2 ends the popup with a "🔍 <query>" suggestion row in the caption
+  // column. When OCR misreads the "搜索网络结果" row above it (customer 4.2,
+  // 2026-11-07: one contact listed with the exact ID, yet stopped as search-r022),
+  // that echo row was taken for an unknown caption. It is the bottom boundary of
+  // the local results, never a caption.
+  const queryText = normalized(identity.query);
+  const isQueryEcho = (text) => text === queryText || text.replace(/^(?:[^\p{L}\p{N}]{1,2}|[0o])/u, "") === queryText;
+  const echoTops = rawLines.filter((line) => column(line.left) <= 70 && queryText.length >= 2
+    && isQueryEcho(normalized(line.text)) && Number(line.top) >= sectionTop).map((line) => Number(line.top));
+  const sectionEnd = Math.min(Number(popup.bottom), ...echoTops,
     ...visual.filter((line) => Number(line.top) >= sectionTop && (isOtherSearchSection(line.text)
       || (!header && (isUnsafeVisualText(line.text) || isNetworkLookupText(line.text)))))
       .map((line) => Number(line.top)));
