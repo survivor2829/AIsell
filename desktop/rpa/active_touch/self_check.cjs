@@ -3161,8 +3161,11 @@ try {
   assert.match(messageDraftSource, /Set-DraftInputPhase "pre_input"[\s\S]*Set-DraftInputPhase "after_input_click"[\s\S]*Set-DraftInputPhase "typing"[\s\S]*Set-DraftInputPhase "after_paste"/);
   assert.match(messageDraftSource, /safety_diagnostics = \$safety/);
   assert.match(messageDraftSource, /\$script:draftInputLeaseActive -and \[Win32WechatMessageDraft\]::GetLastInputTick\(\) -ne \$script:draftInputLeaseTick/);
-  assert.match(messageDraftSource, /Get-WechatClipboardSnapshot/);
-  assert.match(messageDraftSource, /Restore-WechatClipboardSnapshot \$script:draftOldClipboard/);
+  // Draft input keeps only the user's text (field 2026-11-07: reading every
+  // clipboard format of another program stopped or killed input).
+  assert.doesNotMatch(messageDraftSource, /\$oldClipboard = Get-WechatClipboardSnapshot/);
+  assert.match(messageDraftSource, /\$oldClipboard = \[System\.Windows\.Forms\.Clipboard\]::GetText\(\[System\.Windows\.Forms\.TextDataFormat\]::UnicodeText\)/);
+  assert.match(messageDraftSource, /Clipboard\]::SetText\(\[string\]\$script:draftOldClipboard/);
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
   assert.match(messageBubbleSource, /Get-WechatClipboardSnapshot/, "message proof must preserve non-text clipboard data before reading the draft");
   assert.match(messageBubbleSource, /Restore-WechatClipboardSnapshot \$oldClipboard/, "message proof must restore the original clipboard snapshot after reading the draft");
