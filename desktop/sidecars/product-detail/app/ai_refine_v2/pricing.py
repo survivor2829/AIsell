@@ -37,9 +37,13 @@ class RequestOutcomeUnknown(RuntimeError):
         self.not_submitted = not_submitted
 
 
+# The gateway keeps receipts far longer than this; past it a missing receipt is not trusted as "never bought".
+RECEIPT_TRUST_SECONDS = 7 * 24 * 3600
+
+
 def _image_failure_diagnostic(exc):
     """Keep bounded metadata only; exception messages can contain keys or bodies."""
-    allowed_types = {"APIMartError", "APIMartNotSubmitted", "APIMartOutcomeUnknown",
+    allowed_types = {"APIMartError", "APIMartNotSubmitted", "APIMartOutcomeUnknown", "APIMartGatewayNeverReceived",
                      "APIMartTaskFailed", "APIMartReferenceUploadTransportError",
                      "TypeError", "ValueError", "RuntimeError", "TimeoutError", "URLError", "OSError"}
     error_type = type(exc).__name__
@@ -406,11 +410,20 @@ class CostJournal:
                 self.finish(name, operation["status"], provider_task_id=provider_id)
             if (not provider_id and not operation.get("raw_url") and operation["status"] != "failed"
                     and operation.get("gateway_operation_id") and api_key):
-                from ai_image_apimart import recover_gateway_task_id, APIMartOutcomeUnknown
+                from ai_image_apimart import recover_gateway_task_id, APIMartOutcomeUnknown, APIMartGatewayNeverReceived
                 try:
                     provider_id = recover_gateway_task_id(operation["gateway_operation_id"], api_key)
                     # Journal first again: a second process exit must retain the recovered ID.
                     self.finish(name, "submitting", provider_task_id=provider_id)
+                except APIMartGatewayNeverReceived as exc:
+                    if time.time() - float(operation.get("started_at") or 0) > RECEIPT_TRUST_SECONDS:
+                        # An old receipt may simply have expired at the gateway: that proves nothing.
+                        block["provider_status"] = "outcome_unknown"
+                        unknown.append(f"{name}: 原网关回执已过期，未重新提交")
+                    else:
+                        # Proven never bought: the screen goes back to "not submitted" and can be made again.
+                        self.finish(name, "failed", not_submitted=True, diagnostic=_image_failure_diagnostic(exc))
+                        operation = self.load()["operations"][name]
                 except APIMartOutcomeUnknown:
                     block["provider_status"] = "outcome_unknown"
                     unknown.append(f"{name}: 原网关回执尚不可确认，未重新提交")

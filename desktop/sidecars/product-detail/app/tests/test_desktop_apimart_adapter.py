@@ -483,3 +483,70 @@ def test_malformed_poll_result_never_resubmits_paid_task(monkeypatch, poll_respo
     assert caught.value.task_id == "task-malformed-1"
     assert len(submit_calls) == 1
     assert len(poll_calls) == 1
+
+
+def _missing_receipt(url):
+    import io, urllib.error
+    return urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b"{\"error\": \"receipt_not_found\"}"))
+
+
+def test_gateway_without_any_receipt_means_never_bought_and_may_try_again(monkeypatch):
+    # Customer PC 2026-11-09: a dropped submit, then the gateway said "no receipt" every time.
+    import uuid
+    operation = str(uuid.uuid4())
+    monkeypatch.setattr(adapter, "_gateway_receipt_base", lambda: "https://gateway.invalid")
+    calls = []
+    def get(url, key):
+        calls.append(url)
+        raise _missing_receipt(url)
+    monkeypatch.setattr(adapter, "_http_get_json_response", get)
+    monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
+    with pytest.raises(adapter.APIMartGatewayNeverReceived) as caught:
+        adapter.recover_gateway_task_id(operation, "secret")
+    assert len(calls) == 4
+    assert caught.value.not_submitted and not caught.value.outcome_unknown
+    assert caught.value.do_not_retry, "never an automatic new purchase for the screen"
+
+
+def test_one_pending_or_unclear_answer_keeps_the_outcome_unknown(monkeypatch):
+    import io, urllib.error, uuid
+    operation = str(uuid.uuid4())
+    monkeypatch.setattr(adapter, "_gateway_receipt_base", lambda: "https://gateway.invalid")
+    answers = iter([_missing_receipt("u"), urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(b"<html>proxy</html>")),
+                    _missing_receipt("u"), _missing_receipt("u")])
+    def get(url, key):
+        raise next(answers)
+    monkeypatch.setattr(adapter, "_http_get_json_response", get)
+    monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
+    with pytest.raises(adapter.APIMartOutcomeUnknown):
+        adapter.recover_gateway_task_id(operation, "secret")
+
+
+@pytest.mark.parametrize("second_send_lands", [True, False])
+def test_a_dropped_submit_is_resent_once_as_the_same_operation(monkeypatch, second_send_lands):
+    # The run resends the very same request (id and bytes); the gateway de-duplicates it, so a late
+    # original can never be a second purchase. A second "never received" stops instead of buying anew.
+    root = "https://gateway.invalid/v1/provider-gateway"
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
+    monkeypatch.setenv("REFINE_API_BASE_URL", root + "/apimart")
+    monkeypatch.setattr(adapter, "_gateway_receipt_base", lambda: root)
+    posts, events = [], []
+    def open_(request, **kwargs):
+        if request.method == "POST":
+            posts.append((request.get_header("X-xiaoxi-operation-id"), request.data))
+            if len(posts) == 1 or not second_send_lands:
+                raise ConnectionResetError("dropped by a busy gateway")
+            return io.BytesIO(b'{"data": [{"task_id": "paid-once"}]}')
+        raise _missing_receipt(request.full_url)
+    class Reply(io.BytesIO):
+        status = 200
+    monkeypatch.setattr(adapter, "_open_apimart", lambda request, **kw: Reply(open_(request).getvalue()))
+    monkeypatch.setattr(adapter, "poll_image_task", lambda task_id, key, **kw: f"https://cdn.invalid/{task_id}.png")
+    call = lambda: adapter.default_api_call("prompt", None, "secret", lifecycle_callback=events.append)
+    if second_send_lands:
+        assert call() == "https://cdn.invalid/paid-once.png"
+    else:
+        with pytest.raises(adapter.APIMartGatewayNeverReceived):
+            call()
+    assert len(posts) == 2 and posts[0] == posts[1], "the same operation id and the same bytes"
+    assert posts[0][0] == events[0]["gateway_operation_id"]

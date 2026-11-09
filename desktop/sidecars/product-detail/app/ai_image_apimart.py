@@ -108,6 +108,19 @@ class APIMartNotSubmitted(APIMartError):
         super().__init__(message)
 
 
+class APIMartGatewayNeverReceived(APIMartNotSubmitted):
+    """The gateway answered, repeatedly, that it holds no receipt for this operation.
+
+    The gateway writes the receipt before it forwards anything upstream, so no receipt means
+    nothing was bought (customer PC 2026-11-09: a dropped connection left a consumables task
+    stuck as "unknown" although the gateway had never seen the request). The run itself sends
+    the same operation again, byte for byte, which the gateway de-duplicates; it never opens a
+    new operation for the screen by itself, so a late original can never be bought twice.
+    """
+
+    stage = "receipt"
+
+
 class APIMartOutcomeUnknown(APIMartError):
     """A generation was submitted, but its final billable outcome is unknown."""
 
@@ -152,7 +165,8 @@ def _gateway_receipt_base() -> str:
 
 
 def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
-    """Read the original submit response; missing/pending receipts never permit POST."""
+    """Read the original submit response. Pending or unclear answers never permit a POST; only the
+    gateway's repeated, explicit "no receipt" allows sending the same operation once more."""
     root = _gateway_receipt_base()
     try:
         valid_id = str(uuid.UUID(operation_id)) == operation_id
@@ -161,7 +175,9 @@ def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
     if not root or not valid_id:
         raise APIMartOutcomeUnknown("", "原请求缺少可核对的网关回执", stage="receipt")
     code = None
-    for attempt in range(3):
+    all_missing = True
+    for attempt in range(_RECEIPT_LOOKS):
+        missing = False
         try:
             code, body = _http_get_json_response(f"{root}/operations/{operation_id}", api_key)
             task_id = _submit_task_id(body) if code in (200, 201) else ""
@@ -169,14 +185,34 @@ def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
                 return task_id
         except Exception as exc:
             code = getattr(exc, "code", None)
+            missing = code == 404 and _receipt_not_found(exc)
+        all_missing = all_missing and missing
         # Only repeat receipt GETs. Never retry upload or billable submission.
         if code not in (None, 202, 404, 408, 429, 500, 502, 503, 504):
             break
-        if attempt < 2:
+        if attempt < _RECEIPT_LOOKS - 1:
             time.sleep(2 ** (attempt + 1))
+    # Every look (about 14 seconds in all) got the gateway's own "no such receipt": it never began.
+    if all_missing:
+        raise APIMartGatewayNeverReceived(
+            "网关没有收到这次生图请求，未产生费用，可以重新生成这一屏。", stage="receipt", http_status=404,
+        ) from None
     raise APIMartOutcomeUnknown(
         "", "原提交回执尚不可确认，已保留请求编号，未重新提交", stage="receipt", http_status=code,
     ) from None
+
+
+_RECEIPT_LOOKS = 4
+
+
+def _receipt_not_found(error) -> bool:
+    """True only for the gateway's explicit answer, never for a bare 404 from something in between."""
+    try:
+        parsed = json.loads(error.read(65536).decode("utf-8"))
+        code = parsed.get("error")
+        return (code.get("code") if isinstance(code, dict) else code) == "receipt_not_found"
+    except Exception:
+        return False
 
 
 def _resolve_api_key(api_key: str = "") -> str:
@@ -554,21 +590,27 @@ def _submit_image_task_for_route(prompt: str,
                                  gateway_operation_id: str = "",
                                  image_profile: Optional[dict] = None) -> tuple[str, bool]:
     """Submit once and retain the proven route for polling the same task."""
+    payload, selected_direct = _prepare_image_submission(
+        prompt, image_data_url, api_key, thinking, size, image_profile=image_profile,
+    )
+    return _post_image_submission(payload, api_key, selected_direct, gateway_operation_id), selected_direct
+
+
+def _prepare_image_submission(prompt, image_data_url, api_key, thinking="medium", size=_SIZE_DEFAULT, *, image_profile=None):
+    """The exact payload and route of one submission, so a resend carries the same bytes."""
     from ai_refine_v2.image_profile import submission_fields
     try:
         profile_fields = submission_fields(image_profile)
     except ValueError as exc:
         raise APIMartNotSubmitted(str(exc), stage="reference_prepare") from None
-    payload: dict[str, Any] = {
-        **profile_fields,
-        "prompt": prompt,
-        "n": 1,
-        "size": size,
-    }
+    payload: dict[str, Any] = {**profile_fields, "prompt": prompt, "n": 1, "size": size}
     reference_urls, selected_direct = _prepare_reference_urls_for_route(image_data_url, api_key)
     if reference_urls:
         payload["image_urls"] = reference_urls
+    return payload, selected_direct
 
+
+def _post_image_submission(payload: dict, api_key: str, selected_direct: bool, gateway_operation_id: str = "") -> str:
     receipt_options = {"gateway_operation_id": gateway_operation_id} if gateway_operation_id else {}
     try:
         if selected_direct:
@@ -583,7 +625,7 @@ def _submit_image_task_for_route(prompt: str,
         raise APIMartOutcomeUnknown("", "APIMart 提交响应未确认") from exc
     task_id = _submit_task_id(body)
     if task_id:
-        return task_id, selected_direct
+        return task_id
     if isinstance(body, dict) and body.get("_gateway_request_not_sent") is True:
         raise APIMartNotSubmitted("连接暂未建立，未提交生图、未产生本次生图费用。请稍后重试。", stage="submit", http_status=code)
     if 400 <= code < 500:
@@ -712,17 +754,26 @@ def default_api_call(prompt: str,
             lifecycle_callback({"event": "prepared", "gateway_operation_id": operation_id})
         except Exception:
             raise APIMartNotSubmitted("提交前回执保存失败，尚未提交生图。", stage="checkpoint") from None
-    receipt_options = {"gateway_operation_id": operation_id} if operation_id else {}
-    try:
-        task_id, selected_direct = _submit_image_task_for_route(
-            prompt, image_data_url, api_key, thinking=thinking, size=size,
-            image_profile=image_profile, **receipt_options,
-        )
-    except APIMartOutcomeUnknown as exc:
-        if not operation_id or exc.task_id:
-            raise
-        task_id = recover_gateway_task_id(operation_id, api_key)
-        selected_direct = False
+    payload, selected_direct = _prepare_image_submission(
+        prompt, image_data_url, api_key, thinking, size, image_profile=image_profile,
+    )
+    task_id = ""
+    for resend in (False, True):
+        try:
+            task_id = _post_image_submission(payload, api_key, selected_direct, operation_id)
+            break
+        except APIMartOutcomeUnknown as exc:
+            if not operation_id or exc.task_id:
+                raise
+            try:
+                task_id = recover_gateway_task_id(operation_id, api_key)
+                selected_direct = False
+                break
+            except APIMartGatewayNeverReceived:
+                # Never reached the gateway: send the same operation once more. Same id and bytes,
+                # so a late original and this resend are one purchase at the gateway.
+                if resend:
+                    raise
     route = "direct" if selected_direct else "system"
     if lifecycle_callback is not None:
         try:

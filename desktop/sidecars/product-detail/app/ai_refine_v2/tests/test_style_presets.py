@@ -85,3 +85,13 @@ def test_style_is_frozen_for_recovery(tmp_path):
     pipeline_runner._freeze_task_input(tmp_path, {"product_title": "x", "product_style": "fresh"})
     pipeline_runner._freeze_task_input(tmp_path, {"product_title": "x"})
     assert json.loads((tmp_path / "_input.json").read_text(encoding="utf-8"))["product_style"] == "fresh"
+
+
+def test_lively_is_commercial_not_cartoon_and_tech_is_light():
+    # Customer feedback 2026-11-09: lively looked too cartoonish for a business, tech was too dark navy.
+    bright = style_presets.PRESETS["bright"]["style_dna"]
+    assert "不用卡通" in bright["unified_visual_treatment"] and "商业" in bright["composition_style"]
+    assert "圆润" not in bright["typography_hint"] and "圆角信息卡片" not in bright["composition_style"]
+    tech = style_presets.PRESETS["tech"]["style_dna"]
+    assert tech["color_palette"].startswith("浅") and "不使用大面积深蓝" in tech["color_palette"]
+    assert "深底" not in tech["typography_hint"] and "深蓝渐变" not in tech["unified_visual_treatment"]
