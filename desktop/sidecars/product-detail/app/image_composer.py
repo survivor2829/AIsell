@@ -700,7 +700,7 @@ def compose_brand_cta(product_data: dict, product_image: str,
     draw.text((bx + 30, by + 12), btn_text, font=bf, fill=WHITE)
 
     # 底部免责
-    draw.text((30, h - 40), "*产品参数以实物为准，图片仅供参考", font=_font(11), fill=(*WHITE, 60))
+    draw.text((30, h - 40), "产品效果仅供参考", font=_font(11), fill=(*WHITE, 60))
     draw.text((30, h - 22), "© " + (brand or "品牌"), font=_font(10), fill=(*WHITE, 40))
 
     if save_path:

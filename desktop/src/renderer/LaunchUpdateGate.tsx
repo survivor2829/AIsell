@@ -1,5 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import type { CloudStatus } from "./CloudMaintenance";
+import { MascotHello } from "./MascotHello";
+import { releaseVoice } from "./release-voice";
 import "./launch-update-gate.css";
 
 // 打开即更新：有新版时先装好再进入，期间不挂载业务页面，也就不会启动任何任务。
@@ -50,8 +52,17 @@ export function LaunchUpdateGate({ children }: { children: ReactNode }) {
     : gate.phase === "installing" ? "安装完成后软件会自动重新打开，请不要关闭电脑。"
     : downloading ? `已下载 ${((state.downloadedBytes || 0) / 1048576).toFixed(1)} / ${((state.totalBytes || 0) / 1048576).toFixed(1)} MB`
     : gate.phase === "checking" && !state.nextVersion ? "连不上更新服务器时会直接进入当前版本。" : "正在校验更新文件…";
+  const coming = state.announcements?.find((entry) => entry.version === state.nextVersion);
+  const highlight = coming ? releaseVoice(coming.version, coming.notes).highlight : "";
   return <main className="launch-update" role="status" aria-live="polite">
     <section className="launch-update-card">
+      <div className="launch-update-hero">
+        <MascotHello moment="work" width={132} />
+        <div>
+          <strong>{gate.phase === "retrying" ? "网络有点慢，我再试一次～" : "我去换身新本领，马上回来～"}</strong>
+          {highlight && <p>这次会带回来：{highlight}</p>}
+        </div>
+      </div>
       <h1>{title}</h1>
       {downloading && gate.phase !== "retrying" ? <progress max={100} value={percent} aria-label={`已下载 ${percent}%`} /> : <progress aria-label={title} />}
       {gate.phase === "retrying" && state.error && <p className="launch-update-error">{state.error}</p>}

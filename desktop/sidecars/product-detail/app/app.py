@@ -3540,7 +3540,7 @@ def generate_ai_images():
             "story_desc_2": _to_str(parsed_data.get("story_desc_2", "")),
             "story_bottom_1": _to_str(parsed_data.get("story_bottom_1", "")),
             "story_bottom_2": _to_str(parsed_data.get("story_bottom_2", "")),
-            "footer_note": "*产品参数以实物为准，图片仅供参考",
+            "footer_note": "产品效果仅供参考",
         }
 
     print(f"[AI生图] 开始为 {product_data.get('model_name', '未知')} 生成详情图...")
@@ -3673,7 +3673,7 @@ def generate_ai_detail():
         "story_desc_1": _to_str(parsed_data.get("story_desc_1", "")),
         "story_desc_2": _to_str(parsed_data.get("story_desc_2", "")),
         "scenes": parsed_data.get("scenes") or [],
-        "footer_note": "*产品参数以实物为准，图片仅供参考",
+        "footer_note": "产品效果仅供参考",
     }
     # 主参数条（4 项）
     for i in (1, 2, 3, 4):
@@ -5267,7 +5267,11 @@ def ai_refine_v2_execute():
     if product_category and product_category not in ALLOWED_PRODUCT_TYPES:
         return _input_error("AI_REFINE_CATEGORY_INVALID", "请选择设备、配件、耗材或工具品类")
 
-    from ai_refine_v2 import pipeline_runner
+    from ai_refine_v2 import pipeline_runner, style_presets
+    try:
+        product_style = style_presets.resolve(data.get("style"))
+    except ValueError:
+        return _input_error("AI_REFINE_STYLE_INVALID", "请重新选择详情图风格")
     # PR C (2026-05-07): 二级 key 模式 — paid/admin 用 platform, else 用 user 自配
     try:
         deepseek_key, _ = _get_deepseek_key(current_user)
@@ -5284,6 +5288,7 @@ def ai_refine_v2_execute():
         mode=schema_mode,
         user_id=current_user.id,  # P4 §A.6: owner 标记防 IDOR
         product_category=product_category,
+        product_style=product_style,
     )
     actual_deepseek_key, actual_gpt_image_key = pipeline_runner._apply_safety_valve(
         deepseek_key, gpt_image_key
@@ -5294,6 +5299,7 @@ def ai_refine_v2_execute():
         "task_id": task_id,
         "mode": mode,
         "poll_url": f"/api/ai-refine-v2/status/{task_id}",
+        "style_label": style_presets.label_of(product_style),
         "notes": (
             [] if mode == "real"
             else ["当前为 mock/partial-mock 模式: 部分或全部使用占位图. "

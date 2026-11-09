@@ -126,6 +126,8 @@ def _with_costs(task_id: str, result: dict) -> dict:
         inputs = _read_json(_OUTPUT_BASE / task_id / "_input.json") or {}
         result["product_category"] = inputs.get("product_category") or ""
         result["product_title"] = inputs.get("product_title") or ""
+        from ai_refine_v2.style_presets import label_of
+        result["style_label"] = label_of(inputs.get("product_style"))
     return result
 
 
@@ -1360,6 +1362,21 @@ def _run_assembler(task_dir: Path, blocks: list[dict],
 # ─────────────────────────────────────────────────────────────
 # v2 Assembler (PRD §阶段二·任务 2.2 stub, PRD §阶段三正式实现 PIL 拼接)
 # ─────────────────────────────────────────────────────────────
+DISCLAIMER_TEXT = "产品效果仅供参考"
+
+
+def _disclaimer_band(width: int):
+    """Drawn by the program, never by the image model, so the wording is always exact."""
+    from PIL import Image, ImageDraw
+    from image_composer import _load_chinese_font
+    height = max(72, round(width * 0.07))
+    band = Image.new("RGB", (width, height), (244, 244, 246))
+    draw = ImageDraw.Draw(band)
+    draw.line([(0, 0), (width, 0)], fill=(222, 222, 226), width=max(1, round(width / 800)))
+    draw.text((width / 2, height / 2), DISCLAIMER_TEXT, font=_load_chinese_font(max(18, round(width * 0.024))), fill=(120, 120, 128), anchor="mm")
+    return band
+
+
 def _run_assembler_v2(task_dir: Path, blocks: list[dict]) -> str:
     """v2 临时 assembler: PIL 纵向拼接成功的 N 张图为 1 张长 PNG.
 
@@ -1389,11 +1406,13 @@ def _run_assembler_v2(task_dir: Path, blocks: list[dict]) -> str:
     total_h = sum(im.height for im in images)
     max_w = max(im.width for im in images)
 
-    canvas = Image.new("RGB", (max_w, total_h), (255, 255, 255))
+    band = _disclaimer_band(max_w)
+    canvas = Image.new("RGB", (max_w, total_h + band.height), (255, 255, 255))
     y = 0
     for im in images:
         canvas.paste(im, (0, y))
         y += im.height
+    canvas.paste(band, (0, y))
 
     out_png = task_dir / "assembled.png"
     canvas.save(out_png, "PNG")
@@ -1409,7 +1428,8 @@ def _run_assembler_v2(task_dir: Path, blocks: list[dict]) -> str:
 # ─────────────────────────────────────────────────────────────
 def _worker(task_id: str, product_text: str, product_image_url: str,
             product_title: str, deepseek_key: str, gpt_image_key: str,
-            mode: str = "v1", product_category: str | None = None):
+            mode: str = "v1", product_category: str | None = None,
+            product_style: str | None = None):
     """Dispatcher: 按 mode 分发到 _worker_v1 / _worker_v2.
 
     mode='v1' (默认, 兼容直调 _worker 的 4 个老单测): plan + generate + Jinja+Playwright
@@ -1421,7 +1441,7 @@ def _worker(task_id: str, product_text: str, product_image_url: str,
     if mode == "v2":
         _worker_v2(task_id, product_text, product_image_url,
                    product_title, deepseek_key, gpt_image_key,
-                   product_category=product_category)
+                   product_category=product_category, product_style=product_style)
         return
     if mode != "v1":
         _set(task_id, status="failed",
@@ -1627,7 +1647,7 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
 
 def _worker_v2(task_id: str, product_text: str, product_image_url: str,
                product_title: str, deepseek_key: str, gpt_image_key: str,
-               product_category: str | None = None):
+               product_category: str | None = None, product_style: str | None = None):
     """v2 路径: plan_v2 + generate_v2 + PIL stub assembler.
 
     跟 _worker_v1 镜像结构, 调 v2 函数. 4 刀 guard 复用:
@@ -1658,6 +1678,7 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             "schema_mode": "v2",
             "user_id": _task_identity(task_id)[0],
             **({"reference_preflight_required": True} if preflight_required else {}),
+            **({"product_style": product_style} if product_style else {}),
         })
         existing_planning = _read_json(task_dir / "_planning.json")
         from ai_refine_v2.pricing import CostJournal, read_quote
@@ -1724,6 +1745,11 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             planning = refine_planner._reorder_lifestyle_to_second(planning, product_category)
         # PR B (2026-05-07): 耗材类/配件类 + DeepSeek 输出 materials 时注入 material_origin 屏
             planning = refine_planner._inject_material_origin(planning, product_category)
+
+        if not existing_planning:
+            # Frozen with the task, so recovery and single-screen redo keep the style that was drawn.
+            from ai_refine_v2.style_presets import apply as apply_style
+            planning = apply_style(planning, (_read_json(task_dir / "_input.json") or {}).get("product_style"))
 
         actual_mode = _detect_mode(deepseek_key, gpt_image_key, planner_is_real=(
             journal.load()["operations"].get("planner", {}).get("status") == "completed"
@@ -2321,7 +2347,8 @@ def start_task(product_text: str, product_image_url: str,
                product_title: str, deepseek_key: str,
                gpt_image_key: str, mode: str = "v1",
                user_id: int | None = None,
-               product_category: str | None = None) -> str:
+               product_category: str | None = None,
+               product_style: str | None = None) -> str:
     """启动后台管线任务, 立即返回 task_id.
 
     mode='v1' (默认, 向后兼容): plan + generate + Jinja+Playwright
@@ -2350,6 +2377,7 @@ def start_task(product_text: str, product_image_url: str,
             product_image_url=product_image_url, product_title=product_title,
             deepseek_key=deepseek_key, gpt_image_key=gpt_image_key,
             mode=mode, product_category=product_category,
+            product_style=product_style,
         ),
     )
     t.start()

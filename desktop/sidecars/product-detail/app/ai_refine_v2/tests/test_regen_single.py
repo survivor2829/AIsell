@@ -155,7 +155,10 @@ class TestAssembleLongImage(unittest.TestCase):
             self.assertTrue(out.is_file())
             with Image.open(out) as assembled:
                 h = assembled.height
-            self.assertEqual(h, 12 * 400)  # 12 屏 × 400 height
+            from ai_refine_v2.pipeline_runner import _disclaimer_band
+            with Image.open(task_dir / "assembled.png") as assembled:
+                band = _disclaimer_band(assembled.width).height
+            self.assertEqual(h, 12 * 400 + band)  # 12 屏 × 400 height + 底部声明
 
 
 if __name__ == "__main__":

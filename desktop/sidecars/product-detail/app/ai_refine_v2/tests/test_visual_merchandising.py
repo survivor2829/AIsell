@@ -799,4 +799,4 @@ def test_long_image_leaves_out_square_images(tmp_path):
     finally:
         runner._validate_assembled_png = original
     with Image.open(tmp_path / "assembled.png") as long_image:
-        assert long_image.size == (750, 2000)
+        assert long_image.size == (750, 2000 + runner._disclaimer_band(750).height)
