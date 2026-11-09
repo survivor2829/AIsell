@@ -922,10 +922,10 @@
   function selectedRefineStyleName() {
     return document.querySelector(`.style-card[data-style="${selectedRefineStyle}"] strong`)?.textContent || '';
   }
-  function showRefineStyleResult(label) {
+  function showRefineStyleResult(label, drawn = false) {
     const result = document.getElementById('style_result');
     if (!result || !label) return;
-    result.textContent = selectedRefineStyle === 'random' ? `🎁 这次抽到了：${label}，整套都是这个风格` : `这一套用：${label}`;
+    result.textContent = drawn ? `🎁 这次抽到了：${label}，整套都是这个风格` : `这一套用：${label}`;
     result.hidden = false;
   }
   let currentThemeId = 'classic-red';
@@ -2475,6 +2475,7 @@
     try {
       if (!taskRecord) {
         try {
+          const submittedStyle = selectedRefineStyle;
           const startResp = await postJson('/api/ai-refine-v2/execute', reroll ? {
             ...reroll, ...(productImageUrl ? { product_image_url: productImageUrl } : {}),
           } : {
@@ -2483,9 +2484,9 @@
             product_title: productTitle,
             schema_mode: 'v2',
             product_category: currentProductType,
-            ...(document.getElementById('style_picker') ? { style: selectedRefineStyle } : {}),
+            ...(document.getElementById('style_picker') ? { style: submittedStyle } : {}),
           });
-          showRefineStyleResult(startResp.style_label);
+          showRefineStyleResult(startResp.style_label, submittedStyle === 'random');
           taskRecord = persistAiRefineTask({
             task_id: startResp.task_id,
             mode: startResp.mode,

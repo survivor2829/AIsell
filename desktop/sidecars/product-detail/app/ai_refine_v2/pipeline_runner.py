@@ -1373,7 +1373,10 @@ def _disclaimer_band(width: int):
     band = Image.new("RGB", (width, height), (244, 244, 246))
     draw = ImageDraw.Draw(band)
     draw.line([(0, 0), (width, 0)], fill=(222, 222, 226), width=max(1, round(width / 800)))
-    draw.text((width / 2, height / 2), DISCLAIMER_TEXT, font=_load_chinese_font(max(18, round(width * 0.024))), fill=(120, 120, 128), anchor="mm")
+    try:
+        draw.text((width / 2, height / 2), DISCLAIMER_TEXT, font=_load_chinese_font(max(18, round(width * 0.024))), fill=(120, 120, 128), anchor="mm")
+    except Exception as exc:  # The images are already paid for; a font problem must not lose them.
+        print(f"[ai_refine_v2] disclaimer text not drawn: {type(exc).__name__}", flush=True)
     return band
 
 

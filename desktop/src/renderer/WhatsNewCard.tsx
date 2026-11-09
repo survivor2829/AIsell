@@ -4,6 +4,7 @@ import { releaseVoice, type ReleaseVoice } from "./release-voice";
 
 export function ReleaseBody({ voice, skipHighlight = false }: { voice: ReleaseVoice; skipHighlight?: boolean }) {
   const groups = voice.groups.map((group) => ({ ...group, items: group.items.filter((item) => !skipHighlight || item !== voice.highlight) })).filter((group) => group.items.length);
+  if (!groups.length && !voice.caveats.length && !(skipHighlight && voice.highlight)) return <p className="release-empty">这一版的说明没有保存下来。</p>;
   return <div className="release-body">
     {groups.map((group) => <section key={group.title}>
       <h4>{group.title}</h4>

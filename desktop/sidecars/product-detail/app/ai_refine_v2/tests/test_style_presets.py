@@ -39,6 +39,17 @@ def test_the_chosen_style_reaches_every_screen(style_id):
     assert "模型自己定的颜色" in source["screens"][0]["prompt"], "the caller's plan is not changed in place"
 
 
+def test_a_prompt_that_does_not_quote_the_plan_still_gets_the_style():
+    source = plan()
+    source["screens"][1]["prompt"] = "模型自己写的提示词"
+    result = style_presets.apply(source, "bright")
+    assert json.dumps(style_presets.PRESETS["bright"]["style_dna"], ensure_ascii=False) in result["screens"][1]["prompt"]
+
+
+def test_the_chosen_style_overrides_each_screen_scene():
+    assert all(style_presets.STYLE_PRIORITY in screen["prompt"] for screen in style_presets.apply(plan(), "fresh")["screens"])
+
+
 def test_no_style_leaves_the_plan_alone():
     source = plan()
     assert style_presets.apply(source, None) == source
@@ -60,6 +71,14 @@ def test_the_long_image_ends_with_the_disclaimer(tmp_path, monkeypatch):
         band = image.convert("RGB").crop((0, 600, 800, image.height))
         assert image.convert("RGB").getpixel((400, 599)) == (30, 30, 200), "the screens themselves are untouched"
         assert len(set(band.getdata())) > 2, "the band carries text, not a blank strip"
+
+
+def test_a_font_problem_never_costs_the_paid_long_image(monkeypatch):
+    import image_composer
+    def broken(*args, **kwargs):
+        raise OSError("no font")
+    monkeypatch.setattr(image_composer, "_load_chinese_font", broken)
+    assert pipeline_runner._disclaimer_band(800).width == 800
 
 
 def test_style_is_frozen_for_recovery(tmp_path):

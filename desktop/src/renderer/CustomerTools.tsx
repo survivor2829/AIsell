@@ -7,6 +7,21 @@ import { ReleaseBody, WhatsNewCard } from "./WhatsNewCard";
 import { releaseVoice } from "./release-voice";
 
 const seriesOf = (version: string) => version.split(".").slice(0, 2).join(".");
+const versionParts = (version: string) => version.split(".").map(Number);
+const isAfter = (left: string, right: string) => {
+  const [a, b] = [versionParts(left), versionParts(right)];
+  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  return false;
+};
+
+// The body is built when opened: about 180 versions are listed and most are never read.
+function HistoryEntry({ version, date, notes }: { version: string; date: string; notes: string }) {
+  const [open, setOpen] = useState(false);
+  return <details className="announcement-entry" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary><strong>版本 {version}</strong>{date && <time dateTime={date}>{date.replace(/-/g, ".")}</time>}</summary>
+    {open && <ReleaseBody voice={releaseVoice(version, notes)} />}
+  </details>;
+}
 
 export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }) {
   const [panel, setPanel] = useState<"announcements" | null>(null);
@@ -72,26 +87,28 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
   // The newest versions come with their full announcement; the history reaches back to the very first version.
   // History stops at the installed version: a newer release waiting to be installed is not part of it yet.
   const announcementList = state?.announcements;
+  const installedVersion = state?.version || "";
   const { allVersions, daysOfUpdates, seriesCount } = useMemo(() => {
     const localDate = (time?: string) => (time ? new Date(time).toLocaleString("sv-SE").slice(0, 16) : "");
     const recent = new Map((announcementList || []).map((entry) => [entry.version, entry]));
     const versions = history.length ? history.map((entry) => {
       const latest = recent.get(entry.version);
       return { ...entry, notes: latest?.notes || entry.notes, date: localDate(latest?.publishedAt) || entry.date };
-    }) : (announcementList || []).map((entry) => ({ version: entry.version, notes: entry.notes || "", date: localDate(entry.publishedAt) }));
+    }) : (announcementList || []).filter((entry) => !installedVersion || !isAfter(entry.version, installedVersion)).map((entry) => ({ version: entry.version, notes: entry.notes || "", date: localDate(entry.publishedAt) }));
     const dated = versions.map((entry) => entry.date.slice(0, 10)).filter(Boolean).sort();
     const counts = new Map<string, number>();
     for (const entry of versions) counts.set(seriesOf(entry.version), (counts.get(seriesOf(entry.version)) || 0) + 1);
     return { allVersions: versions, seriesCount: counts,
       daysOfUpdates: dated.length > 1 ? Math.round((Date.parse(dated[dated.length - 1]) - Date.parse(dated[0])) / 86400000) + 1 : 0 };
-  }, [history, announcementList]);
+  }, [history, announcementList, installedVersion]);
   const justUpdated = state?.lastUpdate?.unread ? state.lastUpdate : null;
   const whatsNewNotes = justUpdated ? justUpdated.notes || state?.announcements?.find((entry) => entry.version === justUpdated.version)?.notes || "" : "";
   const closeWhatsNew = () => {
     setWhatsNewClosed(true);
     void window.xiaoxiCloudMaintenance?.acknowledgeUpdate().then(setState).catch(() => undefined);
   };
-  const latestVoice = allVersions[0] ? releaseVoice(allVersions[0].version, allVersions[0].notes) : null;
+  const latestEntry = allVersions[0];
+  const latestVoice = useMemo(() => (latestEntry ? releaseVoice(latestEntry.version, latestEntry.notes) : null), [latestEntry?.version, latestEntry?.notes]);
   const acknowledgeConsent = async (thenOpenSettings = false) => {
     const api = window.xiaoxiCloudMaintenance;
     if (!api) return;
@@ -139,14 +156,11 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
           {latestVoice.highlight && <p className="whats-new-highlight"><span>这次的亮点</span>{latestVoice.highlight}</p>}
           <ReleaseBody voice={latestVoice} skipHighlight />
         </article>
-        <h3 className="announcement-journey">我们一路走来</h3>
+        {allVersions.length > 1 && <h3 className="announcement-journey">我们一路走来</h3>}
         <div className="announcement-list">
           {allVersions.slice(1).map((entry, index) => <div key={entry.version}>
             {(index === 0 || seriesOf(entry.version) !== seriesOf(allVersions[index]?.version || "")) && <h3 className="announcement-series">{seriesOf(entry.version)} 系列 <small>{seriesCount.get(seriesOf(entry.version))} 个版本</small></h3>}
-            <details className="announcement-entry">
-              <summary><strong>版本 {entry.version}</strong>{entry.date && <time dateTime={entry.date}>{entry.date.replace(/-/g, ".")}</time>}</summary>
-              <ReleaseBody voice={releaseVoice(entry.version, entry.notes)} />
-            </details>
+            <HistoryEntry version={entry.version} date={entry.date} notes={entry.notes} />
           </div>)}
         </div>
       </> : <p className="customer-empty">{state?.enabled ? "暂时没有收到更新公告。联网后刷新即可查看。" : "当前版本尚未启用云端公告。"}</p>}

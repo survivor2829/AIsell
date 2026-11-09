@@ -9,6 +9,8 @@ import json
 import secrets
 
 RANDOM = "random"
+STYLE_PRIORITY = ("。风格要求最优先：本页构图里的背景、光线、配色或氛围如与整套设计不同，一律改按整套设计，"
+                  "只保留场景内容和产品摆放；产品本身的外观和配色严格保持参考图原样。")
 
 PRESETS = {
     "bright": {
@@ -83,6 +85,13 @@ def apply(planning, style_id):
     result["style_dna"] = copy.deepcopy(preset)
     result["product_style"] = style_id
     for screen in result.get("screens") or []:
-        if old_text and isinstance(screen.get("prompt"), str):
-            screen["prompt"] = screen["prompt"].replace(old_text, new_text)
+        prompt = screen.get("prompt")
+        if not isinstance(prompt, str):
+            continue
+        if old_text and old_text in prompt:
+            prompt = prompt.replace(old_text, new_text)
+        elif new_text not in prompt:
+            prompt += "。整套设计：" + new_text
+        # Each screen's scene was written for the planner's own look, so the chosen one has to win.
+        screen["prompt"] = prompt + STYLE_PRIORITY
     return result

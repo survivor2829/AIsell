@@ -22,4 +22,5 @@ assert.deepEqual(voice.caveats, ["其他电脑还没验证"]);
 assert.equal(voice.opener, releaseVoice("1.2.77", notes).opener, "the same release always says the same thing");
 assert.match(releaseVoice("1.2.78", "• 修复一个问题").opener, /修|问题|收拾/, "a fixes-only release does not claim new skills");
 assert.deepEqual(releaseVoice("1.0.0", "").groups, [], "an empty note does not break the page");
+assert.equal(releaseVoice("1.2.9", "这次把启动速度调快了一些").highlight, "这次把启动速度调快了一些", "a plain paragraph is still shown");
 console.log("release voice self-check passed");

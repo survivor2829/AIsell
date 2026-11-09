@@ -28,7 +28,9 @@ function steadyPick(list: string[], version: string) {
 
 export function releaseVoice(version: string, notes: string): ReleaseVoice {
   const [body, cautions = ""] = String(notes || "").split("验证范围与注意事项");
-  const items = bullets(body);
+  // Notes normally come as bullet lines; anything else is still shown rather than dropped.
+  const lines = body.split("\n").map((line) => line.trim()).filter((line) => line && !line.endsWith("更新内容"));
+  const items = bullets(body).length ? bullets(body) : lines;
   const groups = [LEARNED, FIXED, SMOOTHER].map((title) => ({ title, items: items.filter((item) => groupOf(item) === title) })).filter((group) => group.items.length);
   const kind = groups.some((group) => group.title === LEARNED) ? "learned" : groups.some((group) => group.title === FIXED) ? "fixed" : "smoother";
   return { opener: steadyPick(OPENERS[kind], version), highlight: items[0] || "", groups, caveats: bullets(cautions) };
