@@ -4,7 +4,7 @@
   border: 1px solid #f6dde1; border-radius: clamp(24px, 1.8vw, 36px); box-shadow: 0 18px 40px #e6000014; color: #172033;
   background: radial-gradient(60% 75% at 6% 0%, #ffdfe5 0%, transparent 70%), radial-gradient(50% 70% at 94% 100%, #ffe7d9 0%, transparent 72%), linear-gradient(120deg, #ffffff 0%, #fff5f6 55%, #ffecef 100%); }
 .touch-hero-copy { grid-column: 1; align-self: center; }
-.touch-chip { display: inline-block; padding: .35em 1em; border-radius: 999px; border: 1px solid #f8d3d9; background: #fff0f2; color: #c91739; font-size: clamp(13px, .95vw, 18px); font-weight: 900; letter-spacing: .06em; }
+.touch-chip { display: inline-block; padding: .35em 1em; border-radius: 999px; border: 1px solid #f8d3d9; background: #fff0f2; color: var(--brand-red); font-size: clamp(13px, .95vw, 18px); font-weight: 900; letter-spacing: .06em; }
 .touch-hero-copy h1 { margin: .35em 0 0; font-size: clamp(38px, 3.3vw, 74px); font-weight: 900; line-height: 1.14; letter-spacing: -.02em; }
 .touch-hero-copy h1 em { font-style: normal; background: linear-gradient(90deg, #e60000, #ff5a3c); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .touch-hero-copy p { margin: .6em 0 0; max-width: 34em; color: #3f4a5e; font-size: clamp(16px, 1.15vw, 23px); font-weight: 800; line-height: 1.6; }
@@ -95,4 +95,4 @@
 .auto-reply-page.is-full .auto-reply-held h2 { font-size: clamp(18px, 1.3vw, 26px); }
 .auto-reply-page.is-full .auto-reply-held p, .auto-reply-page.is-full .auto-reply-held li { font-size: clamp(14px, 1vw, 19px); }
 /* 朋友圈运营有两种任务：发朋友圈用品牌红，朋友圈互动用白底红字。 */
-.touch-add.is-light { border: 1px solid #f5b5bd; background: #fff; color: #c91739; box-shadow: 0 8px 18px #e6000014; }
+.touch-add.is-light { border: 1px solid #f5b5bd; background: #fff; color: var(--brand-red); box-shadow: 0 8px 18px #e6000014; }

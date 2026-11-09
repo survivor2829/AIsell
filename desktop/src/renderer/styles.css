@@ -5,7 +5,8 @@
 :root {
   --brand-red: #e60000;
   --brand-red-bright: #fb0001;
-  --brand-red-dark: #c91739;
+  --brand-red-dark: #c40000;
+  --brand: var(--brand-red);
   --brand-rose: #ad2a55;
   --brand-slate: #5c7ca5;
   --brand-soft: #fff2f3;
@@ -371,7 +372,7 @@ button:focus-visible {
 .desktop-window .content-card { height: 100%; min-height: 0; }
 .desktop-window-login { background: #f8f4f0; }
 .desktop-window-login .window-chrome { color: #302a2b; }
-.desktop-window-workspace { background: #c91739; }
+.desktop-window-workspace { background: var(--brand-red); }
 .window-chrome {
   position: absolute;
   inset: 0 0 auto;
@@ -723,7 +724,7 @@ button:focus-visible {
 }
 
 /* Big and bold for customers with weaker eyesight (user 2026-10-30). */
-.module-return { display: inline-flex; align-items: center; gap: 8px; min-height: 46px; min-width: 156px; margin: 14px 28px 0; padding: 8px 22px 8px 16px; border: 2px solid currentColor; border-radius: 10px; background: color-mix(in srgb, currentColor 6%, #fff); color: var(--agent-accent-strong, #9e1731); font: inherit; font-size: 17px; font-weight: 700; letter-spacing: .02em; cursor: pointer; }
+.module-return { display: inline-flex; align-items: center; gap: 8px; min-height: 46px; min-width: 156px; margin: 14px 28px 0; padding: 8px 22px 8px 16px; border: 2px solid currentColor; border-radius: 10px; background: color-mix(in srgb, currentColor 6%, #fff); color: var(--agent-accent-strong, var(--brand-red)); font: inherit; font-size: 17px; font-weight: 700; letter-spacing: .02em; cursor: pointer; }
 .module-return:hover { background: color-mix(in srgb, currentColor 14%, #fff); }
 .module-return:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
@@ -788,10 +789,10 @@ button:focus-visible {
 }
 
 .danger-button {
-  border: 1px solid #dc2626;
-  background: #dc2626;
+  border: 1px solid var(--brand-red);
+  background: var(--brand-red);
   color: #fff;
-  box-shadow: 0 5px 12px rgba(220, 38, 38, 0.16);
+  box-shadow: 0 5px 12px rgba(230, 0, 0, 0.16);
 }
 
 .danger-button:disabled {
@@ -1094,7 +1095,7 @@ button:focus-visible {
 
 .auto-reply-held-head > span {
   flex: 0 0 auto;
-  color: #b42318;
+  color: var(--brand-red);
   font-size: 13px;
   font-weight: 700;
 }
@@ -1251,7 +1252,7 @@ button:focus-visible {
 .auto-reply-recovery.is-manual {
   border-color: #fecaca;
   background: #fef2f2;
-  color: #b42318;
+  color: var(--brand-red-dark);
 }
 
 .auto-reply-recovery.is-manual p,
@@ -1268,7 +1269,7 @@ button:focus-visible {
 .auto-reply-reason.is-degraded {
   border-color: #fecaca;
   background: #fef2f2;
-  color: #b42318;
+  color: var(--brand-red-dark);
 }
 
 .api-settings-grid {
@@ -1469,7 +1470,7 @@ button:focus-visible {
 
 .platform-item.active {
   background: #edf5ff;
-  color: #ef4444;
+  color: var(--brand-red);
 }
 
 .platform-icon {
@@ -1538,7 +1539,7 @@ td {
   place-items: center;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: #e60012;
+  background: var(--brand-red);
   color: #fff;
   font-size: 9px;
   font-weight: 800;
@@ -1560,7 +1561,7 @@ td {
 }
 
 .blocked-text {
-  color: #ef4444;
+  color: var(--brand-red);
   font-weight: 700;
 }
 
@@ -1992,7 +1993,7 @@ td {
 }
 
 .dev-status.is-blocked {
-  color: #b42318;
+  color: var(--brand-red);
 }
 
 .debug-panel summary {
@@ -2046,7 +2047,7 @@ td {
 }
 
 .status-card .danger {
-  color: #dc2626;
+  color: var(--brand-red);
 }
 
 .conversation-check {
@@ -2461,7 +2462,7 @@ td .text-button {
 }
 
 .floating-pulse.error {
-  background: #dc2626;
+  background: var(--brand-red);
   box-shadow: none;
   animation: none;
 }
@@ -2619,7 +2620,7 @@ td .text-button {
 
 .login-error {
   min-height: 20px;
-  color: #ef4444;
+  color: var(--brand-red);
   font-size: 13px;
   font-weight: 700;
 }
@@ -2811,7 +2812,7 @@ td .text-button {
 }
 
 .danger-text-button {
-  color: #b42318;
+  color: var(--brand-red);
 }
 
 .placeholder-stage {

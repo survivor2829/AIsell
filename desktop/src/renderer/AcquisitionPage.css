@@ -6,7 +6,7 @@
 .acq-card { display: grid; gap: 14px; padding: 22px 24px; background: #fff; border: 2px solid var(--rose); border-radius: 20px; }
 .acq-sec { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .acq-sec h2 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 22px; font-weight: 900; }
-.acq-sec h2 em { font-style: normal; padding: 3px 10px; border-radius: 999px; background: #fff0f2; color: #c91739; font-size: 13px; font-weight: 900; }
+.acq-sec h2 em { font-style: normal; padding: 3px 10px; border-radius: 999px; background: #fff0f2; color: var(--brand-red); font-size: 13px; font-weight: 900; }
 .acq-sec > span { font-size: 14px; font-weight: 700; color: var(--muted); }
 .acq-sec > .social-text-button { margin-left: auto; }
 
@@ -42,7 +42,7 @@
 .acq-live ul { display: flex; gap: 18px; margin: 0; padding: 0; list-style: none; font-size: 12px; font-weight: 700; color: var(--muted); }
 .acq-live ul b { display: block; font-size: 24px; font-weight: 900; color: var(--ink); font-variant-numeric: tabular-nums; }
 .acq-live ul li:last-child b { color: var(--red); }
-.acq-stop { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border: 2px solid #f5b5bd; border-radius: 12px; background: #fff; color: #b4122c; font-weight: 800; }
+.acq-stop { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border: 2px solid #f5b5bd; border-radius: 12px; background: #fff; color: var(--brand-red); font-weight: 800; }
 
 .acq-tasks, .acq-leads { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .acq-tasks li { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 2px solid #f6ecee; border-radius: 14px; }
@@ -50,11 +50,11 @@
 .acq-task-copy b { font-size: 15px; font-weight: 900; }
 .acq-task-copy span, .acq-task-copy small { font-size: 12px; font-weight: 700; color: var(--muted); }
 .acq-task-copy small.is-done { color: #166534; }
-.acq-task-copy small.is-failed { color: #b4122c; }
+.acq-task-copy small.is-failed { color: var(--brand-red); }
 .acq-task-copy small.is-running, .acq-task-copy small.is-needs_user { color: #b45309; }
 .acq-task-actions, .acq-lead-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .acq-mini { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 2px solid var(--rose); border-radius: 10px; background: #fff; color: var(--muted); font-size: 13px; font-weight: 800; }
-.acq-mini.is-go { border-color: #f5b5bd; color: #b4122c; }
+.acq-mini.is-go { border-color: #f5b5bd; color: var(--brand-red); }
 .acq-mini:hover:not(:disabled) { border-color: #f5b5bd; }
 
 .acq-filters { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
@@ -69,10 +69,10 @@
 .acq-lead-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .acq-lead-head b { font-size: 15px; font-weight: 900; }
 .acq-lead-head small { margin-left: auto; font-size: 12px; font-weight: 700; color: #9ca3af; }
-.acq-chip { padding: 2px 9px; border-radius: 999px; background: #fff0f2; color: #b4122c; font-size: 12px; font-weight: 800; }
+.acq-chip { padding: 2px 9px; border-radius: 999px; background: #fff0f2; color: var(--brand-red); font-size: 12px; font-weight: 800; }
 .acq-lead-main p { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.6; }
 .acq-lead-src { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--muted); }
-.acq :focus-visible { outline: 2px solid #c91739; outline-offset: 2px; }
+.acq :focus-visible { outline: 2px solid var(--brand-red); outline-offset: 2px; }
 @media (max-width: 1100px) { .acq-grid { grid-template-columns: 1fr; } .acq-live { flex-wrap: wrap; } }
 @media (prefers-reduced-motion: reduce) { .acq-live-dot { animation: none; } }
 
@@ -81,7 +81,7 @@
 .acq-act.is-done { background: #ecfdf3; color: #166534; }
 .acq-act.is-queued, .acq-act.is-running { background: #fff7e6; color: #b45309; }
 .acq-act.is-unknown { background: #fff4e0; color: #92400e; }
-.acq-act.is-failed { background: #fff0f2; color: #b4122c; }
+.acq-act.is-failed { background: #fff0f2; color: var(--brand-red); }
 .acq-caps { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; padding: 12px 14px; border-radius: 14px; background: #fffafa; border: 2px dashed var(--rose); }
 .acq-caps label { display: grid; gap: 6px; font-size: 13px; font-weight: 800; }
 .acq-caps input { width: 120px; padding: 8px 10px; border: 2px solid var(--rose); border-radius: 10px; font: inherit; font-weight: 700; }

@@ -169,7 +169,7 @@
 }
 
 .content-settings summary:focus-visible {
-  outline: 3px solid rgba(213, 20, 63, 0.15);
+  outline: 3px solid rgba(230, 0, 0, 0.15);
   outline-offset: -3px;
 }
 
@@ -276,7 +276,7 @@
 }
 
 .content-task-row small {
-  color: #b42318;
+  color: var(--brand-red);
 }
 
 .content-task-actions {
@@ -292,7 +292,7 @@
 }
 
 .content-task-actions .is-danger {
-  color: #b42318;
+  color: var(--brand-red);
 }
 
 .content-list-toolbar {
@@ -337,7 +337,7 @@
 
 .content-library-search:focus-within {
   border-color: #d5143f;
-  outline: 3px solid rgba(213, 20, 63, 0.1);
+  outline: 3px solid rgba(230, 0, 0, 0.1);
 }
 
 .content-library-search input {
@@ -541,7 +541,7 @@
 
 .content-asset-metadata.is-failed,
 .content-asset-metadata.is-unavailable {
-  color: #b42318;
+  color: var(--brand-red);
 }
 
 .content-asset-copy > small {
@@ -570,7 +570,7 @@
 }
 
 .content-file-status.is-missing {
-  color: #b42318;
+  color: var(--brand-red);
   background: #fff1f0;
 }
 
@@ -584,7 +584,7 @@
 }
 
 .content-file-status.is-missing .content-status-dot {
-  background: #e5484d;
+  background: var(--brand-red);
 }
 
 .content-archived-label {
@@ -609,13 +609,13 @@
 
 .content-rights-select:focus-visible {
   border-color: #d5143f;
-  outline: 3px solid rgba(213, 20, 63, 0.1);
+  outline: 3px solid rgba(230, 0, 0, 0.1);
 }
 
 .content-rights-select.is-restricted,
 .content-rights-select.is-expired {
   border-color: #f4aaa5;
-  color: #b42318;
+  color: var(--brand-red);
   background: #fff8f7;
 }
 
@@ -657,7 +657,7 @@
 
 .content-row-actions button:focus-visible,
 .content-icon-button:focus-visible {
-  outline: 3px solid rgba(213, 20, 63, 0.14);
+  outline: 3px solid rgba(230, 0, 0, 0.14);
   outline-offset: 1px;
 }
 
@@ -862,7 +862,7 @@
 }
 
 .finished-card-status.is-deleted {
-  color: #b42318;
+  color: var(--brand-red);
   background: rgba(254, 243, 242, 0.94);
 }
 

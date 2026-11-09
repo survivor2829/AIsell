@@ -51,7 +51,7 @@ function registerWechatWorkflowIpc(options) {
   async function showFloating(request = {}) {
     if (disposed) throw new Error("程序正在退出。");
     if (!floatingWindow || floatingWindow.isDestroyed()) {
-      const position = spritePosition(screen.getPrimaryDisplay().workArea, readSpritePlace());
+      const position = spritePosition(screen.getPrimaryDisplay(), readSpritePlace());
       const target = new BrowserWindow({
         width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height, ...position,
         title: "小玺", alwaysOnTop: true, resizable: false, show: false, transparent: true, hasShadow: false,
@@ -85,6 +85,8 @@ function registerWechatWorkflowIpc(options) {
         clearInterval(spriteCursorTimer); spriteCursorTimer = null;
         stopSpriteWalk();
       });
+      // Above the taskbar and other always-on-top windows, so nothing on the desktop can hide 小玺.
+      target.setAlwaysOnTop?.(true, "screen-saver");
       startSpriteCursor();
       floatingLoad = (async () => {
         // did-finish-load only confirms HTML loading, not React/module startup.
@@ -313,6 +315,15 @@ function registerWechatWorkflowIpc(options) {
       }, 33);
     });
   });
+  // The taskbar appears, moves or changes size, or a screen goes away: 小玺 goes back to where it can be seen.
+  function regroundSprite() {
+    if (disposed || !floatingWindow || floatingWindow.isDestroyed() || spriteDrag || spriteFall) return;
+    stopSpriteWalk();
+    const [x, y] = floatingWindow.getPosition(), display = spriteDisplay(x, y), area = display.workArea;
+    const right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;
+    floatingWindow.setPosition(Math.round(Math.min(right, Math.max(area.x, x))), spriteGround(display));
+  }
+  for (const event of ["display-metrics-changed", "display-removed"]) screen.on?.(event, regroundSprite);
   ipcMain.on?.("wechat-workflow:sprite-walk-stop", (event) => { if (fromSprite(event)) stopSpriteWalk(); });
   ipcMain.on?.("wechat-workflow:sprite-interactive", (event, interactive) => {
     if (fromSprite(event)) floatingWindow.setIgnoreMouseEvents?.(interactive !== true, { forward: true });
@@ -351,7 +362,7 @@ function registerWechatWorkflowIpc(options) {
     if (!drag.moved || floatingWindow.isMaximized?.()) return { moved: false };
     // Let go anywhere and it falls to the bottom of that screen, carried along by how it was thrown.
     return new Promise((resolve) => {
-      const [startX, startY] = floatingWindow.getPosition(), area = spriteDisplay(startX, startY).workArea, ground = spriteGround(area);
+      const [startX, startY] = floatingWindow.getPosition(), display = spriteDisplay(startX, startY), area = display.workArea, ground = spriteGround(display);
       const left = area.x, right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;
       let x = Math.min(right, Math.max(left, startX)), y = startY, vx = Math.max(-900, Math.min(900, Date.now() - drag.lastAt < 120 ? drag.vx : 0)), vy = Math.max(-700, Math.min(1200, Date.now() - drag.lastAt < 120 ? drag.vy : 0)), last = Date.now();
       const started = last;
@@ -376,6 +387,7 @@ function registerWechatWorkflowIpc(options) {
     start, showFloating, runContactSync, setExternalActivity, say, showSprite,
     dispose: async () => {
       disposed = true;
+      for (const event of ["display-metrics-changed", "display-removed"]) screen.removeListener?.(event, regroundSprite);
       clearInterval(progressTimer); progressTimer = null;
       await controller.dispose(); floatingWindow?.destroy(); floatingWindow = null;
     }

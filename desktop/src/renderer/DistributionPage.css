@@ -14,7 +14,7 @@
 .dist-tabs { display: inline-flex; gap: 4px; margin: 30px 0 0; padding: 4px; background: #fff; border: 2px solid #f1dfe1; border-radius: 14px; align-self: flex-start; }
 .dist-tabs button { padding: 9px 22px; border: 0; border-radius: 10px; background: transparent; color: #6b7280; font: inherit; font-size: 15px; font-weight: 800; cursor: pointer; }
 .dist-tabs button[aria-selected="true"] { background: #e60000; color: #fff; box-shadow: 0 6px 14px rgba(230, 0, 0, .22); }
-.dist-tabs button:focus-visible { outline: 2px solid #c91739; outline-offset: 2px; }
+.dist-tabs button:focus-visible { outline: 2px solid var(--brand-red); outline-offset: 2px; }
 .dist-panel { display: flex; flex-direction: column; flex: 1; margin-top: 24px; }
 @keyframes dist-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .dist-hero { animation: none; } }

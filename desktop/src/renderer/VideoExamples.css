@@ -3,12 +3,12 @@
 .video-examples > p { margin: 8px 0 18px; color: #697184; line-height: 1.6; }
 .video-example-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .video-example-cards > button { display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 12px; min-width: 0; border: 1px solid #eadde1; border-radius: 12px; text-align: left; background: #fff; color: inherit; cursor: pointer; }
-.video-example-cards > button:hover { border-color: #c91739; background: #fff3f5; }
+.video-example-cards > button:hover { border-color: var(--brand-red-dark); background: #fff3f5; }
 .video-example-cards img { display: block; width: min(100%, 190px); height: auto; aspect-ratio: 9 / 16; margin: 0 auto; object-fit: contain; border-radius: 7px; }
 .video-example-cards span { display: grid; gap: 9px; min-width: 0; }
 .video-example-cards small { color: #697184; font-size: 12px; }
 .video-example-cards strong { font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
-.video-example-cards em { display: flex; align-items: center; gap: 6px; color: #b81735; font-size: 13px; font-style: normal; }
+.video-example-cards em { display: flex; align-items: center; gap: 6px; color: var(--brand-red); font-size: 13px; font-style: normal; }
 .video-example-dialog { width: min(700px, calc(100vw - 32px)); max-height: calc(100dvh - 56px); padding: 0; overflow: auto; border: 0; border-radius: 14px; background: #fff; color: #283344; box-shadow: 0 18px 60px #18212d40; }
 .video-example-dialog::backdrop { background: #17202bc9; }
 .video-example-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; }
@@ -19,7 +19,7 @@
 .video-example-stage video { display: block; width: 100%; height: min(720px, calc(100dvh - 155px)); object-fit: contain; }
 .video-example-error { padding: 32px 20px; color: #fff; text-align: center; }
 .video-example-error button { padding: 10px 16px; margin: 8px; border: 0; border-radius: 7px; cursor: pointer; }
-.video-examples button:focus-visible, .video-example-dialog button:focus-visible { outline: 2px solid #c91739; outline-offset: 3px; }
+.video-examples button:focus-visible, .video-example-dialog button:focus-visible { outline: 2px solid var(--brand-red); outline-offset: 3px; }
 @media (max-width: 600px) { .video-example-cards { grid-template-columns: 1fr; } }
 .example-banner { display: flex; gap: 22px; align-items: stretch; margin: 0 0 18px; padding: 14px; background: #fff9fa; border: 1px solid #eadde1; border-radius: 14px; color: #283344; }
 .example-banner-player { flex: 0 0 auto; width: 152px; aspect-ratio: 9 / 16; overflow: hidden; border-radius: 10px; background: #10141c; }
@@ -36,21 +36,21 @@
 /* Steps fill the rest of the banner height, so nothing is left blank below or to the right. */
 .example-banner-steps { flex: 1 1 auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
 .example-banner-steps li { display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 16px 18px; border: 1px solid #f1d7de; border-radius: 12px; background: #fff; }
-.example-banner-steps b { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #c91739; color: #fff; font-size: 15px; }
+.example-banner-steps b { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--brand-red); color: #fff; font-size: 15px; }
 .example-banner-steps span { display: grid; gap: 4px; min-width: 0; color: #5b6475; font-size: 14px; line-height: 1.55; }
 .example-banner-steps strong { color: #283344; font-size: 16px; }
 @media (max-width: 900px) { .example-banner-steps { grid-template-columns: 1fr; } }
-.example-banner-copy small { color: #b81735; font-size: 13px; font-weight: 600; }
+.example-banner-copy small { color: var(--brand-red); font-size: 13px; font-weight: 600; }
 .example-banner-copy h2 { margin: 0; font-size: 22px; }
 .example-banner-copy p { margin: 0; color: #4b5565; line-height: 1.65; }
 .example-banner-copy .example-banner-title { color: #283344; font-weight: 600; }
 .example-banner-actions { display: flex; flex: 0 0 auto; gap: 10px; }
 .example-banner-actions button, .example-banner.is-collapsed button { display: inline-flex; align-items: center; gap: 4px; padding: 7px 14px; border: 1px solid #eadde1; border-radius: 8px; background: #fff; color: #283344; font: inherit; font-size: 14px; cursor: pointer; }
-.example-banner-actions .example-banner-tutorial { border-color: #c91739; color: #b81735; }
+.example-banner-actions .example-banner-tutorial { border-color: var(--brand-red); color: var(--brand-red); }
 .example-banner-actions button:hover, .example-banner.is-collapsed button:hover { background: #fff3f5; }
 .example-banner.is-collapsed { align-items: center; justify-content: space-between; padding: 10px 14px; }
 .example-banner.is-collapsed > span { display: inline-flex; align-items: center; gap: 8px; color: #4b5565; }
-.example-banner button:focus-visible { outline: 2px solid #c91739; outline-offset: 3px; }
+.example-banner button:focus-visible { outline: 2px solid var(--brand-red); outline-offset: 3px; }
 @media (max-width: 600px) { .example-banner { flex-direction: column; } .example-banner-player { width: min(100%, 200px); margin: 0 auto; } }
 /* 微信拓客演示是宽屏录屏：封面只取左边的微信窗口，点开用大窗口看清楚；右边步骤收紧成横排小卡。 */
 .example-banner.is-wide { gap: 20px; }
@@ -68,3 +68,22 @@
 @media (max-width: 1100px) { .example-banner.is-wide { flex-direction: column; } .example-banner.is-wide .example-banner-player { width: 100%; aspect-ratio: 480 / 169; } .example-banner.is-wide .example-banner-poster img { object-position: 50% 50%; } }
 .video-example-dialog.is-wide { width: min(1280px, calc(100vw - 48px)); }
 .video-example-dialog.is-wide .video-example-stage video { height: auto; max-height: calc(100dvh - 155px); aspect-ratio: 480 / 169; }
+/* 成片示例（用户 2026-11-09 选定）：视频做主角占左边大块，三步竖排在右侧窄栏，不留大片空白。 */
+.example-banner:not(.is-wide):not(.is-collapsed) { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr); gap: 18px; }
+.example-banner:not(.is-wide) .example-banner-player { position: relative; display: flex; justify-content: center; width: auto; height: auto; min-height: clamp(300px, 46vh, 480px); aspect-ratio: auto; border-radius: 12px; }
+.example-banner-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(22px) brightness(.55); transform: scale(1.15); pointer-events: none; }
+.example-banner:not(.is-wide) .example-banner-poster, .example-banner:not(.is-wide) .example-banner-player video { position: relative; z-index: 1; width: auto; height: 100%; aspect-ratio: 9 / 16; }
+.example-banner:not(.is-wide) .example-banner-player video { background: #10141c; }
+.example-banner:not(.is-wide) .example-banner-error { position: relative; z-index: 1; width: 100%; }
+.example-banner:not(.is-wide) .example-banner-copy { gap: 14px; }
+.example-banner:not(.is-wide) .example-banner-head { display: contents; }
+.example-banner:not(.is-wide) .example-banner-head > div:first-child { order: 1; }
+.example-banner:not(.is-wide) .example-banner-steps { order: 2; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 10px; }
+.example-banner:not(.is-wide) .example-banner-actions { order: 3; }
+.example-banner:not(.is-wide) .example-banner-steps li { flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px; padding: 10px 14px; }
+.example-banner:not(.is-wide) .example-banner-steps b { flex: 0 0 auto; }
+.example-banner:not(.is-wide) .example-banner-copy h2 { font-size: 20px; }
+@media (max-width: 900px) {
+  .example-banner:not(.is-wide):not(.is-collapsed) { grid-template-columns: 1fr; }
+  .example-banner:not(.is-wide) .example-banner-player { width: 100%; height: clamp(260px, 52vw, 380px); margin: 0; }
+}

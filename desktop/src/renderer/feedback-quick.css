@@ -10,7 +10,7 @@
 .fbq header { display: flex; align-items: center; gap: 12px; }
 .fbq header h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 24px; font-weight: 900; }
 .fbq header h2 svg { color: #e60000; }
-.fbq header span { padding: 4px 12px; border-radius: 999px; background: #fff0f2; color: #b4122c; font-size: 14px; font-weight: 800; }
+.fbq header span { padding: 4px 12px; border-radius: 999px; background: #fff0f2; color: var(--brand-red); font-size: 14px; font-weight: 800; }
 .fbq-close { margin-left: auto; display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 12px; background: #f6f7f9; color: #6b7280; cursor: pointer; }
 .fbq form { display: grid; gap: 14px; }
 .fbq-chips { display: flex; flex-wrap: wrap; gap: 10px; }

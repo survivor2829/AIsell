@@ -1047,6 +1047,7 @@ async function checkFloatingProgress() {
   const handlers = new Map();
   const listeners = new Map();
   const cursor = { x: 0, y: 0 };
+  const screenDisplay = { workArea: { x: 0, y: 0, width: 1920, height: 1080 } }, screenEvents = new Map();
   let mainHideCount = 0;
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
@@ -1055,7 +1056,7 @@ async function checkFloatingProgress() {
   class ProgressWindow extends EventEmitter {
     constructor(settings) {
       super(); this.settings = settings; this.visible = false; this.destroyed = false;
-      this.sent = [];
+      this.sent = []; this.topLevel = settings.alwaysOnTop ? "floating" : null;
       this.webContents = Object.assign(new EventEmitter(), { send: (channel, value) => this.sent.push([channel, value]), setWindowOpenHandler() {}, async executeJavaScript() { return true; } });
       windows.push(this);
     }
@@ -1065,6 +1066,7 @@ async function checkFloatingProgress() {
     setPosition(x, y) { this.position = [x, y]; }
     getPosition() { return this.position || [this.settings.x, this.settings.y]; }
     setIgnoreMouseEvents(ignore) { this.ignoringMouse = ignore; }
+    setAlwaysOnTop(on, level) { this.topLevel = on ? level || "floating" : null; }
     maximize() { this.maximized = true; this.emit("maximize"); }
     unmaximize() { this.maximized = false; }
     isMaximized() { return this.maximized === true; }
@@ -1084,7 +1086,8 @@ async function checkFloatingProgress() {
     rendererPath: __filename, preloadPath: __filename,
     spritePlaceFile: path.join(rootDir, "sprite-place.json"),
     electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, listener) => listeners.set(name, listener) }, BrowserWindow: ProgressWindow,
-      screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }), getCursorScreenPoint: () => ({ ...cursor }) } }
+      screen: { getPrimaryDisplay: () => screenDisplay, getCursorScreenPoint: () => ({ ...cursor }),
+        on: (name, listener) => screenEvents.set(name, listener), removeListener: (name, listener) => { if (screenEvents.get(name) === listener) screenEvents.delete(name); } } }
   });
   const event = { sender: mainWindow.webContents };
   await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
@@ -1181,6 +1184,16 @@ async function checkFloatingProgress() {
   assert.ok(held[1] < 1080 - 260, "still in the air");
   assert.equal((await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent)).moved, true, "letting go without moving still drops it");
   assert.equal(sprite.getPosition()[1], 1080 - 260);
+  // Customer PC 2026-11-09: it fell behind the taskbar. It stays above the taskbar, and when the taskbar is set to
+  // auto-hide (Windows then reports the whole screen as free) it moves back up to where it can be seen.
+  assert.equal(sprite.topLevel, "screen-saver", "above the taskbar");
+  Object.assign(screenDisplay, { bounds: { x: 0, y: 0, width: 1920, height: 1080 } });
+  screenEvents.get("display-metrics-changed")();
+  assert.equal(sprite.getPosition()[1], 1080 - 64 - 260, "room left where an auto-hidden taskbar pops up");
+  Object.assign(screenDisplay, { workArea: { x: 0, y: 0, width: 1920, height: 1032 } });
+  screenEvents.get("display-metrics-changed")();
+  assert.equal(sprite.getPosition()[1], 1032 - 260, "with a visible taskbar it stands right on it");
+  delete screenDisplay.bounds; screenDisplay.workArea = { x: 0, y: 0, width: 1920, height: 1080 };
   const hidesBefore = mainHideCount;
   await control.showSprite();
   assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");
@@ -1191,6 +1204,7 @@ async function checkFloatingProgress() {
   control.say({ text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
   assert.deepEqual(sprite.sent.find(([channel]) => channel === "wechat-workflow:sprite-say")[1], { text: "视频做好啦～", sub: "去成片中心看看吧", mood: "done" });
   await control.dispose();
+  assert.equal(screenEvents.size, 0, "screen listeners go away with the window");
   // The place is used again next time.
   const again = registerWechatWorkflowIpc({ logger: { event() {} }, rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
     autoSchedule: false, getAccount: () => "test-account", getMainWindow: () => mainWindow, executors: {}, rendererPath: __filename, preloadPath: __filename,

@@ -1,15 +1,15 @@
 .launch-update{display:grid;place-items:center;width:100%;height:100%;background:#f8f4f0;color:#273442;-webkit-app-region:drag}
 .launch-update-card{width:min(520px,calc(100vw - 48px));padding:32px 36px;background:#fff;border:1px solid #ead8df;border-radius:14px;box-shadow:0 8px 32px #17203318;-webkit-app-region:no-drag}
 .launch-update-card h1{margin:0;font-size:22px;font-weight:700}
-.launch-update-card progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e83458}
+.launch-update-card progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:var(--brand-red)}
 .launch-update-card p{margin:12px 0 0;font-size:14px;line-height:1.6;font-variant-numeric:tabular-nums}
-.launch-update-card .launch-update-error{color:#b42318}
+.launch-update-card .launch-update-error{color:var(--brand-red)}
 .launch-update-card .launch-update-note{color:#64748b;font-size:13px}
 
-.launch-update-notice{position:fixed;top:64px;left:50%;z-index:2000;transform:translateX(-50%);width:min(620px,calc(100vw - 32px));padding:18px 20px;background:#fff;border:1px solid #f1c0c8;border-left:4px solid #e83458;border-radius:12px;box-shadow:0 12px 36px #17203329;color:#273442;-webkit-app-region:no-drag}
+.launch-update-notice{position:fixed;top:64px;left:50%;z-index:2000;transform:translateX(-50%);width:min(620px,calc(100vw - 32px));padding:18px 20px;background:#fff;border:1px solid #f1c0c8;border-left:4px solid var(--brand-red);border-radius:12px;box-shadow:0 12px 36px #17203329;color:#273442;-webkit-app-region:no-drag}
 .launch-update-notice strong{font-size:15px}
 .launch-update-notice p{margin:8px 0 12px;font-size:13.5px;line-height:1.65;user-select:text}
-.launch-update-notice button{padding:6px 16px;border:0;border-radius:8px;background:#e83458;color:#fff;font-size:13px;cursor:pointer}
+.launch-update-notice button{padding:6px 16px;border:0;border-radius:8px;background:var(--brand-red);color:#fff;font-size:13px;cursor:pointer}
 
 .launch-update-hero{display:flex;align-items:flex-end;gap:8px;margin-bottom:14px}
 .launch-update-hero strong{display:block;font-size:17px;line-height:1.5}

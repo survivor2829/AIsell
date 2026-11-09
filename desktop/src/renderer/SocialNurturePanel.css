@@ -11,7 +11,7 @@
 .nur-plan-head .platform-icon { border-radius: 16px; box-shadow: 0 8px 18px rgba(31, 41, 55, .14); }
 .nur-plan-who { flex: 1; min-width: 240px; }
 .nur-plan-who h2 { margin: 0; font-size: 26px; font-weight: 900; }
-.nur-phase { display: flex; align-items: center; gap: 10px; margin: 6px 0 0; font-size: 18px; font-weight: 800; color: #b4122c; }
+.nur-phase { display: flex; align-items: center; gap: 10px; margin: 6px 0 0; font-size: 18px; font-weight: 800; color: var(--brand-red); }
 .nur-phase.is-warn { color: #b45309; }
 .nur-phase i { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 0 rgba(230, 0, 0, .4); animation: nur-pulse 1.6s infinite; }
 @keyframes nur-pulse { 70% { box-shadow: 0 0 0 10px rgba(230, 0, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(230, 0, 0, 0); } }
@@ -31,7 +31,7 @@
 .nur-days li.is-now b { border-color: var(--red); color: var(--red); box-shadow: 0 0 0 6px rgba(230, 0, 0, .1); }
 .nur-days span { font-size: 14px; font-weight: 800; }
 .nur-days small { font-size: 13px; font-weight: 700; color: var(--muted); }
-.nur-days li.is-now span, .nur-days li.is-now small { color: #b4122c; }
+.nur-days li.is-now span, .nur-days li.is-now small { color: var(--brand-red); }
 
 .nur-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
 .nur-stats div { display: grid; gap: 4px; padding: 16px 18px; border-radius: 16px; background: #fff7f8; }
@@ -43,7 +43,7 @@
 .nur-last.is-completed { background: #f0fdf4; color: #166534; }
 .nur-meta { margin: 0; font-size: 14px; font-weight: 600; color: var(--muted); }
 
-.nur-new { display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 64px; border: 2px dashed #f5b5bd; border-radius: 20px; background: #fffafb; color: #b4122c; font-size: 18px; font-weight: 900; }
+.nur-new { display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 64px; border: 2px dashed #f5b5bd; border-radius: 20px; background: #fffafb; color: var(--brand-red); font-size: 18px; font-weight: 900; }
 
 /* ---- 向导 ---- */
 .nur-wizard { position: relative; display: grid; gap: 30px; width: min(820px, 100%); justify-self: center; padding: 36px 44px; background: #fff; border: 2px solid var(--rose); border-radius: 28px; box-shadow: 0 16px 40px rgba(31, 41, 55, .06); }
@@ -54,7 +54,7 @@
 .nur-step h3 { display: flex; align-items: center; gap: 12px; margin: 0; font-size: 21px; font-weight: 900; }
 .nur-step h3 em { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--red); color: #fff; font-style: normal; font-size: 17px; }
 .nur-help { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.7; color: var(--muted); }
-.nur-help b { color: #b4122c; }
+.nur-help b { color: var(--brand-red); }
 .nur-empty { display: flex; align-items: center; gap: 16px; padding: 20px 22px; border-radius: 16px; background: #fff7f8; font-size: 16px; font-weight: 700; }
 .nur-empty p { margin: 0; flex: 1; }
 
@@ -69,12 +69,12 @@
 
 .nur-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 64px; padding: 12px 14px; border: 2px solid var(--rose); border-radius: 16px; background: #fffdfd; cursor: text; }
 .nur-tags:focus-within { border-color: var(--red); box-shadow: 0 0 0 4px rgba(230, 0, 0, .08); }
-.nur-tag { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 8px 0 16px; border-radius: 999px; background: #ffe9ec; color: #b4122c; font-size: 16px; font-weight: 800; }
+.nur-tag { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 8px 0 16px; border-radius: 999px; background: #ffe9ec; color: var(--brand-red); font-size: 16px; font-weight: 800; }
 .nur-tag button { display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 50%; background: transparent; color: inherit; }
 .nur-tag button:hover { background: rgba(180, 18, 44, .12); }
 .nur-tags input { flex: 1; min-width: 180px; height: 38px; border: 0; outline: 0; background: transparent; font: inherit; font-size: 17px; font-weight: 600; color: var(--ink); }
 .nur-suggest { display: flex; flex-wrap: wrap; gap: 10px; }
-.nur-suggest button { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 14px; border: 2px dashed #f5b5bd; border-radius: 999px; background: #fff; color: #b4122c; font-size: 15px; font-weight: 800; }
+.nur-suggest button { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 14px; border: 2px dashed #f5b5bd; border-radius: 999px; background: #fff; color: var(--brand-red); font-size: 15px; font-weight: 800; }
 
 .nur-comments { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .nur-comments li { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 10px 0 18px; border: 2px solid var(--rose); border-radius: 14px; font-size: 16px; font-weight: 700; }

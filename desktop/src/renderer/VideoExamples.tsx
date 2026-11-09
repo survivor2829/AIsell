@@ -110,6 +110,8 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
   </section>;
   return <section className={`example-banner${wide ? ' is-wide' : ''}`} aria-label={`${example.module}${label}`}>
     <div className="example-banner-player">
+      {/* The vertical video stands on a blurred copy of its own cover, so the stage is full instead of a thin strip. */}
+      {!wide && <img className="example-banner-backdrop" src={asset(`${example.file}.jpg`)} alt="" aria-hidden="true" />}
       {failed ? <div className="example-banner-error" role="alert"><p>示例暂时无法播放</p><button type="button" onClick={() => { setFailed(false); setStarted(false); }}>重试</button></div>
         : started ? <video ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />
         : <button type="button" className="example-banner-poster" aria-label={`播放${example.module}${label}`} onClick={() => wide ? setEnlarged(true) : setStarted(true)}>
