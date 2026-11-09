@@ -8,7 +8,7 @@ const clip = (name: string, kind: "mp4" | "jpg") => `./home-reel/${name}.${kind}
 const prefersStill = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || (navigator.hardwareConcurrency || 4) <= 2;
 
 export function HomeReel() {
-  const [still] = useState(prefersStill);
+  const still = useRef(prefersStill()).current;
   const [broken, setBroken] = useState(false);
   const [seen, setSeen] = useState(false);
   const [foreground, setForeground] = useState(isWindowShown);
@@ -31,7 +31,7 @@ export function HomeReel() {
     }
   }, [running, playing]);
 
-  return <div className="home-reel" ref={box} aria-label="两条示例成片">
+  return <div className="home-reel" ref={box} role="group" aria-label="两条示例成片">
     {CLIPS.map((name, slot) => <div key={name} className="home-phone">
       {playing ? <video ref={(element) => { videos.current[slot] = element; }} src={clip(name, "mp4")} poster={clip(name, "jpg")}
         muted playsInline autoPlay preload="auto" loop onError={() => setBroken(true)} />

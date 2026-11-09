@@ -1,7 +1,9 @@
 import { Bell, RefreshCw, MoreHorizontal } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { CustomerPanel } from "./CustomerPanel";
 import type { CloudStatus } from "./CloudMaintenance";
+
+const seriesOf = (version: string) => version.split(".").slice(0, 2).join(".");
 
 export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }) {
   const [panel, setPanel] = useState<"announcements" | null>(null);
@@ -64,14 +66,21 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
     finally { updateInFlight.current = false; setUpdateBusy(false); }
   };
   // The newest versions come with their full announcement; the history reaches back to the very first version.
-  const recent = new Map((state?.announcements || []).map((entry) => [entry.version, entry]));
-  const allVersions = [...history.map((entry) => {
-    const latest = recent.get(entry.version);
-    return { ...entry, notes: latest?.notes || entry.notes, date: latest?.publishedAt?.slice(0, 10) || entry.date };
-  }), ...(state?.announcements || []).filter((entry) => !history.some((item) => item.version === entry.version)).map((entry) => ({ version: entry.version, notes: entry.notes || "", date: entry.publishedAt?.slice(0, 10) || "" }))];
-  const dated = allVersions.map((entry) => entry.date).filter(Boolean).sort();
-  const daysOfUpdates = dated.length > 1 ? Math.round((Date.parse(dated[dated.length - 1]) - Date.parse(dated[0])) / 86400000) + 1 : 0;
-  const series = (version: string) => version.split(".").slice(0, 2).join(".");
+  // History stops at the installed version: a newer release waiting to be installed is not part of it yet.
+  const announcementList = state?.announcements;
+  const { allVersions, daysOfUpdates, seriesCount } = useMemo(() => {
+    const localDate = (time?: string) => (time ? new Date(time).toLocaleDateString("sv-SE") : "");
+    const recent = new Map((announcementList || []).map((entry) => [entry.version, entry]));
+    const versions = history.length ? history.map((entry) => {
+      const latest = recent.get(entry.version);
+      return { ...entry, notes: latest?.notes || entry.notes, date: localDate(latest?.publishedAt) || entry.date };
+    }) : (announcementList || []).map((entry) => ({ version: entry.version, notes: entry.notes || "", date: localDate(entry.publishedAt) }));
+    const dated = versions.map((entry) => entry.date).filter(Boolean).sort();
+    const counts = new Map<string, number>();
+    for (const entry of versions) counts.set(seriesOf(entry.version), (counts.get(seriesOf(entry.version)) || 0) + 1);
+    return { allVersions: versions, seriesCount: counts,
+      daysOfUpdates: dated.length > 1 ? Math.round((Date.parse(dated[dated.length - 1]) - Date.parse(dated[0])) / 86400000) + 1 : 0 };
+  }, [history, announcementList]);
   const acknowledgeConsent = async (thenOpenSettings = false) => {
     const api = window.xiaoxiCloudMaintenance;
     if (!api) return;
@@ -110,7 +119,7 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
         </div>
         <div className="announcement-list">
           {allVersions.map((entry, index) => <div key={entry.version}>
-            {series(entry.version) !== series(allVersions[index - 1]?.version || "") && <h3 className="announcement-series">{series(entry.version)} 系列 <small>{allVersions.filter((item) => series(item.version) === series(entry.version)).length} 个版本</small></h3>}
+            {seriesOf(entry.version) !== seriesOf(allVersions[index - 1]?.version || "") && <h3 className="announcement-series">{seriesOf(entry.version)} 系列 <small>{seriesCount.get(seriesOf(entry.version))} 个版本</small></h3>}
             <details className="announcement-entry" open={index === 0}>
               <summary><strong>版本 {entry.version}</strong>{entry.date && <time dateTime={entry.date}>{entry.date.replace(/-/g, ".")}</time>}</summary>
               <p>{entry.notes || "此版本尚未提供更新说明。"}</p>

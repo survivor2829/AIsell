@@ -10,7 +10,7 @@ const { verifyManifest, compareVersions } = require("../shared/cloud-contract.cj
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createPreloadApis } = require("./preload-api.cjs");
 const { LEGACY_COMPONENTS: COMPONENTS } = require("../shared/component-contract.cjs");
-const { releaseNotes, matchingReleaseNotes, bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
+const { releaseNotes, matchingReleaseNotes, bundledAnnouncements, releaseHistory } = require("../shared/customer-release-notes.cjs");
 
 async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   const dir = path.join(rootDir, "bundled-announcements");
@@ -26,6 +26,11 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
     .filter(candidate => compareVersions(candidate, version) < 0).sort((a, b) => compareVersions(b, a))[0];
   assert.ok(previousVersion && bundledVersions.includes(previousVersion), "A skipped recent release is still explained after a full upgrade");
   assert.deepEqual(bundledAnnouncements("1.1.0").map(entry => entry.version), ["1.1.0"], "Do not show future bundled releases");
+  const packageVersion = require("../../package.json").version;
+  assert.ok(require("../shared/customer-release-dates.json")[packageVersion], "add the release date to customer-release-dates.json when bumping the version");
+  const history = releaseHistory(packageVersion);
+  assert.equal(history[0].version, packageVersion, "the history starts at the installed version");
+  assert.equal(history.at(-1).version, "0.1.0", "and reaches back to the very first one");
   const bundledUnread = controller.status().unreadAnnouncements;
   assert.ok(bundledUnread > 1, "the bundled history fixture must include multiple unread versions");
   controller.markAnnouncementsRead();
