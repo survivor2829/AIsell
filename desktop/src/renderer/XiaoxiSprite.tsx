@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { WorkflowController } from "./WechatWorkflow";
+import { createMascotPet, type PetWork } from "./MascotPet";
 import "./XiaoxiSprite.css";
 
-// 小玺 (user decisions 2026-10-30): a small living robot always on screen at the right edge. It wanders a
-// little, can be dragged, and talks in a comic bubble: a warm line when something starts, a short
-// 「ING」 line with the progress while it runs, a happy or worried line when it ends, and now and then
-// a light remark that has nothing to do with work.
+// The company mascot as a desktop pet (user decisions 2026-11-08) that talks in a comic bubble: a warm line
+// when something starts, the live title, detail and progress of the work while it runs, a happy or worried
+// line when it ends. Touching and playing belong to MascotPet; what is shown about the work belongs here.
 
 export type SpriteActivity = { kind: string; title: string; detail?: string; done?: number; total?: number; attention?: boolean; pausable?: boolean };
-type Mood = "idle" | "hello" | "work" | "done" | "error" | "sleep";
 type Line = { text: string; sub?: string; mood?: "done" | "error" | "" };
 
 const GREETINGS: [RegExp, string][] = [
@@ -30,38 +29,51 @@ const FINISHED: [RegExp, Line][] = [
 ];
 // Light remarks for the quiet moments.
 const CHATTER = [
-  "记得喝口水呀～", "坐久了，起来伸个懒腰吧～", "有我在，你放心忙别的～", "我在这儿呢，需要我就点我～",
-  "今天的客户一定会多多的～", "看看远处，让眼睛休息一下～", "嘿嘿，我刚学会了一个新表情～", "今天也辛苦啦～"
+  "记得喝口水呀～", "坐久了，起来伸个懒腰吧～", "有我在，你放心忙别的～", "我在这儿呢，双击我就回到软件～",
+  "今天的客户一定会多多的～", "看看远处，让眼睛休息一下～", "今天也辛苦啦～"
 ];
 const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
 const greetingFor = (title: string) => (GREETINGS.find(([pattern]) => pattern.test(title)) || GREETINGS[GREETINGS.length - 1])[1];
-
-const LIVELY_MS = 8000, REST_MS = 22000;
+const workFor = (activity: SpriteActivity | null, alert: string): PetWork => {
+  if (alert) return "error";
+  if (!activity) return null;
+  return activity.kind === "wechat" || /消息|触达|回复|接待|朋友圈|联系人/.test(activity.title) ? "typing" : "work";
+};
 
 export function XiaoxiSprite({ workflow, activity, alert }: { workflow: WorkflowController; activity: SpriteActivity | null; alert: string }) {
   const api = window.xiaoxiWorkflow;
-  const [resting, setResting] = useState(false);
-  const restingNow = useRef(false);
-  restingNow.current = resting;
   const [line, setLine] = useState<Line | null>(null);
   const [greeting, setGreeting] = useState("");
   const [typed, setTyped] = useState("");
-  const [mood, setMood] = useState<Mood>("idle");
-  const [blink, setBlink] = useState(false);
-  const [look, setLook] = useState({ x: 0, y: 0 });
-  const [tilt, setTilt] = useState(0);
-  const [roam, setRoam] = useState({ x: 0, y: 0 });
   const lastKind = useRef("");
   const lastTitle = useRef("");
-  const idleSince = useRef(Date.now());
-  const drag = useRef(false);
+  const pressed = useRef(false);
   const lineTimer = useRef<number>();
+  const host = useRef<HTMLDivElement>(null);
+  const pet = useRef<ReturnType<typeof createMascotPet> | null>(null);
+  // What the pet says for fun must never cover the live state of the work.
+  const quiet = useRef(true);
+  quiet.current = !activity && !alert;
 
   const show = (next: Line, ms = 5200) => {
     window.clearTimeout(lineTimer.current);
     setLine(next);
     if (ms) lineTimer.current = window.setTimeout(() => setLine(null), ms);
   };
+
+  useEffect(() => {
+    if (!host.current) return;
+    const created = createMascotPet(host.current, {
+      walk: async (dx) => api?.spriteWalk?.(dx),
+      stopWalk: () => api?.spriteWalkStop?.(),
+      say: (text, ms) => { if (quiet.current) show({ text }, ms); },
+      openMain: () => { void api?.showMain(); }
+    });
+    pet.current = created;
+    const offCursor = api?.onSpriteCursor?.((point: { x: number; y: number }) => created.cursor(point.x, point.y));
+    const offDrag = api?.onSpriteDrag?.((speed: { vx: number; vy: number }) => created.dragMove(speed.vx, speed.vy));
+    return () => { offCursor?.(); offDrag?.(); created.destroy(); pet.current = null; };
+  }, [api]);
 
   // Something started, changed, or ended.
   useEffect(() => {
@@ -73,7 +85,6 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     if (!kind && lastKind.current && !alert) {
       const done = FINISHED.find(([pattern]) => pattern.test(lastKind.current));
       if (done) show(done[1]);
-      idleSince.current = Date.now();
     }
     lastKind.current = kind; lastTitle.current = activity?.title || "";
   }, [activity?.kind, activity?.title, alert]);
@@ -81,53 +92,24 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   // One-off lines from the main process (a finished video, a failed job).
   useEffect(() => api?.onSpriteSay?.((said: Line) => show(said, said.mood === "error" ? 9000 : 6000)), [api]);
 
-  // Mood follows what is going on.
+  // The pet acts out whatever is really going on.
+  const work = workFor(activity, alert);
+  useEffect(() => { pet.current?.setWork(work); }, [work]);
   useEffect(() => {
-    const next: Mood = alert ? "error" : line?.mood === "done" ? "done" : line?.mood === "error" ? "error"
-      : greeting ? "hello" : activity ? "work" : Date.now() - idleSince.current > 180000 ? "sleep" : "idle";
-    setMood(next);
-  }, [alert, line, greeting, activity]);
+    if (line?.mood === "done") pet.current?.celebrate();
+    else if (line?.mood === "error") pet.current?.oops();
+  }, [line]);
 
-  // A floating window that never stops moving costs about a tenth of a core all day (measured 2026-11-02), which low-end
-  // computers feel. With nothing going on it moves for a while, then rests; anything happening wakes it at once.
-  const calm = !alert && !line && !greeting && !activity;
+  // Small talk now and then, never over the work.
   useEffect(() => {
-    if (!calm) { setResting(false); return; }
     let timer = 0;
-    const turn = (rest: boolean) => { setResting(rest); timer = window.setTimeout(() => turn(!rest), rest ? REST_MS : LIVELY_MS); };
-    timer = window.setTimeout(() => turn(true), LIVELY_MS);
-    return () => window.clearTimeout(timer);
-  }, [calm]);
-
-  // Alive: blinks at uneven intervals, glances around, tilts its head, wanders a little.
-  useEffect(() => {
-    let alive = true;
-    const timers: number[] = [];
-    const later = (fn: () => void, ms: number) => timers.push(window.setTimeout(() => alive && fn(), ms));
-    const doBlink = () => {
-      later(doBlink, 1800 + Math.random() * 3800);
-      if (restingNow.current) return;
-      setBlink(true); later(() => setBlink(false), 110);
-      if (Math.random() < .25) later(() => { setBlink(true); later(() => setBlink(false), 100); }, 260);
-    };
-    const glance = () => {
-      if (restingNow.current) { later(glance, 2000); return; }
-      setLook({ x: (Math.random() - .5) * 10, y: (Math.random() - .5) * 5 });
-      setTilt(Math.random() < .35 ? (Math.random() - .5) * 10 : 0);
-      later(glance, 900 + Math.random() * 2200);
-    };
-    const wander = () => {
-      if (!drag.current && !restingNow.current) setRoam({ x: (Math.random() - .5) * 22, y: (Math.random() - .5) * 26 });
-      later(wander, 3600 + Math.random() * 3000);
-    };
-    // Small talk now and then, never over something important.
     const chatter = () => {
-      later(chatter, 45000 + Math.random() * 75000);
-      if (!alert && Math.random() < .45) show({ text: pick(CHATTER) }, 4200);
+      timer = window.setTimeout(chatter, 60000 + Math.random() * 90000);
+      if (quiet.current && Math.random() < .4) show({ text: pick(CHATTER) }, 4200);
     };
-    later(doBlink, 1200); later(glance, 700); later(wander, 2000); later(chatter, 20000 + Math.random() * 20000);
-    return () => { alive = false; timers.forEach(window.clearTimeout); };
-  }, [alert]);
+    timer = window.setTimeout(chatter, 40000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // The words being typed out like someone talking.
   const message: Line | null = alert ? { text: "遇到点小麻烦～", sub: alert, mood: "error" }
@@ -142,24 +124,25 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   }, [message?.text]);
 
   const percent = activity?.total ? Math.round((activity.done || 0) / activity.total * 100) : null;
-  const showMain = () => { void api?.showMain(); };
-  const interactive = (on: boolean) => { if (!drag.current) api?.spriteInteractive?.(on); };
-  // Holding 小玺 hands the dragging to the main process; letting go without moving opens the app.
-  const down = (event: ReactPointerEvent) => {
+  const interactive = (on: boolean) => { if (!pressed.current) api?.spriteInteractive?.(on); };
+  // Holding the pet hands the dragging to the main process; letting go without moving is a touch.
+  const down = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
-    drag.current = true;
-    (event.currentTarget as Element).setPointerCapture(event.pointerId);
+    pressed.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
     api?.spriteDragStart?.();
   };
-  const up = async () => {
-    if (!drag.current) return;
-    drag.current = false;
+  const up = async (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!pressed.current) return;
+    pressed.current = false;
+    const { clientX, clientY } = event;
     const result = await api?.spriteDragEnd?.();
-    if (!result?.moved) showMain();
+    if (result?.moved) pet.current?.dragEnd(Number(result.impact) || 0);
+    else pet.current?.click(clientX, clientY);
   };
 
-  return <main className={`floating-shell workflow-floating-shell xiaoxi-shell${resting ? " is-resting" : ""}`}>
-    <div className="xiaoxi-roam" style={{ transform: `translate(${roam.x}px, ${roam.y}px)` }}>
+  return <main className="floating-shell workflow-floating-shell xiaoxi-shell">
+    <div className="xiaoxi-roam">
       {(message || activity) && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}`} key={message?.text || activity?.title} role="status" aria-live="polite"
         onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)}>
         {message ? <>
@@ -172,48 +155,12 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
         </>}
         {activity?.pausable && <button type="button" className="xiaoxi-link" onClick={() => void workflow.run(() => api!.pause())}>先暂停</button>}
       </section>}
-      <button type="button" className="xiaoxi-buddy" data-mood={mood} aria-label="小玺：点我回到软件，按住可以拖动"
-        onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)} onPointerDown={down} onPointerUp={() => void up()} onPointerCancel={() => void up()}>
-        <svg viewBox="0 0 200 220" aria-hidden="true">
-          <ellipse className="xs-shadow" cx="100" cy="208" rx="52" ry="7" fill="#000" />
-          <g className="xs-body">
-            <g className="xs-arm l"><path d="M52 150 C38 156 32 168 34 178" fill="none" stroke="#e9ecf2" strokeWidth="13" strokeLinecap="round" /><circle cx="34" cy="180" r="9" fill="#e60012" /></g>
-            <g className="xs-arm r"><path d="M148 150 C162 156 168 168 166 178" fill="none" stroke="#e9ecf2" strokeWidth="13" strokeLinecap="round" /><circle cx="166" cy="180" r="9" fill="#e60012" /></g>
-            <rect x="62" y="138" width="76" height="56" rx="26" fill="#f6f7fa" stroke="#dfe3ea" strokeWidth="3" />
-            <rect x="90" y="156" width="20" height="8" rx="4" fill="#5ee6ff" className="xs-led" />
-            <g className="xs-head" style={{ transform: `rotate(${tilt}deg)` }}>
-              <g className="xs-tuft"><path d="M100 36 C90 20 110 10 116 20 C110 24 112 34 105 40 Z" fill="#e60012" stroke="#c0000f" strokeWidth="2" /></g>
-              <rect x="30" y="38" width="140" height="112" rx="46" fill="#f8f9fb" stroke="#dfe3ea" strokeWidth="3" />
-              <rect x="23" y="78" width="10" height="30" rx="5" fill="#e60012" /><rect x="167" y="78" width="10" height="30" rx="5" fill="#e60012" />
-              <rect x="44" y="52" width="112" height="80" rx="32" fill="#141b28" />
-              <path d="M58 60 Q84 54 108 58" stroke="#ffffff" strokeOpacity=".12" strokeWidth="6" strokeLinecap="round" fill="none" />
-              <ellipse cx="62" cy="112" rx="8" ry="4.5" fill="#ff6b8a" opacity=".55" /><ellipse cx="138" cy="112" rx="8" ry="4.5" fill="#ff6b8a" opacity=".55" />
-              {["idle", "hello", "work"].includes(mood) && <g>
-                <g style={{ transform: `translate(${look.x}px, ${look.y}px)`, transition: "transform .18s ease-out" }}>
-                  <g className="xs-lid" style={{ transform: `scaleY(${blink ? .08 : 1})` }}><rect x="66" y="74" width="20" height="28" rx="10" fill="#5ee6ff" /><circle cx="80" cy="81" r="3" fill="#fff" opacity=".85" /></g>
-                  <g className="xs-lid" style={{ transform: `scaleY(${blink ? .08 : 1})` }}><rect x="114" y="74" width="20" height="28" rx="10" fill="#5ee6ff" /><circle cx="128" cy="81" r="3" fill="#fff" opacity=".85" /></g>
-                </g>
-                {mood === "hello" ? <ellipse cx="100" cy="116" rx="6" ry="5" fill="#5ee6ff" /> : <path d="M90 114 Q100 120 110 114" fill="none" stroke="#5ee6ff" strokeWidth="3.5" strokeLinecap="round" />}
-              </g>}
-              {mood === "done" && <g>
-                <path d="M64 92 L76 78 L88 92 M112 92 L124 78 L136 92" fill="none" stroke="#5ff0a0" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M84 108 Q100 124 116 108" fill="none" stroke="#5ff0a0" strokeWidth="5" strokeLinecap="round" />
-              </g>}
-              {mood === "error" && <g>
-                <path d="M64 80 L84 72 M136 80 L116 72" stroke="#ffb547" strokeWidth="4" strokeLinecap="round" />
-                <rect x="68" y="84" width="16" height="18" rx="8" fill="#ffb547" /><rect x="116" y="84" width="16" height="18" rx="8" fill="#ffb547" />
-                <path d="M88 118 Q94 112 100 118 Q106 124 112 118" fill="none" stroke="#ffb547" strokeWidth="3.5" strokeLinecap="round" />
-                <path className="xs-drop" d="M160 44 Q167 56 160 61 Q153 56 160 44 Z" fill="#7fc8ff" />
-              </g>}
-              {mood === "sleep" && <g>
-                <path d="M64 92 Q76 99 88 92 M112 92 Q124 99 136 92" fill="none" stroke="#5ee6ff" strokeOpacity=".7" strokeWidth="5" strokeLinecap="round" />
-                <ellipse cx="100" cy="116" rx="4" ry="3" fill="#5ee6ff" opacity=".6" />
-                <text className="xs-zz" x="150" y="40" fontSize="20" fontWeight="800" fill="#9cc4ff">z</text>
-                <text className="xs-zz b" x="164" y="26" fontSize="14" fontWeight="800" fill="#9cc4ff">z</text>
-              </g>}
-            </g>
-          </g>
-        </svg>
+      <button type="button" className="xiaoxi-buddy" aria-label="吉祥物：双击回到软件，按住可以拖动"
+        onClick={(event) => { if (event.detail === 0) void api?.showMain(); }}
+        onPointerEnter={() => interactive(true)} onPointerLeave={() => { interactive(false); pet.current?.leave(); }}
+        onPointerMove={(event) => { if (!pressed.current) pet.current?.hover(event.clientX, event.clientY); }}
+        onPointerDown={down} onPointerUp={(event) => void up(event)} onPointerCancel={(event) => void up(event)}>
+        <div className="xiaoxi-pet" ref={host} />
       </button>
     </div>
   </main>;

@@ -1133,11 +1133,11 @@ async function checkFloatingProgress() {
   assert.equal(status.state.contactSync.running, false);
   assert.equal(status.state.contactSync.contactCount, 3);
   assert.equal(windows.length, 1, "all task types reuse one floating window");
-  // 小玺 (user decisions 2026-10-30): always on screen at the right edge's middle, clicks pass through its
-  // transparent parts, it can be dragged and keeps its place, and every feature reports what runs.
+  // The mascot (user decisions 2026-11-08): always on screen, standing on the bottom edge at the right; clicks pass
+  // through its transparent parts, it can be picked up and dropped, and every feature reports what runs.
   const sprite = windows[0];
   assert.equal(sprite.settings.transparent, true);
-  assert.equal(sprite.settings.x, 1920 - 360 - 6); assert.equal(sprite.settings.y, Math.round((1080 - 230) / 2));
+  assert.equal(sprite.settings.x, 1920 - 400 - 6); assert.equal(sprite.settings.y, 1080 - 260);
   assert.equal(sprite.ignoringMouse, true, "transparent parts let clicks through");
   // 2026-11-02: a maximized 小玺 sat at the top-left, would not drag and turned into a white block.
   assert.equal(sprite.settings.maximizable, false, "小玺 cannot be maximized");
@@ -1158,8 +1158,14 @@ async function checkFloatingProgress() {
   listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
   Object.assign(cursor, { x: 1500, y: 540 });
   await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.deepEqual(await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent), { moved: true });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")), { x: 1920 - 360 - 6 - 300, y: Math.round((1080 - 230) / 2) + 40 });
+  assert.ok(sprite.sent.some(([channel]) => channel === "wechat-workflow:sprite-drag"), "the pet is told how it is being swung");
+  sprite.setPosition(1920 - 400 - 6 - 300, 820 - 180);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const dropped = await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
+  assert.equal(dropped.moved, true);
+  assert.equal(sprite.getPosition()[1], 1080 - 260, "let go in the air, it lands on the bottom edge");
+  assert.equal(typeof JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).x, "number");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).y, undefined, "only left-right is kept");
   const hidesBefore = mainHideCount;
   await control.showSprite();
   assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");
@@ -1176,7 +1182,8 @@ async function checkFloatingProgress() {
     spritePlaceFile: path.join(rootDir, "sprite-place.json"),
     electron: { ipcMain: { handle() {}, on() {} }, BrowserWindow: ProgressWindow, screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) } } });
   await again.showSprite();
-  assert.equal(windows.at(-1).settings.x, 1920 - 360 - 6 - 300, "小玺 comes back where it was dragged");
+  assert.equal(windows.at(-1).settings.x, JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).x, "it comes back where it was dropped");
+  assert.equal(windows.at(-1).settings.y, 1080 - 260, "and stands on the bottom edge");
   await again.dispose();
 }
 
