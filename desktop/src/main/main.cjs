@@ -297,7 +297,7 @@ ipcMain.on("window-chrome:set-mode", (event, mode) => {
     // After sign-in the AI gateway is up, so the one background check sees the real state.
     if (environmentCheckup && !environmentCheckup.last()) setTimeout(() => void environmentCheckup.run().catch(() => {}), 15000).unref?.();
   }
-  mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#f8f4f0" : "#c91739", symbolColor: mode === "login" ? "#302a2b" : "#ffffff", height: 36 });
+  mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#f8f4f0" : "#e60000", symbolColor: mode === "login" ? "#302a2b" : "#ffffff", height: 36 });
 });
 ipcMain.on('startup:mark', (event, stage) => {
   if (event.sender === mainWindow?.webContents && ['renderer_loaded', 'login_visible', 'login_interactive'].includes(stage)) startupTiming.mark(stage);

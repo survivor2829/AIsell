@@ -5,6 +5,7 @@ const checks = [
   "scripts/build-renderer.self_check.cjs",
   "scripts/dev-electron.self_check.cjs",
   "src/main/window-layout.self_check.cjs",
+  "src/main/floating-progress-window.self_check.cjs",
   "src/main/license-auth-ipc.self_check.cjs",
   "src/main/map-acquisition.self_check.cjs",
   "src/main/acquisition-workbench.self_check.cjs",

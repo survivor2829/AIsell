@@ -1,4 +1,4 @@
-.digital-human-page { --dh-accent: var(--brand, #e5484d); max-width: 1240px; margin: 0 auto; padding: 28px; color: #202637; caret-color: var(--dh-accent); }
+.digital-human-page { --dh-accent: var(--brand-red); max-width: 1240px; margin: 0 auto; padding: 28px; color: #202637; caret-color: var(--dh-accent); }
 .dh-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 24px; }
 .dh-heading{min-width:0;flex:1}.dh-output>.dh-quality{font-size:13px;color:#596374;line-height:1.6}.dh-header-actions{display:flex;gap:10px;flex-wrap:wrap}
 .dh-header h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.02em; }
@@ -80,7 +80,7 @@
 .dh-voice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .dh-mode-nav { max-width:1184px; margin:20px auto 0; display:flex; gap:10px; padding:0 28px; }
 .dh-mode-nav button { border:0; border-bottom:2px solid transparent; padding:12px 8px; background:transparent; color:#525d70; font:inherit; cursor:pointer; }
-.dh-mode-nav button[aria-pressed="true"] { color:var(--brand,#c71639); border-bottom-color:currentColor; font-weight:700; }
+.dh-mode-nav button[aria-pressed="true"] { color:var(--brand-red); border-bottom-color:currentColor; font-weight:700; }
 .rh-section-title { font-size:18px; margin:0 0 12px; }
 .rh-section-title:not(:first-child) { margin-top:30px; }
 .rh-import-row { display:flex; gap:12px; align-items:end; flex-wrap:wrap; }
@@ -88,13 +88,13 @@
 .rh-voice-setup { margin-top:22px; padding:18px 0; border-block:1px solid #e3e5eb; }
 .rh-voice-setup h3,.rh-quote h3,.rh-speech h3 { font-size:15px; margin:0 0 12px; }
 .rh-consent { display:flex; gap:8px; align-items:start; font-size:13px; line-height:1.6; margin:14px 0; }
-.rh-consent input { flex-shrink:0; margin-top:4px; accent-color:var(--brand,#c71639); }
+.rh-consent input { flex-shrink:0; margin-top:4px; accent-color:var(--brand-red); }
 .rh-title-field { margin-top:18px; }
 .rh-title-field input { box-sizing:border-box; width:100%; border:1px solid #d7dce4; border-radius:8px; padding:10px 12px; color:#303849; font:inherit; }
 .rh-caption-styles { margin:24px 0 12px; padding:0; border:0; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .rh-caption-styles legend { font-size:14px; font-weight:650; margin-bottom:10px; }
 .rh-caption-styles button { min-width:0; display:grid; gap:5px; padding:12px; text-align:left; border:1px solid #d7dce4; border-radius:8px; background:#fff; color:#303849; font:inherit; cursor:pointer; }
-.rh-caption-styles button[aria-pressed="true"] { border-color:var(--brand,#c71639); background:#fff5f6; }
+.rh-caption-styles button[aria-pressed="true"] { border-color:var(--brand-red); background:#fff5f6; }
 .rh-caption-styles button small { color:#596374; line-height:1.5; }
 .rh-ready { color:#27613b; font-size:14px; }
 .rh-voice-refresh { margin-top:10px; }
@@ -130,8 +130,8 @@
 .rh-steps { display:flex; gap:12px; margin:0 0 22px; border-bottom:1px solid #e3e5eb; }
 .rh-steps button { flex:1; display:flex; align-items:center; justify-content:center; gap:9px; padding:14px 6px; border:0; border-bottom:3px solid transparent; background:transparent; color:#525d70; font:inherit; cursor:pointer; }
 .rh-steps button span { display:grid; place-items:center; width:26px; height:26px; border-radius:50%; background:#eceef2; font-size:13px; }
-.rh-steps button[aria-current=step] { color:var(--brand,#c71639); border-bottom-color:currentColor; font-weight:700; }
-.rh-steps button[aria-current=step] span { color:white; background:var(--brand,#c71639); }
+.rh-steps button[aria-current=step] { color:var(--brand-red); border-bottom-color:currentColor; font-weight:700; }
+.rh-steps button[aria-current=step] span { color:white; background:var(--brand-red); }
 .rh-steps button:focus-visible,.rh-advanced summary:focus-visible,.rh-reference-sources summary:focus-visible { outline:3px solid #bf4663; outline-offset:3px; }
 .rh-steps button:disabled { cursor:default; opacity:.6; }
 .rh-advanced,.rh-reference-sources { margin:20px 0; padding:16px 0; border-block:1px solid #e3e5eb; }

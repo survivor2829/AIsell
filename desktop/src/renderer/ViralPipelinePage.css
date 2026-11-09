@@ -1,4 +1,4 @@
-.vp-page { --dh-accent: var(--brand, #e5484d); max-width: 1184px; margin: 0 auto; padding: 20px 28px 40px; color: #1f2937; }
+.vp-page { --dh-accent: var(--brand-red); max-width: 1184px; margin: 0 auto; padding: 20px 28px 40px; color: #1f2937; }
 .vp-head h2 { margin: 0; font-size: 24px; font-weight: 900; letter-spacing: -0.01em; }
 .vp-head p { margin: 6px 0 0; font-size: 14px; font-weight: 700; color: #4b5563; }
 .vp-page > .dh-message { margin: 14px 0 0; }
@@ -14,7 +14,7 @@
 .vp-filter-row > b.vp-filter-gap { width: auto; margin-left: 16px; }
 .vp-spacer { flex: 1; }
 .vp-chip { height: 32px; padding: 0 13px; border-radius: 999px; border: 1px solid #e5e7eb; background: #fff; font: inherit; font-size: 14px; font-weight: 900; color: #4b5563; cursor: pointer; }
-.vp-chip[aria-pressed="true"] { background: #fde7e7; border-color: #f5b5bd; color: #b4122c; }
+.vp-chip[aria-pressed="true"] { background: #fde7e7; border-color: #f5b5bd; color: var(--brand-red); }
 .vp-chip:disabled { cursor: default; opacity: 0.7; }
 .vp-login { padding: 8px 10px; border-radius: 8px; background: #fff7ed; font-size: 13px; font-weight: 700; color: #92400e; }
 .vp-login > span { flex: 1; min-width: 200px; }
@@ -33,7 +33,7 @@
 .vp-likes small { margin-left: 4px; font-size: 12px; font-weight: 700; color: #6b7280; }
 .vp-tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .vp-tag { font-size: 13px; font-weight: 900; padding: 2px 8px; border-radius: 999px; }
-.vp-tag.is-likes { background: #fde7e7; color: #b4122c; }
+.vp-tag.is-likes { background: #fde7e7; color: var(--brand-red); }
 .vp-tag.is-underdog { background: #efe7ff; color: #6d28d9; }
 .vp-tag.is-asking { background: #e7f6ec; color: #166534; }
 .vp-card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
@@ -69,10 +69,10 @@
 .vq-steps i.is-failed { background: #b91c1c; }
 .vq-status { font-size: 12px; font-weight: 700; color: #4b5563; line-height: 1.5; }
 .vq-item.is-done .vq-status { color: #166534; }
-.vq-item.is-failed .vq-status { color: #b4122c; }
+.vq-item.is-failed .vq-status { color: var(--brand-red); }
 .vq-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; font-weight: 700; color: #6b7280; }
 .vq-cover { width: 96px; border-radius: 6px; border: 1px solid #f1e5e6; }
 .vq-actions { display: flex; gap: 8px; align-items: center; }
 .vq-actions:empty { display: none; }
 .vq-actions .dh-text-button { padding: 0; border: 0; background: none; font: inherit; font-size: 12px; font-weight: 700; color: #6b7280; cursor: pointer; }
-.vq-actions .dh-text-button:hover:not(:disabled) { color: #b4122c; }
+.vq-actions .dh-text-button:hover:not(:disabled) { color: var(--brand-red-dark); }

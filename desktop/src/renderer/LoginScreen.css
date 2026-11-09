@@ -3,8 +3,8 @@
 .signin-scene {
   --signin-ink: #0e1015;
   --signin-muted: #5d6270;
-  --signin-red: #d0102f;
-  --signin-accent: #ef4452;
+  --signin-red: #e60000;
+  --signin-accent: #e60000;
   --signin-px: 0px;
   --signin-py: 0px;
   position: relative;

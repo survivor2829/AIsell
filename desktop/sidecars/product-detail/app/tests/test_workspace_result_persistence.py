@@ -337,7 +337,5 @@ class TestWorkspaceFrontendPaidTaskSafety:
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert 'id="hidden_modules_bar"' in content
         assert "bar.inert = !visible" in content
-        assert "function initAnnouncementAccessibility(" in content
-        assert "panel.inert = panel.hidden" in content
-        assert "panel.setAttribute('aria-hidden', panel.hidden ? 'true' : 'false')" in content
+        assert "initAnnouncementAccessibility" not in content and "announcement.js" not in content, "the old announcement stays removed"
         assert 'alt="${escapeHtml(t.name)}模板预览"' in content

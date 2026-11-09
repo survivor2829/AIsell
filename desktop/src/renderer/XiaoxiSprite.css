@@ -18,18 +18,18 @@ html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root 
 .xiaoxi-bubble.is-error strong { color: #8a3a00; }
 .xiaoxi-ing-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .xiaoxi-ing-row b { margin-left: auto; font-variant-numeric: tabular-nums; }
-.xiaoxi-ing { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 99px; background: #fff0f1; color: #e60012; font-weight: 800; letter-spacing: .04em; }
-.xiaoxi-ing i { width: 4px; height: 4px; border-radius: 50%; background: #e60012; animation: xiaoxi-dot 1s infinite; }
+.xiaoxi-ing { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 99px; background: #fff0f1; color: var(--brand-red); font-weight: 800; letter-spacing: .04em; }
+.xiaoxi-ing i { width: 4px; height: 4px; border-radius: 50%; background: var(--brand-red); animation: xiaoxi-dot 1s infinite; }
 .xiaoxi-ing i:nth-child(2) { animation-delay: .15s } .xiaoxi-ing i:nth-child(3) { animation-delay: .3s }
 @keyframes xiaoxi-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .45 } 30% { transform: translateY(-3px); opacity: 1 } }
 .xiaoxi-caret { display: inline-block; width: 1px; height: 1em; margin-left: 1px; vertical-align: -.12em; background: currentColor; animation: xiaoxi-caret .8s steps(1) infinite; }
 @keyframes xiaoxi-caret { 50% { opacity: 0 } }
-.xiaoxi-link { align-self: flex-start; padding: 0; border: 0; background: none; color: #e60012; font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.xiaoxi-link { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--brand-red); font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 
 /* the pet: traced from the company stickers; the parts are moved by MascotPet */
 .xiaoxi-buddy { flex: 0 0 auto; align-self: flex-end; width: 160px; margin: 0 -14px 0 -16px; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; pointer-events: none; }
 .xiaoxi-buddy:active { cursor: grabbing; }
-.xiaoxi-buddy:focus-visible { outline: 2px solid #e60012; outline-offset: 2px; border-radius: 16px; }
+.xiaoxi-buddy:focus-visible { outline: 2px solid var(--brand-red); outline-offset: 2px; border-radius: 16px; }
 .xiaoxi-pet { width: 100%; will-change: transform; }
 .xiaoxi-pet svg { display: block; width: 100%; height: auto; overflow: visible; pointer-events: none; }
 .xiaoxi-pet #root, .xiaoxi-pet #root * { pointer-events: visiblePainted; }

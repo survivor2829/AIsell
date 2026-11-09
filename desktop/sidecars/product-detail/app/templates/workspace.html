@@ -6,7 +6,6 @@
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>小玺AI · 工作台</title>
   <link rel="stylesheet" href="/static/css/design-system.css?v=2">
-  <link rel="stylesheet" href="/static/css/announcement.css">
   <script src="/static/vendor/sortable-1.15.6.min.js"></script>
   <style>
     /* ── Reset ─────────────────────────────────────────────── */
@@ -158,7 +157,7 @@
     .upload-icon svg { width: 100%; height: 100%; }
     .upload-box:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
     .upload-placeholder .upload-label { font-size: 16px; color: var(--color-text-hint); font-weight: 600; }
-    .upload-placeholder .upload-required { color: #ee1d36; font-size: 11px; font-weight: 500; }
+    .upload-placeholder .upload-required { color: var(--color-error); font-size: 11px; font-weight: 500; }
     .upload-preview { display: none; width: 100%; height: 100%; position: relative; }
     .upload-preview img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
     .upload-remove {
@@ -590,7 +589,7 @@
       <p class="section-title">选择品类</p>
       <div class="cat-pills">
         <button class="cat-pill" data-type="设备类"
-          style="--cat-color:#E8231A; --cat-color-bg:rgba(232,35,26,0.08)"
+          style="--cat-color:var(--color-error); --cat-color-bg:rgba(230,0,0,0.08)"
           onclick="selectCategory('设备类')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 8h9l2 8H5l2-8Zm2 0V5h5v3M16 5h4v7M4 16h15"/><circle cx="8" cy="19" r="2"/><circle cx="16" cy="19" r="2"/></svg><span>设备类</span></button>
         <button class="cat-pill" data-type="配件类"
           style="--cat-color:#1E6FBF; --cat-color-bg:rgba(30,111,191,0.08)"
@@ -662,7 +661,7 @@
       </button>
       <p class="text-hint" style="margin-top:8px;">根据产品主图、标题和文案生成模板详情页</p>
 
-      <button class="btn-generate" id="btn_generate_parameter" type="button" onclick="generateParameterSheet()" style="margin-top:14px; background:linear-gradient(135deg,#ef4444,#dc2626); border:none;">
+      <button class="btn-generate" id="btn_generate_parameter" type="button" onclick="generateParameterSheet()" style="margin-top:14px; background:var(--color-error); border:none;">
         📋 一键生成产品参数图
       </button>
       <p class="text-hint" style="margin-top:8px;">复用已上传产品图和参数文案，只输出产品参数图</p>
@@ -874,7 +873,7 @@
   </form>
 </dialog>
 <div id="workspace_notice" role="alert" hidden
-  style="position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:10001; max-width:min(560px,calc(100vw - 40px)); padding:12px 16px; border:1px solid #fecaca; border-radius:9px; background:#fef2f2; color:#b91c1c; box-shadow:0 8px 24px rgba(0,0,0,.12); font-size:13px; line-height:1.6;">
+  style="position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:10001; max-width:min(560px,calc(100vw - 40px)); padding:12px 16px; border:1px solid #fecaca; border-radius:9px; background:#fef2f2; color:var(--color-error-text); box-shadow:0 8px 24px rgba(0,0,0,.12); font-size:13px; line-height:1.6;">
 </div>
 
 <!-- ─── Progress Overlay ─────────────────────────────────────────── -->
@@ -1097,7 +1096,7 @@
       error?.taskId ? `task_id=${error.taskId}` : ''].filter(Boolean).join('\n'));
     if (detail) console.warn('[ai-refine] not finished', error?.code || '', detail);
     results.innerHTML = `
-      <div role="alert" style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7; overflow-wrap:anywhere; text-align:center;">
+      <div role="alert" style="width:min(560px,100%); color:var(--color-error-text); background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7; overflow-wrap:anywhere; text-align:center;">
         <div style="font-weight:700;">${escapeHtml(aiRefineUserMessage(error))}</div>
         <button type="button" data-ai-refine-retry
           style="margin-top:14px; padding:8px 28px; border:none; border-radius:7px; background:#047857; color:#fff; font-size:15px; cursor:pointer;">重试</button>
@@ -1942,7 +1941,7 @@
     if (key) {
       label.innerHTML = `⚙️ 豆包 Key: <span style="color:#059669;">已配置 ✓ ····${key.slice(-4)}</span>`;
     } else {
-      label.innerHTML = `⚙️ 豆包 Key: <span style="color:#dc2626;">未配置 ⚠️</span>`;
+      label.innerHTML = `⚙️ 豆包 Key: <span style="color:var(--color-error);">未配置 ⚠️</span>`;
     }
   }
   function setupArkKey() {
@@ -2746,38 +2745,8 @@
     }
   }
 
-  function initAnnouncementAccessibility() {
-    const bindPanel = (panel) => {
-      if (!(panel instanceof HTMLElement)) return;
-      const syncPanel = () => {
-        panel.inert = panel.hidden;
-        panel.setAttribute('aria-hidden', panel.hidden ? 'true' : 'false');
-      };
-      panel.setAttribute('role', 'dialog');
-      panel.setAttribute('aria-label', '更新公告');
-      syncPanel();
-      if (panel.dataset.a11yBound === 'true') return;
-      panel.dataset.a11yBound = 'true';
-      new MutationObserver(syncPanel).observe(panel, {
-        attributes: true,
-        attributeFilter: ['hidden'],
-      });
-    };
-    document.querySelectorAll('.xx-ann-panel').forEach(bindPanel);
-    new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        mutation.addedNodes.forEach((node) => {
-          if (!(node instanceof HTMLElement)) return;
-          if (node.matches('.xx-ann-panel')) bindPanel(node);
-          node.querySelectorAll?.('.xx-ann-panel').forEach(bindPanel);
-        });
-      });
-    }).observe(document.body, { childList: true, subtree: true });
-  }
-
   /* ── Init ───────────────────────────────────────────────────── */
   document.addEventListener('DOMContentLoaded', async () => {
-    initAnnouncementAccessibility();
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
     restoreServerAiRefineTask(); // 新端口没有 browser storage 时，只读接管原任务。
     // 产品图走自动抠图 — 否则 AI 精修合成时原图背景 + 原图水印文字会穿透到模板
@@ -2790,7 +2759,6 @@
     if (!resumePersistedAiRefineTask()) restoreLatestAiResult();
   });
 </script>
-<script src="/static/js/announcement.js" defer></script>
 {% if desktop_mode %}<script src="/static/desktop-scroll.js" defer></script>{% endif %}
 </body>
 </html>

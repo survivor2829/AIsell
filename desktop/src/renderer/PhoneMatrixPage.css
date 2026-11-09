@@ -1,7 +1,7 @@
 /* 手机矩阵 part 1: the phone list. */
 .phone-matrix { display: flex; flex-direction: column; gap: 18px; }
 .pm-hero { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 28px 30px; border-radius: 24px; background: #fff; border: 1px solid #ece9ef; }
-.pm-hero .ns-h1 em { font-style: normal; color: var(--brand-red, #e60012); }
+.pm-hero .ns-h1 em { font-style: normal; color: var(--brand-red); }
 .pm-lead { max-width: 640px; margin: 10px 0 0; color: #5d6573; font-size: 15px; line-height: 1.7; }
 .pm-stats { display: flex; align-items: center; gap: 22px; margin: 0; }
 .pm-stats div { display: flex; flex-direction: column; align-items: center; min-width: 72px; }
@@ -15,7 +15,7 @@
 .pm-alert svg, .pm-tip svg { flex: 0 0 auto; margin-top: 2px; }
 .pm-groups { display: flex; flex-wrap: wrap; gap: 8px; }
 .pm-groups button { min-height: 40px; padding: 0 16px; border: 1px solid #e3e5ea; border-radius: 999px; background: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
-.pm-groups button[aria-pressed="true"] { border-color: var(--brand-red, #e60012); background: var(--brand-red, #e60012); color: #fff; }
+.pm-groups button[aria-pressed="true"] { border-color: var(--brand-red); background: var(--brand-red); color: #fff; }
 .pm-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 48px 20px; border-radius: 20px; background: #fff; color: #5d6573; text-align: center; }
 .pm-empty p { max-width: 460px; margin: 0; line-height: 1.7; }
 .pm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin: 0; padding: 0; list-style: none; }
@@ -46,7 +46,7 @@
 .pm-serial { margin: 0; color: #6b7280; font-size: 12px; }
 .pm-dialog footer { display: flex; justify-content: flex-end; gap: 10px; }
 .pm-dialog footer button { min-height: 42px; padding: 0 18px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; font: inherit; font-weight: 700; cursor: pointer; }
-.pm-dialog footer .is-primary { border-color: var(--brand-red, #e60012); background: var(--brand-red, #e60012); color: #fff; }
+.pm-dialog footer .is-primary { border-color: var(--brand-red); background: var(--brand-red); color: #fff; }
 
 /* 手机墙 (part 2): live screens, the main screen and sync. */
 .pm-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
@@ -61,7 +61,7 @@
 .pm-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
 .pm-tile { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 2px solid transparent; border-radius: 14px; background: #fff; }
 .pm-tile.is-picked { border-color: #7aa7ff; }
-.pm-tile.is-main { border-color: var(--brand-red, #e60012); }
+.pm-tile.is-main { border-color: var(--brand-red); }
 .pm-tile-open { padding: 0; border: 0; background: none; cursor: pointer; }
 .pm-tile-label { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
 .pm-tile-label b { flex: 0 0 auto; padding: 1px 6px; border-radius: 6px; background: #1d2230; color: #fff; font-size: 11px; }
@@ -81,12 +81,12 @@
 .pm-keys button { display: grid; place-items: center; min-height: 40px; border: 1px solid #e3e5ea; border-radius: 10px; background: #fff; cursor: pointer; }
 .pm-text { display: flex; gap: 6px; }
 .pm-text input { flex: 1; min-width: 0; min-height: 42px; padding: 0 12px; border: 1px solid #d9dce3; border-radius: 10px; font: inherit; }
-.pm-text button { display: grid; place-items: center; width: 44px; border: 0; border-radius: 10px; background: var(--brand-red, #e60012); color: #fff; cursor: pointer; }
+.pm-text button { display: grid; place-items: center; width: 44px; border: 0; border-radius: 10px; background: var(--brand-red); color: #fff; cursor: pointer; }
 .pm-sync { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #e3e5ea; border-radius: 14px; cursor: pointer; }
 .pm-sync input { margin-top: 3px; width: 18px; height: 18px; }
 .pm-sync span { display: flex; flex-direction: column; gap: 2px; color: #5d6573; font-size: 13px; }
 .pm-sync strong { color: #1d2230; font-size: 15px; }
-.pm-sync.is-on { border-color: var(--brand-red, #e60012); background: #fff4f5; }
+.pm-sync.is-on { border-color: var(--brand-red); background: #fff4f5; }
 .pm-jitter { display: flex; align-items: center; gap: 8px; padding: 0 4px; color: #5d6573; font-size: 13px; }
 .pm-jitter input { width: 16px; height: 16px; }
 
@@ -103,7 +103,7 @@
 .pm-batch-panel p { margin: 0; color: #374151; font-size: 14px; line-height: 1.6; }
 .pm-batch-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .pm-batch-row input { flex: 1; min-width: 200px; min-height: 40px; padding: 0 12px; border: 1px solid #d9dce3; border-radius: 10px; font: inherit; }
-.pm-batch-panel .is-primary { border-color: var(--brand-red, #e60012); background: var(--brand-red, #e60012); color: #fff; }
+.pm-batch-panel .is-primary { border-color: var(--brand-red); background: var(--brand-red); color: #fff; }
 .pm-batch-apps { display: flex; flex-wrap: wrap; gap: 8px; }
 .pm-batch-card { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid #c9dafc; border-radius: 16px; background: #f5f8ff; }
 .pm-batch-card.is-done { border-color: #bfe3cc; background: #f3fbf6; }
