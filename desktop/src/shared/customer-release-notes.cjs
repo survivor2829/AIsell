@@ -1,4 +1,5 @@
 const catalog = require("./customer-release-notes.json");
+const dates = require("./customer-release-dates.json");
 const { VERSION, compareVersions } = require("./cloud-contract.cjs");
 
 function releaseNotes(version, entries = catalog) {
@@ -24,8 +25,17 @@ function matchingReleaseNotes(version, supplied) {
 }
 function bundledAnnouncements(version) {
   if (!VERSION.test(version)) return [];
-  return Object.keys(catalog).filter(candidate => VERSION.test(candidate) && compareVersions(candidate, version) <= 0)
+  // Versions before 1.1.0 were written up later for the history; they were never news to anyone.
+  return Object.keys(catalog).filter(candidate => VERSION.test(candidate) && compareVersions(candidate, version) <= 0 && compareVersions(candidate, "1.1.0") >= 0)
     .sort((left, right) => compareVersions(right, left)).slice(0, 20)
     .map(candidate => ({ version: candidate, notes: releaseNotes(candidate) }));
 }
-module.exports = { releaseNotes, matchingReleaseNotes, bundledAnnouncements };
+// Every version up to this one, oldest included, for the history in the announcements panel. Only what changed:
+// the notes of a long-superseded version about what had not been verified then no longer say anything useful.
+function releaseHistory(version) {
+  if (!VERSION.test(version)) return [];
+  return Object.keys(catalog).filter(candidate => VERSION.test(candidate) && compareVersions(candidate, version) <= 0)
+    .sort((left, right) => compareVersions(right, left))
+    .map(candidate => ({ version: candidate, date: dates[candidate] || "", notes: catalog[candidate].changes.map(line => `• ${String(line).trim()}`).join("\n") }));
+}
+module.exports = { releaseNotes, matchingReleaseNotes, bundledAnnouncements, releaseHistory };

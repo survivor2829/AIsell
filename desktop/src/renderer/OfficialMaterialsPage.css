@@ -32,3 +32,6 @@
 .official-materials-page .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 
 @media(max-width:760px) { .materials-assistant { gap:10px; padding-right:0; }.materials-assistant-trigger { width:125px; height:200px; }.materials-assistant-dialog h2 { font-size:20px; }.materials-assistant-dialog input { min-width:140px; width:100%; }.official-materials-head-actions { gap:6px; }.official-materials-head-actions button { padding:8px 10px; } }
+
+.official-scene-includes { margin: 0 0 12px; color: #6b7280; font-size: 13px; }
+.official-scene-empty { padding: 40px 16px; margin: 0; border: 1px dashed #d6dbe3; border-radius: 12px; color: #6b7280; font-size: 14px; text-align: center; }

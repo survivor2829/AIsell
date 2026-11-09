@@ -30,7 +30,7 @@
     ]
   },
   "materials": {
-    "name": "小禾", "legacyNames": ["素材小助理"], "responsibility": "物保素材库",
+    "name": "小禾", "legacyNames": ["素材小助理"], "responsibility": "场景素材库",
     "appearances": [
       {"id": "original", "label": "小禾", "portraitKey": "materials-assistant", "portraitFile": "materials-assistant.png", "position": "50% 24%", "accent": "#4f815c", "strong": "#31543b", "surface": "#eaf5e9", "soft": "#f3faf2", "pattern": "", "motifs": ["images", "folder", "search"], "layout": "frames"}
     ]

@@ -3,12 +3,40 @@
   "revision": 1,
   "categories": [
     {
-      "id": "factory",
-      "label": "工厂"
-    },
-    {
       "id": "community",
       "label": "小区"
+    },
+    {
+      "id": "retail",
+      "label": "商超"
+    },
+    {
+      "id": "hospital",
+      "label": "医院"
+    },
+    {
+      "id": "school",
+      "label": "学校"
+    },
+    {
+      "id": "hotel",
+      "label": "酒店"
+    },
+    {
+      "id": "office",
+      "label": "商写"
+    },
+    {
+      "id": "station",
+      "label": "场站"
+    },
+    {
+      "id": "factory",
+      "label": "工厂仓储"
+    },
+    {
+      "id": "facilities",
+      "label": "公共配套"
     },
     {
       "id": "robot",

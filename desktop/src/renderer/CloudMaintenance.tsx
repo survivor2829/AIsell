@@ -16,6 +16,7 @@ export type CloudStatus = {
 declare global {
   interface Window {
     xiaoxiCloudMaintenance?: {
+      releaseHistory?: () => Promise<{ version: string; date: string; notes: string }[]>;
       status(): Promise<CloudStatus>; check(): Promise<CloudStatus>; upload(): Promise<CloudStatus>;
       consent(enabled: boolean): Promise<CloudStatus>; restart(): Promise<CloudStatus>;
       announcements(): Promise<CloudStatus>; readAnnouncement(id: string | number): Promise<CloudStatus>;

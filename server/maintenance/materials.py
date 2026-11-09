@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 ID = re.compile(r"[a-zA-Z0-9_-]{1,80}\Z")
 MAX_FILE = 24 * 1024 * 1024
 DEFAULT_CATEGORIES = [{"id": key, "label": label} for key, label in
-                      (("factory", "工厂"), ("community", "小区"), ("robot", "机器人"), ("cleaning", "保洁作业"))]
+                      (("community", "小区"), ("retail", "商超"), ("hospital", "医院"), ("school", "学校"), ("hotel", "酒店"),
+                       ("office", "商写"), ("station", "场站"), ("factory", "工厂仓储"), ("facilities", "公共配套"))]
 
 
 def validate_source_url(value):

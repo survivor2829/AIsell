@@ -880,6 +880,7 @@ function createPreloadApis(ipcRenderer) {
       announcements: () => ipcRenderer.invoke("cloud:announcements"),
       readAnnouncement: (sequence) => ipcRenderer.invoke("cloud:readAnnouncement", sequence),
       readAnnouncements: () => ipcRenderer.invoke("cloud:readAnnouncements"),
+      releaseHistory: () => ipcRenderer.invoke("cloud:releaseHistory"),
       consent: (enabled) => ipcRenderer.invoke("cloud:consent", enabled === true),
       upload: () => ipcRenderer.invoke("cloud:upload"),
       restart: () => ipcRenderer.invoke("cloud:restart"),
