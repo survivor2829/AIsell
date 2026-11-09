@@ -231,6 +231,8 @@ function registerDigitalHumanIpc(options = {}) {
   const combined = { isBusy: () => reference.isBusy() || Boolean(viralScout?.isBusy()) || Boolean(pipeline?.isBusy()),
     prepareForUpdate: () => ({ busy: reference.prepareForUpdate().busy }),
     resumeAfterUpdate: () => { reference.resumeAfterUpdate(); } };
+  // list() reads every saved task from disk, so only look while one is actually running.
+  combined.referenceTasks = () => reference.isBusy() ? reference.list().items : [];
   return { service: combined, close: async () => {
     for (const channel of Object.values(DIGITAL_HUMAN_CHANNELS)) ipcMain.removeHandler(channel);
     await pipeline?.close();

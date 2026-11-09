@@ -57,3 +57,57 @@ assert.equal(acquisitionActivity("cloud:update", {}), undefined, "别的消息�
   assert.deepEqual(activities.at(-1), ["map-acquisition", null], "别的消息不改小玺");
   console.log("sprite feeds self-check passed");
 })().catch((error) => { console.error(error); process.exit(1); });
+
+// SOP：耗时功能必须接桌宠。主进程新发一种进度消息而没有登记时，这里不通过。
+{
+  const fs = require("node:fs"), path = require("node:path");
+  const { productDetailActivity, productDetailEvent, serviceActivity, pushedActivity, SPRITE_FEATURES, SPRITE_NOT_WORK, SPRITE_COMPUTED_SENDERS } = require("./sprite-activity.cjs");
+  const { createSpriteFeeds } = require("./sprite-feeds.cjs");
+  assert.equal(productDetailActivity({ state: "pending", task: { status: "running_planner", progress_msg: "DeepSeek (v2) 分析产品文案..." } }).title, "正在琢磨这款产品的卖点");
+  assert.deepEqual(productDetailActivity({ state: "pending", task: { status: "running_generator", progress_msg: "已就绪 2/15 张", planned_count: 15, success_count: 2 } }),
+    { title: "正在画第 3/15 张详情图", detail: "一张一张认真画", done: 2, total: 15 });
+  assert.equal(productDetailActivity({ state: "pending", task: { status: "running_generator", progress_msg: "已就绪 15/15 张, 开始拼装长图..." } }).title, "正在把详情图拼成长图");
+  assert.equal(productDetailActivity({ state: "pending", task: { status: "running_assembler", progress_msg: "Playwright 截图中..." } }).title, "正在把详情图拼成长图");
+  assert.equal(productDetailActivity({ state: "pending", task: { status: "running_generator", progress_msg: "AI 精修 v2 中 5/15" } }).title, "正在画第 6/15 张详情图", "真实的进度文字");
+  assert.equal(productDetailActivity({ state: "pending", task: { status: "running_generator", progress_msg: "开始生成 6 张 AI 精修图..." } }).title, "开始动笔画详情图啦", "总数未知时不编数字");
+  assert.equal(productDetailActivity({ state: "success", task: { status: "success" } }), null);
+  assert.equal(productDetailActivity({ state: "outcome_unknown", task: {} }), null, "结果不明要客户处理，不能一直显示还在干活");
+  assert.match(productDetailEvent({ title: "x" }, { state: "outcome_unknown" }).text, /不确定/, "结果不明不说成完成");
+  assert.equal(productDetailActivity({ state: "running_generator", task: { status: "running_generator", progress_msg: "只重做第 3 张，其余图片沿用", planned_count: 15, success_count: 15 } }).title, "正在重画这一张详情图", "单张重做不显示整套张数");
+  assert.equal(productDetailEvent({ title: "x" }, { state: "failed" }).mood, "error");
+  assert.equal(productDetailEvent(null, { state: "failed" }), null, "只有刚才还在做的任务才报失败，重启后不重复报");
+  assert.equal(pushedActivity("geo:update", { busy: "writing" }).title, "正在写 GEO 文章");
+  assert.equal(pushedActivity("geo:update", { busy: "" }), null);
+  assert.equal(pushedActivity("digital-human:viral-pipeline", { items: [{ status: "running", progress: 40, message: "生成本人口播" }] }).done, 40);
+  assert.equal(pushedActivity("digital-human:viral-progress", { stage: "done" }), null);
+  assert.equal(serviceActivity("x", [{ status: "completed" }, { status: "draft" }, { status: "preview_ready" }, { status: "some_future_wait" }]), null, "等客户确认的不算在干活");
+  assert.equal(pushedActivity("moments-publish:update", { status: "publishing" }).title, "正在发朋友圈");
+  assert.equal(pushedActivity("moments-publish:update", { status: "outcome_unknown" }), null, "结果不明不显示成还在发");
+  assert.equal(pushedActivity("moments-campaign:update", { status: "running", current_post: 3 }).detail, "第 3 条");
+  assert.equal(serviceActivity("正在做产品效果视频", [{ status: "generating", statusLabel: "生成镜头", progress: 30 }]).detail, "生成镜头");
+  for (const row of SPRITE_FEATURES) if (row.channel) assert.notEqual(pushedActivity(row.channel, {}), undefined, row.feature + " 登记了消息却没有处理");
+  const registered = new Set(SPRITE_FEATURES.map((row) => row.channel).filter(Boolean));
+  const sent = new Set(), computed = new Set();
+  for (const name of fs.readdirSync(__dirname)) {
+    if (!name.endsWith(".cjs") || name.includes("self_check")) continue;
+    const source = fs.readFileSync(path.join(__dirname, name), "utf8");
+    for (const match of source.matchAll(/(?:webContents|sender)\??\.send\(\s*['"`]([^'"`$]+)['"`]/g)) sent.add(match[1]);
+    if (/(?:webContents|sender)\??\.send\(\s*(?!['"`][^'"`$]+['"`])/.test(source)) computed.add(name);
+  }
+  // A channel name built at run time cannot be read here, so those files have to be looked at and listed by hand.
+  assert.deepEqual([...computed].filter((name) => !SPRITE_COMPUTED_SENDERS.has(name)), [], "这个文件用变量当进度消息名，请确认已接桌宠后加入 SPRITE_COMPUTED_SENDERS");
+  const unknown = [...sent].filter((channel) => !registered.has(channel) && !SPRITE_NOT_WORK.has(channel));
+  assert.deepEqual(unknown, [], "新的进度消息要在 sprite-activity.cjs 的 SPRITE_FEATURES 里登记，或说明不算干活（SPRITE_NOT_WORK）");
+  console.log("sprite feature registry self-check passed");
+  (async () => {
+    const calls = []; let report = { state: "running_planner", task: { status: "running_planner" } };
+    const feeds = createSpriteFeeds({ sprite: () => ({ setExternalActivity: (kind, activity) => calls.push([kind, activity]), say() {} }), productDetailStatus: async () => report, setTimer: () => 0, clearTimer() {} });
+    await feeds.pollDetailActivity();
+    assert.ok(calls.at(-1)[1], "在干活时显示进度");
+    report = null;
+    await feeds.pollDetailActivity();
+    assert.ok(calls.at(-1)[1], "偶尔读不到不清掉");
+    await feeds.pollDetailActivity(); await feeds.pollDetailActivity();
+    assert.equal(calls.at(-1)[1], null, "详情图服务一直读不到时，气泡不能停在旧进度上");
+  })();
+}

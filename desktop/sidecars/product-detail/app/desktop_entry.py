@@ -686,6 +686,22 @@ def _install_desktop_contract(
         busy = busy or ledger.get("state") in ("pending", "running", "submitting", "queued", "starting")
         return jsonify({"ok": True, "busy": bool(busy)})
 
+    def internal_refine_activity():
+        """Progress for the desktop mascot. Polled often, so it must never write the ledger or change a task."""
+        require_loopback()
+        if not _token_matches(contract.control_digest, request.headers.get("x-xiaoxi-control-token", "")):
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        with ledger_lock:
+            ledger = read_refine_ledger()
+        task_id = str(ledger.get("task_id") or "")
+        task = task_state(task_id) or {}
+        # The task's own status is the truth; the ledger only speaks for the moment before a task exists.
+        admitting = ledger.get("state") == "pending" and not task_id and time.time() - float(ledger.get("started_at") or 0) < 60
+        return jsonify({"ok": True, "state": str(task.get("status") or "") or ("pending" if admitting else ""), "task": {
+            key: task.get(key) for key in ("status", "progress_pct", "progress_msg", "planned_count", "success_count")
+        }})
+
+    flask_app.add_url_rule("/internal/refine-activity", endpoint="xiaoxi_internal_refine_activity", view_func=internal_refine_activity, methods=["GET"])
     flask_app.add_url_rule("/internal/update-state", endpoint="xiaoxi_internal_update_state", view_func=internal_update_state, methods=["POST"])
     csrf.exempt(internal_update_state)
 

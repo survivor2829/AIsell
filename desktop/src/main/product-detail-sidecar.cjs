@@ -656,6 +656,21 @@ function createProductDetailSidecar(options = {}) {
         req.setTimeout(5000, () => req.destroy(Error("update_state_timeout"))); req.on("error", reject); req.end(body);
       });
     },
+    // What the running detail task is doing, for the mascot. Null whenever it cannot be read.
+    async refineActivity() {
+      if (!currentRun || currentRun.closed || snapshot.state !== "ready") return null;
+      return new Promise((resolve) => {
+        const req = http.request(new URL("/internal/refine-activity", snapshot.origin), { method: "GET", headers: { "x-xiaoxi-control-token": currentRun.controlToken } }, (res) => {
+          let text = "";
+          res.on("data", (chunk) => { text += chunk; if (text.length > 16384) req.destroy(); });
+          res.on("end", () => { try { resolve(res.statusCode === 200 ? JSON.parse(text) : null); } catch { resolve(null); } });
+          res.on("close", () => resolve(null)); // A connection cut mid-reply never reaches "end".
+        });
+        req.setTimeout(3000, () => req.destroy());
+        req.on("error", () => resolve(null));
+        req.end();
+      });
+    },
     dispose,
     onUpdate,
     restart,

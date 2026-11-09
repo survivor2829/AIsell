@@ -4,7 +4,7 @@
 //
 // Low-end computers matter: the frame loop stops whenever nothing is moving, and quiet stretches are the norm.
 
-export type PetWork = "work" | "typing" | "error" | null;
+export type PetWork = "work" | "typing" | "drawing" | "error" | null;
 export type PetHooks = {
   walk: (dx: number) => Promise<{ moved?: number } | undefined>;
   stopWalk: () => void;
@@ -26,6 +26,7 @@ for (let i = 0; i < 70; i++) {
 }
 const CUP = `<g transform="translate(0 -96)"><path d="M-20 -62c-12-18 12-26 0-44M22 -62c-12-18 12-26 0-44" fill="none" stroke="#c9ced8" stroke-width="9" stroke-linecap="round"/><path class="ink thin" d="M66 -32c44-6 44 50-6 54" fill="none"/><path class="ink thin" d="M-68 -50H70C68 34 36 58 2 58C-34 58 -66 34 -68 -50Z" fill="#fff"/><ellipse cx="1" cy="-46" rx="60" ry="11" fill="#8a4a2e"/><ellipse class="ink thin" cx="0" cy="66" rx="104" ry="17" fill="#fff"/></g>`;
 const PHONE = `<g transform="translate(14 -120) rotate(8)"><rect class="ink thin" x="-50" y="-92" width="104" height="186" rx="20" fill="#34363d"/><rect x="-38" y="-78" width="80" height="150" rx="9" fill="#9fd8ff"/><path d="M-22 -44h48M-22 -20h48M-22 4h30" stroke="#fff" stroke-width="12" stroke-linecap="round"/></g>`;
+const BRUSH = `<g transform="translate(0 -30) rotate(28)"><rect class="ink thin" x="-11" y="-150" width="22" height="130" rx="9" fill="#b98250"/><path d="M-16 -150C-20 -190 -4 -214 0 -226C6 -212 20 -190 16 -150Z" fill="#f23a1e" stroke="#a51f0d" stroke-width="8" stroke-linejoin="round"/></g>`;
 const eyeBall = (x: number) => `<ellipse cx="${x}" cy="490" rx="176" ry="196" fill="#fff" stroke="#d3d3d9" stroke-width="9"/><ellipse cx="${x}" cy="490" rx="150" ry="170" fill="none" stroke="#c6c6cd" stroke-width="6"/>`;
 const pupil = (x: number, star = false) => `<ellipse cx="${x}" cy="500" rx="88" ry="118" fill="#3f1b18"/><ellipse cx="${x}" cy="546" rx="62" ry="50" fill="#74352a" opacity=".6"/>` + (star
   ? `<path d="M${x + 28} 400c6 34 14 42 48 48c-34 6-42 14-48 48c-6-34-14-42-48-48c34-6 42-14 48-48Z" fill="#fff"/><path d="M${x - 30} 530c3 15 7 19 22 22c-15 3-19 7-22 22c-3-15-7-19-22-22c15-3 19-7 22-22Z" fill="#fff"/>`
@@ -42,6 +43,7 @@ const ART = `<svg viewBox="-280 -110 1560 1360" data-mouth="smile" data-eye="nor
  <g id="torso"><path class="ink" fill="#e7e7ea" d="M300 800C232 900 216 1040 280 1120C340 1176 660 1176 720 1120C784 1040 768 900 700 800C630 850 370 850 300 800Z"/>
   <path class="gray" d="M372 880C430 906 570 906 628 880M372 880L330 980M628 880L670 980M330 980C396 1090 604 1090 670 980M500 898V940M420 1078L376 1140M580 1078L624 1140"/>
   <rect x="396" y="946" width="208" height="92" rx="16" fill="#e8251c"/><text x="500" y="1012" text-anchor="middle" font-size="62" font-weight="900" fill="#fff">玺联惠</text></g>
+ <g id="easel" class="off"><path class="ink thin" d="M860 1000L800 1215M1060 1000L1120 1215M960 980V1215" fill="none"/><rect class="ink thin" x="790" y="600" width="340" height="410" rx="14" fill="#fffdf8"/><path id="paint1" class="off" d="M830 670Q960 620 1090 680" fill="none" stroke="#f23a1e" stroke-width="30" stroke-linecap="round"/><path id="paint2" class="off" d="M840 790Q960 850 1080 770" fill="none" stroke="#ffc52e" stroke-width="30" stroke-linecap="round"/><path id="paint3" class="off" d="M850 910Q960 870 1075 925" fill="none" stroke="#4d7fd6" stroke-width="30" stroke-linecap="round"/></g>
  <g id="laptop" class="off"><path class="ink thin" d="M330 1000H670L690 1160H310Z" fill="#b9bdc8"/><rect class="ink thin" x="270" y="1148" width="460" height="42" rx="16" fill="#d5d8e0"/><circle cx="500" cy="1078" r="20" fill="#e8251c"/></g>
  <g id="head">
   <g id="tailG" class="off"><path d="M238 300C176 250 106 214 18 196C38 240 44 268 28 310C104 324 178 330 238 340Z" fill="#dc1f16"/><path d="M242 292C208 226 162 168 90 112C172 116 250 170 284 256Z" fill="#c7180f"/></g>
@@ -75,7 +77,7 @@ const ART = `<svg viewBox="-280 -110 1560 1360" data-mouth="smile" data-eye="nor
  </g>
  <path id="armL0" class="ink" fill="none" style="stroke-width:98"/><path id="armR0" class="ink" fill="none" style="stroke-width:98"/><path id="armL1" fill="none" stroke="#fff" stroke-width="68" stroke-linecap="round"/><path id="armR1" fill="none" stroke="#fff" stroke-width="68" stroke-linecap="round"/>
  <g id="handL">${hands("")}</g>
- <g id="handR">${hands(`<g data-prop="cup" class="off">${CUP}</g><g data-prop="phone" class="off">${PHONE}</g>`)}</g>
+ <g id="handR">${hands(`<g data-prop="cup" class="off">${CUP}</g><g data-prop="phone" class="off">${PHONE}</g><g data-prop="brush" class="off">${BRUSH}</g>`)}</g>
 </g>
 <g id="fxLayer"></g>
 </svg>`;
@@ -110,7 +112,7 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   host.innerHTML = ART;
   const svg = host.querySelector("svg") as SVGSVGElement;
   const el = (id: string) => svg.querySelector("#" + id) as SVGGraphicsElement;
-  const E = Object.fromEntries(["root", "head", "tuft", "face", "lookN", "lookS", "lookW", "lookR", "eyesN", "legL0", "legL1", "legR0", "legR1", "footL", "footR", "armL0", "armL1", "armR0", "armR1", "handL", "handR", "shadow", "fxLayer", "band", "shades", "sweat", "tailG", "laptop", "blushL", "blushR"].map((id) => [id, el(id)])) as Record<string, SVGGraphicsElement>;
+  const E = Object.fromEntries(["root", "head", "tuft", "face", "lookN", "lookS", "lookW", "lookR", "eyesN", "legL0", "legL1", "legR0", "legR1", "footL", "footR", "armL0", "armL1", "armR0", "armR1", "handL", "handR", "shadow", "fxLayer", "band", "shades", "sweat", "tailG", "laptop", "easel", "paint1", "paint2", "paint3", "blushL", "blushR"].map((id) => [id, el(id)])) as Record<string, SVGGraphicsElement>;
   const S: Values = { ...REST }, T: Values = { ...REST }, V = Object.fromEntries(KEYS.map((k) => [k, 0])) as Values;
 
   const airScale = (host.clientWidth || 160) / AIR_REFERENCE;
@@ -211,8 +213,8 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   const restPose = () => go({ Lx: 206, Ly: 1040, Lr: 0, Lb: -46, Rx: 794, Ry: 1040, Rr: 0, Rb: 46, by: 0, bx: 0, lean: 0, sx: 1, sy: 1, hr: 0, hx: 0, hy: 0, fLx: 410, fLy: 1190, fRx: 590, fRy: 1190, fLr: 0, fRr: 0, shade: 0, blush: .5, blink: 0, turn: 0 });
   function resetLook() {
     face("normal", "smile"); hand("L", "fist"); hand("R", "fist");
-    for (const key of ["band", "shades", "sweat", "tailG", "laptop"]) show(key, false);
-    prop("L", "pom", false); prop("R", "pom", false); prop("R", "cup", false); prop("R", "phone", false);
+    for (const key of ["band", "shades", "sweat", "tailG", "laptop", "easel", "paint1", "paint2", "paint3"]) show(key, false);
+    prop("L", "pom", false); prop("R", "pom", false); prop("R", "cup", false); prop("R", "phone", false); prop("R", "brush", false);
   }
 
   async function play(name: string, action: Action, followCursor: boolean) {
@@ -320,14 +322,28 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
         go({ Ly: 1106, Ry: 1106, ly: 8, hy: 4 }); await w(rnd(7000, 11000));
       }
     },
+    async drawingLoop(w) {
+      show("easel", true); prop("R", "brush", true); track = false; face("normal", "smile");
+      go({ turn: .6, hr: 5, lx: 42, ly: 8, Rb: 110 });
+      for (;;) {
+        for (let stroke = 1; stroke <= 3; stroke++) {
+          const y = 560 + stroke * 110;
+          for (let i = 0; i < 8; i++) { go({ Rx: 880 + (i % 2) * 150, Ry: y + (i % 2) * 18, Rr: i % 2 ? 12 : -10, hr: 4 + (i % 2) * 2 }); await w(190); }
+          show("paint" + stroke, true);
+        }
+        face("happy", "smile"); go({ Rx: 840, Ry: 960, Rr: 0, hr: 3 }); fx(STAR, 1000, 560, 20); await w(rnd(6000, 9500));
+        for (let stroke = 1; stroke <= 3; stroke++) show("paint" + stroke, false);
+        face("normal", "smile");
+      }
+    },
     async errorLoop(w) {
       face("worry", "wave"); show("sweat", true); go({ Lx: 240, Ly: 770, Lr: 14, Lb: -110, Rx: 760, Ry: 770, Rr: -14, Rb: 110, sx: .98, hr: -2 });
       for (;;) { for (let i = 0; i < 16; i++) { go({ bx: (i % 2 ? 1 : -1) * 7, hr: i % 2 ? 2 : -2 }); await w(120); } go({ bx: 0, hr: -2 }); await w(rnd(6000, 9000)); }
     }
   };
-  const act = (name: string) => { asleep = name === "sleepy"; fps = ["sleepy", "workLoop", "typingLoop", "errorLoop"].includes(name) ? 30 : 60; return play(name, A[name], hoverFollow.has(name)); };
+  const act = (name: string) => { asleep = name === "sleepy"; fps = ["sleepy", "workLoop", "typingLoop", "drawingLoop", "errorLoop"].includes(name) ? 30 : 60; return play(name, A[name], hoverFollow.has(name)); };
 
-  function startWork() { act(work === "typing" ? "typingLoop" : work === "error" ? "errorLoop" : "workLoop"); }
+  function startWork() { act(work === "typing" ? "typingLoop" : work === "drawing" ? "drawingLoop" : work === "error" ? "errorLoop" : "workLoop"); }
   function scheduleIdle() {
     window.clearTimeout(idleTimer);
     idleTimer = window.setTimeout(() => {

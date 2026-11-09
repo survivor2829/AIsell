@@ -29,7 +29,8 @@ function registerWechatWorkflowIpc(options) {
       },
       tasks: state.tasks.map((task) => task.id === current?.id && moments ? { ...task, progress: moments } : task),
       momentsProgress: moments || null,
-      external: [...external.values()]
+      // A moments job the workflow is running already shows as the workflow's own task.
+      external: [...external.values()].filter((item) => !(state.currentTaskId && item.kind === { publish: "moments-publish", interact: "moments-campaign" }[current?.type]))
     };
   }
   const broadcast = (state) => {
@@ -249,7 +250,9 @@ function registerWechatWorkflowIpc(options) {
   // Every feature reports what it is doing here, so 小玺 shows it (user decision 2026-10-30).
   function setExternalActivity(kind, activity) {
     if (disposed) return;
-    if (activity) external.set(kind, { kind, ...activity }); else external.delete(kind);
+    const before = JSON.stringify(external.get(kind) ?? null), next = activity ? { kind, ...activity } : null;
+    if (before === JSON.stringify(next)) return; // Polled every few seconds; only real changes reach the windows.
+    if (next) external.set(kind, next); else external.delete(kind);
     broadcast(controller.status());
   }
   // One thing 小玺 says once: a finished video, a failed job.

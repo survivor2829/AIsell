@@ -13,6 +13,9 @@ const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwn
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const productBrand = require("../../product-brand.json");
 const PROCESS_QUERY_TIMEOUT_MS = 60000;
+const UPDATE_WINDOW_WORDS = { waiting: ["等软件歇一下，我就开始", null], verifying: ["我在检查新本领", "每个文件都要完好无损，才放心给你用"], backup: ["先把你的资料收好", "配置、授权和业务记录都留着，一样不丢"],
+  installing: ["正在换上新本领", "请不要关机，很快就好"], starting: ["快好啦，我去叫醒软件", "马上回来见你"] };
+
 async function processSnapshot() {
   let result;
   try { result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
@@ -337,7 +340,7 @@ async function runHelper({ jobFile, userData }) {
   await app.whenReady();
   const window = new BrowserWindow({ width: 640, height: 340, resizable: false, autoHideMenuBar: true, title: `${productBrand.displayName} · 软件更新`,
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: "xiaoxi-update-helper" } });
-  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e83458}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy" max="100"></progress></html>`));
+  await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{display:block;width:100%;height:18px;margin-top:20px;accent-color:#e83458}.hero{display:flex;align-items:center;gap:18px;margin-top:6px}.hero h1{margin:0 0 4px}.hero p{margin:0}#pet{flex:none;overflow:visible}#pet .b{transform-origin:100px 180px;animation:b 1.1s ease-in-out infinite alternate}#pet .t{transform-origin:100px 34px;animation:t 1.6s ease-in-out infinite}#pet .e{transform-origin:100px 96px;animation:e 4.2s linear infinite}@keyframes b{from{transform:translateY(0) scale(1.02,.98)}to{transform:translateY(-8px) scale(.98,1.02)}}@keyframes t{0%,100%{transform:rotate(-5deg)}50%{transform:rotate(7deg)}}@keyframes e{0%,94%,100%{transform:scaleY(1)}97%{transform:scaleY(.08)}}</style><small>${productBrand.displayName}　${job.currentVersion} → ${job.targetVersion}</small><div class="hero"><svg id="pet" viewBox="0 0 200 200" width="104" height="104"><g class="b"><path class="t" d="M72 34C70 14 92 2 122 -6C112 8 128 18 130 34C110 24 90 24 72 34Z" fill="#f03a1f"/><path d="M100 26C150 26 186 54 186 96C186 140 146 166 100 166C54 166 14 140 14 96C14 54 50 26 100 26Z" fill="#fff" stroke="#2e2a2c" stroke-width="5"/><ellipse cx="58" cy="92" rx="36" ry="40" fill="#fff" stroke="#c6c6cd" stroke-width="3"/><ellipse cx="142" cy="92" rx="36" ry="40" fill="#fff" stroke="#c6c6cd" stroke-width="3"/><g class="e"><ellipse cx="66" cy="96" rx="20" ry="26" fill="#3f1b18"/><ellipse cx="134" cy="96" rx="20" ry="26" fill="#3f1b18"/><circle cx="73" cy="83" r="7" fill="#fff"/><circle cx="141" cy="83" r="7" fill="#fff"/></g><path d="M80 134Q100 150 120 134" fill="none" stroke="#2e2a2c" stroke-width="5" stroke-linecap="round"/><ellipse cx="44" cy="132" rx="11" ry="5" fill="#ffb1bb"/><ellipse cx="156" cy="132" rx="11" ry="5" fill="#ffb1bb"/></g></svg><div><h1 id="title">我准备换上新本领啦</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p></div></div><progress id="busy" max="100"></progress></html>`));
   let finished = false, currentPhase = "ready";
   const timings = [];
   let measuredPhase = "ready", phaseStarted = performance.now();
@@ -354,7 +357,10 @@ async function runHelper({ jobFile, userData }) {
       persistenceError = error;
       detail += `\n更新记录未能保存（${updateFailure(error, currentPhase).code}），请保留此窗口的错误信息。`;
     }
-    if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(title)};document.getElementById('detail').textContent=${JSON.stringify(detail)};document.getElementById('busy').hidden=${JSON.stringify(phase === "error")};${phase === "complete" ? "document.getElementById('busy').value=100;document.getElementById('detail').textContent+=' 更新完成 100%。';" : "document.getElementById('busy').removeAttribute('value');"}`).catch(() => {});
+    // Only what the window says is warmer; the status file above, errors and any rollback keep the exact wording.
+    const warm = !persistenceError && !/恢复|回退|结束新版/.test(title + detail) ? UPDATE_WINDOW_WORDS[phase] : null;
+    const shown = warm ? [warm[0], warm[1] ?? detail] : [title, detail];
+    if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(shown[0])};document.getElementById('detail').textContent=${JSON.stringify(shown[1])};document.getElementById('busy').hidden=${JSON.stringify(phase === "error")};${phase === "complete" ? "document.getElementById('busy').value=100;document.getElementById('detail').textContent+=' 更新完成 100%。';" : "document.getElementById('busy').removeAttribute('value');"}`).catch(() => {});
     if (persistenceError && phase !== "error") throw persistenceError;
   };
   const activeJobFile = path.join(paths.directory, "active-job.json");
