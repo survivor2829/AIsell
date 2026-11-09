@@ -790,6 +790,18 @@ function createPreloadApis(ipcRenderer) {
       spriteInteractive: (interactive) => ipcRenderer.send("wechat-workflow:sprite-interactive", interactive === true),
       spriteDragStart: () => ipcRenderer.send("wechat-workflow:sprite-drag-start"),
       spriteDragEnd: () => ipcRenderer.invoke("wechat-workflow:sprite-drag-end"),
+      spriteWalk: (dx) => ipcRenderer.invoke("wechat-workflow:sprite-walk", Number(dx)),
+      spriteWalkStop: () => ipcRenderer.send("wechat-workflow:sprite-walk-stop"),
+      onSpriteCursor: (callback) => {
+        const handler = (_event, point) => callback(point);
+        ipcRenderer.on("wechat-workflow:sprite-cursor", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:sprite-cursor", handler);
+      },
+      onSpriteDrag: (callback) => {
+        const handler = (_event, speed) => callback(speed);
+        ipcRenderer.on("wechat-workflow:sprite-drag", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:sprite-drag", handler);
+      },
       onSpriteSay: (callback) => {
         const handler = (_event, line) => callback(line);
         ipcRenderer.on("wechat-workflow:sprite-say", handler);

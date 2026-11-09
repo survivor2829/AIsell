@@ -1,7 +1,7 @@
-/* 小玺 (user decisions 2026-10-30): a transparent window, 小玺 at its right, the comic bubble to its left. */
+/* The mascot (user decisions 2026-11-08): a transparent window, the pet at its right, the comic bubble to its left. */
 html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root { background: transparent; overflow: hidden; }
-.floating-shell.xiaoxi-shell { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 0; padding: 10px 14px 10px 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
-.xiaoxi-roam { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 12px; width: 100%; transition: transform 1.8s ease-in-out; }
+.floating-shell.xiaoxi-shell { display: flex; flex-direction: row; align-items: flex-end; justify-content: flex-end; gap: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+.xiaoxi-roam { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 12px; width: 100%; }
 
 /* the comic bubble with its tail pointing at 小玺 */
 .xiaoxi-bubble { position: relative; display: flex; flex-direction: column; gap: 4px; max-width: 228px; padding: 10px 13px; border: 2.5px solid #1d2230; border-radius: 16px;
@@ -26,38 +26,31 @@ html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root 
 @keyframes xiaoxi-caret { 50% { opacity: 0 } }
 .xiaoxi-link { align-self: flex-start; padding: 0; border: 0; background: none; color: #e60012; font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 
-/* 小玺 */
-.xiaoxi-buddy { flex: 0 0 auto; width: 92px; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
+/* the pet: traced from the company stickers; the parts are moved by MascotPet */
+.xiaoxi-buddy { flex: 0 0 auto; align-self: flex-end; width: 160px; margin: 0 -14px 0 -16px; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; pointer-events: none; }
 .xiaoxi-buddy:active { cursor: grabbing; }
-.xiaoxi-buddy:focus-visible { outline: 2px solid #5ee6ff; outline-offset: 2px; border-radius: 16px; }
-.xiaoxi-buddy svg { display: block; width: 100%; height: auto; overflow: visible; }
-.xiaoxi-buddy .xs-body { animation: xs-breathe 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
-.xiaoxi-buddy .xs-head { transition: transform .45s cubic-bezier(.3, 1.4, .5, 1); transform-box: fill-box; transform-origin: 50% 90%; }
-.xiaoxi-buddy .xs-tuft { animation: xs-wiggle 2.6s ease-in-out infinite; transform-box: fill-box; transform-origin: 30% 100%; }
-.xiaoxi-buddy .xs-shadow { animation: xs-shadow 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-.xiaoxi-buddy .xs-lid { transform-box: fill-box; transform-origin: center; transition: transform .07s; }
-.xiaoxi-buddy .xs-arm { transform-box: fill-box; transition: transform .35s cubic-bezier(.3, 1.5, .5, 1); }
-.xiaoxi-buddy .xs-arm.l { transform-origin: 100% 10%; } .xiaoxi-buddy .xs-arm.r { transform-origin: 0% 10%; }
-.xiaoxi-buddy .xs-led { animation: xs-glow 1.6s ease-in-out infinite; }
-@keyframes xs-breathe { 0%, 100% { transform: translateY(0) scale(1, 1) } 50% { transform: translateY(-3px) scale(1.01, .99) } }
-@keyframes xs-wiggle { 0%, 100% { transform: rotate(0) } 20% { transform: rotate(-12deg) } 40% { transform: rotate(6deg) } 55% { transform: rotate(0) } }
-@keyframes xs-shadow { 0%, 100% { transform: scaleX(1); opacity: .25 } 50% { transform: scaleX(.88); opacity: .16 } }
-@keyframes xs-glow { 0%, 100% { opacity: .5 } 50% { opacity: 1 } }
-.xiaoxi-buddy[data-mood="work"] .xs-arm.l { animation: xs-typeL .5s ease-in-out infinite; }
-.xiaoxi-buddy[data-mood="work"] .xs-arm.r { animation: xs-typeR .5s ease-in-out infinite; }
-@keyframes xs-typeL { 0%, 100% { transform: rotate(-8deg) } 50% { transform: rotate(6deg) } }
-@keyframes xs-typeR { 0%, 100% { transform: rotate(6deg) } 50% { transform: rotate(-8deg) } }
-.xiaoxi-buddy[data-mood="hello"] .xs-arm.r { animation: xs-wave .45s ease-in-out 5 alternate; }
-@keyframes xs-wave { from { transform: rotate(-150deg) } to { transform: rotate(-110deg) } }
-.xiaoxi-buddy[data-mood="done"] .xs-arm.l { transform: rotate(75deg); } .xiaoxi-buddy[data-mood="done"] .xs-arm.r { transform: rotate(-75deg); }
-.xiaoxi-buddy[data-mood="done"] .xs-body { animation: xs-hop .9s ease-in-out infinite; }
-@keyframes xs-hop { 0%, 100% { transform: translateY(0) scale(1, 1) } 30% { transform: translateY(-12px) scale(.97, 1.03) } 55% { transform: translateY(0) scale(1.05, .95) } }
-.xiaoxi-buddy[data-mood="error"] .xs-arm.l { transform: rotate(18deg); } .xiaoxi-buddy[data-mood="error"] .xs-arm.r { transform: rotate(-18deg); }
-.xiaoxi-buddy[data-mood="error"] .xs-drop { animation: xs-drip 1.6s ease-in infinite; }
-@keyframes xs-drip { 0%, 30% { transform: translateY(0); opacity: 0 } 45% { opacity: 1 } 100% { transform: translateY(10px); opacity: 0 } }
-.xiaoxi-buddy[data-mood="sleep"] .xs-body { animation: xs-breathe 5s ease-in-out infinite; }
-.xiaoxi-buddy[data-mood="sleep"] .xs-arm.l { transform: rotate(10deg); } .xiaoxi-buddy[data-mood="sleep"] .xs-arm.r { transform: rotate(-10deg); }
-.xiaoxi-buddy .xs-zz { animation: xs-zz 2.4s ease-out infinite; } .xiaoxi-buddy .xs-zz.b { animation-delay: 1.2s; }
-@keyframes xs-zz { 0% { transform: translate(0, 0); opacity: 0 } 30% { opacity: 1 } 100% { transform: translate(12px, -22px); opacity: 0 } }
-.xiaoxi-shell.is-resting * { animation-play-state: paused !important; }
+.xiaoxi-buddy:focus-visible { outline: 2px solid #e60012; outline-offset: 2px; border-radius: 16px; }
+.xiaoxi-pet { width: 100%; will-change: transform; }
+.xiaoxi-pet svg { display: block; width: 100%; height: auto; overflow: visible; pointer-events: none; }
+.xiaoxi-pet #root, .xiaoxi-pet #root * { pointer-events: visiblePainted; }
+.xiaoxi-pet .off, .xiaoxi-pet .off * { pointer-events: none !important; }
+.xiaoxi-pet .off { opacity: 0; }
+.xiaoxi-pet .ink { stroke: #2e2a2c; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }
+.xiaoxi-pet .ink.thin { stroke-width: 12; }
+.xiaoxi-pet .red { fill: #f23a1e; stroke: #a51f0d; stroke-width: 9; stroke-linejoin: round; stroke-linecap: round; }
+.xiaoxi-pet .cr { fill: none; stroke: #a51f0d; stroke-width: 7; stroke-linecap: round; }
+.xiaoxi-pet .gray { fill: none; stroke: #bfbfc5; stroke-width: 8; stroke-linecap: round; stroke-linejoin: round; }
+.xiaoxi-pet .gray.wide { stroke-width: 9; }
+.xiaoxi-pet .dk { fill: none; stroke: #2e2a2c; stroke-width: 13; stroke-linecap: round; stroke-linejoin: round; }
+.xiaoxi-pet .dk.bold { stroke-width: 17; }
+.xiaoxi-pet .dk.slim { stroke-width: 10; }
+.xiaoxi-pet text { font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif; }
+.xiaoxi-pet svg:not([data-mouth=smile]) [data-m=smile], .xiaoxi-pet svg:not([data-mouth=open]) [data-m=open], .xiaoxi-pet svg:not([data-mouth=big]) [data-m=big], .xiaoxi-pet svg:not([data-mouth=o]) [data-m=o], .xiaoxi-pet svg:not([data-mouth=wave]) [data-m=wave], .xiaoxi-pet svg:not([data-mouth=pout]) [data-m=pout], .xiaoxi-pet svg:not([data-mouth=smirk]) [data-m=smirk],
+.xiaoxi-pet svg:not([data-eye=normal]) [data-e=normal], .xiaoxi-pet svg:not([data-eye=star]) [data-e=star], .xiaoxi-pet svg:not([data-eye=happy]) [data-e=happy], .xiaoxi-pet svg:not([data-eye=squeeze]) [data-e=squeeze], .xiaoxi-pet svg:not([data-eye=closed]) [data-e=closed], .xiaoxi-pet svg:not([data-eye=worry]) [data-e=worry], .xiaoxi-pet svg:not([data-eye=dizzy]) [data-e=dizzy], .xiaoxi-pet svg:not([data-eye=wide]) [data-e=wide] { display: none; }
+.xiaoxi-pet .spin { transform-box: fill-box; transform-origin: center; animation: xiaoxi-spin .8s linear infinite; }
+.xiaoxi-pet .fx { animation: xiaoxi-fx 1.2s ease-out forwards; transform-box: fill-box; transform-origin: center; }
+.xiaoxi-pet .cf { animation: xiaoxi-cf 1.5s cubic-bezier(.2, .7, .5, 1) forwards; transform-box: fill-box; transform-origin: center; }
+@keyframes xiaoxi-spin { to { transform: rotate(360deg) } }
+@keyframes xiaoxi-fx { 0% { opacity: 0; transform: translateY(20px) scale(.4) } 20% { opacity: 1; transform: translateY(-10px) scale(1.15) } 100% { opacity: 0; transform: translate(var(--dx, 0), -190px) scale(1) } }
+@keyframes xiaoxi-cf { 0% { opacity: 1; transform: translate(0, 0) rotate(0) } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--r)) } }
 @media (prefers-reduced-motion: reduce) { .xiaoxi-shell *, .xiaoxi-shell *::before { animation: none !important; transition: none !important; } }
