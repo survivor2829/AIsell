@@ -1063,7 +1063,10 @@ async function checkFloatingProgress() {
     isDestroyed() { return this.destroyed; }
     isVisible() { return this.visible; }
     setMenu() {}
-    setPosition(x, y) { this.position = [x, y]; }
+    setPosition(x, y) { this.position = [x, y]; this.movedWithoutSize = true; }
+    setBounds({ x, y, width, height }) { this.position = [x, y]; this.sizes = [...(this.sizes || []), [width, height]]; }
+    getSize() { return this.size || [this.settings.width, this.settings.height]; }
+    setSize(width, height) { this.size = [width, height]; }
     getPosition() { return this.position || [this.settings.x, this.settings.y]; }
     setIgnoreMouseEvents(ignore) { this.ignoringMouse = ignore; }
     setAlwaysOnTop(on, level) { this.topLevel = on ? level || "floating" : null; }
@@ -1162,7 +1165,7 @@ async function checkFloatingProgress() {
   Object.assign(cursor, { x: 1500, y: 540 });
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.ok(sprite.sent.some(([channel]) => channel === "wechat-workflow:sprite-drag"), "the pet is told how it is being swung");
-  sprite.setPosition(1920 - 400 - 6 - 300, 820 - 180);
+  sprite.position = [1920 - 400 - 6 - 300, 820 - 180];
   await new Promise((resolve) => setTimeout(resolve, 150));
   const dropped = await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
   assert.equal(dropped.moved, true);
@@ -1173,7 +1176,7 @@ async function checkFloatingProgress() {
   listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
   Object.assign(cursor, { x: 1300, y: 200 });
   await new Promise((resolve) => setTimeout(resolve, 40));
-  sprite.setPosition(1000, 100);
+  sprite.position = [1000, 100];
   const falling = handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
   await new Promise((resolve) => setTimeout(resolve, 40));
   listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
@@ -1194,6 +1197,11 @@ async function checkFloatingProgress() {
   screenEvents.get("display-metrics-changed")();
   assert.equal(sprite.getPosition()[1], 1032 - 260, "with a visible taskbar it stands right on it");
   delete screenDisplay.bounds; screenDisplay.workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  // Customer PC 2026-11-09: on a scaled screen a bare move let Windows grow the window, so 小玺 sank lower on every drop.
+  assert.equal(sprite.movedWithoutSize, undefined, "every move of 小玺 also fixes its size");
+  assert.ok(sprite.sizes.length > 3 && sprite.sizes.every(([w, h]) => w === 400 && h === 260));
+  sprite.size = [400, 311]; sprite.emit("resize");
+  assert.deepEqual(sprite.size, [400, 260], "a size Windows changed on its own is put back");
   const hidesBefore = mainHideCount;
   await control.showSprite();
   assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");

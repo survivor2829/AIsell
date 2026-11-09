@@ -65,6 +65,13 @@ function registerWechatWorkflowIpc(options) {
       // The transparent parts let clicks through; 小玺 and its bubble take them while the pointer is on them.
       target.setIgnoreMouseEvents?.(true, { forward: true });
       target.on("maximize", () => target.unmaximize());
+      // Windows can still resize it without a move of ours (a scaling change, crossing to a screen with another
+      // scale): put the size straight back, or 小玺 drawn at the bottom ends up off screen.
+      target.on("resize", () => {
+        if (target.isDestroyed()) return;
+        const [width, height] = target.getSize();
+        if (width !== SPRITE_WINDOW.width || height !== SPRITE_WINDOW.height) target.setSize(SPRITE_WINDOW.width, SPRITE_WINDOW.height);
+      });
       target.on("enter-full-screen", () => target.setFullScreen(false));
       target.setMenu(null);
       target.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -269,6 +276,12 @@ function registerWechatWorkflowIpc(options) {
   function readSpritePlace() {
     try { return options.spritePlaceFile ? JSON.parse(fs.readFileSync(options.spritePlaceFile, "utf8")) : null; } catch { return null; }
   }
+  // Every move also states the size. On a scaled screen (125%, 150%) Windows rounds a moved window bigger each
+  // time, so after a few drops the window had grown and 小玺, drawn at its bottom, sank below the screen
+  // (customer PC 2026-11-09; reproduced at 125%: 260 -> 311 -> 359 -> 405 px tall).
+  function placeSprite(x, y) {
+    floatingWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height });
+  }
   const spriteDisplay = (x, y) => screen.getDisplayNearestPoint?.({ x: Math.round(x + SPRITE_WINDOW.width / 2), y: Math.round(y) }) || screen.getPrimaryDisplay();
   const saveSpritePlace = (x) => {
     if (!options.spritePlaceFile) return;
@@ -300,8 +313,8 @@ function registerWechatWorkflowIpc(options) {
   ipcMain.handle?.("wechat-workflow:sprite-walk", (event, dx) => {
     if (!fromSprite(event) || spriteDrag || active() || !Number.isFinite(dx)) return { moved: 0 };
     stopSpriteWalk();
-    const [startX, y] = floatingWindow.getPosition();
-    const range = spriteWalkRange(spriteDisplay(startX, y).workArea, startX), goal = Math.min(range.max, Math.max(range.min, startX + Math.max(-300, Math.min(300, dx))));
+    const [startX, startY] = floatingWindow.getPosition(), display = spriteDisplay(startX, startY), y = spriteGround(display);
+    const range = spriteWalkRange(display.workArea, startX), goal = Math.min(range.max, Math.max(range.min, startX + Math.max(-300, Math.min(300, dx))));
     if (Math.abs(goal - startX) < 4) return { moved: 0 };
     return new Promise((resolve) => {
       const direction = Math.sign(goal - startX), started = Date.now(), walk = { moved: 0, resolve, timer: null };
@@ -309,7 +322,7 @@ function registerWechatWorkflowIpc(options) {
       walk.timer = setInterval(() => {
         if (!floatingWindow || floatingWindow.isDestroyed() || active()) { stopSpriteWalk(); return; }
         const x = startX + direction * Math.min(Math.abs(goal - startX), (Date.now() - started) * .06);
-        floatingWindow.setPosition(Math.round(x), y);
+        placeSprite(Math.round(x), y);
         walk.moved = Math.abs(x - startX);
         if (walk.moved >= Math.abs(goal - startX)) stopSpriteWalk();
       }, 33);
@@ -321,7 +334,7 @@ function registerWechatWorkflowIpc(options) {
     stopSpriteWalk();
     const [x, y] = floatingWindow.getPosition(), display = spriteDisplay(x, y), area = display.workArea;
     const right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;
-    floatingWindow.setPosition(Math.round(Math.min(right, Math.max(area.x, x))), spriteGround(display));
+    placeSprite(Math.round(Math.min(right, Math.max(area.x, x))), spriteGround(display));
   }
   for (const event of ["display-metrics-changed", "display-removed"]) screen.on?.(event, regroundSprite);
   ipcMain.on?.("wechat-workflow:sprite-walk-stop", (event) => { if (fromSprite(event)) stopSpriteWalk(); });
@@ -346,7 +359,7 @@ function registerWechatWorkflowIpc(options) {
       const point = screen.getCursorScreenPoint();
       if (!drag.moved && Math.hypot(point.x - drag.from.x, point.y - drag.from.y) < 4) return;
       drag.moved = true;
-      floatingWindow.setPosition(Math.round(point.x - drag.dx), Math.round(point.y - drag.dy));
+      placeSprite(Math.round(point.x - drag.dx), Math.round(point.y - drag.dy));
       const now = Date.now(), elapsed = Math.max(1, now - drag.lastAt);
       drag.vx = drag.vx * .6 + (point.x - drag.last.x) / elapsed * 400; drag.vy = drag.vy * .6 + (point.y - drag.last.y) / elapsed * 400;
       drag.last = point; drag.lastAt = now;
@@ -368,7 +381,7 @@ function registerWechatWorkflowIpc(options) {
       const started = last;
       const finish = (impact) => {
         clearInterval(timer); spriteFall = null;
-        if (floatingWindow && !floatingWindow.isDestroyed()) { floatingWindow.setPosition(Math.round(x), ground); saveSpritePlace(x); }
+        if (floatingWindow && !floatingWindow.isDestroyed()) { placeSprite(Math.round(x), ground); saveSpritePlace(x); }
         resolve({ moved: true, impact: Math.round(Math.max(0, impact)) });
       };
       const timer = setInterval(() => {
@@ -377,7 +390,7 @@ function registerWechatWorkflowIpc(options) {
         vy += 2400 * dt; y += vy * dt; x += vx * dt;
         if (x < left || x > right) { x = Math.min(right, Math.max(left, x)); vx = -vx * .55; }
         if (y >= ground || now - started > 3000) { finish(vy); return; }
-        floatingWindow.setPosition(Math.round(x), Math.round(Math.max(area.y - 40, y)));
+        placeSprite(Math.round(x), Math.round(Math.max(area.y - 40, y)));
       }, 16);
       spriteFall = { timer, resolve };
     });
