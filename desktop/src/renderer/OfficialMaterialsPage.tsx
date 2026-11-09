@@ -4,6 +4,10 @@ import { appearanceStyle, portraitAsset, type RoleAppearance, type RolePreferenc
 import type { OfficialCatalog, OfficialMaterial, SearchUpdate } from "./official-materials-types";
 import "./OfficialMaterialsPage.css";
 
+// 9 大场景（用户 2026-11-09）。早期的「机器人」「保洁作业」不是场景，素材仍在「全部」里，不再单独成类。
+const RETIRED_CATEGORIES = new Set(["robot", "cleaning"]);
+const SCENE_INCLUDES: Record<string, string> = { factory: "工厂、仓储物流", facilities: "卫生间、地下车库、食堂茶水间" };
+
 export function OfficialMaterialsPage({ onUseMaterial, preference, appearance, onPersonalize }: {
   onUseMaterial: (ids: string[]) => void;
   preference: RolePreference;
@@ -105,9 +109,11 @@ export function OfficialMaterialsPage({ onUseMaterial, preference, appearance, o
   const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const items = (catalog?.items || []).filter((item) => (!category || item.category === category) && (!words.length || words.some((word) => `${item.title} ${item.description}`.toLocaleLowerCase().includes(word))));
   const results = search?.items || [];
+  const scenes = (catalog?.categories || []).filter((item) => !RETIRED_CATEGORIES.has(item.id));
+  const sceneLabel = scenes.find((item) => item.id === category);
   return <section className="page official-materials-page" style={appearanceStyle(appearance, true)}>
     <header className="official-materials-head">
-      <div><h1>物保素材库</h1><p>做视频缺画面？从行业图片与视频中选用。您自己的素材请在线索视频混剪中管理。</p></div>
+      <div><h1>场景素材库</h1><p>做视频缺画面？从行业图片与视频中选用。您自己的素材请在线索视频混剪中管理。</p></div>
       <div className="official-materials-head-actions">
         <button type="button" className="secondary-button" onClick={() => window.dispatchEvent(new CustomEvent("xiaoxi:open-tutorials", { detail: { category: "materials" } }))}><PlayCircle size={18} />看操作演示</button>
         <button type="button" className="secondary-button" disabled={loading} onClick={() => void refresh(true)}><RefreshCw size={16} />{loading ? "正在读取" : "刷新素材"}</button>
@@ -127,13 +133,15 @@ export function OfficialMaterialsPage({ onUseMaterial, preference, appearance, o
       </div>
     </div>
     {notice && <p className="touch-notice" role="status">{notice}</p>}
-    <div className="official-materials-toolbar"><div className="official-material-categories" aria-label="素材分类"><button aria-pressed={!category} onClick={() => { setCategory(""); setVisible(24); }}>全部</button>{catalog?.categories.map((item) => <button key={item.id} aria-pressed={category === item.id} onClick={() => { setCategory(item.id); setVisible(24); }}>{item.label}</button>)}</div><input aria-label="搜索仓库素材" placeholder="搜索仓库素材" value={query} onChange={(event) => { setQuery(event.target.value); setVisible(24); }} /></div>
+    <div className="official-materials-toolbar"><div className="official-material-categories" aria-label="素材分类"><button aria-pressed={!category} onClick={() => { setCategory(""); setVisible(24); }}>全部</button>{scenes.map((item) => <button key={item.id} aria-pressed={category === item.id} onClick={() => { setCategory(item.id); setVisible(24); }}>{item.label}</button>)}</div><input aria-label="搜索仓库素材" placeholder="搜索仓库素材" value={query} onChange={(event) => { setQuery(event.target.value); setVisible(24); }} /></div>
     <h2 className="official-section-title">{searchedPrompt ? "仓库中的素材" : "行业素材"}<small>{items.length} 项</small></h2>
+    {category && SCENE_INCLUDES[category] && <p className="official-scene-includes">包含：{SCENE_INCLUDES[category]}</p>}
+    {!loading && !items.length && category && !words.length && <p className="official-scene-empty">「{sceneLabel?.label}」场景的素材正在整理中，很快就会上架。</p>}
     <div className="official-material-grid">{items.slice(0, visible).map((item) => <article className="official-material" key={item.id}>
       <button className="official-material-cover" onClick={() => void showPreview(item)} aria-label={`预览${item.title}`}><img loading="lazy" src={item.thumbnailUrl} alt="" /><span>{item.kind === "video" ? "视频" : "图片"}</span></button>
       <div className="official-material-copy"><h3>{item.title}</h3><p>{item.description}</p><small>{item.license} · {item.author}</small><div><button className="primary-button" disabled={Boolean(importing)} onClick={() => void useMaterial(item.id)}>{importing === item.id ? "正在准备素材…" : "用于线索视频混剪"}</button><button className="official-source-link" onClick={() => void openSource(item.sourceUrl)}>来源<ExternalLink size={13} /></button></div></div>
     </article>)}</div>
-    {!loading && !items.length && <p className="official-materials-empty">{query || category ? "没有找到匹配素材，换个关键词或分类试试。" : "素材暂未加载，请点击刷新重试。"}</p>}
+    {!loading && !items.length && !(category && !words.length) && <p className="official-materials-empty">{query || category ? "没有找到匹配素材，换个关键词或分类试试。" : "素材暂未加载，请点击刷新重试。"}</p>}
     {items.length > visible && <button className="secondary-button" onClick={() => setVisible((value) => value + 24)}>显示更多素材</button>}
     {results.length > 0 && <section className="official-reference-results"><h2>查找到的相关内容</h2><p>参考网页可在原网站查看，使用前请确认素材的使用条件。</p>{results.map((item) => <article key={item.id}>{item.thumbnailUrl && <img loading="lazy" src={item.thumbnailUrl} alt="" />}<div><h3>{item.title}</h3><p>{item.description}</p><small>{item.source} · {item.usage === "usable" && item.materialId ? "可用于制作" : "参考链接"}</small></div>{item.usage === "usable" && item.materialId ? <button className="primary-button" disabled={Boolean(importing)} onClick={() => void useMaterial(item.materialId!)}>用于线索视频混剪</button> : <button className="secondary-button" onClick={() => void openSource(item.url)}>去原网站查看<ExternalLink size={14} /></button>}</article>)}</section>}
     {preview && <div className="official-preview-backdrop" onClick={() => setPreview(null)}><section className="official-preview" role="dialog" aria-modal="true" aria-label={preview.title} onClick={(event) => event.stopPropagation()}><header><h2>{preview.title}</h2><button autoFocus className="secondary-button" onClick={() => setPreview(null)} aria-label="关闭预览"><X size={20} /></button></header>{preparingPreview ? <p role="status">正在准备预览…</p> : previewError ? <p role="alert">暂时无法预览，可刷新素材后重试。</p> : preview.kind === "video" ? <video controls preload="metadata" src={preview.previewUrl || preview.thumbnailUrl} onError={() => setPreviewError(true)} /> : <img src={preview.previewUrl || preview.thumbnailUrl} alt={preview.title} onError={() => setPreviewError(true)} />}<p>{preview.description}</p><small>作者：{preview.author} · 使用条件：{preview.license}</small><footer><button className="secondary-button" onClick={() => void openSource(preview.sourceUrl)}>查看来源与使用条件<ExternalLink size={14} /></button><button className="primary-button" disabled={Boolean(importing)} onClick={() => void useMaterial(preview.id)}>{importing === preview.id ? "正在准备素材…" : "用于线索视频混剪"}</button></footer></section></div>}

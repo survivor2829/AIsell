@@ -8,7 +8,7 @@ const CATEGORIES = [
   { id: 'short-video' as const, label: '短视频获客', icon: Film },
   { id: 'wechat' as const, label: '微信拓客', icon: MessageCircle },
   { id: 'product-detail' as const, label: '产品详情图', icon: Image },
-  { id: 'materials' as const, label: '物保素材库', icon: FolderOpen }
+  { id: 'materials' as const, label: '场景素材库', icon: FolderOpen }
 ];
 const TOPICS: { id: TutorialTopic; label: string }[] = [{ id: 'digital-human', label: '数字人' }, { id: 'ai-editing', label: '线索视频混剪' }, { id: 'product-video', label: '产品效果视频' }];
 const duration = (value: number) => `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`;

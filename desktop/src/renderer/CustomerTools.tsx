@@ -1,13 +1,15 @@
 import { Bell, RefreshCw, MoreHorizontal } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { CustomerPanel } from "./CustomerPanel";
 import type { CloudStatus } from "./CloudMaintenance";
+
+const seriesOf = (version: string) => version.split(".").slice(0, 2).join(".");
 
 export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }) {
   const [panel, setPanel] = useState<"announcements" | null>(null);
   const [state, setState] = useState<CloudStatus>();
   const [error, setError] = useState("");
-  const [announcementId, setAnnouncementId] = useState("");
+  const [history, setHistory] = useState<{ version: string; date: string; notes: string }[]>([]);
   const [updateError, setUpdateError] = useState("");
   const [updateNotice, setUpdateNotice] = useState("");
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -36,14 +38,13 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
     setPanel("announcements");
     if (!api) return;
     setError("");
+    void api.releaseHistory?.().then(setHistory).catch(() => undefined);
     try {
       const local = await api.readAnnouncements();
       setState(local);
       const refreshed = await api.announcements();
       const current = refreshed.unreadAnnouncements ? await api.readAnnouncements() : refreshed;
       setState(current);
-      setAnnouncementId((selected) => current.announcements.some((item) => (item.id || String(item.sequence)) === selected)
-        ? selected : String(current.announcements[0]?.id || current.announcements[0]?.sequence || ""));
     } catch { setError("公告暂时刷新失败，本机记录仍可查看。"); }
   };
   const updateWorking = updateBusy || ["checking", "downloading", "preparing", "verifying", "waiting"].includes(state?.stage || "");
@@ -64,8 +65,22 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
     catch { setUpdateError("更新暂未完成，请重试。"); }
     finally { updateInFlight.current = false; setUpdateBusy(false); }
   };
-  const selectedAnnouncement = state?.announcements?.find((entry) => String(entry.id || entry.sequence) === announcementId)
-    || state?.announcements?.[0];
+  // The newest versions come with their full announcement; the history reaches back to the very first version.
+  // History stops at the installed version: a newer release waiting to be installed is not part of it yet.
+  const announcementList = state?.announcements;
+  const { allVersions, daysOfUpdates, seriesCount } = useMemo(() => {
+    const localDate = (time?: string) => (time ? new Date(time).toLocaleDateString("sv-SE") : "");
+    const recent = new Map((announcementList || []).map((entry) => [entry.version, entry]));
+    const versions = history.length ? history.map((entry) => {
+      const latest = recent.get(entry.version);
+      return { ...entry, notes: latest?.notes || entry.notes, date: localDate(latest?.publishedAt) || entry.date };
+    }) : (announcementList || []).map((entry) => ({ version: entry.version, notes: entry.notes || "", date: localDate(entry.publishedAt) }));
+    const dated = versions.map((entry) => entry.date).filter(Boolean).sort();
+    const counts = new Map<string, number>();
+    for (const entry of versions) counts.set(seriesOf(entry.version), (counts.get(seriesOf(entry.version)) || 0) + 1);
+    return { allVersions: versions, seriesCount: counts,
+      daysOfUpdates: dated.length > 1 ? Math.round((Date.parse(dated[dated.length - 1]) - Date.parse(dated[0])) / 86400000) + 1 : 0 };
+  }, [history, announcementList]);
   const acknowledgeConsent = async (thenOpenSettings = false) => {
     const api = window.xiaoxiCloudMaintenance;
     if (!api) return;
@@ -94,20 +109,26 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
       {(updateError || state?.error || state?.updateFailure) && <span className="topbar-update-notice is-error" role="status">{updateMessage}</span>}
     </div>
     <details className="topbar-secondary"><summary className="topbar-tool" aria-label="更多工具" title="更多工具"><MoreHorizontal size={18} /></summary><div className="topbar-secondary-menu"><button className="topbar-tool" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); void openAnnouncements(); }}><Bell size={17} /><span>更新公告{state?.unreadAnnouncements ? ' · 有未读' : ''}</span></button></div></details>
-    {panel === "announcements" && <CustomerPanel title="更新公告" description="看看这次有哪些改进。" onClose={() => setPanel(null)}>
+    {panel === "announcements" && <CustomerPanel title="更新公告" description="从第一版到现在，每一次更新都在这里。" onClose={() => setPanel(null)}>
       <div className="announcement-toolbar"><span>当前版本 {state?.version || "—"}</span><button type="button" className="customer-text-button" disabled={!state?.enabled || state.announcementsChecking} onClick={() => void refresh()}><RefreshCw size={14} />{state?.announcementsChecking ? "正在刷新…" : "刷新公告"}</button></div>
-      {state?.announcements?.length && selectedAnnouncement ? <div className="announcement-list">
-        <label className="announcement-version-picker">选择版本<select value={String(selectedAnnouncement.id || selectedAnnouncement.sequence)} onChange={(event) => setAnnouncementId(event.target.value)}>
-          {state.announcements.map((entry) => <option key={entry.id || entry.sequence} value={String(entry.id || entry.sequence)}>版本 {entry.version}</option>)}
-        </select></label>
-        <article className="announcement-entry">
-          <h3>版本 {selectedAnnouncement.version}</h3>
-          {selectedAnnouncement.publishedAt && <time dateTime={selectedAnnouncement.publishedAt}>{new Date(selectedAnnouncement.publishedAt).toLocaleDateString("zh-CN")}</time>}
-          <p>{selectedAnnouncement.notes || "此版本尚未提供更新说明。"}</p>
-        </article>
-      </div> : <p className="customer-empty">{state?.enabled ? "暂时没有收到更新公告。联网后刷新即可查看。" : "当前版本尚未启用云端公告。"}</p>}
+      {allVersions.length ? <>
+        <div className="announcement-summary">
+          <div><strong>{allVersions.length}</strong><span>个版本</span></div>
+          {daysOfUpdates > 0 && <div><strong>{daysOfUpdates}</strong><span>天持续更新</span></div>}
+          <p>从 {allVersions[allVersions.length - 1].version} 到 {allVersions[0].version}，我们一直在根据大家的反馈打磨。</p>
+        </div>
+        <div className="announcement-list">
+          {allVersions.map((entry, index) => <div key={entry.version}>
+            {seriesOf(entry.version) !== seriesOf(allVersions[index - 1]?.version || "") && <h3 className="announcement-series">{seriesOf(entry.version)} 系列 <small>{seriesCount.get(seriesOf(entry.version))} 个版本</small></h3>}
+            <details className="announcement-entry" open={index === 0}>
+              <summary><strong>版本 {entry.version}</strong>{entry.date && <time dateTime={entry.date}>{entry.date.replace(/-/g, ".")}</time>}</summary>
+              <p>{entry.notes || "此版本尚未提供更新说明。"}</p>
+            </details>
+          </div>)}
+        </div>
+      </> : <p className="customer-empty">{state?.enabled ? "暂时没有收到更新公告。联网后刷新即可查看。" : "当前版本尚未启用云端公告。"}</p>}
       {(error || state?.announcementError) && <p className="customer-error" role="alert">{error || state?.announcementError}</p>}
-      {state?.lastAnnouncementsCheck && <p className="customer-field-hint">最近检查：{new Date(state.lastAnnouncementsCheck).toLocaleString("zh-CN", { hour12: false })}。这里保留本机最近收到的公告。</p>}
+      {state?.lastAnnouncementsCheck && <p className="customer-field-hint">最近检查：{new Date(state.lastAnnouncementsCheck).toLocaleString("zh-CN", { hour12: false })}。</p>}
     </CustomerPanel>}
   </div>;
 }

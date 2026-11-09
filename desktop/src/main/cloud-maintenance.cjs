@@ -10,7 +10,7 @@ const { reportEntry } = require("../shared/cloud-report.cjs");
 const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = require("../shared/component-contract.cjs");
 const { createComponentStore } = require("./component-store.cjs");
 const componentPaths = require("./component-paths.cjs");
-const { bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
+const { bundledAnnouncements, releaseHistory } = require("../shared/customer-release-notes.cjs");
 const { updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 const { retainArtifacts, retryArtifacts } = require("../shared/artifact-retention.cjs");
 
@@ -196,6 +196,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     }
     return status();
   }
+  // The full history is display-only and has no unread state: only the latest versions count as news.
+  function history() { try { return releaseHistory(version); } catch { return []; } }
   function markAnnouncementsRead() {
     const unreadVersions = status().announcements.filter((item) => !item.read).map((item) => item.version);
     if (!unreadVersions.length) return status();
@@ -449,7 +451,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); retryArtifacts(dir, fullRetentionOptions()); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, acknowledgeConsentNotice, identity, consentEnabled: () => Boolean(network) && state.consent && !stopped, installId: state.installId, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, setLaunchGate, acknowledgeUpdate, refreshLocalState: () => notify(),
+  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, releaseHistory: history, flush, enqueue, setConsent, acknowledgeConsentNotice, identity, consentEnabled: () => Boolean(network) && state.consent && !stopped, installId: state.installId, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, setLaunchGate, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };
