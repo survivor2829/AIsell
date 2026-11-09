@@ -1166,6 +1166,21 @@ async function checkFloatingProgress() {
   assert.equal(sprite.getPosition()[1], 1080 - 260, "let go in the air, it lands on the bottom edge");
   assert.equal(typeof JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).x, "number");
   assert.equal(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).y, undefined, "only left-right is kept");
+  // Caught again while falling: the fall stops at once and the window stays in the hand.
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  Object.assign(cursor, { x: 1300, y: 200 });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  sprite.setPosition(1000, 100);
+  const falling = handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  assert.equal((await falling).caught, true, "the first letting-go learns it was caught");
+  const held = sprite.getPosition();
+  await new Promise((resolve) => setTimeout(resolve, 90));
+  assert.deepEqual(sprite.getPosition(), held, "nothing else moves it while held");
+  assert.ok(held[1] < 1080 - 260, "still in the air");
+  assert.equal((await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent)).moved, true, "letting go without moving still drops it");
+  assert.equal(sprite.getPosition()[1], 1080 - 260);
   const hidesBefore = mainHideCount;
   await control.showSprite();
   assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");

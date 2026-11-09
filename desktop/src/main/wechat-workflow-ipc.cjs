@@ -316,14 +316,17 @@ function registerWechatWorkflowIpc(options) {
   });
   // While 小玺 is held, the window follows the pointer from here (a relayed move fell behind a quick
   // drag and lost it, 2026-10-30). Letting go without moving is a click.
-  let spriteDrag = null;
+  let spriteDrag = null, spriteFall = null;
   ipcMain.on?.("wechat-workflow:sprite-drag-start", (event) => {
     if (!fromSprite(event)) return;
     clearInterval(spriteDrag?.timer);
     stopSpriteWalk();
+    // Caught in mid-air: the fall ends here, and letting go again must drop it from where it is held.
+    const caught = Boolean(spriteFall);
+    if (spriteFall) { const fall = spriteFall; spriteFall = null; clearInterval(fall.timer); fall.resolve({ moved: true, impact: 0, caught: true }); }
     if (floatingWindow.isMaximized?.()) floatingWindow.unmaximize();
     const cursor = screen.getCursorScreenPoint(), [x, y] = floatingWindow.getPosition();
-    const drag = { dx: cursor.x - x, dy: cursor.y - y, from: cursor, moved: false, started: Date.now(), last: cursor, lastAt: Date.now(), lastSent: 0, vx: 0, vy: 0 };
+    const drag = { dx: cursor.x - x, dy: cursor.y - y, from: cursor, moved: caught, started: Date.now(), last: cursor, lastAt: Date.now(), lastSent: 0, vx: 0, vy: 0 };
     drag.timer = setInterval(() => {
       if (!floatingWindow || floatingWindow.isDestroyed() || Date.now() - drag.started > 60000) { clearInterval(drag.timer); return; }
       const point = screen.getCursorScreenPoint();
@@ -350,18 +353,19 @@ function registerWechatWorkflowIpc(options) {
       let x = Math.min(right, Math.max(left, startX)), y = startY, vx = Math.max(-900, Math.min(900, Date.now() - drag.lastAt < 120 ? drag.vx : 0)), vy = Math.max(-700, Math.min(1200, Date.now() - drag.lastAt < 120 ? drag.vy : 0)), last = Date.now();
       const started = last;
       const finish = (impact) => {
-        clearInterval(timer);
+        clearInterval(timer); spriteFall = null;
         if (floatingWindow && !floatingWindow.isDestroyed()) { floatingWindow.setPosition(Math.round(x), ground); saveSpritePlace(x); }
         resolve({ moved: true, impact: Math.round(Math.max(0, impact)) });
       };
       const timer = setInterval(() => {
-        if (!floatingWindow || floatingWindow.isDestroyed()) { clearInterval(timer); resolve({ moved: true, impact: 0 }); return; }
+        if (!floatingWindow || floatingWindow.isDestroyed()) { clearInterval(timer); spriteFall = null; resolve({ moved: true, impact: 0 }); return; }
         const now = Date.now(), dt = Math.min(.04, (now - last) / 1000); last = now;
         vy += 2400 * dt; y += vy * dt; x += vx * dt;
         if (x < left || x > right) { x = Math.min(right, Math.max(left, x)); vx = -vx * .55; }
         if (y >= ground || now - started > 3000) { finish(vy); return; }
         floatingWindow.setPosition(Math.round(x), Math.round(Math.max(area.y - 40, y)));
       }, 16);
+      spriteFall = { timer, resolve };
     });
   });
   return {

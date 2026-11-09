@@ -113,13 +113,14 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   const E = Object.fromEntries(["root", "head", "tuft", "face", "lookN", "lookS", "lookW", "lookR", "eyesN", "legL0", "legL1", "legR0", "legR1", "footL", "footR", "armL0", "armL1", "armR0", "armR1", "handL", "handR", "shadow", "fxLayer", "band", "shades", "sweat", "tailG", "laptop", "blushL", "blushR"].map((id) => [id, el(id)])) as Record<string, SVGGraphicsElement>;
   const S: Values = { ...REST }, T: Values = { ...REST }, V = Object.fromEntries(KEYS.map((k) => [k, 0])) as Values;
 
-  let air = 0, vy = 0, facing = 1, walking = false, walkPhase = 0, track = true, asleep = false, dragging = false, destroyed = false;
+  const airScale = (host.clientWidth || 160) / AIR_REFERENCE;
+  let drawnAir = 0, air = 0, vy = 0, facing = 1, walking = false, walkPhase = 0, track = true, asleep = false, dragging = false, destroyed = false;
   let token = 0, busy = false, currentName = "", work: PetWork = null, worked = false;
   let raf = 0, last = 0, awakeUntil = 0, lastDraw = 0, fps = 30, idleTimer = 0, blinkTimer = 0, sleepTimer = 0, lastIdle = "", clock = 0, lastCursorAt = performance.now();
   const timers = new Set<number>();
 
   function render() {
-    host.style.transform = `translateY(${(-air * host.clientWidth / AIR_REFERENCE).toFixed(1)}px)`;
+    if (air !== drawnAir) { drawnAir = air; host.style.transform = `translateY(${(-air * airScale).toFixed(1)}px)`; }
     E.root.setAttribute("transform", `translate(${S.bx.toFixed(1)} ${S.by.toFixed(1)}) rotate(${S.lean.toFixed(2)} 500 1215) translate(500 1215) scale(${S.sx.toFixed(3)} ${S.sy.toFixed(3)}) translate(-500 -1215)`);
     E.shadow.setAttribute("opacity", clamp(.18 - air / 900, .04, .18).toFixed(3));
     E.shadow.setAttribute("transform", `translate(500 1222) scale(${clamp(1 - air / 700, .45, 1).toFixed(3)}) translate(-500 -1222)`);
@@ -171,7 +172,10 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
     if (destroyed) return;
     if (now - lastDraw < 1000 / fps - 2) { raf = requestAnimationFrame(frame); return; }
     const dt = Math.min(.05, (now - last) / 1000); last = now; lastDraw = now;
-    const energy = step(dt);
+    // Stiff springs blow up at a long step, so the same small step is used at any frame rate.
+    const steps = Math.max(1, Math.ceil(dt / .008));
+    let energy = 0;
+    for (let i = 0; i < steps; i++) energy = step(dt / steps);
     render();
     if (energy > .35 || now < awakeUntil || air > 0 || vy !== 0 || walking || dragging) raf = requestAnimationFrame(frame);
   }
@@ -221,13 +225,18 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
     try {
       await action(wait);
       if (mine !== token) return;
-      resetLook(); restPose(); track = true; busy = false; currentName = "";
+      resetLook(); restPose(); track = true; busy = false; currentName = ""; fps = 30;
       carryOn();
-    } catch { /* A newer action took over. */ }
+    } catch (failure) {
+      if (mine !== token) return; // A newer action took over.
+      console.warn("mascot action failed", name, failure);
+      walking = false; resetLook(); restPose(); track = true; busy = false; currentName = ""; fps = 30;
+      later(() => { if (!busy && !dragging) carryOn(); }, 3000);
+    }
   }
   function carryOn() { if (work) startWork(); else scheduleIdle(); }
 
-  const hoverFollow = new Set(["wave", "salute", "work", "done", "error", "cool", "scratch", "dance", "sit", "walk", "typing"]);
+  const hoverFollow = new Set(["wave", "salute", "workLoop", "errorLoop", "done", "cool", "scratch", "dance", "sit", "walk"]);
   const A: Record<string, Action> = {
     async wave(w) { face("normal", "open"); hand("R", "open"); talk(pick(["嗨～", "你好呀！", "我在这儿呢～"])); pop(); for (let i = 0; i < 5; i++) { go({ Rx: 945 + (i % 2) * 62, Ry: 560, Rr: i % 2 ? 18 : -16, Rb: 170, hr: i % 2 ? 3 : -3 }); await w(230); } },
     async salute(w) { hand("L", "open"); go({ Lx: 118, Ly: 330, Lr: 24, Lb: -430, hr: -4 }); pop(); await w(420); go({ by: -14, sy: 1.03 }); await w(900); go({ by: 0, sy: 1 }); },
@@ -243,6 +252,7 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       const distance = pick([-1, 1]) * rnd(90, 240);
       facing = Math.sign(distance); go({ turn: facing }); walking = true; wake();
       const result = await Promise.race([hooks.walk(distance), w(6000).then(() => undefined)]);
+      await w(0); // Interrupted while walking: the newer action owns the pose now.
       walking = false; hooks.stopWalk(); restPose();
       if (result && !result.moved) { fx(ASK, 780, 220, 10); }
       await w(380);
@@ -355,7 +365,7 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
     setWork(next: PetWork) {
       if (next === work) return;
       work = next;
-      if (!next) { worked = false; if (!dragging) { token++; busy = false; resetLook(); restPose(); track = true; scheduleIdle(); } return; }
+      if (!next) { worked = false; if (!dragging) { token++; busy = false; currentName = ""; fps = 30; resetLook(); restPose(); track = true; scheduleIdle(); } return; }
       if (!dragging && !["poke", "giggle", "annoyed", "petted", "dizzy"].includes(currentName)) startWork();
     },
     celebrate() { if (!dragging) act("done"); },
@@ -366,9 +376,10 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       if (asleep && !dragging) { act("wake"); return; }
       if (destroyed || !track || dragging) return;
       const p = toSvg(x, y);
-      // Far-away movement changes nothing it would notice, so the loop can stay stopped.
-      if (Math.abs(p.x - 500) > 6500) return;
-      go({ lx: clamp((p.x - 500) / 10, -54, 54), ly: clamp((p.y - 480) / 12, -34, 34), hr: clamp((p.x - 500) / 120, -7, 7), turn: clamp((p.x - 500) / 900, -.8, .8) });
+      const next = { lx: clamp((p.x - 500) / 10, -54, 54), ly: clamp((p.y - 480) / 12, -34, 34), hr: clamp((p.x - 500) / 120, -7, 7), turn: clamp((p.x - 500) / 900, -.8, .8) };
+      // Past a short distance these all stop changing, so ordinary mouse use across the screen costs no frames.
+      if (Math.abs(next.lx - T.lx) + Math.abs(next.ly - T.ly) + Math.abs(next.hr - T.hr) + Math.abs(next.turn - T.turn) * 20 < 2.5) return;
+      go(next);
     },
     hover(clientX: number, clientY: number) {
       const p = toSvg(clientX, clientY), now = performance.now(), head = p.x > 90 && p.x < 910 && p.y > 110 && p.y < 800;

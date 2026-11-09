@@ -27,13 +27,14 @@ html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root 
 .xiaoxi-link { align-self: flex-start; padding: 0; border: 0; background: none; color: #e60012; font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer; }
 
 /* the pet: traced from the company stickers; the parts are moved by MascotPet */
-.xiaoxi-buddy { flex: 0 0 auto; width: 160px; margin: 0 -14px 0 -16px; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; pointer-events: none; }
+.xiaoxi-buddy { flex: 0 0 auto; align-self: flex-end; width: 160px; margin: 0 -14px 0 -16px; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; pointer-events: none; }
 .xiaoxi-buddy:active { cursor: grabbing; }
 .xiaoxi-buddy:focus-visible { outline: 2px solid #e60012; outline-offset: 2px; border-radius: 16px; }
 .xiaoxi-pet { width: 100%; will-change: transform; }
 .xiaoxi-pet svg { display: block; width: 100%; height: auto; overflow: visible; pointer-events: none; }
 .xiaoxi-pet #root, .xiaoxi-pet #root * { pointer-events: visiblePainted; }
-.xiaoxi-pet .off { opacity: 0; pointer-events: none !important; }
+.xiaoxi-pet .off, .xiaoxi-pet .off * { pointer-events: none !important; }
+.xiaoxi-pet .off { opacity: 0; }
 .xiaoxi-pet .ink { stroke: #2e2a2c; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }
 .xiaoxi-pet .ink.thin { stroke-width: 12; }
 .xiaoxi-pet .red { fill: #f23a1e; stroke: #a51f0d; stroke-width: 9; stroke-linejoin: round; stroke-linecap: round; }

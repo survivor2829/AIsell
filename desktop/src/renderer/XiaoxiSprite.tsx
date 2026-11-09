@@ -53,7 +53,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   const pet = useRef<ReturnType<typeof createMascotPet> | null>(null);
   // What the pet says for fun must never cover the live state of the work.
   const quiet = useRef(true);
-  quiet.current = !activity && !alert;
+  quiet.current = !activity && !alert && !greeting && !line?.mood;
 
   const show = (next: Line, ms = 5200) => {
     window.clearTimeout(lineTimer.current);
@@ -137,6 +137,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     pressed.current = false;
     const { clientX, clientY } = event;
     const result = await api?.spriteDragEnd?.();
+    if (result?.caught) return; // Picked up again in mid-air: that press finishes the job.
     if (result?.moved) pet.current?.dragEnd(Number(result.impact) || 0);
     else pet.current?.click(clientX, clientY);
   };

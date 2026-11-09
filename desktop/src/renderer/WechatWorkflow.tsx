@@ -105,7 +105,7 @@ declare global {
       showFloating: () => Promise<WorkflowResult>;
       spriteInteractive?: (interactive: boolean) => void;
       spriteDragStart?: () => void;
-      spriteDragEnd?: () => Promise<{ moved: boolean; impact?: number }>;
+      spriteDragEnd?: () => Promise<{ moved: boolean; impact?: number; caught?: boolean }>;
       spriteWalk?: (dx: number) => Promise<{ moved?: number }>;
       spriteWalkStop?: () => void;
       onSpriteCursor?: (callback: (point: { x: number; y: number }) => void) => () => void;
