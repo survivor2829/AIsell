@@ -149,7 +149,9 @@ class TestProviderResultDownloadRoute(unittest.TestCase):
         import ai_image_apimart as adapter
 
         with mock.patch.object(
-            adapter, "_submit_image_task_for_route", return_value=("task-1", True),
+            adapter, "_prepare_image_submission", return_value=({"prompt": "prompt"}, True),
+        ), mock.patch.object(
+            adapter, "_post_image_submission", return_value="task-1",
         ), mock.patch.object(
             adapter, "poll_image_task", return_value="https://cdn.invalid/result.png",
         ):

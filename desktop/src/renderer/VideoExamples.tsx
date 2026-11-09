@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, PlayCircle, X } from 'lucide-react';
+import { useEffect, useRef, useState, createElement } from 'react';
+import { ChevronDown, ChevronUp, PlayCircle, X, Upload, Sparkles, Film } from 'lucide-react';
 import type { TutorialTopic } from './tutorials-types';
 import { SpeedVideo } from './SpeedVideo';
 import { isWindowShown, onWindowShownChange } from './window-shown';
@@ -88,6 +88,8 @@ const BANNER_TEXT: Record<VideoExample['topic'], { result: string; steps: { titl
     ]
   }
 };
+// Upload, make, get the video: the three steps every video example shows.
+const STEP_ICONS = [Upload, Sparkles, Film];
 const collapsedKey = (topic: string) => `video-example-banner-collapsed:${topic}`;
 function readCollapsed(topic: string) { try { return localStorage.getItem(collapsedKey(topic)) === '1'; } catch { return false; } }
 function writeCollapsed(topic: string, value: boolean) { try { localStorage.setItem(collapsedKey(topic), value ? '1' : '0'); } catch { /* Only a convenience. */ } }
@@ -110,8 +112,6 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
   </section>;
   return <section className={`example-banner${wide ? ' is-wide' : ''}`} aria-label={`${example.module}${label}`}>
     <div className="example-banner-player">
-      {/* The vertical video stands on a blurred copy of its own cover, so the stage is full instead of a thin strip. */}
-      {!wide && <img className="example-banner-backdrop" src={asset(`${example.file}.jpg`)} alt="" aria-hidden="true" />}
       {failed ? <div className="example-banner-error" role="alert"><p>示例暂时无法播放</p><button type="button" onClick={() => { setFailed(false); setStarted(false); }}>重试</button></div>
         : started ? <video ref={video} src={asset(`${example.file}.mp4`)} poster={asset(`${example.file}.jpg`)} controls autoPlay playsInline preload="metadata" onError={() => setFailed(true)} />
         : <button type="button" className="example-banner-poster" aria-label={`播放${example.module}${label}`} onClick={() => wide ? setEnlarged(true) : setStarted(true)}>
@@ -131,7 +131,7 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
           <button type="button" className="example-banner-collapse" onClick={toggle}>收起<ChevronUp size={16} aria-hidden="true" /></button>
         </div>
       </div>
-      <ol className="example-banner-steps">{text.steps.map((step, index) => <li key={step.title}><b>{index + 1}</b><span><strong>{step.title}</strong>{step.detail}</span></li>)}</ol>
+      <ol className="example-banner-steps">{text.steps.map((step, index) => <li key={step.title}>{!wide && STEP_ICONS[index] && <i className="example-banner-step-icon" aria-hidden="true">{createElement(STEP_ICONS[index])}</i>}<b>{index + 1}</b><span><strong>{step.title}</strong>{step.detail}</span></li>)}</ol>
     </div>
     {enlarged && <ExamplePlayer example={example} onClose={() => setEnlarged(false)} />}
   </section>;

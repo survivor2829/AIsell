@@ -68,22 +68,37 @@
 @media (max-width: 1100px) { .example-banner.is-wide { flex-direction: column; } .example-banner.is-wide .example-banner-player { width: 100%; aspect-ratio: 480 / 169; } .example-banner.is-wide .example-banner-poster img { object-position: 50% 50%; } }
 .video-example-dialog.is-wide { width: min(1280px, calc(100vw - 48px)); }
 .video-example-dialog.is-wide .video-example-stage video { height: auto; max-height: calc(100dvh - 155px); aspect-ratio: 480 / 169; }
-/* 成片示例（用户 2026-11-09 选定）：视频做主角占左边大块，三步竖排在右侧窄栏，不留大片空白。 */
-.example-banner:not(.is-wide):not(.is-collapsed) { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr); gap: 18px; }
-.example-banner:not(.is-wide) .example-banner-player { position: relative; display: flex; justify-content: center; width: auto; height: auto; min-height: clamp(300px, 46vh, 480px); aspect-ratio: auto; border-radius: 12px; }
-.example-banner-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(22px) brightness(.55); transform: scale(1.15); pointer-events: none; }
-.example-banner:not(.is-wide) .example-banner-poster, .example-banner:not(.is-wide) .example-banner-player video { position: relative; z-index: 1; width: auto; height: 100%; aspect-ratio: 9 / 16; }
-.example-banner:not(.is-wide) .example-banner-player video { background: #10141c; }
-.example-banner:not(.is-wide) .example-banner-error { position: relative; z-index: 1; width: 100%; }
-.example-banner:not(.is-wide) .example-banner-copy { gap: 14px; }
+/* 成片示例（用户 2026-11-09）：常见的“手机样机 + 旁边说明”排法。手机高度按窗口封顶，播放前后大小不变；
+   右栏标题、说明和三步撑满与手机同高，不留空白。 */
+.example-banner:not(.is-wide):not(.is-collapsed) { --phone-h: clamp(300px, 52vh, 460px); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 22px; align-items: stretch; padding: 18px; background: linear-gradient(135deg, #fff 0%, var(--brand-soft, #fff2f3) 100%); }
+.example-banner:not(.is-wide) .example-banner-player { position: relative; width: auto; height: var(--phone-h); aspect-ratio: 9 / 16; padding: 0; overflow: hidden; border: 6px solid #1b1d23; border-radius: 26px; background: #10141c; box-shadow: 0 14px 30px #1720332e; }
+.example-banner:not(.is-wide) .example-banner-poster, .example-banner:not(.is-wide) .example-banner-player video, .example-banner:not(.is-wide) .example-banner-error { position: absolute; inset: 0; width: 100%; height: 100%; }
+.example-banner:not(.is-wide) .example-banner-player video, .example-banner:not(.is-wide) .example-banner-poster img { object-fit: contain; background: #10141c; }
+.example-banner:not(.is-wide) .example-banner-copy { display: grid; grid-template-rows: auto 1fr auto; gap: 14px; min-height: var(--phone-h); }
 .example-banner:not(.is-wide) .example-banner-head { display: contents; }
-.example-banner:not(.is-wide) .example-banner-head > div:first-child { order: 1; }
-.example-banner:not(.is-wide) .example-banner-steps { order: 2; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 10px; }
-.example-banner:not(.is-wide) .example-banner-actions { order: 3; }
-.example-banner:not(.is-wide) .example-banner-steps li { flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px; padding: 10px 14px; }
-.example-banner:not(.is-wide) .example-banner-steps b { flex: 0 0 auto; }
-.example-banner:not(.is-wide) .example-banner-copy h2 { font-size: 20px; }
-@media (max-width: 900px) {
+.example-banner:not(.is-wide) .example-banner-head > div:first-child { grid-row: 1; }
+.example-banner:not(.is-wide) .example-banner-steps { grid-row: 2; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.example-banner:not(.is-wide) .example-banner-actions { grid-row: 3; }
+/* Each step is a full-height tile: a big icon, its number, then the words, centred. */
+.example-banner:not(.is-wide) .example-banner-steps li { position: relative; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 40px 18px 24px; text-align: center; border-color: #f3d9de; box-shadow: 0 6px 16px #1720330d; }
+.example-banner:not(.is-wide) .example-banner-steps li:not(:last-child)::after { content: ""; position: absolute; top: 50%; right: -10px; width: 8px; height: 8px; border-top: 2px solid var(--brand-red); border-right: 2px solid var(--brand-red); transform: translateY(-50%) rotate(45deg); }
+.example-banner-step-icon { display: grid; place-items: center; width: clamp(60px, 9vh, 92px); height: clamp(60px, 9vh, 92px); border-radius: 50%; background: var(--brand-soft, #fff2f3); color: var(--brand-red); font-style: normal; }
+.example-banner:not(.is-wide) .example-banner-steps b { position: absolute; top: 12px; left: 12px; width: 26px; height: 26px; font-size: 13px; }
+.example-banner:not(.is-wide) .example-banner-steps span { justify-items: center; gap: 8px; font-size: 15px; }
+.example-banner:not(.is-wide) .example-banner-steps strong { font-size: 20px; }
+.example-banner-step-icon svg { width: 45%; height: 45%; }
+.example-banner:not(.is-wide) .example-banner-copy h2 { font-size: 22px; }
+@media (max-width: 760px) {
   .example-banner:not(.is-wide):not(.is-collapsed) { grid-template-columns: 1fr; }
-  .example-banner:not(.is-wide) .example-banner-player { width: 100%; height: clamp(260px, 52vw, 380px); margin: 0; }
+  .example-banner:not(.is-wide) .example-banner-player { justify-self: center; }
+  .example-banner:not(.is-wide) .example-banner-copy { min-height: 0; }
+}
+@media (max-width: 1100px) {
+  .example-banner:not(.is-wide) .example-banner-steps { grid-template-columns: 1fr; }
+  .example-banner:not(.is-wide) .example-banner-steps li { flex-direction: row; justify-content: flex-start; text-align: left; padding: 10px 14px 10px 46px; }
+  .example-banner:not(.is-wide) .example-banner-steps li::after { display: none; }
+  .example-banner:not(.is-wide) .example-banner-steps span { justify-items: start; }
+  .example-banner:not(.is-wide) .example-banner-steps b { top: 50%; transform: translateY(-50%); }
+  .example-banner-step-icon { width: 44px; height: 44px; }
+  .example-banner-step-icon svg { width: 22px; height: 22px; }
 }

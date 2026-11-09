@@ -370,7 +370,7 @@ def test_generator_journals_stable_block_identity_before_post(task, monkeypatch)
     }
 
 
-@pytest.mark.parametrize("receipt_status", [200, 202, 404, 409, 503])
+@pytest.mark.parametrize("receipt_status", [200, 202, 404, 409, 503, "missing", "missing-old"])
 def test_restart_finds_gateway_receipt_without_reupload_or_resubmit(task, monkeypatch, receipt_status):
     import ai_image_apimart as adapter
     monkeypatch.setattr(adapter.time, "sleep", lambda _: None)
@@ -395,10 +395,14 @@ def test_restart_finds_gateway_receipt_without_reupload_or_resubmit(task, monkey
         ledger.image_call(quote(), adapter.default_api_call, "prompt", "data:image/png;base64,YQ==", "secret", block_id="hero")
     original_id = ledger.load()["operations"]["image:1"]["gateway_operation_id"]
     runner._TASKS.clear()
+    if receipt_status == "missing-old":
+        ledger.finish("image:1", "submitting", started_at=0)  # a receipt this old may just have expired
     def receipt(request, **kwargs):
         requests.append(request)
         assert request.method == "GET"
         assert request.full_url == f"https://gateway.invalid/v1/provider-gateway/operations/{original_id}"
+        if str(receipt_status).startswith("missing"):
+            raise urllib.error.HTTPError(request.full_url, 404, "fixture", {}, io.BytesIO(b'{"error": "receipt_not_found"}'))
         if receipt_status >= 400:
             raise urllib.error.HTTPError(request.full_url, receipt_status, "fixture", {}, io.BytesIO(b'{}'))
         body = {"data": [{"task_id": "paid-original"}]} if receipt_status == 200 else {"status": "pending"}
@@ -417,8 +421,18 @@ def test_restart_finds_gateway_receipt_without_reupload_or_resubmit(task, monkey
         return "/static/assembled.png"
     monkeypatch.setattr(runner, "_run_assembler_v2", assemble)
     state = runner._recover_task(task.name, "secret")
+    if receipt_status == "missing":
+        # The gateway never had it: nothing was bought, no new purchase happens by itself, and the screen can be made again.
+        operation = ledger.load()["operations"]["image:1"]
+        assert operation["status"] == "failed" and operation["not_submitted"] is True
+        assert [request.method for request in requests] == ["POST"] + ["GET"] * 4
+        assert ledger.summary()["reserved_cny"] == 0
+        assert state["status"] != "outcome_unknown", state
+        return
     assert state["status"] == ("success" if receipt_status == 200 else "outcome_unknown")
-    assert [request.method for request in requests] == ["POST"] + ["GET"] * (1 if receipt_status in (200, 409) else 3)
+    assert [request.method for request in requests] == ["POST"] + ["GET"] * (1 if receipt_status in (200, 409) else 4)
+    if receipt_status == "missing-old":
+        assert ledger.load()["operations"]["image:1"]["status"] != "failed"
     assert upload.call_count == 1
     operation = ledger.load()["operations"]["image:1"]
     assert operation["gateway_operation_id"] == original_id
