@@ -49,13 +49,15 @@ async function main() {
     //    and drops it when the server says another computer signed in.
     const sessions = [];
     let reply = { status: 200, body: { ok: true, token: "t".repeat(43), expiresAt: new Date(Date.now() + DAY).toISOString(), capabilities: {},
-      deviceToken: "f".repeat(64), account: { id: "acct_1", phone: "13900139000", setupRequired: false, mustChangePassword: false } } };
+      deviceToken: "f".repeat(64), account: { id: "acct_1", phone: "13900139000", setupRequired: false, mustChangePassword: false, isAdmin: true } } };
+    let lastAdminHeaders = null;
     const client = createProviderGatewayClient({
       config: { enabled: true, origin: "https://gateway.test" }, accountStore: store, licenseStore: { readCode: () => "legacy-license-code" },
       appId: "com.aihuoke.desktop.test", channel: "test", version: "1.2.15", installId: "12345678-1234-1234-1234-123456789012",
       requestImpl: async (request) => {
         if (request.url.endsWith("/health")) return { status: 200, headers: {}, body: JSON.stringify({ ok: true, service: "provider-gateway", schema: 1, runtime_revision: "r1", upstream_timeout_seconds: 180 }) };
-        sessions.push(JSON.parse(request.body));
+        if (request.url.includes("/account/admin")) lastAdminHeaders = request.headers;
+        else sessions.push(JSON.parse(request.body));
         return { status: reply.status, headers: { "content-type": "application/json" }, body: JSON.stringify(reply.body) };
       }
     });
@@ -67,6 +69,18 @@ async function main() {
     const login = await client.login({ phone: "13900139000", password: "start2026" });
     assert.equal(login.ready, true);
     assert.deepEqual([sessions.at(-1).phone, sessions.at(-1).password], ["13900139000", "start2026"]);
+    assert.equal(store.status().isAdmin, true, "the administrator flag reaches the account menu");
+    // Account management: nothing is sent without a ticket, the ticket stays in the main process, a refusal drops it.
+    assert.deepEqual(await client.adminRequest("GET", "/accounts"), { ok: false, error: "admin_ticket_required" });
+    assert.equal(lastAdminHeaders, null);
+    reply = { status: 200, body: { ok: true, ticket: "ticket-value", expiresIn: 1800 } };
+    assert.deepEqual(await client.adminUnlock("start2026"), { ok: true }, "the ticket is not handed back to the page");
+    reply = { status: 200, body: { ok: true, accounts: [] } };
+    assert.equal((await client.adminRequest("GET", "/accounts")).ok, true);
+    assert.equal(lastAdminHeaders["X-Xiaoxi-Admin-Ticket"], "ticket-value");
+    reply = { status: 403, body: { error: "admin_ticket_required" } };
+    assert.deepEqual(await client.adminRequest("GET", "/accounts"), { ok: false, error: "admin_ticket_required" });
+    assert.equal(client.adminUnlocked(), false);
     reply = { status: 401, body: { error: "account_signed_in_elsewhere" } };
     const kicked = await client.initialize({ force: true });
     assert.deepEqual([kicked.ready, kicked.code], [false, "GATEWAY_ACCOUNT_SIGNED_IN_ELSEWHERE"]);

@@ -94,6 +94,24 @@ class AccountsAdminTest(unittest.TestCase):
         self.assertTrue(detail["unblocked"])
         self.assertEqual(["recharge", "grant"], [row["kind"] for row in detail["ledger"]])
 
+    def test_the_public_proxy_carries_the_administrator_ticket(self):
+        public = Server(("127.0.0.1", 0), Handler, Store(str(Path(self.temp.name) / "public")))
+        threading.Thread(target=public.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{public.server_port}"
+            created = self.call(self.admin_origin, "/api/accounts", {"phone": "13800000007", "password": "start2026"})[1]
+            self.assertEqual(200, self.call(self.admin_origin, f"/api/accounts/{created['id']}/admin", {"enabled": True})[0])
+            token = self.login("13800000007", "start2026")[1]["token"]
+            auth = {"Authorization": f"Bearer {token}"}
+            status, granted = self.call(base, "/v1/provider-gateway/account/admin/ticket", {"password": "start2026"}, origin=False, headers=auth)
+            self.assertEqual(200, status, granted)
+            status, listed = self.call(base, "/v1/provider-gateway/account/admin/accounts", origin=False,
+                                       headers={**auth, "X-Xiaoxi-Admin-Ticket": granted["ticket"]})
+            self.assertEqual(200, status, listed)
+        finally:
+            public.shutdown()
+            public.server_close()
+
     def test_gateway_admin_routes_need_the_token(self):
         self.assertEqual(404, self.call(self.gateway_origin, "/v1/accounts-admin/accounts", origin=False)[0])
         self.assertEqual(404, self.call(self.gateway_origin, "/v1/accounts-admin/accounts", origin=False,

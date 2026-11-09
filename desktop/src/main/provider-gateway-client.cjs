@@ -313,6 +313,44 @@ function createProviderGatewayClient(options = {}) {
     return { ok: true, account: payload.account };
   }
 
+  // Account management (administrators). The ticket proves the password was typed recently; it stays here.
+  let adminTicket = "", adminTicketUntil = 0;
+  const adminUnlocked = () => Boolean(adminTicket && adminTicketUntil > Date.now() + 5000);
+  function lockAdmin() { adminTicket = ""; adminTicketUntil = 0; }
+  async function adminCall(method, suffix, body, extraHeaders = {}) {
+    await initialize();
+    const send = async () => normalizeResponse(await requestImpl({ url: endpoint(`/account/admin${suffix}`), method,
+      headers: { ...requestHeaders(), ...extraHeaders, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      body: body === undefined ? null : JSON.stringify(body), timeoutMs: SESSION_TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES, agent }));
+    let response = await send();
+    if (response.status === 401) {
+      // Refused before anything ran: the session here is stale, so renew it once and ask again.
+      const renewed = await initialize({ force: true });
+      if (!renewed.ready) return { ok: false, error: "session_required" };
+      response = await send();
+    }
+    let payload = {};
+    try { payload = await response.json(); } catch { /* Reported below. */ }
+    if (!response.ok || payload?.ok !== true) return { ok: false, error: String(payload?.error || `http_${response.status}`) };
+    return payload;
+  }
+  async function adminUnlock(password) {
+    lockAdmin();
+    const result = await adminCall("POST", "/ticket", { password: String(password || "") });
+    if (result.ok && typeof result.ticket === "string") {
+      adminTicket = result.ticket;
+      adminTicketUntil = Date.now() + Math.max(0, Number(result.expiresIn) || 0) * 1000;
+      return { ok: true };
+    }
+    return result.ok ? { ok: false, error: "admin_response_invalid" } : result;
+  }
+  async function adminRequest(method, suffix, body) {
+    if (!adminUnlocked()) { lockAdmin(); return { ok: false, error: "admin_ticket_required" }; }
+    const result = await adminCall(method, suffix, body, { "X-Xiaoxi-Admin-Ticket": adminTicket });
+    if (!result.ok && ["admin_ticket_required", "admin_required", "session_required"].includes(result.error)) lockAdmin();
+    return result;
+  }
+
   function initialize({ force = false, verify = false } = {}) {
     if (closed) return Promise.resolve(status());
     if (!force && ((!verify && sessionReady()) || !enabled || !origin)) return Promise.resolve(status());
@@ -420,11 +458,15 @@ function createProviderGatewayClient(options = {}) {
     token = "";
     expiresAt = "";
     capabilities = {};
+    lockAdmin();
     code = enabled && origin ? "GATEWAY_SESSION_REQUIRED" : code;
     return status();
   }
 
   return {
+    adminRequest,
+    adminUnlock,
+    adminUnlocked,
     billingBalance,
     close,
     fetch: fetchGateway,

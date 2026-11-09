@@ -1,4 +1,5 @@
-"""Customer accounts: phone number + password, one active device per account.
+"""Customer accounts: phone number + password. An account is either single-device (the default
+for new accounts) or shared across computers; each signed-in computer is a row in account_devices.
 
 The account's ``subject`` is the identity every other table already uses (receipts,
 script usage, voice slots). An account converted from a license keeps that license's
@@ -21,6 +22,7 @@ PHONE = re.compile(r"1[3-9]\d{9}")
 DEVICE_TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1}
 MIN_PASSWORD, MAX_PASSWORD = 8, 64
+ADMIN_TICKET_SECONDS = 30 * 60
 DEVICE_TTL_SECONDS = 90 * 24 * 60 * 60
 FAILED_LOGIN_LIMIT, FAILED_LOGIN_WINDOW = 5, 15 * 60
 
@@ -70,7 +72,35 @@ class AccountStore:
                 active_install_id TEXT, device_digest BLOB, device_expires_at REAL,
                 limits_json TEXT NOT NULL DEFAULT '{}',
                 created_at REAL NOT NULL, last_login_at REAL)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS account_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL, install_id TEXT NOT NULL, digest BLOB NOT NULL UNIQUE,
+                expires_at REAL NOT NULL, created_at REAL NOT NULL, last_seen_at REAL NOT NULL,
+                UNIQUE(account_id, install_id))""")
+            self._migrate_locked()
             self.db.commit()
+
+    def _migrate_locked(self):
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(accounts)")}
+        if "is_admin" not in columns:
+            self.db.execute("ALTER TABLE accounts ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        if "multi_device" in columns:
+            return
+        # Runs once, in one transaction: every account that exists now is a company account and
+        # becomes shared; accounts created after this keep the single-computer default.
+        self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            self.db.execute("""INSERT OR IGNORE INTO account_devices (account_id, install_id, digest, expires_at, created_at, last_seen_at)
+                SELECT id, active_install_id, device_digest, device_expires_at, ?, COALESCE(last_login_at, ?) FROM accounts
+                WHERE device_digest IS NOT NULL AND active_install_id IS NOT NULL AND device_expires_at IS NOT NULL""", (now, now))
+            self.db.execute("ALTER TABLE accounts ADD COLUMN multi_device INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("UPDATE accounts SET multi_device=1")
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     # ---- helpers -------------------------------------------------------------------
     def _digest(self, token: str) -> bytes:
@@ -99,13 +129,21 @@ class AccountStore:
         self.failures[key] = recent
         return len(recent) >= FAILED_LOGIN_LIMIT
 
-    def _bind_device(self, account_id: int, install_id: str) -> str:
-        """The new device becomes the only one: its token replaces every older one."""
-        token = secrets.token_urlsafe(48)
-        self.db.execute("""UPDATE accounts SET active_install_id=?, device_digest=?, device_expires_at=?, last_login_at=?
-            WHERE id=?""", (install_id, self._digest(token), time.time() + DEVICE_TTL_SECONDS, time.time(), account_id))
+    def _bind_device(self, account: dict, install_id: str) -> str:
+        """A single-device account keeps only the newest computer; a shared one adds it to the list."""
+        token, now = secrets.token_urlsafe(48), time.time()
+        if account["multi_device"]:
+            self.db.execute("DELETE FROM account_devices WHERE account_id=? AND (install_id=? OR expires_at<=?)", (account["id"], install_id, now))
+        else:
+            self.db.execute("DELETE FROM account_devices WHERE account_id=?", (account["id"],))
+        self.db.execute("""INSERT INTO account_devices (account_id, install_id, digest, expires_at, created_at, last_seen_at)
+            VALUES (?,?,?,?,?,?)""", (account["id"], install_id, self._digest(token), now + DEVICE_TTL_SECONDS, now, now))
+        self.db.execute("UPDATE accounts SET last_login_at=? WHERE id=?", (now, account["id"]))
         self.db.commit()
         return token
+
+    def _clear_devices(self, account_id: int):
+        self.db.execute("DELETE FROM account_devices WHERE account_id=?", (account_id,))
 
     @staticmethod
     def public(account: dict) -> dict:
@@ -113,7 +151,8 @@ class AccountStore:
         return {"id": account["subject"], "phone": account["phone"] or "", "displayName": account["display_name"],
                 "mustChangePassword": bool(account["must_change_password"]),
                 "setupRequired": not account["phone"],
-                "expiresAt": account["expires_at"]}
+                "expiresAt": account["expires_at"],
+                "isAdmin": bool(account["is_admin"])}
 
     # ---- customer logins -------------------------------------------------------------
     def login_password(self, phone, password, install_id: str, client: str) -> tuple[dict, str]:
@@ -130,20 +169,23 @@ class AccountStore:
                 raise AccountError("account_invalid", 401)
             self.failures.pop("phone:" + phone, None)
             account = self._usable(account)
-            return account, self._bind_device(account["id"], install_id)
+            return account, self._bind_device(account, install_id)
 
     def login_device(self, token, install_id: str) -> dict:
         if not isinstance(token, str) or not DEVICE_TOKEN.fullmatch(token):
             raise AccountError("device_invalid", 401)
         with self.lock:
-            account = self._row("device_digest=?", (self._digest(token),))
-            if account is None:
-                # The token was replaced: another computer signed in with this account.
+            device = self.db.execute("SELECT id, account_id, install_id, expires_at FROM account_devices WHERE digest=?",
+                                     (self._digest(token),)).fetchone()
+            if device is None:
+                # The token was removed: another computer took over, or this one was signed out.
                 raise AccountError("account_signed_in_elsewhere", 401)
-            if account["active_install_id"] != install_id or (account["device_expires_at"] or 0) <= time.time():
+            if device[2] != install_id or device[3] <= time.time():
                 raise AccountError("device_invalid", 401)
-            account = self._usable(account)
-            self.db.execute("UPDATE accounts SET last_login_at=? WHERE id=?", (time.time(), account["id"]))
+            account = self._usable(self._row("id=?", (device[1],)))
+            now = time.time()
+            self.db.execute("UPDATE account_devices SET last_seen_at=? WHERE id=?", (now, device[0]))
+            self.db.execute("UPDATE accounts SET last_login_at=? WHERE id=?", (now, account["id"]))
             self.db.commit()
             return account
 
@@ -162,7 +204,7 @@ class AccountStore:
             if account["phone"]:
                 raise AccountError("account_use_password", 401)
             account = self._usable(account)
-            return account, self._bind_device(account["id"], install_id) if bind else ""
+            return account, self._bind_device(account, install_id) if bind else ""
 
     def setup(self, subject: str, phone, password) -> dict:
         """A converted license chooses its phone and password once."""
@@ -183,7 +225,7 @@ class AccountStore:
             self.db.commit()
             return self._row("id=?", (account["id"],))
 
-    def change_password(self, subject: str, current, new) -> dict:
+    def change_password(self, subject: str, current, new, keep_install: str = "") -> dict:
         problem = password_problem(new)
         if problem:
             raise AccountError(problem)
@@ -195,12 +237,37 @@ class AccountStore:
                 raise AccountError("password_unchanged")
             self.db.execute("UPDATE accounts SET password_hash=?, must_change_password=0 WHERE id=?",
                             (hash_password(new), account["id"]))
+            # A new password also ends every other computer's sign-in; the one changing it stays.
+            if keep_install:
+                self.db.execute("DELETE FROM account_devices WHERE account_id=? AND install_id!=?", (account["id"], keep_install))
             self.db.commit()
             return self._row("id=?", (account["id"],))
 
     def by_subject(self, subject: str) -> dict | None:
         with self.lock:
             return self._row("subject=?", (subject,))
+
+    def verify_admin_password(self, subject: str, password) -> dict:
+        """Opening account management asks for the password again. Failures count per administrator:
+        behind the proxy every client address is the same, so a shared bucket would lock out all customers."""
+        with self.lock:
+            account = self._usable(self._row("subject=?", (subject,)))
+            if not account["is_admin"]:
+                raise AccountError("admin_required", 403)
+            key = "admin:" + subject
+            if self._throttled(key):
+                raise AccountError("login_throttled", 429)
+            if not isinstance(password, str) or not check_password(password, account["password_hash"]):
+                self.failures.setdefault(key, []).append(time.time())
+                raise AccountError("password_wrong", 403)
+            self.failures.pop(key, None)
+            return account
+
+    def is_admin(self, subject: str) -> bool:
+        with self.lock:
+            account = self._row("subject=?", (subject,))
+        return bool(account and account["status"] == "active" and account["is_admin"]
+                    and not (account["expires_at"] and account["expires_at"] <= time.time()))
 
     # ---- administration ------------------------------------------------------------------
     def admin_subject(self, account_id: int) -> str:
@@ -217,11 +284,17 @@ class AccountStore:
                 rows = [dict(row) for row in self.db.execute("SELECT * FROM accounts ORDER BY created_at DESC")]
             finally:
                 self.db.row_factory = None
+            devices: dict[int, list[dict]] = {}
+            for device in self.db.execute("""SELECT id, account_id, install_id, created_at, last_seen_at FROM account_devices
+                WHERE expires_at>? ORDER BY last_seen_at DESC""", (time.time(),)):
+                devices.setdefault(device[1], []).append({"id": device[0], "label": device[2][-4:].upper(), "createdAt": device[3], "lastSeenAt": device[4]})
         return [{"id": row["id"], "phone": row["phone"] or "", "displayName": row["display_name"], "note": row["note"],
                  "status": row["status"], "converted": bool(row["legacy_license_id"]), "setUp": bool(row["phone"]),
                  "mustChangePassword": bool(row["must_change_password"]), "expiresAt": row["expires_at"],
                  "createdAt": row["created_at"], "lastLoginAt": row["last_login_at"],
-                 "deviceActive": bool(row["device_digest"]), "limits": json.loads(row["limits_json"] or "{}"),
+                 "deviceActive": bool(devices.get(row["id"])), "devices": devices.get(row["id"], []),
+                 "multiDevice": bool(row["multi_device"]), "isAdmin": bool(row["is_admin"]),
+                 "limits": json.loads(row["limits_json"] or "{}"),
                  "usage": usage(row["subject"])} for row in rows]
 
     def admin_create(self, phone, password, display_name="", note="", expires_at=None) -> dict:
@@ -249,8 +322,8 @@ class AccountStore:
             if account is None or not account["phone"]:
                 raise AccountError("account_not_found", 404)
             # A reset signs every device out; the customer must choose a new password at next login.
-            self.db.execute("""UPDATE accounts SET password_hash=?, must_change_password=1, device_digest=NULL,
-                active_install_id=NULL WHERE id=?""", (hash_password(password), account_id))
+            self.db.execute("UPDATE accounts SET password_hash=?, must_change_password=1 WHERE id=?", (hash_password(password), account_id))
+            self._clear_devices(account_id)
             self.db.commit()
             return self._row("id=?", (account_id,))
 
@@ -262,7 +335,7 @@ class AccountStore:
                 raise AccountError("account_not_found", 404)
             self.db.execute("UPDATE accounts SET status=? WHERE id=?", (status, account_id))
             if status == "disabled":
-                self.db.execute("UPDATE accounts SET device_digest=NULL, active_install_id=NULL WHERE id=?", (account_id,))
+                self._clear_devices(account_id)
             self.db.commit()
             return self._row("id=?", (account_id,))
 
@@ -270,6 +343,57 @@ class AccountStore:
         with self.lock:
             if self._row("id=?", (account_id,)) is None:
                 raise AccountError("account_not_found", 404)
-            self.db.execute("UPDATE accounts SET device_digest=NULL, active_install_id=NULL WHERE id=?", (account_id,))
+            self._clear_devices(account_id)
+            self.db.commit()
+            return self._row("id=?", (account_id,))
+
+    def admin_set_multi_device(self, account_id: int, enabled) -> tuple[dict, str | None]:
+        """Back to one computer: the most recently used one stays. Returns the install that stays."""
+        if not isinstance(enabled, bool):
+            raise AccountError("multi_device_invalid")
+        with self.lock:
+            if self._row("id=?", (account_id,)) is None:
+                raise AccountError("account_not_found", 404)
+            self.db.execute("UPDATE accounts SET multi_device=? WHERE id=?", (int(enabled), account_id))
+            kept = None
+            if not enabled:
+                row = self.db.execute("""SELECT id, install_id FROM account_devices WHERE account_id=?
+                    ORDER BY last_seen_at DESC, id DESC LIMIT 1""", (account_id,)).fetchone()
+                self.db.execute("DELETE FROM account_devices WHERE account_id=? AND id!=?", (account_id, row[0] if row else -1))
+                kept = row[1] if row else ""
+            self.db.commit()
+            return self._row("id=?", (account_id,)), kept
+
+    def admin_remove_device(self, account_id: int, device_id) -> tuple[dict, str]:
+        if type(device_id) is not int:
+            raise AccountError("device_not_found", 404)
+        with self.lock:
+            row = self.db.execute("SELECT install_id FROM account_devices WHERE id=? AND account_id=?", (device_id, account_id)).fetchone()
+            if row is None:
+                raise AccountError("device_not_found", 404)
+            self.db.execute("DELETE FROM account_devices WHERE id=?", (device_id,))
+            self.db.commit()
+            return self._row("id=?", (account_id,)), row[0]
+
+    def admin_set_expiry(self, account_id: int, expires_at) -> dict:
+        if expires_at is not None and (isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)) or expires_at <= 0):
+            raise AccountError("expires_invalid")
+        with self.lock:
+            if self._row("id=?", (account_id,)) is None:
+                raise AccountError("account_not_found", 404)
+            self.db.execute("UPDATE accounts SET expires_at=? WHERE id=?", (expires_at, account_id))
+            self.db.commit()
+            return self._row("id=?", (account_id,))
+
+    def admin_set_admin(self, account_id: int, enabled) -> dict:
+        if not isinstance(enabled, bool):
+            raise AccountError("admin_invalid")
+        with self.lock:
+            account = self._row("id=?", (account_id,))
+            if account is None:
+                raise AccountError("account_not_found", 404)
+            if enabled and not account["phone"]:
+                raise AccountError("admin_needs_phone")
+            self.db.execute("UPDATE accounts SET is_admin=? WHERE id=?", (int(enabled), account_id))
             self.db.commit()
             return self._row("id=?", (account_id,))

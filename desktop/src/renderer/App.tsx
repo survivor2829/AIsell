@@ -32,6 +32,7 @@ import { type ComponentType, useEffect, useMemo, useRef, useState } from "react"
 import productBrand from "../../product-brand.json";
 import packageInfo from "../../package.json";
 import { LoginScreen } from "./LoginScreen";
+import { AccountManagementPage } from "./AccountManagementPage";
 import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
@@ -65,7 +66,7 @@ import { AgentOverview } from "./AgentOverview";
 import { back, remember, type Place } from "./nav-history";
 import BillingBadge from "./BillingBadge";
 
-type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview" | "nurture" | "phone-matrix" | "guide";
+type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview" | "nurture" | "phone-matrix" | "guide" | "account-admin";
 // 小丽 ("tutorials") leads 账号运营 since 2026-10-30; the tutorials page itself moved to the bottom as "guide".
 type GroupKey = WorkspaceRoleKey | "business" | "tutorials";
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
@@ -74,7 +75,7 @@ const productDisplayName = productBrand.displayName.replace(/版本$/u, "");
 
 type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string;
-  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string };
+  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string; isAdmin?: boolean };
 type AccountApi = {
   status: () => Promise<LicenseStatus>;
   login: (payload: { phone: string; password: string }) => Promise<LicenseStatus>;
@@ -461,7 +462,8 @@ function isSupportRole(key: string): key is typeof supportRoles[number] {
 const guideNavItem: NavItem = { key: "guide", label: "操作教程", icon: CircleHelp };
 const finishedNavItem: NavItem = { key: "finished", label: "成片中心", icon: Video };
 const accountsNavItem: NavItem = { key: "accounts", label: "平台账号", icon: CircleUserRound };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, guideNavItem, finishedNavItem, accountsNavItem, ...agentSecondary, diagnosticsNavItem];
+const accountAdminNavItem: NavItem = { key: "account-admin", label: "账号管理", icon: UsersRound };
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), ...supportNavItems, guideNavItem, finishedNavItem, accountsNavItem, ...agentSecondary, diagnosticsNavItem, accountAdminNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -535,7 +537,7 @@ function taskStatusLabel(status: string) {
 function moduleIsAvailable(key: ModuleKey) {
   // 账号运营（小丽）自 1.2.58 有自己的首页；漏了它会在首页下面多出一整屏「下一阶段开放」。
   if (isSupportRole(key) || key === "business" || key === "tutorials" || isBusinessModule(key)) return true;
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "phone-matrix", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "phone-matrix", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics", "account-admin"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -910,6 +912,7 @@ export default function App() {
             </button>
             {accountMenuOpen && <div className="account-menu" role="menu">
               <div className="account-menu-status"><span>{license.mode === "account" ? "登录账号" : "软件授权"}</span><strong>{license.mode === "account" ? (license.phone || license.displayName || "已登录") : (license.licenseId || "已授权")}</strong></div>
+              {license.mode === "account" && license.isAdmin && <button role="menuitem" onClick={() => { setActive("account-admin"); setAccountMenuOpen(false); }}><UsersRound size={16} />账号管理</button>}
               <button role="menuitem" onClick={() => { setActive("contact-sync"); setAccountMenuOpen(false); }}><RefreshCw size={16} />重新同步微信</button>
               <button role="menuitem" onClick={() => { openFeedback(); setAccountMenuOpen(false); }}><MessageCircle size={16} />吐槽中心</button>
               <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setSessionEntered(false);
@@ -929,6 +932,7 @@ export default function App() {
         <div className="content-card" ref={contentScrollRef}>
           {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={22} strokeWidth={2.75} aria-hidden="true" />返回上一级</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
+          {active === "account-admin" && license.mode === "account" && license.isAdmin && <AccountManagementPage selfPhone={license.phone || ""} />}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole}
             onStart={() => selectChild("production", "workspace")} workflowTasks={workflow.state.tasks as unknown as Record<string, unknown>[]} />}
           {activeGroup?.key === "business" && active !== "business" && <BusinessAssistantPage module={isBusinessModule(active) ? active : undefined} appearance={appearanceFor("business", visiblePreference("business").appearanceId)} onPersonalize={() => setPersonalizingRole("business")} onOpenModule={module => selectChild("business", module)} />}
