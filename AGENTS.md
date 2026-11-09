@@ -38,6 +38,9 @@ Windows Electron 微信客户运营与内容制作应用。涉及微信适配的
 
 ## 发布与清理
 
+- 每次内部更新都按项目 Skill `release-internal` 的固定顺序，构建发布只用 `npm.cmd run release:sop`，不临时换流程。
+- 新增长耗时功能必须接入桌宠进度：在 `desktop/src/main/sprite-activity.cjs` 的 `SPRITE_FEATURES` 登记，漏接时自检不通过。
+
 - 内部更新的方式（组件增量优先、何时用 `--full`）和每次发布的客户公告要求（`customer-release-notes.json`）见 [docs/internal-release.md](docs/internal-release.md) 末节，发布前必须遵守。
 - `release/` 是生成物，只从 `desktop/` 重建。不从 dirty worktree 对外发布；提交、运行时、包内 manifest 和实机验收必须对应同一版本。
 - 旧运行时、构建目录、旧脚本和发布物先列清理候选，再按用户对候选范围的确认处理；已确认且范围未变时不重复询问。新增候选、用途不明或包含唯一内容时先说明影响并确认。源码和规则的冗余整理不等于获准删除运行数据、原始素材或回滚证据。

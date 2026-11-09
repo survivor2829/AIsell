@@ -335,19 +335,13 @@
        避免硬写两列在右栏变宽时变得过宽且丑。 */
     .style-picker { margin-top: 14px; }
     .style-picker-title { font-size: 13px; font-weight: 700; color: var(--color-text); margin-bottom: 8px; }
-    .style-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
-    .style-card { display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1.5px solid var(--color-border); border-radius: 10px; background: #fff; cursor: pointer; text-align: left; font: inherit; transition: border-color .15s, transform .15s; }
-    .style-card:hover { border-color: var(--color-border-hover); transform: translateY(-1px); }
-    .style-card:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
-    .style-card[aria-pressed="true"] { border-color: var(--color-primary); box-shadow: 0 0 0 1px var(--color-primary); }
-    .style-card-art { position: relative; display: block; height: 52px; border-radius: 7px; overflow: hidden; margin-bottom: 4px; }
-    .style-card-art i { position: absolute; left: 8px; height: 5px; border-radius: 3px; }
-    .style-card-art i:nth-child(1) { top: 10px; width: 46%; }
-    .style-card-art i:nth-child(2) { top: 20px; width: 30%; opacity: .75; }
-    .style-card-art b { position: absolute; right: 8px; bottom: 7px; width: 26px; height: 26px; border-radius: 6px; opacity: .85; }
-    .style-card-art em { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-style: normal; font-size: 26px; font-weight: 800; text-shadow: 0 1px 4px rgba(0,0,0,.25); }
-    .style-card strong { font-size: 12.5px; color: var(--color-text); }
-    .style-card small { font-size: 11px; color: var(--color-text-muted, #6b7280); line-height: 1.3; }
+    .style-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .style-card { display: block; padding: 0; border: 0; border-radius: 12px; overflow: hidden; background: #e5e7eb; cursor: pointer; line-height: 0; outline: 2px solid transparent; outline-offset: 2px; transition: transform .15s, outline-color .15s, box-shadow .15s; }
+    .style-card.is-wide { grid-column: span 2; }
+    .style-card svg { display: block; width: 100%; height: auto; }
+    .style-card svg text { font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif; }
+    .style-card:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(15, 23, 42, .18); }
+    .style-card:focus-visible, .style-card[aria-pressed="true"] { outline-color: var(--color-primary); }
     .style-result { margin: 8px 0 0; padding: 6px 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 13px; font-weight: 600; }
     .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; padding: 14px 16px 16px; }
     .theme-card {
@@ -678,26 +672,11 @@
       <div class="style-picker" id="style_picker">
         <div class="style-picker-title">这次想要什么风格？</div>
         <div class="style-grid">
-        <button type="button" class="style-card" data-style="random" aria-pressed="true" onclick="selectRefineStyle('random')">
-          <span class="style-card-art" style="background:linear-gradient(135deg,#ff9a8b,#fad0c4 40%,#a1c4fd)"><em>?</em></span>
-          <strong>随机抽卡</strong><small>交给运气，揭晓惊喜</small>
-        </button>
-        <button type="button" class="style-card" data-style="bright" aria-pressed="false" onclick="selectRefineStyle('bright')">
-          <span class="style-card-art" style="background:linear-gradient(135deg,#fffaf0,#cfe9ff)"><i style="background:#ff9a3c"></i><i style="background:#3aa0ff"></i><b style="background:#3aa0ff"></b></span>
-          <strong>明亮活泼</strong><small>阳光、轻快、有活力</small>
-        </button>
-        <button type="button" class="style-card" data-style="premium" aria-pressed="false" onclick="selectRefineStyle('premium')">
-          <span class="style-card-art" style="background:linear-gradient(135deg,#2a2a2e,#101013)"><i style="background:#d9bf8c"></i><i style="background:#8d8d94"></i><b style="background:#8d8d94"></b></span>
-          <strong>高级专业</strong><small>沉稳、深色、质感</small>
-        </button>
-        <button type="button" class="style-card" data-style="fresh" aria-pressed="false" onclick="selectRefineStyle('fresh')">
-          <span class="style-card-art" style="background:linear-gradient(135deg,#fbf8ef,#d8ecd0)"><i style="background:#6aa86a"></i><i style="background:#c6a67c"></i><b style="background:#c6a67c"></b></span>
-          <strong>清新自然</strong><small>清爽、干净、放心</small>
-        </button>
-        <button type="button" class="style-card" data-style="tech" aria-pressed="false" onclick="selectRefineStyle('tech')">
-          <span class="style-card-art" style="background:linear-gradient(135deg,#0b1f4a,#0b6e8f)"><i style="background:#37e0ff"></i><i style="background:#7c6cff"></i><b style="background:#7c6cff"></b></span>
-          <strong>科技未来</strong><small>智能、精准、前沿</small>
-        </button>
+        <button type="button" class="style-card is-wide" data-style="random" data-name="随机抽卡" aria-label="随机抽卡" aria-pressed="true" onclick="selectRefineStyle('random')"><svg viewBox="0 0 248 160" aria-hidden="true"><defs><linearGradient id="sc-r" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7a59"/><stop offset=".55" stop-color="#f0418a"/><stop offset="1" stop-color="#6a5cff"/></linearGradient></defs><rect width="248" height="160" fill="url(#sc-r)"/><g transform="translate(62 72)"><rect x="-74" y="-46" width="58" height="82" rx="8" fill="#fff6e3" transform="rotate(-16 -45 -5)"/><rect x="-44" y="-52" width="58" height="82" rx="8" fill="#1b1b20" transform="rotate(-5 -15 -11)"/><rect x="-12" y="-50" width="58" height="82" rx="8" fill="#dcefd2" transform="rotate(6 17 -9)"/><rect x="18" y="-44" width="58" height="82" rx="8" fill="#0b2a5a" transform="rotate(16 47 -3)"/></g><text x="205" y="94" text-anchor="middle" font-size="56" font-weight="900" fill="#fff">?</text><rect y="124" width="248" height="36" fill="#000" opacity=".22"/><text x="12" y="141" font-size="13" font-weight="800" fill="#fff">随机抽卡</text><text x="12" y="153" font-size="8" fill="#fff" opacity=".9">交给运气，整套抽中一种风格</text></svg></button>
+        <button type="button" class="style-card" data-style="bright" data-name="明亮活泼" aria-label="明亮活泼" aria-pressed="false" onclick="selectRefineStyle('bright')"><svg viewBox="0 0 120 160" aria-hidden="true"><defs><linearGradient id="sc-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff6df"/><stop offset="1" stop-color="#bfe3ff"/></linearGradient></defs><rect width="120" height="160" fill="url(#sc-b)"/><circle cx="100" cy="22" r="17" fill="#ffd25e"/><text x="15" y="27" font-size="13" font-weight="900" fill="#1c4f8a">核心卖点</text><text x="15" y="41" font-size="7.5" fill="#47709e">一句话讲清优势</text><rect x="15" y="50" width="27" height="11" rx="5.5" fill="#ff9a3c"/><rect x="46" y="50" width="27" height="11" rx="5.5" fill="#ff9a3c"/><rect x="77" y="50" width="27" height="11" rx="5.5" fill="#ff9a3c"/><g><ellipse cx="60" cy="118" rx="33" ry="4.5" fill="#000" opacity=".22"/><rect x="33" y="78" width="54" height="38" rx="11" fill="#ffffff"/><path d="M40 80C40 58 80 58 80 80Z" fill="#7cc4ff"/><rect x="46" y="88" width="28" height="6" rx="3" fill="#2d6fb5" opacity=".7"/><circle cx="43" cy="116" r="6" fill="#2d6fb5"/><circle cx="77" cy="116" r="6" fill="#2d6fb5"/></g><rect y="124" width="120" height="36" fill="#ffffffcc"/><text x="9" y="141" font-size="13" font-weight="800" fill="#1c4f8a">明亮活泼</text><text x="9" y="153" font-size="8" fill="#1c4f8a" opacity=".85">阳光 · 轻快 · 有活力</text></svg></button>
+        <button type="button" class="style-card" data-style="premium" data-name="高级专业" aria-label="高级专业" aria-pressed="false" onclick="selectRefineStyle('premium')"><svg viewBox="0 0 120 160" aria-hidden="true"><defs><radialGradient id="sc-p" cx=".7" cy=".3" r=".9"><stop offset="0" stop-color="#4a4640"/><stop offset=".6" stop-color="#1d1c20"/><stop offset="1" stop-color="#0d0d10"/></radialGradient></defs><rect width="120" height="160" fill="url(#sc-p)"/><path d="M15 45H105" stroke="#d9bf8c" stroke-width=".8"/><text x="15" y="27" font-size="13" font-weight="900" fill="#f1e2c2">核心卖点</text><text x="15" y="41" font-size="7.5" fill="#b9a988">一句话讲清优势</text><rect x="15" y="50" width="27" height="11" rx="5.5" fill="#d9bf8c55"/><rect x="46" y="50" width="27" height="11" rx="5.5" fill="#d9bf8c55"/><rect x="77" y="50" width="27" height="11" rx="5.5" fill="#d9bf8c55"/><g><ellipse cx="60" cy="118" rx="33" ry="4.5" fill="#000" opacity=".22"/><rect x="33" y="78" width="54" height="38" rx="11" fill="#d8d8dc"/><path d="M40 80C40 58 80 58 80 80Z" fill="#8d8d94"/><rect x="46" y="88" width="28" height="6" rx="3" fill="#26262b" opacity=".7"/><circle cx="43" cy="116" r="6" fill="#26262b"/><circle cx="77" cy="116" r="6" fill="#26262b"/></g><rect y="124" width="120" height="36" fill="#00000099"/><text x="9" y="141" font-size="13" font-weight="800" fill="#f1e2c2">高级专业</text><text x="9" y="153" font-size="8" fill="#f1e2c2" opacity=".85">沉稳 · 深色 · 质感</text></svg></button>
+        <button type="button" class="style-card" data-style="fresh" data-name="清新自然" aria-label="清新自然" aria-pressed="false" onclick="selectRefineStyle('fresh')"><svg viewBox="0 0 120 160" aria-hidden="true"><defs><linearGradient id="sc-f" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbf8ef"/><stop offset="1" stop-color="#cfe8c6"/></linearGradient></defs><rect width="120" height="160" fill="url(#sc-f)"/><path d="M120 0C92 8 88 30 102 44C116 36 122 18 120 0ZM104 42C100 58 104 74 120 82C124 66 120 50 104 42Z" fill="#7fb77e"/><text x="15" y="27" font-size="13" font-weight="900" fill="#2f5d3a">核心卖点</text><text x="15" y="41" font-size="7.5" fill="#5f8467">一句话讲清优势</text><rect x="15" y="50" width="27" height="11" rx="5.5" fill="#a9c98f"/><rect x="46" y="50" width="27" height="11" rx="5.5" fill="#a9c98f"/><rect x="77" y="50" width="27" height="11" rx="5.5" fill="#a9c98f"/><g><ellipse cx="60" cy="118" rx="33" ry="4.5" fill="#000" opacity=".22"/><rect x="33" y="78" width="54" height="38" rx="11" fill="#ffffff"/><path d="M40 80C40 58 80 58 80 80Z" fill="#b6d9a8"/><rect x="46" y="88" width="28" height="6" rx="3" fill="#6a8f5c" opacity=".7"/><circle cx="43" cy="116" r="6" fill="#6a8f5c"/><circle cx="77" cy="116" r="6" fill="#6a8f5c"/></g><rect y="124" width="120" height="36" fill="#ffffffc2"/><text x="9" y="141" font-size="13" font-weight="800" fill="#2f5d3a">清新自然</text><text x="9" y="153" font-size="8" fill="#2f5d3a" opacity=".85">清爽 · 干净 · 放心</text></svg></button>
+        <button type="button" class="style-card" data-style="tech" data-name="科技未来" aria-label="科技未来" aria-pressed="false" onclick="selectRefineStyle('tech')"><svg viewBox="0 0 120 160" aria-hidden="true"><defs><linearGradient id="sc-t" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a1a44"/><stop offset="1" stop-color="#0b6e8f"/></linearGradient></defs><rect width="120" height="160" fill="url(#sc-t)"/><path d="M0 60H120M0 80H120M0 100H120M20 44V124M50 44V124M80 44V124M110 44V124" stroke="#37e0ff" stroke-opacity=".22" stroke-width=".7"/><circle cx="60" cy="88" r="36" fill="#37e0ff" opacity=".14"/><text x="15" y="27" font-size="13" font-weight="900" fill="#d9fbff">核心卖点</text><text x="15" y="41" font-size="7.5" fill="#7fd6e8">一句话讲清优势</text><rect x="15" y="50" width="27" height="11" rx="5.5" fill="#37e0ff66"/><rect x="46" y="50" width="27" height="11" rx="5.5" fill="#37e0ff66"/><rect x="77" y="50" width="27" height="11" rx="5.5" fill="#37e0ff66"/><g><ellipse cx="60" cy="118" rx="33" ry="4.5" fill="#000" opacity=".22"/><rect x="33" y="78" width="54" height="38" rx="11" fill="#e6f6fb"/><path d="M40 80C40 58 80 58 80 80Z" fill="#37e0ff"/><rect x="46" y="88" width="28" height="6" rx="3" fill="#123d66" opacity=".7"/><circle cx="43" cy="116" r="6" fill="#123d66"/><circle cx="77" cy="116" r="6" fill="#123d66"/></g><rect y="124" width="120" height="36" fill="#00122f99"/><text x="9" y="141" font-size="13" font-weight="800" fill="#d9fbff">科技未来</text><text x="9" y="153" font-size="8" fill="#d9fbff" opacity=".85">智能 · 精准 · 前沿</text></svg></button>
         </div>
         <p class="style-result" id="style_result" role="status" hidden></p>
       </div>
@@ -920,7 +899,7 @@
     if (result) result.hidden = true;
   }
   function selectedRefineStyleName() {
-    return document.querySelector(`.style-card[data-style="${selectedRefineStyle}"] strong`)?.textContent || '';
+    return document.querySelector(`.style-card[data-style="${selectedRefineStyle}"]`)?.dataset.name || '';
   }
   function showRefineStyleResult(label, drawn = false) {
     const result = document.getElementById('style_result');

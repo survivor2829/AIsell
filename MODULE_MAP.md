@@ -32,6 +32,7 @@
 | `desktop/src/shared/product-detail-examples.json`、`ProductDetailExamples.tsx` | 分类与示例媒体清单、仅显示有示例的分类；48×64小图横条按列排列，原三条左、新三条右，窄容器单列；按需查看原图 | 首屏读取全部长图，改变AI生成规则，管理用户业务素材 |
 | `desktop/src/renderer/CustomerTools.tsx`、`desktop/src/renderer/CustomerPanel.tsx` | 顶栏公告、离线教程和对应功能跳转；公告只展示主进程已验证数据 | 下载或执行公告内容；从远程页面加载教程代码 |
 | `desktop/src/renderer/XiaoxiSprite.tsx`、`MascotPet.ts`、`main/floating-progress-window.cjs`、`wechat-workflow-ipc.cjs` 的 sprite 部分 | 吉祥物悬浮窗：气泡展示真实任务状态；MascotPet 负责部件动画、自主动作和触摸反应；主进程只移动窗口（走动、拖动、下落）并上报光标 | 用闲聊覆盖任务进度；微信任务或联系人同步时走动；无动作时继续跑帧循环 |
+| `desktop/src/main/sprite-activity.cjs`、`sprite-feeds.cjs` | 各功能进度翻译成桌宠的话；`SPRITE_FEATURES` 是功能登记表，新增长耗时功能必须在此登记，`sprite-activity.self_check.cjs` 会扫描主进程消息防漏接 |
 | `server/provider-gateway/accounts.py`、`renderer/AccountManagementPage.tsx`、`main/account-auth-ipc.cjs` | 账号的通用/一台电脑、按电脑记录登录和软件内账号管理；管理票据只在主进程，服务器每次校验管理员 | 在软件内授予管理员或修改其他管理员；在软件内充值；把手机号写入源码或日志 |
 | `desktop/src/main/bootstrap.cjs`、`src/shared/launcher-contract.cjs` | 固定启动器信任核：选择、签名与JSON清单核验、单实例、启动尝试及干净进程回退 | 下载、备份和业务功能进入固定核；启动时全树读取文件内容 |
 | `desktop/src/main/updater-bootstrap.cjs`、`component-*`、`update-*`、`download-verification.cjs` | 可增量更新器：准备回执、一次下载摘要、结构检查、助手、备份与已有保留器；assets保留静态媒体原路径 | 将prepared当作健康ACK；按版本较新清除未知备份；把媒体混入界面包 |

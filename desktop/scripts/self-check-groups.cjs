@@ -1,5 +1,6 @@
 const checks = [
   "scripts/run-self-checks.self_check.cjs",
+  "scripts/release-sop.self_check.cjs",
   "scripts/artifact-retention.self_check.cjs",
   "scripts/build-renderer.self_check.cjs",
   "scripts/dev-electron.self_check.cjs",

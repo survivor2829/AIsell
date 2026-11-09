@@ -1034,7 +1034,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       reply: autoReplyController
     });
     spriteFeeds = createSpriteFeeds({ sprite: () => workflowController, contentEngine: () => contentEngineController,
-      productDetailHistory: () => readProductDetailHistory(path.join(app.getPath("userData"), "product-detail", "made-history.json")) });
+      productDetailHistory: () => readProductDetailHistory(path.join(app.getPath("userData"), "product-detail", "made-history.json")),
+      productDetailStatus: () => productDetailController?.refineActivity?.(),
+      productVideoTasks: () => productVideoRegistration?.service?.isBusy?.() ? productVideoRegistration.service.list().items : [],
+      referenceTasks: () => digitalHumanRegistration?.service?.referenceTasks?.() || [] });
     spriteFeeds.start();
     createWindow();
     registerRolePreferencesIpc({ ipcMain, controller: createRolePreferences({ rootDir: runtime.rootDir }), getMainWindow: () => mainWindow });

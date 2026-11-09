@@ -489,6 +489,13 @@ assert continued.status_code == 202 and resumes == ["task-recovery-4"]
 updating = client_one.post("/internal/update-state", json={"hold": False},
                           headers={"x-xiaoxi-control-token": config.control_token})
 assert updating.status_code == 200 and updating.get_json()["busy"] is True
+activity = client_one.get("/internal/refine-activity", headers={"x-xiaoxi-control-token": config.control_token})
+assert activity.status_code == 200 and activity.get_json()["task"]["status"] == "running_generator"
+assert activity.get_json()["state"] == "running_generator"
+ledger_before_poll = ledger_path.read_bytes()
+client_one.get("/internal/refine-activity", headers={"x-xiaoxi-control-token": config.control_token})
+assert ledger_path.read_bytes() == ledger_before_poll
+assert client_one.get("/internal/refine-activity").status_code == 403
 
 # Recovery 202 takes ownership before a new paid execute can be admitted.
 archive = json.loads(archive_path.read_text(encoding="utf-8"))

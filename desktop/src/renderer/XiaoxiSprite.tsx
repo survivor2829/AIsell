@@ -17,7 +17,9 @@ const GREETINGS: [RegExp, string][] = [
   [/联系人/, "我去把微信联系人搬过来～"],
   [/养号/, "我去帮你养号啦，刷刷视频、混个脸熟～"],
   [/分发|发布/, "视频我来帮你发出去～"],
-  [/视频|素材|封面|包装/, "视频交给我来做，好了叫你～"],
+  [/详情图|卖点/, "详情图交给我来画，好了叫你～"],
+  [/GEO|文章|豆包/, "文章的事交给我，写好叫你～"],
+  [/视频|素材|封面|包装|口播|成片/, "视频交给我来做，好了叫你～"],
   [/找客户|获客|线索/, "我去帮你找找有意向的客户～"],
   [/./, "这件事交给我啦～"]
 ];
@@ -37,6 +39,7 @@ const greetingFor = (title: string) => (GREETINGS.find(([pattern]) => pattern.te
 const workFor = (activity: SpriteActivity | null, alert: string): PetWork => {
   if (alert) return "error";
   if (!activity) return null;
+  if (activity.kind === "productDetail") return "drawing";
   return activity.kind === "wechat" || /消息|触达|回复|接待|朋友圈|联系人/.test(activity.title) ? "typing" : "work";
 };
 
