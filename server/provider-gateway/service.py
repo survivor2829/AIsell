@@ -63,6 +63,7 @@ UNMETERED_POST = ("/apimart/uploads/images", "/apimart/seedance2/private-avatar/
 APP_IDS = {
     "test": "com.aihuoke.desktop.test",
     "delivery": "com.aihuoke.desktop",
+    "mobile": "com.xiaoxi.mobile",
 }
 PRODUCT_ID = "ai-huoke-desktop"
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z", re.I)
