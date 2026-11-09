@@ -109,6 +109,7 @@ CI/CD 不会自动证明所有微信场景、任意素材的视频质量或跨�
 ## 发布规则（2026-09-24 从 AGENTS.md 原样挪入）
 
 - 日常内部更新统一优先走组件增量：`npm.cmd run release:internal` 构建增量候选，验收后 `npm.cmd run publish:internal` 发布；原 `release:components`／`publish:components` 入口继续兼容。首次安装、已核实的底座／数据模式不兼容或明确要求离线安装器时才用 `--full`，不能因改动多、普通构建失败或习惯操作就改成整包。先核对基础文件差异；相同内容的压缩包排列变化不能当作依赖升级。增量仍需同提交检查、组合目录与实际切换验收，详细命令和例外见 [内部更新标准](docs/internal-release.md)。
+- 公告写给客户看（吉祥物会直接念给客户）：用客户听得懂的话，第一条写这次最大的亮点；同时在 `customer-release-dates.json` 写上该版本的日期和时分（北京时间）。
 - 每次发布须在 `desktop/src/shared/customer-release-notes.json` 为该版本写明客户可感知的功能新增、问题修复及未验证项，不用“修复与体验改进”等空泛概括。整包与增量发布共用同一份内容，随安装包内置，确保离线或手动安装后也能查看；已发布版本不原地替换程序内容，新修复递增版本并补新公告。发布前核对公告、版本、构建及验证证据一致，真实微信待测项不能写成已解决。
 
 CI源码检查使用 `self-check-groups.cjs` 的统一清单，分为 core、moments-visual、reply-visual、rpa、runtime 五组，在独立标准 Windows runner 执行；组内资源独占保持不变，`source-and-renderer` 汇总结果。PR完整检查及同树主线轻量核验是两种明确状态：后者只在原PR全部五组、汇总、service-and-content及本地详情E2E成功且上述证据链成立时，才允许主线五组/服务显示skipped；普通缺组或跳过仍拒绝复用。PR失败/中断、未合并、外仓、合并时基线/全树变化、artifact缺失或过期均执行主线完整检查。手动工作流保持完整检查。五分钟目标包含依赖准备；端到端另外统计从最终PR CI启动至本机更新验收完成的历时，重试、排队和衔接等待单列，不只报成功单轮耗时。

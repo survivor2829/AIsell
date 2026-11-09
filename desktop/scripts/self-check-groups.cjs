@@ -127,6 +127,7 @@ const checks = [
   "src/renderer/batch-draft-queue.self_check.cjs",
   "src/renderer/batch-voice-recovery.self_check.cjs",
   "src/renderer/ad-law-terms.self_check.cjs",
+  "src/renderer/release-voice.self_check.cjs",
   "src/renderer/status-subscription.self_check.cjs",
   "src/renderer/creative-studio.self_check.cjs",
   "src/renderer/flow-funnel.self_check.cjs",

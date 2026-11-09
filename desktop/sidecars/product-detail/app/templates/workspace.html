@@ -333,6 +333,22 @@
        - layout-balance/edit 右栏 ≈ 460px → 3-4 列
        - layout-preview 右栏 ≈ 320px → 2 列
        避免硬写两列在右栏变宽时变得过宽且丑。 */
+    .style-picker { margin-top: 14px; }
+    .style-picker-title { font-size: 13px; font-weight: 700; color: var(--color-text); margin-bottom: 8px; }
+    .style-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+    .style-card { display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1.5px solid var(--color-border); border-radius: 10px; background: #fff; cursor: pointer; text-align: left; font: inherit; transition: border-color .15s, transform .15s; }
+    .style-card:hover { border-color: var(--color-border-hover); transform: translateY(-1px); }
+    .style-card:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .style-card[aria-pressed="true"] { border-color: var(--color-primary); box-shadow: 0 0 0 1px var(--color-primary); }
+    .style-card-art { position: relative; display: block; height: 52px; border-radius: 7px; overflow: hidden; margin-bottom: 4px; }
+    .style-card-art i { position: absolute; left: 8px; height: 5px; border-radius: 3px; }
+    .style-card-art i:nth-child(1) { top: 10px; width: 46%; }
+    .style-card-art i:nth-child(2) { top: 20px; width: 30%; opacity: .75; }
+    .style-card-art b { position: absolute; right: 8px; bottom: 7px; width: 26px; height: 26px; border-radius: 6px; opacity: .85; }
+    .style-card-art em { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-style: normal; font-size: 26px; font-weight: 800; text-shadow: 0 1px 4px rgba(0,0,0,.25); }
+    .style-card strong { font-size: 12.5px; color: var(--color-text); }
+    .style-card small { font-size: 11px; color: var(--color-text-muted, #6b7280); line-height: 1.3; }
+    .style-result { margin: 8px 0 0; padding: 6px 10px; border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 13px; font-weight: 600; }
     .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; padding: 14px 16px 16px; }
     .theme-card {
       border: 2px solid transparent;
@@ -659,10 +675,36 @@
 
       {% if desktop_mode %}
       {% if desktop_capabilities.get('paid_ai_ready') %}
+      <div class="style-picker" id="style_picker">
+        <div class="style-picker-title">这次想要什么风格？</div>
+        <div class="style-grid">
+        <button type="button" class="style-card" data-style="random" aria-pressed="true" onclick="selectRefineStyle('random')">
+          <span class="style-card-art" style="background:linear-gradient(135deg,#ff9a8b,#fad0c4 40%,#a1c4fd)"><em>?</em></span>
+          <strong>随机抽卡</strong><small>交给运气，揭晓惊喜</small>
+        </button>
+        <button type="button" class="style-card" data-style="bright" aria-pressed="false" onclick="selectRefineStyle('bright')">
+          <span class="style-card-art" style="background:linear-gradient(135deg,#fffaf0,#cfe9ff)"><i style="background:#ff9a3c"></i><i style="background:#3aa0ff"></i><b style="background:#3aa0ff"></b></span>
+          <strong>明亮活泼</strong><small>阳光、轻快、有活力</small>
+        </button>
+        <button type="button" class="style-card" data-style="premium" aria-pressed="false" onclick="selectRefineStyle('premium')">
+          <span class="style-card-art" style="background:linear-gradient(135deg,#2a2a2e,#101013)"><i style="background:#d9bf8c"></i><i style="background:#8d8d94"></i><b style="background:#8d8d94"></b></span>
+          <strong>高级专业</strong><small>沉稳、深色、质感</small>
+        </button>
+        <button type="button" class="style-card" data-style="fresh" aria-pressed="false" onclick="selectRefineStyle('fresh')">
+          <span class="style-card-art" style="background:linear-gradient(135deg,#fbf8ef,#d8ecd0)"><i style="background:#6aa86a"></i><i style="background:#c6a67c"></i><b style="background:#c6a67c"></b></span>
+          <strong>清新自然</strong><small>清爽、干净、放心</small>
+        </button>
+        <button type="button" class="style-card" data-style="tech" aria-pressed="false" onclick="selectRefineStyle('tech')">
+          <span class="style-card-art" style="background:linear-gradient(135deg,#0b1f4a,#0b6e8f)"><i style="background:#37e0ff"></i><i style="background:#7c6cff"></i><b style="background:#7c6cff"></b></span>
+          <strong>科技未来</strong><small>智能、精准、前沿</small>
+        </button>
+        </div>
+        <p class="style-result" id="style_result" role="status" hidden></p>
+      </div>
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">根据产品资料与图片配色确定风格，先精选客户买点，一买点一张图，另含封面与资料支持的参数图。详情图合计8至15张，另生成3张1:1电商主图（主图、场景图、参数图，按张计费），白底图免费排版；可下载单张和长图。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">按上面选的风格统一出图，产品外观和配色保持原样；先精选客户买点，一买点一张图，另含封面与资料支持的参数图。详情图合计8至15张，另生成3张1:1电商主图（主图、场景图、参数图，按张计费），白底图免费排版；可下载单张和长图。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -870,6 +912,22 @@
   /* ── State ─────────────────────────────────────────────────── */
   let productImageUrl = '';
   let currentProductType = '{{ initial_product_type|default("设备类") }}';
+  let selectedRefineStyle = 'random';
+  function selectRefineStyle(id) {
+    selectedRefineStyle = id;
+    document.querySelectorAll('.style-card').forEach(card => card.setAttribute('aria-pressed', String(card.dataset.style === id)));
+    const result = document.getElementById('style_result');
+    if (result) result.hidden = true;
+  }
+  function selectedRefineStyleName() {
+    return document.querySelector(`.style-card[data-style="${selectedRefineStyle}"] strong`)?.textContent || '';
+  }
+  function showRefineStyleResult(label, drawn = false) {
+    const result = document.getElementById('style_result');
+    if (!result || !label) return;
+    result.textContent = drawn ? `🎁 这次抽到了：${label}，整套都是这个风格` : `这一套用：${label}`;
+    result.hidden = false;
+  }
   let currentThemeId = 'classic-red';
   let allThemes = [];
   let currentBuildData = null;
@@ -2403,7 +2461,8 @@
       inputMeta = buildAiRefineTaskMeta(productText, productTitle);
       const confirmed = await confirmInWorkspace(
         `根据产品图片和资料自动策划并生成详情图，详情图合计最多15张，另加3张1:1电商主图，按实际生成的张数计费。\n\n` +
-        `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
+        `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字` +
+        (document.getElementById('style_picker') ? `\n风格：${selectedRefineStyleName()}` : ''),
         { title: '确认 AI 精修任务', confirmLabel: '开始付费生成' },
       );
       if (!confirmed) return;
@@ -2416,6 +2475,7 @@
     try {
       if (!taskRecord) {
         try {
+          const submittedStyle = selectedRefineStyle;
           const startResp = await postJson('/api/ai-refine-v2/execute', reroll ? {
             ...reroll, ...(productImageUrl ? { product_image_url: productImageUrl } : {}),
           } : {
@@ -2424,7 +2484,9 @@
             product_title: productTitle,
             schema_mode: 'v2',
             product_category: currentProductType,
+            ...(document.getElementById('style_picker') ? { style: submittedStyle } : {}),
           });
+          showRefineStyleResult(startResp.style_label, submittedStyle === 'random');
           taskRecord = persistAiRefineTask({
             task_id: startResp.task_id,
             mode: startResp.mode,

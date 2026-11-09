@@ -27,7 +27,7 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   assert.ok(previousVersion && bundledVersions.includes(previousVersion), "A skipped recent release is still explained after a full upgrade");
   assert.deepEqual(bundledAnnouncements("1.1.0").map(entry => entry.version), ["1.1.0"], "Do not show future bundled releases");
   const packageVersion = require("../../package.json").version;
-  assert.ok(require("../shared/customer-release-dates.json")[packageVersion], "add the release date to customer-release-dates.json when bumping the version");
+  assert.match(String(require("../shared/customer-release-dates.json")[packageVersion]), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, "add the release date and time to customer-release-dates.json when bumping the version");
   const history = releaseHistory(packageVersion);
   assert.equal(history[0].version, packageVersion, "the history starts at the installed version");
   assert.equal(history.at(-1).version, "0.1.0", "and reaches back to the very first one");
