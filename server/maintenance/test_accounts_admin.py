@@ -112,6 +112,19 @@ class AccountsAdminTest(unittest.TestCase):
             public.shutdown()
             public.server_close()
 
+    def test_callers_cannot_state_their_own_address_through_the_proxy(self):
+        public = Server(("127.0.0.1", 0), Handler, Store(str(Path(self.temp.name) / "public-address")))
+        threading.Thread(target=public.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{public.server_port}"
+            body = {"password": "wrong1234", "appId": "com.aihuoke.desktop.test", "channel": "test", "version": "1.2.15", "installId": "33333333-3333-3333-3333-333333333333"}
+            replies = [self.call(base, "/v1/provider-gateway/session", {**body, "phone": f"1390000{index:04d}"}, origin=False,
+                                 headers={"X-Xiaoxi-Client-Ip": f"203.0.113.{index}"}) for index in range(31)]
+            self.assertEqual((429, "login_throttled"), (replies[-1][0], replies[-1][1].get("error")), replies[-1])
+        finally:
+            public.shutdown()
+            public.server_close()
+
     def test_gateway_admin_routes_need_the_token(self):
         self.assertEqual(404, self.call(self.gateway_origin, "/v1/accounts-admin/accounts", origin=False)[0])
         self.assertEqual(404, self.call(self.gateway_origin, "/v1/accounts-admin/accounts", origin=False,

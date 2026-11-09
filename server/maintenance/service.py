@@ -343,6 +343,7 @@ class Handler(BaseHTTPRequestHandler):
             value = self.headers.get(name)
             if value and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
                 headers[name] = value
+        headers["X-Xiaoxi-Client-Ip"] = self.client_address[0]
         if body is not None:
             headers["Content-Length"] = str(len(body))
         target = PROVIDER_GATEWAY_ORIGIN + self.path

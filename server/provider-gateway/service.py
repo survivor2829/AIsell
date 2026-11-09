@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 import io
 import http.client
 import json
@@ -1363,6 +1364,18 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"Bearer\s+(.+)", value, re.I)
         return bool(match and self.config.sessions.validate(match.group(1).strip()))
 
+    def _client_address(self):
+        """The customer's address. Requests arrive from the local proxy, which states it in this header
+        after dropping whatever the caller sent; without it every customer would look like 127.0.0.1."""
+        peer = self.client_address[0]
+        stated = self.headers.get("X-Xiaoxi-Client-Ip", "")
+        if peer in ("127.0.0.1", "::1") and stated:
+            try:
+                return str(ipaddress.ip_address(stated))
+            except ValueError:
+                pass
+        return peer
+
     def _session_subject(self):
         match = re.fullmatch(r"Bearer\s+(.+)", self.headers.get("Authorization", ""), re.I)
         return self.config.sessions.subject(match.group(1).strip()) if match else None
@@ -1466,7 +1479,7 @@ class Handler(BaseHTTPRequestHandler):
         accounts = self.server.accounts
         try:
             if isinstance(body.get("phone"), str) or isinstance(body.get("password"), str):
-                account, device = accounts.login_password(body.get("phone"), body.get("password"), install_id, self.client_address[0])
+                account, device = accounts.login_password(body.get("phone"), body.get("password"), install_id, self._client_address())
                 return self._issue_account_session(account, device, install_id=install_id)
             if isinstance(body.get("deviceToken"), str):
                 return self._issue_account_session(accounts.login_device(body["deviceToken"], install_id), install_id=install_id)

@@ -38,8 +38,8 @@ class AccountTest(unittest.TestCase):
         self.server.receipts.close()
         self.temp.cleanup()
 
-    def call(self, route, body=None, token="", admin=None):
-        headers = {"Content-Type": "application/json"}
+    def call(self, route, body=None, token="", admin=None, extra=None):
+        headers = {"Content-Type": "application/json", **(extra or {})}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if admin is not None:
@@ -252,6 +252,26 @@ class AccountTest(unittest.TestCase):
         status, relaunch = self.session(INSTALL_A, deviceToken=updated["deviceToken"])
         self.assertEqual(200, status, relaunch)
         self.assertEqual("lic-abcd", relaunch["account"]["id"])
+
+    def login_from(self, address, phone, password):
+        return self.call("/v1/provider-gateway/session", {"appId": "com.aihuoke.desktop.test", "channel": "test", "version": "1.2.15", "installId": INSTALL_A,
+                                                          "phone": phone, "password": password}, extra={"X-Xiaoxi-Client-Ip": address})
+
+    def test_one_customers_wrong_passwords_do_not_lock_out_the_others(self):
+        self.new_account("13800000011")
+        self.new_account("13800000012")
+        for _ in range(6):
+            self.login_from("203.0.113.5", "13800000011", "wrong1234")
+        self.assertEqual(429, self.login_from("203.0.113.9", "13800000011", "abc12345")[0], "the guessed phone number still waits")
+        self.assertEqual(200, self.login_from("203.0.113.5", "13800000012", "abc12345")[0], "same office, another phone number")
+        self.assertEqual(200, self.login_from("203.0.113.9", "13800000012", "abc12345")[0])
+
+    def test_one_address_guessing_many_phone_numbers_is_stopped(self):
+        self.new_account("13800000013")
+        for index in range(30):
+            self.login_from("203.0.113.7", f"1390000{index:04d}", "wrong1234")
+        self.assertEqual(429, self.login_from("203.0.113.7", "13800000013", "abc12345")[0])
+        self.assertEqual(200, self.login_from("203.0.113.8", "13800000013", "abc12345")[0], "other addresses are not affected")
 
     def test_wrong_passwords_are_throttled(self):
         self.call("/v1/accounts-admin/accounts", {"phone": "13600136000", "password": "start2026"}, admin=ADMIN)

@@ -25,6 +25,8 @@ MIN_PASSWORD, MAX_PASSWORD = 8, 64
 ADMIN_TICKET_SECONDS = 30 * 60
 DEVICE_TTL_SECONDS = 90 * 24 * 60 * 60
 FAILED_LOGIN_LIMIT, FAILED_LOGIN_WINDOW = 5, 15 * 60
+# One address can be a whole office behind one router, so it gets more room than one phone number.
+FAILED_LOGIN_CLIENT_LIMIT = 30
 
 
 class AccountError(Exception):
@@ -123,11 +125,14 @@ class AccountStore:
             raise AccountError("account_expired", 403)
         return account
 
-    def _throttled(self, key: str) -> bool:
+    def _throttled(self, key: str, limit: int = FAILED_LOGIN_LIMIT) -> bool:
         now = time.time()
         recent = [moment for moment in self.failures.get(key, []) if now - moment < FAILED_LOGIN_WINDOW]
-        self.failures[key] = recent
-        return len(recent) >= FAILED_LOGIN_LIMIT
+        if recent:
+            self.failures[key] = recent
+        else:
+            self.failures.pop(key, None)
+        return len(recent) >= limit
 
     def _bind_device(self, account: dict, install_id: str) -> str:
         """A single-device account keeps only the newest computer; a shared one adds it to the list."""
@@ -160,7 +165,7 @@ class AccountStore:
         if not PHONE.fullmatch(phone) or not isinstance(password, str):
             raise AccountError("account_invalid", 401)
         with self.lock:
-            if self._throttled("phone:" + phone) or self._throttled("client:" + client):
+            if self._throttled("phone:" + phone) or self._throttled("client:" + client, FAILED_LOGIN_CLIENT_LIMIT):
                 raise AccountError("login_throttled", 429)
             account = self._row("phone=?", (phone,))
             if account is None or not check_password(password, account["password_hash"]):
