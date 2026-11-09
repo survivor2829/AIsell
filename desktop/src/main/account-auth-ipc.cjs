@@ -5,11 +5,11 @@ const MESSAGES = {
   GATEWAY_LOGIN_THROTTLED: "密码输错次数太多，请 15 分钟后再试。",
   GATEWAY_ACCOUNT_DISABLED: "这个账号已被停用，请联系管理员。",
   GATEWAY_ACCOUNT_EXPIRED: "这个账号已到期，请联系管理员续期。",
-  GATEWAY_ACCOUNT_SIGNED_IN_ELSEWHERE: "账号已在另一台电脑登录，这台电脑已下线。如需在这里使用，请重新登录。",
+  GATEWAY_ACCOUNT_SIGNED_IN_ELSEWHERE: "这台电脑已下线：账号可能在另一台电脑登录了，或被管理员设为下线。如需在这里使用，请重新登录。",
   GATEWAY_DEVICE_INVALID: "登录已失效，请重新登录。",
   GATEWAY_ACCOUNT_USE_PASSWORD: "这个账号已设置手机号登录，请用手机号和密码登录。",
   GATEWAY_UNAVAILABLE: "暂时连不上服务器，请检查网络后重试。",
-  account_signed_in_elsewhere: "账号已在另一台电脑登录，这台电脑已下线。如需在这里使用，请重新登录。",
+  account_signed_in_elsewhere: "这台电脑已下线：账号可能在另一台电脑登录了，或被管理员设为下线。如需在这里使用，请重新登录。",
   account_disabled: "这个账号已被停用，请联系管理员。",
   account_expired: "这个账号已到期，请联系管理员续期。",
   account_offline_too_long: "已超过 7 天没有联网验证，请联网后重新登录。",
@@ -23,6 +23,32 @@ const UPDATE_ERRORS = {
   password_wrong: "当前密码不对。",
   password_unchanged: "新密码不能和原来的一样。",
   account_already_set_up: "账号已经设置过了。"
+};
+
+const ADMIN_ERRORS = {
+  password_wrong: "密码不对，请重新输入。",
+  login_throttled: "密码输错次数太多，请 15 分钟后再试。",
+  admin_required: "这个账号没有管理权限。",
+  admin_ticket_required: "需要重新验证密码",
+  session_required: "需要重新验证密码",
+  phone_invalid: "手机号格式不对。",
+  phone_taken: "这个手机号已经有账号了。",
+  password_length: "密码需要 8 到 64 位。",
+  password_too_simple: "密码要同时包含字母和数字。",
+  account_not_found: "这个账号不存在，请刷新。",
+  device_not_found: "这台电脑已经下线了，请刷新。",
+  cannot_change_self: "不能在这里修改你自己的账号。",
+  admin_protected: "管理员账号不能在这里修改，请到网页后台操作。",
+  expires_invalid: "到期日不正确。"
+};
+const adminFailure = (error) => ({ ok: false, error: ADMIN_ERRORS[error] || "操作没有完成，请稍后重试。" });
+const ADMIN_ACTIONS = {
+  "multi-device": (payload) => typeof payload.enabled === "boolean" ? { enabled: payload.enabled } : null,
+  status: (payload) => ["active", "disabled"].includes(payload.status) ? { status: payload.status } : null,
+  "reset-password": (payload) => typeof payload.password === "string" ? { password: payload.password } : null,
+  "sign-out": () => ({}),
+  "device-sign-out": (payload) => Number.isSafeInteger(payload.deviceId) ? { deviceId: payload.deviceId } : null,
+  expires: (payload) => payload.expiresAt === null || Number.isFinite(payload.expiresAt) ? { expiresAt: payload.expiresAt } : null
 };
 
 function registerAccountAuthIpc({ ipcMain, accountStore, licenseStore, gatewayClient, onChanged }) {
@@ -65,6 +91,28 @@ function registerAccountAuthIpc({ ipcMain, accountStore, licenseStore, gatewayCl
     }
     return status();
   });
+  // Account management: the server decides who may; these handlers only shape the request.
+  const adminGuarded = async (run) => {
+    if (!accountMode()) return adminFailure("admin_required");
+    try {
+      const result = await run();
+      return result.ok ? result : adminFailure(result.error);
+    } catch { return { ok: false, error: "暂时连不上服务器，请检查网络后重试。" }; }
+  };
+  ipcMain.handle("account:admin-state", () => ({ unlocked: accountMode() && gatewayClient.adminUnlocked() }));
+  ipcMain.handle("account:admin-unlock", (_event, payload) => adminGuarded(() => gatewayClient.adminUnlock(String(payload?.password || ""))));
+  ipcMain.handle("account:admin-list", () => adminGuarded(() => gatewayClient.adminRequest("GET", "/accounts")));
+  ipcMain.handle("account:admin-create", (_event, payload) => adminGuarded(() => {
+    const expiresAt = Number.isFinite(payload?.expiresAt) ? payload.expiresAt : undefined;
+    return gatewayClient.adminRequest("POST", "/accounts", { phone: String(payload?.phone || ""), password: String(payload?.password || ""),
+      displayName: String(payload?.displayName || ""), note: String(payload?.note || ""), ...(expiresAt ? { expiresAt } : {}) });
+  }));
+  ipcMain.handle("account:admin-action", (_event, payload) => adminGuarded(async () => {
+    const shape = Object.prototype.hasOwnProperty.call(ADMIN_ACTIONS, payload?.action) ? ADMIN_ACTIONS[payload.action] : null;
+    const body = shape ? shape(payload) : null;
+    if (!body || !Number.isSafeInteger(payload?.id) || payload.id <= 0) return { ok: false, error: "invalid_admin_request" };
+    return gatewayClient.adminRequest("POST", `/accounts/${payload.id}/${payload.action}`, body);
+  }));
   ipcMain.handle("account:logout", async () => {
     if (accountMode()) { accountStore.clear(); gatewayClient.invalidate(); }
     else licenseStore.logout();

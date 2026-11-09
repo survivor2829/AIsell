@@ -29,7 +29,7 @@ function createAccountStore({ rootDir, safeStorage, now = Date.now, onChange = (
     if (!account || typeof account !== "object") return null;
     return { id: String(account.id || ""), phone: String(account.phone || ""), displayName: String(account.displayName || ""),
       setupRequired: account.setupRequired === true, mustChangePassword: account.mustChangePassword === true,
-      expiresAt: Number.isFinite(account.expiresAt) ? account.expiresAt : null };
+      expiresAt: Number.isFinite(account.expiresAt) ? account.expiresAt : null, isAdmin: account.isAdmin === true };
   }
 
   function credentials() {
@@ -59,7 +59,7 @@ function createAccountStore({ rootDir, safeStorage, now = Date.now, onChange = (
     const fresh = Boolean(record?.deviceToken) && now() - Number(record.verifiedAt || 0) <= OFFLINE_GRACE_MS;
     if (fresh && profile?.id) {
       return { authorized: true, licenseId: profile.id, phone: profile.phone, displayName: profile.displayName,
-        setupRequired: profile.setupRequired, mustChangePassword: profile.mustChangePassword,
+        setupRequired: profile.setupRequired, mustChangePassword: profile.mustChangePassword, isAdmin: profile.isAdmin === true,
         expiresAt: profile.expiresAt ? new Date(profile.expiresAt * 1000).toISOString() : undefined, verifiedAt: record.verifiedAt };
     }
     return { authorized: false, phone: profile?.phone || "",

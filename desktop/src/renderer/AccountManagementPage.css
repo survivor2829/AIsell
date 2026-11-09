@@ -1,0 +1,43 @@
+.account-admin { color: #1d1412; --admin-line: #ece4e1; --admin-muted: #766a66; --admin-red: #d9001b; }
+.account-admin-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 16px; }
+.account-admin-head h1 { margin: 0 0 6px; font-size: 26px; }
+.account-admin-head p { margin: 0; color: var(--admin-muted); font-size: 14px; line-height: 1.6; }
+.account-admin button { font: inherit; cursor: pointer; }
+.account-admin button:disabled { cursor: default; opacity: .6; }
+.account-admin button:focus-visible, .account-admin input:focus-visible { outline: 2px solid var(--admin-red); outline-offset: 2px; }
+.account-admin input { font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--admin-line); border-radius: 8px; background: #fff; color: inherit; }
+.account-admin label { display: grid; gap: 5px; font-size: 13px; color: var(--admin-muted); }
+.account-admin-primary { flex: none; padding: 9px 20px; border: 0; border-radius: 8px; background: var(--admin-red); color: #fff; font-weight: 700; }
+.account-admin-muted { margin: 0; color: var(--admin-muted); font-size: 13px; }
+.account-admin-error, .account-admin-notice { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: 14px; line-height: 1.6; }
+.account-admin-error { background: #fff0f0; color: #a4001a; }
+.account-admin-notice { background: #edf8f0; color: #1f6a3a; user-select: text; }
+.account-admin-unlock { display: grid; gap: 14px; max-width: 340px; }
+.account-admin-unlock .account-admin-error { margin: 0; }
+.account-admin-create { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; padding: 16px; margin-bottom: 16px; border: 1px solid var(--admin-line); border-radius: 12px; }
+.account-admin-create p { grid-column: 1 / -1; }
+.account-admin-tools { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; color: var(--admin-muted); font-size: 13px; }
+.account-admin-tools input { width: 280px; max-width: 100%; }
+.account-admin-list { border-top: 1px solid var(--admin-line); }
+.account-admin-row { border-bottom: 1px solid var(--admin-line); }
+.account-admin-summary { display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(220px, 1.3fr) auto auto; align-items: center; gap: 16px; padding: 13px 4px; }
+.account-admin-who { display: grid; gap: 3px; min-width: 0; }
+.account-admin-who strong { font-size: 15px; }
+.account-admin-who em { margin-left: 8px; padding: 1px 7px; border-radius: 5px; background: #f1ecea; color: #5a4d49; font-size: 12px; font-style: normal; font-weight: 500; }
+.account-admin-who em.is-admin { background: #fff0d9; color: #8a5a00; }
+.account-admin-who span { overflow: hidden; color: var(--admin-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.account-admin-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--admin-muted); font-size: 13px; }
+.account-admin-facts .is-on { color: #1f7a42; font-weight: 700; }
+.account-admin-facts .is-off { color: #a4001a; font-weight: 700; }
+.account-admin-mode { display: inline-flex; padding: 3px; border-radius: 9px; background: #f1ecea; }
+.account-admin-mode button { min-width: 78px; padding: 6px 12px; border: 0; border-radius: 7px; background: transparent; color: #5a4d49; font-size: 13px; }
+.account-admin-mode button[aria-pressed="true"] { background: #fff; color: var(--admin-red); font-weight: 700; box-shadow: 0 1px 3px rgba(40, 10, 10, .14); }
+.account-admin-more, .account-admin-detail button { padding: 6px 13px; border: 1px solid var(--admin-line); border-radius: 7px; background: #fff; color: inherit; font-size: 13px; }
+.account-admin-detail { padding: 2px 4px 16px; }
+.account-admin-detail h2 { margin: 0 0 8px; font-size: 14px; }
+.account-admin-detail ul { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
+.account-admin-detail li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; font-size: 13px; color: var(--admin-muted); }
+.account-admin-detail li span:first-child { min-width: 86px; color: #1d1412; font-weight: 700; }
+.account-admin-detail li button { margin-left: auto; }
+.account-admin-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+@media (max-width: 860px) { .account-admin-summary { grid-template-columns: 1fr auto; } .account-admin-facts { grid-column: 1 / -1; grid-row: 2; } }

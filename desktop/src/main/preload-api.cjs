@@ -744,6 +744,17 @@ function createPreloadApis(ipcRenderer) {
         currentPassword: String(payload?.currentPassword || ""), newPassword: String(payload?.newPassword || "")
       }),
       logout: () => ipcRenderer.invoke("account:logout"),
+      adminState: () => ipcRenderer.invoke("account:admin-state"),
+      adminUnlock: (password) => ipcRenderer.invoke("account:admin-unlock", { password: String(password || "") }),
+      adminList: () => ipcRenderer.invoke("account:admin-list"),
+      adminCreate: (payload) => ipcRenderer.invoke("account:admin-create", {
+        phone: String(payload?.phone || ""), password: String(payload?.password || ""), displayName: String(payload?.displayName || ""),
+        note: String(payload?.note || ""), expiresAt: Number.isFinite(payload?.expiresAt) ? payload.expiresAt : null
+      }),
+      adminAction: (payload) => ipcRenderer.invoke("account:admin-action", {
+        id: payload?.id, action: String(payload?.action || ""), enabled: payload?.enabled, status: payload?.status,
+        deviceId: payload?.deviceId, password: payload?.password, expiresAt: payload?.expiresAt
+      }),
       onChanged: (callback) => {
         const handler = () => callback();
         ipcRenderer.on("account:changed", handler);

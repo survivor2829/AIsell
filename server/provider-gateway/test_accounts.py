@@ -1,12 +1,17 @@
+import hashlib
+import hmac
 import json
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from accounts import AccountStore
 from service import GatewayConfig, GatewayServer, Handler
 
 INSTALL_A = "11111111-1111-1111-1111-111111111111"
@@ -33,8 +38,8 @@ class AccountTest(unittest.TestCase):
         self.server.receipts.close()
         self.temp.cleanup()
 
-    def call(self, route, body=None, token="", admin=None):
-        headers = {"Content-Type": "application/json"}
+    def call(self, route, body=None, token="", admin=None, extra=None):
+        headers = {"Content-Type": "application/json", **(extra or {})}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if admin is not None:
@@ -53,6 +58,140 @@ class AccountTest(unittest.TestCase):
 
     def alive(self, token):
         return self.call("/v1/provider-gateway/capabilities", token=token)[0] == 200
+
+    def new_account(self, phone="13800000001", password="abc12345"):
+        status, created = self.call("/v1/accounts-admin/accounts", {"phone": phone, "password": password}, admin=ADMIN)
+        self.assertEqual(200, status, created)
+        return created["id"]
+
+    def admin_action(self, account_id, action, body):
+        return self.call(f"/v1/accounts-admin/accounts/{account_id}/{action}", body, admin=ADMIN)
+
+    def listed(self, account_id):
+        accounts = self.call("/v1/accounts-admin/accounts", admin=ADMIN)[1]["accounts"]
+        return next(item for item in accounts if item["id"] == account_id)
+
+    def shared_login_on_two_computers(self):
+        account_id = self.new_account()
+        self.assertEqual(200, self.admin_action(account_id, "multi-device", {"enabled": True})[0])
+        first = self.session(INSTALL_A, phone="13800000001", password="abc12345")[1]
+        second = self.session(INSTALL_B, phone="13800000001", password="abc12345")[1]
+        return account_id, first, second
+
+    def test_new_accounts_stay_on_one_computer(self):
+        account_id = self.new_account()
+        self.assertFalse(self.listed(account_id)["multiDevice"])
+        first = self.session(INSTALL_A, phone="13800000001", password="abc12345")[1]
+        second = self.session(INSTALL_B, phone="13800000001", password="abc12345")[1]
+        self.assertFalse(self.alive(first["token"]))
+        self.assertTrue(self.alive(second["token"]))
+        status, refused = self.session(INSTALL_A, deviceToken=first["deviceToken"])
+        self.assertEqual((401, "account_signed_in_elsewhere"), (status, refused["error"]))
+
+    def test_shared_account_keeps_every_computer_signed_in(self):
+        account_id, first, second = self.shared_login_on_two_computers()
+        self.assertTrue(self.alive(first["token"]))
+        self.assertTrue(self.alive(second["token"]))
+        renewed = self.session(INSTALL_A, deviceToken=first["deviceToken"])[1]
+        self.assertTrue(self.alive(renewed["token"]))
+        self.assertTrue(self.alive(second["token"]), "renewing one computer leaves the other alone")
+        self.assertEqual(2, len(self.listed(account_id)["devices"]))
+
+    def test_signing_out_one_computer_leaves_the_others(self):
+        account_id, first, second = self.shared_login_on_two_computers()
+        target = next(item for item in self.listed(account_id)["devices"] if item["label"] == INSTALL_A[-4:])
+        self.assertEqual(200, self.admin_action(account_id, "device-sign-out", {"deviceId": target["id"]})[0])
+        self.assertFalse(self.alive(first["token"]))
+        self.assertTrue(self.alive(second["token"]))
+        self.assertEqual(401, self.session(INSTALL_A, deviceToken=first["deviceToken"])[0])
+
+    def test_switching_back_to_one_computer_keeps_the_most_recent(self):
+        account_id, first, second = self.shared_login_on_two_computers()
+        self.assertEqual(200, self.admin_action(account_id, "multi-device", {"enabled": False})[0])
+        self.assertFalse(self.alive(first["token"]))
+        self.assertTrue(self.alive(second["token"]))
+        self.assertEqual([INSTALL_B[-4:]], [item["label"] for item in self.listed(account_id)["devices"]])
+        status, refused = self.session(INSTALL_A, deviceToken=first["deviceToken"])
+        self.assertEqual((401, "account_signed_in_elsewhere"), (status, refused["error"]))
+
+    def admin_session(self, phone="13800000009"):
+        account_id = self.new_account(phone)
+        self.assertEqual(200, self.admin_action(account_id, "admin", {"enabled": True})[0])
+        session = self.session(INSTALL_A, phone=phone, password="abc12345")[1]
+        self.assertTrue(session["account"]["isAdmin"])
+        return account_id, session["token"]
+
+    def app_call(self, route, body=None, token="", ticket=None):
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+        if ticket:
+            headers["X-Xiaoxi-Admin-Ticket"] = ticket
+        request = urllib.request.Request(f"{self.origin}/v1/provider-gateway/account/admin{route}",
+                                         data=None if body is None else json.dumps(body).encode(), headers=headers,
+                                         method="GET" if body is None else "POST")
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read() or b"{}")
+
+    def test_changing_the_password_signs_out_the_other_computers(self):
+        account_id, first, second = self.shared_login_on_two_computers()
+        status, _ = self.call("/v1/provider-gateway/account/password", {"currentPassword": "abc12345", "newPassword": "new12345x"}, token=first["token"])
+        self.assertEqual(200, status)
+        self.assertTrue(self.alive(first["token"]), "the computer changing it stays")
+        self.assertFalse(self.alive(second["token"]))
+        self.assertEqual(401, self.session(INSTALL_B, deviceToken=second["deviceToken"])[0])
+        self.assertEqual([INSTALL_A[-4:]], [item["label"] for item in self.listed(account_id)["devices"]])
+
+    def test_wrong_administrator_passwords_do_not_lock_out_customers(self):
+        self.new_account("13800000005")
+        _, token = self.admin_session()
+        for _ in range(6):
+            self.app_call("/ticket", {"password": "wrong1234"}, token)
+        self.assertEqual(429, self.app_call("/ticket", {"password": "abc12345"}, token)[0])
+        self.assertEqual(200, self.session(INSTALL_B, phone="13800000005", password="abc12345")[0])
+
+    def test_an_expiry_in_the_past_ends_the_session_at_once(self):
+        account_id = self.new_account()
+        token = self.session(INSTALL_A, phone="13800000001", password="abc12345")[1]["token"]
+        self.assertEqual(200, self.admin_action(account_id, "expires", {"expiresAt": time.time() + 86400})[0])
+        self.assertTrue(self.alive(token))
+        self.assertEqual(200, self.admin_action(account_id, "expires", {"expiresAt": time.time() - 60})[0])
+        self.assertFalse(self.alive(token))
+
+    def test_the_app_cannot_change_yourself_or_another_administrator(self):
+        admin_id, token = self.admin_session()
+        other = self.new_account("13800000006")
+        self.assertEqual(200, self.admin_action(other, "admin", {"enabled": True})[0])
+        ticket = self.app_call("/ticket", {"password": "abc12345"}, token)[1]["ticket"]
+        for action, body in (("reset-password", {"password": "taken1234"}), ("status", {"status": "disabled"}), ("expires", {"expiresAt": 1}), ("sign-out", {})):
+            self.assertEqual("admin_protected", self.app_call(f"/accounts/{other}/{action}", body, token, ticket)[1].get("error"), action)
+        for action, body in (("multi-device", {"enabled": False}), ("expires", {"expiresAt": 1}), ("device-sign-out", {"deviceId": 1})):
+            self.assertEqual("cannot_change_self", self.app_call(f"/accounts/{admin_id}/{action}", body, token, ticket)[1].get("error"), action)
+        self.assertEqual(200, self.app_call(f"/accounts/{admin_id}/multi-device", {"enabled": True}, token, ticket)[0])
+
+    def test_app_account_management_needs_an_administrator_and_a_fresh_password(self):
+        customer = self.new_account("13800000002")
+        plain = self.session(INSTALL_B, phone="13800000002", password="abc12345")[1]["token"]
+        self.assertEqual(403, self.app_call("/ticket", {"password": "abc12345"}, plain)[0])
+        self.assertEqual(403, self.app_call("/accounts", token=plain)[0])
+        admin_id, token = self.admin_session()
+        self.assertEqual(403, self.app_call("/accounts", token=token)[0], "no ticket yet")
+        self.assertEqual(403, self.app_call("/ticket", {"password": "wrong1234"}, token)[0])
+        status, granted = self.app_call("/ticket", {"password": "abc12345"}, token)
+        self.assertEqual(200, status, granted)
+        ticket = granted["ticket"]
+        self.assertEqual(403, self.app_call("/accounts", token=plain, ticket=ticket)[0], "a ticket belongs to one administrator")
+        self.assertEqual({}, self.app_call("/accounts", token=token, ticket=ticket)[1]["accounts"][0]["usage"])
+        self.assertEqual(200, self.app_call(f"/accounts/{customer}/multi-device", {"enabled": True}, token, ticket)[0])
+        self.assertTrue(self.listed(customer)["multiDevice"])
+        self.assertEqual(404, self.app_call(f"/accounts/{customer}/recharge", {"amountCny": 1}, token, ticket)[0])
+        self.assertEqual(404, self.app_call(f"/accounts/{customer}/admin", {"enabled": True}, token, ticket)[0])
+        self.assertFalse(self.listed(customer)["isAdmin"])
+        self.assertEqual(400, self.app_call(f"/accounts/{admin_id}/status", {"status": "disabled"}, token, ticket)[0])
+        self.assertEqual(200, self.admin_action(admin_id, "admin", {"enabled": False})[0])
+        self.assertEqual(403, self.app_call("/accounts", token=token, ticket=ticket)[0], "losing the role ends the ticket")
+
 
     def test_license_converts_once_into_a_phone_account_with_the_same_identity(self):
         status, first = self.session(licenseCode="signed-license-abcd")
@@ -114,6 +253,26 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(200, status, relaunch)
         self.assertEqual("lic-abcd", relaunch["account"]["id"])
 
+    def login_from(self, address, phone, password):
+        return self.call("/v1/provider-gateway/session", {"appId": "com.aihuoke.desktop.test", "channel": "test", "version": "1.2.15", "installId": INSTALL_A,
+                                                          "phone": phone, "password": password}, extra={"X-Xiaoxi-Client-Ip": address})
+
+    def test_one_customers_wrong_passwords_do_not_lock_out_the_others(self):
+        self.new_account("13800000011")
+        self.new_account("13800000012")
+        for _ in range(6):
+            self.login_from("203.0.113.5", "13800000011", "wrong1234")
+        self.assertEqual(429, self.login_from("203.0.113.9", "13800000011", "abc12345")[0], "the guessed phone number still waits")
+        self.assertEqual(200, self.login_from("203.0.113.5", "13800000012", "abc12345")[0], "same office, another phone number")
+        self.assertEqual(200, self.login_from("203.0.113.9", "13800000012", "abc12345")[0])
+
+    def test_one_address_guessing_many_phone_numbers_is_stopped(self):
+        self.new_account("13800000013")
+        for index in range(30):
+            self.login_from("203.0.113.7", f"1390000{index:04d}", "wrong1234")
+        self.assertEqual(429, self.login_from("203.0.113.7", "13800000013", "abc12345")[0])
+        self.assertEqual(200, self.login_from("203.0.113.8", "13800000013", "abc12345")[0], "other addresses are not affected")
+
     def test_wrong_passwords_are_throttled(self):
         self.call("/v1/accounts-admin/accounts", {"phone": "13600136000", "password": "start2026"}, admin=ADMIN)
         codes = [self.session(phone="13600136000", password="wrong1234")[0] for _ in range(6)]
@@ -134,6 +293,40 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(401, self.session(phone="13500135000", password="start2026")[0])
         _, fresh = self.session(phone="13500135000", password="reset2026")
         self.assertTrue(fresh["account"]["mustChangePassword"])
+
+
+class AccountMigrationTest(unittest.TestCase):
+    def test_accounts_from_before_this_version_become_shared_and_stay_signed_in(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / "receipts.sqlite3")
+            config = GatewayConfig(keys={"deepseek": "server-secret"})
+            config.receipt_db_path = path
+            config.accounts_admin_token = ADMIN
+            token = "d" * 48
+            digest = hmac.new(config.sessions.secret, b"device:" + token.encode(), hashlib.sha256).digest()
+            old = sqlite3.connect(path)
+            old.execute("""CREATE TABLE accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT UNIQUE, password_hash TEXT,
+                display_name TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+                subject TEXT NOT NULL UNIQUE, legacy_license_id TEXT UNIQUE, must_change_password INTEGER NOT NULL DEFAULT 1,
+                expires_at REAL, active_install_id TEXT, device_digest BLOB, device_expires_at REAL,
+                limits_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL, last_login_at REAL)""")
+            old.execute("""INSERT INTO accounts (phone, subject, active_install_id, device_digest, device_expires_at, created_at)
+                VALUES ('13800000003','acct_old',?,?,?,1)""", (INSTALL_A, digest, time.time() + 3600))
+            old.commit()
+            old.close()
+            server = GatewayServer(("127.0.0.1", 0), Handler, config)
+            try:
+                accounts = server.accounts
+                self.assertEqual(1, accounts.by_subject("acct_old")["multi_device"])
+                self.assertEqual("acct_old", accounts.login_device(token, INSTALL_A)["subject"])
+                created = accounts.admin_create("13800000004", "abc12345")
+                self.assertEqual(0, created["multi_device"])
+                # A restart must not turn later single-computer accounts into shared ones.
+                reopened = AccountStore(server.receipts.db, server.receipts.lock, config.sessions.secret)
+                self.assertEqual(0, reopened.by_subject(created["subject"])["multi_device"])
+            finally:
+                server.server_close()
+                server.receipts.close()
 
 
 if __name__ == "__main__":

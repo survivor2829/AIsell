@@ -39,7 +39,7 @@ INPUT_METRICS = ("expected_input_tick", "current_input_tick", "required_idle_ms"
                  "expected_hWnd", "foreground_hWnd")
 PROVIDER_GATEWAY_PREFIX = "/v1/provider-gateway"
 # Customer accounts are managed by the gateway on loopback; only this admin server forwards to it.
-ACCOUNTS_ADMIN_ROUTE = re.compile(r"/api/accounts(?:/(\d{1,9})/(reset-password|status|sign-out|recharge|billing-access))?")
+ACCOUNTS_ADMIN_ROUTE = re.compile(r"/api/accounts(?:/(\d{1,9})/(reset-password|status|sign-out|recharge|billing-access|multi-device|device-sign-out|expires|admin))?")
 ACCOUNTS_BILLING_ROUTE = re.compile(r"/api/accounts/\d{1,9}/billing")
 PROVIDER_GATEWAY_ORIGIN = "http://127.0.0.1:8444"
 PROVIDER_GATEWAY_MAX_REQUEST_BYTES = 32 * 1024 * 1024
@@ -339,10 +339,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(body) != length:
                 return self.reply(400, {"error": "invalid_body"})
         headers = {}
-        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return", "X-Xiaoxi-Operation-Id", "X-DashScope-Async", "X-DashScope-OssResourceResolve", "X-DashScope-SSE"):
+        for name in ("Authorization", "Content-Type", "Accept", "X-Xiaoxi-Admin-Ticket", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return", "X-Xiaoxi-Operation-Id", "X-DashScope-Async", "X-DashScope-OssResourceResolve", "X-DashScope-SSE"):
             value = self.headers.get(name)
             if value and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
                 headers[name] = value
+        headers["X-Xiaoxi-Client-Ip"] = self.client_address[0]
         if body is not None:
             headers["Content-Length"] = str(len(body))
         target = PROVIDER_GATEWAY_ORIGIN + self.path

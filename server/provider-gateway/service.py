@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 import io
 import http.client
 import json
@@ -38,10 +39,10 @@ from material_search import MaterialSearch
 
 
 try:
-    from .accounts import AccountError, AccountStore
+    from .accounts import ADMIN_TICKET_SECONDS, AccountError, AccountStore
     from .billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, Billing, merge_prices
 except ImportError:  # run as a script: python service.py
-    from accounts import AccountError, AccountStore
+    from accounts import ADMIN_TICKET_SECONDS, AccountError, AccountStore
     from billing import CREDIT_MESSAGE, DEFAULT_GRANT_POINTS, DEFAULT_MARKUP, Billing, merge_prices
 
 PREFIX = "/v1/provider-gateway"
@@ -51,8 +52,12 @@ ADMIN_PREFIX = "/v1/accounts-admin"
 # Clients from this version on keep the device token an account login returns; older clients only
 # know license codes and must never take the device binding away from an updated computer.
 ACCOUNT_CLIENT_VERSION = (1, 2, 15)
-ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/(reset-password|status|sign-out|recharge|billing-access)")
+ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/(reset-password|status|sign-out|recharge|billing-access|multi-device|device-sign-out|expires|admin)")
 ADMIN_BILLING_ROUTE = re.compile(re.escape(ADMIN_PREFIX) + r"/accounts/(\d{1,9})/billing")
+# Account management inside the desktop app: an administrator's session plus a short-lived ticket.
+APP_ADMIN_PREFIX = PREFIX + "/account/admin"
+APP_ADMIN_ACTIONS = {"reset-password", "status", "sign-out", "multi-device", "device-sign-out", "expires"}
+APP_ADMIN_ACCOUNT_ROUTE = re.compile(re.escape(APP_ADMIN_PREFIX) + r"/accounts/(\d{1,9})/([a-z-]{1,20})")
 # Free supplier routes never need credit: uploads, voice enrollment and avatar asset registration.
 UNMETERED_POST = ("/apimart/uploads/images", "/apimart/seedance2/private-avatar/assets", "/services/audio/tts/customization")
 APP_IDS = {
@@ -245,14 +250,14 @@ class SessionStore:
     def __init__(self, secret: str = "", ttl_seconds: int = 24 * 60 * 60):
         self.secret = str(secret or "").encode("utf-8") or secrets.token_bytes(32)
         self.ttl_seconds = max(300, min(7 * 24 * 60 * 60, int(ttl_seconds)))
-        self._sessions: dict[bytes, tuple[float, str]] = {}
+        self._sessions: dict[bytes, tuple[float, str, str]] = {}
         self._lock = threading.Lock()
         self.receipts = None
 
     def _digest(self, token: str) -> bytes:
         return hmac.new(self.secret, token.encode("utf-8"), hashlib.sha256).digest()
 
-    def issue(self, license_id: str, expires_at: datetime) -> tuple[str, datetime]:
+    def issue(self, license_id: str, expires_at: datetime, install_id: str = "") -> tuple[str, datetime]:
         now = time.time()
         expiry = min(expires_at.timestamp(), now + self.ttl_seconds)
         if expiry <= now:
@@ -263,9 +268,9 @@ class SessionStore:
             self._cleanup_locked(now)
             if len(self._sessions) >= 4096:
                 self._sessions.pop(next(iter(self._sessions)))
-            self._sessions[digest] = (expiry, license_id)
+            self._sessions[digest] = (expiry, license_id, install_id)
             if self.receipts is not None:
-                self.receipts.store_session(digest, expiry, license_id)
+                self.receipts.store_session(digest, expiry, license_id, install_id)
         return token, datetime.fromtimestamp(expiry, timezone.utc)
 
     def validate(self, token: str) -> bool:
@@ -283,16 +288,28 @@ class SessionStore:
                 return entry[1]
             return self.receipts.lookup_session(digest, now) if self.receipts is not None else None
 
-    def revoke_subject(self, subject: str) -> None:
+    def install(self, token: str) -> str:
+        """Which computer a session belongs to; '' for sessions from before computers were recorded."""
+        if not isinstance(token, str) or not TOKEN.fullmatch(token):
+            return ""
+        digest = self._digest(token)
         with self._lock:
-            for digest, (_expires, owner) in list(self._sessions.items()):
-                if owner == subject:
+            entry = self._sessions.get(digest)
+            if entry:
+                return entry[2]
+            return self.receipts.lookup_session_install(digest) if self.receipts is not None else ""
+
+    def revoke_subject(self, subject: str, install_id: str | None = None, keep_install: str | None = None) -> None:
+        """All of a subject's sessions by default; only one computer's, or all but one computer's."""
+        with self._lock:
+            for digest, (_expires, owner, install) in list(self._sessions.items()):
+                if owner == subject and (install_id is None or install == install_id) and (keep_install is None or install != keep_install):
                     self._sessions.pop(digest, None)
             if self.receipts is not None:
-                self.receipts.revoke_sessions(subject)
+                self.receipts.revoke_sessions(subject, install_id, keep_install)
 
     def _cleanup_locked(self, now: float) -> None:
-        for digest, (expires, _license_id) in list(self._sessions.items()):
+        for digest, (expires, _license_id, _install) in list(self._sessions.items()):
             if expires <= now:
                 self._sessions.pop(digest, None)
 
@@ -454,6 +471,8 @@ class ReceiptStore:
         self.db.execute("""CREATE TABLE IF NOT EXISTS gateway_sessions (
             token_digest BLOB PRIMARY KEY, expires_at REAL NOT NULL,
             subject TEXT NOT NULL)""")
+        if "install_id" not in {row[1] for row in self.db.execute("PRAGMA table_info(gateway_sessions)")}:
+            self.db.execute("ALTER TABLE gateway_sessions ADD COLUMN install_id TEXT NOT NULL DEFAULT ''")
         self.db.execute("""CREATE TABLE IF NOT EXISTS voice_clone_claims (
             speaker_id TEXT PRIMARY KEY, subject_hash TEXT NOT NULL,
             operation_id TEXT NOT NULL, created_at REAL NOT NULL)""")
@@ -552,16 +571,21 @@ class ReceiptStore:
                                   (speaker, self._subject(subject))).fetchone()
             return row[0] if row else None
 
-    def store_session(self, digest, expiry, subject):
+    def store_session(self, digest, expiry, subject, install_id=""):
         with self.lock:
             self.db.execute("DELETE FROM gateway_sessions WHERE expires_at<=?", (time.time(),))
             self.db.execute("""INSERT OR REPLACE INTO gateway_sessions
-                (token_digest, expires_at, subject) VALUES (?,?,?)""", (digest, expiry, subject))
+                (token_digest, expires_at, subject, install_id) VALUES (?,?,?,?)""", (digest, expiry, subject, install_id))
             self.db.commit()
 
-    def revoke_sessions(self, subject):
+    def revoke_sessions(self, subject, install_id=None, keep_install=None):
         with self.lock:
-            self.db.execute("DELETE FROM gateway_sessions WHERE subject=?", (subject,))
+            sql, args = "DELETE FROM gateway_sessions WHERE subject=?", [subject]
+            if install_id is not None:
+                sql, args = sql + " AND install_id=?", args + [install_id]
+            if keep_install is not None:
+                sql, args = sql + " AND install_id!=?", args + [keep_install]
+            self.db.execute(sql, args)
             self.db.commit()
 
     def usage(self, subject):
@@ -572,6 +596,11 @@ class ReceiptStore:
             scripts = self.db.execute("""SELECT count(*) FROM narration_script_usage
                 WHERE subject_hash=? AND created_at>? AND state!='released'""", (subject_hash, time.time() - 86400)).fetchone()[0]
         return {"paidOperations30d": operations, "scripts24h": scripts}
+
+    def lookup_session_install(self, digest):
+        with self.lock:
+            row = self.db.execute("SELECT install_id FROM gateway_sessions WHERE token_digest=?", (digest,)).fetchone()
+            return row[0] if row else ""
 
     def lookup_session(self, digest, now):
         with self.lock:
@@ -679,9 +708,27 @@ class GatewayServer(ThreadingHTTPServer):
         self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
         config.sessions.receipts = self.receipts
         self.accounts = AccountStore(self.receipts.db, self.receipts.lock, config.sessions.secret)
+        self.admin_tickets_lock = threading.Lock()
+        self.admin_tickets = {}
         self.billing = Billing(self.receipts.db, self.receipts.lock, markup=config.billing_markup,
                                grant_points=config.billing_grant_points, prices=merge_prices(config.billing_prices))
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
+
+    def issue_admin_ticket(self, subject):
+        """Proof the password was typed recently. Memory only: a restart just asks for it again."""
+        ticket = secrets.token_urlsafe(32)
+        now = time.time()
+        with self.admin_tickets_lock:
+            self.admin_tickets = {key: value for key, value in self.admin_tickets.items() if value[0] > now}
+            self.admin_tickets[hashlib.sha256(ticket.encode("utf-8")).digest()] = (now + ADMIN_TICKET_SECONDS, subject)
+        return ticket
+
+    def admin_ticket_valid(self, ticket, subject):
+        if not isinstance(ticket, str) or not ticket:
+            return False
+        with self.admin_tickets_lock:
+            entry = self.admin_tickets.get(hashlib.sha256(ticket.encode("utf-8")).digest())
+        return bool(entry and entry[0] > time.time() and entry[1] == subject)
 
     def apimart_public_price(self, model):
         # Anonymous, fixed supplier metadata. Never forward the session or API key.
@@ -1317,6 +1364,18 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"Bearer\s+(.+)", value, re.I)
         return bool(match and self.config.sessions.validate(match.group(1).strip()))
 
+    def _client_address(self):
+        """The customer's address. Requests arrive from the local proxy, which states it in this header
+        after dropping whatever the caller sent; without it every customer would look like 127.0.0.1."""
+        peer = self.client_address[0]
+        stated = self.headers.get("X-Xiaoxi-Client-Ip", "")
+        if peer in ("127.0.0.1", "::1") and stated:
+            try:
+                return str(ipaddress.ip_address(stated))
+            except ValueError:
+                pass
+        return peer
+
     def _session_subject(self):
         match = re.fullmatch(r"Bearer\s+(.+)", self.headers.get("Authorization", ""), re.I)
         return self.config.sessions.subject(match.group(1).strip()) if match else None
@@ -1392,14 +1451,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply_json(400, {"error": "invalid_billing_request"})
         return self._reply_json(200, {"ok": True, **settled})
 
-    def _issue_account_session(self, account, device_token="", exclusive=True):
-        # One device per account: the new session replaces every other session of this account.
+    def _issue_account_session(self, account, device_token="", exclusive=True, install_id=""):
+        # A single-device account: the new session replaces every other session of this account.
+        # A shared account keeps its other computers signed in, and only renews this computer's.
         # License-code sessions (transition, older clients) never sign other computers out,
         # or two computers sharing one license would keep knocking each other off.
-        if exclusive:
+        if exclusive and not account["multi_device"]:
             self.config.sessions.revoke_subject(account["subject"])
+        elif exclusive and install_id:
+            self.config.sessions.revoke_subject(account["subject"], install_id=install_id)
         expiry = datetime.fromtimestamp(account["expires_at"], timezone.utc) if account["expires_at"] else datetime.now(timezone.utc) + timedelta(days=3650)
-        token, session_expiry = self.config.sessions.issue(account["subject"], expiry)
+        token, session_expiry = self.config.sessions.issue(account["subject"], expiry, install_id)
         return self._reply_json(200, {"ok": True, "schema": 2, "token": token, "expiresAt": session_expiry.isoformat(),
                                       "capabilities": self.config.capabilities(), "account": AccountStore.public(account),
                                       **({"deviceToken": device_token} if device_token else {})})
@@ -1417,10 +1479,10 @@ class Handler(BaseHTTPRequestHandler):
         accounts = self.server.accounts
         try:
             if isinstance(body.get("phone"), str) or isinstance(body.get("password"), str):
-                account, device = accounts.login_password(body.get("phone"), body.get("password"), install_id, self.client_address[0])
-                return self._issue_account_session(account, device)
+                account, device = accounts.login_password(body.get("phone"), body.get("password"), install_id, self._client_address())
+                return self._issue_account_session(account, device, install_id=install_id)
             if isinstance(body.get("deviceToken"), str):
-                return self._issue_account_session(accounts.login_device(body["deviceToken"], install_id))
+                return self._issue_account_session(accounts.login_device(body["deviceToken"], install_id), install_id=install_id)
             # Transition: an existing license code signs in once and is turned into an account.
             code = body.get("licenseCode")
             if not isinstance(code, str) or not LICENSE_PART.fullmatch(code.split(".")[0]):
@@ -1433,7 +1495,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply_json(401, {"error": "license_invalid"})
             account_client = tuple(int(part) for part in str(body["version"]).split(".")) >= ACCOUNT_CLIENT_VERSION
             account, device = accounts.login_license(license_id, expires_at.timestamp(), install_id, bind=account_client)
-            return self._issue_account_session(account, device, exclusive=False)
+            return self._issue_account_session(account, device, exclusive=False, install_id=install_id)
         except AccountError as error:
             return self._reply_json(error.status, {"error": error.code})
         except ValueError:
@@ -1451,7 +1513,11 @@ class Handler(BaseHTTPRequestHandler):
             if action == "setup":
                 account = self.server.accounts.setup(subject, body.get("phone"), body.get("password"))
             else:
-                account = self.server.accounts.change_password(subject, body.get("currentPassword"), body.get("newPassword"))
+                token = re.fullmatch(r"Bearer\s+(.+)", self.headers.get("Authorization", ""), re.I).group(1).strip()
+                install = self.config.sessions.install(token)
+                account = self.server.accounts.change_password(subject, body.get("currentPassword"), body.get("newPassword"), install)
+                if install:
+                    self.config.sessions.revoke_subject(subject, keep_install=install)
         except AccountError as error:
             return self._reply_json(error.status, {"error": error.code})
         return self._reply_json(200, {"ok": True, "account": AccountStore.public(account)})
@@ -1461,6 +1527,47 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get("X-Xiaoxi-Accounts-Admin", "")
         if not expected or not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
             return self._reply_json(404, {"error": "not_found"})
+        return self._accounts_admin_apply(method, route)
+
+    def _app_admin_subject(self):
+        """The signed-in administrator holding a live ticket, or None after replying with the refusal."""
+        subject = self._session_subject()
+        if not subject:
+            self._reply_json(401, {"error": "session_required"})
+            return None
+        if not self.server.accounts.is_admin(subject):
+            self._reply_json(403, {"error": "admin_required"})
+            return None
+        if not self.server.admin_ticket_valid(self.headers.get("X-Xiaoxi-Admin-Ticket", ""), subject):
+            self._reply_json(403, {"error": "admin_ticket_required"})
+            return None
+        return subject
+
+    def _app_admin_ticket(self):
+        subject = self._session_subject()
+        if not subject:
+            return self._reply_json(401, {"error": "session_required"})
+        try:
+            body = self._read_json(4096)
+            self.server.accounts.verify_admin_password(subject, body.get("password"))
+        except AccountError as error:
+            return self._reply_json(error.status, {"error": error.code})
+        except (ValueError, UnicodeError, json.JSONDecodeError):
+            return self._reply_json(400, {"error": "invalid_admin_request"})
+        return self._reply_json(200, {"ok": True, "ticket": self.server.issue_admin_ticket(subject), "expiresIn": ADMIN_TICKET_SECONDS})
+
+    def _app_admin(self, method, route):
+        subject = self._app_admin_subject()
+        if not subject:
+            return None
+        if route == APP_ADMIN_PREFIX + "/accounts":
+            return self._accounts_admin_apply(method, ADMIN_PREFIX + "/accounts", acting_subject=subject)
+        matched = APP_ADMIN_ACCOUNT_ROUTE.fullmatch(route)
+        if method != "POST" or not matched or matched.group(2) not in APP_ADMIN_ACTIONS:
+            return self._reply_json(404, {"error": "not_found"})
+        return self._accounts_admin_apply(method, f"{ADMIN_PREFIX}/accounts/{matched.group(1)}/{matched.group(2)}", acting_subject=subject)
+
+    def _accounts_admin_apply(self, method, route, acting_subject=None):
         accounts = self.server.accounts
         billing = self.server.billing
         try:
@@ -1469,8 +1576,9 @@ class Handler(BaseHTTPRequestHandler):
                 if detail:
                     subject = accounts.admin_subject(int(detail.group(1)))
                     return self._reply_json(200, {"ok": True, **billing.summary(subject), **billing.detail(subject)})
-                return self._reply_json(200, {"ok": True, "accounts": accounts.admin_list(
-                    lambda subject: {**self.server.receipts.usage(subject), "billing": billing.summary(subject)})})
+                # The in-app page manages logins only; money stays on the SSH-only page.
+                usage = (lambda subject: {}) if acting_subject else (lambda subject: {**self.server.receipts.usage(subject), "billing": billing.summary(subject)})
+                return self._reply_json(200, {"ok": True, "accounts": accounts.admin_list(usage)})
             body = self._read_json()
             billing_action = ADMIN_ACCOUNT_ROUTE.fullmatch(route)
             if billing_action and billing_action.group(2) in ("recharge", "billing-access"):
@@ -1491,6 +1599,35 @@ class Handler(BaseHTTPRequestHandler):
                                                 float(expires) if isinstance(expires, (int, float)) and not isinstance(expires, bool) else None)
                 return self._reply_json(200, {"ok": True, "id": account["id"]})
             account_id, action = ADMIN_ACCOUNT_ROUTE.fullmatch(route).groups()
+            if acting_subject:
+                # In the app an administrator manages customers: not themselves, and not other administrators.
+                target = accounts.by_subject(accounts.admin_subject(int(account_id)))
+                if target["subject"] == acting_subject:
+                    if not (action == "multi-device" and body.get("enabled") is True):
+                        return self._reply_json(400, {"error": "cannot_change_self"})
+                elif target["is_admin"]:
+                    return self._reply_json(400, {"error": "admin_protected"})
+            if action == "multi-device":
+                account, kept = accounts.admin_set_multi_device(int(account_id), body.get("enabled"))
+                if kept:
+                    self.config.sessions.revoke_subject(account["subject"], keep_install=kept)
+                elif kept == "":
+                    self.config.sessions.revoke_subject(account["subject"])
+                return self._reply_json(200, {"ok": True, "id": account["id"]})
+            if action == "device-sign-out":
+                account, install = accounts.admin_remove_device(int(account_id), body.get("deviceId"))
+                self.config.sessions.revoke_subject(account["subject"], install_id=install)
+                # Sessions from before computers were recorded cannot be told apart, so they end too.
+                self.config.sessions.revoke_subject(account["subject"], install_id="")
+                return self._reply_json(200, {"ok": True, "id": account["id"]})
+            if action == "expires":
+                account = accounts.admin_set_expiry(int(account_id), body.get("expiresAt"))
+                if account["expires_at"] and account["expires_at"] <= time.time():
+                    self.config.sessions.revoke_subject(account["subject"])
+                return self._reply_json(200, {"ok": True, "id": account["id"]})
+            if action == "admin":
+                account = accounts.admin_set_admin(int(account_id), body.get("enabled"))
+                return self._reply_json(200, {"ok": True, "id": account["id"]})
             if action == "reset-password":
                 account = accounts.admin_reset_password(int(account_id), body.get("password"))
             elif action == "status":
@@ -2223,6 +2360,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply_json(200, {"ok": True, "account": AccountStore.public(account)})
         if route == ADMIN_PREFIX + "/accounts" or ADMIN_BILLING_ROUTE.fullmatch(route):
             return self._accounts_admin("GET", route)
+        if route == APP_ADMIN_PREFIX + "/accounts":
+            return self._app_admin("GET", route)
         if route == PREFIX + "/billing/balance":
             return self._billing_customer("GET")
         if route == PREFIX + "/narration/script-quota":
@@ -2303,6 +2442,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._billing_customer("POST")
         if route in (PREFIX + "/account/setup", PREFIX + "/account/password"):
             return self._account_update(route.removeprefix(PREFIX + "/account/"))
+        if route == APP_ADMIN_PREFIX + "/ticket":
+            return self._app_admin_ticket()
+        if route == APP_ADMIN_PREFIX + "/accounts" or APP_ADMIN_ACCOUNT_ROUTE.fullmatch(route):
+            return self._app_admin("POST", route)
         if route == ADMIN_PREFIX + "/accounts" or ADMIN_ACCOUNT_ROUTE.fullmatch(route):
             return self._accounts_admin("POST", route)
         if route.startswith(PREFIX + "/volcengine/voice-clone/"):
