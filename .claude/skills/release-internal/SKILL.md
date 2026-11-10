@@ -12,7 +12,7 @@ description: 发布 AI获客 内部更新的固定流程。用户说“发版/�
 3. **版本三件套**
    - `desktop/package.json` 和 `package-lock.json`（两处）递增版本号。
    - `customer-release-notes.json` 写客户听得懂的话，第一条是最大亮点，未验证的写进 `limitations`。更新弹窗、公告页、等待页都由它自动生成，不用另外写。
-   - `customer-release-dates.json` 写 `YYYY-MM-DD HH:mm`（北京时间），`PROJECT_STATUS.md` 顶部加一条。
+   - `customer-release-dates.json` 写 `YYYY-MM-DD HH:mm`（北京时间），`docs/project-status-history.md` 顶部加一条本版记录；只有能力或验证状态变了才改 `PROJECT_STATUS.md`（当前状态）。
 4. **本机验证**：相关自检 + `npm.cmd run build:test`；界面改动用临时实例看真实页面，不碰用户数据。微信相关先在开发机测试号实测。
 5. **独立审查**：`code-review`，修掉确认的问题。
 6. **CI**：推分支开 PR。只有 Electron 下载 504 这类网络失败才重跑失败项，别的失败先修。`gh pr checks` 全绿才往下走，同一分支不要同时挂两个重试循环。
