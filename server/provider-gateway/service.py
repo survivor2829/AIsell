@@ -692,13 +692,23 @@ class ReceiptStore:
         return (row[1], self._result(row[1:]), row[0]) if row else ("missing", None, None)
 
 
+# When every worker is busy the server answers this itself, before reading anything (user 2026-11-09).
+_BUSY_BODY = b'{"error":"server_busy"}'
+BUSY_REPLY = (b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+              b"X-Xiaoxi-Error-Origin: gateway_transport\r\nX-Xiaoxi-Request-Not-Sent: 1\r\nRetry-After: 3\r\n"
+              b"Connection: close\r\nContent-Length: " + str(len(_BUSY_BODY)).encode() + b"\r\n\r\n" + _BUSY_BODY)
+GATEWAY_SLOTS = 48
+RATE_LIMITS = (("global", 1200), ("address", 240))
+
+
 class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, handler, config: GatewayConfig):
         super().__init__(address, handler)
         self.config = config
-        self.slots = threading.BoundedSemaphore(16)
+        self.slots = threading.BoundedSemaphore(GATEWAY_SLOTS)
+        self.refusals = threading.BoundedSemaphore(64)
         self.rate_lock = threading.Lock()
         self.rates = collections.OrderedDict()
         self.inflight_lock = threading.RLock()
@@ -781,13 +791,38 @@ class GatewayServer(ThreadingHTTPServer):
 
     def process_request(self, request, address):
         if not self.slots.acquire(False):
-            request.close()
+            if self.refusals.acquire(False):
+                threading.Thread(target=self._refuse_busy, args=(request,), daemon=True).start()
+            else:
+                request.close()
             return
         try:
             super().process_request(request, address)
         except Exception:
             self.slots.release()
             raise
+
+    def _refuse_busy(self, request):
+        """Say "busy, not sent" instead of dropping the connection (customer PC 2026-11-09: a silent
+        drop left a paid image request looking unknown). Nothing of the request has been read."""
+        try:
+            request.settimeout(5)
+            if hasattr(request, "do_handshake"):
+                request.do_handshake()
+            request.sendall(BUSY_REPLY)
+            request.shutdown(socket.SHUT_WR)
+            # Take in what the caller still sends, so closing does not reset the reply away.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and request.recv(65536):
+                pass
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                request.close()
+            except OSError:
+                pass
+            self.refusals.release()
 
     def process_request_thread(self, request, address):
         try:
@@ -799,11 +834,12 @@ class GatewayServer(ThreadingHTTPServer):
         minute = int(time.time() / 60)
         retry_after = max(1, int((minute + 1) * 60 - time.time()))
         with self.rate_lock:
-            for key, limit in (("global", 300), (address, 60)):
+            limits = ((RATE_LIMITS[0][0], RATE_LIMITS[0][1]), (address, RATE_LIMITS[1][1]))
+            for key, limit in limits:
                 stamp, count = self.rates.get(key, (minute, 0))
                 if stamp == minute and count >= limit:
                     return {"allowed": False, "scope": key, "retry_after": retry_after}
-            for key, _limit in (("global", 300), (address, 60)):
+            for key, _limit in limits:
                 stamp, count = self.rates.get(key, (minute, 0))
                 self.rates[key] = (minute, count + 1 if stamp == minute else 1)
                 self.rates.move_to_end(key)
@@ -2345,7 +2381,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_result(result)
 
     def do_GET(self):
-        limit = self.server.rate_limit(self.client_address[0])
+        limit = self.server.rate_limit(self._client_address())
         if not limit["allowed"]:
             return self._reply_json(
                 429,
@@ -2421,7 +2457,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._reply_json(404, {"error": "not_found"})
 
     def do_POST(self):
-        limit = self.server.rate_limit(self.client_address[0])
+        limit = self.server.rate_limit(self._client_address())
         if not limit["allowed"]:
             return self._reply_json(
                 429,

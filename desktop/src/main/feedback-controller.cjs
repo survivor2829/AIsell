@@ -10,7 +10,10 @@ const { reportEntry } = require("../shared/cloud-report.cjs");
 const CATEGORIES = new Set(["problem", "suggestion", "experience"]);
 const STATUSES = new Set(["pending", "in_progress", "resolved"]);
 const MAX_ATTEMPTS = 5;
-const freshDraft = () => ({ id: crypto.randomUUID(), text: "", category: "problem", includeDiagnostics: true, visibility: "public", context: null });
+// Screenshots pasted into 吐槽 (user 2026-11-09). The page turns each into a JPEG before it gets here.
+const MAX_IMAGES = 4, MAX_IMAGE_BYTES = 1024 * 1024;
+const JPEG_DATA_URL = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
+const freshDraft = () => ({ id: crypto.randomUUID(), text: "", category: "problem", includeDiagnostics: true, visibility: "public", context: null, images: [] });
 const validationError = (message) => Object.assign(new Error(message), { code: "feedback_validation" });
 const errorFor = (code) => ({
   cloud_http_400: "反馈内容未被服务端接受，已保留在本机。",
@@ -28,17 +31,30 @@ function cleanContext(value) {
   // `page` is the screen the feedback came from (the 吐槽 button on every page); `module` picks its logs.
   return module || taskId ? { module, taskId, ...(page ? { page } : {}) } : null;
 }
+function cleanImages(value) {
+  const images = Array.isArray(value) ? value : [];
+  if (images.length > MAX_IMAGES) throw validationError("最多附带 4 张截图。");
+  for (const image of images) {
+    const match = typeof image === "string" && JPEG_DATA_URL.exec(image);
+    if (!match || Buffer.byteLength(match[1], "base64") > MAX_IMAGE_BYTES) throw validationError("截图格式不对或太大，请换一张再试。");
+  }
+  return images.slice();
+}
 function validateInput(value, allowEmpty = false) {
   if (!value || typeof value !== "object" || !UUID.test(value.id || "")) throw validationError("反馈草稿已失效，请重新打开吐槽中心。");
   const text = typeof value.text === "string" ? value.text : "";
   if (Array.from(text).length > 2000 || (!allowEmpty && !text.trim())) throw validationError("请填写 1～2000 字的反馈内容。");
   if (!CATEGORIES.has(value.category)) throw validationError("请选择反馈类型。");
+  // Diagnostics always go with the feedback; customers are not asked about them (user 2026-11-09).
   return { id: value.id, text: allowEmpty ? text : text.trim(), category: value.category,
-    visibility: value.visibility === "private" ? "private" : "public", includeDiagnostics: value.includeDiagnostics !== false, context: cleanContext(value.context) };
+    visibility: value.visibility === "private" ? "private" : "public", includeDiagnostics: true, context: cleanContext(value.context),
+    images: cleanImages(value.images) };
 }
 function fingerprint(value, schema = 2) {
+  const images = (value.images || []).map((image) => crypto.createHash("sha256").update(image).digest("hex"));
   return crypto.createHash("sha256").update(JSON.stringify({ text: value.text, category: value.category,
-    includeDiagnostics: value.includeDiagnostics, context: value.context, ...(schema === 2 ? { visibility: value.visibility } : {}) })).digest("hex");
+    includeDiagnostics: value.includeDiagnostics, context: value.context, ...(schema === 2 ? { visibility: value.visibility } : {}),
+    ...(images.length ? { images } : {}) })).digest("hex");
 }
 function validReceipt(value, id) {
   return value?.id === id && STATUSES.has(value.status) && Number.isSafeInteger(value.receivedAt)
@@ -65,6 +81,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
   catch (error) { if (error.code !== "ENOENT") throw new Error("feedback_store_unreadable"); }
   if (saved && (![1, 2].includes(saved.schema) || !Array.isArray(saved.items))) throw new Error("feedback_store_invalid");
   let state = saved || { schema: 2, installId: crypto.randomUUID(), items: [], draft: freshDraft(), lastRefresh: "" };
+  const imageFile = (id, index) => path.join(rootDir, "feedback", "images", id, index + ".jpg");
   if (state.schema === 1) state = { ...state, schema: 2, draft: { ...state.draft, visibility: "private" } };
   const network = transport || (config?.enabled ? createTransport(config) : null);
   let timer, stopped = false, flushing, refreshing, refreshError = "";
@@ -84,14 +101,14 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
       refreshError, items: state.items.slice().reverse().map((item) => ({
         id: item.payload.id, text: item.payload.text, category: item.payload.category,
         context: structuredClone(item.payload.context), createdAt: item.payload.createdAt, includeDiagnostics: item.includeDiagnostics,
-        diagnosticCount: item.payload.diagnostics.length, delivery: item.delivery,
+        diagnosticCount: item.payload.diagnostics.length, imageCount: item.payload.images || 0, delivery: item.delivery,
         visibility: item.receipt?.visibility || item.payload.visibility || "private", hidden: item.receipt?.hidden === true, officialReply: item.receipt?.officialReply || "", status: item.receipt?.status || null, receivedAt: item.receipt?.receivedAt || null,
         updatedAt: item.receipt?.updatedAt || null, error: item.error || "", retryable: item.errorCode !== "cloud_http_409"
       })) };
   }
   function notify() { for (const listener of listeners) { try { listener(status()); } catch {} } }
   function saveDraft(payload) {
-    const draft = validateInput(payload, true);
+    const draft = { ...validateInput(payload, true), images: [] };
     // Ignore delayed saves from a draft that has already been submitted.
     if (draft.id === state.draft.id) commit({ ...state, draft });
     return status();
@@ -142,6 +159,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     }
     return { schema: 2, visibility: input.visibility, id: input.id, text: input.text, category: input.category,
       createdAt: new Date(clock()).toISOString(), context: { ...(input.context || {}), ...(capsules.length ? { capsules } : {}) }, diagnostics,
+      ...(input.images?.length ? { images: input.images.length } : {}),
       client: { schema: 1, appId: config?.appId || "com.aihuoke.desktop.test", channel: config?.channel || "test",
         installId, version, buildId: token(buildId), platform: process.platform,
         arch: process.arch, osRelease: token(os.release()) } };
@@ -167,6 +185,24 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
         const receipt = await network.request("/v1/feedback", { body: { ...item.payload, receiptToken } });
         if (stopped) break;
         if (!validReceipt(receipt, item.payload.id)) throw Object.assign(new Error("feedback_receipt_invalid"), { code: "feedback_receipt_invalid" });
+        if (item.payload.images) updateItem(item.payload.id, { receipt: receiptView(receipt) });
+        // Then the screenshots, one by one; a retry starts from the first one not yet received.
+        for (let index = state.items.find((value) => value.payload.id === item.payload.id).imagesSent || 0; index < (item.payload.images || 0); index += 1) {
+          let jpg = "";
+          try { jpg = fs.readFileSync(imageFile(item.payload.id, index)).toString("base64"); } catch { /* A screenshot removed from disk is skipped. */ }
+          if (jpg) {
+            try { await network.request("/v1/feedback/images", { body: { id: item.payload.id, receiptToken, index, jpg }, timeoutMs: 120_000 }); }
+            catch (error) {
+              // A picture the server will never take must not hold back the words it already has.
+              if (!/cloud_http_(?:400|404|413|422)$/.test(String(error?.code || error?.message || ""))) throw error;
+            }
+          }
+          if (stopped) break;
+          updateItem(item.payload.id, { imagesSent: index + 1 });
+        }
+        if (stopped) break;
+        // Delivered: the copies on this computer are no longer needed.
+        if (item.payload.images) fs.rmSync(path.dirname(imageFile(item.payload.id, 0)), { recursive: true, force: true });
         patch = { receipt: receiptView(receipt),
           delivery: "sent", error: "", errorCode: "", retryAt: 0 };
       } catch (error) {
@@ -192,8 +228,13 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     } else {
       if (input.id !== state.draft.id) throw validationError("反馈草稿已失效，请重新打开吐槽中心。");
       // Preserve the last keystrokes even when secure credential storage fails.
-      commit({ ...state, draft: input });
+      commit({ ...state, draft: { ...input, images: [] } });
       const secret = encrypt(crypto.randomBytes(32).toString("hex"));
+      // The screenshots live beside the queue, not inside it: the queue file stays small.
+      input.images.forEach((image, index) => {
+        fs.mkdirSync(path.dirname(imageFile(input.id, index)), { recursive: true });
+        fs.writeFileSync(imageFile(input.id, index), Buffer.from(JPEG_DATA_URL.exec(image)[1], "base64"));
+      });
       item = { payload: snapshot(input), secret, inputHash: fingerprint(input), includeDiagnostics: input.includeDiagnostics,
         delivery: network ? "queued" : "failed", attempts: 0, retryAt: 0, errorCode: network ? "" : "feedback_unavailable",
         error: network ? "" : errorFor("feedback_unavailable") };

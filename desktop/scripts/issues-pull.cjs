@@ -47,6 +47,13 @@ while True:
 offset = 0
 while True:
     page = get(f"/api/feedback?offset={offset}")
+    for item in page["items"]:
+        have = known.get(item["id"] + ":images")
+        have = have if isinstance(have, list) else []
+        missing = [index for index in item.get("imageFiles") or [] if index not in have]
+        if missing:
+            item["imageData"] = {str(index): base64.b64encode(get(f"/api/feedback/{item['id']}/images/{index}.jpg", True)).decode()
+                                 for index in missing}
     result["feedback"].extend(page["items"])
     offset += len(page["items"])
     if not page["items"] or offset >= page["total"] or offset >= 500:
@@ -128,6 +135,15 @@ function save(out, pulled) {
     state.known[`${id}:attachments`] = item.attachments || [];
   }
   const present = new Set(pulled.capsules.map(item => item.id || item.capsule?.id));
+  for (const item of pulled.feedback) {
+    if (!item.imageData || !UUID.test(item.id || "")) continue;
+    const folder = path.join(out, "feedback-images", item.id);
+    fs.mkdirSync(folder, { recursive: true });
+    for (const [index, data] of Object.entries(item.imageData)) if (/^[0-9]$/.test(index)) fs.writeFileSync(path.join(folder, index + ".jpg"), Buffer.from(data, "base64"));
+    state.known[item.id + ":images"] = [...new Set([...(Array.isArray(state.known[item.id + ":images"]) ? state.known[item.id + ":images"] : []),
+      ...Object.keys(item.imageData).map(Number)])];
+    delete item.imageData;
+  }
   fs.writeFileSync(path.join(out, "feedback.json"), JSON.stringify(pulled.feedback, null, 2));
   fs.writeFileSync(path.join(out, "issues.json"), JSON.stringify({ issues: pulled.issues, versions: pulled.versions }, null, 2));
   fs.writeFileSync(path.join(out, "state.json"), JSON.stringify(state, null, 2));

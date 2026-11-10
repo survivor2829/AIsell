@@ -450,9 +450,34 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(asr_config.keys["volcengine_asr"], "asr-api-secret")
         self.assertTrue(asr_config.capabilities()["volcengine_asr"])
 
+    def test_each_customer_has_an_own_allowance_behind_the_local_proxy(self):
+        # Every request arrives from 127.0.0.1; limiting that address limited all customers together.
+        minute = int(time.time() / 60)
+        self.server.rates["127.0.0.1"] = (minute, 240)
+        request = urllib.request.Request(self.origin + "/v1/provider-gateway/health", headers={"X-Xiaoxi-Client-Ip": "203.0.113.7"})
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        self.server.rates["203.0.113.7"] = (minute, 240)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        self.assertEqual(error.exception.code, 429)
+
+    def test_a_full_gateway_says_busy_and_not_sent(self):
+        held = [self.server.slots.acquire(False) for _ in range(48)]
+        try:
+            self.assertTrue(all(held))
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(self.origin + "/v1/provider-gateway/health", timeout=10)
+            self.assertEqual(error.exception.code, 503)
+            self.assertEqual(error.exception.headers.get("X-Xiaoxi-Error-Origin"), "gateway_transport")
+            self.assertEqual(error.exception.headers.get("X-Xiaoxi-Request-Not-Sent"), "1")
+        finally:
+            for _ in held:
+                self.server.slots.release()
+
     def test_gateway_rate_limit_identifies_scope_and_wait(self):
         minute = int(time.time() / 60)
-        self.server.rates["global"] = (minute, 300)
+        self.server.rates["global"] = (minute, 1200)
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(self.origin + "/v1/provider-gateway/health")
         self.assertEqual(error.exception.code, 429)

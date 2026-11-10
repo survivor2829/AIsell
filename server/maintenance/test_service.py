@@ -49,6 +49,82 @@ class ServiceTest(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_gateway_not_sent_mark_reaches_the_client(self):
+        # The gateway's "nothing was sent" mark used to be dropped here, so a safe resend looked unknown.
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('X-Xiaoxi-Error-Origin', 'gateway_transport')
+                self.send_header('X-Xiaoxi-Request-Not-Sent', '1')
+                self.end_headers()
+                self.wfile.write(b'{"error":"server_busy"}')
+            def log_message(self, *args):
+                pass
+        upstream = HTTPServer(('127.0.0.1', 0), Upstream)
+        public = Server(('127.0.0.1', 0), Handler, None)
+        for server in (upstream, public):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with patch('service.PROVIDER_GATEWAY_ORIGIN', f'http://127.0.0.1:{upstream.server_port}'):
+                request = urllib.request.Request(f'http://127.0.0.1:{public.server_port}/v1/provider-gateway/apimart/images/generations',
+                                                 b'{}', headers={'Content-Type': 'application/json'})
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(request)
+            self.assertEqual(error.exception.code, 503)
+            self.assertEqual(error.exception.headers.get('X-Xiaoxi-Request-Not-Sent'), '1')
+            self.assertEqual(error.exception.headers.get('X-Xiaoxi-Error-Origin'), 'gateway_transport')
+        finally:
+            for server in (public, upstream):
+                server.shutdown()
+                server.server_close()
+
+    def test_a_full_server_says_busy_instead_of_dropping(self):
+        public = Server(('127.0.0.1', 0), Handler, None)
+        threading.Thread(target=public.serve_forever, daemon=True).start()
+        held = [public.slots.acquire(False) for _ in range(64)]
+        try:
+            self.assertTrue(all(held))
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(f'http://127.0.0.1:{public.server_port}/v1/provider-gateway/health', timeout=10)
+            self.assertEqual(error.exception.code, 503)
+            self.assertEqual(error.exception.headers.get('X-Xiaoxi-Request-Not-Sent'), '1')
+        finally:
+            for _ in held:
+                public.slots.release()
+            public.shutdown()
+            public.server_close()
+
+    def test_feedback_screenshots_need_the_receipt_and_stay_within_the_declared_count(self):
+        import base64
+        from feedback import FeedbackUnauthorized
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root)
+            feedback_id, secret = "12345678-1234-1234-1234-1234567890ab", "a" * 64
+            clean = {"schema": 2, "id": feedback_id, "text": "看截图", "category": "problem", "createdAt": "2026-11-09T10:00:00.000Z",
+                     "client": {}, "context": {}, "diagnostics": [], "visibility": "private", "images": 1}
+            store.insert_feedback(clean, secret)
+            jpg = base64.b64encode(bytes([0xFF, 0xD8, 0xFF, 0xE0]) + b"0" * 64).decode()
+            with self.assertRaises(FeedbackUnauthorized):
+                store.insert_feedback_image({"id": feedback_id, "receiptToken": "b" * 64, "index": 0, "jpg": jpg})
+            with self.assertRaises(ValueError):
+                store.insert_feedback_image({"id": feedback_id, "receiptToken": secret, "index": 1, "jpg": jpg})
+            with self.assertRaises(ValueError):
+                store.insert_feedback_image({"id": feedback_id, "receiptToken": secret, "index": 0, "jpg": base64.b64encode(b"<svg/>").decode()})
+            self.assertEqual(store.insert_feedback_image({"id": feedback_id, "receiptToken": secret, "index": 0, "jpg": jpg})["index"], 0)
+            self.assertEqual(store.feedback_overview()["items"][0]["imageFiles"], [0])
+            self.assertTrue(store.feedback_image_file(feedback_id, "0").read_bytes().startswith(bytes([0xFF, 0xD8, 0xFF])))
+            self.assertIsNone(store.feedback_image_file("../etc", "0"))
+
+    def test_gateway_requests_have_their_own_larger_allowance(self):
+        public = Server(('127.0.0.1', 0), Handler, None)
+        minute = int(time.time() / 60)
+        public.rates['127.0.0.1'] = (minute, 60)
+        self.assertFalse(public.rate_limit('127.0.0.1')['allowed'], 'other routes keep their limit')
+        self.assertTrue(public.rate_limit('127.0.0.1', (1200, 240), ':gateway')['allowed'])
+        public.server_close()
+
     def test_input_diagnostics_survive_report_and_feedback_without_raw_input(self):
         details = {"input_phase": "search_query_input", "expected_input_tick": 4294967295,
                    "current_input_tick": 4294967296, "required_idle_ms": 450,
@@ -84,7 +160,7 @@ class ServiceTest(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             minute = int(time.time() / 60)
-            server.rates["global"] = (minute, 300)
+            server.rates["global:gateway"] = (minute, 1200)
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{server.server_port}/v1/provider-gateway/health"
