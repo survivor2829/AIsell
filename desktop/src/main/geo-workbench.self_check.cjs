@@ -133,6 +133,15 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
     geo.dispose();
   }
   {
+    // 搜狐号、百家号正常提交后都说“已提交，请核对”：这不是故障，不上报。
+    const w = world({ publish: async (job) => { job.beforeClick(); return { status: "unknown", reason: "页面显示已提交。" }; } }), geo = w.make();
+    await geo.dispatch("add-article", { title: "短标题", body: "正文" });
+    await geo.dispatch("confirm-publish", { articleId: geo.snapshot().articles[0].id, targets: [{ platform: "toutiao", accountId: "tt1" }] });
+    const state = await w.idle(geo);
+    assert.equal(state.publications[0].status, "unknown"); assert.equal(w.log.failures.length, 0);
+    geo.dispose();
+  }
+  {
     // 用户自己点停下：不算故障，不上报。
     const w = world({ publish: async () => { throw Object.assign(new Error("已停下"), { code: "GEO_STOPPED" }); } }), geo = w.make();
     await geo.dispatch("add-article", { title: "短标题", body: "正文" });

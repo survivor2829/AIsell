@@ -52,6 +52,7 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
   // 2026-11-09 真实账号：打开发文页直接显示账号未通过审核。说清楚原因，不说成找不到输入框。
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "您的搜狐号未通过审核"), /没有通过平台审核/);
   assert.match(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "账号审核未通过"), /没有通过平台审核/);
+  assert.equal(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/news/list", "洗地机怎么选\n审核未通过\n别的文章\n已发布"), "", "列表里某篇文章没过审，不算账号没过审");
   assert.equal(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "实名认证\n已认证\n发布内容"), "", "菜单里有这几个字不算没实名");
   assert.ok(!DRIVERS.sohu.holdText.test("为了账号安全，请不要泄露密码"), "常驻提示不算验证");
   assert.ok(DRIVERS.sohu.holdText.test("为了账号安全，需要短信验证") && DRIVERS.baijiahao.holdText.test("百度安全验证"));
@@ -173,6 +174,8 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
     // 平台自己的提示才留下；菜单里的短词不算。
     const { noticesOf } = require("./geo-publish-drivers.cjs");
     assert.deepEqual(noticesOf("首页\n实名认证\n发布内容\n请先完成实名认证后再发布文章\n" + "很长".repeat(30) + "审核"), ["请先完成实名认证后再发布文章"]);
+    // 已经打进编辑器的正文是用户自己的话，不能当成平台提示。
+    assert.deepEqual(noticesOf("通过ISO认证的洗地机更省心\n请先完成实名认证后再发布文章", { title: "洗地机", body: "第一段。\n通过ISO认证的洗地机更省心" }), ["请先完成实名认证后再发布文章"]);
   }
   {
     // 找不到输入框：带上当时页面的截图和地址，平台提示写进原因，一次都不点。

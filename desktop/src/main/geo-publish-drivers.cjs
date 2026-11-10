@@ -48,16 +48,24 @@ async function findSoon(page, predicate, { tries = 22, shouldStop = () => false,
 }
 // Short lines in which the platform itself says why (实名认证, 额度, 禁言…). Menu items are shorter than 6 characters.
 const NOTICE = /实名|认证|限制|违规|异常|频繁|禁言|额度|封禁|风险|失败|必填|审核|登录|验证|动态/;
-const noticesOf = (text) => [...new Set(String(text || "").split(/\n+/).map((line) => line.trim()).filter((line) => line.length >= 6 && line.length <= 40 && NOTICE.test(line)))].slice(0, 3);
+// Lines of the article itself, already typed into the editor, are the user's words and never a notice.
+const noticesOf = (text, job = {}) => {
+  const own = squash(`${job.title || ""}${job.body || ""}`);
+  return [...new Set(String(text || "").split(/\n+/).map((line) => line.trim()).filter((line) => line.length >= 6 && line.length <= 40 && NOTICE.test(line) && !own.includes(squash(line))))].slice(0, 3);
+};
 // The page as it was when a publish stopped or could not be confirmed: what a diagnosis needs and a message cannot hold.
-async function pageEvidence(page, step) {
+// A page that no longer answers does not hold the failure back: after 8 seconds it goes without a picture.
+async function pageEvidence(page, step, job) {
   const evidence = { step, pageUrl: "", screenshot: "", notices: [] };
-  try {
+  const look = (async () => {
     evidence.pageUrl = String(await page.url()).replace(/[?#].*$/, "");
-    evidence.notices = noticesOf(await shownText(page));
+    evidence.notices = noticesOf(await shownText(page), job);
     evidence.screenshot = (await page.send("Page.captureScreenshot", { format: "png" }))?.data || "";
-  } catch { /* A closed or hung page leaves the failure without a picture. */ }
-  return evidence;
+  })().catch(() => { /* A closed page leaves the failure without a picture. */ });
+  let timer;
+  await Promise.race([look, new Promise((resolve) => { timer = setTimeout(resolve, 8000); })]);
+  clearTimeout(timer);
+  return { ...evidence };
 }
 
 // Both must read back as the confirmed text before the publish button is touched.
@@ -209,8 +217,9 @@ const SOHU = {
     if (/账号已被平台禁言/.test(text)) return "这个搜狐号已被平台禁言，暂时不能发文章。";
     if (/今日发布额度已用完/.test(text)) return "这个搜狐号今天的发布额度用完了，明天再发。";
     if (/仅支持发布动态/.test(text)) return "这个搜狐号目前只能发动态，不能发文章。";
-    // Seen on a real account 2026-11-09: the editor address showed 未通过审核 and the form never came.
-    if (/未通过审核|审核未通过/.test(text)) return "这个搜狐号没有通过平台审核，暂时不能发文章。请到搜狐号后台按提示重新提交审核，通过后再发。";
+    // Seen on a real account 2026-11-09: the editor address showed 搜狐号未通过审核 and the form never came.
+    // Only the account's own review counts: an article of the list marked 审核未通过 says nothing about the account.
+    if (/(账号|搜狐号|自媒体号|入驻)[^\n]{0,8}(未通过审核|审核未通过)/.test(text)) return "这个搜狐号没有通过平台审核，暂时不能发文章。请到搜狐号后台按提示重新提交审核，通过后再发。";
     return /实名认证可解锁|实名认证后可解锁|您的账号未实名/.test(text) && !/addarticle/.test(url) ? "这个搜狐号还没有实名认证，平台不允许发文章。请先到搜狐号后台完成实名认证。" : "";
   },
   async fill(page, job) {
@@ -253,9 +262,7 @@ const BAIJIAHAO = {
   holdText: /百度安全验证|请完成下方验证/,
   blocked: (_url, text) => /注册百家号|申请入驻/.test(text) ? "这个账号还没有开通百家号，请先到百家号后台完成注册和认证。" : "",
   async fill(page, job) {
-    const findTitle = () => page.find((node) => node.localName === "div" && attr(node, "contenteditable") === "true" && /-editor\b/.test(String(attr(node, "class") || "")));
-    let title = await findTitle();
-    for (let tries = 0; !title && tries < 15; tries++) { await sleep(1000); title = await findTitle(); }
+    const title = await findSoon(page, (node) => node.localName === "div" && attr(node, "contenteditable") === "true" && /-editor\b/.test(String(attr(node, "class") || "")), { tries: 15, shouldStop: job.shouldStop });
     if (!title) throw fail("GEO_FORM_CHANGED", "没有找到百家号的标题输入框，平台页面可能和预想的不同。");
     await page.type(title, job.title);
     // The article body is the body of an iframe.
@@ -411,17 +418,17 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
         if (listed) return listed;
       }
       const hint = (await shownText(page)).match(/[^\n]{0,30}(话题|必填|失败|审核|违规|频繁)[^\n]{0,30}/)?.[0] || "";
-      return { status: "unknown", reason: hint ? `已点发布，页面提示：${hint.slice(0, 100)}。请到平台上看一下，不会自动重发。` : "已点发布，但没等到平台确认。请到平台上看一下，不会自动重发。", evidence: await pageEvidence(page, step) };
+      return { status: "unknown", reason: hint ? `已点发布，页面提示：${hint.slice(0, 100)}。请到平台上看一下，不会自动重发。` : "已点发布，但没等到平台确认。请到平台上看一下，不会自动重发。", evidence: await pageEvidence(page, step, job) };
       } catch (error) {
         if (error?.code === "GEO_STOPPED") throw error;
         // A page that went to the sign-in or an account notice only late reads as a missing field: its own reason is said instead.
         if (error?.code === "GEO_FORM_CHANGED" && !job.clickedAtMs) {
           const where = String(await page.url().catch(() => "")), words = await shownText(page);
-          if (driver.loginRequired(where, words)) throw Object.assign(fail("GEO_LOGIN_REQUIRED", `${driver.name}需要重新扫码登录。`), { evidence: await pageEvidence(page, step) });
+          if (driver.loginRequired(where, words)) throw Object.assign(fail("GEO_LOGIN_REQUIRED", `${driver.name}需要重新扫码登录。`), { evidence: await pageEvidence(page, step, job) });
           const refusal = driver.blocked?.(where, words);
-          if (refusal) throw Object.assign(fail("GEO_ACCOUNT_NOT_READY", refusal), { evidence: await pageEvidence(page, step) });
+          if (refusal) throw Object.assign(fail("GEO_ACCOUNT_NOT_READY", refusal), { evidence: await pageEvidence(page, step, job) });
         }
-        error.evidence = await pageEvidence(page, step);
+        error.evidence = await pageEvidence(page, step, job);
         // What the platform itself says on the page is the likeliest reason, so the person reads it too.
         if (error.code === "GEO_FORM_CHANGED" && error.evidence.notices.length) error.message = `${error.message} 页面上写着：「${error.evidence.notices[0]}」。`;
         throw error;
