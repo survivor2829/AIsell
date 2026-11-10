@@ -4,7 +4,7 @@ import { ImagePlus, X } from "lucide-react";
 // Screenshots in 吐槽 (user 2026-11-09): press Ctrl+V after taking a screenshot, or pick a picture.
 // Each becomes a JPEG no wider or taller than 1600 px, so four of them stay small enough to send.
 export const MAX_FEEDBACK_IMAGES = 4;
-const LONG_SIDE = 1600, MAX_BYTES = 2 * 1024 * 1024;
+const LONG_SIDE = 1600, MAX_BYTES = 1024 * 1024;
 
 async function toJpeg(file: Blob) {
   const bitmap = await createImageBitmap(file);
@@ -15,7 +15,7 @@ async function toJpeg(file: Blob) {
   context.fillStyle = "#fff"; context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
-  for (const quality of [0.85, 0.7, 0.55]) {
+  for (const quality of [0.85, 0.7, 0.55, 0.4]) {
     const url = canvas.toDataURL("image/jpeg", quality);
     if ((url.length - 23) * 0.75 <= MAX_BYTES) return url;
   }
@@ -30,14 +30,18 @@ export function pastedImages(event: ClipboardEvent) {
 
 export function useFeedbackImages(images: string[], onChange: (next: string[]) => void) {
   const [note, setNote] = useState("");
+  const latest = useRef(images);
+  latest.current = images;
   async function add(files: Blob[]) {
     if (!files.length) return;
-    const room = MAX_FEEDBACK_IMAGES - images.length;
-    if (room <= 0) { setNote(`最多 ${MAX_FEEDBACK_IMAGES} 张截图`); return; }
+    if (latest.current.length >= MAX_FEEDBACK_IMAGES) { setNote(`最多 ${MAX_FEEDBACK_IMAGES} 张截图`); return; }
     try {
-      const added = await Promise.all(files.slice(0, room).map(toJpeg));
-      onChange([...images, ...added]);
-      setNote(files.length > room ? `最多 ${MAX_FEEDBACK_IMAGES} 张截图，多的没有加上` : "");
+      const added = await Promise.all(files.slice(0, MAX_FEEDBACK_IMAGES).map(toJpeg));
+      // Read the list again after converting: another paste or a delete may have happened meanwhile.
+      const current = latest.current, next = [...current, ...added].slice(0, MAX_FEEDBACK_IMAGES);
+      latest.current = next;
+      onChange(next);
+      setNote(current.length + added.length > MAX_FEEDBACK_IMAGES ? `最多 ${MAX_FEEDBACK_IMAGES} 张截图，多的没有加上` : "");
     } catch (reason) { setNote(String((reason as Error)?.message || "这张图片读不出来，请换一张。")); }
   }
   // Ctrl+V anywhere in the form: a picture is added, plain text pastes as usual.

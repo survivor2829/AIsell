@@ -581,4 +581,4 @@ def test_busy_or_rate_limited_submit_waits_and_resends_the_same_request(monkeypa
             call()
         assert len(posts) == 4, "three waits, then the screen is reported as not sent"
     assert len(set(posts)) == 1, "every send is the same operation and the same bytes"
-    assert waits[:3] == [5, 10, 20][:len(waits)]
+    assert waits[:3] == [5, 15, 45][:len(waits)]

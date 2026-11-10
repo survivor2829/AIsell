@@ -204,6 +204,7 @@ def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
 
 _RECEIPT_LOOKS = 4
 _BUSY_RESENDS = 3
+_BUSY_WAITS_S = (5, 15, 45)  # together past the end of any per-minute allowance
 
 
 def _receipt_not_found(error) -> bool:
@@ -769,7 +770,7 @@ def default_api_call(prompt: str,
             if exc.stage != "submit" or exc.http_status not in (429, 503) or busy_waits >= _BUSY_RESENDS:
                 raise
             busy_waits += 1
-            time.sleep(5 * 2 ** (busy_waits - 1))
+            time.sleep(_BUSY_WAITS_S[busy_waits - 1])
         except APIMartOutcomeUnknown as exc:
             if not operation_id or exc.task_id:
                 raise

@@ -241,6 +241,14 @@ async function main() {
         assert.equal(Buffer.from(pictures[2].body.jpg, "base64")[0], 0xff);
         assert.equal(shots.status().items[0].delivery, "sent");
         assert.equal(shots.status().items[0].imageCount, 2);
+        assert.equal(fs.existsSync(path.join(shotRoot, "feedback", "images", sent[0].body.id)), false, "delivered pictures are not kept on this computer");
+        assert.equal(shots.status().draft.images.length, 0, "draft pictures are not written into the draft file");
+        // A server that will not take a picture (an older one) still keeps the words: the feedback is sent.
+        failImage = 0; const refuse = shotTransport.request;
+        shotTransport.request = async (route, options) => { if (route === "/v1/feedback/images") { sent.push({ route }); throw Object.assign(new Error("cloud_http_404"), { code: "cloud_http_404" }); } return refuse(route, options); };
+        await shots.submit({ ...shots.status().draft, text: "旧服务器", images: [jpeg(3)] });
+        await shots.flush();
+        assert.equal(shots.status().items[0].delivery, "sent");
       } finally { shots.stop(); fs.rmSync(shotRoot, { recursive: true, force: true }); }
     }
     console.log("feedback self-check passed: immutable retries, private receipts, always-on diagnostics, screenshots, restart, status ordering and atomic persistence failures");

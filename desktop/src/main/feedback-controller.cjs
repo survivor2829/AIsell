@@ -11,7 +11,7 @@ const CATEGORIES = new Set(["problem", "suggestion", "experience"]);
 const STATUSES = new Set(["pending", "in_progress", "resolved"]);
 const MAX_ATTEMPTS = 5;
 // Screenshots pasted into 吐槽 (user 2026-11-09). The page turns each into a JPEG before it gets here.
-const MAX_IMAGES = 4, MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGES = 4, MAX_IMAGE_BYTES = 1024 * 1024;
 const JPEG_DATA_URL = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
 const freshDraft = () => ({ id: crypto.randomUUID(), text: "", category: "problem", includeDiagnostics: true, visibility: "public", context: null, images: [] });
 const validationError = (message) => Object.assign(new Error(message), { code: "feedback_validation" });
@@ -108,7 +108,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
   }
   function notify() { for (const listener of listeners) { try { listener(status()); } catch {} } }
   function saveDraft(payload) {
-    const draft = validateInput(payload, true);
+    const draft = { ...validateInput(payload, true), images: [] };
     // Ignore delayed saves from a draft that has already been submitted.
     if (draft.id === state.draft.id) commit({ ...state, draft });
     return status();
@@ -185,15 +185,24 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
         const receipt = await network.request("/v1/feedback", { body: { ...item.payload, receiptToken } });
         if (stopped) break;
         if (!validReceipt(receipt, item.payload.id)) throw Object.assign(new Error("feedback_receipt_invalid"), { code: "feedback_receipt_invalid" });
+        if (item.payload.images) updateItem(item.payload.id, { receipt: receiptView(receipt) });
         // Then the screenshots, one by one; a retry starts from the first one not yet received.
-        for (let index = item.imagesSent || 0; index < (item.payload.images || 0); index += 1) {
+        for (let index = state.items.find((value) => value.payload.id === item.payload.id).imagesSent || 0; index < (item.payload.images || 0); index += 1) {
           let jpg = "";
           try { jpg = fs.readFileSync(imageFile(item.payload.id, index)).toString("base64"); } catch { /* A screenshot removed from disk is skipped. */ }
-          if (jpg) await network.request("/v1/feedback/images", { body: { id: item.payload.id, receiptToken, index, jpg } });
+          if (jpg) {
+            try { await network.request("/v1/feedback/images", { body: { id: item.payload.id, receiptToken, index, jpg }, timeoutMs: 120_000 }); }
+            catch (error) {
+              // A picture the server will never take must not hold back the words it already has.
+              if (!/cloud_http_(?:400|404|413|422)$/.test(String(error?.code || error?.message || ""))) throw error;
+            }
+          }
           if (stopped) break;
           updateItem(item.payload.id, { imagesSent: index + 1 });
         }
         if (stopped) break;
+        // Delivered: the copies on this computer are no longer needed.
+        if (item.payload.images) fs.rmSync(path.dirname(imageFile(item.payload.id, 0)), { recursive: true, force: true });
         patch = { receipt: receiptView(receipt),
           delivery: "sent", error: "", errorCode: "", retryAt: 0 };
       } catch (error) {
@@ -219,7 +228,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     } else {
       if (input.id !== state.draft.id) throw validationError("反馈草稿已失效，请重新打开吐槽中心。");
       // Preserve the last keystrokes even when secure credential storage fails.
-      commit({ ...state, draft: input });
+      commit({ ...state, draft: { ...input, images: [] } });
       const secret = encrypt(crypto.randomBytes(32).toString("hex"));
       // The screenshots live beside the queue, not inside it: the queue file stays small.
       input.images.forEach((image, index) => {

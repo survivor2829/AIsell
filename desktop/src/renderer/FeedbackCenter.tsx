@@ -164,7 +164,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
     draftRef.current = next; setDraft(next); setSaveState("正在保存草稿…");
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      void window.xiaoxiFeedback?.saveDraft(next).then((result) => {
+      void window.xiaoxiFeedback?.saveDraft({ ...next, images: [] }).then((result) => {
         if (draftRef.current !== next) return;
         setSaveState(result.ok ? "草稿已保存在本机" : "草稿暂未保存，请稍后重试");
       }).catch(() => { if (draftRef.current === next) setSaveState("草稿暂未保存，请稍后重试"); });
