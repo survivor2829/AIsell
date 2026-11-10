@@ -40,9 +40,9 @@ function createTutorialsController({ cacheDir, baseUrl, caPem, toPreviewUrl, emi
   function validate(raw) {
     if (raw?.schema !== 1 || !Number.isSafeInteger(raw.revision) || raw.revision < 1 || !Array.isArray(raw.items) || raw.items.length > 2000) throw new Error('tutorials_catalog_invalid');
     const ids = new Set();
-    const known = row => CATEGORIES.includes(row?.category) && (!row.topic || (row.category === 'short-video' && TOPICS.includes(row.topic)));
-    const items = raw.items.filter(known).map(row => {
-      if (!/^[a-zA-Z0-9_-]{1,80}$/.test(row.id) || ids.has(row.id) || typeof row.title !== 'string' || !row.title.trim() || row.title.length > 120) throw new Error('tutorials_item_invalid');
+    // Only a category this version does not know is skipped; anything wrong inside a known category still fails.
+    const items = raw.items.filter(row => CATEGORIES.includes(row?.category)).map(row => {
+      if (!/^[a-zA-Z0-9_-]{1,80}$/.test(row.id) || ids.has(row.id) || typeof row.title !== 'string' || !row.title.trim() || row.title.length > 120 || (row.topic && (row.category !== 'short-video' || !TOPICS.includes(row.topic)))) throw new Error('tutorials_item_invalid');
       ids.add(row.id);
       const item = { id: row.id, title: row.title, category: row.category, topic: row.topic || '' };
       for (const key of ['cover', 'video']) {

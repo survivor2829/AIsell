@@ -41,7 +41,7 @@ import { FeedbackQuickDialog } from "./FeedbackQuickDialog";
 import { CustomerTools } from "./CustomerTools";
 import { CustomerPanel } from "./CustomerPanel";
 import { TutorialsPage } from "./TutorialsPage";
-import type { TutorialCategory, TutorialTopic } from "./tutorials-types";
+import { TUTORIAL_CATEGORIES, type TutorialCategory, type TutorialTopic } from "./tutorials-types";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
 import { AGENT_ROLE_ORDER, appearanceFor, appearanceStyle, portraitAsset, useRolePreferences, type AgentRoleKey, type WorkspaceRoleKey, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
@@ -598,7 +598,7 @@ export default function App() {
   useEffect(() => {
     const show = (event: Event) => {
       const detail = (event as CustomEvent).detail || {};
-      const category = ["short-video", "wechat", "product-detail", "materials"].includes(detail.category) ? detail.category : "short-video";
+      const category = (TUTORIAL_CATEGORIES as readonly string[]).includes(detail.category) ? detail.category : "short-video";
       const topic = ["digital-human", "ai-editing", "product-video"].includes(detail.topic) ? detail.topic : undefined;
       setTutorialContext({ category, topic });
     };

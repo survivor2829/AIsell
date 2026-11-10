@@ -23,8 +23,9 @@ export const BUSINESS_DEMOS = [
 ] as const;
 type VideoExample = typeof VIDEO_EXAMPLES[number] | typeof WECHAT_DEMOS[number] | typeof BUSINESS_DEMOS[number];
 const isBusinessDemo = (example: VideoExample) => example.topic.startsWith('business-');
+const isWechatDemo = (example: VideoExample) => example.topic.startsWith('wechat-');
 // Screen recordings (微信拓客 and 精准获客) are wide; the finished-video examples are phone-shaped.
-const isWechatDemo = (example: VideoExample) => example.topic.startsWith('wechat-') || isBusinessDemo(example);
+const isScreenRecording = (example: VideoExample) => isWechatDemo(example) || isBusinessDemo(example);
 const asset = (file: string) => new URL(`./video-examples/${file}`, document.baseURI).toString();
 function openTutorial(example: VideoExample) {
   const detail = isBusinessDemo(example) ? { category: 'business' } : isWechatDemo(example) ? { category: 'wechat' } : { category: 'short-video', topic: example.topic as TutorialTopic };
@@ -33,7 +34,7 @@ function openTutorial(example: VideoExample) {
 
 function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: () => void }) {
   // The 精准获客 recordings are narrated: plain playback at normal speed. The WeChat ones are silent and offer speeds.
-  const Player = isWechatDemo(example) && !isBusinessDemo(example) ? SpeedVideo : 'video';
+  const Player = isWechatDemo(example) ? SpeedVideo : 'video';
   const dialog = useRef<HTMLDialogElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const [failed, setFailed] = useState(false);
@@ -44,8 +45,8 @@ function ExamplePlayer({ example, onClose }: { example: VideoExample; onClose: (
     void playback?.play().catch(() => {});
     return () => { playback?.pause(); element?.close(); };
   }, []);
-  const label = isWechatDemo(example) ? '操作演示' : '成片示例';
-  return <dialog ref={dialog} className={`video-example-dialog${isWechatDemo(example) ? ' is-wide' : ''}${isBusinessDemo(example) ? ' is-1610' : ''}`} aria-label={`${example.module}${label}`} onClose={event => { if (!event.currentTarget.open) onClose(); }} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
+  const label = isScreenRecording(example) ? '操作演示' : '成片示例';
+  return <dialog ref={dialog} className={`video-example-dialog${isScreenRecording(example) ? ' is-wide' : ''}${isBusinessDemo(example) ? ' is-1610' : ''}`} aria-label={`${example.module}${label}`} onClose={event => { if (!event.currentTarget.open) onClose(); }} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <header><div><strong>{example.title}</strong><span>{example.module} · {example.duration} · {isBusinessDemo(example) ? '真实操作录屏 · 有讲解' : isWechatDemo(example) ? '真实操作录屏' : '离线示例'}</span></div><button type="button" aria-label={`关闭${label}`} onClick={onClose}><X size={22} /></button></header>
     <div className="video-example-stage">
       {failed ? <div className="video-example-error" role="alert"><p>这段示例暂时无法播放，请重试。</p><button type="button" onClick={() => setFailed(false)}>重新播放</button><button type="button" onClick={() => { onClose(); openTutorial(example); }}>查看操作教程</button></div>
@@ -131,7 +132,7 @@ function writeCollapsed(topic: string, value: boolean) { try { localStorage.setI
 export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
   const example: VideoExample = [...VIDEO_EXAMPLES, ...WECHAT_DEMOS, ...BUSINESS_DEMOS].find(item => item.topic === topic)!;
   const text = BANNER_TEXT[topic];
-  const wide = isWechatDemo(example);
+  const wide = isScreenRecording(example);
   const label = wide ? '操作演示' : '成片示例';
   const [enlarged, setEnlarged] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
@@ -155,7 +156,7 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
       {/* Header row spans the full width: title on the left, actions in the top-right corner. */}
       <div className="example-banner-head">
         <div>
-          <small>{label} · {example.duration} · {wide ? '真实操作录屏' : `「${example.title}」`}</small>
+          <small>{label} · {example.duration} · {wide ? (isBusinessDemo(example) ? '真实操作录屏 · 有讲解' : '真实操作录屏') : `「${example.title}」`}</small>
           <h2>{wide ? example.title : '做出来是这样的'}</h2>
           <p>{text.result}</p>
         </div>

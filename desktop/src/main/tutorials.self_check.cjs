@@ -41,6 +41,9 @@ const { createTutorialsController } = require('./tutorials.cjs');
     const mixedList = await mixed.list({ refresh: true });
     assert.equal(mixedList.data.offline, false, 'one unknown category must not drop the catalog');
     assert.deepEqual(mixedList.data.items.map(row => [row.id, row.category]), [['one', 'short-video'], ['geo', 'business']]);
+    const typo = createTutorialsController({ ...options, cacheDir: await fs.mkdtemp(path.join(os.tmpdir(), 'xiaoxi-tutorial-typo-')),
+      transport: async () => Readable.from([Buffer.from(JSON.stringify({ schema: 1, revision: 4, items: [item, { ...item, id: 'typo', topic: 'ai-edit' }] }))]) });
+    assert.equal((await typo.list({ refresh: true })).data.offline, true, 'a wrong topic in a known category still fails loudly');
     const disconnected = createTutorialsController({ ...options, baseUrl: '', transport: async () => { throw Error('must stay offline'); } });
     assert.equal((await disconnected.list({ refresh: true })).data.items.length, 1, 'disabled service must preserve the cached catalog');
     assert.equal((await disconnected.play('one')).ok, true, 'disabled service must still play verified cached recordings');

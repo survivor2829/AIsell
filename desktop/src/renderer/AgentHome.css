@@ -730,6 +730,8 @@
 .wechat-demo-tabs button.is-on { border-color: var(--agent-accent-strong); background: var(--agent-accent-strong); color: #fff; }
 .wechat-demo-stage { position: relative; flex: 1; min-height: 0; padding: 0; overflow: hidden; border: 0; border-radius: 12px; background: #eef0f5; cursor: zoom-in; }
 .wechat-demo-stage video, .wechat-demo-stage img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+/* 精准获客 recordings show the whole 16:10 screen, not a cropped strip. */
+.wechat-demo-reel.is-1610 .wechat-demo-stage video, .wechat-demo-reel.is-1610 .wechat-demo-stage img { object-fit: contain; object-position: center; }
 .wechat-demo-tag, .wechat-demo-zoom { position: absolute; display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 999px; background: #000000a6; color: #fff; font-size: 13px; font-weight: 800; pointer-events: none; }
 .wechat-demo-tag { left: 10px; top: 10px; }
 .wechat-demo-zoom { right: 10px; bottom: 10px; }
