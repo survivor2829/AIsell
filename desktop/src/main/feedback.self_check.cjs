@@ -78,8 +78,8 @@ async function main() {
     assert.equal(listenerModule, "content_engine", "Listeners and callers cannot modify immutable payloads or another listener's view");
     const textOnly = { ...controller.status().draft, text: "希望操作更简单", includeDiagnostics: false };
     await controller.submit(textOnly); await controller.flush();
-    assert.equal(requests.at(-1).body.diagnostics.length, 0, "Opting out sends no diagnostic entries");
-    assert.equal(requests.at(-1).body.context.capsules, undefined, "Opting out attaches no failure capsule");
+    // Customers are no longer asked (user 2026-11-09): diagnostics go with every feedback.
+    assert.ok(requests.at(-1).body.diagnostics.length > 0, "An old opted-out draft still sends diagnostics");
     const sharedId = "11111111-2222-4333-8444-555555555555", capsuleId = crypto.randomUUID();
     const queries = [];
     const bound = createFeedbackController({ ...options, rootDir: path.join(root, "capsules"),
@@ -215,7 +215,35 @@ async function main() {
       assert.equal(scanBody.diagnostics[0].details.header_recovery_ok, false);
       assert.equal(JSON.stringify(scanBody).includes("must-not-upload"), false);
     } finally { scanFeedback.stop(); }
-    console.log("feedback self-check passed: immutable retries, private receipts, opt-out, restart, status ordering and atomic persistence failures");
+    // Pasted screenshots (user 2026-11-09): the text first, then each picture; a failed picture is retried from where it stopped.
+    {
+      const jpeg = (n) => "data:image/jpeg;base64," + Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32, n)]).toString("base64");
+      const shotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-feedback-shots-"));
+      const sent = [];
+      let failImage = 1;
+      const shotTransport = { close() {}, async request(route, { body }) {
+        sent.push({ route, body: structuredClone(body) });
+        if (route === "/v1/feedback/images" && body.index === failImage) { failImage = -1; throw new Error("ECONNRESET"); }
+        return route === "/v1/feedback/images" ? { ok: true } : { id: body.id, status: "pending", receivedAt: 1700000000, updatedAt: 1700000000 };
+      } };
+      const shots = createFeedbackController({ ...options, rootDir: shotRoot, transport: shotTransport, logger: { readRecent: () => [] } });
+      try {
+        assert.throws(() => shots.saveDraft({ ...shots.status().draft, images: ["data:image/png;base64,AAAA"] }), /截图/);
+        assert.throws(() => shots.saveDraft({ ...shots.status().draft, images: [1, 2, 3, 4, 5].map(jpeg) }), /4 张/);
+        await shots.submit({ ...shots.status().draft, text: "看截图", images: [jpeg(1), jpeg(2)] });
+        await shots.flush();
+        assert.equal(sent[0].body.images, 2, "the feedback says how many pictures follow");
+        assert.equal(JSON.stringify(sent[0].body).includes("base64"), false, "the pictures are not inside the text request");
+        assert.equal(shots.status().items[0].delivery, "queued", "a missing picture keeps it waiting");
+        now += 60_000; await shots.flush();
+        const pictures = sent.filter((item) => item.route === "/v1/feedback/images");
+        assert.deepEqual(pictures.map((item) => item.body.index), [0, 1, 1], "the retry starts at the picture that failed");
+        assert.equal(Buffer.from(pictures[2].body.jpg, "base64")[0], 0xff);
+        assert.equal(shots.status().items[0].delivery, "sent");
+        assert.equal(shots.status().items[0].imageCount, 2);
+      } finally { shots.stop(); fs.rmSync(shotRoot, { recursive: true, force: true }); }
+    }
+    console.log("feedback self-check passed: immutable retries, private receipts, always-on diagnostics, screenshots, restart, status ordering and atomic persistence failures");
   } finally { controller.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

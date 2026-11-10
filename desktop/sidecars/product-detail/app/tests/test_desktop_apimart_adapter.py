@@ -550,3 +550,35 @@ def test_a_dropped_submit_is_resent_once_as_the_same_operation(monkeypatch, seco
             call()
     assert len(posts) == 2 and posts[0] == posts[1], "the same operation id and the same bytes"
     assert posts[0][0] == events[0]["gateway_operation_id"]
+
+
+@pytest.mark.parametrize("busy_replies", [2, 4])
+def test_busy_or_rate_limited_submit_waits_and_resends_the_same_request(monkeypatch, busy_replies):
+    root = "https://gateway.invalid/v1/provider-gateway"
+    monkeypatch.setenv("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "https://gateway.invalid")
+    monkeypatch.setenv("REFINE_API_BASE_URL", root + "/apimart")
+    monkeypatch.setattr(adapter, "_gateway_receipt_base", lambda: root)
+    posts, waits = [], []
+    monkeypatch.setattr(adapter.time, "sleep", waits.append)
+    busy = {"X-Xiaoxi-Error-Origin": "gateway_transport", "X-Xiaoxi-Request-Not-Sent": "1"}
+    def open_(request, **kwargs):
+        posts.append((request.get_header("X-xiaoxi-operation-id"), request.data))
+        if len(posts) <= busy_replies:
+            if len(posts) % 2:
+                raise urllib.error.HTTPError(request.full_url, 503, "busy", busy, io.BytesIO(b'{"error":"server_busy"}'))
+            raise urllib.error.HTTPError(request.full_url, 429, "limit", {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit"}, io.BytesIO(b'{"error":"rate_limit"}'))
+        reply = io.BytesIO(b'{"data": [{"task_id": "paid-once"}]}')
+        reply.status = 200
+        return reply
+    monkeypatch.setattr(adapter, "_open_apimart", open_)
+    monkeypatch.setattr(adapter, "poll_image_task", lambda task_id, key, **kw: f"https://cdn.invalid/{task_id}.png")
+    call = lambda: adapter.default_api_call("prompt", None, "secret", lifecycle_callback=lambda event: None)
+    if busy_replies <= 3:
+        assert call() == "https://cdn.invalid/paid-once.png"
+        assert len(posts) == busy_replies + 1
+    else:
+        with pytest.raises(adapter.APIMartNotSubmitted):
+            call()
+        assert len(posts) == 4, "three waits, then the screen is reported as not sent"
+    assert len(set(posts)) == 1, "every send is the same operation and the same bytes"
+    assert waits[:3] == [5, 10, 20][:len(waits)]

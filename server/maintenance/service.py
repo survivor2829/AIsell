@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import ssl
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,7 +17,7 @@ from urllib.parse import urlsplit, parse_qs
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import urllib.request
-from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
+from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES, MAX_FEEDBACK_IMAGE_BYTES
 from capsules import CapsuleStoreMixin, validate_capsule, MAX_CAPSULE_BYTES, MAX_EVIDENCE_BYTES, MAX_ATTACHMENT_BYTES
 from materials import MaterialsStore, MAX_FILE
 from tutorials import TutorialsStore, serve_file as serve_tutorial_file
@@ -222,6 +223,15 @@ class Store(FeedbackStoreMixin, CapsuleStoreMixin):
                 GROUP BY install_id, version, module, taskKind ORDER BY lastSeen DESC LIMIT 5000""",
                 [value for pair in self.SUCCESS_EVENTS for value in pair])]}
 
+# When every worker is busy the server answers this itself, before reading anything (user 2026-11-09).
+_BUSY_BODY = b'{"error":"server_busy"}'
+BUSY_REPLY = (b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+              b"X-Xiaoxi-Error-Origin: gateway_transport\r\nX-Xiaoxi-Request-Not-Sent: 1\r\nRetry-After: 3\r\n"
+              b"Connection: close\r\nContent-Length: " + str(len(_BUSY_BODY)).encode() + b"\r\n\r\n" + _BUSY_BODY)
+# Requests passed on to the provider gateway: a detail-image task alone polls several times a minute.
+GATEWAY_RATE_LIMITS = (1200, 240)
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     def __init__(self, address, handler, store, admin=False):
@@ -230,7 +240,8 @@ class Server(ThreadingHTTPServer):
         self.release_router = LegacyReleaseRouter(store.root, APP_IDS) if store is not None else None
         self.materials = MaterialsStore(store.root) if store is not None else None
         self.tutorials = TutorialsStore(store.root) if store is not None else None
-        self.slots = threading.BoundedSemaphore(24)
+        self.slots = threading.BoundedSemaphore(64)
+        self.refusals = threading.BoundedSemaphore(64)
         self.rate_lock = threading.Lock()
         self.rates = collections.OrderedDict()
     def server_close(self):
@@ -241,27 +252,52 @@ class Server(ThreadingHTTPServer):
             self.tutorials.db.close()
     def process_request(self, request, address):
         if not self.slots.acquire(False):
-            request.close()
+            if self.refusals.acquire(False):
+                threading.Thread(target=self._refuse_busy, args=(request,), daemon=True).start()
+            else:
+                request.close()
             return
         try:
             super().process_request(request, address)
         except Exception:
             self.slots.release()
             raise
+    def _refuse_busy(self, request):
+        """Say "busy, not sent" instead of dropping the connection (customer PC 2026-11-09: a silent
+        drop left a paid image request looking unknown). Nothing of the request has been read."""
+        try:
+            request.settimeout(5)
+            if hasattr(request, "do_handshake"):
+                request.do_handshake()
+            request.sendall(BUSY_REPLY)
+            request.shutdown(socket.SHUT_WR)
+            # Take in what the caller still sends, so closing does not reset the reply away.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and request.recv(65536):
+                pass
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                request.close()
+            except OSError:
+                pass
+            self.refusals.release()
     def process_request_thread(self, request, address):
         try:
             super().process_request_thread(request, address)
         finally:
             self.slots.release()
-    def rate_limit(self, address):
+    def rate_limit(self, address, limits=(300, 60), bucket=""):
         minute = int(time.time() / 60)
         retry_after = max(1, int((minute + 1) * 60 - time.time()))
         with self.rate_lock:
-            for key, limit in (("global", 300), (address, 60)):
+            pairs = (("global" + bucket, limits[0]), (address + bucket, limits[1]))
+            for key, limit in pairs:
                 stamp, count = self.rates.get(key, (minute, 0))
                 if stamp == minute and count >= limit:
-                    return {"allowed": False, "scope": key, "retry_after": retry_after}
-            for key, _limit in (("global", 300), (address, 60)):
+                    return {"allowed": False, "scope": key.removesuffix(bucket) if bucket else key, "retry_after": retry_after}
+            for key, _limit in pairs:
                 stamp, count = self.rates.get(key, (minute, 0))
                 self.rates[key] = (minute, count + 1 if stamp == minute else 1)
                 self.rates.move_to_end(key)
@@ -371,7 +407,8 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(content_type, str) or len(content_type) > 512 or any(ord(char) < 0x20 or ord(char) > 0x7e for char in content_type):
             content_type = "application/octet-stream"
         self.send_header("Content-Type", content_type)
-        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "Retry-After", "Cache-Control"):
+        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "X-Xiaoxi-Request-Not-Sent",
+                     "X-Xiaoxi-Transport-Phase", "Retry-After", "Cache-Control"):
             value = response_headers.get(name)
             if isinstance(value, str) and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
                 self.send_header(name, value)
@@ -385,7 +422,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            limit = self.server.rate_limit(self.client_address[0])
+            gateway = not self.server.admin and urlsplit(self.path).path.startswith(PROVIDER_GATEWAY_PREFIX + "/")
+            limit = self.server.rate_limit(self.client_address[0], *((GATEWAY_RATE_LIMITS, ":gateway") if gateway else ()))
             if not limit["allowed"]:
                 return self.reply(
                     429,
@@ -436,6 +474,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.server.admin and self.path == "/v1/feedback":
                 clean, secret = validate_feedback(self.body(), validate_report, safe_token)
                 return self.reply(200, self.server.store.insert_feedback(clean, secret))
+            if not self.server.admin and self.path == "/v1/feedback/images":
+                self.connection.settimeout(120)
+                return self.reply(200, self.server.store.insert_feedback_image(self.body(MAX_FEEDBACK_IMAGE_BYTES * 4 // 3 + 16384)))
             if not self.server.admin and self.path == "/v1/feedback/status":
                 return self.reply(200, self.server.store.feedback_statuses(self.body()))
             if not self.server.admin and self.path == "/v1/feedback/visibility":
@@ -479,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urlsplit(self.path).path
         if not self.server.admin and route.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
-            limit = self.server.rate_limit(self.client_address[0])
+            limit = self.server.rate_limit(self.client_address[0], GATEWAY_RATE_LIMITS, ":gateway")
             if not limit["allowed"]:
                 return self.reply(
                     429,
@@ -521,6 +562,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"\d{1,9}", raw_offset) or any(value and not safe_token(value) for value in filters.values()):
                     return self.reply(400, {"error": "invalid_query"})
                 return self.reply(200, self.server.store.capsule_overview(int(raw_offset), **filters))
+            screenshot = re.fullmatch(r"/api/feedback/([a-f0-9-]{36})/images/([0-9])\.jpg", route)
+            if screenshot:
+                target = self.server.store.feedback_image_file(screenshot[1], screenshot[2])
+                if not target:
+                    return self.reply(404, {"error": "not_found"})
+                data = target.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                return self.wfile.write(data)
             attachment = re.fullmatch(r"/api/capsules/([a-f0-9-]{36})/attachments/([a-z0-9][a-z0-9_.-]{0,140}\.(png|jpg|json))", route)
             if attachment:
                 target = self.server.store.attachment_file(attachment[1], attachment[2])

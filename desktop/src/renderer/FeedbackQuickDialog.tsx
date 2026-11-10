@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, MessageCircle, Send, X } from "lucide-react";
 import type { FeedbackContext } from "./FeedbackCenter";
+import { FeedbackImages, useFeedbackImages } from "./FeedbackImages";
 import "./feedback-quick.css";
+import "./feedback-center.css";
 
 // Each page's logs are kept under a module name; the feedback carries the page and the logs of its module.
 const PAGE_MODULES: Record<string, string> = {
@@ -10,7 +12,7 @@ const PAGE_MODULES: Record<string, string> = {
   publish: "social_publish", "product-detail": "product_detail", "keyword-acquisition": "social_acquisition"
 };
 const CATEGORIES: [string, string][] = [["problem", "遇到问题"], ["suggestion", "功能建议"], ["experience", "体验吐槽"]];
-type Draft = { id: string; text: string; category: string; includeDiagnostics: boolean; visibility: "public" | "private"; context: FeedbackContext | null };
+type Draft = { id: string; text: string; category: string; includeDiagnostics: boolean; visibility: "public" | "private"; context: FeedbackContext | null; images?: string[] };
 
 // 吐槽 from any page without leaving it (user decision 2026-10-29): the shared draft gets this page as its
 // context, and the submission goes the same way as in 吐槽中心.
@@ -36,6 +38,8 @@ export function FeedbackQuickDialog({ page, pageTitle, onClose, onOpenCenter }: 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   const edit = (patch: Partial<Draft>) => setDraft((current) => current && { ...current, ...patch });
+  const images = draft?.images || [];
+  const shots = useFeedbackImages(images, (next) => edit({ images: next }));
   async function submit() {
     if (!draft || !window.xiaoxiFeedback || busy || !draft.text.trim()) return;
     setBusy(true); setError("");
@@ -52,13 +56,13 @@ export function FeedbackQuickDialog({ page, pageTitle, onClose, onOpenCenter }: 
         <button type="button" className="fbq-close" aria-label="关闭" onClick={onClose}><X size={20} /></button></header>
       {sent ? <div className="fbq-done"><Check size={40} /><h3>收到了，谢谢！</h3><p>处理进度可以在「吐槽中心 → 我的反馈」里看。</p>
         <div className="fbq-actions"><button type="button" className="secondary-button" onClick={onOpenCenter}>去吐槽中心看看</button><button type="button" className="primary-button" onClick={onClose}>继续干活</button></div></div>
-        : <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        : <form onPaste={shots.onPaste} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           <div className="fbq-chips" role="radiogroup" aria-label="反馈类型">{CATEGORIES.map(([value, label]) => <button type="button" role="radio" key={value} aria-checked={draft?.category === value}
             className={draft?.category === value ? "is-on" : ""} disabled={!draft || busy} onClick={() => edit({ category: value })}>{label}</button>)}</div>
           <textarea ref={textRef} value={draft?.text || ""} disabled={!draft || busy} placeholder="哪里不好用？发生了什么？你希望怎么改？" maxLength={2000}
             onChange={(event) => edit({ text: Array.from(event.target.value).slice(0, 2000).join("") })} />
+          <FeedbackImages images={images} onChange={(next) => edit({ images: next })} disabled={!draft || busy} add={shots.add} note={shots.note} />
           <div className="fbq-options">
-            <label><input type="checkbox" checked={draft?.includeDiagnostics ?? true} disabled={!draft || busy} onChange={(event) => edit({ includeDiagnostics: event.target.checked })} />附带这个页面的近期诊断（不含聊天、联系人、截图）</label>
             <label><input type="checkbox" checked={draft?.visibility === "private"} disabled={!draft || busy} onChange={(event) => edit({ visibility: event.target.checked ? "private" : "public" })} />仅开发者可见</label>
           </div>
           {error && <p className="fbq-error" role="alert">{error}</p>}

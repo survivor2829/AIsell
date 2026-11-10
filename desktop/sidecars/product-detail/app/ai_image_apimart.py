@@ -203,6 +203,7 @@ def recover_gateway_task_id(operation_id: str, api_key: str) -> str:
 
 
 _RECEIPT_LOOKS = 4
+_BUSY_RESENDS = 3
 
 
 def _receipt_not_found(error) -> bool:
@@ -758,22 +759,29 @@ def default_api_call(prompt: str,
         prompt, image_data_url, api_key, thinking, size, image_profile=image_profile,
     )
     task_id = ""
-    for resend in (False, True):
+    busy_waits, resent = 0, False
+    while not task_id:
         try:
             task_id = _post_image_submission(payload, api_key, selected_direct, operation_id)
-            break
+        except APIMartNotSubmitted as exc:
+            # Busy or over the per-minute allowance, refused before anything was sent: wait a little and
+            # send the same request again instead of giving up the screen (user 2026-11-09).
+            if exc.stage != "submit" or exc.http_status not in (429, 503) or busy_waits >= _BUSY_RESENDS:
+                raise
+            busy_waits += 1
+            time.sleep(5 * 2 ** (busy_waits - 1))
         except APIMartOutcomeUnknown as exc:
             if not operation_id or exc.task_id:
                 raise
             try:
                 task_id = recover_gateway_task_id(operation_id, api_key)
                 selected_direct = False
-                break
             except APIMartGatewayNeverReceived:
                 # Never reached the gateway: send the same operation once more. Same id and bytes,
                 # so a late original and this resend are one purchase at the gateway.
-                if resend:
+                if resent:
                     raise
+                resent = True
     route = "direct" if selected_direct else "system"
     if lifecycle_callback is not None:
         try:

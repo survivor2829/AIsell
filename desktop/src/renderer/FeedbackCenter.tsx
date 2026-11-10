@@ -1,13 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
-import { ChevronDown, MessageCircle, RefreshCw, Send, ShieldCheck, X } from "lucide-react";
+import { ChevronDown, ImageIcon, MessageCircle, RefreshCw, Send, X } from "lucide-react";
+import { FeedbackImages, useFeedbackImages } from "./FeedbackImages";
 import "./feedback-center.css";
 
 const Diagnostics = lazy(() => import("./Diagnostics").then((module) => ({ default: module.Diagnostics })));
 export type FeedbackContext = { module: string; taskId?: string; label?: string };
-type Draft = { id: string; text: string; category: string; includeDiagnostics: boolean; visibility: "public" | "private"; context: FeedbackContext | null };
+type Draft = { id: string; text: string; category: string; includeDiagnostics: boolean; visibility: "public" | "private"; context: FeedbackContext | null; images?: string[] };
 type FeedbackItem = {
   id: string; text: string; category: string; context: FeedbackContext | null; createdAt: string;
-  includeDiagnostics: boolean; diagnosticCount: number; delivery: "queued" | "sending" | "sent" | "failed";
+  includeDiagnostics: boolean; diagnosticCount: number; imageCount?: number; delivery: "queued" | "sending" | "sent" | "failed";
   status: "pending" | "in_progress" | "resolved" | null; receivedAt: number | null; updatedAt: number | null;
   error: string; retryable: boolean; visibility: "public" | "private"; hidden: boolean; officialReply: string;
 };
@@ -169,6 +170,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
       }).catch(() => { if (draftRef.current === next) setSaveState("草稿暂未保存，请稍后重试"); });
     }, 250);
   }
+  const shots = useFeedbackImages(draft?.images || [], (next) => edit({ images: next }));
   async function submit() {
     if (!draftRef.current || !window.xiaoxiFeedback || busy) return;
     clearTimeout(saveTimer.current); setBusy(true); setError("");
@@ -204,7 +206,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
     {error && <p className="feedback-error" role="alert">{error}</p>}
     {state && !state.enabled && <p className="feedback-note">反馈服务暂未连接，提交的内容会保存在本机，连接恢复后可以重新发送。</p>}
     {tab === "compose" ? <div id={`${id}-compose`} role="tabpanel" aria-labelledby={`${id}-compose-tab`} className="feedback-compose">
-      <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <form onPaste={shots.onPaste} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <fieldset className="feedback-categories" disabled={busy || !draft}><legend>想聊哪一类？</legend>
           {Object.entries(categoryLabels).map(([value, label]) => <label key={value} className={draft?.category === value ? "is-selected" : ""}>
             <input type="radio" name={`${id}-category`} value={value} checked={draft?.category === value} onChange={() => edit({ category: value })} />{label}
@@ -215,14 +217,12 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
         <textarea id={`${id}-text`} value={draft?.text || ""} disabled={busy || !draft} required rows={7} aria-describedby={`${id}-count`}
           placeholder="哪里不好用？发生了什么？你希望怎么改？" onChange={(event) => edit({ text: Array.from(event.target.value).slice(0, 2000).join("") })} />
         <div className="feedback-draft-meta"><span>{saveState}</span><span id={`${id}-count`}>{Array.from(draft?.text || "").length} / 2000 字</span></div>
+        <FeedbackImages images={draft?.images || []} onChange={(next) => edit({ images: next })} disabled={busy || !draft} add={shots.add} note={shots.note} />
         <fieldset className="feedback-categories feedback-visibility" disabled={busy || !draft}><legend>谁可以看到这条反馈？</legend>
           <label className={draft?.visibility === "public" ? "is-selected" : ""}><input type="radio" name={id + "-visibility"} checked={draft?.visibility === "public"} onChange={() => edit({ visibility: "public" })} />公开到大家的声音</label>
           <label className={draft?.visibility === "private" ? "is-selected" : ""}><input type="radio" name={id + "-visibility"} checked={draft?.visibility === "private"} onChange={() => edit({ visibility: "private" })} />仅开发者可见</label>
-          <p className="feedback-note">{draft?.visibility === "private" ? "文字和回复仅你与开发者可见。" : "文字、类型、时间、处理进度和官方回复会公开。请勿填写个人隐私；提交后可撤回公开。"} 附带诊断仅开发者可见。</p>
+          <p className="feedback-note">{draft?.visibility === "private" ? "文字和回复仅你与开发者可见。" : "文字、类型、时间、处理进度和官方回复会公开。请勿填写个人隐私；提交后可撤回公开。"}</p>
         </fieldset>
-        <div className="feedback-diagnostic-option"><label><input type="checkbox" checked={draft?.includeDiagnostics ?? true} disabled={busy || !draft} onChange={(event) => edit({ includeDiagnostics: event.target.checked })} />附带近期脱敏诊断，帮助定位问题</label>
-          <p><ShieldCheck size={15} />仅附带必要技术信息，不自动附带聊天内容、联系人、截图或素材。此选项不会开启持续自动上传。</p>
-        </div>
         <div className="feedback-submit-row"><p>提交后可在「我的反馈」查看处理进度。</p><button className="primary-button" type="submit" disabled={busy || !draft?.text.trim()}><Send size={16} />{busy ? "正在保存…" : "提交反馈"}</button></div>
       </form>
     </div> : tab === "mine" ? <div id={`${id}-mine`} role="tabpanel" aria-labelledby={`${id}-mine-tab`} className="feedback-mine">
@@ -235,7 +235,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
           {item.officialReply && <div className="feedback-reply"><strong>官方回复</strong><p>{item.officialReply}</p></div>}
           <div className="feedback-item-meta"><span>{item.visibility === "private" ? "仅开发者可见" : item.hidden ? "已由开发者隐藏公开展示" : "公开到大家的声音"}</span>{item.delivery === "sent" && item.visibility === "public" && <button className="secondary-button" disabled={busy} onClick={() => void withdraw(item.id)}>撤回公开</button>}</div>
           <div className="feedback-item-meta"><span>提交时间：{date(item.createdAt)}</span>{item.updatedAt && <span>状态更新：{date(item.updatedAt)}</span>}</div>
-          <div className="feedback-item-meta"><span className="feedback-number">{item.delivery === "sent" ? "反馈编号" : "本机记录编号"}：{item.id}</span><span>{item.includeDiagnostics ? `已附带 ${item.diagnosticCount} 条脱敏诊断` : "仅反馈文字"}</span></div>
+          <div className="feedback-item-meta"><span className="feedback-number">{item.delivery === "sent" ? "反馈编号" : "本机记录编号"}：{item.id}</span>{Boolean(item.imageCount) && <span><ImageIcon size={14} /> 附带 {item.imageCount} 张截图</span>}</div>
           {item.error && <div className="feedback-item-error"><p>{item.error}</p>{item.delivery === "failed" && item.retryable && <button className="secondary-button" disabled={busy || !state.enabled} onClick={() => void retry(item.id)}>重新发送</button>}</div>}
         </li>)}</ol>}
     </div> : tab === "community" ? <div id={id + "-community"} role="tabpanel" aria-labelledby={id + "-community-tab"}>
@@ -249,10 +249,10 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
       {!adminPage?.items.length ? <div className="feedback-empty"><h2>{listBusy ? "正在读取反馈…" : "暂无匹配的反馈"}</h2></div> : <ol className="feedback-list">{adminPage.items.map((item) => <li key={item.id}><AdminRecord item={item} onSaved={() => { void loadAdmin(adminPage.offset); void refresh(); }} /></li>)}</ol>}
       <div className="feedback-pagination"><button className="secondary-button" disabled={listBusy || !adminPage?.offset} onClick={() => void loadAdmin(Math.max(0, (adminPage?.offset || 0) - 100))}>上一页</button><span>共 {adminPage?.total || 0} 条</span><button className="secondary-button" disabled={listBusy || (adminPage?.offset || 0) + 100 >= (adminPage?.total || 0)} onClick={() => void loadAdmin((adminPage?.offset || 0) + 100)}>下一页</button></div>
     </div>}
-    <details className="feedback-diagnostics" open={diagnosticsOpen} onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}>
+    {adminAvailable && <details className="feedback-diagnostics" open={diagnosticsOpen} onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}>
       <summary><div><strong>日志诊断</strong><span>需要进一步排查时，查看日志或导出诊断包。</span></div><ChevronDown size={18} /></summary>
       {diagnosticsOpen && <Suspense fallback={<p className="feedback-note">正在读取诊断工具…</p>}><Diagnostics appVersion={appVersion} edition={edition} buildId={buildId} /></Suspense>}
-    </details>
+    </details>}
   </section>;
 }
 

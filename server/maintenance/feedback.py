@@ -1,4 +1,5 @@
 """User feedback is independent from automatic, consent-based diagnostics."""
+import base64
 import hashlib
 import hmac
 import json
@@ -9,6 +10,10 @@ UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 SECRET = re.compile(r"[a-f0-9]{64}\Z")
 TIME = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\Z")
 STATES = ("pending", "in_progress", "resolved")
+# Screenshots pasted into 吐槽 (user 2026-11-09): sent one by one after the text, as JPEG.
+JPEG = b"\xff\xd8\xff"
+MAX_FEEDBACK_IMAGES = 4
+MAX_FEEDBACK_IMAGE_BYTES = 2 * 1024 * 1024
 
 
 class FeedbackConflict(Exception):
@@ -60,6 +65,12 @@ def validate_feedback(body, validate_report, safe_token):
         if body.get("visibility") not in ("public", "private"):
             raise ValueError("feedback_visibility")
         clean["visibility"] = body["visibility"]
+    # How many screenshots follow; absent when there are none, so older retries keep their hash.
+    images = body.get("images")
+    if images is not None:
+        if type(images) is not int or not 1 <= images <= MAX_FEEDBACK_IMAGES:
+            raise ValueError("feedback_images")
+        clean["images"] = images
     return clean, body["receiptToken"]
 
 
@@ -105,6 +116,42 @@ class FeedbackStoreMixin:
                 json.dumps(clean["diagnostics"], ensure_ascii=False) if clean["diagnostics"] else None, now + 30 * 86400,
                 clean.get("visibility", "private")))
             return self.feedback_receipt(db.execute("SELECT * FROM feedback WHERE id=?", (clean["id"],)).fetchone())
+
+    @property
+    def feedback_image_root(self):
+        return self.root / "feedback-images"
+
+    def feedback_image_indexes(self, feedback_id):
+        folder = self.feedback_image_root / feedback_id
+        return sorted(int(item.stem) for item in folder.glob("[0-9].jpg")) if folder.is_dir() else []
+
+    def insert_feedback_image(self, body):
+        if not isinstance(body, dict) or not UUID.fullmatch(str(body.get("id", ""))) or not SECRET.fullmatch(str(body.get("receiptToken", ""))):
+            raise FeedbackUnauthorized()
+        index, encoded = body.get("index"), body.get("jpg")
+        if type(index) is not int or not isinstance(encoded, str):
+            raise ValueError("feedback_image")
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM feedback WHERE id=?", (body["id"],)).fetchone()
+        if not row or not hmac.compare_digest(row["token_hash"], hashlib.sha256(body["receiptToken"].encode()).hexdigest()):
+            raise FeedbackUnauthorized()
+        if not 0 <= index < int(json.loads(row["body"]).get("images", 0)):
+            raise ValueError("feedback_image_index")
+        image = base64.b64decode(encoded, validate=True)
+        if not image.startswith(JPEG) or len(image) > MAX_FEEDBACK_IMAGE_BYTES:
+            raise ValueError("feedback_image")
+        folder = self.feedback_image_root / body["id"]
+        folder.mkdir(parents=True, exist_ok=True)
+        partial = folder / f".{index}.part"
+        partial.write_bytes(image)
+        partial.replace(folder / f"{index}.jpg")
+        return {"ok": True, "index": index}
+
+    def feedback_image_file(self, feedback_id, index):
+        if not UUID.fullmatch(str(feedback_id or "")) or not str(index).isdigit() or int(index) >= MAX_FEEDBACK_IMAGES:
+            return None
+        target = self.feedback_image_root / feedback_id / f"{int(index)}.jpg"
+        return target if target.is_file() and not target.is_symlink() else None
 
     def withdraw_feedback(self, body):
         if not isinstance(body, dict) or body.get("visibility", "private") != "private":
@@ -159,7 +206,7 @@ class FeedbackStoreMixin:
             rows = db.execute("SELECT * FROM feedback" + where + " ORDER BY received DESC, id DESC LIMIT 100 OFFSET ?", (*parameters, offset)).fetchall()
             total = db.execute("SELECT COUNT(*) FROM feedback" + where, parameters).fetchone()[0]
         now = int(time.time())
-        return {"items": [{**json.loads(row["body"]), **self.feedback_receipt(row),
+        return {"items": [{**json.loads(row["body"]), **self.feedback_receipt(row), "imageFiles": self.feedback_image_indexes(row["id"]),
                            "diagnostics": json.loads(row["diagnostics"]) if row["diagnostics"] and row["diagnostics_expires"] > now else [],
                            "diagnosticsExpired": row["diagnostics_expires"] <= now} for row in rows], "total": total}
 
