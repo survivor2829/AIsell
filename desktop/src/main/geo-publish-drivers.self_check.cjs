@@ -49,6 +49,9 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "账号已被平台禁言，暂无法发布文章"), /禁言/);
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "账号今日发布额度已用完"), /额度/);
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "仅支持发布动态"), /动态/);
+  // 2026-11-09 真实账号：打开发文页直接显示账号未通过审核。说清楚原因，不说成找不到输入框。
+  assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "您的搜狐号未通过审核"), /没有通过平台审核/);
+  assert.match(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "账号审核未通过"), /没有通过平台审核/);
   assert.equal(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "实名认证\n已认证\n发布内容"), "", "菜单里有这几个字不算没实名");
   assert.ok(!DRIVERS.sohu.holdText.test("为了账号安全，请不要泄露密码"), "常驻提示不算验证");
   assert.ok(DRIVERS.sohu.holdText.test("为了账号安全，需要短信验证") && DRIVERS.baijiahao.holdText.test("百度安全验证"));

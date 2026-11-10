@@ -209,6 +209,8 @@ const SOHU = {
     if (/账号已被平台禁言/.test(text)) return "这个搜狐号已被平台禁言，暂时不能发文章。";
     if (/今日发布额度已用完/.test(text)) return "这个搜狐号今天的发布额度用完了，明天再发。";
     if (/仅支持发布动态/.test(text)) return "这个搜狐号目前只能发动态，不能发文章。";
+    // Seen on a real account 2026-11-09: the editor address showed 未通过审核 and the form never came.
+    if (/未通过审核|审核未通过/.test(text)) return "这个搜狐号没有通过平台审核，暂时不能发文章。请到搜狐号后台按提示重新提交审核，通过后再发。";
     return /实名认证可解锁|实名认证后可解锁|您的账号未实名/.test(text) && !/addarticle/.test(url) ? "这个搜狐号还没有实名认证，平台不允许发文章。请先到搜狐号后台完成实名认证。" : "";
   },
   async fill(page, job) {
