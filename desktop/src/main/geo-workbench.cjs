@@ -220,7 +220,9 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
         beforeClick: () => { item.clickedAt = stamp(); commit(); } });
       const reported = REPORT_STATUSES.includes(result?.status) ? result.status : "unknown";
       const status = reported === "failed" && item.clickedAt ? "unknown" : reported;
-      if (status === "unknown") report(item, "GEO_RESULT_UNCONFIRMED", result?.evidence);
+      // Sohu and Baijiahao always answer "submitted, please check" after a normal submit: that is not a fault.
+      // Only a publish the platform never confirmed carries the page with it, and only that one is reported.
+      if (status === "unknown" && result?.evidence) report(item, "GEO_RESULT_UNCONFIRMED", result.evidence);
       Object.assign(item, { status, url: /^https?:\/\//.test(result?.url || "") ? str(result.url, 3000) : "", reason: str(result?.reason, 500), finishedAt: stamp() });
     } catch (error) {
       if (error.code !== "GEO_STOPPED") report(item, /^GEO_/.test(String(error.code || "")) ? error.code : "GEO_UNEXPECTED", error.evidence);
