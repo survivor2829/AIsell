@@ -33,7 +33,8 @@ function reportSocialFailure({ logger, evidenceDir }, module, failure) {
     failed_request_kind: (failure.network?.failed || []).slice(0, 20), slow_request_kind: (failure.network?.slow || []).slice(0, 20),
     // Requests the platform answered with an error status (host:type:status).
     rejected_request_kind: (failure.network?.rejected || []).slice(0, 20) },
-  { level: code === "social_login_required" ? "warn" : "error", code });
+  // An account the platform holds back (实名认证, 禁言, 额度) is the account's state, not a fault of the software.
+  { level: /^(social|geo)_login_required$|^geo_account_not_ready$/.test(code) ? "warn" : "error", code });
 }
 const reportPublishFailure = (deps, failure) => reportSocialFailure(deps, "social_publish", failure);
 

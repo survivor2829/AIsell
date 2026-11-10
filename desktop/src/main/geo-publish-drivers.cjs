@@ -35,6 +35,31 @@ async function typeBody(page, editor, body) {
   }
   await sleep(600);
 }
+// A slow page, or a tip passing over it, holds a field back for a while: one look 8 seconds after opening
+// failed Toutiao's body field on 2026-11-09 although the second try went through. Looks again each second.
+async function findSoon(page, predicate, { tries = 22, shouldStop = () => false, between = null } = {}) {
+  for (let left = tries; ; left--) {
+    const node = await page.find(predicate);
+    if (node || left <= 0) return node;
+    if (shouldStop()) throw fail("GEO_STOPPED", "已停下，这篇没有发。");
+    await between?.();
+    await sleep(1000);
+  }
+}
+// Short lines in which the platform itself says why (实名认证, 额度, 禁言…). Menu items are shorter than 6 characters.
+const NOTICE = /实名|认证|限制|违规|异常|频繁|禁言|额度|封禁|风险|失败|必填|审核|登录|验证|动态/;
+const noticesOf = (text) => [...new Set(String(text || "").split(/\n+/).map((line) => line.trim()).filter((line) => line.length >= 6 && line.length <= 40 && NOTICE.test(line)))].slice(0, 3);
+// The page as it was when a publish stopped or could not be confirmed: what a diagnosis needs and a message cannot hold.
+async function pageEvidence(page, step) {
+  const evidence = { step, pageUrl: "", screenshot: "", notices: [] };
+  try {
+    evidence.pageUrl = String(await page.url()).replace(/[?#].*$/, "");
+    evidence.notices = noticesOf(await shownText(page));
+    evidence.screenshot = (await page.send("Page.captureScreenshot", { format: "png" }))?.data || "";
+  } catch { /* A closed or hung page leaves the failure without a picture. */ }
+  return evidence;
+}
+
 // Both must read back as the confirmed text before the publish button is touched.
 function sameArticle({ title, body }, job) {
   const wanted = paragraphs(job.body).join("");
@@ -64,10 +89,10 @@ const ZHIHU = {
   editorUrl: "https://zhuanlan.zhihu.com/write",
   loginRequired: (url) => /\/signin|\/signup/.test(url),
   async fill(page, job) {
-    const title = await page.find((node) => node.localName === "textarea" && /标题/.test(attr(node, "placeholder") || ""));
+    const title = await findSoon(page, (node) => node.localName === "textarea" && /标题/.test(attr(node, "placeholder") || ""), { shouldStop: job.shouldStop });
     if (!title) throw fail("GEO_FORM_CHANGED", "没有找到知乎的标题输入框，平台页面可能改版了。");
     await page.type(title, job.title);
-    const editor = await page.find(page.byClass("public-DraftEditor-content"));
+    const editor = await findSoon(page, page.byClass("public-DraftEditor-content"), { tries: 10, shouldStop: job.shouldStop });
     if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到知乎的正文输入框，平台页面可能改版了。");
     await typeBody(page, editor, job.body);
     return { read: async () => ({ title: await page.valueOf(title), body: await page.valueOf(editor) }) };
@@ -89,12 +114,14 @@ const TOUTIAO = {
   async fill(page, job) {
     // A first-visit promotion can cover the page. Only its X closes it: its big button accepts an agreement,
     // which is the user's own decision and not the software's.
-    await page.evaluate(`[...document.querySelectorAll("svg.close-btn")].find((el) => el.getClientRects().length)?.dispatchEvent(new MouseEvent("click", { bubbles: true }))`).catch(() => {});
+    // It can also come up while the page is still loading, so it is closed again before each new look.
+    const dismiss = () => page.evaluate(`[...document.querySelectorAll("svg.close-btn")].find((el) => el.getClientRects().length)?.dispatchEvent(new MouseEvent("click", { bubbles: true }))`).catch(() => {});
+    await dismiss();
     await sleep(1200);
-    const title = await page.find((node) => node.localName === "textarea" && /文章标题/.test(attr(node, "placeholder") || ""));
+    const title = await findSoon(page, (node) => node.localName === "textarea" && /文章标题/.test(attr(node, "placeholder") || ""), { shouldStop: job.shouldStop, between: dismiss });
     if (!title) throw fail("GEO_FORM_CHANGED", "没有找到头条的标题输入框，平台页面可能改版了。");
     await page.type(title, job.title);
-    const editor = await page.find(page.byClass("ProseMirror"));
+    const editor = await findSoon(page, page.byClass("ProseMirror"), { tries: 15, shouldStop: job.shouldStop, between: dismiss });
     if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到头条的正文输入框，平台页面可能改版了。");
     await typeBody(page, editor, job.body);
     // 展示封面 is required and defaults to a single image; this version publishes text only.
@@ -144,14 +171,17 @@ const TOUTIAO = {
     }
     return null;
   },
-  linkOf: (job) => `[...document.querySelectorAll("a[href]")].find((a) => (a.innerText || "").trim() === ${JSON.stringify(job.title)} && /toutiao\\.com\\/(item|article)\\//.test(a.href))?.href.split("?")[0] || ""`
+  linkOf: (job) => `[...document.querySelectorAll("a[href]")].find((a) => (a.innerText || "").trim() === ${JSON.stringify(job.title)} && /toutiao\\.com\\/(item|article)\\//.test(a.href))?.href.split("?")[0] || ""`,
+  // After 预览并发布 the editor does not always move on to the list (2026-11-09: published, never confirmed).
+  // The list is then opened in a tab of its own, so the editor tab is left as it is.
+  listUrl: "https://mp.toutiao.com/profile_v4/graphic/articles"
 };
 
 // Sohu and Baijiahao have not published on a real account yet. Their addresses, fields and steps were learned from
 // another product's publisher, used with the user's word that the two companies have an agreement (2026-11-02); this
 // is our own code. They refuse to click unless the page reads back the confirmed text, and only ever report
 // "submitted, please check": the user settles the result on the platform until a real article has gone through.
-const titleField = (page, name) => page.find((node) => (["input", "textarea"].includes(node.localName) || attr(node, "contenteditable") === "true") && /标题/.test(attr(node, "placeholder") || ""))
+const titleField = (page, name, shouldStop) => findSoon(page, (node) => (["input", "textarea"].includes(node.localName) || attr(node, "contenteditable") === "true") && /标题/.test(attr(node, "placeholder") || ""), { tries: 10, shouldStop })
   .then((node) => { if (!node) throw fail("GEO_FORM_CHANGED", `没有找到${name}的标题输入框，平台页面可能和预想的不同。`); return node; });
 const pressByWords = async (page, words) => {
   const node = await page.find((item) => ["button", "a", "span", "div", "label"].includes(item.localName) && words.includes(textOf(item).trim()));
@@ -182,14 +212,14 @@ const SOHU = {
     return /实名认证可解锁|实名认证后可解锁|您的账号未实名/.test(text) && !/addarticle/.test(url) ? "这个搜狐号还没有实名认证，平台不允许发文章。请先到搜狐号后台完成实名认证。" : "";
   },
   async fill(page, job) {
-    let title = await page.find((node) => node.localName === "input" && /标题/.test(attr(node, "placeholder") || ""));
+    let title = await findSoon(page, (node) => node.localName === "input" && /标题/.test(attr(node, "placeholder") || ""), { tries: 12, shouldStop: job.shouldStop });
     // The editor can also be reached from the site's own 发布内容 entry.
     if (!title && await pressByWords(page, ["发布内容"])) await sleep(4000);
     const refusal = this.blocked(String(await page.url()), await shownText(page));
     if (refusal) throw fail("GEO_ACCOUNT_NOT_READY", refusal);
-    title = title || await titleField(page, this.name);
+    title = title || await titleField(page, this.name, job.shouldStop);
     await page.type(title, job.title);
-    const editor = await page.find((node) => attr(node, "contenteditable") === "true" && String(attr(node, "class") || "").includes("ql-editor"));
+    const editor = await findSoon(page, (node) => attr(node, "contenteditable") === "true" && String(attr(node, "class") || "").includes("ql-editor"), { tries: 10, shouldStop: job.shouldStop });
     if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到搜狐号的正文输入框，平台页面可能和预想的不同。");
     await typeBody(page, editor, job.body);
     // The required creation statement says what the article is.
@@ -227,7 +257,7 @@ const BAIJIAHAO = {
     if (!title) throw fail("GEO_FORM_CHANGED", "没有找到百家号的标题输入框，平台页面可能和预想的不同。");
     await page.type(title, job.title);
     // The article body is the body of an iframe.
-    const editor = await page.find((node) => node.localName === "body" && attr(node, "contenteditable") === "true");
+    const editor = await findSoon(page, (node) => node.localName === "body" && attr(node, "contenteditable") === "true", { tries: 10, shouldStop: job.shouldStop });
     if (!editor) throw fail("GEO_FORM_CHANGED", "没有找到百家号的正文输入框，平台页面可能和预想的不同。");
     await typeBody(page, editor, job.body);
     await this.setCover(page, job.coverFile);
@@ -336,10 +366,11 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   async function publish({ platform, profileDir, title, body, aiWritten = false, shouldStop = () => false, onDetail = () => {}, beforeClick = () => {} }) {
     const driver = DRIVERS[platform];
     if (!driver) throw fail("GEO_CHANNEL_UNAVAILABLE", "这个平台还没开放发布。");
-    return withPage(profileDir, async (page) => {
-      const job = { title, body, aiWritten };
+    return withPage(profileDir, async (page, browser) => {
+      const job = { title, body, aiWritten, shouldStop };
       const cover = driver.needsCover ? await makeCover(page, title) : null;
       job.coverFile = cover?.file;
+      let step = "open";
       try {
       onDetail(`打开${driver.name}的写文章页面`);
       await page.navigate(driver.editorUrl);
@@ -350,6 +381,7 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       const refusal = driver.blocked?.(String(await page.url()), await shownText(page));
       if (refusal) throw fail("GEO_ACCOUNT_NOT_READY", refusal);
       await driver.enter?.(page);
+      step = "fill";
       onDetail("填写标题和正文");
       const form = await driver.fill(page, job);
       if (!sameArticle(await form.read(), job)) throw fail("GEO_FORM_MISMATCH", `${driver.name}页面上的内容和你确认的不一致，没有发布。`);
@@ -357,6 +389,7 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
       const point = await pointOf(page, driver.publishButton);
       if (!point) throw fail("GEO_FORM_CHANGED", `没有找到${driver.name}可以点的发布按钮，可能还有必填项没有填。`);
       if (shouldStop()) throw fail("GEO_STOPPED", "已停下，这篇没有发。");
+      step = "click";
       job.clickedAtMs = Date.now();
       beforeClick();
       await page.mouse(point);
@@ -366,12 +399,51 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
         const confirm = await waitThroughVerify(page, () => pointOf(page, driver.confirmButton), { ms: 12_000, shouldStop, onDetail, hold: driver.holdText });
         if (confirm) await page.mouse(confirm);
       }
+      step = "result";
       const result = await waitThroughVerify(page, async () => driver.published(String(await page.url()), await shownText(page), job), { ms: 40_000, shouldStop, onDetail, hold: driver.holdText });
       if (result) return driver.linkOf ? { ...result, url: String(await page.evaluate(driver.linkOf(job)).catch(() => "") || result.url || "") } : result;
+      if (driver.listUrl) {
+        step = "verify";
+        onDetail(`到${driver.name}的作品列表核对`);
+        const listed = await checkList(browser, driver, job, { shouldStop, onDetail });
+        if (listed) return listed;
+      }
       const hint = (await shownText(page)).match(/[^\n]{0,30}(话题|必填|失败|审核|违规|频繁)[^\n]{0,30}/)?.[0] || "";
-      return { status: "unknown", reason: hint ? `已点发布，页面提示：${hint.slice(0, 100)}。请到平台上看一下，不会自动重发。` : "已点发布，但没等到平台确认。请到平台上看一下，不会自动重发。" };
+      return { status: "unknown", reason: hint ? `已点发布，页面提示：${hint.slice(0, 100)}。请到平台上看一下，不会自动重发。` : "已点发布，但没等到平台确认。请到平台上看一下，不会自动重发。", evidence: await pageEvidence(page, step) };
+      } catch (error) {
+        if (error?.code === "GEO_STOPPED") throw error;
+        // A page that went to the sign-in or an account notice only late reads as a missing field: its own reason is said instead.
+        if (error?.code === "GEO_FORM_CHANGED" && !job.clickedAtMs) {
+          const where = String(await page.url().catch(() => "")), words = await shownText(page);
+          if (driver.loginRequired(where, words)) throw Object.assign(fail("GEO_LOGIN_REQUIRED", `${driver.name}需要重新扫码登录。`), { evidence: await pageEvidence(page, step) });
+          const refusal = driver.blocked?.(where, words);
+          if (refusal) throw Object.assign(fail("GEO_ACCOUNT_NOT_READY", refusal), { evidence: await pageEvidence(page, step) });
+        }
+        error.evidence = await pageEvidence(page, step);
+        // What the platform itself says on the page is the likeliest reason, so the person reads it too.
+        if (error.code === "GEO_FORM_CHANGED" && error.evidence.notices.length) error.message = `${error.message} 页面上写着：「${error.evidence.notices[0]}」。`;
+        throw error;
       } finally { cover?.remove(); }
     });
+  }
+  // The platform's own article list, in a new tab of the same window, read for this article and its link.
+  async function checkList(browser, driver, job, { shouldStop, onDetail }) {
+    try {
+      const { targetId } = await browser.send("Target.createTarget", { url: driver.listUrl });
+      const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+      await browser.send("DOM.enable", {}, sessionId);
+      const list = makePage(browser, sessionId);
+      const look = async () => driver.published(String(await list.url()), await shownText(list), job);
+      await sleep(5000);
+      let result = await waitThroughVerify(list, look, { ms: 15_000, shouldStop, onDetail });
+      // A list read straight after publishing can still miss the newest article.
+      if (!result) { await list.reload(); await sleep(5000); result = await waitThroughVerify(list, look, { ms: 15_000, shouldStop, onDetail }); }
+      if (!result) return null;
+      return driver.linkOf ? { ...result, url: String(await list.evaluate(driver.linkOf(job)).catch(() => "") || result.url || "") } : result;
+    } catch (error) {
+      if (error?.code === "GEO_STOPPED") throw error;
+      return null;
+    }
   }
   // The page first shows a placeholder textarea and swaps in a rich-text box a few seconds later. Enter sends
   // (the send button does not answer mouse events from here); the box emptying is what proves it went out.
@@ -416,4 +488,4 @@ function createGeoBrowserAdapter({ launch = launchBrowser, executable = findBrow
   return { publish, ask, stop, dispose: stop };
 }
 
-module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, VERIFY };
+module.exports = { makeCover, coverHtml, createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS, DRIVERS, DOUBAO, sameArticle, paragraphs, waitThroughVerify, findSoon, noticesOf, VERIFY };

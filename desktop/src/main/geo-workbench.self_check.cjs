@@ -8,7 +8,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CHANNELS = [{ id: "toutiao", name: "今日头条", available: true, titleLimit: 30 }, { id: "zhihu", name: "知乎", available: false, reason: "待开放" }];
 function world({ publish, ask, generate } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "geo-check-"));
-  const log = { published: [], asked: [], ai: [], leases: 0, released: 0, signedOut: [] };
+  const log = { published: [], asked: [], ai: [], leases: 0, released: 0, signedOut: [], failures: [] };
   const list = [{ id: "tt1", platform: "toutiao", label: "头条号", status: "active" }, { id: "db1", platform: "doubao", label: "豆包号", status: "active" }, { id: "tt2", platform: "toutiao", label: "没登录", status: "login_required" }];
   const accounts = { snapshot: () => ({ accounts: list }), profileDir: (id) => path.join(root, id), lease: () => { log.leases++; return () => { log.released++; }; }, markSignedOut: (id) => log.signedOut.push(id) };
   const adapter = {
@@ -20,7 +20,7 @@ function world({ publish, ask, generate } = {}) {
     return { usage: {}, content: kind === "geo-questions" ? JSON.stringify({ questions: ["成都洗地机哪家好", "商用洗地机多少钱", 7] }) : JSON.stringify({ title: `洗地机怎么选${log.ai.length}`, body: "第一段。\n第二段。" }) };
   });
   const dataDir = path.join(root, "data");
-  const make = () => createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels: CHANNELS });
+  const make = () => createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels: CHANNELS, onFailure: (failure) => log.failures.push(failure) });
   const idle = async (geo) => { for (let i = 0; i < 400; i++) { await sleep(5); if (!geo.isBusy() && !geo.snapshot().publications.some((item) => item.status === "queued")) return geo.snapshot(); } throw new Error("still busy"); };
   return { root, log, make, idle, dataDir };
 }
@@ -115,16 +115,30 @@ const code = (expected) => (error) => { assert.equal(error.code, expected, error
   {
     // 没点到发布就失败：明确是没发出，可以再试；驱动说失败但已经点过的，算结果不明。
     let clicks = 0;
-    const w = world({ publish: async (job) => { if (clicks++ === 0) throw Object.assign(new Error("没有找到标题"), { code: "GEO_FORM_CHANGED" }); job.beforeClick(); return { status: "failed", reason: "没等到提示" }; } }), geo = w.make();
+    const evidence = { step: "fill", pageUrl: "https://mp.toutiao.com/profile_v4/graphic/publish", screenshot: "cG5n", notices: ["请先完成实名认证"] };
+    const w = world({ publish: async (job) => { if (clicks++ === 0) throw Object.assign(new Error("没有找到标题"), { code: "GEO_FORM_CHANGED", evidence }); job.beforeClick(); return { status: "failed", reason: "没等到提示", evidence: { ...evidence, step: "result" } }; } }), geo = w.make();
     await geo.dispatch("save-brand", brand); await geo.dispatch("add-questions", { text: "问题一" });
     await geo.dispatch("write-article", { questionId: geo.snapshot().questions[0].id });
     const id = geo.snapshot().articles[0].id, target = { articleId: id, targets: [{ platform: "toutiao", accountId: "tt1" }] };
     await geo.dispatch("confirm-publish", target);
     let state = await w.idle(geo);
     assert.equal(state.publications[0].status, "failed"); assert.match(state.publications[0].reason, /没有找到标题/);
+    // 失败时的页面截图交给诊断，发布记录里不存图。
+    assert.deepEqual(w.log.failures[0], { platform: "toutiao", code: "GEO_FORM_CHANGED", step: "fill", clicked: false, pageUrl: evidence.pageUrl, screenshot: "cG5n", notices: evidence.notices });
+    assert.ok(!fs.readFileSync(path.join(w.dataDir, "state.json"), "utf8").includes("cG5n"), "截图不进发布记录");
     assert.equal((await geo.dispatch("confirm-publish", target)).result.added, 1, "确定没发出的可以再发");
     state = await w.idle(geo);
     assert.equal(state.publications[1].status, "unknown", "点过之后不能算没发出");
+    assert.deepEqual([w.log.failures[1].code, w.log.failures[1].step, w.log.failures[1].clicked], ["GEO_RESULT_UNCONFIRMED", "result", true], "结果不明也留下当时的页面");
+    geo.dispose();
+  }
+  {
+    // 用户自己点停下：不算故障，不上报。
+    const w = world({ publish: async () => { throw Object.assign(new Error("已停下"), { code: "GEO_STOPPED" }); } }), geo = w.make();
+    await geo.dispatch("add-article", { title: "短标题", body: "正文" });
+    await geo.dispatch("confirm-publish", { articleId: geo.snapshot().articles[0].id, targets: [{ platform: "toutiao", accountId: "tt1" }] });
+    await w.idle(geo);
+    assert.equal(w.log.failures.length, 0);
     geo.dispose();
   }
   {

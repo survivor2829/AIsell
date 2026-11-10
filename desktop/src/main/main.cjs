@@ -835,7 +835,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     socialAcquisitionRegistration = registerSocialAcquisitionIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_acquisition"), accounts: socialAccountsRegistration.accounts });
     geoWorkbenchRegistration = registerGeoWorkbenchIpc({ ipcMain, shell, deepSeekClient, getMainWindow: () => mainWindow,
-      dataDir: path.join(runtime.rootDir, "geo_workbench") });
+      dataDir: path.join(runtime.rootDir, "geo_workbench"), logger, evidenceDir: path.join(runtime.rootDir, "failure-evidence") });
     socialPublishRegistration = registerSocialPublishIpc({ ipcMain, getMainWindow: () => mainWindow, copyClient: deepSeekClient,
       ffmpegPath: app.isPackaged ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe") : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       dataDir: path.join(runtime.rootDir, "social_publish"), accounts: socialAccountsRegistration.accounts,
