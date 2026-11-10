@@ -3,6 +3,7 @@ import { appearanceStyle, type RoleAppearance } from "./role-appearance";
 import { MapAcquisitionPanel } from './MapAcquisitionPanel';
 import { AcquisitionPage } from './AcquisitionPage';
 import { GeoPanel } from './GeoPanel';
+import { ExampleBanner } from './VideoExamples';
 import "./BusinessAssistantPage.css";
 
 // GEO first under 精准获客 (user 2026-11-07).
@@ -43,6 +44,8 @@ export function BusinessAssistantPage({ module, appearance, onPersonalize, onOpe
       const Icon = item.icon;
       return <button type="button" key={key} aria-label={`打开${item.label}`} onClick={() => onOpenModule(key as BusinessModule)}><Icon size={27} /><span><strong>{item.label}{!item.available && <small className="business-stage">待开放</small>}</strong><span>{item.description}</span></span><ArrowRight size={18} /></button>;
     })}</nav>}
+    {/* Each module opens with its recorded example under the title, like the other modules (user 2026-11-09). */}
+    {module && <ExampleBanner key={module} topic={module} />}
     {module === "business-map" && <MapAcquisitionPanel />}
     {module === "business-keyword" && <AcquisitionPage />}
     {module === "business-geo" && <GeoPanel />}

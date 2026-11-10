@@ -34,6 +34,13 @@ const { createTutorialsController } = require('./tutorials.cjs');
     assert.equal(cached.data.offline, true);
     assert.equal(cached.data.items[0].availableOffline, true);
     assert.equal((await offline.play('one')).ok, true);
+    // 精准获客 is a category since 1.2.85; a category a version does not know is skipped, never the whole catalog.
+    const mixed = createTutorialsController({ ...options, cacheDir: await fs.mkdtemp(path.join(os.tmpdir(), 'xiaoxi-tutorial-mixed-')),
+      transport: async url => Readable.from([Buffer.from(JSON.stringify({ schema: 1, revision: 3, items: [
+        item, { ...item, id: 'geo', title: 'GEO推广', category: 'business', topic: '' }, { ...item, id: 'later', title: '以后的分类', category: 'future-module', topic: '' }] }))]) });
+    const mixedList = await mixed.list({ refresh: true });
+    assert.equal(mixedList.data.offline, false, 'one unknown category must not drop the catalog');
+    assert.deepEqual(mixedList.data.items.map(row => [row.id, row.category]), [['one', 'short-video'], ['geo', 'business']]);
     const disconnected = createTutorialsController({ ...options, baseUrl: '', transport: async () => { throw Error('must stay offline'); } });
     assert.equal((await disconnected.list({ refresh: true })).data.items.length, 1, 'disabled service must preserve the cached catalog');
     assert.equal((await disconnected.play('one')).ok, true, 'disabled service must still play verified cached recordings');

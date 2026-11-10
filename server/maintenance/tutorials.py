@@ -12,7 +12,7 @@ from pathlib import Path
 MAX_VIDEO = 256 * 1024 * 1024
 MAX_COVER = 2 * 1024 * 1024
 CATEGORIES = [{"id": key, "label": label} for key, label in (
-    ("short-video", "短视频获客"), ("wechat", "微信拓客"),
+    ("short-video", "短视频获客"), ("wechat", "微信拓客"), ("accounts", "账号矩阵"), ("business", "精准获客"),
     ("product-detail", "产品详情图"), ("materials", "场景素材库"))]
 TOPICS = [{"id": key, "label": label} for key, label in (
     ("digital-human", "数字人"), ("ai-editing", "AI混剪"), ("product-video", "产品效果视频"))]

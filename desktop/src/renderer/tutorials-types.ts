@@ -1,4 +1,4 @@
-export type TutorialCategory = 'short-video' | 'wechat' | 'product-detail' | 'materials';
+export type TutorialCategory = 'short-video' | 'wechat' | 'accounts' | 'business' | 'product-detail' | 'materials';
 export type TutorialTopic = 'digital-human' | 'ai-editing' | 'product-video';
 export type Tutorial = { id: string; title: string; category: TutorialCategory; topic: TutorialTopic | ''; durationSeconds: number; coverUrl: string; availableOffline: boolean };
 export type TutorialCatalog = { revision: number; items: Tutorial[]; offline: boolean };
