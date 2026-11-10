@@ -20,6 +20,8 @@ const workflowPolicies = Object.freeze({
   workflow_executor_unavailable: { classification: "blocker", attentionScope: "task" },
   touch_draft_generation_failed: { classification: "recoverable", attentionScope: "task" },
   touch_pre_send_failure_streak: { classification: "blocker", attentionScope: "global" },
+  // The first contacts of a run failed the same way: this run pauses, other tasks go on (user 2026-11-09).
+  touch_early_failure_paused: { classification: "blocker", attentionScope: "task" },
   wechat_clipboard_read_failed: { classification: "recoverable", attentionScope: "task" },
   wechat_focus_failed: { classification: "recoverable", attentionScope: "task" },
   wechat_window_preflight_failed: { classification: "environment", attentionScope: "global" },

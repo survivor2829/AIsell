@@ -866,6 +866,39 @@ async function checkTouchMessageSequence() {
       ["sent_verified", "not_attempted"], "the skip keeps the verified text and the unsent image");
     assert.equal(test.failures.length, 3, "three final skips consume one passport failure each");
   }
+  {
+    // The first three contacts of a run fail the same way before anything went out: the run
+    // pauses with one plain sentence; the fourth contact is never tried (user 2026-11-09).
+    const early = await testFailure("message_snapshot_unavailable", { contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id] });
+    for (let person = 0; person < 2; person += 1) {
+      assert.equal((await early.step()).waitingReason, "wechat_pre_send_recovery");
+      assert.equal((await early.step()).status, "pending", "the first two are skipped as before");
+    }
+    assert.equal((await early.step()).waitingReason, "wechat_pre_send_recovery");
+    result = await early.step();
+    assert.equal(result.status, "needs_attention", "the third same-cause failure at the start pauses the run");
+    assert.equal(result.reasonCode, "touch_early_failure_paused");
+    assert.equal(result.error, "这台电脑暂时发不出去，问题已经自动上报，不需要您做任何操作。");
+    assert.equal(early.state().status, "paused");
+    assert.equal(early.state().current_index, 3);
+    assert.equal(early.state().results[2].status, "pre_send_skipped");
+    assert.equal(early.attempts.filter((item) => item.contactId === fourthContact.id).length, 0, "the fourth contact is not tried");
+    assert.equal(early.workflow.canRetryWorkflowTask(early.record, early.payload), true, "the paused run can be continued later");
+
+    // Once a contact went out, the same three failures afterwards keep skipping as before.
+    const afterSend = await testFailure("message_snapshot_unavailable", { contactIds: [contact.id, secondContact.id, thirdContact.id, fourthContact.id],
+      successForContact: (id) => id === contact.id });
+    assert.equal((await afterSend.step()).status, "pending");
+    assert.equal(afterSend.state().results[0].status, "sent_verified");
+    for (let steps = 0; steps < 20 && result.status !== "completed"; steps += 1) {
+      clock.setTime(clock.getTime() + 10 * 60_000); // past the safety interval between contacts
+      result = await afterSend.step();
+      assert.notEqual(result.status, "needs_attention", "scattered failures after a send never pause the run");
+    }
+    assert.equal(result.status, "completed");
+    assert.deepEqual(afterSend.state().results.map((row) => row.status), ["sent_verified", "pre_send_skipped", "pre_send_skipped", "pre_send_skipped"]);
+    assert.equal(afterSend.state().results[3].status, "pre_send_skipped");
+  }
   const different = await testFailure("message_snapshot_unavailable", {
     contactIds: [contact.id, secondContact.id, thirdContact.id],
     reasonForContact: (id) => id === secondContact.id ? "image_driver_failed" : "message_snapshot_unavailable"

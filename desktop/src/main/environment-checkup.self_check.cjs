@@ -10,6 +10,10 @@ assert.equal(wechatItem({ installed: false }).status, "fail");
 assert.equal(wechatItem({ installed: true, running: false, version: "4.1.15.56" }).status, "warn");
 assert.equal(wechatItem({ installed: true, running: true, window: false, version: "4.1.15.56" }).status, "warn");
 assert.equal(wechatItem({ installed: true, running: true, window: true, version: "4.1.13.22" }).status, "ok");
+// 用户 2026-11-09：开发机和客户电脑都是 4.2，4.2 不再被判“未验证”。
+assert.equal(wechatItem({ installed: true, running: true, window: true, version: "4.2.0.8" }).status, "ok");
+assert.equal(wechatItem({ installed: true, running: true, window: true, version: "4.2.0.13" }).status, "ok");
+assert.match(wechatItem({ installed: true, running: true, window: true, version: "4.3.0.1" }).detail, /还没有在本软件上验证过/);
 assert.match(wechatItem({ installed: true, running: true, window: true, version: "3.9.12.51" }).detail, /还没有在本软件上验证过/);
 assert.equal(wechatItem({ error: "probe_failed" }).status, "warn");
 assert.equal(displayItem({ scaleFactor: 1.25, workAreaSize: { width: 2048, height: 1112 } }).status, "ok");
