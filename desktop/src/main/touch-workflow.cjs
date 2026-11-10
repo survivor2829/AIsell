@@ -41,7 +41,7 @@ function sentWindow(executionDir) {
 const PRE_SEND_RECOVERY_ATTEMPTS = 1; // One retry, then skip and move on (user 2026-11-07).
 // The first contacts of a run failing the same way pause it (user 2026-11-09).
 const EARLY_FAILURE_PAUSE_COUNT = 3;
-const EARLY_FAILURE_PAUSE_MESSAGE = "这台电脑暂时发不出去，问题已经自动上报，不需要您做任何操作。";
+const EARLY_FAILURE_PAUSE_MESSAGE = "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。";
 const PRE_SEND_RECOVERY_DELAYS_MS = [3_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
 const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
@@ -605,9 +605,11 @@ function createTouchWorkflow(options = {}) {
       // one complete field capsule instead of skipping the whole list (user decision 2026-11-09).
       // Once any contact of the run went out, scattered failures keep skipping as before.
       const earlyFailurePause = (count, reasonCode, ruleId, skipResponse) => {
-        const anySent = (task.results || []).some((row) => ["sent_verified", "recipient_unreachable_skipped"].includes(row.status)
+        if (count < EARLY_FAILURE_PAUSE_COUNT || task.status === "completed") return skipResponse();
+        // A contact whose result could not be read back counts as sent, like everywhere else in the run.
+        const anySent = (task.results || []).some((row) => ["sent_verified", "recipient_unreachable_skipped", "outcome_unknown_skipped"].includes(row.status)
           || row.message_parts?.some((part) => part.status === "sent_verified"));
-        if (count < EARLY_FAILURE_PAUSE_COUNT || anySent || task.status === "completed") return skipResponse();
+        if (anySent) return skipResponse();
         const detail = summarizeSendResult(result || {});
         const reason = String(reasonCode || "unspecified").replace(/[^a-z0-9_]/giu, "_").slice(0, 48);
         try {
@@ -620,6 +622,9 @@ function createTouchWorkflow(options = {}) {
             ...(detail.raw_worker ? { raw_worker: detail.raw_worker } : {})
           }, { trace: true, traceId: sendOperation.traceId, level: "error", code: `touch_paused_${reason}` });
         } catch { /* Diagnostics never stop the task. */ }
+        // A continued run needs three new same-cause failures before it pauses again.
+        delete task.pre_send_skip_streak;
+        delete task.identity_skip_streak;
         task.status = "paused";
         task.pause_reason = EARLY_FAILURE_PAUSE_MESSAGE;
         persist();

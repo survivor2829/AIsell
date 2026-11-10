@@ -236,7 +236,7 @@ const TASK_ERROR_LABELS: Record<string, string> = {
   wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化；请保持当前微信窗口后重试。",
   wechat_search_identity_circuit_open: "这几位联系人在微信里没有找到唯一匹配，已跳过，没有发送。",
   touch_pre_send_failure_streak: "这几位联系人发送前没有准备好，已跳过，没有发送。",
-  touch_early_failure_paused: "这台电脑暂时发不出去，问题已经自动上报，不需要您做任何操作。",
+  touch_early_failure_paused: "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。",
   powershell_timeout: "微信响应较慢，本次已跳过。",
   moments_publish_outcome_unknown: "已发布。",
   moments_publish_outcome_unknown_requires_resolution: "已发布。",

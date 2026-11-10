@@ -381,9 +381,14 @@ const ANTIVIRUS_BLOCKED_RESULT = Object.freeze({ ok: false, reason: "powershell_
 // can travel with it. The full output stays internal-only below. 1.2.69 had a customer failure
 // whose PowerShell error was never kept, so its cause could only be guessed (2026-11-07).
 function workerErrorKinds(stderr) {
-  const text = String(stderr || "").replace(/(["'“”‘’]).*?\1/gu, "");
+  // Quoted text is dropped pair by pair: straight double quotes, and the curly quotes Chinese
+  // Windows prints (“…”, ‘…’). A quote left open drops the rest of its line. An apostrophe as in
+  // can't is not a quote and keeps the error names after it.
+  const text = String(stderr || "")
+    .replace(/"[^"\r\n]*"/gu, "").replace(/[“”][^“”\r\n]*[“”]/gu, "").replace(/[‘’][^‘’\r\n]*[‘’]/gu, "")
+    .replace(/["“”‘][^\r\n]*/gu, "");
   const found = new Set();
-  for (const pattern of [/\b[A-Z][A-Za-z]{2,}(?:\.[A-Z][A-Za-z]{2,}){0,6}(?:Exception|Error)\b/gu,
+  for (const pattern of [/\b[A-Z][A-Za-z]*(?:\.[A-Z][A-Za-z]{2,}){0,6}(?:Exception|Error)\b/gu,
     /FullyQualifiedErrorId\s*:\s*([A-Za-z0-9_.,]{3,80})/gu, /\b0x[0-9A-Fa-f]{8}\b/gu]) {
     for (const match of text.matchAll(pattern)) {
       const kind = (match[1] || match[0]).replace(/[^\x20-\x7e]/gu, "");

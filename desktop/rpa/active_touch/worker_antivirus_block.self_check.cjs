@@ -48,6 +48,12 @@ function fakeSpawn({ stderr, status }) {
   const kinds = workerErrorKinds(CLIPBOARD_STDERR);
   assert.deepEqual(kinds, ["MethodInvocationException", "ExternalException", "System.Runtime.InteropServices.COMException", "0x800401D0"]);
   assert.ok(!/向锦涛|138|GetText|剪贴板/.test(kinds.join(" ")), "no quoted text, number or Chinese leaves the computer");
+  // Chinese Windows quotes with “…”; what is inside, even ASCII, stays on the computer.
+  const chinese = "使用“0”个参数调用“GetText”时发生异常:“客户 PaymentError 0x1A2B3C4D”\r\n    + CategoryInfo : NotSpecified: (:) [], MethodInvocationException";
+  assert.deepEqual(workerErrorKinds(chinese), ["MethodInvocationException"]);
+  // An apostrophe is not a quote: the error names after it are kept.
+  const apostrophe = "The process can't access the file\r\n    + CategoryInfo : NotSpecified: (:) [], IOException\r\n    + FullyQualifiedErrorId : doesn't_matter,IOException";
+  assert.ok(workerErrorKinds(apostrophe).includes("IOException"), JSON.stringify(workerErrorKinds(apostrophe)));
   const failed = await runPowerShellAsync("exit 0", {}, { ensure: false, spawnProcess: fakeSpawn({ stderr: CLIPBOARD_STDERR, status: 1 }) });
   assert.deepEqual(failed.diagnostics?.worker_error_kind, kinds, "kept without internal diagnostics");
   const { sanitizeFailureDiagnostics } = require("../../src/shared/failure-diagnostics.cjs");

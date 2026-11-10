@@ -450,12 +450,12 @@ async function checkR008BoundedRecovery() {
     const third = await step();
     assert.equal(third.status, "needs_attention", "three same-cause failures at the start pause the run");
     assert.equal(third.reasonCode, "touch_early_failure_paused");
-    assert.equal(third.error, "这台电脑暂时发不出去，问题已经自动上报，不需要您做任何操作。");
+    assert.equal(third.error, "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。");
     assert.equal(loadTaskState(taskDir).status, "paused");
     assert.equal(loadTaskState(taskDir).results[2].status, "identity_skipped");
     assert.equal(loadTaskState(taskDir).current_index, 3, "the fourth contact is next");
     assert.equal(loadTaskState(taskDir).results[3].send_attempted, false, "the fourth contact was not touched");
-    assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 3);
+    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined, "the pause clears the streak; a continued run needs three new failures");
     assert.equal(failures.length, 4, "one final failure per skipped contact, and the pause itself");
     assert.equal(failures[3].reasonCode, "touch_early_failure_paused");
     assert.equal(workflow.canRetryWorkflowTask(record, payload), true, "the paused run can be continued");

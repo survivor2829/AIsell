@@ -878,8 +878,9 @@ async function checkTouchMessageSequence() {
     result = await early.step();
     assert.equal(result.status, "needs_attention", "the third same-cause failure at the start pauses the run");
     assert.equal(result.reasonCode, "touch_early_failure_paused");
-    assert.equal(result.error, "这台电脑暂时发不出去，问题已经自动上报，不需要您做任何操作。");
+    assert.equal(result.error, "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。");
     assert.equal(early.state().status, "paused");
+    assert.equal(early.state().pre_send_skip_streak, undefined, "a continued run needs three new same-cause failures to pause again");
     assert.equal(early.state().current_index, 3);
     assert.equal(early.state().results[2].status, "pre_send_skipped");
     assert.equal(early.attempts.filter((item) => item.contactId === fourthContact.id).length, 0, "the fourth contact is not tried");
