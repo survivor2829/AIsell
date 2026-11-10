@@ -1,4 +1,4 @@
-import { VideoExamples, WechatDemoReel } from './VideoExamples';
+import { BusinessDemoReel, VideoExamples, WechatDemoReel } from './VideoExamples';
 import { PhoneMatrixDemo } from './PhoneMatrixDemo';
 import {
   ArrowRight,
@@ -140,8 +140,9 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryTarget: "business-keyword",
     capabilities: [
       { key: "business-geo", label: "GEO推广", description: "让有需求的客户在 AI 搜索里更容易找到您", icon: Globe2, available: true },
-      { key: "business-keyword", label: "关键词获客", description: "从同行视频的评论里，找出问价、想买的人", icon: Search },
-      { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin }
+      // Same order as the sidebar (BUSINESS_MODULES).
+      { key: "business-map", label: "地图获客", description: "找到附近企业，查资料、留线索、接着跟进", icon: MapPin },
+      { key: "business-keyword", label: "关键词获客", description: "从同行视频的评论里，找出问价、想买的人", icon: Search }
     ]
   },
   // 账号运营（用户 2026-11-04）：点开先见小丽，手机矩阵放第一位，养号、一键分发照旧。
@@ -655,7 +656,7 @@ export function AgentHome({
   const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : role === "business" ? Search : role === "tutorials" ? Smartphone : RadioTower;
 
   // 右边放视频的员工（用户 2026-11-05：左边人物、右边视频，图文并茂；能做的事挪到下面一整行，一屏看完）。
-  const media = role === "production" ? <VideoExamples /> : role === "agent" ? <WechatDemoReel /> : role === "tutorials" ? <PhoneMatrixDemo compact /> : null;
+  const media = role === "production" ? <VideoExamples /> : role === "agent" ? <WechatDemoReel /> : role === "business" ? <BusinessDemoReel /> : role === "tutorials" ? <PhoneMatrixDemo compact /> : null;
   const capabilities = (
       <div className="agent-home-actions">
       <section className="agent-capabilities">

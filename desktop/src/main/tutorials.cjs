@@ -7,7 +7,9 @@ const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { hashFile } = require('../shared/component-contract.cjs');
 
-const CATEGORIES = ['short-video', 'wechat', 'product-detail', 'materials'];
+// 精准获客 and 账号矩阵 since 1.2.85 (user 2026-11-09). A category this version does not know is skipped,
+// not a reason to drop the whole catalog: older versions refused every tutorial over one new category.
+const CATEGORIES = ['short-video', 'wechat', 'accounts', 'business', 'product-detail', 'materials'];
 const TOPICS = ['digital-human', 'ai-editing', 'product-video'];
 const EMPTY = { schema: 1, revision: 0, items: [] };
 const MAX_VIDEO = 256 * 1024 * 1024;
@@ -38,8 +40,9 @@ function createTutorialsController({ cacheDir, baseUrl, caPem, toPreviewUrl, emi
   function validate(raw) {
     if (raw?.schema !== 1 || !Number.isSafeInteger(raw.revision) || raw.revision < 1 || !Array.isArray(raw.items) || raw.items.length > 2000) throw new Error('tutorials_catalog_invalid');
     const ids = new Set();
-    const items = raw.items.map(row => {
-      if (!/^[a-zA-Z0-9_-]{1,80}$/.test(row.id) || ids.has(row.id) || typeof row.title !== 'string' || !row.title.trim() || row.title.length > 120 || !CATEGORIES.includes(row.category) || (row.topic && (row.category !== 'short-video' || !TOPICS.includes(row.topic)))) throw new Error('tutorials_item_invalid');
+    // Only a category this version does not know is skipped; anything wrong inside a known category still fails.
+    const items = raw.items.filter(row => CATEGORIES.includes(row?.category)).map(row => {
+      if (!/^[a-zA-Z0-9_-]{1,80}$/.test(row.id) || ids.has(row.id) || typeof row.title !== 'string' || !row.title.trim() || row.title.length > 120 || (row.topic && (row.category !== 'short-video' || !TOPICS.includes(row.topic)))) throw new Error('tutorials_item_invalid');
       ids.add(row.id);
       const item = { id: row.id, title: row.title, category: row.category, topic: row.topic || '' };
       for (const key of ['cover', 'video']) {

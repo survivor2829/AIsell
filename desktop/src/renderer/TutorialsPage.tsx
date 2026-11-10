@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, Clock3, Film, FolderOpen, Image, MessageCircle, Play, RefreshCw, Search, X } from 'lucide-react';
+import { BookOpen, Clock3, Film, FolderOpen, Image, MessageCircle, Play, RefreshCw, Search, Smartphone, Target, X } from 'lucide-react';
 import type { Tutorial, TutorialCatalog, TutorialCategory, TutorialTopic } from './tutorials-types';
 import { SpeedVideo } from './SpeedVideo';
 import './TutorialsPage.css';
@@ -7,6 +7,8 @@ import './TutorialsPage.css';
 const CATEGORIES = [
   { id: 'short-video' as const, label: '短视频获客', icon: Film },
   { id: 'wechat' as const, label: '微信拓客', icon: MessageCircle },
+  { id: 'accounts' as const, label: '账号矩阵', icon: Smartphone },
+  { id: 'business' as const, label: '精准获客', icon: Target },
   { id: 'product-detail' as const, label: '产品详情图', icon: Image },
   { id: 'materials' as const, label: '场景素材库', icon: FolderOpen }
 ];

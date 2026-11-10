@@ -68,6 +68,11 @@
 @media (max-width: 1100px) { .example-banner.is-wide { flex-direction: column; } .example-banner.is-wide .example-banner-player { width: 100%; aspect-ratio: 480 / 169; } .example-banner.is-wide .example-banner-poster img { object-position: 50% 50%; } }
 .video-example-dialog.is-wide { width: min(1280px, calc(100vw - 48px)); }
 .video-example-dialog.is-wide .video-example-stage video { height: auto; max-height: calc(100dvh - 155px); aspect-ratio: 480 / 169; }
+/* 精准获客 recordings are full 16:10 screens with the whole app in view: no left-side crop, no 480:169 strip. */
+.example-banner.is-1610 .example-banner-poster img { object-position: 50% 50%; }
+@media (max-width: 1100px) { .example-banner.is-wide.is-1610 .example-banner-player { aspect-ratio: 16 / 10; } }
+.video-example-dialog.is-1610 { width: min(1180px, calc(100vw - 48px)); }
+.video-example-dialog.is-1610 .video-example-stage video { aspect-ratio: 16 / 10; }
 /* 成片示例（用户 2026-11-09）：常见的“手机样机 + 旁边说明”排法。手机高度按窗口封顶，播放前后大小不变；
    右栏标题、说明和三步撑满与手机同高，不留空白。 */
 .example-banner:not(.is-wide):not(.is-collapsed) { --phone-h: clamp(300px, 52vh, 460px); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 22px; align-items: stretch; padding: 18px; background: linear-gradient(135deg, #fff 0%, var(--brand-soft, #fff2f3) 100%); }

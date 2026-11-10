@@ -45,6 +45,12 @@ class TutorialsTest(unittest.TestCase):
                 self.assertGreater(movie["durationSeconds"], 12)
                 self.assertLess(movie["durationSeconds"], 13)
                 change(dict(action="save", id="first-guide", title="单项操作录屏", category="short-video", topic="digital-human", video=movie["file"], cover=image["file"]))
+                # 精准获客 and 账号矩阵 categories (2026-11-09); topics stay a 短视频获客 thing only.
+                change(dict(action="save", id="geo-guide", title="GEO推广", category="business", topic="", video=movie["file"], cover=image["file"]))
+                change(dict(action="save", id="phone-guide", title="手机矩阵", category="accounts", topic="", video=movie["file"], cover=image["file"]))
+                with self.assertRaises(HTTPError) as topic_outside_short_video:
+                    change(dict(action="save", id="bad-guide", title="x", category="business", topic="digital-human", video=movie["file"], cover=image["file"]))
+                self.assertEqual(topic_outside_short_video.exception.code, 400)
                 self.assertEqual(json.load(urlopen(api + "/v1/tutorials/catalog"))["items"], [])
                 change(dict(action="publish", id="first-guide"))
                 catalog = json.load(urlopen(api + "/v1/tutorials/catalog"))
