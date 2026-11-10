@@ -40,7 +40,7 @@ function classifyVisibility({ answer = "", references, brand, articles, publicat
   }) };
 }
 
-function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels, onChange = () => {}, clock = () => Date.now() }) {
+function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels, onChange = () => {}, onFailure = () => {}, clock = () => Date.now() }) {
   const file = path.join(dataDir, "state.json");
   const stamp = () => new Date(clock()).toISOString();
   const blank = { version: 1, brand: { version: 0, name: "", aliases: [], regions: [], services: "", cases: "", restrictions: "" }, questions: [], articles: [], publications: [], visibilityRuns: [], ledger: [] };
@@ -201,6 +201,11 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
       }
     } finally { busy = ""; current = null; commit(); finish(); }
   }
+  // The page as it stopped goes to the diagnostics only; the publication record keeps no picture.
+  const report = (item, code, evidence) => {
+    try { onFailure({ platform: item.platform, code, step: evidence?.step || "unknown", clicked: Boolean(item.clickedAt), pageUrl: evidence?.pageUrl || "", screenshot: evidence?.screenshot || "", notices: evidence?.notices || [] }); }
+    catch { /* Diagnostics never change the publication. */ }
+  };
   async function publishOne(item) {
     const article = state.articles.find((row) => row.id === item.articleId);
     if (!article || contentHash(article) !== item.contentHash) return Object.assign(item, { status: "cancelled", reason: "文章改过了，这次发布已取消，请重新确认。", finishedAt: stamp() });
@@ -213,9 +218,12 @@ function createGeoWorkbench({ dataDir, adapter, accounts, generateText, channels
         shouldStop: () => closed || stopping,
         onDetail: (detail) => { item.detail = str(detail, 200); commit(); },
         beforeClick: () => { item.clickedAt = stamp(); commit(); } });
-      const status = REPORT_STATUSES.includes(result?.status) ? result.status : "unknown";
-      Object.assign(item, { status: status === "failed" && item.clickedAt ? "unknown" : status, url: /^https?:\/\//.test(result?.url || "") ? str(result.url, 3000) : "", reason: str(result?.reason, 500), finishedAt: stamp() });
+      const reported = REPORT_STATUSES.includes(result?.status) ? result.status : "unknown";
+      const status = reported === "failed" && item.clickedAt ? "unknown" : reported;
+      if (status === "unknown") report(item, "GEO_RESULT_UNCONFIRMED", result?.evidence);
+      Object.assign(item, { status, url: /^https?:\/\//.test(result?.url || "") ? str(result.url, 3000) : "", reason: str(result?.reason, 500), finishedAt: stamp() });
     } catch (error) {
+      if (error.code !== "GEO_STOPPED") report(item, /^GEO_/.test(String(error.code || "")) ? error.code : "GEO_UNEXPECTED", error.evidence);
       if (error.code === "GEO_LOGIN_REQUIRED") accounts.markSignedOut?.(item.accountId);
       if (item.clickedAt) Object.assign(item, { status: "unknown", reason: "已经点了发布，但之后出了问题。请到平台上看一下是否发出，不会自动重发。", finishedAt: stamp() });
       else Object.assign(item, { status: "failed", reason: /^(GEO|SOCIAL)_/.test(String(error.code || "")) ? error.message : "这次没发出去，可以再试一次。", finishedAt: stamp() });

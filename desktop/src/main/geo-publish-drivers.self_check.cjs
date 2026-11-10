@@ -49,6 +49,9 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "账号已被平台禁言，暂无法发布文章"), /禁言/);
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "账号今日发布额度已用完"), /额度/);
   assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "仅支持发布动态"), /动态/);
+  // 2026-11-09 真实账号：打开发文页直接显示账号未通过审核。说清楚原因，不说成找不到输入框。
+  assert.match(DRIVERS.sohu.blocked(DRIVERS.sohu.editorUrl, "您的搜狐号未通过审核"), /没有通过平台审核/);
+  assert.match(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "账号审核未通过"), /没有通过平台审核/);
   assert.equal(DRIVERS.sohu.blocked("https://mp.sohu.com/mpfe/v4/contentManagement/first/page", "实名认证\n已认证\n发布内容"), "", "菜单里有这几个字不算没实名");
   assert.ok(!DRIVERS.sohu.holdText.test("为了账号安全，请不要泄露密码"), "常驻提示不算验证");
   assert.ok(DRIVERS.sohu.holdText.test("为了账号安全，需要短信验证") && DRIVERS.baijiahao.holdText.test("百度安全验证"));
@@ -68,8 +71,8 @@ assert.equal(DRIVERS.zhihu.published("https://zhuanlan.zhihu.com/p/2100538030733
 }
 
 // 假页面走一遍发布：内容对不上不点；按钮点不到不点；点了等不到确认是结果不明。
-function world({ readBack, point = { x: 1, y: 2 }, urlAfter = "https://zhuanlan.zhihu.com/p/9", url = "https://zhuanlan.zhihu.com/write" } = {}) {
-  const log = { clicks: 0, closed: 0, typed: [], before: 0 };
+function world({ readBack, point = { x: 1, y: 2 }, urlAfter = "https://zhuanlan.zhihu.com/p/9", url = "https://zhuanlan.zhihu.com/write", shown = "", urlOnFail = null, fill = null, listPage = null } = {}) {
+  const log = { clicks: 0, closed: 0, typed: [], before: 0, tabs: [] };
   let current = url;
   const node = { localName: "textarea", attributes: ["placeholder", "请输入标题"] };
   const page = {
@@ -77,12 +80,14 @@ function world({ readBack, point = { x: 1, y: 2 }, urlAfter = "https://zhuanlan.
     type: async (_node, text) => { log.typed.push(text); }, click: async () => true,
     send: async (method, params) => { if (method === "Input.insertText") log.typed.push(params.text); return method === "Page.captureScreenshot" ? { data: Buffer.from("png").toString("base64") } : {}; },
     valueOf: async () => "", front: async () => {},
-    evaluate: async (expression) => expression.includes("elementFromPoint") ? point : expression.includes("captcha") ? false : "",
+    evaluate: async (expression) => expression.includes("elementFromPoint") ? point : expression.includes("captcha") ? false : expression.includes("document.body") ? shown : "",
     mouse: async () => { log.clicks++; current = urlAfter; }
   };
-  const browser = { send: async (method) => method === "Target.createTarget" ? { targetId: "t" } : method === "Target.attachToTarget" ? { sessionId: "s" } : {}, close: async () => { log.closed++; } };
-  DRIVERS.zhihu.fill = async (_page, wanted) => { log.typed.push(wanted.title); return { read: async () => readBack || { title: wanted.title, body: wanted.body } }; };
-  return { log, adapter: createGeoBrowserAdapter({ launch: () => browser, executable: "chrome.exe", makePage: () => page }) };
+  const browser = { send: async (method, params) => { if (method === "Target.createTarget") { log.tabs.push(params.url); return { targetId: "t" }; } return method === "Target.attachToTarget" ? { sessionId: "s" } : {}; }, close: async () => { log.closed++; } };
+  const fake = fill || (async (_page, wanted) => { log.typed.push(wanted.title); return { read: async () => readBack || { title: wanted.title, body: wanted.body } }; });
+  DRIVERS.zhihu.fill = async (...args) => { try { return await fake(...args); } catch (error) { if (urlOnFail) current = urlOnFail; throw error; } };
+  let pages = 0;
+  return { log, adapter: createGeoBrowserAdapter({ launch: () => browser, executable: "chrome.exe", makePage: () => (pages++ > 0 && listPage) ? listPage : page }) };
 }
 const realFill = DRIVERS.toutiao.fill, realFillToutiao = (page) => realFill.call(DRIVERS.toutiao, page, { title: "标题", body: "正文" }), realZhihuFill = DRIVERS.zhihu.fill, realTimeout = global.setTimeout;
 // 真实等待都很长；这里把等待压短，只测判断。
@@ -151,6 +156,68 @@ global.setTimeout = (fn, ms, ...rest) => realTimeout(fn, Math.min(ms, 1), ...res
     await assert.rejects(realFillToutiao(stuck.page), { code: "GEO_FORM_CHANGED" }, "取消不掉就不发");
     await assert.rejects(realFillToutiao(fake(false, true).page), { code: "GEO_FORM_CHANGED" }, "找不到这个选项不能当成已取消");
   }
+  {
+    // 页面慢：输入框第三次看才出现，也能找到；一直不出现，找够次数后才放弃；停下了就不再等。
+    const { findSoon } = require("./geo-publish-drivers.cjs");
+    let looks = 0, between = 0;
+    const slow = { find: async () => (++looks >= 3 ? { localName: "textarea" } : null) };
+    assert.ok(await findSoon(slow, () => true, { between: () => { between++; } }));
+    assert.deepEqual([looks, between], [3, 2], "每次重找前先关弹窗");
+    looks = 0;
+    const never = { find: async () => { looks++; return null; } };
+    assert.equal(await findSoon(never, () => true, { tries: 4 }), null);
+    assert.equal(looks, 5);
+    await assert.rejects(findSoon(never, () => true, { shouldStop: () => true }), { code: "GEO_STOPPED" });
+  }
+  {
+    // 平台自己的提示才留下；菜单里的短词不算。
+    const { noticesOf } = require("./geo-publish-drivers.cjs");
+    assert.deepEqual(noticesOf("首页\n实名认证\n发布内容\n请先完成实名认证后再发布文章\n" + "很长".repeat(30) + "审核"), ["请先完成实名认证后再发布文章"]);
+  }
+  {
+    // 找不到输入框：带上当时页面的截图和地址，平台提示写进原因，一次都不点。
+    const w = world({ shown: "首页\n请先完成实名认证后再发布文章", fill: async () => { throw Object.assign(new Error("没有找到知乎的标题输入框。"), { code: "GEO_FORM_CHANGED" }); } });
+    const error = await w.adapter.publish(input).then(() => null, (caught) => caught);
+    assert.equal(error.code, "GEO_FORM_CHANGED"); assert.match(error.message, /页面上写着：「请先完成实名认证后再发布文章」/);
+    assert.deepEqual([error.evidence.step, error.evidence.pageUrl, Boolean(error.evidence.screenshot)], ["fill", "https://zhuanlan.zhihu.com/write", true]);
+    assert.equal(w.log.clicks, 0);
+  }
+  {
+    // 等输入框的时候页面才跳去登录：说要重新登录，不说页面改版。
+    const w = world({ urlOnFail: "https://www.zhihu.com/signin?next=x", fill: async () => { throw Object.assign(new Error("没有找到"), { code: "GEO_FORM_CHANGED" }); } });
+    const error = await w.adapter.publish(input).then(() => null, (caught) => caught);
+    assert.equal(error.code, "GEO_LOGIN_REQUIRED"); assert.ok(error.evidence.screenshot);
+  }
+  // 平台确认要等几十秒：这里让时钟走快，只测判断。
+  const realNow = Date.now; let clock = realNow();
+  Date.now = () => (clock += 1000);
+  {
+    // 点了发布没等到确认：结果不明，并留下当时的页面。
+    const w = world({ urlAfter: "https://zhuanlan.zhihu.com/write" });
+    const result = await w.adapter.publish(input);
+    assert.equal(result.status, "unknown"); assert.equal(result.evidence.step, "result"); assert.ok(result.evidence.screenshot);
+  }
+  {
+    // 头条点了发布，编辑页没跳到作品列表：另开一个标签页查作品列表，查到就拿回链接；编辑页不动。
+    const realToutiaoFill = DRIVERS.toutiao.fill;
+    DRIVERS.toutiao.fill = async (_page, wanted) => ({ read: async () => ({ title: wanted.title, body: wanted.body }) });
+    const pad = (n) => String(n).padStart(2, "0");
+    // 列表上的时间是读列表那一刻的：晚于点发布的时间。
+    const row = () => { const now = new Date(Date.now()); return `标题\n${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}\n已发布`; };
+    const listPage = (text) => ({ url: async () => DRIVERS.toutiao.listUrl, reload: async () => {}, front: async () => {},
+      evaluate: async (expression) => expression.includes("captcha") ? false : expression.includes("document.body") ? (typeof text === "function" ? text() : text) : expression.includes("a[href]") ? "https://www.toutiao.com/item/123/" : "" });
+    const editor = "https://mp.toutiao.com/profile_v4/graphic/publish";
+    const found = world({ url: editor, urlAfter: editor, listPage: listPage(row) });
+    const result = await found.adapter.publish({ ...input, platform: "toutiao" });
+    assert.deepEqual([result.status, result.url], ["public", "https://www.toutiao.com/item/123/"]);
+    assert.deepEqual(found.log.tabs, ["about:blank", DRIVERS.toutiao.listUrl], "作品列表在新标签页打开");
+    assert.equal(found.log.clicks, 2, "只点了发布和确认发布");
+    // 列表里没有这篇：还是结果不明，不自动重发。
+    const missing = world({ url: editor, urlAfter: editor, listPage: listPage("别的文章\n11-01 09:00\n已发布") });
+    assert.equal((await missing.adapter.publish({ ...input, platform: "toutiao" })).status, "unknown");
+    DRIVERS.toutiao.fill = realToutiaoFill;
+  }
+  Date.now = realNow;
   DRIVERS.zhihu.fill = realZhihuFill;
   console.log("geo publish drivers self-check passed");
   process.exit(0);

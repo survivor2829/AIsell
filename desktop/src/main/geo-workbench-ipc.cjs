@@ -1,18 +1,21 @@
 const path = require("node:path");
 const { createSocialAccounts } = require("./social-accounts.cjs");
 const { createGeoWorkbench } = require("./geo-workbench.cjs");
+const { reportSocialFailure } = require("./social-publish-ipc.cjs");
 const { createGeoBrowserAdapter, GEO_CHANNELS, GEO_ACCOUNT_PLATFORMS } = require("./geo-publish-drivers.cjs");
 
 const ACCOUNT_ACTIONS = new Set(["account-add", "account-login", "account-refresh", "account-remove"]);
 
 // GEO keeps its media accounts apart from the short-video accounts of 一键分发: a separate list and
 // separate Chrome profiles, so these platforms never show up as video publishing targets.
-function registerGeoWorkbenchIpc({ ipcMain, shell, dataDir, deepSeekClient, getMainWindow, options = {} }) {
+function registerGeoWorkbenchIpc({ ipcMain, shell, dataDir, deepSeekClient, getMainWindow, logger, evidenceDir, options = {} }) {
   let geo, accounts, initializationError;
   const send = (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("geo:update", state); };
   try {
     accounts = options.accounts || createSocialAccounts({ dataDir: path.join(dataDir, "accounts"), platforms: GEO_ACCOUNT_PLATFORMS, probe: async () => false, onChange: () => geo?.emit() });
     geo = createGeoWorkbench({ dataDir, accounts, channels: GEO_CHANNELS, adapter: options.adapter || createGeoBrowserAdapter(), onChange: send,
+      // Same log and screenshot folder as 一键分发, which failure capsules and the diagnostic package collect.
+      onFailure: (failure) => reportSocialFailure({ logger, evidenceDir }, "geo_publish", failure),
       generateText: ({ prompt }) => deepSeekClient.geoContent({ prompt }) });
   } catch (error) { initializationError = { ok: false, code: error.code || "GEO_UNAVAILABLE", error: error.code === "GEO_STATE_INVALID" ? error.message : "GEO 暂时无法打开，请重新打开软件。" }; }
   const known = /^(GEO|SOCIAL)_/;
