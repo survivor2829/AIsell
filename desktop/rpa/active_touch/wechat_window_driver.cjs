@@ -376,7 +376,33 @@ function powershellBlockedByAntivirus(stderr) {
 const ANTIVIRUS_BLOCKED_RESULT = Object.freeze({ ok: false, reason: "powershell_blocked_by_antivirus",
   scriptStarted: false, sendAttempted: false });
 
+// What kind of error the worker itself printed, on every computer: exception type names, error ids
+// and HRESULT codes only - never quoted text or anything outside ASCII, so no contact or message
+// can travel with it. The full output stays internal-only below. 1.2.69 had a customer failure
+// whose PowerShell error was never kept, so its cause could only be guessed (2026-11-07).
+function workerErrorKinds(stderr) {
+  // Quoted text is dropped pair by pair: straight double quotes, and the curly quotes Chinese
+  // Windows prints (“…”, ‘…’). A quote left open drops the rest of its line. An apostrophe as in
+  // can't is not a quote and keeps the error names after it.
+  const text = String(stderr || "")
+    .replace(/"[^"\r\n]*"/gu, "").replace(/[“”][^“”\r\n]*[“”]/gu, "").replace(/[‘’][^‘’\r\n]*[‘’]/gu, "")
+    .replace(/["“”‘][^\r\n]*/gu, "");
+  const found = new Set();
+  for (const pattern of [/\b[A-Z][A-Za-z]*(?:\.[A-Z][A-Za-z]{2,}){0,6}(?:Exception|Error)\b/gu,
+    /FullyQualifiedErrorId\s*:\s*([A-Za-z0-9_.,]{3,80})/gu, /\b0x[0-9A-Fa-f]{8}\b/gu]) {
+    for (const match of text.matchAll(pattern)) {
+      const kind = (match[1] || match[0]).replace(/[^\x20-\x7e]/gu, "");
+      if (kind && found.size < 6) found.add(kind.slice(0, 120));
+    }
+  }
+  return [...found];
+}
+
 function workerEvidence(value, { evidence, script, stdout, stderr, elapsedMs, exitCode, error } = {}) {
+  if (value?.ok !== true) {
+    const kinds = workerErrorKinds(stderr);
+    if (kinds.length) value = { ...value, diagnostics: { ...value?.diagnostics, worker_error_kind: kinds } };
+  }
   if (process.env.XIAOXI_INTERNAL_DIAGNOSTICS !== "1") return value;
   const detail = {
     worker_trace_id: evidence?.XIAOXI_FAILURE_TRACE,
@@ -3074,6 +3100,7 @@ function inputWechatMessageDraftAsync(message, context = {}) {
 
 module.exports = {
   powershellBlockedByAntivirus,
+  workerErrorKinds,
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
   WECHAT_MAIN_WINDOW_RULES_SCRIPT,
   WECHAT_MOMENTS_STANDALONE_WINDOW_LAYOUT_MODE,

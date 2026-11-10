@@ -8,8 +8,9 @@ const path = require("node:path");
 const { execFile } = require("node:child_process");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 
-// WeChat versions this app has been run against end to end (PROJECT_STATUS: 4.1.13, 4.1.15).
-const VERIFIED_WECHAT = /^4\.1\./;
+// WeChat versions this app has been run against end to end: 4.1.13, 4.1.15, and 4.2 since 1.2.49
+// (4.2.0.8 on customer computers, 4.2.0.12/4.2.0.13 on the development machine; see PROJECT_STATUS.md).
+const VERIFIED_WECHAT = /^4\.[12]\./;
 const GB = 1024 ** 3;
 
 // Reads the running WeChat (or its install) and whether a main window is showing, without touching it.
@@ -47,10 +48,10 @@ const item = (id, label, status, detail, fix = "") => ({ id, label, status, deta
 function wechatItem(wechat) {
   const label = "微信";
   if (!wechat || wechat.error) return item("wechat", label, "warn", "没能读出微信的状态。", "确认微信已安装并打开，再点「重新检查」。");
-  if (!wechat.installed) return item("wechat", label, "fail", "这台电脑上没有找到微信。", "安装 Windows 版微信 4.1，登录后再点「重新检查」。");
+  if (!wechat.installed) return item("wechat", label, "fail", "这台电脑上没有找到微信。", "安装 Windows 版微信 4.1 或 4.2，登录后再点「重新检查」。");
   const version = String(wechat.version || "");
   if (version && !VERIFIED_WECHAT.test(version)) {
-    return item("wechat", label, "warn", `微信版本 ${version} 还没有在本软件上验证过，触达、自动回复、朋友圈可能出错。`, "建议换成微信 4.1 版本。");
+    return item("wechat", label, "warn", `微信版本 ${version} 还没有在本软件上验证过，触达、自动回复、朋友圈可能出错。`, "建议换成微信 4.1 或 4.2 版本。");
   }
   if (!wechat.running) return item("wechat", label, "warn", `已安装微信 ${version}，但现在没有打开。`, "打开微信并扫码登录。");
   if (!wechat.window) return item("wechat", label, "warn", `微信 ${version} 在运行，但主窗口没有显示（可能还没登录或被最小化到托盘）。`, "登录微信，并把微信主窗口打开。");

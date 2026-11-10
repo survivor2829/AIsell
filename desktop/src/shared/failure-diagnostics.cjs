@@ -37,6 +37,12 @@ function sanitizeFailureDiagnostics(value = {}) {
   }
   for (const key of ['retry_count']) if (Number.isSafeInteger(value?.[key]) && value[key] >= 0) result[key] = value[key];
   if (typeof value?.image_progress_lost === 'boolean') result.image_progress_lost = value.image_progress_lost;
+  // Exception type names and error ids the worker printed (wechat_window_driver workerErrorKinds).
+  if (Array.isArray(value?.worker_error_kind)) {
+    const kinds = value.worker_error_kind.filter(kind => typeof kind === 'string' && /^[A-Za-z0-9_.,:x-]{3,120}$/.test(kind)
+      && !/(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-z0-9]{8,})/i.test(kind)).slice(0, 6);
+    if (kinds.length) result.worker_error_kind = kinds;
+  }
   if (typeof value?.image_send_attempted === 'boolean') result.image_send_attempted = value.image_send_attempted;
   if (typeof value?.source_file === 'string' && /^[A-Za-z0-9_./-]{1,160}$/.test(value.source_file)) result.source_file = value.source_file;
   if (Array.isArray(value?.image_preload)) result.image_preload = value.image_preload.slice(-20).filter(entry => /^[a-z_]{1,80}$/.test(entry?.marker || '')).map(entry => ({ marker: entry.marker, ...(Number.isInteger(entry.elapsed_ms) ? { elapsed_ms: entry.elapsed_ms } : {}) }));

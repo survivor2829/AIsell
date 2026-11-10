@@ -381,8 +381,29 @@ async function longTrailsNeverCostTheScreenshots() {
   t.capsules.stop();
 }
 
+// A touch run paused at the start (user 2026-11-09) files its own capsule the same day the
+// skipped contacts already did, with the WeChat version and the worker's own error output.
+async function earlyTouchPauseFilesItsOwnCapsule() {
+  const t = fixture("early-pause");
+  t.capsules.start();
+  t.logger.event("active_touch", "contact_skipped", { reason_code: "message_snapshot_unavailable" }, { level: "error", code: "touch_skipped_message_snapshot_unavailable" });
+  t.logger.event("active_touch", "early_failure_paused", { failed_contacts: 3, reason_code: "message_snapshot_unavailable", wechat_version: "4.2.0.8",
+    worker_error_kind: ["System.Runtime.InteropServices.COMException", "0x800401D0"],
+    raw_worker: { exit_code: 1, stderr_tail: "Exception calling GetClipboard", stdout_tail: "" } }, { level: "error", code: "touch_paused_message_snapshot_unavailable" });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  const paused = t.files().find(capsule => capsule.code === "touch_paused_message_snapshot_unavailable");
+  assert.ok(paused, "the pause opens its own capsule beside the day's skip capsule");
+  assert.equal(t.files().length, 2);
+  assert.equal(paused.details.wechat_version, "4.2.0.8");
+  assert.deepEqual(paused.details.worker_error_kind, ["System.Runtime.InteropServices.COMException", "0x800401D0"], "the worker's error kind travels on every computer");
+  assert.equal(paused.details.raw_worker, undefined, "the full worker output stays internal-only");
+  assert.ok(t.screens.includes("touch_paused_message_snapshot_unavailable"), "a screenshot is taken at the pause");
+  t.capsules.stop();
+}
+
 (async () => {
   await logFailureBecomesOneCapsuleWithItsSteps();
+  await earlyTouchPauseFilesItsOwnCapsule();
   await longTrailsNeverCostTheScreenshots();
   await engineJournalAndTaskLogMergeIntoOneCapsule();
   await journalHistoryIsNotReplayedAndOffsetsPersist();
