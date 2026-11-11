@@ -36,6 +36,7 @@ def prepare(domain, task_id, batch):
     sources, source_index = build_sources(domain, batch)
     minimum = domain._minimum_spoken_chars(batch)
     maximum = min(2400, sum(domain._max_narration_chars(batch, shot['target_duration_ms']) for shot in shots))
+    source_chars = 0
     if editing:
         source_chars = domain._spoken_char_count(narrated_brief.expression(batch))
         if source_chars > maximum:
@@ -48,6 +49,16 @@ def prepare(domain, task_id, batch):
         maximum = min(maximum, math.floor(minimum_seconds * 1.5 * 1000 / domain._speech_ms_per_char(batch)))
     if maximum < minimum:
         raise ContentEngineError('narrated_duration_too_short', '当前素材总时长不足以承载要求的口播，请补充相关素材。')
+    # Aim clearly above the floor: a target sitting exactly on the minimum lets the
+    # model land a few characters short, and the draft is then rejected.
+    floor_target = min(maximum, minimum + max(12, round(minimum * .15)))
+    # A supplied draft shorter than the video's minimum must be lengthened, even in
+    # rewrite mode, or the model keeps it as is and every attempt is rejected.
+    source_too_short = editing and source_chars < minimum
+    if not editing or source_too_short:
+        target_chars = max(floor_target, min(maximum, round(source_chars * 1.2)) if editing else 0)
+    else:
+        target_chars = min(maximum, max(minimum, round(source_chars * (1.2 if batch['script_action'] == 'expand' else 1))))
     audit = batch.setdefault('_script_draft_audit', [])
     feedback = copy.deepcopy(batch.get('_script_draft_feedback',
         [{'reason': reason} for reason in batch.get('reasons', [])])) if modern and options else []
@@ -103,8 +114,7 @@ def prepare(domain, task_id, batch):
                 for i in range(count)]} if modern else {}),
             'user_information': batch['description'], 'cta': batch.get('cta', ''),
             'minimum_chars': minimum, 'maximum_chars': maximum,
-            'target_chars': min(maximum, max(minimum, round(source_chars * (1.2 if batch['script_action'] == 'expand' else 1))))
-                if editing else min(maximum, minimum + max(12, round(minimum * .15))),
+            'target_chars': target_chars,
             'sources': sources, 'existing_directions': [option['angle'] for option in options],
             **({'existing_choices': [{key: option.get(key, '') for key in
                 ('title', 'summary', 'pain_point', 'angle', 'narration')} for option in options]} if modern else {}),
@@ -126,6 +136,9 @@ def prepare(domain, task_id, batch):
             + ('本次是用户明确选择的' + ('扩写' if batch['script_action'] == 'expand' else '改写') + '，'
                'expression是待编辑的完整原稿，必须保留其完整要点、事实、数字、型号和主要观点，不能另换选题或只摘取其中一个看点。'
                '自然语速和完整内容优先，不为目标时长删减原稿。sources用于选择相关画面和核对新加入的描述，不能凭空增添事实。'
+               + (f'原稿只有{source_chars}字，少于minimum_chars，照抄原稿会被拒绝；必须在保留原稿全部要点的基础上，'
+                  '用sources里看得到的画面和现场原声补充讲解（例如现场在做什么、设备怎么操作、参加后能看到什么），'
+                  '把正文写到target_chars左右，不重复同一句话凑数。' if source_too_short else '')
                if editing else '')
             + (narrated_brief.RULES + '每份另返回framework与summary，按required_frameworks顺序。'
                'summary建议20至40字，只说核心看点，不用先、再、最后复述全文流程。'

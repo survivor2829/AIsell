@@ -66,6 +66,7 @@ def _configured_persona(value: Mapping[str, Any]) -> dict[str, Any] | None:
         "display_name": _clean(value.get("displayName"), 80) or "自然生活",
         "gender": value.get("gender") if value.get("gender") in {"male", "female"} else "unknown",
         "digital_human_default": value.get("digitalHumanDefault") is True,
+        "auto_rotate": value.get("autoRotate") is True,
         "style": _clean(value.get("style") or value.get("category"), 80)
         or "natural_life",
         "catalog_version": _clean(value.get("catalogVersion"), 80)
@@ -174,6 +175,18 @@ def auto_select_voice_persona_ids(
                 entry[1]["persona_id"],
             ),
         )
+    ]
+
+
+def rotation_voice_personas(
+    environment: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Voices that may be handed out automatically, one per video of a batch."""
+    return [
+        {"persona_id": item["persona_id"], "gender": item["gender"],
+         "provider_model": item["provider_model"]}
+        for item in configured_voice_personas(environment)
+        if item.get("auto_rotate") and item.get("product_approved")
     ]
 
 

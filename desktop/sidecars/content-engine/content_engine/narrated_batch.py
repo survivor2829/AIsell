@@ -18,7 +18,7 @@ from .auto_mix_v2 import (
     AUTO_MIX_SPEC_VERSION, canonical_hash, build_material_timeline,
     build_material_evidence_facts, build_music_brief, normalize_text_tracks,
 )
-from .auto_mix_resources import voice_preview_sample
+from .auto_mix_resources import rotation_voice_personas, voice_preview_sample
 from .errors import ContentEngineError
 from .provider_usage import usage_scope
 from .public_data import redact_text
@@ -4819,6 +4819,42 @@ class NarratedBatchDomain:
         c.clear()
         c.update(updated)
 
+    def _candidate_voice(self, b, c):
+        """The first video keeps the batch voice; later ones each get another voice of
+        the same model (same price), alternating female and male, none repeated."""
+        base_id = str((b.get("settings") or {}).get("voice_persona_id") or "") or None
+        base = self.d._approved_auto_mix_voice_persona(selected_id=base_id)
+        assigned = c.get("voice_persona_id")
+        if assigned:
+            kept = self.d._approved_auto_mix_voice_persona(selected_id=assigned)
+            if kept is not None and base is not None and kept["provider_model"] == base["provider_model"]:
+                return assigned
+            c.pop("voice_persona_id", None)
+        candidates = b.get("candidates") or []
+        position = next((i for i, item in enumerate(candidates)
+                         if item.get("candidate_id") == c.get("candidate_id")), 0)
+        if position == 0 or base is None or base["provider"] != "volcengine":
+            return base_id
+        catalog = rotation_voice_personas()
+        genders = {item["persona_id"]: item["gender"] for item in catalog}
+        approved = {row["id"] for row in self.db.execute(
+            "SELECT id FROM voice_personas_v1 WHERE active=1 AND approved_at IS NOT NULL AND provider='volcengine' "
+            "AND provider_voice_id <> '' AND provider_model=?", (base["provider_model"],)).fetchall()}
+        rotation = [item for item in catalog
+                    if item["provider_model"] == base["provider_model"] and item["persona_id"] != base["id"]
+                    and item["persona_id"] in approved]
+        if not rotation:
+            return base_id
+        base_gender = genders.get(base["id"], "")
+        wanted = {"female": "male", "male": "female"}.get(base_gender, "") if position % 2 else base_gender
+        used = {item.get("voice_persona_id") for item in candidates
+                if item.get("candidate_id") != c.get("candidate_id")} | {base["id"]}
+        fresh = [item for item in rotation if item["persona_id"] not in used] or rotation
+        pick = next((item for item in fresh if item["gender"] == wanted), fresh[(position - 1) % len(fresh)])
+        c["voice_persona_id"] = pick["persona_id"]
+        self._store(b)  # Keep the choice before the run row exists, so a restart reuses it.
+        return pick["persona_id"]
+
     def _create_run(self, task_id, b, c):
         self._verify_confirmed_script(b, c)
         if c.get('review_mode') == 'follow_script':
@@ -4868,12 +4904,13 @@ class NarratedBatchDomain:
         input_hash = canonical_hash([b["batch_id"], c["candidate_id"], c["revision"]])
         previous = self.db.execute("SELECT id,generation FROM auto_mix_runs_v2 WHERE input_hash=? ORDER BY generation DESC LIMIT 1", (input_hash,)).fetchone()
         generation = int(previous["generation"]) + 1 if previous else 1
+        voice_persona_id = self._candidate_voice(b, c)
         self.db.execute("INSERT INTO auto_mix_runs_v2(id,project_id,task_id,generation,spec_version,input_hash,status,asset_ids_json,title,copy_framework,public_plan_json,private_state_json,quality_warnings_json,selected_voice_persona_id,created_at,updated_at) "
                         "VALUES(?,?,?,?,?,?,'planned',?,?,?,?,?,'[]',?,?,?)",
                         (run_id, b["project_id"], task_id, generation, AUTO_MIX_SPEC_VERSION,
                          input_hash,
                          self.d._json(ids), c["title"], c["angle"] or b["title"], self.d._json(public),
-                         self.d._json(state), b["settings"].get("voice_persona_id"), now, now))
+                         self.d._json(state), voice_persona_id, now, now))
         c["_run_id"] = run_id
         self._store(b)
         return run_id
@@ -4963,8 +5000,9 @@ class NarratedBatchDomain:
                     b["music_selections"] = records
                 self.db.execute("INSERT OR REPLACE INTO narrated_history_v1(candidate_id,batch_id,shots_json) VALUES(?,?,?)",
                                 (c["candidate_id"], b["batch_id"], self.d._json(c["actual_shots"])))
-                # Remember the selected voice for the entire batch.
-                if run["selected_voice_persona_id"]:
+                # Remember the selected voice for the entire batch; a rotated voice
+                # belongs to its own video only.
+                if run["selected_voice_persona_id"] and not c.get("voice_persona_id"):
                     b["settings"]["voice_persona_id"] = run["selected_voice_persona_id"]
                 self.d._register_finished_for_project(b["project_id"], task_id)
                 production_percent = round((index + 1) * 100 / max(1, total))
