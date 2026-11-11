@@ -52,11 +52,13 @@ def prepare(domain, task_id, batch):
     # Aim clearly above the floor: a target sitting exactly on the minimum lets the
     # model land a few characters short, and the draft is then rejected.
     floor_target = min(maximum, minimum + max(12, round(minimum * .15)))
-    target_chars = (max(floor_target, min(maximum, round(source_chars * (1.2 if batch['script_action'] == 'expand' else 1))))
-                    if editing else floor_target)
     # A supplied draft shorter than the video's minimum must be lengthened, even in
     # rewrite mode, or the model keeps it as is and every attempt is rejected.
     source_too_short = editing and source_chars < minimum
+    if not editing or source_too_short:
+        target_chars = max(floor_target, min(maximum, round(source_chars * 1.2)) if editing else 0)
+    else:
+        target_chars = min(maximum, max(minimum, round(source_chars * (1.2 if batch['script_action'] == 'expand' else 1))))
     audit = batch.setdefault('_script_draft_audit', [])
     feedback = copy.deepcopy(batch.get('_script_draft_feedback',
         [{'reason': reason} for reason in batch.get('reasons', [])])) if modern and options else []
