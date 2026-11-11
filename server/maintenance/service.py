@@ -22,6 +22,7 @@ from capsules import CapsuleStoreMixin, validate_capsule, MAX_CAPSULE_BYTES, MAX
 from materials import MaterialsStore, MAX_FILE
 from tutorials import TutorialsStore, serve_file as serve_tutorial_file
 from legacy_releases import LegacyReleaseRouter
+import mobile_releases
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -676,9 +677,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return self.reply(503, {"error": "release_route_unavailable"})
             return self.reply(200, envelope)
-        match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip)", route)
+        match = mobile_releases.MOBILE_ROUTE.fullmatch(route)
         if match:
-            if (match[1], match[3]) not in (("artifacts", "exe"), ("components", "zip")):
+            try:
+                return self.reply(200, mobile_releases.latest(self.server.store.root, match[1]))
+            except Exception:
+                return self.reply(503, {"error": "release_route_unavailable"})
+        match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip|apk)", route)
+        if match:
+            if (match[1], match[3]) not in (("artifacts", "exe"), ("artifacts", "apk"), ("components", "zip")):
                 return self.reply(404, {"error": "not_found"})
             file = self.server.store.root / match[1] / (match[2] + "." + match[3])
             if file.is_file():
@@ -698,7 +705,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     status = 206
                 self.send_response(status)
-                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Type", "application/vnd.android.package-archive" if match[3] == "apk" else "application/octet-stream")
                 self.send_header("Content-Length", str(max(0, end - start + 1)))
                 self.send_header("Accept-Ranges", "bytes")
                 if status == 206:
