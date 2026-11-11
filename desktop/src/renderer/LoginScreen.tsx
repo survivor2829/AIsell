@@ -115,14 +115,14 @@ const HANDOVER_MS = 1500;
 // A clip that never reports its end still hands over.
 const CLIP_LIMIT_MS = 20000;
 
-// 「24 小时不下班」：右上角一直在走的在岗计时，从今天零点算起（用户 2026-11-11）。
+// 「24 小时不间断干活」：右上角显示现在几点、她们此刻也在线（用户 2026-11-11：「今日已在岗」看不懂）。
 function OnDuty() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 1000); return () => window.clearInterval(timer); }, []);
   const two = (value: number) => String(value).padStart(2, "0");
-  return <small className="signin-online" role="img" aria-label="6 位 AI 员工，24 小时不下班">
-    <b>6 位 AI 员工 · 24 小时不下班</b>
-    <span aria-hidden="true">今日已在岗<time>{two(now.getHours())}:{two(now.getMinutes())}:{two(now.getSeconds())}</time></span>
+  return <small className="signin-online" role="img" aria-label="6 位 AI 员工，24 小时不间断干活">
+    <b>6 位 AI 员工 · 24 小时不间断干活</b>
+    <span aria-hidden="true">现在<time>{two(now.getHours())}:{two(now.getMinutes())}:{two(now.getSeconds())}</time>也在线</span>
   </small>;
 }
 
