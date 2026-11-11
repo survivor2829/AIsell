@@ -1196,9 +1196,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // stage/phase tell whether the app was closed in the middle of an update, and at which step;
     // done/total are the KB downloaded by then (the download's own record is cut off by the quit).
     const updating = (() => { try { return cloudMaintenance?.status(); } catch { return null; } })();
+    const updateState = { stage: updating?.stage, phase: updating?.launchGate?.phase,
+      ...(updating?.stage === "downloading" ? { done: Math.round((updating.downloadedBytes || 0) / 1024), total: Math.round((updating.totalBytes || 0) / 1024) } : {}) };
     try { diagnostics().event("app", "quit_requested", { workflow_phase: workflow?.phase,
-      workflow_enabled: workflow?.enabled, stage: updating?.stage, phase: updating?.launchGate?.phase,
-      ...(updating?.stage === "downloading" ? { done: Math.round((updating.downloadedBytes || 0) / 1024), total: Math.round((updating.totalBytes || 0) / 1024) } : {}) }, { trace: true }); } catch {}
+      workflow_enabled: workflow?.enabled, ...updateState }, { trace: true }); } catch {}
     cloudMaintenance?.stop();
     failureCapsules?.stop();
     feedbackController?.stop();
