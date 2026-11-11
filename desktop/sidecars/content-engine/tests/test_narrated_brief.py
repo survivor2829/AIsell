@@ -393,6 +393,44 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual('rewrite', payload['creative_brief']['script_action'])
         self.assertIn('完整要点', instruction)
 
+    def test_short_rewrite_is_told_to_lengthen_above_the_minimum(self):
+        # 1.2.86: a 150-character idea in rewrite mode came back at 155 characters twice,
+        # under the 195-character floor, because the model was only told to keep the draft.
+        for action in ('rewrite', 'expand'):
+            with self.subTest(action=action):
+                state = self.domain._load(self.batch['batch_id'])
+                state.update(script_action=action, expression='报名参加实训营。' * 19,
+                             available_shots=[{'target_duration_ms': 18000}] * 7)
+                with patch.object(self.domain, '_initialize_speech_budget'), \
+                     patch.object(self.domain, '_minimum_spoken_chars', return_value=195), \
+                     patch.object(self.domain, '_max_narration_chars', return_value=200), \
+                     patch.object(self.domain.d, '_should_stop', return_value=False), \
+                     patch('content_engine.narrated_sources.source_index', return_value=([], {})), \
+                     patch.object(self.domain, '_cloud', side_effect=ContentEngineError('probe', 'stop')) as cloud:
+                    with self.assertRaises(ContentEngineError):
+                        narrated_script_drafts.prepare(self.domain, 'task-test', state)
+                payload, instruction = cloud.call_args.args
+                self.assertEqual(195, payload['minimum_chars'])
+                self.assertEqual(224, payload['target_chars'])  # floor + 15%, not the floor itself
+                self.assertIn('原稿只有152字', instruction)
+                self.assertIn('补充讲解', instruction)
+
+    def test_long_enough_rewrite_is_not_told_to_lengthen(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state.update(script_action='rewrite', expression='保留完整型号与参数。' * 30,
+                     available_shots=[{'target_duration_ms': 18000}] * 7)
+        with patch.object(self.domain, '_initialize_speech_budget'), \
+             patch.object(self.domain, '_minimum_spoken_chars', return_value=195), \
+             patch.object(self.domain, '_max_narration_chars', return_value=200), \
+             patch.object(self.domain.d, '_should_stop', return_value=False), \
+             patch('content_engine.narrated_sources.source_index', return_value=([], {})), \
+             patch.object(self.domain, '_cloud', side_effect=ContentEngineError('probe', 'stop')) as cloud:
+            with self.assertRaises(ContentEngineError):
+                narrated_script_drafts.prepare(self.domain, 'task-test', state)
+        payload, instruction = cloud.call_args.args
+        self.assertEqual(300, payload['target_chars'])
+        self.assertNotIn('原稿只有', instruction)
+
     def test_new_brief_defaults_to_supplied_copy_but_preserves_legacy_input_mode(self):
         request = {'groups': self.batch['groups'], 'brief_version': 1, 'target_audience': '渠道商',
                    'expression': '周末带孩子去公园走走。', 'settings': {'minimum_duration_seconds': 30}}
