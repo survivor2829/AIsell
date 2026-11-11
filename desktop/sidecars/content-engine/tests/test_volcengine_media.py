@@ -257,8 +257,6 @@ class VolcengineMediaTests(unittest.TestCase):
         self.assertEqual(result[1]["metadata"]["words"], [])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class GatewayRefusedTests(unittest.TestCase):
@@ -306,3 +304,7 @@ class GatewayRefusedTests(unittest.TestCase):
         proxies = [item for item in opener.call_args.args if isinstance(item, request.ProxyHandler)]
         self.assertEqual(1, len(proxies))
         self.assertEqual({}, proxies[0].proxies)
+
+
+if __name__ == "__main__":
+    unittest.main()

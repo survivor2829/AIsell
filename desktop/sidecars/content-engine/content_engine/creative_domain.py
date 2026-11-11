@@ -194,7 +194,7 @@ def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=
 # stricter contract so a missing voice backbone cannot silently become a
 # different kind of edit.
 PRODUCT_SKIPPABLE_ANALYSIS_ERRORS = SKIPPABLE_ANALYSIS_ERRORS | {
-    "cloud_request_failed"
+    "cloud_request_failed", "provider_unreachable"
 }
 MAX_MIX_OUTPUTS = 300
 AUTO_MIX_MAX_TTS_PHRASES = 40

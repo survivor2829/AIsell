@@ -352,12 +352,12 @@ class DashScopeMediaClient:
                         prefix = f"百炼{label}请求" if label else "百炼请求"
                         raise ContentEngineError("cloud_request_failed", f"{prefix}超时（{timeout_value} 秒），请检查网络或稍后重试。") from error
                     except URLError as error:
-                        if connection_refused(error):
+                        # Only the first attempt proves nothing was sent; a retry follows a
+                        # timeout whose request may already have reached the provider.
+                        if attempt == 0 and connection_refused(error):
                             raise unreachable_error("阿里百炼") from error
                         raise ContentEngineError("cloud_request_failed", "无法连接阿里百炼，请检查网络、接口地址和代理设置。") from error
                     except Exception as error:
-                        if connection_refused(error):
-                            raise unreachable_error("阿里百炼") from error
                         raise ContentEngineError("cloud_request_failed", "无法连接阿里百炼，请检查网络与配置。") from error
             except ContentEngineError as error:
                 if isinstance(error.__cause__, (TimeoutError, socket.timeout)) and attempt + 1 < attempts:

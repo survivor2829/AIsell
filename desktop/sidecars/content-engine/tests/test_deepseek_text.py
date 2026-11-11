@@ -61,8 +61,10 @@ class DeepSeekTextTests(unittest.TestCase):
             with usage_scope(Path(directory)), self.assertRaises(ContentEngineError) as error:
                 client._structured_completion(messages=[{"role": "user", "content": "导演规划"}],
                     model=client.selection_model, empty_code="empty", empty_message="empty")
+            events = [json.loads(row) for row in (Path(directory) / "provider-usage.jsonl").read_text().splitlines()]
         self.assertEqual("provider_unreachable", error.exception.code)
         self.assertEqual(1, opener.open.call_count)
+        self.assertEqual("not_sent", events[-1]["outcome"])
 
     def test_rejects_images_and_untrusted_provider_destination(self):
         with self.assertRaises(ContentEngineError):
