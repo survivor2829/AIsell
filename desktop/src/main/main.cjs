@@ -1119,8 +1119,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           controller: cloudMaintenance, request: updater.request,
           setHold: value => { updateHolds.launch = value; applyUpdateHold(); },
           publish: state => cloudMaintenance.setLaunchGate(state),
-          onOpen: reason => {
-            logger.event("maintenance", "launch_gate_open", { reason });
+          onOpen: (reason, gate) => {
+            // total = failed attempts before opening; with elapsed_ms it shows how long the customer waited.
+            // Traced so it reaches the report: an untraced info event stays on this computer.
+            logger.event("maintenance", "launch_gate_open", { reason, elapsed_ms: gate?.elapsedMs, total: gate?.attempts }, { trace: true });
             productVideoRegistration?.service?.resumeAfterUpdate();
             digitalHumanRegistration?.service?.resumeAfterUpdate();
             openLaunchGate();
@@ -1191,8 +1193,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
     const workflow = workflowController?.controlSnapshot?.();
+    // stage/phase tell whether the app was closed in the middle of an update, and at which step;
+    // done/total are the KB downloaded by then (the download's own record is cut off by the quit).
+    const updating = (() => { try { return cloudMaintenance?.status(); } catch { return null; } })();
     try { diagnostics().event("app", "quit_requested", { workflow_phase: workflow?.phase,
-      workflow_enabled: workflow?.enabled }, { trace: true }); } catch {}
+      workflow_enabled: workflow?.enabled, stage: updating?.stage, phase: updating?.launchGate?.phase,
+      ...(updating?.stage === "downloading" ? { done: Math.round((updating.downloadedBytes || 0) / 1024), total: Math.round((updating.totalBytes || 0) / 1024) } : {}) }, { trace: true }); } catch {}
     cloudMaintenance?.stop();
     failureCapsules?.stop();
     feedbackController?.stop();

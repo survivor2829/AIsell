@@ -8,7 +8,7 @@ const { createTransport } = require("./cloud-transport.cjs");
 const { compareVersions, fail, token, UUID, VERSION, verifyManifest } = require("../shared/cloud-contract.cjs");
 const { reportEntry } = require("../shared/cloud-report.cjs");
 const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = require("../shared/component-contract.cjs");
-const { createComponentStore } = require("./component-store.cjs");
+const { createComponentStore, downloadArchive } = require("./component-store.cjs");
 const componentPaths = require("./component-paths.cjs");
 const { bundledAnnouncements, releaseHistory } = require("../shared/customer-release-notes.cjs");
 const { updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
@@ -251,6 +251,19 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     } finally { uploading = false; notify(); }
     return status();
   }
+  // One record per downloaded file, in fields the report whitelist already carries (no paths, no
+  // names beyond the component): duration_ms with total (KB fetched now) gives the speed, done is
+  // the KB resumed from an earlier attempt, reason counts the automatic reconnects by cause.
+  function logDownload({ name, ok, code, durationMs, transferredBytes, resumedBytes, reconnects }) {
+    try {
+      const again = reconnects.slow + reconnects.stall + reconnects.other;
+      logger?.event?.("maintenance", "update.download", { phase: "download", action: name, status: ok ? "ok" : "failed",
+        duration_ms: durationMs, total: Math.round(transferredBytes / 1024), done: Math.round(resumedBytes / 1024),
+        ...(again ? { reason: `slow${reconnects.slow}_stall${reconnects.stall}_other${reconnects.other}` } : {}) },
+      // Info even when it failed: update.failed stays the one fault record, so its de-duplication is kept.
+      { level: "info", code, durationMs, phase: "download", trace: true });
+    } catch { /* Diagnostics cannot block an update. */ }
+  }
   async function check() {
     if (!network || checking || stopped || view.updateRequested) return status();
     checking = true; notify({ stage: "checking", error: "" });
@@ -269,13 +282,14 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
             catch (error) { if (error.code !== "full_upgrade_required" && error.message !== "full_upgrade_required") throw error; envelope = null; fullUpgradeRequired = true; }
             if (envelope) {
               const paths = componentPaths.updatePaths(userData);
-              notify({ stage: "preparing", nextVersion: manifest.version, downloadedBytes: 0, totalBytes: 0 });
+              notify({ stage: "preparing", nextVersion: manifest.version, downloadedBytes: 0, totalBytes: 0, downloadResumedBytes: 0, downloadSlowReconnects: 0 });
               let lastPhase = "", lastProgressAt = 0;
               const prepared = await createComponentStore({ rootDir: paths.directory, baseRoot: componentBaseRoot, config, transport: network,
                 onMeasure: measurement => {
                   try { logger?.event?.("maintenance", "update.phase", { phase: measurement.phase, bytes: measurement.bytes, entries: measurement.files },
                     { durationMs: measurement.durationMs, phase: measurement.phase, trace: true }); } catch { /* Diagnostics cannot block an update. */ }
                 },
+                onDownload: logDownload,
                 onProgress: progress => {
                   if (stopped) fail("cloud_stopped");
                   const now = Date.now();
@@ -283,6 +297,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
                   lastPhase = progress.phase; lastProgressAt = now;
                   notify({ stage: progress.phase === "download" ? "downloading" : progress.phase === "ready" ? "ready" : "verifying",
                   downloadedBytes: progress.downloadedBytes, totalBytes: progress.totalBytes,
+                  downloadResumedBytes: progress.resumedBytes || 0, downloadSlowReconnects: progress.slowReconnects || 0,
                   progress: progress.totalBytes ? Math.floor(progress.downloadedBytes / progress.totalBytes * 100) : 0 });
                 } }).prepare(envelope);
               if (stopped) fail("cloud_stopped");
@@ -305,7 +320,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       // using an older installer/partial never transfers deletion ownership.
       const created = fullDownloadPaths(manifest).filter(file => !fs.existsSync(file));
       if (!retainFullDownload(manifest, false, created)) fail("update_cache_registration_failed");
-      notify({ stage: "downloading", nextVersion: manifest.version, progress: 0, downloadedBytes: 0, totalBytes: manifest.size });
+      notify({ stage: "downloading", nextVersion: manifest.version, progress: 0, downloadedBytes: 0, totalBytes: manifest.size, downloadResumedBytes: 0, downloadSlowReconnects: 0 });
       const { verifyDownload } = require("./download-verification.cjs");
       let existing = false;
       try { await verifyDownload(destination, manifest); existing = true; } catch { /* Missing or changed download must be fetched. */ }
@@ -314,15 +329,24 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         if (free.bavail * free.bsize < manifest.size * 2 + 256 * 1024 ** 2) fail("cloud_disk_full");
         temporary = path.join(dir, `${manifest.sha256}.part`);
         let lastProgress = -1;
-        const download = await network.request(manifest.file, { destination: temporary, expected: manifest, maxBytes: manifest.size, resume: true,
-          onProgress: (size) => {
-            const progress = Math.floor(size / manifest.size * 100);
-            if (progress !== lastProgress) { lastProgress = progress; notify({ progress, downloadedBytes: size }); }
-          } });
+        let download, resumeCounted = false;
+        try {
+          download = await downloadArchive(network, manifest.file, { destination: temporary, expected: manifest, maxBytes: manifest.size, resume: true,
+            onProgress: (size) => {
+              if (stopped) fail("cloud_stopped");
+              // The first report is what an earlier attempt left on disk, not bytes fetched now.
+              if (!resumeCounted) { resumeCounted = true; notify({ downloadResumedBytes: size }); }
+              const progress = Math.floor(size / manifest.size * 100);
+              if (progress !== lastProgress) { lastProgress = progress; notify({ progress, downloadedBytes: size }); }
+            } }, { onReconnect: counts => { if (stopped) fail("cloud_stopped"); notify({ downloadSlowReconnects: counts.slow }); } });
+        } catch (error) { if (error?.download) logDownload({ name: "installer", ok: false, code: token(error.code, "download_failed"), ...error.download }); throw error; }
+        logDownload({ name: "installer", ok: true, code: "ok", ...download.download });
+        // Leave the download stage before the checks below, which report no bytes.
+        notify({ stage: "verifying" });
         if (stopped) fail("cloud_stopped");
         if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
         const proof = await verifyDownload(temporary, manifest, { proof: download?.verification });
-        notify({ stage: "verifying" }); fs.renameSync(temporary, destination); temporary = undefined;
+        fs.renameSync(temporary, destination); temporary = undefined;
         await verifyDownload(destination, manifest, { proof });
         fs.rmSync(path.join(dir, `${manifest.sha256}.part.verified.json`), { force: true });
       }

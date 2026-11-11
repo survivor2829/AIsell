@@ -69,5 +69,4 @@
 
 ## 已知的本机问题
 
-- `scripts/component-update-selftest.cjs` 的 HTTPS 断点续传用例在开发机失败（main 同样失败，CI 通过），会让本机 `check:self` 提前停下；需单独补跑剩余项。
 - 本机 `localhost` 解析到 `::1` 时连接被拒，构建与自检用 `NODE_OPTIONS=--dns-result-order=ipv4first`。

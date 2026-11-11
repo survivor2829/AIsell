@@ -11,7 +11,7 @@ function createTransport(config) {
   if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/") fail("cloud_origin_invalid");
   const agent = new https.Agent({ ca: config.caPem || undefined, keepAlive: true, maxSockets: 3 });
   const requests = new Set();
-  async function request(route, { body, headers = {}, maxBytes = 256 * 1024, destination, expected, onProgress, resume = false, method, timeoutMs } = {}) {
+  async function request(route, { body, headers = {}, maxBytes = 256 * 1024, destination, expected, onProgress, resume = false, method, timeoutMs, minSpeed } = {}) {
     if (method !== undefined && method !== "HEAD" || method === "HEAD" && (body !== undefined || destination)) fail("cloud_method_invalid");
     const url = new URL(route, origin);
     if (url.origin !== origin.origin || !route.startsWith("/")) fail("cloud_origin_invalid");
@@ -73,7 +73,17 @@ function createTransport(config) {
           } });
           if (destination) {
             onProgress?.(start);
-            await pipeline(res, meter, fs.createWriteStream(destination, { flags: resume ? start ? "a" : "w" : "wx" }));
+            // A body that stops arriving is abandoned after 10 s (the caller resumes by Range) instead of 30 s.
+            req.setTimeout(10_000);
+            // A connection that only trickles never trips the idle timeout. When the caller asks,
+            // give it up after one window below the floor; the bytes already on disk are kept.
+            let mark = size;
+            const slowTimer = minSpeed && setInterval(() => {
+              if (size - mark < minSpeed.bytesPerSecond * minSpeed.windowMs / 1000) res.destroy(Object.assign(new Error("cloud_slow"), { code: "cloud_slow" }));
+              mark = size;
+            }, minSpeed.windowMs);
+            try { await pipeline(res, meter, fs.createWriteStream(destination, { flags: resume ? start ? "a" : "w" : "wx" })); }
+            finally { clearInterval(slowTimer); }
             if (size !== expected.size || hash.digest("hex") !== expected.sha256) {
               if (resume) await fs.promises.truncate(destination, 0);
               fail("cloud_download_invalid");

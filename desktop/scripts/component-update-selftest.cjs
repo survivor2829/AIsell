@@ -597,11 +597,9 @@ test("new component metadata invalidates ready and in-flight older updates", asy
   assert.equal(controller.status().stage, "error", "An older in-flight preparation cannot reappear as ready");
   assert.equal(await controller.prepareInstall(), null);
 });
-test("HTTPS partial download resumes with strict Range and falls back to a full response", async t => {
-  const { root } = await fixture(t);
-  // Public localhost-only test credentials, unrelated to release signing or the
-  // production CA. Keep this check runnable after npm ci without a local Python env.
-  const tls = { key: `-----BEGIN EC PRIVATE KEY-----
+// Public localhost-only test credentials, unrelated to release signing or the
+// production CA. Keep this check runnable after npm ci without a local Python env.
+const tls = { key: `-----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIGKBS75Giou2rvHwoCN5PWfrVdegseg0JsQ3YXuAuzOxoAoGCCqGSM49
 AwEHoUQDQgAE/8PwLSQxHyZSZKtP1Pga7mjx/cFihToIaMzyckoJCqRbWfHqHyM6
 zT74a8oRTaGqmYcuqFNPopAjXTl8OgQpMw==
@@ -617,6 +615,8 @@ AwEB/zAUBgNVHREEDTALgglsb2NhbGhvc3QwCgYIKoZIzj0EAwIDSAAwRQIhAPaq
 Eo3uwSF/qcX9KawlC0ZAFA==
 -----END CERTIFICATE-----
 ` };
+test("HTTPS partial download resumes with strict Range and falls back to a full response", async t => {
+  const { root } = await fixture(t);
   const data = crypto.randomBytes(96 * 1024), expected = { size: data.length, sha256: digest(data) };
   let mode = "interrupt", requested;
   const server = https.createServer(tls, (req, res) => {
@@ -631,7 +631,8 @@ Eo3uwSF/qcX9KawlC0ZAFA==
       "Content-Range": `bytes ${mode === "invalid" ? start + 1 : start}-${data.length - 1}/${data.length}` });
     res.end(data.subarray(start));
   });
-  await new Promise(resolve => server.listen(0, "localhost", resolve));
+  // Bind IPv4: some machines refuse connections to ::1, which "localhost" binds first.
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const transport = createTransport({ origin: `https://localhost:${server.address().port}`, caPem: tls.cert });
   t.after(async () => { transport.close(); await new Promise(resolve => server.close(resolve)); });
   const destination = path.join(root, "download.part");
@@ -647,4 +648,86 @@ Eo3uwSF/qcX9KawlC0ZAFA==
   mode = "fallback";
   await transport.request("/components/test.zip", options);
   assert.equal(await hashFile(destination), expected.sha256);
+});
+// Field 2026-11: an update crawled until the customer closed and reopened the app. The reopen only
+// replaced the connection and resumed; the downloader now does that by itself.
+async function rangeServer(t, respond) {
+  const requests = [];
+  const server = https.createServer(tls, (req, res) => {
+    const start = Number((req.headers.range || "bytes=0-").match(/\d+/)[0]);
+    requests.push(start);
+    respond({ res, start, count: requests.length });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const transport = createTransport({ origin: `https://localhost:${server.address().port}`, caPem: tls.cert });
+  t.after(async () => { transport.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  return { transport, requests };
+}
+function rangeHead(res, data, start) {
+  res.writeHead(start ? 206 : 200, { "Content-Length": data.length - start,
+    ...(start ? { "Content-Range": `bytes ${start}-${data.length - 1}/${data.length}` } : {}) });
+}
+test("a download that keeps dropping resumes for as long as each attempt adds bytes", async t => {
+  const { root } = await fixture(t);
+  const { downloadArchive } = require("../src/main/component-store.cjs");
+  const data = crypto.randomBytes(160 * 1024), expected = { size: data.length, sha256: digest(data) };
+  const { transport, requests } = await rangeServer(t, ({ res, start, count }) => {
+    rangeHead(res, data, start);
+    if (count > 5) return res.end(data.subarray(start));
+    res.write(data.subarray(start, start + 16384)); setTimeout(() => res.destroy(), 200);
+  });
+  const destination = path.join(root, "dropping.part");
+  const result = await downloadArchive(transport, "/components/test.zip", { destination, expected, maxBytes: data.length, resume: true });
+  assert.equal(await hashFile(destination), expected.sha256);
+  assert.deepEqual(requests, [0, 16384, 32768, 49152, 65536, 81920], "every reconnect continues from the bytes already on disk");
+  assert.deepEqual(result.download.reconnects, { slow: 0, stall: 0, other: 5 });
+  assert.equal(result.download.resumedBytes, 0); assert.equal(result.download.transferredBytes, data.length);
+});
+test("a download that only trickles is moved to a fresh connection and resumed", async t => {
+  const { root } = await fixture(t);
+  const { downloadArchive } = require("../src/main/component-store.cjs");
+  const data = crypto.randomBytes(160 * 1024), expected = { size: data.length, sha256: digest(data) };
+  const { transport, requests } = await rangeServer(t, ({ res, start, count }) => {
+    rangeHead(res, data, start);
+    if (count > 1) return res.end(data.subarray(start));
+    // Never idle, so the idle timeout cannot see it: 1 KB every 40 ms.
+    let sent = 0;
+    const timer = setInterval(() => { if (res.destroyed) return clearInterval(timer); res.write(data.subarray(sent, sent += 1024)); }, 40);
+    res.on("close", () => clearInterval(timer));
+  });
+  const destination = path.join(root, "trickle.part");
+  const started = Date.now();
+  const result = await downloadArchive(transport, "/components/test.zip", { destination, expected, maxBytes: data.length, resume: true },
+    { slow: { bytesPerSecond: 256 * 1024, windowMs: 1000 } });
+  assert.ok(Date.now() - started < 6000, "the trickle must not be waited out");
+  assert.equal(await hashFile(destination), expected.sha256);
+  assert.equal(requests.length, 2); assert.ok(requests[1] > 0 && requests[1] < data.length, "the second connection resumes by Range");
+  assert.deepEqual(result.download.reconnects, { slow: 1, stall: 0, other: 0 });
+});
+test("download retries stop after three attempts without progress and a slow line is replaced at most twice", async t => {
+  const { root } = await fixture(t);
+  const { downloadArchive } = require("../src/main/component-store.cjs");
+  const destination = path.join(root, "stuck.part");
+  let calls = 0;
+  const dead = { async request() { calls++; throw Object.assign(new Error("reset"), { code: "ECONNRESET" }); } };
+  const failure = await downloadArchive(dead, "/components/test.zip", { destination, expected: { size: 10 }, resume: true }).catch(error => error);
+  assert.equal(failure.code, "ECONNRESET"); assert.equal(calls, 3);
+  assert.deepEqual(failure.download.reconnects, { slow: 0, stall: 0, other: 2 });
+  let refused = 0;
+  const denied = { async request() { refused++; throw Object.assign(new Error("cloud_http_404"), { code: "cloud_http_404" }); } };
+  await assert.rejects(downloadArchive(denied, "/components/test.zip", { destination, expected: { size: 10 }, resume: true }), /cloud_http_404/);
+  assert.equal(refused, 1, "errors a new connection cannot fix are not retried");
+  // A line that is simply slow must be allowed to finish: after two replacements the floor is lifted.
+  const floors = [];
+  const slowLine = { async request(_route, options) {
+    floors.push(Boolean(options.minSpeed));
+    if (floors.length <= 2) {
+      await fs.appendFile(destination, "x");
+      throw Object.assign(new Error("cloud_slow"), { code: "cloud_slow" });
+    }
+    return {};
+  } };
+  const result = await downloadArchive(slowLine, "/components/test.zip", { destination, expected: { size: 10 }, resume: true });
+  assert.deepEqual(floors, [true, true, false]);
+  assert.deepEqual(result.download.reconnects, { slow: 2, stall: 0, other: 0 });
 });

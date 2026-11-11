@@ -7,14 +7,14 @@ const SETTLED = new Set(["current", "ready", "error", "blocked", "idle", "disabl
 function createLaunchGate({ controller, request, setHold, onOpen = () => {}, publish = () => {}, now = Date.now,
   checkTimeoutMs = 20_000, retryBaseMs = 2_000, retryMaxMs = 60_000, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   let gate = { phase: "checking", reason: "", attempt: 0, retryAt: 0 };
-  let started = false;
+  let started = false, startedAt = 0;
   function emit(patch) { gate = { ...gate, ...patch }; publish(status()); }
   function status() { return { ...gate }; }
   function open(reason) {
     if (gate.phase === "open") return status();
     emit({ phase: "open", reason, retryAt: 0 });
     setHold(false);
-    try { onOpen(reason); } catch { /* Opening must never be blocked by a resume hook. */ }
+    try { onOpen(reason, { attempts: gate.attempt, elapsedMs: Math.max(0, now() - startedAt) }); } catch { /* Opening must never be blocked by a resume hook. */ }
     return status();
   }
   // Resolves once the controller leaves checking/downloading/verifying, or with null when the
@@ -72,7 +72,7 @@ function createLaunchGate({ controller, request, setHold, onOpen = () => {}, pub
     status,
     start() {
       if (started) return;
-      started = true;
+      started = true; startedAt = now();
       setHold(true);
       emit({ phase: "checking" });
       return run();

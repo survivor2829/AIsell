@@ -24,17 +24,17 @@ function fakeController(outcomes, initial = {}) {
 }
 
 function harness(controller, { request } = {}) {
-  const holds = [], phases = [], opened = [], sleeps = [];
+  const holds = [], phases = [], opened = [], sleeps = [], waits = [];
   const gate = createLaunchGate({
     controller,
     request: request || (async () => controller.status()),
     setHold: value => holds.push(value),
-    onOpen: reason => opened.push(reason),
+    onOpen: (reason, wait) => { opened.push(reason); waits.push(wait); },
     publish: state => phases.push(state.phase),
     checkTimeoutMs: 30,
     sleep: async ms => { sleeps.push(ms); }
   });
-  return { gate, holds, phases, opened, sleeps };
+  return { gate, holds, phases, opened, sleeps, waits };
 }
 
 (async () => {
@@ -44,6 +44,8 @@ function harness(controller, { request } = {}) {
     const run = harness(controller);
     const result = await run.gate.start();
     assert.equal(result.phase, "open"); assert.deepEqual(run.opened, ["current"]);
+    // Evidence for slow updates: how long the customer waited and how many attempts failed first.
+    assert.equal(run.waits[0].attempts, 0); assert.ok(Number.isFinite(run.waits[0].elapsedMs) && run.waits[0].elapsedMs >= 0);
     assert.deepEqual(run.holds, [true, false], "business work is held until the gate opens");
   }
 

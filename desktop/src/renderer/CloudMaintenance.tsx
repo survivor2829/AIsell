@@ -8,7 +8,7 @@ export type CloudStatus = {
   error: string; uploadError: string; consent: boolean; queued: number; lastUpload: string; canInstall: boolean; updateRequested?: boolean; waitingReason?: string;
   announcements: CloudAnnouncement[]; unreadAnnouncements: number; lastAnnouncementsCheck: string;
   announcementError: string; announcementsChecking: boolean;
-  downloadedBytes?: number; totalBytes?: number; updateFailure?: string;
+  downloadedBytes?: number; totalBytes?: number; downloadResumedBytes?: number; downloadSlowReconnects?: number; updateFailure?: string;
   consentNotice?: boolean;
   launchGate?: { phase: "checking" | "updating" | "retrying" | "installing" | "open"; reason: string; attempt: number; retryAt: number };
   lastUpdate?: { version: string; notes: string; completedAt: string; unread: boolean } | null;
