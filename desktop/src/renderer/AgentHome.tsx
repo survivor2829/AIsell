@@ -58,8 +58,6 @@ export type AgentHomeTarget =
   | "finished"
   | "ai-video"
   | "product-video"
-  | "local-acquisition"
-  | "keyword-acquisition"
   | "business-map"
   | "business-keyword"
   | "business-geo"

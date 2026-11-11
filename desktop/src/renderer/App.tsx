@@ -52,7 +52,6 @@ import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
 import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
-import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
 import { DistributionPage } from "./DistributionPage";
 import { SocialAccountsPanel } from "./SocialAccountsPanel";
 import { PhoneMatrixPage } from "./PhoneMatrixPage";
@@ -537,7 +536,7 @@ function taskStatusLabel(status: string) {
 function moduleIsAvailable(key: ModuleKey) {
   // 账号运营（小丽）自 1.2.58 有自己的首页；漏了它会在首页下面多出一整屏「下一阶段开放」。
   if (isSupportRole(key) || key === "business" || key === "tutorials" || isBusinessModule(key)) return true;
-  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "phone-matrix", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "keyword-acquisition", "diagnostics", "account-admin"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "publish", "nurture", "phone-matrix", "product-detail", "materials", "guide", "workspace", "finished", "ai-video", "product-video", "diagnostics", "account-admin"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -983,7 +982,6 @@ export default function App() {
           {active === "phone-matrix" && <PhoneMatrixPage />}
           {(active === "nurture" || active === "publish") && <DistributionPage tab={active} onManageAccounts={() => setActive("accounts")} />}
           {(productDetailVisited || active === "product-detail") && <div className="product-detail-retained" hidden={active !== "product-detail"}><ProductDetailPage preference={visiblePreference("operations")} onPersonalize={() => setPersonalizingRole("operations")} /></div>}
-          {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
           {active === "product-video" && <ProductVideoPage />}
           {active === "guide" && <TutorialsPage />}
