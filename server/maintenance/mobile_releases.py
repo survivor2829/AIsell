@@ -15,6 +15,7 @@ MOBILE_ROUTE = re.compile(r"/v1/mobile/releases/(test)/latest")
 PLATFORMS = {"douyin", "kuaishou", "xhs", "wechat"}
 MAX_APK_BYTES = 512 * 1024**2
 MAX_INT = 9007199254740991
+MAX_DOCUMENT = 65536
 
 
 def folder(root, channel):
@@ -29,7 +30,8 @@ def validate_envelope(envelope):
         raise ValueError("mobile_envelope_invalid")
     m = json.loads(envelope["payload"])
     count = lambda v, low=1: type(v) is int and low <= v <= MAX_INT
-    if (not isinstance(m, dict) or m.get("schema") != 1 or m.get("channel") not in MOBILE_APP_IDS
+    if (not isinstance(m, dict) or m.get("schema") != 1 or not isinstance(m.get("channel"), str)
+            or m["channel"] not in MOBILE_APP_IDS
             or m.get("appId") != MOBILE_APP_IDS[m["channel"]] or m.get("platform") != "android"
             or not count(m.get("versionCode")) or not VERSION.fullmatch(str(m.get("versionName", "")))
             or not count(m.get("sequence")) or not count(m.get("minVersionCode"))
@@ -46,20 +48,29 @@ def validate_envelope(envelope):
         raise ValueError("mobile_release_identity")
     seen = set()
     for item in paused:
-        if (not isinstance(item, dict) or set(item) != {"platform", "reason"} or item["platform"] not in PLATFORMS
+        if (not isinstance(item, dict) or set(item) != {"platform", "reason"} or not isinstance(item["platform"], str)
+                or item["platform"] not in PLATFORMS
                 or item["platform"] in seen or not isinstance(item["reason"], str) or not 0 < len(item["reason"]) <= 200):
             raise ValueError("mobile_release_identity")
         seen.add(item["platform"])
     return m
 
 
+def read_envelope(file):
+    """A stored envelope, size-capped and checked; ValueError on anything off."""
+    if file.is_symlink() or not file.is_file() or file.stat().st_size > MAX_DOCUMENT:
+        raise ValueError("mobile_release_unavailable")
+    try:
+        envelope = json.loads(file.read_text(encoding="utf-8"))
+        validate_envelope(envelope)
+    except (TypeError, KeyError, UnicodeError) as error:
+        raise ValueError("mobile_release_unavailable") from error
+    return envelope
+
+
 def latest(root, channel):
     """The signed envelope phones read, or {"empty": True} before the first publication."""
     file = folder(root, channel) / "latest.json"
-    if file.is_symlink():
-        raise ValueError("mobile_release_unavailable")
-    if not file.is_file():
+    if not file.exists() and not file.is_symlink():
         return {"empty": True}
-    envelope = json.loads(file.read_text(encoding="utf-8"))
-    validate_envelope(envelope)
-    return envelope
+    return read_envelope(file)

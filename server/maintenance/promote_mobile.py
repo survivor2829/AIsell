@@ -12,12 +12,31 @@ from pathlib import Path
 import shutil
 import sys
 from promote_components import publication_lock
-from mobile_releases import folder, validate_envelope
+from mobile_releases import folder, read_envelope, validate_envelope
 
 
 def digest_of(file):
     with file.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def intact(file, size, digest):
+    return not file.is_symlink() and file.is_file() and file.stat().st_size == size and digest_of(file) == digest
+
+
+def check_advance(manifest, previous):
+    """A new build must be a new APK with a higher version; a same-build republish (switches) changes nothing else."""
+    if manifest["sequence"] <= previous["sequence"] or manifest["versionCode"] < previous["versionCode"]:
+        raise ValueError("release_must_advance")
+    if manifest["certSha256"] != previous["certSha256"]:
+        raise ValueError("signing_certificate_changed")
+    if manifest["versionCode"] == previous["versionCode"]:
+        if any(manifest[key] != previous[key] for key in ("sha256", "size", "versionName")):
+            raise ValueError("same_version_different_apk")
+    else:
+        version = lambda text: tuple(map(int, text.split(".")))
+        if manifest["sha256"] == previous["sha256"] or version(manifest["versionName"]) <= version(previous["versionName"]):
+            raise ValueError("new_version_needs_new_apk")
 
 
 def promote(envelope_path, apk_path=None, root="/var/lib/ai-maintenance"):
@@ -29,26 +48,23 @@ def promote(envelope_path, apk_path=None, root="/var/lib/ai-maintenance"):
     artifacts.mkdir(parents=True, exist_ok=True)
     releases.mkdir(parents=True, exist_ok=True)
     target = artifacts / (digest + ".apk")
-    if apk_path is not None:
-        source = Path(apk_path)
-        if source.is_symlink() or not source.is_file() or source.stat().st_size != size or digest_of(source) != digest:
-            raise ValueError("artifact_hash")
+    if apk_path is not None and not intact(Path(apk_path), size, digest):
+        raise ValueError("artifact_hash")
     with publication_lock(root / "publish.lock"):
         latest = releases / "latest.json"
-        if latest.exists():
-            previous = json.loads(json.loads(latest.read_text(encoding="utf-8"))["payload"])
-            if manifest["sequence"] <= previous["sequence"] or manifest["versionCode"] < previous["versionCode"]:
-                raise ValueError("release_must_advance")
-            if manifest["versionCode"] == previous["versionCode"] and digest != previous["sha256"]:
-                raise ValueError("same_version_different_apk")
-        if apk_path is None:
-            if target.is_symlink() or not target.is_file() or target.stat().st_size != size or digest_of(target) != digest:
+        if latest.exists() or latest.is_symlink():
+            check_advance(manifest, json.loads(read_envelope(latest)["payload"]))
+        if not intact(target, size, digest):
+            if apk_path is None:
                 raise ValueError("artifact_missing")
-        elif not target.exists():
+            # Hash what was actually copied, so the trusted name never holds unchecked bytes.
             temporary = artifacts / (digest + ".apk.part")
-            shutil.copyfile(source, temporary)
+            shutil.copyfile(apk_path, temporary)
             with temporary.open("r+b") as stream:
                 os.fsync(stream.fileno())
+            if not intact(temporary, size, digest):
+                temporary.unlink()
+                raise ValueError("artifact_hash")
             os.replace(temporary, target)
         document = json.dumps(envelope)
         with (releases / f'{manifest["sequence"]}.json').open("x", encoding="utf-8") as stream:

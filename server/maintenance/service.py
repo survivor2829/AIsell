@@ -506,8 +506,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         # Public hash-addressed artifacts only. Used to recheck availability after
         # the publisher has already downloaded and hashed this exact installer.
-        match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip)", self.path)
-        if not match or (match[1], match[3]) not in (("artifacts", "exe"), ("components", "zip")):
+        match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip|apk)", self.path)
+        if not match or (match[1], match[3]) not in (("artifacts", "exe"), ("artifacts", "apk"), ("components", "zip")):
             self.send_response(404)
             self.send_header("Content-Length", "0")
             self.end_headers()
