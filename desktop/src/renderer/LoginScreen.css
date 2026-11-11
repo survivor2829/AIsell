@@ -39,8 +39,12 @@
 .signin-logo { width: 64px; height: 64px; border-radius: 16px; object-fit: cover; box-shadow: 0 6px 18px #0000001f; }
 .signin-brand b { font-size: 26px; font-weight: 800; letter-spacing: .02em; }
 .signin-brand span { padding-left: 14px; border-left: 1px solid #0e101526; color: var(--signin-muted); font-size: 18px; font-weight: 600; }
-.signin-online { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 8px 14px; border-radius: 999px; background: #ffffffa6; color: #3a3f4a; font-size: 13px; box-shadow: 0 2px 10px #0000000d; }
-.signin-online::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 4px #22c55e24; }
+.signin-online { display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 9px 18px; border-radius: 999px; background: #ffffffa6; color: #3a3f4a; font-size: 13px; box-shadow: 0 2px 10px #0000000d; }
+.signin-online::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 4px #22c55e24; animation: signin-pulse 2s ease-out infinite; }
+.signin-brand .signin-online b { color: #14171f; font-size: 15px; font-weight: 800; letter-spacing: .01em; }
+.signin-brand .signin-online span { display: flex; align-items: baseline; gap: 8px; padding-left: 12px; border-left: 1px solid #0e101526; color: var(--signin-muted); font-size: 13px; font-weight: 600; }
+.signin-online time { color: #14171f; font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+@keyframes signin-pulse { 0% { box-shadow: 0 0 0 0 #22c55e66; } 100% { box-shadow: 0 0 0 9px #22c55e00; } }
 .signin-copy { position: absolute; z-index: 2; left: 56px; top: 40px; bottom: 40px; display: flex; flex-direction: column; justify-content: space-between; width: min(50%, 580px); }
 /* The column runs from the top line to the bottom line: headline, line, status and crew spread evenly. */
 .signin-copy > * { margin-top: 0; }

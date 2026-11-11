@@ -178,6 +178,8 @@ type Metric = {
   unit?: string;
   detail: string;
   icon: ComponentType<{ size?: number; strokeWidth?: number }>;
+  // 没有数字的入口：只留大字，整块可点（用户 2026-11-11：不要「可进入」这种废话）。
+  target?: AgentHomeTarget;
 };
 
 type ImportantTask = {
@@ -462,11 +464,19 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
   );
 }
 
-function MetricStrip({ metrics }: { metrics: Metric[] }) {
+function MetricStrip({ metrics, onOpen }: { metrics: Metric[]; onOpen: (target: AgentHomeTarget) => void }) {
   return (
     <section className={`agent-metric-strip${metrics.length === 2 ? " is-two" : ""}`} aria-label="业务概览">
       {metrics.map((metric) => {
         const Icon = metric.icon;
+        const target = metric.target;
+        if (target) return (
+          <button type="button" className="agent-metric is-entry" key={metric.label} onClick={() => onOpen(target)}>
+            <Icon size={26} strokeWidth={2.3} />
+            <strong>{metric.label}</strong>
+            <ArrowRight size={22} strokeWidth={2.6} />
+          </button>
+        );
         return (
           <div className="agent-metric" key={metric.label}>
             <Icon size={20} strokeWidth={2.2} />
@@ -583,8 +593,8 @@ function buildProductionView(snapshot: ProductionSnapshot) {
 
 function buildBusinessView() {
   const metrics: Metric[] = [
-    { label: "关键词获客", value: "可进入", detail: "按关键词读同行视频评论", icon: Search },
-    { label: "地图获客", value: "可进入", detail: "查附近企业资料", icon: MapPin }
+    { label: "关键词获客", value: "", detail: "", icon: Search, target: "keyword-acquisition" },
+    { label: "地图获客", value: "", detail: "", icon: MapPin, target: "local-acquisition" }
   ];
   const importantTask: ImportantTask = {
     title: "从评论里找到想买的人",
@@ -611,7 +621,7 @@ function buildAccountOpsView() {
 
 function buildOperationsView() {
   const metrics: Metric[] = [
-    { label: "产品详情图", value: "可进入", detail: "打开现有详情图制作", icon: Sparkles }
+    { label: "产品详情图", value: "", detail: "", icon: Sparkles, target: "product-detail" }
   ];
   const importantTask: ImportantTask = {
     title: "把产品介绍清楚",
@@ -730,7 +740,7 @@ export function AgentHome({
             {view.importantTask.action}<ArrowRight size={16} strokeWidth={2.4} />
           </button>
         </section>
-      {view.metrics.length > 0 && <MetricStrip metrics={view.metrics} />}
+      {view.metrics.length > 0 && <MetricStrip metrics={view.metrics} onOpen={onOpen} />}
       </div>
     </div>
   );
