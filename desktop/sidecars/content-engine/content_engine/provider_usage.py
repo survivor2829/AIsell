@@ -124,6 +124,18 @@ def _transport_error_kind(error):
     return "transport_error"
 
 
+def connection_refused(error):
+    """The TCP connection was refused, so no request bytes left this machine."""
+    return _transport_error_kind(error) == "connection_refused"
+
+
+def unreachable_error(service):
+    return ContentEngineError(
+        "provider_unreachable",
+        f"连不上{service}（连接被拒绝），请求没有发出，不会扣费。请检查网络，或代理/加速器是否正常运行，然后重试。",
+    )
+
+
 def _append_event(root, record, event):
     if root is None:
         return

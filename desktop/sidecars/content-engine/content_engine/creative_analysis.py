@@ -38,7 +38,8 @@ from .auto_mix_resources import (
 )
 from .auto_mix_v2 import guided_script_audience_copy_issue
 from .errors import ContentEngineError
-from .provider_usage import ProviderRequest, usage_scope, observe_http_error, record_response_validation
+from .provider_usage import (ProviderRequest, connection_refused, observe_http_error, record_response_validation,
+                             unreachable_error, usage_scope)
 from .product_pipeline import normalize_product_context
 from .render_mix import discover_media_executable, _windows_process_options
 
@@ -351,8 +352,12 @@ class DashScopeMediaClient:
                         prefix = f"百炼{label}请求" if label else "百炼请求"
                         raise ContentEngineError("cloud_request_failed", f"{prefix}超时（{timeout_value} 秒），请检查网络或稍后重试。") from error
                     except URLError as error:
+                        if connection_refused(error):
+                            raise unreachable_error("阿里百炼") from error
                         raise ContentEngineError("cloud_request_failed", "无法连接阿里百炼，请检查网络、接口地址和代理设置。") from error
                     except Exception as error:
+                        if connection_refused(error):
+                            raise unreachable_error("阿里百炼") from error
                         raise ContentEngineError("cloud_request_failed", "无法连接阿里百炼，请检查网络与配置。") from error
             except ContentEngineError as error:
                 if isinstance(error.__cause__, (TimeoutError, socket.timeout)) and attempt + 1 < attempts:

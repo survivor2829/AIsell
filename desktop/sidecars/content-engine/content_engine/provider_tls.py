@@ -57,7 +57,7 @@ def settle_billing_job(task_id: str, outcome: str) -> None:
     def send():
         ca_pem = os.environ.get(GATEWAY_CA_ENV, "").strip()
         try:
-            handlers = [urllib.request.HTTPSHandler(context=ssl.create_default_context(cadata=ca_pem))] if ca_pem else []
+            handlers = gateway_handlers(ssl.create_default_context(cadata=ca_pem)) if ca_pem else []
         except (ssl.SSLError, ValueError):
             return
         opener = urllib.request.build_opener(*handlers)
@@ -73,6 +73,12 @@ def settle_billing_job(task_id: str, outcome: str) -> None:
             time.sleep(2 * (attempt + 1))
 
     threading.Thread(target=send, name="billing-settle", daemon=True).start()
+
+
+def gateway_handlers(context) -> list:
+    """Openers for our own gateway. Like the main process, connect directly: a local
+    proxy or accelerator that is stopped must not block requests to our server."""
+    return [urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context)]
 
 
 def gateway_tls_context(url: str, *, method: str = "POST"):

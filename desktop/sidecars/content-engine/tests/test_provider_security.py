@@ -106,7 +106,10 @@ class ProviderOriginSecurityTests(unittest.TestCase):
             self.assertEqual("gateway-response", provider_urlopen(request, timeout=30))
             tls.assert_called_once_with(request.full_url, method="GET")
             self.assertIsInstance(build.call_args.args[0], _ProviderRedirectHandler)
-            self.assertIs(build.call_args.args[1]._context, context)
+            # Our own gateway is reached directly, never through a system proxy.
+            self.assertIsInstance(build.call_args.args[1], urllib.request.ProxyHandler)
+            self.assertEqual({}, build.call_args.args[1].proxies)
+            self.assertIs(build.call_args.args[2]._context, context)
             build.return_value.open.assert_called_once_with(request, timeout=30)
 
     def test_dashscope_ignores_inherited_origin_overrides(self):

@@ -26,12 +26,14 @@ from .errors import ContentEngineError
 from .provider_usage import (
     ProviderRateLimitRetry,
     ProviderRequest,
+    connection_refused,
     current_usage_context,
     observe_http_error,
     retry_delay_seconds,
+    unreachable_error,
     usage_scope,
 )
-from .provider_tls import gateway_tls_context, tag_billing
+from .provider_tls import gateway_handlers, gateway_tls_context, tag_billing
 
 
 TTS_ENDPOINT = os.environ.get(
@@ -255,7 +257,7 @@ class VolcengineTTSProvider:
                             tls_context = gateway_tls_context(TTS_ENDPOINT)
                             opener_args = [_NoRedirect()]
                             if tls_context is not None:
-                                opener_args.append(request.HTTPSHandler(context=tls_context))
+                                opener_args.extend(gateway_handlers(tls_context))
                             opener = request.build_opener(*opener_args)
                             with opener.open(operation, timeout=min(self.timeout_seconds, remaining)) as response:
                                 meter.observe(headers=getattr(response, "headers", None), http_status=getattr(response, "status", 200))
@@ -298,6 +300,8 @@ class VolcengineTTSProvider:
                             raise ContentEngineError("cloud_request_failed", f"{message}（HTTP {status}）") from None
                         except (TimeoutError, socket.timeout, URLError, OSError, http.client.HTTPException) as error:
                             meter.observe_transport_error(error)
+                            if connection_refused(error):
+                                raise unreachable_error("配音服务") from None
                             raise self._unknown("火山语音连接中断，提交结果无法确认") from None
             except ProviderRateLimitRetry as retry:
                 if retry.delay_seconds:
