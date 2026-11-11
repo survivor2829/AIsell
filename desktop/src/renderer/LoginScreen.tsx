@@ -115,15 +115,12 @@ const HANDOVER_MS = 1500;
 // A clip that never reports its end still hands over.
 const CLIP_LIMIT_MS = 20000;
 
-// 「24 小时不间断干活」：右上角显示现在几点、她们此刻也在线（用户 2026-11-11：「今日已在岗」看不懂）。
+// 顶栏右侧的两组大字：只有数字「6」和「24」放大飘红，文字是黑色粗体，不加底框（用户 2026-11-11：不要「现在几点也在线」，要大气）。
+// 活人感：数字由 CSS 计数器画出来，进场从 0 跳到 6 / 24，之后每隔几秒轮流跳一下、扫过一道光，旁边绿点一直在呼吸。
 function OnDuty() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 1000); return () => window.clearInterval(timer); }, []);
-  const two = (value: number) => String(value).padStart(2, "0");
-  return <small className="signin-online" role="img" aria-label="6 位 AI 员工，24 小时不间断干活">
-    <b>6 位 AI 员工 · 24 小时不间断干活</b>
-    <span aria-hidden="true">现在<time>{two(now.getHours())}:{two(now.getMinutes())}:{two(now.getSeconds())}</time>也在线</span>
-  </small>;
+  return <p className="signin-online" role="img" aria-label="6 位 AI 员工，24 小时不间断干活">
+    <span><em style={{ "--to": 6 } as CSSProperties} />位 AI 员工</span><i aria-hidden="true" /><span><em style={{ "--to": 24 } as CSSProperties} />小时不间断干活</span>
+  </p>;
 }
 
 function greeting(hour = new Date().getHours()) {
