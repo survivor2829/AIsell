@@ -593,8 +593,8 @@ function buildProductionView(snapshot: ProductionSnapshot) {
 
 function buildBusinessView() {
   const metrics: Metric[] = [
-    { label: "关键词获客", value: "", detail: "", icon: Search, target: "keyword-acquisition" },
-    { label: "地图获客", value: "", detail: "", icon: MapPin, target: "local-acquisition" }
+    { label: "关键词获客", value: "", detail: "", icon: Search, target: "business-keyword" },
+    { label: "地图获客", value: "", detail: "", icon: MapPin, target: "business-map" }
   ];
   const importantTask: ImportantTask = {
     title: "从评论里找到想买的人",
