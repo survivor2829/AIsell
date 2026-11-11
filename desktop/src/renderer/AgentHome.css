@@ -804,10 +804,18 @@
 @media (max-height: 740px) and (min-width: 1101px) { .agent-home-top .agent-portrait-canvas { width: min(100%, 26vh); } .agent-home-top .agent-introduction > p { font-size: 15px; } }
 
 /* 没有数字的入口：一块大字，整块可点。 */
+.agent-home-bottom .agent-metric-strip:has(.is-entry) { container-type: inline-size; }
 .agent-home-bottom .agent-metric.is-entry { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 18px 24px; border-width: 0 0 0 1px; border-style: solid; border-color: transparent; background: transparent; color: #1c2436; font: inherit; text-align: left; cursor: pointer; transition: background .18s ease; }
 .agent-home-bottom .agent-metric.is-entry + .agent-metric.is-entry { border-left-color: color-mix(in srgb, var(--agent-accent) 14%, rgba(255, 255, 255, 0.9)); }
 .agent-home-bottom .agent-metric.is-entry > svg { display: block; width: auto; height: auto; padding: 0; background: none; color: var(--agent-accent-strong); }
 .agent-home-bottom .agent-metric.is-entry > svg:last-child { opacity: .45; transition: transform .18s ease, opacity .18s ease; }
-.agent-home-bottom .agent-metric.is-entry strong { font-size: clamp(22px, 2.1vw, 30px); font-weight: 900; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 字号跟着卡片宽度走，五个字永远完整显示，不出省略号（用户 2026-11-11）。两列时每格 50cqw，去掉图标、箭头、间距约 124px。 */
+.agent-home-bottom .agent-metric.is-entry strong { font-size: clamp(15px, calc(10cqw - 26px), 30px); font-weight: 900; letter-spacing: .01em; white-space: nowrap; }
 .agent-home-bottom .agent-metric.is-entry:hover, .agent-home-bottom .agent-metric.is-entry:focus-visible { background: color-mix(in srgb, var(--agent-accent) 9%, transparent); outline: none; }
 .agent-home-bottom .agent-metric.is-entry:hover > svg:last-child, .agent-home-bottom .agent-metric.is-entry:focus-visible > svg:last-child { opacity: 1; transform: translateX(4px); }
+/* 卡片窄时去掉前面的图标、收紧边距，把宽度让给字。 */
+@container (max-width: 520px) {
+  .agent-home-bottom .agent-metric.is-entry { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 14px 16px; }
+  .agent-home-bottom .agent-metric.is-entry > svg:first-child { display: none; }
+  .agent-home-bottom .agent-metric.is-entry strong { font-size: clamp(15px, calc(10cqw - 14px), 30px); }
+}
