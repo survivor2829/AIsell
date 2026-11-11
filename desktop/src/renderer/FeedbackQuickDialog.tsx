@@ -9,7 +9,7 @@ import "./feedback-center.css";
 const PAGE_MODULES: Record<string, string> = {
   touch: "active_touch", reply: "auto_reply", moments: "moments", "contact-sync": "contact_sync", workflow: "wechat_workflow",
   workspace: "content_engine", "ai-video": "content_engine", "product-video": "content_engine", finished: "content_engine",
-  publish: "social_publish", "product-detail": "product_detail", "keyword-acquisition": "social_acquisition"
+  publish: "social_publish", "product-detail": "product_detail"
 };
 const CATEGORIES: [string, string][] = [["problem", "遇到问题"], ["suggestion", "功能建议"], ["experience", "体验吐槽"]];
 type Draft = { id: string; text: string; category: string; includeDiagnostics: boolean; visibility: "public" | "private"; context: FeedbackContext | null; images?: string[] };
