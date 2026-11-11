@@ -257,5 +257,54 @@ class VolcengineMediaTests(unittest.TestCase):
         self.assertEqual(result[1]["metadata"]["words"], [])
 
 
+
+
+class GatewayRefusedTests(unittest.TestCase):
+    """A refused connection never reached the gateway, so nothing can be billed."""
+
+    origin = "https://gateway.example"
+    endpoint = origin + "/v1/provider-gateway/volcengine/asr/recognize/flash"
+
+    def _post(self, side_effects):
+        calls = []
+
+        def open_request(op, timeout):
+            calls.append(op.get_method())
+            effect = side_effects[min(len(calls), len(side_effects)) - 1]
+            raise effect
+
+        with patch.dict(os.environ, {
+            "XIAOXI_PROVIDER_GATEWAY_ORIGIN": self.origin,
+            "XIAOXI_PROVIDER_GATEWAY_TOKEN": "gateway-token",
+            "XIAOXI_PROVIDER_GATEWAY_CA_PEM": "fixture-ca",
+        }), patch("content_engine.provider_tls.ssl.create_default_context"), \
+                patch("content_engine.volcengine_media.request.build_opener") as opener, \
+                patch.object(VolcengineMediaClient, "_recover_gateway_receipt", return_value=None) as recover, \
+                patch("content_engine.volcengine_media.time.sleep"):
+            opener.return_value.open.side_effect = open_request
+            with self.assertRaises(ContentEngineError) as raised:
+                VolcengineMediaClient()._post(self.endpoint, {}, {}, 1, "语音识别")
+        return raised.exception, calls, recover, opener
+
+    def test_refused_every_attempt_is_unreachable_not_unknown(self):
+        error, calls, recover, _opener = self._post([URLError(ConnectionRefusedError(10061, "refused"))])
+        self.assertEqual("provider_unreachable", error.code)
+        self.assertIn("没有发出", error.message)
+        self.assertEqual(["POST"] * 3, calls)
+        recover.assert_not_called()
+
+    def test_refused_after_a_reset_stays_unknown(self):
+        error, _calls, recover, _opener = self._post([
+            URLError("connection reset"), URLError(ConnectionRefusedError(10061, "refused"))])
+        self.assertEqual("volcengine_outcome_unknown", error.code)
+        recover.assert_called()
+
+    def test_gateway_request_ignores_system_proxy(self):
+        _error, _calls, _recover, opener = self._post([URLError(ConnectionRefusedError(10061, "refused"))])
+        proxies = [item for item in opener.call_args.args if isinstance(item, request.ProxyHandler)]
+        self.assertEqual(1, len(proxies))
+        self.assertEqual({}, proxies[0].proxies)
+
+
 if __name__ == "__main__":
     unittest.main()

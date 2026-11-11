@@ -9,8 +9,9 @@ from urllib.error import HTTPError, URLError
 
 from .creative_analysis import DashScopeMediaClient, MAX_PROVIDER_JSON_BYTES, _json_bytes, _read_bounded
 from .errors import ContentEngineError
-from .provider_tls import gateway_tls_context, tag_billing
-from .provider_usage import ProviderRequest, current_usage_context, observe_http_error
+from .provider_tls import gateway_handlers, gateway_tls_context, tag_billing
+from .provider_usage import (ProviderRequest, connection_refused, current_usage_context, observe_http_error,
+                             unreachable_error)
 from .volcengine_tts import _NoRedirect
 
 
@@ -62,7 +63,7 @@ class DeepSeekTextClient(DashScopeMediaClient):
                     tls = gateway_tls_context(url)
                     handlers = [_NoRedirect()]
                     if tls is not None:
-                        handlers.append(request.HTTPSHandler(context=tls))
+                        handlers.extend(gateway_handlers(tls))
                     with request.build_opener(*handlers).open(op, timeout=timeout or self.timeout_seconds) as response:
                         meter.observe(headers=response.headers, http_status=getattr(response, "status", 200))
                         raw = _read_bounded(response, MAX_PROVIDER_JSON_BYTES, "cloud_response_too_large", "DeepSeek 返回的数据过大。")
@@ -78,6 +79,8 @@ class DeepSeekTextClient(DashScopeMediaClient):
                     raise ContentEngineError("cloud_request_failed", f"DeepSeek 导演请求未完成（HTTP {error.code}），请核对服务权限、额度或原请求记录。") from error
                 except (TimeoutError, socket.timeout, URLError, OSError, ValueError) as error:
                     meter.observe_transport_error(error)
+                    if connection_refused(error):
+                        raise unreachable_error("云端服务") from error
                     # Do not retry a paid request after an uncertain transport
                     # result. NarratedBatch retains its existing inflight marker.
                     raise ContentEngineError("cloud_request_failed", "DeepSeek 导演请求结果暂时无法确认，已保留进度，不会自动重提。") from error

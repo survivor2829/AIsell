@@ -375,6 +375,7 @@ const PUBLIC_ERRORS = Object.freeze({
   auto_mix_voice_unavailable: "当前内容引擎不支持声音试听，请检查配音组件配置。",
   auto_mix_voice_persona_invalid: "音色或模型配置无效，请检查当前声音设置。",
   cloud_request_failed: "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。",
+  provider_unreachable: "连不上云端服务（连接被拒绝），请求没有发出，不会扣费。请检查网络，或代理/加速器是否正常运行，然后重试。",
   cloud_request_rejected: "云端未接受本次请求，请检查模型或音色权限、请求参数和账户额度。",
   cloud_response_invalid: "云端返回的结果无法识别，本次未完成；请稍后重试，请勿连续重复提交。",
   cloud_response_too_large: "云端返回的数据超过安全大小限制，本次未完成；请稍后重试，请勿连续重复提交。",

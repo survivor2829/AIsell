@@ -4362,7 +4362,7 @@ class NarratedBatchDomain:
                 editorial_candidates.append(compose_story(story, [c["shots"] for c in editorial_candidates]))
             except (ContentEngineError, TypeError, ValueError, KeyError, AttributeError) as error:
                 if isinstance(error, ContentEngineError) and (
-                    error.code in {"cloud_request_failed", "narrated_planning_budget_exhausted"}
+                    error.code in {"cloud_request_failed", "narrated_planning_budget_exhausted", "provider_unreachable"}
                     or "unknown" in error.code
                 ):
                     raise
@@ -4557,7 +4557,7 @@ class NarratedBatchDomain:
                         raw_candidates[item["index"]]["title"] = str(item.get("title") or raw_candidates[item["index"]].get("title") or "")[:100]
                         raw_candidates[item["index"]]["narration_draft"] = item["narration"].strip()
                     except ContentEngineError as error:
-                        if error.code == "cloud_request_failed" or "unknown" in error.code:
+                        if error.code in {"cloud_request_failed", "provider_unreachable"} or "unknown" in error.code:
                             raise
                         rewrite_failed.add(source["index"])
                         audit["rejections"].append({"stage": "format", "title": str(source.get("title") or "未命名方案")[:100],
@@ -4984,7 +4984,8 @@ class NarratedBatchDomain:
                     self.db.execute("UPDATE content_tasks SET status='analyzing',error_code=NULL,error_message=NULL WHERE id=? AND status='paused' AND error_code=?", (task_id, code))
         except ContentEngineError as error:
             c.update(status="failed", error=error.message, error_code=error.code)
-            if "unknown" in error.code or error.code.startswith(("cloud_", "auto_mix_voice_", "auto_mix_music_")):
+            if ("unknown" in error.code or error.code == "provider_unreachable"
+                    or error.code.startswith(("cloud_", "auto_mix_voice_", "auto_mix_music_"))):
                 b["status"] = "outcome_unknown" if "unknown" in error.code else "needs_attention"
                 self._store(b)
                 raise

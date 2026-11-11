@@ -15,12 +15,14 @@ from .errors import ContentEngineError
 from .provider_usage import (
     ProviderRateLimitRetry,
     ProviderRequest,
+    connection_refused,
     current_usage_context,
     observe_http_error,
     retry_delay_seconds,
+    unreachable_error,
     usage_scope,
 )
-from .provider_tls import gateway_tls_context, tag_billing
+from .provider_tls import gateway_handlers, gateway_tls_context, tag_billing
 from .volcengine_tts import VolcengineTTSProvider, _NoRedirect
 
 ARK_ENDPOINT = os.environ.get(
@@ -71,7 +73,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
             tls_context = gateway_tls_context(receipt_url, method="GET")
             opener_args = [_NoRedirect()]
             if tls_context is not None:
-                opener_args.append(request.HTTPSHandler(context=tls_context))
+                opener_args.extend(gateway_handlers(tls_context))
             receipt = request.Request(receipt_url, headers={"Authorization": f"Bearer {token}"}, method="GET")
             try:
                 with request.build_opener(*opener_args).open(receipt, timeout=15) as response:
@@ -132,6 +134,8 @@ class VolcengineMediaClient(DashScopeMediaClient):
             request_headers["Authorization"] = f"Bearer {gateway_token}"
             request_headers["X-Xiaoxi-Operation-Id"] = operation_id
         last_meter = None
+        # Stays False only while every attempt was refused before any bytes were sent.
+        maybe_delivered = False
         for attempt in range(1, MAX_429_ATTEMPTS + 1):
             op = request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                                  headers=request_headers, method="POST")
@@ -157,7 +161,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
                             tls_context = gateway_tls_context(url)
                             opener_args = [_NoRedirect()]
                             if tls_context is not None:
-                                opener_args.append(request.HTTPSHandler(context=tls_context))
+                                opener_args.extend(gateway_handlers(tls_context))
                             with request.build_opener(*opener_args).open(op, timeout=timeout) as response:
                                 return self._read_response(response, meter, stage)
                         except HTTPError as error:
@@ -171,6 +175,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
                                 raise ContentEngineError("volcengine_outcome_unknown",
                                                          f"火山{stage}原操作仍无法确认，未自动创建新请求。") from None
                             if status_code >= 500:
+                                maybe_delivered = True
                                 if gateway_request:
                                     recovered = self._recover_gateway_receipt(
                                         gateway_origin, gateway_token, operation_id, meter, stage)
@@ -202,13 +207,18 @@ class VolcengineMediaClient(DashScopeMediaClient):
                             raise ContentEngineError("volcengine_request_rejected", message) from None
                         except (TimeoutError, socket.timeout, URLError, OSError) as error:
                             meter.observe_transport_error(error)
+                            if not connection_refused(error):
+                                maybe_delivered = True
                             if gateway_request:
-                                recovered = self._recover_gateway_receipt(
-                                    gateway_origin, gateway_token, operation_id, meter, stage)
-                                if recovered is not None:
-                                    return recovered
+                                if maybe_delivered:
+                                    recovered = self._recover_gateway_receipt(
+                                        gateway_origin, gateway_token, operation_id, meter, stage)
+                                    if recovered is not None:
+                                        return recovered
                                 if attempt < MAX_429_ATTEMPTS:
                                     raise GatewayReplayRetry() from None
+                            if not maybe_delivered:
+                                raise unreachable_error("云端服务") from None
                             raise ContentEngineError("volcengine_outcome_unknown", f"火山{stage}连接中断或超时，结果不明，未自动重提。") from None
                         except (ValueError, UnicodeError):
                             raise ContentEngineError("volcengine_response_invalid", f"火山{stage}返回无法解析的结果，已停止。") from None

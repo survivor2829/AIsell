@@ -124,6 +124,18 @@ def _transport_error_kind(error):
     return "transport_error"
 
 
+def connection_refused(error):
+    """The TCP connection was refused, so no request bytes left this machine."""
+    return _transport_error_kind(error) == "connection_refused"
+
+
+def unreachable_error(service):
+    return ContentEngineError(
+        "provider_unreachable",
+        f"连不上{service}（连接被拒绝），请求没有发出，不会扣费。请检查网络，或代理/加速器是否正常运行，然后重试。",
+    )
+
+
 def _append_event(root, record, event):
     if root is None:
         return
@@ -243,7 +255,9 @@ class ProviderRequest:
             code = _safe(getattr(error, "code", "")) or _safe(error_type.__name__)
             self.record["error_code"] = code
             status = self.record["http_status"]
-            if "unknown" in code:
+            if self.record.get("transport_error") == "connection_refused":
+                self.record["outcome"] = "not_sent"
+            elif "unknown" in code:
                 self.record["outcome"] = "outcome_unknown"
             elif status and status >= 500:
                 self.record["outcome"] = "failed"
@@ -296,7 +310,7 @@ def provider_usage_summary(data_dir, *, task_ids=None, batch_id=None, limit=100)
         pass
     rows = sorted(calls.values(), key=lambda row: (row.get("started_at", ""), row["call_id"]), reverse=True)
     totals = {"calls": len(rows), "succeeded_calls": 0, "rejected_calls": 0, "failed_calls": 0, "outcome_unknown_calls": 0}
-    for outcome in ("succeeded", "rejected", "failed", "invalid_response", "outcome_unknown"):
+    for outcome in ("succeeded", "rejected", "failed", "invalid_response", "outcome_unknown", "not_sent"):
         totals[f"{outcome}_calls"] = sum(row.get("outcome") == outcome for row in rows)
     for kind in ("llm", "tts", "asr"):
         totals[f"{kind}_calls"] = sum(row.get("kind") == kind for row in rows)
