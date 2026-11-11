@@ -140,8 +140,13 @@
 .dist-preview-head b { font-size: 20px; font-weight: 900; }
 .dist-preview-head span { font-size: 13px; font-weight: 700; color: var(--muted); }
 .dist-phone { position: relative; aspect-ratio: 9 / 16; overflow: hidden; border-radius: 28px; border: 8px solid #111827; background: #1f2937; box-shadow: 0 24px 48px rgba(31, 41, 55, .22); }
-.dist-phone > img, .dist-phone-blank { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: linear-gradient(160deg, #3b2a33, #1f2937); }
-.dist-phone-empty { position: absolute; inset: 0; display: grid; place-content: center; margin: 0; padding: 20px; text-align: center; color: rgba(255, 255, 255, .7); font-size: 14px; font-weight: 700; line-height: 1.7; }
+.dist-phone > img, .dist-phone-blank { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: linear-gradient(160deg, #ff9aa8, #e0364f 55%, #b3122e); }
+/* 没选视频时不显示黑屏：暖色底、淡淡的圆晕，吉祥物站在中间等你选（用户 2026-11-11）。 */
+.dist-phone.is-empty { border-color: #f3c9cf; background: #fff5f6; box-shadow: 0 24px 48px rgba(230, 0, 0, .12); }
+.dist-phone.is-empty .dist-phone-blank { background: radial-gradient(circle at 78% 12%, #ffd9de 0, transparent 46%), radial-gradient(circle at 14% 88%, #ffe9c9 0, transparent 44%), linear-gradient(170deg, #fff7f8, #ffe9ec); }
+.dist-phone.is-empty .dist-phone-top { background: #fff; color: var(--ink); box-shadow: 0 2px 8px rgba(230, 0, 0, .12); }
+.dist-phone-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 20px; text-align: center; }
+.dist-phone-empty p { margin: 0; color: #8a4a55; font-size: 15px; font-weight: 800; line-height: 1.7; }
 .dist-phone-top { position: absolute; top: 12px; left: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border-radius: 999px; background: rgba(0, 0, 0, .45); color: #fff; font-size: 12px; font-weight: 800; }
 .dist-phone-top .platform-icon { border-radius: 50%; }
 .dist-phone-copy { position: absolute; left: 0; right: 0; bottom: 0; display: grid; gap: 6px; padding: 60px 14px 16px; color: #fff; background: linear-gradient(transparent, rgba(0, 0, 0, .82)); }

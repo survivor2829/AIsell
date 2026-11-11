@@ -3,6 +3,7 @@ import { Check, ChevronDown, Globe2, Lock, RefreshCw, RotateCcw, Sparkles, Trash
 import type { SocialAccount, SocialAccountsState, SocialPlatformKey } from "./social-accounts-types";
 import type { SocialPublishJob, SocialPublishResult, SocialPublishState } from "./social-publish-types";
 import { PlatformIcon, PLATFORM_NAMES } from "./PlatformIcon";
+import { MascotHello } from "./MascotHello";
 import "./SocialPublishPanel.css";
 
 type FinishedItem = { finishedVideoId: string; displayName: string; title: string; metadata: Record<string, unknown>; createdAt: string; available: boolean };
@@ -231,12 +232,12 @@ export function SocialPublishPanel({ onManageAccounts }: { onManageAccounts: () 
         </ul>
         <div className="dist-preview">
           <div className="dist-preview-head"><b>发布预览</b><span>{PLATFORM_NAMES[activePlatform]}上大致的样子 · 右边切换平台</span></div>
-          <div className={`dist-phone is-${activePlatform}`}>
+          <div className={`dist-phone is-${activePlatform}${previewVideo ? "" : " is-empty"}`}>
             {previewVideo && coverOf(previewVideo) ? <>
               {landscape && <img className="dist-phone-backdrop" src={coverOf(previewVideo)} alt="" aria-hidden="true" />}
               <img className={landscape ? "dist-phone-landscape" : ""} src={coverOf(previewVideo)} alt="" onLoad={(event) => setLandscape(event.currentTarget.naturalWidth > event.currentTarget.naturalHeight)} />
             </> : <span className="dist-phone-blank" />}
-            {!previewVideo && <p className="dist-phone-empty">选一条视频，<br />这里预览它发出去的样子</p>}
+            {!previewVideo && <div className="dist-phone-empty"><MascotHello moment="idle" width={120} /><p>选一条视频，<br />这里预览它发出去的样子</p></div>}
             <div className="dist-phone-top"><PlatformIcon platform={activePlatform} size={22} /><span>{PLATFORM_NAMES[activePlatform]}</span></div>
             {previewVideo && <div className="dist-phone-copy">
               <b className="dist-phone-account">@{previewAccount?.label || `${PLATFORM_NAMES[activePlatform]}账号`}</b>

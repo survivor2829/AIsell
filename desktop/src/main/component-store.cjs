@@ -7,7 +7,7 @@ const crypto = require("node:crypto");
 const { pipeline } = require("node:stream/promises");
 const { Transform, Writable } = require("node:stream");
 const JSZip = require("jszip");
-const { fail } = require("../shared/cloud-contract.cjs");
+const { fail, token } = require("../shared/cloud-contract.cjs");
 const { retainComponentArtifacts } = require("./update-retention.cjs");
 const { componentsFor, safePath, hashFile, treeHash, validateFiles, verifyComponentManifest, assertCompatible, digest } = require("../shared/component-contract.cjs");
 const { verifyDownload } = require("./download-verification.cjs");
@@ -156,14 +156,33 @@ async function copyVerified(sourceRoot, targetRoot, file) {
 }
 function retryableDownloadError(error) {
   const code = String(error?.code || error?.message || "");
-  return /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|cloud_timeout|cloud_download_invalid|cloud_http_408|cloud_http_425|cloud_http_429|cloud_http_5\d\d)$/u.test(code);
+  return /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|cloud_timeout|cloud_slow|cloud_download_invalid|cloud_http_408|cloud_http_425|cloud_http_429|cloud_http_5\d\d)$/u.test(code);
 }
-async function downloadArchive(transport, route, options) {
+// Below 32 KB/s for 15 s the connection is replaced. Only twice per file: a line that is
+// simply slow keeps downloading after that instead of reconnecting forever.
+const SLOW_CONNECTION = { bytesPerSecond: 32 * 1024, windowMs: 15_000 }, SLOW_RECONNECTS = 2;
+async function partialSize(file) { try { return (await fsp.stat(file)).size; } catch { return 0; } }
+// Field 2026-11: an update crawled until the customer closed and reopened the app, which
+// resumed on a fresh connection and finished at once. Do the same here: reconnect and resume
+// right away while each attempt adds bytes; give up after three attempts in a row add none.
+async function downloadArchive(transport, route, options, { onReconnect, slow = SLOW_CONNECTION } = {}) {
+  const reconnects = { slow: 0, stall: 0, other: 0 }, started = performance.now();
+  const resumedBytes = await partialSize(options.destination);
+  let size = resumedBytes, idle = 0;
+  const summary = () => ({ reconnects, resumedBytes, transferredBytes: Math.max(0, size - resumedBytes), durationMs: Math.round(performance.now() - started) });
   for (let attempt = 0; ; attempt++) {
-    try { return await transport.request(route, options); }
-    catch (error) {
-      if (attempt >= 2 || !retryableDownloadError(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    try {
+      const result = await transport.request(route, { ...options, ...(slow && reconnects.slow < SLOW_RECONNECTS ? { minSpeed: slow } : {}) });
+      size = options.expected?.size ?? size;
+      return { ...result, download: summary() };
+    } catch (error) {
+      const now = await partialSize(options.destination);
+      idle = now > size ? 0 : idle + 1; size = now;
+      if (idle > 2 || attempt >= 30 || !retryableDownloadError(error)) throw Object.assign(error, { download: summary() });
+      const code = String(error?.code || error?.message || "");
+      reconnects[code === "cloud_slow" ? "slow" : code === "cloud_timeout" ? "stall" : "other"]++;
+      onReconnect?.(reconnects);
+      await new Promise((resolve) => setTimeout(resolve, 250 * (idle + 1)));
     }
   }
 }
@@ -205,7 +224,7 @@ async function unpack(archive, root, component) {
   }
   return descriptor;
 }
-function createComponentStore({ rootDir, baseRoot, config, transport, onProgress, onMeasure }) {
+function createComponentStore({ rootDir, baseRoot, config, transport, onProgress, onMeasure, onDownload }) {
   rootDir = path.resolve(rootDir); baseRoot = path.resolve(baseRoot);
   if (rootDir === baseRoot || rootDir.startsWith(baseRoot + path.sep)) fail("component_store_inside_base");
   const prepareKey = process.platform === "win32" ? rootDir.toLowerCase() : rootDir;
@@ -264,7 +283,7 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
       const staging = await fsp.mkdtemp(path.join(generations, ".prepare-"));
       try {
       await retainComponentArtifacts(rootDir, envelope, { created: [staging], staging });
-      let downloadedBytes = 0, totalBytes = 0, copiedBytes = 0;
+      let downloadedBytes = 0, totalBytes = 0, copiedBytes = 0, resumedBytes = 0, slowReconnects = 0;
       const reused = new Set(), cached = new Set(), createdMarkers = [];
       for (const name of names) {
         const files = baseline.files.filter(f => f.component === name);
@@ -284,7 +303,7 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
         }
       }
       if (createdMarkers.length) await retainComponentArtifacts(rootDir, envelope, { created: createdMarkers, staging });
-      const progress = phase => onProgress?.({ phase, downloadedBytes, totalBytes, copiedBytes });
+      const progress = phase => onProgress?.({ phase, downloadedBytes, totalBytes, copiedBytes, resumedBytes, slowReconnects });
       progress("prepare");
       const targetFiles = [...baseFiles], descriptors = {};
       for (const file of baseFiles) { await measured("compose", () => copyVerified(baseRoot, staging, file), file.size, 1); copiedBytes += file.size; progress("compose"); }
@@ -306,9 +325,20 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
               await handle.close();
               await retainComponentArtifacts(rootDir, envelope, { created: [partial], staging });
             } catch (e) { if (e.code !== "EEXIST") throw e; }
-            const before = downloadedBytes;
-            const download = await measured("download", () => downloadArchive(transport, component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
-              onProgress: bytes => { downloadedBytes = before + bytes; progress("download"); } }), component.size, 1);
+            const before = downloadedBytes, slowBefore = slowReconnects;
+            let resumeCounted = false;
+            // Evidence for slow updates: how long this file took, how much was resumed, and why it reconnected.
+            const report = (ok, error, summary) => { try { if (summary) onDownload?.({ name, ok, code: ok ? "ok" : token(error?.code, "download_failed"), ...summary }); } catch { /* Diagnostics cannot block an update. */ } };
+            let download;
+            try {
+              download = await measured("download", () => downloadArchive(transport, component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
+                // The first report of a file is what an earlier attempt left on disk, not bytes fetched now.
+                onProgress: bytes => { if (!resumeCounted) { resumeCounted = true; resumedBytes += bytes; } downloadedBytes = before + bytes; progress("download"); } },
+              { onReconnect: counts => { slowReconnects = slowBefore + counts.slow; progress("download"); } }), component.size, 1);
+            } catch (error) { report(false, error, error?.download); throw error; }
+            report(true, null, download.download);
+            // Leave the download stage before checking and unpacking, which report no bytes.
+            progress("archive");
             const proof = await measured("archive", () => verifyDownload(partial, component, { proof: download?.verification }), component.size, 1);
             await fsp.rename(partial, archive);
             await verifyDownload(archive, component, { proof });
@@ -353,4 +383,4 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
   }
   return { prepare };
 }
-module.exports = { createComponentStore, unpack, verifyFiles, verifyGeneration, verifyStructure };
+module.exports = { createComponentStore, downloadArchive, unpack, verifyFiles, verifyGeneration, verifyStructure };
