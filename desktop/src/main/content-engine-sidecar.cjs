@@ -4,6 +4,7 @@ const { StringDecoder } = require("node:string_decoder");
 const fs = require("node:fs");
 const path = require("node:path");
 const { saveStderrTail, programIntegrityNote } = require("./sidecar-stderr-log.cjs");
+const { prepareRuntimeLaunch } = require("./runtime-link.cjs");
 
 const MAX_READY_LINE_BYTES = 64 * 1024;
 const MAX_REQUEST_LINE_BYTES = 1024 * 1024;
@@ -134,6 +135,7 @@ function createContentEngineSidecar(options = {}) {
   const existsSync = options.existsSync || fs.existsSync;
   const mkdirSync = options.mkdirSync || fs.mkdirSync;
   const spawnProcess = options.spawnProcess || spawn;
+  const prepareLaunch = options.prepareRuntimeLaunch || prepareRuntimeLaunch;
   const requestTimeoutMs = Math.max(
     1,
     Number(options.requestTimeoutMs) || DEFAULT_REQUEST_TIMEOUT_MS
@@ -155,6 +157,8 @@ function createContentEngineSidecar(options = {}) {
   const listeners = new Set();
 
   let currentRun = null;
+  // Why the last start could not use the short runtime link, if it could not; written beside an engine exit.
+  let runtimeLinkNote = "";
   let startPromise = null;
   let stopPromise = null;
   let disposed = false;
@@ -401,7 +405,13 @@ function createContentEngineSidecar(options = {}) {
         }
         const childEnvironment = { ...environment };
         for (const key of PROVIDER_ENV_KEYS) delete childEnvironment[key];
-        child = spawnProcess(runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
+        // Start through a short junction so the frozen engine's own files stay below MAX_PATH on
+        // long user names (runtime-link.cjs). If the link cannot be made, the real path still works
+        // wherever it is short enough, as it did before.
+        let launch = { runtimePath, environment: trustedRuntimeEnvironment };
+        try { launch = prepareLaunch(runtimePath, dataDir, trustedRuntimeEnvironment, { folder: "content-engine" }); runtimeLinkNote = ""; }
+        catch (error) { runtimeLinkNote = `runtime_link_failed=${String(error?.code || error?.message || "unknown").slice(0, 80)}`; } // keep the real path; the exit report says why
+        child = spawnProcess(launch.runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
           shell: false,
           stdio: ["pipe", "pipe", "pipe"],
@@ -410,7 +420,7 @@ function createContentEngineSidecar(options = {}) {
             ...(providerEnvironment && typeof providerEnvironment === "object"
               ? providerEnvironment
               : {}),
-            ...trustedRuntimeEnvironment,
+            ...launch.environment,
             PYTHONIOENCODING: "utf-8",
             PYTHONUTF8: "1"
           }
@@ -480,7 +490,7 @@ function createContentEngineSidecar(options = {}) {
         run.closed = true;
         // The failure capsule collector reads this file next to failures.jsonl.
         if (!run.stopping && run.stderrTail) {
-          const integrity = programIntegrityNote(runtimePath, run.stderrTail);
+          const integrity = [programIntegrityNote(runtimePath, run.stderrTail), runtimeLinkNote].filter(Boolean).join("\n");
           saveStderrTail(dataDir, integrity ? `${run.stderrTail}\n${integrity}` : run.stderrTail, `exit=${exitCode ?? ""}`);
         }
         clearTimeout(run.startupTimer);

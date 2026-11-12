@@ -108,6 +108,10 @@ declare global {
       spriteDragEnd?: () => Promise<{ moved: boolean; impact?: number; caught?: boolean }>;
       spriteWalk?: (dx: number) => Promise<{ moved?: number }>;
       spriteWalkStop?: () => void;
+      spriteMenu?: () => void;
+      spritePeek?: (out: boolean) => void;
+      spriteDockState?: () => Promise<{ side: "left" | "right" | null; revealed: boolean }>;
+      onSpriteDock?: (callback: (dock: { side: "left" | "right" | null; revealed: boolean }) => void) => () => void;
       onSpriteCursor?: (callback: (point: { x: number; y: number }) => void) => () => void;
       onSpriteDrag?: (callback: (speed: { vx: number; vy: number }) => void) => () => void;
       onSpriteSay?: (callback: (line: { text: string; sub?: string; mood?: "done" | "error" | "" }) => void) => () => void;

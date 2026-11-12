@@ -1,10 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
-const { SPRITE_WINDOW, spriteGround, spritePosition, spriteWalkRange } = require("./floating-progress-window.cjs");
+const { SPRITE_WINDOW, spriteGround, spritePosition, spriteWalkRange, spriteDockX, spriteDockSide, spritePetSpan } = require("./floating-progress-window.cjs");
+const SPRITE_PET_LEFT = spritePetSpan(0).left;
 
 function registerWechatWorkflowIpc(options) {
-  const { ipcMain, BrowserWindow, screen } = options.electron || require("electron");
+  const { ipcMain, BrowserWindow, screen, Menu } = options.electron || require("electron");
   const consumedClicks = new Set();
   let floatingWindow = null;
   let floatingLoad = null;
@@ -12,6 +13,8 @@ function registerWechatWorkflowIpc(options) {
   let contactSync = null;
   let readContactProgress = null;
   let disposed = false;
+  // 小玺 hidden from its right-click menu until the next launch, and the screen side it is tucked into (or null).
+  let spriteHidden = false, spriteDock = null;
   // 小玺 also shows the automation that runs outside this app: 养号 and 一键分发 in Chrome
   // (user decision 2026-10-30). kind -> { title, detail, done, total }.
   const external = new Map();
@@ -50,8 +53,11 @@ function registerWechatWorkflowIpc(options) {
 
   async function showFloating(request = {}) {
     if (disposed) throw new Error("程序正在退出。");
+    spriteHidden = false; // Asked for by the customer (查看进度, starting a task): 小玺 comes back.
     if (!floatingWindow || floatingWindow.isDestroyed()) {
-      const position = spritePosition(screen.getPrimaryDisplay(), readSpritePlace());
+      const place = readSpritePlace();
+      const position = spritePosition(screen.getPrimaryDisplay(), place);
+      spriteDock = ["left", "right"].includes(place?.dock) ? place.dock : null;
       const target = new BrowserWindow({
         width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height, ...position,
         title: "小玺", alwaysOnTop: true, resizable: false, show: false, transparent: true, hasShadow: false,
@@ -269,7 +275,8 @@ function registerWechatWorkflowIpc(options) {
     if (disposed || !floatingWindow || floatingWindow.isDestroyed()) return;
     floatingWindow.webContents.send("wechat-workflow:sprite-say", { text: String(line?.text || "").slice(0, 60), sub: String(line?.sub || "").slice(0, 80), mood: ["done", "error"].includes(line?.mood) ? line.mood : "" });
   }
-  const showSprite = () => showFloating({ keepMain: true }).catch(() => { /* The app works without 小玺. */ });
+  // Shown on its own when work starts, unless the customer hid it for this session from its right-click menu.
+  const showSprite = () => spriteHidden ? Promise.resolve() : showFloating({ keepMain: true }).catch(() => { /* The app works without 小玺. */ });
 
   // 小玺's own window: the bubble and 小玺 take clicks; dragging moves the window and the place is kept.
   const fromSprite = (event) => floatingWindow && !floatingWindow.isDestroyed() && event.sender === floatingWindow.webContents;
@@ -283,10 +290,109 @@ function registerWechatWorkflowIpc(options) {
     floatingWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: SPRITE_WINDOW.width, height: SPRITE_WINDOW.height });
   }
   const spriteDisplay = (x, y) => screen.getDisplayNearestPoint?.({ x: Math.round(x + SPRITE_WINDOW.width / 2), y: Math.round(y) }) || screen.getPrimaryDisplay();
+  // The screen 小玺 itself is on (the window reaches off the side while tucked, so its middle can sit on a neighbour).
+  const petDisplay = (x, y, side = spriteDock) => {
+    const pet = spritePetSpan(x, side);
+    return screen.getDisplayNearestPoint?.({ x: Math.round((pet.left + pet.right) / 2), y: Math.round(y + SPRITE_WINDOW.height / 2) }) || screen.getPrimaryDisplay();
+  };
   const saveSpritePlace = (x) => {
     if (!options.spritePlaceFile) return;
-    try { fs.writeFileSync(options.spritePlaceFile, JSON.stringify({ x: Math.round(x) })); } catch { /* The place is a convenience. */ }
+    try { fs.writeFileSync(options.spritePlaceFile, JSON.stringify({ x: Math.round(x), ...(spriteDock ? { dock: spriteDock } : {}) })); } catch { /* The place is a convenience. */ }
   };
+  // Customer feedback 2026-11-12「悬浮宠物碍事，需要可以鼠标右键隐藏退出，以及靠近左右侧贴边隐藏」:
+  // dropped against a side of the screen, or sent there from the right-click menu, 小玺 tucks in and only a
+  // strip shows; the pointer on it brings it out, and it slides back a moment after the pointer has left it.
+  let spriteSlide = null, spritePeekTimer = null, spriteRevealed = false;
+  function slideSprite(toX) {
+    clearInterval(spriteSlide);
+    if (!floatingWindow || floatingWindow.isDestroyed()) return;
+    const [fromX, y] = floatingWindow.getPosition(), started = Date.now();
+    spriteSlide = setInterval(() => {
+      if (!floatingWindow || floatingWindow.isDestroyed()) { clearInterval(spriteSlide); return; }
+      const t = Math.min(1, (Date.now() - started) / 220), eased = 1 - (1 - t) ** 3;
+      placeSprite(Math.round(fromX + (toX - fromX) * eased), y);
+      if (t >= 1) clearInterval(spriteSlide);
+    }, 16);
+    spriteSlide.unref?.();
+  }
+  const dockState = () => ({ side: spriteDock, revealed: Boolean(spriteDock && spriteRevealed) });
+  function tellDock() {
+    if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.webContents.send("wechat-workflow:sprite-dock", dockState());
+  }
+  // Tucked on the left the window's layout is mirrored; moving the window by the same amount keeps 小玺 in place.
+  function setDockSide(side) {
+    const [x, y] = floatingWindow.getPosition(), shift = (side === "left") - (spriteDock === "left");
+    spriteDock = side; spriteRevealed = false;
+    if (shift) placeSprite(x + shift * SPRITE_PET_LEFT, y);
+    tellDock();
+  }
+  // A side with another screen right next to it is no edge: 小玺 just crosses over there.
+  function edgeIsFree(area, side, y) {
+    const probe = { x: side === "left" ? area.x - 8 : area.x + area.width + 8, y: Math.round(Math.min(area.y + area.height - 1, Math.max(area.y, y))) };
+    return !(screen.getAllDisplays?.() || []).some((display) => {
+      const b = display.bounds || display.workArea;
+      return b && probe.x >= b.x && probe.x < b.x + b.width && probe.y >= b.y && probe.y < b.y + b.height;
+    });
+  }
+  function dockSprite(side) {
+    if (!floatingWindow || floatingWindow.isDestroyed()) return;
+    stopSpriteWalk(); clearTimeout(spritePeekTimer);
+    const from = spriteDock;
+    setDockSide(side);
+    const [x, y] = floatingWindow.getPosition(), display = petDisplay(x, y, side), area = display.workArea;
+    // Coming out from the left it stands at the left edge of the screen, from the right at its usual place.
+    const toX = side ? spriteDockX(area, side) : from === "left" ? area.x : spriteDockX(area, "right", true);
+    placeSprite(x, spriteGround(display));
+    slideSprite(toX);
+    saveSpritePlace(toX);
+  }
+  function peekSprite(out) {
+    if (!spriteDock || spriteDrag || !floatingWindow || floatingWindow.isDestroyed()) return;
+    clearTimeout(spritePeekTimer);
+    const move = (revealed) => {
+      const [x, y] = floatingWindow.getPosition();
+      spriteRevealed = revealed;
+      slideSprite(spriteDockX(petDisplay(x, y).workArea, spriteDock, revealed));
+      tellDock();
+    };
+    if (out) { if (!spriteRevealed) move(true); return; }
+    // Slide back only once the pointer is really off 小玺: leaning out moves it under a still pointer, and a
+    // pointer resting on the screen edge must not set it going in and out.
+    const later = () => {
+      spritePeekTimer = setTimeout(() => {
+        if (!spriteDock || !floatingWindow || floatingWindow.isDestroyed()) return;
+        const [x, y] = floatingWindow.getPosition(), pet = spritePetSpan(x, spriteDock), point = screen.getCursorScreenPoint?.();
+        if (point && point.x >= pet.left - 8 && point.x <= pet.right + 8 && point.y >= y && point.y <= y + SPRITE_WINDOW.height) { later(); return; }
+        move(false);
+      }, 1200);
+      spritePeekTimer.unref?.();
+    };
+    later();
+  }
+  function hideSprite() {
+    if (!floatingWindow || floatingWindow.isDestroyed()) return;
+    spriteHidden = true;
+    stopSpriteWalk();
+    floatingWindow.hide();
+    // Something must stay on screen, but never the main window over WeChat while a WeChat task drives it.
+    if (!active()) showMain();
+  }
+  ipcMain.on?.("wechat-workflow:sprite-peek", (event, out) => { if (fromSprite(event)) peekSprite(out === true); });
+  // The page asks once it has loaded: a 小玺 restored into its hiding place knows it is tucked from the start.
+  ipcMain.handle?.("wechat-workflow:sprite-dock-state", (event) => fromSprite(event) ? dockState() : { side: null, revealed: false });
+  ipcMain.on?.("wechat-workflow:sprite-menu", (event) => {
+    if (!fromSprite(event) || !Menu?.buildFromTemplate) return;
+    const [x, y] = floatingWindow.getPosition(), area = petDisplay(x, y).workArea, pet = spritePetSpan(x, spriteDock);
+    const nearLeft = (pet.left + pet.right) / 2 < area.x + area.width / 2;
+    Menu.buildFromTemplate([
+      { label: "回到软件", click: () => showMain() },
+      { type: "separator" },
+      spriteDock
+        ? { label: "从边上出来", click: () => dockSprite(null) }
+        : { label: nearLeft ? "藏到左边" : "藏到右边", click: () => dockSprite(nearLeft ? "left" : "right") },
+      { label: "先隐藏小玺（重新打开软件会再出来）", click: hideSprite }
+    ]).popup({ window: floatingWindow });
+  });
   // The pet watches the pointer anywhere on screen; only changes are sent, ten times a second at most.
   let spriteCursorTimer = null, spriteCursorLast = "";
   function startSpriteCursor() {
@@ -311,7 +417,7 @@ function registerWechatWorkflowIpc(options) {
     walk.resolve({ moved: Math.round(walk.moved) });
   }
   ipcMain.handle?.("wechat-workflow:sprite-walk", (event, dx) => {
-    if (!fromSprite(event) || spriteDrag || active() || !Number.isFinite(dx)) return { moved: 0 };
+    if (!fromSprite(event) || spriteDrag || spriteDock || active() || !Number.isFinite(dx)) return { moved: 0 };
     stopSpriteWalk();
     const [startX, startY] = floatingWindow.getPosition(), display = spriteDisplay(startX, startY), y = spriteGround(display);
     const range = spriteWalkRange(display.workArea, startX), goal = Math.min(range.max, Math.max(range.min, startX + Math.max(-300, Math.min(300, dx))));
@@ -332,7 +438,13 @@ function registerWechatWorkflowIpc(options) {
   function regroundSprite() {
     if (disposed || !floatingWindow || floatingWindow.isDestroyed() || spriteDrag || spriteFall) return;
     stopSpriteWalk();
-    const [x, y] = floatingWindow.getPosition(), display = spriteDisplay(x, y), area = display.workArea;
+    const [x, y] = floatingWindow.getPosition();
+    if (spriteDock) {
+      const display = petDisplay(x, y);
+      spriteRevealed = false;
+      placeSprite(spriteDockX(display.workArea, spriteDock), spriteGround(display)); tellDock(); return;
+    }
+    const display = spriteDisplay(x, y), area = display.workArea;
     const right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;
     placeSprite(Math.round(Math.min(right, Math.max(area.x, x))), spriteGround(display));
   }
@@ -348,6 +460,7 @@ function registerWechatWorkflowIpc(options) {
     if (!fromSprite(event)) return;
     clearInterval(spriteDrag?.timer);
     stopSpriteWalk();
+    clearTimeout(spritePeekTimer);
     // Caught in mid-air: the fall ends here, and letting go again must drop it from where it is held.
     const caught = Boolean(spriteFall);
     if (spriteFall) { const fall = spriteFall; spriteFall = null; clearInterval(fall.timer); fall.resolve({ moved: true, impact: 0, caught: true }); }
@@ -358,6 +471,13 @@ function registerWechatWorkflowIpc(options) {
       if (!floatingWindow || floatingWindow.isDestroyed() || Date.now() - drag.started > 60000) { clearInterval(drag.timer); return; }
       const point = screen.getCursorScreenPoint();
       if (!drag.moved && Math.hypot(point.x - drag.from.x, point.y - drag.from.y) < 4) return;
+      if (!drag.moved && spriteDock) {
+        // Pulled out of its hiding place (a press without moving, such as a double-click, leaves it tucked).
+        clearInterval(spriteSlide);
+        const before = floatingWindow.getPosition()[0];
+        setDockSide(null);
+        drag.dx += before - floatingWindow.getPosition()[0];
+      }
       drag.moved = true;
       placeSprite(Math.round(point.x - drag.dx), Math.round(point.y - drag.dy));
       const now = Date.now(), elapsed = Math.max(1, now - drag.lastAt);
@@ -373,7 +493,12 @@ function registerWechatWorkflowIpc(options) {
     const drag = spriteDrag; spriteDrag = null;
     clearInterval(drag.timer);
     if (!drag.moved || floatingWindow.isMaximized?.()) return { moved: false };
-    // Let go anywhere and it falls to the bottom of that screen, carried along by how it was thrown.
+    // Let go mostly past the left or right edge of the screen: it tucks in there instead of falling.
+    {
+      const [releaseX, releaseY] = floatingWindow.getPosition(), area = petDisplay(releaseX, releaseY, null).workArea, side = spriteDockSide(area, releaseX);
+      if (side && edgeIsFree(area, side, releaseY + SPRITE_WINDOW.height / 2)) { dockSprite(side); return { moved: true, impact: 0, docked: side }; }
+    }
+    // Let go anywhere else and it falls to the bottom of that screen, carried along by how it was thrown.
     return new Promise((resolve) => {
       const [startX, startY] = floatingWindow.getPosition(), display = spriteDisplay(startX, startY), area = display.workArea, ground = spriteGround(display);
       const left = area.x, right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;

@@ -6,6 +6,8 @@ import { MascotHello } from "./MascotHello";
 import { ReleaseBody, WhatsNewCard } from "./WhatsNewCard";
 import { releaseVoice } from "./release-voice";
 
+// 用户 2026-11-12：更新公告的日期一律按 UTC+8（新加坡/台湾/北京同一时间）显示，不跟电脑时区走——美西时区的电脑曾把 11-12 的版本显示成 11-11，「持续更新天数」少一天。
+const RELEASE_TIME_ZONE = "Asia/Singapore";
 const seriesOf = (version: string) => version.split(".").slice(0, 2).join(".");
 const versionParts = (version: string) => version.split(".").map(Number);
 const isAfter = (left: string, right: string) => {
@@ -89,7 +91,7 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
   const announcementList = state?.announcements;
   const installedVersion = state?.version || "";
   const { allVersions, daysOfUpdates, seriesCount } = useMemo(() => {
-    const localDate = (time?: string) => (time ? new Date(time).toLocaleString("sv-SE").slice(0, 16) : "");
+    const localDate = (time?: string) => (time ? new Date(time).toLocaleString("sv-SE", { timeZone: RELEASE_TIME_ZONE }).slice(0, 16) : "");
     const recent = new Map((announcementList || []).map((entry) => [entry.version, entry]));
     const versions = history.length ? history.map((entry) => {
       const latest = recent.get(entry.version);
@@ -165,7 +167,7 @@ export function CustomerTools({ onOpenFeedback }: { onOpenFeedback: () => void }
         </div>
       </> : <p className="customer-empty">{state?.enabled ? "暂时没有收到更新公告。联网后刷新即可查看。" : "当前版本尚未启用云端公告。"}</p>}
       {(error || state?.announcementError) && <p className="customer-error" role="alert">{error || state?.announcementError}</p>}
-      {state?.lastAnnouncementsCheck && <p className="customer-field-hint">最近检查：{new Date(state.lastAnnouncementsCheck).toLocaleString("zh-CN", { hour12: false })}。</p>}
+      {state?.lastAnnouncementsCheck && <p className="customer-field-hint">最近检查：{new Date(state.lastAnnouncementsCheck).toLocaleString("zh-CN", { hour12: false, timeZone: RELEASE_TIME_ZONE })}。</p>}
     </CustomerPanel>}
   </div>;
 }

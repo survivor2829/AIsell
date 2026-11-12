@@ -38,8 +38,32 @@ function spriteGround(display) {
   const area = spriteArea(display?.workArea || display);
   return Math.max(area.y, spriteFloor(display) - SPRITE_WINDOW.height);
 }
+// 小玺 is drawn at the right end of its window (the bubble on its left). Tucked against a side of the
+// screen (customer feedback 2026-11-12「悬浮宠物碍事…靠近左右侧贴边隐藏」) only a strip of it shows;
+// with the pointer on that strip it leans out whole. Tucked on the left the window's layout is mirrored
+// (小玺 at the window's left end, the bubble on its right), so leaning out keeps the bubble on screen.
+const SPRITE_PET = Object.freeze({ left: SPRITE_WINDOW.width - 146, width: 146, peek: 46 });
+function spriteDockX(workArea, side, revealed = false) {
+  const area = spriteArea(workArea), screenRight = area.x + area.width;
+  if (side === "left") return revealed ? area.x : area.x - SPRITE_PET.width + SPRITE_PET.peek;
+  return revealed ? screenRight - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap : screenRight - SPRITE_PET.left - SPRITE_PET.peek;
+}
+// Where 小玺 itself is on screen for a window at x: [left, right).
+function spritePetSpan(x, side = null) {
+  const left = side === "left" ? x : x + SPRITE_PET.left;
+  return { left, right: left + SPRITE_PET.width };
+}
+// Which side a 小玺 let go at window position x (normal layout) should tuck into: it is already partly past
+// that edge of the screen, by the same distance on either side.
+function spriteDockSide(workArea, x) {
+  const area = spriteArea(workArea), pet = spritePetSpan(x);
+  if (pet.left < area.x - 20) return "left";
+  if (pet.right > area.x + area.width + 20) return "right";
+  return null;
+}
 function spritePosition(display, saved = null) {
   const area = spriteArea(display?.workArea || display), right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;
+  if (["left", "right"].includes(saved?.dock)) return { x: spriteDockX(area, saved.dock), y: spriteGround(display) };
   const onScreen = Number.isFinite(saved?.x) && saved.x >= area.x && saved.x <= right;
   return { x: onScreen ? Math.round(saved.x) : right, y: spriteGround(display) };
 }
@@ -56,5 +80,8 @@ module.exports = {
   SPRITE_FLOOR_GAP,
   spriteGround,
   spritePosition,
+  spriteDockX,
+  spriteDockSide,
+  spritePetSpan,
   spriteWalkRange
 };

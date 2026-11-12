@@ -9,6 +9,7 @@ const {
   prepareRuntimeLaunch,
   summarizeStderr
 } = require("./product-detail-sidecar.cjs");
+const { prepareRuntimeLaunch: prepareEngineLaunch } = require("./runtime-link.cjs");
 
 class FakeChild extends EventEmitter {
   constructor({ closeOnKill = true } = {}) {
@@ -104,6 +105,17 @@ async function main() {
       fs.mkdirSync(link);
       assert.throws(() => prepareRuntimeLaunch(executable, dataDir, {}), /target mismatch/, "an unknown ordinary directory is never overwritten");
       assert.equal(fs.statSync(link).isDirectory(), true);
+      // The content engine starts through the same kind of link (field 2026-11-12: a 260-character asset path
+      // on a user named Administrator); its flags are not paths and pass through unchanged.
+      const engine = path.join(resources, "content-engine", "content-engine-worker.exe");
+      fs.writeFileSync(engine, "");
+      const engineData = path.join(root, "content-engine-data");
+      const engineLaunch = prepareEngineLaunch(engine, engineData, { XIAOXI_DISABLE_PAID_CALLS: "0", XIAOXI_REMOTION_BROWSER_PATH: chrome }, { folder: "content-engine" });
+      assert.equal(fs.realpathSync(engineLaunch.runtimePath), fs.realpathSync(engine));
+      assert.ok(engineLaunch.runtimePath.startsWith(path.join(engineData, ".runtime-links")), "the engine starts below the short link");
+      assert.equal(engineLaunch.environment.XIAOXI_DISABLE_PAID_CALLS, "0");
+      assert.ok(engineLaunch.environment.XIAOXI_REMOTION_BROWSER_PATH.startsWith(path.join(engineData, ".runtime-links")));
+      assert.equal(prepareEngineLaunch(engine, engineData, {}, { folder: "product-detail" }).runtimePath, engine, "only the named sidecar folder is linked");
     }
     {
       const privateStderr = 'File "limits\\\\storage\\\\redis.py", line 48\nFileNotFoundError: [Errno 2] C:\\private\\database token=secret-value customer text';

@@ -5,42 +5,15 @@ const http = require("node:http");
 const path = require("node:path");
 const { diagnostics } = require("./diagnostics.cjs");
 const { saveStderrTail } = require("./sidecar-stderr-log.cjs");
+const { prepareRuntimeLaunch: prepareRuntimeLaunchBelowLink } = require("./runtime-link.cjs");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MAX_READY_LINE_BYTES = 64 * 1024;
 const STARTUP_STAGES = new Set(["prepare_data", "browser_check", "load_app", "install_contract", "listen"]);
 
-// A component generation adds a 64-character directory to every dependency.
-// Python's package resources still hit MAX_PATH when Windows long paths are off.
-// Keep both the frozen application and its shared Chromium below one short,
-// version-specific junction; never relocate or overwrite the verified runtime.
-function prepareRuntimeLaunch(runtimePath, dataDir, trustedEnvironment) {
-  if (process.platform !== "win32" || path.basename(path.dirname(runtimePath)) !== "product-detail") {
-    return { runtimePath, environment: trustedEnvironment };
-  }
-  const resources = path.dirname(path.dirname(runtimePath));
-  const realResources = fs.realpathSync(resources);
-  const id = crypto.createHash("sha256").update(realResources.toLowerCase()).digest("hex").slice(0, 16);
-  const linkRoot = path.join(dataDir, ".runtime-links");
-  const link = path.join(linkRoot, id);
-  fs.mkdirSync(linkRoot, { recursive: true });
-  if (fs.lstatSync(linkRoot).isSymbolicLink()) throw new Error("runtime link directory must be local");
-  let stat;
-  try { stat = fs.lstatSync(link); } catch (error) { if (error.code !== "ENOENT") throw error; }
-  if (!stat) {
-    try { fs.symlinkSync(realResources, link, "junction"); } catch (error) { if (error.code !== "EEXIST") throw error; }
-    stat = fs.lstatSync(link);
-  }
-  if (!stat.isSymbolicLink() || fs.realpathSync(link).toLowerCase() !== realResources.toLowerCase()) {
-    throw Object.assign(new Error("runtime link target mismatch"), { code: "PRODUCT_DETAIL_RUNTIME_LINK_FAILED" });
-  }
-  const environment = { ...trustedEnvironment };
-  for (const [key, value] of Object.entries(environment)) {
-    const relative = path.relative(realResources, fs.realpathSync(value));
-    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) environment[key] = path.join(link, relative);
-  }
-  return { runtimePath: path.join(link, path.relative(resources, runtimePath)), environment };
-}
+// The frozen application and its shared Chromium start below one short junction (runtime-link.cjs).
+const prepareRuntimeLaunch = (runtimePath, dataDir, trustedEnvironment) =>
+  prepareRuntimeLaunchBelowLink(runtimePath, dataDir, trustedEnvironment, { folder: "product-detail" });
 
 function summarizeStderr(stderr) {
   const lines = String(stderr).slice(-16_384);

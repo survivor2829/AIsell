@@ -38,7 +38,7 @@
 .signin-brand { grid-column: 1 / -1; position: relative; z-index: 3; display: flex; align-items: center; gap: 14px; padding: 22px 48px 0 56px; }
 .signin-logo { width: 64px; height: 64px; border-radius: 16px; object-fit: cover; box-shadow: 0 6px 18px #0000001f; }
 .signin-brand b { font-size: 26px; font-weight: 800; letter-spacing: .02em; }
-.signin-brand span { padding-left: 14px; border-left: 1px solid #0e101526; color: var(--signin-muted); font-size: 18px; font-weight: 600; }
+.signin-brand span { padding-left: 14px; border-left: 1px solid #0e101526; color: #3a3f4a; font-size: 21px; font-weight: 700; }
 .signin-online { display: flex; align-items: baseline; gap: clamp(18px, 2.4vw, 40px); margin: 0 0 0 auto; white-space: nowrap; }
 .signin-brand .signin-online span { display: flex; align-items: baseline; gap: clamp(6px, .7vw, 12px); padding: 0; border: 0; color: #14171f; font-size: clamp(19px, 1.9vw, 28px); font-weight: 900; letter-spacing: .08em; }
 .signin-online::before { content: ""; align-self: center; flex: none; width: 10px; height: 10px; margin-right: clamp(-28px, -1.4vw, -8px); border-radius: 50%; background: #22c55e; animation: signin-pulse 2s ease-out infinite; }
@@ -53,19 +53,23 @@
 @keyframes signin-beat { 0%, 14%, 100% { transform: none; } 5% { transform: translateY(-5%) scale(1.1); } 9% { transform: scale(.98); } }
 .signin-online i { align-self: center; width: 2px; height: clamp(26px, 2.6vw, 38px); border-radius: 2px; background: #0e10151f; }
 @keyframes signin-pulse { 0% { box-shadow: 0 0 0 0 #22c55e66; } 100% { box-shadow: 0 0 0 9px #22c55e00; } }
-.signin-copy { position: absolute; z-index: 2; left: 56px; top: 40px; bottom: 40px; display: flex; flex-direction: column; justify-content: space-between; width: min(50%, 580px); }
+.signin-copy { position: absolute; z-index: 2; left: 56px; top: 36px; bottom: 32px; display: flex; flex-direction: column; justify-content: space-between; width: min(56%, 720px); }
 /* The column runs from the top line to the bottom line: headline, line, status and crew spread evenly. */
 .signin-copy > * { margin-top: 0; }
 .signin-copy h1 { margin: 0; font-size: clamp(60px, 7.4vw, 112px); line-height: 1.0; font-weight: 800; letter-spacing: -0.035em; }
 .signin-copy h1 em { font-style: normal; background: linear-gradient(100deg, var(--signin-ink) 10%, var(--signin-accent) 95%); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.signin-line { display: flex; align-items: center; min-height: 3.2em; margin: 28px 0 0; font-size: clamp(22px, 2vw, 30px); line-height: 1.5; font-weight: 600; color: #262a33; }
+.signin-line { display: flex; align-items: center; min-height: 3.2em; margin: 28px 0 0; font-size: clamp(22px, 2vw, 32px); line-height: 1.5; font-weight: 700; color: #1d2230; }
 .signin-line i { flex: 0 0 3px; width: 3px; height: 1.1em; margin-left: 4px; border-radius: 2px; background: var(--signin-accent); animation: signin-caret 1s steps(1) infinite; }
-.signin-role { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; font-size: 15px; color: var(--signin-muted); }
-.signin-role::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 4px #22c55e24; }
-.signin-role b { color: var(--signin-ink); font-weight: 700; }
+/* 「小睿 精准获客 ● 在线」：职责是主角（员工色、最大），在线是绿色呼吸点 + 绿字，名字黑色粗体。 */
+/* 用户 2026-11-12：三个词同一字号、一起放大，只靠颜色区分（职责用员工色，在线用绿色），不要大小参差。 */
+.signin-role { display: flex; align-items: center; flex-wrap: wrap; gap: 0 clamp(14px, 1.3vw, 22px); margin: 16px 0 0; font-size: clamp(28px, 2.5vw, 40px); font-weight: 900; line-height: 1.2; }
+.signin-role b { color: var(--signin-ink); font-weight: 900; }
+.signin-role strong { color: var(--signin-accent); font-weight: 900; }
+.signin-live { display: inline-flex; align-items: center; gap: .3em; color: #15a34a; }
+.signin-live::before { content: ""; width: .4em; height: .4em; border-radius: 50%; background: #22c55e; animation: signin-pulse 2s ease-out infinite; }
 
 /* The presenter: no frame; a ground shadow and an accent rim light place it in the room. */
-.signin-figure { position: absolute; z-index: 1; right: 2%; top: 50%; height: 70%; width: 50%; translate: 0 -50%; margin: 0; display: grid; align-items: end; justify-items: center;
+.signin-figure { position: absolute; z-index: 1; right: 0; top: 50%; height: 72%; width: 46%; translate: 0 -50%; margin: 0; display: grid; align-items: end; justify-items: center;
   transform: translate3d(var(--signin-px), var(--signin-py), 0); transition: transform .5s cubic-bezier(.2, .8, .2, 1);
   /* Rim light on the unmasked wrapper, so the glow is not clipped at the image box. */
   filter: drop-shadow(0 0 22px color-mix(in srgb, var(--signin-accent) 22%, transparent)); }
@@ -85,32 +89,34 @@
   mask-image: linear-gradient(to bottom, #000 72%, transparent 100%), linear-gradient(to bottom, #000 45%, transparent 62%), linear-gradient(to right, transparent 0%, #000 16%, #000 84%, transparent 100%);
   mask-composite: intersect, add; }
 /* Crew: hover lifts the avatar and shows the employee's card. */
-.signin-crew { display: flex; gap: 10px; margin-top: 40px; opacity: .78; transition: opacity .3s; }
-/* The team row is quiet: it shows who works for you; clicking stays possible but is not invited. */
-.signin-crew:hover { opacity: 1; }
-.signin-crew button { position: relative; display: grid; justify-items: center; gap: 6px; width: 64px; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; }
+/* 用户 2026-11-12：头像大、字大，眼神不好的老板一眼看清；不要卡片底框，六个人同一规格，
+   只有当前说话的那位头像换成粗的员工色圆圈。六个人平分整列宽度，头像和字随窗口放大。 */
+.signin-crew { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: clamp(6px, .7vw, 12px); margin-top: 24px; }
+.signin-crew button { position: relative; display: grid; justify-items: center; align-content: start; gap: clamp(6px, .6vw, 10px); min-width: 0; padding: 0; border: 0; background: transparent; cursor: pointer; color: inherit; transition: transform .3s cubic-bezier(.2, .8, .2, 1); }
+.signin-crew button:hover { transform: translateY(-3px); }
 /* Name and job under each avatar: the crew row reads as the team, not as decoration. */
 .signin-crew-name { display: grid; justify-items: center; gap: 2px; line-height: 1.25; }
-.signin-crew-name b { font-size: 13px; font-weight: 700; }
-.signin-crew-name small { color: var(--signin-muted); font-size: 11px; white-space: nowrap; }
+.signin-crew-name b { font-size: clamp(16px, 1.3vw, 23px); font-weight: 800; }
+.signin-crew-name small { color: #3a3f4a; font-size: clamp(12.5px, .98vw, 17px); font-weight: 600; white-space: nowrap; }
 .signin-crew button.is-active .signin-crew-name b { color: var(--signin-accent); }
-.signin-crew img { display: block; width: 48px; height: 48px; border-radius: 50%; object-fit: cover; object-position: 50% 8%; background: #fff; border: 3px solid #fff; box-shadow: 0 6px 18px #0000001a; transition: transform .3s cubic-bezier(.2, .8, .2, 1), box-shadow .3s; }
-.signin-crew button.is-active img { border-color: var(--signin-accent); }
+.signin-crew img { display: block; width: clamp(54px, 4.8vw, 92px); height: auto; aspect-ratio: 1; border-radius: 50%; object-fit: cover; object-position: 50% 8%; background: #fff; border: 4px solid #fff; box-shadow: 0 6px 18px #0000001a; }
+/* 当前说话的那位：粗的员工色圆圈，外面再套一圈同色浅光环，圆润、远看也清楚。 */
+.signin-crew button.is-active img { border: 6px solid var(--signin-accent); box-shadow: 0 0 0 5px color-mix(in srgb, var(--signin-accent) 26%, #ffffff), 0 10px 26px color-mix(in srgb, var(--signin-accent) 45%, transparent); }
 
 /* Floating glass card with a 1px gradient edge. */
 .signin-side { display: flex; align-items: stretch; justify-content: center; padding: 40px 48px 40px 8px; }
-.signin-panel { position: relative; width: 100%; max-width: 470px; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; gap: 28px; padding: 56px 44px 44px; border-radius: 28px;
+.signin-panel { position: relative; width: 100%; max-width: 540px; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; gap: 28px; padding: 56px 44px 44px; border-radius: 28px;
   background: #ffffffc7; backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4);
   box-shadow: 0 30px 80px -20px #2a0a1233, 0 2px 6px #0000000d; }
 .signin-panel::before { content: ""; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none;
   background: linear-gradient(140deg, #ffffff 0%, color-mix(in srgb, var(--signin-accent) 35%, #ffffff) 50%, #ffffff00 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
-.signin-panel h2 { margin: 0; font-size: 52px; font-weight: 800; letter-spacing: -0.02em; }
-.signin-sub { margin: -14px 0 12px; color: var(--signin-muted); font-size: clamp(14px, 1.15vw, 17px); white-space: nowrap; }
-.signin-form { display: grid; gap: 20px; }
-.signin-field { display: grid; gap: 10px; font-size: 15px; font-weight: 600; color: #3a3f4a; }
+.signin-panel h2 { margin: 0; font-size: clamp(48px, 3.4vw, 64px); font-weight: 800; letter-spacing: -0.02em; }
+.signin-sub { margin: -14px 0 12px; color: #3a3f4a; font-size: clamp(15px, 1.2vw, 20px); font-weight: 600; white-space: nowrap; }
+.signin-form { display: grid; gap: 22px; }
+.signin-field { display: grid; gap: 10px; font-size: clamp(16px, 1.05vw, 19px); font-weight: 700; color: #262a33; }
 .signin-input-wrap { position: relative; display: flex; align-items: center; }
-.signin-input-wrap input { width: 100%; min-width: 0; height: 64px; padding: 0 52px 0 20px; border: 1px solid #e2e3e8; border-radius: 14px; background: #ffffffd9; color: #1d2230; font-size: 17px; caret-color: var(--signin-red); transition: border-color .2s, box-shadow .2s, background .2s; }
+.signin-input-wrap input { width: 100%; min-width: 0; height: 68px; padding: 0 52px 0 20px; border: 1px solid #d9dbe2; border-radius: 14px; background: #ffffffd9; color: #1d2230; font-size: 19px; caret-color: var(--signin-red); transition: border-color .2s, box-shadow .2s, background .2s; }
 .signin-input-wrap input:focus { outline: none; border-color: color-mix(in srgb, var(--signin-accent) 70%, #ffffff); background: #fff; box-shadow: 0 0 0 5px color-mix(in srgb, var(--signin-accent) 16%, transparent); }
 .signin-input-wrap input:disabled { opacity: .75; }
 .signin-reveal { position: absolute; right: 10px; display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 10px; background: transparent; color: #586274; cursor: pointer; }
@@ -118,14 +124,14 @@
 .signin-options { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--signin-muted); font-size: 13px; }
 .signin-switch { padding: 4px 0; border: 0; color: #3a3f4a; background: transparent; font-size: 13px; cursor: pointer; text-underline-offset: 4px; }
 .signin-switch:hover { text-decoration: underline; }
-.signin-submit { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 64px; margin-top: 12px; border: 0; border-radius: 14px; color: #fff; background: var(--signin-red); font-size: 18px; font-weight: 700; cursor: pointer; box-shadow: 0 12px 28px -10px #d0102f80; transition: background .2s, transform .2s, box-shadow .2s; }
+.signin-submit { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 68px; margin-top: 12px; border: 0; border-radius: 14px; color: #fff; background: var(--signin-red); font-size: 21px; font-weight: 700; cursor: pointer; box-shadow: 0 12px 28px -10px #d0102f80; transition: background .2s, transform .2s, box-shadow .2s; }
 .signin-submit::after { content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 30%; transform: skewX(-20deg); background: linear-gradient(90deg, transparent, #ffffff59, transparent); transition: left .7s cubic-bezier(.2, .8, .2, 1); }
 .signin-submit:hover { background: #b80c29; transform: translateY(-1px); box-shadow: 0 16px 32px -10px #d0102f99; }
 .signin-submit:hover::after { left: 120%; }
 .signin-submit:disabled { opacity: .65; cursor: wait; transform: none; }
 .signin-scene button:focus-visible { outline: 2px solid var(--signin-accent); outline-offset: 3px; }
 .signin-error { margin: 0; padding: 10px 14px; color: #a21932; background: #fff0f2; border-radius: 10px; line-height: 1.5; }
-.signin-help { margin: 6px 0 0; font-size: 12px; color: #8b909b; text-align: center; }
+.signin-help { margin: 6px 0 0; font-size: 14px; color: #6b7080; text-align: center; }
 .signin-loading { color: var(--signin-muted); }
 
 /* Entrance choreography: one layer after another, 80 ms apart. */
@@ -138,22 +144,20 @@
 
 @media (max-width: 1150px) {
   .signin-scene { grid-template-columns: minmax(0, 1fr) minmax(360px, 38%); }
-  .signin-copy { width: 46%; left: 40px; }
+  .signin-copy { width: 54%; left: 40px; }
   .signin-panel { padding: 44px 32px 32px; }
   .signin-brand { padding-left: 40px; }
   .signin-logo { width: 56px; height: 56px; }
   .signin-figure { width: 50%; height: 62%; }
-  .signin-crew img { width: 44px; height: 44px; }
-  .signin-crew button { width: 58px; }
 }
 /* Short windows (laptops at 125% scaling): the sign-in card keeps everything inside. */
 @media (max-height: 820px) {
   .signin-panel { gap: 18px; padding: 36px 36px 28px; }
-  .signin-panel h2 { font-size: 40px; }
+  .signin-panel h2 { font-size: 44px; }
   .signin-form { gap: 14px; }
   .signin-field { gap: 6px; }
-  .signin-input-wrap input { height: 52px; }
-  .signin-submit { min-height: 54px; margin-top: 6px; }
+  .signin-input-wrap input { height: 56px; }
+  .signin-submit { min-height: 58px; margin-top: 6px; }
   .signin-copy h1 { font-size: clamp(52px, 6.4vw, 96px); }
 }
 @media (max-height: 720px) {

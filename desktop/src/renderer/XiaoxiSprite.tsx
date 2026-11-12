@@ -54,6 +54,15 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   const lineTimer = useRef<number>();
   const host = useRef<HTMLDivElement>(null);
   const pet = useRef<ReturnType<typeof createMascotPet> | null>(null);
+  // Tucked into a side of the screen (customer feedback 2026-11-12): only a strip shows, so no bubble until it leans out.
+  const [dock, setDock] = useState<{ side: "left" | "right" | null; revealed: boolean }>({ side: null, revealed: false });
+  useEffect(() => {
+    const off = api?.onSpriteDock?.(setDock);
+    // Restored into its hiding place at launch: ask, since nothing was sent before this page existed.
+    void api?.spriteDockState?.().then((state) => { if (state) setDock(state); }).catch(() => undefined);
+    return off;
+  }, [api]);
+  const tucked = Boolean(dock.side) && !dock.revealed;
   // What the pet says for fun must never cover the live state of the work.
   const quiet = useRef(true);
   quiet.current = !activity && !alert && !greeting && !line?.mood;
@@ -145,9 +154,9 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     else pet.current?.click(clientX, clientY);
   };
 
-  return <main className="floating-shell workflow-floating-shell xiaoxi-shell">
+  return <main className={`floating-shell workflow-floating-shell xiaoxi-shell${dock.side === "left" ? " is-dock-left" : ""}`}>
     <div className="xiaoxi-roam">
-      {(message || activity) && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}`} key={message?.text || activity?.title} role="status" aria-live="polite"
+      {(message || activity) && !tucked && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}`} key={message?.text || activity?.title} role="status" aria-live="polite"
         onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)}>
         {message ? <>
           <strong>{typed}{typed.length < message.text.length && <i className="xiaoxi-caret" />}</strong>
@@ -159,9 +168,11 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
         </>}
         {activity?.pausable && <button type="button" className="xiaoxi-link" onClick={() => void workflow.run(() => api!.pause())}>先暂停</button>}
       </section>}
-      <button type="button" className="xiaoxi-buddy" aria-label="吉祥物：双击回到软件，按住可以拖动"
+      <button type="button" className="xiaoxi-buddy" aria-label="吉祥物：双击回到软件，按住可以拖动，右键可以藏到边上或先隐藏"
         onClick={(event) => { if (event.detail === 0) void api?.showMain(); }}
-        onPointerEnter={() => interactive(true)} onPointerLeave={() => { interactive(false); pet.current?.leave(); }}
+        onContextMenu={(event) => { event.preventDefault(); api?.spriteMenu?.(); }}
+        onPointerEnter={() => { interactive(true); api?.spritePeek?.(true); }}
+        onPointerLeave={() => { interactive(false); pet.current?.leave(); api?.spritePeek?.(false); }}
         onPointerMove={(event) => { if (!pressed.current) pet.current?.hover(event.clientX, event.clientY); }}
         onPointerDown={down} onPointerUp={(event) => void up(event)} onPointerCancel={(event) => void up(event)}>
         <div className="xiaoxi-pet" ref={host} />
