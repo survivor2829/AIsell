@@ -1,5 +1,11 @@
 const assert = require("node:assert/strict");
 const { createLaunchGate } = require("./update-launch-gate.cjs");
+const { diskFullMessage } = require("./cloud-maintenance.cjs");
+
+// The customer is told which drive and how much to clear, rounded up.
+assert.equal(diskFullMessage({ code: "component_disk_space_insufficient", drive: "C:\\", required: 1.71 * 1024 ** 3, available: 0.25 * 1024 ** 3 }),
+  "C盘空间不足：这次更新需要约 1.8 GB，现在只剩 0.3 GB。请清理C盘后重新打开软件，会自动更新到最新版。故障编号：disk_space_insufficient");
+assert.match(diskFullMessage({ code: "ENOSPC" }), /^磁盘空间不足。请清理磁盘后/u);
 
 // A controller whose check() walks through scripted outcomes, like cloud-maintenance does.
 function fakeController(outcomes, initial = {}) {
@@ -101,7 +107,10 @@ function harness(controller, { request } = {}) {
     ["license blocked", fakeController([{ stage: "blocked", nextVersion: "1.2.14" }]), "blocked"],
     // 程序文件被杀毒软件删除：重试永远补不回来，放行并提示重新安装，而不是无限重试
     ["base file missing", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整（缺少：d3dcompiler_47.dll）。故障编号：component_base_file_missing" }]), "base_damaged"],
-    ["base file damaged", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整。故障编号：component_base_file_damaged" }]), "base_damaged"]
+    ["base file damaged", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整。故障编号：component_base_file_damaged" }]), "base_damaged"],
+    // C 盘满（现场 2026-11-12）：重试腾不出空间，放行并说明要清多少
+    ["disk full", fakeController([{ stage: "error", nextVersion: "1.3.0", error: diskFullMessage({ code: "component_disk_space_insufficient", drive: "C:\\", required: 1.8 * 1024 ** 3, available: 0.3 * 1024 ** 3 }) }]), "disk_full"],
+    ["disk full mid-write", fakeController([{ stage: "error", nextVersion: "1.3.0", error: diskFullMessage({ code: "ENOSPC" }) }]), "disk_full"]
   ]) {
     const run = harness(controller);
     await run.gate.start();

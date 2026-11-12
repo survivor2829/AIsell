@@ -15,6 +15,17 @@ const { updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 const { retainArtifacts, retryArtifacts } = require("../shared/artifact-retention.cjs");
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
+// The page new customers download from; the update server is a different host.
+const OFFICIAL_SITE = "https://www.xilianhui.cn/huoke/";
+// Rounded up, so clearing the stated amount is always enough.
+const gigabytes = bytes => (Math.ceil(bytes / 1024 ** 3 * 10) / 10).toFixed(1);
+function diskFullMessage(error) {
+  const drive = /^[a-z]:/iu.exec(String(error?.drive || ""))?.[0].slice(0, 1).toUpperCase();
+  const where = drive ? `${drive}盘` : "磁盘";
+  const amounts = Number.isFinite(error?.required) && Number.isFinite(error?.available)
+    ? `：这次更新需要约 ${gigabytes(error.required)} GB，现在只剩 ${gigabytes(Math.max(0, error.available))} GB` : "";
+  return `${where}空间不足${amounts}。请清理${where}后重新打开软件，会自动更新到最新版。故障编号：disk_space_insufficient`;
+}
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
 function createCloudMaintenance({ rootDir, config, version, buildId, logger, canInstall = () => false, transport, launch = spawn,
   componentBaseRoot, userData, getLicenseStatus = () => null }) {
@@ -326,7 +337,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       try { await verifyDownload(destination, manifest); existing = true; } catch { /* Missing or changed download must be fetched. */ }
       if (!existing) {
         const free = fs.statfsSync(dir);
-        if (free.bavail * free.bsize < manifest.size * 2 + 256 * 1024 ** 2) fail("cloud_disk_full");
+        const required = manifest.size * 2 + 256 * 1024 ** 2, available = free.bavail * free.bsize;
+        if (available < required) throw Object.assign(new Error("cloud_disk_full"), { code: "cloud_disk_full", required, available, drive: path.parse(dir).root });
         temporary = path.join(dir, `${manifest.sha256}.part`);
         let lastProgress = -1;
         let download, resumeCounted = false;
@@ -363,9 +375,10 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       try { logger?.event?.("maintenance", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
+      // Both are fixed by the customer, not by retrying: the launch gate lets them in and shows these steps.
       const message = baseDamaged
-        ? `软件程序文件不完整（${error.code === "component_base_file_missing" ? "缺少" : "损坏"}：${String(error.path || "").split("/").pop()}），无法自动更新，常见原因是被杀毒软件删除或隔离。请联系客服获取一键修复工具，修复后会自动更新到最新版（客户资料和设置会保留）。故障编号：${error.code}`
-        : ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
+        ? `软件程序文件不完整（${error.code === "component_base_file_missing" ? "缺少" : "损坏"}：${String(error.path || "").split("/").pop()}），无法自动更新，常见原因是被杀毒软件（如 360）删除或隔离。请先在杀毒软件里把本软件的安装目录加入信任区，再到官网 ${OFFICIAL_SITE} 下载安装包，直接覆盖安装（客户资料和设置会保留），装好后会自动更新到最新版。故障编号：${error.code}`
+        : ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? diskFullMessage(error)
         : error?.code === "full_upgrade_required" ? "新版正在准备，请稍后重试。故障编号：full_upgrade_required"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
       notify({ stage: "error", error: message });
@@ -478,4 +491,4 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, releaseHistory: history, flush, enqueue, setConsent, acknowledgeConsentNotice, identity, consentEnabled: () => Boolean(network) && state.consent && !stopped, installId: state.installId, start, stop, prepareInstall, installOnExit, beginInstall, setUpdateRequest, setInstallBlocked, setLaunchGate, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
-module.exports = { createCloudMaintenance, fileHash };
+module.exports = { createCloudMaintenance, fileHash, diskFullMessage };

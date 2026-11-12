@@ -279,7 +279,9 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
       }
       const disk = await fsp.statfs(rootDir);
       const required = validateFiles(baseFiles) + names.reduce((n, name) => n + manifest.components[name].expandedSize + manifest.components[name].size, 0) + 128 * 1024 ** 2;
-      if (Number(disk.bavail) * Number(disk.bsize) < required) fail("component_disk_space_insufficient");
+      const available = Number(disk.bavail) * Number(disk.bsize);
+      // The customer needs the numbers to know how much to clear (field 2026-11-12: a full C drive).
+      if (available < required) throw Object.assign(new Error("component_disk_space_insufficient"), { code: "component_disk_space_insufficient", required, available, drive: path.parse(rootDir).root });
       const staging = await fsp.mkdtemp(path.join(generations, ".prepare-"));
       try {
       await retainComponentArtifacts(rootDir, envelope, { created: [staging], staging });
