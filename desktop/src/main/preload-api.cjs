@@ -795,6 +795,7 @@ function createPreloadApis(ipcRenderer) {
       // Right-click menu (回到软件 / 藏到边上 / 先隐藏) and leaning out from a side of the screen (2026-11-12).
       spriteMenu: () => ipcRenderer.send("wechat-workflow:sprite-menu"),
       spritePeek: (out) => ipcRenderer.send("wechat-workflow:sprite-peek", out === true),
+      spriteDockState: () => ipcRenderer.invoke("wechat-workflow:sprite-dock-state"),
       onSpriteDock: (callback) => {
         const handler = (_event, dock) => callback(dock);
         ipcRenderer.on("wechat-workflow:sprite-dock", handler);

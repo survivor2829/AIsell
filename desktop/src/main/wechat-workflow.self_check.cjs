@@ -1055,7 +1055,7 @@ async function checkFloatingProgress() {
   const cursor = { x: 0, y: 0 };
   const screenDisplay = { workArea: { x: 0, y: 0, width: 1920, height: 1080 } }, screenEvents = new Map();
   let mainHideCount = 0;
-  const spriteMenus = [];
+  const spriteMenus = [], neighbourDisplays = [];
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
     show() {}, hide() { mainHideCount += 1; }, focus() {}
@@ -1097,7 +1097,7 @@ async function checkFloatingProgress() {
     spritePlaceFile: path.join(rootDir, "sprite-place.json"),
     electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, listener) => listeners.set(name, listener) }, BrowserWindow: ProgressWindow,
       Menu: { buildFromTemplate: (template) => ({ popup: () => { spriteMenus.push(template); } }) },
-      screen: { getPrimaryDisplay: () => screenDisplay, getCursorScreenPoint: () => ({ ...cursor }),
+      screen: { getPrimaryDisplay: () => screenDisplay, getCursorScreenPoint: () => ({ ...cursor }), getAllDisplays: () => [screenDisplay, ...neighbourDisplays],
         on: (name, listener) => screenEvents.set(name, listener), removeListener: (name, listener) => { if (screenEvents.get(name) === listener) screenEvents.delete(name); } } }
   });
   const event = { sender: mainWindow.webContents };
@@ -1245,6 +1245,50 @@ async function checkFloatingProgress() {
   assert.equal(sprite.visible, false, "work starting on its own does not bring a hidden 小玺 back this session");
   await invoke("show-floating");
   assert.equal(sprite.visible, true, "asking for the progress brings it back");
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const dockState = () => handlers.get("wechat-workflow:sprite-dock-state")(spriteEvent);
+  // A press on the tucked 小玺 without moving (a click, the double-click back to the app) leaves it tucked.
+  listeners.get("wechat-workflow:sprite-menu")(spriteEvent);
+  spriteMenus.at(-1).find((item) => item.label === "藏到右边").click();
+  await wait(300);
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  assert.deepEqual(await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent), { moved: false });
+  assert.deepEqual(await dockState(), { side: "right", revealed: false }, "a click leaves it tucked; the page can ask at load");
+  assert.equal(sprite.getPosition()[0], 1920 - 254 - 46);
+  // Dragged past the left edge: it tucks in there with the layout mirrored, so leaning out keeps the bubble on screen.
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  Object.assign(cursor, { x: 0, y: 700 }); // pushed against the left edge, held a little inside 小玺
+  await wait(60);
+  assert.deepEqual(await dockState(), { side: null, revealed: false }, "pulled out of its hiding place by moving");
+  const leftDrop = await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
+  assert.equal(leftDrop.docked, "left");
+  await wait(300);
+  assert.deepEqual(sprite.getPosition(), [-146 + 46, 1080 - 260], "a strip of it shows at the left edge");
+  listeners.get("wechat-workflow:sprite-peek")(spriteEvent, true);
+  await wait(300);
+  assert.equal(sprite.getPosition()[0], 0, "it leans out with its bubble to the right, on screen");
+  assert.deepEqual(await dockState(), { side: "left", revealed: true });
+  // A pointer still resting on 小玺 keeps it out; it tucks back once the pointer is off it.
+  Object.assign(cursor, { x: 40, y: 1000 });
+  listeners.get("wechat-workflow:sprite-peek")(spriteEvent, false);
+  await wait(1500);
+  assert.equal(sprite.getPosition()[0], 0, "no in-and-out while the pointer is on it");
+  Object.assign(cursor, { x: 900, y: 500 });
+  await wait(1400);
+  assert.equal(sprite.getPosition()[0], -146 + 46);
+  listeners.get("wechat-workflow:sprite-menu")(spriteEvent);
+  spriteMenus.at(-1).find((item) => item.label === "从边上出来").click();
+  await wait(300);
+  assert.equal(sprite.getPosition()[0], 0, "out again at the left edge of the screen");
+  // Another screen right of this one: that side is no edge, 小玺 just crosses over and lands.
+  neighbourDisplays.push({ bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1080 } });
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  Object.assign(cursor, { x: cursor.x + 1720, y: 700 });
+  await wait(60);
+  const crossed = await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
+  assert.equal(crossed.docked, undefined, "no tucking against a neighbouring screen");
+  neighbourDisplays.length = 0;
+  assert.deepEqual(await dockState(), { side: null, revealed: false });
   const hidesBefore = mainHideCount;
   await control.showSprite();
   assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");

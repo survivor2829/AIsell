@@ -56,7 +56,12 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
   const pet = useRef<ReturnType<typeof createMascotPet> | null>(null);
   // Tucked into a side of the screen (customer feedback 2026-11-12): only a strip shows, so no bubble until it leans out.
   const [dock, setDock] = useState<{ side: "left" | "right" | null; revealed: boolean }>({ side: null, revealed: false });
-  useEffect(() => api?.onSpriteDock?.(setDock), [api]);
+  useEffect(() => {
+    const off = api?.onSpriteDock?.(setDock);
+    // Restored into its hiding place at launch: ask, since nothing was sent before this page existed.
+    void api?.spriteDockState?.().then((state) => { if (state) setDock(state); }).catch(() => undefined);
+    return off;
+  }, [api]);
   const tucked = Boolean(dock.side) && !dock.revealed;
   // What the pet says for fun must never cover the live state of the work.
   const quiet = useRef(true);
@@ -149,7 +154,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     else pet.current?.click(clientX, clientY);
   };
 
-  return <main className="floating-shell workflow-floating-shell xiaoxi-shell">
+  return <main className={`floating-shell workflow-floating-shell xiaoxi-shell${dock.side === "left" ? " is-dock-left" : ""}`}>
     <div className="xiaoxi-roam">
       {(message || activity) && !tucked && <section className={`xiaoxi-bubble${message?.mood ? ` is-${message.mood}` : ""}`} key={message?.text || activity?.title} role="status" aria-live="polite"
         onPointerEnter={() => interactive(true)} onPointerLeave={() => interactive(false)}>

@@ -54,3 +54,13 @@ html:has(.xiaoxi-shell), body:has(.xiaoxi-shell), body:has(.xiaoxi-shell) #root 
 @keyframes xiaoxi-fx { 0% { opacity: 0; transform: translateY(20px) scale(.4) } 20% { opacity: 1; transform: translateY(-10px) scale(1.15) } 100% { opacity: 0; transform: translate(var(--dx, 0), -190px) scale(1) } }
 @keyframes xiaoxi-cf { 0% { opacity: 1; transform: translate(0, 0) rotate(0) } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--r)) } }
 @media (prefers-reduced-motion: reduce) { .xiaoxi-shell *, .xiaoxi-shell *::before { animation: none !important; transition: none !important; } }
+
+/* Tucked into the left side of the screen (2026-11-12): mirrored, 小玺 at the window's left end and the bubble
+   on its right, so the bubble stays on screen when it leans out. The main process moves the window to match. */
+.xiaoxi-shell.is-dock-left { justify-content: flex-start; }
+.xiaoxi-shell.is-dock-left .xiaoxi-roam { flex-direction: row-reverse; }
+.xiaoxi-shell.is-dock-left .xiaoxi-buddy { margin: 0 -16px 0 -14px; }
+.xiaoxi-shell.is-dock-left .xiaoxi-bubble { transform-origin: 0 60%; }
+.xiaoxi-shell.is-dock-left .xiaoxi-bubble::before { right: auto; left: -21px; border-width: 12px 20px 12px 0; border-color: transparent #1d2230 transparent transparent; }
+.xiaoxi-shell.is-dock-left .xiaoxi-bubble::after { right: auto; left: -15px; border-width: 9px 16px 9px 0; border-color: transparent #fff transparent transparent; }
+.xiaoxi-shell.is-dock-left .xiaoxi-bubble.is-error::before { border-left-color: transparent; border-right-color: #b45309; }
