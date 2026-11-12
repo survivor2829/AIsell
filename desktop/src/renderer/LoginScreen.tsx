@@ -244,7 +244,8 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>
-        <p className="signin-role signin-rise" style={step(3)}><b>{identity.name}</b>{identity.responsibility} · 在线</p>
+        {/* 用户 2026-11-12：「精准获客」「在线」要凸显——职责用员工的颜色放大，在线用绿色加呼吸点，不加底框。 */}
+        <p className="signin-role signin-rise" style={step(3)}><b>{identity.name}</b><strong>{identity.responsibility}</strong><span className="signin-live">在线</span></p>
         <nav className="signin-crew signin-rise" style={step(4)} aria-label="选择出镜的 AI 员工" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
           {AGENT_ROLE_ORDER.map((key) => <button key={key} type="button" className={key === role ? "is-active" : ""} aria-pressed={key === role}
             aria-label={`${AGENT_ROLE_IDENTITIES[key].name}，${AGENT_ROLE_IDENTITIES[key].responsibility}`} onClick={() => choose(key)}>
