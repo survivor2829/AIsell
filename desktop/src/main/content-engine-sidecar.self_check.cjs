@@ -249,29 +249,42 @@ async function main() {
     {
       // 用户 2026-11-12（1.3.1）：线索视频混剪报「本机正式渲染组件暂不可用」。引擎改从短链接启动时，
       // Remotion 的路径也被换成链接路径，而 Remotion 拒绝经过链接的路径。引擎和 FFmpeg 照走链接，Remotion 用真实路径。
-      const spawnCalls = [];
-      const real = { XIAOXI_FFMPEG_PATH: "C:\\real\\resources\\content-engine\\media-tools\\ffmpeg.exe",
-        XIAOXI_REMOTION_NODE_PATH: "C:\\real\\resources\\node.exe", XIAOXI_REMOTION_WORKER_PATH: "C:\\real\\resources\\worker.mjs",
-        XIAOXI_REMOTION_BUNDLE_PATH: "C:\\real\\resources\\bundle", XIAOXI_REMOTION_BROWSER_PATH: "C:\\real\\resources\\browser.exe", XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE: "1" };
-      const viaLink = (value) => String(value).replace("C:\\real\\resources", "C:\\link\\ab12");
-      const child = new FakeChild();
-      const controller = createContentEngineSidecar({
-        env: {}, runtimePath, runtimeArgs: ["worker.py"], dataDir,
-        getTrustedRuntimeEnvironment: () => real,
-        prepareRuntimeLaunch: (file, _dir, environment) => ({ runtimePath: viaLink(file), environment: Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, viaLink(value)])) }),
-        spawnProcess: (command, args, options) => { spawnCalls.push({ command, args, options }); return child; }
-      });
-      const started = controller.start();
-      await waitFor(() => spawnCalls.length === 1);
-      const env = spawnCalls[0].options.env;
-      assert.equal(env.XIAOXI_FFMPEG_PATH, "C:\\link\\ab12\\content-engine\\media-tools\\ffmpeg.exe", "其他路径照走短链接");
-      for (const key of ["XIAOXI_REMOTION_NODE_PATH", "XIAOXI_REMOTION_WORKER_PATH", "XIAOXI_REMOTION_BUNDLE_PATH", "XIAOXI_REMOTION_BROWSER_PATH"]) {
-        assert.equal(env[key], real[key], `${key} 必须是真实路径`);
+      // 用真实的 runtime-link.cjs 建 junction（只在 Windows 上），检查交给引擎的 Remotion 路径一段链接都不经过。
+      if (process.platform === "win32") {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "engine-link-"));
+        const resources = path.join(root, "resources"), engineDir = path.join(resources, "content-engine");
+        const touch = (file) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "x"); return file; };
+        const engine = touch(path.join(engineDir, "content-engine.exe"));
+        touch(path.join(engineDir, "remotion-bundle", "index.html"));
+        const real = { XIAOXI_FFMPEG_PATH: touch(path.join(engineDir, "media-tools", "ffmpeg.exe")),
+          XIAOXI_REMOTION_NODE_PATH: touch(path.join(root, "app.exe")), XIAOXI_REMOTION_WORKER_PATH: touch(path.join(resources, "app", "remotion-render-worker.mjs")),
+          XIAOXI_REMOTION_BUNDLE_PATH: path.join(engineDir, "remotion-bundle"), XIAOXI_REMOTION_BROWSER_PATH: touch(path.join(engineDir, "browser", "chrome.exe")),
+          XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE: "1" };
+        const engineData = path.join(root, "data");
+        const spawnCalls = [];
+        const child = new FakeChild();
+        const controller = createContentEngineSidecar({
+          env: {}, runtimePath: engine, runtimeArgs: [], dataDir: engineData,
+          getTrustedRuntimeEnvironment: () => real,
+          spawnProcess: (command, args, options) => { spawnCalls.push({ command, args, options }); return child; }
+        });
+        const started = controller.start();
+        await waitFor(() => spawnCalls.length === 1);
+        const links = path.join(engineData, ".runtime-links");
+        assert.ok(spawnCalls[0].command.startsWith(links), "引擎照走短链接（1.3.1 的长用户名修复不变）");
+        const env = spawnCalls[0].options.env;
+        // 与 remotion_render._has_reparse_component 相同的判断：路径上任何一级是链接都不行。
+        const throughLink = (file) => { for (let current = file; ; current = path.dirname(current)) { if (fs.lstatSync(current).isSymbolicLink()) return true; if (path.dirname(current) === current) return false; } };
+        for (const key of ["XIAOXI_REMOTION_NODE_PATH", "XIAOXI_REMOTION_WORKER_PATH", "XIAOXI_REMOTION_BUNDLE_PATH", "XIAOXI_REMOTION_BROWSER_PATH"]) {
+          assert.equal(env[key], real[key], `${key} 必须是真实路径`);
+          assert.equal(throughLink(env[key]), false, `${key} 不能经过链接`);
+        }
+        assert.equal(env.XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE, "1");
+        child.ready();
+        await started;
+        await controller.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
       }
-      assert.equal(env.XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE, "1");
-      child.ready();
-      await started;
-      await controller.stop();
     }
 
     {

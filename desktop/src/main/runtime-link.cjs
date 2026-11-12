@@ -10,7 +10,9 @@ const path = require("node:path");
 // Launch the frozen application, and every trusted path inside the same
 // resources folder, through one short, version-specific junction under the
 // sidecar's own data folder; never relocate or overwrite the verified runtime.
-function prepareRuntimeLaunch(runtimePath, dataDir, trustedEnvironment, { folder = "product-detail", platform = process.platform } = {}) {
+// `keepReal(key)` names paths whose reader refuses reparse points (the content engine's Remotion
+// paths: remotion_render._trusted_runtime_path); they are handed over as they are.
+function prepareRuntimeLaunch(runtimePath, dataDir, trustedEnvironment, { folder = "product-detail", platform = process.platform, keepReal = () => false } = {}) {
   if (platform !== "win32" || path.basename(path.dirname(runtimePath)) !== folder) {
     return { runtimePath, environment: trustedEnvironment };
   }
@@ -33,7 +35,7 @@ function prepareRuntimeLaunch(runtimePath, dataDir, trustedEnvironment, { folder
   const environment = { ...trustedEnvironment };
   for (const [key, value] of Object.entries(environment)) {
     // Flags such as XIAOXI_DISABLE_PAID_CALLS=0 are not paths and stay as they are.
-    if (!path.isAbsolute(String(value)) || !fs.existsSync(value)) continue;
+    if (keepReal(key) || !path.isAbsolute(String(value)) || !fs.existsSync(value)) continue;
     const relative = path.relative(realResources, fs.realpathSync(value));
     if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) environment[key] = path.join(link, relative);
   }
