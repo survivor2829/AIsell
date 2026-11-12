@@ -22,7 +22,9 @@ nsis:
   runAfterFinish: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: AI短视频获客-测试版
-  uninstallDisplayName: AI短视频获客-测试版
+  # User 2026-11-11: the product is no longer a 测试版, so the names customers see drop it.
+  # appId, install directory and executable keep their old names: updates and data depend on them.
+  shortcutName: AI短视频获客
+  uninstallDisplayName: AI短视频获客
   deleteAppDataOnUninstall: false
   differentialPackage: false

@@ -42,7 +42,7 @@ const { registerAccountAuthIpc } = require("./account-auth-ipc.cjs");
 // the foreground window and click target are still checked before every action.
 if (!process.env.XIAOXI_UNATTENDED_INPUT) process.env.XIAOXI_UNATTENDED_INPUT = "1";
 const { createProviderGatewayClient } = require("./provider-gateway-client.cjs");
-const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
+const { developmentEdition, pilotEdition, preloadFile, rendererDir } = require("./edition.cjs");
 const {
   createProductDetailAiSettingsStore
 } = require("./product-detail-ai-settings.cjs");
@@ -313,7 +313,7 @@ function createWindow() {
     titleBarStyle: "hidden",
     titleBarOverlay: { color: "#f8f4f0", symbolColor: "#302a2b", height: 36 },
     icon: path.join(__dirname, `../../${rendererDir}/app-icon.ico`),
-    title: [productBrand.displayName.replace(/版本$/u, ""), editionLabel].filter(Boolean).join(" "),
+    title: productBrand.displayName.replace(/版本$/u, ""),
     webPreferences: productDetailWebPreferences()
   });
   keepWindowInWorkArea(mainWindow, screen);
