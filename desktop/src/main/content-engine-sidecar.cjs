@@ -4,6 +4,7 @@ const { StringDecoder } = require("node:string_decoder");
 const fs = require("node:fs");
 const path = require("node:path");
 const { saveStderrTail, programIntegrityNote } = require("./sidecar-stderr-log.cjs");
+const { prepareRuntimeLaunch } = require("./runtime-link.cjs");
 
 const MAX_READY_LINE_BYTES = 64 * 1024;
 const MAX_REQUEST_LINE_BYTES = 1024 * 1024;
@@ -134,6 +135,7 @@ function createContentEngineSidecar(options = {}) {
   const existsSync = options.existsSync || fs.existsSync;
   const mkdirSync = options.mkdirSync || fs.mkdirSync;
   const spawnProcess = options.spawnProcess || spawn;
+  const prepareLaunch = options.prepareRuntimeLaunch || prepareRuntimeLaunch;
   const requestTimeoutMs = Math.max(
     1,
     Number(options.requestTimeoutMs) || DEFAULT_REQUEST_TIMEOUT_MS
@@ -401,7 +403,12 @@ function createContentEngineSidecar(options = {}) {
         }
         const childEnvironment = { ...environment };
         for (const key of PROVIDER_ENV_KEYS) delete childEnvironment[key];
-        child = spawnProcess(runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
+        // Start through a short junction so the frozen engine's own files stay below MAX_PATH on
+        // long user names (runtime-link.cjs). If the link cannot be made, the real path still works
+        // wherever it is short enough, as it did before.
+        let launch = { runtimePath, environment: trustedRuntimeEnvironment };
+        try { launch = prepareLaunch(runtimePath, dataDir, trustedRuntimeEnvironment, { folder: "content-engine" }); } catch { /* keep the real path */ }
+        child = spawnProcess(launch.runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
           shell: false,
           stdio: ["pipe", "pipe", "pipe"],
@@ -410,7 +417,7 @@ function createContentEngineSidecar(options = {}) {
             ...(providerEnvironment && typeof providerEnvironment === "object"
               ? providerEnvironment
               : {}),
-            ...trustedRuntimeEnvironment,
+            ...launch.environment,
             PYTHONIOENCODING: "utf-8",
             PYTHONUTF8: "1"
           }
