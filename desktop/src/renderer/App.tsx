@@ -409,7 +409,6 @@ const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
 const DEFAULT_ACTIVE_MODULE: ModuleKey = "overview";
-const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 
 const agentChildren: NavItem[] = [
   { key: "touch", label: "精准触达", icon: Send },
@@ -666,7 +665,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.title = [productDisplayName, EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
+    // No 测试版 in the window title (user 2026-11-11): customers see it in the taskbar.
+    document.title = [productDisplayName, BUILD_ID].filter(Boolean).join(" ");
   }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
@@ -1008,7 +1008,7 @@ export default function App() {
           {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
             setCreativeView("history"); setActive("workspace");
           }} />}
-          {active === "diagnostics" && <FeedbackCenter appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} context={feedbackContext} />}
+          {active === "diagnostics" && <FeedbackCenter appVersion={packageInfo.version} edition="正式版" buildId={BUILD_ID} context={feedbackContext} />}
           {!moduleIsAvailable(active) && <Placeholder title={activeTitle} />}
         </div>
 

@@ -545,7 +545,9 @@ test("a base file removed or altered in the installed program is reported by nam
   await controller.check();
   assert.equal(controller.status().stage, "error");
   assert.match(controller.status().error, /缺少：electron\.exe/);
-  assert.match(controller.status().error, /一键修复工具/);
+  // Self-service steps: trust the folder first, then reinstall from the website (no support tool exists any more).
+  assert.match(controller.status().error, /信任区.*https:\/\/www\.xilianhui\.cn\/huoke\/.*覆盖安装/u);
+  assert.doesNotMatch(controller.status().error, /一键修复工具/);
   assert.match(controller.status().error, /component_base_file_missing/, "the launch gate recognises this code and stops retrying");
   const failed = logger.readRecent(50).find(entry => entry.module === "maintenance" && entry.event === "update.failed");
   assert.equal(failed?.code, "component_base_file_missing");
@@ -553,6 +555,23 @@ test("a base file removed or altered in the installed program is reported by nam
   assert.equal(failed?.details?.base_entry_kind, "electron.exe");
   // JSON doubles Windows backslashes, so look for the unique fixture folder name instead of the raw path.
   assert.ok(!JSON.stringify(failed).includes(path.basename(root)), "diagnostics never carry the local install path");
+  // A full disk (field 2026-11-12): the customer is told how much to clear, and the launch gate's code is present.
+  const realStatfs = fs.statfs;
+  fs.statfs = async () => ({ bavail: 1024, bsize: 4096 });
+  try {
+    const full = createCloudMaintenance({ rootDir: path.join(root, "full-disk"), userData: path.join(root, "full-disk-data"),
+      componentBaseRoot: source, config, version: "1.1.0", buildId: "disk-full", canInstall: () => true,
+      transport: { async request(route, options) {
+        if (route.startsWith("/v1/")) return { empty: true };
+        if (route.startsWith("/v2/")) return sign(target.manifest);
+        return transport.request(route, options);
+      }, close() {} } });
+    t.after(() => full.stop());
+    await full.check();
+    assert.equal(full.status().stage, "error");
+    assert.match(full.status().error, /空间不足：这次更新需要约 \d+\.\d GB，现在只剩 0\.0 GB。请清理.+后重新打开软件/u);
+    assert.match(full.status().error, /disk_space_insufficient/u, "the launch gate recognises this code and stops retrying");
+  } finally { fs.statfs = realStatfs; }
   for (const dir of ["missing", "damaged", "nested", "client"]) {
     const left = await fs.readdir(path.join(root, dir, "generations")).catch(() => []);
     assert.deepEqual(left.filter(name => name.startsWith(".prepare-")), [], `${dir}: the failed staging folder is removed`);

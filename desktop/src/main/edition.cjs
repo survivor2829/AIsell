@@ -34,7 +34,6 @@ const rendererDir = environmentEdition === "development"
 module.exports = {
   developmentEdition,
   pilotEdition,
-  editionLabel: developmentEdition ? "测试版" : "",
   preloadFile: developmentEdition ? "preload.dev.cjs" : "preload.cjs",
   rendererDir
 };

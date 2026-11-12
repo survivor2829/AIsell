@@ -56,9 +56,9 @@ export function LaunchUpdateGate({ children }: { children: ReactNode }) {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [downloading]);
-  // 程序文件缺失时放行进入当前版本，并说明原因和修复办法（重试补不回被删的文件）。
+  // 程序文件缺失或磁盘满时放行进入当前版本，并说明原因和修复办法（重试补不回被删的文件，也腾不出空间）。
   useEffect(() => {
-    if (!notice && gate?.phase === "open" && gate.reason === "base_damaged" && state?.error) setNotice({ text: state.error, closed: false });
+    if (!notice && gate?.phase === "open" && (gate.reason === "base_damaged" || gate.reason === "disk_full") && state?.error) setNotice({ text: state.error, closed: false });
   }, [notice, gate?.phase, gate?.reason, state?.error]);
   if (open && notice && !notice.closed) return <>
     {children}
