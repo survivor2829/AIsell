@@ -247,6 +247,34 @@ async function main() {
     }
 
     {
+      // 用户 2026-11-12（1.3.1）：线索视频混剪报「本机正式渲染组件暂不可用」。引擎改从短链接启动时，
+      // Remotion 的路径也被换成链接路径，而 Remotion 拒绝经过链接的路径。引擎和 FFmpeg 照走链接，Remotion 用真实路径。
+      const spawnCalls = [];
+      const real = { XIAOXI_FFMPEG_PATH: "C:\\real\\resources\\content-engine\\media-tools\\ffmpeg.exe",
+        XIAOXI_REMOTION_NODE_PATH: "C:\\real\\resources\\node.exe", XIAOXI_REMOTION_WORKER_PATH: "C:\\real\\resources\\worker.mjs",
+        XIAOXI_REMOTION_BUNDLE_PATH: "C:\\real\\resources\\bundle", XIAOXI_REMOTION_BROWSER_PATH: "C:\\real\\resources\\browser.exe", XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE: "1" };
+      const viaLink = (value) => String(value).replace("C:\\real\\resources", "C:\\link\\ab12");
+      const child = new FakeChild();
+      const controller = createContentEngineSidecar({
+        env: {}, runtimePath, runtimeArgs: ["worker.py"], dataDir,
+        getTrustedRuntimeEnvironment: () => real,
+        prepareRuntimeLaunch: (file, _dir, environment) => ({ runtimePath: viaLink(file), environment: Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, viaLink(value)])) }),
+        spawnProcess: (command, args, options) => { spawnCalls.push({ command, args, options }); return child; }
+      });
+      const started = controller.start();
+      await waitFor(() => spawnCalls.length === 1);
+      const env = spawnCalls[0].options.env;
+      assert.equal(env.XIAOXI_FFMPEG_PATH, "C:\\link\\ab12\\content-engine\\media-tools\\ffmpeg.exe", "其他路径照走短链接");
+      for (const key of ["XIAOXI_REMOTION_NODE_PATH", "XIAOXI_REMOTION_WORKER_PATH", "XIAOXI_REMOTION_BUNDLE_PATH", "XIAOXI_REMOTION_BROWSER_PATH"]) {
+        assert.equal(env[key], real[key], `${key} 必须是真实路径`);
+      }
+      assert.equal(env.XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE, "1");
+      child.ready();
+      await started;
+      await controller.stop();
+    }
+
+    {
       const spawnCalls = [];
       const updates = [];
       const child = new FakeChild();

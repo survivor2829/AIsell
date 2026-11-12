@@ -27,6 +27,7 @@ const TRUSTED_RUNTIME_ENV_KEYS = new Set([
   "XIAOXI_REMOTION_BROWSER_PATH",
   "XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE"
 ]);
+const REMOTION_PATH_KEYS = ["XIAOXI_REMOTION_NODE_PATH", "XIAOXI_REMOTION_WORKER_PATH", "XIAOXI_REMOTION_BUNDLE_PATH", "XIAOXI_REMOTION_BROWSER_PATH"];
 const PROVIDER_ENV_KEYS = new Set([
   "DASHSCOPE_API_KEY",
   "DEEPSEEK_API_KEY",
@@ -411,6 +412,11 @@ function createContentEngineSidecar(options = {}) {
         let launch = { runtimePath, environment: trustedRuntimeEnvironment };
         try { launch = prepareLaunch(runtimePath, dataDir, trustedRuntimeEnvironment, { folder: "content-engine" }); runtimeLinkNote = ""; }
         catch (error) { runtimeLinkNote = `runtime_link_failed=${String(error?.code || error?.message || "unknown").slice(0, 80)}`; } // keep the real path; the exit report says why
+        // The Remotion worker refuses runtime paths that pass through a link (remotion_render.py
+        // `_trusted_runtime_path`), so 1.3.1 reported the formal renderer unavailable everywhere.
+        // It runs as its own Node process, which never had the MAX_PATH problem: keep its real paths.
+        launch = { ...launch, environment: { ...launch.environment } };
+        for (const key of REMOTION_PATH_KEYS) if (key in trustedRuntimeEnvironment) launch.environment[key] = trustedRuntimeEnvironment[key];
         child = spawnProcess(launch.runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
           shell: false,
