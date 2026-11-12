@@ -59,10 +59,13 @@ export function FeedbackImages({ images, onChange, disabled, add, note }: {
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [clipboardNote, setClipboardNote] = useState("");
-  useEffect(() => setClipboardNote(""), [images.length]);
+  const [pasting, setPasting] = useState(false);
+  // A later picture or error replaces the clipboard hint.
+  useEffect(() => setClipboardNote(""), [images.length, note]);
   // Customers rarely know Ctrl+V works, so a button reads the clipboard for them (user 2026-11-11).
   async function pasteFromClipboard() {
-    setClipboardNote("");
+    if (pasting) return;
+    setPasting(true); setClipboardNote("");
     try {
       const files: Blob[] = [];
       for (const item of await navigator.clipboard.read()) {
@@ -72,6 +75,7 @@ export function FeedbackImages({ images, onChange, disabled, add, note }: {
       if (!files.length) { setClipboardNote("剪贴板里没有截图，先用微信截个图（Alt+A），再点“粘贴截图”"); return; }
       await add(files);
     } catch { setClipboardNote("没读到剪贴板，请在这里按 Ctrl+V 试试"); }
+    finally { setPasting(false); }
   }
   return <div className="feedback-images">
     <div className="feedback-images-row">
@@ -82,7 +86,7 @@ export function FeedbackImages({ images, onChange, disabled, add, note }: {
       {images.length < MAX_FEEDBACK_IMAGES && <button type="button" className="feedback-image-add" disabled={disabled} onClick={() => input.current?.click()}>
         <ImagePlus size={22} /><span>添加截图</span>
       </button>}
-      {images.length < MAX_FEEDBACK_IMAGES && <button type="button" className="feedback-image-add" disabled={disabled} onClick={() => void pasteFromClipboard()}>
+      {images.length < MAX_FEEDBACK_IMAGES && <button type="button" className="feedback-image-add" disabled={disabled || pasting} onClick={() => void pasteFromClipboard()}>
         <ClipboardPaste size={22} /><span>粘贴截图</span>
       </button>}
       <input ref={input} type="file" accept="image/*" multiple hidden onChange={(event) => { void add(Array.from(event.target.files || [])); event.target.value = ""; }} />

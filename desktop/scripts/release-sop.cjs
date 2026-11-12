@@ -43,11 +43,11 @@ function capture(args, cwd) {
   return result.stdout.trim();
 }
 
-// The test-edition installer and its version manifest, named as build-installer-release.cjs names them.
+// The test-edition installer and its version manifest, named by the worktree's own installer build.
 function fullInstallerFiles(worktree) {
-  const brand = JSON.parse(fs.readFileSync(path.join(worktree, "desktop", "product-brand.json"), "utf8"));
-  const stem = path.join(worktree, "release", brand.displayName + "-测试版-安装程序");
-  const files = [stem + ".exe", stem + "-版本清单.json"];
+  const { resolveInstallerTarget } = require(path.join(worktree, "desktop", "scripts", "build-installer-release.cjs"));
+  const target = resolveInstallerTarget("test");
+  const files = [target.installerName, target.installerManifestName].map(name => path.join(worktree, "release", name));
   for (const file of files) if (!fs.existsSync(file)) fail("找不到完整安装包产物：" + file + "，先用 --full 构建。");
   return files;
 }
