@@ -1,5 +1,5 @@
-import { useRef, useState, type ClipboardEvent } from "react";
-import { ImagePlus, X } from "lucide-react";
+import { useEffect, useRef, useState, type ClipboardEvent } from "react";
+import { ClipboardPaste, ImagePlus, X } from "lucide-react";
 
 // Screenshots in 吐槽 (user 2026-11-09): press Ctrl+V after taking a screenshot, or pick a picture.
 // Each becomes a JPEG no wider or taller than 1600 px, so four of them stay small enough to send.
@@ -58,6 +58,21 @@ export function FeedbackImages({ images, onChange, disabled, add, note }: {
   images: string[]; onChange: (next: string[]) => void; disabled?: boolean; add: (files: Blob[]) => Promise<void>; note: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
+  const [clipboardNote, setClipboardNote] = useState("");
+  useEffect(() => setClipboardNote(""), [images.length]);
+  // Customers rarely know Ctrl+V works, so a button reads the clipboard for them (user 2026-11-11).
+  async function pasteFromClipboard() {
+    setClipboardNote("");
+    try {
+      const files: Blob[] = [];
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((kind) => kind.startsWith("image/"));
+        if (type) files.push(await item.getType(type));
+      }
+      if (!files.length) { setClipboardNote("剪贴板里没有截图，先用微信截个图（Alt+A），再点“粘贴截图”"); return; }
+      await add(files);
+    } catch { setClipboardNote("没读到剪贴板，请在这里按 Ctrl+V 试试"); }
+  }
   return <div className="feedback-images">
     <div className="feedback-images-row">
       {images.map((image, index) => <figure key={index} className="feedback-image">
@@ -67,8 +82,11 @@ export function FeedbackImages({ images, onChange, disabled, add, note }: {
       {images.length < MAX_FEEDBACK_IMAGES && <button type="button" className="feedback-image-add" disabled={disabled} onClick={() => input.current?.click()}>
         <ImagePlus size={22} /><span>添加截图</span>
       </button>}
+      {images.length < MAX_FEEDBACK_IMAGES && <button type="button" className="feedback-image-add" disabled={disabled} onClick={() => void pasteFromClipboard()}>
+        <ClipboardPaste size={22} /><span>粘贴截图</span>
+      </button>}
       <input ref={input} type="file" accept="image/*" multiple hidden onChange={(event) => { void add(Array.from(event.target.files || [])); event.target.value = ""; }} />
     </div>
-    <p className="feedback-images-hint">{note || `截图后在这里按 Ctrl+V 就能贴上，最多 ${MAX_FEEDBACK_IMAGES} 张`}</p>
+    <p className="feedback-images-hint">{clipboardNote || note || `截好图后点“粘贴截图”（或按 Ctrl+V）就能贴上，最多 ${MAX_FEEDBACK_IMAGES} 张`}</p>
   </div>;
 }
