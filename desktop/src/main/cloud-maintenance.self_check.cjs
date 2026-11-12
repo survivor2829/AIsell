@@ -287,9 +287,12 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
       assert.equal(await controller.beginInstall(), false, `${code} must preserve the running app instead of permitting exit`);
       Date.now = originalNow;
       assert.equal(controller.status().stage, "error");
-      const reason = code === "update_disk_space_insufficient" ? /预计需要 3\.00 GB，可用 1\.00 GB/
+      // A full disk at install time uses the launch gate's disk_full message (drive and GB only, never the path).
+      const reason = ["ENOSPC", "update_disk_space_insufficient"].includes(code) ? /空间不足：这次更新需要约 3\.0 GB，现在只剩 1\.0 GB.*disk_space_insufficient/u
         : code === "update_helper_not_ready" ? /更新助手未能按时就绪/ : new RegExp(code);
       assert.match(controller.status().error, reason, "The visible failure must retain the specific reason rather than claim every update window failed to start");
+      // (Permission errors keep their 位置 line for support; the disk-full message only names the drive.)
+      if (["ENOSPC", "update_disk_space_insufficient"].includes(code)) assert.ok(!controller.status().error.includes(privatePath), `${code}: only the drive letter is shown`);
       assert.equal(events.length, beforeEvents + 1, "Install failures must produce one safe diagnostic");
       assert.deepEqual(events.at(-1), ["maintenance", "update.failed", { stage: phase }, { level: "error", code, phase }]);
       if (phase === "helper" || phase === "prepare") assert.equal(launches, beforeLaunch, "Pre-launch failure must never launch a helper or installer");
@@ -302,7 +305,7 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
     assert.ok(!JSON.stringify(events).includes(privatePath) && !JSON.stringify(events).includes("private error"), "Local paths and raw error messages must not enter cloud diagnostics");
     mode = Object.assign(Error("private logger failure detail"), { code: "ENOSPC", path: privatePath }); loggerThrows = true;
     let notified = false;
-    const unsubscribe = controller.onUpdate(state => { if (state.stage === "error" && /ENOSPC/.test(state.error)) notified = true; });
+    const unsubscribe = controller.onUpdate(state => { if (state.stage === "error" && /空间不足.*disk_space_insufficient/u.test(state.error)) notified = true; });
     assert.equal(await controller.beginInstall(), false, "A logger write failure must not reject installation handling");
     assert.equal(notified, true, "Users must still receive the actual update error when diagnostic storage fails");
     unsubscribe(); loggerThrows = false;
