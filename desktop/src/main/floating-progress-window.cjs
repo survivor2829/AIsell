@@ -38,8 +38,25 @@ function spriteGround(display) {
   const area = spriteArea(display?.workArea || display);
   return Math.max(area.y, spriteFloor(display) - SPRITE_WINDOW.height);
 }
+// 小玺 is drawn at the right end of its window (the bubble is on its left). Tucked against a side of the
+// screen (customer feedback 2026-11-12「悬浮宠物碍事…靠近左右侧贴边隐藏」) only a strip of it shows;
+// with the pointer on that strip it leans out whole.
+const SPRITE_PET = Object.freeze({ left: 254, peek: 46 });
+function spriteDockX(workArea, side, revealed = false) {
+  const area = spriteArea(workArea), screenRight = area.x + area.width;
+  if (side === "left") return revealed ? area.x - SPRITE_PET.left : area.x - SPRITE_WINDOW.width + SPRITE_PET.peek;
+  return revealed ? screenRight - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap : screenRight - SPRITE_PET.left - SPRITE_PET.peek;
+}
+// Which side a 小玺 let go at window position x should tuck into: most of it already past that edge.
+function spriteDockSide(workArea, x) {
+  const area = spriteArea(workArea);
+  if (x + SPRITE_PET.left <= area.x + 30) return "left";
+  if (x + SPRITE_WINDOW.width - 30 >= area.x + area.width) return "right";
+  return null;
+}
 function spritePosition(display, saved = null) {
   const area = spriteArea(display?.workArea || display), right = area.x + area.width - SPRITE_WINDOW.width - SPRITE_WINDOW.rightGap;
+  if (["left", "right"].includes(saved?.dock)) return { x: spriteDockX(area, saved.dock), y: spriteGround(display) };
   const onScreen = Number.isFinite(saved?.x) && saved.x >= area.x && saved.x <= right;
   return { x: onScreen ? Math.round(saved.x) : right, y: spriteGround(display) };
 }
@@ -56,5 +73,7 @@ module.exports = {
   SPRITE_FLOOR_GAP,
   spriteGround,
   spritePosition,
+  spriteDockX,
+  spriteDockSide,
   spriteWalkRange
 };

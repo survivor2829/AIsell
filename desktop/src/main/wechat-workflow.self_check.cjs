@@ -1055,6 +1055,7 @@ async function checkFloatingProgress() {
   const cursor = { x: 0, y: 0 };
   const screenDisplay = { workArea: { x: 0, y: 0, width: 1920, height: 1080 } }, screenEvents = new Map();
   let mainHideCount = 0;
+  const spriteMenus = [];
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
     show() {}, hide() { mainHideCount += 1; }, focus() {}
@@ -1095,6 +1096,7 @@ async function checkFloatingProgress() {
     rendererPath: __filename, preloadPath: __filename,
     spritePlaceFile: path.join(rootDir, "sprite-place.json"),
     electron: { ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, listener) => listeners.set(name, listener) }, BrowserWindow: ProgressWindow,
+      Menu: { buildFromTemplate: (template) => ({ popup: () => { spriteMenus.push(template); } }) },
       screen: { getPrimaryDisplay: () => screenDisplay, getCursorScreenPoint: () => ({ ...cursor }),
         on: (name, listener) => screenEvents.set(name, listener), removeListener: (name, listener) => { if (screenEvents.get(name) === listener) screenEvents.delete(name); } } }
   });
@@ -1208,6 +1210,41 @@ async function checkFloatingProgress() {
   assert.ok(sprite.sizes.length > 3 && sprite.sizes.every(([w, h]) => w === 400 && h === 260));
   sprite.size = [400, 311]; sprite.emit("resize");
   assert.deepEqual(sprite.size, [400, 260], "a size Windows changed on its own is put back");
+  // Customer feedback 2026-11-12「悬浮宠物碍事，需要可以鼠标右键隐藏退出，以及靠近左右侧贴边隐藏」.
+  // Dragged mostly past the right edge and let go: it tucks in there, only a strip showing, and stays put.
+  listeners.get("wechat-workflow:sprite-drag-start")(spriteEvent);
+  Object.assign(cursor, { x: 1900, y: 700 });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  sprite.position = [1920 - 400 + 120, 600];
+  const tucked = await handlers.get("wechat-workflow:sprite-drag-end")(spriteEvent);
+  assert.equal(tucked.docked, "right");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(sprite.getPosition(), [1920 - 254 - 46, 1080 - 260], "only a strip shows at the right edge, on the ground");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).dock, "right", "the hiding place is kept");
+  assert.deepEqual(sprite.sent.filter(([channel]) => channel === "wechat-workflow:sprite-dock").at(-1)[1], { side: "right", revealed: false });
+  assert.deepEqual(await handlers.get("wechat-workflow:sprite-walk")(spriteEvent, -200), { moved: 0 }, "it does not stroll out of its hiding place");
+  // The pointer on the strip brings it out; a moment after the pointer leaves it slides back.
+  listeners.get("wechat-workflow:sprite-peek")(spriteEvent, true);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(sprite.getPosition()[0], 1920 - 400 - 6, "it leans out whole");
+  listeners.get("wechat-workflow:sprite-peek")(spriteEvent, false);
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  assert.equal(sprite.getPosition()[0], 1920 - 254 - 46, "and tucks back in");
+  // The right-click menu: come out again, tuck into the side, or hide 小玺 until the next launch.
+  listeners.get("wechat-workflow:sprite-menu")(spriteEvent);
+  assert.deepEqual(spriteMenus.at(-1).filter((item) => item.label).map((item) => item.label), ["回到软件", "从边上出来", "先隐藏小玺（重新打开软件会再出来）"]);
+  spriteMenus.at(-1).find((item) => item.label === "从边上出来").click();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(sprite.getPosition()[0], 1920 - 400 - 6, "out again at its usual place");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(rootDir, "sprite-place.json"), "utf8")).dock, undefined);
+  listeners.get("wechat-workflow:sprite-menu")(spriteEvent);
+  assert.ok(spriteMenus.at(-1).some((item) => item.label === "藏到右边"), "near the right it offers the right side");
+  spriteMenus.at(-1).find((item) => item.label?.startsWith("先隐藏小玺")).click();
+  assert.equal(sprite.visible, false, "hidden");
+  await control.showSprite();
+  assert.equal(sprite.visible, false, "work starting on its own does not bring a hidden 小玺 back this session");
+  await invoke("show-floating");
+  assert.equal(sprite.visible, true, "asking for the progress brings it back");
   const hidesBefore = mainHideCount;
   await control.showSprite();
   assert.equal(mainHideCount, hidesBefore, "showing 小玺 keeps the main window");

@@ -792,6 +792,14 @@ function createPreloadApis(ipcRenderer) {
       spriteDragEnd: () => ipcRenderer.invoke("wechat-workflow:sprite-drag-end"),
       spriteWalk: (dx) => ipcRenderer.invoke("wechat-workflow:sprite-walk", Number(dx)),
       spriteWalkStop: () => ipcRenderer.send("wechat-workflow:sprite-walk-stop"),
+      // Right-click menu (回到软件 / 藏到边上 / 先隐藏) and leaning out from a side of the screen (2026-11-12).
+      spriteMenu: () => ipcRenderer.send("wechat-workflow:sprite-menu"),
+      spritePeek: (out) => ipcRenderer.send("wechat-workflow:sprite-peek", out === true),
+      onSpriteDock: (callback) => {
+        const handler = (_event, dock) => callback(dock);
+        ipcRenderer.on("wechat-workflow:sprite-dock", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:sprite-dock", handler);
+      },
       onSpriteCursor: (callback) => {
         const handler = (_event, point) => callback(point);
         ipcRenderer.on("wechat-workflow:sprite-cursor", handler);

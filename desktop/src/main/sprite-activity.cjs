@@ -150,7 +150,7 @@ const SPRITE_FEATURES = [
 ];
 // Messages that exist but are not work a customer is waiting on, or that report through another row above.
 const SPRITE_NOT_WORK = new Set(["account:changed", "cloud:update", "feedback:update", "official-materials:searchUpdate", "role-preferences:update", "social-accounts:update", "tutorials:progress",
-  "window-chrome:shown", "wechat-workflow:navigate", "wechat-workflow:update", "wechat-workflow:sprite-cursor", "wechat-workflow:sprite-drag", "wechat-workflow:sprite-say",
+  "window-chrome:shown", "wechat-workflow:navigate", "wechat-workflow:update", "wechat-workflow:sprite-cursor", "wechat-workflow:sprite-drag", "wechat-workflow:sprite-say", "wechat-workflow:sprite-dock",
   "touch-task:update", "social-nurture:update", "social-publish:update"]);
 // Files that build the channel name at run time, and what they send.
 const SPRITE_COMPUTED_SENDERS = new Set([
