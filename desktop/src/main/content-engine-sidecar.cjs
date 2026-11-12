@@ -27,6 +27,12 @@ const TRUSTED_RUNTIME_ENV_KEYS = new Set([
   "XIAOXI_REMOTION_BROWSER_PATH",
   "XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE"
 ]);
+// Remotion paths stay real: remotion_render._trusted_runtime_path refuses any path through a link,
+// so 1.3.1 (which linked them) reported the formal renderer unavailable on every computer. The four
+// paths the engine itself checks are at most 226 characters for the user Administrator (worker,
+// bundle/index.html, browser; node is the app's own exe), below MAX_PATH even for 20-character
+// Windows user names; the deeper node_modules files are read by Node, which handles long paths.
+const isRemotionKey = (key) => key.startsWith("XIAOXI_REMOTION_");
 const PROVIDER_ENV_KEYS = new Set([
   "DASHSCOPE_API_KEY",
   "DEEPSEEK_API_KEY",
@@ -409,7 +415,7 @@ function createContentEngineSidecar(options = {}) {
         // long user names (runtime-link.cjs). If the link cannot be made, the real path still works
         // wherever it is short enough, as it did before.
         let launch = { runtimePath, environment: trustedRuntimeEnvironment };
-        try { launch = prepareLaunch(runtimePath, dataDir, trustedRuntimeEnvironment, { folder: "content-engine" }); runtimeLinkNote = ""; }
+        try { launch = prepareLaunch(runtimePath, dataDir, trustedRuntimeEnvironment, { folder: "content-engine", keepReal: isRemotionKey }); runtimeLinkNote = ""; }
         catch (error) { runtimeLinkNote = `runtime_link_failed=${String(error?.code || error?.message || "unknown").slice(0, 80)}`; } // keep the real path; the exit report says why
         child = spawnProcess(launch.runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
