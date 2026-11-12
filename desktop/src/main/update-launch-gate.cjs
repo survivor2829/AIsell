@@ -49,6 +49,10 @@ function createLaunchGate({ controller, request, setHold, onOpen = () => {}, pub
           const next = await request();
           // The coordinator installs and quits; it only hands back when the install could not start.
           if (next?.updateRequested) await settle(value => !value.updateRequested);
+          // Install could not start for lack of space (backups, ENOSPC): the next check would only
+          // reach ready again and repeat this, so let the customer in with the numbers instead.
+          const after = controller.status();
+          if (after.stage === "error" && /disk_space_insufficient/u.test(after.error || "")) return open("disk_full");
         } else if (state.stage === "error") {
           if (/full_upgrade_required/u.test(state.error || "")) return open("not_ready");
           // A file missing from the installed program never comes back by retrying; let the

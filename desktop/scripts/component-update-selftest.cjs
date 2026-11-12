@@ -569,7 +569,7 @@ test("a base file removed or altered in the installed program is reported by nam
     t.after(() => full.stop());
     await full.check();
     assert.equal(full.status().stage, "error");
-    assert.match(full.status().error, /空间不足：这次更新需要约 \d+\.\d GB，现在只剩 0\.1 GB。请清理.+后重新打开软件/u);
+    assert.match(full.status().error, /空间不足：这次更新需要约 \d+\.\d GB，现在只剩 0\.0 GB。请清理.+后重新打开软件/u);
     assert.match(full.status().error, /disk_space_insufficient/u, "the launch gate recognises this code and stops retrying");
   } finally { fs.statfs = realStatfs; }
   for (const dir of ["missing", "damaged", "nested", "client"]) {

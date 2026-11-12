@@ -2,10 +2,12 @@ const assert = require("node:assert/strict");
 const { createLaunchGate } = require("./update-launch-gate.cjs");
 const { diskFullMessage } = require("./cloud-maintenance.cjs");
 
-// The customer is told which drive and how much to clear, rounded up.
-assert.equal(diskFullMessage({ code: "component_disk_space_insufficient", drive: "C:\\", required: 1.71 * 1024 ** 3, available: 0.25 * 1024 ** 3 }),
-  "C盘空间不足：这次更新需要约 1.8 GB，现在只剩 0.3 GB。请清理C盘后重新打开软件，会自动更新到最新版。故障编号：disk_space_insufficient");
+// The customer is told which drive and how much to clear: need rounded up, free space down.
+assert.equal(diskFullMessage({ code: "component_disk_space_insufficient", drive: "C:\\", requiredBytes: 1.71 * 1024 ** 3, availableBytes: 0.29 * 1024 ** 3 }),
+  "C盘空间不足：这次更新需要约 1.8 GB，现在只剩 0.2 GB。请清理C盘后重新打开软件，会自动更新到最新版。故障编号：disk_space_insufficient");
 assert.match(diskFullMessage({ code: "ENOSPC" }), /^磁盘空间不足。请清理磁盘后/u);
+// The install-time backup check (update-storage checkCopySpace) names its volume by path.
+assert.match(diskFullMessage({ code: "update_disk_space_insufficient", path: "C:\\Users\\a\\AppData", requiredBytes: 3 * 1024 ** 3, availableBytes: 1 * 1024 ** 3 }), /^C盘空间不足：这次更新需要约 3\.0 GB，现在只剩 1\.0 GB/u);
 
 // A controller whose check() walks through scripted outcomes, like cloud-maintenance does.
 function fakeController(outcomes, initial = {}) {
@@ -109,13 +111,26 @@ function harness(controller, { request } = {}) {
     ["base file missing", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整（缺少：d3dcompiler_47.dll）。故障编号：component_base_file_missing" }]), "base_damaged"],
     ["base file damaged", fakeController([{ stage: "error", nextVersion: "1.2.60", error: "软件程序文件不完整。故障编号：component_base_file_damaged" }]), "base_damaged"],
     // C 盘满（现场 2026-11-12）：重试腾不出空间，放行并说明要清多少
-    ["disk full", fakeController([{ stage: "error", nextVersion: "1.3.0", error: diskFullMessage({ code: "component_disk_space_insufficient", drive: "C:\\", required: 1.8 * 1024 ** 3, available: 0.3 * 1024 ** 3 }) }]), "disk_full"],
+    ["disk full", fakeController([{ stage: "error", nextVersion: "1.3.0", error: diskFullMessage({ code: "component_disk_space_insufficient", drive: "C:\\", requiredBytes: 1.8 * 1024 ** 3, availableBytes: 0.3 * 1024 ** 3 }) }]), "disk_full"],
     ["disk full mid-write", fakeController([{ stage: "error", nextVersion: "1.3.0", error: diskFullMessage({ code: "ENOSPC" }) }]), "disk_full"]
   ]) {
     const run = harness(controller);
     await run.gate.start();
     assert.deepEqual(run.opened, [reason], label);
     assert.equal(run.holds.at(-1) ?? false, false, `${label}: the hold is released`);
+  }
+  // 下载好了、安装时备份空间不够：再检查只会回到 ready 再失败一次，直接放行并提示要清多少
+  {
+    const controller = fakeController([{ stage: "ready", nextVersion: "1.3.0" }, { stage: "ready", nextVersion: "1.3.0" }]);
+    let requested = 0;
+    const run = harness(controller, { request: async () => {
+      requested += 1;
+      controller.notify({ stage: "error", error: diskFullMessage({ code: "update_disk_space_insufficient", path: "C:\\x", requiredBytes: 3 * 1024 ** 3, availableBytes: 1024 ** 3 }) });
+      return controller.status();
+    } });
+    await run.gate.start();
+    assert.equal(requested, 1, "the install is not repeated");
+    assert.deepEqual(run.opened, ["disk_full"]);
   }
   // 已经知道有新版之后再断网，不放行，继续重试
   {

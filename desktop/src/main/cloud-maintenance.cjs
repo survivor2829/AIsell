@@ -17,13 +17,15 @@ const { retainArtifacts, retryArtifacts } = require("../shared/artifact-retentio
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 // The page new customers download from; the update server is a different host.
 const OFFICIAL_SITE = "https://www.xilianhui.cn/huoke/";
-// Rounded up, so clearing the stated amount is always enough.
-const gigabytes = bytes => (Math.ceil(bytes / 1024 ** 3 * 10) / 10).toFixed(1);
+// Need is rounded up and free space down, so clearing the stated difference is always enough.
+const gigabytes = (bytes, round) => (round(bytes / 1024 ** 3 * 10) / 10).toFixed(1);
+const DISK_FULL_CODES = ["cloud_disk_full", "component_disk_space_insufficient", "update_disk_space_insufficient", "ENOSPC"];
+// Same fields as update-storage's checkCopySpace (requiredBytes/availableBytes, path of the volume).
 function diskFullMessage(error) {
-  const drive = /^[a-z]:/iu.exec(String(error?.drive || ""))?.[0].slice(0, 1).toUpperCase();
+  const drive = /^[a-z]:/iu.exec(String(error?.drive || error?.path || ""))?.[0].slice(0, 1).toUpperCase();
   const where = drive ? `${drive}盘` : "磁盘";
-  const amounts = Number.isFinite(error?.required) && Number.isFinite(error?.available)
-    ? `：这次更新需要约 ${gigabytes(error.required)} GB，现在只剩 ${gigabytes(Math.max(0, error.available))} GB` : "";
+  const amounts = Number.isFinite(error?.requiredBytes) && Number.isFinite(error?.availableBytes)
+    ? `：这次更新需要约 ${gigabytes(error.requiredBytes, Math.ceil)} GB，现在只剩 ${gigabytes(Math.max(0, error.availableBytes), Math.floor)} GB` : "";
   return `${where}空间不足${amounts}。请清理${where}后重新打开软件，会自动更新到最新版。故障编号：disk_space_insufficient`;
 }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
@@ -337,8 +339,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       try { await verifyDownload(destination, manifest); existing = true; } catch { /* Missing or changed download must be fetched. */ }
       if (!existing) {
         const free = fs.statfsSync(dir);
-        const required = manifest.size * 2 + 256 * 1024 ** 2, available = free.bavail * free.bsize;
-        if (available < required) throw Object.assign(new Error("cloud_disk_full"), { code: "cloud_disk_full", required, available, drive: path.parse(dir).root });
+        const requiredBytes = manifest.size * 2 + 256 * 1024 ** 2, availableBytes = free.bavail * free.bsize;
+        if (availableBytes < requiredBytes) throw Object.assign(new Error("cloud_disk_full"), { code: "cloud_disk_full", requiredBytes, availableBytes, drive: path.parse(dir).root });
         temporary = path.join(dir, `${manifest.sha256}.part`);
         let lastProgress = -1;
         let download, resumeCounted = false;
@@ -378,7 +380,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       // Both are fixed by the customer, not by retrying: the launch gate lets them in and shows these steps.
       const message = baseDamaged
         ? `软件程序文件不完整（${error.code === "component_base_file_missing" ? "缺少" : "损坏"}：${String(error.path || "").split("/").pop()}），无法自动更新，常见原因是被杀毒软件（如 360）删除或隔离。请先在杀毒软件里把本软件的安装目录加入信任区，再到官网 ${OFFICIAL_SITE} 下载安装包，直接覆盖安装（客户资料和设置会保留），装好后会自动更新到最新版。故障编号：${error.code}`
-        : ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? diskFullMessage(error)
+        : DISK_FULL_CODES.includes(error?.code) ? diskFullMessage(error)
         : error?.code === "full_upgrade_required" ? "新版正在准备，请稍后重试。故障编号：full_upgrade_required"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
       notify({ stage: "error", error: message });
@@ -445,7 +447,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       try { logger?.event?.("maintenance", "update.failed", { stage: failure.phase }, {
         level: "error", code: failure.code, phase: failure.phase
       }); } catch {}
-      notify({ stage: "error", error: formatUpdateFailure(failure) });
+      // A full disk at install time (backup space, ENOSPC) gets the same message, so the launch gate lets the customer in.
+      notify({ stage: "error", error: DISK_FULL_CODES.includes(failure.code) ? diskFullMessage(error) : formatUpdateFailure(failure) });
       return false;
     }
     finally { updateLaunching = false; }
