@@ -105,7 +105,7 @@ npm.cmd run release:internal -- --base "C:/path/to/accepted-test-app"
 
 **什么时候换官网的包：版本号进位时。** 第三段到 99 后，下一个版本进到下一档：`1.2.99` 之后是 `1.3.0`，`1.3.99` 之后是 `1.4.0`，以此类推。每到 `x.y.0` 这一版：
 
-1. 照常走固定顺序，构建发布用 `npm.cmd run release:sop -- --full`（内部即 `release:internal -- --full` 和 `publish:internal -- --full <安装包> <版本清单>`）。老客户会通过完整包升级。之后的增量版本要以这个完整包为底座：本机验收装好后，第一次增量用 `release:internal -- --base <已验收的安装目录>` 登记新底座。
+1. 照常走固定顺序，构建发布用 `npm.cmd run release:sop -- --full`（内部即 `release:internal -- --full` 和 `publish:internal -- --full <安装包> <版本清单>`）。老客户会通过完整包升级。底座文件（Electron、Python 等运行时）没变时，构建沿用原底座版本，后面的增量照旧；底座确实变了（构建会列出变化并要求声明 `XIAOXI_BASE_UPGRADE_KIND`），本机验收装好后，第一次增量用 `release:internal -- --base <已验收的安装目录>` 登记新底座。
 2. 用这个已验收的完整安装器替换官网下载文件，同时把官网页面上的版本号改成这一版。
 3. 替换后读回核对：官网下载文件的大小和 SHA-256 与本次完整安装器一致，页面版本号正确。
 
