@@ -68,7 +68,7 @@ function sourceAllowed(source, edition) {
   const lower = name.toLowerCase();
   if (isBlockedRuntimeFile(name) || isBlockedEnvironmentFile(name) || lower.endsWith(".py") || lower.endsWith(".pyc") || lower.includes("self_check")) return false;
   if (relative.includes("/__pycache__/") || relative.includes("/libs/") || /(?:dump_data|wechat-dump|wx_key\.dll)/i.test(name)) return false;
-  if (edition !== "test" && relative.startsWith("src/main/") && ["active-touch-dev-ipc.cjs", "preload.dev.cjs"].includes(name)) return false;
+  if (edition !== "test" && relative.startsWith("src/main/") && name === "preload.dev.cjs") return false;
   if (name.endsWith(".dev.cjs")) {
     const allowed = [
       "state_machine.dev.cjs",

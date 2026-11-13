@@ -623,19 +623,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     }
     configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
-    const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
     const momentsCampaign = developmentEdition || pilotEdition
       ? require("./moments-campaign-ipc.cjs")
       : null;
     const momentsPublish = developmentEdition || pilotEdition
       ? require("./moments-publish-ipc.cjs")
       : null;
-    if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({
-      activeTouchDir: runtime.activeTouchDir,
-      momentsDir: runtime.momentsDir,
-      coordinator,
-      getMainWindow: () => mainWindow
-    });
     if (momentsCampaign) {
       momentsCampaignController = momentsCampaign.registerMomentsCampaignIpc({
         workflowManaged: true,
