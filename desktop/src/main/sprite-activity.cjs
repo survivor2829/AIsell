@@ -132,7 +132,7 @@ function pushedActivity(channel, state) {
 // Every long-running feature and where its progress comes from (SOP: a new one must be added here).
 const SPRITE_FEATURES = [
   { feature: "微信触达/加好友/朋友圈工作流", source: "wechat-workflow 自身的任务状态" },
-  { feature: "单独发朋友圈", channel: "moments-publish:update" },
+  { feature: "发朋友圈", channel: "moments-publish:update" },
   { feature: "单独点赞评论", channel: "moments-campaign:update" },
   { feature: "养号", source: "onState: nurtureActivity" },
   { feature: "一键分发", source: "onState: publishActivity" },

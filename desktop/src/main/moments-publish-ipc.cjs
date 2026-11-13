@@ -1506,9 +1506,10 @@ function registerMomentsPublishIpc(options = {}) {
     };
   }
 
-  // Only media choice is a renderer entry: the unified workflow drives prepare/confirm/resolve on the
-  // controller itself. The standalone panel's prepare/confirm/reset/resolve entries were removed with
-  // the panel (2026-11-13); nothing could reach them any more.
+  // Only media choice is a renderer entry. The unified workflow publishes through prepareWorkflowTask /
+  // runWorkflowStep / runDraft / applyResolution in the main process. The standalone panel's
+  // prepare/confirm/reset/resolve entries went with the panel (2026-11-13); the controller's prepare /
+  // confirm / reset / resolveUnknown remain only as the self-check's way into runDraft.
   ipcMain.handle("moments-publish:choose-media", async (event, payload = {}) => {
     if (!trustedClick(event, payload.clickToken)) return rejected();
     const window = getMainWindow();
