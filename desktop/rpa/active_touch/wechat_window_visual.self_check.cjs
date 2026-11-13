@@ -5,10 +5,13 @@ const { WECHAT_MAIN_WINDOW_VISUAL_CSHARP } = require("./wechat_window_visual.cjs
 
 // Actual navigation pixels (4.1.13, and 4.2.0.13 from a 125% field capture); avatar, conversations
 // and chat pane were removed from the fixtures. Replay capture evidence, not generated mask art.
-// Both captures are at 120 dpi; the boxes blank out Contacts, the menu, or the whole strip.
+// `dpi` is the capture's own scale; the boxes blank out Contacts, the menu, or the whole strip. The 4.2
+// mask was sampled from the 125% field capture; the 100% dev-machine capture (Windows 11 translucent
+// sidebar) checks it independently: the 4.1 mask alone scores 0.753 there.
 const FIXTURES = [
-  { file: "wechat-main-navigation-4.1.13.png", contacts: "0,170,74,70", menu: "0,850,74,91" },
-  { file: "wechat-main-navigation-4.2.0.13.png", contacts: "0,165,84,72", menu: "0,725,84,84" }
+  { file: "wechat-main-navigation-4.1.13.png", dpi: 120, contacts: "0,170,74,70", menu: "0,850,74,91" },
+  { file: "wechat-main-navigation-4.2.0.13.png", dpi: 120, contacts: "0,165,84,72", menu: "0,725,84,84" },
+  { file: "wechat-main-navigation-4.2.0.13-100.png", dpi: 96, contacts: "0,132,68,56", menu: "0,690,68,60" }
 ];
 for (const fixture of FIXTURES) {
 const result = runPowerShell(`
@@ -20,7 +23,7 @@ $original = [Drawing.Bitmap]::FromFile($env:NAVIGATION_FIXTURE)
 $results = @()
 try {
   foreach ($dpi in @(96,120,144,192)) {
-    $image = [Drawing.Bitmap]::new([int][Math]::Round($original.Width*$dpi/120),[int][Math]::Round($original.Height*$dpi/120))
+    $image = [Drawing.Bitmap]::new([int][Math]::Round($original.Width*$dpi/[int]$env:SOURCE_DPI),[int][Math]::Round($original.Height*$dpi/[int]$env:SOURCE_DPI))
     try {
       $g=[Drawing.Graphics]::FromImage($image)
       try { $g.DrawImage($original,0,0,$image.Width,$image.Height) } finally { $g.Dispose() }
@@ -37,13 +40,13 @@ try {
         elseif($name -eq 'no_menu') {$m=$env:MENU_BOX.Split(','); $g.FillRectangle([Drawing.Brushes]::White,[int]$m[0],[int]$m[1],[int]$m[2],[int]$m[3])}
         else {$g.Clear([Drawing.Color]::White)}
       } finally {$g.Dispose()}
-      $scores=[WechatMainWindowVisual]::Inspect($image,120)
+      $scores=[WechatMainWindowVisual]::Inspect($image,[int]$env:SOURCE_DPI)
       $results+=@{case=$name;accepted=[WechatMainWindowVisual]::Accepted($scores);scores=$scores}
     } finally {$image.Dispose()}
   }
   @{ok=$true;results=$results}|ConvertTo-Json -Depth 5 -Compress
 } finally {$original.Dispose()}
-`, { NAVIGATION_FIXTURE: path.join(__dirname, "fixtures", fixture.file), CONTACTS_BOX: fixture.contacts, MENU_BOX: fixture.menu }, { ensure: false, timeout: 60_000 });
+`, { NAVIGATION_FIXTURE: path.join(__dirname, "fixtures", fixture.file), CONTACTS_BOX: fixture.contacts, MENU_BOX: fixture.menu, SOURCE_DPI: String(fixture.dpi) }, { ensure: false, timeout: 60_000 });
 assert.equal(result.ok, true, JSON.stringify(result));
 for (const entry of result.results) {
   assert.equal(entry.accepted, entry.case.startsWith("dpi_"), `${fixture.file} ${entry.case}: ${JSON.stringify(entry.scores)}`);
