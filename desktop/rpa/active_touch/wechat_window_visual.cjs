@@ -10,6 +10,20 @@ const CONTACTS = [
   "011100000000000001100000", "001111111111111111100000", "001111111111111111000000",
   "000000000000000000000000", "000000000000000000000000", "000000000000000000000000"
 ];
+// WeChat 4.2 draws Contacts with a larger, higher head and longer list lines. Taken from a field
+// capture of 4.2.0.13 at 125% (2026-11-13), sampled in the menu glyph's frame so both match at one size;
+// there the 4.1 mask scored 0.765 against the 0.80 bar:
+// on a PC whose main window has no MMUIRenderSubWindowHW child, that left WeChat unrecognized.
+const CONTACTS_42 = [
+  "000000000000000000000000", "000000000000000000000000", "000000000000000000000000",
+  "000000000000000000000000", "000000011111100000000000", "000000011001100000000000",
+  "000000010000110000000000", "000000110000010000000000", "000000110000010111111100",
+  "000000010000110111111100", "000000011111100000000000", "000000001111000001111100",
+  "000000000000000001111100", "000000011111100000000000", "000001111111111100011100",
+  "000011100000011100011100", "001100000000000011000000", "001100000000000011100000",
+  "011100000000000001100000", "001111111111111111000000", "000000000000000000000000",
+  "000000000000000000000000", "000000000000000000000000", "000000000000000000000000"
+];
 const MENU = Array.from({ length: 24 }, (_, y) => [7, 11, 12, 16].includes(y)
   ? "000011111111111111110000" : "000000000000000000000000");
 
@@ -29,6 +43,7 @@ public static class WechatMainWindowVisual {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
   [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
   static readonly string Contacts = "${CONTACTS.join("")}";
+  static readonly string Contacts42 = "${CONTACTS_42.join("")}";
   static readonly string Menu = "${MENU.join("")}";
   public sealed class Match {
     public double Score; public int X, Y, Size;
@@ -80,7 +95,11 @@ public static class WechatMainWindowVisual {
       // Thin hamburger strokes lose a pixel when Windows scales to 100%.
       // They are supporting evidence; the distinct Contacts glyph stays 0.80.
       if(menu.Score<0.75)return new double[]{0,menu.Score};
-      var contacts=Search(data,stride,width,height,scale,Contacts,menu.X-(int)(5*scale),menu.X+(int)(5*scale)+1,(int)(95*scale),Math.Min(height/2,(int)(245*scale)));
+      // The Contacts glyph of WeChat 4.1 or 4.2, whichever matches better at the same place.
+      int cx0=menu.X-(int)(5*scale),cx1=menu.X+(int)(5*scale)+1,cy0=(int)(95*scale),cy1=Math.Min(height/2,(int)(245*scale));
+      var contacts=Search(data,stride,width,height,scale,Contacts,cx0,cx1,cy0,cy1);
+      var contacts42=Search(data,stride,width,height,scale,Contacts42,cx0,cx1,cy0,cy1);
+      if(contacts42.Score>contacts.Score)contacts=contacts42;
       if(Math.Abs(contacts.Size-menu.Size)>Math.Max(3,scale*3))return new double[]{0,menu.Score};
       return new double[]{contacts.Score,menu.Score};
     }
