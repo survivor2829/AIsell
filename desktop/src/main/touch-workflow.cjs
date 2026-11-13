@@ -704,6 +704,7 @@ function createTouchWorkflow(options = {}) {
         stage: "workflow_contact_send", direction: "in", status: "started", traceId: sendOperation.traceId
       });
       let lastSentWindow = null;
+      let earlyNotice = null;
       try {
         let sessionAnchor = null;
         let sourcePartIndex = null;
@@ -815,6 +816,12 @@ function createTouchWorkflow(options = {}) {
           current = task.results[index];
           result = await executeMessageSequence({
             row: current, parts: messageParts(current.message, imageIds, link), execute: executePart, isEnabled: enabled,
+            // After the text goes out, a "not a friend" notice ends the contact: its images would bounce too.
+            stopAfter: async (part) => {
+              if (part.kind !== "text" || typeof options.detectDeliveryNotice !== "function" || !lastSentWindow) return false;
+              earlyNotice = await Promise.resolve(options.detectDeliveryNotice({ ...lastSentWindow, message: current.message })).catch(() => null);
+              return earlyNotice?.ok === true && earlyNotice.undelivered === true;
+            },
             persist: () => { task.results[index] = current; persist(); }
           });
         } else result = await executePart({ kind: "text", message: current.message }, 0);
@@ -846,7 +853,9 @@ function createTouchWorkflow(options = {}) {
         delete task.pre_send_skip_streak;
         // The composer emptying proves the click, not delivery: a contact who
         // deleted the user gets a "friend verification" notice instead.
-        const notice = typeof options.detectDeliveryNotice === "function" && lastSentWindow
+        // A bounce seen right after the text ends the contact; otherwise look again after the last part,
+        // since a notice can render late (review 2026-11-13).
+        const notice = earlyNotice?.undelivered === true ? earlyNotice : typeof options.detectDeliveryNotice === "function" && lastSentWindow
           ? await Promise.resolve(options.detectDeliveryNotice({ ...lastSentWindow, message: current.message })).catch(() => null)
           : null;
         current.retry_blocked = true;

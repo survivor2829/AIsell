@@ -44,7 +44,9 @@ function resolveUnknownMessagePart(row, resolution, resolvedAt) {
   return { index: unknown.index, kind: String(unknown.part.kind || ""), allSent: row.message_parts.every((part) => part.status === "sent_verified") };
 }
 
-async function executeMessageSequence({ row, parts, execute, persist, isEnabled }) {
+// `stopAfter(part, index)` may end the sequence after a confirmed part (2026-11-13: once the text
+// bounced off a contact who is no longer a friend, sending the images is pointless).
+async function executeMessageSequence({ row, parts, execute, persist, isEnabled, stopAfter }) {
   const signatures = parts.map(partSignature);
   if (!row.message_parts) {
     row.message_parts = parts.map((part, index) => ({ kind: part.kind, signature: signatures[index], status: "pending" }));
@@ -79,6 +81,9 @@ async function executeMessageSequence({ row, parts, execute, persist, isEnabled 
       part.status = "sent_verified";
       part.completedAt = new Date().toISOString();
       persist();
+      if (index < parts.length - 1 && typeof stopAfter === "function" && await Promise.resolve(stopAfter(parts[index], index)).catch(() => false)) {
+        return { ok: true, send_attempted: true, stopped_after_part: index, state: { real_send_status: "sent_verified" } };
+      }
       continue;
     }
     // A persisted confirmed receipt wins over a late failure after confirmation.

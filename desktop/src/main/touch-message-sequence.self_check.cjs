@@ -48,11 +48,69 @@ async function checkTouchMessageSequence() {
     "transient clipboard contention must inspect wrapped exceptions and retry with bounded backoff");
   assert.match(IMAGE_SEND_SCRIPT, /Invoke-ImageClipboardWrite "image_write"[\s\S]*Invoke-ImageClipboardWrite "image_file_write"/u,
     "both the bitmap and the file-list paste must use the bounded clipboard retry");
-  assert.match(IMAGE_SEND_SCRIPT, /Wait-SendButton \$true 3000[\s\S]*Clear-ImageComposer[\s\S]*SetFileDropList[\s\S]*Wait-SendButton \$true 3000\)\) \{ throw "image_paste_not_accepted" \}/u,
+  assert.match(IMAGE_SEND_SCRIPT, /Wait-PasteAccepted \$imagePasteWaitMs[\s\S]*Clear-ImageComposer -Force[\s\S]*SetFileDropList[\s\S]*Wait-PasteAccepted \$imagePasteWaitMs[\s\S]*if \(-not \$accepted\) \{ throw "image_paste_not_accepted" \}/u,
     "an ignored bitmap paste must fall back once to the file itself, then stop before any click");
+  // 1.3.4 field (Win10 19042): a picture that took over 3 s to appear was judged ignored, the colour-based
+  // clear skipped, and two copies stayed in the box. Wait longer, clear without trusting the colour, never
+  // let a late first picture join the second paste, and leave nothing behind when the paste is given up.
+  assert.match(IMAGE_SEND_SCRIPT, /\$imagePasteWaitMs = 8000/u);
+  assert.match(IMAGE_SEND_SCRIPT, /function Clear-ImageComposer\(\[switch\]\$Force\) \{\s*Click-ImagePoint \$inputX \$inputY \$mainWindow\s*if \(-not \$Force -and -not \(Test-SendButtonActive\)\) \{ return \}\s*Image-Keys "\^a" \$mainWindow\s*Image-Keys "\{BACKSPACE\}" \$mainWindow\s*if \(-not \(Wait-SendButton \$false 1500\)\) \{ throw "image_existing_draft_clear_failed" \}/u,
+    "the forced clear deletes whatever the send button shows, and a box that will not empty stops the paste");
+  assert.match(IMAGE_SEND_SCRIPT, /if \(\$Force -and \(Wait-SendButton \$true \$imageClearSettleMs\)\) \{[\s\S]*?throw "image_paste_not_accepted"\s*\}/u,
+    "a picture landing after the clear is deleted and the paste given up, so no second paste joins it");
+  assert.match(IMAGE_SEND_SCRIPT, /function Wait-PasteAccepted[\s\S]*GetForegroundWindow\(\) -ne \$mainWindow\) \{ return "dialog" \}[\s\S]*Test-SendButtonActive\) \{ return "composer" \}/u,
+    "a preview window opening late ends the wait like a green send button");
+  assert.match(IMAGE_SEND_SCRIPT, /\} catch \{\s*\$imageError = \$_\s*if \(-not \$sendAttempted -and -not \$dialog -and \[string\]\$imageError\.Exception\.Message -ceq "image_paste_not_accepted"\) \{\s*try \{ \[void\]\(Observe-ImageConversation\); Clear-ImageComposer -Force \} catch \{\}/u,
+    "only our own give-up is cleaned, and only while the same conversation is still open");
+  {
+    const number = (pattern) => Number((IMAGE_SEND_SCRIPT.match(pattern) || [])[1]);
+    const wait = number(/\$imagePasteWaitMs = (\d+)/u), settle = number(/\$imageClearSettleMs = (\d+)/u);
+    const budget = number(/paste = (\d+);/u), clipboardJoin = number(/imageClipboardWriteJoinTimeoutMs = (\d+)/u);
+    // Two waits, the forced clear (1.5 s + settle, twice in the worst case), two 350 ms pauses, five slow clipboard writes.
+    const worst = 2 * wait + 2 * (1500 + settle) + 2 * 350 + 5 * clipboardJoin;
+    assert.ok(Number.isFinite(worst) && worst < budget, `paste stage worst case ${worst} ms must stay inside its ${budget} ms budget`);
+  }
+  {
+    // Run the real wait and clear functions with a scripted send button (no WeChat, no keys sent).
+    const { runPowerShell } = require("../../rpa/active_touch/wechat_window_driver.cjs");
+    const slice = (start, end) => IMAGE_SEND_SCRIPT.slice(IMAGE_SEND_SCRIPT.indexOf(start), IMAGE_SEND_SCRIPT.indexOf(end, IMAGE_SEND_SCRIPT.indexOf(start)));
+    const functions = slice("function Wait-SendButton", "function Observe-ImageConversation");
+    const fixture = runPowerShell(`
+$ErrorActionPreference = "Stop"
+$script:clock = 0
+function Get-UptimeMs { return $script:clock }
+function Start-Sleep { param([int]$Milliseconds) $script:clock += $Milliseconds }
+function Assert-ImageWindowIdentity([IntPtr]$window) {}
+function Click-ImagePoint([int]$x, [int]$y, [IntPtr]$window) {}
+function Image-Keys([string]$keys, [IntPtr]$window) { if ($keys -eq "{BACKSPACE}") { $script:deletes++ ; $script:green = $false } }
+# The send button turns green on its own at $script:lateAt (a picture landing late), unless deleted after.
+function Test-SendButtonActive { if ($script:lateAt -ge 0 -and $script:clock -ge $script:lateAt -and -not $script:lateDone) { $script:lateDone = $true; $script:green = $true }; return $script:green }
+Add-Type 'public static class Win32WechatSendMessage { public static System.IntPtr Front = System.IntPtr.Zero; public static System.IntPtr GetForegroundWindow() { return Front; } }'
+$mainWindow = [IntPtr]7; $inputX = 1; $inputY = 1
+${functions}
+function Run-Clear([int]$lateAt) {
+  $script:clock = 0; $script:deletes = 0; $script:green = $false; $script:lateAt = $lateAt; $script:lateDone = $false
+  try { Clear-ImageComposer -Force; return @{ outcome = "clean"; deletes = $script:deletes } }
+  catch { return @{ outcome = [string]$_.Exception.Message; deletes = $script:deletes } }
+}
+$quiet = Run-Clear -1
+$late = Run-Clear 1700
+$script:clock = 0; $script:green = $false; $script:lateAt = -1
+[Win32WechatSendMessage]::Front = [IntPtr]7
+$noneAccepted = Wait-PasteAccepted 1000
+[Win32WechatSendMessage]::Front = [IntPtr]9
+$dialogAccepted = Wait-PasteAccepted 1000
+@{ ok = $true; quiet = $quiet; late = $late; none = $noneAccepted; dialog = $dialogAccepted } | ConvertTo-Json -Compress -Depth 4
+`, {}, { ensure: false, timeout: 60_000 });
+    assert.equal(fixture.ok, true, JSON.stringify(fixture));
+    assert.deepEqual(fixture.quiet, { outcome: "clean", deletes: 1 }, "an empty box after the delete lets the file paste go ahead");
+    assert.deepEqual(fixture.late, { outcome: "image_paste_not_accepted", deletes: 2 }, "a picture landing after the delete is deleted and the paste given up");
+    assert.equal(fixture.none, "", "no green button and no preview: not accepted");
+    assert.equal(fixture.dialog, "dialog", "a preview window ends the wait");
+  }
   assert.doesNotMatch(IMAGE_SEND_SCRIPT, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
     "image sending must never depend on copying the WeChat draft back out");
-  assert.match(IMAGE_SEND_SCRIPT, /imageStageBudgets[\s\S]*existing_draft_clear = 15000[\s\S]*image_load = 60000[\s\S]*clipboard_bitmap = 45000[\s\S]*paste = 30000[\s\S]*click_send = 30000[\s\S]*post_confirm = 30000/u,
+  assert.match(IMAGE_SEND_SCRIPT, /imageStageBudgets[\s\S]*existing_draft_clear = 15000[\s\S]*image_load = 60000[\s\S]*clipboard_bitmap = 45000[\s\S]*paste = 60000[\s\S]*click_send = 30000[\s\S]*post_confirm = 30000/u,
     "image sending must expose bounded per-stage budgets");
   assert.match(IMAGE_SEND_SCRIPT, /WriteLine\("image_progress:" \+ \$payload\)/u,
     "image sending must persist fixed-token stage progress diagnostics");
@@ -672,6 +730,33 @@ async function checkTouchMessageSequence() {
     await delivered.runWorkflowStep(deliveredRecord, context);
     const deliveredRow = JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(deliveredRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0];
     assert.equal(deliveredRow.status, "sent_verified", "no notice, or an unreadable screen, keeps the verified send");
+  }
+  // 1.3.4 field (Win10 19042): the text bounced off a contact who is no longer a friend, then the image
+  // step failed and the contact was filed as "partly sent". After the text, the notice ends the contact.
+  for (const undelivered of [true, false]) {
+    const checks = [], imageRuns = [];
+    const multipartWorkflow = createTouchWorkflow({ ...config,
+      execute: async (part) => {
+        if (part.image) { imageRuns.push(part.image); part.onTransition?.("sent_verified"); return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } }; }
+        fs.writeFileSync(path.join(part.baseDir, "state.json"), JSON.stringify({ window_pid: 4242, window_handle: "9191", message_input_point: { xRatio: 0.65, yRatio: 0.84 } }));
+        part.onTransition?.("sent_verified");
+        return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
+      },
+      detectDeliveryNotice: async (window) => { checks.push(window); return { ok: true, undelivered }; } });
+    const multipartRecord = { id: crypto.randomUUID(), payload: multipartWorkflow.prepareWorkflowTask({ script: "文字加图片", contactIds: [contact.id], imageIds: [imageId] }), progress: { done: 0 }, status: "running" };
+    await multipartWorkflow.runWorkflowStep(multipartRecord, context);
+    const row = JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(multipartRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0];
+    assert.equal(checks.length, undelivered ? 1 : 2, "a bounce after the text ends the contact; otherwise the notice is checked again at the end");
+    if (undelivered) {
+      assert.deepEqual(imageRuns, [], "no image is sent after the text bounced");
+      assert.equal(row.status, "recipient_unreachable_skipped");
+      assert.equal(row.skip_record.reasonCode, "recipient_not_friend");
+      assert.equal(row.message_parts[0].status, "sent_verified");
+      assert.equal(row.message_parts[1].status, "pending");
+    } else {
+      assert.equal(imageRuns.length, 1, "a friend still gets the image");
+      assert.equal(row.status, "sent_verified");
+    }
   }
 
   async function checkPassportWiring(name, reasonCode, contactIds, image = false) {

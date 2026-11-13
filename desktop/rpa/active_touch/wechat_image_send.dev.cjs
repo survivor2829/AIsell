@@ -60,7 +60,7 @@ $script:imageLeaseSettleTimeoutMs = 250
 $script:imageClipboardWriteJoinTimeoutMs = 5000
 $script:imageStageBudgets = @{
   existing_draft_clear = 15000; image_load = 60000; clipboard_bitmap = 45000;
-  paste = 30000; click_send = 30000; post_confirm = 30000
+  paste = 60000; click_send = 30000; post_confirm = 30000
 }
 function Write-ImageProgress([string]$stage, [string]$status) {
   $elapsed = [Math]::Max(0, (Get-UptimeMs) - $script:imageStageStartedAt)
@@ -196,12 +196,37 @@ function Wait-SendButton([bool]$active, [int]$timeoutMs) {
   } while ((Get-UptimeMs) -lt $until)
   return $false
 }
-function Clear-ImageComposer {
+# Field 1.3.4 (Win10 19042): a pasted picture took over 3 s to appear. Judged ignored after 3 s, the
+# colour-based clear skipped (button still grey), the second paste added a copy, and two pictures were
+# left in the box. Now the paste gets 8 s, and a forced clear does not trust the colour: it deletes, then
+# the box must stay empty for a moment. A picture landing late is deleted and the paste is given up,
+# so a second paste never joins a first one (two pictures would be sent).
+$imagePasteWaitMs = 8000
+$imageClearSettleMs = 2000
+function Clear-ImageComposer([switch]$Force) {
   Click-ImagePoint $inputX $inputY $mainWindow
-  if (-not (Test-SendButtonActive)) { return }
+  if (-not $Force -and -not (Test-SendButtonActive)) { return }
   Image-Keys "^a" $mainWindow
   Image-Keys "{BACKSPACE}" $mainWindow
   if (-not (Wait-SendButton $false 1500)) { throw "image_existing_draft_clear_failed" }
+  if ($Force -and (Wait-SendButton $true $imageClearSettleMs)) {
+    Image-Keys "^a" $mainWindow
+    Image-Keys "{BACKSPACE}" $mainWindow
+    if (-not (Wait-SendButton $false 1500)) { throw "image_existing_draft_clear_failed" }
+    throw "image_paste_not_accepted"
+  }
+}
+# The paste is accepted in the box (send button turns green) or by a preview window that WeChat may
+# open a moment later; either ends the wait.
+function Wait-PasteAccepted([int]$timeoutMs) {
+  $until = (Get-UptimeMs) + $timeoutMs
+  do {
+    if ([Win32WechatSendMessage]::GetForegroundWindow() -ne $mainWindow) { return "dialog" }
+    Assert-ImageWindowIdentity $mainWindow
+    if (Test-SendButtonActive) { return "composer" }
+    Start-Sleep -Milliseconds 150
+  } while ((Get-UptimeMs) -lt $until)
+  return ""
 }
 function Observe-ImageConversation {
   $observation = Get-ConversationObservation $mainWindow $expectedConversation $expectedConversationMode
@@ -283,12 +308,13 @@ try {
   Image-Keys "^v" $mainWindow
   Start-Sleep -Milliseconds 350
   Assert-ImageLease
+  $accepted = Wait-PasteAccepted $imagePasteWaitMs
   $sendWindow = [Win32WechatSendMessage]::GetForegroundWindow()
-  $dialog = $sendWindow -ne $mainWindow
-  if (-not $dialog -and -not (Wait-SendButton $true 3000)) {
+  $dialog = $accepted -eq "dialog"
+  if (-not $accepted) {
     # Some WeChat builds ignore a raw bitmap. Paste the file itself, as when it
     # is copied in Explorer, after removing any partial draft.
-    Clear-ImageComposer
+    Clear-ImageComposer -Force
     $script:pasteMethod = "file_drop"
     $files = New-Object System.Collections.Specialized.StringCollection
     [void]$files.Add([IO.Path]::GetFullPath($imagePath))
@@ -298,9 +324,10 @@ try {
     Image-Keys "^v" $mainWindow
     Start-Sleep -Milliseconds 350
     Assert-ImageLease
+    $accepted = Wait-PasteAccepted $imagePasteWaitMs
     $sendWindow = [Win32WechatSendMessage]::GetForegroundWindow()
-    $dialog = $sendWindow -ne $mainWindow
-    if (-not $dialog -and -not (Wait-SendButton $true 3000)) { throw "image_paste_not_accepted" }
+    $dialog = $accepted -eq "dialog"
+    if (-not $accepted) { throw "image_paste_not_accepted" }
   }
   if ($dialog) {
     Set-ImageStage "preview_verification"
@@ -341,6 +368,9 @@ try {
   @{ ok = $true; sendAttempted = $true; verificationMode = $verificationMode; conversationVerified = $true; draftVerified = $true } | ConvertTo-Json -Compress
 } catch {
   $imageError = $_
+  if (-not $sendAttempted -and -not $dialog -and [string]$imageError.Exception.Message -ceq "image_paste_not_accepted") {
+    try { [void](Observe-ImageConversation); Clear-ImageComposer -Force } catch {}
+  }
   $reason = [string]$imageError.Exception.Message
   if ($reason -notmatch "^[a-z][a-z0-9_]{1,79}$") { $reason = "image_driver_failed" }
   try { Complete-ImageStage $script:imageStage } catch {}
