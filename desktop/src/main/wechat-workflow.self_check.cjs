@@ -477,8 +477,8 @@ async function checkR008BoundedRecovery() {
 }
 
 // 1.3.4/1.3.5 field: WeChat's main window was not recognized, and a 653-contact run (some sent days
-// earlier) kept "running" for hours with WeChat untouched. Now the run pauses on the first such
-// contact without skipping it; other environment failures pause after three skips even when earlier
+// earlier) kept "running" for hours with WeChat untouched. Now, after a one-minute wait (a locked
+// screen or a WeChat restart clears by itself), the run pauses on that contact without skipping it; other environment failures pause after three skips even when earlier
 // contacts of the list went out.
 async function checkWechatWindowPause() {
   const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-window-pause-"));
@@ -502,8 +502,11 @@ async function checkWechatWindowPause() {
     outcome = "sent";
     assert.equal((await step()).status, "pending");
     assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified");
-    // Main window not recognized: pause at once, the contact stays unsent and is not skipped.
+    // Main window not recognized: a short wait first, then the pause; the contact stays unsent and is not skipped.
     outcome = "window";
+    const waiting = await step();
+    assert.equal(waiting.status, "pending", "a passing glitch gets a short wait");
+    assert.equal(waiting.waitingReason, "wechat_environment_recovery");
     const paused = await step();
     assert.equal(paused.status, "needs_attention");
     assert.equal(paused.reasonCode, "touch_wechat_window_paused");
@@ -519,6 +522,7 @@ async function checkWechatWindowPause() {
     for (let i = 0; i < 6 && last?.status !== "needs_attention"; i++) last = await step();
     assert.equal(last.status, "needs_attention", JSON.stringify(last));
     assert.equal(last.reasonCode, "touch_early_failure_paused");
+    assert.match(last.error, /微信现在用不了/u, "an environment cause tells the customer to check WeChat, not to wait for an update");
     assert.equal(loadTaskState(taskDir).results.filter((row) => row.status === "pre_send_skipped").length, 3);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

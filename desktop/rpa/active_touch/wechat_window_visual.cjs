@@ -44,6 +44,7 @@ public static class WechatMainWindowVisual {
   [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
   static readonly string Contacts = "${CONTACTS.join("")}";
   static readonly string Contacts42 = "${CONTACTS_42.join("")}";
+  static readonly string[] ContactMasks = { Contacts, Contacts42 };
   static readonly string Menu = "${MENU.join("")}";
   public sealed class Match {
     public double Score; public int X, Y, Size;
@@ -95,13 +96,17 @@ public static class WechatMainWindowVisual {
       // Thin hamburger strokes lose a pixel when Windows scales to 100%.
       // They are supporting evidence; the distinct Contacts glyph stays 0.80.
       if(menu.Score<0.75)return new double[]{0,menu.Score};
-      // The Contacts glyph of WeChat 4.1 or 4.2, whichever matches better at the same place.
+      // The Contacts glyph of each WeChat version (4.1, then 4.2): a match counts only at the menu
+      // glyph's size, and a later mask is searched only while no earlier one passed.
       int cx0=menu.X-(int)(5*scale),cx1=menu.X+(int)(5*scale)+1,cy0=(int)(95*scale),cy1=Math.Min(height/2,(int)(245*scale));
-      var contacts=Search(data,stride,width,height,scale,Contacts,cx0,cx1,cy0,cy1);
-      var contacts42=Search(data,stride,width,height,scale,Contacts42,cx0,cx1,cy0,cy1);
-      if(contacts42.Score>contacts.Score)contacts=contacts42;
-      if(Math.Abs(contacts.Size-menu.Size)>Math.Max(3,scale*3))return new double[]{0,menu.Score};
-      return new double[]{contacts.Score,menu.Score};
+      double best=0;
+      foreach(string mask in ContactMasks) {
+        var contacts=Search(data,stride,width,height,scale,mask,cx0,cx1,cy0,cy1);
+        if(Math.Abs(contacts.Size-menu.Size)>Math.Max(3,scale*3))continue;
+        if(contacts.Score>best)best=contacts.Score;
+        if(best>=0.80)break;
+      }
+      return new double[]{best,menu.Score};
     }
   }
   static bool Owned(IntPtr window,uint expected,RECT rect) {
