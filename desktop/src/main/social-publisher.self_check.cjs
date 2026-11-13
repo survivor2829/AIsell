@@ -49,7 +49,7 @@ function world(overrides = {}) {
     verificationShown: async () => { if (verifyLeft > 0) { verifyLeft--; if (!verifyLeft && behaviour.success) url = "https://creator.douyin.com/manage"; return true; } return false; },
     listed: async () => behaviour.listed
   };
-  page.setFile = async () => { sets++; log.sets = sets; if (behaviour.loginAfterSet) behaviour.login = true; };
+  page.setFile = async (_input, file) => { sets++; log.sets = sets; log.files = [...(log.files || []), file]; if (behaviour.loginAfterSet) behaviour.login = true; };
   const accountList = [{ id: "a-douyin", platform: "douyin", label: "抖音号", status: "active" }, { id: "a-channels", platform: "channels", label: "视频号", status: "active" }];
   let busy = new Set();
   const accounts = {
@@ -256,6 +256,33 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     await w2.until(p2, (state) => finished(state) && state.jobs.length === 2);
     assert.equal(w2.log.covers.length, 1);
     await p2.dispose();
+  }
+  {
+    // 用户 2026-11-12：抖音/快手/小红书默认拿第一帧当封面。没有换封面步骤的平台上传「开头是封面」的副本；
+    // 视频号照旧在页面上换封面，不做副本。副本做不出来：不打开平台、不发，可以重试。
+    const made = [];
+    const w = world(), p = w.make({ coverFirst: async (video, cover) => { made.push([video, cover]); return path.join(w.root, "带封面.mp4"); } });
+    const cover = path.join(w.root, "封面.jpg"); fs.writeFileSync(cover, "jpg");
+    p.submit({ videos: [{ path: w.video, cover }], accountIds: ["a-douyin", "a-channels"], title: "测试" });
+    const state = await w.until(p, finished);
+    assert.ok(state.jobs.every((job) => job.status === "published"));
+    assert.deepEqual(made, [[w.video, cover]], "只给没有换封面步骤的平台做副本");
+    assert.deepEqual(w.log.files.sort(), [path.join(w.root, "带封面.mp4"), w.video].sort(), "抖音传副本，视频号传原片");
+    assert.deepEqual(w.log.covers, [cover]);
+    await p.dispose();
+    // 没有封面的视频（从电脑里选的）原样上传。
+    const w2 = world(), made2 = [], p2 = w2.make({ coverFirst: async (...args) => { made2.push(args); return "x.mp4"; } });
+    p2.submit({ videos: [{ path: w2.video }], accountIds: ["a-douyin"], title: "测试" });
+    await w2.until(p2, finished);
+    assert.deepEqual(made2, []); assert.deepEqual(w2.log.files, [w2.video]);
+    await p2.dispose();
+    const w3 = world(), p3 = w3.make({ coverFirst: async () => { throw new Error("ffmpeg exited 1 C:/Users/someone"); } });
+    const cover3 = path.join(w3.root, "封面.jpg"); fs.writeFileSync(cover3, "jpg");
+    p3.submit({ videos: [{ path: w3.video, cover: cover3 }], accountIds: ["a-douyin"], title: "测试" });
+    const job = (await w3.until(p3, finished)).jobs[0];
+    assert.equal(job.status, "failed"); assert.match(job.reason, /没能把封面放进视频/); assert.doesNotMatch(job.reason, /Users/);
+    assert.equal(w3.log.launches, 0); assert.equal(w3.log.clicks, 0);
+    await p3.dispose();
   }
   {
     // 页面第一次没接收文件：再设一次就好；两次都不接收：不发，也不点发布。

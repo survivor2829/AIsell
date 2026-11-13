@@ -59,6 +59,7 @@ const checks = [
   "src/main/keyword-acquisition.self_check.cjs",
   "src/main/social-accounts.self_check.cjs",
   "src/main/social-publisher.self_check.cjs",
+  "src/main/social-cover-first.self_check.cjs",
   "src/main/social-publish-copy.self_check.cjs",
   "src/main/social-publish-drivers.self_check.cjs",
   "src/main/social-publish-ipc.self_check.cjs",

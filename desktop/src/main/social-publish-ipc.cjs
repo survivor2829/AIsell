@@ -1,12 +1,13 @@
 const path = require("node:path");
 const { createSocialPublisher } = require("./social-publisher.cjs");
 const { createCoverCache, writeCopy } = require("./social-publish-copy.cjs");
+const { createCoverFirst } = require("./social-cover-first.cjs");
 
 const FINISHED_ID = /^finished_[a-f0-9]{32}$/;
 const PLATFORMS = ["douyin", "kuaishou", "xiaohongshu", "channels"];
 
 // The renderer names videos by their 成片中心 id; file paths are resolved here and never sent back.
-const STEP_CODES = { "打开平台": "open", "上传视频": "upload", "设置封面": "cover", "填写内容": "fill", "点击发布": "click", "等你验证": "user_verification", "等待平台结果": "result", "核对作品": "verify" };
+const STEP_CODES = { "封面放进视频": "cover_embed", "打开平台": "open", "上传视频": "upload", "设置封面": "cover", "填写内容": "fill", "点击发布": "click", "等你验证": "user_verification", "等待平台结果": "result", "核对作品": "verify" };
 
 // A platform-page failure (publishing or 养号) in the diagnostic log, which failure capsules
 // pick up, with the page screenshot saved where capsules look for same-moment evidence.
@@ -43,7 +44,8 @@ function registerSocialPublishIpc({ ipcMain, dataDir, accounts, resolveFinishedV
   let publisher; let initializationError;
   try {
     if (!accounts) throw Object.assign(new Error("accounts unavailable"), { code: "SOCIAL_ACCOUNTS_UNAVAILABLE" });
-    publisher = createSocialPublisher({ dataDir, accounts, ...publisherOptions,
+    const coverFirst = createCoverFirst({ dir: path.join(dataDir, "cover-first"), ffmpegPath });
+    publisher = createSocialPublisher({ dataDir, accounts, coverFirst: coverFirst.prepare, ...publisherOptions,
       onFailure: (failure) => { try { reportPublishFailure({ logger, evidenceDir }, failure); } catch { /* Diagnostics never change the job result. */ } },
       onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-publish:update", state); try { onState(state); } catch { /* 小玺 never changes the job. */ } } });
   } catch (error) { initializationError = { ok: false, code: error.code || "SOCIAL_PUBLISH_UNAVAILABLE", error: error.code === "SOCIAL_PUBLISH_STATE_INVALID" ? error.message : "一键分发暂时无法打开，请重新打开软件。" }; }
