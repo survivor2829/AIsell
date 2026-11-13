@@ -31,9 +31,15 @@ assert.equal(findBrowser(env, () => false), "");
   const launch = ({ profileDir, url, headless }) => {
     let closedResolve; const closed = new Promise((resolve) => { closedResolve = resolve; });
     const browser = { profileDir, url, headless, isClosedFlag: false,
-      send: async (method) => {
+      send: async (method, params = {}, sessionId) => {
         // 登录窗口只看标签页地址（视频号/小红书），不接管页面。
-        if (method === "Target.getTargets") return { targetInfos: (tabs.get(profileDir) || []).map((url) => ({ type: "page", url })) };
+        // 标签页：地址末尾带 #loading 表示还在加载。
+        if (method === "Target.getTargets") return { targetInfos: (tabs.get(profileDir) || []).map((url, index) => ({ type: "page", url: url.replace(/#loading$/, ""), targetId: `tab-${index}` })) };
+        if (method === "Target.attachToTarget") return { sessionId: params.targetId };
+        if (method === "Runtime.evaluate") {
+          const url = (tabs.get(profileDir) || [])[Number(String(sessionId).replace("tab-", ""))] || "";
+          return { result: { value: params.expression === "location.href" ? url.replace(/#loading$/, "") : (/#loading$/.test(url) ? "loading" : "complete") } };
+        }
         assert.equal(method, "Storage.getCookies", "只读浏览器级 Cookie，不接管页面"); return { cookies: cookies.get(profileDir) || [] }; },
       close: async () => { if (!browser.isClosedFlag) { browser.isClosedFlag = true; closedResolve(); } },
       isClosed: () => browser.isClosedFlag, closed };
@@ -143,7 +149,12 @@ assert.equal(findBrowser(env, () => false), "");
     assert.notEqual(gated.snapshot().accounts[0].status, "active");
     await gated.login(xhs.id);
     const again = launches.at(-1);
-    tabs.set(again.profileDir, ["https://creator.xiaohongshu.com/new/home"]);
+    // 页面还在加载（网慢、平台还没来得及跳登录页）：不下结论。
+    tabs.set(again.profileDir, ["https://creator.xiaohongshu.com/new/home#loading"]);
+    await sleep(120);
+    assert.notEqual(gated.snapshot().accounts[0].status, "active", "加载中不算已登录");
+    // 网址参数里带 login 的正常页面不是登录页。
+    tabs.set(again.profileDir, ["https://creator.xiaohongshu.com/new/home?source=login"]);
     for (let i = 0; i < 400 && gated.snapshot().accounts[0].status !== "active"; i++) await sleep(10);
     assert.equal(gated.snapshot().accounts[0].status, "active", "窗口里确认已登录，列表跟着变");
     assert.equal(again.isClosed(), false, "已登录不自动关窗口，用户自己关");
@@ -162,7 +173,18 @@ assert.equal(findBrowser(env, () => false), "");
     for (let i = 0; i < 400 && !third.isClosed(); i++) await sleep(10);
     await sleep(20);
     assert.equal(gated.snapshot().accounts[0].status, "active");
-    assert.ok(checks.every((check) => !JSON.stringify(check).includes("old") || check.verdict), "日志里只有标识");
+    // 日志只有平台、哪个检查、结论、状态；不含 Cookie 值。
+    assert.ok(checks.length > 0 && checks.every((check) => JSON.stringify(Object.keys(check).sort()) === JSON.stringify(["platform", "source", "status", "verdict"])
+      && !Object.values(check).some((value) => ["old", "new", "secret-token"].includes(value))), JSON.stringify(checks));
+    // 同一个窗口里先确认已登录，之后平台把账号踢下线（跳到登录页）：也要改成未登录。
+    await gated.login(xhs.id);
+    const fourth = launches.at(-1);
+    tabs.set(fourth.profileDir, ["https://creator.xiaohongshu.com/new/home"]);
+    for (let i = 0; i < 400 && !checks.some((check) => check.verdict === "still_signed_in" && checks.indexOf(check) > checks.length - 3); i++) await sleep(10);
+    tabs.set(fourth.profileDir, ["https://creator.xiaohongshu.com/login"]);
+    for (let i = 0; i < 400 && gated.snapshot().accounts[0].status === "active"; i++) await sleep(10);
+    assert.equal(gated.snapshot().accounts[0].status, "expired", "确认之后被踢下线也能看出来");
+    await fourth.close(); await sleep(20);
     tabs.clear(); await gated.dispose(); fs.rmSync(dir, { recursive: true, force: true });
   }
 

@@ -3,7 +3,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { findBrowser, launchBrowser } = require("./social-browser.cjs");
-const { pageFor, hostMatches, sleep } = require("./social-page.cjs");
+const { attachPage, pageFor, hostMatches, sleep } = require("./social-page.cjs");
 const drivers = require("./social-publish-drivers.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -41,22 +41,16 @@ function loggedIn(platformKey, cookies, now = Date.now(), table = PLATFORMS) {
 // The platform's own answer for a profile whose cookie looks signed in: its publish page
 // sends a signed-out account to the login page (or, on 快手, shows 立即登录). Checked in
 // the same hidden window that read the cookies; an unclear page leaves the cookie verdict.
-// The hidden window must not announce itself: a headless Chrome says "HeadlessChrome" in its
-// user agent, which a platform guarding against bots may answer with its login page.
+// The hidden window must not announce itself as headless (see attachPage's hideHeadless).
 async function platformSignedOut(browser, platformKey) {
   const driver = drivers.driverFor(platformKey);
-  const { userAgent = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
-  const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
-  await browser.send("DOM.enable", {}, sessionId);
-  if (/HeadlessChrome/.test(userAgent)) await browser.send("Network.setUserAgentOverride", { userAgent: userAgent.replace(/HeadlessChrome/g, "Chrome") }, sessionId);
-  const page = pageFor(browser, sessionId);
-  await page.navigate(driver.uploadUrl);
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline && await page.evaluate("document.readyState").catch(() => "") !== "complete") await sleep(500);
+  // 小红书 takes 12–14 s to finish loading on a slow line (its login redirect comes at about 10 s).
+  const page = await attachPage(browser, driver.host, { timeoutMs: 40_000, open: driver.uploadUrl, hideHeadless: true });
   await sleep(3000);
   return drivers.signedOut(page, driver);
 }
+// The login page of a gated site, judged on the path only (a query such as ?from=login is not it).
+const atGatePath = (gate, url) => { try { return gate.test(new URL(url).pathname); } catch { return false; } };
 function cleanLabel(value, platformKey, count, table = PLATFORMS) {
   const label = String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 30);
   return label || `${platformOf(platformKey, table).name}账号${count + 1}`;
@@ -157,11 +151,26 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     // "signed in" (2026-11-13: a 小红书 account showed signed in inside the window, signed out in the list).
     const { gate } = platforms[account.platform];
     const homeHost = new URL(platforms[account.platform].home).hostname;
-    let onSite = 0, onGate = 0, confirmed = false;
+    let onSite = 0, onGate = 0, confirmed = false, polling = false, tab = null;
+    // The page as the user sees it: where it is and whether it has finished loading. A page still
+    // loading (a slow network before the site's own redirect) is no verdict either way.
+    async function shownPage() {
+      const { targetInfos = [] } = await browser.send("Target.getTargets");
+      const target = targetInfos.find((item) => item.type === "page" && hostMatches(item.url, homeHost));
+      if (!target) { tab = null; return null; }
+      if (tab?.targetId !== target.targetId) {
+        const { sessionId } = await browser.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+        tab = { targetId: target.targetId, page: pageFor(browser, sessionId) };
+      }
+      const [url, ready] = await Promise.all([tab.page.url().catch(() => ""), tab.page.evaluate("document.readyState").catch(() => "")]);
+      return ready === "complete" && hostMatches(url, homeHost) ? url : null;
+    }
     const timer = setInterval(() => {
-      if (closing || browser.isClosed()) return;
+      // One poll at a time: a slow browser must not count one observation twice.
+      if (closing || polling || browser.isClosed()) return;
+      polling = true;
       void browser.send("Storage.getCookies").then(async ({ cookies = [] }) => {
-        if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms)) { onSite = 0; return; }
+        if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms)) { onSite = 0; onGate = 0; return; }
         const renewed = [...fingerprint(cookies)].some((value) => !before.has(value));
         if (renewed) {
           closing = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
@@ -169,23 +178,23 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
           setTimeout(() => void browser.close(), 1500);
           return;
         }
-        if (!gate || confirmed) return;
-        const { targetInfos = [] } = await browser.send("Target.getTargets");
-        const pages = targetInfos.filter((item) => item.type === "page" && hostMatches(item.url, homeHost));
-        const atGate = pages.some((item) => gate.test(String(item.url)));
-        onSite = pages.length && !atGate ? onSite + 1 : 0;
+        if (!gate) return;
+        const url = await shownPage();
+        if (closing) return;
+        const atGate = Boolean(url) && atGatePath(gate, url);
+        onSite = url && !atGate ? onSite + 1 : 0;
         // The cookie is still there but the site keeps showing its login page: the session ended
         // (2026-11-13: 视频号 and 小红书 listed as signed in, their windows showing the QR code).
+        // Watched for as long as the window is open, also after a "still signed in".
         onGate = atGate ? onGate + 1 : 0;
-        if (closing) return;
         if (onGate >= GATE_POLLS && !(account.platformSignedOutAt > account.lastLoginAt)) {
-          account.platformSignedOutAt = stamp(); apply(account, cookies); save(); emit();
+          confirmed = false; account.platformSignedOutAt = stamp(); apply(account, cookies); save(); emit();
           report(account, "login_window", "platform_signed_out");
         }
-        if (onSite < GATE_POLLS) return;
+        if (onSite < GATE_POLLS || confirmed) return;
         confirmed = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
         report(account, "login_window", "still_signed_in");
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => { polling = false; });
     }, pollMs);
     timer.unref?.();
     void browser.closed.then(async () => {
@@ -253,4 +262,4 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
   return { snapshot, add, rename, login, refresh, remove, profileDir, lease, markSignedOut, markUploadTrouble, clearUploadTrouble, dispose };
 }
 
-module.exports = { createSocialAccounts, PLATFORMS, loggedIn, platformSignedOut };
+module.exports = { createSocialAccounts, PLATFORMS, loggedIn };
