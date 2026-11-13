@@ -262,7 +262,7 @@ const momentsCampaignSourceMarkers = [
 ];
 const momentsCampaignUiMarkers = ["data-xiaoxi-workflow-start", "data-xiaoxi-workflow-save"];
 const momentsPublishSourceMarkers = [
-  "moments-publish:confirm",
+  "moments-publish:choose-media",
   "xiaoxiMomentsPublish",
   "moments_publish_outcome_unknown"
 ];
