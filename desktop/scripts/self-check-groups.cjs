@@ -106,7 +106,6 @@ const checks = [
   "src/main/runtime-data.self_check.cjs",
   "src/main/runtime-coordinator.self_check.cjs",
   "src/main/active-touch-ipc.self_check.cjs",
-  "src/main/active-touch-dev-ipc.self_check.cjs",
   "src/main/moments-campaign-ipc.self_check.cjs",
   "src/main/moments-publish-ipc.self_check.cjs",
   "src/main/moments-daily-automation.self_check.cjs",

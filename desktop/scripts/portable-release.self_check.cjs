@@ -636,7 +636,7 @@ const packagedWorkerSyntax = spawnSync(executable, [
   env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
 });
 assert.equal(packagedWorkerSyntax.status, 0, packagedWorkerSyntax.stderr || packagedWorkerSyntax.stdout || "packaged Remotion worker syntax check failed");
-assert.equal(fs.existsSync(path.join(mainDir, "active-touch-dev-ipc.cjs")), edition === "test");
+assert.equal(fs.existsSync(path.join(mainDir, "active-touch-dev-ipc.cjs")), false, "the retired developer bridge ships in no edition");
 assert.equal(fs.existsSync(path.join(mainDir, "preload.dev.cjs")), edition === "test");
 assert.equal(fs.readFileSync(path.join(mainDir, "preload.cjs"), "utf8").includes("sendReal"), false);
 assert.equal(fs.readFileSync(path.join(mainDir, "preload.cjs"), "utf8").includes("xiaoxiActiveTouch"), false, "delivery preload must not expose development active-touch APIs");
@@ -736,7 +736,7 @@ for (const marker of retiredCustomerVerificationMarkers) {
   assert.equal(renderer.includes(marker), false, `no edition may ask the customer to verify a post (${marker})`);
 }
 for (const marker of momentsActionIpcMarkers) {
-  assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
+  assert.equal(packagedSources.includes(marker), false, `no edition may contain the retired ${marker}`);
 }
 for (const marker of momentsActionUiMarkers) {
   assert.equal(renderer.includes(marker), false, `the unified workflow renderer must not expose legacy action controls: ${marker}`);

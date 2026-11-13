@@ -46,11 +46,6 @@ const blockedChannels = [
   "active-touch:fail-conversation"
 ];
 const blockedDriverTokens = ["clickWechatSendButton", "SEND_MESSAGE_SCRIPT", "XIAOXI_SEND_KEY", "Win32WechatSendMessage", "verifyWechatMessageBubble"];
-const momentsActionIpcMarkers = [
-  "active-touch:dev-moments-inspect-menu",
-  "active-touch:dev-moments-like",
-  "active-touch:dev-moments-comment"
-];
 function read(file) {
   return fs.readFileSync(file, "utf8");
 }
@@ -118,22 +113,17 @@ function assertStageWorkflowContract() {
 }
 
 function assertMomentsActionEditionBoundary() {
-  const developmentMain = ["active-touch-dev-ipc.cjs", "preload.dev.cjs"]
-    .map((name) => read(path.join(desktopDir, "src", "main", name)))
-    .join("\n");
-  const deliveryMain = ["active-touch-ipc.cjs", "preload.cjs", "preload-api.cjs"]
-    .map((name) => read(path.join(desktopDir, "src", "main", name)))
-    .join("\n");
   const campaignMain = ["main.cjs", "moments-campaign-ipc.cjs", "moments-publish-ipc.cjs", "preload-api.cjs", "preload.cjs"]
     .map((name) => read(path.join(desktopDir, "src", "main", name)))
     .join("\n");
   assert.match(campaignMain, /moments-campaign:start/, "delivery must expose the scoped Moments campaign bridge");
   assert.match(read(path.join(desktopDir, "src", "main", "moments-publish-ipc.cjs")), /ipcMain\.handle\("moments-publish:choose-media"/, "the main process must register the Moments media picker the workflow uses");
-  for (const marker of momentsActionIpcMarkers) {
-    assert.equal(developmentMain.includes(marker), true, `test-only main process must contain ${marker}`);
-    assert.equal(deliveryMain.includes(marker), false, `delivery main process must not contain ${marker}`);
+  // The developer bridge and its Moments actions were retired (2026-11-13): no edition carries them.
+  for (const name of ["main.cjs", "preload.cjs", "preload.dev.cjs", "preload-api.cjs", "active-touch-ipc.cjs"]) {
+    assert.equal(read(path.join(desktopDir, "src", "main", name)).includes("active-touch:dev-"), false, `${name} must not carry the retired developer bridge`);
   }
-  for (const name of ["active-touch-dev-ipc.cjs", "preload.dev.cjs"]) {
+  assert.equal(fs.existsSync(path.join(desktopDir, "src", "main", "active-touch-dev-ipc.cjs")), false);
+  for (const name of ["preload.dev.cjs"]) {
     const source = path.join(desktopDir, "src", "main", name);
     assert.equal(sourceAllowed(source, "test"), true, `${name} must be included in the test edition`);
     assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
@@ -178,7 +168,7 @@ assertStageWorkflowContract();
 assertMomentsActionEditionBoundary();
 assertAutoReplyTestScopeBoundary();
 assertPackagedEditionUsesCopiedRenderer();
-assert.equal(read(path.join(desktopDir, "src", "main", "main.cjs")).includes("active-touch-dev-ipc.cjs"), true);
+assert.equal(read(path.join(desktopDir, "src", "main", "main.cjs")).includes("active-touch-dev-ipc.cjs"), false);
 assert.equal(read(path.join(desktopDir, "rpa", "active_touch", "state_machine.dev.cjs")).includes("wechat_window_driver.dev.cjs"), true);
 assert.match(read(path.join(desktopDir, "scripts", "build-portable-release.cjs")), /name\.endsWith\("\.dev\.cjs"\)/);
 for (const name of [

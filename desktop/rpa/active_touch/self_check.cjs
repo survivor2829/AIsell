@@ -3344,13 +3344,10 @@ try {
   const taskIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/touch-task-ipc.cjs"), "utf8");
   assert.match(taskIpcSource, /function shouldSkipBlockedContact\([^)]*\)[\s\S]*contact_unavailable/);
   const developmentPreloadSource = fs.readFileSync(path.join(__dirname, "../../src/main/preload.dev.cjs"), "utf8");
-  assert.match(developmentPreloadSource, /active-touch:dev-select-customer/);
-  assert.match(developmentPreloadSource, /active-touch:dev-calibrate/);
-  assert.match(developmentPreloadSource, /active-touch:dev-click-search-result/);
-  assert.match(developmentPreloadSource, /active-touch:dev-input-message/);
-  assert.match(developmentPreloadSource, /active-touch:dev-send-dry-run/);
-  assert.match(developmentPreloadSource, /active-touch:dev-moments-dry-run/);
-  assert.match(developmentPreloadSource, /active-touch:send-selected-contact/);
+  // The developer bridge (xiaoxiActiveTouch) had no caller in any page and was retired (2026-11-13).
+  assert.equal(developmentPreloadSource.includes("xiaoxiActiveTouch"), false);
+  assert.equal(developmentPreloadSource.includes("active-touch:"), false);
+  assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/active-touch-dev-ipc.cjs")), false);
   assert.equal(developmentPreloadSource.includes("active-touch:send-real"), false);
   assert.equal(developmentPreloadSource.includes("sendReal:"), false);
   assert.equal(developmentPreloadSource.includes("real-send-hold"), false);
@@ -3363,10 +3360,6 @@ try {
   );
   assert.equal(developmentCliSource.includes('args.includes("--real")'), false);
   assert.equal(developmentCliSource.includes("--user-confirmed"), false);
-  const developmentIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/active-touch-dev-ipc.cjs"), "utf8");
-  assert.match(developmentIpcSource, /clickToken/);
-  assert.match(developmentIpcSource, /executeVerifiedContactSend/);
-  assert.equal(developmentIpcSource.includes("setRealSendArm(runtimeDataDir, true)"), false);
   const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
   assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
   assert.match(sharedTransactionSource, /async function sendReal[\s\S]*clickWechatSendButtonAsync[\s\S]*verifyWechatCurrentConversationAsync[\s\S]*verifyWechatMessageBubbleAsync/);
@@ -3380,7 +3373,6 @@ try {
   assert.match(sharedTransactionSource, /beforeDraft/);
   assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
   assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*click-search-result-dry-run[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
-  assert.equal(developmentIpcSource.includes("real-send-hold"), false);
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx")), false, "customers never see an internal test panel on 精准触达");
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.dev.cjs")), false);
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.self_check.cjs")), false);
