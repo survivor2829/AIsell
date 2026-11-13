@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
+const { diagnostics } = require('./diagnostics.cjs');
 const { assertKeys, contained, fail, cleanMessage } = require('./digital-human-provider.cjs');
 const { createBailianVideoProvider, ASYNC_HEADERS, ROUTES } = require('./bailian-video-provider.cjs');
 const audioTools = require('./digital-human-audio.cjs');
@@ -104,16 +105,36 @@ function createReferenceHumanService(options = {}) {
       // 只告诉页面和一键成片「是否已确认过声音授权」，不暴露授权时间或声音编号。
       voiceConsented: Boolean(item.voice?.consentAt || item.consentAt) };
   }
+  // One damaged record must not take the list, the 5-second resume timer or the app down with it
+  // (1.2.90 field crash: JSON.parse threw inside the timer). The file stays as it is; it is reported once.
+  const unreadable = new Set();
   function records(kind) {
     const directory = file(kind);
-    return fs.existsSync(directory) ? fs.readdirSync(directory).filter((name) => name.endsWith('.json') && (kind === 'tasks' ? TASK_ID : ASSET_ID).test(name.replace(/\.json$/u, ''))).map((name) => read(name.replace(/\.json$/u, ''), kind)) : [];
+    if (!fs.existsSync(directory)) return [];
+    const items = [];
+    for (const name of fs.readdirSync(directory)) {
+      const id = name.replace(/\.json$/u, '');
+      if (!name.endsWith('.json') || !(kind === 'tasks' ? TASK_ID : ASSET_ID).test(id)) continue;
+      try { items.push(read(id, kind)); }
+      catch (error) {
+        // Gone or locked for a moment (deleted meanwhile, antivirus, a rename in progress): just not this time.
+        const damaged = error instanceof SyntaxError || error?.code === 'reference_record_invalid';
+        if (!damaged || unreadable.has(`${kind}/${id}`)) continue;
+        unreadable.add(`${kind}/${id}`);
+        try { diagnostics().event('digital_human', 'record_unreadable', { record_kind: kind, error_code: error instanceof SyntaxError ? 'json_invalid' : String(error?.code || 'read_failed') }, { level: 'error', code: 'reference_record_unreadable' }); }
+        catch { /* Reporting never changes the list. */ }
+      }
+    }
+    return items;
   }
   const publicTask = (task) => ({ ...Object.fromEntries(['id', 'title', 'script', 'referenceAssetId', 'captionStyleId', 'musicTrackId', 'status', 'error', 'errorCode',
     'createdAt', 'updatedAt', 'progress', 'generatedVideoId', 'actualDurationSeconds', 'quote', 'quoteRevision', 'previewRevision', 'voiceName', 'industry', 'business', 'voiceStyleId', 'emphasisPhrases', 'sourceTaskId', 'remakeOfTaskId', 'referenceSource', 'includeCover', 'coverStyle', 'autoCoverState', 'coverError', 'audioSampleRate', 'videoFailure', 'packagingMode', 'soundEffects', 'packagingPlan'].map((key) => [key, task[key]])),
     costUsage: costs.usage(task), coverQuote: task.coverQuote, coverRequest: task.coverRequest ? { submitted: true, design: task.coverRequest.design } : undefined,
     pipelineVersion: task.version || 3, statusLabel: LABELS[task.status], canRefresh: task.status !== 'completed' || ['planned', 'submitted'].includes(task.autoCoverState),
     canResume: task.status === 'needs_attention' && !needsNewNarration(task) && !Object.values(task.operations || {}).some((op) => op.rejected),
-    audioPrepared: Boolean(task.audioPreparedAt), audioAvailable: Boolean(task.audioFile), referenceName: read(task.referenceAssetId, 'assets').name });
+    audioPrepared: Boolean(task.audioPreparedAt), audioAvailable: Boolean(task.audioFile), referenceName: referenceName(task.referenceAssetId) });
+  // A damaged person record leaves the task listed without its name instead of hiding every task.
+  function referenceName(id) { try { return read(id, 'assets').name; } catch { return ''; } }
   function workspace() {
     const location = file('workspace.json');
     if (!fs.existsSync(location)) return { preferences: {} };
@@ -684,7 +705,12 @@ function createReferenceHumanService(options = {}) {
     }
     transition(task, task.resumeStatus); await schedule(id); return publicTask(read(id));
   }
-  function pending() { if (!closed && !held && !global.__xiaoxiUpdateHold) for (const task of records('tasks')) if (RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState)) void schedule(task.id); }
+  // Runs from a timer: whatever fails here (a folder locked by antivirus, a record of an unknown shape)
+  // waits for the next tick and never escapes as an uncaught exception that ends the app.
+  function pending() {
+    try { if (!closed && !held && !global.__xiaoxiUpdateHold) for (const task of records('tasks')) if (RUNNING.has(task.status) || task.status === 'completed' && ['planned', 'submitted'].includes(task.autoCoverState)) void schedule(task.id); }
+    catch (error) { try { diagnostics().event('digital_human', 'resume_scan_failed', { error_code: String(error?.code || error?.name || 'unknown') }, { level: 'warn', code: 'reference_resume_scan_failed' }); } catch { /* Reporting never ends the timer. */ } }
+  }
   const timer = setInterval(pending, 5000); timer.unref?.();
   // 旧版本把「包装时查询进度超时」当成失败：这类任务启动时自动接着查结果（只是查询，不花钱）。
   function recoverPackagingTimeouts() {
@@ -692,10 +718,10 @@ function createReferenceHumanService(options = {}) {
       transition(task, 'packaging', { error: '', errorCode: '', packagingQueryTimeouts: 0 });
     }
   }
-  const startup = setTimeout(() => { if (!closed) recoverPackagingTimeouts(); pending(); }, 0); startup.unref?.();
+  const startup = setTimeout(() => { try { if (!closed) recoverPackagingTimeouts(); } catch { /* Tried again at the next start; never ends the app. */ } pending(); }, 0); startup.unref?.();
   return { capabilities, workspace, saveWorkspace, confirmConsent, scriptQuota, sourceStatus: sources.status, sourceConnect: sources.connect, sourceSearch: sources.search, sourceRead: sources.read, importVideo: admit(importVideo), assets: () => ({ items: records('assets').map(publicAsset) }),
     trainVoice: admit(trainVoice), voiceStatus: admit(voiceStatus), writeScript: admit(writeScript), create, quote: admit(quote), prepare: admit(prepare), confirm: admit(confirm), refresh: admit(refresh), resume: admit(resume), repackage: admit(repackage), repackageVideo: admit(repackageVideo), repackageable, coverFrame: admit(coverFrame), coverSource: admit(coverSource), coverQuote: admit(coverQuote), generateCover: admit(generateCover),
-    list: () => ({ items: records('tasks').map(publicTask).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }), get: (id) => publicTask(read(id)),
+    list: () => ({ items: records('tasks').map(publicTask).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))) }), get: (id) => publicTask(read(id)),
     speechMedia: (id) => { const task = read(id); return { audioDataUrl: `data:audio/wav;base64,${fs.readFileSync(verified(task.audioFile, task.audioSha256)).toString('base64')}` }; },
     isBusy: () => active.size > 0 || admissions > 0,
     prepareForUpdate: () => { held = true; return { busy: active.size > 0 || admissions > 0 }; }, resumeAfterUpdate: () => { held = false; pending(); },
