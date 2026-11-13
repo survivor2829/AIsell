@@ -122,7 +122,7 @@ async function main() {
   const errors = [];
   assert.deepEqual(await resolveSalutation({ remark: "某某物业公司", nickname: "李经理" }, broken, (error) => errors.push(error.code)), { type: "title", value: "李经理" });
   assert.deepEqual(errors, ["AI_NOT_CONFIGURED"]);
-  // 客户现场：称呼大多因为 AI 被限流退回。限流/网络/网关暂不可用时等一下再问，最多再问两次；没配置这类不重试。
+  // 客户现场：称呼大多因为 AI 被限流退回。只有被限流时等一下再问（被拒的请求不扣费），最多再问两次；超时、网关不可用、没配置都不重试（可能已扣费或长期不可用）。
   {
     let calls = 0; const waits = [], retryErrors = [];
     const busy = { async classifySalutation() { calls++; if (calls < 3) throw Object.assign(new Error("busy"), { code: "AI_RATE_LIMITED" }); return { salutation: { value: "周总", source: "remark", basis: "周总" } }; } };
@@ -132,7 +132,10 @@ async function main() {
     let gatewayCalls = 0; const gatewayErrors = [];
     const down = { async classifySalutation() { gatewayCalls++; throw Object.assign(new Error("down"), { code: "PROVIDER_GATEWAY_UNAVAILABLE" }); } };
     await resolveSalutation({ remark: "某某公司采购", nickname: "小林" }, down, (error) => gatewayErrors.push(error.code), { wait: async () => {} });
-    assert.equal(gatewayCalls, 3, "最多问三次"); assert.deepEqual(gatewayErrors, ["PROVIDER_GATEWAY_UNAVAILABLE"], "三次都失败才报一次");
+    assert.equal(gatewayCalls, 1, "网关不可用不重试"); assert.deepEqual(gatewayErrors, ["PROVIDER_GATEWAY_UNAVAILABLE"]);
+    let limitedCalls = 0; const limitedErrors = [];
+    await resolveSalutation({ remark: "某某公司仓库", nickname: "小周" }, { async classifySalutation() { limitedCalls++; throw Object.assign(new Error("busy"), { code: "AI_RATE_LIMITED" }); } }, (error) => limitedErrors.push(error.code), { wait: async () => {} });
+    assert.equal(limitedCalls, 3, "限流最多问三次"); assert.deepEqual(limitedErrors, ["AI_RATE_LIMITED"], "三次都被限流才报一次");
     let fixedCalls = 0;
     await resolveSalutation({ remark: "某某厂家", nickname: "阿强" }, { async classifySalutation() { fixedCalls++; throw Object.assign(new Error("no key"), { code: "AI_NOT_CONFIGURED" }); } }, () => {}, { wait: async () => { throw new Error("不该等待"); } });
     assert.equal(fixedCalls, 1, "没配置不重试");

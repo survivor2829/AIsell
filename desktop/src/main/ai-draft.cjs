@@ -57,9 +57,12 @@ function checkedAiSalutation(contact, answer) {
 // cannot read, such as 清洁机器人城胜15300757695), then a titled nickname; otherwise only the greeting.
 // The same remark is asked once per run of the app.
 const aiSalutations = new Map();
-// Busy or briefly unreachable, the AI answers on a second or third try. Field 1.2.48–1.2.85: 481
+// Rate limited, the AI answers on a second or third try. Field 1.2.48–1.2.85: 481
 // salutations fell back across 4 computers, almost all on "DeepSeek 请求过于频繁" (AI_RATE_LIMITED).
-const SALUTATION_RETRY = new Set(["AI_RATE_LIMITED", "AI_NETWORK_ERROR", "AI_REQUEST_TIMEOUT", "PROVIDER_GATEWAY_UNAVAILABLE"]);
+// Only a rate limit: that request was turned away, so asking again costs nothing. A timeout or a lost
+// answer may already have been billed, and an unavailable gateway is usually a lasting state (not
+// signed in, no AI on the account), where waiting only slows every contact down.
+const SALUTATION_RETRY = new Set(["AI_RATE_LIMITED"]);
 const SALUTATION_RETRY_DELAYS_MS = [3000, 8000];
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

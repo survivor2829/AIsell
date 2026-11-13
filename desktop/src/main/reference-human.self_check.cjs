@@ -318,7 +318,7 @@ async function main() {
       // 1.2.90 客户电脑：一条损坏的任务记录（JSON 里有控制字符）让 5 秒一次的续跑定时器抛错，整个软件崩溃。
       // 现在跳过这条，其他记录照常列出，原文件不动。
       const broken = path.join(root, 'reference/tasks', 'rh_00000000-0000-4000-8000-000000000000.json');
-      fs.writeFileSync(broken, '{"id":"rh_00000000-0000-4000-8000-000000000000","script":"坏\u0001掉"}'.replace('\\u0001', '\u0001'));
+      fs.writeFileSync(broken, '{"id":"rh_00000000-0000-4000-8000-000000000000","script":"坏\u0001掉"}');
       const tolerant = createReferenceHumanService(options);
       const listed = tolerant.list().items.map((item) => item.id);
       assert.ok(listed.includes(nextDraft.id), 'other tasks still listed');
