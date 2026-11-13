@@ -718,6 +718,18 @@ function Request-ExactWechatForeground([IntPtr]$hWnd, [object]$window, [bool]$na
   return [Win32WechatWindow]::GetForegroundWindow() -eq $hWnd
 }
 Set-WechatWindowStage "process"
+# Every recognition pass (accessibility tree, sidebar picture) is slow on a weak PC; repeated in the
+# recovery loop it ran into the host's 20 s kill (field 1.3.4, Windows 10 LTSC 2019 at 125%), which
+# reported a bare timeout with WeChat untouched. Past this budget the run ends with the plain
+# "main window not found" reason instead, which the app explains and files with a screenshot.
+$windowSearchBudgetMs = 12000
+$requestedBudget = 0
+if ([int]::TryParse([Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_WINDOW_BUDGET_MS"), [ref]$requestedBudget) -and $requestedBudget -gt 0) { $windowSearchBudgetMs = $requestedBudget }
+function Test-WechatWindowBudgetSpent {
+  if ($windowClock.ElapsedMilliseconds -lt $windowSearchBudgetMs) { return $false }
+  $windowDiagnostic.window_search_budget_spent = $true
+  return $true
+}
 $processNames = @("Weixin", "WeChat")
 function Update-WechatProcessSnapshot {
   $script:wechatProcesses = @{}
@@ -725,6 +737,14 @@ function Update-WechatProcessSnapshot {
     $script:wechatProcesses[[int]$wechatProcess.Id] = $wechatProcess
   }
   $windowDiagnostic.window_process_count = $script:wechatProcesses.Count
+  # Read at once, so a run that never finds the main window still says which WeChat it met.
+  if (-not $windowDiagnostic.window_wechat_version) {
+    foreach ($seenProcess in @($script:wechatProcesses.Values)) {
+      $seenPath = ""; try { $seenPath = [string]$seenProcess.Path } catch {}
+      $seenVersion = Get-WechatFileVersion $seenPath
+      if ($seenVersion) { $windowDiagnostic.window_wechat_version = $seenVersion; break }
+    }
+  }
 }
 function Start-WechatForDiscovery {
   if (-not $allowDiscoveryLaunch) { return $false }
@@ -970,6 +990,7 @@ if (-not $expectedHandleIsValid) {
   if ($matches.Count -eq 0 -and $windowDiagnostic.window_process_count -eq 0 -and -not $inspectOnly) {
     [void](Start-WechatForDiscovery)
     for ($discoveryRetry = 1; $discoveryRetry -le 20 -and $matches.Count -eq 0; $discoveryRetry++) {
+      if (Test-WechatWindowBudgetSpent) { break }
       Start-Sleep -Milliseconds 500
       $windowDiagnostic.window_discovery_attempts = 1 + $discoveryRetry
       $windowDiagnostic.window_discovery_retries = $discoveryRetry
@@ -992,6 +1013,7 @@ if (-not $expectedHandleIsValid) {
         # A slow PC can take several seconds to bring the tray main window back. Only the
         # popup's own process counts: another Weixin process may be a second account.
         for ($recoveryAttempt = 0; $recoveryAttempt -lt 30; $recoveryAttempt++) {
+          if (Test-WechatWindowBudgetSpent) { break }
           Start-Sleep -Milliseconds 200
           $recoveredCandidates = @(Get-WechatWindowCandidates)
           Update-WechatWindowCandidateDiagnostics $recoveredCandidates

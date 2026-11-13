@@ -37,7 +37,8 @@ function sanitizeWechatWindowDiagnostics(source = {}) {
     "window_recovery_attempted",
     "window_recovery_succeeded",
     "window_discovery_launch_attempted",
-    "window_discovery_launch_succeeded"
+    "window_discovery_launch_succeeded",
+    "window_search_budget_spent"
   ]) {
     if (typeof source[key] === "boolean") detail[key] = source[key];
   }
