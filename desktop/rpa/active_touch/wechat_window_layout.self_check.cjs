@@ -7,6 +7,19 @@ const {
   runPowerShell
 } = require("./wechat_window_driver.cjs");
 
+// The fixtures below run slices of the window script; the whole script must also parse
+// (2026-11-13: a leftover line from an edit broke every real run while the slices passed).
+{
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "wechat-window-parse-")), "normalize.ps1");
+  fs.writeFileSync(file, NORMALIZE_WECHAT_WINDOW_SCRIPT, "utf8");
+  const parsed = runPowerShell("$errors = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:XIAOXI_PARSE_FILE, [ref]$null, [ref]$errors); @{ ok = $true; errors = @($errors | ForEach-Object { '{0}: {1}' -f $_.Extent.StartLineNumber, $_.Message }) } | ConvertTo-Json -Compress",
+    { XIAOXI_PARSE_FILE: file }, { ensure: false, timeout: 60_000 });
+  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  assert.equal(parsed.ok, true, JSON.stringify(parsed));
+  assert.deepEqual([].concat(parsed.errors || []), [], "the full window script must parse");
+}
+
 assert.deepEqual(WECHAT_RPA_WINDOW_LAYOUTS, {
   main: { width: 1120, height: 760, layoutMode: "stable_target" },
   momentsStandalone: { layoutMode: "preserve_native_moments_popup" }
@@ -184,7 +197,10 @@ function Test-WechatVisualNavigation([object]$window) { return [bool]$window.vis
 ${selection}
 ${recovery}
 function Start-Sleep { param([int]$Milliseconds) }
-function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false, [bool]$minimized = $false) {
+$windowClock = [Diagnostics.Stopwatch]::StartNew()
+function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false, [bool]$minimized = $false, [string]$budgetMode = "") {
+  $script:windowNegativeChecks = @{}
+  $script:windowSearchBudgetMs = $(if ($budgetMode -eq "spent") { 0 } else { $null })
   $script:fixtureReenumeration = 0
   $script:fixtureActivationCount = 0
   $windowDiagnostic = @{ window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false }
@@ -199,13 +215,13 @@ function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false,
   }
   function Update-WechatWindowCandidateDiagnostics([object[]]$candidates) {}
   function Test-XiaoxiUserIdle { return $true }
-  function Request-PersonalWechatActivation([object]$window) { $script:fixtureActivationCount++; return $true }
+  function Request-PersonalWechatActivation([object]$window) { $script:fixtureActivationCount++; if ($budgetMode -eq "spendOnActivation") { $script:windowSearchBudgetMs = 0 }; return $true }
   $expectedHandleIsValid = $false
   $nativeActivationRequested = $false
   $candidateMatches = @(Get-WechatWindowCandidates)
   $matches = @()
   ${recoveryFlow}
-  @{ activation=$script:fixtureActivationCount; hWnd=$(if ($matches.Count -eq 1) { [int64]$matches[0].hWnd } else { 0 }); recoverySucceeded=$windowDiagnostic.window_recovery_succeeded; recoveryMainCount=$windowDiagnostic.window_recovery_main_count } | ConvertTo-Json -Compress
+  @{ activation=$script:fixtureActivationCount; hWnd=$(if ($matches.Count -eq 1) { [int64]$matches[0].hWnd } else { 0 }); recoverySucceeded=$windowDiagnostic.window_recovery_succeeded; budgetSpent=[bool]$windowDiagnostic.window_search_budget_spent; recoveryMainCount=$windowDiagnostic.window_recovery_main_count } | ConvertTo-Json -Compress
 }
 @{
   minimized=(Invoke-RecoveryFixture 8 $false $true | ConvertFrom-Json)
@@ -213,6 +229,8 @@ function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false,
   samePid=(Invoke-RecoveryFixture 8 | ConvertFrom-Json)
   otherPid=(Invoke-RecoveryFixture 9 | ConvertFrom-Json)
   inspectOnly=(Invoke-RecoveryFixture 8 $true | ConvertFrom-Json)
+  budgetSpent=(Invoke-RecoveryFixture 8 $false $false "spent" | ConvertFrom-Json)
+  budgetSpentOnActivation=(Invoke-RecoveryFixture 8 $false $false "spendOnActivation" | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 5 -Compress
 `, {}, { ensure: false, timeout: 60_000 });
 assert.ok(recoveryFlowResult?.samePid, `recovery fixture must return all scenarios: ${JSON.stringify(recoveryFlowResult)}`);
@@ -223,6 +241,13 @@ assert.equal(recoveryFlowResult.samePid.hWnd, 211, "re-enumeration must choose t
 assert.equal(recoveryFlowResult.samePid.recoverySucceeded, true);
 assert.equal(recoveryFlowResult.otherPid.activation, 1, "the trigger remains bounded even when the result is rejected");
 assert.equal(recoveryFlowResult.otherPid.hWnd, 0, "a strict main HWND from a different PID must fail closed");
+// 1.3.4 field: past the search budget the run ends as "main window not found" instead of the host's bare timeout,
+// and WeChat is not woken up for a look that would never happen.
+assert.equal(recoveryFlowResult.budgetSpent.activation, 0, "no WeChat activation once the budget is spent");
+assert.equal(recoveryFlowResult.budgetSpent.hWnd, 0);
+assert.equal(recoveryFlowResult.budgetSpent.budgetSpent, true);
+assert.equal(recoveryFlowResult.budgetSpentOnActivation.activation, 1);
+assert.equal(recoveryFlowResult.budgetSpentOnActivation.hWnd, 211, "after an activation the restored window is looked at at least once");
 assert.equal(recoveryFlowResult.otherPid.recoverySucceeded, false);
 assert.equal(recoveryFlowResult.inspectOnly.activation, 0, "a read-only inspection must never request WeChat activation");
 assert.equal(recoveryFlowResult.inspectOnly.hWnd, 0, "a read-only inspection must not promote the standalone surface");

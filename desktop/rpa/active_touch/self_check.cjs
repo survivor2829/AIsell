@@ -3124,6 +3124,20 @@ try {
   assert.equal(queueResult.state.real_send_clicked, false);
 
   const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
+  {
+    // 1.3.4 field (Win10 LTSC 2019, 125%): the recovery loop re-ran every recognition pass until the host's
+    // 20 s kill, so the run ended as a bare timeout with WeChat untouched and no version on record.
+    const normalizer = driverSource.slice(driverSource.indexOf("const NORMALIZE_WECHAT_WINDOW_SCRIPT"), driverSource.indexOf("function normalizeWechatMainWindow"));
+    // The budget follows the host's own timeout (passed in), less PowerShell start-up and room for restore/focus/verify.
+    assert.match(normalizer, /XIAOXI_WINDOW_TIMEOUT_MS[\s\S]{0,300}\$hostTimeout - \[int64\]\$windowDiagnostic\.window_bootstrap_ms - 6000/u);
+    assert.equal((driverSource.match(/XIAOXI_WINDOW_TIMEOUT_MS: String\(timeout \|\| 0\)/gu) || []).length, 2, "both runners pass their timeout to the window script");
+    assert.match(normalizer, /for \(\$discoveryRetry = 1;[^\n]*\n\s*if \(Test-WechatWindowBudgetSpent\) \{ break \}/u);
+    assert.match(normalizer, /for \(\$recoveryAttempt = 0;[^\n]*\n\s*if \(\$recoveryAttempt -gt 0 -and \(Test-WechatWindowBudgetSpent\)\) \{ break \}/u);
+    // The executed recovery scenarios (budget spent before / during recovery) live in wechat_window_layout.self_check.
+    assert.match(normalizer, /window_process_count = \$script:wechatProcesses\.Count[\s\S]{0,600}window_wechat_version = \$seenVersion/u, "the WeChat version is known before a main window is found");
+    const { sanitizeWechatWindowDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
+    assert.equal(sanitizeWechatWindowDiagnostics({ window_search_budget_spent: true, window_wechat_version: "4.1.13.15" }).window_search_budget_spent, true);
+  }
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const searchSource = driverSource.split("const SEARCH_SCRIPT = `")[1].split("`;")[0];
