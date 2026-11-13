@@ -439,7 +439,7 @@ function runPowerShell(script, env = {}, options = {}) {
       XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable,
       ...env,
       XIAOXI_PARENT_PID: String(process.pid),
-      ...(options.windowDiagnostics === true ? { XIAOXI_WINDOW_STARTED_AT: String(startedAt) } : {})
+      ...(options.windowDiagnostics === true ? { XIAOXI_WINDOW_STARTED_AT: String(startedAt), XIAOXI_WINDOW_TIMEOUT_MS: String(timeout || 0) } : {})
     },
     input: scriptInput,
     windowsHide: true
@@ -718,18 +718,6 @@ function Request-ExactWechatForeground([IntPtr]$hWnd, [object]$window, [bool]$na
   return [Win32WechatWindow]::GetForegroundWindow() -eq $hWnd
 }
 Set-WechatWindowStage "process"
-# Every recognition pass (accessibility tree, sidebar picture) is slow on a weak PC; repeated in the
-# recovery loop it ran into the host's 20 s kill (field 1.3.4, Windows 10 LTSC 2019 at 125%), which
-# reported a bare timeout with WeChat untouched. Past this budget the run ends with the plain
-# "main window not found" reason instead, which the app explains and files with a screenshot.
-$windowSearchBudgetMs = 12000
-$requestedBudget = 0
-if ([int]::TryParse([Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_WINDOW_BUDGET_MS"), [ref]$requestedBudget) -and $requestedBudget -gt 0) { $windowSearchBudgetMs = $requestedBudget }
-function Test-WechatWindowBudgetSpent {
-  if ($windowClock.ElapsedMilliseconds -lt $windowSearchBudgetMs) { return $false }
-  $windowDiagnostic.window_search_budget_spent = $true
-  return $true
-}
 $processNames = @("Weixin", "WeChat")
 function Update-WechatProcessSnapshot {
   $script:wechatProcesses = @{}
@@ -738,8 +726,9 @@ function Update-WechatProcessSnapshot {
   }
   $windowDiagnostic.window_process_count = $script:wechatProcesses.Count
   # Read at once, so a run that never finds the main window still says which WeChat it met.
-  if (-not $windowDiagnostic.window_wechat_version) {
-    foreach ($seenProcess in @($script:wechatProcesses.Values)) {
+  if (-not $script:wechatVersionLookedUp -and $script:wechatProcesses.Count -gt 0) {
+    $script:wechatVersionLookedUp = $true
+    foreach ($seenProcess in @($script:wechatProcesses.Values | Sort-Object -Property @{ Expression = { $_.ProcessName -ne "Weixin" } })) {
       $seenPath = ""; try { $seenPath = [string]$seenProcess.Path } catch {}
       $seenVersion = Get-WechatFileVersion $seenPath
       if ($seenVersion) { $windowDiagnostic.window_wechat_version = $seenVersion; break }
@@ -925,17 +914,45 @@ function Update-WechatWindowCandidateDiagnostics([object[]]$candidates) {
 function Select-WechatMainCandidates([object[]]$candidates) {
   foreach ($candidate in @($candidates)) {
     if (Test-WechatMainCandidate $candidate) { continue }
+    $checkKey = Get-WechatCandidateCheckKey $candidate
+    if ($script:windowNegativeChecks.ContainsKey($checkKey)) { continue }
+    if (Test-WechatWindowBudgetSpent) { continue }
     Set-WechatWindowStage "shell"
     $candidate.shellNavigation = Test-WechatShellNavigation $candidate
-    if (-not (Test-WechatMainCandidate $candidate)) {
+    if (-not (Test-WechatMainCandidate $candidate) -and -not (Test-WechatWindowBudgetSpent)) {
       Set-WechatWindowStage "visual"
       $candidate.visualNavigation = Test-WechatVisualNavigation $candidate
     }
+    if (-not (Test-WechatMainCandidate $candidate)) { $script:windowNegativeChecks[$checkKey] = $true }
   }
   Set-WechatWindowStage "select"
   return @($candidates | Where-Object { Test-WechatMainCandidate $_ })
 }
 
+# Every recognition pass (accessibility tree, sidebar picture) is slow on a weak PC; repeated in the
+# recovery loop it ran into the host's 20 s kill (field 1.3.4, Windows 10 LTSC 2019 at 125%), which
+# reported a bare timeout with WeChat untouched. The search stops early enough to end with the plain
+# "main window not found" reason, which the app explains and files with a screenshot: the host
+# timeout, minus PowerShell's own start-up, minus room for the restore/focus/verify stages.
+function Get-WechatWindowSearchBudgetMs {
+  if ($null -ne $script:windowSearchBudgetMs) { return $script:windowSearchBudgetMs }
+  $hostTimeout = 0
+  [void][int]::TryParse([string]$env:XIAOXI_WINDOW_TIMEOUT_MS, [ref]$hostTimeout)
+  $script:windowSearchBudgetMs = $(if ($hostTimeout -gt 0) { [Math]::Max(2000, $hostTimeout - [int64]$windowDiagnostic.window_bootstrap_ms - 6000) } else { [int64]::MaxValue })
+  return $script:windowSearchBudgetMs
+}
+function Test-WechatWindowBudgetSpent {
+  if ($null -eq $windowClock -or $windowClock.ElapsedMilliseconds -lt (Get-WechatWindowSearchBudgetMs)) { return $false }
+  $windowDiagnostic.window_search_budget_spent = $true
+  return $true
+}
+# A window that failed the slow checks is not checked again while nothing about it changed (size,
+# visibility, whether it is in front): the recovery loop then polls quickly instead of repeating seconds of work.
+$script:windowNegativeChecks = @{}
+function Get-WechatCandidateCheckKey([object]$candidate) {
+  $front = 0; try { $front = [int64][Win32WechatWindow]::GetForegroundWindow() } catch {}
+  return "{0}|{1}|{2}|{3}|{4}|{5}" -f [int64]$candidate.hWnd, [int]$candidate.width, [int]$candidate.height, [bool]$candidate.visible, [bool]$candidate.minimized, ([int64]$candidate.hWnd -eq $front)
+}
 function Get-WechatWindowRecoveryCandidate([object[]]$candidates) {
   # A minimized or standalone surface is not a proven main-window target. It may only
   # supply a single verified executable path for WeChat's own restore action.
@@ -1006,6 +1023,9 @@ if (-not $expectedHandleIsValid) {
     $recoveryCandidate = Get-WechatWindowRecoveryCandidate $candidateMatches
     if ($null -ne $recoveryCandidate) {
       Set-WechatWindowStage "recover"
+      if (Test-WechatWindowBudgetSpent) { $recoveryCandidate = $null }
+    }
+    if ($null -ne $recoveryCandidate) {
       if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser $recoveryCandidate.pid ([IntPtr]$recoveryCandidate.hWnd); exit }
       $windowDiagnostic.window_recovery_attempted = $true
       if (Request-PersonalWechatActivation $recoveryCandidate) {
@@ -1013,7 +1033,7 @@ if (-not $expectedHandleIsValid) {
         # A slow PC can take several seconds to bring the tray main window back. Only the
         # popup's own process counts: another Weixin process may be a second account.
         for ($recoveryAttempt = 0; $recoveryAttempt -lt 30; $recoveryAttempt++) {
-          if (Test-WechatWindowBudgetSpent) { break }
+          if ($recoveryAttempt -gt 0 -and (Test-WechatWindowBudgetSpent)) { break }
           Start-Sleep -Milliseconds 200
           $recoveredCandidates = @(Get-WechatWindowCandidates)
           Update-WechatWindowCandidateDiagnostics $recoveredCandidates
@@ -2290,7 +2310,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
           XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable,
           ...env,
           XIAOXI_PARENT_PID: String(process.pid),
-          ...(options.windowDiagnostics === true ? { XIAOXI_WINDOW_STARTED_AT: String(startedAt) } : {})
+          ...(options.windowDiagnostics === true ? { XIAOXI_WINDOW_STARTED_AT: String(startedAt), XIAOXI_WINDOW_TIMEOUT_MS: String(timeout || 0) } : {})
         },
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
