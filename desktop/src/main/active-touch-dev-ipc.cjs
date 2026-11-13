@@ -292,7 +292,7 @@ async function runMomentsDryRun(payload = {}) {
 
 async function runMomentsAction(event, payload, definition) {
   if (!trustedFocusedClick(event, payload, definition.clickIntent)) {
-    return blockedMomentsAction(definition.action, "trusted_user_click_required", "已阻断：请在主窗口本人点击对应的朋友圈按钮");
+    return blockedMomentsAction(definition.action, "trusted_user_click_required", "已阻断：请在测试版主窗口本人点击对应的朋友圈按钮");
   }
   if (momentsActionInFlight) {
     return blockedMomentsAction(definition.action, "moments_action_in_flight", "已阻断：另一项朋友圈操作正在执行");
@@ -416,7 +416,7 @@ function registerActiveTouchDevIpc(options = {}) {
     const mainWindow = getMainWindow();
     const clickToken = String(payload.clickToken ?? "");
     if (!clickToken || consumedClickTokens.has(clickToken) || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
-      return { ok: false, action: "send", blocked_reason: "trusted_user_click_required", error: "已阻断：请在主窗口本人点击发送", send_attempted: false };
+      return { ok: false, action: "send", blocked_reason: "trusted_user_click_required", error: "已阻断：请在测试版窗口本人点击发送", send_attempted: false };
     }
     rememberClickToken(clickToken);
     if (realSendInFlight) return { ok: false, action: "send", blocked_reason: "real_send_in_flight", error: "已阻断：真实发送正在确认中", send_attempted: false };
