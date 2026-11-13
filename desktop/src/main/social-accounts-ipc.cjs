@@ -1,9 +1,11 @@
 const { createSocialAccounts } = require("./social-accounts.cjs");
 
-function registerSocialAccountsIpc({ ipcMain, dataDir, getMainWindow }) {
+function registerSocialAccountsIpc({ ipcMain, dataDir, getMainWindow, logger }) {
   let accounts; let initializationError;
   try {
     accounts = createSocialAccounts({ dataDir,
+      // Identifiers only: platform, which check, its verdict and the resulting status.
+      onCheck: ({ platform, source, verdict, status }) => logger?.event?.("social_accounts", "login_checked", { platform_kind: platform, source_kind: source, outcome: verdict, status }),
       onChange: (state) => { const window = getMainWindow(); if (window && !window.isDestroyed()) window.webContents.send("social-accounts:update", state); } });
   } catch (error) { initializationError = { ok: false, code: error.code || "SOCIAL_STORAGE_UNAVAILABLE", error: error.code ? error.message : "平台账号记录暂时无法打开，请检查数据目录后重试。" }; }
   const methods = {

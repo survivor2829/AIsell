@@ -11,13 +11,27 @@ const classes = (node) => String(attr(node, "class") || "").split(/\s+/).filter(
 
 // With `open`, the page is a new tab created for this task, so tabs Chrome restored
 // from an earlier session are never mistaken for it.
-async function attachPage(browser, host, { timeoutMs = 30_000, open = "" } = {}) {
+// A headless Chrome names itself "HeadlessChrome" in its user agent and client hints, which a
+// platform guarding against bots may answer with its login page. The tab opens blank, takes
+// the plain Chrome identity, and only then goes to the platform.
+async function plainIdentity(browser, sessionId) {
+  const { userAgent = "", product = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
+  if (!/HeadlessChrome/.test(userAgent)) return;
+  const fullVersion = (String(product).match(/\/([\d.]+)/) || [])[1] || "", major = fullVersion.split(".")[0] || "";
+  const brands = [{ brand: "Google Chrome", version: major }, { brand: "Chromium", version: major }, { brand: "Not_A Brand", version: "24" }];
+  await browser.send("Network.setUserAgentOverride", { userAgent: userAgent.replace(/HeadlessChrome/g, "Chrome"),
+    userAgentMetadata: { brands, fullVersionList: brands.map((item) => ({ ...item, version: item.brand === "Not_A Brand" ? "24.0.0.0" : fullVersion })),
+      fullVersion, platform: "Windows", platformVersion: "10.0.0", architecture: "x86", model: "", mobile: false } }, sessionId);
+}
+
+async function attachPage(browser, host, { timeoutMs = 30_000, open = "", hideHeadless = false } = {}) {
   const deadline = Date.now() + timeoutMs;
   if (open) {
-    const { targetId } = await browser.send("Target.createTarget", { url: open });
+    const { targetId } = await browser.send("Target.createTarget", { url: hideHeadless ? "about:blank" : open });
     const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
     await browser.send("DOM.enable", {}, sessionId);
     const page = createPage(browser, sessionId);
+    if (hideHeadless) { await plainIdentity(browser, sessionId); await page.navigate(open); }
     while (Date.now() <= deadline) {
       const [url, ready] = await Promise.all([page.url().catch(() => ""), page.evaluate("document.readyState").catch(() => "")]);
       if (url && url !== "about:blank" && ready === "complete") return page;

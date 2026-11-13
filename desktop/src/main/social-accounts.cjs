@@ -3,7 +3,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { findBrowser, launchBrowser } = require("./social-browser.cjs");
-const { attachPage, sleep } = require("./social-page.cjs");
+const { attachPage, pageFor, hostMatches, sleep } = require("./social-page.cjs");
 const drivers = require("./social-publish-drivers.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -16,9 +16,14 @@ const stamp = () => new Date().toISOString();
 const PLATFORMS = {
   douyin: { name: "抖音", home: "https://www.douyin.com/", hosts: ["douyin.com"], loginCookies: ["sessionid", "sessionid_ss"] },
   kuaishou: { name: "快手", home: "https://cp.kuaishou.com/", hosts: ["kuaishou.com"], loginCookies: ["kuaishou.web.cp.api_st", "kuaishou.server.web_st", "userId"] },
-  channels: { name: "视频号", home: "https://channels.weixin.qq.com/platform", hosts: ["channels.weixin.qq.com"], loginCookies: ["sessionid"] },
-  xiaohongshu: { name: "小红书", home: "https://creator.xiaohongshu.com/", hosts: ["xiaohongshu.com"], loginCookies: ["access-token-creator.xiaohongshu.com", "galaxy_creator_session_id"] }
+  // `gate`: the creator site sends a signed-out visitor to a page matching it, so the login window
+  // staying on the creator site is the platform's own "signed in" (douyin.com and cp.kuaishou.com
+  // stay open to visitors, so they have no gate).
+  channels: { name: "视频号", home: "https://channels.weixin.qq.com/platform", hosts: ["channels.weixin.qq.com"], loginCookies: ["sessionid"], gate: /login/ },
+  xiaohongshu: { name: "小红书", home: "https://creator.xiaohongshu.com/", hosts: ["xiaohongshu.com"], loginCookies: ["access-token-creator.xiaohongshu.com", "galaxy_creator_session_id"], gate: /login/ }
 };
+// Polls in a row the login window has to stay on the creator site before that counts (redirects take a moment).
+const GATE_POLLS = 3;
 const ACCOUNT_ID = /^[0-9a-f-]{36}$/;
 
 function platformOf(value, table = PLATFORMS) {
@@ -36,18 +41,22 @@ function loggedIn(platformKey, cookies, now = Date.now(), table = PLATFORMS) {
 // The platform's own answer for a profile whose cookie looks signed in: its publish page
 // sends a signed-out account to the login page (or, on 快手, shows 立即登录). Checked in
 // the same hidden window that read the cookies; an unclear page leaves the cookie verdict.
+// The hidden window must not announce itself as headless (see attachPage's hideHeadless).
 async function platformSignedOut(browser, platformKey) {
   const driver = drivers.driverFor(platformKey);
-  const page = await attachPage(browser, driver.host, { timeoutMs: 20_000, open: driver.uploadUrl });
+  // 小红书 takes 12–14 s to finish loading on a slow line (its login redirect comes at about 10 s).
+  const page = await attachPage(browser, driver.host, { timeoutMs: 40_000, open: driver.uploadUrl, hideHeadless: true });
   await sleep(3000);
   return drivers.signedOut(page, driver);
 }
+// The login page of a gated site, judged on the path only (a query such as ?from=login is not it).
+const atGatePath = (gate, url) => { try { return gate.test(new URL(url).pathname); } catch { return false; } };
 function cleanLabel(value, platformKey, count, table = PLATFORMS) {
   const label = String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 30);
   return label || `${platformOf(platformKey, table).name}账号${count + 1}`;
 }
 
-function createSocialAccounts({ dataDir, launch = launchBrowser, executable = findBrowser(), onChange = () => {}, pollMs = 2000, probe = platformSignedOut, platforms = PLATFORMS }) {
+function createSocialAccounts({ dataDir, launch = launchBrowser, executable = findBrowser(), onChange = () => {}, pollMs = 2000, probe = platformSignedOut, platforms = PLATFORMS, onCheck = () => {} }) {
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -66,6 +75,8 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
   const snapshot = () => ({ platforms: Object.entries(platforms).map(([key, item]) => ({ key, name: item.name })),
     browserReady: Boolean(executable), accounts: state.accounts.map((account) => ({ ...account, loggingIn: open.has(account.id), publishing: leased.has(account.id) })) });
   const emit = () => { if (!disposed) onChange(snapshot()); };
+  // Every login verdict, for the diagnostics log: which check decided and what it said.
+  const report = (account, source, verdict) => { try { onCheck({ platform: account.platform, source, verdict, status: account.status }); } catch { /* Diagnostics never change the status. */ } };
   const find = (id) => {
     const account = ACCOUNT_ID.test(String(id || "")) && state.accounts.find((item) => item.id === id);
     if (!account) throw fail("SOCIAL_ACCOUNT_NOT_FOUND", "没有找到这个账号，请刷新后重试。");
@@ -135,21 +146,62 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       .map((cookie) => crypto.createHash("sha256").update(`${cookie.name}=${cookie.value}`).digest("hex")));
     // Taken as the window opens, before the user can scan anything.
     const before = fingerprint((await browser.send("Storage.getCookies").catch(() => ({})))?.cookies || []);
+    // An account still signed in needs no new scan, so its cookie never changes. Where the creator
+    // site sends visitors to its login page, the window staying there is the platform's own
+    // "signed in" (2026-11-13: a 小红书 account showed signed in inside the window, signed out in the list).
+    const { gate } = platforms[account.platform];
+    const homeHost = new URL(platforms[account.platform].home).hostname;
+    let onSite = 0, onGate = 0, confirmed = false, polling = false, tab = null;
+    // The page as the user sees it: where it is and whether it has finished loading. A page still
+    // loading (a slow network before the site's own redirect) is no verdict either way.
+    async function shownPage() {
+      const { targetInfos = [] } = await browser.send("Target.getTargets");
+      const target = targetInfos.find((item) => item.type === "page" && hostMatches(item.url, homeHost));
+      if (!target) { tab = null; return null; }
+      if (tab?.targetId !== target.targetId) {
+        const { sessionId } = await browser.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+        tab = { targetId: target.targetId, page: pageFor(browser, sessionId) };
+      }
+      const [url, ready] = await Promise.all([tab.page.url().catch(() => ""), tab.page.evaluate("document.readyState").catch(() => "")]);
+      return ready === "complete" && hostMatches(url, homeHost) ? url : null;
+    }
     const timer = setInterval(() => {
-      if (closing || browser.isClosed()) return;
-      void browser.send("Storage.getCookies").then(({ cookies = [] }) => {
+      // One poll at a time: a slow browser must not count one observation twice.
+      if (closing || polling || browser.isClosed()) return;
+      polling = true;
+      void browser.send("Storage.getCookies").then(async ({ cookies = [] }) => {
+        if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms)) { onSite = 0; onGate = 0; return; }
         const renewed = [...fingerprint(cookies)].some((value) => !before.has(value));
-        if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms) || !renewed) return;
-        closing = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
-        setTimeout(() => void browser.close(), 1500);
-      }).catch(() => {});
+        if (renewed) {
+          closing = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
+          report(account, "login_window", "new_login");
+          setTimeout(() => void browser.close(), 1500);
+          return;
+        }
+        if (!gate) return;
+        const url = await shownPage();
+        if (closing) return;
+        const atGate = Boolean(url) && atGatePath(gate, url);
+        onSite = url && !atGate ? onSite + 1 : 0;
+        // The cookie is still there but the site keeps showing its login page: the session ended
+        // (2026-11-13: 视频号 and 小红书 listed as signed in, their windows showing the QR code).
+        // Watched for as long as the window is open, also after a "still signed in".
+        onGate = atGate ? onGate + 1 : 0;
+        if (onGate >= GATE_POLLS && !(account.platformSignedOutAt > account.lastLoginAt)) {
+          confirmed = false; account.platformSignedOutAt = stamp(); apply(account, cookies); save(); emit();
+          report(account, "login_window", "platform_signed_out");
+        }
+        if (onSite < GATE_POLLS || confirmed) return;
+        confirmed = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
+        report(account, "login_window", "still_signed_in");
+      }).catch(() => {}).finally(() => { polling = false; });
     }, pollMs);
     timer.unref?.();
     void browser.closed.then(async () => {
       clearInterval(timer);
       if (open.get(id) === browser) open.delete(id);
       if (disposed || !state.accounts.includes(account)) return;
-      if (!closing) { try { apply(account, (await cookiesOf(account)).cookies); } catch { /* Keep the last known status. */ } }
+      if (!closing) { try { apply(account, (await cookiesOf(account)).cookies); report(account, "login_window_closed", confirmed ? "still_signed_in" : "cookie_only"); } catch { /* Keep the last known status. */ } }
       save(); emit();
     });
     emit();
@@ -161,7 +213,8 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       try {
         const { cookies, signedOut } = await cookiesOf(account, { verify: true });
         if (signedOut) account.platformSignedOutAt = stamp();
-        apply(account, cookies);
+        const active = apply(account, cookies);
+        report(account, "refresh", signedOut ? "platform_signed_out" : active ? "signed_in" : "no_login_cookie");
       } catch { /* Keep the last known status. */ }
     }
     save(); emit(); return snapshot();
@@ -190,6 +243,7 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     const account = find(id);
     account.platformSignedOutAt = stamp();
     account.status = account.lastLoginAt ? "expired" : "login_required";
+    report(account, "task_page", "platform_signed_out");
     save(); emit(); return snapshot();
   }
   // An upload on this account stopped moving. Only a warning: the account stays selectable,
