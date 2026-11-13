@@ -7,6 +7,17 @@ const { attachPage, sleep } = require("./social-page.cjs");
 const drivers = require("./social-publish-drivers.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
+// What stopped the cover copy, as an identifier the log keeps (never a path or ffmpeg text).
+function coverFailureKind(error) {
+  const text = String(error?.message || "");
+  if (error?.code === "ENOENT") return "tool_missing";
+  if (error?.killed) return "timeout";
+  if (/编码组件|encoder/i.test(text)) return "encoder_unavailable";
+  if (/no video stream/.test(text)) return "no_video_stream";
+  if (/empty output/.test(text)) return "empty_output";
+  if (error instanceof SyntaxError) return "probe_unreadable";
+  return typeof error?.code === "number" ? "ffmpeg_exit" : "unexpected";
+}
 const stamp = () => new Date().toISOString();
 const ACTIVE = new Set(["queued", "running", "needs_user", "clicked"]);
 // Records that must survive pruning: active work, results the user still has to check, and published posts (duplicate guard).
@@ -147,7 +158,9 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
       if (job.coverPath && !driver.setCover && coverFirst && fs.existsSync(job.coverPath)) {
         update(job, { status: "running", step: "封面放进视频", reason: "" });
         try { uploadPath = await coverFirst(job.videoPath, job.coverPath); }
-        catch { throw fail("SOCIAL_COVER_FAILED", "没能把封面放进视频，没有发布，可以重新发起。"); }
+        catch (error) { throw Object.assign(fail("SOCIAL_COVER_FAILED", "没能把封面放进视频，没有发布，可以重新发起。"), { cause: coverFailureKind(error) }); }
+        // The app closed while the copy was being made: nothing opens and nothing is published.
+        if (closed) throw fail("SOCIAL_STOPPED", "软件已关闭，没有发布，可以重新发起。");
       }
       update(job, { status: "running", step: "打开平台", reason: "" });
       browser = launch({ executable, profileDir: accounts.profileDir(job.accountId) });
@@ -244,7 +257,7 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
           notices = await platformNotices(page);
         }
       } catch { /* A closed or hung page leaves the failure without a picture. */ }
-      try { onFailure({ platform: job.platform, code: job.timedOut ? "SOCIAL_JOB_TIMEOUT" : String(error?.code || "SOCIAL_UNEXPECTED"), step: job.step, clicked: Boolean(job.clickedAt), pageUrl, screenshot,
+      try { onFailure({ platform: job.platform, code: job.timedOut ? "SOCIAL_JOB_TIMEOUT" : String(error?.code || "SOCIAL_UNEXPECTED"), step: job.step, clicked: Boolean(job.clickedAt), pageUrl, screenshot, ...(error?.cause ? { cause: error.cause } : {}),
         network: network?.summary() || { failed: [], slow: [], rejected: [] }, notices }); }
       catch { /* Diagnostics never change the job result. */ }
       if (job.clickedAt) update(job, { status: "unknown", step: "", reason: `${reason} 已经点过发布，请到平台核对；不会自动重发。`, finishedAt: stamp() });

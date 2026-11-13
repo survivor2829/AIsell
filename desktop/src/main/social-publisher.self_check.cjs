@@ -276,12 +276,23 @@ const finished = (state) => state.jobs.length && state.jobs.every((job) => !["qu
     await w2.until(p2, finished);
     assert.deepEqual(made2, []); assert.deepEqual(w2.log.files, [w2.video]);
     await p2.dispose();
-    const w3 = world(), p3 = w3.make({ coverFirst: async () => { throw new Error("ffmpeg exited 1 C:/Users/someone"); } });
+    // 做副本时关掉软件：不再打开平台、不发。
+    let finishCopy;
+    const w4 = world(), p4 = w4.make({ coverFirst: () => new Promise((resolve) => { finishCopy = resolve; }) });
+    const cover4 = path.join(w4.root, "封面.jpg"); fs.writeFileSync(cover4, "jpg");
+    p4.submit({ videos: [{ path: w4.video, cover: cover4 }], accountIds: ["a-douyin"], title: "测试" });
+    while (!finishCopy) await new Promise((resolve) => setTimeout(resolve, 5));
+    const closing = p4.dispose(); finishCopy(path.join(w4.root, "带封面.mp4")); await closing;
+    assert.equal(w4.log.launches, 0); assert.equal(w4.log.clicks, 0);
+    // 失败原因只记成标识（工具缺失），不带路径。
+    const failures3 = [];
+    const w3 = world(), p3 = w3.make({ onFailure: (failure) => failures3.push(failure), coverFirst: async () => { throw Object.assign(new Error("spawn C:/Users/someone/ffprobe.exe ENOENT"), { code: "ENOENT" }); } });
     const cover3 = path.join(w3.root, "封面.jpg"); fs.writeFileSync(cover3, "jpg");
     p3.submit({ videos: [{ path: w3.video, cover: cover3 }], accountIds: ["a-douyin"], title: "测试" });
     const job = (await w3.until(p3, finished)).jobs[0];
     assert.equal(job.status, "failed"); assert.match(job.reason, /没能把封面放进视频/); assert.doesNotMatch(job.reason, /Users/);
     assert.equal(w3.log.launches, 0); assert.equal(w3.log.clicks, 0);
+    assert.equal(failures3[0].code, "SOCIAL_COVER_FAILED"); assert.equal(failures3[0].cause, "tool_missing");
     await p3.dispose();
   }
   {
