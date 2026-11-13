@@ -56,7 +56,7 @@ export default function MomentsDryRunPanel() {
     const executor = window.xiaoxiActiveTouch?.momentsDryRun;
     if (!executor) {
       setStatusBlocked(true);
-      setStatus("朋友圈预演仅在内部测试版开放。");
+      setStatus("朋友圈预演仅在内部开发版开放。");
       return;
     }
     setObservationId("");
@@ -201,7 +201,7 @@ export default function MomentsDryRunPanel() {
       <div className="dev-acceptance-head">
         <ThumbsUp size={18} />
         <strong>朋友圈单条安全执行</strong>
-        <span>测试版 · 单条执行</span>
+        <span>开发版 · 单条执行</span>
       </div>
       <div className="dev-control-row">
         <label>

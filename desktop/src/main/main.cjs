@@ -408,7 +408,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
   app.exit(1);
 } else if (!gotSingleInstanceLock) {
   if (!app.isPackaged && developmentEdition) {
-    dialog.showErrorBox("内部开发版未启动", "测试版程序仍在运行，占用了同一份测试数据。请先暂停任务并完全退出旧测试版，再重新运行“启动内部开发版.cmd”。刚才显示的旧窗口没有加载本次源码修复。");
+    dialog.showErrorBox("内部开发版未启动", "已安装的程序仍在运行，占用了同一份测试数据。请先暂停任务并完全退出已安装的程序，再重新运行“启动内部开发版.cmd”。刚才显示的旧窗口没有加载本次源码修复。");
     app.exit(1);
   } else {
     if (productDetailReleaseSmokeMode) process.exitCode = 1;

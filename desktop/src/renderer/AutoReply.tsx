@@ -475,7 +475,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
   const testScopeNotice = running
     ? `正在仅自动回复：${testScopeLabel}。其他联系人不会回复。`
     : !testScopeReady
-      ? "测试版保护未就绪，已禁止启动自动回复"
+      ? "测试保护未就绪，已禁止启动自动回复"
       : !testContacts.length
         ? "请先同步联系人，并确认测试联系人有唯一可识别的会话名称。"
         : selectedTestContact
@@ -576,7 +576,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
               <h2 id="auto-reply-test-scope-title">内部测试保护</h2>
               <p>为避免误回复，本次只能选择 1 位已同步联系人。关闭或重启应用后需要重新选择。</p>
             </div>
-            <span>仅测试版</span>
+            <span>仅开发版</span>
           </div>
           <div className="auto-reply-test-scope-controls">
             <label htmlFor="auto-reply-test-contact">测试联系人</label>

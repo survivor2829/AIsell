@@ -1219,7 +1219,7 @@ function testContactScopeOptions(activeTouchDir) {
 function resolveTestContactScope(activeTouchDir, contactId) {
   const selectedContactId = normalizeText(contactId);
   if (!selectedContactId) {
-    return { ok: false, code: "test_contact_required", error: "测试版请先选择一位已同步联系人" };
+    return { ok: false, code: "test_contact_required", error: "请先选择一位已同步联系人" };
   }
   const contactUniverse = testContactUniverse(activeTouchDir);
   const matchingContacts = contactUniverse.filter((contact) => normalizeText(contact?.id) === selectedContactId);
@@ -2178,7 +2178,7 @@ function createAutoReplyController(options = {}) {
       };
     }
     if (!activeTestContactScope) {
-      return { ok: false, code: "test_contact_required", error: "测试版请先选择一位已同步联系人" };
+      return { ok: false, code: "test_contact_required", error: "请先选择一位已同步联系人" };
     }
     const refreshed = resolveTestContactScope(activeTouchDir, activeTestContactScope.contactId);
     if (!refreshed.ok) return refreshed;
