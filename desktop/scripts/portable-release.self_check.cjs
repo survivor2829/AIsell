@@ -712,7 +712,9 @@ const renderer = fs.readdirSync(path.join(appDir, "dist", "assets"))
   .map((name) => fs.readFileSync(path.join(appDir, "dist", "assets", name), "utf8"))
   .join("\n");
 assert.equal(renderer.includes("内部测试"), edition === "test");
-assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), edition === "test");
+// 用户 2026-11-13：任何版本的界面都不出现「测试版」；版本靠上一行的「内部测试」区分。
+assert.equal(renderer.includes("测试版"), false, "no edition shows 测试版");
+if (edition === "delivery") assert.equal(renderer.includes("交付版"), false);
 if (edition === "delivery") {
   assert.equal(renderer.includes("工作台暂不可用"), true, "delivery renderer must show the current customer recovery state");
   assert.equal(renderer.includes("如果持续失败，请导出日志交给技术人员检查。"), true, "delivery renderer must explain the current retry and diagnostic recovery path");
