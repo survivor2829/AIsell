@@ -6,14 +6,18 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const {
-  buildHandoffMessage,
-  createAutoReplyController,
-  exceedsRateLimit,
-  isReplyableText,
-  isSafeReplyText,
-  registerAutoReplyIpc
-} = require("./auto-reply-ipc.cjs");
+const { createAutoReplyController, registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
+const { isReplyableText, isSafeReplyText } = require("./auto-reply-text.cjs");
+const { buildHandoffMessage, exceedsRateLimit } = require("./auto-reply-contacts.cjs");
+// Every name the controller destructures from the split modules must exist there: a missing export would be
+// undefined and fail only on the rarely used path that needs it.
+{
+  const controllerSource = fs.readFileSync(path.join(__dirname, "auto-reply-ipc.cjs"), "utf8");
+  for (const match of controllerSource.matchAll(/const \{([^}]*)\} = require\("\.\/(auto-reply-[a-z]+)\.cjs"\);/gu)) {
+    const exported = require(`./${match[2]}.cjs`);
+    for (const name of match[1].split(",").map((item) => item.trim()).filter(Boolean)) assert.ok(name in exported, `${match[2]} must export ${name}`);
+  }
+}
 const { createPreloadApis } = require("./preload-api.cjs");
 const { createWechatVisualAutoReplyDriver } = require("../../rpa/active_touch/wechat_auto_reply_visual_driver.dev.cjs");
 

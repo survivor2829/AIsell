@@ -17,18 +17,24 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const nonFailureReasonLiterals = new Set(["failed", "finite_tasks_drained", "idle", "invalid_unclassified_reason",
   "startup_or_data_confirmation_missing", "parent_still_running", "retention_result_missing"]);
 
-function unclassifiedAddedReasons(diff) {
+function literalsOn(lines) {
   const found = new Set();
-  for (const line of String(diff).split(/\r?\n/u)) {
-    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+  for (const line of lines) {
     for (const pattern of patterns) {
       pattern.lastIndex = 0;
-      for (const match of line.matchAll(pattern)) {
-        if (!knownReasons.has(match[1]) && !nonFailureReasonLiterals.has(match[1])) found.add(match[1]);
-      }
+      for (const match of line.matchAll(pattern)) found.add(match[1]);
     }
   }
-  return [...found].sort();
+  return found;
+}
+
+function unclassifiedAddedReasons(diff) {
+  const lines = String(diff).split(/\r?\n/u);
+  const added = literalsOn(lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")));
+  // A literal the same diff also removes is moved code, not a new reason (2026-11-13: splitting
+  // auto-reply-ipc.cjs moved an answer's reason code into a new file). Only new literals are reviewed.
+  const removed = literalsOn(lines.filter((line) => line.startsWith("-") && !line.startsWith("---")));
+  return [...added].filter((reason) => !removed.has(reason) && !knownReasons.has(reason) && !nonFailureReasonLiterals.has(reason)).sort();
 }
 
 function gitDiff(base, options = {}) {
