@@ -58,8 +58,10 @@ function watchNetwork(page) {
 // is never published again by this module: if its result cannot be confirmed
 // on the platform's work management page it stays `unknown` until the user
 // checks the platform and says what happened.
+// `coverFirst(video, cover)` gives a copy of the video that opens with its cover, for
+// platforms without a cover step (they take the first frame); without it the video goes as it is.
 function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, executable = findBrowser(), driverFor = drivers.driverFor, attach = attachPage, steps = drivers,
-  onChange = () => {}, onFailure = () => {}, now = () => Date.now(), dailyLimit = 10, timing = {} }) {
+  coverFirst = null, onChange = () => {}, onFailure = () => {}, now = () => Date.now(), dailyLimit = 10, timing = {} }) {
   const wait = { upload: 15 * 60_000, result: 10 * 60_000, pageOpen: 30_000, settle: 3000, poll: 2000, button: 3000, react: 20_000, busyRetry: 30_000, stall: 3 * 60_000, ...timing };
   wait.job = timing.job ?? wait.upload + wait.result + 5 * 60_000;
   const stateFile = path.join(dataDir, "state.json");
@@ -140,6 +142,13 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
     }
     let browser, watchdog, page, network;
     try {
+      // Before the browser opens, so the copy's encoding never eats into the page's time limits.
+      let uploadPath = job.videoPath;
+      if (job.coverPath && !driver.setCover && coverFirst && fs.existsSync(job.coverPath)) {
+        update(job, { status: "running", step: "封面放进视频", reason: "" });
+        try { uploadPath = await coverFirst(job.videoPath, job.coverPath); }
+        catch { throw fail("SOCIAL_COVER_FAILED", "没能把封面放进视频，没有发布，可以重新发起。"); }
+      }
       update(job, { status: "running", step: "打开平台", reason: "" });
       browser = launch({ executable, profileDir: accounts.profileDir(job.accountId) });
       activeBrowser = browser;
@@ -170,7 +179,7 @@ function createSocialPublisher({ dataDir, accounts, launch = launchBrowser, exec
         if (!input) throw network.troubled()
           ? fail("SOCIAL_PAGE_NOT_LOADED", `${driver.name}的发布页没有加载完整（网络或代理不稳定），没有发布，可以重新发起。`)
           : fail("SOCIAL_FORM_CHANGED", `没有找到${driver.name}的视频上传入口，平台页面可能改版了。`);
-        await page.setFile(input, job.videoPath);
+        await page.setFile(input, uploadPath);
         const reactDeadline = now() + wait.react;
         while (!accepted && now() <= reactDeadline) { await sleep(wait.poll); accepted = await driver.uploaded(page) || /上传中|上传成功|取消上传|\d+%/.test(await page.shownText()); }
         if (accepted) break;
