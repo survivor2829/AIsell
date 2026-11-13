@@ -26,7 +26,10 @@ const SECRET_LIKE_PATTERN = /(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-
 const LOCATION_PATTERN = /(?:https?:\/\/|file:\/\/|\\\\|[a-z]:[\\/]|\/(?:users|home|var|tmp|etc|opt)\/)/iu;
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_.:-]{0,119}$/iu;
 const SAFE_DETAIL_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/iu;
-const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extension|kind|mode|outcome|parent_trace_id|phase|platform|provider|reason|release|retryability|side_effect|stage|state|status|type|version|zone))$/iu;
+// Field names whose values are enums (the value itself must still be a plain identifier: no Chinese,
+// paths or secrets). 2026-11-13 field review: layout/source/class/workflow/owner values were enums
+// (popup_layout "sectioned", capture_source, first_class, workflow, coordinator_owner) lost as hashes.
+const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|class|classification|code|engine|extension|kind|layout|mode|outcome|owner|parent_trace_id|phase|platform|provider|reason|release|retryability|side_effect|source|stage|state|status|type|version|workflow|zone))$/iu;
 const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|(?:user|account|customer).?id|phone|mobile|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text|^(?:error|description|stack|url|uri|host)$)/iu;
 const PATH_KEYS = /(?:path|dir|file|cwd|executable)/iu;
 const RECEIPT_DIAGNOSTIC_FIELDS = [

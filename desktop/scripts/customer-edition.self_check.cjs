@@ -51,12 +51,6 @@ const momentsActionIpcMarkers = [
   "active-touch:dev-moments-like",
   "active-touch:dev-moments-comment"
 ];
-const momentsActionUiMarkers = [
-  "data-xiaoxi-moments-inspect",
-  "data-xiaoxi-moments-like",
-  "data-xiaoxi-moments-comment"
-];
-
 function read(file) {
   return fs.readFileSync(file, "utf8");
 }
@@ -149,8 +143,6 @@ function assertMomentsActionEditionBoundary() {
   assert.doesNotMatch(app, /import\("\.\/MomentsDryRunPanel"\)/, "the retired single-post tool must not be reachable from the app");
   assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-campaign-ipc\.cjs"\)/, "pilot main process must register Moments campaign IPC");
   assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-publish-ipc\.cjs"\)/, "pilot main process must register Moments publish IPC");
-  const panel = read(path.join(desktopDir, "src", "renderer", "MomentsDryRunPanel.tsx"));
-  for (const marker of momentsActionUiMarkers) assert.equal(panel.includes(marker), true, `test-only Moments panel must contain ${marker}`);
 }
 
 function assertAutoReplyTestScopeBoundary() {

@@ -394,6 +394,13 @@ try {
   });
   assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, blockedInput[key]])), inputSafety,
     "workflow send summaries must retain only typed input phase, tick, idle and window observations");
+  {
+    // 枚举类字段（布局、来源、分类、工作流、占用者）原样保留；同名字段里出现中文、路径、密钥照样打码。
+    const kept = sanitizeValue({ popup_layout: "sectioned", capture_source: "hook", first_class: "chat", classification: "chat_window", workflow: "touch", coordinator_owner: "workflow:touch" });
+    assert.deepEqual(kept, { popup_layout: "sectioned", capture_source: "hook", first_class: "chat", classification: "chat_window", workflow: "touch", coordinator_owner: "workflow:touch" });
+    const hidden = sanitizeValue({ capture_source: String.raw`C:\Users\someone\a.png`, classification: "张总的会话", workflow: "sk-abcdefgh1234" });
+    for (const key of Object.keys(hidden)) assert.equal(typeof hidden[key], "object", key + " must stay hashed");
+  }
   assert.equal(blockedInput.outcome, "not_attempted");
   assert.equal(blockedInput.retryability, "safe_retry");
   assert.equal(blockedInput.safety_diagnostics, undefined);

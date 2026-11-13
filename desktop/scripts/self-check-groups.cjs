@@ -140,8 +140,6 @@ const checks = [
   "src/renderer/overview-stats.self_check.cjs",
   "scripts/remotion-packaging.self_check.cjs",
   "src/renderer/moments-campaign-panel.self_check.cjs",
-  "src/renderer/moments-publish-panel.self_check.cjs",
-  "src/renderer/moments-dry-run-panel.self_check.cjs",
   "scripts/build-product-detail-sidecar.self_check.cjs",
   "scripts/development-launcher.self_check.cjs",
   "scripts/product-detail-download.electron.self_check.cjs",
