@@ -3013,10 +3013,6 @@ function registerAutoReplyIpc(options = {}) {
 }
 
 module.exports = {
-  buildHandoffMessage,
   createAutoReplyController,
-  exceedsRateLimit,
-  isReplyableText,
-  isSafeReplyText,
   registerAutoReplyIpc
 };

@@ -1,6 +1,5 @@
 // Split out of auto-reply-ipc.cjs (2026-11-13), unchanged. See auto-reply-ipc.cjs for the controller.
 const crypto = require("node:crypto");
-const { diagnostics } = require("./diagnostics.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { writeFileAtomic } = require("./atomic-file.cjs");
