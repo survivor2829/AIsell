@@ -128,7 +128,7 @@ function assertMomentsActionEditionBoundary() {
     .map((name) => read(path.join(desktopDir, "src", "main", name)))
     .join("\n");
   assert.match(campaignMain, /moments-campaign:start/, "delivery must expose the scoped Moments campaign bridge");
-  assert.match(campaignMain, /moments-publish:confirm/, "delivery must expose the double-confirmed Moments publish bridge");
+  assert.match(read(path.join(desktopDir, "src", "main", "moments-publish-ipc.cjs")), /ipcMain\.handle\("moments-publish:choose-media"/, "the main process must register the Moments media picker the workflow uses");
   for (const marker of momentsActionIpcMarkers) {
     assert.equal(developmentMain.includes(marker), true, `test-only main process must contain ${marker}`);
     assert.equal(deliveryMain.includes(marker), false, `delivery main process must not contain ${marker}`);

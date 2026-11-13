@@ -96,40 +96,13 @@ function createMomentsCampaignApi(ipcRenderer) {
 }
 
 function createMomentsPublishApi(ipcRenderer) {
+  // The unified workflow only asks the main process to open the media picker; publishing itself runs
+  // in the workflow. A real click on the choose button is required.
   const consumeChooseClick = createTrustedClickGate("[data-xiaoxi-moments-publish-choose]");
-  const consumePrepareClick = createTrustedClickGate("[data-xiaoxi-moments-publish-prepare]");
-  const consumeConfirmClick = createTrustedClickGate("[data-xiaoxi-moments-publish-confirm]");
-  const consumeResolveClick = createTrustedClickGate(
-    "[data-xiaoxi-moments-publish-resolve-published], [data-xiaoxi-moments-publish-resolve-not-published]"
-  );
   return {
-    status: () => ipcRenderer.invoke("moments-publish:status"),
     chooseMedia: () => ipcRenderer.invoke("moments-publish:choose-media", {
       clickToken: consumeChooseClick()
-    }),
-    prepare: (payload) => ipcRenderer.invoke("moments-publish:prepare", {
-      content: String(payload?.content || ""),
-      selectionId: String(payload?.selectionId || ""),
-      clickToken: consumePrepareClick()
-    }),
-    confirm: (payload) => ipcRenderer.invoke("moments-publish:confirm", {
-      draftId: String(payload?.draftId || ""),
-      clickToken: consumeConfirmClick()
-    }),
-    reset: () => ipcRenderer.invoke("moments-publish:reset"),
-    resolveUnknown: async (payload) => {
-      const result = await ipcRenderer.invoke("moments-publish:resolve-unknown", {
-        resolution: String(payload?.resolution || ""),
-        clickToken: consumeResolveClick()
-      });
-      if (result?.ok) await ipcRenderer.invoke("wechat-workflow:status").catch(() => undefined);
-      return result;
-    },
-    onUpdate: (callback) => {
-      const handler = (_event, payload) => callback(payload);
-      ipcRenderer.on("moments-publish:update", handler);
-      return () => ipcRenderer.removeListener("moments-publish:update", handler);
-    }
+    })
   };
 }
 

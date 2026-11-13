@@ -1506,7 +1506,10 @@ function registerMomentsPublishIpc(options = {}) {
     };
   }
 
-  ipcMain.handle("moments-publish:status", () => controller.status());
+  // Only media choice is a renderer entry. The unified workflow publishes through prepareWorkflowTask /
+  // runWorkflowStep / runDraft / applyResolution in the main process. The standalone panel's
+  // prepare/confirm/reset/resolve entries went with the panel (2026-11-13); the controller's prepare /
+  // confirm / reset / resolveUnknown remain only as the self-check's way into runDraft.
   ipcMain.handle("moments-publish:choose-media", async (event, payload = {}) => {
     if (!trustedClick(event, payload.clickToken)) return rejected();
     const window = getMainWindow();
@@ -1521,19 +1524,6 @@ function registerMomentsPublishIpc(options = {}) {
       return { ok: false, reason: "moments_publish_media_selection_cancelled", state: controller.status().state };
     }
     return controller.chooseMedia(result.filePaths);
-  });
-  ipcMain.handle("moments-publish:prepare", (event, payload = {}) => {
-    if (!trustedClick(event, payload.clickToken)) return rejected();
-    return controller.prepare({ selectionId: payload.selectionId, content: payload.content });
-  });
-  ipcMain.handle("moments-publish:confirm", (event, payload = {}) => {
-    if (!trustedClick(event, payload.clickToken)) return rejected();
-    return controller.confirm({ confirmationId: payload.confirmationId || payload.draftId });
-  });
-  ipcMain.handle("moments-publish:reset", () => controller.reset());
-  ipcMain.handle("moments-publish:resolve-unknown", (event, payload = {}) => {
-    if (!trustedClick(event, payload.clickToken)) return rejected();
-    return controller.resolveUnknown({ fingerprint: payload.fingerprint, resolution: payload.resolution });
   });
   return controller;
 }
