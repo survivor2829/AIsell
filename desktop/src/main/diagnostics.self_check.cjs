@@ -398,7 +398,9 @@ try {
     // 枚举类字段（布局、来源、分类、工作流、占用者）原样保留；同名字段里出现中文、路径、密钥照样打码。
     const kept = sanitizeValue({ popup_layout: "sectioned", capture_source: "hook", first_class: "chat", classification: "chat_window", workflow: "touch", coordinator_owner: "workflow:touch" });
     assert.deepEqual(kept, { popup_layout: "sectioned", capture_source: "hook", first_class: "chat", classification: "chat_window", workflow: "touch", coordinator_owner: "workflow:touch" });
-    const hidden = sanitizeValue({ capture_source: String.raw`C:\Users\someone\a.png`, classification: "张总的会话", workflow: "sk-abcdefgh1234" });
+    const hidden = sanitizeValue({ capture_source: String.raw`C:\Users\someone\a.png`, classification: "张总的会话",
+      // Only the named fields are opened: other *_owner / *_source / *_class names stay hashed even for plain ASCII.
+      window_owner: "wxid_abc123", data_source: "johnsmith", query_class: "latin", source: "lead" });
     for (const key of Object.keys(hidden)) assert.equal(typeof hidden[key], "object", key + " must stay hashed");
   }
   assert.equal(blockedInput.outcome, "not_attempted");
