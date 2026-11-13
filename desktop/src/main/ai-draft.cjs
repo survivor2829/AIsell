@@ -57,18 +57,30 @@ function checkedAiSalutation(contact, answer) {
 // cannot read, such as 清洁机器人城胜15300757695), then a titled nickname; otherwise only the greeting.
 // The same remark is asked once per run of the app.
 const aiSalutations = new Map();
-async function resolveSalutation(contact, client, onError = () => {}) {
+// Busy or briefly unreachable, the AI answers on a second or third try. Field 1.2.48–1.2.85: 481
+// salutations fell back across 4 computers, almost all on "DeepSeek 请求过于频繁" (AI_RATE_LIMITED).
+const SALUTATION_RETRY = new Set(["AI_RATE_LIMITED", "AI_NETWORK_ERROR", "AI_REQUEST_TIMEOUT", "PROVIDER_GATEWAY_UNAVAILABLE"]);
+const SALUTATION_RETRY_DELAYS_MS = [3000, 8000];
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function resolveSalutation(contact, client, onError = () => {}, { wait = pause, delays = SALUTATION_RETRY_DELAYS_MS } = {}) {
   const local = contactSalutation(contact);
   if (local.type === "title") return local;
   const remark = String(contact?.remark || "").trim(), nickname = String(contact?.nickname || "").trim();
   if ((remark || nickname) && typeof client?.classifySalutation === "function") {
     const key = `${remark}\u0000${nickname}`;
     if (!aiSalutations.has(key)) {
-      try {
-        const { salutation } = await client.classifySalutation({ contact: { remark, nickname } });
-        aiSalutations.set(key, checkedAiSalutation({ remark, nickname }, salutation));
-        if (aiSalutations.size > 2000) aiSalutations.delete(aiSalutations.keys().next().value);
-      } catch (error) { onError(error); }
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const { salutation } = await client.classifySalutation({ contact: { remark, nickname } });
+          aiSalutations.set(key, checkedAiSalutation({ remark, nickname }, salutation));
+          if (aiSalutations.size > 2000) aiSalutations.delete(aiSalutations.keys().next().value);
+          break;
+        } catch (error) {
+          if (attempt < delays.length && SALUTATION_RETRY.has(String(error?.code || ""))) { await wait(delays[attempt]); continue; }
+          onError(error); break;
+        }
+      }
     }
     if (aiSalutations.get(key)?.type === "title") return aiSalutations.get(key);
   }

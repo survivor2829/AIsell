@@ -470,7 +470,8 @@ function createTouchWorkflow(options = {}) {
             // Silent failure (user decision 2026-10-30): the message still goes out, but without the
             // salutation the remark may hold, so it is reported as an error and becomes a capsule.
             onSalutationError: (error) => diagnostics().event("active_touch", "salutation.ai_failed",
-              { task_id: id, current_index: task.current_index, ai_error: String(error?.code || "") },
+              // `ai_error_code`: a key the log keeps readable (as `ai_error` it was only a hash in the field).
+              { task_id: id, current_index: task.current_index, ai_error_code: String(error?.code || "unknown") },
               { trace: true, level: "error", code: "touch_salutation_unavailable" }) });
         } catch (error) {
           try { draft = generateFixedScriptFallback({ task: { ...task, script }, result: current, error }); }

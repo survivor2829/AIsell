@@ -43,46 +43,48 @@ function probeWechat() {
   });
 }
 
-const item = (id, label, status, detail, fix = "") => ({ id, label, status, detail, fix });
+// `reason`: what the problem is, as a code the diagnostics log keeps readable (the Chinese detail
+// only reaches the log as a hash: 10 computers reported "checkup_wechat_warn" without saying which).
+const item = (id, label, status, detail, fix = "", reason = status) => ({ id, label, status, detail, fix, reason });
 
 function wechatItem(wechat) {
   const label = "微信";
-  if (!wechat || wechat.error) return item("wechat", label, "warn", "没能读出微信的状态。", "确认微信已安装并打开，再点「重新检查」。");
-  if (!wechat.installed) return item("wechat", label, "fail", "这台电脑上没有找到微信。", "安装 Windows 版微信 4.1 或 4.2，登录后再点「重新检查」。");
+  if (!wechat || wechat.error) return item("wechat", label, "warn", "没能读出微信的状态。", "确认微信已安装并打开，再点「重新检查」。", "wechat_probe_failed");
+  if (!wechat.installed) return item("wechat", label, "fail", "这台电脑上没有找到微信。", "安装 Windows 版微信 4.1 或 4.2，登录后再点「重新检查」。", "wechat_not_installed");
   const version = String(wechat.version || "");
   if (version && !VERIFIED_WECHAT.test(version)) {
-    return item("wechat", label, "warn", `微信版本 ${version} 还没有在本软件上验证过，触达、自动回复、朋友圈可能出错。`, "建议换成微信 4.1 或 4.2 版本。");
+    return item("wechat", label, "warn", `微信版本 ${version} 还没有在本软件上验证过，触达、自动回复、朋友圈可能出错。`, "建议换成微信 4.1 或 4.2 版本。", "wechat_version_unverified");
   }
-  if (!wechat.running) return item("wechat", label, "warn", `已安装微信 ${version}，但现在没有打开。`, "打开微信并扫码登录。");
-  if (!wechat.window) return item("wechat", label, "warn", `微信 ${version} 在运行，但主窗口没有显示（可能还没登录或被最小化到托盘）。`, "登录微信，并把微信主窗口打开。");
+  if (!wechat.running) return item("wechat", label, "warn", `已安装微信 ${version}，但现在没有打开。`, "打开微信并扫码登录。", "wechat_not_running");
+  if (!wechat.window) return item("wechat", label, "warn", `微信 ${version} 在运行，但主窗口没有显示（可能还没登录或被最小化到托盘）。`, "登录微信，并把微信主窗口打开。", "wechat_window_hidden");
   return item("wechat", label, "ok", `微信 ${version} 已登录并打开。`);
 }
 
 function displayItem(display) {
   const label = "屏幕";
-  if (!display) return item("display", label, "warn", "没能读出屏幕信息。");
+  if (!display) return item("display", label, "warn", "没能读出屏幕信息。", "", "display_unknown");
   const scale = Math.round(Number(display.scaleFactor || 1) * 100);
   const width = Number(display.workAreaSize?.width || display.size?.width || 0), height = Number(display.workAreaSize?.height || display.size?.height || 0);
   const detail = `缩放 ${scale}%，可用区域 ${width}×${height}。`;
-  if (width < 1280 || height < 700) return item("display", label, "warn", detail + "屏幕可用区域偏小，微信窗口可能放不下。", "把显示缩放调小（如 100% 或 125%），或换更大的屏幕。");
-  if (![100, 125, 150].includes(scale)) return item("display", label, "warn", detail + "这个缩放比例还没有验证过，微信自动操作可能点不准。", "在 Windows 设置 → 显示 里把缩放改成 100%、125% 或 150%。");
+  if (width < 1280 || height < 700) return item("display", label, "warn", detail + "屏幕可用区域偏小，微信窗口可能放不下。", "把显示缩放调小（如 100% 或 125%），或换更大的屏幕。", "display_too_small");
+  if (![100, 125, 150].includes(scale)) return item("display", label, "warn", detail + "这个缩放比例还没有验证过，微信自动操作可能点不准。", "在 Windows 设置 → 显示 里把缩放改成 100%、125% 或 150%。", "display_scale_unverified");
   return item("display", label, "ok", detail);
 }
 
 function aiItem(gateway) {
   const label = "AI 服务";
-  if (!gateway || gateway.enabled === false) return item("ai", label, "warn", "这个版本没有连接统一 AI 服务。");
-  if (!gateway.ready) return item("ai", label, "fail", "AI 服务没连上，文案、评论、称呼识别、视频制作都会失败。", "确认已登录软件、网络通畅，然后重启软件。");
-  if (gateway.capabilities && gateway.capabilities.deepseek === false) return item("ai", label, "fail", "账号没有开通文案 AI。", "联系管理员开通。");
+  if (!gateway || gateway.enabled === false) return item("ai", label, "warn", "这个版本没有连接统一 AI 服务。", "", "ai_gateway_disabled");
+  if (!gateway.ready) return item("ai", label, "fail", "AI 服务没连上，文案、评论、称呼识别、视频制作都会失败。", "确认已登录软件、网络通畅，然后重启软件。", "ai_gateway_offline");
+  if (gateway.capabilities && gateway.capabilities.deepseek === false) return item("ai", label, "fail", "账号没有开通文案 AI。", "联系管理员开通。", "ai_deepseek_disabled");
   return item("ai", label, "ok", "AI 服务已连接。");
 }
 
 function diskItem(freeBytes) {
   const label = "磁盘空间";
-  if (!Number.isFinite(freeBytes)) return item("disk", label, "warn", "没能读出剩余空间。");
+  if (!Number.isFinite(freeBytes)) return item("disk", label, "warn", "没能读出剩余空间。", "", "disk_unknown");
   const detail = `软件所在磁盘剩余 ${(freeBytes / GB).toFixed(1)} GB。`;
-  if (freeBytes < 2 * GB) return item("disk", label, "fail", detail + "空间不够，视频制作和更新会失败。", "清理磁盘，至少留出 10 GB。");
-  if (freeBytes < 10 * GB) return item("disk", label, "warn", detail + "空间偏少，做视频时可能不够。", "清理磁盘，建议留出 10 GB 以上。");
+  if (freeBytes < 2 * GB) return item("disk", label, "fail", detail + "空间不够，视频制作和更新会失败。", "清理磁盘，至少留出 10 GB。", "disk_full");
+  if (freeBytes < 10 * GB) return item("disk", label, "warn", detail + "空间偏少，做视频时可能不够。", "清理磁盘，建议留出 10 GB 以上。", "disk_low");
   return item("disk", label, "ok", detail);
 }
 
@@ -97,24 +99,28 @@ function createEnvironmentCheckup({ rootDir, logger, getDisplay = () => null, ga
     const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
     const memoryGb = Number(totalMemory()) / GB;
     const major = Number(String(release()).split(".")[0]);
+    const wechatState = await safe(wechat, { error: "probe_failed" });
+    // Digits and dots only, so the log keeps it readable.
+    const wechatVersion = /^\d+(?:\.\d+){1,3}$/.test(String(wechatState?.version || "")) ? String(wechatState.version) : "";
     const items = [
-      wechatItem(await safe(wechat, { error: "probe_failed" })),
+      wechatItem(wechatState),
       displayItem(await safe(getDisplay, null)),
       aiItem(await safe(gatewayStatus, null)),
       (await safe(findBrowser, "")) ? item("browser", "Chrome 浏览器", "ok", "已找到 Chrome 或 Edge。")
-        : item("browser", "Chrome 浏览器", "warn", "没有找到 Chrome 或 Edge，养号和一键分发用不了。", "安装 Google Chrome。"),
+        : item("browser", "Chrome 浏览器", "warn", "没有找到 Chrome 或 Edge，养号和一键分发用不了。", "安装 Google Chrome。", "browser_missing"),
       diskItem(await safe(() => freeBytes(rootDir), NaN)),
       memoryGb >= 4 ? item("memory", "内存", "ok", `内存 ${memoryGb.toFixed(0)} GB。`)
-        : item("memory", "内存", "warn", `内存 ${memoryGb.toFixed(1)} GB，做视频和同时跑多个任务时可能很慢。`, "建议 8 GB 以上内存。"),
+        : item("memory", "内存", "warn", `内存 ${memoryGb.toFixed(1)} GB，做视频和同时跑多个任务时可能很慢。`, "建议 8 GB 以上内存。", "memory_low"),
       major >= 10 ? item("system", "Windows 系统", "ok", `Windows ${major === 10 ? "10/11" : major}（${release()}）。`)
-        : item("system", "Windows 系统", "fail", `系统版本 ${release()} 太旧。`, "请使用 Windows 10 或 11。")
+        : item("system", "Windows 系统", "fail", `系统版本 ${release()} 太旧。`, "请使用 Windows 10 或 11。", "windows_too_old")
     ];
     const result = { at: new Date(now()).toISOString(), items, problems: items.filter((entry) => entry.status !== "ok").length };
     try { fs.mkdirSync(path.dirname(file), { recursive: true }); writeJsonAtomic(file, result); } catch { /* The result is still shown. */ }
     const worst = items.find((entry) => entry.status === "fail") || items.find((entry) => entry.status === "warn");
     if (worst) {
       try {
-        logger?.event?.("checkup", "checkup_problems", { items: items.map(({ id, status, detail }) => ({ id, status, detail })) },
+        logger?.event?.("checkup", "checkup_problems", { items: items.map(({ id, status, reason }) => ({ item_kind: id, status, reason_code: reason })),
+          ...(wechatVersion ? { wechat_version: wechatVersion } : {}) },
           { level: "error", code: `checkup_${worst.id}_${worst.status}` });
       } catch { /* Reporting never changes the result. */ }
     }

@@ -314,6 +314,19 @@ async function main() {
     await reopened.writeScript({ ...scriptInput, generationIntentId: intent, recoverOnly: true });
     assert.equal(counts.script, 4, 'restart recovery reuses original receipt');
     await reopened.close();
+    {
+      // 1.2.90 客户电脑：一条损坏的任务记录（JSON 里有控制字符）让 5 秒一次的续跑定时器抛错，整个软件崩溃。
+      // 现在跳过这条，其他记录照常列出，原文件不动。
+      const broken = path.join(root, 'reference/tasks', 'rh_00000000-0000-4000-8000-000000000000.json');
+      fs.writeFileSync(broken, '{"id":"rh_00000000-0000-4000-8000-000000000000","script":"坏\u0001掉"}'.replace('\\u0001', '\u0001'));
+      const tolerant = createReferenceHumanService(options);
+      const listed = tolerant.list().items.map((item) => item.id);
+      assert.ok(listed.includes(nextDraft.id), 'other tasks still listed');
+      assert.ok(!listed.includes('rh_00000000-0000-4000-8000-000000000000'));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(fs.readFileSync(broken, 'utf8').includes('\u0001'), true, 'the damaged file is left as it was');
+      await tolerant.close(); fs.rmSync(broken);
+    }
     // 仿写稿原创度：旧版云端照抄也能标出来；云端两次都不达标时停下，不重发、不再扣额度
     const viral = { platform: 'douyin', title: '物业经理别再招保洁了', body: '物业经理千万别再招保洁了，一台洗地机顶六个人，一年省下二十万人工', url: '' };
     scriptReply = () => ({ ok: true, title: '照抄', script: '物业经理千万别再招保洁了，一台洗地机顶六个人。', emphasisPhrases: [], structure: [{ part: '钩子', method: '反常识开头' }] });

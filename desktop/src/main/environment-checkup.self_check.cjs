@@ -47,6 +47,11 @@ assert.equal(diskItem(50 * GB).status, "ok");
   assert.equal(module, "checkup"); assert.equal(event, "checkup_problems");
   assert.deepEqual(options, { level: "error", code: "checkup_disk_fail" });
   assert.equal(details.items.length, 7);
+  // 日志里能直接读出是哪一项、什么原因、微信版本（以前只有哈希，10 台电脑的「微信警告」看不出原因）。
+  assert.deepEqual(details.items.find((entry) => entry.item_kind === "wechat"), { item_kind: "wechat", status: "warn", reason_code: "wechat_not_running" });
+  assert.deepEqual(details.items.find((entry) => entry.item_kind === "disk"), { item_kind: "disk", status: "fail", reason_code: "disk_full" });
+  assert.equal(details.wechat_version, "4.1.15.56");
+  assert.equal(JSON.stringify(details).includes("没有打开"), false, "不带中文说明");
   // 同时点两次只跑一次。
   const [a, b] = [checkup.run(), checkup.run()];
   assert.equal(a, b);

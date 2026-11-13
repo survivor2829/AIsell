@@ -122,6 +122,21 @@ async function main() {
   const errors = [];
   assert.deepEqual(await resolveSalutation({ remark: "某某物业公司", nickname: "李经理" }, broken, (error) => errors.push(error.code)), { type: "title", value: "李经理" });
   assert.deepEqual(errors, ["AI_NOT_CONFIGURED"]);
+  // 客户现场：称呼大多因为 AI 被限流退回。限流/网络/网关暂不可用时等一下再问，最多再问两次；没配置这类不重试。
+  {
+    let calls = 0; const waits = [], retryErrors = [];
+    const busy = { async classifySalutation() { calls++; if (calls < 3) throw Object.assign(new Error("busy"), { code: "AI_RATE_LIMITED" }); return { salutation: { value: "周总", source: "remark", basis: "周总" } }; } };
+    const answer = await resolveSalutation({ remark: "周总（深圳物业）", nickname: "" }, busy, (error) => retryErrors.push(error.code), { wait: async (ms) => waits.push(ms) });
+    assert.equal(calls, 3); assert.deepEqual(waits, [3000, 8000]); assert.deepEqual(retryErrors, [], "重试成功不算失败");
+    assert.equal(answer.type, "title", JSON.stringify(answer));
+    let gatewayCalls = 0; const gatewayErrors = [];
+    const down = { async classifySalutation() { gatewayCalls++; throw Object.assign(new Error("down"), { code: "PROVIDER_GATEWAY_UNAVAILABLE" }); } };
+    await resolveSalutation({ remark: "某某公司采购", nickname: "小林" }, down, (error) => gatewayErrors.push(error.code), { wait: async () => {} });
+    assert.equal(gatewayCalls, 3, "最多问三次"); assert.deepEqual(gatewayErrors, ["PROVIDER_GATEWAY_UNAVAILABLE"], "三次都失败才报一次");
+    let fixedCalls = 0;
+    await resolveSalutation({ remark: "某某厂家", nickname: "阿强" }, { async classifySalutation() { fixedCalls++; throw Object.assign(new Error("no key"), { code: "AI_NOT_CONFIGURED" }); } }, () => {}, { wait: async () => { throw new Error("不该等待"); } });
+    assert.equal(fixedCalls, 1, "没配置不重试");
+  }
   assert.deepEqual(nicknameSalutation({ nickname: "江南" }), { type: "generic", value: "" });
   assert.deepEqual(nicknameSalutation({ nickname: "金色年华" }), { type: "generic", value: "" });
   const titled = await generatePersonalizedDraft({ client: ask({ value: "城总", source: "remark", basis: "城胜" }),
