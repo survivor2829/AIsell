@@ -27,6 +27,12 @@ const LOCATION_PATTERN = /(?:https?:\/\/|file:\/\/|\\\\|[a-z]:[\\/]|\/(?:users|h
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_.:-]{0,119}$/iu;
 const SAFE_DETAIL_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/iu;
 const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extension|kind|mode|outcome|parent_trace_id|phase|platform|provider|reason|release|retryability|side_effect|stage|state|status|type|version|zone))$/iu;
+// Named one by one, never as suffixes, so a new field called *_source or *_owner stays hashed by
+// default. 2026-11-13 field review: these carried enums lost as hashes (popup_layout "sectioned",
+// capture_source, first_class/last_class = the character class cjk/latin/digit, classification,
+// workflow and coordinator_owner, 569 times each). The value must still be a plain identifier.
+const SAFE_DETAIL_EXACT_KEYS = new Set(["popup_layout", "capture_source", "first_class", "last_class", "classification", "workflow", "coordinator_owner"]);
+const safeDetailKey = (key) => SAFE_DETAIL_STRING_KEYS.test(key) || SAFE_DETAIL_EXACT_KEYS.has(String(key));
 const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|(?:user|account|customer).?id|phone|mobile|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text|^(?:error|description|stack|url|uri|host)$)/iu;
 const PATH_KEYS = /(?:path|dir|file|cwd|executable)/iu;
 const RECEIPT_DIAGNOSTIC_FIELDS = [
@@ -109,7 +115,7 @@ function sanitizeValue(value, context = {}) {
       protectedKey
       || SECRET_LIKE_PATTERN.test(value)
       || LOCATION_PATTERN.test(value)
-      || !SAFE_DETAIL_STRING_KEYS.test(key)
+      || !safeDetailKey(key)
       || !SAFE_IDENTIFIER_PATTERN.test(text)
     ) return summarizeSensitive(value, salt);
     return text.slice(0, MAX_STRING);

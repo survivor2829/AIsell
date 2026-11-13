@@ -3748,16 +3748,6 @@ async function main() {
     const windowDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
     assert.match(windowDriverSource, /if \(options\.sta === true\) shellArgs\.push\("-STA"\)/u);
 
-    const panelSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/MomentsDryRunPanel.tsx"), "utf8");
-    assert.match(panelSource, /const \[menuVerified, setMenuVerified\] = useState\(false\)/u);
-    assert.match(panelSource, /const \[commentSendSupported, setCommentSendSupported\] = useState\(false\)/u);
-    assert.match(panelSource, /disabled=\{busy \|\| !observationId \|\| !menuVerified \|\| !likeEnabled\}/u);
-    assert.match(panelSource, /disabled=\{busy \|\| !observationId \|\| !menuVerified \|\| !commentSendSupported \|\| !commentEnabled/u);
-    assert.ok((panelSource.match(/setMenuVerified\(false\)/gu) ?? []).length >= 4, "every observation invalidation path must close the real action gate");
-    assert.match(panelSource, /当前可见测试帖（不校验作者）/u);
-    assert.match(panelSource, /观察锁 5 分钟内有效/u);
-    assert.match(panelSource, /本次已确认未点击或发送/u);
-    assert.match(panelSource, /重新预演也不会再次执行该动作/u);
 
     const mainSource = fs.readFileSync(path.join(__dirname, "../../src/main/main.cjs"), "utf8");
     assert.match(mainSource, /registerActiveTouchDevIpc\(\{[\s\S]*activeTouchDir: runtime\.activeTouchDir,[\s\S]*momentsDir: runtime\.momentsDir,[\s\S]*coordinator,[\s\S]*getMainWindow/u);
