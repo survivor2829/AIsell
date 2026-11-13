@@ -2,6 +2,17 @@
 
 本文只说明代码职责和状态归属，不记录功能是否通过验收；当前能力与验证结果只看 `PROJECT_STATUS.md`。
 
+## 版本（edition）命名
+
+名字是历史遗留，含义以这里为准（用户 2026-11-13 决定不改名，避免动更新链路）：
+
+| 代码里的名字 | 实际是什么 |
+|---|---|
+| `test` 构建 → `development` 版（`DEVELOPMENT_EDITION`、`developmentEdition`、`dist-development`、`preload.dev.cjs`） | **所有客户正在用的版本**（test 更新频道）。判断「客户看不看得到」不能看 `DEVELOPMENT_EDITION`，要看界面实际是否渲染或调用 |
+| `delivery` 构建 → `pilot` 版（`dist-pilot`、`preload.cjs`） | 预留的正式客户版本，当前没有发布 |
+| `rpa/active_touch/*.dev.cjs` | 在正式驱动之上的**真实发送 / 朋友圈动作层**（如核对当前微信号、真实点击发送），客户每天在用；`.dev` 不表示开发专用。打包时只被排除出 delivery 版 |
+| `preload.dev.cjs` | 内容与 `preload.cjs` 相同，存在与否就是 `edition.cjs` 判断 development 版的依据，不能删 |
+
 ## 代码边界
 
 | 区域 | 职责 | 不应承担 |
