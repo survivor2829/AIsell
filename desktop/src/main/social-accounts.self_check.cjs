@@ -26,12 +26,15 @@ assert.equal(findBrowser(env, () => false), "");
 
 (async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "social-accounts-"));
-  const cookies = new Map(), launches = [];
+  const cookies = new Map(), launches = [], tabs = new Map();
   // 假浏览器：按资料目录保存 Cookie，记录每次启动的参数。
   const launch = ({ profileDir, url, headless }) => {
     let closedResolve; const closed = new Promise((resolve) => { closedResolve = resolve; });
     const browser = { profileDir, url, headless, isClosedFlag: false,
-      send: async (method) => { assert.equal(method, "Storage.getCookies", "只读浏览器级 Cookie，不接管页面"); return { cookies: cookies.get(profileDir) || [] }; },
+      send: async (method) => {
+        // 登录窗口只看标签页地址（视频号/小红书），不接管页面。
+        if (method === "Target.getTargets") return { targetInfos: (tabs.get(profileDir) || []).map((url) => ({ type: "page", url })) };
+        assert.equal(method, "Storage.getCookies", "只读浏览器级 Cookie，不接管页面"); return { cookies: cookies.get(profileDir) || [] }; },
       close: async () => { if (!browser.isClosedFlag) { browser.isClosedFlag = true; closedResolve(); } },
       isClosed: () => browser.isClosedFlag, closed };
     launches.push(browser); return browser;
@@ -124,6 +127,44 @@ assert.equal(findBrowser(env, () => false), "");
   await assert.rejects(reopened.login("not-an-id"), { code: "SOCIAL_ACCOUNT_NOT_FOUND" });
   assert.throws(() => reopened.add({ platform: "weibo" }), { code: "SOCIAL_PLATFORM_INVALID" });
   await reopened.dispose();
+
+{
+    // 小红书：账号本来就登录着，窗口里停在创作者中心不跳登录页 → 列表也改成已登录（不用重新扫码，Cookie 不变）。
+    // 2026-11-13 客户电脑：窗口里是登录状态，列表却一直显示未登录。
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "social-accounts-gate-")), checks = [];
+    const gated = createSocialAccounts({ dataDir: dir, launch, executable: "chrome.exe", pollMs: 5, probe, onCheck: (check) => checks.push(check) });
+    const xhs = (await gated.add({ platform: "xiaohongshu" })).accounts[0];
+    const window = launches.at(-1);
+    await window.close(); await sleep(20);
+    const login = [{ name: "galaxy_creator_session_id", value: "old", domain: ".xiaohongshu.com", expires: Date.now() / 1000 + 3600 }];
+    cookies.set(window.profileDir, login);
+    // 后台核对说平台要求重新登录（例如被当成机器人）：状态卡在未登录。
+    platformPage.verdict = true; await gated.refresh(); platformPage.verdict = false;
+    assert.notEqual(gated.snapshot().accounts[0].status, "active");
+    await gated.login(xhs.id);
+    const again = launches.at(-1);
+    tabs.set(again.profileDir, ["https://creator.xiaohongshu.com/new/home"]);
+    for (let i = 0; i < 400 && gated.snapshot().accounts[0].status !== "active"; i++) await sleep(10);
+    assert.equal(gated.snapshot().accounts[0].status, "active", "窗口里确认已登录，列表跟着变");
+    assert.equal(again.isClosed(), false, "已登录不自动关窗口，用户自己关");
+    await again.close(); await sleep(20);
+    assert.equal(gated.snapshot().accounts[0].status, "active", "关窗口后仍是已登录");
+    assert.ok(checks.some((check) => check.source === "login_window" && check.verdict === "still_signed_in"));
+
+    // 反过来：Cookie 还在，但窗口一直停在登录页（平台已让账号下线）→ 列表改成未登录。
+    await gated.login(xhs.id);
+    const third = launches.at(-1);
+    tabs.set(third.profileDir, ["https://creator.xiaohongshu.com/login?redirectReason=401"]);
+    for (let i = 0; i < 400 && gated.snapshot().accounts[0].status === "active"; i++) await sleep(10);
+    assert.equal(gated.snapshot().accounts[0].status, "expired", "窗口显示登录页，列表改为未登录");
+    // 扫码后 Cookie 变了：恢复已登录并自动关窗口。
+    cookies.set(third.profileDir, [{ ...login[0], value: "new" }]);
+    for (let i = 0; i < 400 && !third.isClosed(); i++) await sleep(10);
+    await sleep(20);
+    assert.equal(gated.snapshot().accounts[0].status, "active");
+    assert.ok(checks.every((check) => !JSON.stringify(check).includes("old") || check.verdict), "日志里只有标识");
+    tabs.clear(); await gated.dispose(); fs.rmSync(dir, { recursive: true, force: true });
+  }
 
   // 没装浏览器时界面能提示。
   assert.equal(createSocialAccounts({ dataDir, launch, executable: "" }).snapshot().browserReady, false);

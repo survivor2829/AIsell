@@ -3,7 +3,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { findBrowser, launchBrowser } = require("./social-browser.cjs");
-const { attachPage, sleep } = require("./social-page.cjs");
+const { pageFor, hostMatches, sleep } = require("./social-page.cjs");
 const drivers = require("./social-publish-drivers.cjs");
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -16,9 +16,14 @@ const stamp = () => new Date().toISOString();
 const PLATFORMS = {
   douyin: { name: "抖音", home: "https://www.douyin.com/", hosts: ["douyin.com"], loginCookies: ["sessionid", "sessionid_ss"] },
   kuaishou: { name: "快手", home: "https://cp.kuaishou.com/", hosts: ["kuaishou.com"], loginCookies: ["kuaishou.web.cp.api_st", "kuaishou.server.web_st", "userId"] },
-  channels: { name: "视频号", home: "https://channels.weixin.qq.com/platform", hosts: ["channels.weixin.qq.com"], loginCookies: ["sessionid"] },
-  xiaohongshu: { name: "小红书", home: "https://creator.xiaohongshu.com/", hosts: ["xiaohongshu.com"], loginCookies: ["access-token-creator.xiaohongshu.com", "galaxy_creator_session_id"] }
+  // `gate`: the creator site sends a signed-out visitor to a page matching it, so the login window
+  // staying on the creator site is the platform's own "signed in" (douyin.com and cp.kuaishou.com
+  // stay open to visitors, so they have no gate).
+  channels: { name: "视频号", home: "https://channels.weixin.qq.com/platform", hosts: ["channels.weixin.qq.com"], loginCookies: ["sessionid"], gate: /login/ },
+  xiaohongshu: { name: "小红书", home: "https://creator.xiaohongshu.com/", hosts: ["xiaohongshu.com"], loginCookies: ["access-token-creator.xiaohongshu.com", "galaxy_creator_session_id"], gate: /login/ }
 };
+// Polls in a row the login window has to stay on the creator site before that counts (redirects take a moment).
+const GATE_POLLS = 3;
 const ACCOUNT_ID = /^[0-9a-f-]{36}$/;
 
 function platformOf(value, table = PLATFORMS) {
@@ -36,9 +41,19 @@ function loggedIn(platformKey, cookies, now = Date.now(), table = PLATFORMS) {
 // The platform's own answer for a profile whose cookie looks signed in: its publish page
 // sends a signed-out account to the login page (or, on 快手, shows 立即登录). Checked in
 // the same hidden window that read the cookies; an unclear page leaves the cookie verdict.
+// The hidden window must not announce itself: a headless Chrome says "HeadlessChrome" in its
+// user agent, which a platform guarding against bots may answer with its login page.
 async function platformSignedOut(browser, platformKey) {
   const driver = drivers.driverFor(platformKey);
-  const page = await attachPage(browser, driver.host, { timeoutMs: 20_000, open: driver.uploadUrl });
+  const { userAgent = "" } = await browser.send("Browser.getVersion").catch(() => ({}));
+  const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
+  const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+  await browser.send("DOM.enable", {}, sessionId);
+  if (/HeadlessChrome/.test(userAgent)) await browser.send("Network.setUserAgentOverride", { userAgent: userAgent.replace(/HeadlessChrome/g, "Chrome") }, sessionId);
+  const page = pageFor(browser, sessionId);
+  await page.navigate(driver.uploadUrl);
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline && await page.evaluate("document.readyState").catch(() => "") !== "complete") await sleep(500);
   await sleep(3000);
   return drivers.signedOut(page, driver);
 }
@@ -47,7 +62,7 @@ function cleanLabel(value, platformKey, count, table = PLATFORMS) {
   return label || `${platformOf(platformKey, table).name}账号${count + 1}`;
 }
 
-function createSocialAccounts({ dataDir, launch = launchBrowser, executable = findBrowser(), onChange = () => {}, pollMs = 2000, probe = platformSignedOut, platforms = PLATFORMS }) {
+function createSocialAccounts({ dataDir, launch = launchBrowser, executable = findBrowser(), onChange = () => {}, pollMs = 2000, probe = platformSignedOut, platforms = PLATFORMS, onCheck = () => {} }) {
   const stateFile = path.join(dataDir, "state.json");
   let state;
   try {
@@ -66,6 +81,8 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
   const snapshot = () => ({ platforms: Object.entries(platforms).map(([key, item]) => ({ key, name: item.name })),
     browserReady: Boolean(executable), accounts: state.accounts.map((account) => ({ ...account, loggingIn: open.has(account.id), publishing: leased.has(account.id) })) });
   const emit = () => { if (!disposed) onChange(snapshot()); };
+  // Every login verdict, for the diagnostics log: which check decided and what it said.
+  const report = (account, source, verdict) => { try { onCheck({ platform: account.platform, source, verdict, status: account.status }); } catch { /* Diagnostics never change the status. */ } };
   const find = (id) => {
     const account = ACCOUNT_ID.test(String(id || "")) && state.accounts.find((item) => item.id === id);
     if (!account) throw fail("SOCIAL_ACCOUNT_NOT_FOUND", "没有找到这个账号，请刷新后重试。");
@@ -135,13 +152,39 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       .map((cookie) => crypto.createHash("sha256").update(`${cookie.name}=${cookie.value}`).digest("hex")));
     // Taken as the window opens, before the user can scan anything.
     const before = fingerprint((await browser.send("Storage.getCookies").catch(() => ({})))?.cookies || []);
+    // An account still signed in needs no new scan, so its cookie never changes. Where the creator
+    // site sends visitors to its login page, the window staying there is the platform's own
+    // "signed in" (2026-11-13: a 小红书 account showed signed in inside the window, signed out in the list).
+    const { gate } = platforms[account.platform];
+    const homeHost = new URL(platforms[account.platform].home).hostname;
+    let onSite = 0, onGate = 0, confirmed = false;
     const timer = setInterval(() => {
       if (closing || browser.isClosed()) return;
-      void browser.send("Storage.getCookies").then(({ cookies = [] }) => {
+      void browser.send("Storage.getCookies").then(async ({ cookies = [] }) => {
+        if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms)) { onSite = 0; return; }
         const renewed = [...fingerprint(cookies)].some((value) => !before.has(value));
-        if (closing || !loggedIn(account.platform, cookies, Date.now(), platforms) || !renewed) return;
-        closing = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
-        setTimeout(() => void browser.close(), 1500);
+        if (renewed) {
+          closing = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
+          report(account, "login_window", "new_login");
+          setTimeout(() => void browser.close(), 1500);
+          return;
+        }
+        if (!gate || confirmed) return;
+        const { targetInfos = [] } = await browser.send("Target.getTargets");
+        const pages = targetInfos.filter((item) => item.type === "page" && hostMatches(item.url, homeHost));
+        const atGate = pages.some((item) => gate.test(String(item.url)));
+        onSite = pages.length && !atGate ? onSite + 1 : 0;
+        // The cookie is still there but the site keeps showing its login page: the session ended
+        // (2026-11-13: 视频号 and 小红书 listed as signed in, their windows showing the QR code).
+        onGate = atGate ? onGate + 1 : 0;
+        if (closing) return;
+        if (onGate >= GATE_POLLS && !(account.platformSignedOutAt > account.lastLoginAt)) {
+          account.platformSignedOutAt = stamp(); apply(account, cookies); save(); emit();
+          report(account, "login_window", "platform_signed_out");
+        }
+        if (onSite < GATE_POLLS) return;
+        confirmed = true; account.lastLoginAt = stamp(); apply(account, cookies); save(); emit();
+        report(account, "login_window", "still_signed_in");
       }).catch(() => {});
     }, pollMs);
     timer.unref?.();
@@ -149,7 +192,7 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       clearInterval(timer);
       if (open.get(id) === browser) open.delete(id);
       if (disposed || !state.accounts.includes(account)) return;
-      if (!closing) { try { apply(account, (await cookiesOf(account)).cookies); } catch { /* Keep the last known status. */ } }
+      if (!closing) { try { apply(account, (await cookiesOf(account)).cookies); report(account, "login_window_closed", confirmed ? "still_signed_in" : "cookie_only"); } catch { /* Keep the last known status. */ } }
       save(); emit();
     });
     emit();
@@ -161,7 +204,8 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
       try {
         const { cookies, signedOut } = await cookiesOf(account, { verify: true });
         if (signedOut) account.platformSignedOutAt = stamp();
-        apply(account, cookies);
+        const active = apply(account, cookies);
+        report(account, "refresh", signedOut ? "platform_signed_out" : active ? "signed_in" : "no_login_cookie");
       } catch { /* Keep the last known status. */ }
     }
     save(); emit(); return snapshot();
@@ -190,6 +234,7 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
     const account = find(id);
     account.platformSignedOutAt = stamp();
     account.status = account.lastLoginAt ? "expired" : "login_required";
+    report(account, "task_page", "platform_signed_out");
     save(); emit(); return snapshot();
   }
   // An upload on this account stopped moving. Only a warning: the account stays selectable,
@@ -208,4 +253,4 @@ function createSocialAccounts({ dataDir, launch = launchBrowser, executable = fi
   return { snapshot, add, rename, login, refresh, remove, profileDir, lease, markSignedOut, markUploadTrouble, clearUploadTrouble, dispose };
 }
 
-module.exports = { createSocialAccounts, PLATFORMS, loggedIn };
+module.exports = { createSocialAccounts, PLATFORMS, loggedIn, platformSignedOut };

@@ -831,7 +831,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       expertStore: aiExpertStore, deepSeekClient
     });
     socialAccountsRegistration = registerSocialAccountsIpc({ ipcMain, getMainWindow: () => mainWindow,
-      dataDir: path.join(runtime.rootDir, "social_accounts") });
+      dataDir: path.join(runtime.rootDir, "social_accounts"), logger });
     socialAcquisitionRegistration = registerSocialAcquisitionIpc({ ipcMain, dialog, shell, getMainWindow: () => mainWindow,
       dataDir: path.join(runtime.rootDir, "social_acquisition"), accounts: socialAccountsRegistration.accounts });
     geoWorkbenchRegistration = registerGeoWorkbenchIpc({ ipcMain, shell, deepSeekClient, getMainWindow: () => mainWindow,
