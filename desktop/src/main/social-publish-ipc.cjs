@@ -27,7 +27,7 @@ function reportSocialFailure({ logger, evidenceDir }, module, failure) {
   }
   // Asking for a new login is the platform's normal answer to an ended session: counted, not filed as a bug.
   logger?.event?.(module, "job_failed", { platform_kind: failure.platform, step_code: STEP_CODES[failure.step] || (/^[a-z_]+$/.test(String(failure.step || "")) ? failure.step : "unknown"),
-    ...(failure.clicked !== undefined ? { clicked: failure.clicked } : {}), ...(failure.day ? { day: failure.day, nurture_mode: failure.mode } : {}),
+    ...(failure.clicked !== undefined ? { clicked: failure.clicked } : {}), ...(/^[a-z_]+$/.test(String(failure.cause || "")) ? { cause_kind: failure.cause } : {}), ...(failure.day ? { day: failure.day, nurture_mode: failure.mode } : {}),
     // The page it stopped on as a plain identifier (platform.post.create, login.html), which the log keeps readable.
     page_kind: failure.pageUrl ? new URL(failure.pageUrl).pathname.replace(/[^a-z0-9_.:-]+/gi, ".").replace(/^\.+|\.+$/g, "").slice(0, 100) : "", ...(evidenceId ? { evidence_id: evidenceId } : {}),
     // Hosts whose page resources failed or were slow: a network or proxy problem shows here.

@@ -11,7 +11,7 @@ const { withH264Encoder } = require("./h264-encoder.cjs");
 // time, because the AI cover lands (and can be redone) after the video is finished.
 const COVER_SECONDS = 0.1;
 // Bump when the output changes, so copies made the old way are not reused.
-const FORMAT = 1;
+const FORMAT = 2;
 const KEEP = 30;
 
 const ffprobeNextTo = (ffmpegPath) => path.basename(ffmpegPath) === ffmpegPath
@@ -33,7 +33,8 @@ function coverFirstArgs({ video, cover, width, height, fps, audio, seconds = COV
     `[cb]scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},gblur=sigma=40[bg]`,
     `[cf]scale=${w}:${h}:force_original_aspect_ratio=decrease[fg]`,
     `[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=${fps},setsar=1,format=yuv420p[cv]`,
-    `[0:v]setsar=1,format=yuv420p[mv]`
+    // The same even size as the cover part: concat needs both to match (odd sizes, non-square pixels).
+    `[0:v]scale=${w}:${h},setsar=1,format=yuv420p[mv]`
   ];
   const args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", video,
     "-loop", "1", "-framerate", String(fps), "-t", String(seconds), "-i", cover];
@@ -54,11 +55,14 @@ function createCoverFirst({ dir, ffmpegPath = "ffmpeg", run = execFile, encoders
   async function probe(video) {
     const info = JSON.parse(await exec(ffprobeNextTo(ffmpegPath), ["-v", "error", "-show_streams", "-of", "json", video]));
     const streams = Array.isArray(info?.streams) ? info.streams : [];
-    const v = streams.find((s) => s.codec_type === "video"), a = streams.find((s) => s.codec_type === "audio");
+    // Cover art stored as a video stream is not the video.
+    const v = streams.find((s) => s.codec_type === "video" && !s.disposition?.attached_pic), a = streams.find((s) => s.codec_type === "audio");
     if (!v || !(v.width > 0) || !(v.height > 0)) throw new Error("no video stream");
     // Even sizes: yuv420p and H.264 need them.
     const even = (n) => Math.max(2, Math.floor(n / 2) * 2);
-    const rotated = [90, 270].includes(Math.abs(Number(v.tags?.rotate || v.side_data_list?.find((d) => d.rotation !== undefined)?.rotation || 0)) % 360);
+    // A rotate tag of "0" must not hide a display-matrix rotation next to it.
+    const turn = [v.tags?.rotate, ...(v.side_data_list || []).map((d) => d.rotation)].map(Number).find((n) => Number.isFinite(n) && n % 360 !== 0) || 0;
+    const rotated = [90, 270].includes(Math.abs(turn) % 360);
     return {
       width: even(rotated ? v.height : v.width), height: even(rotated ? v.width : v.height), fps: frameRate(v.avg_frame_rate || v.r_frame_rate),
       audio: a ? { sampleRate: Number(a.sample_rate) || 44100, layout: Number(a.channels) === 1 ? "mono" : "stereo" } : null
@@ -73,7 +77,7 @@ function createCoverFirst({ dir, ffmpegPath = "ffmpeg", run = execFile, encoders
   // Oldest copies go first; the one just made or reused always stays.
   function prune(current) {
     let files;
-    try { files = fs.readdirSync(dir).filter((name) => /\.mp4$/i.test(name)).map((name) => ({ name, at: fs.statSync(path.join(dir, name)).mtimeMs })); }
+    try { files = fs.readdirSync(dir).filter((name) => /\.mp4$/i.test(name) && !/\.part\.mp4$/i.test(name)).map((name) => ({ name, at: fs.statSync(path.join(dir, name)).mtimeMs })); }
     catch { return; }
     files.sort((x, y) => y.at - x.at);
     for (const file of files.slice(keep)) if (path.join(dir, file.name) !== current) fs.rmSync(path.join(dir, file.name), { force: true });

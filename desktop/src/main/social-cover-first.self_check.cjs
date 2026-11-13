@@ -12,6 +12,40 @@ const { createCoverFirst, coverFirstArgs } = require("./social-cover-first.cjs")
     assert.match(withSound, /anullsrc=r=48000:cl=stereo/); assert.match(withSound, /concat=n=2:v=1:a=1/);
     const silent = coverFirstArgs({ video: "v.mp4", cover: "c.jpg", width: 1080, height: 1920, fps: 30, audio: null }).join(" ");
     assert.doesNotMatch(silent, /anullsrc/); assert.match(silent, /concat=n=2:v=1:a=0/);
+    // 原视频也缩到同一个偶数尺寸，奇数尺寸（1081×1921）不会让拼接失败。
+    assert.match(silent, /\[0:v\]scale=1080:1920,/);
+  }
+  {
+    // 读视频尺寸：rotate 标签为 "0" 时仍认显示矩阵里的 -90 度；内嵌的封面图不当作视频；奇数尺寸取偶数。
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cover-first-probe-"));
+    const video = path.join(root, "v.mp4"), cover = path.join(root, "c.jpg");
+    fs.writeFileSync(video, "mp4"); fs.writeFileSync(cover, "jpg");
+    let graph = "";
+    const run = (file, args, _options, done) => {
+      if (/ffprobe/.test(path.basename(file))) return done(null, JSON.stringify({ streams: [
+        { codec_type: "video", width: 600, height: 600, disposition: { attached_pic: 1 } },
+        { codec_type: "video", width: 1921, height: 1081, avg_frame_rate: "30/1", tags: { rotate: "0" }, side_data_list: [{ rotation: -90 }] }] }));
+      graph = args[args.indexOf("-filter_complex") + 1]; fs.writeFileSync(args.at(-1), "copy"); done(null, "");
+    };
+    const { prepare } = createCoverFirst({ dir: path.join(root, "out"), ffmpegPath: path.join(root, "ffmpeg.exe"), run, encoders: async (_f, attempt) => attempt([]) });
+    await prepare(video, cover);
+    assert.match(graph, /\[0:v\]scale=1080:1920,/, graph);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  {
+    // 清理旧副本时不碰别人正在写的半截文件。
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cover-first-prune-"));
+    const out = path.join(root, "out"); fs.mkdirSync(out);
+    const video = path.join(root, "v.mp4"), cover = path.join(root, "c.jpg");
+    fs.writeFileSync(video, "mp4"); fs.writeFileSync(cover, "jpg");
+    fs.writeFileSync(path.join(out, "other.part.mp4"), "writing"); fs.writeFileSync(path.join(out, "old.mp4"), "old");
+    const run = (file, args, _options, done) => /ffprobe/.test(path.basename(file))
+      ? done(null, JSON.stringify({ streams: [{ codec_type: "video", width: 1080, height: 1920 }] }))
+      : (fs.writeFileSync(args.at(-1), "copy"), done(null, ""));
+    const { prepare } = createCoverFirst({ dir: out, ffmpegPath: path.join(root, "ffmpeg.exe"), run, encoders: async (_f, attempt) => attempt([]), keep: 1 });
+    const made = await prepare(video, cover);
+    assert.deepEqual(fs.readdirSync(out).sort(), [path.basename(made), "other.part.mp4"].sort());
+    fs.rmSync(root, { recursive: true, force: true });
   }
   {
     // 同一条视频发多个号只做一次；换了封面重新做；编码失败不留半截文件。
