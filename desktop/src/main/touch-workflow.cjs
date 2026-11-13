@@ -853,8 +853,9 @@ function createTouchWorkflow(options = {}) {
         delete task.pre_send_skip_streak;
         // The composer emptying proves the click, not delivery: a contact who
         // deleted the user gets a "friend verification" notice instead.
-        // One look per contact: the one taken right after the text (a friend then is a friend for the images too).
-        const notice = earlyNotice?.ok === true ? earlyNotice : typeof options.detectDeliveryNotice === "function" && lastSentWindow
+        // A bounce seen right after the text ends the contact; otherwise look again after the last part,
+        // since a notice can render late (review 2026-11-13).
+        const notice = earlyNotice?.undelivered === true ? earlyNotice : typeof options.detectDeliveryNotice === "function" && lastSentWindow
           ? await Promise.resolve(options.detectDeliveryNotice({ ...lastSentWindow, message: current.message })).catch(() => null)
           : null;
         current.retry_blocked = true;
