@@ -48,8 +48,17 @@ async function checkTouchMessageSequence() {
     "transient clipboard contention must inspect wrapped exceptions and retry with bounded backoff");
   assert.match(IMAGE_SEND_SCRIPT, /Invoke-ImageClipboardWrite "image_write"[\s\S]*Invoke-ImageClipboardWrite "image_file_write"/u,
     "both the bitmap and the file-list paste must use the bounded clipboard retry");
-  assert.match(IMAGE_SEND_SCRIPT, /Wait-SendButton \$true 3000[\s\S]*Clear-ImageComposer[\s\S]*SetFileDropList[\s\S]*Wait-SendButton \$true 3000\)\) \{ throw "image_paste_not_accepted" \}/u,
+  assert.match(IMAGE_SEND_SCRIPT, /Wait-SendButton \$true \$imagePasteWaitMs[\s\S]*Clear-ImageComposerAlways[\s\S]*SetFileDropList[\s\S]*Wait-SendButton \$true \$imagePasteWaitMs\)\) \{ throw "image_paste_not_accepted" \}/u,
     "an ignored bitmap paste must fall back once to the file itself, then stop before any click");
+  // 1.3.4 field (Win10 19042): a picture that took over 3 s to appear was judged ignored, the colour-based
+  // clear skipped, and two copies stayed in the box. Wait longer, clear without trusting the colour, and
+  // leave nothing behind when the paste is given up.
+  assert.match(IMAGE_SEND_SCRIPT, /\$imagePasteWaitMs = 8000/u);
+  assert.match(IMAGE_SEND_SCRIPT, /function Clear-ImageComposerAlways \{\s*Click-ImagePoint \$inputX \$inputY \$mainWindow\s*Image-Keys "\^a" \$mainWindow\s*Image-Keys "\{BACKSPACE\}" \$mainWindow/u,
+    "the fallback clear selects all and deletes whatever the send button shows");
+  assert.match(IMAGE_SEND_SCRIPT, /\} catch \{\s*\$imageError = \$_\s*if \(-not \$sendAttempted -and \$script:imageStage -eq "paste" -and -not \$dialog\) \{\s*try \{ Clear-ImageComposerAlways \} catch \{\}/u,
+    "a paste given up before the send click leaves no picture in the box");
+  assert.ok(8000 * 2 + 4000 < 30000, "two paste waits and the clear stay inside the 30 s paste stage budget");
   assert.doesNotMatch(IMAGE_SEND_SCRIPT, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
     "image sending must never depend on copying the WeChat draft back out");
   assert.match(IMAGE_SEND_SCRIPT, /imageStageBudgets[\s\S]*existing_draft_clear = 15000[\s\S]*image_load = 60000[\s\S]*clipboard_bitmap = 45000[\s\S]*paste = 30000[\s\S]*click_send = 30000[\s\S]*post_confirm = 30000/u,
@@ -672,6 +681,33 @@ async function checkTouchMessageSequence() {
     await delivered.runWorkflowStep(deliveredRecord, context);
     const deliveredRow = JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(deliveredRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0];
     assert.equal(deliveredRow.status, "sent_verified", "no notice, or an unreadable screen, keeps the verified send");
+  }
+  // 1.3.4 field (Win10 19042): the text bounced off a contact who is no longer a friend, then the image
+  // step failed and the contact was filed as "partly sent". After the text, the notice ends the contact.
+  for (const undelivered of [true, false]) {
+    const checks = [], imageRuns = [];
+    const multipartWorkflow = createTouchWorkflow({ ...config,
+      execute: async (part) => {
+        if (part.image) { imageRuns.push(part.image); part.onTransition?.("sent_verified"); return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } }; }
+        fs.writeFileSync(path.join(part.baseDir, "state.json"), JSON.stringify({ window_pid: 4242, window_handle: "9191", message_input_point: { xRatio: 0.65, yRatio: 0.84 } }));
+        part.onTransition?.("sent_verified");
+        return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
+      },
+      detectDeliveryNotice: async (window) => { checks.push(window); return { ok: true, undelivered }; } });
+    const multipartRecord = { id: crypto.randomUUID(), payload: multipartWorkflow.prepareWorkflowTask({ script: "文字加图片", contactIds: [contact.id], imageIds: [imageId] }), progress: { done: 0 }, status: "running" };
+    await multipartWorkflow.runWorkflowStep(multipartRecord, context);
+    const row = JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(multipartRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0];
+    assert.equal(checks.length, 1, "one notice check per contact, right after the text");
+    if (undelivered) {
+      assert.deepEqual(imageRuns, [], "no image is sent after the text bounced");
+      assert.equal(row.status, "recipient_unreachable_skipped");
+      assert.equal(row.skip_record.reasonCode, "recipient_not_friend");
+      assert.equal(row.message_parts[0].status, "sent_verified");
+      assert.equal(row.message_parts[1].status, "pending");
+    } else {
+      assert.equal(imageRuns.length, 1, "a friend still gets the image");
+      assert.equal(row.status, "sent_verified");
+    }
   }
 
   async function checkPassportWiring(name, reasonCode, contactIds, image = false) {

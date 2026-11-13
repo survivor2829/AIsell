@@ -196,6 +196,16 @@ function Wait-SendButton([bool]$active, [int]$timeoutMs) {
   } while ((Get-UptimeMs) -lt $until)
   return $false
 }
+# Field 1.3.4 (Win10 19042): a pasted picture took over 3 s to appear. The send button was still grey,
+# so the colour-based clear above skipped, the second paste added a copy, and the run gave up with two
+# pictures left in the box. This clear does not trust the colour: select all and delete, then settle.
+function Clear-ImageComposerAlways {
+  Click-ImagePoint $inputX $inputY $mainWindow
+  Image-Keys "^a" $mainWindow
+  Image-Keys "{BACKSPACE}" $mainWindow
+  [void](Wait-SendButton $false 1500)
+}
+$imagePasteWaitMs = 8000
 function Clear-ImageComposer {
   Click-ImagePoint $inputX $inputY $mainWindow
   if (-not (Test-SendButtonActive)) { return }
@@ -285,10 +295,10 @@ try {
   Assert-ImageLease
   $sendWindow = [Win32WechatSendMessage]::GetForegroundWindow()
   $dialog = $sendWindow -ne $mainWindow
-  if (-not $dialog -and -not (Wait-SendButton $true 3000)) {
+  if (-not $dialog -and -not (Wait-SendButton $true $imagePasteWaitMs)) {
     # Some WeChat builds ignore a raw bitmap. Paste the file itself, as when it
     # is copied in Explorer, after removing any partial draft.
-    Clear-ImageComposer
+    Clear-ImageComposerAlways
     $script:pasteMethod = "file_drop"
     $files = New-Object System.Collections.Specialized.StringCollection
     [void]$files.Add([IO.Path]::GetFullPath($imagePath))
@@ -300,7 +310,7 @@ try {
     Assert-ImageLease
     $sendWindow = [Win32WechatSendMessage]::GetForegroundWindow()
     $dialog = $sendWindow -ne $mainWindow
-    if (-not $dialog -and -not (Wait-SendButton $true 3000)) { throw "image_paste_not_accepted" }
+    if (-not $dialog -and -not (Wait-SendButton $true $imagePasteWaitMs)) { throw "image_paste_not_accepted" }
   }
   if ($dialog) {
     Set-ImageStage "preview_verification"
@@ -341,6 +351,9 @@ try {
   @{ ok = $true; sendAttempted = $true; verificationMode = $verificationMode; conversationVerified = $true; draftVerified = $true } | ConvertTo-Json -Compress
 } catch {
   $imageError = $_
+  if (-not $sendAttempted -and $script:imageStage -eq "paste" -and -not $dialog) {
+    try { Clear-ImageComposerAlways } catch {}
+  }
   $reason = [string]$imageError.Exception.Message
   if ($reason -notmatch "^[a-z][a-z0-9_]{1,79}$") { $reason = "image_driver_failed" }
   try { Complete-ImageStage $script:imageStage } catch {}
