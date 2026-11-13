@@ -3752,6 +3752,11 @@ async function main() {
     const mainSource = fs.readFileSync(path.join(__dirname, "../../src/main/main.cjs"), "utf8");
     // The developer Moments IPC was retired with its panel (2026-11-13); campaigns use moments-campaign-ipc.
     assert.equal(mainSource.includes("registerActiveTouchDevIpc"), false);
+    // The campaign is now the only caller of moments_action_cli.dev.cjs: it must hold the WeChat lock around it.
+    const campaignSource = fs.readFileSync(path.join(__dirname, "../../src/main/moments-campaign-ipc.cjs"), "utf8");
+    assert.match(campaignSource, /lock = coordinator\?\.acquire\?\.\(\{/u);
+    assert.match(campaignSource, /coordinator\?\.release\?\.\(lock\.lock\.owner\)/u);
+    assert.match(campaignSource, /cliName: "moments_action_cli\.dev\.cjs"/u);
     assert.match(mainSource, /backgroundThrottling: false/u);
 
     console.log("moments action self-check passed");

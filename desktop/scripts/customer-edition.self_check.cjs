@@ -119,15 +119,15 @@ function assertMomentsActionEditionBoundary() {
   assert.match(campaignMain, /moments-campaign:start/, "delivery must expose the scoped Moments campaign bridge");
   assert.match(read(path.join(desktopDir, "src", "main", "moments-publish-ipc.cjs")), /ipcMain\.handle\("moments-publish:choose-media"/, "the main process must register the Moments media picker the workflow uses");
   // The developer bridge and its Moments actions were retired (2026-11-13): no edition carries them.
-  for (const name of ["main.cjs", "preload.cjs", "preload.dev.cjs", "preload-api.cjs", "active-touch-ipc.cjs"]) {
-    assert.equal(read(path.join(desktopDir, "src", "main", name)).includes("active-touch:dev-"), false, `${name} must not carry the retired developer bridge`);
+  const retiredChannels = ["active-touch:dev-", "active-touch:send-selected-contact", "active-touch:set-real-send-arm", "active-touch:verify-real-send-session", "active-touch:fail-conversation"];
+  for (const name of fs.readdirSync(path.join(desktopDir, "src", "main")).filter((file) => file.endsWith(".cjs") && !file.includes("self_check"))) {
+    const source = read(path.join(desktopDir, "src", "main", name));
+    for (const channel of retiredChannels) assert.equal(source.includes(channel), false, `${name} must not carry the retired ${channel}`);
   }
   assert.equal(fs.existsSync(path.join(desktopDir, "src", "main", "active-touch-dev-ipc.cjs")), false);
-  for (const name of ["preload.dev.cjs"]) {
-    const source = path.join(desktopDir, "src", "main", name);
-    assert.equal(sourceAllowed(source, "test"), true, `${name} must be included in the test edition`);
-    assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
-  }
+  const developmentPreload = path.join(desktopDir, "src", "main", "preload.dev.cjs");
+  assert.equal(sourceAllowed(developmentPreload, "test"), true, "preload.dev.cjs must be included in the test edition");
+  assert.equal(sourceAllowed(developmentPreload, "delivery"), false, "preload.dev.cjs must be excluded from the delivery edition");
   const app = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
   assert.match(app, /<WechatWorkflowPage/, "Moments actions must use the unified task UI");
   assert.doesNotMatch(app, /import\("\.\/MomentsDryRunPanel"\)/, "the retired single-post tool must not be reachable from the app");

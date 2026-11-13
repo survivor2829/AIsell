@@ -741,10 +741,6 @@ for (const marker of momentsActionIpcMarkers) {
 for (const marker of momentsActionUiMarkers) {
   assert.equal(renderer.includes(marker), false, `the unified workflow renderer must not expose legacy action controls: ${marker}`);
 }
-if (edition === "delivery") {
-  for (const marker of momentsActionIpcMarkers) assert.equal(packagedSources.includes(marker), false, `delivery source must not contain ${marker}`);
-  for (const marker of momentsActionUiMarkers) assert.equal(renderer.includes(marker), false, `delivery renderer must not contain ${marker}`);
-}
 console.log(`${edition} ${directoryOnly ? "component application" : "portable release"} self-check passed`);
 });
 }

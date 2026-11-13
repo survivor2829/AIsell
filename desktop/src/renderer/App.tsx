@@ -82,37 +82,6 @@ type AccountApi = {
   logout: () => Promise<LicenseStatus>;
   onChanged: (callback: () => void) => () => void;
 };
-type ActiveTouchState = {
-  calibrated: boolean;
-  target_selected: boolean;
-  conversation_located: boolean;
-  conversation_verified: boolean;
-  dry_run: boolean;
-  selected_customer: ContactRow | null;
-  conversation_title: string;
-  located_window_title: string;
-  search_input_done: boolean;
-  search_result_clicked: boolean;
-  search_query: string;
-  message_input_done: boolean;
-  message_draft: string;
-  send_gate_status: string;
-  send_gate_reason: string;
-  real_send_armed: boolean;
-  real_send_enabled: boolean;
-  real_send_clicked: boolean;
-  real_send_status: string;
-  real_send_reason: string;
-  post_send_verified: boolean;
-  post_send_status: string;
-  post_send_reason: string;
-  message_bubble_verified: boolean;
-  message_bubble_status: string;
-  message_bubble_reason: string;
-  queue_dry_run_count: number;
-  queue_dry_run_passed: boolean;
-  queue_dry_run_results: Array<{ id: string; name: string; ok: boolean; result: string }>;
-};
 type ContactRow = {
   id: string;
   name: string;
