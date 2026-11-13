@@ -476,6 +476,59 @@ async function checkR008BoundedRecovery() {
   }
 }
 
+// 1.3.4/1.3.5 field: WeChat's main window was not recognized, and a 653-contact run (some sent days
+// earlier) kept "running" for hours with WeChat untouched. Now, after a one-minute wait (a locked
+// screen or a WeChat restart clears by itself), the run pauses on that contact without skipping it; other environment failures pause after three skips even when earlier
+// contacts of the list went out.
+async function checkWechatWindowPause() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-window-pause-"));
+  try {
+    const contacts = [1, 2, 3, 4, 5].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    let clock = Date.parse("2026-11-13T00:00:00.000Z");
+    let outcome = "window";
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      execute: async () => outcome === "sent" ? { ok: true, state: { real_send_status: "sent_verified" } }
+        : { ok: false, send_attempted: false, blocked_reason: outcome === "window" ? "personal_wechat_main_window_not_found" : "wechat_window_preflight_failed" }
+    });
+    const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+    const record = { id: "window-pause", payload };
+    const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    // The first contact goes out, so the run already has a sent contact.
+    outcome = "sent";
+    assert.equal((await step()).status, "pending");
+    assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified");
+    // Main window not recognized: a short wait first, then the pause; the contact stays unsent and is not skipped.
+    outcome = "window";
+    const waiting = await step();
+    assert.equal(waiting.status, "pending", "a passing glitch gets a short wait");
+    assert.equal(waiting.waitingReason, "wechat_environment_recovery");
+    const paused = await step();
+    assert.equal(paused.status, "needs_attention");
+    assert.equal(paused.reasonCode, "touch_wechat_window_paused");
+    assert.match(paused.error, /没有认出电脑上的微信主窗口/u);
+    assert.equal(loadTaskState(taskDir).status, "paused");
+    assert.equal(loadTaskState(taskDir).current_index, 1, "the same contact is next after 继续");
+    assert.equal(loadTaskState(taskDir).results[1].status, "generated", "nothing was skipped");
+    assert.equal(loadTaskState(taskDir).results[1].send_attempted, false);
+    assert.equal(workflow.canRetryWorkflowTask(record, payload), true, "the paused run can be continued");
+    // Another environment failure, after a contact already went out: it still pauses after three skips.
+    outcome = "environment";
+    let last;
+    for (let i = 0; i < 6 && last?.status !== "needs_attention"; i++) last = await step();
+    assert.equal(last.status, "needs_attention", JSON.stringify(last));
+    assert.equal(last.reasonCode, "touch_early_failure_paused");
+    assert.match(last.error, /微信现在用不了/u, "an environment cause tells the customer to check WeChat, not to wait for an update");
+    assert.equal(loadTaskState(taskDir).results.filter((row) => row.status === "pre_send_skipped").length, 3);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function checkR008PassportAttachmentCount() {
   const ocrPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
   for (const [ruleId, reasonCode, expectedScreenshots] of [
@@ -3091,6 +3144,7 @@ async function main() {
   await checkInterruptedSendRecoveryInSameProcess();
   await checkClickedAttentionPersistFailureRecovery();
   await checkR008BoundedRecovery();
+  await checkWechatWindowPause();
   await checkTouchCopyModes();
   await checkLiveAccountGate();
   await checkRecipientsFollowContactSync();

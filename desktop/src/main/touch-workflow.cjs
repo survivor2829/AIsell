@@ -42,6 +42,16 @@ const PRE_SEND_RECOVERY_ATTEMPTS = 1; // One retry, then skip and move on (user 
 // The first contacts of a run failing the same way pause it (user 2026-11-09).
 const EARLY_FAILURE_PAUSE_COUNT = 3;
 const EARLY_FAILURE_PAUSE_MESSAGE = "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。";
+// An environment failure after contacts already went out: the customer can usually fix it (WeChat
+// logged out, busy or not in front), so the pause says so instead of "wait for an update".
+const ENVIRONMENT_PAUSE_MESSAGE = "微信现在用不了，后面几位都没有发送。请确认电脑上的微信已登录、没有被别的操作占用，处理好后点「继续」。问题已经自动上报。";
+// WeChat's main window could not be recognized even after the driver tried to bring it back. Retrying
+// for 10 minutes per contact looked like a frozen run to the customer (1.3.4/1.3.5 field, 653-contact
+// list): after a short wait (a locked screen or a WeChat restart clears by itself) the run pauses on
+// the same contact, which stays unsent.
+const WECHAT_WINDOW_PAUSE_REASONS = new Set(["personal_wechat_main_window_not_found"]);
+const WECHAT_WINDOW_PAUSE_AFTER_MS = 60_000;
+const WECHAT_WINDOW_PAUSE_MESSAGE = "没有认出电脑上的微信主窗口，这一位还没有发送。请打开微信并登录，把微信主窗口放在桌面上，再点「继续」。问题已经自动上报。";
 const PRE_SEND_RECOVERY_DELAYS_MS = [3_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
 const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
@@ -605,12 +615,14 @@ function createTouchWorkflow(options = {}) {
       // (1.2.69: 118 contacts skipped in one run). After the third such contact the run pauses with
       // one complete field capsule instead of skipping the whole list (user decision 2026-11-09).
       // Once any contact of the run went out, scattered failures keep skipping as before.
-      const earlyFailurePause = (count, reasonCode, ruleId, skipResponse) => {
+      const earlyFailurePause = (count, reasonCode, ruleId, skipResponse, classification = "") => {
         if (count < EARLY_FAILURE_PAUSE_COUNT || task.status === "completed") return skipResponse();
         // A contact whose result could not be read back counts as sent, like everywhere else in the run.
         const anySent = (task.results || []).some((row) => ["sent_verified", "recipient_unreachable_skipped", "outcome_unknown_skipped"].includes(row.status)
           || row.message_parts?.some((part) => part.status === "sent_verified"));
-        if (anySent) return skipResponse();
+        // An environment failure (WeChat itself unusable) has nothing to do with the contact: contacts sent
+        // earlier in the list (a long run resumed days later) say nothing about this computer now.
+        if (anySent && classification !== "environment") return skipResponse();
         const detail = summarizeSendResult(result || {});
         const reason = String(reasonCode || "unspecified").replace(/[^a-z0-9_]/giu, "_").slice(0, 48);
         try {
@@ -627,9 +639,10 @@ function createTouchWorkflow(options = {}) {
         delete task.pre_send_skip_streak;
         delete task.identity_skip_streak;
         task.status = "paused";
-        task.pause_reason = EARLY_FAILURE_PAUSE_MESSAGE;
+        const pauseMessage = classification === "environment" ? ENVIRONMENT_PAUSE_MESSAGE : EARLY_FAILURE_PAUSE_MESSAGE;
+        task.pause_reason = pauseMessage;
         persist();
-        return response("needs_attention", { error: EARLY_FAILURE_PAUSE_MESSAGE, reasonCode: "touch_early_failure_paused",
+        return response("needs_attention", { error: pauseMessage, reasonCode: "touch_early_failure_paused",
           result: { deliveryStatus: "not_attempted", skipped: true, reasonCode, failedContacts: count } });
       };
       const preSendSkip = (reasonCode, reason, classification = "") => {
@@ -657,7 +670,34 @@ function createTouchWorkflow(options = {}) {
         persist();
         return earlyFailurePause(count, reasonCode, "", () => response(task.status === "completed" ? "completed" : "pending", {
           result: { deliveryStatus, skipped: true, reasonCode, ...(classification ? { classification } : {}) }
-        }));
+        }), classification);
+      };
+      const pauseForWechatWindow = (reasonCode) => {
+        const detail = summarizeSendResult(result || {});
+        try {
+          diagnostics().event("active_touch", "wechat_window_paused", {
+            task_id: id, skipped_index: index, reason_code: reasonCode,
+            ...(detail.window_wechat_version ? { wechat_version: detail.window_wechat_version } : {})
+          }, { trace: true, traceId: sendOperation.traceId, level: "error", code: `touch_paused_${reasonCode}` });
+        } catch { /* Diagnostics never stop the task. */ }
+        passport?.recordFailure("active_touch", passportTaskId, {
+          stage: "pre_send", reasonCode, traceId: sendOperation.traceId,
+          rawReading: { reasonCode, deliveryStatus: "not_attempted", paused: true }, expected: { status: "sent_verified" }
+        });
+        // The same contact is tried again after 继续: nothing was sent, nothing is skipped.
+        delete current.environment_recovery_started_at;
+        current.status = "generated";
+        current.retry_blocked = false;
+        current.send_attempted = false;
+        current.reason = WECHAT_WINDOW_PAUSE_MESSAGE;
+        current.updated_at = now().toISOString();
+        delete task.pre_send_skip_streak;
+        delete task.identity_skip_streak;
+        task.status = "paused";
+        task.pause_reason = WECHAT_WINDOW_PAUSE_MESSAGE;
+        persist();
+        return response("needs_attention", { error: WECHAT_WINDOW_PAUSE_MESSAGE, reasonCode: "touch_wechat_window_paused",
+          result: { deliveryStatus: "not_attempted", reasonCode } });
       };
       passport?.bindTrace("active_touch", sendOperation.traceId, passportTaskId);
       passport?.recordEvent("active_touch", passportTaskId, {
@@ -938,6 +978,9 @@ function createTouchWorkflow(options = {}) {
             environmentStartedAt = now().getTime();
           }
           const environmentElapsedMs = Math.max(0, now().getTime() - environmentStartedAt);
+          if (WECHAT_WINDOW_PAUSE_REASONS.has(failurePolicy.reasonCode) && environmentElapsedMs >= WECHAT_WINDOW_PAUSE_AFTER_MS) {
+            return pauseForWechatWindow(failurePolicy.reasonCode);
+          }
           if (environmentElapsedMs >= ENVIRONMENT_RECOVERY_MAX_MS) {
             return preSendSkip(failurePolicy.reasonCode, "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单", failurePolicy.classification);
           }
