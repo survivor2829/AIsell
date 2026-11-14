@@ -47,9 +47,21 @@ class NarratedTimelineTests(unittest.TestCase):
             rebalance_narrated_phrase_refs(phrases, audio, segments)
         # Field case 2026-11-13 arrived without numbers; the journal now gets them.
         details = raised.exception.details
-        self.assertEqual((8_160, 6_000, 2_160), (details['voice_ms'], details['footage_ms'], details['shortfall_ms']))
-        self.assertEqual([4_160, 4_000], details['phrase_required_ms'])
-        self.assertEqual([3_000, 3_000], details['segment_ms'])
+        self.assertEqual(('rebalance_no_fit', 8_000, 160, 6_000, 2_160),
+                         (details['reason'], details['speech_ms'], details['pauses_ms'], details['footage_ms'],
+                          details['total_overrun_ms']))
+        self.assertEqual(([4_000, 4_000], [3_000, 3_000]), (details['phrase_speech_ms'], details['segment_ms']))
+
+    def test_rebalancing_reports_a_split_failure_when_the_total_fits(self):
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s2']}]
+        audio = [{'duration_ms': 3_000}, {'duration_ms': 3_000}]
+        segments = [{'evidence_ref': 's1', 'target_duration_ms': 5_000},
+                    {'evidence_ref': 's2', 'target_duration_ms': 2_000}]
+        with self.assertRaises(ContentEngineError) as raised:
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
+        details = raised.exception.details
+        self.assertLessEqual(details['total_overrun_ms'], 0, 'the total fits; only the split failed')
+        self.assertEqual(1, details['failed_phrase_index'])
 
     def test_same_material_accepts_different_copy_shapes(self):
         segments = [
@@ -1990,7 +2002,7 @@ class NarratedProductionTests(unittest.TestCase):
         measured = {'voice_ms': 8_160, 'footage_ms': 6_000, 'shortfall_ms': 2_160}
         def render(domain, task_id, batch, candidate, index, total):
             candidate.update(status='failed', error='实际配音超过全部画面的可用时长。',
-                             error_code='narrated_copy_too_long', error_details=measured)
+                             error_code='narrated_copy_too_long', _error_details=measured)
         recorded = []
         with self.paid_calls(allow=('_cloud', 'provider')),              patch.object(NarratedBatchDomain, '_render_candidate', render),              patch('content_engine.failure_journal.record', side_effect=lambda error, **kw: recorded.append(error)):
             self.run_selection({'batch_id': self.batch['batch_id'], 'selections': [
@@ -1998,6 +2010,8 @@ class NarratedProductionTests(unittest.TestCase):
         too_long = [e for e in recorded if getattr(e, 'code', '') == 'narrated_copy_too_long']
         self.assertTrue(too_long, recorded)
         self.assertEqual(measured, too_long[0].details)
+        public = self.domain.get(self.batch['batch_id'])
+        self.assertNotIn('_error_details', json.dumps(public, ensure_ascii=False), 'journal only, never the IPC reply')
 
     def test_variation_avoids_published_sequences_before_any_voice_request(self):
         state = self.domain._load(self.batch['batch_id'])

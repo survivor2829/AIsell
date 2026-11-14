@@ -137,6 +137,20 @@ SKIPPABLE_ANALYSIS_ERRORS = frozenset(
 )
 
 
+def voice_footage_details(reason, speech_ms, footage_ms, *, pause_ms=0, **extra):
+    """Measured numbers for a narrated_copy_too_long failure (field evidence).
+
+    speech_ms/footage_ms are lists of per-phrase speech and per-segment footage.
+    total_overrun_ms may be zero or negative: then the total fits and only the
+    split between phrases and shots failed, which reason states.
+    """
+    speech_ms, footage_ms = [int(v) for v in speech_ms], [int(v) for v in footage_ms]
+    pauses = pause_ms * max(0, len(speech_ms) - 1)
+    return {"reason": reason, "speech_ms": sum(speech_ms), "pauses_ms": pauses, "footage_ms": sum(footage_ms),
+            "total_overrun_ms": sum(speech_ms) + pauses - sum(footage_ms),
+            "phrase_speech_ms": speech_ms[:40], "segment_ms": footage_ms[:80], **extra}
+
+
 def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=160):
     """Move only phrase boundaries so measured speech fits the ordered shots."""
     if not phrases or len(phrases) != len(phrase_audio) or len(segments) < len(phrases):
@@ -180,14 +194,11 @@ def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=
         if not states:
             # Field evidence (2026-11-13 had none): how far the measured voice
             # outran the footage decides between replaying shots and planning slower.
-            raise ContentEngineError("narrated_copy_too_long", "实际配音超过全部画面的可用时长。", details={
-                "failed_phrase_index": phrase_index, "phrase_count": phrase_count,
-                "segment_count": segment_count, "pause_ms": pause_ms,
-                "voice_ms": sum(required), "footage_ms": prefix[-1],
-                "shortfall_ms": sum(required) - prefix[-1],
-                "phrase_required_ms": required[:40],
-                "phrase_chars": [len("".join(str(p.get("text") or "").split())) for p in phrases][:40],
-                "segment_ms": durations[:80]})
+            raise ContentEngineError("narrated_copy_too_long", "实际配音超过全部画面的可用时长。",
+                                     details=voice_footage_details(
+                "rebalance_no_fit", [item["duration_ms"] for item in phrase_audio], durations, pause_ms=pause_ms,
+                failed_phrase_index=phrase_index,
+                phrase_chars=[len("".join(str(p.get("text") or "").split())) for p in phrases][:40]))
 
     boundaries = states[segment_count][2]
     start = 0
@@ -4662,7 +4673,11 @@ class CreativeDomain:
                 available = sum(int(s["target_duration_ms"]) for s in group)
                 speech = int(item["duration_ms"])
                 if speech > available:
-                    raise ContentEngineError("narrated_copy_too_long", "实际配音超过对应画面的可用时长。")
+                    raise ContentEngineError("narrated_copy_too_long", "实际配音超过对应画面的可用时长。",
+                                             details=voice_footage_details(
+                        "phrase_over_group", [a["duration_ms"] for a in audio],
+                        [s["target_duration_ms"] for s in segments], pause_ms=160,
+                        failed_phrase_index=index, failed_speech_ms=speech, failed_group_ms=available))
                 pause = min(160, available - speech) if index < len(phrases) - 1 else 0
                 budget = speech + pause
                 observed_budgets = sentence_shot_budgets(phrase, item, group, pause)
@@ -4781,7 +4796,10 @@ class CreativeDomain:
             estimated_ms = next_estimate
         if len(bounded_phrases) < len(phrases):
             if private_state.get("narrated_batch_v1"):
-                raise ContentEngineError("narrated_copy_too_long", "解说无法完整对应镜头，请缩短后重做这一条。")
+                raise ContentEngineError("narrated_copy_too_long", "解说无法完整对应镜头，请缩短后重做这一条。",
+                                         details={"reason": "estimate_before_voice", "estimated_ms": estimated_ms,
+                                                  "available_ms": available_ms, "phrases_kept": len(bounded_phrases),
+                                                  "phrase_count": len(phrases)})
             if guided_duration_plan is not None:
                 raise ContentEngineError(
                     "guided_auto_mix_script_duration_invalid",
@@ -4823,7 +4841,10 @@ class CreativeDomain:
                     raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配，已停止制作。")
                 available = sum(segment["target_duration_ms"] for segment in group)
                 if item["duration_ms"] > available:
-                    raise ContentEngineError("narrated_copy_too_long", "实际配音无法在对应镜头内完整播放，请调整口播。")
+                    raise ContentEngineError("narrated_copy_too_long", "实际配音无法在对应镜头内完整播放，请调整口播。",
+                                             details=voice_footage_details(
+                        "caption_over_group", durations, [s["target_duration_ms"] for s in segments], pause_ms=160,
+                        failed_speech_ms=int(item["duration_ms"]), failed_group_ms=int(available)))
                 caption["start_ms"] = group[0]["timeline_start_ms"]
                 caption["end_ms"] = caption["start_ms"] + item["duration_ms"]
                 cursor += len(group)
@@ -4842,7 +4863,11 @@ class CreativeDomain:
             )
         if accepted < len(phrases):
             if private_state.get("narrated_batch_v1"):
-                raise ContentEngineError("narrated_copy_too_long", "实际配音过长，已停止本条制作；请缩短解说。")
+                raise ContentEngineError("narrated_copy_too_long", "实际配音过长，已停止本条制作；请缩短解说。",
+                                         details={"reason": "captions_past_footage", "available_ms": available_ms,
+                                                  "captions_fit": accepted, "phrase_count": len(phrases),
+                                                  "last_caption_end_ms": int(captions[-1]["end_ms"]) if captions else 0,
+                                                  "phrase_speech_ms": durations[:40]})
             if guided_duration_plan is not None:
                 raise ContentEngineError(
                     "guided_auto_mix_script_duration_invalid",

@@ -609,13 +609,15 @@ def rewrite_variation(domain, batch, selected):
     """Default mode: one text-only rewrite of the confirmed copy; only its format is checked."""
     source = selected['narration']
     length = domain._spoken_char_count(source)
-    minimum = max(math.ceil(length * .85), domain._minimum_spoken_chars(batch))
+    floor = domain._minimum_spoken_chars(batch)  # The customer's minimum duration.
+    minimum = max(math.ceil(length * .85), floor)
     maximum = max(minimum, math.floor(length * 1.15))
     # The model aims at 85-115%. A somewhat shorter rewrite still fits the footage and
     # the customer's minimum duration, so it is accepted down to 75% instead of skipping
     # the video (2026-11-13: 137 chars against 138 skipped a whole video after three
     # tries). Longer stays strict: a long voice can outrun the footage.
-    accepted_minimum = max(math.ceil(length * .75), domain._minimum_spoken_chars(batch))
+    # The retry hint below still names the 85-115% target, which is what the model aims for.
+    accepted_minimum = max(math.ceil(length * .75), floor)
     earlier = [c for c in batch['candidates']
                if c.get('source_script_id') == selected['script_id'] and c.get('narration') != source]
     previous = [source] + [c['narration'] for c in earlier]
@@ -1131,7 +1133,7 @@ def run_production(domain, task_id, batch):
                 if candidate.get('status') != 'completed':
                     raise ContentEngineError(candidate.get('error_code') or 'narrated_render_incomplete',
                                              candidate.get('error') or '本条尚未完成。',
-                                             details=candidate.get('error_details') or None)
+                                             details=candidate.get('_error_details') or None)
                 job['status'] = 'completed'
                 job.pop('error', None)
                 job.pop('error_code', None)
