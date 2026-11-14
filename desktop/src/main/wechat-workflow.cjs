@@ -38,6 +38,9 @@ function workflowFailureReason(failure, fallback = "workflow_exception") {
   return fallback;
 }
 
+// Shown while automatic reply waits for an unfinished touch (touch first, user 2026-11-14).
+const TOUCH_FIRST_STATUS = "触达完成后再开始自动回复";
+
 function localDate(value) {
   const date = new Date(value);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -216,6 +219,7 @@ function createWechatWorkflowController(options) {
       task.lastCompletedDate = localDate(task.completedAt);
       recordRun(task);
     } else delete task.completedAt;
+    delete task.attentionAt;
     delete task.notBefore;
     delete task.waitingReason;
     return {
@@ -311,7 +315,7 @@ function createWechatWorkflowController(options) {
     return {
       enabled, phase, currentTaskId, currentExecution, lastTaskId, replyEnabled: store.replyEnabled !== false,
       waitingTaskId: waiting?.id || null, waitUntil: waiting?.notBefore || null,
-      nextTaskId: nextTask()?.id || null, error, replyStatus, replyError, replyBackoff, replyExcludedCount, replyExcludedReasons, replyEnrollExcludedCount, replyEnrollAmbiguousCount, revision,
+      nextTaskId: nextTask()?.id || null, error, replyStatus: replyStatus === TOUCH_FIRST_STATUS && !touchUnfinished() ? "" : replyStatus, replyError, replyBackoff, replyExcludedCount, replyExcludedReasons, replyEnrollExcludedCount, replyEnrollAmbiguousCount, revision,
       classificationQuality: qualitySummary(),
       tasks: store.tasks.map((task) => {
         const retryable = canRetry(task);
@@ -470,18 +474,15 @@ function createWechatWorkflowController(options) {
   // finished (waiting, working or stopped for attention), automatic reply does not start. Field: a touch
   // stopped on its first contact and the workflow went straight to replying, which looked like a reply
   // the customer never arranged cutting into the touch.
-  // A touch stopped for attention counts only when it stopped today on this account: a task left
-  // from an earlier day (or from before this rule, with no attentionAt) must never switch off the
-  // reception a customer already relies on, and a task without an account cannot be retried.
+  // A touch stopped for attention holds reply until it is dealt with, whatever the date (an unknown
+  // send result must never be followed by a reply). Only a task left from before this rule (no
+  // attentionAt) never holds it, so an update cannot switch off the reception a customer relies on.
   function touchUnfinished() {
-    const today = localDate(now());
-    return store.tasks.some((task) => task.type === "touch" && (
-      (["pending", "running"].includes(task.status) && (!task.accountName || task.accountName === getAccount()))
-      || (task.status === "needs_attention" && task.accountName === getAccount()
-        && Boolean(task.attentionAt) && localDate(new Date(task.attentionAt)) === today)));
+    return store.tasks.some((task) => task.type === "touch"
+      && (!task.accountName || task.accountName === getAccount())
+      && (["pending", "running"].includes(task.status) || (task.status === "needs_attention" && Boolean(task.attentionAt))));
   }
 
-  const TOUCH_FIRST_STATUS = "触达完成后再开始自动回复";
 
   function settleQueue() {
     if (!enabled) { if (phase !== "needs_attention") phase = "paused"; return; }
@@ -624,7 +625,7 @@ function createWechatWorkflowController(options) {
       lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
-    } else if (!finiteWorkPending && touchUnfinished() && people.length) {
+    } else if (!finiteWorkPending && touchUnfinished() && people.length && options.reply?.runWorkflowStep) {
       // Reception waits for the touch (touch first); not an executor fault.
       replyStatus = TOUCH_FIRST_STATUS;
     } else if (!finiteWorkPending && replyErrorActive()) {
@@ -966,6 +967,7 @@ function createWechatWorkflowController(options) {
     delete task.reasonCode;
     delete task.completedAt;
     delete task.lastCompletedDate;
+    delete task.attentionAt;
     delete task.notBefore;
     delete task.waitingReason;
     log("touch.skipped_requeued", {
@@ -979,6 +981,7 @@ function createWechatWorkflowController(options) {
   function requeueTask(task) {
     if (!canRetry(task)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
     task.status = "pending"; task.error = "";
+    delete task.attentionAt;
     delete task.notBefore;
     delete task.waitingReason;
   }

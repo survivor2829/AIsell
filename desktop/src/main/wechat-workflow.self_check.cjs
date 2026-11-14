@@ -1503,13 +1503,20 @@ async function checkRetryAndContinueIpc() {
     assert.equal(test.mainShowCount(), 1, "a floating-window log failure must still return to the main window");
   } finally { await test.close(); }
 
-  for (const [label, attentionAt] of [["left from before this rule", null], ["stopped yesterday", new Date(Date.now() - 36 * 3600_000).toISOString()]]) {
-    test = await fixture([{ title: "old-attention", status: "needs_attention", retryable: true, attentionAt }], { reply: true });
+  // Upgrade safety: a touch left from before this rule (no attentionAt) never switches reception off,
+  // and another account's stopped touch never holds this account's reception.
+  for (const [label, row] of [["left from before this rule", { attentionAt: null }], ["stopped on another account", { accountName: "other-acct" }]]) {
+    test = await fixture([{ title: "old-attention", status: "needs_attention", retryable: true, ...row }], { reply: true });
     try {
       await test.control.start(); await test.control.tick();
       assert.equal(test.control.status().phase, "listening", `a touch ${label} never switches off reception`);
     } finally { await test.close(); }
   }
+  // Not a day limit: a touch that stopped yesterday and was not dealt with still holds reply.
+  test = await fixture([{ title: "yesterday", status: "needs_attention", retryable: true, attentionAt: new Date(Date.now() - 36 * 3600_000).toISOString() }], { reply: true });
+  try {
+    await assert.rejects(test.control.start(), /触达任务还没完成/u, "a touch stopped yesterday still holds reply until it is dealt with");
+  } finally { await test.close(); }
 
   test = await fixture([{ title: "listen", status: "needs_attention", retryable: true }], { reply: true });
   try {
