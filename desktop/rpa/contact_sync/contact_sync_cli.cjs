@@ -551,9 +551,17 @@ function listAccountDirs(wechatRoot) {
   return candidates;
 }
 
+// An account folder is "<username>_<4 hex>"; a custom WeChat ID account has no "wxid_" prefix
+// (its login key lives under all_users/login/<username>). A wxid folder keeps the old rule, also
+// without a suffix. Same suffix rule as wechat-db selfUsernameOf, inlined so finding the account
+// never depends on loading the database reader.
 function wxidFromAccountDir(accountDir) {
-  const match = path.basename(accountDir).match(/^(wxid_[^_]+)/);
-  return match ? match[1] : "";
+  const name = path.basename(accountDir);
+  const wxid = name.match(/^(wxid_[^_]+)/u)?.[1];
+  if (wxid) return wxid;
+  // A non-wxid name counts only when it holds WeChat's db_storage (never a "Backup_2025" copy).
+  return /^[A-Za-z0-9_-]+_[0-9a-f]{4}$/u.test(name) && fs.existsSync(path.join(accountDir, "db_storage"))
+    ? name.replace(/_[0-9a-f]{4}$/u, "") : "";
 }
 
 function fileMtime(filePath) {

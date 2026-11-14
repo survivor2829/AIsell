@@ -773,7 +773,13 @@ $roots = if (-not [string]::IsNullOrWhiteSpace($wechatRoot)) {
 $accounts = @()
 foreach ($root in $roots) {
   if (Test-Path -LiteralPath $root -PathType Container) {
-    foreach ($account in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^wxid_[A-Za-z0-9_]+$" })) {
+    # A custom WeChat ID account's folder has no "wxid_" prefix and was never found here, so every
+    # send would stop with wechat_account_directory_missing. Only the synced account itself is added:
+    # counting every "<name>_<4 hex>" folder would let an old custom-ID folder or a backup copy make a
+    # working wxid PC look ambiguous or switched. wxid folders are counted exactly as before.
+    foreach ($account in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object {
+      $_.Name -match "^wxid_[A-Za-z0-9_]+$" -or
+      (-not [string]::IsNullOrWhiteSpace($expectedAccountId) -and $_.Name -eq $expectedAccountId) })) {
       $latestWal = Get-ChildItem -LiteralPath (Join-Path $account.FullName "db_storage") -Recurse -File -Filter "*.db-wal" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1

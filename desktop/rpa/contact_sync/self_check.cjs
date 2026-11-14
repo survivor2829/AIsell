@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
-const { candidateWechatRoots, capture: captureRaw, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatExecutable, findWechatExecutableDetails, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
+const { candidateWechatRoots, capture: captureRaw, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findAccount, findWechatExecutable, findWechatExecutableDetails, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
 // Each case below exercises one capture path; reusing a key saved by an earlier case is covered
 // on its own, so it is off unless a case asks for it.
 const capture = (baseDir, options = {}) => captureRaw(baseDir, { reuseSavedKey: false, ...options });
@@ -687,6 +687,47 @@ fs.copyFileSync(input, output);
     assert.equal(captured.ok, true);
     assert.equal(captured.state.last_stage, "captured_and_synced");
     assert.equal(captured.contacts.length, 1);
+  }
+
+  // Field 2026-11-14: a customer account with a custom WeChat ID (folder "<username>_<4 hex>", no
+  // "wxid_") synced but showed 「微信用户」 with no avatar: the own row was looked up with the suffix.
+  {
+    const { currentWechatIdentity } = require("../../src/main/contact-sync-ipc.cjs");
+    const contacts = [
+      { id: "friend_1", nickname: "朋友", avatarUrl: "https://example.invalid/friend.png" },
+      { id: "custom_id9", nickname: "本人昵称", avatarUrl: "https://example.invalid/me.png" }
+    ];
+    const custom = currentWechatIdentity({ account_name: "custom_id9_ab12" }, {}, contacts);
+    assert.deepEqual([custom.nickname, custom.avatar_url, custom.own_contact_found, custom.folder_kind],
+      ["本人昵称", "https://example.invalid/me.png", true, "custom"], "a custom WeChat ID account finds its own row");
+    const wxid = currentWechatIdentity({ account_name: "wxid_abc123_cd34" }, {},
+      [{ id: "wxid_abc123", nickname: "wxid本人", avatarUrl: "https://example.invalid/w.png" }]);
+    assert.deepEqual([wxid.nickname, wxid.own_contact_found, wxid.folder_kind], ["wxid本人", true, "wxid"], "wxid accounts unchanged");
+    const missing = currentWechatIdentity({ account_name: "custom_id9_ab12" }, {}, [{ id: "friend_1", nickname: "朋友" }]);
+    assert.deepEqual([missing.nickname, missing.own_contact_found], ["微信用户", false], "no own row still falls back, and says so");
+    // Another synced account may list this one as a friend under its own remark: never use that row.
+    const otherList = currentWechatIdentity({ account_name: "custom_id9_ab12" }, {},
+      [{ id: "custom_id9", nickname: "别人给的备注", wechatAccountId: "wxid_other_ee11" }]);
+    assert.deepEqual([otherList.nickname, otherList.own_contact_found], ["微信用户", false], "the own row comes only from this account's list");
+    assert.equal(currentWechatIdentity({ account_name: "WeChat Files" }, {}, []).folder_kind, "other", "a 3.x root is not reported as a custom ID");
+
+    // The login key of a custom WeChat ID account lives under all_users/login/<username>.
+    const customRoot = path.join(root, "custom-id-root");
+    const accountDir = path.join(customRoot, "custom_id9_ab12");
+    fs.mkdirSync(path.join(accountDir, "db_storage", "contact"), { recursive: true });
+    fs.writeFileSync(path.join(accountDir, "db_storage", "contact", "contact.db"), "db");
+    fs.mkdirSync(path.join(customRoot, "all_users", "login", "custom_id9"), { recursive: true });
+    fs.writeFileSync(path.join(customRoot, "all_users", "login", "custom_id9", "key_info.db"), "key");
+    const found = findAccount(customRoot);
+    assert.equal(found.accountName, "custom_id9_ab12");
+    assert.equal(found.hasKey, true, "a custom WeChat ID account's login key is found");
+    // A wxid folder without the suffix keeps its login key, as before this change.
+    const oldRoot = path.join(root, "wxid-no-suffix-root");
+    fs.mkdirSync(path.join(oldRoot, "wxid_old", "db_storage", "contact"), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "wxid_old", "db_storage", "contact", "contact.db"), "db");
+    fs.mkdirSync(path.join(oldRoot, "all_users", "login", "wxid_old"), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "all_users", "login", "wxid_old", "key_info.db"), "key");
+    assert.equal(findAccount(oldRoot).hasKey, true, "a wxid folder without a suffix still finds its login key");
   }
 
   console.log("contact-sync self-check passed");
