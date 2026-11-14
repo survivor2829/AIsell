@@ -774,7 +774,11 @@ export default function App() {
                 if (license.mode === "account") void window.xiaoxiAccount?.logout().then(setLicense); }}><LogOut size={16} />退出登录</button>
             </div>}
           </div>
-          <CustomerTools onOpenFeedback={() => openFeedback()} />
+          {/* 返回上一级在标题栏右侧（用户 2026-11-13）：不占正文，也不会压住页面右上角的按钮和标签。 */}
+          <div className="topbar-end">
+            {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={20} strokeWidth={2.75} aria-hidden="true" />返回上一级</button>}
+            <CustomerTools onOpenFeedback={() => openFeedback()} />
+          </div>
         </header>
 
         {personalizingRole && <RoleAppearancePanel key={personalizingRole} role={personalizingRole} value={rolePreferences.preferences[personalizingRole]}
@@ -785,7 +789,6 @@ export default function App() {
           <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
-          {active !== "overview" && <button type="button" className="module-return" onClick={returnToParent}><ArrowLeft size={22} strokeWidth={2.75} aria-hidden="true" />返回上一级</button>}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "account-admin" && license.mode === "account" && license.isAdmin && <AccountManagementPage selfPhone={license.phone || ""} />}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole}
