@@ -1462,6 +1462,8 @@ async function checkRetryAndContinueIpc() {
       task.status = rowFor(task).status;
       if (rowFor(task).accountName) task.accountName = rowFor(task).accountName;
       if (task.status === "completed") task.progress = { done: 1, total: 1 };
+      // Stopped for attention today (as the workflow now records it), unless a row says otherwise.
+      if (task.status === "needs_attention" && rowFor(task).attentionAt !== null) task.attentionAt = rowFor(task).attentionAt || new Date().toISOString();
     }
     fs.writeFileSync(stateFile, JSON.stringify(stored));
     const control = registerWechatWorkflowIpc({ ...options, getMainWindow: () => mainWindow,
@@ -1501,15 +1503,30 @@ async function checkRetryAndContinueIpc() {
     assert.equal(test.mainShowCount(), 1, "a floating-window log failure must still return to the main window");
   } finally { await test.close(); }
 
+  // Upgrade safety: a touch left from before this rule (no attentionAt) never switches reception off,
+  // and another account's stopped touch never holds this account's reception.
+  for (const [label, row] of [["left from before this rule", { attentionAt: null }], ["stopped on another account", { accountName: "other-acct" }]]) {
+    test = await fixture([{ title: "old-attention", status: "needs_attention", retryable: true, ...row }], { reply: true });
+    try {
+      await test.control.start(); await test.control.tick();
+      assert.equal(test.control.status().phase, "listening", `a touch ${label} never switches off reception`);
+    } finally { await test.close(); }
+  }
+  // Not a day limit: a touch that stopped yesterday and was not dealt with still holds reply.
+  test = await fixture([{ title: "yesterday", status: "needs_attention", retryable: true, attentionAt: new Date(Date.now() - 36 * 3600_000).toISOString() }], { reply: true });
+  try {
+    await assert.rejects(test.control.start(), /触达任务还没完成/u, "a touch stopped yesterday still holds reply until it is dealt with");
+  } finally { await test.close(); }
+
   test = await fixture([{ title: "listen", status: "needs_attention", retryable: true }], { reply: true });
   try {
-    await test.control.start(); await test.control.tick();
-    assert.equal(test.control.status().phase, "listening");
+    // Touch first, reply after (user, 2026-11-14): a touch needing attention keeps reply from starting.
+    await assert.rejects(test.control.start(), /触达任务还没完成/u);
+    assert.notEqual(test.control.status().phase, "listening");
     const result = await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() });
     assert.equal(result.ok, true);
     assert.equal(result.state.enabled, true);
     assert.equal(result.state.tasks[0].status, "pending");
-    assert.equal(test.controlEvents.filter((entry) => entry.name === "pause.started").at(-1)?.details.trigger_code, "retry_task");
   } finally { await test.close(); }
 
   test = await fixture([{ title: "blocked", status: "needs_attention", retryable: true },
@@ -1630,8 +1647,13 @@ async function checkRetryAndContinueIpc() {
     try {
       test.options.executors.touch.runWorkflowStep = async () => { touchSends += 1; return { status: "completed" }; };
       test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
-      await test.control.start(); await test.control.tick();
-      assert.equal(test.control.status().phase, "listening");
+      if (kind === "retryAll") {
+        // Touch first (user, 2026-11-14): a touch needing attention never lets reception start.
+        await assert.rejects(test.control.start(), /触达任务还没完成/u);
+      } else {
+        await test.control.start(); await test.control.tick();
+        assert.equal(test.control.status().phase, "listening");
+      }
       const resumesBefore = replyResumes;
       failStateWrite(test.rootDir);
       try {
@@ -1661,26 +1683,15 @@ async function checkRetryAndContinueIpc() {
       return { resolution, resolutionId, completed: false, progress: { done: 0, total: 1 } };
     };
     test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
-    await test.control.start(); await test.control.tick();
+    // Touch first, reply after (user, 2026-11-14): with a touch needing attention, reception never
+    // started, so there is no listening run for a retry to race with.
+    await assert.rejects(test.control.start(), /触达任务还没完成/u);
     const resumesBefore = replyResumes;
-    let enteredPause;
-    const entered = new Promise((resolve) => { enteredPause = resolve; });
-    const pauseGate = new Promise((resolve) => { releaseRetryPause = resolve; });
-    originalRetryPause = test.options.reply.pauseWorkflow;
-    test.options.reply.pauseWorkflow = async () => {
-      enteredPause();
-      await pauseGate;
-    };
-    retryingUnknown = test.control.retryAll(false);
-    await entered;
     const unknownId = test.rows.find((row) => row.title === "unknown").id;
     resolvingUnknown = test.control.resolveTouchUnknown(unknownId, "not_sent");
-    releaseRetryPause(); releaseRetryPause = null;
     assert.equal((await resolvingUnknown).ok, true);
-    await assert.rejects(retryingUnknown, /没有可重新加入/);
-    assert.equal(test.control.status().enabled, false, "a queue change during retry must keep workflow paused");
-    assert.equal(test.control.status().phase, "paused");
-    assert.equal(replyResumes, resumesBefore);
+    assert.equal(test.control.status().enabled, false, "resolving an unknown result keeps the workflow paused");
+    assert.equal(replyResumes, resumesBefore, "and does not resume reception");
     await test.control.tick();
     assert.equal(touchSends, 0, "resolving an unknown result must not send without a new start");
   } finally {
@@ -1735,14 +1746,14 @@ async function checkRetryAndContinueIpc() {
   const eligibilityRows = [{ title: "became-ineligible", status: "needs_attention", retryable: true }];
   test = await fixture(eligibilityRows, { reply: true });
   try {
-    await test.control.start(); await test.control.tick();
-    assert.equal(test.control.status().phase, "listening");
+    // Touch first (user, 2026-11-14): reception does not start while this touch needs attention.
+    await assert.rejects(test.control.start(), /触达任务还没完成/u);
     const pauses = test.replyPauseCalls();
     eligibilityRows[0].retryable = false;
     assert.equal((await test.invoke("retry-task", { id: test.rows[0].id, andStart: true, clickToken: click() })).ok, false);
     assert.equal((await test.invoke("retry-all-and-start", { clickToken: click() })).ok, false);
-    assert.equal(test.control.status().enabled, true, "a rejected retry must not stop reception");
-    assert.equal(test.control.status().phase, "listening");
+    assert.equal(test.control.status().enabled, false, "a rejected retry starts nothing");
+    assert.notEqual(test.control.status().phase, "listening");
     assert.equal(test.replyPauseCalls(), pauses);
   } finally { await test.close(); }
 
@@ -1779,7 +1790,9 @@ async function checkRetryAndContinueIpc() {
     await test.close();
   }
 
-  test = await fixture([{ title: "pausing", status: "needs_attention", retryable: true }], { reply: true });
+  // Touch first (user, 2026-11-14): a touch needing attention never lets reception start, so the
+  // in-flight reply pause is set up with a finished touch that has a skipped contact.
+  test = await fixture([{ title: "pausing", status: "completed", skipped: true }], { reply: true });
   let releaseReply, ticking, pausing;
   try {
     let enteredReply;
@@ -1795,8 +1808,8 @@ async function checkRetryAndContinueIpc() {
     pausing = test.control.pause();
     assert.equal(test.control.controlSnapshot().phase, "pausing");
     await assert.rejects(test.control.retryAll(), /请先暂停/);
-    await assert.rejects(test.control.retryTask(test.rows[0].id), /请先暂停/);
-    assert.equal(test.control.status().tasks[0].status, "needs_attention",
+    await assert.rejects(test.control.retryTask(test.rows[0].id), /请先暂停|不能直接重试/);
+    assert.equal(test.control.status().tasks[0].status, "completed",
       "a retry during an in-flight pause must not mutate the task");
     releaseReply(); releaseReply = null;
     await ticking; await pausing;
@@ -1871,6 +1884,7 @@ async function checkFailedRetryRecoveryGuards() {
       const row = rowFor(task);
       task.status = row.status;
       if (row.status === "completed") task.progress = { done: 1, total: 1 };
+      if (row.status === "needs_attention" && row.attentionAt !== null) task.attentionAt = row.attentionAt || new Date().toISOString();
       if (row.accountName) task.accountName = row.accountName;
     }
     fs.writeFileSync(stateFile, JSON.stringify(stored));
@@ -1906,11 +1920,13 @@ async function checkFailedRetryRecoveryGuards() {
 
   const skipFail = () => ({ title: "skip-fail", status: "completed", skipped: true });
   for (const [name, row, mutate] of [
-    ["resolve sent", { title: "unknown", status: "needs_attention", unknown: true },
-      (state) => state.control.resolveTouchUnknown(state.id("unknown"), "sent")],
-    ["cancel", { title: "attention", status: "needs_attention" },
+    // Touch first (user, 2026-11-14): a touch needing attention on this account keeps reception from
+    // starting, so these plan changes race a retry on a task of another account while listening. An
+    // unknown touch result can only be resolved on its own account, where reception never starts now
+    // (checkRetryAndContinueIpc covers that it stays paused and sends nothing).
+    ["cancel", { title: "attention", status: "needs_attention", accountName: "other-acct" },
       (state) => state.control.cancelTask(state.id("attention"))],
-    ["delete", { title: "attention", status: "needs_attention" },
+    ["delete", { title: "attention", status: "needs_attention", accountName: "other-acct" },
       (state) => state.control.deleteTasks([state.id("attention")], true)]
   ]) {
     const state = await fixture([skipFail(), row]);
@@ -2119,8 +2135,9 @@ async function checkWorkflowDiagnostics() {
   replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
   await control.addTask({ type: "touch", payload: {} });
   await control.start(); await control.tick();
-  // Unattended: the failed finite task is skipped and the run keeps going.
-  assert.equal(control.status().enabled, true, "a finite task failure is skipped, not a stop");
+  // Touch first, reply after (user, 2026-11-14): a touch that stopped for attention ends the run
+  // instead of handing over to automatic reply (other finite tasks are still skipped and the run goes on).
+  assert.equal(control.status().enabled, false, "a touch needing attention stops the run rather than replying");
   assert.equal(events.filter((event) => event.name === "start.started").at(-1)?.previous_phase, "paused");
   await control.pause();
   assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), false,
@@ -2912,7 +2929,12 @@ async function main() {
   await brokenPayload.start(); await brokenPayload.tick();
   const brokenPayloadStatus = brokenPayload.status();
   const brokenPayloadRow = brokenPayloadStatus.tasks.find((task) => task.id === brokenPayloadTask.task.id);
-  assert.equal(brokenPayloadStatus.enabled, true, "one corrupt touch payload must not stop reply observation");
+  // Touch first, reply after (user, 2026-11-14): a touch task stopped for attention keeps automatic
+  // reply from starting until the touch is dealt with; the corrupt task is still isolated and named.
+  assert.equal(brokenPayloadStatus.enabled, false, "a touch needing attention keeps reply from starting");
+  assert.equal(brokenPayloadStatus.replyStatus, "触达完成后再开始自动回复", "the waiting reason is the touch, never a broken executor");
+  assert.notEqual(brokenPayloadStatus.replyError, "自动回复执行器不可用");
+  await assert.rejects(brokenPayload.start(), /触达任务还没完成/u, "starting again says the touch must be finished first");
   assert.equal(brokenPayloadRow.status, "needs_attention");
   assert.equal(brokenPayloadRow.reasonCode, "touch_task_payload_incomplete");
   assert.match(brokenPayloadRow.error, new RegExp(brokenPayloadFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the task error must identify the corrupt payload file");
