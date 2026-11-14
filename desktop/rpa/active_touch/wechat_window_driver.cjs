@@ -1960,6 +1960,24 @@ if ($minimumIdleMs -gt 0) {
   if ($idleMs -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
   if ([uint64]$idleMs -lt [uint64]$minimumIdleMs) { Stop-SearchForActiveUser }
 }
+# Field (user, 2026-11-14): with the cursor left over the search dropdown (where the last
+# contact's result was clicked) WeChat highlights the hovered row and the result check could
+# fail; with the cursor elsewhere it never did. Park it on WeChat's own title strip, without
+# clicking, before the input baseline is taken (a cursor move counts as input). Only when the
+# cursor is inside this WeChat window and the computer has been untouched for 1.5 s: never
+# take the mouse from a person using it.
+$script:searchCursorParked = $false
+$parkPoint = New-Object Win32WechatWindowSearch+POINT
+$parkIdleMs = [Win32WechatWindowSearch]::GetLastInputIdleMilliseconds()
+if ($parkIdleMs -ne [uint32]::MaxValue -and [uint64]$parkIdleMs -ge 1500 -and
+    [Win32WechatWindowSearch]::GetCursorPos([ref]$parkPoint) -and
+    $parkPoint.X -ge $matched.x -and $parkPoint.X -lt ($matched.x + $matched.width) -and
+    $parkPoint.Y -ge $matched.y -and $parkPoint.Y -lt ($matched.y + $matched.height)) {
+  $parkDpi = [int][Win32WechatWindowSearch]::GetDpiForWindow([IntPtr]$matched.hWnd)
+  if ($parkDpi -le 0) { $parkDpi = 96 }
+  $script:searchCursorParked = [Win32WechatWindowSearch]::SetCursorPos([int]($matched.x + $matched.width * 0.5), [int]($matched.y + [Math]::Round(8 * $parkDpi / 96.0)))
+  Start-Sleep -Milliseconds 120
+}
 $expectedInputTick = [Win32WechatWindowSearch]::GetLastInputTick()
 if ($expectedInputTick -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
 Start-Sleep -Milliseconds 300
@@ -2133,7 +2151,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     }
   }
   Assert-ExactSearchForeground
-  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 8
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; cursorParked = [bool]$script:searchCursorParked; inputLeaseTick = [uint64]$script:inputLeaseTick; searchCapturePng = $searchCapturePng; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; popupBounds = $popupBounds; popupDpi = $popupDpi; popupCandidateCount = [int]$script:searchPopupCandidateCount; captureSource = $captureSource; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 8
   exit
 } elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   # Kept for the explicitly named File Transfer Assistant flow.

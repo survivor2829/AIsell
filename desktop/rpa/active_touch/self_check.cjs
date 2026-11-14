@@ -3145,6 +3145,16 @@ try {
     assert.ok(trayAttempt > 0 && NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("Request-PersonalWechatActivation @{ processPath = $trayPaths[0] }", trayAttempt) > trayAttempt,
       "a WeChat with every window hidden is asked to restore its own window");
     assert.ok(NORMALIZE_WECHAT_WINDOW_SCRIPT.includes("$trayPaths.Count -eq 1"), "never guess between two WeChat installations");
+    // Field (user, 2026-11-14): a cursor left over the search dropdown highlights a row and the
+    // result check could fail. The search parks it (no click) before the input baseline, only idle.
+    let searchScript = "";
+    require("./wechat_window_driver.cjs").openWechatSearchResult("probe", { searchIdentity: true, runner: (script) => { searchScript = script; return { ok: false }; } });
+    const park = searchScript.indexOf("$script:searchCursorParked = [Win32WechatWindowSearch]::SetCursorPos(");
+    const baseline = searchScript.indexOf("$expectedInputTick = [Win32WechatWindowSearch]::GetLastInputTick()");
+    assert.ok(park > 0 && baseline > park, "the cursor is parked before the input baseline (a move counts as input)");
+    const parkBlock = searchScript.slice(searchScript.lastIndexOf("$parkIdleMs =", park), baseline);
+    assert.match(parkBlock, /\[uint64\]\$parkIdleMs -ge 1500/u, "never take the mouse from a person using it");
+    assert.doesNotMatch(parkBlock, /mouse_event/u, "parking only moves the cursor, it never clicks");
   }
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
