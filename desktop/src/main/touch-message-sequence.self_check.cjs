@@ -673,7 +673,12 @@ $dialogAccepted = Wait-PasteAccepted 1000
     for (const stage of ["task_ready_ms", "contacts_read_ms", "copy_ready_ms", "send_ready_ms"]) {
       assert.ok(Number.isFinite(timings[0].details[stage]), `the slow report says how long ${stage} took`);
     }
-    assert.ok(timings[0].details.send_ready_ms >= 10_000);
+    assert.ok(timings[0].details.outside_copy_ms >= 10_000);
+    if (Number.isFinite(timings[0].details.copy_started_ms)) {
+      assert.equal(timings[0].details.outside_copy_ms,
+        timings[0].details.send_ready_ms - (timings[0].details.copy_ready_ms - timings[0].details.copy_started_ms),
+        "writing the copy with AI is not counted as a slow preparation");
+    }
   }
 
   const genericFailureWorkflow = createTouchWorkflow({ ...config, execute: async () => ({

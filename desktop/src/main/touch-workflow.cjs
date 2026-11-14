@@ -539,7 +539,10 @@ function createTouchWorkflow(options = {}) {
       const verifiedPartsBefore = new Set(current.message_parts?.flatMap((part, partIndex) => part.status === "sent_verified" ? [partIndex] : []) || []);
       markPrepare("send_ready");
       try {
-        const slow = prepareMarks.send_ready_ms >= TOUCH_PREPARE_SLOW_MS;
+        // AI polish legitimately takes seconds; only the time outside writing the copy counts as slow.
+        const copyMs = Number.isFinite(prepareMarks.copy_started_ms) ? prepareMarks.copy_ready_ms - prepareMarks.copy_started_ms : 0;
+        prepareMarks.outside_copy_ms = Math.max(0, prepareMarks.send_ready_ms - copyMs);
+        const slow = prepareMarks.outside_copy_ms >= TOUCH_PREPARE_SLOW_MS;
         diagnostics().event("active_touch", "prepare_timing", { task_id: id, current_index: index, ...prepareMarks },
           { level: slow ? "warn" : "info", code: slow ? "touch_prepare_slow" : "" });
       } catch { /* Diagnostics never stop the task. */ }

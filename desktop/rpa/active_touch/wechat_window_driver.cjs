@@ -1058,13 +1058,18 @@ if (-not $expectedHandleIsValid) {
   # to restore its window (its Start-menu activation, as above) and then recognize the
   # visible result with the unchanged checks. One installed WeChat only: never guess
   # between two installations.
+  # Not right after the discovery launch above: that WeChat is still starting.
   if (-not $inspectOnly -and $matches.Count -eq 0 -and -not $windowDiagnostic.window_recovery_attempted -and
+      -not $windowDiagnostic.window_discovery_launch_attempted -and
       $windowDiagnostic.window_process_count -gt 0 -and @($candidateMatches | Where-Object { $_.visible }).Count -eq 0) {
     $trayPaths = @(@($script:wechatProcesses.Values | ForEach-Object { $trayPath = ""; try { $trayPath = [string]$_.Path } catch {}; $trayPath }) |
       Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
     if ($trayPaths.Count -eq 1 -and -not (Test-WechatWindowBudgetSpent)) {
       Set-WechatWindowStage "recover"
-      if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser 0 ([IntPtr]::Zero); exit }
+      if (-not (Test-XiaoxiUserIdle)) {
+        $trayPid = [int](@($script:wechatProcesses.Keys | Sort-Object) | Select-Object -First 1)
+        Stop-ForActiveUser $trayPid ([IntPtr]::Zero); exit
+      }
       $windowDiagnostic.window_tray_activation_attempted = $true
       if (Request-PersonalWechatActivation @{ processPath = $trayPaths[0] }) {
         $nativeActivationRequested = $true
@@ -1075,7 +1080,7 @@ if (-not $expectedHandleIsValid) {
           $trayCandidates = @(Get-WechatWindowCandidates)
           Update-WechatWindowCandidateDiagnostics $trayCandidates
           $trayMatches = @(Select-WechatMainCandidates $trayCandidates)
-          $windowDiagnostic.window_recovery_main_count = $trayMatches.Count
+          $windowDiagnostic.window_tray_main_count = $trayMatches.Count
           if ($trayMatches.Count -eq 1) {
             $matches = $trayMatches
             $windowDiagnostic.window_tray_activation_succeeded = $true
