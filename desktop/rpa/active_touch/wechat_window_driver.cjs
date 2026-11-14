@@ -530,7 +530,7 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 $windowClock = [Diagnostics.Stopwatch]::StartNew()
 $windowStageAt = 0L
-$windowDiagnostic = @{ window_stage = "bootstrap"; window_native_count = 0; window_hidden_count = 0; window_minimized_count = 0; window_rejected_layout_count = 0; window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false; window_discovery_attempts = 0; window_discovery_retries = 0; window_discovery_wait_ms = 0; window_discovery_launch_attempted = $false; window_discovery_launch_succeeded = $false }
+$windowDiagnostic = @{ window_stage = "bootstrap"; window_native_count = 0; window_hidden_count = 0; window_minimized_count = 0; window_rejected_layout_count = 0; window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false; window_discovery_attempts = 0; window_discovery_retries = 0; window_discovery_wait_ms = 0; window_discovery_launch_attempted = $false; window_discovery_launch_succeeded = $false; window_tray_activation_attempted = $false; window_tray_activation_succeeded = $false }
 $hostStartedAt = 0L
 if ([int64]::TryParse($env:XIAOXI_WINDOW_STARTED_AT, [ref]$hostStartedAt) -and $hostStartedAt -gt 0) {
   $windowDiagnostic.window_bootstrap_ms = [Math]::Max(0, [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $hostStartedAt)
@@ -1043,6 +1043,47 @@ if (-not $expectedHandleIsValid) {
           if ($recoveredMatches.Count -eq 1) {
             $matches = $recoveredMatches
             $windowDiagnostic.window_recovery_succeeded = $true
+            break
+          }
+        }
+      }
+      Set-WechatWindowStage "select"
+    }
+  }
+  # WeChat running with every window hidden (closed to the tray). On a WeChat 4.2 main
+  # window without the MMUI render child (Windows 10 LTSC field PC, 2026-11-14) the hidden
+  # main window carries no class or child evidence, so it is never a candidate, the recovery
+  # above needs a visible surface and the discovery launch needs no process at all: the run
+  # stopped with 微信运行条件未满足 until the customer opened WeChat by hand. Ask WeChat itself
+  # to restore its window (its Start-menu activation, as above) and then recognize the
+  # visible result with the unchanged checks. One installed WeChat only: never guess
+  # between two installations.
+  # Not right after the discovery launch above: that WeChat is still starting.
+  if (-not $inspectOnly -and $matches.Count -eq 0 -and -not $windowDiagnostic.window_recovery_attempted -and
+      -not $windowDiagnostic.window_discovery_launch_attempted -and
+      $windowDiagnostic.window_process_count -gt 0 -and @($candidateMatches | Where-Object { $_.visible }).Count -eq 0) {
+    $trayPaths = @(@($script:wechatProcesses.Values | ForEach-Object { $trayPath = ""; try { $trayPath = [string]$_.Path } catch {}; $trayPath }) |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    if ($trayPaths.Count -eq 1 -and -not (Test-WechatWindowBudgetSpent)) {
+      Set-WechatWindowStage "recover"
+      if (-not (Test-XiaoxiUserIdle)) {
+        $trayPid = [int](@($script:wechatProcesses.Keys | Sort-Object) | Select-Object -First 1)
+        Stop-ForActiveUser $trayPid ([IntPtr]::Zero); exit
+      }
+      $windowDiagnostic.window_tray_activation_attempted = $true
+      if (Request-PersonalWechatActivation @{ processPath = $trayPaths[0] }) {
+        $nativeActivationRequested = $true
+        for ($trayAttempt = 0; $trayAttempt -lt 30; $trayAttempt++) {
+          if ($trayAttempt -gt 0 -and (Test-WechatWindowBudgetSpent)) { break }
+          Start-Sleep -Milliseconds 200
+          Update-WechatProcessSnapshot
+          $trayCandidates = @(Get-WechatWindowCandidates)
+          Update-WechatWindowCandidateDiagnostics $trayCandidates
+          $trayMatches = @(Select-WechatMainCandidates $trayCandidates)
+          $windowDiagnostic.window_tray_main_count = $trayMatches.Count
+          if ($trayMatches.Count -eq 1) {
+            $matches = $trayMatches
+            $windowDiagnostic.window_tray_activation_succeeded = $true
             break
           }
         }

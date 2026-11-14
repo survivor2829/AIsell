@@ -3137,6 +3137,14 @@ try {
     assert.match(normalizer, /window_process_count = \$script:wechatProcesses\.Count[\s\S]{0,600}window_wechat_version = \$seenVersion/u, "the WeChat version is known before a main window is found");
     const { sanitizeWechatWindowDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
     assert.equal(sanitizeWechatWindowDiagnostics({ window_search_budget_spent: true, window_wechat_version: "4.1.13.15" }).window_search_budget_spent, true);
+    // Field 2026-11-14: a tray-hidden WeChat is now asked to restore itself; the field record must say so.
+    assert.deepEqual(sanitizeWechatWindowDiagnostics({ window_tray_activation_attempted: true, window_tray_activation_succeeded: false }),
+      { window_tray_activation_attempted: true, window_tray_activation_succeeded: false });
+    const { NORMALIZE_WECHAT_WINDOW_SCRIPT } = require("./wechat_window_driver.cjs");
+    const trayAttempt = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("window_tray_activation_attempted = $true");
+    assert.ok(trayAttempt > 0 && NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("Request-PersonalWechatActivation @{ processPath = $trayPaths[0] }", trayAttempt) > trayAttempt,
+      "a WeChat with every window hidden is asked to restore its own window");
+    assert.ok(NORMALIZE_WECHAT_WINDOW_SCRIPT.includes("$trayPaths.Count -eq 1"), "never guess between two WeChat installations");
   }
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];

@@ -1,7 +1,7 @@
 const STAGES = new Set(["bootstrap", "compile", "process", "enumerate", "select", "shell", "visual", "recover", "selected", "restore", "focus", "verify", "complete"]);
 const MODES = new Set(["exact_hwnd", "render_child", "native_main", "shell_navigation", "visual_navigation"]);
 const MOMENTS_STAGES = new Set(["bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete"]);
-const COUNTERS = ["elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count",
+const COUNTERS = ["elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count", "tray_main_count",
   "discovery_attempts", "discovery_retries", "discovery_wait_ms", "obstacle_width", "obstacle_height",
   ...[...STAGES].map((stage) => `${stage}_ms`)];
 const OBSTACLE_KINDS = new Set(["moments", "wechat", "empty", "other"]);
@@ -38,6 +38,8 @@ function sanitizeWechatWindowDiagnostics(source = {}) {
     "window_recovery_succeeded",
     "window_discovery_launch_attempted",
     "window_discovery_launch_succeeded",
+    "window_tray_activation_attempted",
+    "window_tray_activation_succeeded",
     "window_search_budget_spent"
   ]) {
     if (typeof source[key] === "boolean") detail[key] = source[key];
