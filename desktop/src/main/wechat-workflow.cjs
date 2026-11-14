@@ -466,6 +466,15 @@ function createWechatWorkflowController(options) {
       })[0];
   }
 
+  // Touch first, reply after (user, 2026-11-14): while this account still has a touch task that is not
+  // finished (waiting, working or stopped for attention), automatic reply does not start. Field: a touch
+  // stopped on its first contact and the workflow went straight to replying, which looked like a reply
+  // the customer never arranged cutting into the touch.
+  function touchUnfinished() {
+    return store.tasks.some((task) => task.type === "touch" && ["pending", "running", "needs_attention"].includes(task.status)
+      && (!task.accountName || task.accountName === getAccount()));
+  }
+
   function settleQueue() {
     if (!enabled) { if (phase !== "needs_attention") phase = "paused"; return; }
     const pending = store.tasks.filter((task) => task.status === "pending");
@@ -481,7 +490,7 @@ function createWechatWorkflowController(options) {
       phase = nextTask() ? "working" : "scheduled";
       return;
     }
-    if (store.replyEnabled !== false && accountRecipients().length) {
+    if (store.replyEnabled !== false && accountRecipients().length && !touchUnfinished()) {
       phase = "listening";
       return;
     }
@@ -499,8 +508,11 @@ function createWechatWorkflowController(options) {
     if (disposed) throw new Error("程序正在退出。");
     if (enabled || inFlight || mutating) return { alreadyActive: true };
     refreshDay();
-    if (!store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))
-      && !(store.replyEnabled !== false && accountRecipients().length)) {
+    const pendingHere = store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()));
+    if (!pendingHere && store.replyEnabled !== false && accountRecipients().length && touchUnfinished()) {
+      throw new Error("触达任务还没完成，自动回复会在触达完成后开始。请先处理需要处理的触达任务。");
+    }
+    if (!pendingHere && !(store.replyEnabled !== false && accountRecipients().length)) {
       throw new Error("没有待执行任务。请将可重试任务重新加入计划；其他未完成任务请先核对结果。");
     }
     return { alreadyActive: false };
@@ -560,7 +572,7 @@ function createWechatWorkflowController(options) {
     // Finite work has absolute priority. Automatic reply is checked only after
     // every planned task has completed or been safely isolated. A send cooldown
     // or a future appointment is still unfinished work, not an empty queue.
-    if (!finiteWorkPending && people.length && options.reply?.runWorkflowStep && !replyErrorActive()) {
+    if (!finiteWorkPending && !touchUnfinished() && people.length && options.reply?.runWorkflowStep && !replyErrorActive()) {
       if (await liveAccountChanged(false) || !enabled || mutating) return;
       cycleStage = "reply_step";
       const replyStarted = Date.now();
@@ -743,7 +755,7 @@ function createWechatWorkflowController(options) {
         log("queue.transition", {
           stage: "task_settled", task_kind: task.type, task_id: task.id, task_status: task.status,
           next_task_kind: following?.type || "", next_task_id: following?.id || "",
-          continue_to_next_task: Boolean(following), reply_eligible: !pendingWork && store.replyEnabled !== false && accountRecipients().length > 0
+          continue_to_next_task: Boolean(following), reply_eligible: !pendingWork && !touchUnfinished() && store.replyEnabled !== false && accountRecipients().length > 0
         }, { level: "info", code: following ? "next_finite_task_ready" : pendingWork ? "finite_tasks_waiting" : "finite_tasks_drained" });
       }
       emit();
