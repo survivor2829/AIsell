@@ -42,10 +42,14 @@ function currentWechatIdentity(state, settings, contacts = []) {
   if (!stableId) return null;
   // The account folder is "<username>_<4 hex>". A custom WeChat ID account has no "wxid_" prefix,
   // so the old wxid-only rule kept the suffix, never found the own row and showed 「微信用户」 with no
-  // avatar (field 2026-11-14). Same rule as the message receipts (shared wechat-db helper).
-  const ownWxid = require("../../rpa/wechat_db/wechat-db.cjs").selfUsernameOf(stableId);
+  // avatar (field 2026-11-14). Same suffix rule as wechat-db selfUsernameOf, inlined so showing the
+  // account never depends on loading the database reader.
+  const customFolder = /^[A-Za-z0-9_-]+_[0-9a-f]{4}$/u.test(stableId);
+  const ownWxid = stableId.match(/^(wxid_[^_]+)/u)?.[1] || (customFolder ? stableId.replace(/_[0-9a-f]{4}$/u, "") : stableId);
+  // Only this account's own list: another synced account may have it as a friend (with its remark).
   const ownContact = Array.isArray(contacts)
-    ? contacts.find((contact) => [ownWxid, stableId].includes(String(contact?.wxid || contact?.id || "").trim()))
+    ? contacts.find((contact) => [ownWxid, stableId].includes(String(contact?.wxid || contact?.id || "").trim())
+      && [stableId, ""].includes(String(contact?.wechatAccountId || "").trim()))
     : null;
   const root = String(settings?.wechatRoot || state?.wechat_root || "").trim();
   const accountDir = root ? path.join(root, stableId) : "";
@@ -72,7 +76,7 @@ function currentWechatIdentity(state, settings, contacts = []) {
     avatar_url: avatarDataUrl || remoteAvatar,
     synced_at: String(state?.last_synced_at || ""),
     own_contact_found: Boolean(ownContact),
-    folder_kind: /^wxid_/u.test(stableId) ? "wxid" : "custom"
+    folder_kind: /^wxid_/u.test(stableId) ? "wxid" : customFolder ? "custom" : "other"
   };
 }
 

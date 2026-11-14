@@ -773,7 +773,12 @@ $roots = if (-not [string]::IsNullOrWhiteSpace($wechatRoot)) {
 $accounts = @()
 foreach ($root in $roots) {
   if (Test-Path -LiteralPath $root -PathType Container) {
-    foreach ($account in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^wxid_[A-Za-z0-9_]+$" })) {
+    # Account folders are "<username>_<4 hex>"; a custom WeChat ID account has no "wxid_" prefix and
+    # was never found here, so every send would stop with wechat_account_directory_missing.
+    # A non-wxid name must also hold WeChat's db_storage, so a folder like "Backup_2025" never counts.
+    foreach ($account in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object {
+      $_.Name -match "^wxid_[A-Za-z0-9_]+$" -or
+      ($_.Name -match "^[A-Za-z0-9_-]+_[0-9a-f]{4}$" -and (Test-Path -LiteralPath (Join-Path $_.FullName "db_storage") -PathType Container)) })) {
       $latestWal = Get-ChildItem -LiteralPath (Join-Path $account.FullName "db_storage") -Recurse -File -Filter "*.db-wal" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1

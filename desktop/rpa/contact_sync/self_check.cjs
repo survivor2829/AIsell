@@ -705,6 +705,11 @@ fs.copyFileSync(input, output);
     assert.deepEqual([wxid.nickname, wxid.own_contact_found, wxid.folder_kind], ["wxid本人", true, "wxid"], "wxid accounts unchanged");
     const missing = currentWechatIdentity({ account_name: "custom_id9_ab12" }, {}, [{ id: "friend_1", nickname: "朋友" }]);
     assert.deepEqual([missing.nickname, missing.own_contact_found], ["微信用户", false], "no own row still falls back, and says so");
+    // Another synced account may list this one as a friend under its own remark: never use that row.
+    const otherList = currentWechatIdentity({ account_name: "custom_id9_ab12" }, {},
+      [{ id: "custom_id9", nickname: "别人给的备注", wechatAccountId: "wxid_other_ee11" }]);
+    assert.deepEqual([otherList.nickname, otherList.own_contact_found], ["微信用户", false], "the own row comes only from this account's list");
+    assert.equal(currentWechatIdentity({ account_name: "WeChat Files" }, {}, []).folder_kind, "other", "a 3.x root is not reported as a custom ID");
 
     // The login key of a custom WeChat ID account lives under all_users/login/<username>.
     const customRoot = path.join(root, "custom-id-root");
@@ -716,6 +721,13 @@ fs.copyFileSync(input, output);
     const found = findAccount(customRoot);
     assert.equal(found.accountName, "custom_id9_ab12");
     assert.equal(found.hasKey, true, "a custom WeChat ID account's login key is found");
+    // A wxid folder without the suffix keeps its login key, as before this change.
+    const oldRoot = path.join(root, "wxid-no-suffix-root");
+    fs.mkdirSync(path.join(oldRoot, "wxid_old", "db_storage", "contact"), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "wxid_old", "db_storage", "contact", "contact.db"), "db");
+    fs.mkdirSync(path.join(oldRoot, "all_users", "login", "wxid_old"), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "all_users", "login", "wxid_old", "key_info.db"), "key");
+    assert.equal(findAccount(oldRoot).hasKey, true, "a wxid folder without a suffix still finds its login key");
   }
 
   console.log("contact-sync self-check passed");

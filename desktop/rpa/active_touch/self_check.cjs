@@ -3493,6 +3493,27 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
   // Field 2026-11-14 (1.3.8): with WeChat's 搜一搜 side panel open, the picture's send-button point
   // sampled the panel, so a landed paste was judged ignored. Execute the point helper against fake
   // windows (no WeChat): a WeChatAppEx child at the right moves the point to the chat panel's edge.
+  // Field 2026-11-14: a custom WeChat ID account folder ("<username>_<4 hex>", no "wxid_") was never
+  // found by the send's account check, so every send would stop with wechat_account_directory_missing.
+  // Execute the script's own folder filter against real folders.
+  {
+    const devDriverSource = fs.readFileSync(require.resolve("./wechat_window_driver.dev.cjs"), "utf8");
+    const filterStart = devDriverSource.indexOf("Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object {");
+    assert.ok(filterStart > 0, "the send's account folder filter is still there");
+    const filterText = devDriverSource.slice(filterStart, devDriverSource.indexOf("})) {", filterStart) + 1)
+      .replace("Get-ChildItem -LiteralPath $root", "Get-ChildItem -LiteralPath $env:XIAOXI_TEST_ROOT");
+    const folderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-account-folders-"));
+    try {
+      for (const name of ["wxid_abc123_cd34", "wxid_old", "all_users", "Backup_2025"]) fs.mkdirSync(path.join(folderRoot, name));
+      fs.mkdirSync(path.join(folderRoot, "custom_id9_ab12", "db_storage"), { recursive: true });
+      const listed = (await runPowerShellAsync(`@{ names = @(${filterText} | ForEach-Object { $_.Name } | Sort-Object) } | ConvertTo-Json -Compress`,
+        { XIAOXI_TEST_ROOT: folderRoot }, { ensure: false, timeout: 10_000 }))?.names;
+      assert.deepEqual(listed, ["custom_id9_ab12", "wxid_abc123_cd34", "wxid_old"],
+        "wxid folders as before, a custom ID folder with db_storage, never all_users or a Backup_2025 folder");
+    } finally {
+      fs.rmSync(folderRoot, { recursive: true, force: true });
+    }
+  }
   const { WECHAT_SEND_BUTTON_OFFSETS } = require("./wechat_window_driver.dev.cjs");
   const sendPointMatch = imageScript.match(/function Get-SendButtonPoint[\s\S]*?(?=function Test-SendButtonActive)/u);
   assert.ok(sendPointMatch, "the image script keeps Get-SendButtonPoint right before Test-SendButtonActive");
