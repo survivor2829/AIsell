@@ -3460,6 +3460,40 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
 @{ ok = $true; sharedPointVerified = $true } | ConvertTo-Json -Compress
 `, {}, { ensure: false, timeout: 5_000 });
   assert.deepEqual(composerPointResult, { ok: true, sharedPointVerified: true });
+
+  // Field 2026-11-14 (1.3.8): with WeChat's 搜一搜 side panel open, the picture's send-button point
+  // sampled the panel, so a landed paste was judged ignored. Execute the point helper against fake
+  // windows (no WeChat): a WeChatAppEx child at the right moves the point to the chat panel's edge.
+  const { WECHAT_SEND_BUTTON_OFFSETS } = require("./wechat_window_driver.dev.cjs");
+  const sendPointProbe = imageScript.match(/function Get-SendButtonPoint[\s\S]*?(?=function Test-SendButtonActive)/u)[0];
+  const sendPointResult = await runPowerShellAsync(`
+Add-Type -TypeDefinition @"
+using System;
+public static class Win32WechatSendMessage {
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public struct POINT { public int X; public int Y; }
+  public static int Right = 1600; public static int PanelLeft = 1120;
+  public static bool GetWindowRect(IntPtr h, ref RECT r) { r.Left = 0; r.Top = 0; r.Right = Right; r.Bottom = 800; return true; }
+  public static int GetDpiForWindow(IntPtr h) { return 96; }
+  public static IntPtr WindowFromPoint(POINT p) { return new IntPtr(p.X >= PanelLeft ? 200 : 101); }
+  public static uint GetWindowThreadProcessId(IntPtr h, ref uint pid) { pid = h.ToInt64() == 200 ? 20u : 10u; return 1; }
+  public static IntPtr GetAncestor(IntPtr h, int flags) { return new IntPtr(100); }
+}
+"@
+function Get-Process { param([int]$Id, $ErrorAction) @{ ProcessName = $(if ($Id -eq 20) { "WeChatAppEx" } else { "Weixin" }) } }
+${sendPointProbe}
+$mainWindow = [IntPtr]100; $expectedPid = "10"
+$withPanel = Get-SendButtonPoint
+$panelOffset = $script:sendPanelOffset
+[Win32WechatSendMessage]::Right = 1120; [Win32WechatSendMessage]::PanelLeft = 99999
+$plain = Get-SendButtonPoint
+@{ withPanel = $withPanel.x; plain = $plain.x; panelOffset = $panelOffset; plainOffset = $script:sendPanelOffset } | ConvertTo-Json -Compress
+`, {}, { ensure: false, timeout: 10_000 });
+  assert.equal(sendPointResult.plain, 1120 - WECHAT_SEND_BUTTON_OFFSETS.right, "without a side panel the point is unchanged");
+  // The edge walk steps 2 px, like the text send's; a pixel either way does not matter to a button.
+  assert.ok(Math.abs(sendPointResult.withPanel - sendPointResult.plain) <= 2, "with the 搜一搜 panel open the point moves to the chat panel's send button");
+  assert.ok(Math.abs(sendPointResult.panelOffset - (1600 - 1120)) <= 2, "the move equals the panel width");
+  assert.equal(sendPointResult.plainOffset, 0);
   assert.doesNotMatch(imageScript, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
     "image sending must not depend on copying the WeChat draft back out");
   assert.match(imageScript, /function Test-SendButtonActive[\s\S]*XiaoxiScreenPixels\]::Copy[\s\S]*\$green -gt \(\$total \* 0\.3\)/u,

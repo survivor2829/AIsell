@@ -167,7 +167,43 @@ function Get-SendButtonPoint {
   if (-not [Win32WechatSendMessage]::GetWindowRect($mainWindow, [ref]$current)) { throw "image_window_changed" }
   $dpi = [Win32WechatSendMessage]::GetDpiForWindow($mainWindow)
   if ($dpi -le 0) { $dpi = 96 }
-  return @{ x = [int]($current.Right - ${WECHAT_SEND_BUTTON_OFFSETS.right} * $dpi / 96.0); y = [int]($current.Bottom - ${WECHAT_SEND_BUTTON_OFFSETS.bottom} * $dpi / 96.0); scale = $dpi / 96.0 }
+  $scale = $dpi / 96.0
+  $x = [int]($current.Right - ${WECHAT_SEND_BUTTON_OFFSETS.right} * $scale)
+  $y = [int]($current.Bottom - ${WECHAT_SEND_BUTTON_OFFSETS.bottom} * $scale)
+  $cacheKey = "{0},{1},{2},{3},{4}" -f $current.Left, $current.Top, $current.Right, $current.Bottom, $dpi
+  if ($script:sendPointKey -ceq $cacheKey) { return $script:sendPointCache }
+  # WeChat's 搜一搜 side panel (left open by a name search) widens the window, so the send
+  # button sits at the chat panel's right edge, not the window's. The text send learned this
+  # on 2026-11-07; pictures did not (field 2026-11-14, 1.3.8: the paste landed but the green
+  # check sampled the panel, so it was judged ignored, cleared, pasted again and given up).
+  # Same rule as the text send: only a WeChatAppEx child of this window moves the point,
+  # walking left along the send row to where WeChat's own surface begins.
+  $script:sendPanelOffset = 0
+  $probe = New-Object Win32WechatSendMessage+POINT
+  $probe.X = $x; $probe.Y = $y
+  $probeWindow = [Win32WechatSendMessage]::WindowFromPoint($probe)
+  [uint32]$probePid = 0
+  if ($probeWindow -ne [IntPtr]::Zero -and [Win32WechatSendMessage]::GetWindowThreadProcessId($probeWindow, [ref]$probePid) -ne 0 -and
+      [string]$probePid -ne $expectedPid -and [Win32WechatSendMessage]::GetAncestor($probeWindow, 2) -eq $mainWindow -and
+      (Get-Process -Id $probePid -ErrorAction SilentlyContinue).ProcessName -eq "WeChatAppEx") {
+    $width = $current.Right - $current.Left
+    for ($edgeX = $x; $edgeX -gt ($current.Left + $width * 0.40); $edgeX -= 2) {
+      $probe.X = $edgeX
+      $edgeWindow = [Win32WechatSendMessage]::WindowFromPoint($probe)
+      [uint32]$edgePid = 0
+      if ($edgeWindow -eq [IntPtr]::Zero -or [Win32WechatSendMessage]::GetWindowThreadProcessId($edgeWindow, [ref]$edgePid) -eq 0 -or
+          [Win32WechatSendMessage]::GetAncestor($edgeWindow, 2) -ne $mainWindow) { break }
+      if ([string]$edgePid -eq $expectedPid) {
+        $moved = [int]($edgeX + 1 - ${WECHAT_SEND_BUTTON_OFFSETS.right} * $scale)
+        $script:sendPanelOffset = $x - $moved
+        $x = $moved
+        break
+      }
+    }
+  }
+  $script:sendPointKey = $cacheKey
+  $script:sendPointCache = @{ x = $x; y = $y; scale = $scale }
+  return $script:sendPointCache
 }
 function Test-SendButtonActive {
   # WeChat paints the send button green only while the composer holds a draft.
