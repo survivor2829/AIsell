@@ -3465,7 +3465,9 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
   // sampled the panel, so a landed paste was judged ignored. Execute the point helper against fake
   // windows (no WeChat): a WeChatAppEx child at the right moves the point to the chat panel's edge.
   const { WECHAT_SEND_BUTTON_OFFSETS } = require("./wechat_window_driver.dev.cjs");
-  const sendPointProbe = imageScript.match(/function Get-SendButtonPoint[\s\S]*?(?=function Test-SendButtonActive)/u)[0];
+  const sendPointMatch = imageScript.match(/function Get-SendButtonPoint[\s\S]*?(?=function Test-SendButtonActive)/u);
+  assert.ok(sendPointMatch, "the image script keeps Get-SendButtonPoint right before Test-SendButtonActive");
+  const sendPointProbe = sendPointMatch[0];
   const sendPointResult = await runPowerShellAsync(`
 Add-Type -TypeDefinition @"
 using System;
@@ -3485,15 +3487,26 @@ ${sendPointProbe}
 $mainWindow = [IntPtr]100; $expectedPid = "10"
 $withPanel = Get-SendButtonPoint
 $panelOffset = $script:sendPanelOffset
-[Win32WechatSendMessage]::Right = 1120; [Win32WechatSendMessage]::PanelLeft = 99999
+# A maximized WeChat closes the panel without changing size: the point must follow, not a cache.
+[Win32WechatSendMessage]::PanelLeft = 99999
+$sameSizeClosed = Get-SendButtonPoint
+[Win32WechatSendMessage]::Right = 1120
 $plain = Get-SendButtonPoint
-@{ withPanel = $withPanel.x; plain = $plain.x; panelOffset = $panelOffset; plainOffset = $script:sendPanelOffset } | ConvertTo-Json -Compress
+@{ withPanel = $withPanel.x; sameSizeClosed = $sameSizeClosed.x; plain = $plain.x; panelOffset = $panelOffset; plainOffset = $script:sendPanelOffset } | ConvertTo-Json -Compress
 `, {}, { ensure: false, timeout: 10_000 });
   assert.equal(sendPointResult.plain, 1120 - WECHAT_SEND_BUTTON_OFFSETS.right, "without a side panel the point is unchanged");
   // The edge walk steps 2 px, like the text send's; a pixel either way does not matter to a button.
   assert.ok(Math.abs(sendPointResult.withPanel - sendPointResult.plain) <= 2, "with the 搜一搜 panel open the point moves to the chat panel's send button");
   assert.ok(Math.abs(sendPointResult.panelOffset - (1600 - 1120)) <= 2, "the move equals the panel width");
   assert.equal(sendPointResult.plainOffset, 0);
+  assert.equal(sendPointResult.sameSizeClosed, 1600 - WECHAT_SEND_BUTTON_OFFSETS.right,
+    "a panel closing without a size change is seen at once (no cached point)");
+  // The field record says whether the panel was seen (the 2026-11-14 capsule could not).
+  const { sanitizeImageObservation } = require("../../src/shared/failure-diagnostics.cjs");
+  assert.equal(sanitizeImageObservation({ send_panel_offset: 480 }).send_panel_offset, 480);
+  assert.equal(sanitizeImageObservation({ send_panel_offset: "480" }).send_panel_offset, undefined);
+  assert.match(imageScript, /send_panel_offset = \$script:sendPanelOffset[\s\S]*send_panel_offset = \$script:sendPanelOffset/u,
+    "both the progress and the failure records carry the panel offset");
   assert.doesNotMatch(imageScript, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
     "image sending must not depend on copying the WeChat draft back out");
   assert.match(imageScript, /function Test-SendButtonActive[\s\S]*XiaoxiScreenPixels\]::Copy[\s\S]*\$green -gt \(\$total \* 0\.3\)/u,
