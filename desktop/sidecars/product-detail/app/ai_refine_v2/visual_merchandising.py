@@ -419,7 +419,8 @@ def _first_source_line(source, title):
     return next((line.strip() for line in source.splitlines() if line.strip()), source.strip())
 
 
-_SALVAGE_RECORDS = ("quote_repairs", "salvage_dropped_pages", "planning_source", "final_draft_issue")
+_SALVAGE_RECORDS = ("quote_repairs", "salvage_dropped_pages", "planning_source", "final_draft_issue",
+                    "dropped_spec_rows")
 
 
 def salvage_draft(data, source, title=""):
@@ -806,6 +807,11 @@ def _screen_of(location, plan):
     match = re.match(r"screens\[(\d+)\]", location or "")
     if match:
         return int(match.group(1)) + 1
+    if re.match(r"specifications\[\d+\]", location or ""):
+        # A parameter row belongs to the parameter screen, so salvage can drop
+        # just that row instead of failing the whole paid plan (2026-11-14: a
+        # tool's "32英寸/70cm" against the source's 32"/70cm).
+        return next((s.get("idx") for s in plan.get("screens", []) if s.get("role") == "spec_table"), None)
     pid = (location or "").split(".")[0]
     return next((s.get("idx") for s in plan.get("screens", []) if pid and s.get("selling_point_id") == pid), None)
 
@@ -844,16 +850,19 @@ def plan_issues(plan, source, title="", category=None):
         seen_signatures.add(signature)
     # Caption values must exist in supplied facts. This guards units/values,
     # not semantic attribution; the editor still checks which value means what.
+    from .refine_planner import spell_units
+    # Delivery plans first write equal values one way (500*300mm/500×300毫米,
+    # 5L/5升, 40℃/40°C, 32"/32英寸, full-width digits); only there can 英寸 and
+    # m2/m3 be checked without flagging a correct title. Never arithmetic.
     numeric = re.compile(
         r"\d+(?:\.\d+)?(?:[×x*]\d+(?:\.\d+)?)?(?:[-–—~～]\d+(?:\.\d+)?)?"
-        r"(?:km/h|m/s|m²/h|m2/h|mAh|Ah|kW|W|kPa|Pa|RPM|mm|cm|kg|ml|mL|L|V|h|小时|分钟|毫米|厘米|公斤|升|伏|瓦|%|％|°|度)",
+        r"(?:km/h|m/s|m²/h|m2/h|mAh|Ah|kW|W|kPa|Pa|RPM|mm|cm|kg|ml|mL|L|V|h|小时|分钟|毫米|厘米|公斤|升|伏|瓦|%|％"
+        + (r"|英寸|°|度|m2|m3)" if delivery else r"|°|度)"),
         re.I)
     def compact(value):
-        value = re.sub(r"\s+", "", value).replace("–", "-").replace("—", "-").replace("％", "%").lower()
         if delivery:
-            # Equivalent spelling only, never arithmetic or mode conversion.
-            value = re.sub(r"(?<=\d)小时", "h", value)
-        return value
+            value = spell_units(value)  # Before spaces go: 5升 水箱 is a unit, 5升级 is not.
+        return re.sub(r"\s+", "", value).replace("–", "-").replace("—", "-").replace("％", "%").lower()
     source_values = {m.group().lower() for m in numeric.finditer(compact(source))}
     for screen in plan["screens"]:
         idx = screen.get("idx")
@@ -930,7 +939,8 @@ def compile_with_salvage(data, source, title, category, **options):
         bad = {i for i, page in enumerate(pages)
                if page.get("kind") not in ("benefit", "display") or page.get("role") in ("hero", "spec_table")}
         reasons = {i: "页面类型无效" for i in bad}
-        fix_cover = fix_table = None
+        fix_cover = None
+        fix_table = []
         if not bad:
             remaining["dropped_pages"] = dropped
             plan = compile_plan(remaining, source, title, category, **options, check=False)
@@ -941,7 +951,7 @@ def compile_with_salvage(data, source, title, category, **options):
                 if roles.get(idx) == "hero" and not cover_reset and (title or "").strip():
                     fix_cover = message
                 elif roles.get(idx) == "spec_table" and remaining.get("specifications"):
-                    fix_table = message
+                    fix_table.append(message)
                 elif idx is None or not 0 <= page_index < planned:
                     raise original  # A whole-plan problem, or the cover again.
                 else:
@@ -954,9 +964,24 @@ def compile_with_salvage(data, source, title, category, **options):
                                   "technical_support": []}
             dropped.append({"title": "封面文案", "issue": fix_cover})
         if fix_table:
+            # Drop only the rows that fail; a table-wide problem drops the table.
             # Without a provable parameter table the detail set still ships.
-            remaining["specifications"] = []
-            dropped.append({"title": "产品参数", "issue": fix_table})
+            specs = remaining["specifications"]
+            failing = {}  # Row index -> its first issue.
+            for message in fix_table:
+                match = re.match(r"specifications\[(\d+)\]", message)
+                if match and int(match.group(1)) < len(specs):
+                    failing.setdefault(int(match.group(1)), message)
+            row_only = len(failing) > 0 and all(re.match(r"specifications\[\d+\]", m) for m in fix_table)
+            kept = [s for i, s in enumerate(specs) if i not in failing] if row_only else []
+            if kept:
+                # The parameter screen still ships, so this is no dropped page and
+                # the normal screen minimum stays.
+                remaining["dropped_spec_rows"] = list(remaining.get("dropped_spec_rows") or []) + [
+                    {"name": specs[i].get("name"), "issue": m} for i, m in sorted(failing.items())]
+            else:
+                dropped.append({"title": "产品参数", "issue": "; ".join(fix_table)})
+            remaining["specifications"] = kept
         if not bad and not fix_cover and not fix_table:
             break
         if not bad:
