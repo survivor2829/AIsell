@@ -12,7 +12,7 @@ const CATEGORIES = [
   { id: 'product-detail' as const, label: '产品详情图', icon: Image },
   { id: 'materials' as const, label: '场景素材库', icon: FolderOpen }
 ];
-const TOPICS: { id: TutorialTopic; label: string }[] = [{ id: 'digital-human', label: '数字人' }, { id: 'ai-editing', label: '线索视频混剪' }, { id: 'product-video', label: '产品效果视频' }];
+const TOPICS: { id: TutorialTopic; label: string }[] = [{ id: 'digital-human', label: '数字人' }, { id: 'ai-editing', label: '线索视频混剪' }, { id: 'product-video', label: '场景效果视频' }];
 const duration = (value: number) => `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`;
 
 export function TutorialsPage({ category: initialCategory = 'short-video', topic: initialTopic = '', compact = false }: {

@@ -162,17 +162,56 @@ evidence和technical_support逐条引用原文，保留限定词、单位、范�
 
 # Detail screens per plan (user 2026-11-06: 8–15, as many as the material supports).
 PLANNED_SCREEN_LIMIT = 15
+# 配件、耗材、工具（用户 2026-11-13）：客户给的资料通常就那么些，凑满8屏只会出现大同小异的图。
+# 整套（含封面和参数表）最多8屏，不设最低数量；设备类仍是8至15屏。
+COMPACT_CATEGORIES = frozenset({"配件类", "耗材类", "工具类"})
+COMPACT_SCREEN_LIMIT = 8
+
+
+def screen_limit(category=None):
+    return COMPACT_SCREEN_LIMIT if category in COMPACT_CATEGORIES else PLANNED_SCREEN_LIMIT
+
+
+# The general prompts are written for 设备类 (8–15 screens). For the compact categories their
+# screen-count wording is rewritten, so one prompt never asks for both "至少8屏" and "最多8屏".
+_COMPACT_WORDING = (
+    ("正常资料整套8至15屏", f"整套最多{COMPACT_SCREEN_LIMIT}屏、不设最低数量"),
+    ("保留正常资料至少8屏：一个真实作用可以由作业图、相关部件图、原理图解释，",
+     f"整套最多{COMPACT_SCREEN_LIMIT}屏：每个作用只做一页，"),
+    ("而非只删到不足8屏", "资料不够就少出页"),
+    ("保留正常资料至少8屏的丰富度", f"整套最多{COMPACT_SCREEN_LIMIT}屏，每个作用只做一页"),
+)
+
+
+def fit_category(system, category=None):
+    if category not in COMPACT_CATEGORIES:
+        return system
+    for old, new in _COMPACT_WORDING:
+        system = system.replace(old, new)
+    return system
+
+
+def category_rule(category=None):
+    """Appended last to every planning call for the compact categories."""
+    if category not in COMPACT_CATEGORIES:
+        return ""
+    return (f"\n本产品是{category}：整套含封面和参数表最多{COMPACT_SCREEN_LIMIT}屏，不设最低数量，资料少就做3至5屏。"
+            "每个作用只做一页，不能把同一作用拆成作业图、部件图、原理图多页，"
+            "也不能换背景、换角度、换人群或换说法重复；超出的内容按重要性排在后面，程序只保留文字。")
+
+
 # Three extra 1:1 e-commerce images (主图/场景图/参数图), redrawn square from the matching
 # detail screens and generated with them; they never enter the long detail image.
 SQUARE_KINDS = {"main": "主图", "scene": "场景图", "spec": "参数图"}
 SQUARE_VERSION = "square-ecommerce-v1"
 
 
-def screen_budget(source):
+def screen_budget(source, category=None):
     from .buyer_copy import screen_budget as legacy_budget
     sparse = legacy_budget(source, False)["sparse_exception_eligible"]
-    return {"minimum_total_screens": 1 if sparse else 8,
-            "maximum_total_screens": PLANNED_SCREEN_LIMIT, "sparse_exception_eligible": sparse}
+    compact = category in COMPACT_CATEGORIES
+    return {"minimum_total_screens": 1 if sparse or compact else 8,
+            "maximum_total_screens": screen_limit(category), "sparse_exception_eligible": sparse}
 
 
 def prompt(buyer_value=False, *, automatic=False):
@@ -656,12 +695,12 @@ def compile_plan(data, source, title, category, *, buyer_value=False, buyer_outl
         plan.pop("visual_delivery_version", None)  # Model fields cannot select policy.
     if buyer_value:
         plan["buyer_value_version"] = BUYER_VERSION
-        plan["screen_budget"] = screen_budget(source)
+        plan["screen_budget"] = screen_budget(source, category)
     if buyer_outline:
         plan["buyer_outline_version"] = OUTLINE_VERSION
     cover = plan.pop("cover")
     plan["screens"].append({**cover, "role": "hero", "selling_point_id": None})
-    slots = PLANNED_SCREEN_LIMIT - 1 - int(bool(plan["specifications"]))
+    slots = screen_limit(category) - 1 - int(bool(plan["specifications"]))
     pages = keep_person_scene(plan.pop("pages"), slots)
     plan["deferred_pages"] = pages[slots:]  # Text only, never passed to the image queue.
     for page in pages[:slots]:
@@ -782,7 +821,7 @@ def plan_issues(plan, source, title="", category=None):
               for message in _validate_schema_v2(plan, source, title, require_visual_strategy=True)]
     buyer_value = plan.get("buyer_value_version") == BUYER_VERSION
     delivery = plan.get("visual_delivery_version") == DELIVERY_VERSION
-    minimum = screen_budget(source)["minimum_total_screens"]
+    minimum = screen_budget(source, category)["minimum_total_screens"]
     if plan.get("dropped_pages"):
         minimum = min(minimum, MIN_SALVAGED_SCREENS)
     if buyer_value and len(plan["screens"]) < minimum:
@@ -883,7 +922,7 @@ def compile_with_salvage(data, source, title, category, **options):
     remaining = copy.deepcopy(data)
     # Same page order compile_plan uses, so screen idx - 2 names the right page below.
     remaining["pages"] = keep_person_scene(remaining.get("pages") or [],
-                                           PLANNED_SCREEN_LIMIT - 1 - int(bool(remaining.get("specifications"))))
+                                           screen_limit(category) - 1 - int(bool(remaining.get("specifications"))))
     dropped = list(data.get("salvage_dropped_pages") or [])  # Pages the final read already removed.
     cover_reset = False
     for _ in range(5):
@@ -995,16 +1034,17 @@ def run(source, title, category, image_available, key, model, first_http, review
     def call(system, data, http):
         body = {"model": model, "thinking": {"type": "disabled"}, "temperature": 0.3,
                 "max_tokens": 12000, "response_format": {"type": "json_object"},
-                "messages": [{"role": "system", "content": system},
+                "messages": [{"role": "system", "content": fit_category(system, category) + rule},
                              {"role": "user", "content": json.dumps(data, ensure_ascii=False)}]}
         result = http(body, key)
         if result["choices"][0].get("finish_reason") == "length":
             raise PlannerResponseTruncated()
         return result["choices"][0]["message"]["content"]
+    rule = category_rule(category)
     inputs = {"source": source, "title": title, "selected_category": category,
               "reference_image_available": image_available}
     if buyer_value:
-        inputs["screen_budget"] = screen_budget(source)
+        inputs["screen_budget"] = screen_budget(source, category)
     if automatic:
         # Two existing paid positions, no outline call, retry or hand-written
         # fallback. The editor can repair both captions and visual decisions.

@@ -723,8 +723,10 @@ button:focus-visible {
   padding: 22px 38px 34px 38px;
 }
 
-/* Big and bold for customers with weaker eyesight (user 2026-10-30). */
-.module-return { display: inline-flex; align-items: center; gap: 8px; min-height: 46px; min-width: 156px; margin: 14px 28px 0; padding: 8px 22px 8px 16px; border: 2px solid currentColor; border-radius: 10px; background: color-mix(in srgb, currentColor 6%, #fff); color: var(--agent-accent-strong, var(--brand-red)); font: inherit; font-size: 17px; font-weight: 700; letter-spacing: .02em; cursor: pointer; }
+/* Big and bold for customers with weaker eyesight (user 2026-10-30). It sits at the right of the top bar
+   instead of taking its own row, so each page's title and main content start at the top (user 2026-11-13). */
+.topbar-end { grid-column: 3; display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
+.module-return { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; margin: 0; padding: 5px 16px 5px 11px; white-space: nowrap; border: 2px solid currentColor; border-radius: 10px; background: color-mix(in srgb, currentColor 6%, #fff); color: var(--agent-accent-strong, var(--brand-red)); font: inherit; font-size: 17px; font-weight: 700; letter-spacing: .02em; cursor: pointer; }
 .module-return:hover { background: color-mix(in srgb, currentColor 14%, #fff); }
 .module-return:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
@@ -2926,5 +2928,8 @@ td .text-button {
 .topbar-current-module { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .topbar .account-menu-wrap { min-width:0; }
 .topbar .account-trigger { min-width:0; }
+@media (max-width:1080px) { .module-return { padding: 4px 12px 4px 8px; font-size: 15px; } }
+/* Narrow windows: the update caption gives way so the back button never pushes the tools over the account menu. */
+@media (max-width:1000px) { .topbar-end .topbar-update-caption { display: none; } }
 @media (max-width:1080px) { .topbar { column-gap:8px; padding-right:12px; }.topbar .account-name { max-width:110px; } }
 @media (max-width:860px) { .topbar .account-name { max-width:70px; }.topbar-current-module { font-size:14px; } }

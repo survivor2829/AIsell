@@ -55,7 +55,7 @@ function createSpriteFeeds({ sprite, contentEngine = () => null, productDetailHi
     finally { detailPolling = false; }
   }
   function pollServices() {
-    try { sprite()?.setExternalActivity("productVideo", serviceActivity("正在做产品效果视频", productVideoTasks())); } catch { /* Next look. */ }
+    try { sprite()?.setExternalActivity("productVideo", serviceActivity("正在做场景效果视频", productVideoTasks())); } catch { /* Next look. */ }
     try { sprite()?.setExternalActivity("referenceHuman", serviceActivity("正在做本人口播视频", referenceTasks())); } catch { /* Next look. */ }
     if (viralAt && now() - viralAt > PUSHED_STALE_MS) { viralAt = 0; sprite()?.setExternalActivity("viral-progress", null); }
   }

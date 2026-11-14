@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { ImagePlus, PlayCircle, Plus, ThumbsUp } from "lucide-react";
 import { weekCount } from "./overview-stats";
-import { SpeedVideo, atTutorialSpeed } from "./SpeedVideo";
+import { atTutorialSpeed } from "./SpeedVideo";
+import { DemoPlayer } from "./VideoExamples";
 import "./TouchHero.css";
 
 type Loose = Record<string, unknown>;
@@ -21,7 +22,7 @@ export function runNumbers(tasks: Loose[], type: string, now = Date.now()) {
 }
 
 // 微信拓客各页的页头（用户 2026-10-29：页面放大后太空，要饱满、大气）：和主页同一套浅色大卡片，
-// 左边标题、按钮和数字，右边是真实操作录屏，点一下就播。
+// 左边标题、按钮和数字，右边是真实操作录屏，点一下弹出大窗播放（用户 2026-11-13）。
 export function PageHero({ label, chip, title, lead, actions, kpis, video, seconds }: {
   label: string; chip: string; title: ReactNode; lead: string; actions: ReactNode;
   kpis: { value: ReactNode; unit: string; label: string }[]; video: string; seconds: number;
@@ -38,11 +39,10 @@ export function PageHero({ label, chip, title, lead, actions, kpis, video, secon
       {kpis.map((kpi) => <div key={kpi.label}><dt>{kpi.label}</dt><dd><b>{kpi.value}</b><small>{kpi.unit}</small></dd></div>)}
     </dl>
     <div className="touch-demo">
-      {playing
-        ? <SpeedVideo src={asset(`${video}.mp4`)} poster={asset(`${video}.jpg`)} controls autoPlay playsInline />
-        : <button type="button" className="touch-demo-poster" aria-label={`播放${label}操作演示`} onClick={() => setPlaying(true)}>
-          <img src={asset(`${video}.jpg`)} alt="" /><span><PlayCircle size={56} aria-hidden="true" /></span><small>真实操作录屏 · {atTutorialSpeed(seconds)}</small>
-        </button>}
+      <button type="button" className="touch-demo-poster" aria-label={`放大播放${label}操作演示`} onClick={() => setPlaying(true)}>
+        <img src={asset(`${video}.jpg`)} alt="" /><span><PlayCircle size={56} aria-hidden="true" /></span><small>真实操作录屏 · {atTutorialSpeed(seconds)}</small>
+      </button>
+      {playing && <DemoPlayer file={video} onClose={() => setPlaying(false)} />}
     </div>
   </section>;
 }
