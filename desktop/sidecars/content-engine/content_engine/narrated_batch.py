@@ -4948,6 +4948,7 @@ class NarratedBatchDomain:
         require(not any(near_duplicate(actual, old) for old in previous), "narrated_duplicate", "配音拟合后的镜头与已有作品过于相似。")
 
     def _render_candidate(self, task_id, b, c, index, total):
+        c.pop("_error_details", None)  # Never pair an earlier failure's numbers with a new one.
         require(not c.get('_draft_only'), 'narrated_script_needs_mapping',
                 '确认稿尚未完成镜头安排和审查，不能开始配音制作。')
         self._verify_confirmed_script(b, c)
@@ -5022,6 +5023,8 @@ class NarratedBatchDomain:
                     self.db.execute("UPDATE content_tasks SET status='analyzing',error_code=NULL,error_message=NULL WHERE id=? AND status='paused' AND error_code=?", (task_id, code))
         except ContentEngineError as error:
             c.update(status="failed", error=error.message, error_code=error.code)
+            if error.details:
+                c["_error_details"] = error.details  # Measured values for the failure journal only.
             if ("unknown" in error.code or error.code == "provider_unreachable"
                     or error.code.startswith(("cloud_", "auto_mix_voice_", "auto_mix_music_"))):
                 b["status"] = "outcome_unknown" if "unknown" in error.code else "needs_attention"

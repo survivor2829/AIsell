@@ -43,8 +43,25 @@ class NarratedTimelineTests(unittest.TestCase):
             {'evidence_ref': 's2', 'target_duration_ms': 3_000},
         ]
 
-        with self.assertRaisesRegex(ContentEngineError, '全部画面'):
+        with self.assertRaisesRegex(ContentEngineError, '全部画面') as raised:
             rebalance_narrated_phrase_refs(phrases, audio, segments)
+        # Field case 2026-11-13 arrived without numbers; the journal now gets them.
+        details = raised.exception.details
+        self.assertEqual(('rebalance_no_fit', 8_000, 160, 6_000, 2_160),
+                         (details['reason'], details['speech_ms'], details['pauses_ms'], details['footage_ms'],
+                          details['total_overrun_ms']))
+        self.assertEqual(([4_000, 4_000], [3_000, 3_000]), (details['phrase_speech_ms'], details['segment_ms']))
+
+    def test_rebalancing_reports_a_split_failure_when_the_total_fits(self):
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s2']}]
+        audio = [{'duration_ms': 3_000}, {'duration_ms': 3_000}]
+        segments = [{'evidence_ref': 's1', 'target_duration_ms': 5_000},
+                    {'evidence_ref': 's2', 'target_duration_ms': 2_000}]
+        with self.assertRaises(ContentEngineError) as raised:
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
+        details = raised.exception.details
+        self.assertLessEqual(details['total_overrun_ms'], 0, 'the total fits; only the split failed')
+        self.assertEqual(1, details['failed_phrase_index'])
 
     def test_same_material_accepts_different_copy_shapes(self):
         segments = [
@@ -1957,6 +1974,44 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual(['文案改写'], calls)
         self.assertEqual(['completed', 'completed'], [job['status'] for job in result['production_jobs']], result.get('reasons'))
         self.assertEqual([source, '第1个问题我想弄懂吗？'], rendered)
+
+    def test_a_slightly_short_rewrite_is_kept_and_a_much_shorter_one_is_not(self):
+        """2026-11-13: a rewrite of 137 chars against 138 skipped a whole video."""
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        source = self.options[0]['narration']
+        self.assertEqual(10, len(source))   # Model target 9-11 (85-115%); accepted down to 8 (75%).
+        responses = iter([{'title': '换个开头', 'narration': '1问题咋弄懂？'},     # 7: below 75%, asked again
+                          {'title': '换个开头', 'narration': '1个问题咋弄懂？'}])  # 8: short but kept
+        calls, rendered = [], []
+        def render(domain, task_id, batch, candidate, index, total):
+            domain._verify_confirmed_script(batch, candidate)
+            rendered.append(candidate['narration'])
+            candidate.update(status='completed', generated_video_id=f'fake-{index}')
+        cloud = self.domain.d.analyzer.cloud_client
+        with self.paid_calls(allow=('_cloud', 'provider')),              patch.object(NarratedBatchDomain, '_render_candidate', render),              patch.object(cloud, '_structured_completion', side_effect=self.variation_completion(responses, calls)):
+            result = self.run_selection({'batch_id': self.batch['batch_id'], 'selections': [
+                {'script_id': self.options[0]['candidate_id'], 'revision': self.options[0]['revision'], 'count': 2}]})
+        self.assertEqual(['文案改写'], calls)
+        self.assertEqual(['completed', 'completed'], [job['status'] for job in result['production_jobs']], result.get('reasons'))
+        self.assertEqual([source, '1个问题咋弄懂？'], rendered)
+
+    def test_render_measurements_reach_the_failure_journal(self):
+        state = self.domain._load(self.batch['batch_id'])
+        self.draft_options(state)
+        measured = {'voice_ms': 8_160, 'footage_ms': 6_000, 'shortfall_ms': 2_160}
+        def render(domain, task_id, batch, candidate, index, total):
+            candidate.update(status='failed', error='实际配音超过全部画面的可用时长。',
+                             error_code='narrated_copy_too_long', _error_details=measured)
+        recorded = []
+        with self.paid_calls(allow=('_cloud', 'provider')),              patch.object(NarratedBatchDomain, '_render_candidate', render),              patch('content_engine.failure_journal.record', side_effect=lambda error, **kw: recorded.append(error)):
+            self.run_selection({'batch_id': self.batch['batch_id'], 'selections': [
+                {'script_id': self.options[0]['candidate_id'], 'revision': self.options[0]['revision'], 'count': 1}]})
+        too_long = [e for e in recorded if getattr(e, 'code', '') == 'narrated_copy_too_long']
+        self.assertTrue(too_long, recorded)
+        self.assertEqual(measured, too_long[0].details)
+        public = self.domain.get(self.batch['batch_id'])
+        self.assertNotIn('_error_details', json.dumps(public, ensure_ascii=False), 'journal only, never the IPC reply')
 
     def test_variation_avoids_published_sequences_before_any_voice_request(self):
         state = self.domain._load(self.batch['batch_id'])
