@@ -3155,6 +3155,15 @@ try {
     const parkBlock = searchScript.slice(searchScript.lastIndexOf("$parkIdleMs =", park), baseline);
     assert.match(parkBlock, /\[uint64\]\$parkIdleMs -ge 1500/u, "never take the mouse from a person using it");
     assert.doesNotMatch(parkBlock, /mouse_event/u, "parking only moves the cursor, it never clicks");
+    assert.match(parkBlock, /WindowFromPoint\(\$parkPoint\)[\s\S]*WindowFromPoint\(\$parkTarget\)/u,
+      "only a cursor resting on this WeChat window is moved, and only onto this WeChat window");
+    // The main fix: the result click moves the cursor off the clicked row itself, once the click is processed.
+    const clickScript = driverSource.slice(driverSource.indexOf("const CLICK_SEARCH_RESULT_SCRIPT"), driverSource.indexOf("const CONVERSATION_TITLE_SCRIPT"));
+    const click = clickScript.indexOf("mouse_event(0x0004");
+    const clickPark = clickScript.indexOf("$clickParked = [Win32WechatSearchResultClick]::SetCursorPos(");
+    const owned = clickScript.indexOf("$ownedInputTick = ");
+    assert.ok(click > 0 && clickPark > click && owned > clickPark, "the cursor leaves the clicked row after the click and inside the owned input");
+    assert.match(clickScript.slice(click, clickPark), /Start-Sleep -Milliseconds 150/u, "the click is processed before the cursor moves");
   }
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
