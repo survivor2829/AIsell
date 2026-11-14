@@ -1970,19 +1970,27 @@ if ($minimumIdleMs -gt 0) {
 $script:searchCursorParked = $false
 $parkPoint = New-Object Win32WechatWindowSearch+POINT
 $parkIdleMs = [Win32WechatWindowSearch]::GetLastInputIdleMilliseconds()
+[uint32]$parkCursorPid = 0
 if ($parkIdleMs -ne [uint32]::MaxValue -and [uint64]$parkIdleMs -ge 1500 -and
-    [Win32WechatWindowSearch]::GetCursorPos([ref]$parkPoint) -and
-    [Win32WechatWindowSearch]::GetAncestor([Win32WechatWindowSearch]::WindowFromPoint($parkPoint), 2).ToInt64() -eq [int64]$matched.hWnd) {
+    [Win32WechatWindowSearch]::GetCursorPos([ref]$parkPoint)) {
+  # Any window of this WeChat process counts, including its own search dropdown popup.
+  [void][Win32WechatWindowSearch]::GetWindowThreadProcessId([Win32WechatWindowSearch]::WindowFromPoint($parkPoint), [ref]$parkCursorPid)
+}
+if ($parkCursorPid -ne 0 -and [int]$parkCursorPid -eq [int]$matched.pid) {
   $parkDpi = [int][Win32WechatWindowSearch]::GetDpiForWindow([IntPtr]$matched.hWnd)
   if ($parkDpi -le 0) { $parkDpi = 96 }
   $parkTarget = New-Object Win32WechatWindowSearch+POINT
   $parkTarget.X = [int]($matched.x + $matched.width * 0.5)
   $parkTarget.Y = [int]($matched.y + [Math]::Round(8 * $parkDpi / 96.0))
-  if ([Win32WechatWindowSearch]::GetAncestor([Win32WechatWindowSearch]::WindowFromPoint($parkTarget), 2).ToInt64() -eq [int64]$matched.hWnd) {
+  # Already there (the result click parked it): a move to the same point stamps nothing.
+  $parkNeeded = [Math]::Abs($parkPoint.X - $parkTarget.X) -gt 2 -or [Math]::Abs($parkPoint.Y - $parkTarget.Y) -gt 2
+  if ($parkNeeded -and [Win32WechatWindowSearch]::GetAncestor([Win32WechatWindowSearch]::WindowFromPoint($parkTarget), 2).ToInt64() -eq [int64]$matched.hWnd) {
     $preParkTick = [Win32WechatWindowSearch]::GetLastInputTick()
     $script:searchCursorParked = [Win32WechatWindowSearch]::SetCursorPos($parkTarget.X, $parkTarget.Y)
-    # Take the baseline only once Windows has stamped this move, however slow the PC.
-    for ($parkWait = 0; $script:searchCursorParked -and $parkWait -lt 25 -and [Win32WechatWindowSearch]::GetLastInputTick() -eq $preParkTick; $parkWait++) {
+    # Take the baseline only once Windows has stamped this move, however slow the PC
+    # (unattended runs report a fixed tick, so there is nothing to wait for).
+    $parkCanWait = [Environment]::GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") -ne "1"
+    for ($parkWait = 0; $parkCanWait -and $script:searchCursorParked -and $parkWait -lt 25 -and [Win32WechatWindowSearch]::GetLastInputTick() -eq $preParkTick; $parkWait++) {
       Start-Sleep -Milliseconds 20
     }
     Start-Sleep -Milliseconds 50
@@ -2283,12 +2291,16 @@ if ($requireHeaderChange) {
 [Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
 # Field (user, 2026-11-14): a cursor left on the clicked row sits where the next search's dropdown
 # draws a row; WeChat highlights the hovered row and the next result check could fail. Once the click
-# is processed, move the cursor (no click) to WeChat's own top strip. This is the app's own input,
-# so no idle wait; it is taken into the owned tick below.
+# is processed, move the cursor (no click) to WeChat's own top strip. Only when nobody touched the
+# mouse or keyboard since this click: a person's input is never taken over and is still detected
+# below as before. The move is the app's own input, so the owned tick is read once Windows stamped it.
+$clickInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
+$ownedInputTick = $clickInputTick
 Start-Sleep -Milliseconds 150
 $clickParked = $false
 $parkRect = New-Object Win32WechatSearchResultClick+RECT
-if ([Win32WechatSearchResultClick]::GetWindowRect([IntPtr]$expectedHWnd, [ref]$parkRect)) {
+if ([uint64][Win32WechatSearchResultClick]::GetLastInputTick() -eq $clickInputTick -and
+    [Win32WechatSearchResultClick]::GetWindowRect([IntPtr]$expectedHWnd, [ref]$parkRect)) {
   $parkDpi = [int][Win32WechatSearchResultClick]::GetDpiForWindow([IntPtr]$expectedHWnd); if ($parkDpi -le 0) { $parkDpi = 96 }
   $parkPoint = New-Object Win32WechatSearchResultClick+POINT
   $parkPoint.X = [int]($parkRect.Left + ($parkRect.Right - $parkRect.Left) * 0.5)
@@ -2296,9 +2308,13 @@ if ([Win32WechatSearchResultClick]::GetWindowRect([IntPtr]$expectedHWnd, [ref]$p
   $parkHit = [Win32WechatSearchResultClick]::WindowFromPoint($parkPoint)
   if ($parkHit -ne [IntPtr]::Zero -and [Win32WechatSearchResultClick]::GetAncestor($parkHit, 2).ToInt64() -eq $expectedHWnd) {
     $clickParked = [Win32WechatSearchResultClick]::SetCursorPos($parkPoint.X, $parkPoint.Y)
+    $parkCanWait = [Environment]::GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") -ne "1"
+    for ($parkWait = 0; $parkCanWait -and $clickParked -and $parkWait -lt 25 -and [uint64][Win32WechatSearchResultClick]::GetLastInputTick() -eq $clickInputTick; $parkWait++) {
+      Start-Sleep -Milliseconds 20
+    }
+    $ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
   }
 }
-$ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
 Start-Sleep -Milliseconds 350
 $landingHWnd = [Win32WechatSearchResultClick]::GetForegroundWindow()
 [uint32]$landingPid = 0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($landingHWnd, [ref]$landingPid)
@@ -2331,7 +2347,7 @@ if ($requireHeaderChange) {
   try { $headerAfter = Get-ConversationHeaderHash $expectedHWnd } catch {}
   if (-not $headerAfter -or $headerAfter -ceq $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="点击后会话区域未变化，任务已暂停以防触达上一位"; send_attempted=$false; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
 }
-@{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true; cursorParked=[bool]$clickParked } | ConvertTo-Json -Compress
+@{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true; resultClickCursorParked=[bool]$clickParked } | ConvertTo-Json -Compress
 `;
 
 function searchCandidateFingerprint(mode, candidate) {

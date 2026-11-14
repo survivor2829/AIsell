@@ -3161,9 +3161,19 @@ try {
     const clickScript = driverSource.slice(driverSource.indexOf("const CLICK_SEARCH_RESULT_SCRIPT"), driverSource.indexOf("const CONVERSATION_TITLE_SCRIPT"));
     const click = clickScript.indexOf("mouse_event(0x0004");
     const clickPark = clickScript.indexOf("$clickParked = [Win32WechatSearchResultClick]::SetCursorPos(");
-    const owned = clickScript.indexOf("$ownedInputTick = ");
-    assert.ok(click > 0 && clickPark > click && owned > clickPark, "the cursor leaves the clicked row after the click and inside the owned input");
-    assert.match(clickScript.slice(click, clickPark), /Start-Sleep -Milliseconds 150/u, "the click is processed before the cursor moves");
+    const clickTick = clickScript.indexOf("$clickInputTick = [uint64]");
+    const owned = clickScript.indexOf("$ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()", clickPark);
+    assert.ok(click > 0 && clickTick > click && clickPark > clickTick && owned > clickPark,
+      "the click's own tick is read at once; the owned tick only after the move");
+    const clickParkBlock = clickScript.slice(clickTick, owned);
+    assert.match(clickParkBlock, /Start-Sleep -Milliseconds 150/u, "the click is processed before the cursor moves");
+    assert.match(clickParkBlock, /GetLastInputTick\(\) -eq \$clickInputTick -and/u,
+      "a person's input after the click is never taken over: no move, and it is still detected");
+    assert.match(clickParkBlock, /for \(\$parkWait = 0;[^)]*GetLastInputTick\(\) -eq \$clickInputTick/u,
+      "the owned tick waits until Windows stamped the move, however slow the PC");
+    assert.match(parkBlock, /GetWindowThreadProcessId\(\[Win32WechatWindowSearch\]::WindowFromPoint\(\$parkPoint\)/u,
+      "a cursor on WeChat's own dropdown popup counts as on WeChat");
+    assert.match(parkBlock, /\$parkNeeded = /u, "a cursor already at the target is not moved again (a same-point move stamps nothing)");
   }
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
