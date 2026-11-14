@@ -172,12 +172,30 @@ def screen_limit(category=None):
     return COMPACT_SCREEN_LIMIT if category in COMPACT_CATEGORIES else PLANNED_SCREEN_LIMIT
 
 
+# The general prompts are written for 设备类 (8–15 screens). For the compact categories their
+# screen-count wording is rewritten, so one prompt never asks for both "至少8屏" and "最多8屏".
+_COMPACT_WORDING = (
+    ("正常资料整套8至15屏", f"整套最多{COMPACT_SCREEN_LIMIT}屏、不设最低数量"),
+    ("保留正常资料至少8屏：一个真实作用可以由作业图、相关部件图、原理图解释，",
+     f"整套最多{COMPACT_SCREEN_LIMIT}屏：每个作用只做一页，"),
+    ("而非只删到不足8屏", "资料不够就少出页"),
+    ("保留正常资料至少8屏的丰富度", f"整套最多{COMPACT_SCREEN_LIMIT}屏，每个作用只做一页"),
+)
+
+
+def fit_category(system, category=None):
+    if category not in COMPACT_CATEGORIES:
+        return system
+    for old, new in _COMPACT_WORDING:
+        system = system.replace(old, new)
+    return system
+
+
 def category_rule(category=None):
-    """Appended last to every planning call, so it overrides the general 8–15 wording."""
+    """Appended last to every planning call for the compact categories."""
     if category not in COMPACT_CATEGORIES:
         return ""
-    return (f"\n本产品是{category}：上面“正常资料整套8至15屏”和“至少8屏”的要求不适用。"
-            f"整套含封面和参数表最多{COMPACT_SCREEN_LIMIT}屏，不设最低数量，资料少就做3至5屏。"
+    return (f"\n本产品是{category}：整套含封面和参数表最多{COMPACT_SCREEN_LIMIT}屏，不设最低数量，资料少就做3至5屏。"
             "每个作用只做一页，不能把同一作用拆成作业图、部件图、原理图多页，"
             "也不能换背景、换角度、换人群或换说法重复；超出的内容按重要性排在后面，程序只保留文字。")
 
@@ -1016,7 +1034,7 @@ def run(source, title, category, image_available, key, model, first_http, review
     def call(system, data, http):
         body = {"model": model, "thinking": {"type": "disabled"}, "temperature": 0.3,
                 "max_tokens": 12000, "response_format": {"type": "json_object"},
-                "messages": [{"role": "system", "content": system + rule},
+                "messages": [{"role": "system", "content": fit_category(system, category) + rule},
                              {"role": "user", "content": json.dumps(data, ensure_ascii=False)}]}
         result = http(body, key)
         if result["choices"][0].get("finish_reason") == "length":

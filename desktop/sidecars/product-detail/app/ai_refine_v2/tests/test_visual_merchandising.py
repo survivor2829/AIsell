@@ -126,10 +126,19 @@ def test_compact_categories_accept_a_short_set_and_tell_the_model(category):
     for call in (first, review):
         system = call.call_args.args[0]["messages"][0]["content"]
         assert system.rstrip().endswith("程序只保留文字。") and "最多8屏" in system
+        assert "至少8屏" not in system and "8至15屏" not in system
     device_source, device = buyer_draft("设备类")
     device["pages"] = device["pages"][:2]
     with pytest.raises(ValueError, match="至少8屏"):
         compile_plan(device, device_source, "", "设备类", buyer_value=True)
+
+
+def test_compact_wording_leaves_device_prompts_untouched():
+    from ai_refine_v2.visual_merchandising import AUTO_REVIEW, fit_category, prompt
+    for system in (prompt(automatic=True) + AUTO_REVIEW, prompt(True), prompt(False)):
+        assert fit_category(system, "设备类") == system and fit_category(system, None) == system
+        compact = fit_category(system, "工具类")
+        assert "至少8屏" not in compact and "8至15屏" not in compact
 
 
 def test_person_scene_is_kept_inside_the_screen_cap():

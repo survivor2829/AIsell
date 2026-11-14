@@ -119,7 +119,7 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   let drawnAir = 0, air = 0, vy = 0, facing = 1, walking = false, walkPhase = 0, track = true, asleep = false, dragging = false, destroyed = false;
   let token = 0, busy = false, currentName = "", work: PetWork = null, worked = false;
   // Tucked into a side of the screen (user 2026-11-13): hidden behind the edge, peeking round it.
-  let tucked: "left" | "right" | null = null;
+  let tucked: "left" | "right" | null = null, lastSpotted = -Infinity;
   let raf = 0, last = 0, awakeUntil = 0, lastDraw = 0, fps = 30, idleTimer = 0, blinkTimer = 0, sleepTimer = 0, lastIdle = "", clock = 0, lastCursorAt = performance.now();
   const timers = new Set<number>();
 
@@ -424,7 +424,8 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       tucked = next;
       if (dragging) return; // Let go, it carries on in whatever place it ended up.
       if (next) { act("peekEdge"); return; }
-      if (side) { act("spotted"); return; }
+      // Caught at most once in a while: a pointer moving along the edge must not keep startling it.
+      if (side && performance.now() - lastSpotted > 8000) { lastSpotted = performance.now(); act("spotted"); return; }
       token++; busy = false; currentName = ""; fps = 30; resetLook(); restPose(); track = true; carryOn();
     },
     cursor(x: number, y: number) {
@@ -433,7 +434,9 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       if (asleep && !dragging) { act("wake"); return; }
       if (destroyed || !track || dragging) return;
       const p = toSvg(x, y);
-      const next = { lx: clamp((p.x - 500) / 10, -54, 54), ly: clamp((p.y - 480) / 12, -34, 34), hr: clamp((p.x - 500) / 120, -7, 7), turn: clamp((p.x - 500) / 900, -.8, .8) };
+      const eyes = { lx: clamp((p.x - 500) / 10, -54, 54), ly: clamp((p.y - 480) / 12, -34, 34) };
+      // Peeking round the screen edge only the eyes follow; the head keeps its sideways peek.
+      const next = tucked ? { ...eyes, hr: T.hr, turn: T.turn } : { ...eyes, hr: clamp((p.x - 500) / 120, -7, 7), turn: clamp((p.x - 500) / 900, -.8, .8) };
       // Past a short distance these all stop changing, so ordinary mouse use across the screen costs no frames.
       if (Math.abs(next.lx - T.lx) + Math.abs(next.ly - T.ly) + Math.abs(next.hr - T.hr) + Math.abs(next.turn - T.turn) * 20 < 2.5) return;
       go(next);
@@ -461,7 +464,8 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       dragging = false; busy = false; restPose();
       V.sy -= Math.min(9, impact / 190); V.sx += Math.min(7, impact / 260); V.tuft += 200; wake();
       if (impact > 520) { vy = impact * .3; air = .1; }
-      if (shakes >= 5) act("dizzy"); else if (work) startWork(); else act(pick(["look", "scratch"]));
+      // Dropped into a side of the screen (tucked while still held): it peeks from there, even mid-task.
+      if (shakes >= 5) act("dizzy"); else if (tucked) act("peekEdge"); else if (work) startWork(); else act(pick(["look", "scratch"]));
     },
     click(clientX: number, clientY: number) {
       const now = performance.now(), p = toSvg(clientX, clientY);

@@ -214,8 +214,10 @@ function DemoReel({ demos, label }: { demos: readonly VideoExample[]; label: str
 
 // 页面页头里的操作录屏（用户 2026-11-13）：点了和首页一样弹出大窗播放，有讲解的带声音。
 export function DemoPlayer({ file, onClose }: { file: string; onClose: () => void }) {
-  const example = [...WECHAT_DEMOS, ...BUSINESS_DEMOS].find((demo) => demo.file === file);
-  return example ? <ExamplePlayer example={example} onClose={onClose} /> : null;
+  // A recording outside the two lists still opens (as a silent screen recording), never a dead click.
+  const example = [...WECHAT_DEMOS, ...BUSINESS_DEMOS].find((demo) => demo.file === file)
+    || { topic: `wechat-${file}`, title: '操作演示', module: '操作演示', file, duration: '' } as unknown as VideoExample;
+  return <ExamplePlayer example={example} onClose={onClose} />;
 }
 
 export function WechatDemoReel() { return <DemoReel demos={WECHAT_DEMOS} label="微信拓客" />; }
