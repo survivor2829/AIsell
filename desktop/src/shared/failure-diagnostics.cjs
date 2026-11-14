@@ -8,6 +8,8 @@ function sanitizeImageObservation(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
   if (['none', 'bitmap', 'file_drop'].includes(value.paste_method)) result.paste_method = value.paste_method;
   if (typeof value.send_button_color === 'string' && /^\d{1,3},\d{1,3},\d{1,3}$/.test(value.send_button_color)) result.send_button_color = value.send_button_color;
+  // Pixels the send-button point moved left of WeChat's 搜一搜 side panel (0: no panel seen).
+  if (Number.isSafeInteger(value.send_panel_offset) && value.send_panel_offset >= 0 && value.send_panel_offset <= 10000) result.send_panel_offset = value.send_panel_offset;
   if (['verified', 'fallback'].includes(value.input_point_source)) result.input_point_source = value.input_point_source;
   for (const key of ['input_x_ratio', 'input_y_ratio']) {
     if (Number.isFinite(value[key]) && value[key] > 0 && value[key] < 1) result[key] = value[key];

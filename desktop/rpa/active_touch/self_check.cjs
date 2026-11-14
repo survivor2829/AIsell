@@ -3145,6 +3145,35 @@ try {
     assert.ok(trayAttempt > 0 && NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("Request-PersonalWechatActivation @{ processPath = $trayPaths[0] }", trayAttempt) > trayAttempt,
       "a WeChat with every window hidden is asked to restore its own window");
     assert.ok(NORMALIZE_WECHAT_WINDOW_SCRIPT.includes("$trayPaths.Count -eq 1"), "never guess between two WeChat installations");
+    // Field (user, 2026-11-14): a cursor left over the search dropdown highlights a row and the
+    // result check could fail. The search parks it (no click) before the input baseline, only idle.
+    let searchScript = "";
+    require("./wechat_window_driver.cjs").openWechatSearchResult("probe", { searchIdentity: true, runner: (script) => { searchScript = script; return { ok: false }; } });
+    const park = searchScript.indexOf("$script:searchCursorParked = [Win32WechatWindowSearch]::SetCursorPos(");
+    const baseline = searchScript.indexOf("$expectedInputTick = [Win32WechatWindowSearch]::GetLastInputTick()");
+    assert.ok(park > 0 && baseline > park, "the cursor is parked before the input baseline (a move counts as input)");
+    const parkBlock = searchScript.slice(searchScript.lastIndexOf("$parkIdleMs =", park), baseline);
+    assert.match(parkBlock, /\[uint64\]\$parkIdleMs -ge 1500/u, "never take the mouse from a person using it");
+    assert.doesNotMatch(parkBlock, /mouse_event/u, "parking only moves the cursor, it never clicks");
+    assert.match(parkBlock, /WindowFromPoint\(\$parkPoint\)[\s\S]*WindowFromPoint\(\$parkTarget\)/u,
+      "only a cursor resting on this WeChat window is moved, and only onto this WeChat window");
+    // The main fix: the result click moves the cursor off the clicked row itself, once the click is processed.
+    const clickScript = driverSource.slice(driverSource.indexOf("const CLICK_SEARCH_RESULT_SCRIPT"), driverSource.indexOf("const CONVERSATION_TITLE_SCRIPT"));
+    const click = clickScript.indexOf("mouse_event(0x0004");
+    const clickPark = clickScript.indexOf("$clickParked = [Win32WechatSearchResultClick]::SetCursorPos(");
+    const clickTick = clickScript.indexOf("$clickInputTick = [uint64]");
+    const owned = clickScript.indexOf("$ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()", clickPark);
+    assert.ok(click > 0 && clickTick > click && clickPark > clickTick && owned > clickPark,
+      "the click's own tick is read at once; the owned tick only after the move");
+    const clickParkBlock = clickScript.slice(clickTick, owned);
+    assert.match(clickParkBlock, /Start-Sleep -Milliseconds 150/u, "the click is processed before the cursor moves");
+    assert.match(clickParkBlock, /GetLastInputTick\(\) -eq \$clickInputTick -and/u,
+      "a person's input after the click is never taken over: no move, and it is still detected");
+    assert.match(clickParkBlock, /for \(\$parkWait = 0;[^)]*GetLastInputTick\(\) -eq \$clickInputTick/u,
+      "the owned tick waits until Windows stamped the move, however slow the PC");
+    assert.match(parkBlock, /GetWindowThreadProcessId\(\[Win32WechatWindowSearch\]::WindowFromPoint\(\$parkPoint\)/u,
+      "a cursor on WeChat's own dropdown popup counts as on WeChat");
+    assert.match(parkBlock, /\$parkNeeded = /u, "a cursor already at the target is not moved again (a same-point move stamps nothing)");
   }
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
@@ -3460,6 +3489,53 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
 @{ ok = $true; sharedPointVerified = $true } | ConvertTo-Json -Compress
 `, {}, { ensure: false, timeout: 5_000 });
   assert.deepEqual(composerPointResult, { ok: true, sharedPointVerified: true });
+
+  // Field 2026-11-14 (1.3.8): with WeChat's 搜一搜 side panel open, the picture's send-button point
+  // sampled the panel, so a landed paste was judged ignored. Execute the point helper against fake
+  // windows (no WeChat): a WeChatAppEx child at the right moves the point to the chat panel's edge.
+  const { WECHAT_SEND_BUTTON_OFFSETS } = require("./wechat_window_driver.dev.cjs");
+  const sendPointMatch = imageScript.match(/function Get-SendButtonPoint[\s\S]*?(?=function Test-SendButtonActive)/u);
+  assert.ok(sendPointMatch, "the image script keeps Get-SendButtonPoint right before Test-SendButtonActive");
+  const sendPointProbe = sendPointMatch[0];
+  const sendPointResult = await runPowerShellAsync(`
+Add-Type -TypeDefinition @"
+using System;
+public static class Win32WechatSendMessage {
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public struct POINT { public int X; public int Y; }
+  public static int Right = 1600; public static int PanelLeft = 1120;
+  public static bool GetWindowRect(IntPtr h, ref RECT r) { r.Left = 0; r.Top = 0; r.Right = Right; r.Bottom = 800; return true; }
+  public static int GetDpiForWindow(IntPtr h) { return 96; }
+  public static IntPtr WindowFromPoint(POINT p) { return new IntPtr(p.X >= PanelLeft ? 200 : 101); }
+  public static uint GetWindowThreadProcessId(IntPtr h, ref uint pid) { pid = h.ToInt64() == 200 ? 20u : 10u; return 1; }
+  public static IntPtr GetAncestor(IntPtr h, int flags) { return new IntPtr(100); }
+}
+"@
+function Get-Process { param([int]$Id, $ErrorAction) @{ ProcessName = $(if ($Id -eq 20) { "WeChatAppEx" } else { "Weixin" }) } }
+${sendPointProbe}
+$mainWindow = [IntPtr]100; $expectedPid = "10"
+$withPanel = Get-SendButtonPoint
+$panelOffset = $script:sendPanelOffset
+# A maximized WeChat closes the panel without changing size: the point must follow, not a cache.
+[Win32WechatSendMessage]::PanelLeft = 99999
+$sameSizeClosed = Get-SendButtonPoint
+[Win32WechatSendMessage]::Right = 1120
+$plain = Get-SendButtonPoint
+@{ withPanel = $withPanel.x; sameSizeClosed = $sameSizeClosed.x; plain = $plain.x; panelOffset = $panelOffset; plainOffset = $script:sendPanelOffset } | ConvertTo-Json -Compress
+`, {}, { ensure: false, timeout: 10_000 });
+  assert.equal(sendPointResult.plain, 1120 - WECHAT_SEND_BUTTON_OFFSETS.right, "without a side panel the point is unchanged");
+  // The edge walk steps 2 px, like the text send's; a pixel either way does not matter to a button.
+  assert.ok(Math.abs(sendPointResult.withPanel - sendPointResult.plain) <= 2, "with the 搜一搜 panel open the point moves to the chat panel's send button");
+  assert.ok(Math.abs(sendPointResult.panelOffset - (1600 - 1120)) <= 2, "the move equals the panel width");
+  assert.equal(sendPointResult.plainOffset, 0);
+  assert.equal(sendPointResult.sameSizeClosed, 1600 - WECHAT_SEND_BUTTON_OFFSETS.right,
+    "a panel closing without a size change is seen at once (no cached point)");
+  // The field record says whether the panel was seen (the 2026-11-14 capsule could not).
+  const { sanitizeImageObservation } = require("../../src/shared/failure-diagnostics.cjs");
+  assert.equal(sanitizeImageObservation({ send_panel_offset: 480 }).send_panel_offset, 480);
+  assert.equal(sanitizeImageObservation({ send_panel_offset: "480" }).send_panel_offset, undefined);
+  assert.match(imageScript, /send_panel_offset = \$script:sendPanelOffset[\s\S]*send_panel_offset = \$script:sendPanelOffset/u,
+    "both the progress and the failure records carry the panel offset");
   assert.doesNotMatch(imageScript, /Read-ImageDraft|Image-Fingerprint|Invoke-ImageClipboardRead/u,
     "image sending must not depend on copying the WeChat draft back out");
   assert.match(imageScript, /function Test-SendButtonActive[\s\S]*XiaoxiScreenPixels\]::Copy[\s\S]*\$green -gt \(\$total \* 0\.3\)/u,

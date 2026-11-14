@@ -52,6 +52,7 @@ $script:imageClipboardOperation = "none"
 $script:imageClipboardWriteAttempts = 0
 $script:pasteMethod = "none"
 $script:sendButtonColor = ""
+$script:sendPanelOffset = 0
 $composerPoint = $null
 [void]($script:imageStageStartedAt = Get-UptimeMs)
 $script:imageLeaseSettleIntervalMs = 30
@@ -65,7 +66,7 @@ $script:imageStageBudgets = @{
 function Write-ImageProgress([string]$stage, [string]$status) {
   $elapsed = [Math]::Max(0, (Get-UptimeMs) - $script:imageStageStartedAt)
   $retryIndex = 0; if ($env:XIAOXI_IMAGE_RETRY_INDEX) { [int]::TryParse([string]$env:XIAOXI_IMAGE_RETRY_INDEX, [ref]$retryIndex) | Out-Null }
-  $payload = @{ stage = $stage; status = $status; elapsed_ms = $elapsed; clipboard_write_attempts = $script:imageClipboardWriteAttempts; paste_method = $script:pasteMethod; send_button_color = $script:sendButtonColor; input_point_source = $composerPoint.source; input_x_ratio = $composerPoint.xRatio; input_y_ratio = $composerPoint.yRatio; retry_index = $retryIndex; at = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json -Compress
+  $payload = @{ stage = $stage; status = $status; elapsed_ms = $elapsed; clipboard_write_attempts = $script:imageClipboardWriteAttempts; paste_method = $script:pasteMethod; send_button_color = $script:sendButtonColor; send_panel_offset = $script:sendPanelOffset; input_point_source = $composerPoint.source; input_x_ratio = $composerPoint.xRatio; input_y_ratio = $composerPoint.yRatio; retry_index = $retryIndex; at = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json -Compress
   [Console]::Error.WriteLine("image_progress:" + $payload)
 }
 function Complete-ImageStage([string]$stage) {
@@ -167,7 +168,42 @@ function Get-SendButtonPoint {
   if (-not [Win32WechatSendMessage]::GetWindowRect($mainWindow, [ref]$current)) { throw "image_window_changed" }
   $dpi = [Win32WechatSendMessage]::GetDpiForWindow($mainWindow)
   if ($dpi -le 0) { $dpi = 96 }
-  return @{ x = [int]($current.Right - ${WECHAT_SEND_BUTTON_OFFSETS.right} * $dpi / 96.0); y = [int]($current.Bottom - ${WECHAT_SEND_BUTTON_OFFSETS.bottom} * $dpi / 96.0); scale = $dpi / 96.0 }
+  $scale = $dpi / 96.0
+  $rightOffset = [int][Math]::Round(${WECHAT_SEND_BUTTON_OFFSETS.right} * $scale)
+  $x = [int]($current.Right - $rightOffset)
+  $y = [int]($current.Bottom - [Math]::Round(${WECHAT_SEND_BUTTON_OFFSETS.bottom} * $scale))
+  # Probed on every call, never cached: the panel can appear late or close without the window
+  # changing size (a maximized WeChat), and a stale point would bring the field failure back.
+  # WeChat's 搜一搜 side panel (left open by a name search) widens the window, so the send
+  # button sits at the chat panel's right edge, not the window's. The text send learned this
+  # on 2026-11-07; pictures did not (field 2026-11-14, 1.3.8: the paste landed but the green
+  # check sampled the panel, so it was judged ignored, cleared, pasted again and given up).
+  # Same rule as the text send: only a WeChatAppEx child of this window moves the point,
+  # walking left along the send row to where WeChat's own surface begins.
+  $script:sendPanelOffset = 0
+  $probe = New-Object Win32WechatSendMessage+POINT
+  $probe.X = $x; $probe.Y = $y
+  $probeWindow = [Win32WechatSendMessage]::WindowFromPoint($probe)
+  [uint32]$probePid = 0
+  if ($probeWindow -ne [IntPtr]::Zero -and [Win32WechatSendMessage]::GetWindowThreadProcessId($probeWindow, [ref]$probePid) -ne 0 -and
+      [string]$probePid -ne $expectedPid -and [Win32WechatSendMessage]::GetAncestor($probeWindow, 2) -eq $mainWindow -and
+      (Get-Process -Id $probePid -ErrorAction SilentlyContinue).ProcessName -eq "WeChatAppEx") {
+    $width = $current.Right - $current.Left
+    for ($edgeX = $x; $edgeX -gt ($current.Left + $width * 0.40); $edgeX -= 2) {
+      $probe.X = $edgeX
+      $edgeWindow = [Win32WechatSendMessage]::WindowFromPoint($probe)
+      [uint32]$edgePid = 0
+      if ($edgeWindow -eq [IntPtr]::Zero -or [Win32WechatSendMessage]::GetWindowThreadProcessId($edgeWindow, [ref]$edgePid) -eq 0 -or
+          [Win32WechatSendMessage]::GetAncestor($edgeWindow, 2) -ne $mainWindow) { break }
+      if ([string]$edgePid -eq $expectedPid) {
+        $moved = [int]($edgeX + 1 - $rightOffset)
+        $script:sendPanelOffset = $x - $moved
+        $x = $moved
+        break
+      }
+    }
+  }
+  return @{ x = $x; y = $y; scale = $scale }
 }
 function Test-SendButtonActive {
   # WeChat paints the send button green only while the composer holds a draft.
@@ -401,7 +437,7 @@ try {
   if ($env:XIAOXI_INTERNAL_DIAGNOSTICS -eq "1") {
     $rawException = @{ message = (Protect-XiaoxiDiagnosticText $imageError.Exception.Message); type = $errorType; stack = (Protect-XiaoxiDiagnosticText $imageError.ScriptStackTrace) }
   }
-  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; paste_method = $script:pasteMethod; send_button_color = $script:sendButtonColor; input_point_source = $composerPoint.source; input_x_ratio = $composerPoint.xRatio; input_y_ratio = $composerPoint.yRatio; script_line = $scriptLine; source_file = "desktop/rpa/active_touch/wechat_image_send.dev.cjs"; source_line = $sourceLine; errorLine = $scriptLine; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult; raw_exception = $rawException } | ConvertTo-Json -Depth 6 -Compress
+  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; paste_method = $script:pasteMethod; send_button_color = $script:sendButtonColor; send_panel_offset = $script:sendPanelOffset; input_point_source = $composerPoint.source; input_x_ratio = $composerPoint.xRatio; input_y_ratio = $composerPoint.yRatio; script_line = $scriptLine; source_file = "desktop/rpa/active_touch/wechat_image_send.dev.cjs"; source_line = $sourceLine; errorLine = $scriptLine; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult; raw_exception = $rawException } | ConvertTo-Json -Depth 6 -Compress
 } finally {
   if ($sourceImage) { $sourceImage.Dispose() }
   if ($script:clipboardOwned -and [Win32WechatImage]::GetClipboardSequenceNumber() -eq $script:clipboardSequence) {
