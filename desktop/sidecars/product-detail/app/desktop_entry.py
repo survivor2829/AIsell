@@ -567,10 +567,23 @@ def _install_desktop_contract(
     @flask_app.after_request
     def desktop_track_ai_refine(response):
         endpoint = request.endpoint or ""
+        status_payload = None
         if endpoint == "ai_refine_v2_status" and response.status_code == 200:
-            payload = response.get_json(silent=True) or {}
-            if payload.get("task_id") in read_refine_archive():
-                return jsonify({**payload, "archived": True})
+            status_payload = response.get_json(silent=True) or {}
+            if status_payload.get("task_id") in read_refine_archive():
+                return jsonify({**status_payload, "archived": True})
+        response = track_ai_refine(endpoint, response)
+        if (status_payload and status_payload.get("can_replay_planner")
+                and status_payload.get("task_id") in read_refine_archive()):
+            # The tracking just archived this failed task and recovery refuses an
+            # archived task, so offer no "retry" that can only fail (2026-11-14).
+            # A replay now would re-check the same saved reply under the same
+            # rules; after an update the startup reopen offers it again.
+            # Not flagged archived: the page still shows the real failure reason.
+            return jsonify({**status_payload, "can_replay_planner": False})
+        return response
+
+    def track_ai_refine(endpoint, response):
         if (
             endpoint == "ai_refine_v2_status"
             and response.status_code == 404

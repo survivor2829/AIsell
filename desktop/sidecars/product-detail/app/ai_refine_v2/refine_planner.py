@@ -935,8 +935,73 @@ def _validate_schema_v2(
     return w
 
 
+_QUOTE_RUN_END = set(" \t\r\n，,。；;、:：")
+
+
+def _spell_inches(text: str) -> str:
+    """Write a digit's inch mark (32", 32″, 32inch) as 32英寸.
+
+    A quote that closes a quotation (型号"X200") is not an inch mark: a straight
+    or curly double quote after a digit counts only while no quotation is open.
+    A quotation never spans a space or punctuation here, so one stray quote
+    earlier in the copy cannot hide every later inch mark.
+    """
+    text = re.sub(r"(?<=\d)\s*inch(?:es)?(?![a-z])", "英寸", text, flags=re.IGNORECASE)
+    out, open_quote = [], False
+    for i, ch in enumerate(text):
+        if ch in _QUOTE_RUN_END:
+            open_quote = False
+            out.append(ch)
+        elif ch == "″":
+            out.append("英寸")
+        elif ch in "\"＂”“":
+            if ch != "“" and not open_quote and i and text[i - 1].isdigit():
+                out.append("英寸")
+            else:
+                open_quote = ch == "“" or (ch != "”" and not open_quote)
+                out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# Chinese unit words after a number, written as the symbol customers also use.
+# Longest first so 平方米 never becomes 平方m. Spelling only: no arithmetic.
+_UNIT_WORDS = {"毫安时": "mah", "平方米": "m2", "立方米": "m3", "千瓦": "kw", "毫米": "mm", "厘米": "cm",
+               "千克": "kg", "公斤": "kg", "毫升": "ml", "平米": "m2", "平方": "m2", "立方": "m3", "小时": "h"}
+# One-character units also start ordinary words (5升级, 5度电, 3米色), so they
+# count only when no Chinese character follows.
+_UNIT_CHARS = {"升": "l", "瓦": "w", "伏": "v", "米": "m", "度": "°", "寸": "英寸"}
+_UNIT_WORD = re.compile(r"(?<=\d)\s*(" + "|".join(_UNIT_WORDS) + r"|[" + "".join(_UNIT_CHARS)
+                        + r"](?![一-鿿]))")
+_UNIT_SPELLING = {**_UNIT_WORDS, **_UNIT_CHARS}
+
+
+def spell_units(text: str) -> str:
+    """One spelling for values that only differ in how they are written.
+
+    32"/32英寸, 500*300/500×300, 100㎡/100平方米, 11.5公斤/11.5kg, 3至5/3~5/3-5,
+    full-width digits. Real 2026-11-14 failure: a tool's 32英寸 against the
+    source's 32". Numbers themselves are never changed or converted.
+    """
+    text = unicodedata.normalize("NFKC", _spell_inches(text or "")).lower()
+    text = _UNIT_WORD.sub(lambda m: _UNIT_SPELLING[m.group(1)], text)
+    text = re.sub(r"(?<=\d)\s*[×x*]\s*(?=\d)", "×", text)
+    return re.sub(r"(?<=\d)\s*[-–—~～至到]\s*(?=\d)", "-", text)
+
+
+def _contains_value(value: str, evidence: str) -> bool:
+    """value occurs in evidence as a whole number: 2kg is not in 12kg."""
+    pattern = ((r"(?<![0-9.a-z])" if value[:1].isdigit() else "") + re.escape(value)
+               + (r"(?![0-9.])" if value[-1:].isdigit() else ""))
+    return bool(value) and re.search(pattern, evidence) is not None
+
+
 def _spec_value_matches_evidence(spec: dict, product_text: str | None) -> bool:
     value, evidence = (_normalize_claim_text(spec[key]) for key in ("value", "evidence"))
+    if value != "支持" and value not in evidence:
+        return _contains_value(_normalize_claim_text(spell_units(spec["value"])),
+                               _normalize_claim_text(spell_units(spec["evidence"])))
     if value == "支持":
         # Only an explicit source field may use this standalone value. A bare
         # feature, negated sentence or truncated conditional is not equivalent.

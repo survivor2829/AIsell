@@ -845,3 +845,134 @@ def test_long_image_leaves_out_square_images(tmp_path):
         runner._validate_assembled_png = original
     with Image.open(tmp_path / "assembled.png") as long_image:
         assert long_image.size == (750, 2000 + runner._disclaimer_band(750).height)
+
+
+# 2026-11-14 real 工具类 run: the plan failed twice on one parameter row
+# ("32英寸/70cm" against the source's 32"/70cm) before any image was bought.
+PICKER = "美国金鹰拾物器32\"/70cm    头部关节可旋转90度32英寸 物业保洁环卫上手工具"
+
+
+def picker_draft():
+    brief = {"product_presentation": "working_scene", "scene": "物业保洁人员在走廊地面作业",
+             "framing": "中景，人物侧身站立", "product_action": "成年工作人员站立握住手柄夹取地面杂物",
+             "visual_evidence": "长杆让使用者站立即可触及地面", "layout": "标题在左上，人物在右侧"}
+    return {
+        "category_check": {"category": "工具类", "evidence": [PICKER.replace("    ", " ")]},
+        "product_meta": {"name": "美国金鹰拾物器32\"/70cm", "category": "工具类",
+                         "primary_color": "Image 1 authoritative", "key_visual_parts": ["follow reference image"]},
+        "style_dna": {"color_palette": "依据产品原图配色", "lighting": "明亮均匀", "composition_style": "封面整机居中",
+                      "mood": "专业、实用", "typography_hint": "手机大字可读", "unified_visual_treatment": "统一背景基调"},
+        "cover": {"title": "32英寸长杆拾物器，站着夹取地面杂物", "evidence": ["美国金鹰拾物器32\"/70cm"],
+                  "visual_brief": {"product_presentation": "whole_product", "scene": "干净的地面环境",
+                                   "framing": "整机竖幅居中", "product_action": "静态展示整机",
+                                   "visual_evidence": "展示长杆与拾物头部", "layout": "大标题在上，整机居中"}},
+        "pages": [
+            {"kind": "benefit", "role": "lifestyle_demo", "title": "站着夹取，不用弯腰蹲下", "body": "",
+             "technical_support": ["32英寸"], "evidence": ["32英寸 物业保洁环卫上手工具"], "visual_brief": brief},
+            {"kind": "benefit", "role": "detail_zoom", "title": "头部关节可旋转90度，贴边角落也能夹", "body": "",
+             "technical_support": ["头部关节可旋转90度"], "evidence": ["头部关节可旋转90度"],
+             "visual_brief": {"product_presentation": "visible_detail", "scene": "拾物器头部关节特写",
+                              "framing": "近景特写头部关节", "product_action": "头部关节旋转至90度位置",
+                              "visual_evidence": "展示头部关节可旋转90度", "layout": "标题在上，特写居中"}},
+        ],
+        "specifications": [
+            {"name": "长度", "value": "32英寸/70cm", "evidence": "美国金鹰拾物器32\"/70cm"},
+            {"name": "头部关节旋转角度", "value": "可旋转90度", "evidence": "头部关节可旋转90度"},
+        ],
+    }
+
+
+def _plan_picker(data):
+    first, second = Mock(return_value=response(data)), Mock(return_value=response(data))
+    plan = planner.plan_v2(PICKER, product_title="", product_category="工具类",
+                           api_key="offline", http_fn=first, semantic_http_fn=second,
+                           require_automatic_visual=True, allow_visual_advisories=True,
+                           repair_unsupported_captions=True)
+    assert first.call_count == second.call_count == 1  # Nothing bought twice.
+    return plan
+
+
+def test_inch_mark_and_inch_word_are_the_same_parameter_value():
+    plan = _plan_picker(picker_draft())
+    assert [s["value"] for s in plan["specifications"]] == ["32英寸/70cm", "可旋转90度"]
+    assert not plan.get("dropped_pages")
+
+
+def test_one_unproven_parameter_row_drops_that_row_not_the_whole_plan():
+    data = picker_draft()
+    data["specifications"].insert(1, {"name": "重量", "value": "500g", "evidence": "头部关节可旋转90度"})
+    plan = _plan_picker(data)
+    assert [s["name"] for s in plan["specifications"]] == ["长度", "头部关节旋转角度"]
+    assert any(s["role"] == "spec_table" for s in plan["screens"])
+    assert not plan.get("dropped_pages"), "the parameter screen still ships"
+    assert [r["name"] for r in plan["dropped_spec_rows"]] == ["重量"]
+
+
+@pytest.mark.parametrize("value, evidence, ok", [
+    ("32英寸/70cm", "美国金鹰拾物器32\"/70cm", True),
+    ("32英寸", "32″长杆", True),
+    ("32英寸", "32inch长杆", True),
+    ("32/70cm", "32\"/70cm", True),          # Passed before the inch rule; still passes.
+    ("200英寸", "型号\"X200\"适用", False),   # A closing quote is no inch mark.
+    ("200英寸", "型号“X200”适用", False),
+    ("40英寸", "尺寸32\"和40\"两款", True),
+    ("70英寸", "美国金鹰拾物器32\"/70cm", False),
+])
+def test_inch_spelling_matches_without_inventing_values(value, evidence, ok):
+    assert planner._spec_value_matches_evidence({"name": "尺寸", "value": value, "evidence": evidence}, evidence) is ok
+
+
+SAME_VALUE = [('32"', "32英寸"), ("32英寸", '32"'), ("500*300mm", "500×300mm"), ("500x300mm", "500×300mm"),
+              ("100㎡", "100平方米"), ("100m²", "100平方米"), ("40℃", "40°C"), ("11.5kg", "11.5公斤"),
+              ("5L", "5升"), ("800W", "800瓦"), ("8h", "8小时"), ("500mm", "500毫米"), ("70cm", "70厘米"),
+              ("3~5年", "3至5年"), ("１９００ｍ³/h", "1900m³/h"), ("1.2米", "1.2m"), ("2000mAh", "2000毫安时"),
+              ("90度", "90°")]
+OTHER_VALUE = [('32"', "33英寸"), ("500*300mm", "600×300mm"), ("5L", "6升"), ("40℃", "45°C"),
+               ("800W", "900瓦"), ("3~5年", "3至6年"), ("500mm", "500厘米"), ("70cm", "70毫米")]
+
+
+def _plan_spelling(source_spelling, model_spelling):
+    source = f"美国金鹰拾物器 规格{source_spelling} 头部关节可旋转90度 物业保洁环卫上手工具"
+    data = picker_draft()
+    data["category_check"]["evidence"] = [source]
+    data["product_meta"]["name"] = "美国金鹰拾物器"
+    data["cover"].update(title="美国金鹰拾物器", evidence=["美国金鹰拾物器"])
+    data["pages"][0].update(title=f"规格{model_spelling}，站着就能夹", technical_support=[f"规格{model_spelling}"],
+                            evidence=[f"规格{source_spelling}"])
+    data["specifications"] = [{"name": "规格", "value": model_spelling, "evidence": f"规格{source_spelling}"},
+                              {"name": "旋转", "value": "可旋转90度", "evidence": "头部关节可旋转90度"}]
+    first, second = Mock(return_value=response(data)), Mock(return_value=response(data))
+    plan = planner.plan_v2(source, product_title="", product_category="工具类", api_key="offline", http_fn=first,
+                           semantic_http_fn=second, require_automatic_visual=True, allow_visual_advisories=True,
+                           repair_unsupported_captions=True)
+    titles = [s["title"] for s in plan["screens"]]
+    return (any("站着就能夹" in t for t in titles), any(s["name"] == "规格" for s in plan["specifications"]))
+
+
+@pytest.mark.parametrize("source_spelling, model_spelling", SAME_VALUE)
+def test_a_value_written_another_way_keeps_its_page_and_parameter(source_spelling, model_spelling):
+    assert _plan_spelling(source_spelling, model_spelling) == (True, True)
+
+
+@pytest.mark.parametrize("source_spelling, model_spelling", OTHER_VALUE)
+def test_a_changed_number_is_still_caught_and_only_its_parts_drop(source_spelling, model_spelling):
+    assert _plan_spelling(source_spelling, model_spelling) == (False, False)
+
+
+@pytest.mark.parametrize("value, evidence, ok", [
+    ("2kg", "净重12公斤", False),             # Part of another number is no proof.
+    ("2英寸", "规格32\"", False),
+    ("5L", "V5升级版", False),                # 升级 is a word, not litres.
+    ("5°", "每天耗电5度电", False),           # 度电 is kWh, not an angle.
+    ("32英寸/70cm", "品名\"金鹰拾物器 规格32\"/70cm", True),  # One stray quote earlier.
+    ("5L", "5升 水箱", True),
+    ("32英寸", "32寸", True),
+    ("100㎡", "适用100平方", True),
+])
+def test_unit_spelling_never_turns_a_different_fact_into_proof(value, evidence, ok):
+    assert planner._spec_value_matches_evidence({"name": "参数", "value": value, "evidence": evidence}, evidence) is ok
+
+
+@pytest.mark.parametrize("source_spelling, model_spelling", [("32寸", "32英寸"), ("40度", "40℃"), ("100平方", "100㎡")])
+def test_correct_titles_are_not_newly_flagged(source_spelling, model_spelling):
+    assert _plan_spelling(source_spelling, model_spelling)[0] is True
