@@ -118,6 +118,18 @@ function detail(id, { code = "auto_mix_music_not_audible", module = "content_eng
   assert.deepEqual(verify(out, { run: () => ({ results: [{ step: "s1", now: [] }] }) }).failed, []);
   assert.deepEqual(verify(out, { run: () => ({ results: [{ step: "s1", now: [[947, 300]] }] }) }).failed.map(row => row.changed), [["s1"]]);
 
+  // The gateway's keyless APIMart node check heads the report; a dead node is called out.
+  const { report } = require("./issues-pull.cjs");
+  const now = new Date("2026-11-13T08:00:00Z"), at = now.getTime() / 1000 - 60;
+  const dead = report([], [], { now, apimartRoute: { state: "unreachable", checked_at: at, error: "URLError.ConnectionRefusedError" } });
+  assert.match(dead, /## ⚠️ 生图通道：APIMart 节点连不上（检查于 2026-11-13 07:59 UTC，URLError\.ConnectionRefusedError）/);
+  assert.match(report([], [], { now, apimartRoute: { state: "ok", checked_at: at } }), /- 生图通道：APIMart 节点正常（检查于 2026-11-13 07:59 UTC）/);
+  assert.match(report([], [], { now, apimartRoute: { state: "ok", checked_at: at - 3600 } }), /超过 15 分钟没有更新/);
+  assert.match(report([], [], { now, apimartRoute: null }), /## ⚠️ 生图通道：服务器本机连不上网关/);
+  assert.match(report([], [], { now, apimartRoute: { state: "unchecked", checked_at: 0 } }), /还没完成第一次 APIMart 节点检查/);
+  assert.match(report([], [], { now, apimartRoute: { state: "degraded", checked_at: at } }), /未知的节点状态 `degraded`/);
+  assert.doesNotMatch(report([], [], { now }), /生图通道/, "callers that do not pass a route are unchanged");
+
   // The collector runs remotely with the server's python3; it must at least compile.
   const python = process.env.XIAOXI_SELF_CHECK_PYTHON || "python";
   try { execFileSync(python, ["-c", `compile(${JSON.stringify(require("./issues-pull.cjs").COLLECTOR)}, "collector", "exec")`], { stdio: "pipe" }); }

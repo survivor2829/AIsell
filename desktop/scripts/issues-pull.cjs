@@ -64,6 +64,13 @@ try:
     result["health"] = get("/api/health")["successes"]
 except Exception:
     result["health"] = []
+try:
+    # Loopback only, never through an http_proxy the server shell may set.
+    local = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with local.open("http://127.0.0.1:8444/v1/gateway-internal/apimart-route", timeout=5) as response:
+        result["apimartRoute"] = json.loads(response.read()).get("apimart_route") or {}
+except Exception:
+    result["apimartRoute"] = None
 sys.stdout.write(json.dumps(result, ensure_ascii=False))
 `;
 
@@ -279,10 +286,26 @@ function healthLines(healthReport) {
 
 // One line per item: customer text often spans several lines.
 function line(value, limit) { return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, limit); }
-function report(groups, feedback, { now = new Date(), latest = "", health = null } = {}) {
+// The gateway probes the APIMart route (the fixed outbound node) every five minutes without a key.
+function apimartRouteLines(route, now) {
+  const checked = Number(route?.checked_at) || 0;
+  const at = checked ? new Date(checked * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "";
+  if (!route) return ["## ⚠️ 生图通道：服务器本机连不上网关（8444），或网关还是没有节点检查的旧版本", ""];
+  if (!checked) return ["- 生图通道：网关还没完成第一次 APIMart 节点检查；网关运行超过 5 分钟仍是这样，说明检查卡住了", ""];
+  const stale = now.getTime() / 1000 - checked > 15 * 60 ? "；检查结果已超过 15 分钟没有更新，网关的检查可能卡住了" : "";
+  if (route.state === "unreachable") {
+    return [`## ⚠️ 生图通道：APIMart 节点连不上（检查于 ${at}，${route.error || "连接失败"}${stale}）`, "",
+      "客户生成产品详情图会失败（提示“生图通道未连通”），需要换掉服务器上的出站节点（XIAOXI_GATEWAY_APIMART_PROXY_URL）。", ""];
+  }
+  if (route.state !== "ok") return [`## ⚠️ 生图通道：网关报告了未知的节点状态 \`${String(route.state).slice(0, 40)}\`（检查于 ${at}）`, ""];
+  return [`- 生图通道：APIMart 节点正常（检查于 ${at}${stale}）`, ""];
+}
+
+function report(groups, feedback, { now = new Date(), latest = "", health = null, apimartRoute } = {}) {
   const pending = feedback.filter(item => item.status !== "resolved");
   const lines = [`# 现场问题日报 ${now.toISOString().slice(0, 10)}`, "",
     `问题类别 ${groups.length} 个，本次新增现场包的类别 ${groups.filter(group => group.fresh).length} 个；未解决反馈 ${pending.length} 条。最新版本 ${latest || "—"}。`, "",
+    ...(apimartRoute === undefined ? [] : apimartRouteLines(apimartRoute, now)),
     ...(health ? healthLines(health) : [])];
   for (const group of groups) {
     lines.push(`## ${group.fresh ? "🆕 " : ""}${group.module} · ${group.code}`, "",
@@ -313,7 +336,7 @@ async function pull({ out = DEFAULT_OUT, collect = remoteCollect, now = new Date
   const groups = cluster(capsules, pulled.feedback, fresh, pulled.health || []);
   const latest = capsules.map(item => item.client?.version).filter(Boolean).sort(compareVersions).at(-1) || "";
   const health = versionHealth(capsules, pulled.health || []);
-  const text = report(groups, pulled.feedback, { now, latest, health });
+  const text = report(groups, pulled.feedback, { now, latest, health, apimartRoute: pulled.apimartRoute ?? null });
   fs.mkdirSync(path.join(out, "reports"), { recursive: true });
   fs.writeFileSync(path.join(out, "reports", `${now.toISOString().slice(0, 10)}.md`), text);
   fs.writeFileSync(path.join(out, "report.md"), text);

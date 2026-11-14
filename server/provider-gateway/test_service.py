@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import socket
@@ -493,6 +494,46 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertRegex(payload["runtime_revision"], r"^[0-9a-f]{16}$")
         self.assertEqual(180, payload["upstream_timeout_seconds"])
+        self.assertNotIn("apimart_route", payload, "the node state stays off the public health route")
+        with urllib.request.urlopen(self.origin + "/v1/gateway-internal/apimart-route") as response:
+            self.assertEqual("unchecked", json.load(response)["apimart_route"]["state"])
+
+    def test_apimart_route_probe_is_keyless_and_only_transport_failure_is_unreachable(self):
+        seen = []
+        def answer(operation, timeout):
+            seen.append(operation)
+            raise urllib.error.HTTPError(operation.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        self.config.upstream_open = answer
+        self.assertEqual("ok", self.server.probe_apimart_route()["state"])
+        self.assertEqual("https://api.apimart.ai/v1/models", seen[0].full_url)
+        self.assertIsNone(seen[0].get_header("Authorization"))
+        def broken(_operation, timeout):
+            raise urllib.error.URLError(ConnectionRefusedError("http://user:secret@node.invalid:8080 refused"))
+        self.config.upstream_open = broken
+        result = self.server.probe_apimart_route()
+        self.assertEqual({"state", "checked_at", "error"}, set(result))
+        self.assertEqual(("unreachable", "URLError.ConnectionRefusedError"), (result["state"], result["error"]))
+        with urllib.request.urlopen(self.origin + "/v1/gateway-internal/apimart-route") as response:
+            payload = json.load(response)
+        self.assertEqual("unreachable", payload["apimart_route"]["state"])
+        self.assertNotIn("secret", json.dumps(payload))
+
+    def test_apimart_route_probe_uses_the_fixed_outbound_node_when_configured(self):
+        node, direct = [], []
+        self.config.apimart_open = lambda operation, timeout: node.append(operation) or FakeResponse()
+        self.config.upstream_open = lambda operation, timeout: direct.append(operation) or FakeResponse()
+        self.assertEqual("ok", self.server.probe_apimart_route()["state"])
+        self.assertEqual((1, 0), (len(node), len(direct)))
+
+    def test_apimart_route_probe_counts_5xx_as_down_and_a_rejected_redirect_as_up(self):
+        def edge_down(operation, timeout):
+            raise urllib.error.HTTPError(operation.full_url, 502, "Bad Gateway", {}, io.BytesIO(b""))
+        self.config.upstream_open = edge_down
+        self.assertEqual(("unreachable", "http_502"), tuple(self.server.probe_apimart_route()[k] for k in ("state", "error")))
+        def redirected(_operation, timeout):
+            raise urllib.error.URLError("provider_redirect_rejected")
+        self.config.upstream_open = redirected
+        self.assertEqual({"state": "ok"}, {"state": self.server.probe_apimart_route()["state"]})
 
     def test_ark_timeout_is_traceable_and_uses_multimodal_timeout_contract(self):
         token = self.session()
