@@ -48,7 +48,7 @@ function currentWechatIdentity(state, settings, contacts = []) {
   const ownWxid = stableId.match(/^(wxid_[^_]+)/u)?.[1] || (customFolder ? stableId.replace(/_[0-9a-f]{4}$/u, "") : stableId);
   // Only this account's own list: another synced account may have it as a friend (with its remark).
   const ownContact = Array.isArray(contacts)
-    ? contacts.find((contact) => [ownWxid, stableId].includes(String(contact?.wxid || contact?.id || "").trim())
+    ? contacts.find((contact) => [ownWxid.toLowerCase(), stableId.toLowerCase()].includes(String(contact?.wxid || contact?.id || "").trim().toLowerCase())
       && [stableId.toLowerCase(), ""].includes(String(contact?.wechatAccountId || "").trim().toLowerCase()))
     : null;
   const root = String(settings?.wechatRoot || state?.wechat_root || "").trim();
