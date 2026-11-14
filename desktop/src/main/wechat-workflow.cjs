@@ -478,9 +478,10 @@ function createWechatWorkflowController(options) {
   // send result must never be followed by a reply). Only a task left from before this rule (no
   // attentionAt) never holds it, so an update cannot switch off the reception a customer relies on.
   function touchUnfinished() {
-    return store.tasks.some((task) => task.type === "touch"
-      && (!task.accountName || task.accountName === getAccount())
-      && (["pending", "running"].includes(task.status) || (task.status === "needs_attention" && Boolean(task.attentionAt))));
+    return store.tasks.some((task) => task.type === "touch" && (
+      (["pending", "running"].includes(task.status) && (!task.accountName || task.accountName === getAccount()))
+      // A stopped task without an account can be neither retried nor resolved, so it never holds reply.
+      || (task.status === "needs_attention" && task.accountName === getAccount() && Boolean(task.attentionAt))));
   }
 
 
@@ -504,7 +505,7 @@ function createWechatWorkflowController(options) {
       phase = "listening";
       return;
     }
-    if (replyWanted) replyStatus = TOUCH_FIRST_STATUS;
+    if (replyWanted && options.reply?.runWorkflowStep) replyStatus = TOUCH_FIRST_STATUS;
     enabled = false;
     clearTimeout(timer);
     phase = blocked.length || store.tasks.some((task) => task.status === "completed") ? "completed" : "idle";
