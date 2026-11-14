@@ -655,6 +655,27 @@ $dialogAccepted = Wait-PasteAccepted 1000
     "display-only task inspection must fail closed without restoring a backup");
   assert.equal(fs.readFileSync(corruptFile, "utf8"), "{bad json", "display-only inspection must not write task state");
 
+  // Field 2026-11-13/14: the first contact waited 26-36 s before WeChat was touched, with nothing
+  // logged. Every preparation is timed; a slow one is a warning (it reaches feedback) with the stages.
+  {
+    let tick = 0;
+    const slowNow = () => new Date(Date.parse("2026-11-14T09:00:00.000Z") + (tick++) * 4_000);
+    const timings = [];
+    const stopTimings = require("./diagnostics.cjs").diagnostics().subscribe((entry) => {
+      if (entry.module === "active_touch" && entry.event === "prepare_timing") timings.push(entry);
+    });
+    const slowWorkflow = createTouchWorkflow({ ...config, now: slowNow, execute: async () => ({ ok: false, send_attempted: false, blocked_reason: "message_snapshot_unavailable" }) });
+    const slowPayload = slowWorkflow.prepareWorkflowTask({ script: "准备计时测试", contactIds: [contact.id] });
+    await slowWorkflow.runWorkflowStep({ id: crypto.randomUUID(), payload: slowPayload, progress: { done: 0 }, status: "running" }, context);
+    stopTimings();
+    assert.equal(timings.length, 1, "one timing record per prepared contact");
+    assert.deepEqual([timings[0].level, timings[0].code], ["warn", "touch_prepare_slow"], "a preparation over 10 s is reported");
+    for (const stage of ["task_ready_ms", "contacts_read_ms", "copy_ready_ms", "send_ready_ms"]) {
+      assert.ok(Number.isFinite(timings[0].details[stage]), `the slow report says how long ${stage} took`);
+    }
+    assert.ok(timings[0].details.send_ready_ms >= 10_000);
+  }
+
   const genericFailureWorkflow = createTouchWorkflow({ ...config, execute: async () => ({
     ok: false, send_attempted: false, blocked_reason: "message_snapshot_unavailable", error: "发送前快照暂不可用"
   }) });

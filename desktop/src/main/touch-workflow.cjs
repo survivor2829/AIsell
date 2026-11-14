@@ -53,6 +53,7 @@ const WECHAT_WINDOW_PAUSE_REASONS = new Set(["personal_wechat_main_window_not_fo
 const WECHAT_WINDOW_PAUSE_AFTER_MS = 60_000;
 const WECHAT_WINDOW_PAUSE_MESSAGE = "没有认出电脑上的微信主窗口，这一位还没有发送。请打开微信并登录，把微信主窗口放在桌面上，再点「继续」。问题已经自动上报。";
 const PRE_SEND_RECOVERY_DELAYS_MS = [3_000];
+const TOUCH_PREPARE_SLOW_MS = 10_000;
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
 const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
@@ -258,6 +259,11 @@ function createTouchWorkflow(options = {}) {
     if (!enabled() || activeStep) return { status: "pending", progress: fallback };
     activeStep = true;
     const stepStartedAt = now().getTime();
+    // Field 2026-11-13/14 (Windows 10 LTSC PC): the first contact of every run waited 26-36 s
+    // before WeChat was touched, with nothing logged, and looked dead. Each preparation stage
+    // is timed; a slow preparation is reported (warn) with the breakdown.
+    const prepareMarks = {};
+    const markPrepare = (stage) => { prepareMarks[`${stage}_ms`] = Math.max(0, now().getTime() - stepStartedAt); };
     if (lastSearchCaptureSweepAt === null || stepStartedAt - lastSearchCaptureSweepAt >= SEARCH_CAPTURE_SWEEP_INTERVAL_MS) {
       lastSearchCaptureSweepAt = stepStartedAt;
       cleanupStaleSearchCaptures(stepStartedAt);
@@ -445,6 +451,7 @@ function createTouchWorkflow(options = {}) {
         }
         writeJsonAtomic(bindingFile, { taskId: id, signature, copyMode: aiPolish ? 'polish' : 'original' });
       }
+      markPrepare("task_ready");
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
         // Propagate the persisted send interval to the unified scheduler.  Without
         // this it immediately re-enters this branch every poll and starves reply
@@ -452,6 +459,7 @@ function createTouchWorkflow(options = {}) {
         return response("pending", safetyInterval(task.next_send_not_before));
       }
       const liveContacts = options.readContacts();
+      markPrepare("contacts_read");
       const liveClassification = classifyContacts(liveContacts);
       const liveContact = liveClassification.eligible.find((contact) => String(contact.id) === current.id);
       if (!liveContact || identityKey(liveContact) !== current.identity_hash) {
@@ -473,6 +481,7 @@ function createTouchWorkflow(options = {}) {
       }
       if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器", null, TOUCH_WORKFLOW_REASON_CODES.executorUnavailable);
       if (!current.message) {
+        markPrepare("copy_started");
         reportProgress({ stage: "draft_generation", partKind: "text", partIndex: 1 });
         let draft;
         try {
@@ -496,6 +505,7 @@ function createTouchWorkflow(options = {}) {
         current.send_attempted = false;
         persist();
       }
+      markPrepare("copy_ready");
       if (!enabled()) return response("pending");
       const lock = coordinator?.acquire({ state: "touching", taskId: id, account: task.wechat_account_id, phase: "workflow:touch" });
       if (!lock?.ok || !lock.lock?.owner) return response("pending", {
@@ -527,6 +537,12 @@ function createTouchWorkflow(options = {}) {
       persist();
       let result;
       const verifiedPartsBefore = new Set(current.message_parts?.flatMap((part, partIndex) => part.status === "sent_verified" ? [partIndex] : []) || []);
+      markPrepare("send_ready");
+      try {
+        const slow = prepareMarks.send_ready_ms >= TOUCH_PREPARE_SLOW_MS;
+        diagnostics().event("active_touch", "prepare_timing", { task_id: id, current_index: index, ...prepareMarks },
+          { level: slow ? "warn" : "info", code: slow ? "touch_prepare_slow" : "" });
+      } catch { /* Diagnostics never stop the task. */ }
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? index) || 0)}`;
       const sendStartedAt = now().getTime();
