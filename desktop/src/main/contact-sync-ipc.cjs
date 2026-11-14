@@ -40,9 +40,12 @@ function readJsonFile(filePath, fallback) {
 function currentWechatIdentity(state, settings, contacts = []) {
   const stableId = String(state?.account_name || "").trim();
   if (!stableId) return null;
-  const ownWxid = stableId.match(/^(wxid_[^_]+)/u)?.[1] || stableId;
+  // The account folder is "<username>_<4 hex>". A custom WeChat ID account has no "wxid_" prefix,
+  // so the old wxid-only rule kept the suffix, never found the own row and showed 「微信用户」 with no
+  // avatar (field 2026-11-14). Same rule as the message receipts (shared wechat-db helper).
+  const ownWxid = require("../../rpa/wechat_db/wechat-db.cjs").selfUsernameOf(stableId);
   const ownContact = Array.isArray(contacts)
-    ? contacts.find((contact) => String(contact?.wxid || contact?.id || "").trim() === ownWxid)
+    ? contacts.find((contact) => [ownWxid, stableId].includes(String(contact?.wxid || contact?.id || "").trim()))
     : null;
   const root = String(settings?.wechatRoot || state?.wechat_root || "").trim();
   const accountDir = root ? path.join(root, stableId) : "";
@@ -67,7 +70,9 @@ function currentWechatIdentity(state, settings, contacts = []) {
     account_id: stableId,
     nickname: String(state?.wechat_nickname || ownContact?.nickname || ownContact?.name || "微信用户"),
     avatar_url: avatarDataUrl || remoteAvatar,
-    synced_at: String(state?.last_synced_at || "")
+    synced_at: String(state?.last_synced_at || ""),
+    own_contact_found: Boolean(ownContact),
+    folder_kind: /^wxid_/u.test(stableId) ? "wxid" : "custom"
   };
 }
 
@@ -198,6 +203,9 @@ function executeContactSync(args) {
         wechat_root_configured: Boolean(settings.wechatRoot || result?.state?.wechat_root),
         identity_nickname_specific: !["", "微信用户"].includes(identity?.nickname || ""),
         identity_avatar_available: Boolean(identity?.avatar_url),
+        // Whether the own row was found and what kind of account folder it was (no names or IDs).
+        identity_own_contact_found: identity?.own_contact_found === true,
+        identity_folder_kind: identity?.folder_kind || "",
         contact_count: Array.isArray(result?.contacts) ? result.contacts.length : Number(result?.state?.contact_count) || 0,
         process_pid: child.pid || 0,
         exit_code: exitCode,
@@ -303,4 +311,4 @@ function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator, withProg
   });
 }
 
-module.exports = { registerContactSyncIpc };
+module.exports = { registerContactSyncIpc, currentWechatIdentity };
