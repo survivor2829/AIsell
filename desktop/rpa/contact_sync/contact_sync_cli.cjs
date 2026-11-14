@@ -559,7 +559,9 @@ function wxidFromAccountDir(accountDir) {
   const name = path.basename(accountDir);
   const wxid = name.match(/^(wxid_[^_]+)/u)?.[1];
   if (wxid) return wxid;
-  return /^[A-Za-z0-9_-]+_[0-9a-f]{4}$/u.test(name) ? name.replace(/_[0-9a-f]{4}$/u, "") : "";
+  // A non-wxid name counts only when it holds WeChat's db_storage (never a "Backup_2025" copy).
+  return /^[A-Za-z0-9_-]+_[0-9a-f]{4}$/u.test(name) && fs.existsSync(path.join(accountDir, "db_storage"))
+    ? name.replace(/_[0-9a-f]{4}$/u, "") : "";
 }
 
 function fileMtime(filePath) {

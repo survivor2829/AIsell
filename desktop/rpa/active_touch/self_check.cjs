@@ -3490,12 +3490,10 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
 `, {}, { ensure: false, timeout: 5_000 });
   assert.deepEqual(composerPointResult, { ok: true, sharedPointVerified: true });
 
-  // Field 2026-11-14 (1.3.8): with WeChat's 搜一搜 side panel open, the picture's send-button point
-  // sampled the panel, so a landed paste was judged ignored. Execute the point helper against fake
-  // windows (no WeChat): a WeChatAppEx child at the right moves the point to the chat panel's edge.
   // Field 2026-11-14: a custom WeChat ID account folder ("<username>_<4 hex>", no "wxid_") was never
   // found by the send's account check, so every send would stop with wechat_account_directory_missing.
-  // Execute the script's own folder filter against real folders.
+  // Only the synced account itself is added, so an old custom-ID folder or a backup copy can never make
+  // a working wxid PC look ambiguous. Execute the script's own folder filter against real folders.
   {
     const devDriverSource = fs.readFileSync(require.resolve("./wechat_window_driver.dev.cjs"), "utf8");
     const filterStart = devDriverSource.indexOf("Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object {");
@@ -3504,16 +3502,24 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
       .replace("Get-ChildItem -LiteralPath $root", "Get-ChildItem -LiteralPath $env:XIAOXI_TEST_ROOT");
     const folderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-account-folders-"));
     try {
-      for (const name of ["wxid_abc123_cd34", "wxid_old", "all_users", "Backup_2025"]) fs.mkdirSync(path.join(folderRoot, name));
-      fs.mkdirSync(path.join(folderRoot, "custom_id9_ab12", "db_storage"), { recursive: true });
-      const listed = (await runPowerShellAsync(`@{ names = @(${filterText} | ForEach-Object { $_.Name } | Sort-Object) } | ConvertTo-Json -Compress`,
-        { XIAOXI_TEST_ROOT: folderRoot }, { ensure: false, timeout: 10_000 }))?.names;
-      assert.deepEqual(listed, ["custom_id9_ab12", "wxid_abc123_cd34", "wxid_old"],
-        "wxid folders as before, a custom ID folder with db_storage, never all_users or a Backup_2025 folder");
+      for (const name of ["wxid_abc123_cd34", "wxid_old", "all_users"]) fs.mkdirSync(path.join(folderRoot, name));
+      for (const name of ["custom_id9_ab12", "oldcustom_ef56", "Backup_2025"]) fs.mkdirSync(path.join(folderRoot, name, "db_storage"), { recursive: true });
+      const list = async (expected) => (await runPowerShellAsync(
+        `$expectedAccountId = $env:XIAOXI_TEST_EXPECTED; @{ names = @(${filterText} | ForEach-Object { $_.Name } | Sort-Object) } | ConvertTo-Json -Compress`,
+        { XIAOXI_TEST_ROOT: folderRoot, XIAOXI_TEST_EXPECTED: expected }, { ensure: false, timeout: 10_000 }))?.names;
+      assert.deepEqual(await list("wxid_abc123_cd34"), ["wxid_abc123_cd34", "wxid_old"],
+        "a wxid PC counts exactly the wxid folders as before, never an old custom-ID folder or a backup");
+      assert.deepEqual(await list(""), ["wxid_abc123_cd34", "wxid_old"], "no synced account: unchanged");
+      assert.deepEqual(await list("custom_id9_ab12"), ["custom_id9_ab12", "wxid_abc123_cd34", "wxid_old"],
+        "a custom WeChat ID account finds its own folder, and only that one");
     } finally {
       fs.rmSync(folderRoot, { recursive: true, force: true });
     }
   }
+
+  // Field 2026-11-14 (1.3.8): with WeChat's 搜一搜 side panel open, the picture's send-button point
+  // sampled the panel, so a landed paste was judged ignored. Execute the point helper against fake
+  // windows (no WeChat): a WeChatAppEx child at the right moves the point to the chat panel's edge.
   const { WECHAT_SEND_BUTTON_OFFSETS } = require("./wechat_window_driver.dev.cjs");
   const sendPointMatch = imageScript.match(/function Get-SendButtonPoint[\s\S]*?(?=function Test-SendButtonActive)/u);
   assert.ok(sendPointMatch, "the image script keeps Get-SendButtonPoint right before Test-SendButtonActive");
