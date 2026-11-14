@@ -92,7 +92,7 @@ export function ProductVideoPage() {
   const quote = selected?.quote;
   const withinBudget = quote?.ready && Number(quote.maximumCny) <= Number(quote.budgetCny);
   return <div className="product-video-page">
-    <header className="pv-header"><div><h1>产品效果视频</h1><p>一张产品图，配上卖点，让客户看到现场使用效果。</p></div></header>
+    <header className="pv-header"><div><h1>场景效果视频</h1><p>一张产品图，配上卖点，让客户看到现场使用效果。</p></div></header>
     <ExampleBanner topic="product-video" />
     <CreationSteps labels={['上传产品资料', '选择画面', '确认制作']} current={step} onChange={setStep} disabled={[!!busy, !draft.imageId || !!busy, !selected || !!busy]} />
     <div className={`pv-layout${step === 2 ? ' is-confirming' : ''}`}><section className="pv-panel" hidden={step === 2}>

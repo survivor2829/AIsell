@@ -651,8 +651,6 @@
 /* 员工首页（用户 2026-11-05）：一屏看完、不留白、字大字粗。
    上：左人物、右视频（没有视频的员工右边放能做的事）；中：能做的事一整行；下：接下来做什么 + 数字并排。 */
 .agent-home { display: flex; flex-direction: column; gap: clamp(10px, 1.4vh, 18px); padding: 8px 28px 16px; }
-/* 上面有「返回上一级」（上边距 14 + 高 46）时，首页只撑满剩下的高度，否则永远要多滑这一截。 */
-.module-return ~ .agent-home { min-height: calc(100% - 60px); }
 .agent-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .agent-status-row .agent-personalize { margin: 0; }
 .agent-home-top { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(320px, 1fr); gap: 26px; align-items: center; }

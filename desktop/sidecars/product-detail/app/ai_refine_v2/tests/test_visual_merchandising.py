@@ -102,6 +102,36 @@ def test_more_than_fifteen_text_pages_are_selected_without_image_calls():
     assert all("prompt" not in p for p in plan["deferred_pages"])
 
 
+@pytest.mark.parametrize("category,limit", [("设备类", 15), ("配件类", 8), ("耗材类", 8), ("工具类", 8)])
+def test_compact_categories_cap_the_set_at_eight_screens(category, limit):
+    # 配件、耗材、工具资料有限，多出来的页只留文字，不提交生图（用户 2026-11-13）。
+    source, data = fixture(category)
+    data["pages"] = [{**copy.deepcopy(data["pages"][0]), "title": f"部件展示{i}"} for i in range(20)]
+    plan = compile_plan(data, source, "测试产品", category, buyer_value=True)
+    assert plan["screen_count"] == limit
+    assert plan["screen_budget"]["maximum_total_screens"] == limit
+    assert plan["screens"][-1]["role"] == "spec_table"
+    assert len(plan["deferred_pages"]) == 20 - (limit - 2)
+    assert all("prompt" not in p for p in plan["deferred_pages"])
+
+
+@pytest.mark.parametrize("category", ["配件类", "耗材类", "工具类"])
+def test_compact_categories_accept_a_short_set_and_tell_the_model(category):
+    source, data = buyer_draft(category)
+    data["pages"] = data["pages"][:2]
+    assert compile_plan(data, source, "", category, buyer_value=True)["screen_count"] == 4
+    first, review = Mock(return_value=response(data)), Mock(return_value=response(data))
+    planner.plan_v2(source, api_key="offline", http_fn=first, semantic_http_fn=review,
+                    require_buyer_value=True, product_category=category)
+    for call in (first, review):
+        system = call.call_args.args[0]["messages"][0]["content"]
+        assert system.rstrip().endswith("程序只保留文字。") and "最多8屏" in system
+    device_source, device = buyer_draft("设备类")
+    device["pages"] = device["pages"][:2]
+    with pytest.raises(ValueError, match="至少8屏"):
+        compile_plan(device, device_source, "", "设备类", buyer_value=True)
+
+
 def test_person_scene_is_kept_inside_the_screen_cap():
     source, data = fixture()
     pages = [{**copy.deepcopy(data["pages"][0]), "title": f"部件展示{i}"} for i in range(20)]
@@ -180,8 +210,14 @@ def test_buyer_policy_eight_total_pages_and_existing_two_operations(category):
     plan = planner.plan_v2(source, api_key="offline", http_fn=first, semantic_http_fn=review,
                           require_buyer_value=True, product_category=category)
     sent = json.loads(review.call_args.args[0]["messages"][1]["content"])
-    assert sent["screen_budget"]["minimum_total_screens"] == 8
-    assert "至少8屏" in sent["local_issues_to_correct"]
+    if category == "设备类":
+        assert sent["screen_budget"]["minimum_total_screens"] == 8
+        assert "至少8屏" in sent["local_issues_to_correct"]
+    else:
+        # 配件、耗材、工具不设最低数量，最多8屏（用户 2026-11-13）。
+        assert sent["screen_budget"]["minimum_total_screens"] == 1
+        assert sent["screen_budget"]["maximum_total_screens"] == 8
+        assert "local_issues_to_correct" not in sent
     assert plan["screen_count"] == 8 and plan["selling_points"] == []
     assert plan["buyer_value_version"] == "buyer-value-v1"
     assert first.call_count == review.call_count == 1

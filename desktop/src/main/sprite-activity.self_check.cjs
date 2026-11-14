@@ -84,7 +84,7 @@ assert.equal(acquisitionActivity("cloud:update", {}), undefined, "别的消息�
   assert.equal(pushedActivity("moments-publish:update", { status: "publishing" }).title, "正在发朋友圈");
   assert.equal(pushedActivity("moments-publish:update", { status: "outcome_unknown" }), null, "结果不明不显示成还在发");
   assert.equal(pushedActivity("moments-campaign:update", { status: "running", current_post: 3 }).detail, "第 3 条");
-  assert.equal(serviceActivity("正在做产品效果视频", [{ status: "generating", statusLabel: "生成镜头", progress: 30 }]).detail, "生成镜头");
+  assert.equal(serviceActivity("正在做场景效果视频", [{ status: "generating", statusLabel: "生成镜头", progress: 30 }]).detail, "生成镜头");
   for (const row of SPRITE_FEATURES) if (row.channel) assert.notEqual(pushedActivity(row.channel, {}), undefined, row.feature + " 登记了消息却没有处理");
   const registered = new Set(SPRITE_FEATURES.map((row) => row.channel).filter(Boolean));
   const sent = new Set(), computed = new Set();

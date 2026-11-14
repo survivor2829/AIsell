@@ -113,7 +113,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryTarget: "workspace",
     capabilities: [
       { key: "workspace", label: "线索视频混剪", description: "把零散素材，做成讲清卖点的获客短视频", icon: Clapperboard },
-      { key: "product-video", label: "产品效果视频", description: "一张产品图，配上卖点，让客户看到现场使用效果", icon: Video },
+      { key: "product-video", label: "场景效果视频", description: "一张产品图，配上卖点，让客户看到现场使用效果", icon: Video },
       { key: "finished", label: "成片中心", description: "查看成片，导出给客户", icon: Folder },
       { key: "ai-video", label: "数字人视频", description: "上传您的出镜视频，让数字分身替您讲产品", icon: UserRound }
     ]

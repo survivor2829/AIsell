@@ -7,7 +7,7 @@ import './VideoExamples.css';
 
 export const VIDEO_EXAMPLES = [
   { topic: 'ai-editing', title: '学完觉得没用怎么办', module: '线索视频混剪', file: 'lead-mix', duration: '51秒' },
-  { topic: 'product-video', title: '普渡 CC1 Pro', module: '产品效果视频', file: 'cc1-pro', duration: '30秒' }
+  { topic: 'product-video', title: '普渡 CC1 Pro', module: '场景效果视频', file: 'cc1-pro', duration: '30秒' }
 ] as const;
 // 微信拓客各子模块的操作实录（宽屏，客户名单和号码已打码），教程分类为 wechat。
 export const WECHAT_DEMOS = [
@@ -172,7 +172,7 @@ export function ExampleBanner({ topic }: { topic: VideoExample['topic'] }) {
 }
 
 // 员工首页右边（微信拓客 用户 2026-11-05，精准获客 用户 2026-11-09）：三段真实操作录屏轮流播放（2 倍速、无声），
-// 上面的标签可以点着切换，点画面放大看（带声音）。只在画面露出来、窗口在前台时播放。
+// 上面的标签可以点着切换，点画面放大看（精准获客的带讲解声音，微信录屏本身无声）。只在画面露出来、窗口在前台时播放。
 function DemoReel({ demos, label }: { demos: readonly VideoExample[]; label: string }) {
   const [index, setIndex] = useState(0);
   const [enlarged, setEnlarged] = useState<VideoExample | null>(null);
@@ -210,6 +210,12 @@ function DemoReel({ demos, label }: { demos: readonly VideoExample[]; label: str
     <p className="wechat-demo-caption"><b>{current.module}</b>{current.title}</p>
     {enlarged && <ExamplePlayer example={enlarged} onClose={() => setEnlarged(null)} />}
   </section>;
+}
+
+// 页面页头里的操作录屏（用户 2026-11-13）：点了和首页一样弹出大窗播放，有讲解的带声音。
+export function DemoPlayer({ file, onClose }: { file: string; onClose: () => void }) {
+  const example = [...WECHAT_DEMOS, ...BUSINESS_DEMOS].find((demo) => demo.file === file);
+  return example ? <ExamplePlayer example={example} onClose={onClose} /> : null;
 }
 
 export function WechatDemoReel() { return <DemoReel demos={WECHAT_DEMOS} label="微信拓客" />; }

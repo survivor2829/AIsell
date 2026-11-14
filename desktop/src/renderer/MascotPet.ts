@@ -118,13 +118,15 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   const airScale = (host.clientWidth || 160) / AIR_REFERENCE;
   let drawnAir = 0, air = 0, vy = 0, facing = 1, walking = false, walkPhase = 0, track = true, asleep = false, dragging = false, destroyed = false;
   let token = 0, busy = false, currentName = "", work: PetWork = null, worked = false;
+  // Tucked into a side of the screen (user 2026-11-13): hidden behind the edge, peeking round it.
+  let tucked: "left" | "right" | null = null;
   let raf = 0, last = 0, awakeUntil = 0, lastDraw = 0, fps = 30, idleTimer = 0, blinkTimer = 0, sleepTimer = 0, lastIdle = "", clock = 0, lastCursorAt = performance.now();
   const timers = new Set<number>();
 
   function render() {
     if (air !== drawnAir) { drawnAir = air; host.style.transform = `translateY(${(-air * airScale).toFixed(1)}px)`; }
     E.root.setAttribute("transform", `translate(${S.bx.toFixed(1)} ${S.by.toFixed(1)}) rotate(${S.lean.toFixed(2)} 500 1215) translate(500 1215) scale(${S.sx.toFixed(3)} ${S.sy.toFixed(3)}) translate(-500 -1215)`);
-    E.shadow.setAttribute("opacity", clamp(.18 - air / 900, .04, .18).toFixed(3));
+    E.shadow.setAttribute("opacity", tucked ? "0" : clamp(.18 - air / 900, .04, .18).toFixed(3));
     E.shadow.setAttribute("transform", `translate(500 1222) scale(${clamp(1 - air / 700, .45, 1).toFixed(3)}) translate(-500 -1222)`);
     E.head.setAttribute("transform", `translate(${S.hx.toFixed(1)} ${S.hy.toFixed(1)}) rotate(${S.hr.toFixed(2)} 500 800)`);
     E.tuft.setAttribute("transform", `rotate(${S.tuft.toFixed(2)} 500 160)`);
@@ -236,9 +238,9 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       later(() => { if (!busy && !dragging) carryOn(); }, 3000);
     }
   }
-  function carryOn() { if (work) startWork(); else scheduleIdle(); }
+  function carryOn() { if (tucked) act("peekEdge"); else if (work) startWork(); else scheduleIdle(); }
 
-  const hoverFollow = new Set(["wave", "salute", "workLoop", "errorLoop", "done", "cool", "scratch", "dance", "sit", "walk"]);
+  const hoverFollow = new Set(["wave", "salute", "workLoop", "errorLoop", "done", "cool", "scratch", "dance", "sit", "walk", "peekEdge"]);
   const A: Record<string, Action> = {
     async wave(w) { face("normal", "open"); hand("R", "open"); talk(pick(["嗨～", "你好呀！", "我在这儿呢～"])); pop(); for (let i = 0; i < 5; i++) { go({ Rx: 945 + (i % 2) * 62, Ry: 560, Rr: i % 2 ? 18 : -16, Rb: 170, hr: i % 2 ? 3 : -3 }); await w(230); } },
     async salute(w) { hand("L", "open"); go({ Lx: 118, Ly: 330, Lr: 24, Lb: -430, hr: -4 }); pop(); await w(420); go({ by: -14, sy: 1.03 }); await w(900); go({ by: 0, sy: 1 }); },
@@ -304,6 +306,35 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
     async sleepy(w) { track = false; asleep = true; face("closed", "o"); go({ by: 112, sy: .96, fLx: 330, fLy: 1150, fRx: 670, fRy: 1150, fLr: -24, fRr: 24, Lx: 236, Ly: 1080, Rx: 764, Ry: 1080, hr: 7, hy: 24 }); for (;;) { fx(ZZ, 780, 260, 60); go({ hy: 30, hr: 9 }); await w(1900); go({ hy: 18, hr: 5 }); await w(1900); } },
     async wake(w) { asleep = false; face("wide", "o"); pop(1.2); hop(420); await w(420); face("happy", "big"); hand("R", "open"); talk(pick(["你回来啦！", "我刚刚没睡！", "想我了吗～"])); for (let i = 0; i < 4; i++) { go({ Rx: 945 + (i % 2) * 62, Ry: 560, Rr: i % 2 ? 18 : -16, Rb: 170 }); await w(220); } },
     async dizzy(w) { face("dizzy", "wave"); V.tuft += 240; talk("晕…晕了…"); for (let i = 0; i < 24; i++) { go({ lean: Math.sin(i * .55) * 8, hr: Math.sin(i * .55 + 1) * 9, bx: Math.sin(i * .55) * 18 }); await w(90); } go({ lean: 0, hr: 0, bx: 0 }); },
+    // Tucked into a side of the screen (user 2026-11-13「隐藏到右边…侧过身来看着你」): the body stays behind the
+    // screen edge, the head leans round it (about a third of the face shows), the near hand holds the edge and the
+    // eyes follow the pointer. Now and then it tilts its head, ducks back and peeks out again, waves or blushes.
+    // s points into the screen: -1 tucked on the right, 1 on the left (the window is mirrored there).
+    async peekEdge(w) {
+      if (!tucked) return;
+      const s = tucked === "left" ? 1 : -1, near: "L" | "R" = s < 0 ? "L" : "R";
+      const out = { bx: s * 80, lean: s * 12, by: 0, blush: .7, turn: s * .8, lx: s * 40 };
+      const holdHand = (lift = 0) => near === "L" ? go({ Lx: 320, Ly: 640 - lift, Lr: 24, Lb: -120 }) : go({ Rx: 680, Ry: 640 - lift, Rr: -24, Rb: 120 });
+      hand(near, "open"); face("normal", "smile"); go(out); holdHand();
+      const peekX = 500 + s * 420;
+      for (;;) {
+        await w(rnd(3200, 6500));
+        const roll = Math.random();
+        if (roll < .3) { go({ hr: s * 12 }); await w(900); go({ hr: s * -4 }); await w(700); go({ hr: 0 }); }
+        else if (roll < .55) {
+          go({ bx: s * 10, lean: s * 3 }); face("closed", "smile"); await w(rnd(900, 1600));
+          face("wide", "o"); go(out); pop(.6); fx(ASK, peekX, 230, s * 20); await w(600); face("normal", "smile");
+        }
+        else if (roll < .8) { for (let i = 0; i < 4; i++) { holdHand(i % 2 ? 40 : 110); await w(220); } holdHand(); }
+        else { face("happy", "smile"); go({ blush: 1 }); fx(HEART, peekX, 260, s * 30); await w(1400); face("normal", "smile"); go({ blush: .7 }); }
+      }
+    },
+    // Leaning out of its hiding place under the pointer: caught.
+    async spotted(w) {
+      face("wide", "o"); pop(1.2); V.tuft += 200; fx(BANG, 840, 190, 30); await w(380);
+      face("happy", "big"); hand("R", "open"); talk(pick(["被你发现啦～", "嘿嘿，我在这儿～", "找我有事吗？"]));
+      for (let i = 0; i < 4; i++) { go({ Rx: 945 + (i % 2) * 62, Ry: 560, Rr: i % 2 ? 18 : -16, Rb: 170 }); await w(220); }
+    },
     async look(w) { track = false; go({ lx: -46, hr: -6, turn: -.6 }); await w(800); go({ lx: 46, hr: 6, turn: .6 }); await w(800); go({ lx: 0, hr: 0, turn: 0 }); fx(ASK, 780, 220, 10); await w(500); },
     // The work acts run in bursts: a task can last all night and this must not cost a CPU core.
     async workLoop(w) {
@@ -341,13 +372,13 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
       for (;;) { for (let i = 0; i < 16; i++) { go({ bx: (i % 2 ? 1 : -1) * 7, hr: i % 2 ? 2 : -2 }); await w(120); } go({ bx: 0, hr: -2 }); await w(rnd(6000, 9000)); }
     }
   };
-  const act = (name: string) => { asleep = name === "sleepy"; fps = ["sleepy", "workLoop", "typingLoop", "drawingLoop", "errorLoop"].includes(name) ? 30 : 60; return play(name, A[name], hoverFollow.has(name)); };
+  const act = (name: string) => { asleep = name === "sleepy"; fps = ["sleepy", "peekEdge", "workLoop", "typingLoop", "drawingLoop", "errorLoop"].includes(name) ? 30 : 60; return play(name, A[name], hoverFollow.has(name)); };
 
   function startWork() { act(work === "typing" ? "typingLoop" : work === "drawing" ? "drawingLoop" : work === "error" ? "errorLoop" : "workLoop"); }
   function scheduleIdle() {
     window.clearTimeout(idleTimer);
     idleTimer = window.setTimeout(() => {
-      if (busy || dragging || work || destroyed) return;
+      if (busy || dragging || work || tucked || destroyed) return;
       const pool = IDLE_ACTIONS.filter(([name]) => name !== lastIdle);
       let roll = Math.random() * pool.reduce((sum, item) => sum + item[1], 0), chosen = pool[0][0];
       for (const [name, weight] of pool) { roll -= weight; if (roll <= 0) { chosen = name; break; } }
@@ -362,7 +393,7 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
   }
   function sleepCheck() {
     sleepTimer = window.setTimeout(() => {
-      if (!asleep && !work && !dragging && performance.now() - lastCursorAt > SLEEP_AFTER_MS) act("sleepy");
+      if (!asleep && !work && !tucked && !dragging && performance.now() - lastCursorAt > SLEEP_AFTER_MS) act("sleepy");
       sleepCheck();
     }, 5000);
   }
@@ -381,11 +412,21 @@ export function createMascotPet(host: HTMLElement, hooks: PetHooks) {
     setWork(next: PetWork) {
       if (next === work) return;
       work = next;
-      if (!next) { worked = false; if (!dragging) { token++; busy = false; currentName = ""; fps = 30; resetLook(); restPose(); track = true; scheduleIdle(); } return; }
-      if (!dragging && !["poke", "giggle", "annoyed", "petted", "dizzy"].includes(currentName)) startWork();
+      if (!next) { worked = false; if (!dragging) { token++; busy = false; currentName = ""; fps = 30; resetLook(); restPose(); track = true; carryOn(); } return; }
+      if (!dragging && !tucked && !["poke", "giggle", "annoyed", "petted", "dizzy"].includes(currentName)) startWork();
     },
-    celebrate() { if (!dragging) act("done"); },
-    oops() { if (!dragging && !work) act("oops"); },
+    celebrate() { if (!dragging && !tucked) act("done"); },
+    oops() { if (!dragging && !work && !tucked) act("oops"); },
+    // The main process tucks it into a side of the screen and brings it out under the pointer.
+    setDock(side: "left" | "right" | null, revealed: boolean) {
+      const next = side && !revealed ? side : null, was = tucked;
+      if (next === was) return;
+      tucked = next;
+      if (dragging) return; // Let go, it carries on in whatever place it ended up.
+      if (next) { act("peekEdge"); return; }
+      if (side) { act("spotted"); return; }
+      token++; busy = false; currentName = ""; fps = 30; resetLook(); restPose(); track = true; carryOn();
+    },
     cursor(x: number, y: number) {
       if (Math.abs(x - lastCursor.x) + Math.abs(y - lastCursor.y) < 3) return;
       lastCursor = { x, y }; lastCursorAt = performance.now();

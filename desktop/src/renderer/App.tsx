@@ -280,7 +280,7 @@ const agentSecondary: NavItem[] = [
 
 const productionChildren: NavItem[] = [
   { key: "workspace", label: "线索视频混剪", icon: Clapperboard },
-  { key: "product-video", label: "产品效果视频", icon: Video },
+  { key: "product-video", label: "场景效果视频", icon: Video },
   { key: "ai-video", label: "数字人视频", icon: UserRound }
 ];
 

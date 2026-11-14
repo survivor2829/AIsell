@@ -32,7 +32,7 @@ const VIDEO_KINDS = [
   [/analysis/, "正在看你的素材"],
   [/cover/, "正在给视频做封面"],
   [/packaging/, "正在给视频做包装"],
-  [/^product_/, "正在做产品效果视频"],
+  [/^product_/, "正在做场景效果视频"],
   [/course/, "正在做课程视频"],
   [/./, "正在做视频"]
 ];
@@ -139,7 +139,7 @@ const SPRITE_FEATURES = [
   { feature: "手机矩阵", source: "onActivity" },
   { feature: "短视频成片", source: "poll: content engine" },
   { feature: "产品详情图", source: "poll: /internal/refine-activity" },
-  { feature: "产品效果视频", source: "poll: product video service" },
+  { feature: "场景效果视频", source: "poll: product video service" },
   { feature: "本人口播", source: "poll: reference human service" },
   { feature: "GEO推广", channel: "geo:update" },
   { feature: "爆款文案扒取", channel: "digital-human:viral-progress" },

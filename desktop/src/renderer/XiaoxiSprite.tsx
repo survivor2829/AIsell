@@ -63,6 +63,8 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
     return off;
   }, [api]);
   const tucked = Boolean(dock.side) && !dock.revealed;
+  // Tucked it hides behind the screen edge and peeks round it; leaning out under the pointer it is caught.
+  useEffect(() => { pet.current?.setDock(dock.side, dock.revealed); }, [dock.side, dock.revealed]);
   // What the pet says for fun must never cover the live state of the work.
   const quiet = useRef(true);
   quiet.current = !activity && !alert && !greeting && !line?.mood;
