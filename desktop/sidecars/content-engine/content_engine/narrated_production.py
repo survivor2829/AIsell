@@ -611,6 +611,11 @@ def rewrite_variation(domain, batch, selected):
     length = domain._spoken_char_count(source)
     minimum = max(math.ceil(length * .85), domain._minimum_spoken_chars(batch))
     maximum = max(minimum, math.floor(length * 1.15))
+    # The model aims at 85-115%. A somewhat shorter rewrite still fits the footage and
+    # the customer's minimum duration, so it is accepted down to 75% instead of skipping
+    # the video (2026-11-13: 137 chars against 138 skipped a whole video after three
+    # tries). Longer stays strict: a long voice can outrun the footage.
+    accepted_minimum = max(math.ceil(length * .75), domain._minimum_spoken_chars(batch))
     earlier = [c for c in batch['candidates']
                if c.get('source_script_id') == selected['script_id'] and c.get('narration') != source]
     previous = [source] + [c['narration'] for c in earlier]
@@ -636,7 +641,7 @@ def rewrite_variation(domain, batch, selected):
         if not isinstance(narration, str) or not narration.strip() or len(narration) > 2400:
             return 'narration须为1至2400字的完整口播。'
         count = domain._spoken_char_count(narration)
-        if not minimum <= count <= maximum:
+        if not accepted_minimum <= count <= maximum:
             return f'narration实际{count}字（不计空白），须在{minimum}至{maximum}字之间。'
         if any(SequenceMatcher(None, compact(narration), compact(text), autojunk=False).ratio() > .9 for text in previous):
             return '与原文或已有改写过于相似；请换开头、表达和段落顺序。'
@@ -1125,7 +1130,8 @@ def run_production(domain, task_id, batch):
                 domain._render_candidate(task_id, batch, candidate, job['production_index'] - 1, len(jobs))
                 if candidate.get('status') != 'completed':
                     raise ContentEngineError(candidate.get('error_code') or 'narrated_render_incomplete',
-                                             candidate.get('error') or '本条尚未完成。')
+                                             candidate.get('error') or '本条尚未完成。',
+                                             details=candidate.get('error_details') or None)
                 job['status'] = 'completed'
                 job.pop('error', None)
                 job.pop('error_code', None)

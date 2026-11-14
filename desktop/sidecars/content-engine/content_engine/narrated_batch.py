@@ -5022,6 +5022,10 @@ class NarratedBatchDomain:
                     self.db.execute("UPDATE content_tasks SET status='analyzing',error_code=NULL,error_message=NULL WHERE id=? AND status='paused' AND error_code=?", (task_id, code))
         except ContentEngineError as error:
             c.update(status="failed", error=error.message, error_code=error.code)
+            if error.details:
+                c["error_details"] = error.details  # Measured values for the failure journal.
+            else:
+                c.pop("error_details", None)
             if ("unknown" in error.code or error.code == "provider_unreachable"
                     or error.code.startswith(("cloud_", "auto_mix_voice_", "auto_mix_music_"))):
                 b["status"] = "outcome_unknown" if "unknown" in error.code else "needs_attention"

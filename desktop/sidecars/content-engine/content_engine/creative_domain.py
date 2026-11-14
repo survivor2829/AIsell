@@ -178,7 +178,16 @@ def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=
                     next_states[end] = score
         states = next_states
         if not states:
-            raise ContentEngineError("narrated_copy_too_long", "实际配音超过全部画面的可用时长。")
+            # Field evidence (2026-11-13 had none): how far the measured voice
+            # outran the footage decides between replaying shots and planning slower.
+            raise ContentEngineError("narrated_copy_too_long", "实际配音超过全部画面的可用时长。", details={
+                "failed_phrase_index": phrase_index, "phrase_count": phrase_count,
+                "segment_count": segment_count, "pause_ms": pause_ms,
+                "voice_ms": sum(required), "footage_ms": prefix[-1],
+                "shortfall_ms": sum(required) - prefix[-1],
+                "phrase_required_ms": required[:40],
+                "phrase_chars": [len("".join(str(p.get("text") or "").split())) for p in phrases][:40],
+                "segment_ms": durations[:80]})
 
     boundaries = states[segment_count][2]
     start = 0
