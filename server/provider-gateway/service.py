@@ -49,6 +49,9 @@ PREFIX = "/v1/provider-gateway"
 # Account administration lives outside PREFIX: the public maintenance proxy only forwards
 # PREFIX + "/", so these routes are reachable on the server's loopback only.
 ADMIN_PREFIX = "/v1/accounts-admin"
+# The APIMart route check is for the operator's daily report only: like ADMIN_PREFIX it sits outside
+# PREFIX, so the public proxy never forwards it and the node's state is not published.
+APIMART_ROUTE_STATUS = "/v1/gateway-internal/apimart-route"
 # Clients from this version on keep the device token an account login returns; older clients only
 # know license codes and must never take the device binding away from an updated computer.
 ACCOUNT_CLIENT_VERSION = (1, 2, 15)
@@ -392,6 +395,10 @@ class GatewayConfig:
             billing_prices=json.loads(env.get("XIAOXI_GATEWAY_BILLING_PRICES_JSON", "{}")),
         )
 
+    def apimart_opener(self):
+        """The one choice of APIMart route, shared by customer calls and the route probe."""
+        return self.apimart_open if self.apimart_open is not None else self.upstream_open
+
     def __post_init__(self):
         self.keys = {str(key): str(value or "").strip() for key, value in (self.keys or {}).items()}
         self.upstream_timeout_seconds = _bounded_timeout(self.upstream_timeout_seconds)
@@ -698,6 +705,8 @@ BUSY_REPLY = (b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/js
               b"X-Xiaoxi-Error-Origin: gateway_transport\r\nX-Xiaoxi-Request-Not-Sent: 1\r\nRetry-After: 3\r\n"
               b"Connection: close\r\nContent-Length: " + str(len(_BUSY_BODY)).encode() + b"\r\n\r\n" + _BUSY_BODY)
 GATEWAY_SLOTS = 48
+APIMART_ROUTE_PROBE_INTERVAL_SECONDS = 300
+APIMART_ROUTE_PROBE_TIMEOUT_SECONDS = 15
 RATE_LIMITS = (("global", 1200), ("address", 240))
 
 
@@ -724,6 +733,51 @@ class GatewayServer(ThreadingHTTPServer):
         self.billing = Billing(self.receipts.db, self.receipts.lock, markup=config.billing_markup,
                                grant_points=config.billing_grant_points, prices=merge_prices(config.billing_prices))
         self.material_search = MaterialSearch((config.receipt_db_path + ".materials") if config.receipt_db_path and config.receipt_db_path != ":memory:" else ":memory:")
+        # Whether the APIMart route (the fixed outbound node when one is set) answers at all. Filled by
+        # the background probe; requests never trigger a probe, so a busy health endpoint costs nothing.
+        self.apimart_route_lock = threading.Lock()
+        self.apimart_route = {"state": "unchecked", "checked_at": 0}
+
+    def probe_apimart_route(self):
+        """One keyless request along the same route as customer image calls. A 2xx-4xx answer (no key,
+        unknown path) or a rejected redirect proves the node and APIMart answer; a 5xx (APIMart or its
+        edge failing) or a transport failure is unreachable. No key or session is sent: never billed."""
+        request = Request(self.config.origins["apimart"] + "/v1/models",
+                          headers={"User-Agent": "xiaoxi-route-check/1.0", "Accept": "application/json"})
+        error = ""
+        try:
+            with self.config.apimart_opener()(request, timeout=APIMART_ROUTE_PROBE_TIMEOUT_SECONDS):
+                pass
+        except HTTPError as answer:
+            answer.close()
+            if int(answer.code or 0) >= 500:
+                error = "http_" + str(int(answer.code))
+        except Exception as failure:
+            reason = getattr(failure, "reason", None)
+            if str(reason) != "provider_redirect_rejected":
+                # The kind only: exception text can carry the proxy URL and its password.
+                error = type(failure).__name__ + ("." + type(reason).__name__ if isinstance(reason, BaseException) else "")
+        state = "unreachable" if error else "ok"
+        result = {"state": state, "checked_at": int(time.time())}
+        if error:
+            result["error"] = error[:64]
+        with self.apimart_route_lock:
+            self.apimart_route = result
+        return result
+
+    def apimart_route_status(self):
+        with self.apimart_route_lock:
+            return dict(self.apimart_route)
+
+    def start_apimart_route_probe(self, interval=APIMART_ROUTE_PROBE_INTERVAL_SECONDS):
+        def loop():
+            while True:
+                try:
+                    self.probe_apimart_route()
+                except Exception:
+                    pass
+                time.sleep(interval)
+        threading.Thread(target=loop, name="apimart-route-probe", daemon=True).start()
 
     def issue_admin_ticket(self, subject):
         """Proof the password was typed recently. Memory only: a restart just asks for it again."""
@@ -1885,9 +1939,7 @@ class Handler(BaseHTTPRequestHandler):
             })
 
         try:
-            upstream_open = self.config.upstream_open
-            if provider == "apimart" and self.config.apimart_open is not None:
-                upstream_open = self.config.apimart_open
+            upstream_open = self.config.apimart_opener() if provider == "apimart" else self.config.upstream_open
             response = upstream_open(
                 operation,
                 timeout=self.config.upstream_timeout_seconds,
@@ -2389,6 +2441,8 @@ class Handler(BaseHTTPRequestHandler):
                 {"X-Xiaoxi-Error-Origin": "gateway_rate_limit", "Retry-After": str(limit["retry_after"])},
             )
         route = urlsplit(self.path).path
+        if route == APIMART_ROUTE_STATUS:
+            return self._reply_json(200, {"apimart_route": self.server.apimart_route_status()})
         if route == PREFIX + "/account":
             subject = self._session_subject()
             account = self.server.accounts.by_subject(subject) if subject else None
@@ -2516,6 +2570,7 @@ def main():
     config.receipt_db_path = "/var/lib/ai-provider-gateway/operation-receipts.sqlite3"
     config.viral_library_path = "/var/lib/ai-provider-gateway/viral-library.json"
     server = GatewayServer((args.host, args.port), Handler, config)
+    server.start_apimart_route_probe()
     server.serve_forever()
 
 
