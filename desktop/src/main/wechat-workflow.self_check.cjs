@@ -1462,6 +1462,8 @@ async function checkRetryAndContinueIpc() {
       task.status = rowFor(task).status;
       if (rowFor(task).accountName) task.accountName = rowFor(task).accountName;
       if (task.status === "completed") task.progress = { done: 1, total: 1 };
+      // Stopped for attention today (as the workflow now records it), unless a row says otherwise.
+      if (task.status === "needs_attention" && rowFor(task).attentionAt !== null) task.attentionAt = rowFor(task).attentionAt || new Date().toISOString();
     }
     fs.writeFileSync(stateFile, JSON.stringify(stored));
     const control = registerWechatWorkflowIpc({ ...options, getMainWindow: () => mainWindow,
@@ -1500,6 +1502,14 @@ async function checkRetryAndContinueIpc() {
     assert.equal(prevented, true);
     assert.equal(test.mainShowCount(), 1, "a floating-window log failure must still return to the main window");
   } finally { await test.close(); }
+
+  for (const [label, attentionAt] of [["left from before this rule", null], ["stopped yesterday", new Date(Date.now() - 36 * 3600_000).toISOString()]]) {
+    test = await fixture([{ title: "old-attention", status: "needs_attention", retryable: true, attentionAt }], { reply: true });
+    try {
+      await test.control.start(); await test.control.tick();
+      assert.equal(test.control.status().phase, "listening", `a touch ${label} never switches off reception`);
+    } finally { await test.close(); }
+  }
 
   test = await fixture([{ title: "listen", status: "needs_attention", retryable: true }], { reply: true });
   try {
@@ -1867,6 +1877,7 @@ async function checkFailedRetryRecoveryGuards() {
       const row = rowFor(task);
       task.status = row.status;
       if (row.status === "completed") task.progress = { done: 1, total: 1 };
+      if (row.status === "needs_attention" && row.attentionAt !== null) task.attentionAt = row.attentionAt || new Date().toISOString();
       if (row.accountName) task.accountName = row.accountName;
     }
     fs.writeFileSync(stateFile, JSON.stringify(stored));
@@ -2914,6 +2925,8 @@ async function main() {
   // Touch first, reply after (user, 2026-11-14): a touch task stopped for attention keeps automatic
   // reply from starting until the touch is dealt with; the corrupt task is still isolated and named.
   assert.equal(brokenPayloadStatus.enabled, false, "a touch needing attention keeps reply from starting");
+  assert.equal(brokenPayloadStatus.replyStatus, "触达完成后再开始自动回复", "the waiting reason is the touch, never a broken executor");
+  assert.notEqual(brokenPayloadStatus.replyError, "自动回复执行器不可用");
   await assert.rejects(brokenPayload.start(), /触达任务还没完成/u, "starting again says the touch must be finished first");
   assert.equal(brokenPayloadRow.status, "needs_attention");
   assert.equal(brokenPayloadRow.reasonCode, "touch_task_payload_incomplete");
