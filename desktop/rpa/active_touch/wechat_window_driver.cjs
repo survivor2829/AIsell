@@ -522,9 +522,12 @@ const WECHAT_MAIN_WINDOW_RULES_SCRIPT = `
 # so touch could not start at all. Every recorded WeChat main window (397 field records, 4.1-4.2) is an
 # unowned Qt window titled 微信/Weixin of main-window size; chat pop-outs carry the contact's name,
 # Moments its own title, and login/notice windows are too small. That is accepted as evidence for a
-# visible window; two such windows stay ambiguous, and every later step still verifies what it opened.
+# visible window, but only as a last resort: Select-WechatMainCandidates uses it when no window has the
+# stronger evidence and exactly one window qualifies, so a PC that worked before is never made
+# ambiguous by it. Landscape main size only (layoutRank 2): a login window scaled up stays portrait.
 function Test-WechatTitledMain([object]$candidate) {
-  return [bool]$candidate.visible -and -not [bool]$candidate.minimized -and
+  return [int64]$candidate.owner -eq 0 -and -not [bool]$candidate.toolWindow -and [int]$candidate.layoutRank -ge 2 -and
+    [bool]$candidate.visible -and -not [bool]$candidate.minimized -and
     [string]$candidate.windowClass -match "(?i)^Qt(?:\\d+)?QWindowIcon$" -and
     @("微信", "Weixin", "WeChat") -ccontains [string]$candidate.title
 }
@@ -532,8 +535,7 @@ function Test-WechatMainCandidate([object]$candidate) {
   if ([int64]$candidate.owner -ne 0 -or $candidate.toolWindow -or [int]$candidate.layoutRank -le 0) { return $false }
   return [bool]$candidate.hasMainRenderChild -or
     [string]$candidate.windowClass -ieq "mmui::MainWindow" -or
-    [bool]$candidate.shellNavigation -or [bool]$candidate.visualNavigation -or
-    (Test-WechatTitledMain $candidate)
+    [bool]$candidate.shellNavigation -or [bool]$candidate.visualNavigation -or [bool]$candidate.titledMain
 }
 `;
 
@@ -938,6 +940,11 @@ function Select-WechatMainCandidates([object[]]$candidates) {
     if (-not (Test-WechatMainCandidate $candidate)) { $script:windowNegativeChecks[$checkKey] = $true }
   }
   Set-WechatWindowStage "select"
+  # Last resort: nothing has the stronger evidence and exactly one window is a titled main window.
+  if (@($candidates | Where-Object { Test-WechatMainCandidate $_ }).Count -eq 0) {
+    $titled = @($candidates | Where-Object { Test-WechatTitledMain $_ })
+    if ($titled.Count -eq 1) { $titled[0].titledMain = $true }
+  }
   return @($candidates | Where-Object { Test-WechatMainCandidate $_ })
 }
 
@@ -1118,7 +1125,7 @@ $matched = $matches[0]
 $windowDiagnostic.window_class_code = $matched.windowClass
 $wechatVersion = Get-WechatFileVersion $matched.processPath
 if ($wechatVersion) { $windowDiagnostic.window_wechat_version = $wechatVersion }
-$windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } elseif ($matched.visualNavigation) { "visual_navigation" } elseif (Test-WechatTitledMain $matched) { "titled_main" } else { "native_main" })
+$windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } elseif ($matched.visualNavigation) { "visual_navigation" } elseif ($matched.titledMain) { "titled_main" } else { "native_main" })
 Set-WechatWindowStage "restore"
 $hWnd = [IntPtr]$matched.hWnd
 if ($inspectOnly) {
