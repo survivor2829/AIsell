@@ -3145,6 +3145,32 @@ try {
     assert.ok(trayAttempt > 0 && NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("Request-PersonalWechatActivation @{ processPath = $trayPaths[0] }", trayAttempt) > trayAttempt,
       "a WeChat with every window hidden is asked to restore its own window");
     assert.ok(NORMALIZE_WECHAT_WINDOW_SCRIPT.includes("$trayPaths.Count -eq 1"), "never guess between two WeChat installations");
+    // Field 2026-11-14/15 (Windows 11, WeChat 4.1.5.16): a visible main window with no render child, no
+    // UIA navigation and an unmatched sidebar was never recognized. Execute the rule on fake windows:
+    // a visible unowned Qt window titled 微信 of main size is the main window; nothing else is.
+    {
+      const { WECHAT_MAIN_WINDOW_RULES_SCRIPT } = require("./wechat_window_driver.cjs");
+      const fake = (name, extra = {}) => {
+        const fields = { n: `"${name}"`, owner: "0", toolWindow: "$false", layoutRank: "2", hasMainRenderChild: "$false", windowClass: '"Qt51514QWindowIcon"',
+          shellNavigation: "$false", visualNavigation: "$false", visible: "$true", minimized: "$false", title: '"微信"', ...extra };
+        return `@{ ${Object.entries(fields).map(([key, value]) => `${key}=${value}`).join("; ")} }`;
+      };
+      const titled = await runPowerShellAsync(`${WECHAT_MAIN_WINDOW_RULES_SCRIPT}
+$r = @{}
+foreach ($c in @(${[fake("main"), fake("chat_popout", { title: '"张三"' }), fake("moments", { title: '"朋友圈"' }), fake("small", { layoutRank: "0" }), fake("portrait_login", { layoutRank: "1" }), fake("weixin", { title: '"Weixin"' }),
+        fake("hidden", { visible: "$false" }), fake("minimized", { minimized: "$true" }), fake("owned", { owner: "5" }), fake("tool", { toolWindow: "$true" }),
+        fake("other_class", { windowClass: '"Chrome_WidgetWin_1"' })].join(", ")})) { $r[$c.n] = [bool](Test-WechatTitledMain $c); $r[$c.n + "_strong"] = [bool](Test-WechatMainCandidate $c) }
+$r | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 10_000 });
+      assert.deepEqual(Object.keys(titled).filter((name) => titled[name] === true).sort(), ["main", "weixin"],
+        "only a visible, unowned Qt window titled 微信/Weixin of landscape main size qualifies by title");
+      // The title alone never makes a candidate a main window: selection grants it as a last resort.
+      const selectBody = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Select-WechatMainCandidates"));
+      const noStrong = selectBody.indexOf("if (@($candidates | Where-Object { Test-WechatMainCandidate $_ }).Count -eq 0) {");
+      const onlyOne = selectBody.indexOf("if ($titled.Count -eq 1) { $titled[0].titledMain = $true }");
+      assert.ok(noStrong > 0 && onlyOne > noStrong && onlyOne - noStrong < 300,
+        "the title is used only when no window has stronger evidence and exactly one window qualifies");
+      assert.equal(titled.main_strong, false, "the title alone never makes a candidate a main window");
+    }
     // Field (user, 2026-11-14): a cursor left over the search dropdown highlights a row and the
     // result check could fail. The search parks it (no click) before the input baseline, only idle.
     let searchScript = "";
