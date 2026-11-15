@@ -517,11 +517,23 @@ function resolveWechatRpaWindowTarget({ surfaceMode, dpi, workArea } = {}) {
 // Main-window evidence is independent of a particular Qt render-child version.
 // An exact HWND supplied by an earlier verified step is handled separately.
 const WECHAT_MAIN_WINDOW_RULES_SCRIPT = `
+# Field 2026-11-14/15 (Windows 11, WeChat 4.1.5.16 at 125%): a visible main window with no MMUI render
+# child, no readable UIA navigation and a sidebar drawn unlike both picture masks was never recognized,
+# so touch could not start at all. Every recorded WeChat main window (397 field records, 4.1-4.2) is an
+# unowned Qt window titled 微信/Weixin of main-window size; chat pop-outs carry the contact's name,
+# Moments its own title, and login/notice windows are too small. That is accepted as evidence for a
+# visible window; two such windows stay ambiguous, and every later step still verifies what it opened.
+function Test-WechatTitledMain([object]$candidate) {
+  return [bool]$candidate.visible -and -not [bool]$candidate.minimized -and
+    [string]$candidate.windowClass -match "(?i)^Qt(?:\\d+)?QWindowIcon$" -and
+    @("微信", "Weixin", "WeChat") -ccontains [string]$candidate.title
+}
 function Test-WechatMainCandidate([object]$candidate) {
   if ([int64]$candidate.owner -ne 0 -or $candidate.toolWindow -or [int]$candidate.layoutRank -le 0) { return $false }
   return [bool]$candidate.hasMainRenderChild -or
     [string]$candidate.windowClass -ieq "mmui::MainWindow" -or
-    [bool]$candidate.shellNavigation -or [bool]$candidate.visualNavigation
+    [bool]$candidate.shellNavigation -or [bool]$candidate.visualNavigation -or
+    (Test-WechatTitledMain $candidate)
 }
 `;
 
@@ -1106,7 +1118,7 @@ $matched = $matches[0]
 $windowDiagnostic.window_class_code = $matched.windowClass
 $wechatVersion = Get-WechatFileVersion $matched.processPath
 if ($wechatVersion) { $windowDiagnostic.window_wechat_version = $wechatVersion }
-$windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } elseif ($matched.visualNavigation) { "visual_navigation" } else { "native_main" })
+$windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } elseif ($matched.visualNavigation) { "visual_navigation" } elseif (Test-WechatTitledMain $matched) { "titled_main" } else { "native_main" })
 Set-WechatWindowStage "restore"
 $hWnd = [IntPtr]$matched.hWnd
 if ($inspectOnly) {
