@@ -96,7 +96,7 @@ app.whenReady().then(async () => {
             setTimeout(() => URL.revokeObjectURL(url), 1000);
           }
           document.getElementById("download").addEventListener("click", () => {
-            download("partitioned.png", "download");
+            download("CC1 PRO_详情图.png", "download");
           });
           document.getElementById("blocked").addEventListener("click", () => {
             download("blocked.exe", "blocked");
@@ -133,6 +133,8 @@ app.whenReady().then(async () => {
     getMainWindow: () => window,
     getProductDetailOrigin: () => origin,
     getDesktopPath: () => downloadDir,
+    // 2026-11-16: each product goes to Pictures/小玺产品详情图/<product>.
+    getExportRoot: () => path.join(root, "Pictures", "小玺产品详情图"),
     diagnostics: {
       event: (component, event, payload) => diagnosticEvents.push({ component, event, payload })
     }
@@ -151,12 +153,14 @@ app.whenReady().then(async () => {
     if (updates.some((update) => update.payload?.state === "completed")) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const savedPath = path.join(downloadDir, "partitioned.png");
+  const savedPath = path.join(root, "Pictures", "小玺产品详情图", "CC1 PRO", "CC1 PRO_详情图.png");
   assert.equal(requests.find((request) => request.url.includes("kind=preview"))?.hasCookie, true);
   assert.equal(requests.find((request) => request.url.includes("kind=download"))?.hasCookie, true);
   assert.equal(fs.existsSync(savedPath), true, "Electron host must save the product image");
   assert.deepEqual(fs.readFileSync(savedPath), png);
   assert.equal(updates.some((update) => update.payload?.state === "completed"), true);
+  assert.equal(updates.find((update) => update.payload?.state === "completed")?.payload.location, ["图片", "小玺产品详情图", "CC1 PRO"].join("\\"));
+  assert.deepEqual(fs.readdirSync(downloadDir), [], "nothing lands on the desktop any more");
 
   await frame.executeJavaScript("document.getElementById('blocked').click()", true);
   await new Promise((resolve) => setTimeout(resolve, 300));

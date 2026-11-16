@@ -1841,6 +1841,21 @@
     return [...document.querySelectorAll('.module-wrapper.module-hidden')].map(w => w.dataset.moduleId);
   }
 
+  // The desktop app files every download under Pictures\小玺产品详情图\<product>, taking the
+  // product from the part of the file name before the first "_" (2026-11-16). Product title first
+  // (what the customer typed for this product), then the parsed model, then the category.
+  // For an AI result, the title it was generated with (saved with its task), not what the box
+  // says by the time the customer downloads it.
+  function exportBaseName(taskId = '') {
+    const task = taskId ? loadPersistedAiRefineTask() : null;
+    const taskTitle = task && task.task_id === String(taskId) ? String(task.input_summary?.product_title || '').trim() : '';
+    const title = taskTitle || (document.getElementById('product_title_input')?.value || '').trim();
+    const model = currentBuildData?.parsed?.block_a?.model_name || '';
+    const raw = String(title || model || currentProductType || '产品');
+    const cleaned = raw.replace(/[\\/:*?"<>|_\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40).trim();
+    return cleaned || '产品';
+  }
+
   function triggerBlobDownload(blob, filename) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -1890,7 +1905,7 @@
         throw new Error(err.error || '导出失败');
       }
       const blob = await resp.blob();
-      triggerBlobDownload(blob, `${productType}_${options.filenameSuffix || '详情页'}.${fmt}`);
+      triggerBlobDownload(blob, `${exportBaseName()}_${options.filenameSuffix || '详情页'}.${fmt}`);
       return true;
     } catch (err) {
       showError((options.errorPrefix || '导出失败') + '：' + err.message);
@@ -1965,7 +1980,7 @@
     return div.innerHTML;
   }
 
-  async function downloadAiRefineResult(downloadUrl, button, filename = `${currentProductType}_AI精修详情图.png`) {
+  async function downloadAiRefineResult(downloadUrl, button, filename = `${exportBaseName()}_AI精修详情图.png`) {
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = '下载中...';
@@ -2012,7 +2027,8 @@
       <div class="air-square-frame">${image.url ? `<img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.label)}" />` : escapeHtml(image.reason || '暂无')}</div>
       <div class="air-square-foot"><b>${escapeHtml(image.label)}</b><span class="air-actions">${image.url ? `<button type="button" class="btn btn-ghost" data-ai-square-download="${index}">下载</button>` : ''}${Number.isInteger(image.block_index) ? `<button type="button" class="btn btn-ghost" data-ai-square-redo="${image.block_index}">重做这张 · 计费</button>` : ''}</span></div>
     </article>`).join('');
-    const name = image => `${currentProductType}_电商主图_${image.label}.jpg`;
+    const exportName = exportBaseName(taskId);
+    const name = image => `${exportName}_电商主图_${image.label}.jpg`;
     grid.querySelectorAll('[data-ai-square-download]').forEach(button => {
       button.addEventListener('click', () => {
         const image = images[Number(button.dataset.aiSquareDownload)];
@@ -2146,13 +2162,14 @@
         </div>
       </div>`;
     if (squaresWanted) loadAiSquareImages(result.task_id, results, result);
+    const exportName = exportBaseName(result.task_id);
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
-      downloadAiRefineResult(downloadUrl, event.currentTarget);
+      downloadAiRefineResult(downloadUrl, event.currentTarget, `${exportName}_AI精修详情图.png`);
     });
     results.querySelectorAll('[data-ai-single-download]').forEach(button => {
       button.addEventListener('click', () => {
         const index = Number(button.dataset.aiSingleDownload);
-        downloadAiRefineResult(blocks[index].image_url, button, `${currentProductType}_详情图_${index + 1}.jpg`);
+        downloadAiRefineResult(blocks[index].image_url, button, `${exportName}_详情图_${index + 1}.jpg`);
       });
     });
     results.querySelectorAll('[data-ai-single-redo]').forEach(button => {
@@ -2701,13 +2718,11 @@
         throw new Error(err.error || '导出失败');
       }
       const blob = await resp.blob();
-      // 后端按张数返回 image/png(单图)或 application/zip(多图);文件名优先用 Content-Disposition
+      // 后端按张数返回 image/png(单图)或 application/zip(多图)。文件名固定为「产品名_主图」，
+      // 桌面版按产品名把它放进对应的产品文件夹，所以不用服务端给的文件名。
       const ct = resp.headers.get('Content-Type') || '';
       const isZip = ct.includes('zip');
-      const cd = resp.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)/i);
-      const fallbackName = `${currentProductType}_主图.${isZip ? 'zip' : 'png'}`;
-      triggerBlobDownload(blob, m ? decodeURIComponent(m[1]) : fallbackName);
+      triggerBlobDownload(blob, `${exportBaseName()}_主图.${isZip ? 'zip' : 'png'}`);
     } catch (err) { showError('主图导出失败：' + err.message); }
     finally { btn.disabled = false; btn.textContent = '📦 导出全部主图 ZIP'; }
   }

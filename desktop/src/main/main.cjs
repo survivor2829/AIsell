@@ -51,6 +51,7 @@ const {
 } = require("./product-detail-ai-settings-ipc.cjs");
 const { createProductDetailSidecar } = require("./product-detail-sidecar.cjs");
 const {
+  EXPORT_ROOT_NAME: PRODUCT_DETAIL_EXPORT_ROOT_NAME,
   isAllowedProductDetailUrl,
   registerProductDetailDownloads,
   readProductDetailHistory
@@ -1142,6 +1143,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getMainWindow: () => mainWindow,
       getProductDetailOrigin: () => productDetailController?.status().origin || "",
       getDesktopPath: () => app.getPath("desktop"),
+      // Pictures/小玺产品详情图/<product> (user 2026-11-16); the desktop stays the fallback.
+      getExportRoot: () => path.join(app.getPath("pictures"), PRODUCT_DETAIL_EXPORT_ROOT_NAME),
       diagnostics: logger,
       historyFile: path.join(app.getPath("userData"), "product-detail", "made-history.json")
     });
