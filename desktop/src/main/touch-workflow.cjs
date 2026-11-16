@@ -111,7 +111,7 @@ function resumableFreshEdit(task, multipart) {
 function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
   const evidence = {};
   if (['wechat_id', 'name', 'name_fallback'].includes(diagnostics.search_query_type)) evidence.search_query_type = diagnostics.search_query_type;
-  if (['', 'wechat_id_empty', 'wechat_id_no_result', 'wechat_id_invalid_placeholder'].includes(diagnostics.fallback_reason)) evidence.fallback_reason = diagnostics.fallback_reason;
+  if (['', 'wechat_id_empty', 'wechat_id_no_result', 'wechat_id_near_title_mismatch', 'wechat_id_invalid_placeholder'].includes(diagnostics.fallback_reason)) evidence.fallback_reason = diagnostics.fallback_reason;
   if (includeAttempts && Array.isArray(diagnostics.search_attempts)) evidence.search_attempts = diagnostics.search_attempts.slice(0,2).map(attempt => ({
     ...finiteSearchEvidence(attempt, false), rule_id: /^search-r\d+$/u.test(attempt?.rule_id) ? attempt.rule_id : ''
   }));
@@ -122,6 +122,18 @@ function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
     evidence.title_comparison = { expected: summary(comparison.expected),
       titles: (Array.isArray(comparison.titles) ? comparison.titles : []).slice(0,10).map(title => ({ ...summary(title),
         exact: title.exact === true, punctuation_whitespace_width_only: title.punctuation_whitespace_width_only === true })) };
+    // The OCR title read after the UIA miss: line count, lengths and first difference only.
+    const header = comparison.header;
+    if (header && typeof header === 'object') {
+      const kinds = new Set(['digit', 'latin', 'han', 'han_yi', 'other', 'end']);
+      evidence.title_comparison.header = {
+        ...Object.fromEntries(['lines', 'expected_length', 'observed_length', 'first_diff_index']
+          .filter(key => Number.isInteger(header[key]) && header[key] >= 0).map(key => [key, header[key]])),
+        ...(kinds.has(header.expected_class) ? { expected_class: header.expected_class } : {}),
+        ...(kinds.has(header.observed_class) ? { observed_class: header.observed_class } : {}),
+        ...(typeof header.cut === 'boolean' ? { cut: header.cut } : {})
+      };
+    }
   }
   if (["popup", "formula_fallback", "formula_crop"].includes(diagnostics.capture_source)) {
     evidence.capture_source = diagnostics.capture_source === "formula_crop" ? "formula_fallback" : diagnostics.capture_source;
@@ -149,7 +161,15 @@ function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
       boundary_distance: Array.isArray(box?.boundary_distance) ? box.boundary_distance.filter((value) => Number.isInteger(value) && value >= 0).slice(0, 9) : [],
       starts_with_wechat_id: box?.starts_with_wechat_id === true,
       contains_network_lookup: box?.contains_network_lookup === true,
-      equals_query: box?.equals_query === true
+      equals_query: box?.equals_query === true,
+      // How far a listed "微信号" line is from the query, without its text: tells an OCR
+      // misread from a stale ID (both looked like search-r015 in the 2026-11-15 capsules).
+      ...Object.fromEntries(["id_length", "query_length", "id_query_distance"].filter((key) => Number.isInteger(box?.[key]) && box[key] >= 0)
+        .map((key) => [key, box[key]])),
+      ...(box?.id_first_mismatch && Number.isInteger(box.id_first_mismatch.index) ? { id_first_mismatch: {
+        index: box.id_first_mismatch.index,
+        query_class: classes.has(box.id_first_mismatch.query_class) ? box.id_first_mismatch.query_class : "other",
+        ocr_class: classes.has(box.id_first_mismatch.ocr_class) ? box.id_first_mismatch.ocr_class : "other" } } : {})
     })) : [];
     evidence.ocr_observation = {
       ocr_box_count: boxes.length, ocr_boxes: boxes,

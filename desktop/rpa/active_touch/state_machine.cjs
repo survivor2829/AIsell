@@ -718,21 +718,36 @@ function clickSearchResultDryRun(
   rememberSearch(inputResult, searchPlan.queryType, searchPlan.fallbackReason || '');
   let captureHandedOff = false;
   try {
-  if (!inputResult?.ok && searchPlan.queryType === "wechat_id"
-    && inputResult?.reason === "exact_search_result_not_found"
+  // A near-ID open (the one listed ID read a character or two off) proves nothing by
+  // itself: the whole chat title must match right away, with no cut-title allowance.
+  // On a mismatch the contact is searched by name, as for an ID that was not listed.
+  let nearVerified = null;
+  let nearMismatch = false;
+  if (inputResult?.ok && inputResult.searchResultMode === "sectioned_wechat_id_near") {
+    const nearCheck = conversationVerifier(customerName, { ...exactWindow, strictTitle: true });
+    if (nearCheck?.ok) nearVerified = nearCheck;
+    else {
+      nearMismatch = true;
+      nearVerified = nearCheck || { ok: false };
+    }
+  }
+  const nameFallbackReason = nearMismatch ? "wechat_id_near_title_mismatch" : "wechat_id_no_result";
+  if (((!inputResult?.ok && inputResult?.reason === "exact_search_result_not_found") || nearMismatch)
+    && searchPlan.queryType === "wechat_id"
     && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
     discardSearchCapture(inputResult);
+    nearVerified = null;
     inputResult = openResultDriver(searchPlan.fallbackQuery, {
       ...exactWindow,
       searchIdentity: { query: searchPlan.fallbackQuery, expectedName: customerName },
       searchQueryType: "name_fallback",
-      searchFallbackReason: "wechat_id_no_result",
+      searchFallbackReason: nameFallbackReason,
       searchFallbackRuleId: SEARCH_FALLBACK_RULES.noResult
     });
-    rememberSearch(inputResult, 'name_fallback', 'wechat_id_no_result');
+    rememberSearch(inputResult, 'name_fallback', nameFallbackReason);
     if (inputResult) {
       inputResult.searchQueryType = 'name_fallback';
-      inputResult.searchFallbackReason = 'wechat_id_no_result';
+      inputResult.searchFallbackReason = nameFallbackReason;
     }
   }
   if (inputResult) inputResult.searchEvidence = { ...(inputResult.searchEvidence || {}),
@@ -826,7 +841,7 @@ function clickSearchResultDryRun(
           pid: inputResult.pid,
           hWnd: inputResult.hWnd
         }
-      : conversationVerifier(customerName, exactWindow);
+      : nearVerified || conversationVerifier(customerName, exactWindow);
     conversationVerifyMs = Date.now() - verifyStartedAt;
   }
   const timings = {

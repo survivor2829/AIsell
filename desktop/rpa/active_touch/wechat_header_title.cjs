@@ -1,7 +1,7 @@
 // Read only the fixed title band, never names in the session list or chat body.
 const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const WECHAT_HEADER_TITLE_POWERSHELL = String.raw`
-function Test-WechatHeaderTitle($windowRect, [uint32]$dpi, [string]$expectedTitle) {
+function Test-WechatHeaderTitle($windowRect, [uint32]$dpi, [string]$expectedTitle, [bool]$allowCutTitle = $true) {
   try {
     Add-Type -AssemblyName System.Drawing
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -106,7 +106,8 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
         cut=[bool]($text -match '(…|\.\.\.|。。。)$') }
       if ($textFolded -ceq $expectedFolded) { return $true }
       $cut=$text -match '(…|\.\.\.|。。。)$'
-      return $cut -and $textFolded.Length -ge 4 -and $expectedFolded.StartsWith($textFolded, [StringComparison]::Ordinal)
+      # A caller that already relaxed another check (a near WeChat ID) wants the whole name.
+      return $allowCutTitle -and $cut -and $textFolded.Length -ge 4 -and $expectedFolded.StartsWith($textFolded, [StringComparison]::Ordinal)
     }
     if (-not (& $matches $lines)) {
       # Windows OCR finds no line at all in a strip holding only a short title (a two-character
