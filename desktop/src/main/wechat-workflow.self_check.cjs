@@ -635,6 +635,21 @@ async function checkLoginWaitRetryRoundAndPreparing() {
     assert.equal(workflow.retrySkippedWorkflowTask(retry.record, ["customer-2"]).ok, true);
     assert.equal(loadTaskState(retry.taskDir).results[1].auto_retried, undefined);
 
+    // The chat-surface step's prepared window is handed to the executor (2026-11-16), but only
+    // when it did not have to switch back from Moments.
+    for (const changed of [false, true]) {
+      let handed;
+      const handWorkflow = createTouchWorkflow({
+        dataDir: path.join(root, `hand-${changed}`), now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        restoreChatSurface: async () => ({ ok: true, changed, preparedWindow: { ok: true, pid: 7, hWnd: 8 }, preparedAt: Date.now() }),
+        execute: async (input) => { handed = input.preparedWindow; return { ok: true, state: { real_send_status: "sent_verified" } }; }
+      });
+      const handPayload = handWorkflow.prepareWorkflowTask({ script: "您好", contactIds: [contacts[0].id] });
+      await handWorkflow.runWorkflowStep({ id: `hand-${changed}`, payload: handPayload }, { isEnabled: () => true });
+      assert.deepEqual(handed, changed ? undefined : { ok: true, pid: 7, hWnd: 8 }, changed ? "after a switch back from Moments the executor prepares again" : "the prepared window is handed over");
+    }
+
     // Multipart: a crash while a part is still "preparing" leaves that part unsent and retryable.
     const { executeMessageSequence } = require("./touch-message-sequence.cjs");
     const sequenceRow = {};

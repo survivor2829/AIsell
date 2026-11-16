@@ -97,7 +97,9 @@ function summarizeSendResult(result = {}, context = {}) {
     is_new: result?.isNew ?? proof.is_new,
     same_window: result?.sameWindow ?? proof.same_window,
     input_cleared: result?.draftConsumed ?? proof.input_cleared,
-    before_exact: result?.snapshot?.draftExact ?? proof.before_exact,
+    // A skipped read-back (the send click proves the draft) is not a mismatch.
+    before_exact: result?.draftRead === "skipped" ? undefined : result?.snapshot?.draftExact ?? proof.before_exact,
+    before_draft_read_skipped: result?.draftRead === "skipped" ? true : undefined,
     input_read_ok: proof.input_read_ok,
     input_empty: proof.input_empty,
     session_verified: result?.conversationVerified,
