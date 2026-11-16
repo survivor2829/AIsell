@@ -88,8 +88,60 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
   assert.doesNotMatch(header, /headerTitleEvidence=@\{[^}]*text=/u, "the evidence never carries the title text");
   assert.match(header, /if \(\$text -ceq \$expected\) \{ return \$true \}/u, "the exact match still passes");
   assert.match(header, /\[\\p\{P\}\\p\{S\}\\p\{Cs\}\\p\{Cf\}\\p\{Mn\}\\s\]/u, "only symbols, punctuation and spaces are ignored");
-  assert.match(header, /\$textFolded\.Length -ge 4 -and \$expectedFolded\.StartsWith\(\$textFolded, \[StringComparison\]::Ordinal\)/u,
+  assert.match(header, /\(\$allowCutTitle -and \$cut -and \$textCase\.Length -ge 4\)\) -and \(& \$readsAsName \$textCase\)/u,
     "a cut title must show at least 4 letters/digits of the name");
   assert.doesNotMatch(header, /editDistance|-like/u, "no fuzzy title match");
   console.log("header title fallback shape passed");
+}
+
+// 2026-11-16 (customer computer, 1.3.16, 185 skips): the opened chat's title was read with one
+// digit of the phone number as its look-alike letter (5 as "S"). The comparison block itself runs
+// here, once, on fixed OCR lines (names and numbers are stand-ins): only a digit of the name may
+// be read as its look-alike letter; a letter of the name is never relaxed; strict callers get none.
+if (process.platform === "win32") {
+  const { WECHAT_HEADER_TITLE_POWERSHELL: header } = require("./wechat_header_title.cjs");
+  const { runPowerShell } = require("./wechat_window_driver.cjs");
+  const start = header.indexOf("$expectedHasDash=");
+  const end = header.indexOf("if (-not (& $matches $lines))");
+  assert.ok(start > 0 && end > start, "the title comparison block is found");
+  const name = "示例维护张三13805138000";
+  const cases = [
+    ["field", name, "示例维护张三138O5138000", true, true],
+    ["1 as l, 0 as O", name, "示例维护张三l38O5138OOO", true, true],
+    ["5 as S", name, "示例维护张三1380S138000", true, true],
+    ["6 as b (lower case)", "示例6号", "示例b号", true, true],
+    ["8 as b is not a look-alike", "示例8号", "示例b号", true, false],
+    ["different digit", name, "示例维护张三13805138001", true, false],
+    ["one digit more", name, "示例维护张三138051380005", true, false],
+    ["one digit less", name, "示例维护张三1380513800", true, false],
+    ["different Chinese character", name, "示例维修张三13805138000", true, false],
+    ["a letter of the name is never relaxed", "王总s", "王总5", true, false],
+    ["strict: no look-alikes", name, "示例维护张三138O5138000", false, false],
+    ["strict: exact still passes", name, name, false, true],
+    ["cut title with a look-alike", name, "示例维护张三138O…", true, true],
+    ["cut title, strict", name, "示例维护张三138O…", false, false],
+    ["plain exact", "CC1 PRO", "CC1 PRO", true, true],
+    ["one more character", "城胜", "城胜胜", true, false]
+  ];
+  const result = runPowerShell(`
+$cases = [Environment]::GetEnvironmentVariable("T_CASES") | ConvertFrom-Json
+$out = foreach ($case in $cases) {
+  $expectedTitle = [string]$case[1]
+  $allowCutTitle = [bool]$case[3]
+  $expected=[Text.RegularExpressions.Regex]::Replace($expectedTitle.Normalize([Text.NormalizationForm]::FormKC),'\s+','')
+  ${header.slice(start, end)}
+  $lines = @([pscustomobject]@{ text = [string]$case[2]; x = 0; y = 0; bottom = 10 })
+  @{ name = [string]$case[0]; match = [bool](& $matches $lines); lookalike = [bool]$script:headerTitleEvidence.lookalike; diff = $script:headerTitleEvidence.first_diff_index }
+}
+@{ ok = $true; results = @($out) } | ConvertTo-Json -Compress -Depth 4`, { T_CASES: JSON.stringify(cases) }, { ensure: false, timeout: 60_000 });
+  assert.equal(result.ok, true, JSON.stringify(result).slice(0, 300));
+  for (const [label, , , , expected] of cases) {
+    const row = result.results.find((item) => item.name === label);
+    assert.equal(row?.match, expected, label);
+  }
+  const field = result.results.find((item) => item.name === "field");
+  assert.equal(field.lookalike, true, "a look-alike pass is marked in the evidence");
+  assert.equal(field.diff, 9, "the evidence still records where the plain reading differs");
+  assert.equal(result.results.find((item) => item.name === "plain exact").lookalike, false);
+  console.log("header title look-alike comparison passed");
 }

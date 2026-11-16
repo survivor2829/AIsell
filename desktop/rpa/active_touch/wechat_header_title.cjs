@@ -79,6 +79,29 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
       if ($expectedHasDash) { $folded=[Text.RegularExpressions.Regex]::Replace($folded,'[一·・•]','') }
       [Text.RegularExpressions.Regex]::Replace($folded,'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
     $expectedFolded=& $fold $expectedTitle
+    # Names carry phone numbers, and OCR reads a digit as the letter it resembles: on a
+    # customer computer (1.3.16, 2026-11-16) the opened chat (a name ending in an 11-digit
+    # phone number) was read with one 5 as "S" and 185 contacts were skipped in a morning.
+    # Only where the customer's name has a DIGIT may the reading show a letter that looks
+    # like that digit (case kept: b looks like 6, B like 8); a letter in the name is never
+    # relaxed, so 王总s never matches 王总5. Same length, position by position. Strict
+    # callers (a near WeChat ID already relaxed) get no look-alikes at all.
+    $digitLookalikes=@{ '0'='OoDQ'; '1'='lIi'; '2'='Zz'; '5'='Ss'; '6'='bG'; '8'='B'; '9'='gq' }
+    $foldKeepCase={ param([string]$value)
+      $folded=$value.Normalize([Text.NormalizationForm]::FormKC)
+      if ($expectedHasDash) { $folded=[Text.RegularExpressions.Regex]::Replace($folded,'[一·・•]','') }
+      [Text.RegularExpressions.Regex]::Replace($folded,'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','') }
+    $expectedCase=& $foldKeepCase $expectedTitle
+    # True when the reading equals the name from its start, look-alikes allowed per above.
+    $readsAsName={ param([string]$reading)
+      if ($reading.Length -gt $expectedCase.Length) { return $false }
+      for ($k=0; $k -lt $reading.Length; $k++) {
+        $e=[string]$expectedCase[$k]; $o=[string]$reading[$k]
+        if ($e -ieq $o) { continue }
+        if ($allowCutTitle -and $digitLookalikes.ContainsKey($e) -and $digitLookalikes[$e].Contains($o)) { $script:lookalikeUsed=$true; continue }
+        return $false
+      }
+      return $true }
     # Where a mismatch is, without the name itself: lengths, the first differing
     # position and the kind of character on each side (customer 1.2.72 skips left no
     # way to tell which characters OCR got wrong).
@@ -104,10 +127,14 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
       $script:headerTitleEvidence=@{ lines=1; expected_length=$expectedFolded.Length; observed_length=$textFolded.Length; first_diff_index=$diff
         expected_class=(& $charClass $expectedFolded $diff); observed_class=(& $charClass $textFolded $diff)
         cut=[bool]($text -match '(…|\.\.\.|。。。)$') }
-      if ($textFolded -ceq $expectedFolded) { return $true }
+      $textCase=& $foldKeepCase $text
+      $script:lookalikeUsed=$false
       $cut=$text -match '(…|\.\.\.|。。。)$'
-      # A caller that already relaxed another check (a near WeChat ID) wants the whole name.
-      return $allowCutTitle -and $cut -and $textFolded.Length -ge 4 -and $expectedFolded.StartsWith($textFolded, [StringComparison]::Ordinal)
+      # The whole name, or (not for strict callers) a "…"-cut title of 4+ letters/digits.
+      $matched=(($textCase.Length -eq $expectedCase.Length) -or ($allowCutTitle -and $cut -and $textCase.Length -ge 4)) -and (& $readsAsName $textCase)
+      # Field reports can count the chats accepted only through a look-alike digit.
+      if ($matched -and $script:lookalikeUsed) { $script:headerTitleEvidence.lookalike=$true }
+      return $matched
     }
     if (-not (& $matches $lines)) {
       # Windows OCR finds no line at all in a strip holding only a short title (a two-character
