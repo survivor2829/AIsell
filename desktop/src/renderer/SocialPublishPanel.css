@@ -80,12 +80,13 @@
 .dist-steps li.is-done span { color: #166534; }
 .dist-steps li.is-now i { background: linear-gradient(90deg, #ff6b81, #e60000, #ff6b81) 0 0 / 200% 100%; animation: dist-flowbar 1.1s linear infinite; }
 .dist-steps li.is-now span { color: var(--brand-red); }
-.dist-steps li.is-wait i { background: #f59e0b; animation: dist-blink 1.2s ease-in-out infinite; }
+.dist-steps li.is-wait i { background: #f59e0b; }
+/* Live cue on the shared heartbeat (beat.ts): two repaints a second for as long as the work lasts. */
+html[data-beat="1"] .dist-steps li.is-wait i { opacity: .35; }
 .dist-steps li.is-wait span { color: #92400e; }
 .dist-steps li.is-fail i { background: var(--brand-red); }
 .dist-steps li.is-fail span { color: var(--brand-red); }
 @keyframes dist-flowbar { from { background-position: 200% 0; } to { background-position: 0 0; } }
-@keyframes dist-blink { 50% { opacity: .35; } }
 .dist-job-status { justify-self: end; font-size: 13px; font-weight: 900; color: var(--muted); }
 .dist-job-status.is-published { color: #166534; }
 .dist-job-status.is-unknown, .dist-job-status.is-needs_user { color: #b45309; }

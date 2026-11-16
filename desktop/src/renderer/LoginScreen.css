@@ -41,32 +41,34 @@
 .signin-brand span { padding-left: 14px; border-left: 1px solid #0e101526; color: #3a3f4a; font-size: 21px; font-weight: 700; }
 .signin-online { display: flex; align-items: baseline; gap: clamp(18px, 2.4vw, 40px); margin: 0 0 0 auto; white-space: nowrap; }
 .signin-brand .signin-online span { display: flex; align-items: baseline; gap: clamp(6px, .7vw, 12px); padding: 0; border: 0; color: #14171f; font-size: clamp(19px, 1.9vw, 28px); font-weight: 900; letter-spacing: .08em; }
-.signin-online::before { content: ""; align-self: center; flex: none; width: 10px; height: 10px; margin-right: clamp(-28px, -1.4vw, -8px); border-radius: 50%; background: #22c55e; animation: signin-pulse 2s ease-out infinite; }
+.signin-online::before { content: ""; align-self: center; flex: none; width: 10px; height: 10px; margin-right: clamp(-28px, -1.4vw, -8px); border-radius: 50%; background: #22c55e; }
 /* The digits come from a CSS counter so they can run up from 0; with animations off they simply show the final number. */
 @property --signin-count { syntax: "<integer>"; initial-value: 0; inherits: false; }
-.signin-online em { display: inline-block; min-width: .58em; text-align: right; font-style: normal; font-family: "Bahnschrift", "DIN Alternate", "Arial Black", sans-serif; font-size: clamp(44px, 4.6vw, 68px); font-weight: 700; line-height: .9; letter-spacing: 0; font-variant-numeric: tabular-nums; transform-origin: 50% 85%; animation: signin-beat 7s ease-in-out 2.6s infinite; }
+.signin-online em { display: inline-block; min-width: .58em; text-align: right; font-style: normal; font-family: "Bahnschrift", "DIN Alternate", "Arial Black", sans-serif; font-size: clamp(44px, 4.6vw, 68px); font-weight: 700; line-height: .9; letter-spacing: 0; font-variant-numeric: tabular-nums; transform-origin: 50% 85%; animation: signin-beat 7s ease-in-out 2.6s 1; }
 .signin-online i + span em { min-width: 1.16em; animation-delay: 3s; }
-.signin-online em::after { --signin-count: var(--to); counter-reset: signin-count var(--signin-count); content: counter(signin-count); color: transparent; background: linear-gradient(100deg, var(--brand-red) 40%, #ff9a7a 50%, var(--brand-red) 60%) 100% 0 / 320% 100%; -webkit-background-clip: text; background-clip: text; animation: signin-count 1.5s cubic-bezier(.2, .7, .2, 1) .5s backwards, signin-shine 7s linear 2.6s infinite; }
+.signin-online em::after { --signin-count: var(--to); counter-reset: signin-count var(--signin-count); content: counter(signin-count); color: transparent; background: linear-gradient(100deg, var(--brand-red) 40%, #ff9a7a 50%, var(--brand-red) 60%) 100% 0 / 320% 100%; -webkit-background-clip: text; background-clip: text; animation: signin-count 1.5s cubic-bezier(.2, .7, .2, 1) .5s backwards, signin-shine 7s linear 2.6s 1; }
 .signin-online i + span em::after { animation-delay: .7s, 3s; }
 @keyframes signin-count { from { --signin-count: 0; } }
 @keyframes signin-shine { 0%, 12% { background-position: 100% 0; } 30%, 100% { background-position: 0 0; } }
 @keyframes signin-beat { 0%, 14%, 100% { transform: none; } 5% { transform: translateY(-5%) scale(1.1); } 9% { transform: scale(.98); } }
 .signin-online i { align-self: center; width: 2px; height: clamp(26px, 2.6vw, 38px); border-radius: 2px; background: #0e10151f; }
-@keyframes signin-pulse { 0% { box-shadow: 0 0 0 0 #22c55e66; } 100% { box-shadow: 0 0 0 9px #22c55e00; } }
+/* Live cue on the shared heartbeat (beat.ts): two repaints a second for as long as the work lasts. */
+html[data-beat="1"] .signin-online::before, html[data-beat="1"] .signin-live::before { box-shadow: 0 0 0 5px #22c55e40; }
+html[data-beat="1"] .signin-line i { opacity: 0; }
 .signin-copy { position: absolute; z-index: 2; left: 56px; top: 36px; bottom: 32px; display: flex; flex-direction: column; justify-content: space-between; width: min(56%, 720px); }
 /* The column runs from the top line to the bottom line: headline, line, status and crew spread evenly. */
 .signin-copy > * { margin-top: 0; }
 .signin-copy h1 { margin: 0; font-size: clamp(60px, 7.4vw, 112px); line-height: 1.0; font-weight: 800; letter-spacing: -0.035em; }
 .signin-copy h1 em { font-style: normal; background: linear-gradient(100deg, var(--signin-ink) 10%, var(--signin-accent) 95%); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .signin-line { display: flex; align-items: center; min-height: 3.2em; margin: 28px 0 0; font-size: clamp(22px, 2vw, 32px); line-height: 1.5; font-weight: 700; color: #1d2230; }
-.signin-line i { flex: 0 0 3px; width: 3px; height: 1.1em; margin-left: 4px; border-radius: 2px; background: var(--signin-accent); animation: signin-caret 1s steps(1) infinite; }
+.signin-line i { flex: 0 0 3px; width: 3px; height: 1.1em; margin-left: 4px; border-radius: 2px; background: var(--signin-accent); }
 /* 「小睿 精准获客 ● 在线」：职责是主角（员工色、最大），在线是绿色呼吸点 + 绿字，名字黑色粗体。 */
 /* 用户 2026-11-12：三个词同一字号、一起放大，只靠颜色区分（职责用员工色，在线用绿色），不要大小参差。 */
 .signin-role { display: flex; align-items: center; flex-wrap: wrap; gap: 0 clamp(14px, 1.3vw, 22px); margin: 16px 0 0; font-size: clamp(28px, 2.5vw, 40px); font-weight: 900; line-height: 1.2; }
 .signin-role b { color: var(--signin-ink); font-weight: 900; }
 .signin-role strong { color: var(--signin-accent); font-weight: 900; }
 .signin-live { display: inline-flex; align-items: center; gap: .3em; color: #15a34a; }
-.signin-live::before { content: ""; width: .4em; height: .4em; border-radius: 50%; background: #22c55e; animation: signin-pulse 2s ease-out infinite; }
+.signin-live::before { content: ""; width: .4em; height: .4em; border-radius: 50%; background: #22c55e; }
 
 /* The presenter: no frame; a ground shadow and an accent rim light place it in the room. */
 .signin-figure { position: absolute; z-index: 1; right: 0; top: 50%; height: 72%; width: 46%; translate: 0 -50%; margin: 0; display: grid; align-items: end; justify-items: center;
@@ -103,10 +105,13 @@
 /* 当前说话的那位：粗的员工色圆圈，外面再套一圈同色浅光环，圆润、远看也清楚。 */
 .signin-crew button.is-active img { border: 6px solid var(--signin-accent); box-shadow: 0 0 0 5px color-mix(in srgb, var(--signin-accent) 26%, #ffffff), 0 10px 26px color-mix(in srgb, var(--signin-accent) 45%, transparent); }
 
-/* Floating glass card with a 1px gradient edge. */
+/* Floating card with a 1px gradient edge. No backdrop blur: it re-blurred the page behind the card on
+   every frame (about 12% of the GPU at 200% scaling, 2026-11-16); an almost opaque card looks the same.
+   Nothing on this page loops forever (pulses breathe three times, the numbers beat once, the caret
+   blinks four times): any endless animation kept the whole page redrawing at the display rate. */
 .signin-side { display: flex; align-items: stretch; justify-content: center; padding: 40px 48px 40px 8px; }
 .signin-panel { position: relative; width: 100%; max-width: 540px; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; gap: 28px; padding: 56px 44px 44px; border-radius: 28px;
-  background: #ffffffc7; backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: #fffffff2;
   box-shadow: 0 30px 80px -20px #2a0a1233, 0 2px 6px #0000000d; }
 .signin-panel::before { content: ""; position: absolute; inset: 0; padding: 1px; border-radius: inherit; pointer-events: none;
   background: linear-gradient(140deg, #ffffff 0%, color-mix(in srgb, var(--signin-accent) 35%, #ffffff) 50%, #ffffff00 100%);
@@ -139,7 +144,6 @@
 
 @keyframes signin-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes signin-enter { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
-@keyframes signin-caret { 50% { opacity: 0; } }
 
 @media (max-width: 1150px) {
   .signin-scene { grid-template-columns: minmax(0, 1fr) minmax(360px, 38%); }
@@ -189,7 +193,7 @@
 .signin-crew-timer.is-idle { width: 6px; background: #00000012; }
 .signin-crew-timer.is-idle::after { display: none; }
 .signin-crew-timer::after { content: ""; position: absolute; inset: 0; background: var(--signin-accent); transform-origin: left; transform: scaleX(0);
-  animation: signin-rotate var(--signin-rotate, 9s) linear forwards; animation-play-state: paused; }
+  animation: signin-rotate var(--signin-rotate, 9s) steps(var(--signin-steps, 9), end) forwards; animation-play-state: paused; }
 .signin-stage.is-rotating .signin-crew-timer::after { animation-play-state: running; }
 @keyframes signin-rotate { to { transform: scaleX(1); } }
 @media (prefers-reduced-motion: reduce) { .signin-crew-timer::after { animation: none; transform: scaleX(1); } }

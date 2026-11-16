@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { onBeat } from "./beat";
 import type { WorkflowController } from "./WechatWorkflow";
 import { createMascotPet, type PetWork } from "./MascotPet";
 import "./XiaoxiSprite.css";
@@ -42,6 +43,15 @@ const workFor = (activity: SpriteActivity | null, alert: string): PetWork => {
   if (activity.kind === "productDetail") return "drawing";
   return activity.kind === "wechat" || /消息|触达|回复|接待|朋友圈|联系人/.test(activity.title) ? "typing" : "work";
 };
+
+// The "working" dots step once a second on the shared heartbeat (beat.ts: resting when hidden, off with
+// reduced motion). As an endless CSS animation they kept this transparent always-on-top window redrawing
+// at the display rate for the whole task (hours of touch): about a quarter of a CPU core (2026-11-16).
+function IngDots() {
+  const [step, setStep] = useState(0);
+  useEffect(() => onBeat(() => setStep((value) => (value + 1) % 3)), []);
+  return <>{[0, 1, 2].map((index) => <i key={index} className={index === step ? "is-up" : undefined} />)}</>;
+}
 
 export function XiaoxiSprite({ workflow, activity, alert }: { workflow: WorkflowController; activity: SpriteActivity | null; alert: string }) {
   const api = window.xiaoxiWorkflow;
@@ -166,7 +176,7 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
         </> : activity && <>
           <strong>{activity.title}</strong>
           {activity.detail && <span className="xiaoxi-sub">{activity.detail}</span>}
-          <span className="xiaoxi-ing-row"><span className="xiaoxi-ing">ING<i /><i /><i /></span>{percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
+          <span className="xiaoxi-ing-row"><span className="xiaoxi-ing">ING<IngDots /></span>{percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
         </>}
         {activity?.pausable && <button type="button" className="xiaoxi-link" onClick={() => void workflow.run(() => api!.pause())}>先暂停</button>}
       </section>}

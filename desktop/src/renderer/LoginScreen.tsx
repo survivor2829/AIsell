@@ -240,7 +240,9 @@ export function LoginScreen({ license, onLogin, onStatus }: { license: LicenseSt
       <OnDuty />
     </header>
     <section className={`signin-stage${rotating ? " is-rotating" : ""}`} aria-label={`${identity.name}：${identity.responsibility}`}
-      style={{ "--signin-rotate": `${playsClip ? clipMs : ROTATE_MS}ms` } as CSSProperties}>
+      style={{ "--signin-rotate": `${playsClip ? clipMs : ROTATE_MS}ms`,
+        // One notch a second, whatever the clip length.
+        "--signin-steps": Math.max(1, Math.round((playsClip ? clipMs : ROTATE_MS) / 1000)) } as CSSProperties}>
       <div className="signin-copy">
         <h1 className="signin-rise" style={step(1)}>{greeting()}，<br /><em>欢迎回来</em></h1>
         <p className="signin-line signin-rise" style={step(2)} aria-live="polite"><span>{line}</span><i aria-hidden="true" /></p>

@@ -13,8 +13,9 @@
 .nur-plan-who h2 { margin: 0; font-size: 26px; font-weight: 900; }
 .nur-phase { display: flex; align-items: center; gap: 10px; margin: 6px 0 0; font-size: 18px; font-weight: 800; color: var(--brand-red); }
 .nur-phase.is-warn { color: #b45309; }
-.nur-phase i { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 0 rgba(230, 0, 0, .4); animation: nur-pulse 1.6s infinite; }
-@keyframes nur-pulse { 70% { box-shadow: 0 0 0 10px rgba(230, 0, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(230, 0, 0, 0); } }
+.nur-phase i { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 0 rgba(230, 0, 0, .4); }
+/* Live cue on the shared heartbeat (beat.ts): two repaints a second for as long as the work lasts. */
+html[data-beat="1"] .nur-phase i { box-shadow: 0 0 0 5px rgba(230, 0, 0, .22); }
 .nur-plan-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .nur-btn { display: inline-flex; align-items: center; gap: 8px; height: 46px; padding: 0 20px; border: 2px solid var(--rose); border-radius: 14px; background: #fff; color: var(--ink); font-size: 16px; font-weight: 800; }
 .nur-btn:hover:not(:disabled) { border-color: #f5b5bd; }

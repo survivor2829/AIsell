@@ -33,9 +33,11 @@
 
 .acq-live { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-radius: 18px; background: linear-gradient(90deg, #fff5f6, #fff); border: 2px solid #f5c6cd; }
 .acq-live.is-wait { background: #fffaf0; border-color: #f5dfb8; }
-.acq-live-dot { width: 10px; height: 10px; border-radius: 50%; background: #16a34a; animation: acq-pulse 1.6s infinite; flex: 0 0 auto; }
+.acq-live-dot { width: 10px; height: 10px; border-radius: 50%; background: #16a34a; flex: 0 0 auto; }
+/* Live cue on the shared heartbeat (beat.ts): two repaints a second for as long as the work lasts. */
+html[data-beat="1"] .acq-live-dot { box-shadow: 0 0 0 4px rgba(22, 163, 74, .28); }
+html[data-beat="1"] .acq-live.is-wait .acq-live-dot { box-shadow: 0 0 0 4px rgba(245, 158, 11, .32); }
 .acq-live.is-wait .acq-live-dot { background: #f59e0b; }
-@keyframes acq-pulse { 0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, .5); } 100% { box-shadow: 0 0 0 9px rgba(22, 163, 74, 0); } }
 .acq-live > div { display: grid; gap: 2px; min-width: 0; flex: 1; }
 .acq-live > div b { font-size: 16px; font-weight: 900; }
 .acq-live > div span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--muted); }
