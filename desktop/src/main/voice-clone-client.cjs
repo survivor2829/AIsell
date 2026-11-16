@@ -36,6 +36,9 @@ function createVoiceCloneClient({ gatewayClient, rootDir, ffmpegPath, execFileIm
     if (!response.ok) {
       let code = 'voice_clone_provider_unavailable';
       try { code = JSON.parse(text).error || code; } catch {}
+      if (response.status >= 400 && response.status < 500 && require('./provider-balance.cjs').supplierBalanceRefused(text)) {
+        throw fail('provider_balance_insufficient', require('./provider-balance.cjs').API_BALANCE_MESSAGE, { outcomeUnknown: false });
+      }
       throw fail(code, '专属声音请求未完成，请保留原任务并查询状态。', { outcomeUnknown: response.status >= 500 || response.status === 409 });
     }
     return { text, status: response.status };

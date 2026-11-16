@@ -1327,6 +1327,9 @@ def _record_worker_exception(
         terminal_status = "failed"
         progress_msg = f"失败: {exc}"
     error_code = str(getattr(exc, "code", ""))
+    if error_code in {"AI_REFINE_API_BALANCE_INSUFFICIENT", "AI_REFINE_CREDIT_EXHAUSTED"}:
+        # The supplier refused for balance: nothing was bought, say so plainly.
+        progress_msg = str(exc)
     if recovery is not None:
         recovery.update(
             status=terminal_status,

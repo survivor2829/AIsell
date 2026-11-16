@@ -4362,7 +4362,7 @@ class NarratedBatchDomain:
                 editorial_candidates.append(compose_story(story, [c["shots"] for c in editorial_candidates]))
             except (ContentEngineError, TypeError, ValueError, KeyError, AttributeError) as error:
                 if isinstance(error, ContentEngineError) and (
-                    error.code in {"cloud_request_failed", "narrated_planning_budget_exhausted", "provider_unreachable"}
+                    error.code in {"cloud_request_failed", "narrated_planning_budget_exhausted", "provider_unreachable", "provider_balance_insufficient", "credit_exhausted"}
                     or "unknown" in error.code
                 ):
                     raise
@@ -4557,7 +4557,7 @@ class NarratedBatchDomain:
                         raw_candidates[item["index"]]["title"] = str(item.get("title") or raw_candidates[item["index"]].get("title") or "")[:100]
                         raw_candidates[item["index"]]["narration_draft"] = item["narration"].strip()
                     except ContentEngineError as error:
-                        if error.code in {"cloud_request_failed", "provider_unreachable"} or "unknown" in error.code:
+                        if error.code in {"cloud_request_failed", "provider_unreachable", "provider_balance_insufficient", "credit_exhausted"} or "unknown" in error.code:
                             raise
                         rewrite_failed.add(source["index"])
                         audit["rejections"].append({"stage": "format", "title": str(source.get("title") or "未命名方案")[:100],
