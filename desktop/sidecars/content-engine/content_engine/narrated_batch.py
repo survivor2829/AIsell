@@ -5018,6 +5018,9 @@ class NarratedBatchDomain:
                 b["status"] = run["status"]
                 code = (public.get("attention") or {}).get("code", "")
                 c["error_code"] = code
+                attention_details = self.d._json_object(run["private_state_json"]).get("attention_details")
+                if isinstance(attention_details, dict) and attention_details:
+                    c["_error_details"] = attention_details  # Measured values for the failure journal only.
                 if code in {"auto_mix_material_too_short", "auto_mix_material_evidence_too_short", "auto_mix_material_evidence_missing", "auto_mix_voice_verification_failed"}:
                     c["status"] = "failed"
                     self.db.execute("UPDATE content_tasks SET status='analyzing',error_code=NULL,error_message=NULL WHERE id=? AND status='paused' AND error_code=?", (task_id, code))

@@ -1418,7 +1418,9 @@ class AutoMixV2ContractTests(unittest.TestCase):
             "他绕过红柱子和炸鸡。",
         )
 
-        self.assertEqual(0.6667, result["similarity"])
+        # 它/他 and 闸机/炸鸡 sound the same, so the copy's characters are adopted.
+        self.assertEqual(1.0, result["similarity"])
+        self.assertTrue(result["sameSoundAdopted"])
         self.assertEqual([], result["missingCriticalTokens"])
         self.assertEqual(0, result["criticalTokenCount"])
         self.assertTrue(result["matched"])
@@ -1427,10 +1429,59 @@ class AutoMixV2ContractTests(unittest.TestCase):
             "它绕过红柱和闸机。",
             "他绕过红柱和炸鸡。",
         )
-        self.assertEqual(0.625, shorter["similarity"])
+        self.assertEqual(1.0, shorter["similarity"])
         self.assertEqual([], shorter["missingCriticalTokens"])
         self.assertEqual(0, shorter["criticalTokenCount"])
         self.assertTrue(shorter["matched"])
+
+    def test_voice_verification_accepts_brands_asr_wrote_with_same_sound_characters(self):
+        # Dev-machine ASR recordings (2026-08..11) and the customer stop of 2026-11-16:
+        # the voice read the brand, ASR wrote a same-sound character.
+        cases = (
+            ("客户要普渡你有普渡，要高仙你有高仙。", "客户要普度，你有普度要高鲜，你有高鲜。", ["普渡", "高仙"]),
+            ("全品牌开放平台：高仙、普渡、萤石、云象。", "全品牌开放平台高仙、普度、银石、云象。", ["普渡", "萤石"]),
+            ("新增有鹿、高飞机器人、高空幕墙。", "新增有路、高飞机器人、高空幕墙。", ["有鹿"]),
+            ("玺联惠洗地机，一台顶五个保洁。", "喜连会洗地机，一台顶五个保洁。", ["玺联惠"]),
+            ("德威莱克DW2200B驾驶式扫地车。", "德威莱克DW二二零零B驾驶式扫地车。", ["DW2200B"]),
+            ("高仙机器人很好用。", "高鲜的机器人很好用。", ["高仙"]),
+            ("型号X2000很好用。", "型号x两千很好用。", ["X2000"]),
+        )
+        for expected, recognized, terms in cases:
+            with self.subTest(expected=expected):
+                result = verify_spoken_phrase(expected, recognized, critical_terms=terms)
+                self.assertTrue(result["matched"], result)
+                self.assertEqual([], result["missingCriticalTokens"])
+
+    def test_voice_verification_still_rejects_other_words_and_numbers(self):
+        cases = (
+            ("坦虎工业吸尘器，吸力强。", "老虎工业吸尘器，吸力强。", ["坦虎"], "坦虎", "老虎"),
+            ("坦虎工业吸尘器，吸力强。", "工业吸尘器，吸力强。", ["坦虎"], "坦虎", None),
+            ("坦虎工业吸尘器。", "工业吸尘器呼呼。", ["坦虎"], "坦虎", ""),
+            ("毛驴快跑S9扫地机器人。", "毛驴快跑S八扫地机器人。", ["毛驴快跑S9"], "毛驴快跑s9", "毛驴快跑s八"),
+            ("价格是4999元。", "价格是四九九八元。", [], "4999", "四九九八"),
+        )
+        for expected, recognized, terms, missing, heard in cases:
+            with self.subTest(expected=expected, recognized=recognized):
+                result = verify_spoken_phrase(expected, recognized, critical_terms=terms)
+                self.assertFalse(result["matched"])
+                self.assertIn(missing, result["missingCriticalTokens"])
+                if heard is not None:
+                    self.assertEqual(heard, result["heardAs"][missing])
+
+    def test_voice_verification_never_treats_chinese_numerals_as_same_sound(self):
+        from content_engine.auto_mix_v2 import _same_sound
+
+        self.assertTrue(_same_sound("仙", "鲜"))
+        self.assertTrue(_same_sound("萤", "银"))
+        self.assertFalse(_same_sound("十", "是"))
+        self.assertFalse(_same_sound("四", "寺"))
+        self.assertFalse(_same_sound("5", "五"))
+
+    def test_voice_failure_message_shows_the_term_as_the_copy_writes_it(self):
+        from content_engine.creative_domain import _display_term
+
+        self.assertEqual("DW2200B", _display_term("德威莱克 DW2200B 扫地车", "dw2200b"))
+        self.assertEqual("iPhone 15 Pro", _display_term("iPhone 15 Pro 好用", "iphone15pro"))
 
     def test_voice_verification_uses_confirmed_brand_terms(self):
         result = verify_spoken_phrase(
