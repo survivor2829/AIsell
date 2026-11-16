@@ -1844,16 +1844,42 @@
   // The desktop app files every download under Pictures\小玺产品详情图\<product>, taking the
   // product from the part of the file name before the first "_" (2026-11-16). Product title first
   // (what the customer typed for this product), then the parsed model, then the category.
-  // For an AI result, the title it was generated with (saved with its task), not what the box
-  // says by the time the customer downloads it.
-  function exportBaseName(taskId = '') {
+  // A specific product name, never the category (user 2026-11-16: many "设备类" folders get mixed
+  // up). For an AI result: the title it was generated with, then the product name the planner read
+  // from the product text; then the typed title, the parsed model, the first line of the text.
+  function cleanExportName(value) {
+    return String(value || '').replace(/[\\/:*?"<>|_\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40).trim();
+  }
+
+  // The first line of the product text, only when it reads like a product name: short, not a
+  // sentence, not a numbered heading. "产品名称：" alone on its line takes the next line.
+  function firstLineProductName(text) {
+    const lines = String(text || '').split(/[\r\n]/).map(item => item.trim()).filter(Boolean);
+    const labelled = /^(?:产品名称|产品名|品名|型号|名称)\s*[:：]\s*/;
+    let line = lines[0] || '';
+    if (labelled.test(line)) line = line.replace(labelled, '') || lines[1] || '';
+    if (!line || line.length > 24 || /[，。,；;！!？?]/.test(line)
+      || /^(?:[一二三四五六七八九十]+[、.．]|\d+[、.．)]|第[一二三四五六七八九十\d]+)/.test(line)) return '';
+    return line;
+  }
+
+  function exportBaseName(source = '') {
+    const result = source && typeof source === 'object' ? source : null;
+    const taskId = result ? result.task_id : source;
     const task = taskId ? loadPersistedAiRefineTask() : null;
-    const taskTitle = task && task.task_id === String(taskId) ? String(task.input_summary?.product_title || '').trim() : '';
-    const title = taskTitle || (document.getElementById('product_title_input')?.value || '').trim();
-    const model = currentBuildData?.parsed?.block_a?.model_name || '';
-    const raw = String(title || model || currentProductType || '产品');
-    const cleaned = raw.replace(/[\\/:*?"<>|_\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40).trim();
-    return cleaned || '产品';
+    const candidates = [
+      result?.product_title,
+      result?.planning?.product_meta?.name,
+      task && task.task_id === String(taskId) ? task.input_summary?.product_title : '',
+      document.getElementById('product_title_input')?.value,
+      currentBuildData?.parsed?.block_a?.model_name,
+      firstLineProductName(document.getElementById('text_input')?.value),
+    ];
+    for (const candidate of candidates) {
+      const cleaned = cleanExportName(candidate);
+      if (cleaned) return cleaned;
+    }
+    return '未命名产品';
   }
 
   function triggerBlobDownload(blob, filename) {
@@ -1980,21 +2006,25 @@
     return div.innerHTML;
   }
 
-  async function downloadAiRefineResult(downloadUrl, button, filename = `${exportBaseName()}_AI精修详情图.png`) {
+  async function saveAiImage(downloadUrl, filename) {
+    const response = await fetch(downloadUrl, { credentials: 'include' });
+    if (!response.ok) throw new Error(`下载失败 (${response.status})`);
+    const blob = await response.blob();
+    // Suppliers may return PNG/WebP bytes under a legacy .jpg storage path.
+    // Match the exported name to the bytes, without recompressing the image.
+    const header = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+    const extension = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47 ? 'png' :
+      header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff ? 'jpg' :
+      String.fromCharCode(...header.slice(0, 4)) === 'RIFF' && String.fromCharCode(...header.slice(8, 12)) === 'WEBP' ? 'webp' : null;
+    triggerBlobDownload(blob, extension ? filename.replace(/\.[^.]+$/, '.' + extension) : filename);
+  }
+
+  async function downloadAiRefineResult(downloadUrl, button, filename = `${exportBaseName()}_完整长图.png`) {
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = '下载中...';
     try {
-      const response = await fetch(downloadUrl, { credentials: 'include' });
-      if (!response.ok) throw new Error(`下载失败 (${response.status})`);
-      const blob = await response.blob();
-      // Suppliers may return PNG/WebP bytes under a legacy .jpg storage path.
-      // Match the exported name to the bytes, without recompressing the image.
-      const header = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
-      const extension = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47 ? 'png' :
-        header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff ? 'jpg' :
-        String.fromCharCode(...header.slice(0, 4)) === 'RIFF' && String.fromCharCode(...header.slice(8, 12)) === 'WEBP' ? 'webp' : null;
-      triggerBlobDownload(blob, extension ? filename.replace(/\.[^.]+$/, '.' + extension) : filename);
+      await saveAiImage(downloadUrl, filename);
       button.textContent = '已提交保存';
     } catch (error) {
       showError('下载详情图失败：' + error.message);
@@ -2008,10 +2038,11 @@
   }
 
   // 1:1 电商主图：后台用已生成的分屏和抠好的产品图排版，不调用 AI，不收费。
-  async function loadAiSquareImages(taskId, results, result) {
+  // Resolves to { files: [{ url, filename }], error } for this render's "download all".
+  async function loadAiSquareImages(taskId, results, result, exportName) {
     const grid = results.querySelector('[data-ai-squares]');
     const all = results.querySelector('[data-ai-square-all]');
-    if (!grid) return;
+    if (!grid) return { files: [], error: '' };
     let images = [];
     try {
       const response = await fetch(`/api/ai-refine-v2/square/${encodeURIComponent(taskId)}`, { credentials: 'include' });
@@ -2020,14 +2051,13 @@
       images = data.images || [];
     } catch (error) {
       grid.querySelectorAll('.air-square-frame').forEach(frame => { frame.textContent = '1:1 主图暂时做不出来：' + error.message; });
-      return;
+      return { files: [], error: error.message || '主图暂时做不出来' };
     }
-    if (!results.contains(grid)) return;
+    if (!results.contains(grid)) return { files: [], error: '' };
     grid.innerHTML = images.map((image, index) => `<article class="air-square">
       <div class="air-square-frame">${image.url ? `<img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.label)}" />` : escapeHtml(image.reason || '暂无')}</div>
       <div class="air-square-foot"><b>${escapeHtml(image.label)}</b><span class="air-actions">${image.url ? `<button type="button" class="btn btn-ghost" data-ai-square-download="${index}">下载</button>` : ''}${Number.isInteger(image.block_index) ? `<button type="button" class="btn btn-ghost" data-ai-square-redo="${image.block_index}">重做这张 · 计费</button>` : ''}</span></div>
     </article>`).join('');
-    const exportName = exportBaseName(taskId);
     const name = image => `${exportName}_电商主图_${image.label}.jpg`;
     grid.querySelectorAll('[data-ai-square-download]').forEach(button => {
       button.addEventListener('click', () => {
@@ -2048,6 +2078,7 @@
         for (const image of ready) await downloadAiRefineResult(image.url, all, name(image));
       });
     }
+    return { files: ready.map(image => ({ url: image.url, filename: name(image) })), error: '' };
   }
 
   function renderAiRefineResult(result, options = {}) {
@@ -2138,6 +2169,10 @@
         <div class="air-head">
           <span class="air-info">${escapeHtml(info)}</span>
           <span class="air-buttons">
+            ${(() => {
+              const parts = [squaresWanted ? '主图' : '', downloadUrl ? '长图' : '', detailBlocks.some(block => block?.success && block.image_url) ? '分屏' : ''].filter(Boolean);
+              return parts.length > 1 ? `<button type="button" class="air-primary" data-ai-download-all>一键下载全部（${parts.join(' + ')}）</button>` : '';
+            })()}
             ${squaresWanted ? '<button type="button" class="air-primary" data-ai-square-all disabled>下载全部 1:1 主图</button>' : ''}
             ${downloadUrl ? '<button type="button" class="air-primary" data-ai-refine-download>下载完整长图</button>' : ''}
           </span>
@@ -2161,10 +2196,41 @@
           </aside>` : ''}
         </div>
       </div>`;
-    if (squaresWanted) loadAiSquareImages(result.task_id, results, result);
-    const exportName = exportBaseName(result.task_id);
+    const exportName = exportBaseName(result);
+    const squaresReady = squaresWanted ? loadAiSquareImages(result.task_id, results, result, exportName) : Promise.resolve({ files: [], error: '' });
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
-      downloadAiRefineResult(downloadUrl, event.currentTarget, `${exportName}_AI精修详情图.png`);
+      downloadAiRefineResult(downloadUrl, event.currentTarget, `${exportName}_完整长图.png`);
+    });
+    // User 2026-11-16: the main images, the long image and every screen of it, in one go, all
+    // into this product's folder.
+    results.querySelector('[data-ai-download-all]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const originalText = button.textContent;
+      button.disabled = true;
+      // The 1:1 images of this result are waited for, so one click saves everything once.
+      if (squaresWanted) button.textContent = '等主图做好…';
+      const squares = await squaresReady;
+      const files = [
+        ...squares.files,
+        ...(downloadUrl ? [{ url: downloadUrl, filename: `${exportName}_完整长图.png`, label: '完整长图' }] : []),
+        ...blocks.map((block, index) => ({ block, index }))
+          .filter(({ block }) => block.success && block.image_url && !String(block.block_id || '').includes('_square_'))
+          .map(({ block, index }) => ({ url: block.image_url, filename: `${exportName}_详情图_${index + 1}.jpg`, label: `第 ${index + 1} 屏` })),
+      ];
+      const failed = [];
+      for (const [position, file] of files.entries()) {
+        button.textContent = `正在保存 ${position + 1}/${files.length}…`;
+        try { await saveAiImage(file.url, file.filename); }
+        catch (error) { failed.push(`${file.label || file.filename}（${error.message}）`); }
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      const notes = [
+        ...(squares.error ? [`1:1 主图暂时做不出来（${squares.error}），这次没有包含主图`] : []),
+        ...(failed.length ? [`没有保存成功：${failed.join('、')}`] : []),
+      ];
+      button.textContent = `已提交保存 ${files.length - failed.length} 张`;
+      if (notes.length) showError(notes.join('；'));
+      setTimeout(() => { button.disabled = false; button.textContent = originalText; }, 3000);
     });
     results.querySelectorAll('[data-ai-single-download]').forEach(button => {
       button.addEventListener('click', () => {
