@@ -11,7 +11,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 import json
+import logging
 import math
+from pathlib import Path
 import re
 from typing import Any, Iterable
 import unicodedata
@@ -842,6 +844,8 @@ def _spoken_number_variants(token: str) -> tuple[str, ...]:
         variants.add(cardinal)
     if whole == "2" and not dot:
         variants.add("两")
+    # 2000 is said 两千 as often as 二千 (likewise 两百, 两万).
+    variants.update(re.sub(r"^二(?=[百千万])", "两", item) for item in list(variants))
     if percent:
         variants = {"百分之" + item for item in variants}
     return tuple(sorted(item for item in variants if item))
@@ -857,6 +861,124 @@ def _spoken_numeric_lexemes(value: Any) -> set[str]:
     ))
 
 
+# ASR writes a brand it does not know with a same-sound character (普渡 as 普度,
+# 高仙 as 高鲜, 萤石 as 银石, 有鹿 as 有路: dev-machine recordings, 2026-08..11; a
+# customer run stopped on it 2026-11-16). The voice reads the copy as written, so a
+# stretch whose every character sounds like the copy is the copy. Readings are
+# toneless; only front/back nasals are folded (ying/yin). Chinese numerals never
+# count as same-sound, so numbers stay strict.
+_HANZI_READINGS: dict[str, frozenset[str]] | None = None
+_CHINESE_NUMERALS = frozenset("零〇一二两三四五六七八九十百千万亿点")
+
+
+def _fold_reading(reading: str) -> str:
+    return re.sub(r"(?<=[aei])ng$", "n", reading)
+
+
+def _hanzi_readings() -> dict[str, frozenset[str]]:
+    global _HANZI_READINGS
+    if _HANZI_READINGS is None:
+        table: dict[str, set[str]] = {}
+        path = Path(__file__).parent / "assets" / "hanzi-readings.v1.txt"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            # Without the table only identical characters match (the pre-1.3.22 rule).
+            logging.getLogger(__name__).warning("hanzi readings unavailable: %s", type(error).__name__)
+            lines = []
+        for line in lines:
+            reading, _, characters = line.partition("\t")
+            if line.startswith("#") or not characters:
+                continue
+            for character in characters:
+                table.setdefault(character, set()).add(_fold_reading(reading))
+        _HANZI_READINGS = {key: frozenset(value) for key, value in table.items()}
+    return _HANZI_READINGS
+
+
+def _same_sound(expected: str, heard: str) -> bool:
+    if expected == heard:
+        return True
+    if expected in _CHINESE_NUMERALS or heard in _CHINESE_NUMERALS:
+        return False
+    readings = _hanzi_readings()
+    return bool(readings.get(expected, frozenset()) & readings.get(heard, frozenset()))
+
+
+def _adopt_same_sound(expected: str, recognized: str) -> str:
+    """Write the copy's characters back where ASR heard the same sounds."""
+
+    output = []
+    for tag, e1, e2, r1, r2 in SequenceMatcher(None, expected, recognized, autojunk=False).get_opcodes():
+        heard = recognized[r1:r2]
+        if (
+            tag == "replace"
+            and e2 - e1 == r2 - r1
+            and all(_same_sound(a, b) for a, b in zip(expected[e1:e2], heard))
+        ):
+            output.append(expected[e1:e2])
+        else:
+            output.append(heard)
+    return "".join(output)
+
+
+def _critical_term_variants(term: str) -> tuple[str, ...]:
+    """The term as written, and with each digit run spelled the ways ASR writes it."""
+
+    parts = re.split(r"(\d+)", term)
+    variants = [""]
+    for part in parts:
+        options = [part]
+        if part.isdigit():
+            options += [_normalize_spoken_phrase_text(item) for item in _spoken_number_variants(part)]
+        variants = [prefix + option for prefix in variants for option in dict.fromkeys(options)][:32]
+    return tuple(dict.fromkeys(variants))
+
+
+def _closest_heard(term: str, recognized: str, near: int | None = None) -> tuple[str, int, int]:
+    """The ASR stretch most like the term: (stretch, positions that sound alike, width).
+
+    With `near`, only stretches starting within two characters of that position count.
+    """
+
+    best, best_score, best_width = "", 0, max(1, len(term))
+    for variant in _critical_term_variants(term):
+        width = len(variant)
+        for start in range(0, max(1, len(recognized) - width + 1)):
+            if near is not None and abs(start - near) > 2:
+                continue
+            window = recognized[start:start + width]
+            if len(window) != width:
+                continue
+            score = sum(1 for a, b in zip(variant, window) if _same_sound(a, b))
+            if score > best_score or (score == best_score and score == width and width < best_width):
+                best, best_score, best_width = window, score, width
+    return best, best_score, best_width
+
+
+def _critical_term_heard(term: str, recognized: str) -> bool:
+    """The term, any digit spelling of it, or a same-sound stretch, anywhere in the ASR text."""
+
+    if any(variant in recognized for variant in _critical_term_variants(term)):
+        return True
+    _, score, width = _closest_heard(term, recognized)
+    return score == width
+
+
+def _heard_as(term: str, expected: str, recognized: str) -> str:
+    """What ASR wrote where the copy has the term; empty when nothing there resembles it."""
+
+    position = expected.find(term)
+    near = 0
+    if position >= 0:
+        for _, e1, e2, r1, r2 in SequenceMatcher(None, expected, recognized, autojunk=False).get_opcodes():
+            if e1 <= position < max(e2, e1 + 1):
+                near = r1 + min(position - e1, max(0, r2 - r1))
+                break
+    best, score, width = _closest_heard(term, recognized, near)
+    return best[:24] if score * 2 >= width else ""
+
+
 def verify_spoken_phrase(
     expected_text: Any,
     recognized_text: Any,
@@ -867,12 +989,13 @@ def verify_spoken_phrase(
     """Check ASR wording while keeping brands and numbers fail-closed."""
 
     expected = _normalize_spoken_phrase_text(expected_text)
-    recognized = _normalize_spoken_phrase_text(recognized_text)
+    recognized_written = _normalize_spoken_phrase_text(recognized_text)
     _contract(
-        bool(expected) and bool(recognized),
+        bool(expected) and bool(recognized_written),
         "auto_mix_voice_verification_invalid",
         "配音回听没有得到可核对的文字。",
     )
+    recognized = _adopt_same_sound(expected, recognized_written)
     expected_numeric_lexemes = tuple(dict.fromkeys(
         re.findall(r"\d+(?:\.\d+)?%?", unicodedata.normalize(
             "NFKC", str(expected_text or "")
@@ -901,7 +1024,9 @@ def verify_spoken_phrase(
         for token in expected_numeric_lexemes
     )
     missing = sorted(
-        token for token in critical if token not in recognized
+        token for token in critical
+        if not _critical_term_heard(token, recognized)
+        and not _critical_term_heard(token, recognized_written)
     )
     missing.extend(
         token for token, variants in numeric_tokens
@@ -952,6 +1077,8 @@ def verify_spoken_phrase(
         ),
         "similarity": round(similarity, 4),
         "missingCriticalTokens": missing,
+        "heardAs": {token: _heard_as(token, expected, recognized_written) for token in missing},
+        "sameSoundAdopted": recognized != recognized_written,
         "criticalTokenCount": len(critical) + len(numeric_tokens),
     }
 

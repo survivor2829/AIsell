@@ -33,6 +33,7 @@ from .auto_mix_v2 import (
     guided_script_audience_copy_issue,
     invalidated_stages_for_layer,
     matching_spoken_critical_terms,
+    _normalize_spoken_phrase_text,
     normalize_text_tracks,
     public_auto_mix_plan,
     public_music_track,
@@ -121,6 +122,18 @@ AUTO_MIX_REUSE_SELECTED_VOICE_RECOVERY_CODES = frozenset(
     }
 )
 AUTO_MIX_LEGACY_ALIGNMENT_CODE = "auto_mix_material_too_short"
+
+
+def _display_term(text, normalized_term):
+    """The term as the copy writes it (case, spaces), for the customer message."""
+
+    source = str(text or "")
+    target = str(normalized_term or "")
+    for start in range(len(source)):
+        for end in range(start + 1, min(len(source), start + len(target) * 3 + 8) + 1):
+            if _normalize_spoken_phrase_text(source[start:end]) == target:
+                return source[start:end].strip()
+    return target
 AUTO_MIX_LEGACY_ALIGNMENT_MESSAGE = "引用素材不足以覆盖对应口播的真实时间窗口。"
 CREATIVE_CHANNELS = frozenset({"wechat", "douyin", "kuaishou", "internal"})
 ROLE_ORDER = ("hook", "process", "result")
@@ -3368,7 +3381,7 @@ class CreativeDomain:
         )
 
     def _pause_auto_mix(
-        self, task_id, run_id, *, state, code, message, public_plan, private_state
+        self, task_id, run_id, *, state, code, message, public_plan, private_state, details=None
     ):
         safe_code = str(code)[:64]
         public_plan["attention"] = {
@@ -3376,6 +3389,11 @@ class CreativeDomain:
             "message": str(message)[:240],
             "layer": self._auto_mix_attention_layer(safe_code),
         }
+        if isinstance(details, dict) and details:
+            # Measured values for the failure journal only; kept out of the public plan (IPC).
+            private_state["attention_details"] = details
+        else:
+            private_state.pop("attention_details", None)
         self._save_auto_mix_run(
             run_id,
             status=state,
@@ -3617,6 +3635,7 @@ class CreativeDomain:
                     message=error.message,
                     public_plan=public_plan,
                     private_state=private_state,
+                    details=error.details,
                 )
             raise
 
@@ -4945,6 +4964,7 @@ class CreativeDomain:
             "provider_voice_id": persona["provider_voice_id"],
             "instruction": persona["instruction"],
         }
+        verification, recognized = {}, ""
         for attempt in range(1):
             cache_key = auto_mix_canonical_hash(
                 {
@@ -5149,9 +5169,29 @@ class CreativeDomain:
                     "verification": verification,
                     "attempts": attempt + 1,
                 }
+        missing = list(verification.get("missingCriticalTokens") or [])
+        heard_as = verification.get("heardAs") or {}
+        if missing:
+            term = _display_term(phrase.get("text"), missing[0])[:24]
+            heard = str(heard_as.get(missing[0]) or "")[:24]
+            message = (
+                f"配音核对时「{term}」没对上" + (f"（听成了「{heard}」）" if heard else "（没听到）")
+                + "，这一条先停下了；请重新生成，或把这个词换成更好读的写法。"
+            )
+        else:
+            message = "配音和文案对不上的地方太多，这一条先停下了；请重新生成。"
         raise ContentEngineError(
             "auto_mix_voice_verification_failed",
-            "配音回听与当前口播差异过大，或关键品牌词、数字不一致；已停止当前短语。",
+            message,
+            # Which word failed and what ASR wrote there, for the field report.
+            details={
+                "similarity": verification.get("similarity"),
+                "missing_terms": [str(item)[:24] for item in missing[:4]],
+                "heard_as": [str(heard_as.get(item) or "")[:24] for item in missing[:4]],
+                "same_sound_adopted": bool(verification.get("sameSoundAdopted")),
+                "expected_length": len(str(phrase.get("text") or "")),
+                "recognized_length": len(recognized),
+            },
         )
 
     def _cached_auto_mix_artifact(self, stage, cache_key):
