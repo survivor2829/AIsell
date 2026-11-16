@@ -133,6 +133,7 @@ const checks = [
   "src/renderer/status-subscription.self_check.cjs",
   "src/renderer/creative-studio.self_check.cjs",
   "src/renderer/flow-funnel.self_check.cjs",
+  "src/renderer/endless-animation.self_check.cjs",
   "src/renderer/viral-pipeline.self_check.cjs",
   "src/renderer/narration-simple.self_check.cjs",
   "src/renderer/nav-history.self_check.cjs",
