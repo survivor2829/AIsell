@@ -134,7 +134,8 @@ function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
           .filter(key => Number.isInteger(header[key]) && header[key] >= 0).map(key => [key, header[key]])),
         ...(kinds.has(header.expected_class) ? { expected_class: header.expected_class } : {}),
         ...(kinds.has(header.observed_class) ? { observed_class: header.observed_class } : {}),
-        ...(typeof header.cut === 'boolean' ? { cut: header.cut } : {})
+        ...(typeof header.cut === 'boolean' ? { cut: header.cut } : {}),
+        ...(header.lookalike === true ? { lookalike: true } : {})
       };
     }
   }
