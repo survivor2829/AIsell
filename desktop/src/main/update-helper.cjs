@@ -409,7 +409,10 @@ async function runHelper({ jobFile, userData }) {
     const launchStarted = Date.now();
     const child = spawn(job.executable, ["--xiaoxi-updated-launch", job.id], { detached: true, stdio: "ignore", windowsHide: false, cwd: path.dirname(job.helperExecutable) });
     let exited = false; child.once("error", () => { exited = true; }); child.once("exit", () => { exited = true; }); child.unref();
-    const ack = path.join(paths.jobs, job.id + ".ack.json"), until = Date.now() + 90000;
+    // The new version acknowledges once its page has rendered. 90 s was too short for a slow laptop or
+    // an antivirus scan of the new files (a working version was rolled back, user report 2026-11-16);
+    // a version that crashes exits and is caught at once, so the longer wait only covers a slow start.
+    const ack = path.join(paths.jobs, job.id + ".ack.json"), until = Date.now() + 300_000;
     candidate = { pid: child.pid, processes: child.pid ? trackLaunch([], child.pid, launchStarted) : [] };
     let launchedProcesses = child.pid ? trackLaunch(await processSnapshot(), child.pid, launchStarted) : [];
     candidate.processes = launchedProcesses;

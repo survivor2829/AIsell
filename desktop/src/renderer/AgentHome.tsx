@@ -376,7 +376,19 @@ function usePortraitMotion(role: AgentRoleKey, availableFrames: FrameAvailabilit
     };
   }, [availableFrames.blink, availableFrames.idle, availableFrames.wave, motionActive, role]);
 
-  return { frame, motionActive };
+  // The breathing loop recomposites a large portrait every frame (about 6% of the graphics card at 200%
+  // scaling, 2026-11-16): it plays for three breaths whenever the page comes into focus, then rests.
+  // Blinking keeps going; it only swaps a frame every few seconds.
+  const [breathing, setBreathing] = useState(false);
+  useEffect(() => {
+    if (!motionActive) { setBreathing(false); return undefined; }
+    setBreathing(true);
+    // 0.5 s delay + three 5.2 s breaths: it stops on the rest pose.
+    const rest = window.setTimeout(() => setBreathing(false), 16_100);
+    return () => window.clearTimeout(rest);
+  }, [motionActive, role]);
+
+  return { frame, motionActive, breathing };
 }
 
 function assetUrl(fileName: string) {
@@ -395,7 +407,7 @@ function portraitFrameFile(definition: RoleDefinition, frame: string) {
 function AgentPortrait({ definition }: { definition: RoleDefinition }) {
   const [availableFrames, setAvailableFrames] = useState<FrameAvailability>({});
   const framesResolved = PORTRAIT_FRAMES.every((candidate) => Object.prototype.hasOwnProperty.call(availableFrames, candidate));
-  const { frame, motionActive } = usePortraitMotion(
+  const { frame, breathing } = usePortraitMotion(
     definition.key,
     framesResolved ? availableFrames : EMPTY_FRAME_AVAILABILITY
   );
@@ -433,7 +445,7 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
     : null;
 
   return (
-    <div className={`agent-portrait-stage ${motionActive ? "is-motion-active" : "is-motion-paused"}`}>
+    <div className={`agent-portrait-stage ${breathing ? "is-motion-active" : "is-motion-paused"}`}>
       <div className="agent-portrait-canvas">
         {displayedFrame && (
           <div className="agent-portrait-visual">

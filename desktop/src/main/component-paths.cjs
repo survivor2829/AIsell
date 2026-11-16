@@ -133,6 +133,8 @@ function markHealthy() {
   fs.rmSync(path.join(context.paths.directory, "boot-attempt.json"), { force: true });
   context.healthy = true;
   const selection = readJson(context.paths.selection, {});
+  // A rollback's message was shown at this launch; a healthy run ends it, or it reappeared on every launch.
+  if (!selection.pending && selection.failure) { saveSelection(context.paths, { ...selection, failure: "" }); return; }
   if (!selection.pending || selection.active !== context.id) return;
   const complete = { version: context.version, notes: context.notes || "", completedAt: new Date().toISOString(), unread: true };
   saveSelection(context.paths, { ...selection, pending: null, failure: "", lastUpdate: complete });
