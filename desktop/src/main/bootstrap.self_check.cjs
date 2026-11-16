@@ -115,6 +115,12 @@ async function main() {
   assert.equal(ordinary.loaded.root, target.root);
   global.__xiaoxiComponents = { ...ordinary.loaded, healthy: false };
   pathsApi.markHealthy();
+  // A rollback message is shown once: the next healthy run clears it (it used to reappear on every launch).
+  json(healthy.paths.selection, { active: target.id, previous: null, pending: null, failure: "新版上次未能完成启动，已恢复上一版本。" });
+  global.__xiaoxiComponents = { ...ordinary.loaded, healthy: false };
+  pathsApi.markHealthy();
+  assert.equal(JSON.parse(fs.readFileSync(healthy.paths.selection)).failure, "", "a healthy run clears the rollback message");
+  assert.equal(JSON.parse(fs.readFileSync(healthy.paths.selection)).active, target.id);
 
   for (const failure of ["signature", "receipt", "missing-entry", "unfinished"]) {
     const test = setup(failure), previous = candidate(test, "1.1.106"), current = candidate(test, "1.1.107", { receipt: failure !== "receipt" });

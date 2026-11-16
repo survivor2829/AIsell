@@ -18,18 +18,18 @@
 }
 .signin-scene ::selection { background: #f6bbc7; color: #0e1015; }
 
-/* Aurora: two slow colour fields in the employee's accent, plus fine grain. */
+/* Aurora: two colour fields in the employee's accent, plus fine grain. Still, with no blur or blend:
+   at 200% scaling the drifting, blurred layer took a third of the graphics card on its own and made
+   the presenter video stutter on laptops (user report 2026-11-16; measured 35% GPU -> 1%). */
 .signin-aurora, .signin-aurora::after, .signin-grain { position: absolute; inset: -20%; z-index: -1; pointer-events: none; }
 .signin-aurora {
   background:
     radial-gradient(38% 46% at 66% 40%, color-mix(in srgb, var(--signin-accent) 26%, transparent) 0%, transparent 70%),
     radial-gradient(34% 40% at 24% 78%, color-mix(in srgb, var(--signin-accent) 14%, #ffe2e8) 0%, transparent 72%);
-  filter: blur(30px);
-  animation: signin-drift 26s ease-in-out infinite alternate;
   transition: background .6s ease;
 }
-.signin-aurora::after { content: ""; inset: 0; background: radial-gradient(30% 34% at 82% 78%, #e9e4ff 0%, transparent 70%); animation: signin-drift 34s ease-in-out infinite alternate-reverse; }
-.signin-grain { inset: 0; opacity: .035; mix-blend-mode: multiply;
+.signin-aurora::after { content: ""; inset: 0; background: radial-gradient(30% 34% at 82% 78%, #e9e4ff 0%, transparent 70%); }
+.signin-grain { inset: 0; opacity: .035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 
 /* Stage: copy left, the presenter standing at the right of the stage. */
@@ -139,7 +139,6 @@
 
 @keyframes signin-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes signin-enter { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
-@keyframes signin-drift { 0% { transform: translate3d(-2%, -1%, 0) scale(1); } 100% { transform: translate3d(3%, 2%, 0) scale(1.08); } }
 @keyframes signin-caret { 50% { opacity: 0; } }
 
 @media (max-width: 1150px) {

@@ -5,6 +5,23 @@ const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing
 startupTiming.mark('main_loaded');
 const path = require("node:path");
 const components = require("./component-paths.cjs");
+const ROLLBACK_REASON_CODES = [
+  [/上次未能完成启动/, "previous_launch_unfinished"],
+  [/更新文件或准备记录不可用/, "update_files_unavailable"],
+  [/新版引导未能启动/, "new_bootstrap_failed"],
+  [/新版未能启动/, "new_version_not_started"],
+  [/更新未完成/, "update_incomplete"]
+];
+function reportUpdateRollback(logger) {
+  try {
+    const selection = components.readJson(components.updatePaths(app.getPath("userData")).selection, {});
+    const reason = String(selection?.failure || "");
+    if (!reason) return;
+    const code = (ROLLBACK_REASON_CODES.find(([pattern]) => pattern.test(reason)) || [null, "other"])[1];
+    logger.event("maintenance", "update.rolled_back", { reason_code: code, running_version: components.businessVersion(app) },
+      { level: "error", code: `update_rolled_back_${code}` });
+  } catch { /* Reporting must never block startup. */ }
+}
 const productBrand = require("../../product-brand.json");
 const installerTargets = require("../../installer-targets.json");
 const { windowLayout, keepWindowInWorkArea } = require("./window-layout.cjs");
@@ -1151,12 +1168,36 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // Daily Moments automation drives WeChat, so it waits for the launch update check.
     void launchGateOpened.then(() => momentsCampaignController?.initialize());
     logger.event("app", "ready", { window_created: true });
+    // A rollback used to leave no trace: the startup guard runs before diagnostics exist. Report the
+    // reason the launcher recorded, once (it is cleared after this version starts healthy).
+    reportUpdateRollback(logger);
     const readyWindow = mainWindow;
     // Health must not wait for the launch gate: closing during an update download would otherwise
     // leave boot-attempt.json behind and roll back a working version on the next launch.
-    Promise.resolve(readyWindow.__xiaoxiLoaded).then(() => readyWindow.webContents.executeJavaScript(
-      "new Promise(resolve => { const until = Date.now() + 15000; const check = () => { if (document.getElementById('root')?.childElementCount) resolve(true); else if (Date.now() > until) resolve(false); else setTimeout(check, 100); }; check(); })"
-    )).then(async ready => {
+    // Nor may it give up after a fixed 15 s: a slow laptop, a fresh boot or an antivirus scan could
+    // render later, the version was never marked healthy and the next launch rolled it back
+    // (「已恢复上一版本」 over and over, user report 2026-11-16). Keep checking while the window exists.
+    // Every 100 ms for the first 15 s (an ordinary launch is marked at once), then every 2 s for up to
+    // 10 minutes; a renderer that never answers one check cannot stall the loop.
+    const windowCreatedAt = Date.now();
+    const pageRendered = async () => {
+      while (!readyWindow.isDestroyed() && Date.now() - windowCreatedAt < 600_000) {
+        try {
+          const rendered = await Promise.race([
+            readyWindow.webContents.executeJavaScript("Boolean(document.getElementById('root')?.childElementCount)"),
+            new Promise((resolve) => setTimeout(() => resolve(false), 5000))
+          ]);
+          if (rendered) {
+            const seconds = Math.round((Date.now() - windowCreatedAt) / 1000);
+            if (seconds >= 15) logger.event("app", "health_late", { seconds });
+            return true;
+          }
+        } catch { /* Page still loading or reloading. */ }
+        await new Promise((resolve) => setTimeout(resolve, Date.now() - windowCreatedAt < 15_000 ? 100 : 2000));
+      }
+      return false;
+    };
+    Promise.resolve(readyWindow.__xiaoxiLoaded).catch(() => {}).then(pageRendered).then(async ready => {
       if (!ready) return;
       components.markHealthy(); cloudMaintenance?.refreshLocalState();
       // Retry only previously registered retirement, after the real page works.
