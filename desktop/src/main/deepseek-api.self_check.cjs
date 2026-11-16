@@ -568,7 +568,13 @@ async function main() {
   const rejectedRequestClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error: "invalid request" }) }) });
   await assert.rejects(() => rejectedRequestClient.reply(retryInput), (error) => error.code === "AI_REQUEST_REJECTED");
   const balanceClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: 402, json: async () => ({}) }) });
-  await assert.rejects(() => balanceClient.reply(retryInput), (error) => error.code === "AI_BALANCE_INSUFFICIENT");
+  await assert.rejects(() => balanceClient.reply(retryInput), (error) => error.code === "AI_BALANCE_INSUFFICIENT" && error.message.startsWith("API余额不足"));
+  const creditClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: 402, json: async () => ({ error: "credit_exhausted" }) }) });
+  await assert.rejects(() => creditClient.reply(retryInput), (error) => error.code === "AI_BALANCE_INSUFFICIENT" && error.message.startsWith("算力已用完"));
+  const { supplierBalanceRefused } = require("./provider-balance.cjs");
+  assert.equal(supplierBalanceRefused({ code: "Arrearage" }), true);
+  assert.equal(supplierBalanceRefused({ error: "credit_exhausted" }), false);
+  assert.equal(supplierBalanceRefused({ error: "rate_limit" }), false);
   const unreadableReplyClient = createDeepSeekClient({
     keyStore: { read: () => { throw new DeepSeekApiError("API_KEY_UNREADABLE", "已保存的 DeepSeek API Key 无法读取，请重新填写。"); } },
     fetchImpl: async () => { throw new Error("must not call fetch"); }

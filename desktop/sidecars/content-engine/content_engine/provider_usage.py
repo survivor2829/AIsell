@@ -270,10 +270,20 @@ class ProviderRequest:
         return False
 
 
+API_BALANCE_MESSAGE = "API余额不足，请联系客服处理后再试。"
+_SUPPLIER_BALANCE = re.compile(
+    r"insufficient[_\s-]*(?:account[_\s-]*)?(?:balance|quota|user[_\s-]*quota|funds|credit)"
+    r"|arrearage|account[_\s-]*overdue|overdue[_\s-]*payment|quota[_\s-]*exhausted"
+    r"|余额不足|欠费|额度不足|额度已用完",
+    re.IGNORECASE,
+)
+
+
 def observe_http_error(meter, error):
     """Read a bounded rejection only to extract approved counters and codes."""
     meter.observe(headers=getattr(error, "headers", None), http_status=getattr(error, "code", None))
     payload = None
+    raw = b""
     try:
         raw = error.read(65536)
         if len(raw) < 65536:
@@ -284,6 +294,13 @@ def observe_http_error(meter, error):
     # The company gateway refuses new paid work once this customer's 算力 is used up.
     if getattr(error, "code", None) == 402 and isinstance(payload, dict) and payload.get("error") == "credit_exhausted":
         raise ContentEngineError("credit_exhausted", "算力已用完，请联系客服充值后继续使用。")
+    # A supplier refusing for lack of balance on our API account (DeepSeek 402
+    # "Insufficient Balance" 2026-11-16, 百炼 Arrearage, quota used up): nothing was bought.
+    # Only a 4xx refusal is definite; 5xx/409 keep the callers' receipt recovery.
+    status = int(getattr(error, "code", 0) or 0)
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else ""
+    if 400 <= status < 500 and status != 409 and _SUPPLIER_BALANCE.search(text):
+        raise ContentEngineError("provider_balance_insufficient", API_BALANCE_MESSAGE)
 
 
 def provider_usage_summary(data_dir, *, task_ids=None, batch_id=None, limit=100):

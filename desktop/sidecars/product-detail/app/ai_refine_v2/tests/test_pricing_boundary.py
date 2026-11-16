@@ -283,3 +283,52 @@ def test_resuming_preserved_plan_does_not_pay_planner_again(tmp_path, monkeypatc
     runner._worker_v2(task, "资料", "image.png", "产品", "key", "key")
     planner.assert_not_called()
     assert images.call_args.args[0] == planning
+
+
+def test_supplier_balance_refusal_says_api_balance_and_allows_a_later_retry(tmp_path, monkeypatch):
+    # 2026-11-16: DeepSeek answered 402 "Insufficient Balance"; customers saw "策划请求结果不明".
+    import io
+    import urllib.error
+    body = b'{"error":{"message":"Insufficient Balance (request_id: x)","type":"insufficient_balance_error","code":"invalid_request_error"}}'
+    refused = urllib.error.HTTPError("https://gateway.invalid/deepseek", 402, "Payment Required", {}, io.BytesIO(body))
+    post = Mock(side_effect=[refused, {"id": "after-top-up", "choices": [], "usage": {}}])
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", post)
+    journal = pricing.CostJournal(tmp_path)
+    with pytest.raises(pricing.ProviderBalanceInsufficient) as raised:
+        journal.planner_call(quote(), {"messages": [], "max_tokens": 100}, "key")
+    assert "API余额不足" in str(raised.value)
+    entry = journal.load()["operations"]["planner"]
+    assert entry["status"] == "failed" and entry["not_submitted"] is True
+    assert "Insufficient" not in journal.path.read_text()
+    # Nothing was bought, so once the account is topped up the same task can plan again.
+    assert journal.planner_call(quote(), {"messages": [], "max_tokens": 100}, "key")["id"] == "after-top-up"
+    assert post.call_count == 2
+
+
+def test_customer_credit_and_other_rejections_keep_their_own_meaning():
+    from provider_balance import balance_message, API_BALANCE_MESSAGE, CREDIT_MESSAGE
+
+    assert balance_message(b'{"error":"credit_exhausted"}') == CREDIT_MESSAGE
+    assert balance_message({"code": "Arrearage", "message": "Access denied"}) == API_BALANCE_MESSAGE
+    assert balance_message("insufficient_user_quota") == API_BALANCE_MESSAGE
+    assert balance_message('{"error":"rate_limit"}') == ""
+    assert balance_message({"error": {"code": "invalid_api_key"}}) == ""
+
+
+def test_customer_credit_refusal_has_its_own_code(tmp_path, monkeypatch):
+    import io
+    import urllib.error
+    refused = urllib.error.HTTPError("https://gateway.invalid", 402, "x", {}, io.BytesIO(b'{"error":"credit_exhausted"}'))
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", Mock(side_effect=refused))
+    with pytest.raises(pricing.ProviderBalanceInsufficient) as raised:
+        pricing.CostJournal(tmp_path).planner_call(quote(), {"messages": [], "max_tokens": 100}, "key")
+    assert raised.value.code == "AI_REFINE_CREDIT_EXHAUSTED" and "算力" in str(raised.value)
+
+
+def test_balance_text_on_a_5xx_stays_outcome_unknown(tmp_path, monkeypatch):
+    import io
+    import urllib.error
+    refused = urllib.error.HTTPError("https://gateway.invalid", 502, "x", {}, io.BytesIO(b"Insufficient Balance"))
+    monkeypatch.setattr(refine_planner, "_http_post_deepseek", Mock(side_effect=refused))
+    with pytest.raises(pricing.RequestOutcomeUnknown):
+        pricing.CostJournal(tmp_path).planner_call(quote(), {"messages": [], "max_tokens": 100}, "key")

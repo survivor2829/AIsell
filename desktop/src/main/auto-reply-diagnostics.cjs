@@ -29,7 +29,8 @@ function sanitizeSystemError(error) {
     AI_NETWORK_ERROR: "无法连接 DeepSeek，请检查网络后重新启动自动回复。",
     AI_REQUEST_TIMEOUT: "DeepSeek 请求超时，请检查网络后重新启动自动回复。",
     AI_RATE_LIMITED: "DeepSeek 请求过于频繁，请稍后重新启动自动回复。",
-    AI_BALANCE_INSUFFICIENT: "DeepSeek 账户余额不足，请处理后重新启动自动回复。",
+    AI_BALANCE_INSUFFICIENT: /算力/u.test(String(error?.message || ""))
+      ? "算力已用完，请联系客服充值后重新启动自动回复。" : "API余额不足，请联系客服处理后重新启动自动回复。",
     AI_CONTENT_FILTERED: "DeepSeek 本次输出被内容策略拦截，请调整资料或问题后重新启动。",
     AI_RESPONSE_EMPTY: "DeepSeek 返回空内容，自动回复已暂停。",
     AI_RESPONSE_INVALID: "DeepSeek 返回格式无效，自动回复已暂停。",

@@ -256,6 +256,16 @@ def test_submit_explicit_4xx_is_definite_failure(monkeypatch):
     assert len(calls) == 1
 
 
+
+def test_submit_refused_for_supplier_balance_says_api_balance(monkeypatch):
+    def fake_post(url, payload, api_key, timeout=60):
+        return 402, {"error": {"code": "insufficient_user_quota", "message": "quota"}}
+
+    monkeypatch.setattr(adapter, "_http_post_json", fake_post)
+    with pytest.raises(adapter.APIMartNotSubmitted) as caught:
+        adapter.submit_image_task("prompt", None, "secret")
+    assert "API余额不足" in str(caught.value)
+
 def test_ambiguous_submit_response_is_not_retried(monkeypatch):
     calls = []
 

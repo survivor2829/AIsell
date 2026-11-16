@@ -631,8 +631,10 @@ def _post_image_submission(payload: dict, api_key: str, selected_direct: bool, g
     if isinstance(body, dict) and body.get("_gateway_request_not_sent") is True:
         raise APIMartNotSubmitted("连接暂未建立，未提交生图、未产生本次生图费用。请稍后重试。", stage="submit", http_status=code)
     if 400 <= code < 500:
+        from provider_balance import balance_message
+        refusal = balance_message(body)
         raise APIMartNotSubmitted(
-            f"APIMart 明确拒绝提交 HTTP {code}，未创建生图任务。",
+            refusal or f"APIMart 明确拒绝提交 HTTP {code}，未创建生图任务。",
             stage="submit", http_status=code,
         )
     raise APIMartOutcomeUnknown(

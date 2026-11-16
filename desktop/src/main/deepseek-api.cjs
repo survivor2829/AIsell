@@ -392,6 +392,8 @@ function responseOutputMetrics(payload) {
   };
 }
 
+const { API_BALANCE_MESSAGE, supplierBalanceRefused } = require("./provider-balance.cjs");
+
 async function responseError(response) {
   if (response.status === 401 || response.status === 403) return new DeepSeekApiError("API_KEY_INVALID", "DeepSeek API Key 无效或已失效，请检查后重新填写。");
   if (response.status === 402) {
@@ -399,14 +401,14 @@ async function responseError(response) {
     let reason = "";
     try { reason = String((await response.json())?.error || ""); } catch {}
     return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", reason === "credit_exhausted"
-      ? "算力已用完，请联系客服充值后继续使用。" : "DeepSeek 账户余额不足，请充值后再试。");
+      ? "算力已用完，请联系客服充值后继续使用。" : API_BALANCE_MESSAGE);
   }
   if (response.status === 408) return new DeepSeekApiError("AI_REQUEST_TIMEOUT", "DeepSeek 请求超时，请稍后重试。");
   if (response.status === 429) return new DeepSeekApiError("AI_RATE_LIMITED", "DeepSeek 请求过于频繁，请稍后再试。");
   if (response.status >= 500) return new DeepSeekApiError("AI_REQUEST_FAILED", "DeepSeek 服务暂时不可用，请稍后重试。");
   let text = "";
   try { text = JSON.stringify(await response.json()).toLowerCase(); } catch {}
-  if (/insufficient_balance|余额不足/.test(text)) return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", "DeepSeek 账户余额不足，请充值后再试。");
+  if (supplierBalanceRefused(text)) return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", API_BALANCE_MESSAGE);
   return new DeepSeekApiError("AI_REQUEST_REJECTED", "DeepSeek 拒绝了本次请求，请检查模型和请求配置。");
 }
 

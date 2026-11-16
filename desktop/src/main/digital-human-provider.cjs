@@ -24,6 +24,7 @@ const VOICES = Object.freeze([
   { id: 'lively', name: '轻快讲解', prompt: '轻快有亲和力的普通话讲解，语气自然，语速适中' },
 ]);
 
+const { API_BALANCE_MESSAGE, supplierBalanceRefused } = require('./provider-balance.cjs');
 function fail(code, message, extra = {}) { return Object.assign(new Error(message), { code, ...extra }); }
 function cleanMessage(value) {
   return String(value || '').replace(/Bearer\s+\S+|sk-[A-Za-z0-9_-]+/giu, '[已隐藏]')
@@ -236,6 +237,13 @@ function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } 
         && ![408, 409, 429].includes(response.status) && typeof payload?.request_id === 'string'
         && payload.request_id.length > 0 && typeof payload?.code === 'string' && payload.code.length > 0;
       const missingRoute = response.status === 404 && !payload?.code;
+      // Our supplier account out of balance or quota. A receipt replay keeps its own rule:
+      // only an identifiable upstream rejection proves the original request bought nothing.
+      if (response.status >= 400 && response.status < 500 && ![408, 409, 429].includes(response.status)
+        && supplierBalanceRefused(payload)) {
+        throw fail('provider_balance_insufficient', API_BALANCE_MESSAGE,
+          { outcomeUnknown: receiptQuery ? !originalRequestRejected : false, originalRequestRejected, status: response.status });
+      }
       throw fail(missingRoute ? 'digital_human_route_unavailable' : 'digital_human_provider_error',
         missingRoute ? '数字人接口尚未部署或当前不可用，请在开发者工具检查服务版本。' : `服务未完成请求${detail ? `：${detail}` : `（${response.status}）`}`,
         { outcomeUnknown: receiptQuery ? !originalRequestRejected : method === 'POST' && (response.status >= 500 || response.status === 409),

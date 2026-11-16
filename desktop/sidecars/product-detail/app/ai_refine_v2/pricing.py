@@ -27,6 +27,19 @@ class PricingRequired(RuntimeError):
     do_not_retry = True
 
 
+class ProviderBalanceInsufficient(RuntimeError):
+    """The supplier refused the request for lack of balance: nothing was bought."""
+
+    code = "AI_REFINE_API_BALANCE_INSUFFICIENT"
+    do_not_retry = True
+    outcome_unknown = False
+
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        if code:
+            self.code = code
+
+
 class RequestOutcomeUnknown(RuntimeError):
     code = "AI_REFINE_OUTCOME_UNKNOWN"
     do_not_retry = True
@@ -146,6 +159,11 @@ class CostJournal:
                 raw = exc.read(65536)
             except Exception:
                 return result
+            # Kept on the exception only (never persisted) so a balance refusal can be named.
+            try:
+                exc._xiaoxi_body = raw
+            except Exception:
+                pass
             result["body_sha256"] = hashlib.sha256(raw).hexdigest()
             try:
                 data = json.loads(raw)
@@ -287,14 +305,25 @@ class CostJournal:
         rates = quote["planner_per_million_cny"]
         reserve = money((input_bound * rates["input"] + body["max_tokens"] * rates["output"]) / 1_000_000)
         operation_id = uuid.uuid4().hex
+        # A balance refusal bought nothing, so the same operation may be sent again later.
         self.begin(operation, quote, reserve, request_sha256=request_hash,
-                   gateway_operation_id=operation_id, gateway_origin=_planner_receipt_origin())
+                   gateway_operation_id=operation_id, gateway_origin=_planner_receipt_origin(),
+                   retry_not_submitted=True)
         try:
             # Persist the exact payload, but never the credential, before sending.
             _write(self.path.parent / f"_{operation}_request.json", body)
             response = _http_post_deepseek(body, key, operation_id)
         except Exception as exc:
-            self.finish(operation, "outcome_unknown", request_error=self._request_error(exc))
+            request_error = self._request_error(exc)
+            from provider_balance import balance_message, CREDIT_MESSAGE
+            # Only a 4xx refusal is definite (a 409 or 5xx may still have been delivered).
+            definite = isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500 and exc.code != 409
+            refusal = balance_message(getattr(exc, "_xiaoxi_body", None)) if definite else ""
+            if refusal:
+                self.finish(operation, "failed", not_submitted=True, request_error=request_error)
+                raise ProviderBalanceInsufficient(
+                    refusal, code="AI_REFINE_CREDIT_EXHAUSTED" if refusal == CREDIT_MESSAGE else None) from None
+            self.finish(operation, "outcome_unknown", request_error=request_error)
             raise RequestOutcomeUnknown("策划请求结果不明，已保留费用预留；不会自动重新策划。") from None
         # Retain the response before schema parsing: even invalid JSON was paid.
         _write(response_path, response)

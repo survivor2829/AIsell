@@ -76,5 +76,23 @@ class ProviderBillingTest(unittest.TestCase):
         self.assertIn("充值", raised.exception.message)
 
 
+    def test_supplier_out_of_balance_says_api_balance(self):
+        # 2026-11-16: DeepSeek 402 "Insufficient Balance"; 百炼 answers Arrearage when overdue.
+        for status, body in ((402, {"error": {"message": "Insufficient Balance (request_id: x)"}}),
+                             (400, {"code": "Arrearage", "message": "Access denied, please make sure your account is in good standing."})):
+            error = urllib.error.HTTPError("https://gw", status, "x", {}, io.BytesIO(json.dumps(body).encode()))
+            with self.assertRaises(ContentEngineError) as raised:
+                observe_http_error(mock.Mock(), error)
+            self.assertEqual("provider_balance_insufficient", raised.exception.code)
+            self.assertIn("API余额不足", raised.exception.message)
+
+    def test_other_rejections_are_left_to_the_caller(self):
+        error = urllib.error.HTTPError("https://gw", 429, "x", {}, io.BytesIO(b"{\"error\":\"rate_limit\"}"))
+        observe_http_error(mock.Mock(), error)
+        # A 5xx/409 mentioning balance may still have been delivered: left to receipt recovery.
+        for status in (409, 502):
+            error = urllib.error.HTTPError("https://gw", status, "x", {}, io.BytesIO(b"Insufficient Balance"))
+            observe_http_error(mock.Mock(), error)
+
 if __name__ == "__main__":
     unittest.main()
