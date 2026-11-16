@@ -390,7 +390,7 @@ $dialogAccepted = Wait-PasteAccepted 1000
   const beforeLoginInterruption = calls.length;
   result = await textWorkflow.runWorkflowStep(textRecord, context);
   assert.equal(result.status, "pending");
-  assert.equal(result.waitingReason, "wechat_environment_recovery");
+  assert.equal(result.waitingReason, "wechat_login_wait", "a logged-out WeChat waits for login (2026-11-15)");
   assert.equal(result.retryAfterMs, 30000);
 
   assert.equal(result.result.deliveryStatus, "not_attempted");
@@ -415,14 +415,19 @@ $dialogAccepted = Wait-PasteAccepted 1000
   const cappedPayload = cappedWorkflow.prepareWorkflowTask({ script: "环境恢复上限测试", contactIds: [contact.id] });
   const cappedRecord = { id: crypto.randomUUID(), payload: cappedPayload, progress: { done: 0 }, status: "running" };
   result = await cappedWorkflow.runWorkflowStep(cappedRecord, context);
-  assert.equal(result.waitingReason, "wechat_environment_recovery");
-  clock.setTime(clock.getTime() + 10 * 60_000);
+  assert.equal(result.waitingReason, "wechat_login_wait");
+  // Unlike other environment causes (skipped after ten minutes), a logged-out WeChat keeps the
+  // contact waiting until the customer logs in, then it goes on by itself (user decision 2026-11-15).
+  clock.setTime(clock.getTime() + 3 * 60 * 60_000);
   result = await cappedWorkflow.runWorkflowStep(cappedRecord, context);
-  assert.equal(result.status, "completed", "environment recovery must stop after ten minutes");
-  assert.equal(result.result.skipped, true);
+  assert.equal(result.status, "pending", "hours later the contact is still waiting, not skipped");
+  assert.equal(result.waitingReason, "wechat_login_wait");
   const cappedTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(cappedRecord.id).digest("hex"));
-  assert.equal(JSON.parse(fs.readFileSync(path.join(cappedTaskDir, "touch_task.json"), "utf8")).results[0].status, "pre_send_skipped");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cappedTaskDir, "touch_task.json"), "utf8")).results[0].status, "generated");
   loginRequired = false;
+  result = await cappedWorkflow.runWorkflowStep(cappedRecord, context);
+  assert.equal(result.status, "completed", "after login the waiting contact is sent");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cappedTaskDir, "touch_task.json"), "utf8")).results[0].status, "sent_verified");
 
   searchUnavailable = true;
   const skipWorkflow = createTouchWorkflow(config);
@@ -438,8 +443,11 @@ $dialogAccepted = Wait-PasteAccepted 1000
   assert.deepEqual(Object.keys(skippedTask.results[0].skip_record), ["contactId", "displayName", "index", "reasonCode", "ruleId", "blockedReason", "at", "traceId", "identityLogic"]);
   assert.equal(skippedTask.results[0].skip_record.reasonCode, "exact_search_result_not_found");
   searchUnavailable = false;
-  result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context);
+  // 发完后续联系人后，列表末尾会自动把跳过的人再试一轮（2026-11-15），这次能找到就发出。
+  for (let step = 0; step < 6 && result.status !== "completed"; step++) { clock.setTime(clock.getTime() + 10_000); result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context); }
   assert.equal(result.status, "completed", "跳过无结果联系人后仍应完成后续联系人");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(skipTaskDir, "touch_task.json"), "utf8")).results[0].status, "sent_verified",
+    "末尾自动再试一轮时，之前搜不到的人这次发出");
 
   searchIdentityUnverified = true;
   const unverifiedWorkflow = createTouchWorkflow(config);
@@ -463,7 +471,13 @@ $dialogAccepted = Wait-PasteAccepted 1000
   assert.equal(unverifiedTask.results[1].status, "pending", "后续联系人不能被连带跳过");
   searchIdentityUnverified = false;
   result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.result?.autoRetryQueued, 1, "后续联系人发完后，末尾自动把跳过的人再试一轮（2026-11-15）");
+  // 这一轮仍认不准：再跳过一次就结束，不会有第三轮。
+  searchIdentityUnverified = true;
+  for (let step = 0; step < 6 && result.status !== "completed"; step++) { clock.setTime(clock.getTime() + 10_000); result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context); }
+  searchIdentityUnverified = false;
   assert.equal(result.status, "completed", "隔离未确认搜索结果后仍应完成后续联系人");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8")).results[0].status, "identity_skipped");
 
   networkLookupMisclick = true;
   const poisonedWorkflow = createTouchWorkflow(config);
@@ -806,7 +820,7 @@ $dialogAccepted = Wait-PasteAccepted 1000
       let final;
       for (const id of contactIds) {
         final = await workflow.runWorkflowStep(record, context);
-        if (reasonCode === "wechat_login_required") {
+        if (reasonCode === "wechat_window_not_foreground") {
           assert.equal(final.waitingReason, "wechat_environment_recovery");
           clock.setTime(clock.getTime() + 10 * 60_000);
           final = await workflow.runWorkflowStep(record, context);
@@ -825,7 +839,7 @@ $dialogAccepted = Wait-PasteAccepted 1000
     }
   }
   assert.equal((await checkPassportWiring("图片点击前超时", "image_send_pre_click_timeout", [contact.id], true)).status, "completed");
-  assert.equal((await checkPassportWiring("环境耗尽", "wechat_login_required", [contact.id])).status, "completed");
+  assert.equal((await checkPassportWiring("环境耗尽", "wechat_window_not_foreground", [contact.id])).status, "completed");
   // Three contacts failing for the same reason no longer stop the unattended run.
   assert.equal((await checkPassportWiring("连续同因跳过", "message_snapshot_unavailable",
     [contact.id, secondContact.id, thirdContact.id])).status, "completed");
@@ -1093,12 +1107,13 @@ $dialogAccepted = Wait-PasteAccepted 1000
     await rejoined.step(); await rejoined.step(); result = await rejoined.step();
     assert.notEqual(result.status, "needs_attention", "rejoining the skipped set starts a new streak");
   }
-  for (const reasonCode of ["wechat_login_required", "image_send_pre_click_timeout"]) {
+  // A logged-out WeChat waits for login instead (2026-11-15); another environment cause still skips.
+  for (const reasonCode of ["wechat_window_not_foreground", "image_send_pre_click_timeout"]) {
     const test = await testFailure(reasonCode, { contactIds: [contact.id, secondContact.id, thirdContact.id],
       preClick: reasonCode === "image_send_pre_click_timeout" });
     for (let person = 0; person < 3; person += 1) {
       result = await test.step();
-      if (reasonCode === "wechat_login_required") {
+      if (reasonCode === "wechat_window_not_foreground") {
         assert.equal(result.waitingReason, "wechat_environment_recovery");
         clock.setTime(clock.getTime() + 10 * 60_000);
         result = await test.step();

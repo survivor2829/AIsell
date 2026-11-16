@@ -7,6 +7,51 @@ const {
   runPowerShell
 } = require("./wechat_window_driver.cjs");
 
+// A logged-out WeChat shows only its login window (2026-11-16 field: Weixin「微信」296x388 at
+// 100%). The detector is replayed with fake windows: login size at 100% and 125%, a large chat
+// popup, a minimized login window, a hidden one and an untitled small window.
+{
+  const start = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Test-WechatLoginWindowShown");
+  const end = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Update-WechatWindowCandidateDiagnostics");
+  assert.ok(start > 0 && end > start, "the login window detector lives in the window script");
+  assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /Test-WechatLoginWindowShown\)\) \{[^]*?reason = "wechat_login_required"/u,
+    "no main window plus a login window reports wechat_login_required");
+  assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /mainLikeCandidates\.Count -eq 0 -and \(Test-WechatLoginWindowShown\)\)/u,
+    "at high scaling the login window itself can be a candidate: only main-like candidates rule the login out");
+  const detector = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(start, end);
+  const replay = (windows, expectedPid = "") => runPowerShell(`
+Add-Type @"
+using System;
+public static class Win32WechatWindow {
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public static object[][] Rows;
+  public static IntPtr[] WindowsForProcesses(int[] ids) { var r = new IntPtr[Rows.Length]; for (int i = 0; i < Rows.Length; i++) r[i] = new IntPtr(i + 1); return r; }
+  static object[] Row(IntPtr h) { return Rows[h.ToInt32() - 1]; }
+  public static bool IsWindowVisible(IntPtr h) { return (bool)Row(h)[0]; }
+  public static bool IsIconic(IntPtr h) { return (bool)Row(h)[1]; }
+  public static int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n) { s.Append((string)Row(h)[2]); return s.Length; }
+  public static bool GetWindowRect(IntPtr h, out RECT r) { r = new RECT(); r.Right = (int)Row(h)[3]; r.Bottom = (int)Row(h)[4]; return true; }
+  public static uint GetDpiForWindow(IntPtr h) { return (uint)(int)Row(h)[5]; }
+}
+"@
+$wechatProcesses = @{ 1 = $true }
+$expectedPid = '${expectedPid}'
+[Win32WechatWindow]::Rows = @(${windows.map((w) => `,@([bool]$${w.visible}, [bool]$${w.minimized}, '${w.title}', ${w.width}, ${w.height}, ${w.dpi})`).join("")})
+${detector}
+@{ ok = $true; login = [bool](Test-WechatLoginWindowShown) } | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 30_000 });
+  const win = (over) => ({ visible: true, minimized: false, title: "微信", width: 296, height: 388, dpi: 96, ...over });
+  assert.equal(replay([win({})]).login, true, "the field login window (100%)");
+  assert.equal(replay([win({ width: 370, height: 485, dpi: 120 })]).login, true, "the same window at 125%");
+  assert.equal(replay([win({ title: "Weixin", width: 330, height: 219 }), win({})]).login, true, "beside WeChat's small helper window");
+  assert.equal(replay([win({ width: 1120, height: 760 })]).login, false, "a main-size window is not the login window");
+  assert.equal(replay([win({ minimized: true })]).login, false);
+  assert.equal(replay([win({ visible: false })]).login, false);
+  assert.equal(replay([win({ title: "张经理" })]).login, false, "a small chat popup is not the login window");
+  assert.equal(replay([win({})], "1").login, true, "the target account's own login window");
+  assert.equal(replay([win({})], "2").login, false, "another WeChat's login window says nothing about the target account");
+  assert.equal(replay([win({ width: 740, height: 970, dpi: 240 })]).login, true, "the login window at 250% scaling");
+}
+
 // The fixtures below run slices of the window script; the whole script must also parse
 // (2026-11-13: a leftover line from an edit broke every real run while the slices passed).
 {
@@ -214,6 +259,7 @@ function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false,
     return @($main)
   }
   function Update-WechatWindowCandidateDiagnostics([object[]]$candidates) {}
+  function Test-WechatLoginWindowShown { return $false }
   function Test-XiaoxiUserIdle { return $true }
   function Request-PersonalWechatActivation([object]$window) { $script:fixtureActivationCount++; if ($budgetMode -eq "spendOnActivation") { $script:windowSearchBudgetMs = 0 }; return $true }
   $expectedHandleIsValid = $false

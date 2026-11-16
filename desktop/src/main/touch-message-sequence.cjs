@@ -63,7 +63,9 @@ async function executeMessageSequence({ row, parts, execute, persist, isEnabled,
       return { ok: false, send_attempted: null, blocked_reason: "touch_part_outcome_unknown", error: `${label}的发送结果未确认，请查看微信；不会自动补发。` };
     }
     if (!isEnabled()) return { ok: false, send_attempted: false, blocked_reason: "workflow_paused", error: "已暂停，已发出的内容会保留。" };
-    part.status = "sending";
+    // "preparing" until the executor reports "prepared" just before the click: a restart in
+    // between resumes this part instead of counting it as sent (2026-11-15 review).
+    part.status = "preparing";
     persist();
     let result;
     try {
@@ -73,6 +75,13 @@ async function executeMessageSequence({ row, parts, execute, persist, isEnabled,
         persist();
       });
     } catch {
+      // Still "preparing": the executor never reached its "prepared" mark (written right before
+      // the click), so nothing of this part was sent and it can be tried again.
+      if (part.status === "preparing") {
+        part.status = "not_attempted";
+        persist();
+        return { ok: false, send_attempted: false, blocked_reason: "executor_exception", error: `${label}发送步骤异常中断，尚未发送。` };
+      }
       part.status = "outcome_unknown";
       persist();
       return { ok: false, send_attempted: null, blocked_reason: "touch_part_exception", error: `${label}执行中断，结果未确认；不会自动补发。` };

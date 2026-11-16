@@ -26,6 +26,9 @@ const workflowPolicies = Object.freeze({
   // WeChat; like the early pause, other tasks go on (only account doubts stop the whole run) (2026-11-13).
   touch_wechat_window_paused: { classification: "blocker", attentionScope: "task" },
   wechat_clipboard_read_failed: { classification: "recoverable", attentionScope: "task" },
+  // The send executor failed before its "prepared" mark (right before the click): nothing was sent;
+  // retried once, then skipped as retryable (2026-11-15).
+  executor_exception: { classification: "recoverable", attentionScope: "task" },
   wechat_focus_failed: { classification: "recoverable", attentionScope: "task" },
   wechat_window_preflight_failed: { classification: "environment", attentionScope: "global" },
   wechat_search_panel_unavailable: { classification: "blocker", attentionScope: "global" },

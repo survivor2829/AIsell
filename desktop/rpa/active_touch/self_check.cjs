@@ -1074,6 +1074,62 @@ try {
   assert.equal(multipartCrashRecovered.results[0].message_parts.filter((part) => part.status === "outcome_unknown").length, 1, "exactly the in-flight multipart segment must enter manual resolution");
   assert.equal(multipartCrashRecovered.results[0].message_parts[1].status, "outcome_unknown");
 
+  // 2026-11-15: a restart while still searching/typing ("preparing", before the executor's
+  // "prepared" ledger mark) used to count the contact as sent; it is tried again instead.
+  const preparingCrash = createTask("preparing-crash", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  preparingCrash.results[0].message = "准备阶段崩溃测试消息";
+  preparingCrash.results[0].status = "preparing";
+  preparingCrash.results[0].send_attempted = null;
+  saveTaskState(dir, preparingCrash);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  const preparingRecovered = recoverInterruptedTask(dir);
+  assert.equal(preparingRecovered.results[0].status, "generated", "a contact interrupted before the click is tried again");
+  assert.equal(preparingRecovered.results[0].retry_blocked, false);
+  assert.equal(preparingRecovered.results[0].send_attempted, false);
+  assert.equal(preparingRecovered.results[0].crash_recovered_from, "preparing");
+  assert.notEqual(preparingRecovered.phase, "awaiting_unknown_resolution");
+  // The executor's ledger still wins: "prepared" right before the click stays ambiguous.
+  const preparingWithLedger = createTask("preparing-with-ledger", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  preparingWithLedger.results[0].message = "准备阶段账本测试消息";
+  preparingWithLedger.results[0].status = "preparing";
+  preparingWithLedger.results[0].send_attempted = null;
+  saveTaskState(dir, preparingWithLedger);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: preparingWithLedger.id, contact_id: preparingWithLedger.results[0].id, current_index: 0 },
+    real_send_status: "prepared", real_send_attempt_key: "k1", real_send_attempts: { k1: "prepared" }
+  }), "utf8");
+  const preparingLedgerRecovered = recoverInterruptedTask(dir);
+  assert.equal(preparingLedgerRecovered.results[0].status, "outcome_unknown", "a ledger 'prepared' is never retried");
+  assert.equal(preparingLedgerRecovered.results[0].crash_recovered_from, "prepared");
+  assert.equal(preparingLedgerRecovered.results[0].retry_blocked, true);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  // Multipart: a part still preparing resumes; a part that reached the sender stays ambiguous.
+  const preparingParts = createTask("preparing-parts", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  preparingParts.results[0].message = "图文准备阶段测试消息";
+  preparingParts.results[0].status = "preparing";
+  preparingParts.results[0].send_attempted = null;
+  preparingParts.results[0].message_parts = [
+    { kind: "text", signature: "text", status: "sent_verified" },
+    { kind: "image", signature: "image", status: "preparing" }
+  ];
+  saveTaskState(dir, preparingParts);
+  const preparingPartsRecovered = recoverInterruptedTask(dir);
+  assert.equal(preparingPartsRecovered.results[0].status, "generated");
+  assert.deepEqual(preparingPartsRecovered.results[0].message_parts.map((part) => part.status), ["sent_verified", "pending"],
+    "the sent text stays sent; the image that never reached the sender is sent after the restart");
+  const preparingPartClicked = createTask("preparing-part-clicked", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  preparingPartClicked.results[0].message = "图文点击阶段测试消息";
+  preparingPartClicked.results[0].status = "preparing";
+  preparingPartClicked.results[0].send_attempted = null;
+  preparingPartClicked.results[0].message_parts = [
+    { kind: "text", signature: "text", status: "sent_verified" },
+    { kind: "image", signature: "image", status: "clicked" }
+  ];
+  saveTaskState(dir, preparingPartClicked);
+  const preparingPartClickedRecovered = recoverInterruptedTask(dir);
+  assert.equal(preparingPartClickedRecovered.results[0].message_parts[1].status, "outcome_unknown", "a clicked part is never resent");
+  assert.equal(preparingPartClickedRecovered.phase, "awaiting_unknown_resolution");
+
   async function workflowCrashRecoveryCase(rowStatus, multipart = false, settings = {}) {
     const workflowRoot = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-touch-${rowStatus}-recovery-`));
     const imageIds = multipart ? ["a".repeat(64)] : [];

@@ -412,6 +412,7 @@ function taskResultLabel(status: string) {
     processing: "处理中",
     draft_ready: "草稿已填",
     generated: "文案已生成",
+    preparing: "正在找人",
     prepared: "发送已准备",
     clicked: "已点击，待核验",
     sent_verified: "发送已核验",

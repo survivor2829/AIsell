@@ -653,6 +653,24 @@ function recoverInterruptedTask(baseDir = __dirname) {
     const beforeIndex = task.current_index;
     reconcileRealSendAttempt(task, readExecutionState(baseDir));
     const unresolved = task.results[task.current_index];
+    // Interrupted while searching, opening or typing ("preparing", set until the executor writes
+    // "prepared" just before the click): nothing was sent, so the contact is simply tried again.
+    // A part that reached "prepared"/"clicked" stays ambiguous and goes through the rules below.
+    if (unresolved?.status === "preparing") {
+      for (const part of Array.isArray(unresolved.message_parts) ? unresolved.message_parts : []) {
+        if (part?.status === "preparing") part.status = "pending";
+      }
+      const reachedSender = Array.isArray(unresolved.message_parts)
+        && unresolved.message_parts.some((part) => ["sending", "prepared", "clicked"].includes(part?.status));
+      if (reachedSender) unresolved.status = "sending";
+      else {
+        unresolved.status = "generated";
+        unresolved.retry_blocked = false;
+        unresolved.send_attempted = false;
+        unresolved.crash_recovered_from = "preparing";
+        unresolved.updated_at = nowIso();
+      }
+    }
     if (["sending", "prepared", "clicked"].includes(unresolved?.status)) {
       const interruptedStatus = unresolved.status;
       const interruptedParts = Array.isArray(unresolved.message_parts)
