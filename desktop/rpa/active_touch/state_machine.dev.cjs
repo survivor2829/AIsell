@@ -23,6 +23,10 @@ const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, 
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
 
 const POST_SEND_CONFIRMATION_ATTEMPTS = 2;
+// A session verified this recently, in the same window, is not checked again right before the send.
+const FRESH_SESSION_MS = 60_000;
+// A window the caller prepared this recently (same step, no idle wait) is not prepared again.
+const HANDED_WINDOW_MS = 10_000;
 const RETRYABLE_POST_SEND_CONFIRMATION_REASONS = new Set(["input_draft_read_failed"]);
 const { summarizeSendResult, observeSendStage } = require("../../src/shared/wechat-send-diagnostics.cjs");
 
@@ -434,7 +438,18 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   if (state.real_send_attempts?.[key] || ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status)) {
     return withSendAttempted(rejectRepeatedAttempt(baseDir, state), sendAttemptedFromState(state, key));
   }
-  const session = await observeSendStage(options, "send_session_check", () => sessionCheckAsync(state, sessionDriver, baseDir));
+  // The same contact's session (window, chat and account) was verified seconds ago in this run, and
+  // the send click itself checks the window, chat and focus before and after the draft. A second
+  // full session check here repeated that work (about 2.5 s per contact, 1.3.13 field) and only added
+  // the account scan, which a changed account would fail anyway through the window handle.
+  // (Logging out or switching the account closes the main window, so a new account never keeps
+  // the window handle checked here.)
+  const fresh = options.freshSession;
+  const freshAge = Date.now() - Number(fresh?.at);
+  const freshSession = fresh?.ok === true && Number.isFinite(freshAge) && freshAge >= 0 && freshAge < FRESH_SESSION_MS
+    && Number(fresh.pid) === Number(state.window_pid) && String(fresh.hWnd) === String(state.window_handle);
+  const session = freshSession ? fresh
+    : await observeSendStage(options, "send_session_check", () => sessionCheckAsync(state, sessionDriver, baseDir));
   if (!session.ok || Number(session.pid) !== Number(state.window_pid) || String(session.hWnd) !== String(state.window_handle)) {
     return withSendAttempted(blockSendGate(baseDir, state, "real_send_session_changed", "已阻断：微信账号、PID、窗口句柄或当前会话发生变化"));
   }
@@ -449,7 +464,9 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
     expectedIncomingMessage: String(options.expectedIncomingMessage || "").trim(),
     expectedIncomingRuntimeId: String(options.expectedIncomingRuntimeId || "").trim()
   };
-  const before = await observeSendStage(options, "before_send_snapshot", () => bubbleVerifier(message, { ...windowContext, phase: "before" }));
+  // The draft itself is proven by the send click (draftVerified, read back right before the click),
+  // so the snapshot only records the bubbles already in the chat (one clipboard round-trip less).
+  const before = await observeSendStage(options, "before_send_snapshot", () => bubbleVerifier(message, { ...windowContext, phase: "before", skipDraftRead: true }));
   if (!hasMessageSnapshot(before)) {
     const blocked = blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
     return withSendAttempted({
@@ -485,23 +502,26 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   } catch {
     return persistOutcomeUnknown(baseDir, prepared, "send_driver_exception", null, options.onTransition);
   }
+  // The click's own read-back proves the exact draft just before the click. Kept with every result
+  // that may have been sent, so a later bubble check can still confirm it by the emptied input.
+  const snapshotBefore = sendResult?.draftVerified === true ? { ...before.snapshot, draftExact: true } : before.snapshot;
   if (!sendResult?.ok || sendResult.conversationVerified !== true || sendResult.composerVerified === false || sendResult.draftVerified !== true) {
     if (sendResult?.sendAttempted === false) {
       return persistNotAttempted(baseDir, prepared, sendResult?.reason || "atomic_send_not_verified", options.onTransition, sendResult?.composerDiagnostics || null);
     }
-    return persistOutcomeUnknown(baseDir, prepared, sendResult?.reason || "atomic_send_not_verified", sendResult?.sendAttempted === true ? true : null, options.onTransition, sendResult);
+    return persistOutcomeUnknown(baseDir, { ...prepared, message_bubble_snapshot_before: snapshotBefore }, sendResult?.reason || "atomic_send_not_verified", sendResult?.sendAttempted === true ? true : null, options.onTransition, sendResult);
   }
-  const clicked = { ...prepared, real_send_clicked: true, real_send_status: "clicked", real_send_attempts: { ...prepared.real_send_attempts, [key]: "clicked" }, located_window_title: sendResult.title ?? prepared.located_window_title, last_result: "real_send_clicked" };
+  const clicked = { ...prepared, message_bubble_snapshot_before: snapshotBefore, real_send_clicked: true, real_send_status: "clicked", real_send_attempts: { ...prepared.real_send_attempts, [key]: "clicked" }, located_window_title: sendResult.title ?? prepared.located_window_title, last_result: "real_send_clicked" };
   saveState(baseDir, clicked);
   try { notifyTransition(options.onTransition, "clicked", clicked); } catch {}
   let verified;
   for (let attempt = 0; attempt < POST_SEND_CONFIRMATION_ATTEMPTS; attempt += 1) {
     try {
-      verified = await observeSendStage(options, "after_send_confirmation", () => bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot }));
+      verified = await observeSendStage(options, "after_send_confirmation", () => bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: snapshotBefore }));
     } catch {
       return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", true, options.onTransition);
     }
-    if (isVerifiedNewMessage(verified, message, before.snapshot)) break;
+    if (isVerifiedNewMessage(verified, message, snapshotBefore)) break;
     if (attempt + 1 >= POST_SEND_CONFIRMATION_ATTEMPTS || !shouldRetryPostSendConfirmation(verified)) break;
     let retrySession;
     try {
@@ -514,7 +534,7 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
       break;
     }
   }
-  if (!isVerifiedNewMessage(verified, message, before.snapshot)) return persistOutcomeUnknown(baseDir, clicked, verified?.reason || "message_bubble_not_new_latest_exact", true, options.onTransition, verified);
+  if (!isVerifiedNewMessage(verified, message, snapshotBefore)) return persistOutcomeUnknown(baseDir, clicked, verified?.reason || "message_bubble_not_new_latest_exact", true, options.onTransition, verified);
   const draftConsumed = verified.verificationMode === "draft_consumed";
   const nextState = { ...clicked, real_send_status: "sent_verified", real_send_attempts: { ...clicked.real_send_attempts, [key]: "sent_verified" }, message_bubble_verified: !draftConsumed, message_bubble_status: draftConsumed ? "not_exposed" : "verified", message_bubble_reason: draftConsumed ? "uia_message_bubble_unavailable" : "", post_send_verified: true, post_send_status: draftConsumed ? "draft_consumed_verified" : "bubble_verified", post_send_reason: "", post_send_verification_mode: draftConsumed ? "draft_consumed" : "message_bubble", located_window_title: verified.title ?? clicked.located_window_title, last_result: "sent_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
@@ -784,6 +804,7 @@ async function executeVerifiedContactSendCore(options = {}) {
     }
   }
   let session = { ok: true };
+  let freshSession = null;
   if (!reusedSession) {
     if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
     const windowPreflight = options.windowPreflight || prepareWechatRpaWindowAsync;
@@ -792,8 +813,11 @@ async function executeVerifiedContactSendCore(options = {}) {
       ? Math.max(0, Math.min(60_000, Math.floor(requestedWindowIdleMs)))
       : 0;
     let preparedWindow;
+    const handedAge = Date.now() - Number(options.preparedWindowAt);
+    const handedWindow = windowMinIdleMs === 0 && Number.isFinite(handedAge) && handedAge >= 0
+      && handedAge < HANDED_WINDOW_MS && strictPreparedWechatWindow(options.preparedWindow) ? options.preparedWindow : null;
     try {
-      preparedWindow = await observeSendStage(options, "prepare_window", () => windowPreflight({
+      preparedWindow = handedWindow || await observeSendStage(options, "prepare_window", () => windowPreflight({
         minIdleMs: windowMinIdleMs,
         requireFocused: true
       }));
@@ -839,7 +863,29 @@ async function executeVerifiedContactSendCore(options = {}) {
       "--min-idle-ms",
       "0"
     ];
-    const openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
+    let openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
+    // The handed window lost focus or changed before the search (a notification, a click elsewhere):
+    // prepare it the usual way once and search again. Nothing was typed or clicked in the chat yet.
+    if (handedWindow && openedConversation?.ok !== true && openedConversation?.send_attempted !== true
+      && ["wechat_window_not_foreground", "wechat_window_identity_mismatch"].includes(String(openedConversation?.blocked_reason || ""))
+      && await executionMayContinue(options)) {
+      discardSearchCapture(openedConversation);
+      let refreshed;
+      try {
+        refreshed = await observeSendStage(options, "prepare_window", () => windowPreflight({ minIdleMs: windowMinIdleMs, requireFocused: true }));
+      } catch {
+        refreshed = { ok: false, reason: WINDOW_PREFLIGHT_FAILED };
+      }
+      const refreshedIdentity = strictPreparedWechatWindow(refreshed);
+      if (!refreshedIdentity) {
+        setRealSendArm(baseDir, false);
+        return withSendAttempted({ ok: false, action: "prepare-wechat-window", blocked_reason: String(refreshed?.reason || "wechat_window_not_ready"),
+          error: wechatWindowBlockText(refreshed?.reason || "wechat_window_not_ready"),
+          send_diagnostics: preflightDiagnostics(refreshed, "prepare_wechat_window", windowMinIdleMs, 0) });
+      }
+      openedConversation = await options.runStep("click-search-result-dry-run",
+        ["--expected-pid", String(refreshedIdentity.pid), "--expected-hwnd", refreshedIdentity.hWnd, "--min-idle-ms", "0"]);
+    }
     if (!(await executionMayContinue(options))) {
       discardSearchCapture(openedConversation);
       return withSendAttempted(cancelVerifiedContactSend(baseDir));
@@ -856,6 +902,10 @@ async function executeVerifiedContactSendCore(options = {}) {
     session = await observeSendStage(options, "verify_session", () => verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync));
     if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
     if (!session.ok) return withSendAttempted(session);
+    // Only the touch path skips the second check; a reply (beforeDraft hook) keeps it.
+    if (typeof options.beforeDraft !== "function") {
+      freshSession = { ok: true, pid: Number(session.state?.window_pid), hWnd: String(session.state?.window_handle || ""), at: Date.now() };
+    }
   }
   if (reusedSession && !(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   if (options.image) {
@@ -902,7 +952,8 @@ async function executeVerifiedContactSendCore(options = {}) {
     expectedIncomingMessage: options.expectedIncomingMessage,
     expectedIncomingRuntimeId: options.expectedIncomingRuntimeId,
     onTransition: options.onTransition,
-    onDiagnostic: options.onDiagnostic
+    onDiagnostic: options.onDiagnostic,
+    freshSession
   }, options.sendDriver || clickWechatSendButtonAsync, options.sessionDriver || verifyWechatCurrentConversationAsync, options.bubbleVerifier || verifyWechatMessageBubbleAsync);
   return withSessionAnchor(textOutcome, options, baseDir);
 }

@@ -1162,6 +1162,18 @@ $snapshot = @{
   exactCount = $outgoingExactBefore.Count
   capturedAtUtc = [DateTime]::UtcNow.ToString("o")
 }
+if ($phase -eq "before" -and [Environment]::GetEnvironmentVariable("XIAOXI_SKIP_DRAFT_READ") -eq "1") {
+  # The send click reads the draft back itself right before clicking and refuses an inexact one;
+  # the caller carries that proof forward, so the input box is not selected and copied here too.
+  # Still fail closed before anything is prepared when WeChat is no longer in front.
+  if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+    @{ ok = $false; reason = "wechat_window_not_foreground"; proofDiagnostics = @{ input_read_ok = $false; input_read_reason = "draft_read_skipped_not_foreground"; same_window = $false } } | ConvertTo-Json -Compress -Depth 4
+    exit
+  }
+  $snapshot.draftExact = $false
+  @{ ok = $true; snapshot = $snapshot; draftRead = "skipped" } | ConvertTo-Json -Compress -Depth 5
+  exit
+}
 if ($phase -eq "before") {
   $draftBefore = Read-InputDraft
   if (-not $draftBefore.ok) {
@@ -1279,7 +1291,8 @@ function verifyWechatMessageBubble(message, context = {}) {
     XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
     XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? ""),
     XIAOXI_VERIFY_PHASE: phase,
-    XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null)
+    XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null),
+    XIAOXI_SKIP_DRAFT_READ: context.skipDraftRead === true ? "1" : ""
   }, { ensure: false });
 }
 
@@ -1293,7 +1306,8 @@ function verifyWechatMessageBubbleAsync(message, context = {}) {
     XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
     XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? ""),
     XIAOXI_VERIFY_PHASE: phase,
-    XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null)
+    XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null),
+    XIAOXI_SKIP_DRAFT_READ: context.skipDraftRead === true ? "1" : ""
   }, { ensure: false });
 }
 

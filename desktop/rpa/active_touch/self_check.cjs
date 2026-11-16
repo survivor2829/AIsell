@@ -1498,11 +1498,13 @@ try {
     { minIdleMs: 15_000, requireFocused: true }
   ]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
-  assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files", "D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input and before send");
-  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedAccountId), ["account-a", "account-a"]);
-  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedPid), [81, 81]);
-  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedHWnd), ["91", "91"]);
-  assert.deepEqual(sharedSessionContexts.map((context) => context?.allowExactSearchFallback), [true, true]);
+  // 2026-11-16: the account and chat verified before input are not verified a second time right
+  // before the send (same window, under a minute); the send click checks window, chat and focus.
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input");
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedAccountId), ["account-a"]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedPid), [81]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedHWnd), ["91"]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.allowExactSearchFallback), [true]);
   assert.equal(sharedClicks, 1);
   assert.equal(loadState(sharedDir).conversation_token, "conversation:v1:81:91:shared", "exact WeChat-id search must bind the visual header observation token");
   assert.equal(loadState(sharedDir).conversation_title_mode, "visual_header", "new-render conversations may be verified without a UIA customer-name node");
@@ -2917,27 +2919,74 @@ try {
   verifyRealSendSession(dir, () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   const bubblePhases = [];
+  let plainSessionChecks = 0;
   const sent = await sendReal(
     dir,
-    { message: "hello", allowRealSend: true, userConfirmed: true },
+    // A stale or foreign "fresh" session never skips the check before the send.
+    { message: "hello", allowRealSend: true, userConfirmed: true,
+      freshSession: { ok: true, pid: 21, hWnd: "32", accountId: "internal-account", at: Date.now() - 120_000 } },
     () => {
       assert.equal(loadState(dir).real_send_status, "prepared");
       assert.deepEqual(loadState(dir).message_bubble_snapshot_before, { lastMessageId: "before-1" });
       return { ok: true, title: "测试客户 - 微信", conversationVerified: true, draftVerified: true };
     },
-    () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
+    () => (plainSessionChecks += 1, { ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
     (message, context) => {
       bubblePhases.push(context.phase);
-      if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "before-1" } };
+      if (context.phase === "before") {
+        assert.equal(context.skipDraftRead, true, "the click's own read-back proves the draft; the snapshot does not copy it again");
+        return { ok: true, snapshot: { lastMessageId: "before-1" } };
+      }
       assert.equal(message, "hello");
-      assert.deepEqual(context.beforeSnapshot, { lastMessageId: "before-1" });
+      assert.deepEqual(context.beforeSnapshot, { lastMessageId: "before-1", draftExact: true },
+        "the click's verified draft is carried to the after-send proof");
       return { ok: true, title: "测试客户 - 微信", messageText: "hello", exactMatch: true, outgoing: true, isLatest: true, isNew: true };
     }
   );
   assert.deepEqual(bubblePhases, ["before", "after"]);
+  assert.equal(plainSessionChecks, 1, "a session verified over a minute ago is checked again before the send");
   assert.equal(sent.state.real_send_status, "sent_verified");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
   assert.equal(setRealSendArm(dir, false).state.real_send_status, "sent_verified");
+  // 2026-11-16: the window the chat-surface step prepared a moment ago is reused, not prepared again;
+  // an old one (or none) is prepared afresh.
+  for (const [ageMs, expectedPreflights, expectedPid] of [[0, 0, "55"], [60_000, 1, "81"]]) {
+    let preflights = 0;
+    const clickArgs = [];
+    const handedResult = await executeVerifiedContactSend({
+      baseDir: dir, contactId: "wxid_handed", message: "handed", authorized: true,
+      preparedWindow: preparedWechatWindow(55, 66), preparedWindowAt: Date.now() - ageMs,
+      windowPreflight: async () => { preflights += 1; return preparedWechatWindow(); },
+      runStep: async (command, args) => {
+        if (command !== "click-search-result-dry-run") return { ok: true, state: {} };
+        clickArgs.push(...args);
+        return { ok: false, send_attempted: false, blocked_reason: "exact_search_result_not_found" };
+      }
+    });
+    assert.equal(handedResult.blocked_reason, "exact_search_result_not_found");
+    assert.equal(preflights, expectedPreflights, ageMs ? "an old handed window is prepared again" : "a fresh handed window is not prepared twice");
+    assert.equal(clickArgs[clickArgs.indexOf("--expected-pid") + 1], expectedPid);
+  }
+  {
+    // A handed window that lost focus before the search is prepared once more and searched again.
+    let preflights = 0;
+    const searches = [];
+    const refocused = await executeVerifiedContactSend({
+      baseDir: dir, contactId: "wxid_handed", message: "handed", authorized: true,
+      preparedWindow: preparedWechatWindow(55, 66), preparedWindowAt: Date.now(),
+      windowPreflight: async () => { preflights += 1; return preparedWechatWindow(); },
+      runStep: async (command, args) => {
+        if (command !== "click-search-result-dry-run") return { ok: true, state: {} };
+        searches.push(args[args.indexOf("--expected-pid") + 1]);
+        return searches.length === 1
+          ? { ok: false, send_attempted: false, blocked_reason: "wechat_window_not_foreground" }
+          : { ok: false, send_attempted: false, blocked_reason: "exact_search_result_not_found" };
+      }
+    });
+    assert.equal(preflights, 1, "the lost focus is repaired by one ordinary preparation");
+    assert.deepEqual(searches, ["55", "81"]);
+    assert.equal(refocused.blocked_reason, "exact_search_result_not_found");
+  }
   clearCustomer(dir);
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_draft_consumed", name: "Draft fallback", wxid: "wxid_draft_consumed", wechatId: "internal-test-007", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_draft_consumed");

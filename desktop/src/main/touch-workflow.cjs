@@ -814,9 +814,16 @@ function createTouchWorkflow(options = {}) {
         const executePart = async (part, partIndex, onPartTransition) => {
           const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
           reportProgress({ ...partProgress, stage: "prepare_contact" });
+          let handedWindow = null;
           if (restoreChatSurface && !sessionAnchor) {
             // Best effort: when this fails the search step below still decides (and skips safely).
             const restored = await Promise.resolve().then(restoreChatSurface).catch((error) => ({ ok: false, reason: String(error?.code || error?.message || "restore_failed") }));
+            // Only a window left untouched (already on the chat page) is reused; after a switch back
+            // from Moments the executor prepares it afresh.
+            if (restored?.ok === true && restored.changed !== true && restored.preparedWindow) {
+              // Aged from the preparation itself, not from the end of the Moments check after it.
+              handedWindow = { preparedWindow: restored.preparedWindow, preparedWindowAt: Number(restored.preparedAt) || 0 };
+            }
             diagnostics().event("active_touch", "chat_surface_restore", { task_id: id, current_index: index, changed: restored?.changed === true },
               { trace: true, traceId: sendOperation.traceId, level: restored?.ok === true ? "info" : "warn", code: restored?.ok === true ? (restored.changed ? "returned_to_chat" : "already_chat") : String(restored?.reason || "restore_failed") });
           }
@@ -839,6 +846,7 @@ function createTouchWorkflow(options = {}) {
             ...(image ? { image } : {}),
             frozenContact: current.contact,
             attemptId: multipart ? `${current.request_id}:${partIndex}` : current.request_id,
+            ...(handedWindow || {}),
             authorized: isBatchAuthorized(task),
             windowMinIdleMs: 0,
             ...(multipart ? { captureSessionAnchor: true, now,
@@ -1464,7 +1472,12 @@ async function restoreWechatChatSurface() {
   const { prepareWechatRpaWindowAsync } = require("../../rpa/active_touch/wechat_window_driver.cjs");
   const { returnWechatFromMomentsToChat } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
   const prepared = await prepareWechatRpaWindowAsync({ requireFocused: true, minIdleMs: 0 });
-  return prepared?.ok === true ? returnWechatFromMomentsToChat(prepared) : prepared;
+  const preparedAt = Date.now();
+  if (prepared?.ok !== true) return prepared;
+  const returned = await returnWechatFromMomentsToChat(prepared);
+  // The window this step just prepared is handed to the send executor, which prepared it a second
+  // time about a second later (2.2 s per contact in the 1.3.13 field data).
+  return returned && typeof returned === "object" ? { ...returned, preparedWindow: prepared, preparedAt } : returned;
 }
 
 function workflowSignature({ script, contacts, imageIds = [], link = "", aiPolish = false }) {
