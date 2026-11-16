@@ -5308,6 +5308,26 @@ def ai_refine_v2_execute():
     })
 
 
+@app.route("/api/ai-refine-v2/history", methods=["GET"])
+@login_required
+def ai_refine_v2_history():
+    """该用户做过的详情图（已完成的任务），新的在前，用于重新打开和重新下载。"""
+    from ai_refine_v2 import pipeline_runner
+    return jsonify({"items": pipeline_runner.list_task_history(
+        current_user.id, is_admin=bool(current_user.is_admin))})
+
+
+@app.route("/api/ai-refine-v2/thumb/<task_id>", methods=["GET"])
+@login_required
+def ai_refine_v2_thumb(task_id: str):
+    """历史列表用的小缩略图（首屏，160px），不加载原图。"""
+    from ai_refine_v2 import pipeline_runner
+    thumb = pipeline_runner.task_thumbnail(task_id, current_user.id, is_admin=bool(current_user.is_admin))
+    if thumb is None:
+        abort(404)
+    return send_file(thumb, mimetype="image/jpeg", max_age=3600)
+
+
 @app.route("/api/ai-refine-v2/status/<task_id>", methods=["GET"])
 @login_required
 def ai_refine_v2_status(task_id: str):
