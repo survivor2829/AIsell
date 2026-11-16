@@ -28,6 +28,8 @@ type ProductDetailDownloadUpdate = {
   state: "started" | "completed" | "failed";
   filename: string;
   code?: string;
+  location?: string;
+  extracted?: number;
 };
 
 type ProductDetailApi = {
@@ -177,10 +179,11 @@ export function ProductDetailPage({ preference, onPersonalize }: { preference: R
     });
     const unsubscribeDownload = api.onDownloadUpdate((update) => {
       if (!active) return;
+      const place = update.location || "桌面";
       if (update.state === "started") {
-        setNotice(`正在保存到桌面：${update.filename}`);
+        setNotice(`正在保存到 ${place}：${update.filename}`);
       } else if (update.state === "completed") {
-        setNotice(`已保存到桌面：${update.filename}`);
+        setNotice(update.extracted ? `已解压 ${update.extracted} 张图片到 ${place}` : `已保存到 ${place}：${update.filename}`);
       } else {
         setNotice(`下载失败，请重试：${update.filename}`);
       }
