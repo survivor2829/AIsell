@@ -1457,8 +1457,8 @@ class AutoMixV2ContractTests(unittest.TestCase):
             ("坦虎工业吸尘器，吸力强。", "老虎工业吸尘器，吸力强。", ["坦虎"], "坦虎", "老虎"),
             ("坦虎工业吸尘器，吸力强。", "工业吸尘器，吸力强。", ["坦虎"], "坦虎", None),
             ("坦虎工业吸尘器。", "工业吸尘器呼呼。", ["坦虎"], "坦虎", ""),
-            ("毛驴快跑S9扫地机器人。", "毛驴快跑S八扫地机器人。", ["毛驴快跑S9"], "毛驴快跑s9", "毛驴快跑s八"),
-            ("价格是4999元。", "价格是四九九八元。", [], "4999", "四九九八"),
+            ("毛驴快跑S9扫地机器人。", "毛驴快跑S八扫地机器人。", ["毛驴快跑S9"], "毛驴快跑s9", "毛驴快跑s8"),
+            ("价格是4999元。", "价格是四九九八元。", [], "4999", "4998"),
         )
         for expected, recognized, terms, missing, heard in cases:
             with self.subTest(expected=expected, recognized=recognized):
@@ -1476,6 +1476,55 @@ class AutoMixV2ContractTests(unittest.TestCase):
         self.assertFalse(_same_sound("十", "是"))
         self.assertFalse(_same_sound("四", "寺"))
         self.assertFalse(_same_sound("5", "五"))
+
+    def test_voice_verification_accepts_chinese_numerals_heard_as_digits(self):
+        # Customer 2026-11-16 (1.3.22): the title sentence said 八小时, ASR wrote 8小时.
+        title = "车间里的洗地机一天最多干八小时还得有人在后面推"
+        passed = verify_spoken_phrase("车间里的洗地机，一天最多干八小时，还得有人在后面推。",
+                                      "车间里的洗地机一天最多干8小时还得有人在后面推", title=title)
+        self.assertTrue(passed["matched"], passed)
+        for recognized in ("一年能省2万块", "一年能省20000块"):
+            self.assertTrue(verify_spoken_phrase("一年能省两万块", recognized, title="一年能省两万块")["matched"])
+        wrong = verify_spoken_phrase("车间里的洗地机，一天最多干八小时，还得有人在后面推。",
+                                     "车间里的洗地机一天最多干9小时还得有人在后面推", title=title)
+        self.assertFalse(wrong["matched"])
+        self.assertFalse(verify_spoken_phrase("一年能省两万块", "一年能省3万块", title="一年能省两万块")["matched"])
+
+    def test_copy_and_asr_share_one_written_form(self):
+        from content_engine.auto_mix_v2 import _canonical_spoken, _number_breaks
+
+        for text, form in (("一天干八小时", "1天干8小时"), ("二零二六年", "2026年"), ("十五", "15"),
+                           ("两千三百", "2300"), ("两千三", "2300"), ("两万五", "25000"), ("2万5", "25000"),
+                           ("1.5万", "15000"), ("一万零五", "10005"), ("三点五倍", "3点5倍"), ("3.5倍", "3点5倍"),
+                           ("8:30", "8点30"), ("八点三十", "8点30"), ("八点半", "8点30"), ("50%", "百分之50"),
+                           ("百分之五十", "百分之50"), ("20-25款", "20到25款"), ("3000㎡", "3000平方米"),
+                           ("编号007", "编号007"), ("零零七", "007"), ("万一", "万1"), ("千万别", "千万别")):
+            with self.subTest(text=text):
+                self.assertEqual(form, _canonical_spoken(text))
+        self.assertEqual("20 21 22号", _number_breaks("20、21、22号"))
+        self.assertEqual("18 3天", _number_breaks("18三天"))
+
+    def test_voice_verification_covers_every_written_number_form(self):
+        cases = (
+            ("吸力提升3.5倍，清洁更干净", "吸力提升三点五倍，清洁更干净", True),
+            ("吸力提升三点五倍，清洁更干净", "吸力提升3.5倍，清洁更干净", True),
+            ("效率提高百分之五十，人工省一半", "效率提高50%，人工省一半", True),
+            ("11月20日开课，名额有限", "十一月二十日开课，名额有限", True),
+            ("每天早上8点半开工", "每天早上八点半开工", True),
+            ("每天8:30开工，准时到岗", "每天八点三十开工，准时到岗", True),
+            ("每天8:30开工，准时到岗", "每天九点三十开工，准时到岗", False),
+            ("现场有20-25款真机供你选", "现场有20到25款真机供你选", True),
+            ("一小时能扫3000㎡的地面", "一小时能扫3000平方米的地面", True),
+            ("10月16、17、18三天开课", "10月16、 17、 18三天开课", True),
+            ("一天干8小时，不累", "一天干18小时，不累", False),
+            ("我们一直省一万块钱", "我们一直省1万块钱", True),
+        )
+        for expected, recognized, matched in cases:
+            with self.subTest(expected=expected, recognized=recognized):
+                self.assertEqual(matched, verify_spoken_phrase(expected, recognized)["matched"])
+        for recognized, matched in (("一年能省2万5", True), ("一年能省25000", True), ("一年能省20005", False)):
+            with self.subTest(recognized=recognized):
+                self.assertEqual(matched, verify_spoken_phrase("一年能省两万五", recognized, title="一年能省两万五")["matched"])
 
     def test_voice_failure_message_shows_the_term_as_the_copy_writes_it(self):
         from content_engine.creative_domain import _display_term

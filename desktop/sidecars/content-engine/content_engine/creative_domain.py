@@ -34,6 +34,7 @@ from .auto_mix_v2 import (
     invalidated_stages_for_layer,
     matching_spoken_critical_terms,
     _normalize_spoken_phrase_text,
+    _canonical_spoken,
     normalize_text_tracks,
     public_auto_mix_plan,
     public_music_track,
@@ -131,8 +132,9 @@ def _display_term(text, normalized_term):
     target = str(normalized_term or "")
     for start in range(len(source)):
         for end in range(start + 1, min(len(source), start + len(target) * 3 + 8) + 1):
-            if _normalize_spoken_phrase_text(source[start:end]) == target:
-                return source[start:end].strip()
+            stretch = source[start:end]
+            if target in (_normalize_spoken_phrase_text(stretch), _canonical_spoken(stretch)):
+                return stretch.strip()
     return target
 AUTO_MIX_LEGACY_ALIGNMENT_MESSAGE = "引用素材不足以覆盖对应口播的真实时间窗口。"
 CREATIVE_CHANNELS = frozenset({"wechat", "douyin", "kuaishou", "internal"})

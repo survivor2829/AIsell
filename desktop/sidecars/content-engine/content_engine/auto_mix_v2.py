@@ -791,76 +791,6 @@ def matching_spoken_critical_terms(
     return tuple(sorted(matching))
 
 
-def _spoken_number_variants(token: str) -> tuple[str, ...]:
-    """Return common Mandarin ASR spellings for an Arabic numeric token."""
-    raw = str(token or "").strip()
-    percent = raw.endswith("%")
-    number = raw[:-1] if percent else raw
-    if not re.fullmatch(r"\d+(?:\.\d+)?", number):
-        return ()
-    digits = "零一二三四五六七八九"
-
-    def integer_words(value: int) -> str:
-        if value == 0:
-            return "零"
-        if value > 99_999_999:
-            return "".join(digits[int(character)] for character in str(value))
-        units = ("", "十", "百", "千")
-
-        def under_ten_thousand(part: int, *, omit_leading_one_ten: bool = True) -> str:
-            output, pending_zero = [], False
-            for position in range(3, -1, -1):
-                divisor = 10 ** position
-                digit, part = divmod(part, divisor)
-                if digit:
-                    if pending_zero and output:
-                        output.append("零")
-                    if not (omit_leading_one_ten and digit == 1 and position == 1 and not output):
-                        output.append(digits[digit])
-                    output.append(units[position])
-                    pending_zero = False
-                elif output and part:
-                    pending_zero = True
-            return "".join(output)
-
-        high, low = divmod(value, 10_000)
-        if not high:
-            return under_ten_thousand(low)
-        bridge = "零" if 0 < low < 1_000 else ""
-        low_words = (
-            under_ten_thousand(low, omit_leading_one_ten=False) if low else ""
-        )
-        return under_ten_thousand(high) + "万" + bridge + low_words
-
-    whole, dot, fraction = number.partition(".")
-    cardinal = integer_words(int(whole))
-    if dot:
-        cardinal += "点" + "".join(digits[int(character)] for character in fraction)
-    sequential = "".join(digits[int(character)] for character in whole)
-    if dot:
-        sequential += "点" + "".join(digits[int(character)] for character in fraction)
-    variants = {sequential}
-    if len(whole) == 1 or not whole.startswith("0"):
-        variants.add(cardinal)
-    if whole == "2" and not dot:
-        variants.add("两")
-    # 2000 is said 两千 as often as 二千 (likewise 两百, 两万).
-    variants.update(re.sub(r"^二(?=[百千万])", "两", item) for item in list(variants))
-    if percent:
-        variants = {"百分之" + item for item in variants}
-    return tuple(sorted(item for item in variants if item))
-
-
-def _spoken_numeric_lexemes(value: Any) -> set[str]:
-    """Extract complete Mandarin numeric expressions from normalized ASR text."""
-    normalized = _normalize_spoken_phrase_text(value)
-    digits_and_units = "零〇一二两三四五六七八九十百千万亿点"
-    return set(re.findall(
-        rf"百分之[{digits_and_units}]+|[{digits_and_units}]+",
-        normalized,
-    ))
-
-
 # ASR writes a brand it does not know with a same-sound character (普渡 as 普度,
 # 高仙 as 高鲜, 萤石 as 银石, 有鹿 as 有路: dev-machine recordings, 2026-08..11; a
 # customer run stopped on it 2026-11-16). The voice reads the copy as written, so a
@@ -922,17 +852,133 @@ def _adopt_same_sound(expected: str, recognized: str) -> str:
     return "".join(output)
 
 
-def _critical_term_variants(term: str) -> tuple[str, ...]:
-    """The term as written, and with each digit run spelled the ways ASR writes it."""
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1_000}
+_CN_SECTION = {"万": 10_000, "亿": 100_000_000}
+_CN_DIGIT_CLASS = "".join(_CN_DIGIT)
+_UNIT_CLASS = "十百千万亿"
+# One number: digits (with a decimal or clock part, then optional units: 2万5, 1.5万),
+# or Chinese numerals (三点五, 两万五). 18三天 is two numbers, not one.
+_NUMBER_RUN = re.compile(
+    rf"\d+(?:[.点]\d+)?(?:[{_UNIT_CLASS}][0-9{_CN_DIGIT_CLASS}{_UNIT_CLASS}]*)?"
+    rf"|[{_CN_DIGIT_CLASS}十](?:[{_CN_DIGIT_CLASS}{_UNIT_CLASS}]|点(?=[{_CN_DIGIT_CLASS}]))*"
+)
+# Unit symbols ASR spells out (NFKC would turn ㎡ into "m2" and invent a number 2).
+_SYMBOL_WORDS = (
+    ("㎡", "平方米"), ("m²", "平方米"), ("㎥", "立方米"), ("m³", "立方米"), ("㎏", "公斤"),
+    ("㎞", "公里"), ("㎝", "厘米"), ("㎜", "毫米"), ("℃", "度"), ("°C", "度"),
+    ("＋", "加"), ("+", "加"), ("＆", "和"), ("&", "和"),
+)
 
-    parts = re.split(r"(\d+)", term)
-    variants = [""]
-    for part in parts:
-        options = [part]
-        if part.isdigit():
-            options += [_normalize_spoken_phrase_text(item) for item in _spoken_number_variants(part)]
-        variants = [prefix + option for prefix in variants for option in dict.fromkeys(options)][:32]
-    return tuple(dict.fromkeys(variants))
+
+def _integer_words(text: str) -> str | None:
+    """Arabic or Chinese integer, units allowed: 2万5 / 两万五 → 25000, 一万零五 → 10005."""
+
+    if text.isdigit():
+        return text  # 007 keeps its zeros.
+    if len(text) > 1 and all(character in _CN_DIGIT for character in text):
+        return "".join(str(_CN_DIGIT[character]) for character in text)  # 二零二六 → 2026
+    tokens = re.findall(rf"\d+|[{_CN_DIGIT_CLASS}]|[十百千万亿]", text)
+    if "".join(tokens) != text:
+        return None
+    total = section = 0
+    current: int | None = None
+    current_single = zero = False
+    last_unit = 0
+    for index, token in enumerate(tokens):
+        if token.isdigit() or token in _CN_DIGIT:
+            if current is not None:
+                return None
+            value = int(token) if token.isdigit() else _CN_DIGIT[token]
+            if token in ("零", "〇"):
+                zero = True
+                continue
+            current, current_single = value, len(token) == 1
+        elif token in _CN_UNIT:
+            if current is None and index != 0:
+                return None
+            section += (1 if current is None else current) * _CN_UNIT[token]
+            current, last_unit = None, _CN_UNIT[token]
+        else:
+            if current is None and section == 0:
+                return None
+            total += (section + (current or 0)) * _CN_SECTION[token]
+            section, current, last_unit, zero = 0, None, _CN_SECTION[token], False
+    if current is not None and current_single and last_unit and not zero:
+        current *= last_unit // 10  # 两万五 = 25000, 两千三 = 2300, 二百五 = 250
+    return str(total + section + (current or 0))
+
+
+def _number_words(run: str) -> str | None:
+    """One number in one written form: integers in Arabic, decimals as 3点5, 1.5万 → 15000."""
+
+    point = re.search(r"[.点]", run)
+    if not point:
+        return _integer_words(run)
+    whole, fraction = run[:point.start()], run[point.end():]
+    integer = _integer_words(whole)
+    if integer is None or not fraction:
+        return None
+    section = _CN_SECTION.get(fraction[-1])
+    digits = fraction[:-1] if section else fraction
+    if digits and all(character.isdigit() or character in _CN_DIGIT for character in digits):
+        decimals = "".join(character if character.isdigit() else str(_CN_DIGIT[character]) for character in digits)
+        if section:
+            scaled = (int(integer) * 10 ** len(decimals) + int(decimals)) * section // 10 ** len(decimals)
+            return str(scaled)
+        return f"{int(integer)}点{decimals}"
+    clock = _integer_words(fraction)  # 八点三十 → 8点30 (a time)
+    return f"{int(integer)}点{clock}" if clock is not None and not section else None
+
+
+def _canonical_written(value: Any) -> str:
+    """`_canonical_spoken` before punctuation is dropped (numbers keep their breaks)."""
+
+    text = str(value or "")
+    for symbol, words in _SYMBOL_WORDS:
+        text = text.replace(symbol, words)
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)", lambda m: f"{m.group(1)}点{m.group(2)}", text)
+    text = re.sub(r"(\d+(?:\.\d+)?)\s*%", lambda m: f"百分之{m.group(1)}", text)
+    text = re.sub(rf"(?<=[0-9{_CN_DIGIT_CLASS}十])点半", "点30", text)
+    text = re.sub(r"(?<=\d)\s*[-~～—–至]\s*(?=\d)", "到", text)
+
+    def number(match):
+        words = _number_words(match.group(0)) or match.group(0)
+        # 18三天: once 三 is 3 it must not run into the 18 before it.
+        before = text[match.start() - 1] if match.start() else ""
+        after = text[match.end()] if match.end() < len(text) else ""
+        return (" " if before.isdigit() else "") + words + (" " if after.isdigit() else "")
+
+    return _NUMBER_RUN.sub(number, text)
+
+
+def _number_breaks(value: Any) -> str:
+    """Canonical text with every non-letter run as one space: 20、21 stays two numbers."""
+
+    return re.sub(r"[^0-9A-Za-z一-鿿]+", " ", _canonical_written(value)).casefold()
+
+
+def _canonical_spoken(value: Any) -> str:
+    """Copy and ASR text in one written form before any comparison.
+
+    Numbers in Arabic (八 → 8, 两万五 → 25000, 1.5万 → 15000), decimals and times as
+    3点5 / 8点30 (8:30, 八点三十, 八点半), percentages as 百分之50, ranges with 到, unit
+    symbols spelled out. Both sides go through the same rules, so a word such as 一直
+    becomes 1直 on both and still compares equal.
+    """
+
+    return _normalize_spoken_phrase_text(_canonical_written(value))
+
+
+_STRICT_NUMBER = re.compile(r"\d+(?:[.:]\d+)?(?:[十百千万亿]+[0-9" + _CN_DIGIT_CLASS + r"]?)?%?")
+
+
+def _critical_term_variants(term: str) -> tuple[str, ...]:
+    """Terms are compared in the canonical written form, so one spelling suffices."""
+
+    return (term,)
 
 
 def _closest_heard(term: str, recognized: str, near: int | None = None) -> tuple[str, int, int]:
@@ -986,84 +1032,58 @@ def verify_spoken_phrase(
     title: Any = "",
     critical_terms: Any = (),
 ) -> dict[str, Any]:
-    """Check ASR wording while keeping brands and numbers fail-closed."""
+    """Check ASR wording while keeping brands and numbers fail-closed.
 
-    expected = _normalize_spoken_phrase_text(expected_text)
-    recognized_written = _normalize_spoken_phrase_text(recognized_text)
+    Both texts are first brought to one written form (`_canonical_spoken`), then the
+    ASR's same-sound characters are written back as the copy's; every check below
+    (similarity, brands and title, numbers) compares those forms.
+    """
+
+    expected = _canonical_spoken(expected_text)
+    recognized_written = _canonical_spoken(recognized_text)
     _contract(
         bool(expected) and bool(recognized_written),
         "auto_mix_voice_verification_invalid",
         "配音回听没有得到可核对的文字。",
     )
     recognized = _adopt_same_sound(expected, recognized_written)
-    expected_numeric_lexemes = tuple(dict.fromkeys(
-        re.findall(r"\d+(?:\.\d+)?%?", unicodedata.normalize(
-            "NFKC", str(expected_text or "")
-        ))
-    ))
-    recognized_numeric_lexemes = set(re.findall(
-        r"\d+(?:\.\d+)?%?", unicodedata.normalize(
-            "NFKC", str(recognized_text or "")
-        )
-    ))
-    recognized_spoken_numeric_lexemes = _spoken_numeric_lexemes(recognized_text)
-    normalized_numeric_tokens = {
-        _normalize_spoken_phrase_text(token) for token in expected_numeric_lexemes
-    }
+    # Numbers the copy writes in digits must be heard as the same number, whole:
+    # 8 is not found inside 18, 10 not inside 110.
+    copy_digits = str(expected_text or "")
+    for symbol, words in _SYMBOL_WORDS:
+        copy_digits = copy_digits.replace(symbol, words)
+    numeric_tokens = tuple(
+        (lexeme, _canonical_spoken(lexeme))
+        for lexeme in dict.fromkeys(_STRICT_NUMBER.findall(unicodedata.normalize("NFKC", copy_digits)))
+    )
+    numeric_forms = {form for _, form in numeric_tokens}
+    recognized_breaks = _number_breaks(recognized_text)
     critical = set()
-    safe_title = _normalize_spoken_phrase_text(title)
+    safe_title = _canonical_spoken(title)
     if 2 <= len(safe_title) <= 24 and safe_title in expected:
         critical.add(safe_title)
-    critical.update(
-        term for term in matching_spoken_critical_terms(
-            expected_text, critical_terms
-        ) if term not in normalized_numeric_tokens
-    )
-    numeric_tokens = tuple(
-        (token, _spoken_number_variants(token))
-        for token in expected_numeric_lexemes
-    )
+    terms = critical_terms if isinstance(critical_terms, (list, tuple)) else ()
+    for term in terms:
+        canonical = _canonical_spoken(term)
+        if 2 <= len(canonical) <= 100 and canonical in expected and canonical not in numeric_forms:
+            critical.add(canonical)
     missing = sorted(
         token for token in critical
         if not _critical_term_heard(token, recognized)
         and not _critical_term_heard(token, recognized_written)
     )
-    missing.extend(
-        token for token, variants in numeric_tokens
-        if token not in recognized_numeric_lexemes
-        and not any(
-            _normalize_spoken_phrase_text(variant)
-            in recognized_spoken_numeric_lexemes
-            for variant in variants
-        )
-    )
+    missing_numbers = [
+        (lexeme, form) for lexeme, form in numeric_tokens
+        if not re.search(rf"(?<![0-9]){re.escape(form)}(?![0-9])", recognized_breaks)
+    ]
     matcher = SequenceMatcher(None, expected, recognized)
     similarity = matcher.ratio()
-    spoken_expected = str(expected_text or "")
-    for token, variants in numeric_tokens:
-        spoken_variant = next(
-            (
-                variant
-                for variant in variants
-                if _normalize_spoken_phrase_text(variant)
-                in recognized_spoken_numeric_lexemes
-            ),
-            None,
-        )
-        if spoken_variant:
-            spoken_expected = re.sub(
-                re.escape(token), spoken_variant, spoken_expected
-            )
-    spoken_similarity = SequenceMatcher(
-        None, _normalize_spoken_phrase_text(spoken_expected), recognized
-    ).ratio()
-    similarity = max(similarity, spoken_similarity)
     # Mandarin ASR cannot distinguish a small number of same-sound characters
     # (for example, 闸机 / 炸鸡). Keep brands and numbers fail-closed, but do
     # not reject a short, otherwise anchored sentence solely for that ambiguity.
     short_phrase_anchor = max(5, len(expected) - 3)
     short_asr_homophone_match = (
-        not missing
+        not missing and not missing_numbers
         and 8 <= len(expected) <= 14
         and len(expected) == len(recognized)
         and similarity >= short_phrase_anchor / len(expected)
@@ -1071,13 +1091,16 @@ def verify_spoken_phrase(
             0, len(expected), 0, len(recognized)
         ).size >= short_phrase_anchor
     )
+    heard_as = {token: _heard_as(token, expected, recognized_written) for token in missing}
+    heard_as.update({lexeme: _heard_as(form, expected, recognized_written) for lexeme, form in missing_numbers})
+    missing.extend(lexeme for lexeme, _ in missing_numbers)
     return {
         "matched": not missing and (
             similarity >= 0.72 or short_asr_homophone_match
         ),
         "similarity": round(similarity, 4),
         "missingCriticalTokens": missing,
-        "heardAs": {token: _heard_as(token, expected, recognized_written) for token in missing},
+        "heardAs": heard_as,
         "sameSoundAdopted": recognized != recognized_written,
         "criticalTokenCount": len(critical) + len(numeric_tokens),
     }
