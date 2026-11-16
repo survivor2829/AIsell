@@ -371,6 +371,88 @@ def _status_from_record(task_id: str, data: dict, *, terminal: bool) -> dict:
     }
 
 
+def list_task_history(user_id, *, is_admin: bool = False, limit: int = 100) -> list[dict]:
+    """This user's detail-image tasks that have images on disk, newest first, for re-downloading.
+
+    User 2026-11-16: after several products the earlier results could not be found
+    again (the page only remembers the last task). Each task keeps its images and
+    _summary.json; this reads only small JSON files, newest first, and stops at
+    `limit`. A task replaced by a later "重做这张" of it is left out (the redo holds
+    the full set). A damaged task record is skipped, never failing the list.
+    """
+    items: list[dict] = []
+    if not _OUTPUT_BASE.is_dir():
+        return items
+    pattern = re.compile(r"v2_(\d{10,16})_[0-9a-f]{4,16}")
+    folders = sorted(((int(m.group(1)), d) for d in _OUTPUT_BASE.iterdir()
+                      if d.is_dir() and (m := pattern.fullmatch(d.name))), key=lambda pair: pair[0], reverse=True)
+    replaced: set[str] = set()
+    for created_ms, task_dir in folders:
+        if len(items) >= max(1, int(limit)):
+            break
+        try:
+            summary = _read_json(task_dir / "_summary.json")
+            if not summary or task_dir.name in replaced:
+                continue
+            if summary.get("user_id") != user_id and not is_admin:
+                continue
+            blocks = [b for b in (summary.get("blocks") or []) if isinstance(b, dict)]
+            detail = [b for b in blocks if b.get("success") and b.get("image_url")
+                      and "_square_" not in str(b.get("block_id") or "")]
+            if not detail:
+                continue
+            failed = int(summary.get("failed_count") or 0)
+            finished = (summary.get("terminal_status") in {"success", "partial_success"}
+                        and (failed == 0 or summary.get("finished_with_missing_screens") is True)
+                        and bool(summary.get("assembled_url")))
+            reroll = _read_json(task_dir / "_reroll.json")
+            if reroll and finished and isinstance(reroll.get("source_task_id"), str):
+                replaced.add(reroll["source_task_id"])
+            inputs = _read_json(task_dir / "_input.json") or {}
+            name = str(inputs.get("product_title") or "").strip() or str(summary.get("product") or "").strip()
+            items.append({
+                "task_id": task_dir.name,
+                "product_name": name[:60],
+                "created_at_ms": created_ms,
+                "screen_count": len(detail),
+                "finished": finished,
+                "has_long_image": finished,
+                "thumbnail_url": f"/api/ai-refine-v2/thumb/{task_dir.name}",
+            })
+        except Exception:
+            continue
+    return items
+
+
+def task_thumbnail(task_id: str, user_id, *, is_admin: bool = False) -> Path | None:
+    """A small cached preview (first detail screen) for the history list; None if not allowed."""
+    if not re.fullmatch(r"v2_\d{10,16}_[0-9a-f]{4,16}", task_id or ""):
+        return None
+    task_dir = _OUTPUT_BASE / task_id
+    summary = _read_json(task_dir / "_summary.json")
+    if not summary or (summary.get("user_id") != user_id and not is_admin):
+        return None
+    thumb = task_dir / "_thumb.jpg"
+    if thumb.is_file():
+        return thumb
+    for block in summary.get("blocks") or []:
+        if not isinstance(block, dict) or not block.get("success") or "_square_" in str(block.get("block_id") or ""):
+            continue
+        source = task_dir / Path(str(block.get("file") or "")).name
+        if not source.is_file():
+            continue
+        try:
+            from PIL import Image
+            with Image.open(source) as image:
+                image = image.convert("RGB")
+                image.thumbnail((160, 160))
+                image.save(thumb, "JPEG", quality=80)
+            return thumb
+        except Exception:
+            return None
+    return None
+
+
 def get_task_status(task_id: str) -> dict | None:
     """读 task 状态. 优先 in-memory, 缺失时从磁盘 _summary.json 重建.
 

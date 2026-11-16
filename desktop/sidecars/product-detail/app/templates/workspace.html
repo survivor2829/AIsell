@@ -565,8 +565,9 @@
       {% endif %}
     </div>
     {% if desktop_mode %}<details class="workspace-menu"><summary>更多</summary><nav aria-label="工作台选项">{% endif %}
+    <a href="#" onclick="openDetailHistory(event)">我做过的详情图</a>
     <a href="/batch/upload">批量生成</a>
-    <a href="/batch/history">历史记录</a>
+    <a href="/batch/history">批量生成历史</a>
     <span class="topbar-username">{{ current_user.username }}</span>
     {% if current_user.is_admin %}<a href="/admin">管理后台</a>{% endif %}
     <a href="/settings">设置</a>
@@ -2102,7 +2103,7 @@
     ));
     const elapsed = Number(result.elapsed_s || 0);
     const cost = Number(result.cost_rmb || 0);
-    const restored = options.restored ? '上次生成 · ' : '';
+    const restored = options.historyItem ? '以前做的 · ' : options.restored ? '上次生成 · ' : '';
     const costs = result.costs;
     const billedInfo = costs?.version === 1
       ? `${Number.isFinite(costs.estimated_cny) ? `预计 ¥${costs.estimated_cny.toFixed(2)} · ` : ''}实际账单待核对`
@@ -2243,6 +2244,100 @@
         source_task_id: result.task_id, block_index: Number(button.dataset.aiSingleRedo),
       }}));
     });
+  }
+
+  /* ── 我做过的详情图：重新打开、重新下载（不重新生成、不收费） ───────────────── */
+  // User 2026-11-16: after several products the earlier results could not be found again
+  // (the page only remembers the last task, and 历史记录 lists batch uploads only).
+  async function openDetailHistory(event) {
+    event?.preventDefault?.();
+    document.querySelectorAll('details.workspace-menu[open]').forEach(menu => menu.removeAttribute('open'));
+    let overlay = document.getElementById('detail_history_overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'detail_history_overlay';
+      overlay.style.cssText = 'position:fixed; inset:0; z-index:1000; background:rgba(15,23,42,.45); display:flex; align-items:center; justify-content:center; padding:24px;';
+      overlay.innerHTML = `<div role="dialog" aria-label="我做过的详情图" style="width:min(760px,100%); max-height:86vh; display:flex; flex-direction:column; background:#fff; border-radius:14px; box-shadow:0 20px 50px rgba(0,0,0,.25); overflow:hidden;">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid #eef0f3;">
+          <div><b style="font-size:17px; color:#101828;">我做过的详情图</b><div style="font-size:13px; color:#667085; margin-top:2px;">打开后可以重新下载，不会重新生成，也不收费</div></div>
+          <button type="button" data-history-close class="btn btn-ghost" aria-label="关闭">关闭</button>
+        </div>
+        <div data-history-list style="overflow-y:auto; padding:8px 12px 16px;"></div>
+      </div>`;
+      overlay.addEventListener('click', (clickEvent) => {
+        if (clickEvent.target === overlay || clickEvent.target.closest('[data-history-close]')) overlay.style.display = 'none';
+      });
+      document.body.appendChild(overlay);
+    }
+    overlay.style.display = 'flex';
+    const list = overlay.querySelector('[data-history-list]');
+    list.innerHTML = '<div style="padding:24px; text-align:center; color:#667085;">正在读取…</div>';
+    let items = [];
+    try {
+      const response = await fetch('/api/ai-refine-v2/history', { credentials: 'include' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `(${response.status})`);
+      items = Array.isArray(data.items) ? data.items : [];
+    } catch (error) {
+      list.innerHTML = `<div style="padding:24px; text-align:center; color:#b42318;">读取失败：${escapeHtml(error.message)}</div>`;
+      return;
+    }
+    if (!items.length) {
+      list.innerHTML = '<div style="padding:24px; text-align:center; color:#667085;">还没有做好的详情图</div>';
+      return;
+    }
+    list.innerHTML = items.map((item, index) => `<div style="display:flex; align-items:center; gap:14px; padding:10px 8px; border-bottom:1px solid #f2f4f7;">
+        <div style="width:64px; height:64px; flex:none; border-radius:8px; overflow:hidden; background:#f2f4f7;">${item.thumbnail_url ? `<img src="${escapeHtml(item.thumbnail_url)}" alt="" style="width:100%; height:100%; object-fit:cover; display:block;">` : ''}</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:15px; color:#101828; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(item.product_name || '未命名产品')}</div>
+          <div style="font-size:13px; color:#667085; margin-top:3px;">${escapeHtml(new Date(item.created_at_ms).toLocaleString('zh-CN', { hour12: false }))} · ${item.finished ? `${Number(item.screen_count) || 0} 屏${item.has_long_image ? ' · 含长图' : ''}` : `没做完 · 已存 ${Number(item.screen_count) || 0} 屏`}</div>
+        </div>
+        <button type="button" class="btn btn-ghost" data-history-open="${index}">打开</button>
+      </div>`).join('');
+    list.querySelectorAll('[data-history-open]').forEach(button => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        button.textContent = '正在打开…';
+        const opened = await openDetailHistoryTask(items[Number(button.dataset.historyOpen)]);
+        button.disabled = false;
+        button.textContent = '打开';
+        if (opened) overlay.style.display = 'none';
+      });
+    });
+  }
+
+  async function openDetailHistoryTask(item) {
+    const taskId = item.task_id;
+    // A generation in progress keeps its progress display and result area.
+    if (aiRefineBusy) {
+      showError('正在生成新的详情图，做好后再打开以前做的');
+      return false;
+    }
+    let state;
+    try {
+      const response = await fetch(`/api/ai-refine-v2/status/${encodeURIComponent(taskId)}`, { credentials: 'include' });
+      state = await response.json().catch(() => null);
+      if (!response.ok || !state || state.error) throw new Error(state?.error || `(${response.status})`);
+    } catch (error) {
+      showError('打开这份详情图失败：' + error.message);
+      return false;
+    }
+    switchCenterTab('ai_img');
+    const empty = document.getElementById('empty_state');
+    const loading = document.getElementById('ai_img_loading');
+    if (empty) empty.style.display = 'none';
+    if (loading) loading.style.display = 'none';
+    // The list's name travels with the result, so its downloads go to that product's folder.
+    const result = { ...state, task_id: taskId, product_title: state.product_title || item.product_name || '' };
+    if (['recovery_required', 'outcome_unknown', 'pricing_required'].includes(result.status)) {
+      // Same as reopening the last result: continue the paid task, never start a new one.
+      const record = persistAiRefineTask({ task_id: taskId, status: result.status });
+      renderAiRefineRecoveryRequired(result, record);
+    } else {
+      renderAiRefineResult(result, { restored: true, historyItem: true });
+    }
+    document.getElementById('ai_img_results')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return true;
   }
 
   function renderAiRefineRecoveryRequired(state, taskRecord) {
