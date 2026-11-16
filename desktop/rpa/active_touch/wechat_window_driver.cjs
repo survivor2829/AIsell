@@ -911,6 +911,29 @@ function Get-WechatWindowCandidates {
   return @($candidates.ToArray())
 }
 
+# The WeChat login window: a visible, not minimized WeChat window titled 微信/Weixin/WeChat of
+# login size (296x388 logical on the 2026-11-16 field captures; 260-380 x 340-500 allowed).
+function Test-WechatLoginWindowShown {
+  # Only the target account's process when one is expected: another WeChat's login window
+  # says nothing about this account.
+  $loginPids = @($wechatProcesses.Keys | Where-Object { [string]::IsNullOrWhiteSpace($expectedPid) -or [string]$_ -eq $expectedPid })
+  if ($loginPids.Count -eq 0) { return $false }
+  foreach ($loginHWnd in [Win32WechatWindow]::WindowsForProcesses([int[]]$loginPids)) {
+    if (-not [Win32WechatWindow]::IsWindowVisible($loginHWnd) -or [Win32WechatWindow]::IsIconic($loginHWnd)) { continue }
+    $loginText = New-Object System.Text.StringBuilder 64
+    [void][Win32WechatWindow]::GetWindowText($loginHWnd, $loginText, $loginText.Capacity)
+    if (@("微信", "Weixin", "WeChat") -cnotcontains $loginText.ToString().Trim()) { continue }
+    $loginRect = New-Object Win32WechatWindow+RECT
+    if (-not [Win32WechatWindow]::GetWindowRect($loginHWnd, [ref]$loginRect)) { continue }
+    $loginDpi = [double][Win32WechatWindow]::GetDpiForWindow($loginHWnd)
+    if ($loginDpi -lt 72) { $loginDpi = 96 }
+    $loginWidth = ($loginRect.Right - $loginRect.Left) * 96 / $loginDpi
+    $loginHeight = ($loginRect.Bottom - $loginRect.Top) * 96 / $loginDpi
+    if ($loginWidth -ge 260 -and $loginWidth -le 380 -and $loginHeight -ge 340 -and $loginHeight -le 500) { return $true }
+  }
+  return $false
+}
+
 function Update-WechatWindowCandidateDiagnostics([object[]]$candidates) {
   $windowDiagnostic.window_candidate_count = @($candidates).Count
   $windowDiagnostic.window_render_count = @($candidates | Where-Object { $_.hasMainRenderChild }).Count
@@ -1038,6 +1061,18 @@ if (-not $expectedHandleIsValid) {
       Update-WechatWindowCandidateDiagnostics $candidateMatches
       $matches = @(Select-WechatMainCandidates $candidateMatches)
     }
+  }
+  # WeChat logged out (13 customer PCs, 2026-11-15/16 around midnight: 「为了你的账号安全，请重新
+  # 登录」): only the small login window is left, no main window at all. Recovering or launching
+  # WeChat only brings the login window back, and the run waited a minute before saying "main
+  # window not found". Say what it is at once; the task waits for the customer to log in.
+  # At about 225% scaling the login window itself passes the physical-size candidate filter, so
+  # "no candidates" is not required: only that no candidate can be a (tray-hidden) main window.
+  $mainLikeCandidates = @($candidateMatches | Where-Object { $_.hasMainRenderChild -or $_.hiddenMainRecoveryEligible -or $_.windowClass -ieq "mmui::MainWindow" })
+  if ($matches.Count -eq 0 -and $mainLikeCandidates.Count -eq 0 -and (Test-WechatLoginWindowShown)) {
+    $windowDiagnostic.window_login_window = $true
+    @{ ok = $false; reason = "wechat_login_required"; rule_id = (Write-XiaoxiFailure "wx1-r048" "wechat_login_required") } | ConvertTo-Json -Compress
+    exit
   }
   if (-not $inspectOnly -and $matches.Count -eq 0) {
     $recoveryCandidate = Get-WechatWindowRecoveryCandidate $candidateMatches

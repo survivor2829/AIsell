@@ -39,6 +39,7 @@ function sentWindow(executionDir) {
   } catch { return null; }
 }
 const PRE_SEND_RECOVERY_ATTEMPTS = 1; // One retry, then skip and move on (user 2026-11-07).
+const AUTO_RETRY_REASONS = new Set(["search_result_not_opened", "search_result_identity_unverified", "exact_search_result_not_found"]);
 // The first contacts of a run failing the same way pause it (user 2026-11-09).
 const EARLY_FAILURE_PAUSE_COUNT = 3;
 const EARLY_FAILURE_PAUSE_MESSAGE = "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。";
@@ -52,6 +53,8 @@ const ENVIRONMENT_PAUSE_MESSAGE = "微信现在用不了，后面几位都没有
 const WECHAT_WINDOW_PAUSE_REASONS = new Set(["personal_wechat_main_window_not_found"]);
 const WECHAT_WINDOW_PAUSE_AFTER_MS = 60_000;
 const WECHAT_WINDOW_PAUSE_MESSAGE = "没有认出电脑上的微信主窗口，这一位还没有发送。请打开微信并登录，把微信主窗口放在桌面上，再点「继续」。问题已经自动上报。";
+const WECHAT_LOGIN_WAIT_MS = 30_000;
+const WECHAT_LOGIN_WAIT_MESSAGE = "微信已退出登录，这一位还没有发送。请在电脑上重新登录微信，登录后会自动接着发。";
 const PRE_SEND_RECOVERY_DELAYS_MS = [3_000];
 const TOUCH_PREPARE_SLOW_MS = 10_000;
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
@@ -299,7 +302,14 @@ function createTouchWorkflow(options = {}) {
     let searchCaptureBytes = null;
     let legacyCopyMode = false;
     const bindingFile = path.join(taskDir, "workflow-binding.json");
-    const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
+    // During the end-of-list retry round current_index rewinds to the first retried contact; count
+    // finished contacts instead, so the progress does not jump back toward zero.
+    const progress = () => ({
+      done: task?.auto_retry_round_done && task.status !== "completed"
+        ? (task.results || []).filter((row) => COMPLETED_ROW_STATES.has(row?.status)).length
+        : task?.current_index || 0,
+      total: task?.total || contacts.length
+    });
     const reportProgress = (detail) => {
       const row = task?.results?.[task.current_index];
       try {
@@ -311,6 +321,14 @@ function createTouchWorkflow(options = {}) {
       } catch { /* Display updates must never affect a send decision. */ }
     };
     const response = (status, extra = {}) => {
+      // The list is done: contacts skipped because they could not be found or confirmed get one
+      // more try before the task counts as finished (user decision 2026-11-15).
+      if (status === "completed" && task && !task.auto_retry_round_done) {
+        const queued = queueAutoRetryRound();
+        // Keep the send spacing after the last regular send (retrySkippedResults clears it).
+        const spacing = Date.parse(task.next_send_not_before || "") > now().getTime() ? safetyInterval(task.next_send_not_before) : {};
+        if (queued) return response("pending", { ...extra, ...spacing, result: { ...(extra.result || {}), autoRetryQueued: queued } });
+      }
       const current = task?.results?.[task.current_index] || task?.results?.at(-1) || {};
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? task?.current_index) || 0)}`;
       const reasonCode = String(extra.reasonCode || extra.result?.blocked_reason || current.skip_record?.reasonCode || current.blocked_reason || "");
@@ -352,6 +370,37 @@ function createTouchWorkflow(options = {}) {
       return { status, progress: progress(), ...extra, ...(recovery ? { recovery } : {}) };
     };
     const persist = () => { task = saveTaskState(taskDir, task); };
+    // One automatic round for identity skips (not found / not confirmed): never for unknown or
+    // partial sends, never for a contact whose search hit the network-lookup misclick guard.
+    const queueAutoRetryRound = () => {
+      // A list whose index reached the end may still say "running" (an exit between the two
+      // writes): it is finished, and retrySkippedResults only reopens a finished task.
+      if (task.current_index >= task.total && task.status === "running") task.status = "completed";
+      const ids = (task.results || []).filter((row) => row?.status === "identity_skipped" && !row.poisoned
+        && AUTO_RETRY_REASONS.has(String(row.skip_record?.reasonCode || ""))).map((row) => String(row.id));
+      const nextSendNotBefore = task.next_send_not_before;
+      const retried = ids.length && new Set(ids).size === ids.length ? retrySkippedResults(task, ids, now().toISOString()) : null;
+      task.auto_retry_round_done = true;
+      if (!retried?.ok) { persist(); return 0; }
+      task = retried.task;
+      task.auto_retry_round_done = true;
+      task.next_send_not_before = nextSendNotBefore || "";
+      delete task.identity_skip_streak;
+      delete task.pre_send_skip_streak;
+      for (const row of task.results) {
+        if (!ids.includes(String(row.id)) || row.status !== "generated") continue;
+        row.auto_retried = true;
+        row.reason = "自动再试一次";
+        if (row.search_evidence) delete row.search_evidence.fingerprint;
+      }
+      task.status = "running";
+      task.pause_reason = "";
+      persist();
+      try {
+        diagnostics().event("active_touch", "auto_retry_round", { task_id: id, retried: ids.length }, { level: "info", code: "touch_auto_retry_round" });
+      } catch { /* Diagnostics never stop the task. */ }
+      return ids.length;
+    };
     // A contact that ends unsent (skipped, needs attention, outcome unknown) becomes one
     // field capsule: the final reason code, the recoveries tried before it, the steps
     // leading there (breadcrumbs) and a screenshot. The recoveries themselves stay
@@ -421,7 +470,9 @@ function createTouchWorkflow(options = {}) {
       // A completed receipt is authoritative even if the app exited before the
       // queue received the next index. Never send that contact a second time.
       if (current && COMPLETED_ROW_STATES.has(current.status)) {
-        task.current_index += 1;
+        // Step over every finished contact at once: the automatic retry round starts from the
+        // first retried contact, possibly hundreds of finished rows before the next one.
+        while (task.current_index < task.total && COMPLETED_ROW_STATES.has(task.results[task.current_index]?.status)) task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
         return response(task.status === "completed" ? "completed" : "pending");
@@ -552,7 +603,12 @@ function createTouchWorkflow(options = {}) {
         wechatRoot = String(JSON.parse(fs.readFileSync(path.join(contactsDir, "..", "contact_sync", "state.json"), "utf8")).wechat_root || "");
       } catch {}
       const drivers = options.drivers || require("../../rpa/active_touch/wechat_window_driver.dev.cjs");
-      current.status = "sending";
+      // "preparing" until the executor reports "prepared" (its own ledger is written just before
+      // the send click). A restart while searching or typing used to leave "sending", which
+      // recovery could only count as sent: that contact never got the message (2026-11-15 review).
+      // persist() above may have replaced the task object (greeting refresh): mark the saved row.
+      current = task.results[index];
+      current.status = "preparing";
       current.send_attempted = null;
       persist();
       let result;
@@ -820,7 +876,8 @@ function createTouchWorkflow(options = {}) {
                 return;
               }
               const row = task.results[index];
-              row.status = status;
+              // The executor reports "sending" only for a send it stopped before the click.
+              row.status = status === "sending" ? "preparing" : status;
               row.attempt_key = String(executionState.real_send_attempt_key || row.attempt_key || "");
               row.retry_blocked = ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(status);
               row.send_attempted = status === "sent_verified" ? true : status === "not_attempted" ? false : null;
@@ -878,15 +935,24 @@ function createTouchWorkflow(options = {}) {
         sendOperation.end({ ...detail, ...(result?.ok === false ? { raw_result: result } : {}) }, { ok: result?.ok === true, code: detail.reason,
           ...(warnPreSend ? { level: "warn" } : {}) });
       } catch (error) {
-        sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
-        task.results[index].status = "outcome_unknown";
-        task.results[index].retry_blocked = true;
-        task.results[index].send_attempted = null;
-        current = task.results[index];
-        return unknownSkip(String(error?.code || error?.message || "executor_exception").slice(0, 120));
+        // A text send still "preparing" never reached the executor's "prepared" mark, written
+        // right before the click: nothing was sent, so it is an ordinary pre-send failure.
+        const neverClicked = !multipart && task.results[index].status === "preparing";
+        sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: neverClicked ? false : null });
+        if (!neverClicked) {
+          task.results[index].status = "outcome_unknown";
+          task.results[index].retry_blocked = true;
+          task.results[index].send_attempted = null;
+          current = task.results[index];
+          return unknownSkip(String(error?.code || error?.message || "executor_exception").slice(0, 120));
+        }
+        result = { ok: false, send_attempted: false, blocked_reason: "executor_exception",
+          error: "发送步骤异常中断，消息未发送" };
       }
       current = task.results[index];
       current.last_trace_id = sendOperation.traceId;
+      // The login wait ends with any other outcome; a later logout is reported afresh.
+      if (String(result?.blocked_reason || "") !== "wechat_login_required") delete current.login_wait_started_at;
       if (result?.ok && result?.state?.real_send_status === "sent_verified") {
         delete task.identity_skip_streak;
         delete task.pre_send_skip_streak;
@@ -899,6 +965,7 @@ function createTouchWorkflow(options = {}) {
           : null;
         current.retry_blocked = true;
         current.send_attempted = true;
+        delete current.login_wait_started_at;
         if (notice?.ok === true && notice.undelivered === true) {
           current.status = "recipient_unreachable_skipped";
           current.blocked_reason = "recipient_not_friend";
@@ -988,7 +1055,15 @@ function createTouchWorkflow(options = {}) {
           current.retry_blocked = true;
           const deliveryStatus = skippedDelivery(current);
           current.updated_at = now().toISOString();
-          reportContact("skipped", reasonCode, { stage: "search_identity", rule_id: ruleId, passport_recorded: true }, sendOperation.traceId);
+          // The end-of-list retry of a contact already skipped and uploaded once: the first skip holds
+          // the root cause, so the repeat stays a local warning (no second capsule or passport failure).
+          const repeatSkip = current.auto_retried === true;
+          if (repeatSkip) {
+            try {
+              diagnostics().event("active_touch", "contact_skipped_again", { task_id: id, current_index: index, reason_code: reasonCode, rule_id: ruleId },
+                { trace: true, traceId: sendOperation.traceId, level: "warn", code: `touch_skipped_again_${reasonCode}` });
+            } catch { /* Diagnostics never stop the task. */ }
+          } else reportContact("skipped", reasonCode, { stage: "search_identity", rule_id: ruleId, passport_recorded: true }, sendOperation.traceId);
           recordSkippedResult(current, index, {
             reasonCode,
             ruleId,
@@ -1002,14 +1077,16 @@ function createTouchWorkflow(options = {}) {
             task.completed_at = now().toISOString();
           }
           persist();
-          passport?.recordFailure("active_touch", passportTaskId, {
+          if (!repeatSkip) passport?.recordFailure("active_touch", passportTaskId, {
             stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
             rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" },
             ...(/^search-r\d+$/u.test(ruleId) && (searchCaptureBytes || ruleId === 'search-r015') ? { screenshotBytes: searchCaptureBytes } : {})
           });
-          return earlyFailurePause(nextStreak, reasonCode, ruleId, () => response(task.status === "completed" ? "completed" : "pending", {
+          const skipResponse = () => response(task.status === "completed" ? "completed" : "pending", {
             result: { deliveryStatus, skipped: true, reasonCode }
-          }));
+          });
+          // A repeat in the retry round never pauses the run: it is about to finish.
+          return repeatSkip ? skipResponse() : earlyFailurePause(nextStreak, reasonCode, ruleId, skipResponse);
         }
         if (!enabled() || failurePolicy.reasonCode === "batch_cancelled" || failurePolicy.reasonCode === "workflow_paused") {
           current.status = "generated";
@@ -1018,6 +1095,32 @@ function createTouchWorkflow(options = {}) {
           current.updated_at = now().toISOString();
           persist();
           return response("pending", { result: { deliveryStatus: "not_attempted" } });
+        }
+        // WeChat logged out (it shows only its login window; 2026-11-15/16 around midnight on many
+        // computers: 「为了你的账号安全，请重新登录」). Nothing was sent. The run waits on this contact
+        // and looks again every 30 seconds; once the customer logs in it goes on by itself (user
+        // decision 2026-11-15). Logging out is not a software fault: one warning, no field capsule.
+        if (failurePolicy.reasonCode === "wechat_login_required") {
+          delete current.environment_recovery_started_at;
+          if (!current.login_wait_started_at) {
+            current.login_wait_started_at = now().toISOString();
+            try {
+              diagnostics().event("active_touch", "wechat_login_wait", { task_id: id, current_index: index },
+                { trace: true, traceId: sendOperation.traceId, level: "warn", code: "touch_wechat_login_wait" });
+            } catch { /* Diagnostics never stop the task. */ }
+          }
+          current.status = "generated";
+          current.reason = WECHAT_LOGIN_WAIT_MESSAGE;
+          current.retry_blocked = false;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return response("pending", {
+            retryAfterMs: WECHAT_LOGIN_WAIT_MS,
+            waitingReason: "wechat_login_wait",
+            reasonCode: failurePolicy.reasonCode,
+            result: { deliveryStatus: "not_attempted", classification: failurePolicy.classification }
+          });
         }
         if (failurePolicy.classification === "environment") {
           let environmentStartedAt = Date.parse(current.environment_recovery_started_at);
@@ -1281,7 +1384,7 @@ function createTouchWorkflow(options = {}) {
       if (!result || !["pending", "generated", "not_attempted"].includes(result.status)
         || result.send_attempted !== false
         || result.retry_blocked
-        || result.message_parts?.some((part) => ["sending", "prepared", "clicked", "sent_verified", "outcome_unknown"].includes(part?.status))) {
+        || result.message_parts?.some((part) => ["preparing", "sending", "prepared", "clicked", "sent_verified", "outcome_unknown"].includes(part?.status))) {
         throw new Error("任务中存在尚未确认的发送结果，请先核对微信后再编辑。");
       }
       result.status = "pending";
@@ -1335,8 +1438,10 @@ function createTouchWorkflow(options = {}) {
     delete retried.task.identity_skip_streak;
     delete retried.task.pre_send_skip_streak;
     for (const result of retried.task.results) {
-      if (result.status === "generated" && result.reason === "已重新加入，等待继续任务" && result.search_evidence) {
-        delete result.search_evidence.fingerprint;
+      if (result.status === "generated" && result.reason === "已重新加入，等待继续任务") {
+        // A contact picked by hand starts over: its next failure is uploaded again.
+        delete result.auto_retried;
+        if (result.search_evidence) delete result.search_evidence.fingerprint;
       }
     }
     const saved = saveTaskState(taskDir, retried.task);

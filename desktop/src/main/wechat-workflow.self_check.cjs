@@ -161,11 +161,21 @@ async function checkTouchCopyModes() {
   } finally { await controller.dispose(); }
 }
 
+// Runs touch steps until the task finishes: since 2026-11-15 a list that ends with identity skips
+// gets one automatic retry round before it reports "completed".
+async function finishTouchRun(step, limit = 10) {
+  let result;
+  for (let i = 0; i < limit && !["completed", "needs_attention"].includes(result?.status); i++) result = await step();
+  return result;
+}
+
 async function checkTouchStatusDoesNotRecoverActiveSend() {
-  for (const multipart of [false, true]) {
+  // heldPrepared: the executor already wrote its "prepared" mark (right before the click) when
+  // the app stopped. Without it, nothing was clicked and the contact is tried again (2026-11-15).
+  for (const [multipart, heldPrepared] of [[false, true], [true, true], [false, false], [true, false]]) {
     const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-status-race-"));
     const dataDir = path.join(root, "touch");
-    const id = multipart ? "multipart" : "text";
+    const id = `${multipart ? "multipart" : "text"}-${heldPrepared ? "prepared" : "preparing"}`;
     const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
     const payload = { script: "您好，想了解您的设备需求。", contacts: [contact], ...(multipart ? { imageIds: ["image-1"] } : {}) };
     const taskRecord = { id, payload };
@@ -179,6 +189,7 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
       execute: async (input) => {
         input.onDiagnostic({ stage: input.image ? "read_back" : "prepare_window", phase: "start",
           ...(input.image ? { clipboard_read_attempts: 2, retry_index: 1 } : {}) });
+        if (heldPrepared) input.onTransition("prepared");
         if (!release) await new Promise((resolve) => { release = resolve; });
         return { ok: true, state: { real_send_status: "sent_verified" } };
       }
@@ -195,20 +206,31 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
     }
     const duringSend = loadTaskState(taskDir);
     assert.equal(duringSend.status, "running", "status polling must not recover a live task");
-    assert.equal(duringSend.results[0].status, "sending");
+    assert.equal(duringSend.results[0].status, heldPrepared && !multipart ? "prepared" : "preparing");
+    if (multipart) assert.equal(duringSend.results[0].message_parts[0].status, heldPrepared ? "prepared" : "preparing");
 
     const restartRoot = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-touch-restart-"));
     const restartDir = path.join(restartRoot, "touch", "workflow-tasks", path.basename(taskDir));
     fs.mkdirSync(path.dirname(restartDir), { recursive: true });
     fs.cpSync(taskDir, restartDir, { recursive: true });
+    let resent = 0;
     const restarted = createTouchWorkflow({ ...workflowOptions, dataDir: path.join(restartRoot, "touch"),
-      execute: async () => { throw new Error("interrupted sends must not be repeated"); } });
+      execute: async () => {
+        if (heldPrepared) throw new Error("interrupted sends must not be repeated");
+        resent += 1;
+        return { ok: true, state: { real_send_status: "sent_verified" } };
+      } });
     const restartResult = await restarted.runWorkflowStep(taskRecord, { isEnabled: () => true });
     const recovered = loadTaskState(restartDir);
-    // An interrupted send is counted as sent on restart: never repeated, never handed to the customer.
     assert.notEqual(restartResult.status, "needs_attention", "a real restart recovers an interrupted send without asking anyone");
-    if (!multipart) assert.equal(recovered.results[0].status, "outcome_unknown_skipped");
-    assert.equal(recovered.results[0].needs_internal_review, true);
+    if (heldPrepared) {
+      // An interrupted send past "prepared" is counted as sent on restart: never repeated.
+      if (!multipart) assert.equal(recovered.results[0].status, "outcome_unknown_skipped");
+      assert.equal(recovered.results[0].needs_internal_review, true);
+    } else {
+      assert.ok(resent >= 1, "a contact interrupted before the click is sent after the restart");
+      assert.equal(recovered.results[0].crash_recovered_from, "preparing");
+    }
 
     release();
     const completed = await running;
@@ -320,14 +342,17 @@ async function checkInterruptedSendRecoveryInSameProcess() {
     const added = await controller.addTask({ type: "touch", payload: { script: "您好，想了解您的设备需求。", contactIds: [contact.id] } });
     await controller.start();
     await controller.tick();
+    // The fault hit before the executor ran (still "preparing", 2026-11-15): nothing can have been
+    // sent, so the contact is retryable rather than an unknown result needing confirmation.
     assert.equal(firstAttention?.tasks[0]?.status, "needs_attention");
-    assert.equal(firstAttention.tasks[0].canRetry, false);
-    assert.equal(firstAttention.tasks[0].unknownResolution?.required, true,
-      "the first attention snapshot must show manual confirmation after recovery");
+    assert.equal(firstAttention.tasks[0].canRetry, true);
+    assert.notEqual(firstAttention.tasks[0].unknownResolution?.required, true,
+      "a send that never reached the executor is not an unknown result");
     const taskDir = path.join(dataDir, "workflow-tasks", require("node:crypto").createHash("sha256").update(added.task.id).digest("hex"));
     const recovered = loadTaskState(taskDir);
     assert.equal(recovered.status, "paused");
-    assert.equal(recovered.results[0].status, "outcome_unknown");
+    assert.equal(recovered.results[0].status, "generated");
+    assert.equal(recovered.results[0].crash_recovered_from, "preparing");
     assert.equal(sends, 0, "recovery must not automatically send again");
   } finally {
     await controller.dispose();
@@ -413,9 +438,9 @@ async function checkR008BoundedRecovery() {
       ...(multipart ? { mediaStore: { validateIds: (ids) => ids, resolve: () => ({ path: "image-1" }) } } : {}),
       passport: { recordEvent() {}, recordFailure: (_module, _id, evidence) => failures.push(evidence), bindTrace() {},
         writeRunBill: (moduleName, id, rows) => bills.push(billStore.writeRunBill(moduleName, id, rows)) },
-      execute: async () => {
+      execute: async (input) => {
         attempt += 1;
-        return succeed
+        return succeed === true || succeed === input.contactId
           ? { ok: true, state: { real_send_status: "sent_verified" } }
           : { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
             diagnostics: { rule_id: "search-r008", candidate_set_hash: fixedHash || `candidate-${attempt}` } };
@@ -459,9 +484,16 @@ async function checkR008BoundedRecovery() {
     assert.equal(failures.length, 4, "one final failure per skipped contact, and the pause itself");
     assert.equal(failures[3].reasonCode, "touch_early_failure_paused");
     assert.equal(workflow.canRetryWorkflowTask(record, payload), true, "the paused run can be continued");
-    succeed = true;
-    assert.equal((await step()).status, "completed");
-    assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined, "a verified send resets the circuit count");
+    // Only the fourth contact can be reached; the automatic end-of-list round (2026-11-15) tries the
+    // three skipped contacts once more, they fail again and stay skipped.
+    succeed = contacts[3].id;
+    let finished;
+    for (let i = 0; i < 20 && finished?.status !== "completed"; i++) finished = await step();
+    assert.equal(finished.status, "completed", JSON.stringify(finished));
+    assert.equal(loadTaskState(taskDir).results[3].status, "sent_verified");
+    assert.equal(loadTaskState(taskDir).auto_retry_round_done, true);
+    assert.deepEqual(loadTaskState(taskDir).results.slice(0, 3).map((row) => [row.status, row.auto_retried]),
+      [["identity_skipped", true], ["identity_skipped", true], ["identity_skipped", true]]);
     assert.equal(bills.at(-1).rule_counts["search-r008"], 3);
     const retry = workflow.retrySkippedWorkflowTask(record, [contacts[0].id]);
     assert.equal(retry.ok, true);
@@ -529,6 +561,108 @@ async function checkWechatWindowPause() {
   }
 }
 
+// Version B (user decisions 2026-11-15): a logged-out WeChat waits on the contact and goes on by
+// itself after login; identity skips get one automatic round at the end; an executor failure
+// before the "prepared" mark is a plain pre-send failure, never an assumed send.
+async function checkLoginWaitRetryRoundAndPreparing() {
+  const root = trackedMkdtemp(path.join(os.tmpdir(), "xiaoxi-login-retry-"));
+  try {
+    const contacts = [1, 2, 3].map((number) => ({
+      id: `customer-${number}`, name: `客户${number}`, wechatId: `wxid_customer_${number}`, wechatAccountId: "test-account"
+    }));
+    let clock = Date.parse("2026-11-16T00:00:00.000Z");
+    let plan = {};
+    const calls = {};
+    const workflow = createTouchWorkflow({
+      dataDir: root, now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      execute: async ({ contactId, onTransition }) => {
+        calls[contactId] = (calls[contactId] || 0) + 1;
+        const next = (plan[contactId] || []).shift() || "sent";
+        if (next === "login") return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required" };
+        if (next === "identity") return { ok: false, send_attempted: false, blocked_reason: "search_result_not_opened" };
+        if (next === "throw") throw new Error("worker crashed while searching");
+        if (next === "throw_after_prepared") { onTransition("prepared"); throw new Error("worker crashed after prepared"); }
+        return { ok: true, state: { real_send_status: "sent_verified" } };
+      }
+    });
+    const run = (id) => {
+      const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: contacts.map((contact) => contact.id) });
+      const record = { id, payload };
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(id).digest("hex"));
+      return { record, taskDir, step: async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); } };
+    };
+
+    // Logged out: wait on contact 2 (hours if needed), never skip or pause; continue after login.
+    plan = { "customer-2": ["login", "login", "login"] };
+    const login = run("login-wait");
+    assert.equal((await login.step()).status, "pending");
+    for (let wait = 0; wait < 3; wait++) {
+      const waiting = await login.step();
+      assert.equal(waiting.status, "pending", JSON.stringify(waiting));
+      assert.equal(waiting.waitingReason, "wechat_login_wait");
+      assert.equal(waiting.retryAfterMs, 30_000);
+      const row = loadTaskState(login.taskDir).results[1];
+      assert.equal(row.status, "generated", "nothing is skipped while WeChat is logged out");
+      assert.equal(row.send_attempted, false);
+      assert.match(row.reason, /微信已退出登录/u);
+    }
+    assert.equal((await login.step()).status, "pending", "after login the same contact goes out");
+    assert.equal(loadTaskState(login.taskDir).results[1].status, "sent_verified");
+    assert.equal(loadTaskState(login.taskDir).results[1].login_wait_started_at, undefined);
+    assert.equal((await login.step()).status, "completed");
+
+    // Identity skips get one more round once the list is done.
+    plan = { "customer-1": ["identity"], "customer-2": ["identity", "identity"] };
+    for (const key of Object.keys(calls)) delete calls[key];
+    const retry = run("auto-retry-round");
+    const steps = [];
+    for (let i = 0; i < 12 && steps.at(-1)?.status !== "completed"; i++) steps.push(await retry.step());
+    assert.equal(steps.at(-1).status, "completed", JSON.stringify(steps.map((item) => item.status)));
+    assert.ok(steps.some((item) => item.result?.autoRetryQueued === 2), "both skipped contacts are queued again");
+    const retriedTask = loadTaskState(retry.taskDir);
+    assert.equal(retriedTask.results[0].status, "sent_verified", "the second try reached the contact");
+    assert.equal(retriedTask.results[0].auto_retried, true);
+    assert.equal(retriedTask.results[1].status, "identity_skipped", "a second failure is final: no third round");
+    assert.equal(retriedTask.results[2].status, "sent_verified");
+    assert.equal(retriedTask.auto_retry_round_done, true);
+    assert.equal(calls["customer-3"], 1, "a sent contact is never sent again by the retry round");
+    const queuedStep = steps.find((item) => item.result?.autoRetryQueued);
+    assert.equal(queuedStep.waitingReason, "touch_safety_interval", "the round keeps the spacing after the last send");
+    assert.ok(queuedStep.retryAfterMs > 0);
+    assert.ok(queuedStep.progress.done >= 1, "progress counts finished contacts, it does not rewind to the first retried row");
+    // A contact picked by hand after the round starts over: its next failure is uploaded again.
+    assert.equal(workflow.retrySkippedWorkflowTask(retry.record, ["customer-2"]).ok, true);
+    assert.equal(loadTaskState(retry.taskDir).results[1].auto_retried, undefined);
+
+    // Multipart: a crash while a part is still "preparing" leaves that part unsent and retryable.
+    const { executeMessageSequence } = require("./touch-message-sequence.cjs");
+    const sequenceRow = {};
+    const crashed = await executeMessageSequence({ row: sequenceRow, parts: [{ kind: "text", message: "您好" }, { kind: "image", imageId: "a" }],
+      persist() {}, isEnabled: () => true, execute: async () => { throw new Error("crash while searching"); } });
+    assert.equal(crashed.send_attempted, false);
+    assert.equal(crashed.blocked_reason, "executor_exception");
+    assert.deepEqual(sequenceRow.message_parts.map((part) => part.status), ["not_attempted", "pending"]);
+    const crashedAfterPrepared = await executeMessageSequence({ row: {}, parts: [{ kind: "text", message: "您好" }],
+      persist() {}, isEnabled: () => true, execute: async (_part, _index, transition) => { transition("prepared"); throw new Error("crash after prepared"); } });
+    assert.equal(crashedAfterPrepared.send_attempted, null, "past the prepared mark the result stays unknown");
+
+    // An executor failure before "prepared" is a pre-send failure (recovered, then skipped as retryable);
+    // after "prepared" it stays an assumed send that is never repeated.
+    plan = { "customer-1": ["throw", "throw"], "customer-2": ["throw_after_prepared"] };
+    const crash = run("executor-crash");
+    const recovering = await crash.step();
+    assert.equal(recovering.waitingReason, "wechat_pre_send_recovery", JSON.stringify(recovering));
+    assert.equal(loadTaskState(crash.taskDir).results[0].status, "generated");
+    await crash.step();
+    assert.equal(loadTaskState(crash.taskDir).results[0].status, "pre_send_skipped");
+    await crash.step();
+    assert.equal(loadTaskState(crash.taskDir).results[1].status, "outcome_unknown_skipped", "a crash after prepared is never resent");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function checkR008PassportAttachmentCount() {
   const ocrPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9caRcAAAAASUVORK5CYII=", "base64");
   for (const [ruleId, reasonCode, expectedScreenshots] of [
@@ -569,8 +703,14 @@ async function checkR008PassportAttachmentCount() {
         assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, delay);
         assert.equal(screenshots, 0, "bounded retries must not consume passport attachments");
       }
-      clock += 60 * 60 * 1000;
-      assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+      // The end-of-list retry round (2026-11-15) tries the contact once more; its repeat skip is a
+      // local warning, so the passport still holds exactly one final failure.
+      let finalStep;
+      for (let i = 0; i < 6 && finalStep?.status !== "completed"; i++) {
+        clock += 60 * 60 * 1000;
+        finalStep = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+      }
+      assert.equal(finalStep.status, "completed");
       assert.equal(screenshots, expectedScreenshots, `${ruleId} must have one final failure with the real diagnostics subscriber`);
       assert.equal(temporaryCaptures.every((file) => !fs.existsSync(file)), true,
         "each transient OCR capture must be removed after the workflow step");
@@ -649,8 +789,14 @@ async function checkR008PartialSend() {
     }
     clock += 60 * 60 * 1000;
     result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
-    assert.equal(result.status, "completed");
     assert.equal(result.result.deliveryStatus, "partial_sent");
+    // The end-of-list round (2026-11-15) tries the missing image once more; the text is never resent.
+    for (let i = 0; i < 6 && result.status !== "completed"; i++) {
+      clock += 60 * 60 * 1000;
+      result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+    }
+    assert.equal(result.status, "completed");
+    assert.ok(imageReads >= 3, "the retry round tried the image again");
     assert.equal(textSends, 1, "verified text must never be sent again");
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     const row = loadTaskState(taskDir).results[0];
@@ -686,7 +832,8 @@ async function checkT5FourthReviewExits() {
           if (kind === "unknown") return { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" };
           if (kind === "preclick") return { ok: false, send_attempted: false, blocked_reason: "image_send_pre_click_timeout", pre_send_retry_exhausted: true };
           if (kind === "imageformat") return { ok: false, send_attempted: false, blocked_reason: "image_paste_not_accepted", pre_send_retry_exhausted: true };
-          if (kind === "environment") return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required" };
+          // A logged-out WeChat waits for login (2026-11-15); another environment cause still skips.
+          if (kind === "environment") return { ok: false, send_attempted: false, blocked_reason: "wechat_window_not_foreground" };
           if (kind === "recoverable") return { ok: false, send_attempted: false, blocked_reason: "image_existing_draft_clear_failed" };
           return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
             diagnostics: { rule_id: "search-r008", candidate_set_hash: `image-${imageReads}` } };
@@ -763,13 +910,13 @@ async function checkT5FourthReviewRulesAndEvidence() {
       const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
       if (kind === "other_identity") {
         assert.equal((await step()).retryAfterMs, 2000);
-        assert.equal((await step()).status, "completed");
+        assert.equal((await finishTouchRun(step)).status, "completed");
         assert.equal(billRows.at(-1)[0].ruleId, "", "an identity failure without its own rule must not inherit r008");
         assert.deepEqual(bills.at(-1).rule_counts, {});
         continue;
       }
       assert.equal((await step()).retryAfterMs, 2000);
-      assert.equal((await step()).status, "completed");
+      assert.equal((await finishTouchRun(step)).status, "completed");
       if (kind === "diagnostics") {
         const evidence = loadTaskState(taskDir).results[0].search_evidence;
         assert.equal(evidence.capture_source, "popup");
@@ -777,7 +924,9 @@ async function checkT5FourthReviewRulesAndEvidence() {
         assert.equal(evidence.popup_dpi, 120);
         assert.deepEqual(evidence.search_columns, [62]);
         assert.equal(evidence.popup_candidate_count, 2);
-        assert.deepEqual(failures.at(-1).rawReading.diagnostics, evidence);
+        // The passport keeps the first skip (the retry round's repeat is a local warning).
+        const withoutFingerprint = ({ fingerprint: _fingerprint, ...rest }) => rest;
+        assert.deepEqual(withoutFingerprint(failures.at(-1).rawReading.diagnostics), withoutFingerprint(evidence));
       } else {
         assert.equal(workflow.retrySkippedWorkflowTask(record, [contact.id]).ok, true);
         succeed = true;
@@ -839,7 +988,8 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
       script: "您好", contactIds: contacts.map((contact) => contact.id)
     }) };
     let circuit;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    // 20 steps: the list, then the automatic end-of-list retry round (2026-11-15).
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       clock += 60 * 60 * 1000;
       circuit = await workflow.runWorkflowStep(record, { isEnabled: () => true });
       if (circuit.status === "completed") break;
@@ -903,8 +1053,8 @@ async function checkT5FourthReviewCircuit() {
     // A third same-rule identity failure no longer opens a circuit: the image is skipped, the
     // text already sent stays sent, and the unattended run finishes.
     const skipped = await step();
-    assert.equal(skipped.status, "completed");
     assert.equal(skipped.result.deliveryStatus, "partial_sent");
+    assert.equal((await finishTouchRun(step)).status, "completed", "the end-of-list retry round ends the same way");
     const row = loadTaskState(taskDir).results[0];
     assert.equal(row.send_attempted, true);
     assert.match(row.reason, /^部分内容已发送/u);
@@ -936,7 +1086,7 @@ async function checkCircuitRejoinKeepsThirdContactRecovery() {
       assert.equal((await step()).status, "pending");
     }
     assert.equal((await step()).retryAfterMs, 2000);
-    assert.equal((await step()).status, "completed", "the third contact is skipped too; no circuit stops the run");
+    assert.equal((await finishTouchRun(step)).status, "completed", "the third contact is skipped too; no circuit stops the run");
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     assert.equal(loadTaskState(taskDir).results[2].status, "identity_skipped");
     assert.equal(workflow.retrySkippedWorkflowTask(record, [contacts[0].id]).ok, true);
@@ -1067,6 +1217,8 @@ async function checkRejoinedIdentityStreakStartsEmpty() {
       assert.equal((await step()).retryAfterMs, 2000);
       await step();
     }
+    // The automatic end-of-list round (2026-11-15) tries both again; they fail the same way.
+    assert.equal((await finishTouchRun(step)).status, "completed");
     assert.equal(loadTaskState(taskDir).identity_skip_streak.count, 2);
     assert.equal(workflow.retrySkippedWorkflowTask(record, contacts.map((contact) => contact.id)).ok, true);
     assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
@@ -1097,8 +1249,11 @@ async function checkMissingSearchResultsDoNotTripCircuit() {
     for (let index = 0; index < contacts.length; index += 1) {
       clock += 60 * 60 * 1000;
       const result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
-      assert.equal(result.status, index === contacts.length - 1 ? "completed" : "pending");
+      assert.equal(result.status, "pending", "a missing contact never stops the run");
     }
+    // The last skip queues the automatic end-of-list round (2026-11-15); it ends the same way.
+    const step = async () => { clock += 60 * 60 * 1000; return workflow.runWorkflowStep(record, { isEnabled: () => true }); };
+    assert.equal((await finishTouchRun(step)).status, "completed");
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
   } finally {
@@ -3173,6 +3328,7 @@ async function main() {
   await checkClickedAttentionPersistFailureRecovery();
   await checkR008BoundedRecovery();
   await checkWechatWindowPause();
+  await checkLoginWaitRetryRoundAndPreparing();
   await checkTouchCopyModes();
   await checkLiveAccountGate();
   await checkRecipientsFollowContactSync();

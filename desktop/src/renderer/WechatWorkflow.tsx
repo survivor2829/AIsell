@@ -276,6 +276,7 @@ function recoveryWaitText(task?: WorkflowTask) {
   if (/user_active|external_input_detected/u.test(task?.reasonCode || "")) return "检测到键鼠操作，等待电脑空闲";
   if (task?.waitingReason === "wechat_operation_busy") return "等待其他微信操作结束";
   if (task?.waitingReason === "wechat_identity_recovery") return "正在恢复联系人身份识别";
+  if (task?.waitingReason === "wechat_login_wait") return "微信已退出登录，请在电脑上重新登录微信，登录后自动继续";
   if (task?.waitingReason === "wechat_environment_recovery") return "微信运行条件暂未满足，等待恢复";
   if (task?.reasonCode?.startsWith("image_")) return "图片尚未发送，正在恢复发送前检查";
   return "发送前检查未通过，等待恢复";

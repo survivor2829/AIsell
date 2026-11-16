@@ -428,6 +428,14 @@
     "classification": "blocker"
   },
   {
+    "id": "wx1-r048",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_login_required",
+    "condition": "login_window_without_main_window",
+    "line": 1074,
+    "classification": "environment"
+  },
+  {
     "id": "wx2-r001",
     "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
     "reason": "real_send_session_changed",
