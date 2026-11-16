@@ -2,6 +2,7 @@ const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs"
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL } = require("./wechat_header_title.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -2835,8 +2836,10 @@ public static class Win32WechatConversationTitle {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
 }
 "@
+${WECHAT_HEADER_TITLE_POWERSHELL}
 $expected = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION")
 $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHwnd = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
@@ -2884,6 +2887,8 @@ if ($root -eq $null) {
   exit
 }
 $windowRect = $matched.rect
+$titleDpi = [int][Win32WechatConversationTitle]::GetDpiForWindow($matched.hWnd)
+if ($titleDpi -le 0) { $titleDpi = 96 }
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 $found = $null
 $unavailable = $null
@@ -2913,20 +2918,42 @@ for ($i = 0; $i -lt $all.Count; $i++) {
     break
   }
 }
+# WeChat 4.2 exposes no UIA element for the chat title, so every contact opened by name
+# was skipped as search_result_not_opened although the right chat was open (13 customer
+# PCs, 1.3.13, 2026-11-15; reproduced on the development machine, 4.2.0.13). Read the
+# title band with the same OCR check the send step already relies on (one title line,
+# letters/digits identical, a cut title shows at least 4 of them); a late title gets one
+# more read. Only when UIA shows no title element at all: a UIA title that differs from
+# the customer (even by punctuation only) is a different chat, never re-read by OCR. A
+# near-ID open (XIAOXI_TITLE_STRICT) accepts no cut title.
+$titleMode = $(if ($found -ne $null) { "uia_header" } else { "" })
+$titleStrict = [Environment]::GetEnvironmentVariable("XIAOXI_TITLE_STRICT") -eq "1"
+if ($found -eq $null -and $unavailable -eq $null -and $titleSummaries.Count -eq 0) {
+  $ocrRect = [pscustomobject]@{ Left = [double]$windowRect.Left; Top = [double]$windowRect.Top; Right = [double]$windowRect.Right; Bottom = [double]$windowRect.Bottom
+    Width = [double]($windowRect.Right - $windowRect.Left); Height = [double]($windowRect.Bottom - $windowRect.Top) }
+  for ($ocrAttempt = 0; $ocrAttempt -lt 2; $ocrAttempt++) {
+    if ($ocrAttempt -gt 0) { Start-Sleep -Milliseconds 400 }
+    if ([Win32WechatConversationTitle]::GetForegroundWindow() -ne $matched.hWnd) { break }
+    if (Test-WechatHeaderTitle $ocrRect $titleDpi $expected (-not $titleStrict)) { $found = $expected; $titleMode = "ocr_header"; break }
+  }
+}
 if ($unavailable -ne $null) {
   @{ ok = $false; reason = "contact_unavailable"; rule_id = (Write-XiaoxiFailure "wx1-r042" "contact_unavailable"); title = $unavailable; windowTitle = $matched.title; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
 } else {
-  @{ ok = ($found -ne $null); title = $found; windowTitle = $matched.title; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64(); titleComparison = @{ expected=(Get-TitleComparisonSummary $expected $expected); titles=@($titleSummaries.ToArray()) } } | ConvertTo-Json -Compress -Depth 6
+  @{ ok = ($found -ne $null); title = $found; titleMode = $titleMode; windowTitle = $matched.title; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64(); titleComparison = @{ expected=(Get-TitleComparisonSummary $expected $expected); titles=@($titleSummaries.ToArray()); header=$script:headerTitleEvidence } } | ConvertTo-Json -Compress -Depth 6
 }
 `;
 
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
   if (!String(expectedTitle ?? "").trim()) return { ok: false };
+  // The OCR title read can take several seconds on a busy computer: allow more than the
+  // default 15 s so a slow read is not reported as a chat that did not open.
   return runPowerShell(CONVERSATION_TITLE_SCRIPT, {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
-    XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? "")
-  }, { ensure: false });
+    XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+  }, { ensure: false, timeout: 30000 });
 }
 
 function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
@@ -2934,8 +2961,9 @@ function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
   return runPowerShellAsync(CONVERSATION_TITLE_SCRIPT, {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
-    XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? "")
-  }, { ensure: false });
+    XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+  }, { ensure: false, timeout: 30000 });
 }
 
 const MESSAGE_DRAFT_SCRIPT = `

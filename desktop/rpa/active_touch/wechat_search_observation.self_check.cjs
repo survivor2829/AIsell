@@ -308,6 +308,36 @@ async function checkWrongConversationTitleGate() {
       assert.match(comparison.expected.sha256_16, /^[a-f0-9]{16}$/u);
       assert.equal(comparison.titles[0].punctuation_whitespace_width_only, true);
       assert.doesNotMatch(JSON.stringify(comparison), /甲|乙/u);
+      // A near-ID result (one listed ID read a character off, 2026-11-15) is never an
+      // exact-ID open: the whole chat title must match at once (strict, no cut title);
+      // on a mismatch the contact is searched by name like an unlisted ID.
+      saveState(root, { ...loadState(root), selected_customer: { ...loadState(root).selected_customer, name: '城胜', remark: '城胜', wechatId: 'wakeup2829' } });
+      const queries = [];
+      const opener = (query) => { queries.push(query); return query === 'wakeup2829'
+        ? { ok: true, pid: 81, hWnd: '91', processName: 'Weixin', title: '微信', exactSearchOpened: true,
+          searchQuery: query, searchQueryType: 'wechat_id', searchResultMode: 'sectioned_wechat_id_near', searchEvidence: {} }
+        : { ok: true, pid: 81, hWnd: '91', processName: 'Weixin', title: '微信', searchQuery: query,
+          searchQueryType: 'name_fallback', searchResultMode: 'sectioned_name_visual', searchEvidence: {} }; };
+      const checks = [];
+      const verifier = (answers) => (name, context) => { checks.push({ name, strict: context?.strictTitle === true });
+        return answers.shift() ? { ok: true, title: name, processName: 'Weixin', pid: 81, hWnd: '91' } : { ok: false, title: null }; };
+      const nearRight = clickSearchResultDryRun(root, opener, () => [], verifier([true]));
+      assert.equal(nearRight.blocked_reason, undefined, JSON.stringify(nearRight));
+      assert.deepEqual(checks, [{ name: '城胜', strict: true }], 'one strict title check, no second read');
+      assert.deepEqual(queries, ['wakeup2829']);
+      assert.equal(loadState(root).conversation_verification_mode, 'conversation_title', 'a near ID never becomes exact_wechat_id_search');
+      checks.length = 0; queries.length = 0;
+      saveState(root, { ...loadState(root), target_selected: true });
+      const nearThenName = clickSearchResultDryRun(root, opener, () => [], verifier([false, true]));
+      assert.equal(nearThenName.blocked_reason, undefined, 'a wrong near-ID chat falls back to the name search');
+      assert.deepEqual(queries, ['wakeup2829', '城胜']);
+      assert.deepEqual(checks.map((check) => check.strict), [true, false]);
+      assert.equal(loadState(root).search_fallback_reason, 'wechat_id_near_title_mismatch');
+      checks.length = 0; queries.length = 0;
+      saveState(root, { ...loadState(root), target_selected: true });
+      const nearAndNameWrong = clickSearchResultDryRun(root, opener, () => [], verifier([false, false]));
+      assert.equal(nearAndNameWrong.blocked_reason, 'search_result_not_opened');
+      assert.equal(nearAndNameWrong.diagnostics.fallback_reason, 'wechat_id_near_title_mismatch');
     } finally { for (const file of [first, second]) { try { fs.unlinkSync(file); } catch {} } }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
@@ -322,7 +352,33 @@ if (process.platform === "win32") {
   fixtureDriver.filename = driverFile; fixtureDriver.paths = module.paths;
   fixtureDriver._compile(fs.readFileSync(driverFile,'utf8') + '\nmodule.exports.__titleScript = CONVERSATION_TITLE_SCRIPT;', driverFile);
   const titleScript = fixtureDriver.exports.__titleScript;
-  const titleLoop = titleScript.slice(titleScript.indexOf('$found = $null'), titleScript.indexOf('if ($unavailable -ne $null)'));
+  const titleLoop = titleScript.slice(titleScript.indexOf('$found = $null'), titleScript.indexOf('$titleMode = '));
+  // The OCR read after a UIA miss (WeChat 4.2 has no UIA title; 2026-11-15): wired to the
+  // shared header check, used only while WeChat stays in front, never on 已停用 rows.
+  const ocrBlock = titleScript.slice(titleScript.indexOf('$titleMode = '), titleScript.indexOf('if ($unavailable -ne $null)'));
+  const ocrReplay = (foreground, ocrSays, unavailable = '$null', { uiaTitles = 0, strict = false } = {}) => {
+    const script = `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n`
+      + `Add-Type 'public static class Win32WechatConversationTitle { public static System.IntPtr Fg; public static System.IntPtr GetForegroundWindow() { return Fg; } }'\n`
+      + `[Win32WechatConversationTitle]::Fg=[IntPtr]${foreground ? 5 : 6}; $script:calls=0; $script:cut=@()\n`
+      + `[Environment]::SetEnvironmentVariable('XIAOXI_TITLE_STRICT', '${strict ? '1' : ''}')\n`
+      + `function Test-WechatHeaderTitle($r, $d, $e, $allowCut) { $script:calls++; $script:cut += [bool]$allowCut; return (${ocrSays ? '$true' : '$false'} -and $r.Width -eq 900 -and $d -eq 120 -and $e -eq '甲乙') }\n`
+      + `$titleSummaries=[Collections.Generic.List[object]]::new(); for ($t=0; $t -lt ${uiaTitles}; $t++) { $titleSummaries.Add(@{length=2}) }\n`
+      + `$found=$null; $unavailable=${unavailable}; $expected='甲乙'; $titleDpi=120; $matched=@{hWnd=[IntPtr]5}; $windowRect=@{Left=10;Top=0;Right=910;Bottom=700}\n`
+      + ocrBlock + '\n@{found=$found; mode=$titleMode; calls=$script:calls; cut=@($script:cut)} | ConvertTo-Json -Compress';
+    const run = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],
+      {encoding:'utf8',windowsHide:true,timeout:15000});
+    assert.equal(run.status,0,run.stderr);
+    return JSON.parse(run.stdout.trim().replace(/^﻿/u,''));
+  };
+  assert.deepEqual(ocrReplay(true, true), { found: '甲乙', mode: 'ocr_header', calls: 1, cut: [true] });
+  const ocrMiss = ocrReplay(true, false);
+  assert.equal(ocrMiss.found, null, 'an unread title never opens the gate');
+  assert.equal(ocrMiss.calls, 2, 'a late title gets one more read');
+  assert.equal(ocrReplay(false, true).found, null, 'WeChat lost the foreground: no OCR verdict');
+  assert.equal(ocrReplay(true, true, "'已停用的微信用户'").calls, 0, 'a disabled contact is never re-read as the customer');
+  assert.equal(ocrReplay(true, true, '$null', { uiaTitles: 1 }).calls, 0,
+    'a UIA title that is not the customer (even by punctuation) is a different chat, never re-read by OCR');
+  assert.deepEqual(ocrReplay(true, true, '$null', { strict: true }).cut, [false], 'a near-ID open accepts no cut title');
   const replay = `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n$expected='甲，乙'; $windowRect=@{Left=0;Top=0}; `
     + `$script:items=@([pscustomobject]@{Current=@{Name='甲, 乙';BoundingRectangle=@{Left=300;Top=50}}}); `
     + `$all=[pscustomobject]@{Count=1}; $all | Add-Member ScriptMethod Item {param($i) return $script:items[$i]}\n`

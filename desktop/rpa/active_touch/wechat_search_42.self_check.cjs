@@ -46,6 +46,30 @@ assert.equal(resolveWechatSearchResultObservation(observe(two), byId("wakeup2829
 const longer = realLines().map((item) => item.text.startsWith("微 信") ? line("微信号：wakeup28290", 136, 142, 252, 155) : item);
 assert.notEqual(resolveWechatSearchResultObservation(observe(longer), byId("wakeup2829")).status, "selected");
 
+// 13 customer PCs (1.3.13, 2026-11-15): the one listed contact's ID read a character off
+// (S as 5, a dropped character) became search-r015 and a weaker name search. The single
+// listed ID is now clicked as a name-verified result, never as an exact-ID one.
+const misreadId = (text) => realLines().map((item) => item.text.startsWith("微 信") ? line(text, 136, 142, 250, 155) : item);
+const near = resolveWechatSearchResultObservation(observe(misreadId("微信号：wakeup2B29")), byId("wakeup2829"));
+assert.equal(near.mode, "sectioned_wechat_id_near", JSON.stringify(near));
+assert.equal(isVerifiedWechatSearchResultMode(near.mode), false, "a near ID must still pass the chat-title check");
+assert.equal(near.diagnostics.id_query_distance, 1);
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：wakeup282")), byId("wakeup2829")).rule_id, "search-r015",
+  "a shorter reading may be a cut ID whose ellipsis OCR dropped");
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：wakeup282..")), byId("wakeup2829")).rule_id, "search-r015",
+  "dots read for the ellipsis are a cut ID too");
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：wakeup28291")), byId("wakeup2829")).rule_id, "search-r015",
+  "a longer ID containing the query is another account");
+// Two edits are too many for a short ID, fine for a long one; a cut ID or two ID rows never match.
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：zhanq8Bx")), byId("zhang88x")).rule_id, "search-r015");
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：wakeuq2B2q")), byId("wakeup2829")).rule_id, "search-r015",
+  "three edits are never the same ID");
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：wxzhang_5B8899")), byId("wxzhang_558890")).mode, "sectioned_wechat_id_near");
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：wakeup28…")), byId("wakeup2829")).rule_id, "search-r015");
+assert.equal(resolveWechatSearchResultObservation(observe([...misreadId("微信号：wakeup2B29"), line("微 信 号 ： wakeup2830", 136, 165, 252, 176)]), byId("wakeup2829")).rule_id, "search-r007");
+// An ID under 6 characters is never guessed.
+assert.equal(resolveWechatSearchResultObservation(observe(misreadId("微信号：abc1e")), byId("abc1d")).rule_id, "search-r015");
+
 // "网络查找微信号" or "查找" inside the contact section stops the click.
 const lookup = [...realLines(), line("网 络 查 找 微 信 号", 136, 160, 260, 172)];
 assert.notEqual(resolveWechatSearchResultObservation(observe(lookup), byId("wakeup2829")).status, "selected");
@@ -137,10 +161,14 @@ assert.ok(echoFound.candidate.y > 137 && echoFound.candidate.y < 152, "the click
 const echoOnly = resolveWechatSearchResultObservation({ ...echoObserve, visualCandidates: echoLines.filter((item) => !item.text.startsWith("微")) },
   { query: "ABC1234", expectedName: "测试甲", queryType: "wechat_id" });
 assert.notEqual(echoOnly.status, "selected");
-// A different ID, even one differing only by a digit, is never clicked.
+// An ID one digit off is never taken as the exact ID. Since 2026-11-15 (user decision) the
+// single listed row is opened as a near-ID result, so the chat title (测试甲) must match
+// before anything is sent; a really different account fails there.
 const otherId = resolveWechatSearchResultObservation({ ...echoObserve, visualCandidates: echoLines.map((item) => item.text.startsWith("微") ? line("微 信 号 ： ABC1235", 137, 137, 228, 152) : item) },
   { query: "ABC1234", expectedName: "测试甲", queryType: "wechat_id" });
-assert.notEqual(otherId.status, "selected");
+assert.notEqual(otherId.mode, "sectioned_wechat_id_visual");
+assert.equal(otherId.mode, "sectioned_wechat_id_near");
+assert.equal(isVerifiedWechatSearchResultMode(otherId.mode), false);
 
 // WeChat 4.1 popups with the network row keep their original rules.
 const legacy = resolveWechatSearchResultObservation({ ...observe(realLines()),

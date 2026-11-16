@@ -793,6 +793,22 @@ function sameDisplayName(text, expected) {
   return differences <= 1;
 }
 
+// An OCR reading of a listed WeChat ID close enough to the query to be the same ID:
+// at least 6 characters (WeChat's minimum), no cut mark, the same length or one longer
+// (never shorter: a dropped ellipsis), and one edit (two for IDs of 10+ characters)
+// after the usual i/l/1 and o/0 folding; never a longer ID that contains the query.
+function nearWechatId(value, query) {
+  // Any run of dots/ellipsis-like marks may be a cut ID whose hidden tail differs.
+  if (value === null || value === undefined || /[…⋯]|[.。·・]{2,}/u.test(String(value))) return null;
+  const seen = foldedWechatId(value), wanted = foldedWechatId(query);
+  // A shorter reading may be a cut ID whose ellipsis OCR dropped: never near.
+  if (wanted.length < 6 || seen.length < wanted.length || seen.length - wanted.length > 1) return null;
+  // A longer ID containing the query is another account WeChat matched by substring.
+  if (seen.length > wanted.length && seen.includes(wanted)) return null;
+  const distance = editDistance(seen, wanted);
+  return distance >= 1 && distance <= (wanted.length >= 10 ? 2 : 1) ? { distance } : null;
+}
+
 function resolveSectionedPopup(visual, popup, identity, column, rawLines = visual) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
@@ -849,6 +865,14 @@ function resolveSectionedPopup(visual, popup, identity, column, rawLines = visua
     if (idRows.length > 1) return reject("search-r007");
     if (exact.length === 1) return { status: "selected", mode: "sectioned_wechat_id_visual", candidate: exact[0],
       ...(header ? {} : { diagnostics: { popup_layout: "sectioned", section_caption: "unread" } }) };
+    // 13 customer PCs, 1.3.13 (2026-11-15): WeChat listed exactly one contact by the
+    // searched ID in 20 of 34 captured searches, yet OCR read its ID a character or two
+    // off, so the contact fell back to the far weaker name search. The single listed ID
+    // is opened, but only as a name-verified result: it is not an exact-ID mode, so the
+    // chat title must still match the customer's remark/nickname before anything is sent.
+    const near = nearWechatId(idRows.length === 1 ? wechatIdLabelValue(idRows[0]) : null, identity.query);
+    if (near) return { status: "selected", mode: "sectioned_wechat_id_near", candidate: idRows[0],
+      diagnostics: { popup_layout: "sectioned", id_query_distance: near.distance, ...(header ? {} : { section_caption: "unread" }) } };
     return reject("search-r015", "exact_search_result_not_found");
   }
   const names = rows.filter((line) => wechatIdLabelValue(line) === null

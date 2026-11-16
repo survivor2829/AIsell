@@ -824,11 +824,13 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
               ocr_observation:{ocr_boxes:[{left:1,top:2,right:3,bottom:4,text:secret}]}},
               {search_query_type:'name_fallback',fallback_reason:'wechat_id_no_result',rule_id:ruleId,ocr_observation:{ocr_boxes:[]}}],
             title_comparison:{expected:{length:3,sha256_16:'1234567890abcdef',text:secret},
-              titles:[{length:4,sha256_16:'abcdef1234567890',punctuation_whitespace_width_only:true,text:secret}]},
+              titles:[{length:4,sha256_16:'abcdef1234567890',punctuation_whitespace_width_only:true,text:secret}],
+              header:{lines:1,expected_length:3,observed_length:4,first_diff_index:2,expected_class:'han',observed_class:secret,cut:false,text:secret}},
             popup_candidate_count: 2, search_columns: [62, Infinity],
             ocr_observation: { visual_lines: [{ text: secret }], uia_candidates: [{ text: `${secret}-uia` }],
               capture_source: "formula_fallback", ocr_boxes: [{ text: secret, left: 1, top: 2, right: 3, bottom: 4,
-                char_count: 2, first_class: "han", last_class: "han", boundary_distance: [2], equals_query: true }] }
+                char_count: 2, first_class: "han", last_class: "han", boundary_distance: [2], equals_query: true,
+                id_length: 10, query_length: 10, id_query_distance: 1, id_first_mismatch: { index: 7, query_class: "number", ocr_class: secret } }] }
           } }
         };
       }
@@ -851,6 +853,10 @@ async function checkR008EvidencePrivacy(ruleId = "search-r008") {
     assert.equal(evidence.search_attempts[0].rule_id,'search-r015');
     assert.equal(evidence.search_attempts[1].fallback_reason,'wechat_id_no_result');
     assert.equal(evidence.title_comparison.titles[0].punctuation_whitespace_width_only,true);
+    assert.deepEqual(evidence.title_comparison.header, { lines:1, expected_length:3, observed_length:4, first_diff_index:2, expected_class:'han', cut:false },
+      "the OCR title read keeps counts and classes only");
+    assert.deepEqual(evidence.ocr_observation.ocr_boxes[0].id_first_mismatch, { index: 7, query_class: "number", ocr_class: "other" });
+    assert.equal(evidence.ocr_observation.ocr_boxes[0].id_query_distance, 1, "the ID distance tells a misread from a stale ID");
     assert.equal(JSON.stringify(task).includes(secret), false, "task state must not retain OCR contact text");
     assert.equal(JSON.stringify(failures).includes(secret), false, "passport failures must not retain OCR contact text");
     assert.equal(JSON.stringify(circuit).includes(secret), false, "circuit diagnostics must not retain OCR contact text");
