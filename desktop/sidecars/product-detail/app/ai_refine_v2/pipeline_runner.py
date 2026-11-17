@@ -220,8 +220,11 @@ class PaidResultRecoveryRequired(RuntimeError):
     recovery_required = True
 
 
-# Last real progress of each task (a heartbeat only proves the worker is alive).
+# Last real progress of each task (a heartbeat only proves the worker is alive), its last
+# real message, and how many waits are open (one heartbeat per task even when nested).
 _LAST_PROGRESS: dict[str, float] = {}
+_LAST_MESSAGE: dict[str, str] = {}
+_KEEP_ALIVE_DEPTH: dict[str, int] = {}
 # A worker waiting on the image service reports itself alive this often. The desktop
 # treats a task with no update for 5 minutes as stuck and let a new click buy the
 # whole page again while the old one was still drawing (2026-11-17: APIMart took up to
@@ -239,25 +242,47 @@ def _set(task_id: str, _heartbeat: bool = False, **fields):
             setattr(st, k, v)
         st.updated_at = time.time()
         st.elapsed_s = round(time.time() - st.started_at, 1)
-        if not _heartbeat:
+        if not _heartbeat and task_id in _KEEP_ALIVE_DEPTH:
             _LAST_PROGRESS[task_id] = st.updated_at
+            if "progress_msg" in fields:
+                _LAST_MESSAGE[task_id] = str(fields["progress_msg"] or "")
 
 
 @contextlib.contextmanager
 def _keep_alive(task_id: str):
     """While the body waits on the image service, keep the task visibly alive and say how
     long the wait has been, so nobody starts the page again."""
+    with _TASKS_LOCK:
+        depth = _KEEP_ALIVE_DEPTH.get(task_id, 0)
+        _KEEP_ALIVE_DEPTH[task_id] = depth + 1
+        if depth == 0:
+            # Every wait is timed from its own start, never from an earlier run of the task.
+            _LAST_PROGRESS[task_id] = time.time()
+    if depth:
+        try:
+            yield
+        finally:
+            with _TASKS_LOCK:
+                _KEEP_ALIVE_DEPTH[task_id] -= 1
+        return
     stop = _heartbeat_threading.Event()
-    _LAST_PROGRESS.setdefault(task_id, time.time())
 
     def beat():
+        notice = False
         while not stop.wait(HEARTBEAT_SECONDS):
             idle = time.time() - _LAST_PROGRESS.get(task_id, time.time())
+            if stop.is_set():
+                return
             if idle >= SLOW_NOTICE_SECONDS:
                 minutes, seconds = divmod(int(idle), 60)
+                notice = True
                 _set(task_id, _heartbeat=True, progress_msg=(
                     f"生图服务较忙，图片还在生成（已等 {minutes} 分 {seconds} 秒），"
                     "请不要重新点生成；完成后自动继续，不会重复扣费"))
+            elif notice and task_id in _LAST_MESSAGE:
+                # Work moved again: show its own message instead of a frozen wait.
+                notice = False
+                _set(task_id, _heartbeat=True, progress_msg=_LAST_MESSAGE[task_id])
             else:
                 _set(task_id, _heartbeat=True)
 
@@ -267,6 +292,12 @@ def _keep_alive(task_id: str):
         yield
     finally:
         stop.set()
+        # No beat may land after the wait (it would cover "完成" with the slow notice).
+        worker.join(timeout=5)
+        with _TASKS_LOCK:
+            _KEEP_ALIVE_DEPTH.pop(task_id, None)
+            _LAST_PROGRESS.pop(task_id, None)
+            _LAST_MESSAGE.pop(task_id, None)
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:

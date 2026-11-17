@@ -2718,6 +2718,8 @@
                 { product_title: startError.productTitle || '' },
             });
             if (ui.subText) ui.subText.textContent = `正在处理原任务：${startError.productTitle || '上次产品'}。当前资料保留，新任务尚未提交。`;
+            // The same material for an unfinished page continues that page (nothing bought twice).
+            if (startError.code !== 'DESKTOP_AI_REFINE_ALREADY_RUNNING') options = { ...options, recoverOriginal: true };
           } else {
             if (startError.httpStatus >= 500 && ![
               'DESKTOP_AI_REFINE_NOT_CONFIGURED', 'DESKTOP_PAID_ACTION_DISABLED'

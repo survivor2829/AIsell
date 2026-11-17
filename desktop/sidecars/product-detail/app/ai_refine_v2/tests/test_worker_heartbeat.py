@@ -14,10 +14,12 @@ def test_waiting_worker_reports_in_and_says_why(monkeypatch):
     task_id = "v2_heartbeat_test"
     runner._TASKS[task_id] = runner.TaskState(task_id=task_id)
     try:
-        runner._set(task_id, progress_msg="生成第 1 屏")
-        progress_at = runner._LAST_PROGRESS[task_id]
-        first_update = runner._TASKS[task_id].updated_at
+        runner._LAST_PROGRESS[task_id] = time.time() - 3600  # left from an earlier run
         with runner._keep_alive(task_id):
+            runner._set(task_id, progress_msg="生成第 1 屏")
+            progress_at = runner._LAST_PROGRESS[task_id]
+            assert time.time() - progress_at < 1, "a new wait never reuses an old timestamp"
+            first_update = runner._TASKS[task_id].updated_at
             time.sleep(0.12)
             assert runner._TASKS[task_id].updated_at > first_update, "alive while it waits"
             assert runner._TASKS[task_id].progress_msg == "生成第 1 屏", "no notice for a short wait"
@@ -25,11 +27,18 @@ def test_waiting_worker_reports_in_and_says_why(monkeypatch):
             assert "生图服务较忙" in runner._TASKS[task_id].progress_msg
             assert "不要重新点生成" in runner._TASKS[task_id].progress_msg
             assert runner._LAST_PROGRESS[task_id] == progress_at, "a heartbeat is not progress"
-            runner._set(task_id, progress_msg="生成第 2 屏")
+            runner._set(task_id, blocks=[])
             assert runner._LAST_PROGRESS[task_id] > progress_at, "real progress resets the wait"
+            time.sleep(0.12)
+            assert runner._TASKS[task_id].progress_msg == "生成第 1 屏", "the wait notice gives way to the real message"
+            with runner._keep_alive(task_id):
+                assert runner._KEEP_ALIVE_DEPTH[task_id] == 2, "a nested wait shares the one heartbeat"
+            runner._set(task_id, progress_msg="完成")
         stopped_at = runner._TASKS[task_id].updated_at
         time.sleep(0.2)
         assert runner._TASKS[task_id].updated_at == stopped_at, "no heartbeat after the wait ends"
+        assert runner._TASKS[task_id].progress_msg == "完成", "a late beat never covers the result"
+        assert task_id not in runner._LAST_PROGRESS and task_id not in runner._KEEP_ALIVE_DEPTH
     finally:
         runner._TASKS.pop(task_id, None)
         runner._LAST_PROGRESS.pop(task_id, None)
