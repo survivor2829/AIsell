@@ -918,9 +918,6 @@ def _download_generation_results(
         for future in concurrent.futures.as_completed(futures):
             block = futures[future]
             fetched += 1
-            if progress_cb:
-                progress_cb(80 + int(fetched / max(len(to_fetch), 1) * 4),
-                            f"生图已完成，正在下载图片 {fetched}/{len(to_fetch)}…")
             try:
                 selected_route = future.result()
                 block["download_route"] = selected_route or block["download_route"]
@@ -937,6 +934,13 @@ def _download_generation_results(
                 status="downloading",
                 schema_mode=schema_mode,
             )
+            # After the screen is recorded: a display update never loses a downloaded screen.
+            if progress_cb:
+                try:
+                    progress_cb(80 + int(fetched / max(len(to_fetch), 1) * 4),
+                                f"生图已完成，正在下载图片 {fetched}/{len(to_fetch)}…")
+                except Exception:
+                    pass
     if download_errors:
         message = (
             f"本地下载 {len(download_errors)}/{len(blocks)} 张付费结果失败: "
@@ -1933,6 +1937,41 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             e,
             log_prefix="pipeline_v2",
         )
+        if gpt_image_key and _only_slow_screens_unknown(task_dir, e):
+            _continue_after_slow_screens(task_id, task_dir, gpt_image_key)
+
+
+def _only_slow_screens_unknown(task_dir: Path, exc: Exception) -> bool:
+    """True when every uncertain image was submitted and only polled past the limit."""
+    if not getattr(exc, "slow_submitted_task", False):
+        return False
+    from ai_refine_v2.pricing import CostJournal
+    try:
+        operations = CostJournal(task_dir).load()["operations"]
+    except Exception:
+        return False
+    unknown = [op for name, op in operations.items() if name.startswith("image:") and op.get("status") in {"outcome_unknown", "submitting"}]
+    return bool(unknown) and all(op.get("slow_poll") and op.get("provider_task_id") for op in unknown)
+
+
+def _continue_after_slow_screens(task_id: str, task_dir: Path, gpt_image_key: str) -> None:
+    """The run ended because a submitted image was still generating (2026-11-17: APIMart took up
+    to 13.5 minutes per image for hours). Go on by itself, as the customer's 恢复 would: download
+    the finished screens, poll the slow ones again (same task ids, nothing bought twice), generate
+    the screens a slow first screen held back, and assemble the page."""
+    with _TASKS_LOCK:
+        if task_id in _RECOVERY_TASK_IDS:
+            return
+        _RECOVERY_TASK_IDS.add(task_id)
+    try:
+        _set(task_id, status="running_recovery", error="",
+             progress_msg="生图服务较忙，有图片还在生成，正在继续等待；不会重复扣费")
+        _recover_task(task_id, gpt_image_key, continue_missing=True)
+    except Exception as exc:
+        _record_worker_exception(task_id, task_dir, exc, log_prefix="pipeline_slow_continue")
+    finally:
+        with _TASKS_LOCK:
+            _RECOVERY_TASK_IDS.discard(task_id)
 
 
 def _valid_local_image(path: Path) -> bool:

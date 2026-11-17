@@ -342,9 +342,14 @@ class TestGenerateV2Failure(unittest.TestCase):
         called = self._unknown_on_screen_2(stage="poll", poll_reason="timeout", provider_task_id="task_slow")
         self.assertEqual(called, [1, 2, 3, 4, 5, 6], "every other screen is still generated")
 
-    def test_uncertain_purchase_still_stops_the_rest(self):
-        called = self._unknown_on_screen_2(stage="submit")
-        self.assertLessEqual(len(called), 3, "screens not yet started are cancelled after an uncertain purchase")
+    def test_uncertain_purchase_is_not_treated_as_slow(self):
+        # Whether later screens are bought is decided by the cost journal (deterministic there:
+        # test_pricing_boundary.test_a_slow_screen_through_the_journal_...); with an instant mock
+        # the pool may start them before the cancel, so only the classification is checked here.
+        from ai_refine_v2.refine_generator import _halts_other_screens
+        from ai_refine_v2.pricing import RequestOutcomeUnknown
+        self.assertTrue(_halts_other_screens(RequestOutcomeUnknown("x", stage="submit")))
+        self.assertFalse(_halts_other_screens(RequestOutcomeUnknown("x", stage="poll", poll_reason="timeout", provider_task_id="t")))
 
     def test_poll_timeout_unknown_is_marked_slow(self):
         from ai_refine_v2.pricing import RequestOutcomeUnknown

@@ -353,3 +353,58 @@ def test_a_poll_timeout_keeps_its_task_and_is_marked_only_slow(tmp_path):
     with pytest.raises(pricing.RequestOutcomeUnknown) as raised:
         unsent.image_call(quote(), Mock(side_effect=APIMartOutcomeUnknown("", "提交响应不明", stage="submit")), "prompt")
     assert raised.value.slow_submitted_task is False
+
+
+def test_a_slow_screen_through_the_journal_lets_every_other_screen_be_generated(tmp_path):
+    # Review 2026-11-17: the journal itself refused every later screen once any screen was
+    # outcome_unknown, so a slow image still stopped the page. Run the generator through
+    # CostJournal.image_call as the pipeline does.
+    import threading
+    from ai_image_apimart import APIMartOutcomeUnknown
+    from ai_refine_v2.refine_generator import generate_v2
+    from ai_refine_v2.tests.test_refine_generator_v2 import _v2_planning
+    ledger = pricing.CostJournal(tmp_path)
+    ledger.set_plan(quote(), 6)
+    called, lock = [], threading.Lock()
+
+    def provider(prompt, *args, lifecycle_callback=None, **kwargs):
+        screen = next(i for i in range(1, 7) if f"「屏{i}」" in prompt)
+        with lock:
+            called.append(screen)
+        if screen == 2:
+            slow = APIMartOutcomeUnknown("task_slow", "APIMart 任务超时未完成", stage="poll")
+            slow.poll_reason = "timeout"
+            raise slow
+        return f"https://cdn.invalid/{screen}.png"
+
+    def wrapped(prompt, *args, lifecycle_callback=None, block_id="", **kwargs):
+        return ledger.image_call(quote(), provider, prompt, block_id=block_id, lifecycle_callback=lifecycle_callback)
+
+    with pytest.raises(pricing.RequestOutcomeUnknown) as raised:
+        generate_v2(_v2_planning(n=6), api_key="test", api_call_fn=wrapped,
+                    max_retries_hero=0, max_retries_sp=0, concurrency=1)
+    assert raised.value.slow_submitted_task is True
+    assert sorted(called) == [1, 2, 3, 4, 5, 6], "every other screen is still generated"
+    operations = [op for name, op in ledger.load()["operations"].items() if name.startswith("image:")]
+    assert sorted(op["status"] for op in operations) == ["completed"] * 5 + ["outcome_unknown"]
+    assert runner._only_slow_screens_unknown(tmp_path, raised.value) is True
+
+    # An uncertain purchase still stops the screens after it.
+    other = pricing.CostJournal(tmp_path / "uncertain")
+    other.set_plan(quote(), 6)
+    called.clear()
+
+    def uncertain(prompt, *args, **kwargs):
+        screen = next(i for i in range(1, 7) if f"「屏{i}」" in prompt)
+        called.append(screen)
+        if screen == 2:
+            raise APIMartOutcomeUnknown("", "提交响应不明", stage="submit")
+        return f"https://cdn.invalid/{screen}.png"
+
+    with pytest.raises(pricing.RequestOutcomeUnknown) as raised:
+        generate_v2(_v2_planning(n=6), api_key="test", concurrency=1, max_retries_hero=0, max_retries_sp=0,
+                    api_call_fn=lambda prompt, *a, lifecycle_callback=None, block_id="", **kw:
+                        other.image_call(quote(), uncertain, prompt, block_id=block_id, lifecycle_callback=lifecycle_callback))
+    assert raised.value.slow_submitted_task is False
+    assert len(called) <= 3, "screens after an uncertain purchase are not bought"
+    assert runner._only_slow_screens_unknown(tmp_path / "uncertain", raised.value) is False
