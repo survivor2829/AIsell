@@ -62,7 +62,7 @@ assert.doesNotMatch(review, /<button[^>]*disabled/u, "the edit button stays avai
 
 // Page wiring: hints at confirmation and on finished works, never on the confirm button.
 assert.equal((page.match(/<AdLawHint text=\{(?:option|c)\.narration\} \/>/gu) || []).length, 2, "legacy choices and finished works show hints");
-assert.match(page, /data-batch-action="confirm" disabled=\{locked \|\| saving \|\| dirty \|\| !countsValid \|\| voiceBlocked\}/u,
+assert.match(page, /data-batch-action="confirm" disabled=\{locked \|\| saving \|\| dirty \|\| !countsValid\}/u,
   "the hint does not take part in enabling 确认文案");
 assert.doesNotMatch(page, /adLawSentences/u, "the page only renders the hint");
 // New work uses a fixed presentation and no paid strict-review toggle.
