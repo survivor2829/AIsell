@@ -875,6 +875,20 @@ def _make_provider_checkpoint(
                 planned_count=planned_count,
             )
 
+    def downloaded(block_id: str, route: str = "") -> None:
+        """A finished screen is on disk: show it now, before the rest of the page is done."""
+        with checkpoint_lock:
+            block = by_id.get(str(block_id))
+            if block is None:
+                return
+            block["success"] = True
+            if route in {"system", "direct"}:
+                block["download_route"] = route
+            _persist_recovery(task_dir, blocks, 0.0, planned_count, status="generating", schema_mode=schema_mode)
+            _set(task_dir.name, blocks=blocks, planned_count=planned_count)
+
+    checkpoint.downloaded = downloaded
+    checkpoint.files = {block["block_id"]: block["file"] for block in blocks}
     return checkpoint
 
 
@@ -1210,18 +1224,42 @@ def _generate_and_download_v2(planning_v2: dict, product_image_url: str,
                     f"AI 精修 v2 中 {completed_count}/{total}")
         return url
 
-    result = refine_generator.generate_v2(
-        planning_v2=planning_v2,
-        product_cutout_url=product_image_url,
-        api_key=gpt_image_key,
-        api_call_fn=wrapped_api_call,
-        concurrency=IMAGE_CONCURRENCY,
-        max_retries_hero=1,
-        max_retries_sp=1,
-        cost_per_call_rmb=quote["image_unit_cny"],
-        lifecycle_callback=provider_checkpoint,
-        completed_blocks=completed,
-    )
+    # Each finished screen is downloaded at once so the customer sees it while the slower ones
+    # are still drawing (2026-11-17: one image could take 10 minutes and the page showed nothing
+    # until all were done). The final download step skips screens already on disk.
+    early_downloads = concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_CONCURRENCY)
+
+    def fetch_early(block_id: str, raw_url: str, route: str) -> None:
+        try:
+            destination = task_dir / provider_checkpoint.files[block_id]
+            if not _valid_local_image(destination):
+                route = _download_image(raw_url, destination, retries=1, preferred_route=route or "unknown") or route
+            if _valid_local_image(destination):
+                provider_checkpoint.downloaded(block_id, route)
+        except Exception:
+            pass  # The final download step tries again; a screen is never lost here.
+
+    def lifecycle(block_id, event):
+        provider_checkpoint(block_id, event)
+        raw_url = str((event or {}).get("raw_url") or "").strip()
+        if raw_url and block_id in provider_checkpoint.files:
+            early_downloads.submit(fetch_early, block_id, raw_url, str(event.get("route") or ""))
+
+    try:
+        result = refine_generator.generate_v2(
+            planning_v2=planning_v2,
+            product_cutout_url=product_image_url,
+            api_key=gpt_image_key,
+            api_call_fn=wrapped_api_call,
+            concurrency=IMAGE_CONCURRENCY,
+            max_retries_hero=1,
+            max_retries_sp=1,
+            cost_per_call_rmb=quote["image_unit_cny"],
+            lifecycle_callback=lifecycle,
+            completed_blocks=completed,
+        )
+    finally:
+        early_downloads.shutdown(wait=True)
 
     blocks = _download_generation_results(
         result.blocks,
