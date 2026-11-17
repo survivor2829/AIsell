@@ -244,7 +244,16 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
         if (!state.outbox.includes(prior.id)) state.outbox.push(prior.id);
         // A capsule kept for the whole day may have opened with no evidence (e.g.
         // on an older version); take this occurrence's screenshots and passports.
-        if (!(capsule.attachments || []).length && !(capsule.evidence || []).length) lateAttach(prior.id, at, failure.traceId || "");
+        // A new app version takes its own screenshots and passports once: a capsule opened on
+        // 1.3.27 in the morning showed nothing of 70 later failures on 1.3.34 (2026-11-17).
+        const version = capsule.latest.appVersion;
+        const evidenced = Array.isArray(capsule.evidencedVersions) ? capsule.evidencedVersions : [capsule.environment?.version || version];
+        const fresh = version && !evidenced.includes(version);
+        if (fresh) capsule.evidencedVersions = [...evidenced, version].slice(-5);
+        if (fresh || !(capsule.attachments || []).length && !(capsule.evidence || []).length) {
+          try { write(capsule); } catch {}
+          lateAttach(prior.id, at, failure.traceId || "");
+        }
       }
       save();
       void flush();
@@ -260,7 +269,8 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
       breadcrumbs: breadcrumbs(at, failure.traceId), internal: internalTrail(failure.traceId),
       engineStderr: serviceStderr(failure.module, at),
       evidence: evidence(at, failure.traceId), environment: (() => { try { return environment() || {}; } catch { return {}; } })(),
-      ...(environmental === "repeated" ? { suspected: "environment_repeated" } : {})
+      ...(environmental === "repeated" ? { suspected: "environment_repeated" } : {}),
+      evidencedVersions: [(() => { try { return String(identity?.()?.version || ""); } catch { return ""; } })()]
     };
     try { attach(capsule, at); } catch { capsule.attachments = capsule.attachments || []; }
     try { write(capsule); } catch { return null; }

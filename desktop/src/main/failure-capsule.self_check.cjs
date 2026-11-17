@@ -300,6 +300,30 @@ async function aDayCapsuleWithoutEvidenceTakesALaterOccurrence() {
   t.capsules.stop();
 }
 
+async function aNewVersionTakesItsOwnEvidence() {
+  // 2026-11-17: a capsule opened on 1.3.27 in the morning kept its morning screenshots while
+  // 70 later failures on 1.3.34 added only a count; the new version could not be diagnosed.
+  let version = "1.3.27";
+  const t = fixture("version-evidence", { lateAttachMs: 30, identity: () => ({ schema: 1, installId: "11111111-2222-4333-8444-555555555555", version }) });
+  const passports = path.join(t.root, "task-passports", "active_touch", "task_3");
+  fs.mkdirSync(passports, { recursive: true });
+  fs.writeFileSync(path.join(passports, "2026-11-17-02-46-11-000Z-aa11bb22-screen.png"), PNG);
+  const id = t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: Date.now() - 60_000 });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  const morning = t.files()[0].attachments.filter(name => name.startsWith("passport-")).length;
+  fs.writeFileSync(path.join(passports, `${stamp(Date.now())}-cc33dd44-screen.png`), PNG);
+  assert.equal(t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: Date.now() - 30_000 }), id);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(t.files()[0].attachments.filter(name => name.startsWith("passport-")).length, morning, "the same version adds no evidence again");
+  version = "1.3.34";
+  assert.equal(t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: Date.now() }), id);
+  await new Promise(resolve => setTimeout(resolve, 120));
+  const capsule = t.files()[0];
+  assert.ok(capsule.attachments.some(name => name.includes("cc33dd44")), "the new version brings its own passport: " + JSON.stringify(capsule.attachments));
+  assert.deepEqual(capsule.evidencedVersions, ["1.3.27", "1.3.34"]);
+  t.capsules.stop();
+}
+
 async function maskedScreenshotsAreNotUploaded() {
   const t = fixture("masked");
   const evidence = path.join(t.root, "failure-evidence");
@@ -417,6 +441,7 @@ async function earlyTouchPauseFilesItsOwnCapsule() {
   await flightRecordAndPassportTravelWithTheFailure();
   await passportWrittenAfterTheFailureStillTravels();
   await aDayCapsuleWithoutEvidenceTakesALaterOccurrence();
+  await aNewVersionTakesItsOwnEvidence();
   await maskedScreenshotsAreNotUploaded();
   await environmentCausesAreCountedNotFiled();
   profilePathVariants();
