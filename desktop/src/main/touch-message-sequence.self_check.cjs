@@ -537,6 +537,29 @@ $dialogAccepted = Wait-PasteAccepted 1000
   const handPicked = retrySkippedResults(JSON.parse(JSON.stringify(unchangedTask)), [unchangedTask.results[1].id]);
   assert.equal(handPicked.ok, true, "a contact picked by hand is retried");
   assert.equal(handPicked.task.results[1].status, "generated");
+  // 2026-11-17: the version was a hand-kept date ("2026-11-15.1") that 1.3.21 and 1.3.27 never
+  // bumped, so 600 skipped contacts could not be put back. It is now the hash of the recognition
+  // code: a record from that date is retryable again, and any change of that code frees records.
+  {
+    const { identityLogicVersion } = require("../../rpa/active_touch/touch_task_state.cjs");
+    assert.match(IDENTITY_LOGIC_VERSION, /^code-[0-9a-f]{16}$/u);
+    const oldRecordTask = JSON.parse(JSON.stringify(unchangedTask));
+    oldRecordTask.results[1].skip_record.identityLogic = "2026-11-15.1";
+    assert.equal(skippedTaskSummary(oldRecordTask).records[1].bulk_retryable, true, "skips under the old hand-kept version come back");
+    assert.equal(retrySkippedResults(oldRecordTask).ok, true);
+    const codeDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-identity-logic-"));
+    try {
+      fs.writeFileSync(path.join(codeDir, "a.cjs"), "const title = 1;\r\n");
+      const before = identityLogicVersion(["a.cjs"], codeDir);
+      fs.writeFileSync(path.join(codeDir, "a.cjs"), "const title = 1;\n");
+      assert.equal(identityLogicVersion(["a.cjs"], codeDir), before, "line endings do not change the version");
+      fs.writeFileSync(path.join(codeDir, "a.cjs"), "const title = 2;\n");
+      assert.notEqual(identityLogicVersion(["a.cjs"], codeDir), before, "a change of the recognition code changes the version");
+      assert.equal(identityLogicVersion(["missing.cjs"], codeDir), "", "unreadable code never blocks a retry");
+    } finally {
+      fs.rmSync(codeDir, { recursive: true, force: true });
+    }
+  }
 
   const completedUnverified = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
   const completedUnverifiedBytes = fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8");

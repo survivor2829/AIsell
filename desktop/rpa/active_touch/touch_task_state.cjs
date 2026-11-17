@@ -13,11 +13,26 @@ const STALE_TASK_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH_SIZE = 50;
 const CURRENT_TASK_VERSION = 4;
 const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipped", "pre_send_skipped"]);
-// Bump whenever how a contact is found or recognised changes (search resolver,
-// title check). A contact skipped as not found / not recognised under the same
-// logic gets the same result again, so "retry all" leaves it out until then
-// (user 2026-11-07: retrying those only clicked the avatar and wasted time).
-const IDENTITY_LOGIC_VERSION = "2026-11-15.1";
+// A contact skipped as not found / not recognised under the same logic gets the
+// same result again, so "retry all" leaves it out until that logic changes (user
+// 2026-11-07: retrying those only clicked the avatar and wasted time). The version
+// was a hand-kept date nobody bumped: 1.3.21 and 1.3.27 changed the title check,
+// yet a customer could not put 600 skipped contacts back (2026-11-17). It is now
+// the content hash of the code that finds and recognises a contact, so any change
+// there frees every earlier identity skip by itself. Unreadable code: "" (never
+// equal to a record, so retrying stays possible).
+const IDENTITY_LOGIC_FILES = ["state_machine.cjs", "wechat_header_title.cjs", "wechat_search_input.cjs",
+  "wechat_search_result_resolver.cjs", "wechat_window_driver.cjs", "wechat_screen_pixels.cjs", "window_title_reader.cjs"];
+function identityLogicVersion(files = IDENTITY_LOGIC_FILES, dir = __dirname) {
+  try {
+    const hash = crypto.createHash("sha256");
+    for (const name of files) hash.update(name).update("\0").update(fs.readFileSync(path.join(dir, name), "utf8").replace(/\r\n/g, "\n")).update("\0");
+    return `code-${hash.digest("hex").slice(0, 16)}`;
+  } catch {
+    return "";
+  }
+}
+const IDENTITY_LOGIC_VERSION = identityLogicVersion();
 
 function nowIso() {
   return new Date().toISOString();
@@ -225,7 +240,7 @@ function bulkRetryBlockedReason(result) {
   const blocked = skippedRetryBlockedReason(result);
   if (blocked) return blocked;
   return String(result?.status || "") === "identity_skipped"
-    && result?.skip_record?.identityLogic === IDENTITY_LOGIC_VERSION ? "retry_skipped_identity_unchanged" : "";
+    && Boolean(IDENTITY_LOGIC_VERSION) && result?.skip_record?.identityLogic === IDENTITY_LOGIC_VERSION ? "retry_skipped_identity_unchanged" : "";
 }
 
 function poisonedSearchCandidate(result, at = nowIso()) {
@@ -876,6 +891,7 @@ function cleanupTaskCache(baseDir = __dirname, nowMs = Date.now()) {
 module.exports = {
   BATCH_SIZE,
   IDENTITY_LOGIC_VERSION,
+  identityLogicVersion,
   CURRENT_TASK_VERSION,
   TASK_FILE,
   TASK_BACKUP_FILE,
