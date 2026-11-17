@@ -1138,7 +1138,15 @@ async function checkNonIdentitySkipDropsOldSearchRule() {
     clock += 60 * 60 * 1000;
     assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, 2000);
     clock += 60 * 60 * 1000;
-    assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+    // Nothing was sent: the pre-send skip is retried once at the end of the list (2026-11-17), fails
+    // the same way and the run ends.
+    let finished = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+    assert.equal(finished.result?.autoRetryQueued, 1);
+    for (let step = 0; step < 4 && finished.status !== "completed"; step++) {
+      clock += 60 * 60 * 1000;
+      finished = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+    }
+    assert.equal(finished.status, "completed");
     const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
     assert.equal(loadTaskState(taskDir).results[0].skip_record.ruleId, "",
       "a pre-send skip must not carry the previous search rule into its record");

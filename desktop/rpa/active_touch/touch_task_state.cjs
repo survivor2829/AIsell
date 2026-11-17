@@ -114,10 +114,16 @@ function contactIdentityError(contacts, contact, index = contactIdentityIndex(co
   const accountId = String(contact?.wechatAccountId ?? "").trim();
   if (contact?.allowed === false || contact?.disabled === true || contact?.active === false) return "contact_disabled";
   if (!String(contact?.id ?? "").trim() || !touchSearchName(contact)) return "contact_identity_missing";
-  if (!wechatId) return "wechat_id_missing";
   if (!accountId) return "wechat_account_identity_missing";
+  // A friend who never set a WeChat ID (only wxid_…) has no ID WeChat's search can find. Such
+  // contacts were all left out (15–30% of a synced list, hundreds on a large account) although
+  // the send already searches by name whenever the ID finds nothing, and then requires the chat
+  // title to match. They are searched by name the same way, so the name must be unique in the
+  // synced list, also where callers otherwise relax that (user 2026-11-17: reach whoever can be
+  // reached).
+  if (!wechatId && index.names.get(name) !== 1) return "contact_name_not_unique";
   if (options.requireUniqueName !== false && index.names.get(name) !== 1) return "contact_name_not_unique";
-  if (index.wechatIds.get(wechatId) !== 1) return "contact_identity_not_unique";
+  if (wechatId && index.wechatIds.get(wechatId) !== 1) return "contact_identity_not_unique";
   if (index.ids.get(String(contact?.id ?? "").trim()) !== 1) return "contact_identity_not_unique";
   if (index.accounts.size !== 1 || !index.accounts.has(accountId)) return "wechat_account_ambiguous";
   return "";
