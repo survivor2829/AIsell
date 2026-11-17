@@ -1508,10 +1508,11 @@ function createTouchWorkflow(options = {}) {
     const id = String(record?.id || record || "").trim();
     if (!id) return null;
     const taskDir = workflowDirectory(id);
-    if (!fs.existsSync(path.join(taskDir, "touch_task.json"))) return null;
-    const task = readWorkflowTask(id);
-    if (!task || task.integrity_error) return null;
-    const summary = skippedTaskSummary(task);
+    // Before the task starts, those skipped from the start are already known (payload.excluded).
+    const started = fs.existsSync(path.join(taskDir, "touch_task.json"));
+    const task = started ? readWorkflowTask(id) : null;
+    if (started && (!task || task.integrity_error)) return null;
+    const summary = task ? skippedTaskSummary(task) : { breakdown: {}, records: [] };
     // Who blocked or deleted the user: found by this task, plus those an earlier task found and
     // this one skipped from the start (payload.excluded).
     const unreachableSummary = { blocked: [], deleted: [] };
@@ -1522,7 +1523,8 @@ function createTouchWorkflow(options = {}) {
       const kind = entry?.reason_code === "recipient_blocked_before" ? "blocked" : entry?.reason_code === "recipient_deleted_before" ? "deleted" : "";
       if (kind) unreachableSummary[kind].push({ name: String(entry.contact?.remark || entry.contact?.name || ""), found: "earlier" });
     }
-    return { skipped_breakdown: summary.breakdown, skipped_records: summary.records,
+    if (!task && !unreachableSummary.blocked.length && !unreachableSummary.deleted.length) return null;
+    return { ...(task ? { skipped_breakdown: summary.breakdown, skipped_records: summary.records } : {}),
       unreachable_summary: { blocked_count: unreachableSummary.blocked.length, deleted_count: unreachableSummary.deleted.length,
         blocked: unreachableSummary.blocked.slice(0, 500), deleted: unreachableSummary.deleted.slice(0, 500) } };
   }

@@ -877,6 +877,7 @@ $dialogAccepted = Wait-PasteAccepted 1000
       assert.deepEqual(laterPayload.contacts.map((item) => item.id), [secondContact.id], "a blocked or deleted contact is not touched again");
       assert.equal(laterPayload.excluded.find((entry) => entry.contact.id === contact.id)?.reason_code, expectedCode);
       const laterRecord = { id: crypto.randomUUID(), payload: laterPayload, progress: { done: 0 }, status: "running" };
+      assert.equal(kindWorkflow.describeSkippedWorkflowTask(laterRecord).unreachable_summary[`${kind}_count`], 1, "before the task starts it already says who was skipped");
       await kindWorkflow.runWorkflowStep(laterRecord, context);
       const summary = kindWorkflow.describeSkippedWorkflowTask(laterRecord).unreachable_summary;
       assert.equal(summary[`${kind}_count`], summary[kind].length);
