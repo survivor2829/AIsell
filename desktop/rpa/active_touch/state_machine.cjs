@@ -13,7 +13,6 @@ const {
   verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
 const { isVerifiedWechatSearchResultMode } = require("./wechat_search_result_resolver.cjs");
-const { titleNearNames } = require("./wechat_header_title.cjs");
 
 const DEFAULT_STATE = {
   version: 1,
@@ -429,8 +428,6 @@ function selectCustomer(baseDir = __dirname, customerId = "", contactsDir = base
     conversation_located: false,
     conversation_verified: false,
     selected_customer: customer,
-    // Names an OCR title read one Chinese character off could also be (wechat_header_title.cjs).
-    title_near_names: titleNearNames(contacts, customer),
     conversation_title: "",
     conversation_verification_mode: "",
     conversation_token: "",
@@ -710,8 +707,6 @@ function clickSearchResultDryRun(
     searchQueryType: searchPlan.queryType,
     searchIdentity: { query: searchQuery, expectedName: customerName }
   };
-  // Only the title check takes the near names (wechat_header_title.cjs), not the search.
-  const titleWindow = Array.isArray(state.title_near_names) ? { ...exactWindow, titleNearNames: state.title_near_names } : exactWindow;
   let inputResult = openResultDriver(searchQuery, exactWindow);
   const searchAttempts = [];
   const rememberSearch = (result, queryType, fallbackReason = '') => {
@@ -846,7 +841,7 @@ function clickSearchResultDryRun(
           pid: inputResult.pid,
           hWnd: inputResult.hWnd
         }
-      : nearVerified || conversationVerifier(customerName, titleWindow);
+      : nearVerified || conversationVerifier(customerName, exactWindow);
     conversationVerifyMs = Date.now() - verifyStartedAt;
   }
   const timings = {

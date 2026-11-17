@@ -73,8 +73,7 @@ function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir =
     expectedAccountId,
     expectedPid: options.allowWindowRebind ? options.expectedPid : state.window_pid,
     expectedHWnd: options.allowWindowRebind ? options.expectedHWnd : state.window_handle,
-    allowExactSearchFallback,
-    titleNearNames: state.title_near_names
+    allowExactSearchFallback
   });
   if (!result.ok) return result;
   if (options.allowWindowRebind && (Number(result.pid) !== Number(options.expectedPid)
@@ -118,8 +117,7 @@ async function sessionCheckAsync(state, driver = verifyWechatCurrentConversation
     expectedAccountId,
     expectedPid: options.allowWindowRebind ? options.expectedPid : state.window_pid,
     expectedHWnd: options.allowWindowRebind ? options.expectedHWnd : state.window_handle,
-    allowExactSearchFallback,
-    titleNearNames: state.title_near_names
+    allowExactSearchFallback
   }));
   if (!result.ok) return result;
   if (options.allowWindowRebind && (Number(result.pid) !== Number(options.expectedPid)
@@ -462,7 +460,6 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
     expectedConversation: state.selected_customer?.name,
     expectedConversationMode: state.conversation_verification_mode,
     expectedConversationToken: state.conversation_token,
-    titleNearNames: state.title_near_names,
     expectedMessage: message,
     expectedIncomingMessage: String(options.expectedIncomingMessage || "").trim(),
     expectedIncomingRuntimeId: String(options.expectedIncomingRuntimeId || "").trim()
@@ -920,7 +917,7 @@ async function executeVerifiedContactSendCore(options = {}) {
       onDiagnostic: options.onDiagnostic,
       context: { pid: state.window_pid, hWnd: state.window_handle, expectedConversation: state.selected_customer?.name,
         expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token,
-        inputPoint: state.message_input_point, titleNearNames: state.title_near_names }
+        inputPoint: state.message_input_point }
     }));
     return withSessionAnchor(imageOutcome, options, baseDir);
   }

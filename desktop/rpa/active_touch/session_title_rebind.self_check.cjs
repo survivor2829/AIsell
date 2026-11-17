@@ -94,34 +94,34 @@ const { searchObservationEvidence } = require("./wechat_search_result_resolver.c
   console.log("header title fallback shape passed");
 }
 
-// 2026-11-16 (customer computer, 1.3.16, 185 skips): the opened chat's title was read with one
-// digit of the phone number as its look-alike letter (5 as "S"). The comparison block itself runs
-// here, once, on fixed OCR lines (names and numbers are stand-ins): only a digit of the name may
-// be read as its look-alike letter; a letter of the name is never relaxed; strict callers get none.
-if (process.platform === "win32") {
+// The comparison block runs here on fixed OCR lines (names and numbers are stand-ins). Since
+// 2026-11-17 (user decision) the title must equal the name exactly; only symbols, punctuation,
+// spaces and case are ignored and a "…"-cut title shows 4+ letters. The look-alike-digit (1.3.21)
+// and one-wrong-character (1.3.27) allowances are gone: the chat-title reader replaced them.
+if (process.platform === "win32") (async () => {
+  const http = require("node:http");
   const { WECHAT_HEADER_TITLE_POWERSHELL: header } = require("./wechat_header_title.cjs");
-  const { runPowerShell } = require("./wechat_window_driver.cjs");
-  const start = header.indexOf("$expectedHasDash=");
-  const end = header.indexOf("if (-not (& $matches $lines))");
-  assert.ok(start > 0 && end > start, "the title comparison block is found");
+  const { runPowerShell, runPowerShellAsync } = require("./wechat_window_driver.cjs");
+  const foldStart = header.indexOf("$expectedHasDash=");
+  const foldEnd = header.indexOf("$script:headerTitleEvidence=@{ lines=0");
+  const readerStart = header.indexOf("$lineOcrUrl=");
+  const readerEnd = header.indexOf("# A narrow title strip");
+  const compareStart = header.indexOf("$foldKeepCase=");
+  const compareEnd = header.indexOf("if (-not (& $matches $lines))");
+  assert.ok(foldStart > 0 && foldEnd > foldStart && readerStart > foldEnd && readerEnd > readerStart
+    && compareStart > readerEnd && compareEnd > compareStart, "the title check blocks are found");
   const name = "示例维护张三13805138000";
   const cases = [
-    ["field", name, "示例维护张三138O5138000", true, true],
-    ["1 as l, 0 as O", name, "示例维护张三l38O5138OOO", true, true],
-    ["5 as S", name, "示例维护张三1380S138000", true, true],
-    ["6 as b (lower case)", "示例6号", "示例b号", true, true],
-    ["8 as b is not a look-alike", "示例8号", "示例b号", true, false],
+    ["plain exact", "CC1 PRO", "CC1 PRO", true, true],
+    ["symbols and emoji ignored", "崔情情🍀🌻", "崔情情", true, true],
+    ["a digit read as a letter is a different title", name, "示例维护张三138O5138000", true, false],
+    ["one Chinese character wrong is a different title", "济南展迪", "济南屣迪", true, false],
     ["different digit", name, "示例维护张三13805138001", true, false],
     ["one digit more", name, "示例维护张三138051380005", true, false],
-    ["one digit less", name, "示例维护张三1380513800", true, false],
-    ["different Chinese character", name, "示例维修张三13805138000", true, false],
-    ["a letter of the name is never relaxed", "王总s", "王总5", true, false],
-    ["strict: no look-alikes", name, "示例维护张三138O5138000", false, false],
-    ["strict: exact still passes", name, name, false, true],
-    ["cut title with a look-alike", name, "示例维护张三138O…", true, true],
-    ["cut title, strict", name, "示例维护张三138O…", false, false],
-    ["plain exact", "CC1 PRO", "CC1 PRO", true, true],
-    ["one more character", "城胜", "城胜胜", true, false]
+    ["one more character", "城胜", "城胜胜", true, false],
+    ["cut title, 4+ letters", name, "示例维护张三138…", true, true],
+    ["cut title, strict caller", name, "示例维护张三138…", false, false],
+    ["strict: exact still passes", name, name, false, true]
   ];
   const result = runPowerShell(`
 $cases = [Environment]::GetEnvironmentVariable("T_CASES") | ConvertFrom-Json
@@ -129,70 +129,80 @@ $out = foreach ($case in $cases) {
   $expectedTitle = [string]$case[1]
   $allowCutTitle = [bool]$case[3]
   $expected=[Text.RegularExpressions.Regex]::Replace($expectedTitle.Normalize([Text.NormalizationForm]::FormKC),'\s+','')
-  ${header.slice(start, end)}
+  ${header.slice(foldStart, foldEnd)}
+  $script:headerTitleEvidence=@{ lines=0 }
+  ${header.slice(compareStart, compareEnd)}
   $lines = @([pscustomobject]@{ text = [string]$case[2]; x = 0; y = 0; bottom = 10 })
-  @{ name = [string]$case[0]; match = [bool](& $matches $lines); lookalike = [bool]$script:headerTitleEvidence.lookalike; diff = $script:headerTitleEvidence.first_diff_index }
+  @{ name = [string]$case[0]; match = [bool](& $matches $lines) }
 }
 @{ ok = $true; results = @($out) } | ConvertTo-Json -Compress -Depth 4`, { T_CASES: JSON.stringify(cases) }, { ensure: false, timeout: 60_000 });
   assert.equal(result.ok, true, JSON.stringify(result).slice(0, 300));
-  for (const [label, , , , expected] of cases) {
-    const row = result.results.find((item) => item.name === label);
-    assert.equal(row?.match, expected, label);
-  }
-  const field = result.results.find((item) => item.name === "field");
-  assert.equal(field.lookalike, true, "a look-alike pass is marked in the evidence");
-  assert.equal(field.diff, 9, "the evidence still records where the plain reading differs");
-  assert.equal(result.results.find((item) => item.name === "plain exact").lookalike, false);
-  console.log("header title look-alike comparison passed");
+  for (const [label, , , , expected] of cases) assert.equal(result.results.find((item) => item.name === label)?.match, expected, label);
+  console.log("header title strict comparison passed");
 
-  // 2026-11-17 (user decision): one Chinese character misread (1.3.16 field: 济南展迪 read as
-  // 济南屣迪, 407 skips on one computer) confirms the chat when the name has 4+ letters, the reading
-  // is full length, and no other contact of the address book is within one character of it.
-  // Without the touch-supplied list (auto-reply) the rule is off.
-  const nearCases = [
-    ["field", "济南展迪", "济南屣迪", true, [], true],
-    ["not given: off", "济南展迪", "济南屣迪", true, null, false],
-    ["another contact one character away", "济南展迪", "济南屣迪", true, ["济南履迪"], false],
-    ["another contact two characters away", "济南展迪", "济南屣迪", true, ["济南展通"], true],
-    ["several near names, one is a rival", "济南展迪", "济南屣迪", true, ["济南展通", "济南屣迪", "青岛展迪"], false],
-    ["several near names, none a rival", "济南展迪", "济南屣迪", true, ["济南展通", "青岛展迪"], true],
-    ["a dash in the name: off", "济南-展迪", "济南-屣迪", true, [], false],
-    ["same name elsewhere", "济南展迪", "济南屣迪", true, ["济南展迪"], false],
-    ["three letters", "王总经", "王总红", true, [], false],
-    ["two characters wrong", "济南展迪", "济北屣迪", true, [], false],
-    ["a digit wrong", "示例维护13805", "示例维护13806", true, [], false],
-    ["Chinese read as a letter", "济南展迪", "济南a迪", true, [], false],
-    ["cut title", "济南展迪物业公司", "济南屣迪…", true, [], false],
-    ["strict caller", "济南展迪", "济南屣迪", false, [], false]
-  ];
-  const nearResult = runPowerShell(`
-$cases = [Environment]::GetEnvironmentVariable("T_CASES") | ConvertFrom-Json
-$out = foreach ($case in $cases) {
-  [Environment]::SetEnvironmentVariable("XIAOXI_TITLE_NEAR_NAMES", $(if ($null -eq $case[4]) { $null } else { ConvertTo-Json -Compress -InputObject @($case[4]) }))
-  $expectedTitle = [string]$case[1]
-  $allowCutTitle = [bool]$case[3]
-  $expected=[Text.RegularExpressions.Regex]::Replace($expectedTitle.Normalize([Text.NormalizationForm]::FormKC),'\\s+','')
-  ${header.slice(start, end)}
-  $lines = @([pscustomobject]@{ text = [string]$case[2]; x = 0; y = 0; bottom = 10 })
-  @{ name = [string]$case[0]; match = [bool](& $matches $lines); near = [bool]$script:headerTitleEvidence.near_cjk }
+  // The chat-title reader: its reading confirms the chat only when it equals the name; a wrong
+  // reading, a reader that is down or answers late, a bad token or a non-loopback address leave
+  // the decision to Windows' reading (the block falls through instead of returning).
+  let replyText = "", replyDelayMs = 0, seenToken = "", posts = 0;
+  const token = "t".repeat(48);
+  const server = http.createServer((request, response) => {
+    let size = 0;
+    request.on("data", (chunk) => { size += chunk.length; });
+    request.on("end", () => {
+      posts += 1; seenToken = request.headers["x-xiaoxi-token"];
+      setTimeout(() => {
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ text: replyText, score: 0.99, bytes: size }));
+      }, replyDelayMs);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${server.address().port}/read`;
+  const runReader = (expectedTitle, env) => runPowerShellAsync(`
+Add-Type -AssemblyName System.Drawing
+Add-Type -ReferencedAssemblies System.Drawing @"
+public static class XiaoxiScreenPixels {
+  public static bool Copy(System.Drawing.Bitmap bitmap, int left, int top) { return true; }
 }
-@{ ok = $true; results = @($out) } | ConvertTo-Json -Compress -Depth 4`, { T_CASES: JSON.stringify(nearCases) }, { ensure: false, timeout: 60_000 });
-  assert.equal(nearResult.ok, true, JSON.stringify(nearResult).slice(0, 300));
-  for (const [label, , , , , expected] of nearCases) {
-    const row = nearResult.results.find((item) => item.name === label);
-    assert.equal(row?.match, expected, label);
+"@
+$expectedTitle = [Environment]::GetEnvironmentVariable("T_EXPECTED")
+$allowCutTitle = $true
+$left = 0; $top = 0; $right = 300; $bottom = 40
+$verdict = & {
+  ${header.slice(foldStart, foldEnd)}
+  $script:headerTitleEvidence=@{ lines=0 }
+  ${header.slice(readerStart, readerEnd)}
+  return "fallthrough"
+}
+@{ ok = $true; verdict = [string]$verdict; evidence = $script:headerTitleEvidence.line_ocr } | ConvertTo-Json -Compress -Depth 4`, { T_EXPECTED: expectedTitle, ...env }, { ensure: false, timeout: 60_000 });
+  try {
+    replyText = "济南展迪";
+    let read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "True", "an exact reading confirms the chat");
+    assert.equal(seenToken, token);
+    assert.deepEqual([read.evidence.read, read.evidence.match], [true, true]);
+    replyText = "济南屣迪";
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "fallthrough", "a wrong reading leaves it to Windows' reading");
+    assert.equal(read.evidence.match, false);
+    replyText = "崔情情";
+    read = await runReader("崔情情🍀🌻", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "True", "emoji in the name are ignored like everywhere else");
+    replyText = "济南展迪"; replyDelayMs = 6000;
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "fallthrough", "a late reader never holds the check up");
+    assert.equal(read.evidence.read, false);
+    replyDelayMs = 0;
+    const before = posts;
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: "http://10.0.0.1:1/read", XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "fallthrough", "only a loopback reader is used");
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: "short" });
+    assert.equal(read.verdict, "fallthrough", "no token, no call");
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: "", XIAOXI_LINE_OCR_TOKEN: "" });
+    assert.equal(read.verdict, "fallthrough", "without the reader the old path decides");
+    assert.equal(posts, before, "none of those reached the reader");
+  } finally {
+    server.close();
   }
-  assert.equal(nearResult.results.find((item) => item.name === "field").near, true, "a near-character pass is marked in the evidence");
-
-  const { titleNearNames } = require("./wechat_header_title.cjs");
-  const book = [
-    { id: "me", name: "济南展迪", remark: "济南展迪", nickname: "展迪" },
-    { id: "a", name: "济南展通", remark: "济南展通", nickname: "" },
-    { id: "b", name: "济南履迪", remark: "", nickname: "济南履迪" },
-    { id: "c", name: "青岛海尔服务", remark: "", nickname: "" },
-    { id: "d", name: "济南迪", remark: "", nickname: "" }
-  ];
-  assert.deepEqual(titleNearNames(book, book[0]).sort(), ["济南展通", "济南履迪"].sort(), "same length, at most two characters apart, not the customer");
-  assert.deepEqual(titleNearNames(book, { id: "x", name: "王总" }), [], "a short name gets no near rule");
-  console.log("header title near-character comparison passed");
-}
+  console.log("header title reader passed");
+})().catch((error) => { console.error(error); process.exitCode = 1; });

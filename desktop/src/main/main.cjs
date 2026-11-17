@@ -987,6 +987,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         passport: taskPassportStore
       });
     }
+    // The chat-title reader shares the product-detail runtime; it starts on the first touch step.
+    require("./line-ocr-service.cjs").configureLineOcrService({
+      resolveLaunch: () => app.isPackaged
+        ? { runtimePath: productDetailRuntimePath(), runtimeArgs: [] }
+        : { runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] },
+      onEvent: (event, details) => {
+        try { diagnostics().event("active_touch", `line_ocr.${event}`, details, { level: event === "unavailable" ? "warn" : "info" }); } catch { /* never blocks */ }
+      }
+    });
     touchTaskController = registerTouchTaskIpc({
       getMainWindow: () => mainWindow,
       dataDir: runtime.activeTouchDir,
@@ -1225,6 +1234,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", (event) => {
+    try { require("./line-ocr-service.cjs").lineOcrService()?.stop(); } catch { /* best effort */ }
     if (quitCleanupComplete) return;
     event.preventDefault();
     if (quitCleanupStarted) return;

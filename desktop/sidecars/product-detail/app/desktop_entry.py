@@ -978,6 +978,15 @@ def _run_server(config: DesktopConfig, protocol_stdout) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["--line-ocr-serve"]:
+        # The touch title reader shares this runtime (onnxruntime, numpy, Pillow) but not the
+        # Flask app: it starts without loading any product-detail module.
+        import line_ocr
+
+        protocol_stdout = sys.stdout
+        with contextlib.redirect_stdout(sys.stderr):
+            return line_ocr.serve(protocol_stdout)
     args = _parse_args(argv)
     if args.self_check:
         sys.stdout.write(json.dumps(self_check(args.data_dir), ensure_ascii=False) + "\n")

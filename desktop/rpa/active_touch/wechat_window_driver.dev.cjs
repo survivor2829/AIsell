@@ -4,7 +4,7 @@ const {
   runPowerShellAsync
 } = require("./wechat_window_driver.cjs");
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
-const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL } = require("./wechat_header_title.cjs");
 
 const WECHAT_SEND_BUTTON_OFFSETS = { right: 64, bottom: 42 };
 const CLIPBOARD_TEXT_RETRY_POWERSHELL = `
@@ -692,8 +692,7 @@ function observationEnvironment(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle ?? ""),
-    XIAOXI_EXPECTED_CONVERSATION_MODE: String(context.verificationMode ?? "conversation_title"),
-    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
+    XIAOXI_EXPECTED_CONVERSATION_MODE: String(context.verificationMode ?? "conversation_title")
   };
 }
 
@@ -727,8 +726,7 @@ function sendMessageEnvironment(context = {}) {
     XIAOXI_EXPECTED_INCOMING_MESSAGE: String(context.expectedIncomingMessage ?? ""),
     XIAOXI_EXPECTED_INCOMING_RUNTIME_ID: String(context.expectedIncomingRuntimeId ?? ""),
     XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
-    XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? ""),
-    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
+    XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? "")
   };
 }
 
@@ -862,7 +860,7 @@ function verifyLoggedInWechatAccountAsync(expectedAccountId, wechatRoot = "") {
 }
 
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
-  const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd, titleNearNames: context.titleNearNames };
+  const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd };
   const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
   const observation = observeWechatConversation(expectedTitle, { ...expectedWindow, verificationMode });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
@@ -889,7 +887,7 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
 }
 
 async function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
-  const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd, titleNearNames: context.titleNearNames };
+  const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd };
   const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
   const observation = await observeWechatConversationAsync(expectedTitle, { ...expectedWindow, verificationMode });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
