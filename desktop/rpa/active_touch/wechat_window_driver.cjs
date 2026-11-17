@@ -3028,6 +3028,9 @@ public static class Win32WechatMessageDraft {
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int index);
+  [DllImport("user32.dll")] public static extern IntPtr GetThreadDpiAwarenessContext();
+  [DllImport("user32.dll")] public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr context);
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
@@ -3211,9 +3214,24 @@ $draftHeight = $(if ([Win32WechatMessageDraft]::GetWindowRect($matched.hWnd, [re
 $inputPoints = @(Get-DraftInputPoints $draftHeight $draftDpi)
 # What stood at a refused point, for the field report (class names only, no text).
 $draftHit = $null
+# Process and class names and coordinates only: a window title can carry a customer's name.
 function Get-DraftHitEvidence([IntPtr]$hitWindow, [IntPtr]$rootWindow, [int]$hitProcessId, [string]$check) {
-  return @{ check = $check; hit_class = [Win32WechatMessageDraft]::ClassOf($hitWindow); root_class = [Win32WechatMessageDraft]::ClassOf($rootWindow)
+  $rootRect = New-Object Win32WechatMessageDraft+RECT
+  $hasRoot = $rootWindow -ne [IntPtr]::Zero -and [Win32WechatMessageDraft]::GetWindowRect($rootWindow, [ref]$rootRect)
+  $mainRect = New-Object Win32WechatMessageDraft+RECT
+  [void][Win32WechatMessageDraft]::GetWindowRect($matched.hWnd, [ref]$mainRect)
+  $hitProcess = ""
+  try { $hitProcess = [string](Get-Process -Id $hitProcessId -ErrorAction Stop).ProcessName } catch { $hitProcess = "" }
+  $awareness = -1
+  try { $awareness = [Win32WechatMessageDraft]::GetAwarenessFromDpiAwarenessContext([Win32WechatMessageDraft]::GetThreadDpiAwarenessContext()) } catch { $awareness = -2 }
+  return @{ hit_stage = $check; hit_class = [Win32WechatMessageDraft]::ClassOf($hitWindow); root_class = [Win32WechatMessageDraft]::ClassOf($rootWindow)
+    hit_process = $(if ($hitProcess -match '^[A-Za-z0-9_.-]{1,60}$') { $hitProcess } else { "" })
     same_process = ($hitProcessId -eq [int]$matched.pid); root_is_main = ($rootWindow -eq $matched.hWnd)
+    hit_is_root = ($hitWindow -eq $rootWindow); hit_null = ($hitWindow -eq [IntPtr]::Zero)
+    root_ex_style = $(if ($hasRoot) { [Win32WechatMessageDraft]::GetWindowLong($rootWindow, -20) } else { 0 })
+    root_rect = $(if ($hasRoot) { @($rootRect.Left, $rootRect.Top, $rootRect.Right, $rootRect.Bottom) } else { @() })
+    main_rect = @($mainRect.Left, $mainRect.Top, $mainRect.Right, $mainRect.Bottom)
+    point = @([int]$x, [int]$y); thread_dpi_awareness = $awareness
     foreground_is_main = ([Win32WechatMessageDraft]::GetForegroundWindow() -eq $matched.hWnd); attempt = $attempt; dpi = $draftDpi }
 }
 for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
@@ -3336,8 +3354,8 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
 }
 Restore-DraftClipboardIfOwned
 @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; draftVerified = $draftVerified; draftCheck = $draftCheck; draftAttempts = $attemptUsed; draftPoint = $usedPoint
-  safety_diagnostics = $(if ($draftVerified) { $null } else { @{ draft_check = $draftCheck; draft_attempts = $attemptUsed; draft_dpi = $draftDpi; draft_window_height = $draftHeight
-    draft_points = @($inputPoints | ForEach-Object { $_.yRatio }); draft_hit = $draftHit } }) } | ConvertTo-Json -Compress -Depth 5
+  safety_diagnostics = $(if ($draftVerified) { $null } else { @{ input_reason = $draftCheck; input_attempts = $attemptUsed; input_dpi = $draftDpi; input_window_height = $draftHeight
+    input_points = @($inputPoints | ForEach-Object { $_.yRatio }); input_hit = $draftHit } }) } | ConvertTo-Json -Compress -Depth 5
 `;
 
 function inputWechatMessageDraft(message, context = {}) {

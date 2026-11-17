@@ -113,7 +113,10 @@ function executeActiveTouch(args, options = {}) {
         stderr_bytes: Buffer.byteLength(stderr),
         ...(result?.ok !== true ? { raw_result: result, raw_worker: { stderr: scrubSecretText(stderr).slice(-16000),
           stdout: scrubSecretText(stdout).slice(-16000), stderr_truncated: stderr.length > 16000, stdout_truncated: stdout.length > 16000 } } : {}),
-        diagnostics: diagnosticValue("diagnostics") ?? null
+        diagnostics: diagnosticValue("diagnostics") ?? null,
+        // What a refused input point hit, the window and point (class/process names and numbers only):
+        // the evidence for 200% laptops whose input box is refused (2026-11-17, cfe8221b).
+        safety_diagnostics: diagnosticValue("safety_diagnostics") ?? null
       }, { ok: result?.ok === true, code: primaryReason });
       resolve(result);
     };
