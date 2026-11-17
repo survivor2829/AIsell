@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { fillRespectfulTemplate } = require("../../src/main/ai-draft.cjs");
+const { foldTitle } = require("./wechat_header_title.cjs");
 
 const TASK_FILE = "touch_task.json";
 const TASK_BACKUP_FILE = "touch_task.json.bak";
@@ -104,7 +105,14 @@ function contactIdentityIndex(contacts) {
     names: counts(contactName),
     wechatIds: counts((row) => String(row?.wechatId ?? "").trim()),
     ids: counts((row) => String(row?.id ?? "").trim()),
-    accounts: new Set(activeRows.map((row) => String(row?.wechatAccountId ?? "").trim()).filter(Boolean))
+    accounts: new Set(activeRows.map((row) => String(row?.wechatAccountId ?? "").trim()).filter(Boolean)),
+    // Every synced friend (also disabled or blocked ones: WeChat's search still lists them) under
+    // each name a chat title may show, folded as the title check folds (no symbols, emoji, spaces
+    // or case). A name search can open any of them.
+    titleNames: contacts.reduce((result, row) => {
+      for (const value of new Set([row?.name, row?.remark, row?.nickname].map(foldTitle).filter(Boolean))) result.set(value, (result.get(value) || 0) + 1);
+      return result;
+    }, new Map())
   };
 }
 
@@ -121,7 +129,7 @@ function contactIdentityError(contacts, contact, index = contactIdentityIndex(co
   // title to match. They are searched by name the same way, so the name must be unique in the
   // synced list, also where callers otherwise relax that (user 2026-11-17: reach whoever can be
   // reached).
-  if (!wechatId && index.names.get(name) !== 1) return "contact_name_not_unique";
+  if (!wechatId && (index.names.get(name) !== 1 || index.titleNames.get(foldTitle(name)) !== 1)) return "contact_name_not_unique";
   if (options.requireUniqueName !== false && index.names.get(name) !== 1) return "contact_name_not_unique";
   if (wechatId && index.wechatIds.get(wechatId) !== 1) return "contact_identity_not_unique";
   if (index.ids.get(String(contact?.id ?? "").trim()) !== 1) return "contact_identity_not_unique";

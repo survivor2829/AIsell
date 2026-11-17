@@ -775,7 +775,7 @@ function createTouchWorkflow(options = {}) {
         const deliveryStatus = skippedDelivery(current);
         recordSkippedResult(current, index, { reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
         // The end-of-list retry of a contact already skipped and reported once: a local warning only.
-        const repeatSkip = current.auto_retried === true;
+        const repeatSkip = current.auto_retried === true && current.auto_retry_from === "pre_send_skipped";
         if (repeatSkip) {
           try {
             diagnostics().event("active_touch", "contact_skipped_again", { task_id: id, current_index: index, reason_code: reasonCode },
@@ -792,7 +792,8 @@ function createTouchWorkflow(options = {}) {
         // rest of them are not tried again in this round (no hours of futile recovery).
         if (repeatSkip && current.auto_retry_from === "pre_send_skipped" && count >= AUTO_RETRY_PRE_SEND_GIVE_UP_COUNT) {
           for (const row of task.results.slice(index + 1)) {
-            if (row?.auto_retried !== true || row.auto_retry_from !== "pre_send_skipped" || row.status !== "generated" || !nothingSent(row)) continue;
+            if (row?.auto_retried !== true || row.auto_retry_from !== "pre_send_skipped" || row.status !== "generated" || !nothingSent(row)
+              || String(row.skip_record?.reasonCode || "") !== String(reasonCode)) continue;
             row.status = "pre_send_skipped";
             row.retry_blocked = true;
             row.send_attempted = false;

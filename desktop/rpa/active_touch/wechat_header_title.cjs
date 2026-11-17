@@ -87,8 +87,11 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     # only by touch; without it the rule is off).
     $nearCjkNames=$null
     $nearRaw=[Environment]::GetEnvironmentVariable("XIAOXI_TITLE_NEAR_NAMES")
-    if (-not [string]::IsNullOrWhiteSpace($nearRaw)) {
-      try { $nearCjkNames=@(@($nearRaw | ConvertFrom-Json) | ForEach-Object { & $fold ([string]$_) }) } catch { $nearCjkNames=$null }
+    # A name with a dash folds differently here (一·・• dropped) than where the list was built: off.
+    if (-not [string]::IsNullOrWhiteSpace($nearRaw) -and -not $expectedHasDash) {
+      # Windows PowerShell 5.1 passes a parsed JSON array down the pipeline as ONE object; foreach
+      # over the parsed value enumerates the names themselves (review 2026-11-17).
+      try { $nearParsed=ConvertFrom-Json -InputObject $nearRaw; $nearCjkNames=@(foreach ($nearItem in $nearParsed) { & $fold ([string]$nearItem) }) } catch { $nearCjkNames=$null }
     }
     $nearCjkMatch={ param([string]$reading)
       if ($null -eq $nearCjkNames -or -not $allowCutTitle -or $expectedFolded.Length -lt 4 -or $reading.Length -ne $expectedFolded.Length) { return $false }

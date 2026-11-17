@@ -912,6 +912,19 @@ try {
   assert.deepEqual(noIdTwins.eligible.map((row) => row.id), [validContacts[0].id]);
   assert.deepEqual(noIdTwins.excluded.map((row) => row.reason_code), ["contact_name_not_unique", "contact_name_not_unique"],
     "a name shared by two contacts without a WeChat ID cannot be told apart by a name search");
+  // Review 2026-11-17: a blocked friend still appears in WeChat's search, and the title check
+  // ignores symbols, emoji, spaces and case, so those count as the same name.
+  const noIdLookalikes = classifyContacts([
+    validContacts[0],
+    { ...validContacts[1], id: "no-id-c", wxid: "no-id-c", name: "张三", remark: "张三", wechatId: "" },
+    { ...validContacts[2], id: "blocked", wxid: "blocked", name: "张三", remark: "张三", wechatId: "blocked-id", allowed: false },
+    { ...validContacts[3], id: "no-id-d", wxid: "no-id-d", name: "李四", remark: "李四", wechatId: "" },
+    { ...validContacts[4], id: "emoji", wxid: "emoji", name: "李四🌸", remark: "李四🌸", wechatId: "emoji-id" },
+    { ...validContacts[5], id: "no-id-e", wxid: "no-id-e", name: "王五", remark: "王五", wechatId: "" }
+  ]);
+  assert.deepEqual(noIdLookalikes.excluded.filter((row) => row.reason_code === "contact_name_not_unique").map((row) => row.contact.id).sort(),
+    ["no-id-c", "no-id-d"], "a blocked friend or a name that differs only by an emoji makes a name search ambiguous");
+  assert.equal(noIdLookalikes.eligible.some((row) => row.id === "no-id-e"), true);
   assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
   const duplicateWechatIds = classifyContacts([
     validContacts[0],
