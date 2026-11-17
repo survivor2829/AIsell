@@ -816,6 +816,71 @@ def _screen_of(location, plan):
     return next((s.get("idx") for s in plan.get("screens", []) if pid and s.get("selling_point_id") == pid), None)
 
 
+CAPTION_VALUE_ISSUE = "标题或解释出现原文没有的参数值/单位："
+
+
+def _caption_values(delivery):
+    """The value pattern and the one written form captions and source are compared in."""
+    from .refine_planner import spell_units
+    # Delivery plans first write equal values one way (500*300mm/500×300毫米,
+    # 5L/5升, 40℃/40°C, 32"/32英寸, full-width digits); only there can 英寸 and
+    # m2/m3 be checked without flagging a correct title. Never arithmetic.
+    numeric = re.compile(
+        r"\d+(?:\.\d+)?(?:[×x*]\d+(?:\.\d+)?)?(?:[-–—~～]\d+(?:\.\d+)?)?"
+        r"(?:km/h|m/s|m²/h|m2/h|mAh|Ah|kW|W|kPa|Pa|RPM|mm|cm|kg|ml|mL|L|V|h|小时|分钟|毫米|厘米|公斤|升|伏|瓦|%|％"
+        + (r"|英寸|°|度|m2|m3)" if delivery else r"|°|度)"),
+        re.I)
+    def compact(value):
+        if delivery:
+            value = spell_units(value)  # Before spaces go: 5升 水箱 is a unit, 5升级 is not.
+        # Two numbers a space apart stay two numbers: 4100x1525x2050 66升 is not 205066升.
+        value = re.sub(r"(?<=\d)\s+(?=\d)", "|", value)
+        return re.sub(r"\s+", "", value).replace("–", "-").replace("—", "-").replace("％", "%").lower()
+    return numeric, compact
+
+
+_LOOSE_NUMBER = re.compile(r"\d+(?:\.\d+)?(?:\s*[×x*]\s*\d+(?:\.\d+)?)?(?:\s*[-–—~～至到]\s*\d+(?:\.\d+)?)?", re.I)
+
+
+def strip_caption_value(text, value, delivery=True):
+    """The caption without one value the source does not support; the rest of it stays.
+
+    A caption is a sentence the AI wrote; an unsupported number in it is removed, not
+    the page (2026-11-17: the same invented 30英寸 on several pages dropped them all
+    and failed the plan). Each written form of the value (30英寸, 30", 30 英寸) is found
+    through the same comparison form the check uses, so nothing else is touched.
+    """
+    numeric, compact = _caption_values(delivery)
+    text, wanted = str(text or ""), str(value or "").lower()
+    if not wanted:
+        return text
+    out, cursor = [], 0
+    for match in _LOOSE_NUMBER.finditer(text):
+        if match.start() < cursor:
+            continue
+        for end in range(match.end(), min(len(text), match.end() + 6) + 1):
+            if compact(text[match.start():end]) == wanted:
+                out.append(text[cursor:match.start()])
+                cursor = end
+                break
+    if not out:
+        return text
+    cleaned = "".join(out) + text[cursor:]
+    cleaned = re.sub(r"[（(\[【]\s*[)）\]】]", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip(" ，,、/·|-—:：;；")
+
+
+def without_unsupported_values(text, source, title="", delivery=True):
+    """The caption with every value the source (or the customer's title) lacks removed."""
+    numeric, compact = _caption_values(delivery)
+    allowed = {m.group().lower() for m in numeric.finditer(compact(str(source or "") + "\n" + str(title or "")))}
+    for match in list(numeric.finditer(compact(str(text or "")))):
+        if match.group().lower() not in allowed:
+            text = strip_caption_value(text, match.group(), delivery)
+    return text
+
+
 def plan_issues(plan, source, title="", category=None):
     """Return [(screen idx or None, message)]; None concerns the whole plan."""
     from .refine_planner import _validate_schema_v2, _check_product_category
@@ -850,20 +915,10 @@ def plan_issues(plan, source, title="", category=None):
         seen_signatures.add(signature)
     # Caption values must exist in supplied facts. This guards units/values,
     # not semantic attribution; the editor still checks which value means what.
-    from .refine_planner import spell_units
-    # Delivery plans first write equal values one way (500*300mm/500×300毫米,
-    # 5L/5升, 40℃/40°C, 32"/32英寸, full-width digits); only there can 英寸 and
-    # m2/m3 be checked without flagging a correct title. Never arithmetic.
-    numeric = re.compile(
-        r"\d+(?:\.\d+)?(?:[×x*]\d+(?:\.\d+)?)?(?:[-–—~～]\d+(?:\.\d+)?)?"
-        r"(?:km/h|m/s|m²/h|m2/h|mAh|Ah|kW|W|kPa|Pa|RPM|mm|cm|kg|ml|mL|L|V|h|小时|分钟|毫米|厘米|公斤|升|伏|瓦|%|％"
-        + (r"|英寸|°|度|m2|m3)" if delivery else r"|°|度)"),
-        re.I)
-    def compact(value):
-        if delivery:
-            value = spell_units(value)  # Before spaces go: 5升 水箱 is a unit, 5升级 is not.
-        return re.sub(r"\s+", "", value).replace("–", "-").replace("—", "-").replace("％", "%").lower()
-    source_values = {m.group().lower() for m in numeric.finditer(compact(source))}
+    numeric, compact = _caption_values(delivery)
+    # The customer's own title is supplied material too: a value written there is
+    # theirs, not invented (2026-11-17: a title with 30英寸 failed every retry).
+    source_values = {m.group().lower() for m in numeric.finditer(compact(source + "\n" + (title or "")))}
     for screen in plan["screens"]:
         idx = screen.get("idx")
         body = screen.get("body", "")
@@ -872,7 +927,7 @@ def plan_issues(plan, source, title="", category=None):
         for key in ("title", "body"):
             for match in numeric.finditer(compact(str(screen.get(key) or ""))):
                 if match.group().lower() not in source_values:
-                    issues.append((idx, "标题或解释出现原文没有的参数值/单位：" + match.group()))
+                    issues.append((idx, CAPTION_VALUE_ISSUE + match.group()))
         proof = screen.get("technical_support", [])
         if not isinstance(proof, list) or not all(
             isinstance(q, str) and any(q == e
@@ -933,8 +988,21 @@ def compile_with_salvage(data, source, title, category, **options):
     remaining["pages"] = keep_person_scene(remaining.get("pages") or [],
                                            screen_limit(category) - 1 - int(bool(remaining.get("specifications"))))
     dropped = list(data.get("salvage_dropped_pages") or [])  # Pages the final read already removed.
+    # Two pages with the same caption are one page shown twice: keep the first. A
+    # duplicate is a page problem, never a reason to fail the whole plan.
+    seen_captions, unique_pages = set(), []
+    for page in remaining["pages"]:
+        caption = tuple(re.sub(r"\s+", "", str(page.get(key) or "")) for key in ("title", "body"))
+        if caption in seen_captions:
+            dropped.append({"title": page.get("title"), "issue": "与前一页文案重复"})
+            continue
+        seen_captions.add(caption)
+        unique_pages.append(page)
+    remaining["pages"] = unique_pages
     cover_reset = False
-    for _ in range(5):
+    stripped_values = []
+    for _ in range(8):
+        changed = False
         pages = remaining["pages"]
         bad = {i for i, page in enumerate(pages)
                if page.get("kind") not in ("benefit", "display") or page.get("role") in ("hero", "spec_table")}
@@ -946,17 +1014,49 @@ def compile_with_salvage(data, source, title, category, **options):
             plan = compile_plan(remaining, source, title, category, **options, check=False)
             planned = sum(1 for s in plan["screens"] if s.get("role") not in ("hero", "spec_table"))
             roles = {s.get("idx"): s.get("role") for s in plan["screens"]}
+            whole_plan = False
             for idx, message in plan_issues(plan, source, title, category):
                 page_index = (idx or 0) - 2  # Screen 1 is the cover.
+                # The cover keeps resetting to the customer's own title when there is one
+                # (it names the product); without one, its invented value is removed too.
+                if message.startswith(CAPTION_VALUE_ISSUE) and roles.get(idx) != "spec_table" and not (
+                        roles.get(idx) == "hero" and (title or "").strip()):
+                    # An invented value leaves the caption it sits in; the page stays.
+                    target = (remaining.get("cover") if roles.get(idx) == "hero"
+                              else pages[page_index] if 0 <= page_index < len(pages) else None)
+                    value = message[len(CAPTION_VALUE_ISSUE):]
+                    if isinstance(target, dict):
+                        before = (target.get("title"), target.get("body"))
+                        for key in ("title", "body"):
+                            if isinstance(target.get(key), str):
+                                target[key] = strip_caption_value(target[key], value, options.get("delivery", False))
+                        if (target.get("title"), target.get("body")) != before:
+                            stripped_values.append({"title": before[0], "value": value})
+                            changed = True
+                        # A title and a body with the same value raise two issues; the
+                        # first already removed both. The page stays once the value is
+                        # gone; a value that cannot be separated drops the page below.
+                        numeric, compact = _caption_values(options.get("delivery", False))
+                        still = any(m.group().lower() == value.lower()
+                                    for key in ("title", "body")
+                                    for m in numeric.finditer(compact(str(target.get(key) or ""))))
+                        if (target.get("title") or "").strip() and not still:
+                            continue
                 if roles.get(idx) == "hero" and not cover_reset and (title or "").strip():
                     fix_cover = message
                 elif roles.get(idx) == "spec_table" and remaining.get("specifications"):
                     fix_table.append(message)
                 elif idx is None or not 0 <= page_index < planned:
-                    raise original  # A whole-plan problem, or the cover again.
+                    whole_plan = True  # A whole-plan problem, or the cover again.
                 else:
                     bad.add(page_index)
                     reasons.setdefault(page_index, message)
+            if whole_plan:
+                # Values removed this round can clear it (two captions that differed only
+                # by an invented value read as duplicates); check again before giving up.
+                if not changed:
+                    raise original
+                continue
         if fix_cover:
             # The cover only shows the product under the customer's own title.
             cover_reset = True
@@ -982,13 +1082,15 @@ def compile_with_salvage(data, source, title, category, **options):
             else:
                 dropped.append({"title": "产品参数", "issue": "; ".join(fix_table)})
             remaining["specifications"] = kept
-        if not bad and not fix_cover and not fix_table:
+        if not bad and not fix_cover and not fix_table and not changed:
             break
         if not bad:
             continue
         dropped.extend({"title": pages[i].get("title"), "issue": reasons[i]} for i in sorted(bad))
         remaining["pages"] = [page for i, page in enumerate(pages) if i not in bad]
     remaining["dropped_pages"] = dropped
+    if stripped_values:
+        remaining["stripped_caption_values"] = stripped_values
     try:
         return compile_plan(remaining, source, title, category, **options)
     except ValueError:
@@ -1034,6 +1136,13 @@ def repair_captions(data, source):
             clauses = [c.strip() for c in re.split(r'[，,；;。！？!?\n]', original) if c.strip()]
             kept = [] if numeric_conflict else [c for c in clauses if not defects(c, proof)[0]]
             replacement = '，'.join(kept)
+            if numeric_conflict:
+                # Only the invented value leaves; the caption the AI wrote stays. Several
+                # pages swapped for the same source fact read as duplicates and failed the
+                # whole plan (2026-11-17).
+                trimmed = without_unsupported_values(original, source)
+                if trimmed != original and re.search(r'[\w一-鿿]', trimmed) and not defects(trimmed, proof)[0]:
+                    replacement = trimmed
             if key == 'title' and not replacement:
                 # Prefer this page's own complete, supported fact. Never use
                 # another page's benefit, invent a title or silently omit a page.
