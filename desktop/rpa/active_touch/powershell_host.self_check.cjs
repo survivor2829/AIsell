@@ -19,6 +19,13 @@ async function main() {
     answer = await host.run('"[" + [Environment]::GetEnvironmentVariable("XIAOXI_TITLE_NEAR_NAMES") + "]"', {}, 10_000);
     assert.equal(answer.stdout, "[]", "a value the previous request set never reaches the next one");
 
+    // CI 2026-11-17 (English Windows): a Chinese value arrived garbled through the console
+    // code page; a customer's name garbled that way would fail every title check. The transport
+    // is base64, so even a script switching the host's console to code page 437 changes nothing.
+    await host.run('[Console]::InputEncoding = [Text.Encoding]::GetEncoding(437); [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437); "switched"', {}, 10_000);
+    answer = await host.run('[Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION") + "|" + "清洁机器人炎枫"', { XIAOXI_EXPECTED_CONVERSATION: "清洁机器人森礼19101706971" }, 10_000);
+    assert.equal(answer.stdout, "清洁机器人森礼19101706971|清洁机器人炎枫", "Chinese names survive whatever the console code page");
+
     await host.run('$leftover = 7; "set"', {}, 10_000);
     answer = await host.run('"[" + $leftover + "]"', {}, 10_000);
     assert.equal(answer.stdout, "[]", "each request runs in its own runspace");

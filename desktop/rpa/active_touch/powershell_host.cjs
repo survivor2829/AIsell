@@ -26,7 +26,10 @@ while ($true) {
   if ($null -eq $line) { break }
   $response = $null; $ps = $null; $rs = $null
   try {
-    $request = $line | ConvertFrom-Json
+    # Requests and answers travel as base64 of UTF-8 JSON: plain ASCII, so neither the console
+    # code page (GBK on a Chinese Windows, 437 on CI) nor a script changing it can garble a
+    # customer's name (CI 2026-11-17: 甲 arrived as τö▓).
+    $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line.Trim())) | ConvertFrom-Json
     foreach ($key in $previousKeys) { [Environment]::SetEnvironmentVariable($key, $null) }
     $previousKeys = @()
     foreach ($property in $request.env.PSObject.Properties) {
@@ -51,7 +54,7 @@ while ($true) {
     if ($null -ne $ps) { $ps.Dispose() }
     if ($null -ne $rs) { $rs.Dispose() }
   }
-  [Console]::Out.WriteLine($response)
+  [Console]::Out.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$response)))
   [Console]::Out.Flush()
 }
 `;
@@ -94,7 +97,7 @@ function createPowerShellHost(options = {}) {
         buffer = buffer.slice(newline + 1);
         if (!line || !pending) continue;
         let message;
-        try { message = JSON.parse(line); } catch { continue; }
+        try { message = JSON.parse(Buffer.from(line, "base64").toString("utf8")); } catch { continue; }
         if (String(message.id) !== pending.id) continue;
         const settle = pending.settle;
         pending = null;
@@ -123,7 +126,7 @@ function createPowerShellHost(options = {}) {
         resolve({ timedOut: true });
       }, Math.max(1000, Number(timeoutMs) || 15000));
       pending = { id, settle: (value) => { clearTimeout(timer); resolve(value); } };
-      const request = JSON.stringify({ id, env, script: Buffer.from(String(script), "utf16le").toString("base64") });
+      const request = Buffer.from(JSON.stringify({ id, env, script: Buffer.from(String(script), "utf16le").toString("base64") }), "utf8").toString("base64");
       try { process_.stdin.write(`${request}\n`); } catch {
         clearTimeout(timer);
         pending = null;
