@@ -708,9 +708,10 @@ function clickSearchResultDryRun(
     minIdleMs: Number(windowContext.minIdleMs) || 0,
     ...(windowContext.captureSearchFailure === true ? { captureSearchFailure: true } : {}),
     searchQueryType: searchPlan.queryType,
-    searchIdentity: { query: searchQuery, expectedName: customerName },
-    ...(Array.isArray(state.title_near_names) ? { titleNearNames: state.title_near_names } : {})
+    searchIdentity: { query: searchQuery, expectedName: customerName }
   };
+  // Only the title check takes the near names (wechat_header_title.cjs), not the search.
+  const titleWindow = Array.isArray(state.title_near_names) ? { ...exactWindow, titleNearNames: state.title_near_names } : exactWindow;
   let inputResult = openResultDriver(searchQuery, exactWindow);
   const searchAttempts = [];
   const rememberSearch = (result, queryType, fallbackReason = '') => {
@@ -845,7 +846,7 @@ function clickSearchResultDryRun(
           pid: inputResult.pid,
           hWnd: inputResult.hWnd
         }
-      : nearVerified || conversationVerifier(customerName, exactWindow);
+      : nearVerified || conversationVerifier(customerName, titleWindow);
     conversationVerifyMs = Date.now() - verifyStartedAt;
   }
   const timings = {
