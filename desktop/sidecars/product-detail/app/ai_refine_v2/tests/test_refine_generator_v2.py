@@ -318,6 +318,46 @@ class TestGenerateV2Failure(unittest.TestCase):
         # cost: 屏 1 + 屏 3 = ¥1.40
         self.assertAlmostEqual(result.total_cost_rmb, 1.40, places=2)
 
+    # 2026-11-17: APIMart took up to 13.5 minutes per image for hours. A screen that was submitted
+    # and only polled past the limit used to cancel every screen not yet submitted.
+    def _unknown_on_screen_2(self, **unknown_fields):
+        from ai_refine_v2.pricing import RequestOutcomeUnknown
+        called = []
+        lock = threading.Lock()
+
+        def mock_call(prompt, *a, **kw):
+            screen = next(i for i in range(1, 7) if f"「屏{i}」" in prompt)
+            with lock:
+                called.append(screen)
+            if screen == 2:
+                raise RequestOutcomeUnknown("生图请求结果尚未确认", **unknown_fields)
+            return f"https://fake/{screen}.png"
+
+        with self.assertRaises(RequestOutcomeUnknown):
+            generate_v2(_v2_planning(n=6), api_key="test", api_call_fn=mock_call,
+                        max_retries_hero=0, max_retries_sp=0, concurrency=1)
+        return sorted(called)
+
+    def test_slow_submitted_screen_does_not_stop_the_others(self):
+        called = self._unknown_on_screen_2(stage="poll", poll_reason="timeout", provider_task_id="task_slow")
+        self.assertEqual(called, [1, 2, 3, 4, 5, 6], "every other screen is still generated")
+
+    def test_uncertain_purchase_is_not_treated_as_slow(self):
+        # Whether later screens are bought is decided by the cost journal (deterministic there:
+        # test_pricing_boundary.test_a_slow_screen_through_the_journal_...); with an instant mock
+        # the pool may start them before the cancel, so only the classification is checked here.
+        from ai_refine_v2.refine_generator import _halts_other_screens
+        from ai_refine_v2.pricing import RequestOutcomeUnknown
+        self.assertTrue(_halts_other_screens(RequestOutcomeUnknown("x", stage="submit")))
+        self.assertFalse(_halts_other_screens(RequestOutcomeUnknown("x", stage="poll", poll_reason="timeout", provider_task_id="t")))
+
+    def test_poll_timeout_unknown_is_marked_slow(self):
+        from ai_refine_v2.pricing import RequestOutcomeUnknown
+        self.assertTrue(RequestOutcomeUnknown("x", stage="poll", poll_reason="timeout", provider_task_id="t").slow_submitted_task)
+        self.assertFalse(RequestOutcomeUnknown("x", stage="poll", poll_reason="connection", provider_task_id="t").slow_submitted_task)
+        self.assertFalse(RequestOutcomeUnknown("x", stage="poll", poll_reason="timeout").slow_submitted_task)
+        self.assertFalse(RequestOutcomeUnknown("x").slow_submitted_task)
+
 
 # ──────────────────────────────────────────────────────────────────
 # E: Input validation

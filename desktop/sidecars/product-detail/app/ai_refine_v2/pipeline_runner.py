@@ -50,6 +50,9 @@ _DATA_ROOT = Path(
 ).resolve()
 _REPO_ROOT = _DATA_ROOT
 _OUTPUT_BASE = _DATA_ROOT / "static" / "ai_refine_v2"
+# Screens generated, polled on recovery and downloaded at the same time. 3 left a 12-screen
+# page four rounds long; the gateway saw no APIMart 429 in four days (643 images, 2026-11-13..17).
+IMAGE_CONCURRENCY = 5
 _MOCK_IMAGES_DIR = _RESOURCE_ROOT / "static" / "smoke_output_v2"  # 4/23 占位图来源
 _MOCK_PLANNING = _RESOURCE_ROOT / "smoke_output_v2" / "_planning.json"
 
@@ -890,24 +893,33 @@ def _download_generation_results(
     )
 
     download_errors: list[str] = []
-    for index, block in enumerate(blocks):
-        if progress_cb:
-            progress_cb(80 + int(index / max(len(blocks), 1) * 4),
-                        f"生图已完成，正在下载图片 {index + 1}/{len(blocks)}…")
-        raw_url = block["raw_url"]
-        if raw_url and not block["placeholder"]:
+
+    # Each screen (3-4 MB) was fetched one after another, about 20 s for a 12-screen page after
+    # the last image was ready. They are fetched together now; the record is still written by
+    # this thread only, after each screen, so a crash keeps every finished screen.
+    def fetch(block):
+        destination = task_dir / block["file"]
+        selected_route = block["download_route"] if _valid_local_image(destination) else _download_image(
+            block["raw_url"],
+            destination,
+            retries=2,
+            preferred_route=block["download_route"],
+        )
+        if not _valid_local_image(destination):
+            raise PaidResultRecoveryRequired(
+                f"下载后的图片无法解码: {block['block_id']}"
+            )
+        return selected_route
+
+    to_fetch = [block for block in blocks if block["raw_url"] and not block["placeholder"]]
+    fetched = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_CONCURRENCY) as pool:
+        futures = {pool.submit(fetch, block): block for block in to_fetch}
+        for future in concurrent.futures.as_completed(futures):
+            block = futures[future]
+            fetched += 1
             try:
-                destination = task_dir / block["file"]
-                selected_route = block["download_route"] if _valid_local_image(destination) else _download_image(
-                    raw_url,
-                    destination,
-                    retries=2,
-                    preferred_route=block["download_route"],
-                )
-                if not _valid_local_image(destination):
-                    raise PaidResultRecoveryRequired(
-                        f"下载后的图片无法解码: {block['block_id']}"
-                    )
+                selected_route = future.result()
                 block["download_route"] = selected_route or block["download_route"]
                 block["success"] = True
             except Exception as exc:
@@ -922,6 +934,13 @@ def _download_generation_results(
                 status="downloading",
                 schema_mode=schema_mode,
             )
+            # After the screen is recorded: a display update never loses a downloaded screen.
+            if progress_cb:
+                try:
+                    progress_cb(80 + int(fetched / max(len(to_fetch), 1) * 4),
+                                f"生图已完成，正在下载图片 {fetched}/{len(to_fetch)}…")
+                except Exception:
+                    pass
     if download_errors:
         message = (
             f"本地下载 {len(download_errors)}/{len(blocks)} 张付费结果失败: "
@@ -1012,7 +1031,7 @@ def _run_real_generator(planning: dict, product_image_url: str,
         product_cutout_url=product_image_url,
         api_key=gpt_image_key,
         api_call_fn=wrapped_api_call,
-        concurrency=3,
+        concurrency=IMAGE_CONCURRENCY,
         max_retries_hero=1,
         max_retries_sp=1,
         cost_per_call_rmb=quote["image_unit_cny"],
@@ -1148,7 +1167,7 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
         product_cutout_url=product_image_url,
         api_key=gpt_image_key,
         api_call_fn=wrapped_api_call,
-        concurrency=3,
+        concurrency=IMAGE_CONCURRENCY,
         max_retries_hero=1,
         max_retries_sp=1,
         cost_per_call_rmb=quote["image_unit_cny"],
@@ -1918,6 +1937,41 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             e,
             log_prefix="pipeline_v2",
         )
+        if gpt_image_key and _only_slow_screens_unknown(task_dir, e):
+            _continue_after_slow_screens(task_id, task_dir, gpt_image_key)
+
+
+def _only_slow_screens_unknown(task_dir: Path, exc: Exception) -> bool:
+    """True when every uncertain image was submitted and only polled past the limit."""
+    if not getattr(exc, "slow_submitted_task", False):
+        return False
+    from ai_refine_v2.pricing import CostJournal
+    try:
+        operations = CostJournal(task_dir).load()["operations"]
+    except Exception:
+        return False
+    unknown = [op for name, op in operations.items() if name.startswith("image:") and op.get("status") in {"outcome_unknown", "submitting"}]
+    return bool(unknown) and all(op.get("slow_poll") and op.get("provider_task_id") for op in unknown)
+
+
+def _continue_after_slow_screens(task_id: str, task_dir: Path, gpt_image_key: str) -> None:
+    """The run ended because a submitted image was still generating (2026-11-17: APIMart took up
+    to 13.5 minutes per image for hours). Go on by itself, as the customer's 恢复 would: download
+    the finished screens, poll the slow ones again (same task ids, nothing bought twice), generate
+    the screens a slow first screen held back, and assemble the page."""
+    with _TASKS_LOCK:
+        if task_id in _RECOVERY_TASK_IDS:
+            return
+        _RECOVERY_TASK_IDS.add(task_id)
+    try:
+        _set(task_id, status="running_recovery", error="",
+             progress_msg="生图服务较忙，有图片还在生成，正在继续等待；不会重复扣费")
+        _recover_task(task_id, gpt_image_key, continue_missing=True)
+    except Exception as exc:
+        _record_worker_exception(task_id, task_dir, exc, log_prefix="pipeline_slow_continue")
+    finally:
+        with _TASKS_LOCK:
+            _RECOVERY_TASK_IDS.discard(task_id)
 
 
 def _valid_local_image(path: Path) -> bool:
@@ -2144,7 +2198,7 @@ def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = 
         except Exception as exc:
             return block, "", exc
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_CONCURRENCY) as pool:
         futures = [pool.submit(poll, block) for block in poll_candidates]
         for future in concurrent.futures.as_completed(futures):
             block, raw_url, error = future.result()
@@ -2182,7 +2236,7 @@ def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = 
 
     candidates = [block for block in blocks if str(block.get("raw_url") or "").strip()]
     download_errors: list[str] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=IMAGE_CONCURRENCY) as pool:
         futures = [pool.submit(download, block) for block in candidates]
         for future in concurrent.futures.as_completed(futures):
             block, route, error = future.result()

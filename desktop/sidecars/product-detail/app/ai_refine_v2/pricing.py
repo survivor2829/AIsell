@@ -45,9 +45,18 @@ class RequestOutcomeUnknown(RuntimeError):
     do_not_retry = True
     outcome_unknown = True
 
-    def __init__(self, message, *, not_submitted=False):
+    def __init__(self, message, *, not_submitted=False, stage="", poll_reason="", provider_task_id=""):
         super().__init__(message)
         self.not_submitted = not_submitted
+        # Where the uncertainty arose: a submitted task whose poll ran out of time is only slow
+        # (its task id is kept and recovery polls it again); anything else may be a lost purchase.
+        self.stage = stage
+        self.poll_reason = poll_reason
+        self.provider_task_id = provider_task_id
+
+    @property
+    def slow_submitted_task(self):
+        return self.stage == "poll" and self.poll_reason == "timeout" and bool(self.provider_task_id)
 
 
 # The gateway keeps receipts far longer than this; past it a missing receipt is not trusted as "never bought".
@@ -375,7 +384,10 @@ class CostJournal:
                            and all(op["status"] == "failed" for _, op in existing))
             if existing and not (retry or another_try):
                 raise RequestOutcomeUnknown("该屏已有付费记录，只能恢复原结果，不能重复提交。")
-            if any(op["status"] == "outcome_unknown" for op in previous):
+            # An uncertain purchase stops new ones. A screen submitted and only polled past the
+            # limit (slow_poll) is not uncertain: its task id is kept and polled again, so the
+            # other screens go on (2026-11-17: one slow image ended whole pages).
+            if any(op["status"] == "outcome_unknown" and not op.get("slow_poll") for op in previous):
                 raise RequestOutcomeUnknown("已有生图结果不明，已停止后续付费请求。", not_submitted=True)
             # A plainly failed attempt does not use up one of the planned screens;
             # the per-task cost cap still bounds every attempt.
@@ -401,12 +413,17 @@ class CostJournal:
             not_submitted = isinstance(exc, APIMartNotSubmitted) and not any(receipt.get(key) for key in ("provider_task_id", "raw_url"))
             known_failure = not_submitted or isinstance(exc, APIMartTaskFailed)
             diagnostic = _image_failure_diagnostic(exc)
+            unknown = RequestOutcomeUnknown(
+                f"生图请求结果尚未确认（{'/'.join(str(value) for value in diagnostic.values())}），已保留原回执与预留费用，禁止重提。",
+                stage=str(getattr(exc, "stage", "") or ""),
+                poll_reason=str(getattr(exc, "poll_reason", "") or ""),
+                provider_task_id=str(receipt.get("provider_task_id") or ""))
             self.finish(operation, "failed" if known_failure else "outcome_unknown",
-                        not_submitted=not_submitted, diagnostic=diagnostic, **receipt)
+                        not_submitted=not_submitted, diagnostic=diagnostic,
+                        **({"slow_poll": True} if not known_failure and unknown.slow_submitted_task else {}), **receipt)
             if known_failure:
                 raise
-            detail = "/".join(str(value) for value in diagnostic.values())
-            raise RequestOutcomeUnknown(f"生图请求结果尚未确认（{detail}），已保留原回执与预留费用，禁止重提。") from None
+            raise unknown from None
         receipt.setdefault("raw_url", result)
         self.finish(operation, "completed", **receipt)
         return result

@@ -534,6 +534,7 @@ def generate(
             for b in sp_blocks
         }
         first_unknown: Exception | None = None
+        halted = False
         for fut in concurrent.futures.as_completed(futures):
             b = futures[fut]
             if fut.cancelled():
@@ -542,17 +543,11 @@ def generate(
                 br, cost = fut.result()
             except Exception as e:
                 if getattr(e, "outcome_unknown", False):
-                    if first_unknown is None:
+                    if first_unknown is None or not getattr(e, "slow_submitted_task", False):
                         first_unknown = e
-                        for pending, pending_block in futures.items():
-                            if pending is not fut:
-                                if pending.cancel():
-                                    _emit_lifecycle_best_effort(
-                                        lifecycle_callback,
-                                        pending_block["block_id"], {
-                                        "event": "cancelled",
-                                        "provider_task_id": "",
-                                    })
+                    if not halted and _halts_other_screens(e):
+                        halted = True
+                        _cancel_pending_screens(futures, fut, lifecycle_callback)
                     continue
                 # 内部已捕获, 防御: pool 本身异常
                 br = BlockResult(
@@ -992,6 +987,22 @@ def _generate_one_block_v2(
     )
 
 
+def _halts_other_screens(exc) -> bool:
+    """An uncertain purchase stops the screens not yet started; a screen that was submitted and
+    only polled past the limit does not (2026-11-17: APIMart took up to 13.5 minutes per image
+    for hours and one slow screen cancelled every screen not yet submitted)."""
+    return not getattr(exc, "slow_submitted_task", False)
+
+
+def _cancel_pending_screens(futures, done, lifecycle_callback) -> None:
+    for pending, pending_block in futures.items():
+        if pending is not done and pending.cancel():
+            _emit_lifecycle_best_effort(lifecycle_callback, pending_block["block_id"], {
+                "event": "cancelled",
+                "provider_task_id": "",
+            })
+
+
 def generate_v2(
     planning_v2: dict,
     product_cutout_url: Optional[str] = None,
@@ -1155,6 +1166,7 @@ def generate_v2(
             for b in sp_blocks
         }
         first_unknown: Exception | None = None
+        halted = False
         for fut in concurrent.futures.as_completed(futures):
             b = futures[fut]
             if fut.cancelled():
@@ -1163,17 +1175,11 @@ def generate_v2(
                 br, cost = fut.result()
             except Exception as e:
                 if getattr(e, "outcome_unknown", False):
-                    if first_unknown is None:
+                    if first_unknown is None or not getattr(e, "slow_submitted_task", False):
                         first_unknown = e
-                        for pending, pending_block in futures.items():
-                            if pending is not fut:
-                                if pending.cancel():
-                                    _emit_lifecycle_best_effort(
-                                        lifecycle_callback,
-                                        pending_block["block_id"], {
-                                        "event": "cancelled",
-                                        "provider_task_id": "",
-                                    })
+                    if not halted and _halts_other_screens(e):
+                        halted = True
+                        _cancel_pending_screens(futures, fut, lifecycle_callback)
                     continue
                 # ThreadPool 本身异常 (内部已捕获, 这里防御)
                 br = BlockResult(
