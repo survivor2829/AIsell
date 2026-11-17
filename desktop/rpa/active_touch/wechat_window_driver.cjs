@@ -51,12 +51,17 @@ public static class Win32XiaoxiParentGuard {
   private const uint WAIT_OBJECT_0 = 0x00000000u;
   private const uint INFINITE = 0xffffffffu;
   private static IntPtr parentHandle = IntPtr.Zero;
+  private static int guardedParent = 0;
+  // The long-lived observation host (powershell_host.cjs) runs many scripts in one process: a
+  // later script finds the guard already watching the same app, which counts as started.
+  public static bool Watching(int parentProcessId) { return parentHandle != IntPtr.Zero && guardedParent == parentProcessId; }
   [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
   [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   public static bool Start(int parentProcessId) {
     if (parentProcessId <= 0 || parentHandle != IntPtr.Zero) return false;
     parentHandle = OpenProcess(SYNCHRONIZE, false, parentProcessId);
     if (parentHandle == IntPtr.Zero) return false;
+    guardedParent = parentProcessId;
     Thread watcher = new Thread(() => {
       uint result = WaitForSingleObject(parentHandle, INFINITE);
       if (result == WAIT_OBJECT_0) Environment.Exit(197);
@@ -71,7 +76,7 @@ public static class Win32XiaoxiParentGuard {
 "@
 [int]$xiaoxiParentPid = 0
 if (-not [int]::TryParse([string]$env:XIAOXI_PARENT_PID, [ref]$xiaoxiParentPid) -or
-  -not [Win32XiaoxiParentGuard]::Start($xiaoxiParentPid)) { exit 197 }
+  -not ([Win32XiaoxiParentGuard]::Watching($xiaoxiParentPid) -or [Win32XiaoxiParentGuard]::Start($xiaoxiParentPid))) { exit 197 }
 try { [void][Win32XiaoxiDpiContext]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
 `;
 
@@ -2439,6 +2444,34 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     });
   }
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
+  // Read-only observations may run in the long-lived host (powershell_host.cjs): about 0.9 s
+  // less per call. Whatever goes wrong there before the script ran falls back to a new process.
+  if (options.hosted === true && options.diagnostics !== true && options.sta !== true && !options.spawnProcess) {
+    const host = require("./powershell_host.cjs").powerShellHost();
+    if (host) {
+      const hostedEnv = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("XIAOXI_"))),
+        ...evidenceEnvironment(),
+        XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable || "",
+        ...env,
+        XIAOXI_PARENT_PID: String(process.pid)
+      };
+      const hostedTimeout = options.timeout === false ? 15000 : (Number(options.timeout) > 0 ? Number(options.timeout) : 15000);
+      return host.run(`${DPI_AWARE_POWERSHELL}\n${FAILURE_EVIDENCE_SCRIPT}\n${script}`, hostedEnv, hostedTimeout).then((answer) => {
+        if (answer?.hostUnavailable) return runPowerShellAsync(script, env, { ...options, hosted: false, ensure: false });
+        if (answer?.timedOut) return { ok: false, reason: "powershell_timeout" };
+        const output = String(answer?.stdout || "").trim();
+        if (!output) return { ok: false, reason: ensureResult?.reason || "powershell_output_invalid" };
+        try {
+          const parsed = JSON.parse(output);
+          if (!parsed.ok && !parsed.reason) return { ...parsed, reason: ensureResult?.reason || "powershell_output_invalid" };
+          return parsed;
+        } catch {
+          return ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false, reason: "powershell_output_invalid" };
+        }
+      });
+    }
+  }
   const scriptInput = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${FAILURE_EVIDENCE_SCRIPT}\n${script}`, "utf16le").toString("base64");
   const timeout = options.timeout === false ? null : (Number(options.timeout) > 0 ? Number(options.timeout) : 15000);
   const terminationGraceMs = Number(options.terminationGraceMs) > 0

@@ -704,7 +704,7 @@ function observeWechatConversation(expectedTitle, context = {}) {
 
 function observeWechatConversationAsync(expectedTitle, context = {}) {
   if (!String(expectedTitle ?? "").trim()) return Promise.resolve({ ok: false, reason: "conversation_observation_context_missing" });
-  return runPowerShellAsync(OBSERVE_CONVERSATION_SCRIPT, observationEnvironment(expectedTitle, context), { ensure: false });
+  return runPowerShellAsync(OBSERVE_CONVERSATION_SCRIPT, observationEnvironment(expectedTitle, context), { ensure: false, hosted: true });
 }
 
 const SEND_RESULTS = new Set(["not_attempted", "sent_verified", "outcome_unknown"]);
@@ -843,7 +843,7 @@ function detectActiveWechatAccountAsync(context = {}) {
     XIAOXI_EXPECTED_PID: String(context.pid),
     XIAOXI_EXPECTED_ACCOUNT_ID: String(context.expectedAccountId ?? ""),
     XIAOXI_WECHAT_ROOT: String(context.wechatRoot ?? "")
-  }, { ensure: false });
+  }, { ensure: false, hosted: true });
 }
 
 // For callers without a verified window (auto reply, Moments): any running
@@ -1310,7 +1310,7 @@ function verifyWechatMessageBubbleAsync(message, context = {}) {
     XIAOXI_VERIFY_PHASE: phase,
     XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null),
     XIAOXI_SKIP_DRAFT_READ: context.skipDraftRead === true ? "1" : ""
-  }, { ensure: false });
+  }, { ensure: false, hosted: true });
 }
 
 module.exports = {
