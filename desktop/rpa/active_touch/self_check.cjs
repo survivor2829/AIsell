@@ -898,10 +898,33 @@ try {
     { ...validContacts[1], id: "missing-wechat", wxid: "missing-wechat", name: "空微信号", remark: "空微信号", wechatId: "" },
     { ...validContacts[2], id: "disabled", wxid: "disabled", name: "已停用", remark: "已停用", wechatId: "disabled", allowed: false }
   ]);
-  assert.equal(classified.eligible.length, 52, "duplicate display names remain safe when each contact has a unique exact WeChat ID");
+  // A contact without a WeChat ID is searched by name (title must match), so it is kept when its
+  // name is unique (2026-11-17: 15–30% of real synced lists were left out) and left out when not.
+  assert.equal(classified.eligible.length, 53, "duplicate display names remain safe when each contact has a unique exact WeChat ID");
+  assert.equal(classified.eligible.some((row) => row.id === "missing-wechat"), true, "a unique name without a WeChat ID is reached by name");
   assert.equal(classified.excluded.filter((row) => row.reason_code === "contact_name_not_unique").length, 0);
-  assert.equal(classified.excluded.some((row) => row.reason_code === "wechat_id_missing"), true);
-  assert.match(classified.excluded.find((row) => row.reason_code === "wechat_id_missing").reason, /未公开微信号/);
+  assert.equal(classified.excluded.some((row) => row.reason_code === "wechat_id_missing"), false);
+  const noIdTwins = classifyContacts([
+    validContacts[0],
+    { ...validContacts[1], id: "no-id-a", wxid: "no-id-a", name: "同名无号", remark: "同名无号", wechatId: "" },
+    { ...validContacts[2], id: "no-id-b", wxid: "no-id-b", name: "同名无号", remark: "同名无号", wechatId: "" }
+  ]);
+  assert.deepEqual(noIdTwins.eligible.map((row) => row.id), [validContacts[0].id]);
+  assert.deepEqual(noIdTwins.excluded.map((row) => row.reason_code), ["contact_name_not_unique", "contact_name_not_unique"],
+    "a name shared by two contacts without a WeChat ID cannot be told apart by a name search");
+  // Review 2026-11-17: a blocked friend still appears in WeChat's search, and the title check
+  // ignores symbols, emoji, spaces and case, so those count as the same name.
+  const noIdLookalikes = classifyContacts([
+    validContacts[0],
+    { ...validContacts[1], id: "no-id-c", wxid: "no-id-c", name: "张三", remark: "张三", wechatId: "" },
+    { ...validContacts[2], id: "blocked", wxid: "blocked", name: "张三", remark: "张三", wechatId: "blocked-id", allowed: false },
+    { ...validContacts[3], id: "no-id-d", wxid: "no-id-d", name: "李四", remark: "李四", wechatId: "" },
+    { ...validContacts[4], id: "emoji", wxid: "emoji", name: "李四🌸", remark: "李四🌸", wechatId: "emoji-id" },
+    { ...validContacts[5], id: "no-id-e", wxid: "no-id-e", name: "王五", remark: "王五", wechatId: "" }
+  ]);
+  assert.deepEqual(noIdLookalikes.excluded.filter((row) => row.reason_code === "contact_name_not_unique").map((row) => row.contact.id).sort(),
+    ["no-id-c", "no-id-d"], "a blocked friend or a name that differs only by an emoji makes a name search ambiguous");
+  assert.equal(noIdLookalikes.eligible.some((row) => row.id === "no-id-e"), true);
   assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
   const duplicateWechatIds = classifyContacts([
     validContacts[0],
@@ -3330,7 +3353,8 @@ $r | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 10_000 });
   assert.match(messageDraftSource, /Replace\(\[string\]\[char\]13, \[string\]\[char\]10\)/);
   assert.match(messageDraftSource, /TrimEnd\(\[char\[\]\]@\(\[char\]0xFFFC\)\)/);
   assert.match(messageDraftSource, /\$normalizedCopiedDraft -ceq \$normalizedMessage/);
-  assert.match(messageDraftSource, /\$inputPoints = @\([\s\S]*yRatio = 0\.84[\s\S]*yRatio = 0\.88[\s\S]*yRatio = 0\.92/);
+  assert.match(messageDraftSource, /\$inputPoints = @\(Get-DraftInputPoints \$draftHeight \$draftDpi\)/);
+  assert.match(messageDraftSource, /draft_hit = \$draftHit/, "a refused input point reports what stood there");
   assert.match(messageDraftSource, /for \(\$attempt = 1; \$attempt -le \$inputPoints\.Count; \$attempt\+\+\)[\s\S]*SendWait\("\^a"\)[\s\S]*SendWait\("\^v"\)[\s\S]*if \(\$draftVerified\) \{[\s\S]*break/);
   assert.match(messageDraftSource, /draftPoint = \$usedPoint/);
   assert.match(messageDraftSource, /wechat_focus_lost_after_paste/);
@@ -3620,6 +3644,30 @@ if ($point.y -ne 625 -or $point.source -cne 'fallback') { throw 'composer fallba
 @{ ok = $true; sharedPointVerified = $true } | ConvertTo-Json -Compress
 `, {}, { ensure: false, timeout: 5_000 });
   assert.deepEqual(composerPointResult, { ok: true, sharedPointVerified: true });
+
+  // Field 2026-11-17 (200% laptop, WeChat logged in again, 1.3.23): the input box began at 87% of
+  // the window, the old first point (84%) clicked the chat history and about 500 contacts failed as
+  // message_input_target_not_owned. Run the script's own point rule on the field measurements: the
+  // first two points must lie in the text area (between the box top and the toolbar, 55 logical
+  // pixels above the bottom) of the default box and of the taller box the same laptop had before.
+  {
+    const draftScript = fs.readFileSync(require.resolve("./wechat_window_driver.cjs"), "utf8").split("const MESSAGE_DRAFT_SCRIPT = `")[1];
+    const pointRule = draftScript.match(/function Get-DraftInputPoints[\s\S]*?\r?\n\}\r?\n/u)[0];
+    const pointResult = await runPowerShellAsync(`
+${pointRule}
+@{ field = @(Get-DraftInputPoints 1520 192 | ForEach-Object { $_.yRatio }); small = @(Get-DraftInputPoints 728 96 | ForEach-Object { $_.yRatio })
+  missing = @(Get-DraftInputPoints 0 0 | ForEach-Object { $_.yRatio }) } | ConvertTo-Json -Compress
+`, {}, { ensure: false, timeout: 5_000 });
+    const inside = (ratio, heightLogical, boxTopLogical) => ratio * heightLogical > boxTopLogical && ratio * heightLogical < heightLogical - 55;
+    for (const ratio of pointResult.field.slice(0, 2)) {
+      assert.ok(inside(ratio, 760, 660), `field default box (top 660 of 760) holds ${ratio}`);
+      assert.ok(inside(ratio, 760, 592), `field tall box (top 592 of 760) holds ${ratio}`);
+    }
+    assert.equal(inside(0.84, 760, 660), false, "the old first point really was outside the field box");
+    for (const ratio of pointResult.small.slice(0, 2)) assert.ok(inside(ratio, 728, 728 - 100), `a 768-high laptop box holds ${ratio}`);
+    assert.equal(pointResult.field.at(-1), 0.84, "84% stays the last resort");
+    assert.deepEqual(pointResult.missing, [0.9, 0.88, 0.84], "no window height: fixed points inside the default box");
+  }
 
   // Field 2026-11-14: a custom WeChat ID account folder ("<username>_<4 hex>", no "wxid_") was never
   // found by the send's account check, so every send would stop with wechat_account_directory_missing.

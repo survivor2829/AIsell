@@ -2,7 +2,7 @@ const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs"
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
-const { WECHAT_HEADER_TITLE_POWERSHELL } = require("./wechat_header_title.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -2987,7 +2987,8 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : "",
+    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   }, { ensure: false, timeout: 30000 });
 }
 
@@ -2997,7 +2998,8 @@ function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : "",
+    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   }, { ensure: false, timeout: 30000 });
 }
 
@@ -3026,10 +3028,16 @@ public static class Win32WechatMessageDraft {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int maxCount);
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
     if (Environment.GetEnvironmentVariable("XIAOXI_UNATTENDED_INPUT") == "1") return 1u; return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+  }
+  public static string ClassOf(IntPtr hWnd) {
+    StringBuilder text = new StringBuilder(128);
+    return hWnd == IntPtr.Zero || GetClassName(hWnd, text, text.Capacity) <= 0 ? "" : text.ToString();
   }
 }
 "@
@@ -3181,11 +3189,35 @@ $draftVerified = $false
 $draftCheck = "clipboard_roundtrip"
 $attemptUsed = 0
 $usedPoint = $null
-$inputPoints = @(
-  @{ xRatio = 0.65; yRatio = 0.84 },
-  @{ xRatio = 0.65; yRatio = 0.88 },
-  @{ xRatio = 0.65; yRatio = 0.92 }
-)
+# The input box sits on WeChat's bottom toolbar and its height is the user's (WeChat keeps it,
+# and resets it after a new login). Fixed ratios started at 84%: on a 200% laptop whose WeChat
+# had just logged in again (1.3.23, 2026-11-17) the box began at 87%, the first click landed in
+# the chat history and every contact of the night (about 500) failed as target_not_owned.
+# Measure from the bottom instead (logical pixels, this window's DPI): 76 and 86 above the
+# bottom are inside the text area of the default box (100 high, toolbar in its lowest 55) and
+# of any taller one; 84% stays last for an unusually tall box on a short window.
+function Get-DraftInputPoints([int]$windowHeight, [int]$dpi) {
+  if ($dpi -lt 72) { $dpi = 96 }
+  $points = @()
+  foreach ($bottomOffset in @(76, 86)) {
+    $offsetRatio = $(if ($windowHeight -gt 0) { 1 - ($bottomOffset * $dpi / 96.0) / $windowHeight } else { 0 })
+    if ($offsetRatio -ge 0.6 -and $offsetRatio -le 0.95) { $points += @{ xRatio = 0.65; yRatio = [Math]::Round($offsetRatio, 4) } }
+  }
+  if ($points.Count -eq 0) { $points = @(@{ xRatio = 0.65; yRatio = 0.9 }, @{ xRatio = 0.65; yRatio = 0.88 }) }
+  return @($points + @(@{ xRatio = 0.65; yRatio = 0.84 }))
+}
+$draftDpi = [int][Win32WechatMessageDraft]::GetDpiForWindow($matched.hWnd)
+if ($draftDpi -lt 72) { $draftDpi = 96 }
+$draftRect = New-Object Win32WechatMessageDraft+RECT
+$draftHeight = $(if ([Win32WechatMessageDraft]::GetWindowRect($matched.hWnd, [ref]$draftRect)) { $draftRect.Bottom - $draftRect.Top } else { 0 })
+$inputPoints = @(Get-DraftInputPoints $draftHeight $draftDpi)
+# What stood at a refused point, for the field report (class names only, no text).
+$draftHit = $null
+function Get-DraftHitEvidence([IntPtr]$hitWindow, [IntPtr]$rootWindow, [int]$hitProcessId, [string]$check) {
+  return @{ check = $check; hit_class = [Win32WechatMessageDraft]::ClassOf($hitWindow); root_class = [Win32WechatMessageDraft]::ClassOf($rootWindow)
+    same_process = ($hitProcessId -eq [int]$matched.pid); root_is_main = ($rootWindow -eq $matched.hWnd)
+    foreground_is_main = ([Win32WechatMessageDraft]::GetForegroundWindow() -eq $matched.hWnd); attempt = $attempt; dpi = $draftDpi }
+}
 for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
   $attemptUsed = $attempt
   Set-DraftInputPhase "pre_input"
@@ -3214,6 +3246,7 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
   if ($hitRoot -ne $matched.hWnd -or [int]$hitPid -ne [int]$matched.pid -or
     [Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
     $draftCheck = "message_input_target_not_owned"
+    $draftHit = Get-DraftHitEvidence $hit $hitRoot ([int]$hitPid) "target"
     if ($exactWindowBinding) { break }
     continue
   }
@@ -3227,6 +3260,7 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
   if ($cursorRoot -ne $matched.hWnd -or [int]$cursorPid -ne [int]$matched.pid -or
       [Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
     $draftCheck = "message_input_target_not_owned"
+    $draftHit = Get-DraftHitEvidence $cursorHit $cursorRoot ([int]$cursorPid) "cursor"
     if ($exactWindowBinding) { break }
     continue
   }
@@ -3303,7 +3337,9 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
   }
 }
 Restore-DraftClipboardIfOwned
-@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; draftVerified = $draftVerified; draftCheck = $draftCheck; draftAttempts = $attemptUsed; draftPoint = $usedPoint } | ConvertTo-Json -Compress
+@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; draftVerified = $draftVerified; draftCheck = $draftCheck; draftAttempts = $attemptUsed; draftPoint = $usedPoint
+  safety_diagnostics = $(if ($draftVerified) { $null } else { @{ draft_check = $draftCheck; draft_attempts = $attemptUsed; draft_dpi = $draftDpi; draft_window_height = $draftHeight
+    draft_points = @($inputPoints | ForEach-Object { $_.yRatio }); draft_hit = $draftHit } }) } | ConvertTo-Json -Compress -Depth 5
 `;
 
 function inputWechatMessageDraft(message, context = {}) {

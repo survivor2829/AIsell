@@ -144,4 +144,55 @@ $out = foreach ($case in $cases) {
   assert.equal(field.diff, 9, "the evidence still records where the plain reading differs");
   assert.equal(result.results.find((item) => item.name === "plain exact").lookalike, false);
   console.log("header title look-alike comparison passed");
+
+  // 2026-11-17 (user decision): one Chinese character misread (1.3.16 field: 济南展迪 read as
+  // 济南屣迪, 407 skips on one computer) confirms the chat when the name has 4+ letters, the reading
+  // is full length, and no other contact of the address book is within one character of it.
+  // Without the touch-supplied list (auto-reply) the rule is off.
+  const nearCases = [
+    ["field", "济南展迪", "济南屣迪", true, [], true],
+    ["not given: off", "济南展迪", "济南屣迪", true, null, false],
+    ["another contact one character away", "济南展迪", "济南屣迪", true, ["济南履迪"], false],
+    ["another contact two characters away", "济南展迪", "济南屣迪", true, ["济南展通"], true],
+    ["several near names, one is a rival", "济南展迪", "济南屣迪", true, ["济南展通", "济南屣迪", "青岛展迪"], false],
+    ["several near names, none a rival", "济南展迪", "济南屣迪", true, ["济南展通", "青岛展迪"], true],
+    ["a dash in the name: off", "济南-展迪", "济南-屣迪", true, [], false],
+    ["same name elsewhere", "济南展迪", "济南屣迪", true, ["济南展迪"], false],
+    ["three letters", "王总经", "王总红", true, [], false],
+    ["two characters wrong", "济南展迪", "济北屣迪", true, [], false],
+    ["a digit wrong", "示例维护13805", "示例维护13806", true, [], false],
+    ["Chinese read as a letter", "济南展迪", "济南a迪", true, [], false],
+    ["cut title", "济南展迪物业公司", "济南屣迪…", true, [], false],
+    ["strict caller", "济南展迪", "济南屣迪", false, [], false]
+  ];
+  const nearResult = runPowerShell(`
+$cases = [Environment]::GetEnvironmentVariable("T_CASES") | ConvertFrom-Json
+$out = foreach ($case in $cases) {
+  [Environment]::SetEnvironmentVariable("XIAOXI_TITLE_NEAR_NAMES", $(if ($null -eq $case[4]) { $null } else { ConvertTo-Json -Compress -InputObject @($case[4]) }))
+  $expectedTitle = [string]$case[1]
+  $allowCutTitle = [bool]$case[3]
+  $expected=[Text.RegularExpressions.Regex]::Replace($expectedTitle.Normalize([Text.NormalizationForm]::FormKC),'\\s+','')
+  ${header.slice(start, end)}
+  $lines = @([pscustomobject]@{ text = [string]$case[2]; x = 0; y = 0; bottom = 10 })
+  @{ name = [string]$case[0]; match = [bool](& $matches $lines); near = [bool]$script:headerTitleEvidence.near_cjk }
+}
+@{ ok = $true; results = @($out) } | ConvertTo-Json -Compress -Depth 4`, { T_CASES: JSON.stringify(nearCases) }, { ensure: false, timeout: 60_000 });
+  assert.equal(nearResult.ok, true, JSON.stringify(nearResult).slice(0, 300));
+  for (const [label, , , , , expected] of nearCases) {
+    const row = nearResult.results.find((item) => item.name === label);
+    assert.equal(row?.match, expected, label);
+  }
+  assert.equal(nearResult.results.find((item) => item.name === "field").near, true, "a near-character pass is marked in the evidence");
+
+  const { titleNearNames } = require("./wechat_header_title.cjs");
+  const book = [
+    { id: "me", name: "济南展迪", remark: "济南展迪", nickname: "展迪" },
+    { id: "a", name: "济南展通", remark: "济南展通", nickname: "" },
+    { id: "b", name: "济南履迪", remark: "", nickname: "济南履迪" },
+    { id: "c", name: "青岛海尔服务", remark: "", nickname: "" },
+    { id: "d", name: "济南迪", remark: "", nickname: "" }
+  ];
+  assert.deepEqual(titleNearNames(book, book[0]).sort(), ["济南展通", "济南履迪"].sort(), "same length, at most two characters apart, not the customer");
+  assert.deepEqual(titleNearNames(book, { id: "x", name: "王总" }), [], "a short name gets no near rule");
+  console.log("header title near-character comparison passed");
 }

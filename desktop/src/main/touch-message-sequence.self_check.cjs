@@ -584,10 +584,63 @@ $dialogAccepted = Wait-PasteAccepted 1000
   const boundedRecoveryState = JSON.parse(fs.readFileSync(path.join(boundedRecoveryDir, "touch_task.json"), "utf8"));
   assert.equal(boundedRecoveryState.results[0].status, "pre_send_skipped");
   assert.equal(boundedRecoveryWorkflow.describeSkippedWorkflowTask(boundedRecoveryRecord).skipped_breakdown.pre_send, 1);
+  const boundedCallsBeforeRound = calls.length;
   result = await boundedRecoveryWorkflow.runWorkflowStep(boundedRecoveryRecord, context);
-  assert.equal(result.status, "completed", "the skipped contact must not block later contacts");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(boundedRecoveryDir, "touch_task.json"), "utf8")).results[1].status, "sent_verified",
+    "the skipped contact must not block later contacts");
+  // Field 2026-11-17: about 500 contacts of one night were skipped before anything was sent. A
+  // pre-send skip (nothing of the contact went out) gets the end-of-list round too.
+  assert.equal(result.result?.autoRetryQueued, 1, "the pre-send skip is queued again at the end of the list");
+  for (let step = 0; step < 6 && result.status !== "completed"; step++) { clock.setTime(clock.getTime() + 10_000); result = await boundedRecoveryWorkflow.runWorkflowStep(boundedRecoveryRecord, context); }
+  assert.equal(result.status, "completed");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(boundedRecoveryDir, "touch_task.json"), "utf8")).results[0].status, "sent_verified",
+    "the retried contact goes out once the cause is gone");
+  assert.equal(calls.length, boundedCallsBeforeRound + 2, "each contact is sent exactly once");
+
+  // The retry round with the cause still there: after 5 retried contacts fail the same way in a
+  // row, the rest of the round is closed instead of hours of recovery; nothing is ever sent twice
+  // and no second field report is made for a contact already reported.
+  {
+    const roundContacts = Array.from({ length: 8 }, (_, index) => ({ ...contact, id: `round-${index}`, wxid: `round-${index}`,
+      wechatId: `round-id-${index}`, name: `轮次客户${index}`, remark: `轮次客户${index}`, nickname: `轮次${index}` }));
+    const roundConfig = { ...config, readContacts: () => [...config.readContacts(), ...roundContacts] };
+    let roundFailing = true;
+    let roundSends = 0;
+    const roundWorkflow = createTouchWorkflow({ ...roundConfig, execute: async (...args) => {
+      if (roundFailing) return { ok: false, send_attempted: false, blocked_reason: "message_input_failed_message_input_target_not_owned_attempts_2" };
+      roundSends += 1;
+      return config.execute(...args);
+    } });
+    const roundPayload = roundWorkflow.prepareWorkflowTask({ script: "末尾再试上限测试", contactIds: roundContacts.map((row) => row.id) });
+    const roundRecord = { id: crypto.randomUUID(), payload: roundPayload, progress: { done: 0 }, status: "running" };
+    const roundDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(roundRecord.id).digest("hex"));
+    const roundTask = () => JSON.parse(fs.readFileSync(path.join(roundDir, "touch_task.json"), "utf8"));
+    // Contact 0 goes out first, so the early-failure pause does not apply (mid-run failure).
+    roundFailing = false;
+    result = await roundWorkflow.runWorkflowStep(roundRecord, context);
+    roundFailing = true;
+    const reports = [];
+    const stopReports = require("./diagnostics.cjs").diagnostics().subscribe((entry) => {
+      if (entry.module === "active_touch" && /^touch_skipped/u.test(String(entry.code || ""))) reports.push(entry.code);
+    });
+    let queued = 0;
+    for (let step = 0; step < 80 && result.status !== "completed"; step++) {
+      clock.setTime(clock.getTime() + 10_000);
+      result = await roundWorkflow.runWorkflowStep(roundRecord, context);
+      if (result.result?.autoRetryQueued) queued = result.result.autoRetryQueued;
+    }
+    stopReports();
+    assert.equal(result.status, "completed");
+    assert.equal(queued, 7, "the seven pre-send skips are queued once");
+    const rows = roundTask().results;
+    assert.equal(rows[0].status, "sent_verified");
+    assert.ok(rows.slice(1).every((row) => row.status === "pre_send_skipped" && row.send_attempted === false), "nothing else was sent");
+    assert.equal(rows.filter((row) => /没有再试/u.test(row.reason)).length, 2, "after five failed retries the last two are not tried again");
+    assert.equal(reports.filter((code) => code.startsWith("touch_skipped_message_input")).length, 7, "each contact is reported once, not again in the round");
+    assert.equal(roundSends, 1);
+  }
   const boundedRetry = boundedRecoveryWorkflow.retrySkippedWorkflowTask(boundedRecoveryRecord, [contact.id]);
-  assert.equal(boundedRetry.ok, true, "a proven-not-sent skipped contact must remain available for a later run");
+  assert.equal(boundedRetry.ok, false, "a contact that went out in the round is not retried again");
 
   const interruptedWorkflow = createTouchWorkflow(config);
   const interruptedPayload = interruptedWorkflow.prepareWorkflowTask({ script: "发送前中断恢复测试", contactIds: [contact.id] });
@@ -839,10 +892,11 @@ $dialogAccepted = Wait-PasteAccepted 1000
     }
   }
   assert.equal((await checkPassportWiring("图片点击前超时", "image_send_pre_click_timeout", [contact.id], true)).status, "completed");
-  assert.equal((await checkPassportWiring("环境耗尽", "wechat_window_not_foreground", [contact.id])).status, "completed");
+  // A text skipped before sending is queued for the end-of-list round (2026-11-17) instead of ending the run.
+  assert.equal((await checkPassportWiring("环境耗尽", "wechat_window_not_foreground", [contact.id])).result?.autoRetryQueued, 1);
   // Three contacts failing for the same reason no longer stop the unattended run.
   assert.equal((await checkPassportWiring("连续同因跳过", "message_snapshot_unavailable",
-    [contact.id, secondContact.id, thirdContact.id])).status, "completed");
+    [contact.id, secondContact.id, thirdContact.id])).result?.autoRetryQueued, 3);
 
   const taskState = (record) => JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks",
     crypto.createHash("sha256").update(record.id).digest("hex"), "touch_task.json"), "utf8"));
@@ -895,7 +949,13 @@ $dialogAccepted = Wait-PasteAccepted 1000
     assert.equal(first.status, "pending", reasonCode);
     assert.equal(first.waitingReason, "wechat_pre_send_recovery", reasonCode);
     assert.equal(first.retryAfterMs, 3000, reasonCode); // one retry, then skip
-    const third = await test.step();
+    let third = await test.step();
+    // Nothing of a text-only contact went out: it gets the end-of-list round (2026-11-17); a
+    // contact whose text already went out (image codes) is a partial send and is never retried.
+    assert.equal(third.result?.autoRetryQueued === 1, !reasonCode.startsWith("image_"), `${reasonCode}: end-of-list round`);
+    const attemptsBeforeRound = test.attempts.length;
+    for (let step = 0; step < 6 && third.status !== "completed"; step++) { clock.setTime(clock.getTime() + 10_000); third = await test.step(); }
+    if (!reasonCode.startsWith("image_")) assert.ok(test.attempts.length > attemptsBeforeRound, `${reasonCode}: the round tried the contact again`);
     assert.equal(third.status, "completed", reasonCode);
     assert.equal(third.progress.done, 1, reasonCode);
     assert.equal(test.state().results[0].status, "pre_send_skipped", reasonCode);
@@ -982,11 +1042,14 @@ $dialogAccepted = Wait-PasteAccepted 1000
     }
     for (let attempt = 0; attempt < 1; attempt += 1) assert.equal((await test.step()).waitingReason, "wechat_pre_send_recovery");
     result = await test.step();
-    // A third same-cause failure is skipped like the others; the run is not stopped.
-    assert.equal(result.status, "completed");
+    // A third same-cause failure is skipped like the others; the run is not stopped. Contacts of
+    // which nothing went out are queued for the end-of-list round (2026-11-17); partial sends never.
+    if (multipart) assert.equal(result.status, "completed");
+    else assert.equal(result.result?.autoRetryQueued, 3);
     assert.equal(result.result.deliveryStatus, multipart ? "partial_sent" : "not_attempted",
       "the skip delivery status must include already verified message parts");
-    assert.equal(test.state().results[2].status, "pre_send_skipped");
+    assert.equal(test.state().results[2].status, multipart ? "pre_send_skipped" : "generated");
+    if (!multipart) assert.equal(test.state().results[2].auto_retried, true, "queued for the end-of-list round");
     if (multipart) assert.deepEqual(test.state().results[2].message_parts.map((part) => part.status),
       ["sent_verified", "not_attempted"], "the skip keeps the verified text and the unsent image");
     assert.equal(test.failures.length, 3, "three final skips consume one passport failure each");
@@ -1099,8 +1162,11 @@ $dialogAccepted = Wait-PasteAccepted 1000
     assert.notEqual(result.status, "needs_attention", "a verified contact resets the prior failure streak");
   }
   const rejoined = await testFailure("message_snapshot_unavailable", { contactIds: [contact.id, secondContact.id] });
-  for (let person = 0; person < 2; person += 1) { await rejoined.step(); await rejoined.step(); await rejoined.step(); }
-  assert.equal(rejoined.state().pre_send_skip_streak.count, 2);
+  // Both are skipped, retried once at the end of the list (2026-11-17), skipped again: the run ends.
+  for (let step = 0; step < 12 && (await rejoined.step()).status !== "completed"; step += 1) clock.setTime(clock.getTime() + 10_000);
+  assert.equal(rejoined.state().status, "completed");
+  assert.equal(rejoined.state().auto_retry_round_done, true);
+  assert.ok(rejoined.state().results.every((row) => row.status === "pre_send_skipped"));
   assert.equal(rejoined.workflow.retrySkippedWorkflowTask(rejoined.record, [contact.id, secondContact.id]).ok, true);
   assert.equal(rejoined.state().pre_send_skip_streak, undefined);
   for (let person = 0; person < 2; person += 1) {
@@ -1118,9 +1184,11 @@ $dialogAccepted = Wait-PasteAccepted 1000
         clock.setTime(clock.getTime() + 10 * 60_000);
         result = await test.step();
       }
-      assert.equal(result.status, person === 2 ? "completed" : "pending", "the run never stops on a same-cause streak");
+      assert.equal(result.status, "pending", "the run never stops on a same-cause streak");
     }
-    assert.equal(test.state().results[2].status, "pre_send_skipped");
+    // Nothing of them went out: all three are queued for the end-of-list round (2026-11-17).
+    assert.equal(result.result?.autoRetryQueued, 3, reasonCode);
+    assert.equal(test.state().results[2].skip_record.reasonCode, reasonCode);
   }
 
   atomicMismatch = true;

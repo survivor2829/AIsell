@@ -40,6 +40,16 @@ function sentWindow(executionDir) {
 }
 const PRE_SEND_RECOVERY_ATTEMPTS = 1; // One retry, then skip and move on (user 2026-11-07).
 const AUTO_RETRY_REASONS = new Set(["search_result_not_opened", "search_result_identity_unverified", "exact_search_result_not_found"]);
+// Pre-send skips the end-of-list round leaves alone: the contact's own data decides them, so a
+// second try ends the same way.
+const PRE_SEND_NO_AUTO_RETRY_REASONS = new Set(["contact_name_not_unique", "contact_identity_not_unique", "contact_identity_missing",
+  "contact_disabled", "wechat_id_missing", "wechat_account_identity_missing", "wechat_account_ambiguous", "contact_snapshot_changed",
+  "powershell_blocked_by_antivirus"]);
+const AUTO_RETRY_PRE_SEND_GIVE_UP_COUNT = 5;
+// A contact skipped before anything of it went out (every part still pending or not attempted).
+function nothingSent(row) {
+  return row?.send_attempted === false && (row.message_parts || []).every((part) => ["pending", "not_attempted"].includes(String(part?.status || "pending")));
+}
 // The first contacts of a run failing the same way pause it (user 2026-11-09).
 const EARLY_FAILURE_PAUSE_COUNT = 3;
 const EARLY_FAILURE_PAUSE_MESSAGE = "这台电脑暂时发不出去，问题已经自动上报，不需要您做别的。软件更新修好后，点「继续」接着发剩下的人。";
@@ -371,15 +381,22 @@ function createTouchWorkflow(options = {}) {
       return { status, progress: progress(), ...extra, ...(recovery ? { recovery } : {}) };
     };
     const persist = () => { task = saveTaskState(taskDir, task); };
-    // One automatic round for identity skips (not found / not confirmed): never for unknown or
-    // partial sends, never for a contact whose search hit the network-lookup misclick guard.
+    // One automatic round for identity skips (not found / not confirmed) and for contacts skipped
+    // before anything of them was sent: never for unknown or partial sends, never for a contact
+    // whose search hit the network-lookup misclick guard. A pre-send failure that hit every contact
+    // for hours (a 200% laptop, 2026-11-17: about 500 contacts in one night, nothing sent) is
+    // usually gone by the end of the list or after an update; those contacts get their chance.
     const queueAutoRetryRound = () => {
       // A list whose index reached the end may still say "running" (an exit between the two
       // writes): it is finished, and retrySkippedResults only reopens a finished task.
       if (task.current_index >= task.total && task.status === "running") task.status = "completed";
-      const ids = (task.results || []).filter((row) => row?.status === "identity_skipped" && !row.poisoned
-        && AUTO_RETRY_REASONS.has(String(row.skip_record?.reasonCode || ""))).map((row) => String(row.id));
+      const ids = (task.results || []).filter((row) => !row?.poisoned && (
+        (row?.status === "identity_skipped" && AUTO_RETRY_REASONS.has(String(row.skip_record?.reasonCode || "")))
+        || (row?.status === "pre_send_skipped" && nothingSent(row)
+          && !PRE_SEND_NO_AUTO_RETRY_REASONS.has(String(row.skip_record?.reasonCode || "")))))
+        .map((row) => String(row.id));
       const nextSendNotBefore = task.next_send_not_before;
+      const retriedFrom = new Map((task.results || []).map((row) => [String(row?.id), String(row?.status || "")]));
       const retried = ids.length && new Set(ids).size === ids.length ? retrySkippedResults(task, ids, now().toISOString()) : null;
       task.auto_retry_round_done = true;
       if (!retried?.ok) { persist(); return 0; }
@@ -391,6 +408,7 @@ function createTouchWorkflow(options = {}) {
       for (const row of task.results) {
         if (!ids.includes(String(row.id)) || row.status !== "generated") continue;
         row.auto_retried = true;
+        row.auto_retry_from = retriedFrom.get(String(row.id)) || "";
         row.reason = "自动再试一次";
         if (row.search_evidence) delete row.search_evidence.fingerprint;
       }
@@ -756,17 +774,41 @@ function createTouchWorkflow(options = {}) {
         current.retry_blocked = true;
         const deliveryStatus = skippedDelivery(current);
         recordSkippedResult(current, index, { reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
-        reportContact("skipped", reasonCode, { stage: "pre_send", classification, passport_recorded: true }, sendOperation.traceId);
-        passport?.recordFailure("active_touch", passportTaskId, {
-          stage: "pre_send", reasonCode, traceId: sendOperation.traceId,
-          rawReading: { reasonCode, deliveryStatus }, expected: { status: "sent_verified" }
-        });
+        // The end-of-list retry of a contact already skipped and reported once: a local warning only.
+        const repeatSkip = current.auto_retried === true && current.auto_retry_from === "pre_send_skipped";
+        if (repeatSkip) {
+          try {
+            diagnostics().event("active_touch", "contact_skipped_again", { task_id: id, current_index: index, reason_code: reasonCode },
+              { trace: true, traceId: sendOperation.traceId, level: "warn", code: `touch_skipped_again_${String(reasonCode).replace(/[^a-z0-9_]/giu, "_").slice(0, 48)}` });
+          } catch { /* Diagnostics never stop the task. */ }
+        } else {
+          reportContact("skipped", reasonCode, { stage: "pre_send", classification, passport_recorded: true }, sendOperation.traceId);
+          passport?.recordFailure("active_touch", passportTaskId, {
+            stage: "pre_send", reasonCode, traceId: sendOperation.traceId,
+            rawReading: { reasonCode, deliveryStatus }, expected: { status: "sent_verified" }
+          });
+        }
+        // Retried pre-send skips failing the same way again: the cause is still there, so the
+        // rest of them are not tried again in this round (no hours of futile recovery).
+        if (repeatSkip && current.auto_retry_from === "pre_send_skipped" && count >= AUTO_RETRY_PRE_SEND_GIVE_UP_COUNT) {
+          for (const row of task.results.slice(index + 1)) {
+            if (row?.auto_retried !== true || row.auto_retry_from !== "pre_send_skipped" || row.status !== "generated" || !nothingSent(row)
+              || String(row.skip_record?.reasonCode || "") !== String(reasonCode)) continue;
+            row.status = "pre_send_skipped";
+            row.retry_blocked = true;
+            row.send_attempted = false;
+            row.reason = "自动再试时前几位仍因同一原因发不出去，这一位没有再试，可稍后手动重试";
+            row.updated_at = current.updated_at;
+          }
+        }
         task.current_index = index + 1;
         if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
         persist();
-        return earlyFailurePause(count, reasonCode, "", () => response(task.status === "completed" ? "completed" : "pending", {
+        const skipResponse = () => response(task.status === "completed" ? "completed" : "pending", {
           result: { deliveryStatus, skipped: true, reasonCode, ...(classification ? { classification } : {}) }
-        }), classification);
+        });
+        // A repeat in the retry round never pauses the run: it is about to finish.
+        return repeatSkip ? skipResponse() : earlyFailurePause(count, reasonCode, "", skipResponse, classification);
       };
       const pauseForWechatWindow = (reasonCode) => {
         const detail = summarizeSendResult(result || {});
@@ -1450,6 +1492,7 @@ function createTouchWorkflow(options = {}) {
       if (result.status === "generated" && result.reason === "已重新加入，等待继续任务") {
         // A contact picked by hand starts over: its next failure is uploaded again.
         delete result.auto_retried;
+        delete result.auto_retry_from;
         if (result.search_evidence) delete result.search_evidence.fingerprint;
       }
     }
