@@ -215,6 +215,12 @@ function createTouchWorkflow(options = {}) {
   // WeChat may still show the Moments page a Moments task left open; contact search only works
   // from the chat page. The app passes restoreWechatChatSurface; self-checks inject their own.
   const restoreChatSurface = typeof options.restoreChatSurface === "function" ? options.restoreChatSurface : null;
+  // A contact that ended with a verified send left WeChat on its chat page: the next contact of
+  // the same task within a minute needs no Moments check or window restore (7.5 s per contact on
+  // the development machine, 2026-11-17). Anything else (the first contact, a skip, a failure, an
+  // unknown outcome, a pause or another task in between) restores as before.
+  const CHAT_SURFACE_TRUST_MS = 60_000;
+  let chatSurfaceSettled = { taskId: "", at: 0 };
   // Injected in self-checks; the app reads the account contact sync captured.
   const receipts = () => {
     if (options.receipts !== undefined) return options.receipts;
@@ -866,7 +872,12 @@ function createTouchWorkflow(options = {}) {
           const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
           reportProgress({ ...partProgress, stage: "prepare_contact" });
           let handedWindow = null;
-          if (restoreChatSurface && !sessionAnchor) {
+          const surfaceSettled = chatSurfaceSettled.taskId === id && Date.now() - chatSurfaceSettled.at < CHAT_SURFACE_TRUST_MS;
+          chatSurfaceSettled = { taskId: "", at: 0 };  // Only a verified send below restores the trust.
+          if (surfaceSettled && restoreChatSurface && !sessionAnchor) {
+            diagnostics().event("active_touch", "chat_surface_restore", { task_id: id, current_index: index, changed: false, skipped: true },
+              { trace: true, traceId: sendOperation.traceId, level: "info", code: "settled_after_send" });
+          } else if (restoreChatSurface && !sessionAnchor) {
             // Best effort: when this fails the search step below still decides (and skips safely).
             const restored = await Promise.resolve().then(restoreChatSurface).catch((error) => ({ ok: false, reason: String(error?.code || error?.message || "restore_failed") }));
             // Only a window left untouched (already on the chat page) is reused; after a switch back
@@ -929,6 +940,8 @@ function createTouchWorkflow(options = {}) {
               currentIndex: index
             }),
             onTransition: (status, executionState = {}) => {
+              if (status === "sent_verified") chatSurfaceSettled = { taskId: id, at: Date.now() };
+              else if (status !== "sending") chatSurfaceSettled = { taskId: "", at: 0 };
               if (multipart) {
                 onPartTransition(status);
                 if (status === "sent_verified") reportProgress({ ...partProgress, stage: "part_complete" });

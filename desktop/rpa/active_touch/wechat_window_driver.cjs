@@ -3313,42 +3313,25 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
     $draftCheck = "clipboard_write_or_paste_failed"
     continue
   }
-  Start-Sleep -Milliseconds (350 + (250 * $attempt))
+  # No read-back of the input box (user decision 2026-11-17: speed; select-all, copy and two waits
+  # took about 2-3 s per contact). What could put other text into the box is the clipboard
+  # changing between Set-Clipboard and the paste: the clipboard must still hold this message.
+  Start-Sleep -Milliseconds 150
   Assert-ExactDraftLease
   if ([Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
     $draftCheck = "wechat_focus_lost_after_paste"
     continue
   }
   try {
-    Set-DraftInputPhase "copy_probe"
-    $probe = "__XIAOXI_DRAFT_PROBE_" + [Guid]::NewGuid().ToString("N")
-    Set-Clipboard -Value $probe
-    $ownedClipboardValue = [string]$probe
-    $script:draftOwnedClipboardValue = $ownedClipboardValue
-    Assert-ExactDraftLease
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
-    Rebase-ExactDraftInputLease
-    Start-Sleep -Milliseconds 100
-    Assert-ExactDraftLease
-    [System.Windows.Forms.SendKeys]::SendWait("^c")
-    Rebase-ExactDraftInputLease
-    Start-Sleep -Milliseconds (250 + (150 * $attempt))
-    Assert-ExactDraftLease
-    $copiedDraft = [string](Get-Clipboard -Raw -ErrorAction Stop)
-    $normalizedCopiedDraft = Normalize-WechatDraftText $copiedDraft
-    if ($normalizedCopiedDraft -ceq $normalizedMessage) {
-      $ownedClipboardValue = $copiedDraft
-      $script:draftOwnedClipboardValue = $copiedDraft
+    Set-DraftInputPhase "clipboard_check"
+    $pastedSource = [string](Get-Clipboard -Raw -ErrorAction Stop)
+    if ((Normalize-WechatDraftText $pastedSource) -ceq $normalizedMessage) {
       $draftVerified = $true
-      $draftCheck = "clipboard_roundtrip"
-    } elseif ($normalizedCopiedDraft -ceq (Normalize-WechatDraftText $probe)) {
-      $ownedClipboardValue = $copiedDraft
-      $script:draftOwnedClipboardValue = $copiedDraft
-      $draftCheck = "message_input_empty_or_copy_blocked"
+      $draftCheck = "pasted_owned_clipboard"
     } else {
-      $draftCheck = "message_input_content_mismatch"
+      $draftCheck = "clipboard_changed_before_paste"
     }
-  } catch { $draftCheck = "clipboard_roundtrip_failed" }
+  } catch { $draftCheck = "clipboard_check_failed" }
   if ($draftVerified) {
     $usedPoint = $point
     break
