@@ -31,7 +31,9 @@ const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extensio
 // default. 2026-11-13 field review: these carried enums lost as hashes (popup_layout "sectioned",
 // capture_source, first_class/last_class = the character class cjk/latin/digit, classification,
 // workflow and coordinator_owner, 569 times each). The value must still be a plain identifier.
-const SAFE_DETAIL_EXACT_KEYS = new Set(["popup_layout", "capture_source", "first_class", "last_class", "classification", "workflow", "coordinator_owner"]);
+const SAFE_DETAIL_EXACT_KEYS = new Set(["popup_layout", "capture_source", "first_class", "last_class", "classification", "workflow", "coordinator_owner",
+  // Window class and process names at a refused input point (2026-11-17): application names, never customer text.
+  "hit_class", "root_class", "hit_process"]);
 const safeDetailKey = (key) => SAFE_DETAIL_STRING_KEYS.test(key) || SAFE_DETAIL_EXACT_KEYS.has(String(key));
 const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|(?:user|account|customer).?id|phone|mobile|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text|^(?:error|description|stack|url|uri|host)$)/iu;
 const PATH_KEYS = /(?:path|dir|file|cwd|executable)/iu;

@@ -3354,7 +3354,27 @@ $r | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 10_000 });
   assert.match(messageDraftSource, /TrimEnd\(\[char\[\]\]@\(\[char\]0xFFFC\)\)/);
   assert.match(messageDraftSource, /\$normalizedCopiedDraft -ceq \$normalizedMessage/);
   assert.match(messageDraftSource, /\$inputPoints = @\(Get-DraftInputPoints \$draftHeight \$draftDpi\)/);
-  assert.match(messageDraftSource, /draft_hit = \$draftHit/, "a refused input point reports what stood there");
+  assert.match(messageDraftSource, /input_hit = \$draftHit/, "a refused input point reports what stood there");
+  // No evidence key may contain "draft": the log sanitizer drops those as possible draft text, which
+  // kept this evidence out of every field report until 2026-11-17.
+  {
+    const evidence = messageDraftSource.slice(messageDraftSource.indexOf("safety_diagnostics = "));
+    assert.doesNotMatch(evidence.slice(0, evidence.indexOf("ConvertTo-Json")), /\bdraft_[a-z]+ = /u);
+    const os = require("node:os");
+    const logger = require("../../src/main/diagnostics.cjs").configureDiagnostics({ rootDir: fs.mkdtempSync(path.join(os.tmpdir(), "draft-hit-")) });
+    const seen = [];
+    const stop = logger.subscribe((entry) => seen.push(entry));
+    logger.event("wechat_adapter", "executor.failed", { safety_diagnostics: { input_reason: "message_input_target_not_owned", input_attempts: 1,
+      input_points: [0.9, 0.8868, 0.84], input_hit: { hit_stage: "target", hit_class: "ApplicationFrameWindow", root_class: "Windows.UI.Core.CoreWindow",
+        hit_process: "TextInputHost", point: [1456, 1368], main_rect: [0, 0, 2240, 1520], thread_dpi_awareness: 2, same_process: false } } }, { level: "error", code: "check" });
+    stop();
+    const kept = seen[0].details.safety_diagnostics;
+    assert.equal(kept.input_reason, "message_input_target_not_owned", "the reason reaches the field report as text");
+    assert.deepEqual([kept.input_hit.hit_class, kept.input_hit.root_class, kept.input_hit.hit_process],
+      ["ApplicationFrameWindow", "Windows.UI.Core.CoreWindow", "TextInputHost"], "what stood at the point reaches the field report");
+    assert.deepEqual(kept.input_hit.point, [1456, 1368]);
+    assert.equal(kept.input_hit.thread_dpi_awareness, 2);
+  }
   assert.match(messageDraftSource, /for \(\$attempt = 1; \$attempt -le \$inputPoints\.Count; \$attempt\+\+\)[\s\S]*SendWait\("\^a"\)[\s\S]*SendWait\("\^v"\)[\s\S]*if \(\$draftVerified\) \{[\s\S]*break/);
   assert.match(messageDraftSource, /draftPoint = \$usedPoint/);
   assert.match(messageDraftSource, /wechat_focus_lost_after_paste/);
