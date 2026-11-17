@@ -94,8 +94,11 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   })
   $text = (@($lowestLines | ForEach-Object { [string]$_.Text }) -join '').Normalize([Text.NormalizationForm]::FormKC)
   $text = [Text.RegularExpressions.Regex]::Replace($text, '\s+', '')
-  $undelivered = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|你还不是[他她]|被对方拒收|拒收了你的消息')
-  Write-NoticeResult @{ ok = $true; undelivered = $undelivered; line_count = @($reading.Lines).Count }
+  # 被对方拒收: the contact blocked the user; 朋友验证 / 你还不是他(她)朋友: the contact deleted them.
+  $blocked = [Text.RegularExpressions.Regex]::IsMatch($text, '被对方拒收|拒收了你的消息')
+  $deleted = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|你还不是[他她]')
+  $kind = $(if ($blocked) { "blocked" } elseif ($deleted) { "deleted" } else { "" })
+  Write-NoticeResult @{ ok = $true; undelivered = ($blocked -or $deleted); kind = $kind; line_count = @($reading.Lines).Count }
 } catch {
   Write-NoticeResult @{ ok = $false; reason = "delivery_notice_unreadable" }
 } finally {
@@ -118,9 +121,12 @@ async function detectWechatDeliveryNoticeAsync(context = {}, run = runPowerShell
   const result = await run(WECHAT_DELIVERY_NOTICE_SCRIPT, {
     XIAOXI_EXPECTED_PID: String(pid),
     XIAOXI_EXPECTED_HWND: hWnd
-  }, { ensure: false, timeout: 12_000 });
+  }, { ensure: false, timeout: 12_000, hosted: true });
   if (result?.ok !== true) return { ok: false, reason: String(result?.reason || "delivery_notice_unreadable") };
-  return { ok: true, undelivered: result.undelivered === true };
+  const undelivered = result.undelivered === true;
+  // blocked: 被对方拒收 (the contact blocked the user); deleted: 朋友验证 (the contact deleted them).
+  const kind = undelivered && ["blocked", "deleted"].includes(result.kind) ? result.kind : "";
+  return { ok: true, undelivered, ...(kind ? { kind } : {}) };
 }
 
 module.exports = { WECHAT_DELIVERY_NOTICE_SCRIPT, detectWechatDeliveryNoticeAsync, mentionsNotice };

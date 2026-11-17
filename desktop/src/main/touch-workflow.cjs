@@ -215,6 +215,8 @@ function createTouchWorkflow(options = {}) {
   // WeChat may still show the Moments page a Moments task left open; contact search only works
   // from the chat page. The app passes restoreWechatChatSurface; self-checks inject their own.
   const restoreChatSurface = typeof options.restoreChatSurface === "function" ? options.restoreChatSurface : null;
+  // Contacts found blocked or deleted are remembered per WeChat account and skipped later.
+  const unreachable = contactsDir ? require("./touch-unreachable.cjs").createUnreachableRegistry(contactsDir) : null;
   // A contact that ended with a verified send left WeChat on its chat page: the next contact of
   // the same task within a minute needs no Moments check or window restore (7.5 s per contact on
   // the development machine, 2026-11-17). Anything else (the first contact, a skip, a failure, an
@@ -278,8 +280,12 @@ function createTouchWorkflow(options = {}) {
     if ([...requested].some((id) => !contacts.some((contact) => String(contact.id) === id))) {
       throw new Error("所选联系人已不在同步通讯录，请刷新后重新选择");
     }
-    const classification = classifyContacts(contacts);
+    const classification = classifyContacts(contacts, { unreachableKind: (contact) => unreachable?.kindOf(contact) || "" });
     const eligible = classification.eligible.filter((contact) => requested.has(String(contact.id)));
+    if (!eligible.length && classification.excluded.some((entry) => requested.has(String(entry.contact.id))
+      && ["recipient_blocked_before", "recipient_deleted_before"].includes(entry.reason_code))) {
+      throw new Error("所选联系人此前都已拉黑或删除你，已自动跳过；对方重新加回好友后可在名单里放出。");
+    }
     if (!eligible.length) throw new Error("所选联系人暂无可安全触达的对象，请检查联系人资料");
     for (const contact of eligible) validateTouchMessage(fillRespectfulTemplate(script, contact));
     const snapshot = createTask(script, contacts, now().toISOString(), {
@@ -1040,15 +1046,24 @@ function createTouchWorkflow(options = {}) {
         delete current.login_wait_started_at;
         if (notice?.ok === true && notice.undelivered === true) {
           current.status = "recipient_unreachable_skipped";
-          current.blocked_reason = "recipient_not_friend";
-          current.reason = "已发出，但对方已不是好友（需要朋友验证），消息未送达；不会重发";
+          // 2026-11-17: blocked (被对方拒收) and deleted (朋友验证) are counted apart and both are
+          // skipped by later tasks; the rest of this contact's messages were already not sent.
+          current.unreachable_kind = ["blocked", "deleted"].includes(notice.kind) ? notice.kind : "";
+          current.blocked_reason = current.unreachable_kind === "blocked" ? "recipient_blocked"
+            : current.unreachable_kind === "deleted" ? "recipient_deleted" : "recipient_not_friend";
+          current.reason = current.unreachable_kind === "blocked" ? "已发出，但被对方拒收（对方已将你拉黑），消息未送达；以后的触达会自动跳过此人"
+            : current.unreachable_kind === "deleted" ? "已发出，但对方已删除你（需要朋友验证），消息未送达；以后的触达会自动跳过此人"
+            : "已发出，但对方已不是好友（需要朋友验证），消息未送达；不会重发";
+          if (current.unreachable_kind) {
+            try { unreachable?.record(current.contact, current.unreachable_kind, now().toISOString()); } catch { /* The task result still says it. */ }
+          }
           recordSkippedResult(current, index, { reasonCode: current.blocked_reason, blockedReason: current.reason, at: now().toISOString() });
         } else {
           current.status = "sent_verified";
           current.reason = "发送成功并已核验";
         }
         diagnostics().event("active_touch", "delivery_notice", { checked: Boolean(notice), ok: notice?.ok === true,
-          undelivered: notice?.undelivered === true, reason: notice?.reason || "" }, { code: notice?.undelivered === true ? "recipient_not_friend" : notice?.reason || "" });
+          undelivered: notice?.undelivered === true, ...(notice?.kind ? { kind: notice.kind } : {}), reason: notice?.reason || "" }, { code: notice?.undelivered === true ? current.blocked_reason || "recipient_not_friend" : notice?.reason || "" });
         task.current_index = index + 1;
         task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
         if (task.current_index >= task.total) {
@@ -1497,7 +1512,19 @@ function createTouchWorkflow(options = {}) {
     const task = readWorkflowTask(id);
     if (!task || task.integrity_error) return null;
     const summary = skippedTaskSummary(task);
-    return { skipped_breakdown: summary.breakdown, skipped_records: summary.records };
+    // Who blocked or deleted the user: found by this task, plus those an earlier task found and
+    // this one skipped from the start (payload.excluded).
+    const unreachableSummary = { blocked: [], deleted: [] };
+    for (const row of summary.records) {
+      if (row.unreachable_kind) unreachableSummary[row.unreachable_kind].push({ name: String(row.displayName || ""), found: "this_task" });
+    }
+    for (const entry of Array.isArray(record?.payload?.excluded) ? record.payload.excluded : []) {
+      const kind = entry?.reason_code === "recipient_blocked_before" ? "blocked" : entry?.reason_code === "recipient_deleted_before" ? "deleted" : "";
+      if (kind) unreachableSummary[kind].push({ name: String(entry.contact?.remark || entry.contact?.name || ""), found: "earlier" });
+    }
+    return { skipped_breakdown: summary.breakdown, skipped_records: summary.records,
+      unreachable_summary: { blocked_count: unreachableSummary.blocked.length, deleted_count: unreachableSummary.deleted.length,
+        blocked: unreachableSummary.blocked.slice(0, 500), deleted: unreachableSummary.deleted.slice(0, 500) } };
   }
   function retrySkippedWorkflowTask(record, contactIds) {
     const id = String(record?.id || record || "").trim();

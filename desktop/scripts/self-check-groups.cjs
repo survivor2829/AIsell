@@ -24,6 +24,7 @@ const checks = [
   "rpa/active_touch/wechat_search_42.self_check.cjs",
   "rpa/active_touch/session_title_rebind.self_check.cjs",
   "rpa/active_touch/powershell_host.self_check.cjs",
+  "rpa/active_touch/wechat_delivery_notice.self_check.cjs",
   "rpa/active_touch/wechat_search_capture_chain.self_check.cjs",
   "rpa/active_touch/wechat_search_input.self_check.cjs",
   "rpa/active_touch/wechat_render_surface.self_check.cjs",

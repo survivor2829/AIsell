@@ -198,7 +198,10 @@ function createWechatWorkflowController(options) {
   }
   function skippedTouchState(task) {
     if (task.type !== "touch" || !executors.touch?.describeSkippedWorkflowTask) return null;
-    try { return executors.touch.describeSkippedWorkflowTask(task); }
+    // The payload names who was skipped from the start as blocked or deleted earlier.
+    let payload;
+    try { payload = readPayload(task); } catch { payload = undefined; }
+    try { return executors.touch.describeSkippedWorkflowTask({ ...task, ...(payload ? { payload } : {}) }); }
     catch { return null; }
   }
 

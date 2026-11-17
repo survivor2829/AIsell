@@ -26,7 +26,7 @@ export type WorkflowMedia = {
   files: Array<{ name: string; size: number; kind: "image" | "video" }>;
 };
 type TouchImage = { id: string; name: string; size?: number; preview: string };
-type TouchSkipRecord = { contactId: string; displayName: string; index: number; reasonCode: string; blockedReason: string; at: string; traceId: string; status: string; retryable?: boolean; retry_blocked_reason?: string };
+type TouchSkipRecord = { contactId: string; displayName: string; index: number; reasonCode: string; blockedReason: string; at: string; traceId: string; status: string; retryable?: boolean; retry_blocked_reason?: string; unreachable_kind?: "blocked" | "deleted" };
 export type WorkflowTaskInput = {
   type: WorkflowTaskType;
   title?: string;
@@ -55,6 +55,8 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   sent_verified_count?: number;
   skipped_breakdown?: { identity: number; ai_failed: number; pre_send: number; outcome_unknown: number; partial_sent?: number; unreachable?: number };
   skipped_records?: TouchSkipRecord[];
+  // Who blocked (消息被拒收) or deleted (需要朋友验证) the user; both are skipped by later tasks.
+  unreachable_summary?: { blocked_count: number; deleted_count: number; blocked: { name: string; found: "this_task" | "earlier" }[]; deleted: { name: string; found: "this_task" | "earlier" }[] };
   reasonCode?: string;
   reasonClassification?: "environment" | "recoverable" | "blocker";
   waitingReason?: string;
@@ -542,7 +544,15 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
             {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}>{canRetryWhileListening ? "暂停自动回复，全部重试并继续" : "全部重试并继续"}</button>}
           </div>
           <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}{Boolean(task.skipped_breakdown?.partial_sent) && ` · 部分已发送 ${task.skipped_breakdown!.partial_sent}`}{Boolean(task.skipped_breakdown?.unreachable) && ` · 对方已不是好友 ${task.skipped_breakdown!.unreachable}`}</p>
-          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{["partial_sent_skipped", "recipient_unreachable_skipped"].includes(record.status) ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></details>
+          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{record.status === "recipient_unreachable_skipped" && record.unreachable_kind ? (record.unreachable_kind === "blocked" ? "被对方拉黑（消息被拒收）" : "对方已删除你（需要朋友验证）") : ["partial_sent_skipped", "recipient_unreachable_skipped"].includes(record.status) ? TOUCH_SKIP_LABELS[record.status] : record.reasonCode === "outcome_unknown" && record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送，后续结果未知" : record.blockedReason?.startsWith("部分内容已发送") ? "部分已发送（后续内容未发）" : TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}{record.blockedReason && <p className="workflow-skip-reason">{taskErrorText(record.blockedReason)}</p>}</li>)}</ul></details>
+        </section>}
+        {task.type === "touch" && Boolean((task.unreachable_summary?.blocked_count || 0) + (task.unreachable_summary?.deleted_count || 0)) && <section className="workflow-touch-skipped" aria-label="拉黑与删除统计">
+          <div className="workflow-touch-skipped-head"><strong>被拉黑 {task.unreachable_summary!.blocked_count} 人 · 被删除 {task.unreachable_summary!.deleted_count} 人</strong></div>
+          <p className="workflow-small-note">消息被拒收算被拉黑，需要朋友验证算被删除；这些人以后的触达会自动跳过。</p>
+          <details><summary>查看名单</summary><ul>
+            {task.unreachable_summary!.blocked.map((person, index) => <li key={`blocked-${index}`}><span title={person.name}>{person.name || "未命名联系人"}</span><small>被拉黑{person.found === "earlier" ? "（此前已发现，本次未发送）" : ""}</small></li>)}
+            {task.unreachable_summary!.deleted.map((person, index) => <li key={`deleted-${index}`}><span title={person.name}>{person.name || "未命名联系人"}</span><small>被删除{person.found === "earlier" ? "（此前已发现，本次未发送）" : ""}</small></li>)}
+          </ul></details>
         </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}

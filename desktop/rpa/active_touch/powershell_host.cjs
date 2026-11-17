@@ -75,7 +75,7 @@ function createPowerShellHost(options = {}) {
     if (pending) {
       const settle = pending.settle;
       pending = null;
-      settle({ hostUnavailable: true, reason: "powershell_host_stopped" });
+      settle({ hostUnavailable: true, cause: "powershell_host_stopped" });
     }
   };
 
@@ -98,7 +98,7 @@ function createPowerShellHost(options = {}) {
         if (String(message.id) !== pending.id) continue;
         const settle = pending.settle;
         pending = null;
-        settle(message.host_error ? { hostUnavailable: true, reason: "powershell_host_error" } : { stdout: String(message.stdout || ""), stderr: String(message.stderr || "") });
+        settle(message.host_error ? { hostUnavailable: true, cause: "powershell_host_error" } : { stdout: String(message.stdout || ""), stderr: String(message.stderr || "") });
       }
     });
     created.stderr.on("data", () => {});
@@ -114,7 +114,7 @@ function createPowerShellHost(options = {}) {
   const run = (script, env = {}, timeoutMs = 15000) => {
     const job = queue.then(() => new Promise((resolve) => {
       let process_;
-      try { process_ = start(); } catch { resolve({ hostUnavailable: true, reason: "powershell_host_spawn_failed" }); return; }
+      try { process_ = start(); } catch { resolve({ hostUnavailable: true, cause: "powershell_host_spawn_failed" }); return; }
       const id = `${Date.now()}-${++sequence}`;
       const timer = setTimeout(() => {
         if (!pending || pending.id !== id) return;
@@ -128,7 +128,7 @@ function createPowerShellHost(options = {}) {
         clearTimeout(timer);
         pending = null;
         stop();
-        resolve({ hostUnavailable: true, reason: "powershell_host_write_failed" });
+        resolve({ hostUnavailable: true, cause: "powershell_host_write_failed" });
       }
     }));
     queue = job.catch(() => undefined);

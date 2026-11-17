@@ -165,13 +165,21 @@ function classifyContacts(contacts = [], options = {}) {
     contact_name_not_unique: "联系人姓名重复",
     contact_identity_not_unique: "联系人微信号或身份不唯一",
     wechat_account_ambiguous: "联系人来自多个或无法确认的微信账号",
-    user_excluded: "已移出本次触达"
+    user_excluded: "已移出本次触达",
+    recipient_blocked_before: "此前触达时已被对方拉黑（消息被拒收），自动跳过",
+    recipient_deleted_before: "此前触达时对方已删除你（需要朋友验证），自动跳过"
   };
+  // Contacts an earlier touch found blocked or deleted (src/main/touch-unreachable.cjs).
+  const unreachableKind = typeof options.unreachableKind === "function" ? options.unreachableKind : () => "";
   const identityIndex = contactIdentityIndex(rows);
   for (const contact of rows) {
     const reasonCode = contactIdentityError(rows, contact, identityIndex, { requireUniqueName: false });
     if (reasonCode) excluded.push({ contact: publicContact(contact), reason_code: reasonCode, reason: labels[reasonCode] || reasonCode });
     else if (userExcludedIds.has(String(contact?.id ?? "").trim())) excluded.push({ contact: publicContact(contact), reason_code: "user_excluded", reason: labels.user_excluded });
+    else if (["blocked", "deleted"].includes(unreachableKind(contact))) {
+      const code = unreachableKind(contact) === "blocked" ? "recipient_blocked_before" : "recipient_deleted_before";
+      excluded.push({ contact: publicContact(contact), reason_code: code, reason: labels[code] });
+    }
     else eligible.push(contact);
   }
   const reasonCounts = excluded.reduce((counts, entry) => {
@@ -272,12 +280,18 @@ function skippedTaskSummary(task) {
     const category = skipCategory(result?.status);
     if (!category) continue;
     breakdown[category] = Number(breakdown[category] || 0) + 1;
+    // Blocked (被对方拒收) and deleted (朋友验证) are counted apart (user decision 2026-11-17).
+    if (["blocked", "deleted"].includes(result?.unreachable_kind)) {
+      const field = `unreachable_${result.unreachable_kind}`;
+      breakdown[field] = Number(breakdown[field] || 0) + 1;
+    }
     const record = result.skip_record || recordSkippedResult({ ...result }, index).skip_record;
     const retryBlockedReason = skippedRetryBlockedReason(result);
     const bulkBlockedReason = bulkRetryBlockedReason(result);
     records.push({
       ...record,
       status: result.status,
+      ...(["blocked", "deleted"].includes(result?.unreachable_kind) ? { unreachable_kind: result.unreachable_kind } : {}),
       retryable: !retryBlockedReason,
       retry_blocked_reason: retryBlockedReason,
       bulk_retryable: !bulkBlockedReason,
