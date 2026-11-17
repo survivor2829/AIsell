@@ -19,6 +19,7 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
   let child = null;
   let starting = null;
   let failedAt = 0;
+  let stopping = false;
 
   function clear() {
     delete env[ENV_URL];
@@ -27,6 +28,7 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
 
   function stop() {
     const running = child;
+    stopping = true;
     child = null;
     clear();
     if (running && running.exitCode === null) {
@@ -48,8 +50,11 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
       return Promise.resolve(false);
     }
     const token = crypto.randomBytes(24).toString("hex");
+    stopping = false;
     return new Promise((resolve) => {
       let settled = false;
+      let timer = null;
+      let ready = false;
       const finish = (ok, reason) => {
         if (settled) return;
         settled = true;
@@ -74,9 +79,12 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
         return;
       }
       child = process_;
-      const timer = setTimeout(() => finish(false, "start_timeout"), START_TIMEOUT_MS);
+      timer = setTimeout(() => finish(false, "start_timeout"), START_TIMEOUT_MS);
       let buffered = "";
       process_.stdout.on("data", (chunk) => {
+        // Only the first line of the current reader counts: nothing after start, nothing from a
+        // reader already being stopped.
+        if (settled || child !== process_) return;
         buffered += String(chunk);
         const line = buffered.split(/\r?\n/u)[0];
         if (!buffered.includes("\n")) return;
@@ -85,6 +93,7 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
           if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("port");
           env[ENV_URL] = `http://127.0.0.1:${port}/read`;
           env[ENV_TOKEN] = token;
+          ready = true;
           onEvent("ready", { port });
           finish(true);
         } catch {
@@ -99,7 +108,11 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
           clear();
         }
         if (!settled) finish(false, `exited_${code}`);
-        else onEvent("exited", { code });
+        else {
+          // A reader that stops on its own after starting is not restarted for every contact.
+          if (ready && child === null && !stopping) failedAt = now();
+          onEvent("exited", { code });
+        }
       });
     });
   }

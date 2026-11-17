@@ -49,10 +49,13 @@ function fakeChild() {
   assert.equal(await service.ensure(), true);
   assert.equal(spawned.length, 1, "a running reader is reused");
 
-  // It exits: the address is withdrawn at once (scripts fall back to Windows' reading) and the
-  // next touch step starts it again.
+  // It exits on its own: the address is withdrawn at once (scripts fall back to Windows' reading)
+  // and it is not restarted for every contact, only after five minutes (review 2026-11-17).
   spawned[0].child.emit("exit", 3);
   assert.equal(env[ENV_URL], undefined);
+  assert.equal(await service.ensure(), false);
+  assert.equal(spawned.length, 1, "no restart storm after a crash");
+  clock += 5 * 60_000 + 1;
   const again = service.ensure();
   spawned[1].child.stdout.emit("data", "{\"port\": 50124}\n");
   assert.equal(await again, true);

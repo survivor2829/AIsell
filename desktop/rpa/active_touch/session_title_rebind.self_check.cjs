@@ -105,7 +105,7 @@ if (process.platform === "win32") (async () => {
   const foldStart = header.indexOf("$expectedHasDash=");
   const foldEnd = header.indexOf("$script:headerTitleEvidence=@{ lines=0");
   const readerStart = header.indexOf("$lineOcrUrl=");
-  const readerEnd = header.indexOf("# A narrow title strip");
+  const readerEnd = header.indexOf("if ($null -eq $engine) { return $false }", readerStart);
   const compareStart = header.indexOf("$foldKeepCase=");
   const compareEnd = header.indexOf("if (-not (& $matches $lines))");
   assert.ok(foldStart > 0 && foldEnd > foldStart && readerStart > foldEnd && readerEnd > readerStart
@@ -188,6 +188,11 @@ $verdict = & {
     replyText = "崔情情";
     read = await runReader("崔情情🍀🌻", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
     assert.equal(read.verdict, "True", "emoji in the name are ignored like everywhere else");
+    // A name of one letter once symbols are dropped could be another contact: Windows decides.
+    replyText = "A"; const beforeShort = posts;
+    read = await runReader("A🍀", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "fallthrough");
+    assert.equal(posts, beforeShort, "a one-letter name never asks the reader");
     replyText = "济南展迪"; replyDelayMs = 6000;
     read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
     assert.equal(read.verdict, "fallthrough", "a late reader never holds the check up");

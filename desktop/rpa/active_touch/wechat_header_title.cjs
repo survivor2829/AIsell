@@ -20,8 +20,9 @@ function Test-WechatHeaderTitle($windowRect, [uint32]$dpi, [string]$expectedTitl
       return $task.Result
     }
     if ($dpi -lt 72) { return $false }
+    # Without the Windows Chinese OCR language only Windows' reading is impossible; the chat-title
+    # reader below does not need it (review 2026-11-17), so the engine is only required further down.
     $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('zh-Hans-CN'))
-    if ($null -eq $engine) { return $false }
 ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     # OCR lines of one screen area, each with its position in that area (unscaled pixels).
     function Read-HeaderArea([int]$areaLeft, [int]$areaTop, [int]$areaRight, [int]$areaBottom, [int]$scale, [int]$padding) {
@@ -80,7 +81,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     # Windows' reading below decides as before.
     $lineOcrUrl=[Environment]::GetEnvironmentVariable("XIAOXI_LINE_OCR_URL")
     $lineOcrToken=[Environment]::GetEnvironmentVariable("XIAOXI_LINE_OCR_TOKEN")
-    if ($lineOcrUrl -match '^http://127\.0\.0\.1:\d+/read$' -and $lineOcrToken.Length -ge 32 -and $expectedFolded.Length -ge 1) {
+    if ($lineOcrUrl -match '^http://127\.0\.0\.1:\d+/read$' -and $lineOcrToken.Length -ge 32 -and $expectedFolded.Length -ge 2) {
       $band=$null; $pngStream=$null
       try {
         $band=[System.Drawing.Bitmap]::new($right-$left,$bottom-$top)
@@ -89,6 +90,8 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
           $request=[System.Net.HttpWebRequest]::Create($lineOcrUrl)
           $request.Method='POST'; $request.Timeout=4000; $request.ReadWriteTimeout=4000; $request.Proxy=$null
           $request.ContentType='image/png'; $request.Headers.Add('X-Xiaoxi-Token',$lineOcrToken)
+          # No 100-continue round trip: the reader never sends one, so each request waited ~350 ms.
+          $request.ServicePoint.Expect100Continue=$false
           $payload=$pngStream.ToArray(); $request.ContentLength=$payload.Length
           $requestStream=$request.GetRequestStream(); $requestStream.Write($payload,0,$payload.Length); $requestStream.Close()
           $response=$request.GetResponse()
@@ -103,6 +106,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
         foreach ($resource in @($pngStream,$band)) { if ($null -ne $resource) { $resource.Dispose() } }
       }
     }
+    if ($null -eq $engine) { return $false }
     # A narrow title strip needs surrounding whitespace for WinRT line detection.
     $lines=@(Read-HeaderArea $left $top $right $bottom 3 (($bottom-$top)*2))
     # Customer names carry emoji, punctuation and spaces that OCR drops or misreads,
