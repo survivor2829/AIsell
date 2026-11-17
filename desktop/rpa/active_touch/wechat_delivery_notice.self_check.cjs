@@ -26,8 +26,13 @@ async function main() {
   assert.equal(mentionsNotice("你还不是他朋友"), true);
 
   // The script decides the kind from the lowest text only, with both patterns.
-  assert.match(WECHAT_DELIVERY_NOTICE_SCRIPT, /\$blocked = \[Text\.RegularExpressions\.Regex\]::IsMatch\(\$text, '被对方拒收\|拒收了你的消息'\)/u);
-  assert.match(WECHAT_DELIVERY_NOTICE_SCRIPT, /\$deleted = \[Text\.RegularExpressions\.Regex\]::IsMatch\(\$text, '朋友验证\|你还不是\[他她\]'\)/u);
+  // Keys Windows OCR read right on a real screen even when it dropped or misread other characters.
+  assert.match(WECHAT_DELIVERY_NOTICE_SCRIPT, /\$blocked = \[Text\.RegularExpressions\.Regex\]::IsMatch\(\$text, '拒收'\)/u);
+  assert.match(WECHAT_DELIVERY_NOTICE_SCRIPT, /\$deleted = \[Text\.RegularExpressions\.Regex\]::IsMatch\(\$text, '朋友验证\|还不是\[他她\]'\)/u);
+  for (const reading of ["消息已发出，但被对方拒收了。", "消息已发出，但对方拒收了。", "消息已发出，但钅芯了方拒收了。", "己发±，但对方拒收了。"]) {
+    assert.equal(/拒收/u.test(reading), true, `a block read as ${reading} is still a block`);
+  }
+  assert.equal(mentionsNotice("请勿拒收"), true, "our own message with the key word is never read as a notice");
   assert.match(WECHAT_DELIVERY_NOTICE_SCRIPT, /kind = \$kind/u);
   console.log("delivery notice self-check passed");
 }

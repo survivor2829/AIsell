@@ -6,8 +6,11 @@
 const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
-// Kept in sync with the PowerShell pattern below.
-const NOTICE_PATTERN = /朋友验证|你还不是[他她]|被对方拒收|拒收了你的消息/u;
+// Kept in sync with the PowerShell patterns below. Windows OCR drops or misreads characters
+// of this small grey line ("但对方拒收了" without 被, "但钅芯了方拒收了", 2026-11-17 real
+// screen), so each kind keys on the words it always read right: 拒收 for a block, 朋友验证 /
+// 还不是他(她) for a deletion.
+const NOTICE_PATTERN = /拒收|朋友验证|还不是[他她]/u;
 
 const WECHAT_DELIVERY_NOTICE_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -99,8 +102,8 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   $text = (@($lowestLines | ForEach-Object { [string]$_.Text }) -join '').Normalize([Text.NormalizationForm]::FormKC)
   $text = [Text.RegularExpressions.Regex]::Replace($text, '\s+', '')
   # 被对方拒收: the contact blocked the user; 朋友验证 / 你还不是他(她)朋友: the contact deleted them.
-  $blocked = [Text.RegularExpressions.Regex]::IsMatch($text, '被对方拒收|拒收了你的消息')
-  $deleted = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|你还不是[他她]')
+  $blocked = [Text.RegularExpressions.Regex]::IsMatch($text, '拒收')
+  $deleted = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|还不是[他她]')
   $kind = $(if ($blocked) { "blocked" } elseif ($deleted) { "deleted" } else { "" })
   Write-NoticeResult @{ ok = $true; undelivered = ($blocked -or $deleted); kind = $kind; line_count = @($reading.Lines).Count }
 } catch {
