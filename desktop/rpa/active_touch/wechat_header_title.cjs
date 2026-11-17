@@ -73,6 +73,36 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
       if ($expectedHasDash) { $folded=[Text.RegularExpressions.Regex]::Replace($folded,'[一·・•]','') }
       [Text.RegularExpressions.Regex]::Replace($folded,'[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]','').ToLowerInvariant() }
     $expectedFolded=& $fold $expectedTitle
+    # One Chinese character misread still confirms the chat (user decision 2026-11-17, first in
+    # 1.3.27, dropped with the new reader in 1.3.30, back in 1.3.35: the new reader still misread
+    # rare characters such as 燚 and 70 opened chats were skipped on one computer). Only a title
+    # of 4+ characters, full length, exactly one differing position with a Chinese character on
+    # both sides, never for strict callers, and only when no other contact in the address book is
+    # within one character of the reading (XIAOXI_TITLE_NEAR_NAMES; without the list it is off).
+    $nearCjkNames=$null
+    $nearRaw=[Environment]::GetEnvironmentVariable("XIAOXI_TITLE_NEAR_NAMES")
+    if (-not [string]::IsNullOrWhiteSpace($nearRaw) -and -not $expectedHasDash) {
+      # Windows PowerShell 5.1 passes a parsed JSON array down the pipeline as ONE object.
+      try { $nearParsed=ConvertFrom-Json -InputObject $nearRaw; $nearCjkNames=@(foreach ($nearItem in $nearParsed) { & $fold ([string]$nearItem) }) } catch { $nearCjkNames=$null }
+    }
+    $nearCjkMatch={ param([string]$reading)
+      if ($null -eq $nearCjkNames -or -not $allowCutTitle -or $expectedFolded.Length -lt 4 -or $reading.Length -ne $expectedFolded.Length) { return $false }
+      $position=-1
+      for ($k=0; $k -lt $reading.Length; $k++) {
+        if ($reading[$k] -ceq $expectedFolded[$k]) { continue }
+        if ($position -ge 0) { return $false }
+        $position=$k
+      }
+      if ($position -lt 0) { return $false }
+      $cjk='^\p{IsCJKUnifiedIdeographs}$'
+      if (-not [regex]::IsMatch([string]$reading[$position],$cjk) -or -not [regex]::IsMatch([string]$expectedFolded[$position],$cjk)) { return $false }
+      foreach ($near in $nearCjkNames) {
+        if ($near.Length -ne $reading.Length) { continue }
+        $distance=0
+        for ($k=0; $k -lt $near.Length -and $distance -le 1; $k++) { if ($near[$k] -cne $reading[$k]) { $distance++ } }
+        if ($distance -le 1) { return $false }
+      }
+      return $true }
     $script:headerTitleEvidence=@{ lines=0; expected_length=$expectedFolded.Length }
     # The chat-title reader first (PP-OCRv4 recognition, served by the desktop app). Windows' own
     # OCR read 26 of 64 field titles exactly, this reader 58 (2026-11-17); most skipped contacts had
@@ -99,6 +129,7 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
           $readFolded=& $fold ([string]$reading.text)
           $script:headerTitleEvidence.line_ocr=@{ read=$true; observed_length=$readFolded.Length; score=[double]$reading.score; match=($readFolded -ceq $expectedFolded) }
           if ($readFolded -ceq $expectedFolded) { return $true }
+          if (& $nearCjkMatch $readFolded) { $script:headerTitleEvidence.line_ocr.near_cjk=$true; return $true }
         }
       } catch {
         $script:headerTitleEvidence.line_ocr=@{ read=$false; error=$_.Exception.GetType().Name }
@@ -113,9 +144,8 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
     # and a long name is cut with "…": an exact match skipped about half of the
     # opened chats (customer 1.2.71, 2026-11-07). Letters and digits must be
     # identical; only symbols/punctuation/spaces are ignored, and a cut title must
-    # show at least the first 4 letters/digits of the name. No other tolerance: the
-    # look-alike-digit and one-wrong-character allowances (1.3.21, 1.3.27) widened a
-    # weak reader; the reader above replaces them (user decision 2026-11-17).
+    # show at least the first 4 letters/digits of the name. The one-Chinese-character
+    # rule above is the only other tolerance (look-alike digits stay off).
     $foldKeepCase={ param([string]$value)
       $folded=$value.Normalize([Text.NormalizationForm]::FormKC)
       if ($expectedHasDash) { $folded=[Text.RegularExpressions.Regex]::Replace($folded,'[一·・•]','') }
@@ -155,7 +185,9 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
       $textCase=& $foldKeepCase $text
       $cut=$text -match '(…|\.\.\.|。。。)$'
       # The whole name, or (not for strict callers) a "…"-cut title of 4+ letters/digits.
-      return (($textCase.Length -eq $expectedCase.Length) -or ($allowCutTitle -and $cut -and $textCase.Length -ge 4)) -and (& $readsAsName $textCase)
+      if ((($textCase.Length -eq $expectedCase.Length) -or ($allowCutTitle -and $cut -and $textCase.Length -ge 4)) -and (& $readsAsName $textCase)) { return $true }
+      if (-not $cut -and (& $nearCjkMatch $textFolded)) { $script:headerTitleEvidence.near_cjk=$true; return $true }
+      return $false
     }
     if (-not (& $matches $lines)) {
       # Windows OCR finds no line at all in a strip holding only a short title (a two-character
@@ -184,4 +216,28 @@ function foldTitle(value) {
   return String(value ?? "").normalize("NFKC").replace(/[\p{P}\p{S}\p{Cs}\p{Cf}\p{Mn}\s]/gu, "").toLowerCase();
 }
 
-module.exports = { WECHAT_HEADER_TITLE_POWERSHELL, foldTitle };
+// Other contacts' names a one-character OCR misread of this customer's title could equally be:
+// same folded length, at most two characters apart. Only touch passes them; without the list
+// (auto-reply, older callers) the near-character rule is off.
+function titleNearNames(contacts, customer) {
+  const expected = foldTitle(customer?.name);
+  if (expected.length < 4) return [];
+  const near = new Set();
+  for (const row of Array.isArray(contacts) ? contacts : []) {
+    if (!row || String(row.id ?? "") === String(customer?.id ?? "")) continue;
+    for (const value of [row.name, row.remark, row.nickname]) {
+      const folded = foldTitle(value);
+      if (folded.length !== expected.length) continue;
+      let diff = 0;
+      for (let index = 0; index < folded.length && diff <= 2; index++) if (folded[index] !== expected[index]) diff++;
+      if (diff <= 2) near.add(folded);
+    }
+  }
+  return [...near].slice(0, 200);
+}
+
+function titleNearNamesEnvironment(names) {
+  return Array.isArray(names) ? JSON.stringify(names.map(String).slice(0, 200)) : "";
+}
+
+module.exports = { WECHAT_HEADER_TITLE_POWERSHELL, foldTitle, titleNearNames, titleNearNamesEnvironment };

@@ -145,9 +145,12 @@ function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
         ...(kinds.has(header.expected_class) ? { expected_class: header.expected_class } : {}),
         ...(kinds.has(header.observed_class) ? { observed_class: header.observed_class } : {}),
         ...(typeof header.cut === 'boolean' ? { cut: header.cut } : {}),
+        // Confirmed with one Chinese character read differently (wechat_header_title.cjs).
+        ...(header.near_cjk === true ? { near_cjk: true } : {}),
         // Whether the chat-title reader ran, how long its reading was and whether it matched (never the text).
         ...(header.line_ocr && typeof header.line_ocr === 'object' ? { line_ocr: {
           read: header.line_ocr.read === true, match: header.line_ocr.match === true,
+          ...(header.line_ocr.near_cjk === true ? { near_cjk: true } : {}),
           ...(Number.isInteger(header.line_ocr.observed_length) ? { observed_length: header.line_ocr.observed_length } : {}),
           ...(Number.isFinite(header.line_ocr.score) ? { score: Math.round(header.line_ocr.score * 1000) / 1000 } : {}),
           ...(/^[A-Za-z]{1,40}$/u.test(String(header.line_ocr.error || '')) ? { error: header.line_ocr.error } : {}) } } : {})

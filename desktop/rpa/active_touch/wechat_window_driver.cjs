@@ -2,7 +2,7 @@ const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs"
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
-const { WECHAT_HEADER_TITLE_POWERSHELL } = require("./wechat_header_title.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -2987,7 +2987,8 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : "",
+    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   }, { ensure: false, timeout: 30000 });
 }
 
@@ -2997,7 +2998,8 @@ function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : "",
+    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   }, { ensure: false, timeout: 30000 });
 }
 
