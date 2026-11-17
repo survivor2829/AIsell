@@ -534,6 +534,7 @@ def generate(
             for b in sp_blocks
         }
         first_unknown: Exception | None = None
+        halted = False
         for fut in concurrent.futures.as_completed(futures):
             b = futures[fut]
             if fut.cancelled():
@@ -544,6 +545,11 @@ def generate(
                 if getattr(e, "outcome_unknown", False):
                     if first_unknown is None:
                         first_unknown = e
+                    # A screen that is only slow (submitted, polled past the limit) does not stop the
+                    # others: on 2026-11-17 APIMart took up to 13.5 minutes per image for hours and one
+                    # slow screen cancelled every screen not yet submitted. Only an uncertain purchase does.
+                    if not getattr(e, "slow_submitted_task", False) and not halted:
+                        halted = True
                         for pending, pending_block in futures.items():
                             if pending is not fut:
                                 if pending.cancel():
@@ -1155,6 +1161,7 @@ def generate_v2(
             for b in sp_blocks
         }
         first_unknown: Exception | None = None
+        halted = False
         for fut in concurrent.futures.as_completed(futures):
             b = futures[fut]
             if fut.cancelled():
@@ -1165,6 +1172,11 @@ def generate_v2(
                 if getattr(e, "outcome_unknown", False):
                     if first_unknown is None:
                         first_unknown = e
+                    # A screen that is only slow (submitted, polled past the limit) does not stop the
+                    # others: on 2026-11-17 APIMart took up to 13.5 minutes per image for hours and one
+                    # slow screen cancelled every screen not yet submitted. Only an uncertain purchase does.
+                    if not getattr(e, "slow_submitted_task", False) and not halted:
+                        halted = True
                         for pending, pending_block in futures.items():
                             if pending is not fut:
                                 if pending.cancel():

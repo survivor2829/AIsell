@@ -332,3 +332,24 @@ def test_balance_text_on_a_5xx_stays_outcome_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(refine_planner, "_http_post_deepseek", Mock(side_effect=refused))
     with pytest.raises(pricing.RequestOutcomeUnknown):
         pricing.CostJournal(tmp_path).planner_call(quote(), {"messages": [], "max_tokens": 100}, "key")
+
+
+def test_a_poll_timeout_keeps_its_task_and_is_marked_only_slow(tmp_path):
+    # 2026-11-17: a submitted image still generating after the poll limit is only slow; the
+    # generator lets the other screens continue and recovery polls the same task again.
+    from ai_image_apimart import APIMartOutcomeUnknown
+    ledger = pricing.CostJournal(tmp_path)
+    ledger.set_plan(quote(), 2)
+    timeout = APIMartOutcomeUnknown("task_slow", "APIMart 任务超时未完成", stage="poll")
+    timeout.poll_reason = "timeout"
+    with pytest.raises(pricing.RequestOutcomeUnknown) as raised:
+        ledger.image_call(quote(), Mock(side_effect=timeout), "prompt", block_id="s2")
+    assert raised.value.slow_submitted_task is True
+    assert raised.value.provider_task_id == "task_slow"
+    operation = next(op for op in ledger.load()["operations"].values() if op.get("block_id") == "s2")
+    assert operation["status"] == "outcome_unknown" and operation["provider_task_id"] == "task_slow"
+    unsent = pricing.CostJournal(tmp_path / "unsent")
+    unsent.set_plan(quote(), 1)
+    with pytest.raises(pricing.RequestOutcomeUnknown) as raised:
+        unsent.image_call(quote(), Mock(side_effect=APIMartOutcomeUnknown("", "提交响应不明", stage="submit")), "prompt")
+    assert raised.value.slow_submitted_task is False

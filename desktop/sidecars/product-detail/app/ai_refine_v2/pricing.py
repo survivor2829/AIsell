@@ -45,9 +45,18 @@ class RequestOutcomeUnknown(RuntimeError):
     do_not_retry = True
     outcome_unknown = True
 
-    def __init__(self, message, *, not_submitted=False):
+    def __init__(self, message, *, not_submitted=False, stage="", poll_reason="", provider_task_id=""):
         super().__init__(message)
         self.not_submitted = not_submitted
+        # Where the uncertainty arose: a submitted task whose poll ran out of time is only slow
+        # (its task id is kept and recovery polls it again); anything else may be a lost purchase.
+        self.stage = stage
+        self.poll_reason = poll_reason
+        self.provider_task_id = provider_task_id
+
+    @property
+    def slow_submitted_task(self):
+        return self.stage == "poll" and self.poll_reason == "timeout" and bool(self.provider_task_id)
 
 
 # The gateway keeps receipts far longer than this; past it a missing receipt is not trusted as "never bought".
@@ -406,7 +415,10 @@ class CostJournal:
             if known_failure:
                 raise
             detail = "/".join(str(value) for value in diagnostic.values())
-            raise RequestOutcomeUnknown(f"生图请求结果尚未确认（{detail}），已保留原回执与预留费用，禁止重提。") from None
+            raise RequestOutcomeUnknown(f"生图请求结果尚未确认（{detail}），已保留原回执与预留费用，禁止重提。",
+                                        stage=str(getattr(exc, "stage", "") or ""),
+                                        poll_reason=str(getattr(exc, "poll_reason", "") or ""),
+                                        provider_task_id=str(receipt.get("provider_task_id") or "")) from None
         receipt.setdefault("raw_url", result)
         self.finish(operation, "completed", **receipt)
         return result

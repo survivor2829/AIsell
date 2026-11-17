@@ -39,8 +39,11 @@ T2I_MODEL = "gpt-image-2"
 # 默认 1:1 (gpt-image-2 支持 1:1 / 3:4 / 4:3 / 9:16 / 16:9)
 _SIZE_DEFAULT = "1:1"
 _POLL_INTERVAL_S = 3
-# 480s = 8min, 给 v2 Hero 12 屏 + APIMart 偶发 503 重试边界, env 可覆盖
-_POLL_TIMEOUT_S = int(os.environ.get("REFINE_POLL_TIMEOUT_S", "480"))
+# Polling is free, so a slow image is waited for rather than given up. Gateway records
+# 2026-11-13..17 (643 images): median 45 s, P90 139 s, but for hours on 11-17 APIMart
+# took up to 807 s; the old 8-minute limit turned those into "结果不明" and stopped
+# whole detail pages. 20 minutes covers every completed image observed. env overrides.
+_POLL_TIMEOUT_S = int(os.environ.get("REFINE_POLL_TIMEOUT_S", "1200"))
 # Polling only reads the status of an already submitted task: it never buys
 # anything, so a shaky network is waited out (bounded by _POLL_TIMEOUT_S) instead
 # of giving up after three failures in ~9 s. Customer computer 2026-11-04: the
