@@ -6,8 +6,11 @@
 const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
-// Kept in sync with the PowerShell pattern below.
-const NOTICE_PATTERN = /朋友验证|你还不是[他她]|被对方拒收|拒收了你的消息/u;
+// Kept in sync with the PowerShell patterns below. Windows OCR drops or misreads characters
+// of this small grey line ("但对方拒收了" without 被, "但钅芯了方拒收了", 2026-11-17 real
+// screen), so each kind keys on the words it always read right: 拒收 for a block, 朋友验证 /
+// 还不是他(她) for a deletion.
+const NOTICE_PATTERN = /拒收|朋友验证|还不是[他她]/u;
 
 const WECHAT_DELIVERY_NOTICE_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -38,13 +41,14 @@ try {
   if ($dpi -lt 72) { $dpi = 96 }
   $scale = $dpi / 96.0
   $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
-  # Chat body only: right of the session list, and the band just above the
-  # composer, whose height is fixed (~150 px at 96 DPI) whatever the window
-  # size. On a real 1120x760 window the notice sat 168 px above the bottom.
+  # The whole chat body: right of the session list, below the title bar and above the
+  # composer (fixed ~130 px at 96 DPI). A short chat (a contact added recently, most touch
+  # recipients) keeps its messages at the top, far above the composer: the old band of
+  # 210 px above the composer missed "消息已发出，但被对方拒收了" 250 px up (2026-11-17).
   $left = [int]($rect.Left + [Math]::Max(240 * $scale, $width * 0.28))
   $right = [int]($rect.Right - 12 * $scale)
   $bottom = [int]($rect.Bottom - 130 * $scale)
-  $top = [int]([Math]::Max($rect.Top + 80 * $scale, $rect.Bottom - 340 * $scale))
+  $top = [int]($rect.Top + 80 * $scale)
   if ($right - $left -lt 160 -or $bottom - $top -lt 40) { Write-NoticeResult @{ ok = $false; reason = "delivery_notice_region_invalid" } }
   Add-Type -AssemblyName System.Drawing
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -84,18 +88,24 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('zh-Hans-CN'))
   if ($null -eq $engine) { Write-NoticeResult @{ ok = $false; reason = "delivery_notice_ocr_unavailable" } }
   $reading=Wait-Notice ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult])
-  # Only the lowest text counts: the notice sits directly under the bubble just
-  # sent, while an older notice in the history would sit above that bubble.
-  # (Real 1120x760 window: notice ~30 px above the band bottom, our bubble ~77.)
-  $lowestLimit = $scaled.Height - 60 * $scale * 2
+  # Only the lowest text counts: the notice sits directly under the bubble just sent,
+  # while an older notice in the history would sit above that bubble. The lowest line and
+  # the one above it if it is within 26 px (a deletion notice wraps onto two lines); the
+  # bubble just sent is taller than that, so an older notice never joins.
+  $allBottoms = @($reading.Lines | ForEach-Object { $_.Words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height } })
+  if ($allBottoms.Count -eq 0) { Write-NoticeResult @{ ok = $true; undelivered = $false; kind = ""; line_count = 0 } }
+  $lowestLimit = ($allBottoms | Measure-Object -Maximum).Maximum - 26 * $scale * 2
   $lowestLines = @($reading.Lines | Where-Object {
     $wordBottoms = @($_.Words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height })
     $wordBottoms.Count -gt 0 -and ($wordBottoms | Measure-Object -Maximum).Maximum -ge $lowestLimit
   })
   $text = (@($lowestLines | ForEach-Object { [string]$_.Text }) -join '').Normalize([Text.NormalizationForm]::FormKC)
   $text = [Text.RegularExpressions.Regex]::Replace($text, '\s+', '')
-  $undelivered = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|你还不是[他她]|被对方拒收|拒收了你的消息')
-  Write-NoticeResult @{ ok = $true; undelivered = $undelivered; line_count = @($reading.Lines).Count }
+  # 被对方拒收: the contact blocked the user; 朋友验证 / 你还不是他(她)朋友: the contact deleted them.
+  $blocked = [Text.RegularExpressions.Regex]::IsMatch($text, '拒收')
+  $deleted = [Text.RegularExpressions.Regex]::IsMatch($text, '朋友验证|还不是[他她]')
+  $kind = $(if ($blocked) { "blocked" } elseif ($deleted) { "deleted" } else { "" })
+  Write-NoticeResult @{ ok = $true; undelivered = ($blocked -or $deleted); kind = $kind; line_count = @($reading.Lines).Count }
 } catch {
   Write-NoticeResult @{ ok = $false; reason = "delivery_notice_unreadable" }
 } finally {
@@ -118,9 +128,12 @@ async function detectWechatDeliveryNoticeAsync(context = {}, run = runPowerShell
   const result = await run(WECHAT_DELIVERY_NOTICE_SCRIPT, {
     XIAOXI_EXPECTED_PID: String(pid),
     XIAOXI_EXPECTED_HWND: hWnd
-  }, { ensure: false, timeout: 12_000 });
+  }, { ensure: false, timeout: 12_000, hosted: true });
   if (result?.ok !== true) return { ok: false, reason: String(result?.reason || "delivery_notice_unreadable") };
-  return { ok: true, undelivered: result.undelivered === true };
+  const undelivered = result.undelivered === true;
+  // blocked: 被对方拒收 (the contact blocked the user); deleted: 朋友验证 (the contact deleted them).
+  const kind = undelivered && ["blocked", "deleted"].includes(result.kind) ? result.kind : "";
+  return { ok: true, undelivered, ...(kind ? { kind } : {}) };
 }
 
 module.exports = { WECHAT_DELIVERY_NOTICE_SCRIPT, detectWechatDeliveryNoticeAsync, mentionsNotice };

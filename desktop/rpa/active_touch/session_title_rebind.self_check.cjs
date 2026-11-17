@@ -185,6 +185,27 @@ $verdict = & {
     read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
     assert.equal(read.verdict, "fallthrough", "a wrong reading leaves it to Windows' reading");
     assert.equal(read.evidence.match, false);
+    // One Chinese character off (user decision 2026-11-17; back in 1.3.35 after the new reader
+    // still misread 燚): confirmed only with the address-book list and nobody that close in it.
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token, XIAOXI_TITLE_NEAR_NAMES: "[]" });
+    assert.equal(read.verdict, "True", "one Chinese character off confirms the chat");
+    assert.equal(read.evidence.near_cjk, true, "and the field report says so");
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token, XIAOXI_TITLE_NEAR_NAMES: JSON.stringify(["济南屣迪"]) });
+    assert.equal(read.verdict, "fallthrough", "never when another contact could be what was read");
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token, XIAOXI_TITLE_NEAR_NAMES: JSON.stringify(["济南屣迫"]) });
+    assert.equal(read.verdict, "fallthrough", "nor when one is a character away from the reading");
+    replyText = "济南屣迫";
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token, XIAOXI_TITLE_NEAR_NAMES: "[]" });
+    assert.equal(read.verdict, "fallthrough", "two characters off is another name");
+    replyText = "王总6";
+    read = await runReader("王总5", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token, XIAOXI_TITLE_NEAR_NAMES: "[]" });
+    assert.equal(read.verdict, "fallthrough", "a digit is never relaxed, nor a name under 4 characters");
+    replyText = "张三丰A";
+    read = await runReader("张三丰B", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token, XIAOXI_TITLE_NEAR_NAMES: "[]" });
+    assert.equal(read.verdict, "fallthrough", "only a Chinese character, never a letter");
+    replyText = "济南屣迪";
+    read = await runReader("济南展迪", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
+    assert.equal(read.verdict, "fallthrough", "without the list (auto-reply and other callers) the rule is off");
     replyText = "崔情情";
     read = await runReader("崔情情🍀🌻", { XIAOXI_LINE_OCR_URL: url, XIAOXI_LINE_OCR_TOKEN: token });
     assert.equal(read.verdict, "True", "emoji in the name are ignored like everywhere else");

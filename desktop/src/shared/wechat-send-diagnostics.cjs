@@ -15,7 +15,7 @@ const SAFE_INPUT_PHASES = new Set([
   "preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
   "search_quiet_check", "search_focus", "search_select_all", "search_query_input",
   "search_observation", "search_result_enter", "pre_input", "after_input_click",
-  "typing", "after_paste", "copy_probe"
+  "typing", "after_paste", "copy_probe", "clipboard_check"
 ]);
 
 function sanitizeWechatInputDiagnostics(value) {

@@ -145,9 +145,12 @@ function finiteSearchEvidence(diagnostics = {}, includeAttempts = true) {
         ...(kinds.has(header.expected_class) ? { expected_class: header.expected_class } : {}),
         ...(kinds.has(header.observed_class) ? { observed_class: header.observed_class } : {}),
         ...(typeof header.cut === 'boolean' ? { cut: header.cut } : {}),
+        // Confirmed with one Chinese character read differently (wechat_header_title.cjs).
+        ...(header.near_cjk === true ? { near_cjk: true } : {}),
         // Whether the chat-title reader ran, how long its reading was and whether it matched (never the text).
         ...(header.line_ocr && typeof header.line_ocr === 'object' ? { line_ocr: {
           read: header.line_ocr.read === true, match: header.line_ocr.match === true,
+          ...(header.line_ocr.near_cjk === true ? { near_cjk: true } : {}),
           ...(Number.isInteger(header.line_ocr.observed_length) ? { observed_length: header.line_ocr.observed_length } : {}),
           ...(Number.isFinite(header.line_ocr.score) ? { score: Math.round(header.line_ocr.score * 1000) / 1000 } : {}),
           ...(/^[A-Za-z]{1,40}$/u.test(String(header.line_ocr.error || '')) ? { error: header.line_ocr.error } : {}) } } : {})
@@ -212,6 +215,14 @@ function createTouchWorkflow(options = {}) {
   // WeChat may still show the Moments page a Moments task left open; contact search only works
   // from the chat page. The app passes restoreWechatChatSurface; self-checks inject their own.
   const restoreChatSurface = typeof options.restoreChatSurface === "function" ? options.restoreChatSurface : null;
+  // Contacts found blocked or deleted are remembered per WeChat account and skipped later.
+  const unreachable = contactsDir ? require("./touch-unreachable.cjs").createUnreachableRegistry(contactsDir) : null;
+  // A contact that ended with a verified send left WeChat on its chat page: the next contact of
+  // the same task within a minute needs no Moments check or window restore (7.5 s per contact on
+  // the development machine, 2026-11-17). Anything else (the first contact, a skip, a failure, an
+  // unknown outcome, a pause or another task in between) restores as before.
+  const CHAT_SURFACE_TRUST_MS = 60_000;
+  let chatSurfaceSettled = { taskId: "", at: 0 };
   // Injected in self-checks; the app reads the account contact sync captured.
   const receipts = () => {
     if (options.receipts !== undefined) return options.receipts;
@@ -269,8 +280,12 @@ function createTouchWorkflow(options = {}) {
     if ([...requested].some((id) => !contacts.some((contact) => String(contact.id) === id))) {
       throw new Error("所选联系人已不在同步通讯录，请刷新后重新选择");
     }
-    const classification = classifyContacts(contacts);
+    const classification = classifyContacts(contacts, { unreachableKind: (contact) => unreachable?.kindOf(contact) || "" });
     const eligible = classification.eligible.filter((contact) => requested.has(String(contact.id)));
+    if (!eligible.length && classification.excluded.some((entry) => requested.has(String(entry.contact.id))
+      && ["recipient_blocked_before", "recipient_deleted_before"].includes(entry.reason_code))) {
+      throw new Error("所选联系人此前都已拉黑或删除你，已自动跳过；对方重新加回好友后可在名单里放出。");
+    }
     if (!eligible.length) throw new Error("所选联系人暂无可安全触达的对象，请检查联系人资料");
     for (const contact of eligible) validateTouchMessage(fillRespectfulTemplate(script, contact));
     const snapshot = createTask(script, contacts, now().toISOString(), {
@@ -863,7 +878,12 @@ function createTouchWorkflow(options = {}) {
           const partProgress = { partKind: part.kind, partIndex: partIndex + 1 };
           reportProgress({ ...partProgress, stage: "prepare_contact" });
           let handedWindow = null;
-          if (restoreChatSurface && !sessionAnchor) {
+          const surfaceSettled = chatSurfaceSettled.taskId === id && Date.now() - chatSurfaceSettled.at < CHAT_SURFACE_TRUST_MS;
+          chatSurfaceSettled = { taskId: "", at: 0 };  // Only a verified send below restores the trust.
+          if (surfaceSettled && restoreChatSurface && !sessionAnchor) {
+            diagnostics().event("active_touch", "chat_surface_restore", { task_id: id, current_index: index, changed: false, skipped: true },
+              { trace: true, traceId: sendOperation.traceId, level: "info", code: "settled_after_send" });
+          } else if (restoreChatSurface && !sessionAnchor) {
             // Best effort: when this fails the search step below still decides (and skips safely).
             const restored = await Promise.resolve().then(restoreChatSurface).catch((error) => ({ ok: false, reason: String(error?.code || error?.message || "restore_failed") }));
             // Only a window left untouched (already on the chat page) is reused; after a switch back
@@ -926,6 +946,8 @@ function createTouchWorkflow(options = {}) {
               currentIndex: index
             }),
             onTransition: (status, executionState = {}) => {
+              if (status === "sent_verified") chatSurfaceSettled = { taskId: id, at: Date.now() };
+              else if (status !== "sending") chatSurfaceSettled = { taskId: "", at: 0 };
               if (multipart) {
                 onPartTransition(status);
                 if (status === "sent_verified") reportProgress({ ...partProgress, stage: "part_complete" });
@@ -1024,15 +1046,24 @@ function createTouchWorkflow(options = {}) {
         delete current.login_wait_started_at;
         if (notice?.ok === true && notice.undelivered === true) {
           current.status = "recipient_unreachable_skipped";
-          current.blocked_reason = "recipient_not_friend";
-          current.reason = "已发出，但对方已不是好友（需要朋友验证），消息未送达；不会重发";
+          // 2026-11-17: blocked (被对方拒收) and deleted (朋友验证) are counted apart and both are
+          // skipped by later tasks; the rest of this contact's messages were already not sent.
+          current.unreachable_kind = ["blocked", "deleted"].includes(notice.kind) ? notice.kind : "";
+          current.blocked_reason = current.unreachable_kind === "blocked" ? "recipient_blocked"
+            : current.unreachable_kind === "deleted" ? "recipient_deleted" : "recipient_not_friend";
+          current.reason = current.unreachable_kind === "blocked" ? "已发出，但被对方拒收（对方已将你拉黑），消息未送达；以后的触达会自动跳过此人"
+            : current.unreachable_kind === "deleted" ? "已发出，但对方已删除你（需要朋友验证），消息未送达；以后的触达会自动跳过此人"
+            : "已发出，但对方已不是好友（需要朋友验证），消息未送达；不会重发";
+          if (current.unreachable_kind) {
+            try { unreachable?.record(current.contact, current.unreachable_kind, now().toISOString()); } catch { /* The task result still says it. */ }
+          }
           recordSkippedResult(current, index, { reasonCode: current.blocked_reason, blockedReason: current.reason, at: now().toISOString() });
         } else {
           current.status = "sent_verified";
           current.reason = "发送成功并已核验";
         }
         diagnostics().event("active_touch", "delivery_notice", { checked: Boolean(notice), ok: notice?.ok === true,
-          undelivered: notice?.undelivered === true, reason: notice?.reason || "" }, { code: notice?.undelivered === true ? "recipient_not_friend" : notice?.reason || "" });
+          undelivered: notice?.undelivered === true, ...(notice?.kind ? { kind: notice.kind } : {}), reason: notice?.reason || "" }, { code: notice?.undelivered === true ? current.blocked_reason || "recipient_not_friend" : notice?.reason || "" });
         task.current_index = index + 1;
         task.next_send_not_before = new Date(now().getTime() + sendDelayMs()).toISOString();
         if (task.current_index >= task.total) {
@@ -1477,11 +1508,25 @@ function createTouchWorkflow(options = {}) {
     const id = String(record?.id || record || "").trim();
     if (!id) return null;
     const taskDir = workflowDirectory(id);
-    if (!fs.existsSync(path.join(taskDir, "touch_task.json"))) return null;
-    const task = readWorkflowTask(id);
-    if (!task || task.integrity_error) return null;
-    const summary = skippedTaskSummary(task);
-    return { skipped_breakdown: summary.breakdown, skipped_records: summary.records };
+    // Before the task starts, those skipped from the start are already known (payload.excluded).
+    const started = fs.existsSync(path.join(taskDir, "touch_task.json"));
+    const task = started ? readWorkflowTask(id) : null;
+    if (started && (!task || task.integrity_error)) return null;
+    const summary = task ? skippedTaskSummary(task) : { breakdown: {}, records: [] };
+    // Who blocked or deleted the user: found by this task, plus those an earlier task found and
+    // this one skipped from the start (payload.excluded).
+    const unreachableSummary = { blocked: [], deleted: [] };
+    for (const row of summary.records) {
+      if (row.unreachable_kind) unreachableSummary[row.unreachable_kind].push({ name: String(row.displayName || ""), found: "this_task" });
+    }
+    for (const entry of Array.isArray(record?.payload?.excluded) ? record.payload.excluded : []) {
+      const kind = entry?.reason_code === "recipient_blocked_before" ? "blocked" : entry?.reason_code === "recipient_deleted_before" ? "deleted" : "";
+      if (kind) unreachableSummary[kind].push({ name: String(entry.contact?.remark || entry.contact?.name || ""), found: "earlier" });
+    }
+    if (!task && !unreachableSummary.blocked.length && !unreachableSummary.deleted.length) return null;
+    return { ...(task ? { skipped_breakdown: summary.breakdown, skipped_records: summary.records } : {}),
+      unreachable_summary: { blocked_count: unreachableSummary.blocked.length, deleted_count: unreachableSummary.deleted.length,
+        blocked: unreachableSummary.blocked.slice(0, 500), deleted: unreachableSummary.deleted.slice(0, 500) } };
   }
   function retrySkippedWorkflowTask(record, contactIds) {
     const id = String(record?.id || record || "").trim();

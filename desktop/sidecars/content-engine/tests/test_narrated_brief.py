@@ -393,6 +393,38 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual('rewrite', payload['creative_brief']['script_action'])
         self.assertIn('完整要点', instruction)
 
+    def test_little_footage_still_gets_a_script_when_pictures_may_repeat(self):
+        # 2026-11-17 real run: 12 photos (about 3 seconds each) stopped before any script
+        # with "当前素材总时长不足以承载要求的口播", although production replays pictures.
+        for strict in (False, True):
+            with self.subTest(strict_visual_review=strict):
+                state = self.domain._load(self.batch['batch_id'])
+                state.update(script_action='generate', expression='', available_shots=[{'target_duration_ms': 3000}] * 12)
+                state['settings'] = {**state.get('settings', {}), 'strict_visual_review': strict}
+                with patch.object(self.domain, '_initialize_speech_budget'),                      patch.object(self.domain, '_minimum_spoken_chars', return_value=150),                      patch.object(self.domain, '_max_narration_chars', return_value=10),                      patch.object(self.domain.d, '_should_stop', return_value=False),                      patch('content_engine.narrated_sources.source_index', return_value=([], {})),                      patch.object(self.domain, '_cloud', side_effect=ContentEngineError('probe', 'stop before provider')) as cloud:
+                    with self.assertRaises(ContentEngineError) as stopped:
+                        narrated_script_drafts.prepare(self.domain, 'task-test', state)
+                if strict:
+                    self.assertEqual('narrated_duration_too_short', stopped.exception.code, "unique pictures still bound the copy")
+                    cloud.assert_not_called()
+                else:
+                    self.assertEqual('probe', stopped.exception.code, "the script is requested")
+                    self.assertGreaterEqual(cloud.call_args.args[0]['maximum_chars'], 150)
+
+    def test_draft_labels_are_trimmed_locally_never_a_reason_to_drop_the_draft(self):
+        # 2026-11-17 real run: a usable script was discarded for a 70-character summary.
+        long_summary = "这条视频用三天线下实操的现场画面，讲清楚从机器操作、保养到找客户、报价、签单的完整学习过程，适合想入行的人，看完就知道值不值得来学，" * 2
+        script = {"title": "标" * 130, "summary": long_summary, "pain_point": "", "angle": "x" * 200,
+                  "narration": "想做清洁设备生意？现场有真机，学员上手练。"}
+        narrated_script_drafts._repair_labels(script, {"target_audience": "保洁公司老板"})
+        self.assertLessEqual(len(script["summary"]), 60)
+        self.assertTrue(script["summary"])
+        self.assertLessEqual(len(script["title"]), 100)
+        self.assertEqual(script["pain_point"], script["title"][:300])
+        self.assertLessEqual(len(script["angle"]), 150)
+        self.assertEqual("保洁公司老板", script["audience"])
+        self.assertEqual("想做清洁设备生意？现场有真机，学员上手练。", script["narration"], "the voiced text is never touched")
+
     def test_short_rewrite_is_told_to_lengthen_above_the_minimum(self):
         # 1.2.86: a 150-character idea in rewrite mode came back at 155 characters twice,
         # under the 195-character floor, because the model was only told to keep the draft.

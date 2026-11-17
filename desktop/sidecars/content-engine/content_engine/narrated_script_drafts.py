@@ -1,6 +1,7 @@
 """Prepare grounded copy choices before committing to a video edit."""
 import copy
 import math
+import re
 import time
 from difflib import SequenceMatcher
 
@@ -26,6 +27,42 @@ def _fit_generated_sentences(domain, script, batch, minimum, maximum):
     return {**script, 'narration': fitted} if minimum <= domain._spoken_char_count(fitted) <= maximum else script
 
 
+_LABEL_LIMITS = (('title', 100), ('pain_point', 300), ('angle', 150), ('summary', 60))
+
+
+def _clip(text, limit):
+    """At most ``limit`` characters, ending at a sentence or clause break when one is near."""
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    breaks = [cut.rfind(mark) for mark in '。！？；，,;']
+    end = max(breaks)
+    return (cut[:end] if end >= limit // 2 else cut).rstrip('，,;；、 ')
+
+
+def _repair_labels(script, batch):
+    """Labels around a draft are fixed locally; only the narration itself is the AI's to redo.
+
+    2026-11-17 real run: a usable script was thrown away because its one-line summary ran
+    past 60 characters ("summary须为60字以内…"), and the batch stopped. Titles, pain point,
+    angle and summary are shown to the customer, not voiced, so they are trimmed or filled.
+    """
+    title = _clip(script.get('title') if isinstance(script.get('title'), str) else '', 100)
+    narration = script.get('narration') if isinstance(script.get('narration'), str) else ''
+    if not title and narration.strip():
+        title = _clip(re.split(r'[。！？!?]', narration.strip())[0], 30)
+    script['title'] = title
+    for field, limit in _LABEL_LIMITS[1:]:
+        if field == 'summary' and batch is None:
+            continue
+        value = script.get(field)
+        value = _clip(value if isinstance(value, str) else '', limit)
+        script[field] = value or _clip(title, limit)
+    if batch is not None:
+        script['audience'] = batch['target_audience']
+
+
 def prepare(domain, task_id, batch):
     domain._initialize_speech_budget(batch)
     options = batch.setdefault('script_options', [])
@@ -35,10 +72,21 @@ def prepare(domain, task_id, batch):
     from .narrated_sources import source_index as build_sources
     sources, source_index = build_sources(domain, batch)
     minimum = domain._minimum_spoken_chars(batch)
+    # Footage limits the copy only where pictures may not repeat (strict review). The
+    # default mode replays pictures when the copy outruns them, as production does
+    # (narrated_production.follows_script); capping the copy by footage there stopped
+    # image-only batches before any script (2026-11-17: 12 photos, "总时长不足").
     maximum = min(2400, sum(domain._max_narration_chars(batch, shot['target_duration_ms']) for shot in shots))
     source_chars = 0
     if editing:
         source_chars = domain._spoken_char_count(narrated_brief.expression(batch))
+    if narrated_production.follows_script(batch):
+        # Never below what one proper video needs; above that, footage still bounds it.
+        needed = math.ceil(domain._minimum_spoken_chars(batch) * 1.5)
+        if editing:
+            needed = max(needed, math.ceil(source_chars * 1.2))
+        maximum = min(2400, max(maximum, needed))
+    if editing:
         if source_chars > maximum:
             raise ContentEngineError('narrated_duration_too_short', '当前素材不足以承载完整原稿，请补充相关素材；系统没有截断原文。')
         if batch['script_action'] == 'expand':
@@ -90,6 +138,7 @@ def prepare(domain, task_id, batch):
             for number, script in enumerate(scripts, 1):
                 if not isinstance(script, dict):
                     return f'第{number}份文案格式无效。'
+                _repair_labels(script, batch if modern else None)
                 for field, limit in (('title', 100), ('audience', 150), ('pain_point', 300), ('angle', 150), ('narration', 2400)):
                     value = script.get(field)
                     if not isinstance(value, str) or not 0 < len(value.strip()) <= limit:
@@ -104,6 +153,11 @@ def prepare(domain, task_id, batch):
                 if not modern and not minimum <= length <= maximum:
                     errors.append(f'第{number}份实际{length}字，须在{minimum}至{maximum}字之间。')
                 refs = script.get('source_ids')
+                if not narrated_production.strict_visual_review(batch):
+                    # Only strict review checks facts against these; elsewhere a wrong number
+                    # is dropped (all sources when none is left), never a reason to redo the draft.
+                    kept = [ref for ref in refs if isinstance(ref, str) and ref in source_index] if isinstance(refs, list) else []
+                    script['source_ids'] = refs = kept or list(source_index)[:20]
                 if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or ref not in source_index for ref in refs):
                     errors.append(f'第{number}份source_ids只能引用所给S编号。')
             return ' '.join(errors) or None

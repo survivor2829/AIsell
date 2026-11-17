@@ -2,7 +2,7 @@ const { WECHAT_SCREEN_PIXELS_POWERSHELL } = require("./wechat_screen_pixels.cjs"
 const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
-const { WECHAT_HEADER_TITLE_POWERSHELL } = require("./wechat_header_title.cjs");
+const { WECHAT_HEADER_TITLE_POWERSHELL, titleNearNamesEnvironment } = require("./wechat_header_title.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -51,12 +51,17 @@ public static class Win32XiaoxiParentGuard {
   private const uint WAIT_OBJECT_0 = 0x00000000u;
   private const uint INFINITE = 0xffffffffu;
   private static IntPtr parentHandle = IntPtr.Zero;
+  private static int guardedParent = 0;
+  // The long-lived observation host (powershell_host.cjs) runs many scripts in one process: a
+  // later script finds the guard already watching the same app, which counts as started.
+  public static bool Watching(int parentProcessId) { return parentHandle != IntPtr.Zero && guardedParent == parentProcessId; }
   [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
   [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   public static bool Start(int parentProcessId) {
     if (parentProcessId <= 0 || parentHandle != IntPtr.Zero) return false;
     parentHandle = OpenProcess(SYNCHRONIZE, false, parentProcessId);
     if (parentHandle == IntPtr.Zero) return false;
+    guardedParent = parentProcessId;
     Thread watcher = new Thread(() => {
       uint result = WaitForSingleObject(parentHandle, INFINITE);
       if (result == WAIT_OBJECT_0) Environment.Exit(197);
@@ -71,7 +76,7 @@ public static class Win32XiaoxiParentGuard {
 "@
 [int]$xiaoxiParentPid = 0
 if (-not [int]::TryParse([string]$env:XIAOXI_PARENT_PID, [ref]$xiaoxiParentPid) -or
-  -not [Win32XiaoxiParentGuard]::Start($xiaoxiParentPid)) { exit 197 }
+  -not ([Win32XiaoxiParentGuard]::Watching($xiaoxiParentPid) -or [Win32XiaoxiParentGuard]::Start($xiaoxiParentPid))) { exit 197 }
 try { [void][Win32XiaoxiDpiContext]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
 `;
 
@@ -2439,6 +2444,34 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     });
   }
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
+  // Read-only observations may run in the long-lived host (powershell_host.cjs): about 0.9 s
+  // less per call. Whatever goes wrong there before the script ran falls back to a new process.
+  if (options.hosted === true && options.diagnostics !== true && options.sta !== true && !options.spawnProcess) {
+    const host = require("./powershell_host.cjs").powerShellHost();
+    if (host) {
+      const hostedEnv = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("XIAOXI_"))),
+        ...evidenceEnvironment(),
+        XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable || "",
+        ...env,
+        XIAOXI_PARENT_PID: String(process.pid)
+      };
+      const hostedTimeout = options.timeout === false ? 15000 : (Number(options.timeout) > 0 ? Number(options.timeout) : 15000);
+      return host.run(`${DPI_AWARE_POWERSHELL}\n${FAILURE_EVIDENCE_SCRIPT}\n${script}`, hostedEnv, hostedTimeout).then((answer) => {
+        if (answer?.hostUnavailable) return runPowerShellAsync(script, env, { ...options, hosted: false, ensure: false });
+        if (answer?.timedOut) return { ok: false, reason: "powershell_timeout" };
+        const output = String(answer?.stdout || "").trim();
+        if (!output) return { ok: false, reason: ensureResult?.reason || "powershell_output_invalid" };
+        try {
+          const parsed = JSON.parse(output);
+          if (!parsed.ok && !parsed.reason) return { ...parsed, reason: ensureResult?.reason || "powershell_output_invalid" };
+          return parsed;
+        } catch {
+          return ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false, reason: "powershell_output_invalid" };
+        }
+      });
+    }
+  }
   const scriptInput = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${FAILURE_EVIDENCE_SCRIPT}\n${script}`, "utf16le").toString("base64");
   const timeout = options.timeout === false ? null : (Number(options.timeout) > 0 ? Number(options.timeout) : 15000);
   const terminationGraceMs = Number(options.terminationGraceMs) > 0
@@ -2987,7 +3020,8 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : "",
+    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   }, { ensure: false, timeout: 30000 });
 }
 
@@ -2997,7 +3031,8 @@ function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : ""
+    XIAOXI_TITLE_STRICT: context.strictTitle === true ? "1" : "",
+    XIAOXI_TITLE_NEAR_NAMES: titleNearNamesEnvironment(context.titleNearNames)
   }, { ensure: false, timeout: 30000 });
 }
 
@@ -3311,42 +3346,25 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
     $draftCheck = "clipboard_write_or_paste_failed"
     continue
   }
-  Start-Sleep -Milliseconds (350 + (250 * $attempt))
+  # No read-back of the input box (user decision 2026-11-17: speed; select-all, copy and two waits
+  # took about 2-3 s per contact). What could put other text into the box is the clipboard
+  # changing between Set-Clipboard and the paste: the clipboard must still hold this message.
+  Start-Sleep -Milliseconds 150
   Assert-ExactDraftLease
   if ([Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
     $draftCheck = "wechat_focus_lost_after_paste"
     continue
   }
   try {
-    Set-DraftInputPhase "copy_probe"
-    $probe = "__XIAOXI_DRAFT_PROBE_" + [Guid]::NewGuid().ToString("N")
-    Set-Clipboard -Value $probe
-    $ownedClipboardValue = [string]$probe
-    $script:draftOwnedClipboardValue = $ownedClipboardValue
-    Assert-ExactDraftLease
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
-    Rebase-ExactDraftInputLease
-    Start-Sleep -Milliseconds 100
-    Assert-ExactDraftLease
-    [System.Windows.Forms.SendKeys]::SendWait("^c")
-    Rebase-ExactDraftInputLease
-    Start-Sleep -Milliseconds (250 + (150 * $attempt))
-    Assert-ExactDraftLease
-    $copiedDraft = [string](Get-Clipboard -Raw -ErrorAction Stop)
-    $normalizedCopiedDraft = Normalize-WechatDraftText $copiedDraft
-    if ($normalizedCopiedDraft -ceq $normalizedMessage) {
-      $ownedClipboardValue = $copiedDraft
-      $script:draftOwnedClipboardValue = $copiedDraft
+    Set-DraftInputPhase "clipboard_check"
+    $pastedSource = [string](Get-Clipboard -Raw -ErrorAction Stop)
+    if ((Normalize-WechatDraftText $pastedSource) -ceq $normalizedMessage) {
       $draftVerified = $true
-      $draftCheck = "clipboard_roundtrip"
-    } elseif ($normalizedCopiedDraft -ceq (Normalize-WechatDraftText $probe)) {
-      $ownedClipboardValue = $copiedDraft
-      $script:draftOwnedClipboardValue = $copiedDraft
-      $draftCheck = "message_input_empty_or_copy_blocked"
+      $draftCheck = "pasted_owned_clipboard"
     } else {
-      $draftCheck = "message_input_content_mismatch"
+      $draftCheck = "clipboard_changed_before_paste"
     }
-  } catch { $draftCheck = "clipboard_roundtrip_failed" }
+  } catch { $draftCheck = "clipboard_check_failed" }
   if ($draftVerified) {
     $usedPoint = $point
     break

@@ -300,6 +300,44 @@ async function aDayCapsuleWithoutEvidenceTakesALaterOccurrence() {
   t.capsules.stop();
 }
 
+async function aNewVersionTakesItsOwnEvidence() {
+  // 2026-11-17: a capsule opened on 1.3.27 in the morning kept its morning screenshots while
+  // 70 later failures on 1.3.34 added only a count; the new version could not be diagnosed.
+  let version = "1.3.27";
+  const t = fixture("version-evidence", { lateAttachMs: 30, identity: () => ({ schema: 1, installId: "11111111-2222-4333-8444-555555555555", version }) });
+  const passports = path.join(t.root, "task-passports", "active_touch", "task_3");
+  fs.mkdirSync(passports, { recursive: true });
+  const stamp = (ms) => new Date(ms).toISOString().replace(/[:.T]/g, "-");
+  const passportCount = () => t.files()[0].attachments.filter(name => name.startsWith("passport-")).length;
+  // The late attachment runs on a timer: wait for an attachment instead of a fixed pause.
+  const waitFor = async (marker) => {
+    for (let waited = 0; waited < 3000 && !t.files()[0].attachments.some(name => name.includes(marker)); waited += 20) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  const first = Date.now() - 20_000;  // Passports are picked by file time, within 60 s after the failure.
+  fs.writeFileSync(path.join(passports, `${stamp(first)}-aa11bb22-screen.png`), PNG);
+  const id = t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: first });
+  await waitFor("aa11bb22");
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const morning = passportCount();
+  assert.ok(morning >= 1, "the first occurrence takes its passport: " + JSON.stringify(t.files()[0].attachments));
+  const later = Date.now() - 10_000;
+  fs.writeFileSync(path.join(passports, `${stamp(later)}-bb22cc33-screen.png`), PNG);
+  assert.equal(t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: later }), id);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(passportCount(), morning, "the same version adds no evidence again");
+  version = "1.3.34";
+  const now = Date.now();
+  fs.writeFileSync(path.join(passports, `${stamp(now)}-cc33dd44-screen.png`), PNG);
+  assert.equal(t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: now }), id);
+  await waitFor("cc33dd44");
+  const capsule = t.files()[0];
+  assert.ok(capsule.attachments.some(name => name.includes("cc33dd44")), "the new version brings its own passport: " + JSON.stringify(capsule.attachments));
+  assert.deepEqual(capsule.evidencedVersions, ["1.3.27", "1.3.34"]);
+  t.capsules.stop();
+}
+
 async function maskedScreenshotsAreNotUploaded() {
   const t = fixture("masked");
   const evidence = path.join(t.root, "failure-evidence");
@@ -417,6 +455,7 @@ async function earlyTouchPauseFilesItsOwnCapsule() {
   await flightRecordAndPassportTravelWithTheFailure();
   await passportWrittenAfterTheFailureStillTravels();
   await aDayCapsuleWithoutEvidenceTakesALaterOccurrence();
+  await aNewVersionTakesItsOwnEvidence();
   await maskedScreenshotsAreNotUploaded();
   await environmentCausesAreCountedNotFiled();
   profilePathVariants();

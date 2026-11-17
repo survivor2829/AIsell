@@ -3346,13 +3346,16 @@ $r | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 10_000 });
   assert.match(driverSource, /function inputWechatMessageDraft[\s\S]*\}, \{ ensure: false \}\);/);
   assert.match(safeStateMachineSource, /inputDriver\(draft, \{\s*pid: state\.window_pid,\s*hWnd: state\.window_handle\s*\}\)/);
   assert.match(messageDraftSource, /SendWait\("\^a"\)[\s\S]*Set-Clipboard -Value \$message[\s\S]*SendWait\("\^v"\)/);
-  assert.match(messageDraftSource, /SendWait\("\^c"\)/);
-  assert.match(messageDraftSource, /draftCheck = "clipboard_roundtrip"/);
+  // 2026-11-17 (user decision, speed): no select-all/copy read-back of the input box; the
+  // clipboard must still hold this message after the paste, or the draft is not used.
+  assert.doesNotMatch(messageDraftSource, /SendWait\("\^c"\)/);
+  assert.match(messageDraftSource, /\$pastedSource = \[string\]\(Get-Clipboard -Raw -ErrorAction Stop\)/);
+  assert.match(messageDraftSource, /\(Normalize-WechatDraftText \$pastedSource\) -ceq \$normalizedMessage\)[\s\S]*\$draftVerified = \$true/);
+  assert.match(messageDraftSource, /draftCheck = "clipboard_changed_before_paste"/);
   assert.match(messageDraftSource, /function Normalize-WechatDraftText/);
   assert.match(messageDraftSource, /Replace\(\[Environment\]::NewLine, \[string\]\[char\]10\)/);
   assert.match(messageDraftSource, /Replace\(\[string\]\[char\]13, \[string\]\[char\]10\)/);
   assert.match(messageDraftSource, /TrimEnd\(\[char\[\]\]@\(\[char\]0xFFFC\)\)/);
-  assert.match(messageDraftSource, /\$normalizedCopiedDraft -ceq \$normalizedMessage/);
   assert.match(messageDraftSource, /\$inputPoints = @\(Get-DraftInputPoints \$draftHeight \$draftDpi\)/);
   assert.match(messageDraftSource, /input_hit = \$draftHit/, "a refused input point reports what stood there");
   // No evidence key may contain "draft": the log sanitizer drops those as possible draft text, which
@@ -3378,8 +3381,8 @@ $r | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 10_000 });
   assert.match(messageDraftSource, /for \(\$attempt = 1; \$attempt -le \$inputPoints\.Count; \$attempt\+\+\)[\s\S]*SendWait\("\^a"\)[\s\S]*SendWait\("\^v"\)[\s\S]*if \(\$draftVerified\) \{[\s\S]*break/);
   assert.match(messageDraftSource, /draftPoint = \$usedPoint/);
   assert.match(messageDraftSource, /wechat_focus_lost_after_paste/);
-  assert.match(messageDraftSource, /message_input_empty_or_copy_blocked/);
-  assert.match(messageDraftSource, /message_input_content_mismatch/);
+  assert.match(messageDraftSource, /clipboard_check_failed/);
+  assert.doesNotMatch(messageDraftSource, /copy_probe/, "the input box is never read back");
   assert.match(messageDraftSource, /function Restore-DraftClipboardIfOwned/);
   assert.match(messageDraftSource, /\$currentClipboard -ceq \[string\]\$script:draftOwnedClipboardValue/);
   assert.match(messageDraftSource, /function Rebase-ExactDraftInputLease/);

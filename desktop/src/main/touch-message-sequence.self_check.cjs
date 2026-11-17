@@ -847,6 +847,49 @@ $dialogAccepted = Wait-PasteAccepted 1000
     const deliveredRow = JSON.parse(fs.readFileSync(path.join(root, "workflow-tasks", crypto.createHash("sha256").update(deliveredRecord.id).digest("hex"), "touch_task.json"), "utf8")).results[0];
     assert.equal(deliveredRow.status, "sent_verified", "no notice, or an unreadable screen, keeps the verified send");
   }
+  // 2026-11-17 (user decision): "被对方拒收" is a block, a friend-verification notice a deletion;
+  // they are counted apart, remembered per WeChat account and skipped by later tasks.
+  {
+    const { createUnreachableRegistry } = require("./touch-unreachable.cjs");
+    const registry = createUnreachableRegistry(root);
+    for (const [kind, expectedReason, expectedCode] of [["blocked", "recipient_blocked", "recipient_blocked_before"], ["deleted", "recipient_deleted", "recipient_deleted_before"]]) {
+      registry.release(contact);
+      registry.release(secondContact);
+      const kindWorkflow = createTouchWorkflow({ ...config,
+        execute: async (options) => {
+          fs.writeFileSync(path.join(options.baseDir, "state.json"), JSON.stringify({ window_pid: 4242, window_handle: "9191", message_input_point: { xRatio: 0.65, yRatio: 0.84 } }));
+          return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
+        },
+        detectDeliveryNotice: async () => ({ ok: true, undelivered: true, kind }) });
+      const kindRecord = { id: crypto.randomUUID(), payload: kindWorkflow.prepareWorkflowTask({ script: "拉黑删除检测", contactIds: [contact.id, secondContact.id] }), progress: { done: 0 }, status: "running" };
+      await kindWorkflow.runWorkflowStep(kindRecord, context);
+      const kindTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(kindRecord.id).digest("hex"));
+      const kindRow = loadTaskState(kindTaskDir).results[0];
+      assert.equal(kindRow.status, "recipient_unreachable_skipped");
+      assert.equal(kindRow.unreachable_kind, kind);
+      assert.equal(kindRow.skip_record.reasonCode, expectedReason, `${kind} is named as such`);
+      assert.match(kindRow.reason, kind === "blocked" ? /拒收/u : /删除/u);
+      assert.equal(skippedTaskSummary(loadTaskState(kindTaskDir)).breakdown[`unreachable_${kind}`], 1, `${kind} is counted apart`);
+      assert.equal(registry.kindOf(contact), kind, "the contact is remembered for its WeChat account");
+      assert.equal(registry.kindOf({ ...contact, wechatAccountId: "another_account" }), "", "never for another account");
+      // A later task skips the contact from the start and says why; the summary names them.
+      const laterPayload = kindWorkflow.prepareWorkflowTask({ script: "下一次触达", contactIds: [contact.id, secondContact.id] });
+      assert.deepEqual(laterPayload.contacts.map((item) => item.id), [secondContact.id], "a blocked or deleted contact is not touched again");
+      assert.equal(laterPayload.excluded.find((entry) => entry.contact.id === contact.id)?.reason_code, expectedCode);
+      const laterRecord = { id: crypto.randomUUID(), payload: laterPayload, progress: { done: 0 }, status: "running" };
+      assert.equal(kindWorkflow.describeSkippedWorkflowTask(laterRecord).unreachable_summary[`${kind}_count`], 1, "before the task starts it already says who was skipped");
+      await kindWorkflow.runWorkflowStep(laterRecord, context);
+      const summary = kindWorkflow.describeSkippedWorkflowTask(laterRecord).unreachable_summary;
+      assert.equal(summary[`${kind}_count`], summary[kind].length);
+      assert.equal(summary[kind].filter((person) => person.found === "earlier").length, 1, "the one found earlier is named as found earlier");
+      assert.equal(summary[kind].filter((person) => person.found === "this_task").length, 1, "and the one found now as found now");
+      assert.throws(() => kindWorkflow.prepareWorkflowTask({ script: "只选这一位", contactIds: [contact.id] }), /此前都已拉黑或删除你/u,
+        "a task of only such contacts says so instead of a generic error");
+    }
+    registry.release(contact);
+    registry.release(secondContact);
+    assert.equal(registry.kindOf(contact), "", "a contact added back can be let in again");
+  }
   // 1.3.4 field (Win10 19042): the text bounced off a contact who is no longer a friend, then the image
   // step failed and the contact was filed as "partly sent". After the text, the notice ends the contact.
   for (const undelivered of [true, false]) {

@@ -650,6 +650,38 @@ async function checkLoginWaitRetryRoundAndPreparing() {
       assert.deepEqual(handed, changed ? undefined : { ok: true, pid: 7, hWnd: 8 }, changed ? "after a switch back from Moments the executor prepares again" : "the prepared window is handed over");
     }
 
+    // 2026-11-17 speed-up: after a verified send WeChat is on the chat page, so the next contact of
+    // the same task skips the 7.5 s chat-surface restore; after anything else it restores again.
+    {
+      let restores = 0;
+      const outcomes = { [contacts[0].id]: "sent_verified", [contacts[1].id]: "fail", [contacts[2].id]: "sent_verified" };
+      const settleWorkflow = createTouchWorkflow({
+        dataDir: path.join(root, "settled-surface"), now: () => new Date(clock), random: () => 0, readContacts: () => contacts,
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        restoreChatSurface: async () => { restores += 1; return { ok: true, changed: false }; },
+        execute: async (input) => {
+          if (outcomes[input.contactId] === "fail") {
+            input.onTransition?.("not_attempted", {});
+            return { ok: false, send_attempted: false, blocked_reason: "search_result_not_opened" };
+          }
+          input.onTransition?.("sent_verified", {});
+          return { ok: true, state: { real_send_status: "sent_verified" } };
+        }
+      });
+      const settlePayload = settleWorkflow.prepareWorkflowTask({ script: "您好", contactIds: contacts.slice(0, 3).map((item) => item.id) });
+      const counts = [];
+      for (let step = 0; step < 6 && counts.length < 3; step += 1) {
+        const before = restores;
+        const result = await settleWorkflow.runWorkflowStep({ id: "settled-surface", payload: settlePayload }, { isEnabled: () => true });
+        clock += 10 * 60_000;
+        if (result?.waitingReason === "touch_safety_interval" && restores === before && !result?.result) continue;
+        counts.push(restores - before);
+      }
+      assert.equal(counts[0], 1, "the first contact restores the chat surface");
+      assert.equal(counts[1], 0, "after a verified send the next contact skips it");
+      assert.equal(counts[2], 1, "after a failed contact the next one restores again");
+    }
+
     // Multipart: a crash while a part is still "preparing" leaves that part unsent and retryable.
     const { executeMessageSequence } = require("./touch-message-sequence.cjs");
     const sequenceRow = {};
