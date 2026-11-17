@@ -8,7 +8,7 @@ import { BatchSoundSettings } from "./BatchSoundSettings";
 import { VideoDownloadButton } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
 import { CARRIED_ASSETS_WAIT, carriedAssetsAutosave, createDraftQueue, createPendingDraftSlot, discardPendingDraft, isDeterministicDraftError, restoreNotice, restorePendingDraft, retryHold, waitForDraftWrites } from "./batch-draft-queue";
-import { type RecoveryVoice, VOICE_RECOVERY_BLOCKS, approvedVoiceIds as approvedIn, resumeNeedsVoice, voiceRecovery } from "./batch-voice-recovery";
+import { type RecoveryVoice, approvedVoiceIds as approvedIn } from "./batch-voice-recovery";
 import { LayoutTemplate, Clapperboard, ArrowLeft, ArrowRight, Plus } from "lucide-react";
 import { CreationSteps } from './CreationGuide';
 import { ExampleBanner } from './VideoExamples';
@@ -135,10 +135,10 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       setNotice(message);
     },
   }));
+  // A voice this computer cannot use is never reported as "unavailable": starting or
+  // continuing switches it to one that works and the batch says so (voice_notice).
   function voiceWarning(b: Batch) {
-    const voice = b.settings?.voice_persona_id;
-    return voice && !b.archived && approvedVoiceIds.current && !approvedVoiceIds.current.has(voice)
-      ? "该批次的声音暂不可用，请选择可用声音。" : "";
+    return b.voice_notice || "";
   }
   function applyVoices(items: VoiceItem[]) {
     approvedVoiceIds.current = approvedIn(items);
@@ -425,9 +425,6 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const shownCandidates = [...(batch?.candidates || [])].sort((a, b) => (a.production_index || 0) - (b.production_index || 0)).slice(0, batch?.target_count || batch?.recommended_count || 3);
   const completed = shownCandidates.filter((c) => c.status === "completed").length;
   const pendingJobs = batch?.production_retry_available || (batch?.production_jobs ? batch.production_jobs.some((job) => ["queued", "processing"].includes(job.status)) : completed < (batch?.target_count || 1));
-  // While the batch's voice needs its approval back, paid production is held here too
-  // (the engine refuses it before creating a task).
-  const voiceBlocked = voiceRecovery(batch, catalog) !== null;
   const automaticVoice = voices.filter(voice => voice.productApproved).sort((a, b) =>
     Number(b.digitalHumanDefault === true) - Number(a.digitalHumanDefault === true)
       || (b.autoSelectPriority || 0) - (a.autoSelectPriority || 0))[0];
@@ -436,17 +433,18 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     : automaticVoice ? `自动（${automaticVoice.displayName}）` : '自动选择';
   const musicSummary = settings.music_mode === 'none' ? '不加配乐'
     : '自动';
-  const continueHint = voiceBlocked ? VOICE_RECOVERY_BLOCKS : batch?.production_retry_available
+  const continueHint = batch?.production_retry_available
     ? settings.strict_visual_review ? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。" : "继续会按文案顺序重新安排未完成作品的镜头；已完成作品会保留。"
     : "继续会从未完成的步骤接着做；已完成的分析、审核和成片会保留。";
   const continueAction = batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown"
-    ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty || voiceBlocked} onClick={() => void start("continue")}>继续未完成作品</button></div>
+    ? <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button></div>
     : null;
   const editRejected = rejectedEdit && rejectedEdit.owner === draftOwner.current && rejectedEdit.fingerprint === draftFingerprint ? rejectedEdit.message : undefined;
-  const recoveryHeld = voiceBlocked ? VOICE_RECOVERY_BLOCKS : retryHold({ saving, dirty, rejected: editRejected });
-  // 恢复任务 requeues the paused production itself (tasks.resume); the engine refuses it
-  // without the voice as well, so it waits for the card like 继续未完成作品.
-  const resumeHeld = paused && voiceBlocked && resumeNeedsVoice(batch) ? VOICE_RECOVERY_BLOCKS : "";
+  // A voice this computer cannot use never holds anything here: the engine switches it to
+  // one it can and says so in voice_notice (2026-11-17: the batch stopped with its voice
+  // setting locked and greyed out, so the customer could do nothing).
+  const recoveryHeld = retryHold({ saving, dirty, rejected: editRejected });
+  const resumeHeld = "";
   const skippedJobs = batch?.production_jobs?.filter((job) => job.status === "skipped") || [];
   const flowStep = flowView ?? (dirty ? 0 : batch?.archived || batch?.script_confirmation || shownCandidates.length ? 3 : options.length ? 2 : running ? 1 : 0);
   const flowSteps = [
@@ -494,7 +492,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
     {batch?.music_notice && <p role="status" className="batch-notice">{batch.music_notice}</p>}
     {batch?.archived && <p className="batch-notice" role="status">这是已归档的批次，可查看记录、预览与导出已有成片。</p>}
     {submitting && !batch && <section className="batch-progress" role="status">正在提交素材并启动任务…</section>}
-    {batch && (!visualFlow || running || paused || submitting || failedState || voiceBlocked) && <section className={`batch-progress${failedState || voiceBlocked ? " is-attention" : ""}`}>
+    {batch && (!visualFlow || running || paused || submitting || failedState) && <section className={`batch-progress${failedState ? " is-attention" : ""}`}>
       <div className="batch-progress-illustration" aria-hidden="true"><img className="batch-progress-motion" src={ended ? activityStill : activityArt} alt="" /><img className="batch-progress-still" src={activityStill} alt="" /></div>
       <div className="batch-progress-content">
         <div className="batch-progress-heading"><div><strong>{ended ? (batch.status === "completed" ? "本次制作已完成" : "本次任务已结束") : submitting ? "正在提交任务" : activity?.phase_label || (running ? "正在处理" : batchStatus[batch.status] || "处理中")}</strong><span>{scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已完成 ${completed} / ${batch.target_count || "待定"} 条`}</span></div>{!ended && progressPercent !== null && <b>{progressPercent}%</b>}</div>
@@ -512,7 +510,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         {batch.status === "outcome_unknown" && <p className="batch-provider-final" role="status">软件已停止继续等待，不会自动重复扣费；最后一次真实进度为 {progressPercent === null ? "未量化" : `${progressPercent}%`}。核对云端记录后，只从这里继续未完成步骤。</p>}
       </div>
       {onOpenDiagnostics && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status) && <button type="button" onClick={() => onOpenDiagnostics({ module: "content_engine", taskId: batch.task_id || batch.batch_id })}>反馈这个问题</button>}
-      {voiceBlocked && <p className="batch-notice" role="alert">本批使用的声音暂不可用，已完成作品仍可查看。请新建视频并选择可用声音；原任务和已生成内容会保留，不会自动重复制作。</p>}
+      {batch?.voice_notice && <p className="batch-hint" role="status">{batch.voice_notice}</p>}
       {batch.status === "outcome_unknown" && batch.planning_recovery_available && <div className="batch-planning-recovery">
         <span>原请求结果仍无法确认。请确认是否重试未完成规划；可能产生一次云端费用。{batch.planning_checkpoint ? ` 已保留${batch.planning_checkpoint.stage} ${batch.planning_checkpoint.completed}/${batch.planning_checkpoint.total}。` : ""}{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
         <button type="button" data-batch-action="resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverPlanning()}>确认风险，重试未完成规划</button>
@@ -610,14 +608,14 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
 </details>
       {soundDirty && <p className="batch-hint">制作设置已更新。</p>}
       <div className="batch-script-confirm"><div><p>{chosen.length ? modern ? `制作 ${chosenTotal} 条视频` : `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : modern ? "请先选定一个方案。" : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
-        {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid || voiceBlocked} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
+        {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
         {continueAction}
       </div>
       </>}
     </section>}
     {showResults && batch && completed > 0 && <div className="batch-output-row"><p>{batch.export_ready ? `已自动保存 ${batch.exported_count} 条成片` : "已完成的作品可以保存到成片文件夹"}</p><button disabled={busy} onClick={() => void run(async () => { await callBatch("open-output", { batch_id: batch.batch_id }); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); })}>打开成片文件夹</button>{batch.export_error && <p className="batch-notice" role="status">视频已制作完成，但保存遇到问题。点击上方按钮可重新保存，无需重新制作。</p>}</div>}
     {showResults && !!skippedJobs.length && <section className="batch-skipped" aria-label="未完成的作品"><h2>有 {skippedJobs.length} 条未能完成</h2><p>{ended ? "本次任务已结束，以下作品没有生成成片。" : "以下作品已跳过，不会阻塞其他作品。"}</p><ul>{skippedJobs.map((job) => <li key={job.production_index}><strong>第 {job.production_index} 条：{job.error || "当前素材未能支持这条作品。"}</strong><p>{/配音.*超过.*时长/.test(job.error || "") ? "下一步：缩短口播文案，或补充符合文案的可用画面，再新建视频。直接重试相同素材与文案仍可能失败。" : /没有得到符合|没有.*候选|素材未能支持/.test(job.error || "") ? "下一步：补充能展示该卖点的素材，或调整创作方向使其符合现有画面，再新建视频。" : "下一步：检查对应素材、文案及上面的错误信息；不清楚原因时可点击“反馈这个问题”，确认后再决定是否重试。"}</p></li>)}</ul><p>调整素材和文案不会自动开始制作；再次生成文案、配音或视频可能计费，请确认后操作。</p></section>}
-    {showResults && !!shownCandidates.length && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty || voiceBlocked} title={voiceBlocked ? VOICE_RECOVERY_BLOCKS : undefined} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
+    {showResults && !!shownCandidates.length && <section className="batch-results"><header><div><h2>{batch?.approved || (batch?.target_count || 0) <= 3 ? "本批作品" : "样片与待制作方案"}</h2><p>已完成的作品可立即预览、调整和导出。</p></div>{batch?.status === "awaiting_confirmation" && <button className="batch-primary" data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>满意，继续整批（共 {batch.target_count} 条）</button>}</header>
       <div className={`batch-result-grid${shownCandidates.length === 1 ? " is-single" : ""}`}>{shownCandidates.slice(0, visibleCandidates).map((c, index) => <article className="batch-result" key={c.candidate_id}>{c.generated_video_id ? <video controls controlsList="nodownload" preload={shownCandidates.length === 1 ? "metadata" : "none"} poster={shownCandidates.length === 1 ? undefined : videoUrl(c.generated_video_id, "thumbnail")} src={videoUrl(c.generated_video_id)} /> : <div className="batch-result-placeholder"><span>{String(index + 1).padStart(2, "0")}</span><p>{batchStatus[c.status] || "待制作"}</p></div>}<div className="batch-result-body"><h3>{c.title}</h3><p>{c.angle}</p><small>使用 {new Set((c.actual_shots || c.shots).map((s) => s.asset_id)).size} 个原素材 · {(c.actual_shots || c.shots).length} 个镜头 · {c.generated_video_id ? "成片" : "预计"} {((c.duration_ms || c.shots.reduce((n, s) => n + s.source_end_ms - s.source_start_ms, 0)) / 1000).toFixed(1)} 秒</small>{c.music_status === "none" && <p>本条未配乐</p>}{c.error && c.status !== "rendering" && <p className="batch-notice">{c.error}</p>}{shownCandidates.length === 1 && <p className="batch-result-copy">{c.narration}</p>}<details open={!visualFlow && !c.generated_video_id}><summary>{shownCandidates.length === 1 ? "查看镜头安排" : "完整口播与镜头安排"}</summary>{c.review_mode === "follow_script" && <p className="batch-hint">按文案生成，未做画面事实核对</p>}{shownCandidates.length !== 1 && <p>{c.narration}</p>}<AdLawHint text={c.narration} /><ol>{(c.actual_shots || c.shots).map((s) => <li key={s.segment_id}>{s.description || materialLabel(batch, s.asset_id)}（{(s.source_start_ms / 1000).toFixed(1)}–{(s.source_end_ms / 1000).toFixed(1)} 秒）</li>)}</ol></details>{!scriptFlow && <button disabled={locked} onClick={() => setEditing(c)}>调整这一条</button>}{c.generated_video_id && <VideoDownloadButton generatedId={c.generated_video_id} />}</div></article>)}</div>{shownCandidates.length > visibleCandidates && <button onClick={() => setVisibleCandidates(visibleCandidates + 12)}>显示更多作品</button>}
     </section>}
     {visualFlow && flowStep === 3 && !shownCandidates.length && <section className="batch-flow-empty"><Clapperboard size={44} strokeWidth={1.3} /><h2>{batch?.archived ? "这个批次还没有成片" : running ? "视频正在制作中" : "暂时没有成片"}</h2><p>{batch?.archived ? "点击上方“新建视频”开始新的创作。" : ended ? "请按上方未完成原因调整素材或文案，再点击“新建视频”。" : "制作完成后，就可以在这里播放和保存。"}</p></section>}

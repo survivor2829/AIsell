@@ -946,6 +946,8 @@ def _plan_spelling(source_spelling, model_spelling):
                            semantic_http_fn=second, require_automatic_visual=True, allow_visual_advisories=True,
                            repair_unsupported_captions=True)
     titles = [s["title"] for s in plan["screens"]]
+    if model_spelling != source_spelling:
+        _plan_spelling.leaked = any(model_spelling in t for t in titles)
     return (any("站着就能夹" in t for t in titles), any(s["name"] == "规格" for s in plan["specifications"]))
 
 
@@ -956,7 +958,12 @@ def test_a_value_written_another_way_keeps_its_page_and_parameter(source_spellin
 
 @pytest.mark.parametrize("source_spelling, model_spelling", OTHER_VALUE)
 def test_a_changed_number_is_still_caught_and_only_its_parts_drop(source_spelling, model_spelling):
-    assert _plan_spelling(source_spelling, model_spelling) == (False, False)
+    # 2026-11-17: the wrong number leaves the caption and the page stays (dropping every
+    # page that carried it failed whole orders); the parameter row still drops.
+    page_kept, row_kept = _plan_spelling(source_spelling, model_spelling)
+    assert not row_kept and not _plan_spelling.leaked, "the changed number never reaches a picture"
+    if model_spelling[-1] in "寸mm升C瓦米":  # Caption units: the value leaves, the page stays.
+        assert page_kept
 
 
 @pytest.mark.parametrize("value, evidence, ok", [

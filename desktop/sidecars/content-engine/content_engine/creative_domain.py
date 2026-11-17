@@ -3564,11 +3564,12 @@ class CreativeDomain:
         excluded_persona_id = str(
             private_state.get("excluded_voice_persona_id") or ""
         )
-        persona = self._approved_auto_mix_voice_persona(
+        persona = self._usable_auto_mix_voice_persona(
             selected_id=row["selected_voice_persona_id"],
             excluded_id=excluded_persona_id,
         )
-        if persona is None:
+        # Designing a voice needs the Bailian service; a computer without it never tries.
+        if persona is None and "bailian" in (self._voice_providers() or ("bailian",)):
             try:
                 persona = self._auto_prepare_default_voice_persona(
                     selected_id=row["selected_voice_persona_id"],
@@ -3594,7 +3595,7 @@ class CreativeDomain:
                 run_id,
                 state="needs_attention",
                 code="auto_mix_voice_persona_approval_required",
-                message="当前声音不可用，请在更多设置中更换声音。",
+                message="这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。",
                 public_plan=public_plan,
                 private_state=private_state,
             )
@@ -4403,7 +4404,32 @@ class CreativeDomain:
             )
         return cards
 
-    def _approved_auto_mix_voice_persona(self, *, selected_id=None, excluded_id=""):
+    def _voice_providers(self):
+        """The voice providers this computer's voice service reaches (empty: no restriction known)."""
+        return tuple(getattr(getattr(self.analyzer, "cloud_client", None), "voice_providers", None) or ())
+
+    def _usable_auto_mix_voice_persona(self, *, selected_id=None, excluded_id="", providers=None):
+        """The voice to speak with on this computer; None only when no voice is installed at all.
+
+        The selected voice when it is approved and its provider is reachable here; otherwise
+        the preferred approved voice that is (official voices first). A voice an older build
+        un-approved, a designed voice never auditioned on this computer, or a voice of a
+        provider this computer does not use therefore never stops a video. 2026-11-17: a
+        confirmed batch stopped with "当前声音不可用" while its voice setting was locked,
+        so the customer could neither continue nor change it.
+        """
+        supported = tuple(providers or self._voice_providers())
+        if selected_id:
+            row = self._approved_auto_mix_voice_persona(selected_id=selected_id, excluded_id=excluded_id)
+            if row is not None and (not supported or row["provider"] in supported):
+                return row
+        row = self._approved_auto_mix_voice_persona(excluded_id=excluded_id, providers=supported)
+        if row is None and excluded_id:
+            # Retrying with another voice is a preference; the only voice left still speaks.
+            row = self._approved_auto_mix_voice_persona(providers=supported)
+        return row
+
+    def _approved_auto_mix_voice_persona(self, *, selected_id=None, excluded_id="", providers=None):
         values = [AUTO_MIX_TTS_MODEL]
         clauses = [
             "active = 1",
@@ -4411,7 +4437,7 @@ class CreativeDomain:
             "provider_voice_id <> ''",
             "((provider = 'bailian' AND provider_model = ?) OR (provider = 'volcengine' AND provider_model IN ('seed-tts-1.0', 'seed-tts-2.0')))",
         ]
-        supported = getattr(getattr(self.analyzer, "cloud_client", None), "voice_providers", None)
+        supported = providers or getattr(getattr(self.analyzer, "cloud_client", None), "voice_providers", None)
         if not selected_id and supported:
             clauses.append("provider IN (" + ",".join("?" for _ in supported) + ")")
             values.extend(supported)
@@ -5798,11 +5824,11 @@ class CreativeDomain:
                 return {**result, "file": str(self.data_dir / result["relative_path"])}
             if result:
                 raise ContentEngineError("auto_mix_voice_cache_changed", "已付费口播缓存发生变化，原回执已保留，不会自动重新购买。")
-            persona = self._approved_auto_mix_voice_persona(selected_id=run["selected_voice_persona_id"])
+            persona = self._usable_auto_mix_voice_persona(selected_id=run["selected_voice_persona_id"])
         else:
-            persona = self._approved_auto_mix_voice_persona(selected_id=request.get("voice_persona_id"))
+            persona = self._usable_auto_mix_voice_persona(selected_id=request.get("voice_persona_id"))
         if persona is None:
-            raise ContentEngineError("auto_mix_voice_unavailable", "当前配音声音不可用，请更换可用声音或稍后重试；已有制作进度已保留。")
+            raise ContentEngineError("auto_mix_voice_unavailable", "这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。")
         if run is None:
             now, project_id, run_id = self._now(), self._new_id("creative_project"), self._new_id("auto_mix_run")
             with self.database.transaction() as connection:

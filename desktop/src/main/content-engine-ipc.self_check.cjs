@@ -1122,7 +1122,7 @@ async function main() {
     const unapprovedVoiceSave = await batchSave();
     assert.equal(unapprovedVoiceSave.ok, false);
     assert.equal(unapprovedVoiceSave.code, "auto_mix_voice_persona_approval_required");
-    assert.match(unapprovedVoiceSave.error, /声音尚未批准或批准已失效.*声音与配乐/u);
+    assert.match(unapprovedVoiceSave.error, /这台电脑上没有可用的配音声音/u);
     assert.equal(notifications.length, notificationsBeforeBatch, "an automatic draft save must not raise a desktop notification");
     assert.deepEqual(lastBatchSaveEvent()[2], { error_code: "auto_mix_voice_persona_approval_required" });
     batchSaveFailure = Object.assign(new Error("供应商原文 secret-provider-detail"), { code: "narrated_future_check_failed" });

@@ -1375,6 +1375,38 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(("queued", [paused_task]), (resumed["status"], enqueued))
         self.assertEqual(before + 2, self._task_count())
 
+    def _add_official_voice(self):
+        self.s.connection.execute(
+            "INSERT INTO voice_personas_v1(id,version,display_name,style,catalog_version,provider,provider_model,"
+            "provider_voice_id,instruction,voice_prompt,voice_prefix,catalog_source,approved_at,active,created_at,updated_at) "
+            "VALUES('volc-xiaohe-2@1',1,'小何','natural','2026.08','volcengine','seed-tts-2.0','zh_female_xiaohe',"
+            "'','','','manual','2026-11-17T00:00:00.000Z',1,'2026-11-17T00:00:00.000Z','2026-11-17T00:00:00.000Z')")
+
+    def test_a_voice_this_computer_cannot_use_is_replaced_and_the_batch_goes_on(self):
+        # 2026-11-17 field report: after a customer computer fell back to an older build
+        # and updated again, a confirmed batch stopped with "当前声音不可用，请在更多设置
+        # 中更换声音" while that setting was locked. Any voice this computer can use must
+        # take over, with no step for the customer.
+        self._add_official_voice()
+        cases = {
+            "approval cleared by an older build": lambda: self._set_voice_approval(None),
+            "provider this computer does not reach": lambda: setattr(
+                self.s.creative_domain.analyzer.cloud_client, "voice_providers", ("volcengine",)),
+        }
+        for name, break_voice in cases.items():
+            with self.subTest(name):
+                self._set_voice_approval("2026-09-29T00:00:00.000Z")
+                self.s.creative_domain.analyzer.cloud_client.voice_providers = ("bailian", "volcengine")
+                _, batch_id, task_id = self._confirmed_batch(f"记住的声音不可用：{name}")
+                self.s.update_task(task_id, "completed")
+                break_voice()
+                started = self.s.continue_narrated_batch(batch_id)
+                self.assertEqual("confirmed", self._task_action(started["task_id"]))
+                batch = self.s.get_narrated_batch(batch_id)
+                self.assertEqual("volc-xiaohe-2@1", batch["settings"]["voice_persona_id"])
+                self.assertIn("已自动换成「小何」", json.dumps(batch, ensure_ascii=False))
+        self.s.creative_domain.analyzer.cloud_client.voice_providers = ("bailian", "volcengine")
+
     def test_future_observation_guidance_does_not_excuse_sparse_motion_claims(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         claim_frames = patch.object(domain, "_claim_frames", side_effect=lambda batch, candidate, source: ([], source["frames"]))

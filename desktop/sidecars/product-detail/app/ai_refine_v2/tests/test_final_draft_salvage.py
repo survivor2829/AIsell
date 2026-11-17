@@ -139,3 +139,49 @@ def test_real_input_conflicts_still_stop():
     nothing["specifications"] = []
     with pytest.raises(planner.PlannerError):
         plan(nothing, nothing)  # No provable page left: too thin to deliver.
+
+
+# 2026-11-17 field case (1.3.33, 5932308d): an invented "30英寸" failed the order three
+# times. An invented value is a caption problem: it leaves the caption, never the order.
+def _plan_with(edit, title=TITLE):
+    data = cart_draft()
+    edit(data)
+    http, review = Mock(return_value=response(data)), Mock(return_value=response(data))
+    return planner.plan_v2(SOURCE, product_title=title, product_category="设备类", api_key="offline",
+                           http_fn=http, semantic_http_fn=review, require_buyer_value=True,
+                           require_automatic_visual=True, allow_visual_advisories=True,
+                           repair_unsupported_captions=True)
+
+
+def _captions(result):
+    return json.dumps([[s.get("title"), s.get("body")] for s in result["screens"]], ensure_ascii=False)
+
+
+@pytest.mark.parametrize("value", ["30英寸", '30"', "999mm", "88kg", "66升", "4500W", "12.5公斤"])
+def test_the_same_invented_value_on_every_page_leaves_the_captions_not_the_pages(value):
+    pages_before = len(cart_draft()["pages"])
+    def edit(data):
+        for page in data["pages"]:
+            page["title"] = page["title"] + " " + value
+    result = _plan_with(edit)
+    assert value not in _captions(result)
+    assert len(detail_screens(result)) >= pages_before - 1, "the pages stay"
+
+
+def test_a_value_in_the_customers_own_title_is_theirs_not_invented():
+    result = _plan_with(lambda data: data["cover"].update(title=TITLE + " 30英寸"), title=TITLE + " 30英寸")
+    assert result["screens"][0]["title"].startswith(TITLE)
+
+
+def test_numbers_a_space_apart_stay_two_numbers():
+    from ai_refine_v2.visual_merchandising import _caption_values
+    numeric, compact = _caption_values(True)
+    assert [m.group() for m in numeric.finditer(compact("整车尺寸4100x1525x2050 66升"))][-1] == "66l"
+
+
+def test_pages_that_end_up_with_the_same_caption_are_shown_once():
+    def edit(data):
+        data["pages"][1] = copy.deepcopy(data["pages"][0])
+    result = _plan_with(edit)  # A duplicated page never fails the order.
+    titles = [s["title"] for s in detail_screens(result)]
+    assert titles.count(cart_draft()["pages"][0]["title"]) == 1

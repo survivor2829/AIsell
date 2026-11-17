@@ -958,10 +958,23 @@ class NarratedBatchDomain:
         approved (the fallback in _initialize_speech_budget and _run_auto_mix_v2),
         so with none approved at all the paid planning and review would run and
         the task would stop at the voice step.
+
+        It never asks the customer to change the voice: a remembered voice this computer
+        cannot use (un-approved by an older build, a designed voice never auditioned here, a
+        provider this computer does not reach) is replaced by one it can, and the batch keeps
+        going. 2026-11-17: a confirmed batch stopped with "当前声音不可用" and the voice
+        setting was locked, so the customer could do nothing.
         """
-        persona_id = str((b.get("settings") or {}).get("voice_persona_id") or "").strip()
-        require(self.d._approved_auto_mix_voice_persona(selected_id=persona_id or None) is not None,
-                "auto_mix_voice_persona_approval_required", "当前声音不可用，请在更多设置中更换声音。")
+        settings = b.setdefault("settings", {})
+        persona_id = str(settings.get("voice_persona_id") or "").strip()
+        persona = self.d._usable_auto_mix_voice_persona(selected_id=persona_id or None)
+        require(persona is not None, "auto_mix_voice_persona_approval_required",
+                "这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。")
+        if persona_id and persona["id"] != persona_id:
+            settings["voice_persona_id"] = persona["id"]
+            b["voice_notice"] = f"原来的声音在这台电脑上用不了，已自动换成「{persona['display_name'] or '官方声音'}」继续制作。"
+            self._store(b)
+        return persona
 
     def require_voice_to_resume(self, task_id):
         """Requeuing a stopped production is the same paid work as starting it.
@@ -1315,8 +1328,11 @@ class NarratedBatchDomain:
             minimum = 0 if script_source == 'provided' else max(30, minimum)
             settings = {**settings, 'minimum_duration_seconds': minimum}
         if settings.get("voice_persona_id"):
-            require(self.d._approved_auto_mix_voice_persona(selected_id=settings["voice_persona_id"]) is not None,
-                    "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
+            # A voice this computer cannot use (say a preference remembered from another
+            # version) is replaced by one it can, never refused.
+            usable = self.d._usable_auto_mix_voice_persona(selected_id=settings["voice_persona_id"])
+            if usable is not None and usable["id"] != settings["voice_persona_id"]:
+                settings = {**settings, "voice_persona_id": usable["id"]}
         if settings.get("brand_profile_id"):
             self.d._brand_row(settings["brand_profile_id"])
         if not b:
@@ -4823,7 +4839,8 @@ class NarratedBatchDomain:
         """The first video keeps the batch voice; later ones each get another voice of
         the same model (same price), alternating female and male, none repeated."""
         base_id = str((b.get("settings") or {}).get("voice_persona_id") or "") or None
-        base = self.d._approved_auto_mix_voice_persona(selected_id=base_id)
+        base = self.d._usable_auto_mix_voice_persona(selected_id=base_id)
+        base_id = base["id"] if base is not None else base_id
         assigned = c.get("voice_persona_id")
         if assigned:
             kept = self.d._approved_auto_mix_voice_persona(selected_id=assigned)

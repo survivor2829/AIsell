@@ -60,7 +60,7 @@ const ERRORS = {
   narrated_voice_recovery_not_available: "当前批次没有可人工确认并重试的未完成配音。",
   invalid_narrated_voice_resolution: "本次配音核对操作无效，请刷新后重试。",
   // Save/start validation is fixable on the page; it must never read as "engine unavailable".
-  auto_mix_voice_persona_approval_required: "这条视频使用的声音尚未批准或批准已失效，请在「声音与配乐」中改选已批准的声音，或重新试听并批准后再试。",
+  auto_mix_voice_persona_approval_required: "这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。",
   auto_mix_voice_persona_not_found: "所选声音已不在声音列表中，请在「声音与配乐」中改选已批准的声音。",
   invalid_voice_persona_id: "声音设置无效，请在「声音与配乐」中重新选择已批准的声音。",
   invalid_narrated_settings: "制作设置无效，请检查最短时长、配乐、视频模板和画面核对开关后重试。",
