@@ -2420,6 +2420,56 @@
     return { loading, results, bar, subText };
   }
 
+  // Screens already drawn are shown while the slower ones are still drawing (2026-11-17: one
+  // image could take 10 minutes and the page showed nothing until every screen was done).
+  function renderAiRefineProgressBlocks(state, ui) {
+    const results = ui && ui.results;
+    if (!results) return;
+    const blocks = Array.isArray(state.blocks) ? state.blocks : [];
+    const ready = blocks.map((block, index) => ({ block, index }))
+      .filter(({ block }) => block && block.success && typeof block.image_url === 'string' && block.image_url.startsWith('/static/'));
+    let box = document.getElementById('ai_refine_progress_preview');
+    if (!ready.length) {
+      if (box) box.remove();
+      return;
+    }
+    const key = ready.map(({ block }) => block.image_url).join('|');
+    if (box && box.dataset.key === key) return;
+    if (!box) {
+      box = document.createElement('section');
+      box.id = 'ai_refine_progress_preview';
+      box.setAttribute('aria-label', '已画好的图');
+      box.style.cssText = 'margin-top:16px;';
+      results.appendChild(box);
+    }
+    box.dataset.key = key;
+    box.textContent = '';
+    const total = Number(state.planned_count) || blocks.length;
+    const head = document.createElement('div');
+    head.style.cssText = 'font-size:15px; font-weight:600; color:#047857; margin-bottom:4px;';
+    head.textContent = `已画好 ${ready.length}/${total} 张，先给你看`;
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:13px; color:#64748b; margin-bottom:12px;';
+    note.textContent = '其余几张还在画，全部画好后会自动拼成完整长图，不用重新点生成。';
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px;';
+    for (const { block, index } of ready) {
+      const figure = document.createElement('figure');
+      figure.style.cssText = 'margin:0; background:#f8fafc; border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,.12);';
+      const image = document.createElement('img');
+      image.src = block.image_url;
+      image.alt = `第 ${index + 1} 张`;
+      image.loading = 'lazy';
+      image.style.cssText = 'display:block; width:100%; height:auto;';
+      const caption = document.createElement('figcaption');
+      caption.style.cssText = 'font-size:12px; color:#334155; padding:6px 8px;';
+      caption.textContent = `第 ${index + 1} 张${block.is_hero ? ' · 首图' : ''}`;
+      figure.append(image, caption);
+      grid.appendChild(figure);
+    }
+    box.append(head, note, grid);
+  }
+
   function aiRefineModeBadge(mode) {
     if (mode === 'real') return '✅ 真实 API (DeepSeek + GPT-image-2)';
     if (mode === 'partial-mock') return '⚠️ 部分占位 (缺 DEEPSEEK_API_KEY)';
@@ -2488,6 +2538,7 @@
 
       if (ui.bar) ui.bar.style.width = `${Number(state.progress_pct || 0)}%`;
       if (ui.subText) ui.subText.textContent = `${modeBadge} · ${state.progress_msg || state.status}`;
+      renderAiRefineProgressBlocks(state, ui);
       if (taskRecord.status !== state.status) {
         taskRecord = persistAiRefineTask({ ...taskRecord, status: state.status }) || taskRecord;
       }

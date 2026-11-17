@@ -717,3 +717,55 @@ def test_transient_reference_upload_drop_is_retried_before_planning(task, monkey
         diagnostic = json.loads((task / "_recovery.json").read_text(encoding="utf-8"))["diagnostic"]
         assert diagnostic == {"error_type": "APIMartReferenceUploadTransportError",
                               "stage": "reference_upload", "cause_type": "TimeoutError"}
+
+
+def test_finished_screens_are_on_screen_while_a_slow_one_is_still_drawing(task, monkeypatch):
+    # 2026-11-17 (user): show the screens already drawn; one image could take 10 minutes and
+    # the page showed nothing until every screen was done.
+    import threading
+    from ai_refine_v2 import refine_generator
+    reference = task / "product.jpg"
+    Image.new("RGB", (100, 100), "#55ad81").save(reference)
+    runner._TASKS[task.name] = runner.TaskState(task_id=task.name, user_id=73)
+    total = len(refine_generator._build_blocks_v2(sample()))
+    lock = threading.Lock()
+    calls = {"n": 0}
+    others_visible = threading.Event()
+    seen_while_slow = []
+
+    def fake_download(url, destination, retries=2, timeout=30, preferred_route="unknown"):
+        Image.effect_noise((320, 480), 60).convert("RGB").save(destination, "JPEG")  # a real-sized picture
+        return "direct"
+
+    monkeypatch.setattr(runner, "_download_image", fake_download)
+
+    def ready():
+        state = runner.get_task_status(task.name) or {}
+        return [bool(block.get("success")) for block in state.get("blocks") or []]
+
+    def post(prompt, *args, lifecycle_callback, **kwargs):
+        with lock:
+            calls["n"] += 1
+            number = calls["n"]
+        if number == 2:
+            # This screen is the slow one: it finishes only after every other screen is visible.
+            assert others_visible.wait(10), "finished screens were not shown while one was still drawing"
+            seen_while_slow.extend(ready())
+        url = f"https://example.invalid/{number}.jpg"
+        lifecycle_callback({"event": "completed", "provider_task_id": f"task-{number}", "raw_url": url, "route": "direct"})
+        return url
+
+    monkeypatch.setattr(refine_generator, "_default_api_call", post)
+
+    def watch():
+        while not others_visible.is_set():
+            if ready().count(True) == total - 1:
+                others_visible.set()
+            threading.Event().wait(0.02)
+
+    threading.Thread(target=watch, daemon=True).start()
+    result, _ = runner._run_real_generator_v2(sample(), str(reference), "fake", task, lambda *a: None)
+    others_visible.set()
+    assert seen_while_slow.count(False) == 1, "only the slow screen was missing while it drew"
+    assert seen_while_slow[0] is True, "the first screen was already visible"
+    assert all(block["success"] for block in result), "the final step keeps every screen"
