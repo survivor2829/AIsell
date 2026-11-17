@@ -61,6 +61,7 @@ running("task-2", quiet_seconds=10)
 result["other_product"] = generate("另一款产品")
 tasks["task-3"] = {"task_id": "task-3", "user_id": user_id, "status": "outcome_unknown"}
 result["after_unknown"] = generate("另一款产品")
+result["changed_after_unknown"] = generate("第三款产品")
 result["starts"] = len(started)
 archive = json.loads((config.data_dir / "database" / "desktop-ai-refine-archive.json").read_text(encoding="utf-8"))
 result["archived"] = sorted(archive)
@@ -82,10 +83,16 @@ def test_new_generation_is_never_blocked_by_an_earlier_task(tmp_path):
     # Same pictures asked twice while the first is working: show it, pay once.
     assert result["double_click"][0] == 200
     assert result["double_click"][1]["task_id"] == "task-1" and result["double_click"][1]["attached"] is True
-    # A stuck task, another product, an unknown outcome: each click starts new pictures.
+    # A task silent for minutes (its worker reports every 20 s while it waits, so this one
+    # is gone) and another product: each click starts new pictures.
     assert result["after_stall"][1]["task_id"] == "task-2"
     assert result["other_product"][1]["task_id"] == "task-3"
-    assert result["after_unknown"][1]["task_id"] == "task-4"
+    # 2026-11-17 (user): the same request again for an unfinished paid page continues that
+    # page instead of buying it again; changed material still starts new pictures.
+    assert result["after_unknown"][0] == 409
+    assert result["after_unknown"][1]["code"] == "DESKTOP_AI_REFINE_RECOVERY_REQUIRED"
+    assert result["after_unknown"][1]["task_id"] == "task-3"
+    assert result["changed_after_unknown"][1]["task_id"] == "task-4"
     assert result["starts"] == 4
     # Earlier tasks stay on record with their receipts.
     assert {"task-1", "task-2", "task-3"} <= set(result["archived"])

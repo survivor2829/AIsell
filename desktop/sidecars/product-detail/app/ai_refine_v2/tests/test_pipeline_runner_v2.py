@@ -158,7 +158,7 @@ class TestV2RunRealGeneratorGuards(unittest.TestCase):
 
     def test_v2_a_guard_uses_provider_route_download_in_source(self):
         """A 刀: v2 必须复用先落盘、后按 provider 路由下载的共享实现。"""
-        v2_section = self.src.split("def _run_real_generator_v2")[1].split("\ndef ")[0]
+        v2_section = self.src.split("def _generate_and_download_v2")[1].split("\ndef ")[0]
         self.assertIn(
             "_download_generation_results", v2_section,
             "_run_real_generator_v2 必须复用原子 checkpoint + provider 路由下载",

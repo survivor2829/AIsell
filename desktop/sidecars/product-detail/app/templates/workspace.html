@@ -2524,7 +2524,7 @@
 
     if (!finalState) {
       const deferred = { ...lastState, task_id: taskId,
-        error: '这个任务长时间没有进展，可能卡住了。再点一次生成会直接开始新任务。' };
+        error: '这个任务长时间没有进展，可能已经中断。已画好的图都保存着；点「重试」会先接着原任务做，不会重复扣费。' };
       if (ui.loading) ui.loading.style.display = 'none';
       renderAiRefineRecoveryRequired(deferred, taskRecord);
       return deferred;

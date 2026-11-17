@@ -28,7 +28,9 @@ import os
 import re
 import shutil
 import concurrent.futures
+import contextlib
 import threading
+import threading as _heartbeat_threading  # never a test's synchronous stand-in
 import time
 import traceback
 import uuid
@@ -218,7 +220,17 @@ class PaidResultRecoveryRequired(RuntimeError):
     recovery_required = True
 
 
-def _set(task_id: str, **fields):
+# Last real progress of each task (a heartbeat only proves the worker is alive).
+_LAST_PROGRESS: dict[str, float] = {}
+# A worker waiting on the image service reports itself alive this often. The desktop
+# treats a task with no update for 5 minutes as stuck and let a new click buy the
+# whole page again while the old one was still drawing (2026-11-17: APIMart took up to
+# 13.5 minutes for one image; customers paid again and got no page).
+HEARTBEAT_SECONDS = 20
+SLOW_NOTICE_SECONDS = 90
+
+
+def _set(task_id: str, _heartbeat: bool = False, **fields):
     with _TASKS_LOCK:
         st = _TASKS.get(task_id)
         if st is None:
@@ -227,6 +239,34 @@ def _set(task_id: str, **fields):
             setattr(st, k, v)
         st.updated_at = time.time()
         st.elapsed_s = round(time.time() - st.started_at, 1)
+        if not _heartbeat:
+            _LAST_PROGRESS[task_id] = st.updated_at
+
+
+@contextlib.contextmanager
+def _keep_alive(task_id: str):
+    """While the body waits on the image service, keep the task visibly alive and say how
+    long the wait has been, so nobody starts the page again."""
+    stop = _heartbeat_threading.Event()
+    _LAST_PROGRESS.setdefault(task_id, time.time())
+
+    def beat():
+        while not stop.wait(HEARTBEAT_SECONDS):
+            idle = time.time() - _LAST_PROGRESS.get(task_id, time.time())
+            if idle >= SLOW_NOTICE_SECONDS:
+                minutes, seconds = divmod(int(idle), 60)
+                _set(task_id, _heartbeat=True, progress_msg=(
+                    f"生图服务较忙，图片还在生成（已等 {minutes} 分 {seconds} 秒），"
+                    "请不要重新点生成；完成后自动继续，不会重复扣费"))
+            else:
+                _set(task_id, _heartbeat=True)
+
+    worker = _heartbeat_threading.Thread(target=beat, name=f"refine-heartbeat-{task_id}", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -1056,6 +1096,14 @@ def _run_real_generator(planning: dict, product_image_url: str,
 def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
                             gpt_image_key: str, task_dir: Path,
                             progress_cb, *, resume_blocks: list[dict] | None = None) -> tuple[list[dict], float]:
+    with _keep_alive(task_dir.name):
+        return _generate_and_download_v2(planning_v2, product_image_url, gpt_image_key, task_dir,
+                                         progress_cb, resume_blocks=resume_blocks)
+
+
+def _generate_and_download_v2(planning_v2: dict, product_image_url: str,
+                              gpt_image_key: str, task_dir: Path,
+                              progress_cb, *, resume_blocks: list[dict] | None = None) -> tuple[list[dict], float]:
     """调 refine_generator.generate_v2() 真调 APIMart, 下载图到 task_dir.
 
     跟 _run_real_generator (v1) 完全等价的 4 刀 guard 模式, 只是调 generate_v2:
@@ -1966,7 +2014,8 @@ def _continue_after_slow_screens(task_id: str, task_dir: Path, gpt_image_key: st
     try:
         _set(task_id, status="running_recovery", error="",
              progress_msg="生图服务较忙，有图片还在生成，正在继续等待；不会重复扣费")
-        _recover_task(task_id, gpt_image_key, continue_missing=True)
+        with _keep_alive(task_id):
+            _recover_task(task_id, gpt_image_key, continue_missing=True)
     except Exception as exc:
         _record_worker_exception(task_id, task_dir, exc, log_prefix="pipeline_slow_continue")
     finally:
@@ -2333,7 +2382,8 @@ def _recover_task(task_id: str, gpt_image_key: str, *, continue_missing: bool = 
 
 def _recovery_worker(task_id: str, gpt_image_key: str, continue_missing: bool = False) -> None:
     try:
-        _recover_task(task_id, gpt_image_key, continue_missing=continue_missing)
+        with _keep_alive(task_id):
+            _recover_task(task_id, gpt_image_key, continue_missing=continue_missing)
     except Exception as exc:
         _record_worker_exception(
             task_id,
