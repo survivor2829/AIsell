@@ -38,13 +38,14 @@ try {
   if ($dpi -lt 72) { $dpi = 96 }
   $scale = $dpi / 96.0
   $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
-  # Chat body only: right of the session list, and the band just above the
-  # composer, whose height is fixed (~150 px at 96 DPI) whatever the window
-  # size. On a real 1120x760 window the notice sat 168 px above the bottom.
+  # The whole chat body: right of the session list, below the title bar and above the
+  # composer (fixed ~130 px at 96 DPI). A short chat (a contact added recently, most touch
+  # recipients) keeps its messages at the top, far above the composer: the old band of
+  # 210 px above the composer missed "消息已发出，但被对方拒收了" 250 px up (2026-11-17).
   $left = [int]($rect.Left + [Math]::Max(240 * $scale, $width * 0.28))
   $right = [int]($rect.Right - 12 * $scale)
   $bottom = [int]($rect.Bottom - 130 * $scale)
-  $top = [int]([Math]::Max($rect.Top + 80 * $scale, $rect.Bottom - 340 * $scale))
+  $top = [int]($rect.Top + 80 * $scale)
   if ($right - $left -lt 160 -or $bottom - $top -lt 40) { Write-NoticeResult @{ ok = $false; reason = "delivery_notice_region_invalid" } }
   Add-Type -AssemblyName System.Drawing
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -84,10 +85,13 @@ ${WECHAT_SCREEN_PIXELS_POWERSHELL}
   $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('zh-Hans-CN'))
   if ($null -eq $engine) { Write-NoticeResult @{ ok = $false; reason = "delivery_notice_ocr_unavailable" } }
   $reading=Wait-Notice ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult])
-  # Only the lowest text counts: the notice sits directly under the bubble just
-  # sent, while an older notice in the history would sit above that bubble.
-  # (Real 1120x760 window: notice ~30 px above the band bottom, our bubble ~77.)
-  $lowestLimit = $scaled.Height - 60 * $scale * 2
+  # Only the lowest text counts: the notice sits directly under the bubble just sent,
+  # while an older notice in the history would sit above that bubble. The lowest line and
+  # the one above it if it is within 26 px (a deletion notice wraps onto two lines); the
+  # bubble just sent is taller than that, so an older notice never joins.
+  $allBottoms = @($reading.Lines | ForEach-Object { $_.Words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height } })
+  if ($allBottoms.Count -eq 0) { Write-NoticeResult @{ ok = $true; undelivered = $false; kind = ""; line_count = 0 } }
+  $lowestLimit = ($allBottoms | Measure-Object -Maximum).Maximum - 26 * $scale * 2
   $lowestLines = @($reading.Lines | Where-Object {
     $wordBottoms = @($_.Words | ForEach-Object { $_.BoundingRect.Y + $_.BoundingRect.Height })
     $wordBottoms.Count -gt 0 -and ($wordBottoms | Measure-Object -Maximum).Maximum -ge $lowestLimit
