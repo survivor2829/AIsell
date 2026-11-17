@@ -33,6 +33,8 @@
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
 | `desktop/rpa/active_touch/` | 微信窗口观察/发送适配、主动触达状态机及测试版朋友圈执行器 | renderer 状态管理、API Key 持久化、跨业务混用发送账本 |
 | `desktop/sidecars/product-detail/app/line_ocr.py`、`desktop/src/main/line-ocr-service.cjs` | 触达聊天标题识字（PP-OCRv4 识别模型，跑在产品详情图运行时，回环+令牌），主进程按需启动并把地址交给微信脚本 | 读搜索下拉框或其他业务界面；把识字结果写日志 |
+| `desktop/rpa/active_touch/powershell_host.cjs` | 只读微信观察（会话核对、发送前后快照、送达提示）共用的常驻 PowerShell，每次独立运行环境 | 点击、输入、发送；保存跨次执行的变量 |
+| `desktop/src/main/touch-unreachable.cjs` | 按微信账号记下拉黑、删除过用户的联系人，供以后触达排除和统计 | 判断拉黑或删除（由送达提示识别）；跨账号共用 |
 | `desktop/sidecars/product-detail/` | 产品详情图本地 sidecar、隔离工作台和用户数据迁移 | 向 renderer 暴露文件系统、密钥或任意本机进程能力 |
 | `desktop/sidecars/content-engine/` | 原素材原地索引、媒体探测、素材版权/使用权状态、内容任务和成片登记 | 复制或删除用户原片；调用微信自动化或绕过 Electron 主进程 |
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
