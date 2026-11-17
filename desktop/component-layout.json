@@ -8,7 +8,7 @@
     {"component":"video","prefixes":["resources/content-engine/remotion-bundle/","resources/content-engine/remotion-render-worker.mjs","resources/content-engine/remotion-runtime-manifest.json","resources/content-engine/remotion-runtime-manifest.sha256","resources/content-engine/remotion-sbom.json","remotion-packaging/"]},
     {"component":"content-engine","prefixes":["resources/content-engine/content-engine-worker.exe","resources/content-engine/_internal/content_engine/","resources/content-engine/_internal/base_library.zip","resources/content-engine/_internal/pyi*"]},
     {"component":"content-engine","prefixes":["resources/content-engine/_internal/"],"extensions":[".pyz",".pkg",".toc"]},
-    {"component":"product-detail","prefixes":["resources/product-detail/product-detail-server.exe","resources/product-detail/_internal/ai_refine_v2/","resources/product-detail/_internal/templates/","resources/product-detail/_internal/static/","resources/product-detail/_internal/base_library.zip","resources/product-detail/_internal/pyi*"]},
+    {"component":"product-detail","prefixes":["resources/product-detail/product-detail-server.exe","resources/product-detail/_internal/ai_refine_v2/","resources/product-detail/_internal/templates/","resources/product-detail/_internal/static/","resources/product-detail/_internal/base_library.zip","resources/product-detail/_internal/pyi*","resources/product-detail/_internal/line_ocr_model.json","resources/product-detail/_internal/models/ch_PP-OCRv4_rec_infer.onnx"]},
     {"component":"product-detail","prefixes":["resources/product-detail/_internal/"],"extensions":[".pyz",".pkg",".toc"]},
     {"component":"application","prefixes":["resources/app/","版本清单.json","版本标识.txt","首次使用说明.txt"]}
   ]
