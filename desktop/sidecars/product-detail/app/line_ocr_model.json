@@ -1,0 +1,9 @@
+{
+  "name": "PP-OCRv4-rec-ch",
+  "file": "ch_PP-OCRv4_rec_infer.onnx",
+  "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b",
+  "archiveUrl": "https://files.pythonhosted.org/packages/ba/12/1e5497183bdbe782dbb91bad1d0d2297dba4d2831b2652657f7517bfc6df/rapidocr_onnxruntime-1.4.4-py3-none-any.whl",
+  "archiveSha256": "971d7d5f223a7a808662229df1ef69893809d8457d834e6373d3854bc1782cbf",
+  "archiveMember": "rapidocr_onnxruntime/models/ch_PP-OCRv4_rec_infer.onnx",
+  "source": "https://github.com/PaddlePaddle/PaddleOCR (PP-OCRv4, Apache-2.0) via https://github.com/RapidAI/RapidOCR (Apache-2.0)"
+}

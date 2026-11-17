@@ -83,6 +83,7 @@ function removeBuildTarget(target, buildRoot) {
 
 function buildPyInstallerArgs(paths) {
   const modelConfig = require(path.join(paths.sourceDir, "cutout_model.json"));
+  const lineOcrConfig = require(path.join(paths.sourceDir, "line_ocr_model.json"));
   const dataArgs = [
     "--add-data",
     `${paths.templatesDir}${path.delimiter}templates`,
@@ -91,7 +92,11 @@ function buildPyInstallerArgs(paths) {
     "--add-data",
     `${paths.screenTypesFile}${path.delimiter}ai_refine_v2`,
     "--add-data", `${path.join(paths.sourceDir, "cutout_model.json")}${path.delimiter}.`,
-    "--add-data", `${path.join(paths.defaultBuildRoot, "cutout-models", modelConfig.file)}${path.delimiter}models`
+    "--add-data", `${path.join(paths.defaultBuildRoot, "cutout-models", modelConfig.file)}${path.delimiter}models`,
+    // The touch chat-title reader (line_ocr.py, served by --line-ocr-serve).
+    "--add-data", `${path.join(paths.sourceDir, "line_ocr_model.json")}${path.delimiter}.`,
+    "--add-data", `${path.join(paths.defaultBuildRoot, "line-ocr-models", lineOcrConfig.file)}${path.delimiter}models`,
+    "--hidden-import", "line_ocr"
   ];
   return [
     "--noconfirm",
@@ -361,6 +366,7 @@ async function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null 
   if (!fs.existsSync(model) || sha256(model) !== modelConfig.sha256) {
     throw new Error("Missing or invalid offline cutout model. Run node scripts/prepare-cutout-model.cjs before building.");
   }
+  require("./prepare-line-ocr-model.cjs").prepare();
   fs.mkdirSync(paths.buildRoot, { recursive: true });
   assertFreshOutput(paths);
   fs.mkdirSync(paths.specDir, { recursive: true });

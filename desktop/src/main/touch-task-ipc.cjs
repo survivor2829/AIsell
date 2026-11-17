@@ -1389,15 +1389,26 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     return taskPayload();
   });
 
+  // The chat-title reader is up before a contact is searched (a no-op once running; when it
+  // cannot start the scripts keep Windows' own reading).
+  // A cold start waits at most 5 s; past that the reader keeps starting in the background and
+  // this contact uses Windows' reading.
+  const withTitleReader = (fn) => typeof fn === "function" ? async (...args) => {
+    try {
+      const ready = require("./line-ocr-service.cjs").lineOcrService()?.ensure();
+      if (ready) await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 5000).unref?.())]);
+    } catch { /* optional */ }
+    return fn(...args);
+  } : fn;
   const workflow = createTouchWorkflow({
     dataDir: activeTouchDir(),
     mediaStore: require("./touch-media.cjs").createTouchMediaStore({ dataDir: activeTouchDir(), nativeImage: require("electron").nativeImage }),
     coordinator: runtimeCoordinator,
     readContacts,
     client: deepSeekClient,
-    execute: realSendExecutor,
+    execute: withTitleReader(realSendExecutor),
     detectDeliveryNotice,
-    runStep: runActiveTouch,
+    runStep: withTitleReader(runActiveTouch),
     restoreChatSurface: restoreWechatChatSurface,
     passport: taskPassportStore
   });
