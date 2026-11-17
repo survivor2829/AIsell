@@ -851,13 +851,15 @@ async function main() {
   assert.match(page, /const b = await callBatch<Batch>\(action, payload\);\s*draftSlot\.started\(draftOwner\.current\);/u);
   assert.match(page, /if \(dropped && mounted\.current\) discardPendingDraft\(localStorage, [^;]+, fingerprint\);/u,
     "only an edit the user moved on from is backed up; leaving the page keeps it cached");
-  assert.match(page, /"该批次的声音暂不可用，请选择可用声音。"/u);
+  // 2026-11-17: a voice this computer cannot use is switched by the engine, never reported as unavailable.
+  assert.doesNotMatch(page, /声音暂不可用|请选择可用声音/u);
+  assert.match(page, /return b\.voice_notice \|\| "";/u);
   assert.match(page, /setDirty\(false\); setNotice\(\[droppedNotice\.current, voiceWarning\(b\)\]\.filter\(Boolean\)\.join\(" "\)\);/u,
-    "loading a batch must flag a voice that is no longer approved and keep a dropped-edit notice");
+    "loading a batch shows the voice switch and keeps a dropped-edit notice");
 
   assert.equal((page.match(/if \(!batch \|\| draftQueue\.busy\(\)\) return;\s*draftQueue\.cancelPending\(\);/gu) || []).length, 2,
     "both retries handle the save queue the way start() does");
-  assert.match(page, /const editRejected = rejectedEdit && rejectedEdit\.owner === draftOwner\.current && rejectedEdit\.fingerprint === draftFingerprint \? rejectedEdit\.message : undefined;\s*const recoveryHeld = voiceBlocked \? VOICE_RECOVERY_BLOCKS : retryHold\(\{ saving, dirty, rejected: editRejected \}\);/u,
+  assert.match(page, /const editRejected = rejectedEdit && rejectedEdit\.owner === draftOwner\.current && rejectedEdit\.fingerprint === draftFingerprint \? rejectedEdit\.message : undefined;[\s\S]*?const recoveryHeld = retryHold\(\{ saving, dirty, rejected: editRejected \}\);/u,
     "the retry buttons wait for a save on its way and name a rejection");
   assert.match(page, /if \(isDeterministicDraftError\(error\)\) setRejectedEdit\(\{ fingerprint, owner, message: \(error as Error\)\.message \}\);/u);
   assert.match(page, /setBatch\(value\);\s*setRejectedEdit\(null\);/u, "a landed save clears the rejection");

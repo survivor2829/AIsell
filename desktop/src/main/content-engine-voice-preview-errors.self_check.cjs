@@ -105,7 +105,7 @@ for (const code of saveStartCodes) {
   assert.doesNotMatch(result.error, /private provider detail|403|secret|draft\.json|C:\\/u, `${code} must not leak internals`);
 }
 assert.match(publicError({ code: "auto_mix_voice_persona_approval_required", message: "请选择已试听批准的声音。" }).error,
-  /尚未批准或批准已失效.*声音与配乐/u, "an unapproved voice must say what to do");
+  /这台电脑上没有可用的配音声音.*更新到最新版本/u, "no usable voice at all must say what to do");
 // Fixed Chinese settings messages from the engine name the actual field; code echoes,
 // key names and paths fall back to the mapped text.
 assert.equal(publicError({ code: "invalid_narrated_settings", message: "请选择至少一首配乐，或改为自动配乐。" }).error,
