@@ -498,6 +498,14 @@ def _install_desktop_contract(
                         # The first request is still being admitted; it owns this click.
                         return jsonify({"ok": False, "code": "DESKTOP_AI_REFINE_STARTING",
                                         "error": "上一个任务正在提交，请稍候。"}), 409
+                # The same request again for an unfinished paid page continues that page:
+                # its finished screens are kept and nothing already bought is bought again.
+                if (ledger.get("task_id") and ledger.get("state") in {"outcome_unknown", "recovery_required"}
+                        and hmac.compare_digest(str(ledger.get("request_fingerprint") or ""), fingerprint)):
+                    return jsonify({"ok": False, "code": "DESKTOP_AI_REFINE_RECOVERY_REQUIRED",
+                                    "error": "这份资料上次还没做完，已画好的图都保存着，正在接着做，不会重复扣费。",
+                                    "task_id": ledger["task_id"],
+                                    "product_title": str(ledger.get("product_title") or "")}), 409
                 # The customer asked for new pictures: an earlier task never blocks
                 # them. It stays on record with its receipts; if it is still
                 # working it may finish in the background.
