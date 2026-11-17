@@ -275,8 +275,12 @@ def confirm_selections(domain, request):
         settings,
         [item['narration'] for item in selections],
     )
-    persona = domain.d._approved_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
-    require(persona is not None, 'auto_mix_voice_persona_approval_required', '当前声音不可用，请在更多设置中更换声音。')
+    # The voice this computer can use; a remembered one it cannot is replaced, never refused.
+    persona = domain.d._usable_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
+    if persona is not None and persona['provider'] != 'volcengine':
+        persona = domain.d._approved_auto_mix_voice_persona(providers=('volcengine',)) or persona
+    require(persona is not None, 'auto_mix_voice_persona_approval_required',
+            '这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。')
     require(persona['provider'] == 'volcengine', 'auto_mix_voice_persona_invalid',
             '当前声音不支持火山配音，请重新选择已批准的火山音色。')
     from .volcengine_tts import VolcengineTTSProvider
@@ -286,7 +290,9 @@ def confirm_selections(domain, request):
     previous = [{k: v for k, v in item.items() if k != 'confirmed_at'} for item in b.get('script_selections', [])]
     if previous == selections:
         require(settings == b['settings'], 'narrated_settings_changed', '本批已开始制作，请新建批次使用其他声音或配乐。')
-        return domain.start(b['batch_id'], 'confirmed')
+        return domain.start(b['batch_id'], 'confirmed')  # start() switches an unusable voice itself.
+    if settings.get('voice_persona_id') != persona['id']:
+        settings = {**settings, 'voice_persona_id': persona['id']}
     require(not b.get('script_confirmation'), 'narrated_script_already_confirmed',
             '本批已开始制作；修改正文后重新确认，或新建批次选择其他方向。')
     if settings != b['settings']:

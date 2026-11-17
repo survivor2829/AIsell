@@ -17,7 +17,7 @@ export type Batch = {
   progress: number; candidates: Candidate[]; available_shots: Shot[]; completed_count?: number;
   settings: { voice_persona_id?: string; brand_profile_id?: string; minimum_duration_seconds?: number; workflow_version?: number; music_mode?: "auto" | "none" | "selected"; music_track_ids?: string[]; video_template?: "topic_fixed" | "key_points"; strict_visual_review?: boolean }; approved: boolean;
   script_options?: Candidate[]; selected_script_id?: string;
-  script_selections?: ScriptSelection[]; production_jobs?: ProductionJob[]; production_retry_available?: boolean; voice_recovery_available?: boolean;
+  script_selections?: ScriptSelection[]; production_jobs?: ProductionJob[]; production_retry_available?: boolean; voice_recovery_available?: boolean; voice_notice?: string;
   material_context?: string; export_ready?: boolean; exported_count?: number; export_error?: string;
   script_confirmation?: { script_id: string; revision: number; narration: string; confirmed_at: string } | null;
   direction?: { audience?: string; pain_point?: string; angle?: string };

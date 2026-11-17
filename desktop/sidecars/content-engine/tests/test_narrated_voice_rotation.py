@@ -20,6 +20,11 @@ class FakeCreative:
             return self.approved.get("volc-xiaohe-2@1")
         return self.approved.get(selected_id)
 
+    def _usable_auto_mix_voice_persona(self, *, selected_id=None, excluded_id="", providers=None):
+        # The real rule: the selected voice when usable, otherwise the preferred usable one.
+        return (self._approved_auto_mix_voice_persona(selected_id=selected_id) if selected_id else None) \
+            or self._approved_auto_mix_voice_persona()
+
 
 class FakeRows:
     def __init__(self, approved):
