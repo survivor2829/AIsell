@@ -548,14 +548,15 @@ class CreativeDomain:
     def _sync_configured_voice_persona(self):
         now = self._now()
         personas = configured_voice_personas()
-        if not personas and builtin_voice_catalog_unreadable():
-            # A catalog that could not be read says nothing about which voices exist: retiring
-            # on it took every official voice away (field eb308612). Keep what is there.
-            return False
+        # A catalog that could not be read says nothing about which voices exist: retiring on it
+        # took every official voice away (field eb308612). Keep what is there; previews saved on
+        # this computer are still registered.
+        readable = bool(personas) or not builtin_voice_catalog_unreadable()
         with self.database.transaction():
-            self._sync_configured_voice_persona_rows(now, personas)
+            if readable:
+                self._sync_configured_voice_persona_rows(now, personas)
             self._register_saved_voice_previews(now)
-        return True
+        return readable
 
     def _sync_configured_voice_persona_rows(self, now, personas):
         configured_ids = {persona["persona_id"] for persona in personas}
@@ -4418,8 +4419,8 @@ class CreativeDomain:
         ).fetchall()
         return {
             "voice_rows": {f"{row['provider']}:{'active' if row['active'] else 'retired'}:{'approved' if row['approved'] else 'pending'}": int(row["n"]) for row in rows},
-            "catalog_unreadable": builtin_voice_catalog_unreadable(),
             "catalog_voice_count": len(configured_voice_personas()),
+            "catalog_unreadable": builtin_voice_catalog_unreadable(),
             "voice_providers": list(self._voice_providers()),
         }
 

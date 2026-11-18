@@ -37,17 +37,19 @@ BUILTIN_VOICE_CATALOG = (
 )
 
 
+# Whether the last read of the shipped catalog (by configured_voice_personas) failed. The sync
+# decides on that very read: reading again could succeed a moment later (a file briefly locked by
+# antivirus) and the empty list from the failed read would still retire every voice.
+_last_builtin_read_failed = False
+
+
 def builtin_voice_catalog_unreadable() -> bool:
-    """True when the shipped voice catalog exists in the build but cannot be read here.
+    """True when the last read of the shipped voice catalog failed.
 
     An empty catalog from a read failure must never retire the voices this computer already
     has: only a catalog that was read can say a voice is gone.
     """
-    try:
-        payload = json.loads(BUILTIN_VOICE_CATALOG.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return True
-    return not isinstance(payload, dict) or payload.get("schemaVersion") != 1
+    return _last_builtin_read_failed
 
 
 def _clean(value: Any, maximum: int) -> str:
@@ -108,12 +110,15 @@ def _configured_persona(value: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _builtin_voice_personas() -> list[dict[str, Any]]:
+    global _last_builtin_read_failed
+    _last_builtin_read_failed = True
     try:
         payload = json.loads(BUILTIN_VOICE_CATALOG.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
     if not isinstance(payload, dict) or payload.get("schemaVersion") != 1:
         return []
+    _last_builtin_read_failed = False
     catalog_version = _clean(payload.get("catalogVersion"), 80)
     personas = []
     for item in payload.get("personas") or []:

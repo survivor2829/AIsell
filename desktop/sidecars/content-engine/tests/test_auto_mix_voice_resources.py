@@ -687,6 +687,10 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         still = [row["id"] for row in self.service.connection.execute(
             "SELECT id FROM voice_personas_v1 WHERE provider='volcengine' AND active=1 AND approved_at IS NOT NULL")]
         self.assertEqual(sorted(official), sorted(still))
+        # The decision rests on that same read: a later successful read clears it.
+        from content_engine.auto_mix_resources import builtin_voice_catalog_unreadable
+        self.assertGreater(len(configured_voice_personas({})), 5)
+        self.assertFalse(builtin_voice_catalog_unreadable())
 
     def test_a_voice_table_emptied_earlier_is_restored_at_the_next_engine_start(self):
         # A computer whose official voices were retired by the unreadable catalog gets them back
@@ -716,9 +720,11 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
                 continue
             for number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
                 code = line.split("#", 1)[0]
-                for marker in ("Path(__file__).resolve()", "os.path.realpath(__file__)"):
-                    if marker in code:
-                        offenders.append(f"{path.name}:{number}")
+                # Any canonicalising of the engine's own location: __file__ or the executable,
+                # through resolve(), realpath() or absolute().resolve() in any order.
+                anchored = "__file__" in code or "sys.executable" in code
+                if anchored and (".resolve(" in code or "realpath(" in code):
+                    offenders.append(f"{path.name}:{number}")
         self.assertEqual([], offenders)
 
     def test_changed_configuration_on_return_still_revokes_approval_and_preview(self):
