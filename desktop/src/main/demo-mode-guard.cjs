@@ -34,15 +34,21 @@ function classify(channel) {
   return "unclassified";
 }
 
-// Turning phone polling or a screen off is stopping, and stopping is never refused.
-const STOPS_WITH_ON_FALSE = new Set(["phone-matrix:checkPhones", "phone-matrix:watch"]);
+// Turning phone polling off ({ on: false }) or watching no screens ({ serials: [] }) is stopping,
+// and stopping is never refused.
+function stops(channel, payload) {
+  if (!payload || typeof payload !== "object") return false;
+  if (channel === "phone-matrix:checkPhones") return payload.on === false;
+  if (channel === "phone-matrix:watch") return Array.isArray(payload.serials) && payload.serials.length === 0;
+  return false;
+}
 
 // "pass" | "quiet" (refused without the advisor's card) | "action" (refused with it).
 function trialDecision(channel, ...args) {
   const kind = classify(channel);
   if (kind === "open" || kind === "read") return "pass";
   if (kind === "workbench") return WORKBENCH_READS.has(workbenchAction(args)) ? "pass" : "action";
-  if (STOPS_WITH_ON_FALSE.has(String(channel)) && args[0] && typeof args[0] === "object" && args[0].on === false) return "pass";
+  if (stops(String(channel), args[0])) return "pass";
   return kind === "action" ? "action" : "quiet";
 }
 
@@ -51,22 +57,26 @@ function promptsAdvisor(channel, ...args) { return trialDecision(channel, ...arg
 
 // Wraps ipcMain once, before any feature registers. isDemo is read on every call, so signing in or
 // out of the trial takes effect at once. A feature request nobody classified (the source scan
-// missed it) is reported once when it registers and refused quietly.
+// missed it) is refused quietly; it is reported once when it registers (used: false) and once
+// when a trial user actually reaches it (used: true).
 function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () => {}, onUnclassified = () => {} } = {}) {
   if (ipcMain.__xiaoxiDemoGuard) return;
   ipcMain.__xiaoxiDemoGuard = true;
   const reported = new Set();
-  const registering = (channel) => {
-    if (classify(channel) !== "unclassified" || reported.has(channel)) return;
-    reported.add(channel);
-    try { onUnclassified(String(channel)); } catch { /* reporting never stops a feature from registering */ }
+  const report = (channel, used) => {
+    const key = `${used ? "used" : "registered"}|${channel}`;
+    if (classify(channel) !== "unclassified" || reported.has(key)) return;
+    reported.add(key);
+    try { onUnclassified(String(channel), { used }); } catch { /* reporting never stops a feature */ }
   };
+  const registering = (channel) => report(channel, false);
   const refused = (channel, args) => {
     let demo = false;
     try { demo = isDemo() === true; } catch { demo = false; }
     if (!demo) return false;
     const decision = trialDecision(channel, ...args);
     if (decision === "pass") return false;
+    report(channel, true);
     if (decision === "action") { try { onBlocked(channel); } catch { /* the refusal stands */ } }
     return true;
   };

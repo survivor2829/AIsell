@@ -47,13 +47,18 @@ for (const channel of ["wechat-workflow:start", "touch-task:start", "content-eng
 }
 // Requests a page makes on its own when it opens are refused without the card (no pop-up on navigation).
 // Also requests that look like reading but act: refresh resumes outcome_unknown work, watch and checkPhones reach phones.
-for (const channel of ["content-engine:backfill-covers", "contact-sync:auto-detect-paths", "digital-human:reference-refresh",
-  "product-video:refresh", "phone-matrix:watch", "phone-matrix:checkPhones", "phone-matrix:refresh", "social-publish:covers"]) {
+// Buttons are actions with the card (review 2026-11-18): 刷新 on 手机矩阵, 查询原任务 on 数字人, 检查素材.
+for (const channel of ["phone-matrix:refresh", "digital-human:reference-refresh", "content-engine:probe-pending"]) {
+  assert.equal(trialDecision(channel), "action", channel);
+}
+for (const channel of ["content-engine:backfill-covers", "contact-sync:auto-detect-paths",
+  "product-video:refresh", "phone-matrix:watch", "phone-matrix:checkPhones", "social-publish:covers"]) {
   assert.equal(trialDecision(channel), "quiet", channel);
 }
 // Turning phone polling or a screen off is stopping and always passes.
 assert.equal(trialDecision("phone-matrix:checkPhones", { on: false }), "pass");
-assert.equal(trialDecision("phone-matrix:watch", { serial: "x", on: false }), "pass");
+assert.equal(trialDecision("phone-matrix:watch", { serials: [], main: "" }), "pass", "the page's real screen-off request");
+assert.equal(trialDecision("phone-matrix:watch", { serials: ["abc"], main: "abc" }), "quiet");
 assert.equal(trialDecision("phone-matrix:checkPhones", { on: true }), "quiet");
 // Only real requests are listed: page events, CSS selectors and labels are not (review 2026-11-18).
 for (const name of ["wechat-workflow:navigate", "input:checked", "moments:like", "digital-human:viral-progress"]) {
@@ -64,7 +69,8 @@ assert.equal(trialDecision("brand-new-area:do-something"), "quiet", "a name nobo
 assert.equal(blocksInTrial("geo:invoke", "status", {}), false, "a workbench page still loads");
 assert.equal(blocksInTrial("map-acquisition:invoke", "pause-task", {}), false, "stopping is never refused");
 assert.equal(promptsAdvisor("map-acquisition:invoke", "start-task", {}), true);
-assert.equal(blocksInTrial("map-acquisition:invoke", "return-results", {}), false, "going back to the results is looking");
+assert.equal(blocksInTrial("geo:invoke", "stop", {}), false, "stopping GEO is never refused");
+assert.equal(promptsAdvisor("map-acquisition:invoke", "copy-phone", {}), true, "copying a lead's phone records it, so it is using the feature");
 assert.equal(promptsAdvisor("geo:invoke", "open-link", {}), true, "opening an outside link is using the feature");
 assert.equal(blocksInTrial("map-acquisition:invoke", { action: "start-task" }), true);
 assert.equal(blocksInTrial("map-acquisition:invoke"), true, "an unnamed workbench action is refused");
@@ -76,7 +82,7 @@ const ipcMain = { handle: (channel, listener) => registered.set(channel, listene
   removeListener: (channel, listener) => { if (sent.get(channel) === listener) sent.delete(channel); } };
 let demo = true, blocked = [], ran = 0;
 const reportedUnclassified = [];
-installDemoModeGuard(ipcMain, { isDemo: () => demo, onBlocked: (channel) => blocked.push(channel), onUnclassified: (channel) => reportedUnclassified.push(channel) });
+installDemoModeGuard(ipcMain, { isDemo: () => demo, onBlocked: (channel) => blocked.push(channel), onUnclassified: (channel, detail) => reportedUnclassified.push([channel, detail]) });
 installDemoModeGuard(ipcMain, { isDemo: () => false }); // a second install changes nothing
 ipcMain.handle("wechat-workflow:start", async () => { ran += 1; return { ok: true }; });
 ipcMain.handle("wechat-workflow:status", async () => ({ ok: true, state: "idle" }));
@@ -85,7 +91,7 @@ ipcMain.handle("content-engine:backfill-covers", async () => ({ ok: true }));
 ipcMain.handle("brand-new-area:do-something", async () => ({ ok: true }));
 ipcMain.handle("brand-new-area:do-something", async () => ({ ok: true }));
 ipcMain.handle("account:status", async () => ({ ok: true }));
-assert.deepEqual(reportedUnclassified, ["brand-new-area:do-something"]);
+assert.deepEqual(reportedUnclassified, [["brand-new-area:do-something", { used: false }]]);
 let touches = 0;
 ipcMain.on("phone-matrix:input", () => { touches += 1; });
 ipcMain.handle("geo:invoke", async (_event, action) => ({ ok: true, action }));
@@ -96,6 +102,10 @@ ipcMain.handle("geo:invoke", async (_event, action) => ({ ok: true, action }));
   assert.deepEqual(blocked, ["wechat-workflow:start"]);
   assert.equal((await registered.get("content-engine:backfill-covers")({}, {})).ok, false);
   assert.deepEqual(blocked, ["wechat-workflow:start"], "a request the page makes on its own brings no card");
+  assert.equal((await registered.get("brand-new-area:do-something")({}, {})).ok, false, "an unclassified request is refused in the trial");
+  await registered.get("brand-new-area:do-something")({}, {});
+  assert.deepEqual(reportedUnclassified.at(-1), ["brand-new-area:do-something", { used: true }], "reaching it in the trial is reported once");
+  assert.equal(reportedUnclassified.length, 2);
   assert.deepEqual(await registered.get("wechat-workflow:status")({}, {}), { ok: true, state: "idle" });
   assert.deepEqual(await registered.get("geo:invoke")({}, "status", {}), { ok: true, action: "status" }, "the real workbench form reaches the handler");
   sent.get("phone-matrix:input")({}, { x: 1 });

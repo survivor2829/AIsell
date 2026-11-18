@@ -5,9 +5,9 @@ let trialAccountSignedIn = false;
 let notifyTrialBlocked = () => {};
 // A request no one classified for the trial is reported as an error once the logger exists.
 const unclassifiedTrialChannels = [];
-let reportUnclassifiedTrialChannel = (channel) => unclassifiedTrialChannels.push(channel);
+let reportUnclassifiedTrialChannel = (channel, detail) => unclassifiedTrialChannels.push([channel, detail]);
 require("./demo-mode-guard.cjs").installDemoModeGuard(ipcMain, { isDemo: () => trialAccountSignedIn, onBlocked: (channel) => notifyTrialBlocked(channel),
-  onUnclassified: (channel) => reportUnclassifiedTrialChannel(channel) });
+  onUnclassified: (channel, detail) => reportUnclassifiedTrialChannel(channel, detail) });
 if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
 const startupTiming = global.__xiaoxiStartupTiming ||= require('./startup-timing.cjs').createStartupTiming();
@@ -552,11 +552,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       } });
     try { const current = accountStore.status(); trialAccountSignedIn = current.authorized === true && current.demo === true; } catch { trialAccountSignedIn = false; }
     // Requests nobody classified for the trial, registered before the logger existed or after.
-    reportUnclassifiedTrialChannel = (channel) => {
+    // Registering one is a warning for every account; a trial user reaching it is an error (field report).
+    reportUnclassifiedTrialChannel = (channel, detail) => {
       try { logger.event("app", "trial_channel_unclassified", { request_kind: String(channel).replace(/[^a-zA-Z0-9_-]/gu, "_").slice(0, 80) },
-        { level: "error", code: "trial_channel_unclassified" }); } catch {}
+        { level: detail?.used ? "error" : "warn", code: "trial_channel_unclassified" }); } catch {}
     };
-    for (const channel of unclassifiedTrialChannels.splice(0)) reportUnclassifiedTrialChannel(channel);
+    for (const [channel, detail] of unclassifiedTrialChannels.splice(0)) reportUnclassifiedTrialChannel(channel, detail);
     // A refused action in the trial: the page shows the advisor's contact once in a while, not per click.
     let trialPromptAt = 0;
     notifyTrialBlocked = () => {
