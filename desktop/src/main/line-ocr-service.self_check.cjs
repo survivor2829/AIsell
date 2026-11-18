@@ -135,6 +135,27 @@ function fakeChild() {
   assert.equal(probed.running(), true, "a touch step that asked meanwhile keeps it");
   probed.stop();
 
+  // A failed check at launch (busy computer) does not hold back the first touch step for five minutes.
+  const slowEnv = {};
+  const slow = createLineOcrService({ resolveLaunch: () => ({ runtimePath: runtime }), env: slowEnv,
+    spawnProcess: () => { const child = fakeChild(); spawned.push({ child }); return child; } });
+  const slowCheck = slow.probe();
+  spawned.at(-1).child.exitCode = 1;
+  spawned.at(-1).child.emit("exit", 1);
+  assert.equal(await slowCheck, false);
+  const firstStep = slow.ensure();
+  spawned.at(-1).child.stdout.emit("data", "{\"port\": 50300}\n");
+  assert.equal(await firstStep, true, "the touch step starts the reader itself");
+  slow.stop();
+
+  // The Windows user name never leaves in the output, in any spelling.
+  const { withoutUserName } = require("./line-ocr-report.cjs");
+  const user = os.userInfo().username;
+  const scrubbed = withoutUserName(`File "C:\\Users\\${user}\\x.py"\nC:\\USERS\\ZHANGS~1\\AppData\\Local\\Temp\\_MEI\nD:/users/Someone/y\nname=${user.toUpperCase()}`);
+  assert.ok(!scrubbed.toLowerCase().includes(user.toLowerCase()), scrubbed);
+  assert.ok(!scrubbed.includes("ZHANGS~1") && !scrubbed.includes("Someone"), scrubbed);
+  assert.match(scrubbed, /C:\\Users\\<user>\\x\.py/u);
+
   // The report: start-up output and what the reader's folder holds (model present and intact,
   // onnxruntime and runtime DLLs), the system, never more than 8 KB of output.
   const { buildLineOcrStartupReport, writeLineOcrStartupReport } = require("./line-ocr-report.cjs");
@@ -175,7 +196,7 @@ function fakeChild() {
   // The reasons survive the real diagnostics redaction (a key named "cause" was hashed).
   const { createDiagnosticLogger } = require("./diagnostics.cjs");
   const diag = createDiagnosticLogger({ rootDir: fs.mkdtempSync(path.join(os.tmpdir(), "line-ocr-diag-")) });
-  diag.event("active_touch", "line_ocr.unavailable", { kind: "exited_1", error_type: "ImportError", win_error: 1114, onnxruntime: true }, { level: "warn" });
+  diag.event("line_ocr", "line_ocr.unavailable", { kind: "exited_1", error_type: "ImportError", win_error: 1114, onnxruntime: true }, { level: "warn" });
   const logged = JSON.stringify(diag.readRecent(10));
   assert.match(logged, /"kind":"exited_1"/u);
   assert.match(logged, /"error_type":"ImportError"/u);

@@ -112,7 +112,7 @@ const {
 let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
-let lineOcrStartupReported = false;
+const lineOcrReportedKinds = new Set();
 let autoReplyController = null;
 let workflowController = null;
 // 小玺's feeds from the features that do not report to it themselves.
@@ -1007,11 +1007,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         ? { runtimePath: productDetailRuntimePath(), runtimeArgs: [], requiredFiles: lineOcrModelFiles(productDetailRuntimePath()) }
         : { runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] },
       onEvent: (event, details, local) => {
-        // The first failure of a run is an error with a full report attached to its capsule (the
+        // The first failure of each kind in a run is an error with a full report attached to its capsule (the
         // reader's own start-up output and what its folder holds); repeats only count as warnings.
-        const firstFailure = event === "unavailable" && !lineOcrStartupReported;
+        // A missing runtime in a development checkout (no built sidecar) is expected: only a warning.
+        const firstFailure = event === "unavailable" && !lineOcrReportedKinds.has(details?.kind)
+          && (app.isPackaged || details?.kind !== "runtime_missing");
         if (firstFailure) {
-          lineOcrStartupReported = true;
+          lineOcrReportedKinds.add(details?.kind);
           try {
             const report = require("./line-ocr-report.cjs");
             report.writeLineOcrStartupReport(runtime.rootDir, report.buildLineOcrStartupReport({

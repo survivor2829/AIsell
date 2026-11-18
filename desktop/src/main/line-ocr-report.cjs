@@ -50,8 +50,18 @@ function folderFacts(runtimePath) {
   };
 }
 
+// Paths with the Windows user name in any spelling (upper case, 8.3 short names such as ZHANGS~1) and
+// the bare name: the capsule only removes the exact profile path.
+function withoutUserName(text) {
+  let user = "";
+  try { user = os.userInfo().username || ""; } catch { /* unknown */ }
+  let result = String(text || "").replace(/([a-z]:[\\/]+users[\\/]+)[^\\/\r\n"']+/giu, "$1<user>");
+  if (user.length >= 2) result = result.split(new RegExp(user.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "giu")).join("<user>");
+  return result;
+}
+
 function buildLineOcrStartupReport({ details = {}, launch = null, stderr = "", now = () => new Date(), appVersion = "" } = {}) {
-  const output = String(stderr || "");
+  const output = withoutUserName(stderr);
   return {
     kind: "line_ocr_startup_failed",
     at: now().toISOString(),
@@ -77,4 +87,4 @@ function writeLineOcrStartupReport(rootDir, report) {
   return file;
 }
 
-module.exports = { buildLineOcrStartupReport, writeLineOcrStartupReport, folderFacts, REPORT_DIR, REPORT_NAME };
+module.exports = { withoutUserName, buildLineOcrStartupReport, writeLineOcrStartupReport, folderFacts, REPORT_DIR, REPORT_NAME };

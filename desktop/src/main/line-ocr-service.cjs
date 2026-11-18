@@ -179,6 +179,9 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
     claimed = false;
     const ok = await acquire();
     if (ok && !claimed) stop();
+    // A check made while the computer is still busy starting up must not hold back the first
+    // touch step for five minutes: it tries again itself.
+    if (!ok && !claimed) failedAt = 0;
     return ok;
   }
 

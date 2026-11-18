@@ -244,6 +244,9 @@ async function appReportTravelsWithItsFailure() {
   const copied = fs.readFileSync(path.join(t.capsules.directory, id, "report-line-ocr-startup.json"), "utf8");
   assert.match(copied, /ImportError/u);
   assert.ok(!copied.includes(JSON.stringify(t.root).slice(1, -1)), "the report carries no profile path");
+  t.capsules.record({ source: "log", module: "active_touch", code: "touch_skipped_search_result_not_opened", at: Date.now() });
+  const touchCapsule = t.files().find((item) => item.module === "active_touch");
+  assert.ok(!(touchCapsule.attachments || []).some((name) => name.startsWith("report-")), "a WeChat failure never carries another module's report");
   t.capsules.stop();
 }
 

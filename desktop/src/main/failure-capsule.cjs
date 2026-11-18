@@ -185,7 +185,7 @@ function createFailureCapsules({ rootDir, logger, engineLogsDir = "", serviceLog
   function attach(capsule, at) {
     const folder = path.join(dir, capsule.id);
     const flight = collectFlight(rootDir, { at });
-    const files = [...flight.files, ...collectPassports(rootDir, { at }), ...collectReports(rootDir, { at })];
+    const files = [...flight.files, ...collectPassports(rootDir, { at }), ...collectReports(rootDir, { at, module: capsule.module })];
     capsule.flight = flight.steps.map(step => ({ ts: step.ts, step: step.step, image: step.image || "", lossless: step.lossless === true,
       ...(step.imageOmitted ? { imageOmitted: step.imageOmitted } : {}) }));
     capsule.attachments = [];
