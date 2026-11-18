@@ -23,9 +23,15 @@ const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipp
 // equal to a record, so retrying stays possible).
 const IDENTITY_LOGIC_FILES = ["state_machine.cjs", "wechat_header_title.cjs", "wechat_search_input.cjs",
   "wechat_search_result_resolver.cjs", "wechat_window_driver.cjs", "wechat_screen_pixels.cjs", "window_title_reader.cjs"];
-function identityLogicVersion(files = IDENTITY_LOGIC_FILES, dir = __dirname) {
+// Changes outside those files that still change who is recognised. 1.3.38: the chat-title reader
+// (PP-OCRv4) finally starts on customer computers (it failed on every Windows user name four or
+// more letters longer than the development machine's: DLL path too long), so contacts skipped
+// while only Windows' own reading was there must be retryable again.
+const IDENTITY_LOGIC_REVISIONS = ["title-reader-short-launch"];
+function identityLogicVersion(files = IDENTITY_LOGIC_FILES, dir = __dirname, revisions = IDENTITY_LOGIC_REVISIONS) {
   try {
     const hash = crypto.createHash("sha256");
+    for (const revision of revisions) hash.update(`revision:${revision}`).update("\0");
     for (const name of files) hash.update(name).update("\0").update(fs.readFileSync(path.join(dir, name), "utf8").replace(/\r\n/g, "\n")).update("\0");
     return `code-${hash.digest("hex").slice(0, 16)}`;
   } catch {

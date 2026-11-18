@@ -34,6 +34,10 @@ function folderFacts(runtimePath) {
   let pythonDlls = [];
   try { pythonDlls = fs.readdirSync(internal).filter((name) => /^python\d+\.dll$/iu.test(name)); } catch { /* none */ }
   return {
+    // Windows refuses the reader's DLLs from about 253 characters (1.3.38): the folder it was
+    // started from, and the deepest DLL path from there.
+    launch_folder_length: root.length,
+    onnxruntime_dll_path_length: path.join(internal, "onnxruntime", "capi", "onnxruntime_pybind11_state.pyd").length,
     // Its fingerprint tells an outdated product-detail component (whose runtime does not know
     // --line-ocr-serve and exits 2 with a usage message) from the current one.
     runtime: fileFacts(runtimePath, { hash: true }),

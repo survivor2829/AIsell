@@ -194,6 +194,17 @@ function lineOcrModelFiles(runtimePath) {
   }
 }
 
+// The packaged runtime below the product-detail service's short junction; the long path only when
+// the junction cannot be made (then the reader may fail as before and says so in its report).
+function lineOcrLaunchPath() {
+  const runtimePath = productDetailRuntimePath();
+  try {
+    return require("./runtime-link.cjs").prepareRuntimeLaunch(runtimePath, path.join(app.getPath("userData"), "product-detail"), {}, { folder: "product-detail" }).runtimePath;
+  } catch {
+    return runtimePath;
+  }
+}
+
 function contentEngineRuntimePath() {
   if (app.isPackaged) {
     return path.join(
@@ -1003,8 +1014,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     }
     // The chat-title reader shares the product-detail runtime; it starts on the first touch step.
     require("./line-ocr-service.cjs").configureLineOcrService({
+      // Started through the same short junction as the product-detail service (runtime-link.cjs):
+      // from the update folder itself onnxruntime's DLL path passed 252 characters for any Windows
+      // user name four letters longer than the development machine's, and Windows refused to load
+      // it ("文件名或扩展名太长", field 47d2578f 1.3.37; 1.3.30–1.3.37 never had the reader there).
       resolveLaunch: () => app.isPackaged
-        ? { runtimePath: productDetailRuntimePath(), runtimeArgs: [], requiredFiles: lineOcrModelFiles(productDetailRuntimePath()) }
+        ? { runtimePath: lineOcrLaunchPath(), runtimeArgs: [], requiredFiles: lineOcrModelFiles(productDetailRuntimePath()) }
         : { runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] },
       onEvent: (event, details, local) => {
         // The first failure of each kind in a run is an error with a full report attached to its capsule (the

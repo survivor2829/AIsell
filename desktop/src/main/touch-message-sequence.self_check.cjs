@@ -556,6 +556,10 @@ $dialogAccepted = Wait-PasteAccepted 1000
       fs.writeFileSync(path.join(codeDir, "a.cjs"), "const title = 2;\n");
       assert.notEqual(identityLogicVersion(["a.cjs"], codeDir), before, "a change of the recognition code changes the version");
       assert.equal(identityLogicVersion(["missing.cjs"], codeDir), "", "unreadable code never blocks a retry");
+      // A change outside the code that still changes who is recognised (1.3.38: the title reader
+      // reachable on customer computers) is a named revision and frees earlier skips too.
+      const unrevised = identityLogicVersion(["a.cjs"], codeDir, []);
+      assert.notEqual(identityLogicVersion(["a.cjs"], codeDir, ["title-reader-short-launch"]), unrevised);
     } finally {
       fs.rmSync(codeDir, { recursive: true, force: true });
     }
