@@ -556,6 +556,14 @@ $dialogAccepted = Wait-PasteAccepted 1000
       fs.writeFileSync(path.join(codeDir, "a.cjs"), "const title = 2;\n");
       assert.notEqual(identityLogicVersion(["a.cjs"], codeDir), before, "a change of the recognition code changes the version");
       assert.equal(identityLogicVersion(["missing.cjs"], codeDir), "", "unreadable code never blocks a retry");
+      // A change outside the code that still changes who is recognised (1.3.38: the title reader
+      // reachable on customer computers) is a named revision and frees earlier skips too.
+      const unrevised = identityLogicVersion(["a.cjs"], codeDir, []);
+      assert.notEqual(identityLogicVersion(["a.cjs"], codeDir, ["title-reader-short-launch"]), unrevised);
+      // The version records actually carry includes the revision (what frees the field skips).
+      const states = require("../../rpa/active_touch/touch_task_state.cjs");
+      assert.equal(states.IDENTITY_LOGIC_VERSION, identityLogicVersion());
+      assert.notEqual(states.IDENTITY_LOGIC_VERSION, identityLogicVersion(undefined, undefined, []), "the default version includes the named revisions");
     } finally {
       fs.rmSync(codeDir, { recursive: true, force: true });
     }

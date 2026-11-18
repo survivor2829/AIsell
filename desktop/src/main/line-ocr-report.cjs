@@ -34,6 +34,10 @@ function folderFacts(runtimePath) {
   let pythonDlls = [];
   try { pythonDlls = fs.readdirSync(internal).filter((name) => /^python\d+\.dll$/iu.test(name)); } catch { /* none */ }
   return {
+    // Windows refuses the reader's DLLs from about 253 characters (1.3.38): the folder it was
+    // started from, and the deepest DLL path from there.
+    launch_folder_length: root.length,
+    onnxruntime_dll_path_length: path.join(internal, "onnxruntime", "capi", "onnxruntime_pybind11_state.pyd").length,
     // Its fingerprint tells an outdated product-detail component (whose runtime does not know
     // --line-ocr-serve and exits 2 with a usage message) from the current one.
     runtime: fileFacts(runtimePath, { hash: true }),
@@ -70,6 +74,12 @@ function buildLineOcrStartupReport({ details = {}, launch = null, stderr = "", n
     output_tail: output.length > MAX_OUTPUT_CHARS ? output.slice(-MAX_OUTPUT_CHARS) : output,
     output_truncated: output.length > MAX_OUTPUT_CHARS,
     files: launch?.runtimePath ? folderFacts(launch.runtimePath) : { runtime: { present: false } },
+    // Started below the short junction ("linked"), or why not; and the real folder's lengths too, in
+    // case Windows resolves the junction for a dependent DLL.
+    short_link: String(launch?.shortLink || "unknown"),
+    real_folder_length: launch?.realRuntimePath ? path.dirname(launch.realRuntimePath).length : 0,
+    real_onnxruntime_dll_path_length: launch?.realRuntimePath
+      ? path.join(path.dirname(launch.realRuntimePath), "_internal", "onnxruntime", "capi", "onnxruntime_pybind11_state.pyd").length : 0,
     system: {
       os_release: os.release(), os_version: typeof os.version === "function" ? os.version() : "", arch: os.arch(),
       cpu: os.cpus()?.[0]?.model || "", cpu_count: os.cpus()?.length || 0,
