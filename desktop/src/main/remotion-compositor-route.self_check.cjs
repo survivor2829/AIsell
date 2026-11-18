@@ -11,7 +11,8 @@ const { pathToFileURL } = require("node:url");
   process.env.XIAOXI_REMOTION_WORKER_IMPORT_ONLY = "1";
   const { compositorBinariesDirectory } = await import(pathToFileURL(path.join(__dirname, "remotion-render-worker.mjs")).href);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "compositor-route-"));
-  const real = path.join(root, "deep", "node_modules", "@remotion", "compositor-win32-x64-msvc");
+  try {
+  const real =path.join(root, "deep", "node_modules", "@remotion", "compositor-win32-x64-msvc");
   fs.mkdirSync(real, { recursive: true });
   fs.writeFileSync(path.join(real, "remotion.exe"), "exe");
   const other = path.join(root, "other");
@@ -37,7 +38,14 @@ const { pathToFileURL } = require("node:url");
   assert.match(environmentSource, /XIAOXI_COMPOSITOR_DIR: runtime\.compositorDir/u);
   assert.match(fs.readFileSync(path.join(__dirname, "content-engine-sidecar.cjs"), "utf8"), /"XIAOXI_COMPOSITOR_DIR"/u);
   const worker = fs.readFileSync(path.join(__dirname, "remotion-render-worker.mjs"), "utf8");
-  assert.equal((worker.match(/^\s+binariesDirectory,$/gmu) || []).length, 2, "both selectComposition and renderMedia get the route");
-  fs.unlinkSync(link);
+  // Every Remotion call that starts its executables gets the route.
+  for (const call of ["selectComposition", "renderMedia"]) {
+    assert.match(worker, new RegExp(String.raw`${call}\(\{[^}]*\bbinariesDirectory\b`, "u"), `${call} gets the route`);
+  }
   console.log("remotion compositor route checks passed");
+  } finally {
+    // The junction first (removing it never touches its target), then the rest.
+    try { fs.unlinkSync(path.join(root, "l")); } catch { /* not made */ }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

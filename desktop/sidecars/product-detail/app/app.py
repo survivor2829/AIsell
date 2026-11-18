@@ -35,9 +35,11 @@ import batch_pubsub as batch_pubsub_mod
 from browser_runtime import launch_chromium
 from provider_transport import post_provider_json
 
+# absolute(), not resolve(): templates are served from the short route the runtime was started by
+# (desktop_entry.RESOURCE_DIR); resolved, 32 templates passed Windows' path limit on long user names.
 RESOURCE_DIR = Path(
     os.environ.get("XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR", Path(__file__).parent)
-).resolve()
+).absolute()
 _DESKTOP_MODE = os.environ.get("XIAOXI_PRODUCT_DETAIL_DESKTOP", "").strip() == "1"
 if _DESKTOP_MODE:
     _desktop_data_value = os.environ.get("XIAOXI_PRODUCT_DETAIL_DATA_DIR", "").strip()

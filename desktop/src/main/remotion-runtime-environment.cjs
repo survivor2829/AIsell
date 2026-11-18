@@ -232,8 +232,7 @@ function verifyPackagedRuntime(resourcesPath) {
   // as part of the dependency closure. Handed over separately so the app can route them through
   // the short runtime link: started from the update folder they sat at 275 characters for the user
   // Administrator and Windows refused to start them (reproduced 2026-11-18: ENOENT, worker crash).
-  const compositorDir = path.join(contentEngineRoot, "node_modules", "@remotion", "compositor-win32-x64-msvc");
-  return { browserPath, bundlePath, workerPath, ...(fs.existsSync(path.join(compositorDir, "remotion.exe")) ? { compositorDir } : {}) };
+  return { browserPath, bundlePath, workerPath, ...compositorFor(contentEngineRoot) };
 }
 
 const VERIFICATION_CACHE_SCHEMA = "xiaoxi-remotion-verification-v1";
@@ -267,14 +266,19 @@ async function fingerprintPackagedRuntime(resourcesPath) {
   return digest.digest("hex");
 }
 
+// Remotion's compositor folder (remotion.exe, ffmpeg, ffprobe), when the package carries it.
+function compositorFor(contentEngineRoot) {
+  const compositorDir = path.join(contentEngineRoot, "node_modules", "@remotion", "compositor-win32-x64-msvc");
+  return fs.existsSync(path.join(compositorDir, "remotion.exe")) ? { compositorDir } : {};
+}
+
 function runtimePaths(resourcesPath) {
   const contentEngineRoot = path.join(path.resolve(resourcesPath), "content-engine");
   return {
     browserPath: path.join(contentEngineRoot, "browser", "chrome.exe"),
     bundlePath: path.join(contentEngineRoot, "remotion-bundle"),
     workerPath: path.join(contentEngineRoot, "remotion-render-worker.mjs"),
-    ...(fs.existsSync(path.join(contentEngineRoot, "node_modules", "@remotion", "compositor-win32-x64-msvc", "remotion.exe"))
-      ? { compositorDir: path.join(contentEngineRoot, "node_modules", "@remotion", "compositor-win32-x64-msvc") } : {})
+    ...compositorFor(contentEngineRoot)
   };
 }
 

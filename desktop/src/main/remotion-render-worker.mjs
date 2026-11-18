@@ -140,7 +140,10 @@ export function compositorBinariesDirectory(given = process.env.XIAOXI_COMPOSITO
   if (!route || !path.isAbsolute(route) || isRemoteOrDevice(route)) return null;
   try {
     const expected = fs.realpathSync.native(resolvePackage());
-    if (fs.realpathSync.native(route).toLocaleLowerCase() !== expected.toLocaleLowerCase()) return null;
+    // A fixed case fold (as runtime-link.cjs): toLocaleLowerCase differs on e.g. Turkish Windows.
+    // The route lives in the app's own data folder, the same trust as the runtime link the whole
+    // engine is started through.
+    if (fs.realpathSync.native(route).toLowerCase() !== expected.toLowerCase()) return null;
     if (!fs.statSync(path.join(route, "remotion.exe")).isFile()) return null;
     return route;
   } catch {

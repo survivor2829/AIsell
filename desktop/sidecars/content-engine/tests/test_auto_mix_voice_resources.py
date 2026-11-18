@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -721,18 +722,44 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
             # Shipped runtime only: developer scripts and tests never run on a customer computer.
             if not {"scripts", "tests", "docs"} & set(path.relative_to(detail_app).parts)
         ]
+        # The two places that resolve on purpose: compared with other resolved paths, never read
+        # from (an exact allowlist; a comment cannot exempt a line).
+        allowed = {
+            ("desktop_entry.py", '_REAL_RESOURCE_DIR = Path(__file__).resolve().parent'),
+            ("browser_runtime.py", 'Path(sys.executable).resolve().parent.parent'),
+        }
+        # Path( ... __file__ / the resource-folder setting ... ).resolve(), across lines too.
+        anchors = ("__file__", "sys.executable", "XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR")
+
+        def spanning_resolves(text):
+            # Each ").resolve(" : walk back to the matching "(" and look at what is inside.
+            for match in re.finditer(r"\)\s*\.(?:absolute\(\)\.)?resolve\(", text):
+                depth, index = 0, match.start()
+                while index >= 0:
+                    depth += {")": 1, "(": -1}.get(text[index], 0)
+                    if depth == 0:
+                        break
+                    index -= 1
+                if index >= 0 and any(anchor in text[index:match.start()] for anchor in anchors):
+                    yield match.end()
         for path in files:
             if "__pycache__" in path.parts:
                 continue
-            for number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
-                if "real path for containment only" in line:
-                    continue  # compared, never read from (desktop_entry._REAL_RESOURCE_DIR)
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            text = "\n".join(line.split("#", 1)[0] for line in lines)
+            flagged = set()
+            for end in spanning_resolves(text):
+                flagged.add(text.count("\n", 0, end) + 1)
+            for number, line in enumerate(lines, 1):
                 code = line.split("#", 1)[0]
-                # Any canonicalising of the engine's own location: __file__ or the executable,
-                # through resolve(), realpath() or absolute().resolve() in any order.
                 anchored = "__file__" in code or "sys.executable" in code
                 if anchored and (".resolve(" in code or "realpath(" in code):
-                    offenders.append(f"{path.name}:{number}")
+                    flagged.add(number)
+            for number in sorted(flagged):
+                code = lines[number - 1].split("#", 1)[0]
+                if any(path.name == name and expected in code for name, expected in allowed):
+                    continue
+                offenders.append(f"{path.name}:{number}")
         self.assertEqual([], offenders)
 
     def test_changed_configuration_on_return_still_revokes_approval_and_preview(self):

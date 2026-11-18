@@ -36,7 +36,8 @@ def chromium_executable() -> Path | None:
             return None
         # Started by the route the app handed over (its short runtime link), once it is known to be
         # the packaged browser: the resolved path is the deep update folder.
-        return Path(configured).expanduser() if candidate == expected.resolve() and candidate.is_file() else None
+        route = Path(configured).expanduser()
+        return route if route.is_absolute() and candidate == expected.resolve() and candidate.is_file() else None
 
     if not configured:
         return None

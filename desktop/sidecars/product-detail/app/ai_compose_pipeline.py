@@ -27,9 +27,10 @@ from playwright.sync_api import sync_playwright
 from browser_runtime import launch_chromium
 
 
+# absolute(), not resolve(): stay on the short runtime route (see app.RESOURCE_DIR).
 RESOURCE_BASE = Path(
     os.environ.get("XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR", Path(__file__).parent)
-).resolve()
+).absolute()
 BASE = Path(
     os.environ.get("XIAOXI_PRODUCT_DETAIL_DATA_DIR", RESOURCE_BASE)
 ).resolve()
