@@ -180,6 +180,19 @@ function productDetailRuntimePath() {
   return developmentProductDetailLaunch.runtimePath;
 }
 
+// The chat-title reader's model inside the packaged product-detail component (registered in
+// component-layout.json); missing on a component older than 1.3.30.
+function lineOcrModelFiles(runtimePath) {
+  const internal = path.join(path.dirname(runtimePath), "_internal");
+  const config = path.join(internal, "line_ocr_model.json");
+  try {
+    const file = String(JSON.parse(fs.readFileSync(config, "utf8")).file || "");
+    return [config, path.join(internal, "models", path.basename(file) || "missing-model")];
+  } catch {
+    return [config];
+  }
+}
+
 function contentEngineRuntimePath() {
   if (app.isPackaged) {
     return path.join(
@@ -990,10 +1003,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // The chat-title reader shares the product-detail runtime; it starts on the first touch step.
     require("./line-ocr-service.cjs").configureLineOcrService({
       resolveLaunch: () => app.isPackaged
-        ? { runtimePath: productDetailRuntimePath(), runtimeArgs: [] }
+        ? { runtimePath: productDetailRuntimePath(), runtimeArgs: [], requiredFiles: lineOcrModelFiles(productDetailRuntimePath()) }
         : { runtimePath: productDetailRuntimePath(), runtimeArgs: developmentProductDetailLaunch?.runtimeArgs || [] },
       onEvent: (event, details) => {
-        try { diagnostics().event("active_touch", `line_ocr.${event}`, details, { level: event === "unavailable" ? "warn" : "info" }); } catch { /* never blocks */ }
+        try { diagnostics().event("active_touch", `line_ocr.${event}`, details, { level: event === "unavailable" ? "warn" : "info", ...(details?.kind ? { code: `line_ocr_${details.kind}` } : {}) }); } catch { /* never blocks */ }
       }
     });
     touchTaskController = registerTouchTaskIpc({
@@ -1015,6 +1028,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
+      createSpacePauseHotkey: require("./space-pause-hotkey.cjs").createSpacePauseHotkey,
       appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
       buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",

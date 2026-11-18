@@ -53,7 +53,7 @@ function IngDots() {
   return <>{[0, 1, 2].map((index) => <i key={index} className={index === step ? "is-up" : undefined} />)}</>;
 }
 
-export function XiaoxiSprite({ workflow, activity, alert }: { workflow: WorkflowController; activity: SpriteActivity | null; alert: string }) {
+export function XiaoxiSprite({ activity, alert }: { workflow: WorkflowController; activity: SpriteActivity | null; alert: string }) {
   const api = window.xiaoxiWorkflow;
   const [line, setLine] = useState<Line | null>(null);
   const [greeting, setGreeting] = useState("");
@@ -178,7 +178,9 @@ export function XiaoxiSprite({ workflow, activity, alert }: { workflow: Workflow
           {activity.detail && <span className="xiaoxi-sub">{activity.detail}</span>}
           <span className="xiaoxi-ing-row"><span className="xiaoxi-ing">ING<IngDots /></span>{percent !== null && <b>{activity.total === 100 ? `${percent}%` : `${activity.done}/${activity.total}`}</b>}</span>
         </>}
-        {activity?.pausable && <button type="button" className="xiaoxi-link" onClick={() => void workflow.run(() => api!.pause())}>先暂停</button>}
+        {/* Pausing is a double press of the space bar anywhere (space-pause-hotkey.cjs); the small
+            "先暂停" link it replaces was hard to hit (user decision 2026-11-18). */}
+        {activity?.pausable && <span className="xiaoxi-space-hint"><b>双击空格</b>暂停</span>}
       </section>}
       <button type="button" className="xiaoxi-buddy" aria-label="吉祥物：双击回到软件，按住可以拖动，右键可以藏到边上或先隐藏"
         onClick={(event) => { if (event.detail === 0) void api?.showMain(); }}

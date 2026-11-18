@@ -36,7 +36,33 @@ function registerWechatWorkflowIpc(options) {
       external: [...external.values()].filter((item) => !(state.currentTaskId && item.kind === { publish: "moments-publish", interact: "moments-campaign" }[current?.type]))
     };
   }
+  // Double press of the space bar pauses the run from anywhere (user decision 2026-11-18); the hook
+  // only exists while there is a run to pause.
+  // The app passes the real hook (main.cjs); without one (tests) nothing listens to the keyboard.
+  const spaceHotkey = (options.createSpacePauseHotkey || (() => ({ start() {}, stop() {} })))({
+    onDoubleTap: () => { void pauseFromSpaceBar(); },
+    onEvent: (event, details) => options.logger?.event?.("wechat_workflow", `space_pause.${event}`, details,
+      { level: event === "unavailable" ? "warn" : "info", ...(details?.kind ? { code: `space_pause_${details.kind}` } : {}) })
+  });
+  function syncSpaceHotkey(state) {
+    if (!disposed && state?.enabled && state.phase !== "pausing") spaceHotkey.start();
+    else spaceHotkey.stop();
+  }
+  async function pauseFromSpaceBar() {
+    const state = controller.status();
+    if (disposed || !state.enabled || state.phase === "pausing") return;
+    options.logger?.event?.("wechat_workflow", "space_pause.requested", { phase: state.phase }, { level: "info" });
+    say({ text: "收到！做完这一步就停", sub: "已经发出去的不会重发" });
+    try {
+      await controller.pause();
+      say({ text: "已经暂停啦", sub: "想继续时，回到软件点「启动程序」" });
+    } catch (failure) {
+      options.logger?.event?.("wechat_workflow", "space_pause.failed", { error: failure }, { level: "warn", code: "space_pause_failed" });
+      say({ text: "这次没停下来", sub: "请回到软件点「暂停程序」", mood: "error" });
+    }
+  }
   const broadcast = (state) => {
+    try { syncSpaceHotkey(state); } catch { /* Pausing by keyboard is a convenience; the run never depends on it. */ }
     const progress = viewState(state);
     for (const window of [main(), floatingWindow]) {
       if (window && !window.isDestroyed()) window.webContents.send("wechat-workflow:update", { ok: true, state: progress });
@@ -525,6 +551,7 @@ function registerWechatWorkflowIpc(options) {
     start, showFloating, runContactSync, setExternalActivity, say, showSprite,
     dispose: async () => {
       disposed = true;
+      spaceHotkey.stop();
       for (const event of ["display-metrics-changed", "display-removed"]) screen.removeListener?.(event, regroundSprite);
       clearInterval(progressTimer); progressTimer = null;
       await controller.dispose(); floatingWindow?.destroy(); floatingWindow = null;

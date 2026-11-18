@@ -14,6 +14,24 @@ const START_TIMEOUT_MS = 20_000;
 const RETRY_AFTER_FAILURE_MS = 5 * 60_000;
 const ENV_URL = "XIAOXI_LINE_OCR_URL";
 const ENV_TOKEN = "XIAOXI_LINE_OCR_TOKEN";
+const STDERR_TAIL_BYTES = 8 * 1024;
+
+// Why a reader that never came up stopped, without any screen text: the Python exception class,
+// a Windows error number and whether the frozen launcher itself failed. Six customer computers
+// reported only a hashed "exited_N" for 1.3.30–1.3.35 while the same component starts on the
+// development machine (2026-11-18), so the reason has to come back from the field.
+function exitEvidence(stderr) {
+  const text = String(stderr || "");
+  const evidence = {};
+  const types = [...text.matchAll(/^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*(?:Error|Exception|Fail|Exit|Interrupt))(?::|\s*$)/gmu)];
+  const last = types.length ? types[types.length - 1][1] : "";
+  if (/^[A-Za-z_]\w{0,59}$/u.test(last)) evidence.error_type = last;
+  const winError = text.match(/\[WinError (-?\d{1,10})\]/u);
+  if (winError) evidence.win_error = Number(winError[1]);
+  if (/Failed to (?:load Python DLL|execute script|extract|start embedded python)|LoadLibrary|\[PYI-\d+/u.test(text)) evidence.launcher_failed = true;
+  if (evidence.error_type && /onnxruntime/u.test(text)) evidence.onnxruntime = true;
+  return evidence;
+}
 
 function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () => Date.now(), env = process.env, onEvent = () => {} } = {}) {
   let child = null;
@@ -46,7 +64,13 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
     }
     if (!launch?.runtimePath || !fs.existsSync(launch.runtimePath)) {
       failedAt = now();
-      onEvent("unavailable", { cause: "runtime_missing" });
+      onEvent("unavailable", { kind: "runtime_missing" });
+      return Promise.resolve(false);
+    }
+    // An older or partly updated product-detail component has the runtime but not the model.
+    if ((launch.requiredFiles || []).some((file) => !fs.existsSync(file))) {
+      failedAt = now();
+      onEvent("unavailable", { kind: "model_missing" });
       return Promise.resolve(false);
     }
     const token = crypto.randomBytes(24).toString("hex");
@@ -55,6 +79,7 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
       let settled = false;
       let timer = null;
       let ready = false;
+      let stderr = "";
       const finish = (ok, reason) => {
         if (settled) return;
         settled = true;
@@ -62,7 +87,9 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
         if (!ok) {
           failedAt = now();
           stop();
-          onEvent("unavailable", { cause: reason });
+          // "kind" and "error_type" are plain codes the diagnostics log keeps readable (not WeChat
+          // failure reasons: the run never depends on this reader).
+          onEvent("unavailable", { kind: reason, ...exitEvidence(stderr) });
         }
         resolve(ok);
       };
@@ -100,15 +127,24 @@ function createLineOcrService({ resolveLaunch, spawnProcess = spawn, now = () =>
           finish(false, "protocol_invalid");
         }
       });
-      process_.stderr.on("data", () => { /* never logged: screen text */ });
+      // Kept in memory only for exitEvidence(); never logged as text (it may hold screen text).
+      process_.stderr.on("data", (chunk) => {
+        if (!settled) stderr = (stderr + String(chunk)).slice(-STDERR_TAIL_BYTES);
+      });
       process_.on("error", () => finish(false, "spawn_error"));
       process_.on("exit", (code) => {
         if (child === process_) {
           child = null;
           clear();
         }
-        if (!settled) finish(false, `exited_${code}`);
-        else {
+        if (!settled) {
+          // The exit can arrive before the last stderr lines are read: wait briefly for them.
+          const fail = () => finish(false, `exited_${code}`);
+          if (process_.stderr.readableEnded === false) {
+            process_.stderr.once("end", fail);
+            setTimeout(fail, 500).unref?.();
+          } else fail();
+        } else {
           // A reader that stops on its own after starting is not restarted for every contact.
           if (ready && child === null && !stopping) failedAt = now();
           onEvent("exited", { code });
@@ -139,4 +175,4 @@ function lineOcrService() {
   return shared;
 }
 
-module.exports = { createLineOcrService, configureLineOcrService, lineOcrService, ENV_URL, ENV_TOKEN };
+module.exports = { createLineOcrService, configureLineOcrService, lineOcrService, exitEvidence, ENV_URL, ENV_TOKEN };

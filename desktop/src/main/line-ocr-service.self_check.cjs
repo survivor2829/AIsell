@@ -80,6 +80,45 @@ function fakeChild() {
   assert.equal(await missing.ensure(), false);
   assert.ok(events.includes("ready") && events.includes("unavailable"));
 
+  // A reader that exits before it is up says why, as plain codes the diagnostics log keeps
+  // readable ("kind", "error_type"), never the stderr text itself. Six customer computers sent
+  // only a hashed "cause" for 1.3.30–1.3.35 (2026-11-18).
+  const details = [];
+  const crashing = createLineOcrService({
+    resolveLaunch: () => ({ runtimePath: runtime }),
+    spawnProcess: () => { const child = fakeChild(); spawned.push({ child }); return child; },
+    env: {}, onEvent: (event, detail) => details.push({ event, ...detail })
+  });
+  const crashed = crashing.ensure();
+  const crashChild = spawned[spawned.length - 1].child;
+  crashChild.stderr.emit("data", "Traceback (most recent call last):\n  File \"line_ocr.py\", line 9\n");
+  crashChild.stderr.emit("data", "onnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] 客户名字\nImportError: DLL load failed while importing onnxruntime_pybind11_state: [WinError 1114] 动态链接库(DLL)初始化例程失败。\n");
+  crashChild.exitCode = 1;
+  crashChild.emit("exit", 1);
+  assert.equal(await crashed, false);
+  assert.deepEqual(details.at(-1), { event: "unavailable", kind: "exited_1", error_type: "ImportError", win_error: 1114, onnxruntime: true });
+  assert.ok(!JSON.stringify(details).includes("客户名字"), "no stderr text reaches the event");
+  const { exitEvidence } = require("./line-ocr-service.cjs");
+  assert.deepEqual(exitEvidence("[PYI-1234:ERROR] Failed to load Python DLL 'python311.dll'.\n"), { launcher_failed: true });
+  assert.deepEqual(exitEvidence(""), {});
+
+  // A component that has the runtime but not the model is named as such, nothing spawned.
+  const before = spawned.length;
+  const noModel = createLineOcrService({ resolveLaunch: () => ({ runtimePath: runtime, requiredFiles: [path.join(os.tmpdir(), "no-such-model.onnx")] }),
+    spawnProcess: () => { throw new Error("must not spawn"); }, env: {}, onEvent: (event, detail) => details.push({ event, ...detail }) });
+  assert.equal(await noModel.ensure(), false);
+  assert.equal(spawned.length, before);
+  assert.deepEqual(details.at(-1), { event: "unavailable", kind: "model_missing" });
+
+  // The reasons survive the real diagnostics redaction (a key named "cause" was hashed).
+  const { createDiagnosticLogger } = require("./diagnostics.cjs");
+  const diag = createDiagnosticLogger({ rootDir: fs.mkdtempSync(path.join(os.tmpdir(), "line-ocr-diag-")) });
+  diag.event("active_touch", "line_ocr.unavailable", { kind: "exited_1", error_type: "ImportError", win_error: 1114, onnxruntime: true }, { level: "warn" });
+  const logged = JSON.stringify(diag.readRecent(10));
+  assert.match(logged, /"kind":"exited_1"/u);
+  assert.match(logged, /"error_type":"ImportError"/u);
+  assert.match(logged, /"win_error":1114/u);
+
   // End to end with the real reader when the development runtime and model are present.
   const python = path.join(__dirname, "..", "..", ".build", "product-detail-venv", "Scripts", "python.exe");
   const model = path.join(__dirname, "..", "..", ".build", "line-ocr-models", "ch_PP-OCRv4_rec_infer.onnx");
