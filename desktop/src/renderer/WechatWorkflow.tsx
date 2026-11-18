@@ -429,7 +429,9 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const activeTasks = tasks.filter((task) => !["completed", "cancelled", "needs_attention"].includes(task.status));
   // 2026-11-18: work that waits for the customer is shown first, never folded away in the history —
   // a stopped task, or a finished touch whose skipped people can still be retried (it holds reply).
-  const waitsForYou = (task: WorkflowTask) => task.status === "needs_attention" || (task.type === "touch" && task.status === "completed"
+  // A stopped task the customer can do something about (retry it, or check an unknown send); one that
+  // was only skipped stays in the history.
+  const waitsForYou = (task: WorkflowTask) => (task.status === "needs_attention" && (task.canRetry || Boolean(task.unknownResolution))) || (task.type === "touch" && task.status === "completed"
     && Boolean(task.skipsHoldReply) && !task.skippedSettledAt && !task.accountMismatch
     && Boolean(task.skipped_records?.some((record) => (record.bulk_retryable ?? record.retryable) === true)));
   const needsYou = tasks.filter(waitsForYou).reverse();
@@ -559,9 +561,14 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const touchSummary = (task: WorkflowTask, retryableSkipped: TouchSkipRecord[], retryLocked: boolean, canRetryWhileListening: boolean) => {
     const total = Math.max(0, Number(task.progress?.total) || 0);
     const done = Math.min(total, Math.max(0, Number(task.progress?.done) || 0));
-    const skipped = task.skipped_records?.length || 0;
-    const unreachable = (task.unreachable_summary?.blocked_count || 0) + (task.unreachable_summary?.deleted_count || 0);
-    const sent = Math.max(0, done - skipped);
+    // Four numbers that add up to the total (review 2026-11-18): blocked/deleted people are counted once,
+    // in their own tile; people whose text arrived but a later part did not count as sent.
+    const records = task.skipped_records || [];
+    const unreachableNow = records.filter((record) => record.status === "recipient_unreachable_skipped").length;
+    const partial = records.filter((record) => record.status === "partial_sent_skipped").length;
+    const skipped = Math.max(0, records.length - unreachableNow - partial);
+    const unreachable = Math.max(unreachableNow, (task.unreachable_summary?.blocked_count || 0) + (task.unreachable_summary?.deleted_count || 0));
+    const sent = Math.max(0, done - records.length + partial);
     const waiting = Math.max(0, total - done);
     const percent = total ? Math.round((sent / total) * 100) : 0;
     const radius = 62, circle = 2 * Math.PI * radius;
@@ -583,14 +590,14 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         <div className="touch-sum-tiles">
           <div className="touch-sum-tile is-green"><i><CheckCircle2 /></i><b>{sent}</b><span>已发送</span></div>
           <div className="touch-sum-tile is-orange"><i><SkipForward /></i><b>{skipped}</b><span>本次跳过</span></div>
-          <div className="touch-sum-tile is-gray"><i><Ban /></i><b>{unreachable}</b><span>拉黑 {task.unreachable_summary?.blocked_count || 0} · 删除 {task.unreachable_summary?.deleted_count || 0}</span></div>
+          <div className="touch-sum-tile is-gray" title="消息被拒收算被拉黑，需要朋友验证算被删除；这些人以后的触达会自动跳过。"><i><Ban /></i><b>{unreachable}</b><span>拉黑 {task.unreachable_summary?.blocked_count || 0} · 删除 {task.unreachable_summary?.deleted_count || 0}</span></div>
           <div className="touch-sum-tile is-blue"><i><Clock3 /></i><b>{waiting}</b><span>还没轮到</span></div>
         </div>
-        {skipped > 0 && <div className="touch-sum-reasons">{reasons.filter(([, , count]) => count > 0).map(([Icon, label, count, tone]) => <span key={label} className={`touch-sum-chip ${tone}`}><Icon />{label}<b>{count}</b></span>)}</div>}
-        {(retryableSkipped.length > 0 || skipped > 0 || unreachable > 0) && <div className="touch-sum-actions">
+        {records.length > 0 && <div className="touch-sum-reasons">{reasons.filter(([, , count]) => count > 0).map(([Icon, label, count, tone]) => <span key={label} className={`touch-sum-chip ${tone}`}><Icon />{label}<b>{count}</b></span>)}</div>}
+        {(retryableSkipped.length > 0 || records.length > 0 || unreachable > 0) && <div className="touch-sum-actions">
           {retryableSkipped.length > 0 && <button type="button" className="touch-sum-button is-primary" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void retrySkipped(task, undefined, true)}><Repeat2 />{canRetryWhileListening ? `暂停自动回复，全部重试 ${retryableSkipped.length} 人` : `全部重试 ${retryableSkipped.length} 人`}</button>}
           {canSettle && <button type="button" className="touch-sum-button is-soft" data-xiaoxi-workflow-start disabled={busy || retryLocked} onClick={() => void settleSkipped(task)}>这些人不再重试，开始自动回复</button>}
-          {(skipped > 0 || unreachable > 0) && <button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看跳过了谁"}</button>}
+          {(records.length > 0 || unreachable > 0) && <button type="button" className="touch-sum-button" aria-expanded={openSkipList === task.id} onClick={() => setOpenSkipList(openSkipList === task.id ? "" : task.id)}><List />{openSkipList === task.id ? "收起名单" : "看跳过了谁"}</button>}
         </div>}
       </div>
     </div>;

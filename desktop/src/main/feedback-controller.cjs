@@ -73,8 +73,8 @@ function publicView(value) {
     status: value.status, receivedAt: value.receivedAt, updatedAt: value.updatedAt,
     officialReply: typeof value.officialReply === "string" ? value.officialReply.slice(0, 4000) : "",
     // Anonymous face and nickname from the server (2026-11-18); nothing else about the person.
-    ...(/^[a-f0-9]{12}$/u.test(value.avatarSeed || "") ? { avatarSeed: value.avatarSeed } : {}),
-    ...(typeof value.nickname === "string" && /^[一-鿿]{2,10}$/u.test(value.nickname) ? { nickname: value.nickname } : {}) };
+    ...(typeof value.avatarSeed === "string" && /^[a-f0-9]{12}$/u.test(value.avatarSeed) ? { avatarSeed: value.avatarSeed } : {}),
+    ...(typeof value.nickname === "string" && /^[一-鿿]{2,10}(?:·\d{1,2})?$/u.test(value.nickname) ? { nickname: value.nickname } : {}) };
 }
 function createFeedbackController({ rootDir, config, version, buildId, logger, safeStorage, transport, clock = Date.now,
   identity = () => null, relatedCapsules = () => [] }) {

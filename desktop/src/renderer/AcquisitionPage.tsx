@@ -76,6 +76,8 @@ export function AcquisitionPage() {
     for (const lead of baseLeads) for (const signal of lead.signals) map.set(signal, (map.get(signal) || 0) + 1);
     return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
   }, [baseLeads]);
+  // A chosen intent that no longer appears (another task, another status) is dropped, never leaving an empty list without a way out.
+  useEffect(() => { if (signalFilter && !signalCounts.some(([signal]) => signal === signalFilter)) setSignalFilter(""); }, [signalCounts, signalFilter]);
   const leads = useMemo(() => signalFilter ? baseLeads.filter((lead) => lead.signals.includes(signalFilter)) : baseLeads, [baseLeads, signalFilter]);
   const counts = useMemo(() => ({ all: state?.leads.length || 0, new: state?.leads.filter((lead) => lead.status === "new").length || 0 }), [state]);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -127,6 +129,8 @@ export function AcquisitionPage() {
 
   return <div className="acq">
     {(error || notice) && <div className={`social-feedback ${error ? "is-error" : ""}`} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
+    {/* Design C (2026-11-18): progress and tasks on the left, the people on the right. */}
+    <div className="acq-board"><div className="acq-side">
     {runningRun && <div className={`acq-live ${runningRun.status === "needs_user" ? "is-wait" : ""}`} role="status">
       <span className="acq-live-dot" aria-hidden="true" />
       <div><b>{RUN_STATUS[runningRun.status]}{runningRun.kind === "actions" ? ` · ${runningRun.accountLabel || "账号"}在做点赞关注` : ""}</b><span>{runningRun.detail || "处理中…"}</span></div>
@@ -167,7 +171,7 @@ export function AcquisitionPage() {
           {(editing || Boolean(state?.running)) && <button type="button" className="secondary-button" disabled={Boolean(pending) || !api || !form.accountId} onClick={() => void saveAndStart(false)}>只保存</button>}
           <button type="button" className="ns-go acq-go" disabled={Boolean(pending) || !api || Boolean(state?.running) || !form.accountId} onClick={() => void saveAndStart(true)}><Play size={18} />开始找客户</button>
         </div>
-        <p className="acq-hint is-help" title="软件只看视频和评论，不会替你发任何内容。如果平台要你验证，Chrome 窗口会跳到前面，你点完后会自动继续。"><CircleHelp size={17} />只看不发，放心用</p>
+        <p className="acq-hint is-help"><CircleHelp size={17} />只看不发。平台要验证时 Chrome 会跳到前面，点完自动继续。</p>
       </section>
 
       <section className="acq-card" aria-labelledby="acq-tasks">
@@ -220,6 +224,7 @@ export function AcquisitionPage() {
       </div>}
     </section>}
 
+    </div>
     <section className="acq-card" aria-labelledby="acq-leads">
       <div className="acq-sec"><h2 id="acq-leads">找到 {counts.all} 个可能想买的人</h2><span>{counts.new} 个还没联系</span>
         <div className="acq-filters">
@@ -260,5 +265,6 @@ export function AcquisitionPage() {
           </li>; })}
       </ul>}
     </section>
+    </div>
   </div>;
 }

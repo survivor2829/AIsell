@@ -114,10 +114,8 @@ html[data-beat="1"] .acq-live.is-wait .acq-live-dot { box-shadow: 0 0 0 4px rgba
 
 /* 精准获客 · 关键词获客 design C (2026-11-18): progress and tasks on the left, the people on the right,
    big numbers, one-tap intent filter, a face for every lead. Body text at least 15px. */
-.acq { grid-template-columns: minmax(360px, 420px) minmax(0, 1fr); align-items: start; }
-.acq > * { grid-column: 1; }
-.acq > .social-feedback { grid-column: 1 / -1; }
-.acq > section[aria-labelledby="acq-leads"] { grid-column: 2; grid-row: 1 / span 20; }
+.acq-board { display: grid; grid-template-columns: minmax(360px, 420px) minmax(0, 1fr); gap: 22px; align-items: start; }
+.acq-side { display: grid; gap: 22px; min-width: 0; }
 .acq .acq-grid { grid-template-columns: 1fr; }
 .acq-live { display: grid; gap: 14px; }
 .acq-live ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 15px; font-weight: 800; }
@@ -141,7 +139,7 @@ html[data-beat="1"] .acq-live.is-wait .acq-live-dot { box-shadow: 0 0 0 4px rgba
 .acq-lead-src, .acq-lead-head small, .acq-task-copy small, .acq-task-copy span { font-size: 14px; }
 .acq-mini, .acq-act, .acq-chip, .acq-seg button, .acq-filters select { font-size: 15px; }
 .acq-sec > span { font-size: 15px; }
-@media (max-width: 1180px) { .acq { grid-template-columns: 1fr; } .acq > section[aria-labelledby="acq-leads"] { grid-column: 1; grid-row: auto; } }
+@media (max-width: 1180px) { .acq-board { grid-template-columns: 1fr; } }
 /* The buttons sit under the words, so a comment reads on one line (2026-11-18). */
 .acq-leads > li { flex-wrap: wrap; }
 .acq-leads > li > .acq-lead-main { flex: 1 1 0; }

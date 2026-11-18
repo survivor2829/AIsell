@@ -163,7 +163,7 @@ async function main() {
       if (route.startsWith("/v1/feedback/public")) {
         if (publicOffline) throw new Error("offline");
         return { items: [{ ...publicReceipt(publicId), text: "公开想法", category: "suggestion", createdAt: new Date(now).toISOString(),
-          avatarSeed: "0123456789ab", nickname: "勤快的小老板",
+          avatarSeed: "0123456789ab", nickname: "勤快的小老板·27",
           receiptToken: "must-not-leak", client: { installId: "must-not-leak" }, diagnostics: ["must-not-leak"] }], total: 1 };
       }
       if (route === "/v1/feedback/status") {
@@ -184,7 +184,7 @@ async function main() {
       assert(!JSON.stringify(social.status().community).includes("must-not-leak"));
       // 2026-11-18: the anonymous face and nickname pass through; nothing else about the person.
       assert.equal(social.status().community.items[0].avatarSeed, "0123456789ab");
-      assert.equal(social.status().community.items[0].nickname, "勤快的小老板");
+      assert.equal(social.status().community.items[0].nickname, "勤快的小老板·27");
       publicOffline = true; await social.publicList(30);
       assert.equal(social.status().community.items.length, 1); assert.equal(social.status().community.offset, 0);
       assert(social.status().community.error);
