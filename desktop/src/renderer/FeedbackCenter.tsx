@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useId, useRef, useState } from 
 import { ChevronDown, ImageIcon, MessageCircle, RefreshCw, Send, X } from "lucide-react";
 import { FeedbackImages, useFeedbackImages } from "./FeedbackImages";
 import { CartoonAvatar } from "./CartoonAvatar";
+import { characterAsset } from "./role-appearance";
 import "./feedback-center.css";
 
 const Diagnostics = lazy(() => import("./Diagnostics").then((module) => ({ default: module.Diagnostics })));
@@ -258,7 +259,7 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
 }
 
 // 小玺 answers every reply in person (design A, 2026-11-18).
-const XIAOXI_FACE = new URL("./agent-characters/xiaoxi-idle.png", document.baseURI).toString();
+const XIAOXI_FACE = characterAsset("xiaoxi-idle.png");
 export function XiaoxiReply({ text }: { text: string }) {
   return <div className="feedback-reply is-xiaoxi"><img src={XIAOXI_FACE} alt="" /><div><strong>小玺 · 官方回复</strong><p>{text}</p></div></div>;
 }

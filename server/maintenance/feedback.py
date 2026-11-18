@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
 
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
@@ -92,20 +93,34 @@ def validate_feedback(body, validate_report, safe_token):
 
 
 class FeedbackStoreMixin:
+    _persona_key_lock = threading.Lock()
+
     def persona_key(self):
-        """The server-only key for anonymous feedback personas, created once beside the data."""
-        path = self.root / "feedback-persona.key"
-        try:
-            key = path.read_bytes()
-            if len(key) >= 32:
-                return key
-        except FileNotFoundError:
-            pass
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_bytes(os.urandom(32))
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        return path.read_bytes()
+        """The server-only key for anonymous feedback personas, created once beside the data.
+
+        Read once per process; requests racing on a fresh server wait on one lock so a single key is
+        written and every row of every response uses it (review 2026-11-18).
+        """
+        cached = getattr(self, "_persona_key_cache", None)
+        if cached:
+            return cached
+        with self._persona_key_lock:
+            cached = getattr(self, "_persona_key_cache", None)
+            if cached:
+                return cached
+            path = self.root / "feedback-persona.key"
+            try:
+                key = path.read_bytes()
+            except FileNotFoundError:
+                key = b""
+            if len(key) < 32:
+                tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                tmp.write_bytes(os.urandom(32))
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, path)
+                key = path.read_bytes()
+            self._persona_key_cache = key
+            return key
 
     def initialize_feedback(self, db):
         db.executescript("""
@@ -206,12 +221,12 @@ class FeedbackStoreMixin:
             rows = db.execute("SELECT * FROM feedback WHERE visibility='public' AND hidden=0 ORDER BY received DESC,id DESC LIMIT ? OFFSET ?",
                               (limit, offset)).fetchall()
             total = db.execute("SELECT COUNT(*) FROM feedback WHERE visibility='public' AND hidden=0").fetchone()[0]
-        items = []
+        items, key = [], self.persona_key()
         for row in rows:
             body = json.loads(row["body"])
             items.append({"id": row["id"], "text": body["text"], "category": body["category"], "createdAt": body["createdAt"],
                           "receivedAt": row["received"], "updatedAt": row["updated"], "status": row["status"], "officialReply": row["official_reply"],
-                          **feedback_persona((body.get("client") or {}).get("installId") or row["id"], self.persona_key())})
+                          **feedback_persona((body.get("client") or {}).get("installId") or row["id"], key)})
         return {"items": items, "total": total}
 
     def feedback_statuses(self, body):

@@ -74,8 +74,10 @@ export function AcquisitionPage() {
   const signalCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const lead of baseLeads) for (const signal of lead.signals) map.set(signal, (map.get(signal) || 0) + 1);
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
   }, [baseLeads]);
+  // The six biggest intents, plus the chosen one if it is further down.
+  const shownSignals = signalCounts.filter(([signal], index) => index < 6 || signal === signalFilter);
   // A chosen intent that no longer appears (another task, another status) is dropped, never leaving an empty list without a way out.
   useEffect(() => { if (signalFilter && !signalCounts.some(([signal]) => signal === signalFilter)) setSignalFilter(""); }, [signalCounts, signalFilter]);
   const leads = useMemo(() => signalFilter ? baseLeads.filter((lead) => lead.signals.includes(signalFilter)) : baseLeads, [baseLeads, signalFilter]);
@@ -235,7 +237,7 @@ export function AcquisitionPage() {
       </div>
       {signalCounts.length > 0 && <div className="acq-intents" role="radiogroup" aria-label="按意向看">
         <button type="button" role="radio" aria-checked={!signalFilter} className={!signalFilter ? "is-on" : ""} onClick={() => setSignalFilter("")}>全部 {baseLeads.length}</button>
-        {signalCounts.map(([signal, count], index) => <button type="button" role="radio" key={signal} aria-checked={signalFilter === signal} className={`is-tone-${index % 4}${signalFilter === signal ? " is-on" : ""}`} onClick={() => setSignalFilter(signalFilter === signal ? "" : signal)}>{signal} {count}</button>)}
+        {shownSignals.map(([signal, count], index) => <button type="button" role="radio" key={signal} aria-checked={signalFilter === signal} className={`is-tone-${index % 4}${signalFilter === signal ? " is-on" : ""}`} onClick={() => setSignalFilter(signalFilter === signal ? "" : signal)}>{signal} {count}</button>)}
       </div>}
       {visibleLeads.length > 0 && anyActionPlatform && <div className="acq-bulk">
         <label className="acq-check"><input type="checkbox" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(visibleLeads.map((lead) => lead.id)))} />全选</label>
