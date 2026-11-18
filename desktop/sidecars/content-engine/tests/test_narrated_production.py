@@ -5,6 +5,7 @@ import json
 import re
 import unittest
 import time
+import types
 from unittest.mock import patch
 
 import test_narrated_batch as batch_fixtures
@@ -464,6 +465,62 @@ class NarratedProductionTests(unittest.TestCase):
         )}
         self.assertEqual('invalidated', statuses['unknown-tts'])
         self.assertEqual('completed', statuses['completed-asr'])
+
+    def test_a_batch_stopped_by_an_unknown_voice_check_can_be_given_up_without_resubmitting(self):
+        # Field report 09b30c69 (2026-11-18): voice check outcome unknown, task paused, no
+        # voice retry offered; archive refused and the page had no other way out.
+        queued = self.s.confirm_narrated_script(self.request(first_count=1))
+        state = self.domain._load(self.batch['batch_id'])
+        candidate = state['candidates'][0]
+        run_id = self.domain._create_run(queued['task_id'], state, candidate)
+        self.domain.d._save_auto_mix_run(run_id, status='outcome_unknown',
+                                         public_plan={'attention': {'code': 'auto_mix_voice_outcome_unknown'}},
+                                         private_state={})
+        self.domain.d._record_auto_mix_artifact(run_id, 'voice_alignment', 'unknown-asr', 'outcome_unknown')
+        state.update(status='outcome_unknown')
+        self.domain._store(state)
+        self.domain.db.execute("UPDATE content_tasks SET status='paused', error_code=?, error_message=? WHERE id=?",
+                               ('auto_mix_voice_outcome_unknown', '配音回听请求结果不明', queued['task_id']))
+        renders = sum(kind == 'render' for kind, _ in self.events)
+
+        with self.assertRaises(ContentEngineError) as refused:
+            self.s.archive_narrated_batch(self.batch['batch_id'])
+        self.assertEqual('narrated_batch_paused', refused.exception.code, 'the old way out stays closed for an ordinary archive')
+        with self.assertRaises(ContentEngineError) as unconfirmed:
+            self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id']})
+        self.assertEqual('narrated_abandon_confirmation_required', unconfirmed.exception.code)
+
+        # Paused but the worker is still finishing its step: giving up waits, nothing is archived.
+        jobs = self.s._creative_jobs
+        self.s._creative_jobs = types.SimpleNamespace(is_running=lambda _task_id: True)
+        try:
+            with self.assertRaises(ContentEngineError) as stopping:
+                self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id'], 'user_confirmed': True})
+            self.assertEqual('narrated_batch_stopping', stopping.exception.code)
+            self.assertFalse(self.domain._load(self.batch['batch_id']).get('_archived_at'))
+        finally:
+            self.s._creative_jobs = jobs
+
+        self.assertEqual({'batch_id': self.batch['batch_id']},
+                         self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id'], 'user_confirmed': True}))
+        stored = self.domain._load(self.batch['batch_id'])
+        self.assertTrue(stored['_archived_at'])
+        self.assertEqual('auto_mix_voice_outcome_unknown', stored['_abandoned']['error_code'])
+        self.assertEqual(['unknown-asr'], [self.domain.db.execute(
+            "SELECT cache_key FROM auto_mix_stage_artifacts_v2 WHERE id=?", (a['id'],)).fetchone()[0]
+            for a in stored['_abandoned']['unresolved_artifacts']])
+        self.assertEqual('cancelled', self.domain.d._task_row(queued['task_id'])['status'])
+        self.assertEqual('outcome_unknown', self.domain.db.execute(
+            "SELECT status FROM auto_mix_stage_artifacts_v2 WHERE cache_key='unknown-asr'").fetchone()[0],
+            'the unresolved call keeps its status: nothing is retried or charged again')
+        self.assertEqual(renders, sum(kind == 'render' for kind, _ in self.events))
+        self.assertNotIn(self.batch['batch_id'], [b['batch_id'] for b in self.s.list_narrated_batches()['batches']])
+        with self.assertRaises(ContentEngineError) as again:
+            self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id'], 'user_confirmed': True})
+        self.assertEqual('narrated_batch_archived', again.exception.code)
+        with self.assertRaises(ContentEngineError) as resumed:
+            self.domain.run(queued['task_id'], {'batch_id': self.batch['batch_id'], 'action': 'continue'})
+        self.assertEqual('narrated_batch_abandoned', resumed.exception.code, 'a given-up batch never runs again')
 
     def test_voice_recovery_can_requeue_a_gateway_preflight_failure(self):
         queued = self.s.confirm_narrated_script(self.request(first_count=1))

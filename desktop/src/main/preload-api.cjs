@@ -136,7 +136,7 @@ function createContentEngineApi(ipcRenderer) {
   }
 
   const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
-  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "voice-resolve", "samples", "continue"].map((action) => [
+  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "voice-resolve", "samples", "continue", "abandon"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
   const consumeAutoMixMusicImportClick = createTrustedClickGate(
@@ -765,6 +765,7 @@ function createPreloadApis(ipcRenderer) {
       retryTask: (id, andStart = false) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), andStart, clickToken: andStart ? consumeWorkflowStart() : consumeWorkflowSave() }),
       retrySkipped: (id, contactIds, andStart = false) => ipcRenderer.invoke("wechat-workflow:retry-skipped", { id: String(id || ""), ...(contactIds ? { contactIds } : {}), andStart, clickToken: andStart ? consumeWorkflowStart() : consumeWorkflowSave() }),
       retryAllAndStart: () => ipcRenderer.invoke("wechat-workflow:retry-all-and-start", { clickToken: consumeWorkflowStart() }),
+      settleSkipped: (id) => ipcRenderer.invoke("wechat-workflow:settle-skipped", { id: String(id || ""), clickToken: consumeWorkflowStart() }),
       resolveTouchUnknown: (id, resolution) => {
         const click = consumeWorkflowResolution();
         return ipcRenderer.invoke("wechat-workflow:resolve-touch-unknown", {

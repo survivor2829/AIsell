@@ -1705,7 +1705,14 @@ async function checkRetryAndContinueIpc() {
     for (const task of stored.tasks) {
       task.status = rowFor(task).status;
       if (rowFor(task).accountName) task.accountName = rowFor(task).accountName;
+      else if (rowFor(task).accountName === "") delete task.accountName;
       if (task.status === "completed") task.progress = { done: 1, total: 1 };
+      // The customer already said 「这些人不再重试」, so reply may run (2026-11-18 rule).
+      if (rowFor(task).settled) task.skippedSettledAt = new Date().toISOString();
+      if (task.status === "completed") task.completedAt = rowFor(task).completedAt || new Date().toISOString();
+      // Finished by this version unless the row is left from an older one.
+      if (task.status === "completed" && !rowFor(task).legacy) task.skipsHoldReply = true;
+      if (task.status === "missed" && rowFor(task).missedAt !== null) task.missedAt = rowFor(task).missedAt || new Date().toISOString();
       // Stopped for attention today (as the workflow now records it), unless a row says otherwise.
       if (task.status === "needs_attention" && rowFor(task).attentionAt !== null) task.attentionAt = rowFor(task).attentionAt || new Date().toISOString();
     }
@@ -1747,15 +1754,60 @@ async function checkRetryAndContinueIpc() {
     assert.equal(test.mainShowCount(), 1, "a floating-window log failure must still return to the main window");
   } finally { await test.close(); }
 
-  // Upgrade safety: a touch left from before this rule (no attentionAt) never switches reception off,
-  // and another account's stopped touch never holds this account's reception.
-  for (const [label, row] of [["left from before this rule", { attentionAt: null }], ["stopped on another account", { accountName: "other-acct" }]]) {
-    test = await fixture([{ title: "old-attention", status: "needs_attention", retryable: true, ...row }], { reply: true });
+  // Another account's stopped touch never holds this account's reception.
+  test = await fixture([{ title: "old-attention", status: "needs_attention", retryable: true, accountName: "other-acct" }], { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening", "a touch stopped on another account never switches off reception");
+  } finally { await test.close(); }
+  // 2026-11-18 (user): reply starts only after every touch is really done. On another computer a touch
+  // that could not reach people finished by skipping them and reply started at once. These now hold:
+  // a touch that missed its date and one finished with people who can still be retried — until the
+  // customer retries them or says 「这些人不再重试」.
+  for (const [label, row] of [["that missed its date", { status: "missed" }],
+    ["finished with people who can be retried", { status: "completed", skipped: true }]]) {
+    test = await fixture([{ title: "unfinished", retryable: true, ...row }], { reply: true });
+    try {
+      await assert.rejects(test.control.start(), /触达任务还没完成/u, `a touch ${label} holds reply`);
+      assert.notEqual(test.control.status().phase, "listening");
+    } finally { await test.close(); }
+  }
+  // Upgrade safety (review 2026-11-18): tasks from before these rules never switch reception off after an
+  // update — a stop without attentionAt, a miss without missedAt, a finish before the rule — and a stopped
+  // task without an account (it can be neither retried nor resolved) never holds reply.
+  for (const [label, row] of [["stopped before the attentionAt rule", { status: "needs_attention", attentionAt: null }],
+    ["missed before the missedAt rule", { status: "missed", missedAt: null }],
+    ["finished with skips by an older version (no skipsHoldReply), whatever its date", { status: "completed", skipped: true, legacy: true }],
+    ["stopped without an account", { status: "needs_attention", accountName: "" }]]) {
+    test = await fixture([{ title: "old", retryable: true, ...row }], { reply: true });
     try {
       await test.control.start(); await test.control.tick();
       assert.equal(test.control.status().phase, "listening", `a touch ${label} never switches off reception`);
     } finally { await test.close(); }
   }
+  test = await fixture([{ title: "settle", status: "completed", retryable: true, skipped: true }], { reply: true });
+  try {
+    assert.equal((await test.invoke("settle-skipped", { id: test.rows[0].id, clickToken: click() })).ok, true);
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening", "after 「这些人不再重试」 reply may start");
+    assert.ok(test.control.status().tasks[0].skippedSettledAt);
+    assert.equal(test.controlEvents.some((entry) => entry.code === "touch_skipped_settled"), true);
+  } finally { await test.close(); }
+  // Settling while another touch still needs handling is saved and says why the program waits (review).
+  test = await fixture([{ title: "settle-a", status: "completed", retryable: true, skipped: true },
+    { title: "still-stopped", status: "needs_attention", retryable: true }], { reply: true });
+  try {
+    const settled = await test.invoke("settle-skipped", { id: test.rows.find((row) => row.title === "settle-a").id, clickToken: click() });
+    assert.equal(settled.ok, true);
+    assert.equal(settled.started, false);
+    assert.match(settled.notice, /触达任务还没完成/u);
+    assert.ok(test.control.status().tasks.find((row) => row.title === "settle-a").skippedSettledAt);
+  } finally { await test.close(); }
+  test = await fixture([{ title: "clean", status: "completed", retryable: true }], { reply: true });
+  try {
+    await test.control.start(); await test.control.tick();
+    assert.equal(test.control.status().phase, "listening", "a touch finished with nobody to retry lets reply start");
+  } finally { await test.close(); }
   // Not a day limit: a touch that stopped yesterday and was not dealt with still holds reply.
   test = await fixture([{ title: "yesterday", status: "needs_attention", retryable: true, attentionAt: new Date(Date.now() - 36 * 3600_000).toISOString() }], { reply: true });
   try {
@@ -1856,6 +1908,7 @@ async function checkRetryAndContinueIpc() {
   try {
     let replyResumes = 0;
     test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
+    await test.control.settleSkipped(test.rows[0].id); // 2026-11-18: reply waits until the skips are settled
     await test.control.start(); await test.control.tick();
     assert.equal(test.control.status().phase, "listening");
     const resumesBefore = replyResumes;
@@ -1897,6 +1950,7 @@ async function checkRetryAndContinueIpc() {
         // Touch first (user, 2026-11-14): a touch needing attention never lets reception start.
         await assert.rejects(test.control.start(), /触达任务还没完成/u);
       } else {
+        await test.control.settleSkipped(test.rows[0].id); // 2026-11-18: reply waits until the skips are settled
         await test.control.start(); await test.control.tick();
         assert.equal(test.control.status().phase, "listening");
       }
@@ -1947,7 +2001,7 @@ async function checkRetryAndContinueIpc() {
     await test.close();
   }
 
-  test = await fixture([{ title: "paused-before-retry", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  test = await fixture([{ title: "paused-before-retry", status: "completed", skipped: true, skipFails: true, settled: true }], { reply: true });
   try {
     let replyResumes = 0;
     test.options.reply.resumeWorkflow = () => { replyResumes += 1; };
@@ -1959,7 +2013,7 @@ async function checkRetryAndContinueIpc() {
     assert.equal(replyResumes, resumesBefore);
   } finally { await test.close(); }
 
-  test = await fixture([{ title: "paused-during-retry", status: "completed", skipped: true, skipFails: true }], { reply: true });
+  test = await fixture([{ title: "paused-during-retry", status: "completed", skipped: true, skipFails: true, settled: true }], { reply: true });
   let releaseUserPause, retryingDuringPause, userPause, originalUserPause;
   try {
     let replyResumes = 0, enteredPause;
@@ -2038,7 +2092,7 @@ async function checkRetryAndContinueIpc() {
 
   // Touch first (user, 2026-11-14): a touch needing attention never lets reception start, so the
   // in-flight reply pause is set up with a finished touch that has a skipped contact.
-  test = await fixture([{ title: "pausing", status: "completed", skipped: true }], { reply: true });
+  test = await fixture([{ title: "pausing", status: "completed", skipped: true, settled: true }], { reply: true });
   let releaseReply, ticking, pausing;
   try {
     let enteredReply;
@@ -2132,6 +2186,7 @@ async function checkFailedRetryRecoveryGuards() {
       if (row.status === "completed") task.progress = { done: 1, total: 1 };
       if (row.status === "needs_attention" && row.attentionAt !== null) task.attentionAt = row.attentionAt || new Date().toISOString();
       if (row.accountName) task.accountName = row.accountName;
+      if (row.settled) task.skippedSettledAt = new Date().toISOString();
     }
     fs.writeFileSync(stateFile, JSON.stringify(stored));
     state.control = createWechatWorkflowController({ ...options, autoSchedule });
@@ -2164,7 +2219,7 @@ async function checkFailedRetryRecoveryGuards() {
     }
   }
 
-  const skipFail = () => ({ title: "skip-fail", status: "completed", skipped: true });
+  const skipFail = () => ({ title: "skip-fail", status: "completed", skipped: true, settled: true });
   for (const [name, row, mutate] of [
     // Touch first (user, 2026-11-14): a touch needing attention on this account keeps reception from
     // starting, so these plan changes race a retry on a task of another account while listening. An
@@ -3335,6 +3390,10 @@ async function main() {
   await bulkRetry.addRecipients(["reply-contact"]);
   const bulkRetryTask = await bulkRetry.addTask({ type: "touch", payload: { contactIds: ["safe", "poisoned"], script: "test" } });
   await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
+  // 2026-11-18: a finished touch with someone still retryable holds reply until settled.
+  assert.notEqual(bulkRetry.status().phase, "listening", "skipped people who can be retried hold reply");
+  await bulkRetry.settleSkipped(bulkRetryTask.task.id);
+  await bulkRetry.start(); await bulkRetry.tick();
   assert.equal(bulkRetry.status().phase, "listening");
   const bulkRetryResult = await bulkRetry.retrySkipped(bulkRetryTask.task.id);
   assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_skipped");
@@ -3344,7 +3403,11 @@ async function main() {
   assert.deepEqual(bulkRetryResult.excludedReasons, { retry_skipped_poisoned_forbidden: 1 });
   assert.equal(bulkRetry.status().enabled, false, "bulk retry must wait for an explicit start");
   assert.equal(bulkRetry.status().tasks[0].status, "pending");
+  assert.equal(bulkRetry.status().tasks[0].skippedSettledAt, undefined, "trying the skipped people again clears the earlier 「不再重试」");
   await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
+  assert.notEqual(bulkRetry.status().phase, "listening", "still someone to retry after the retry: reply waits again");
+  await bulkRetry.settleSkipped(bulkRetryTask.task.id);
+  await bulkRetry.start(); await bulkRetry.tick();
   assert.equal(bulkRetry.status().phase, "listening");
   assert.equal((await bulkRetry.retryAll()).ok, true);
   assert.equal(bulkControlEvents.filter((entry) => entry.name === "pause").at(-1)?.trigger_code, "retry_all");

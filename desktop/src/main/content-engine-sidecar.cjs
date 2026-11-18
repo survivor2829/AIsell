@@ -737,6 +737,7 @@ function createContentEngineSidecar(options = {}) {
     saveAssetCollection: (payload) => request("save_asset_collection", payload),
     listNarratedBatches: (pagination = {}) => request("list_narrated_batches", pagination),
     archiveNarratedBatch: (batchId) => request("archive_narrated_batch", { batch_id: batchId }),
+    abandonNarratedBatch: (payload) => request("abandon_narrated_batch", payload),
     saveNarratedBatch: (payload) => request("save_narrated_batch", payload),
     getNarratedBatch: (batchId) => request("get_narrated_batch", { batch_id: batchId }),
     getNarratedBatchStatus: (batchId) => request("get_narrated_batch_status", { batch_id: batchId }),

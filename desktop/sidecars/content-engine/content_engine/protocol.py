@@ -34,6 +34,7 @@ METHODS = {
     "save_asset_collection": lambda service, params: service.save_asset_collection(params),
     "list_narrated_batches": lambda service, params: service.list_narrated_batches(**params),
     "archive_narrated_batch": lambda service, params: service.archive_narrated_batch(params.get("batch_id")),
+    "abandon_narrated_batch": lambda service, params: service.abandon_narrated_batch(params),
     "save_narrated_batch": lambda service, params: service.save_narrated_batch(params),
     "get_narrated_batch": lambda service, params: service.get_narrated_batch(params.get("batch_id")),
     "get_narrated_batch_status": lambda service, params: service.get_narrated_batch_status(params.get("batch_id")),

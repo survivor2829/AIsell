@@ -3,7 +3,7 @@ const path = require("node:path");
 const { constants } = require("node:fs");
 
 const CHANNELS = Object.freeze(Object.fromEntries([
-  "collections", "save-collection", "list", "get", "status", "save", "recommend", "scripts", "confirm", "music-preview", "resolve", "voice-resolve", "samples", "continue", "edit", "export", "open-output", "archive"
+  "collections", "save-collection", "list", "get", "status", "save", "recommend", "scripts", "confirm", "music-preview", "resolve", "voice-resolve", "samples", "continue", "edit", "export", "open-output", "archive", "abandon"
 ].map((name) => [name, `content-engine:batch-${name}`])));
 const ERRORS = {
   narrated_audience_required: "请填写这条视频想给谁看。",
@@ -14,6 +14,9 @@ const ERRORS = {
   collection_not_found: "素材集不存在，请重新选择。",
   narrated_batch_not_found: "没有找到这个批次。",
   narrated_batch_busy: "当前任务正在执行，请等待完成或暂停。",
+  narrated_abandon_confirmation_required: "请先勾选「确认放弃这条视频」。",
+  narrated_batch_archived: "这条视频已经归档了。",
+  narrated_batch_stopping: "这条视频还在停下来，请等几秒再放弃。",
   narrated_batch_paused: "请先恢复或取消暂停任务，再修改。",
   invalid_narrated_count: "生成数量必须是 1 到 300 的整数。",
   invalid_narrated_pagination: "制作记录分页参数无效，请重新进入页面。",
@@ -156,6 +159,18 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return publicBatch(await controller.listNarratedBatches(p));
   });
   handle(CHANNELS.archive, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.archiveNarratedBatch(id(p.batch_id, "narrated_batch"))); });
+  // Giving up on a batch stopped by an uncertain provider call (field report 09b30c69): only on a
+  // real click with the box ticked; the engine records the unresolved calls and submits nothing.
+  handle(CHANNELS.abandon, async (p, event) => {
+    keys(p, ["batch_id", "user_confirmed", "note", "clickToken"]);
+    requireTrustedAutoMixClick(event, p.clickToken, CHANNELS.abandon);
+    if (p.user_confirmed !== true) invalid("narrated_abandon_confirmation_required");
+    return publicBatch(await controller.abandonNarratedBatch({
+      batch_id: id(p.batch_id, "narrated_batch"),
+      user_confirmed: true,
+      note: text(p.note || "用户放弃并归档", 1000).trim() || "用户放弃并归档"
+    }));
+  });
   handle(CHANNELS.get, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatch(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.status, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatchStatus(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.save, async (p) => publicBatch(await controller.saveNarratedBatch(draft(p))));

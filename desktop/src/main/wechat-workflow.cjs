@@ -50,6 +50,8 @@ function localDate(value) {
 // latest day (user 2026-10-29: 每天重复也要记录). One entry per occurrence: finishing the same
 // occurrence again (e.g. after re-queuing skipped contacts) updates it rather than counting twice.
 const RUN_HISTORY_LIMIT = 120;
+// One rule for "can be retried in bulk", used by 全部重试 and by the touch-first hold on reply.
+const bulkRetryable = (row) => (row?.bulk_retryable ?? row?.retryable) === true;
 function recordRun(task) {
   const occurrence = String(task.occurrenceDate || localDate(task.completedAt));
   const run = { occurrence, completedAt: task.completedAt, done: Number(task.progress?.done) || 0, total: Number(task.progress?.total) || 0 };
@@ -218,6 +220,7 @@ function createWechatWorkflowController(options) {
     task.error = "";
     task.status = outcome.completed ? "completed" : "pending";
     if (outcome.completed) {
+      if (task.type === "touch") task.skipsHoldReply = true;
       task.completedAt = String(outcome.resolvedAt || new Date(now()).toISOString());
       task.lastCompletedDate = localDate(task.completedAt);
       recordRun(task);
@@ -416,6 +419,7 @@ function createWechatWorkflowController(options) {
       }
       if (task.status === "pending" && task.scheduledAt && localDate(task.scheduledAt) < today && !task.startedAt) {
         task.status = "missed";
+        task.missedAt = new Date(now()).toISOString();
         task.error = "已错过原定日期，请重新安排时间。";
         changed = true;
       }
@@ -480,11 +484,41 @@ function createWechatWorkflowController(options) {
   // A touch stopped for attention holds reply until it is dealt with, whatever the date (an unknown
   // send result must never be followed by a reply). Only a task left from before this rule (no
   // attentionAt) never holds it, so an update cannot switch off the reception a customer relies on.
+  //
+  // 2026-11-18 (user): reply starts only after every touch is really done. On another computer a touch
+  // that could not reach people "finished" by skipping them and reply started at once. Now these also
+  // hold reply for this account: a touch that missed its date (missedAt) and one that finished with
+  // people who can still be retried, until the customer retries them or says 「这些人不再重试」
+  // (skippedSettledAt). Both only for tasks this code finished or missed (missedAt, skipsHoldReply are
+  // written by it), so an update never switches off the reception a customer relies on because of a
+  // task an older version left behind, whatever the clock says. A stopped task without an account can be neither retried nor resolved,
+  // so it never holds reply. Cancelled and deleted tasks never hold it.
+  function touchHoldsReply(task) {
+    if (task.type !== "touch") return false;
+    const mine = task.accountName === getAccount();
+    if (["pending", "running"].includes(task.status)) return !task.accountName || mine;
+    if (!mine) return false;
+    if (task.status === "needs_attention") return Boolean(task.attentionAt);
+    if (task.status === "missed") return Boolean(task.missedAt);
+    return task.status === "completed" && task.skipsHoldReply === true && !task.skippedSettledAt && retryableSkips(task) > 0;
+  }
   function touchUnfinished() {
-    return store.tasks.some((task) => task.type === "touch" && (
-      (["pending", "running"].includes(task.status) && (!task.accountName || task.accountName === getAccount()))
-      // A stopped task without an account can be neither retried nor resolved, so it never holds reply.
-      || (task.status === "needs_attention" && task.accountName === getAccount() && Boolean(task.attentionAt))));
+    if (retryableSkipCache.size > store.tasks.length) {
+      const ids = new Set(store.tasks.map((task) => task.id));
+      for (const id of retryableSkipCache.keys()) if (!ids.has(id)) retryableSkipCache.delete(id);
+    }
+    return store.tasks.some(touchHoldsReply);
+  }
+  // Counting the retryable people reads the task's records. It is remembered per task until the task
+  // changes, and for at most a minute, since another task can change who is retryable (blocked, deleted).
+  const retryableSkipCache = new Map();
+  function retryableSkips(task) {
+    const key = [Math.floor(now() / 60_000), task.status, task.progress?.done, task.progress?.total, task.completedAt, task.skippedSettledAt].join("|");
+    const cached = retryableSkipCache.get(task.id);
+    if (cached?.key === key) return cached.count;
+    const count = (skippedTouchState(task)?.skipped_records || []).filter(bulkRetryable).length;
+    retryableSkipCache.set(task.id, { key, count });
+    return count;
   }
 
 
@@ -721,6 +755,8 @@ function createWechatWorkflowController(options) {
       } else { delete task.reasonCode; delete task.reasonClassification; }
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {
+        // Finished by this code: its retryable skips hold reply until settled (2026-11-18 rule).
+        if (task.type === "touch") task.skipsHoldReply = true;
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
         recordRun(task);
@@ -968,6 +1004,7 @@ function createWechatWorkflowController(options) {
     task.progress = { done: retried.task.current_index, total: retried.task.total };
     task.status = "pending";
     task.error = "";
+    delete task.skippedSettledAt;
     delete task.reasonCode;
     delete task.completedAt;
     delete task.lastCompletedDate;
@@ -1006,6 +1043,21 @@ function createWechatWorkflowController(options) {
     catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
   }
 
+  async function settleSkipped(id) {
+    return serialize(() => {
+      const task = findTask(id);
+      if (task.type !== "touch" || task.status !== "completed") throw new Error("只有做完的触达任务可以这样处理。");
+      if (task.accountName !== getAccount()) throw new Error("这项任务属于另一个微信账号，请切换到该账号后再处理。");
+      const retryableCount = retryableSkips(task);
+      if (!(retryableCount > 0)) throw new Error("这项任务没有需要处理的跳过联系人。");
+      task.skippedSettledAt = new Date(now()).toISOString();
+      log("touch.skipped_settled", { stage: "settle_skipped", task_kind: task.type, task_id: task.id, retryable_count: retryableCount },
+        { level: "info", code: "touch_skipped_settled" });
+      persist(); emit();
+      return { ok: true, state: status() };
+    });
+  }
+
   async function retryTask(id, andStart = false) {
     const eligible = findTask(id);
     if (!canRetry(eligible)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
@@ -1028,7 +1080,7 @@ function createWechatWorkflowController(options) {
   function retryAllEligible(task) {
     if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) return null;
     const skipped = ["completed", "needs_attention"].includes(task.status)
-      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => (row.bulk_retryable ?? row.retryable) === true);
+      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some(bulkRetryable);
     return skipped ? "skipped" : canRetry(task) ? "task" : null;
   }
 
@@ -1121,6 +1173,7 @@ function createWechatWorkflowController(options) {
       persist(); emit(); return { ok: true, state: status() };
     }),
     retrySkipped,
+    settleSkipped,
     resolveTouchUnknown: (id, resolution) => serialize(() => {
       assertPlanEditable();
       const task = findTask(id);

@@ -916,6 +916,64 @@ class NarratedBatchDomain:
         self._store(b)
         return {"batch_id": batch_id}
 
+    def abandon(self, request, before_archive=None):
+        """The customer gives up on a batch that stopped with an uncertain provider call.
+
+        Field report 09b30c69 (2026-11-18): a voice check ended outcome_unknown, the task
+        was paused, and every way out was closed (archive refused paused and unknown, cancel
+        hidden, 新建视频 disabled). Abandoning records the unresolved calls for audit and
+        archives the batch. Nothing is retried or submitted again; the unknown artifacts
+        keep their status, so nothing can ever be charged twice for them.
+        """
+        require(isinstance(request, dict), "invalid_narrated_abandon", "放弃信息格式无效。")
+        require(request.get("user_confirmed") is True, "narrated_abandon_confirmation_required",
+                "请先确认放弃这条视频。")
+        b = self._load(request.get("batch_id"))
+        require(not b.get("_archived_at"), "narrated_batch_archived",
+                "这条视频已经放弃并归档。" if b.get("_abandoned") else "这条视频已经归档了。")
+        task = None
+        if b.get("task_id"):
+            try:
+                task = self.d._task_row(b["task_id"])
+            except ContentEngineError:
+                task = None  # the task row is gone: nothing to stop, the batch can still be given up
+        # Only a batch that is not working right now; stopping comes first.
+        require(task is None or task["status"] in {"completed", "failed", "cancelled", "paused"},
+                "narrated_batch_busy", "请等待当前操作完成，或先暂停。")
+        note = redact_text(str(request.get("note") or "用户放弃并归档").strip())[:1000]
+        unresolved = []
+        if task is not None:
+            unresolved = [
+                {"id": row["id"], "stage": row["stage"], "status": row["status"]}
+                for row in self.db.execute(
+                    """
+                    SELECT a.id, a.stage, a.status FROM auto_mix_stage_artifacts_v2 a
+                    JOIN auto_mix_runs_v2 r ON r.id = a.run_id
+                    WHERE r.task_id = ? AND a.status IN ('submitted', 'outcome_unknown')
+                    """,
+                    (task["id"],),
+                ).fetchall()
+            ] if self._table_exists("auto_mix_stage_artifacts_v2") and self._table_exists("auto_mix_runs_v2") else []
+        b["_abandoned"] = {
+            "abandoned_at": self.d._now(),
+            "note": note,
+            "task_id": task["id"] if task else None,
+            "task_status": task["status"] if task else None,
+            "error_code": task["error_code"] if task else None,
+            "planning_inflight": bool(b.get("_planning_inflight") or b.get("_planning_request")),
+            "unresolved_artifacts": unresolved[:100],
+        }
+        # Stopping the task comes first: if that fails the batch stays as it was and can be given up again.
+        if before_archive is not None and task is not None:
+            before_archive(task)
+        b["_archived_at"] = b["_abandoned"]["abandoned_at"]
+        self._store(b)
+        return {"batch_id": b["batch_id"], "task_id": task["id"] if task else None,
+                "task_status": task["status"] if task else None}
+
+    def _table_exists(self, name):
+        return self.db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
     def status(self, batch_id):
         b = self._load(batch_id)
         task = self.d._task_row(b["task_id"]) if b.get("task_id") else None
@@ -5251,6 +5309,9 @@ class NarratedBatchDomain:
     def run(self, task_id, payload):
         b = self._load(payload["batch_id"])
         self._active_batch = b
+        # A batch the customer gave up on never runs again, even if its task is resumed from the task
+        # list (a submitted cover can keep that task paused instead of cancelled).
+        require(not b.get("_abandoned"), "narrated_batch_abandoned", "这条视频已经放弃并归档，不会再继续制作。")
         require(not b.get("_planning_inflight"), "narrated_planning_outcome_unknown", "上次 AI 方案请求结果未知，不会自动重提。")
         require(b["task_id"] == task_id, "narrated_task_stale", "此任务已被新操作替代。")
         action = payload["action"]

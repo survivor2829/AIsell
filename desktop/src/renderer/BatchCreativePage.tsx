@@ -150,6 +150,9 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   }
   const running = Boolean(batch?.task_id && activeStatuses.has(batch.task_status || ""));
   const paused = batch?.task_status === "paused";
+  const [abandonConfirmed, setAbandonConfirmed] = useState(false);
+  // A tick is for the batch it was given on, never carried to another one.
+  useEffect(() => { setAbandonConfirmed(false); }, [batch?.batch_id]);
   const locked = busy || restoring || running || paused || Boolean(batch?.archived);
   const scriptFlow = !batch || settings.workflow_version === 2;
   const modern = !batch || batch.brief_version === 1;
@@ -401,6 +404,29 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       await refreshBatches();
     }); } finally { setSubmitting(false); }
   }
+  // Back to an empty form for a new video (after archiving or giving up on a batch).
+  function clearToNewBatch() {
+    draftOwner.current += 1; draftQueue.cancelPending();
+    localStorage.removeItem("batch-studio-draft-id");
+    setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false);
+    setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [], minimum_duration_seconds: Math.max(30, settings.minimum_duration_seconds || 30) });
+    manualCount.current = false;
+  }
+  // Field report 09b30c69 (2026-11-18): a voice check ended "结果不明", the batch stopped, and
+  // archive, cancel and 新建视频 were all closed. Giving up records it and archives the batch;
+  // nothing is submitted again.
+  async function abandonBatch() {
+    if (!batch || draftQueue.busy()) return;
+    draftQueue.cancelPending();
+    setSubmitting(true);
+    try { await run(async () => {
+      await callBatch("abandon", { batch_id: batch.batch_id, user_confirmed: true });
+      setAbandonConfirmed(false);
+      clearToNewBatch();
+      await refreshBatches();
+      setNotice("已放弃这条视频，可以直接新建一条。已做好的成片和本地素材都保留。");
+    }); } finally { setSubmitting(false); }
+  }
   async function recoverVoice() {
     if (!batch || draftQueue.busy()) return;
     draftQueue.cancelPending();
@@ -485,7 +511,11 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
   const resourceFailures = Object.entries(resources).filter(([, message]) => message && message !== RESOURCE_READING);
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
-    <header className="batch-page-header"><div><h1>线索视频混剪</h1><p>把零散素材，做成讲清卖点的获客短视频。</p></div><div className="batch-header-actions"><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || restoring || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}><Plus size={15} />新建视频</button></div></header>
+    <header className="batch-page-header"><div><h1>线索视频混剪</h1><p>把零散素材，做成讲清卖点的获客短视频。</p></div><div className="batch-header-actions"><button type="button" disabled={busy || saving || running || paused} onClick={onOpenMaterials}>我的素材</button><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || restoring || running} onClick={() => void run(async () => {
+      // A paused batch refuses edits, so its unsaved changes are dropped rather than saved (2026-11-18).
+      if (paused) draftQueue.cancelPending(); else await draftQueue.flush();
+      clearToNewBatch();
+    })}><Plus size={15} />新建视频</button></div></header>
     <ExampleBanner topic="ai-editing" />
     {restoring && <p className="batch-hint" role="status">正在恢复上次编辑；可以继续切换页面。</p>}
     {slowResources && <p className="batch-hint" role="status">资料还在读取，不影响继续操作。</p>}
@@ -498,8 +528,7 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
         // select that batch again for the next edit on the cleared form.
         await draftQueue.flush();
         await callBatch("archive", { batch_id: batch.batch_id });
-        draftOwner.current += 1; draftQueue.cancelPending();
-        setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false); setSettings({ ...settings, workflow_version: 2, minimum_duration_seconds: Math.max(30, settings.minimum_duration_seconds || 30) }); manualCount.current = false;
+        clearToNewBatch();
         await refreshBatches(); setNotice("批次已归档，可在制作任务的已归档分类查看。本地素材和成片文件保留。");
       })}>归档批次</button>}
     </div>
@@ -534,6 +563,11 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
       {batch.voice_recovery_available && <div className="batch-planning-recovery">
         <span>第三方配音或回听没有返回可用回执，系统已保留前面已完成的结果。请先核对对应平台记录，确认这次未生成可用音频后，仅重试未完成的语音步骤。{recoveryHeld ? ` ${recoveryHeld}` : ""}</span>
         <button type="button" data-batch-action="voice-resolve" className="batch-primary" disabled={busy || submitting || Boolean(recoveryHeld)} onClick={() => void recoverVoice()}>确认风险，仅重试未完成配音</button>
+      </div>}
+      {(paused || (batch.status === "outcome_unknown" && !running)) && !batch.archived && <div className="batch-abandon">
+        <strong>这条视频卡住了？可以放弃它，直接新建一条</strong>
+        <label><input type="checkbox" checked={abandonConfirmed} onChange={(event) => setAbandonConfirmed(event.target.checked)} />确认放弃这条视频（已做好的成片会保留，不会重新提交，也不会重复扣费）</label>
+        <button type="button" data-batch-action="abandon" className="batch-primary" disabled={busy || submitting || !abandonConfirmed} onClick={() => void abandonBatch()}>放弃这条，新建视频</button>
       </div>}
       {batch.task_id && (running || paused) && batch.status !== "outcome_unknown" && <>{resumeHeld && <p className="batch-hint" role="status">{resumeHeld}</p>}<button disabled={busy || Boolean(resumeHeld)} title={resumeHeld || undefined} onClick={() => void run(async () => {
         const action = paused ? "resume" : "pause";

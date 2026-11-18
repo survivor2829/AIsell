@@ -51,6 +51,8 @@ const QUIET = new Set([
   "product-video:refresh", "social-publish:covers"
 ]);
 const ACTIONS = new Set([
+  "wechat-workflow:settle-skipped",
+  "content-engine:batch-abandon",
   "ai-expert:chat", "ai-expert:choose-and-import", "ai-expert:remove", "ai-expert:save",
   "auto-reply:acknowledge-manual-followup", "auto-reply:resume-contact", "auto-reply:start", "contact-sync:capture",
   "contact-sync:choose-wechat-exe", "contact-sync:choose-wechat-root", "contact-sync:sync", "content-engine:analyze-assets",

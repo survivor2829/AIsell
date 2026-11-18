@@ -11,7 +11,7 @@ import uuid
 
 from .apimart_cover import APIMartCoverClient
 from .creative_analysis import FFmpegCreativeAnalyzer
-from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain
+from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain, missing_file_evidence as _missing_file_evidence
 from .creative_render import HybridCreativeRenderer
 from .database import Database
 from .errors import ContentEngineError
@@ -54,6 +54,18 @@ TASK_TRANSITIONS = {
     "failed": set(),
     "cancelled": set(),
 }
+
+
+def missing_file_evidence(path: Path) -> dict:
+    """Shared with creative_domain; this side also knows the stricter unsafe-path rule."""
+    details = _missing_file_evidence(path)
+    try:
+        if not details.get("inspect_failed") and details.get("drive_kind") != "network" \
+                and path.exists() and has_unsafe_component(path):
+            details["reason"] = "unsafe_path"  # the file is there but behind a link this app does not follow
+    except OSError:
+        details["inspect_failed"] = True
+    return details
 
 
 def utc_now() -> str:
@@ -149,6 +161,11 @@ class _CreativeJobWorker:
         self._closing.set()
         self._queue.put(None)
         self._thread.join()
+
+    def is_running(self, task_id: str) -> bool:
+        """True while the worker thread is still inside this task (a pause takes effect after it)."""
+        with self._active_lock:
+            return self._active_task_id == task_id
 
     def cancel_task(self, task_id: str) -> None:
         with self._active_lock:
@@ -565,6 +582,25 @@ class ContentEngineService:
 
     def archive_narrated_batch(self, batch_id):
         return self._narrated_batches().archive(batch_id)
+
+    def abandon_narrated_batch(self, request):
+        """Give up on a stopped batch whose provider call is uncertain, and archive it.
+
+        The paused task is cancelled first (a submitted cover keeps it paused, which is
+        fine: the archived batch is never resumed). Nothing is submitted again.
+        """
+        def stop(task):
+            # A pause takes effect when the worker leaves the task; until then it still holds its own
+            # copy of the batch and would write it back over the give-up (review 2026-11-18).
+            is_running = getattr(self._creative_jobs, "is_running", None)
+            if callable(is_running) and is_running(task["id"]):
+                raise ContentEngineError("narrated_batch_stopping", "这条视频还在停下来，请等几秒再放弃。")
+            # No error code of our own: a submitted cover keeps the task paused with its own
+            # cover_submission_inflight reason. The abandoned batch refuses to run either way.
+            if task["status"] == "paused":
+                self.update_task(task["id"], "cancelled")
+        result = self._narrated_batches().abandon(request, before_archive=stop)
+        return {"batch_id": result["batch_id"]}
 
     def save_narrated_batch(self, request):
         return self._narrated_batches().save(request)
@@ -1978,10 +2014,15 @@ class ContentEngineService:
             (asset_id,),
         ).fetchone()
         if row is None:
-            raise ContentEngineError("asset_path_unavailable", "No asset file is available.")
+            raise ContentEngineError("asset_path_unavailable", "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。",
+                                     details={"reason": "no_available_location"})
         path = Path(row["absolute_path"])
         if not path.is_file() or has_unsafe_component(path):
-            raise ContentEngineError("asset_path_unavailable", "No asset file is available.")
+            details = missing_file_evidence(path)
+            message = ("这个素材放在快捷方式或链接文件夹里，软件不能直接读取。请把文件复制到普通文件夹后，在素材库里重新添加。"
+                       if details.get("reason") == "unsafe_path" else
+                       "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。")
+            raise ContentEngineError("asset_path_unavailable", message, details=details)
         return {"asset_id": asset_id, "absolute_path": str(path.resolve(strict=True))}
 
     def create_task(

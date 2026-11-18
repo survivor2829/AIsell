@@ -278,6 +278,19 @@ function registerWechatWorkflowIpc(options) {
     const result = await controller.retrySkipped(String(payload?.id || ""), payload?.contactIds);
     return payload?.andStart === true ? { ...result, ...(await start()) } : result;
   }, true);
+  // 「这些人不再重试，开始自动回复」 does what it says: settle, then start (reply follows when touch is done).
+  handle("settle-skipped", async (payload) => {
+    const settled = await controller.settleSkipped(String(payload?.id || ""));
+    // The settlement is saved either way; if the program cannot start yet (another touch still needs
+    // handling, no reply customers), say why instead of reporting the settlement as failed.
+    try { return { ...settled, ...(await start()) }; }
+    catch (failure) {
+      // Only the expected waits (another touch still to handle, nothing to run yet) are a saved
+      // settlement with a reason; any other start failure is reported and logged as a failure.
+      if (!/触达任务还没完成|没有待执行|没有.{0,8}(客户|任务|联系人)/u.test(String(failure?.message || ""))) throw failure;
+      return { ...settled, ok: true, started: false, notice: failure.message };
+    }
+  }, true);
   handle("retry-all-and-start", async () => {
     const result = await controller.retryAll(true);
     return { ...result, ...(await start()) };

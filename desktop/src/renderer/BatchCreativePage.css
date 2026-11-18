@@ -335,3 +335,10 @@
   border: 2.5px dashed var(--brand-red); border-radius: 16px; background: rgba(255, 240, 242, .93); color: var(--brand-red); pointer-events: none; }
 .file-drop-overlay strong { font-size: 18px; font-weight: 900; }
 .file-drop-overlay span { color: #8a5560; font-size: 13px; }
+
+/* Giving up on a batch stopped by an uncertain call (2026-11-18). */
+.batch-abandon{display:grid;gap:10px;margin-top:14px;padding:16px 18px;border-radius:14px;background:#fff7f0;border:1px solid #f6d2b5}
+.batch-abandon strong{font-size:16px;color:#7a3a10}
+.batch-abandon label{display:flex;gap:10px;align-items:flex-start;font-size:15px;line-height:1.6;color:#4b3a2c;cursor:pointer}
+.batch-abandon input{width:18px;height:18px;margin-top:3px;flex:none}
+.batch-abandon button{justify-self:start}
