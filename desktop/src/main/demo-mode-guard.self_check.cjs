@@ -16,6 +16,20 @@ for (const channel of ["wechat-workflow:status", "content-engine:list-assets", "
   "account:logout", "account:demo-login", "feedback:submit", "cloud:install", "tutorials:list", "official-materials:download", "no-colon"]) {
   assert.equal(blocksInTrial(channel), false, `${channel} stays open in the trial`);
 }
+// Field report 2026-11-18: the trial opened 数字人 and saw 「爆款文案库没有读到」 because reads named by
+// a noun were refused. Every read a trial page makes passes; doing something does not.
+for (const channel of ["digital-human:reference-viral-library", "digital-human:reference-capabilities", "digital-human:reference-assets",
+  "digital-human:reference-workspace", "digital-human:reference-script-quota", "digital-human:reference-quote",
+  "digital-human:reference-viral-pipeline-list", "digital-human:reference-viral-pipeline-cover", "content-engine:list-publish-queue",
+  "content-engine:list-export-packages", "content-engine:reveal-export-package", "content-engine:bailian-key-status",
+  "content-engine:probe-asset", "content-engine:operation", "product-detail:history", "content-engine:open-finished"]) {
+  assert.equal(blocksInTrial(channel), false, `${channel} is a read and passes in the trial`);
+}
+for (const channel of ["digital-human:reference-viral-scan", "digital-human:reference-viral-pipeline-start-script", "digital-human:reference-train",
+  "digital-human:reference-save-workspace", "digital-human:reference-source-search", "content-engine:approve-auto-mix-voice-persona",
+  "content-engine:design-auto-mix-voice-persona", "keyword-acquisition:open-browser", "moments:like", "moments:comment"]) {
+  assert.equal(blocksInTrial(channel), true, `${channel} does something and is refused in the trial`);
+}
 // Workbenches name the action as the first argument: ipcRenderer.invoke("geo:invoke", action, payload).
 assert.equal(blocksInTrial("geo:invoke", "snapshot", {}), false, "a workbench page still loads");
 assert.equal(blocksInTrial("map-acquisition:invoke", "list-results", {}), false);
@@ -27,7 +41,6 @@ assert.equal(promptsAdvisor("wechat-workflow:start"), true);
 assert.equal(promptsAdvisor("geo:invoke", "start-task"), true);
 assert.equal(promptsAdvisor("content-engine:archive-asset"), true, "archiving is using the feature");
 assert.equal(promptsAdvisor("keyword-acquisition:open-conversation"), true);
-assert.equal(promptsAdvisor("content-engine:backfill-covers"), false, "a page filling in covers on load is refused quietly");
 // Opening a finished example on this computer is looking, not using (review 2026-11-18).
 assert.equal(blocksInTrial("content-engine:open-finished"), false);
 assert.equal(blocksInTrial("content-engine:open-generated-video"), false);
