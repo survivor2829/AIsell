@@ -2,75 +2,38 @@
 // use the features. Paid work is refused by the gateway too; this also stops the free local ones
 // (WeChat outreach, keyword and map acquisition, phone matrix, imports, platform browsers).
 //
-// The rule names what is refused: a request whose action contains a word for doing something
-// (start, generate, save, send, delete, scan, log in…). Everything else is reading and passes.
-// The first version allowed only requests named with a "read" word and refused the rest; reads
-// named by a noun ("digital-human:reference-viral-library", "...-capabilities", "...-workspace")
-// were refused and the pages said their data could not be read (field report 2026-11-18).
+// Every request is classified by name in demo-mode-channels.cjs. The first two versions guessed
+// from words in the name: they refused reads named by a noun (数字人 showed 「爆款文案库没有读到」)
+// and let camelCase or noun-named actions through. A name nobody classified is refused quietly.
 // Areas outside the features (account, feedback, updates, tutorials, official materials, the
 // window itself) are never touched.
+const { READS, QUIET, ACTIONS, WORKBENCH_READS } = require("./demo-mode-channels.cjs");
+
 const DEMO_TEXT = "这是体验账号，只能看示例。开通正式账号后就能使用这个功能，请联系顾问开通。";
 
 // Never limited: signing in and out, feedback, updates, help and the window.
 const OPEN_AREAS = new Set(["account", "license-auth", "feedback", "cloud", "maintenance", "update", "diagnostics", "tutorials",
   "official-materials", "role-preferences", "window-chrome", "startup", "announcements"]);
-// Stopping is always allowed: nothing can start in a trial, but stopping must never be refused.
-const ALWAYS_ALLOWED = new Set(["pause", "stop", "cancel", "close"]);
-// Doing something. A request is refused when any word of its action is one of these.
-const ACTION_WORDS = new Set([
-  // starting and running work
-  "start", "run", "resume", "continue", "retry", "confirm", "consent", "train", "speech", "synthesize", "prepare", "repackage",
-  "package", "render", "compose", "generate", "regenerate", "write", "rewrite", "draft", "build", "scan", "crawl", "collect",
-  "search", "analyze", "review", "resolve", "test", "validate", "acknowledge", "queue", "record", "capture", "now", "apply",
-  "invoke", "refresh", "sync", "backfill", "preflight", "detect",
-  // bringing things in or sending them out
-  "import", "choose", "add", "upload", "download", "export", "publish", "send", "submit", "install", "input", "chat", "reply",
-  "comment", "like", "follow", "message", "post", "share", "connect", "login", "logout", "browser", "link",
-  // changing or removing what the customer made
-  "create", "save", "archive", "restore", "update", "delete", "remove", "reject", "set", "rename", "edit", "toggle", "enable",
-  "disable", "clear", "reset", "mark", "configure", "move", "approve", "design"]);
-// An action that starts by looking at something is reading ("list-publish-queue", "reveal-export-package").
-const VIEW_FIRST = new Set(["list", "get", "show", "reveal", "open", "read", "status", "preview"]);
 
 // Workbench channels ("geo:invoke", "map-acquisition:invoke") name the action in their first argument.
-function actionOf(channel, args) {
-  const text = String(channel || "");
-  const colon = text.indexOf(":");
-  if (!text.endsWith(":invoke")) return text.slice(colon + 1);
+function workbenchAction(args) {
   const first = args[0];
   return typeof first === "string" ? first : first && typeof first === "object" ? String(first.action || "") : "";
 }
 
-function wordsOf(action) {
-  return String(action || "").toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean);
-}
-
-// Opening a conversation or a platform browser acts on a platform; "open-finished" only shows a video.
-function opensChat(words) { return words.includes("open") && (words.includes("conversation") || words.includes("browser")); }
-
-function usesFeature(words) {
-  if (words.some((word) => ALWAYS_ALLOWED.has(word))) return false;
-  if (opensChat(words)) return true;
-  if (VIEW_FIRST.has(words[0]) || words[words.length - 1] === "status") return false;
-  return words.some((word) => ACTION_WORDS.has(word));
-}
-
-function blocksInTrial(channel, ...args) {
+// "pass" | "quiet" (refused without the advisor's card) | "action" (refused with it).
+function trialDecision(channel, ...args) {
   const text = String(channel || "");
   const colon = text.indexOf(":");
-  if (colon < 0) return false;
-  if (OPEN_AREAS.has(text.slice(0, colon))) return false;
-  const words = wordsOf(actionOf(text, args));
-  // A workbench call that does not say what it does is refused rather than guessed.
-  if (!words.length) return true;
-  return usesFeature(words);
+  if (colon < 0 || OPEN_AREAS.has(text.slice(0, colon))) return "pass";
+  if (text.endsWith(":invoke")) return WORKBENCH_READS.has(workbenchAction(args)) ? "pass" : "action";
+  if (READS.has(text)) return "pass";
+  if (ACTIONS.has(text)) return "action";
+  return "quiet";
 }
 
-// Every refusal is someone using a feature now, so each one brings up the advisor's card
-// (main.cjs shows it at most once every few seconds).
-function promptsAdvisor(channel, ...args) {
-  return blocksInTrial(channel, ...args);
-}
+function blocksInTrial(channel, ...args) { return trialDecision(channel, ...args) !== "pass"; }
+function promptsAdvisor(channel, ...args) { return trialDecision(channel, ...args) === "action"; }
 
 // Wraps ipcMain once, before any feature registers. isDemo is read on every call, so signing in or
 // out of the trial takes effect at once.
@@ -80,8 +43,10 @@ function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () =>
   const refused = (channel, args) => {
     let demo = false;
     try { demo = isDemo() === true; } catch { demo = false; }
-    if (!demo || !blocksInTrial(channel, ...args)) return false;
-    try { onBlocked(channel); } catch { /* the refusal stands */ }
+    if (!demo) return false;
+    const decision = trialDecision(channel, ...args);
+    if (decision === "pass") return false;
+    if (decision === "action") { try { onBlocked(channel); } catch { /* the refusal stands */ } }
     return true;
   };
   const answer = (channel, listener) => async (event, ...args) => (refused(channel, args)
@@ -115,4 +80,4 @@ function installDemoModeGuard(ipcMain, { isDemo = () => false, onBlocked = () =>
   }
 }
 
-module.exports = { installDemoModeGuard, blocksInTrial, promptsAdvisor, DEMO_TEXT };
+module.exports = { installDemoModeGuard, blocksInTrial, promptsAdvisor, trialDecision, DEMO_TEXT };

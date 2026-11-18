@@ -3,12 +3,6 @@ const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, Notification, pow
 // cached and refreshed whenever the account changes (account-store onChange below).
 let trialAccountSignedIn = false;
 let notifyTrialBlocked = () => {};
-// The advisor's card follows a click or key press only: pages also make requests on their own when
-// they open (cover backfill, WeChat path detection), and those are refused quietly.
-let lastUserInputAt = 0;
-app.on("web-contents-created", (_event, contents) => contents.on("input-event", (_input, input) => {
-  if (["mouseDown", "keyDown", "rawKeyDown", "gestureTap"].includes(input?.type)) lastUserInputAt = Date.now();
-}));
 require("./demo-mode-guard.cjs").installDemoModeGuard(ipcMain, { isDemo: () => trialAccountSignedIn, onBlocked: (channel) => notifyTrialBlocked(channel) });
 if (!app.isPackaged) require("./development-dependencies.cjs").configureDevelopmentDependencies();
 const fs = require("node:fs");
@@ -556,7 +550,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     // A refused action in the trial: the page shows the advisor's contact once in a while, not per click.
     let trialPromptAt = 0;
     notifyTrialBlocked = () => {
-      if (Date.now() - lastUserInputAt > 3000 || Date.now() - trialPromptAt < 4000 || !mainWindow || mainWindow.isDestroyed()) return;
+      if (Date.now() - trialPromptAt < 4000 || !mainWindow || mainWindow.isDestroyed()) return;
       trialPromptAt = Date.now();
       mainWindow.webContents.send("account:trial-blocked");
     };
