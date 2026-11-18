@@ -799,6 +799,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     for (const [controller, prefix] of [[productDetailController, "resources/product-detail/"], [contentEngineController, "resources/content-engine/"]]) {
       controller.onUpdate(state => {
+        // A start that works ends a run of slow starts (three in a row undo the update).
+        if (state.state === "ready") { try { components.clearSlowStarts?.(prefix); } catch {} return; }
         if (!["failed", "unavailable"].includes(state.state)) return;
         const decision = components.serviceRollbackDecision(state.code, prefix);
         if (decision.basis === "not_a_start_failure") return;

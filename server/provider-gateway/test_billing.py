@@ -144,6 +144,20 @@ class BillingTest(unittest.TestCase):
         # A real account is unaffected.
         self.assertEqual(200, self.chat()[0])
 
+    def test_the_trial_keeps_a_bounded_list_of_computers(self):
+        import accounts
+        previous, accounts.DEMO_DEVICE_LIMIT = accounts.DEMO_DEVICE_LIMIT, 3
+        try:
+            for index in range(6):
+                self.server.accounts.failures.clear()
+                self.assertEqual(200, self.demo_session(f"5555555{index}-5555-5555-5555-555555555555")[0])
+            store = self.server.accounts
+            demo = store._row("subject=?", (accounts.DEMO_SUBJECT,))
+            count = store.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (demo["id"],)).fetchone()[0]
+            self.assertEqual(3, count, "the oldest trial computers are dropped")
+        finally:
+            accounts.DEMO_DEVICE_LIMIT = previous
+
     def test_the_trial_is_limited_per_address_and_can_be_switched_off(self):
         for _ in range(30):
             self.assertEqual(200, self.demo_session()[0])

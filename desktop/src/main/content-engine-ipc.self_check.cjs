@@ -372,6 +372,7 @@ async function main() {
       },
       importFolder: async (folderPath, recursive) => {
         calls.push(["importFolder", folderPath, recursive]);
+        if (String(folderPath).includes("unreadable-")) throw Object.assign(new Error("folder unreadable"), { code: "ASSET_SOURCE_NOT_FOUND" });
         return {
           items: [asset()],
           created_assets: 0,
@@ -889,6 +890,15 @@ async function main() {
       ["importFolder", droppedFolder, true]
     ], "duplicates and vanished paths never reach the engine");
     assert.ok(dropped.data.createdAssets >= 1, "the file and folder results are added up");
+    // One unreadable folder among the drop: what was imported stays imported and the folder is skipped.
+    const unreadable = fs.mkdtempSync(path.join(root, "unreadable-"));
+    const partial = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [droppedFile, unreadable] });
+    assert.equal(partial.ok, true, "the clips already imported still reach the batch");
+    assert.equal(partial.data.items.length, 1);
+    assert.equal(partial.data.skippedCount, 1);
+    assert.deepEqual(partial.data.skipped, [{ index: -1, reason: "folder_unreadable" }]);
+    const alone = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [unreadable] });
+    assert.equal(alone.ok, false, "a folder dropped on its own that cannot be read says so");
     for (const [paths, code] of [
       [[], "dropped_paths_empty"],
       ["C:\\one", "dropped_paths_empty"],

@@ -2323,26 +2323,36 @@ function registerContentEngineIpc(options = {}) {
   // still checks every file itself (absolute, a regular file, no links, a supported format).
   handle(CONTENT_ENGINE_CHANNELS.importPaths, async (payload) => {
     const paths = droppedPaths(payload.paths);
+    // Checked off the main thread's blocking calls: a dropped file on an offline network drive must
+    // not freeze every window while Windows waits for it.
+    const stats = await Promise.all(paths.map((value) => fs.promises.stat(value).catch(() => null)));
     const files = [], folders = [];
-    for (const value of paths) {
-      let stat;
-      try { stat = fs.statSync(value); } catch { continue; }
-      if (stat.isDirectory()) folders.push(value);
-      else if (stat.isFile()) files.push(value);
-    }
+    stats.forEach((stat, index) => {
+      if (stat?.isDirectory()) folders.push(paths[index]);
+      else if (stat?.isFile()) files.push(paths[index]);
+    });
     if (!files.length && !folders.length) throw Object.assign(new Error("dropped_paths_empty"), { code: "dropped_paths_empty" });
-    const results = [];
+    // What was imported stays imported: a folder that cannot be read is reported as skipped and the
+    // rest of the drop still reaches the batch. Skipped entries carry no index (they come from
+    // separate imports and could not point back to one dropped item).
+    const results = [], failedFolders = [];
     if (files.length) results.push(await controller.importFiles(files));
-    for (const folder of folders) results.push(await controller.importFolder(folder, true));
-    const skipped = results.flatMap((result) => Array.isArray(result?.skipped) ? result.skipped : []);
+    for (const folder of folders) {
+      try { results.push(await controller.importFolder(folder, true)); } catch (error) {
+        if (!files.length && folders.length === 1) throw error; // the only thing dropped: say why
+        failedFolders.push(folder);
+      }
+    }
+    const skipped = [...results.flatMap((result) => Array.isArray(result?.skipped) ? result.skipped : []),
+      ...failedFolders.map(() => ({ reason: "folder_unreadable" }))];
     return {
       cancelled: false,
       items: results.flatMap((result) => result?.items || []).map(publicAsset),
       createdAssets: results.reduce((sum, result) => sum + Number(result?.created_assets || 0), 0),
       createdLocations: results.reduce((sum, result) => sum + Number(result?.created_locations || 0), 0),
-      skippedCount: results.reduce((sum, result) => sum + Number(result?.skipped_count || 0), 0),
+      skippedCount: results.reduce((sum, result) => sum + Number(result?.skipped_count || 0), 0) + failedFolders.length,
       skipped: skipped.slice(0, 500).map((item) => ({
-        index: Number.isInteger(item?.index) ? item.index : -1,
+        index: -1,
         reason: safeText(item?.reason, 64)
       })),
       hasMore: results.some((result) => result?.has_more === true)

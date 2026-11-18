@@ -29,6 +29,9 @@ FAILED_LOGIN_LIMIT, FAILED_LOGIN_WINDOW = 5, 15 * 60
 # no password. It can look at every example but never spends 算力 (service.py refuses its paid work).
 DEMO_SUBJECT = "demo-experience"
 DEMO_LOGINS_PER_CLIENT = 30
+# The shared trial keeps at most this many computers (the least recently seen go first), so its device
+# list cannot grow without bound (review 2026-11-18).
+DEMO_DEVICE_LIMIT = 2000
 # One address can be a whole office behind one router, so it gets more room than one phone number.
 FAILED_LOGIN_CLIENT_LIMIT = 30
 
@@ -190,7 +193,12 @@ class AccountStore:
                 account = self._row("subject=?", (DEMO_SUBJECT,))
             # An administrator can still switch the trial off by disabling this account.
             account = self._usable(account)
-            return account, self._bind_device(account, install_id)
+            token = self._bind_device(account, install_id)
+            self.db.execute("""DELETE FROM account_devices WHERE account_id=? AND id NOT IN
+                (SELECT id FROM account_devices WHERE account_id=? ORDER BY last_seen_at DESC, id DESC LIMIT ?)""",
+                (account["id"], account["id"], DEMO_DEVICE_LIMIT))
+            self.db.commit()
+            return account, token
 
     # ---- customer logins -------------------------------------------------------------
     def login_password(self, phone, password, install_id: str, client: str) -> tuple[dict, str]:

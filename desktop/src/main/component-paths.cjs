@@ -94,23 +94,49 @@ const SERVICE_BROKEN = /_(?:RUNTIME_(?:UNAVAILABLE|LINK_FAILED)|SPAWN_FAILED|PIP
 const SERVICE_SOFT_FAILURE = /_EXITED$/;
 // A service that is only slow to start is not broken: on a slow computer the first start after an
 // update (antivirus scanning thousands of fresh files) passed 30 s, the version was rolled back,
-// updated again and rolled back again (customer 8a275cd0, Windows 10 1909, 2026-11-18).
+// updated again and rolled back again (customer 8a275cd0, Windows 10 1909, 2026-11-18). Only when
+// a service this update changed fails to start in time on SLOW_START_LIMIT launches in a row (a
+// real hang, not a slow first start) is the previous version restored; a start that works resets it.
 const SERVICE_SLOW_START = /_START_TIMEOUT$/;
-function serviceRollbackDecision(code, prefix, context = global.__xiaoxiComponents) {
-  const value = String(code || "");
-  if (SERVICE_BROKEN.test(value)) return { rollback: true, basis: "service_files_broken" };
-  if (SERVICE_SLOW_START.test(value)) return { rollback: false, basis: "service_slow_start" };
-  if (!SERVICE_SOFT_FAILURE.test(value)) return { rollback: false, basis: "not_a_start_failure" };
-  if (!context?.paths || !context.root) return { rollback: true, basis: "generation_unknown" };
+const SLOW_START_LIMIT = 3;
+function slowStartFile(paths) { return path.join(paths.directory, "slow-starts.json"); }
+function slowStartCount(context, prefix, add) {
+  const file = slowStartFile(context.paths), saved = readJson(file, {});
+  const counts = saved.root === path.resolve(context.root) && saved.counts && typeof saved.counts === "object" ? { ...saved.counts } : {};
+  counts[prefix] = add ? (Number(counts[prefix]) || 0) + 1 : 0;
+  try { writeJsonAtomic(file, { root: path.resolve(context.root), counts }); } catch { /* counting is best effort */ }
+  return counts[prefix];
+}
+function clearSlowStarts(prefix, context = global.__xiaoxiComponents) {
+  if (!context?.paths || !context.root) return;
+  const saved = readJson(slowStartFile(context.paths), {});
+  if (saved.root === path.resolve(context.root) && Number(saved.counts?.[prefix]) > 0) slowStartCount(context, prefix, false);
+}
+// true when this update changed the files under prefix, false when not, null when unknown.
+function serviceChangedByUpdate(prefix, context) {
   const selection = readJson(context.paths.selection, {});
-  if (!selection.active) return { rollback: false, basis: "no_update_to_undo" };
+  if (!selection.active) return false;
   let previousRoot;
-  try { previousRoot = generationPath(context.paths, selection.previous, context.installedRoot); } catch { return { rollback: true, basis: "generation_unknown" }; }
+  try { previousRoot = generationPath(context.paths, selection.previous, context.installedRoot); } catch { return null; }
   const files = root => new Map((readJson(path.join(root || "", "component-base.json"), {}).files || [])
     .filter(file => String(file.path).startsWith(prefix)).map(file => [file.path, `${file.sha256}:${file.size}`]));
   const now = files(context.root), before = files(previousRoot);
-  if (!now.size || !before.size) return { rollback: true, basis: "generation_unknown" };
-  const changed = now.size !== before.size || [...now].some(([file, identity]) => before.get(file) !== identity);
+  if (!now.size || !before.size) return null;
+  return now.size !== before.size || [...now].some(([file, identity]) => before.get(file) !== identity);
+}
+function serviceRollbackDecision(code, prefix, context = global.__xiaoxiComponents) {
+  const value = String(code || "");
+  if (SERVICE_BROKEN.test(value)) return { rollback: true, basis: "service_files_broken" };
+  if (SERVICE_SLOW_START.test(value)) {
+    if (!context?.paths || !context.root || serviceChangedByUpdate(prefix, context) !== true) return { rollback: false, basis: "service_slow_start" };
+    return slowStartCount(context, prefix, true) >= SLOW_START_LIMIT
+      ? { rollback: true, basis: "service_slow_start_repeated" } : { rollback: false, basis: "service_slow_start" };
+  }
+  if (!SERVICE_SOFT_FAILURE.test(value)) return { rollback: false, basis: "not_a_start_failure" };
+  if (!context?.paths || !context.root) return { rollback: true, basis: "generation_unknown" };
+  const changed = serviceChangedByUpdate(prefix, context);
+  if (changed === null) return { rollback: true, basis: "generation_unknown" };
+  if (!readJson(context.paths.selection, {}).active) return { rollback: false, basis: "no_update_to_undo" };
   return changed ? { rollback: true, basis: "service_changed_by_update" } : { rollback: false, basis: "service_unchanged_by_update" };
 }
 function saveSelection(paths, selection) {
@@ -147,6 +173,6 @@ function markHealthy() {
     writeJsonAtomic(path.join(context.paths.jobs, selection.pending.jobId + ".ack.json"), { ok: true, version: context.version });
   }
 }
-module.exports = { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection,
+module.exports = { clearSlowStarts, readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection,
   applicationPath, resourcesPath, businessVersion, currentRoot, markHealthy, createRuntimeVerification, ensureRuntimeGroup, beginBoot,
   bootVerificationReceipt, recordVerification, invalidateVerification, runtimeLaunchFailed, serviceRollbackDecision };

@@ -118,7 +118,12 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       lastUpload: state.lastUpload, canInstall: canInstall(), announcements, unreadAnnouncements: announcements.filter((item) => !item.read).length,
       lastAnnouncementsCheck: state.lastAnnouncementsCheck, consentNotice: Boolean(network) && state.consent && !state.consentNoticeSeen };
   }
-  function notify(patch = {}) { view = { ...view, ...patch }; for (const listener of listeners) { try { listener(status()); } catch {} } }
+  // A detail line belongs to the stage that set it: a new stage clears it unless it brings its own.
+  function notify(patch = {}) {
+    const stageChanged = patch.stage && patch.stage !== view.stage && !Object.hasOwn(patch, "detail");
+    view = { ...view, ...(stageChanged ? { detail: "" } : {}), ...patch };
+    for (const listener of listeners) { try { listener(status()); } catch {} }
+  }
   function fullDownloadPaths(manifest) {
     const installer = path.join(dir, manifest.sha256 + ".exe"), partial = path.join(dir, manifest.sha256 + ".part");
     return [installer, installer + ".verified.json", partial, partial + ".verified.json"];
@@ -374,7 +379,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
       const baseDamaged = ["component_base_file_missing", "component_base_file_damaged"].includes(error?.code);
-      try { logger?.event?.("update", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
+      // A check that fails (offline, server unreachable) is routine: it stays out of the field reports.
+      // A damaged installed program is a real problem and becomes a field report.
+      try { logger?.event?.(baseDamaged ? "update" : "maintenance", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
       // Both are fixed by the customer, not by retrying: the launch gate lets them in and shows these steps.
@@ -457,9 +464,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       let helper = {};
       try {
         const progress = launchedJobFile ? readJson(launchedJobFile.replace(/.json$/, ".status.json")) : null;
-        if (progress) helper = { helper_phase: String(progress.phase || "").slice(0, 32),
-          helper_timings: (Array.isArray(progress.timings) ? progress.timings : []).slice(0, 12)
-            .map((item) => `${String(item?.phase || "").slice(0, 24)}:${Math.round(Number(item?.durationMs) || 0)}`).join(",") };
+        // Numbers under plain keys, so the diagnostics filter keeps them readable (helper_ms_<phase>).
+        if (progress) helper = { helper_phase: String(progress.phase || "").replace(/[^a-z_]/gu, "").slice(0, 32),
+          ...Object.fromEntries((Array.isArray(progress.timings) ? progress.timings : []).slice(0, 12)
+            .filter((item) => /^[a-z_]{1,24}$/u.test(String(item?.phase || "")))
+            .map((item) => [`helper_ms_${item.phase}`, Math.round(Number(item?.durationMs) || 0)])) };
       } catch { /* the failure is reported without it */ }
       // Diagnostics may share the failing disk. Never let their write hide the cause or permit app exit.
       // "update", not "maintenance": maintenance events never become field reports, so a computer
