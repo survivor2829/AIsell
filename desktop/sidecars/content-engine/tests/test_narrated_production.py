@@ -506,6 +506,9 @@ class NarratedProductionTests(unittest.TestCase):
         with self.assertRaises(ContentEngineError) as again:
             self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id'], 'user_confirmed': True})
         self.assertEqual('narrated_batch_archived', again.exception.code)
+        with self.assertRaises(ContentEngineError) as resumed:
+            self.domain.run(queued['task_id'], {'batch_id': self.batch['batch_id'], 'action': 'continue'})
+        self.assertEqual('narrated_batch_abandoned', resumed.exception.code, 'a given-up batch never runs again')
 
     def test_voice_recovery_can_requeue_a_gateway_preflight_failure(self):
         queued = self.s.confirm_narrated_script(self.request(first_count=1))

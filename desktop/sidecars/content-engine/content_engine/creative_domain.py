@@ -422,6 +422,21 @@ def _supported_image_mime_type(path: Path) -> str | None:
     return None
 
 
+def missing_file_evidence(path: Path) -> dict:
+    """Why a recorded material file is not there, without its path (field reports 2026-11-13..18)."""
+    try:
+        anchor = path.anchor or ""
+        unsafe = any(part in {".", ".."} for part in path.parts)
+        return {
+            "reason": "unsafe_path" if unsafe else "file_missing",
+            "drive_kind": "network" if anchor.startswith("\\\\") else "drive" if anchor else "relative",
+            "drive_present": bool(anchor) and Path(anchor).exists(),
+            "folder_present": path.parent.exists(),
+            "suffix": path.suffix.lower()[:8],
+        }
+    except OSError:
+        return {"reason": "file_missing", "inspect_failed": True}
+
 class CreativeDomain:
     def __init__(
         self, database: Database, *, new_id, now, analyzer, renderer, cover_client=None
@@ -11301,15 +11316,7 @@ class CreativeDomain:
         ).fetchone()
         if row is None or not Path(row["absolute_path"]).is_file():
             # Why it is gone, without the path: no recorded location, a missing drive or folder.
-            details = {"reason": "no_available_location"}
-            if row is not None:
-                path = Path(row["absolute_path"])
-                try:
-                    details = {"reason": "file_missing", "drive_present": bool(path.anchor) and Path(path.anchor).exists(),
-                               "folder_present": path.parent.exists(), "network": path.anchor.startswith("\\\\"),
-                               "suffix": path.suffix.lower()[:8]}
-                except OSError:
-                    details = {"reason": "file_missing", "inspect_failed": True}
+            details = {"reason": "no_available_location"} if row is None else missing_file_evidence(Path(row["absolute_path"]))
             raise ContentEngineError("asset_path_unavailable",
                                      "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。",
                                      details=details)

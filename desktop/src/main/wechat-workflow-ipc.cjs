@@ -278,7 +278,8 @@ function registerWechatWorkflowIpc(options) {
     const result = await controller.retrySkipped(String(payload?.id || ""), payload?.contactIds);
     return payload?.andStart === true ? { ...result, ...(await start()) } : result;
   }, true);
-  handle("settle-skipped", (payload) => controller.settleSkipped(String(payload?.id || "")), true);
+  // 「这些人不再重试，开始自动回复」 does what it says: settle, then start (reply follows when touch is done).
+  handle("settle-skipped", async (payload) => ({ ...(await controller.settleSkipped(String(payload?.id || ""))), ...(await start()) }), true);
   handle("retry-all-and-start", async () => {
     const result = await controller.retryAll(true);
     return { ...result, ...(await start()) };

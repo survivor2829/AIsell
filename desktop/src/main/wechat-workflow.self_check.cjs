@@ -1705,9 +1705,12 @@ async function checkRetryAndContinueIpc() {
     for (const task of stored.tasks) {
       task.status = rowFor(task).status;
       if (rowFor(task).accountName) task.accountName = rowFor(task).accountName;
+      else if (rowFor(task).accountName === "") delete task.accountName;
       if (task.status === "completed") task.progress = { done: 1, total: 1 };
       // The customer already said 「这些人不再重试」, so reply may run (2026-11-18 rule).
       if (rowFor(task).settled) task.skippedSettledAt = new Date().toISOString();
+      if (task.status === "completed") task.completedAt = rowFor(task).completedAt || new Date().toISOString();
+      if (task.status === "missed" && rowFor(task).missedAt !== null) task.missedAt = rowFor(task).missedAt || new Date().toISOString();
       // Stopped for attention today (as the workflow now records it), unless a row says otherwise.
       if (task.status === "needs_attention" && rowFor(task).attentionAt !== null) task.attentionAt = rowFor(task).attentionAt || new Date().toISOString();
     }
@@ -1757,14 +1760,27 @@ async function checkRetryAndContinueIpc() {
   } finally { await test.close(); }
   // 2026-11-18 (user): reply starts only after every touch is really done. On another computer a touch
   // that could not reach people finished by skipping them and reply started at once. These now hold:
-  // a stopped touch from before the attentionAt rule, a missed one, and a finished one whose skipped
-  // people can still be retried — until the customer retries them or says 「这些人不再重试」.
-  for (const [label, row] of [["stopped before the attentionAt rule", { status: "needs_attention", attentionAt: null }],
-    ["that missed its date", { status: "missed" }], ["finished with people who can be retried", { status: "completed", skipped: true }]]) {
+  // a touch that missed its date and one finished with people who can still be retried — until the
+  // customer retries them or says 「这些人不再重试」.
+  for (const [label, row] of [["that missed its date", { status: "missed" }],
+    ["finished with people who can be retried", { status: "completed", skipped: true }]]) {
     test = await fixture([{ title: "unfinished", retryable: true, ...row }], { reply: true });
     try {
       await assert.rejects(test.control.start(), /触达任务还没完成/u, `a touch ${label} holds reply`);
       assert.notEqual(test.control.status().phase, "listening");
+    } finally { await test.close(); }
+  }
+  // Upgrade safety (review 2026-11-18): tasks from before these rules never switch reception off after an
+  // update — a stop without attentionAt, a miss without missedAt, a finish before the rule — and a stopped
+  // task without an account (it can be neither retried nor resolved) never holds reply.
+  for (const [label, row] of [["stopped before the attentionAt rule", { status: "needs_attention", attentionAt: null }],
+    ["missed before the missedAt rule", { status: "missed", missedAt: null }],
+    ["finished with skips before this rule", { status: "completed", skipped: true, completedAt: "2026-11-01T00:00:00.000Z" }],
+    ["stopped without an account", { status: "needs_attention", accountName: "" }]]) {
+    test = await fixture([{ title: "old", retryable: true, ...row }], { reply: true });
+    try {
+      await test.control.start(); await test.control.tick();
+      assert.equal(test.control.status().phase, "listening", `a touch ${label} never switches off reception`);
     } finally { await test.close(); }
   }
   test = await fixture([{ title: "settle", status: "completed", retryable: true, skipped: true }], { reply: true });

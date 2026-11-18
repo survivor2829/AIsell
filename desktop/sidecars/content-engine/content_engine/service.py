@@ -11,7 +11,7 @@ import uuid
 
 from .apimart_cover import APIMartCoverClient
 from .creative_analysis import FFmpegCreativeAnalyzer
-from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain
+from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain, missing_file_evidence as _missing_file_evidence
 from .creative_render import HybridCreativeRenderer
 from .database import Database
 from .errors import ContentEngineError
@@ -57,18 +57,11 @@ TASK_TRANSITIONS = {
 
 
 def missing_file_evidence(path: Path) -> dict:
-    """Why a recorded material file is not there, without its path (field reports 2026-11-13..18)."""
-    try:
-        anchor = path.anchor or ""
-        return {
-            "reason": "unsafe_path" if has_unsafe_component(path) else "file_missing",
-            "drive_kind": "network" if anchor.startswith("\\\\") else "drive" if anchor else "relative",
-            "drive_present": bool(anchor) and Path(anchor).exists(),
-            "folder_present": path.parent.exists(),
-            "suffix": path.suffix.lower()[:8],
-        }
-    except OSError:
-        return {"reason": "file_missing", "inspect_failed": True}
+    """Shared with creative_domain; this side also knows the stricter unsafe-path rule."""
+    details = _missing_file_evidence(path)
+    if path.exists() and has_unsafe_component(path):  # a missing file cannot be inspected
+        details["reason"] = "unsafe_path"
+    return details
 
 
 def utc_now() -> str:
@@ -589,11 +582,9 @@ class ContentEngineService:
         """
         result = self._narrated_batches().abandon(request)
         if result.get("task_id") and result.get("task_status") == "paused":
-            try:
-                self.update_task(result["task_id"], "cancelled", error_code="narrated_batch_abandoned",
-                                 error_message="用户已放弃这条视频。")
-            except ContentEngineError:
-                pass  # the batch is archived either way; the task stays stopped
+            # No error code of our own: a submitted cover keeps the task paused with its own
+            # cover_submission_inflight reason. The abandoned batch refuses to run either way.
+            self.update_task(result["task_id"], "cancelled")
         return {"batch_id": result["batch_id"]}
 
     def save_narrated_batch(self, request):

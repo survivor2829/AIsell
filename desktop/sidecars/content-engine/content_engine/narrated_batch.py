@@ -5300,6 +5300,9 @@ class NarratedBatchDomain:
     def run(self, task_id, payload):
         b = self._load(payload["batch_id"])
         self._active_batch = b
+        # A batch the customer gave up on never runs again, even if its task is resumed from the task
+        # list (a submitted cover can keep that task paused instead of cancelled).
+        require(not b.get("_abandoned"), "narrated_batch_abandoned", "这条视频已经放弃并归档，不会再继续制作。")
         require(not b.get("_planning_inflight"), "narrated_planning_outcome_unknown", "上次 AI 方案请求结果未知，不会自动重提。")
         require(b["task_id"] == task_id, "narrated_task_stale", "此任务已被新操作替代。")
         action = payload["action"]

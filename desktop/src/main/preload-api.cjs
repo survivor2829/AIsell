@@ -765,7 +765,7 @@ function createPreloadApis(ipcRenderer) {
       retryTask: (id, andStart = false) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), andStart, clickToken: andStart ? consumeWorkflowStart() : consumeWorkflowSave() }),
       retrySkipped: (id, contactIds, andStart = false) => ipcRenderer.invoke("wechat-workflow:retry-skipped", { id: String(id || ""), ...(contactIds ? { contactIds } : {}), andStart, clickToken: andStart ? consumeWorkflowStart() : consumeWorkflowSave() }),
       retryAllAndStart: () => ipcRenderer.invoke("wechat-workflow:retry-all-and-start", { clickToken: consumeWorkflowStart() }),
-      settleSkipped: (id) => ipcRenderer.invoke("wechat-workflow:settle-skipped", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
+      settleSkipped: (id) => ipcRenderer.invoke("wechat-workflow:settle-skipped", { id: String(id || ""), clickToken: consumeWorkflowStart() }),
       resolveTouchUnknown: (id, resolution) => {
         const click = consumeWorkflowResolution();
         return ipcRenderer.invoke("wechat-workflow:resolve-touch-unknown", {
