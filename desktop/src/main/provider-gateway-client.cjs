@@ -300,6 +300,18 @@ function createProviderGatewayClient(options = {}) {
     }
   }
 
+  // 免费体验 from the login page: the shared trial account, no password.
+  async function loginDemo() {
+    if (closed || !enabled || !origin) return { ...status(), code: status().code || "GATEWAY_DISABLED" };
+    initialization = null;
+    try {
+      return await openSession({ demo: true });
+    } catch {
+      token = ""; expiresAt = ""; capabilities = {}; code = "GATEWAY_UNAVAILABLE";
+      return status();
+    }
+  }
+
   // First-time setup of a converted license, or a password change, with the current session.
   async function updateAccount(action, body) {
     if (!["setup", "password"].includes(action)) throw createError("GATEWAY_ROUTE_INVALID");
@@ -475,6 +487,7 @@ function createProviderGatewayClient(options = {}) {
     isEnabled: () => enabled,
     isReady: () => sessionReady(),
     login,
+    loginDemo,
     updateAccount,
     origin: () => origin,
     requestHeaders,

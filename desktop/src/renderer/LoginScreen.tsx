@@ -4,9 +4,10 @@ import "./LoginScreen.css";
 import { AGENT_ROLE_IDENTITIES, AGENT_ROLE_ORDER, ROLE_CATALOG, characterAsset, type AgentRoleKey } from "./role-appearance";
 
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string;
-  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string; isAdmin?: boolean };
+  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string; isAdmin?: boolean; demo?: boolean };
 type AccountApi = {
   login: (payload: { phone: string; password: string }) => Promise<LicenseStatus>;
+  loginDemo?: () => Promise<LicenseStatus>;
   update: (payload: { action: "setup" | "password"; phone?: string; password?: string; currentPassword?: string; newPassword?: string }) => Promise<LicenseStatus>;
   logout: () => Promise<LicenseStatus>;
 };
@@ -89,6 +90,11 @@ function AccountForm({ status, onLogin, onStatus }: { status: LicenseStatus; onL
       {busy ? "请稍候…" : setup ? "保存并进入" : change ? "修改密码并进入" : "登录"}{!busy && <ArrowRight size={20} aria-hidden="true" />}
     </button>
     {switching && status.authorized && <button type="button" className="signin-switch" onClick={() => { setSwitching(false); setError(""); }}>返回已记住的账号</button>}
+    {/* 免费体验 (user decision 2026-11-18): no account needed, examples only. */}
+    {!setup && !change && accountApi()?.loginDemo && <div className="signin-trial">
+      <span>还没有账号？</span>
+      <button type="button" className="signin-trial-button" disabled={busy} onClick={() => void run(() => accountApi()!.loginDemo!())}>免费体验，先看看效果</button>
+    </div>}
   </form>;
 }
 

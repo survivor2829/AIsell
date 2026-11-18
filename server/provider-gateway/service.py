@@ -177,6 +177,9 @@ def _bounded_timeout(value, default=DEFAULT_UPSTREAM_TIMEOUT_SECONDS) -> int:
     return max(MIN_UPSTREAM_TIMEOUT_SECONDS, min(MAX_UPSTREAM_TIMEOUT_SECONDS, candidate))
 
 
+# The trial account (accounts.DEMO_SUBJECT) is refused all paid work with this.
+DEMO_MESSAGE = "这是体验账号，只能看示例。开通正式账号后就能使用这个功能，请联系顾问开通。"
+
 class _NoProviderRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise URLError("provider_redirect_rejected")
@@ -1482,6 +1485,11 @@ class Handler(BaseHTTPRequestHandler):
         blocks or breaks a request: it is let through (metered as usual) rather than refused."""
         if not subject:
             return None
+        if self.server.accounts.is_demo(subject):
+            # The trial account looks at examples only: every paid request is refused, whatever the
+            # balance (it never gets the new-account grant either: billing is never reached).
+            return self._json_result(402, {"error": "demo_account", "message": DEMO_MESSAGE, "balance": 0},
+                                     {"Content-Type": "application/json; charset=utf-8"})
         try:
             job, feature = self._billing_tags(default_feature)
             if self.server.billing.admit(subject, job, feature):
@@ -1531,6 +1539,8 @@ class Handler(BaseHTTPRequestHandler):
         if not subject:
             return self._reply_json(401, {"error": "session_required"})
         if method == "GET":
+            if self.server.accounts.is_demo(subject):
+                return self._reply_json(200, {"ok": True, "balance": 0, "demo": True})
             return self._reply_json(200, {"ok": True, **self.server.billing.balance(subject)})
         try:
             body = self._read_json(4096)
@@ -1569,6 +1579,10 @@ class Handler(BaseHTTPRequestHandler):
         install_id = str(body["installId"])
         accounts = self.server.accounts
         try:
+            if body.get("demo") is True:
+                # 免费体验 from the login page: the shared trial account, no password.
+                account, device = accounts.login_demo(install_id, self._client_address())
+                return self._issue_account_session(account, device, install_id=install_id)
             if isinstance(body.get("phone"), str) or isinstance(body.get("password"), str):
                 account, device = accounts.login_password(body.get("phone"), body.get("password"), install_id, self._client_address())
                 return self._issue_account_session(account, device, install_id=install_id)

@@ -64,6 +64,7 @@ import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget } from "./AgentH
 import { AgentOverview } from "./AgentOverview";
 import { back, remember, type Place } from "./nav-history";
 import BillingBadge from "./BillingBadge";
+import { TrialBanner } from "./TrialBanner";
 
 type ModuleKey = AgentRoleKey | AgentHomeTarget | BusinessModule | "diagnostics" | "overview" | "nurture" | "phone-matrix" | "guide" | "account-admin";
 // 小丽 ("tutorials") leads 账号运营 since 2026-10-30; the tutorials page itself moved to the bottom as "guide".
@@ -74,7 +75,7 @@ const productDisplayName = productBrand.displayName.replace(/版本$/u, "");
 
 type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string;
-  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string; isAdmin?: boolean };
+  mode?: "account" | "license"; phone?: string; displayName?: string; setupRequired?: boolean; mustChangePassword?: boolean; updateError?: string; isAdmin?: boolean; demo?: boolean };
 type AccountApi = {
   status: () => Promise<LicenseStatus>;
   login: (payload: { phone: string; password: string }) => Promise<LicenseStatus>;
@@ -760,7 +761,7 @@ export default function App() {
         <header className="topbar">
           <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? productDisplayName : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
-            <BillingBadge enabled={license.mode === "account" && Boolean(license.authorized)} />
+            <BillingBadge enabled={license.mode === "account" && Boolean(license.authorized) && !license.demo} />
             <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
               <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
               <span className="account-name">{identityName}</span>
@@ -790,6 +791,8 @@ export default function App() {
           <TutorialsPage category={tutorialContext.category} topic={tutorialContext.topic} compact />
         </CustomerPanel>}
         <div className="content-card" ref={contentScrollRef}>
+          {license.mode === "account" && license.authorized && license.demo && <TrialBanner onSignOut={() => { setSessionEntered(false);
+            void window.xiaoxiAccount?.logout().then(setLicense); }} />}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {active === "account-admin" && license.mode === "account" && license.isAdmin && <AccountManagementPage selfPhone={license.phone || ""} />}
           {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectRole}

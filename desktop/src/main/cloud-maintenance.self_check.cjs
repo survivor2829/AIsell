@@ -294,7 +294,7 @@ async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
       // (Permission errors keep their 位置 line for support; the disk-full message only names the drive.)
       if (["ENOSPC", "update_disk_space_insufficient"].includes(code)) assert.ok(!controller.status().error.includes(privatePath), `${code}: only the drive letter is shown`);
       assert.equal(events.length, beforeEvents + 1, "Install failures must produce one safe diagnostic");
-      assert.deepEqual(events.at(-1), ["maintenance", "update.failed", { stage: phase }, { level: "error", code, phase }]);
+      assert.deepEqual(events.at(-1), ["update", "update.failed", { stage: phase }, { level: "error", code, phase }]);
       if (phase === "helper" || phase === "prepare") assert.equal(launches, beforeLaunch, "Pre-launch failure must never launch a helper or installer");
       if (!["ENOSPC", "update_disk_space_insufficient"].includes(code)) assert.doesNotMatch(controller.status().error, /空间不足/, "Permission, busy, verification and handshake errors are not disk-full errors");
       fs.writeFileSync(installer, bytes);
@@ -549,7 +549,7 @@ async function main() {
     offline = false; latest = sign({ ...manifest, sequence: 9, version: "1.0.2" });
     await controller.check();
     assert.equal(controller.status().stage, "error", "Signed but stale release rejected");
-    assert.equal(logger.readRecent(20).some((entry) => entry.module === "maintenance" && entry.event === "update.failed" && entry.code === "cloud_release_rollback"), true,
+    assert.equal(logger.readRecent(20).some((entry) => entry.module === "update" && entry.event === "update.failed" && entry.code === "cloud_release_rollback"), true,
       "an update failure must retain its safe machine-readable cause for feedback diagnostics");
     await checkAnnouncements(dir, config, manifest, sign, bytes);
     await checkBundledAnnouncements(dir, config, manifest, sign);

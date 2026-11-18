@@ -162,7 +162,9 @@ function createContentEngineSidecar(options = {}) {
     requestTimeoutMs,
     Number(options.voiceDesignTimeoutMs) || VOICE_DESIGN_REQUEST_TIMEOUT_MS
   );
-  const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
+  // 90 s: a slow computer's first start after an update (antivirus scanning the fresh runtime) took
+  // longer than 30 s; a slow start is not a failure (component-paths.cjs SERVICE_SLOW_START).
+  const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 90_000);
   const stopTimeoutMs = Math.max(1, Number(options.stopTimeoutMs) || 3_000);
   const listeners = new Set();
 

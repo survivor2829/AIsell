@@ -374,7 +374,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
       const baseDamaged = ["component_base_file_missing", "component_base_file_damaged"].includes(error?.code);
-      try { logger?.event?.("maintenance", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
+      try { logger?.event?.("update", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
       // Both are fixed by the customer, not by retrying: the launch gate lets them in and shows these steps.
@@ -432,8 +432,18 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         child.once("spawn", () => { child.unref(); resolve(); });
       });
       phase = "ready";
-      const ready = path.join(path.dirname(file), job.id + ".ready.json"), deadline = Date.now() + 30000;
-      while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      // 150 s, longer than the helper's own 120 s wait for the maintenance lock: a slow computer
+      // started the freshly copied helper (antivirus scan) in more than 30 s and every update ended
+      // in update_helper_not_ready (customer 8a275cd0, 2026-11-18).
+      const ready = path.join(path.dirname(file), job.id + ".ready.json"), startedAt = Date.now(), deadline = startedAt + 150000;
+      let slowNotice = false;
+      while (!fs.existsSync(ready) && Date.now() < deadline) {
+        if (!slowNotice && Date.now() - startedAt > 15000) {
+          slowNotice = true;
+          notify({ stage: "preparing", error: "", detail: "正在准备更新助手，较慢的电脑需要一两分钟，请稍候。" });
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
       if (!fs.existsSync(ready)) fail("update_helper_not_ready");
       notify({ stage: "waiting", error: "" });
       require("./update-helper.cjs").authorizeUpdateJob(file, job);
@@ -443,8 +453,18 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
         try { require("./update-helper.cjs").revokeUpdateJob(launchedJobFile); } catch { /* Without a commit, a late helper cannot install. */ }
       }
       const failure = updateFailure(error, phase);
+      // Where the helper itself got to (its own status file): phase names and milliseconds only.
+      let helper = {};
+      try {
+        const progress = launchedJobFile ? readJson(launchedJobFile.replace(/.json$/, ".status.json")) : null;
+        if (progress) helper = { helper_phase: String(progress.phase || "").slice(0, 32),
+          helper_timings: (Array.isArray(progress.timings) ? progress.timings : []).slice(0, 12)
+            .map((item) => `${String(item?.phase || "").slice(0, 24)}:${Math.round(Number(item?.durationMs) || 0)}`).join(",") };
+      } catch { /* the failure is reported without it */ }
       // Diagnostics may share the failing disk. Never let their write hide the cause or permit app exit.
-      try { logger?.event?.("maintenance", "update.failed", { stage: failure.phase }, {
+      // "update", not "maintenance": maintenance events never become field reports, so a computer
+      // that failed every update (8a275cd0, 2026-11-18) left only a breadcrumb behind.
+      try { logger?.event?.("update", "update.failed", { stage: failure.phase, ...helper }, {
         level: "error", code: failure.code, phase: failure.phase
       }); } catch {}
       // A full disk at install time (backup space, ENOSPC) gets the same message, so the launch gate lets the customer in.

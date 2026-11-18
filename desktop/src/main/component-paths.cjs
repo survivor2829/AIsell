@@ -91,10 +91,15 @@ function runtimeLaunchFailed(binary, error) {
 // the same files, fails the same way, and a working update is lost and then
 // downloaded again (seen 2026-10-29 with product detail at browser_check).
 const SERVICE_BROKEN = /_(?:RUNTIME_(?:UNAVAILABLE|LINK_FAILED)|SPAWN_FAILED|PIPE_FAILED)$/;
-const SERVICE_SOFT_FAILURE = /_(?:EXITED|START_TIMEOUT)$/;
+const SERVICE_SOFT_FAILURE = /_EXITED$/;
+// A service that is only slow to start is not broken: on a slow computer the first start after an
+// update (antivirus scanning thousands of fresh files) passed 30 s, the version was rolled back,
+// updated again and rolled back again (customer 8a275cd0, Windows 10 1909, 2026-11-18).
+const SERVICE_SLOW_START = /_START_TIMEOUT$/;
 function serviceRollbackDecision(code, prefix, context = global.__xiaoxiComponents) {
   const value = String(code || "");
   if (SERVICE_BROKEN.test(value)) return { rollback: true, basis: "service_files_broken" };
+  if (SERVICE_SLOW_START.test(value)) return { rollback: false, basis: "service_slow_start" };
   if (!SERVICE_SOFT_FAILURE.test(value)) return { rollback: false, basis: "not_a_start_failure" };
   if (!context?.paths || !context.root) return { rollback: true, basis: "generation_unknown" };
   const selection = readJson(context.paths.selection, {});

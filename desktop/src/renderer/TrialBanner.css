@@ -1,0 +1,19 @@
+/* 免费体验: one slim line, brand red only on what matters. */
+.trial-banner { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 9px 14px; border-radius: 12px;
+  background: linear-gradient(90deg, #fff0f2, #fff7f0); color: #4b2a31; font-size: 14px; }
+.trial-banner > svg { color: var(--brand-red); flex: none; }
+.trial-banner b { color: var(--brand-red); font-weight: 900; }
+.trial-banner span { flex: 1; min-width: 0; }
+.trial-banner button { flex: none; padding: 6px 12px; border: 0; border-radius: 999px; background: var(--brand-red); color: #fff; font: inherit; font-weight: 800; cursor: pointer; }
+.trial-banner .trial-banner-quiet { background: transparent; color: #7a5a62; font-weight: 600; }
+
+.trial-modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(20, 22, 30, .45); }
+.trial-modal { position: relative; width: min(380px, calc(100vw - 32px)); padding: 26px 24px 20px; border-radius: 20px; background: #fff;
+  text-align: center; box-shadow: 0 20px 60px rgba(0, 0, 0, .25); }
+.trial-modal h2 { margin: 0 0 8px; font-size: 21px; color: #1d2230; }
+.trial-modal p { margin: 0 0 14px; color: #5b6170; line-height: 1.6; font-size: 14px; }
+.trial-modal p b { color: var(--brand-red); }
+.trial-modal img { display: block; margin: 0 auto 8px; border-radius: 12px; border: 1px solid #f0e2e5; }
+.trial-modal-note { display: block; margin-bottom: 14px; color: #8a8f99; font-size: 13px; }
+.trial-modal-ok { width: 100%; padding: 11px; border: 0; border-radius: 12px; background: var(--brand-red); color: #fff; font: inherit; font-size: 15px; font-weight: 800; cursor: pointer; }
+.trial-modal-close { position: absolute; top: 12px; right: 12px; padding: 4px; border: 0; background: none; color: #9aa0aa; cursor: pointer; }
