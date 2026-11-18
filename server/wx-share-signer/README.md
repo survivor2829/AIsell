@@ -17,11 +17,15 @@ docker run -d --name aihuoke-wx-signer --restart unless-stopped --network datast
   -v /home/ubuntu/projects/aihuoke-site/wx-signer/signer.py:/app/signer.py:ro \
   python:3.12-alpine python /app/signer.py
 ```
-主站 nginx（转发 `/huoke/` 的那份配置）加：
+商城 nginx（web_shop03）把 `/huoke/` 去掉前缀转给官网容器，不改它。官网自己的 `nginx.conf`（aihuoke-site）加：
 ```
-location /huoke/api/wx-sign { proxy_pass http://aihuoke-wx-signer:8090; }
+location = /api/wx-sign {
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $wx_signer http://aihuoke-wx-signer:8090;
+    proxy_pass $wx_signer;
+}
 ```
-改配置先备份、原地写入（不用 `sed -i`），然后 `nginx -s reload`。
+用变量转发：签名服务不在时只有这个地址报 502，官网照常打开。改配置先备份、原地写入（不用 `sed -i`），然后 `nginx -s reload`。
 
 ## 验证
 - `python -m pytest test_signer.py`（含微信文档示例签名）。

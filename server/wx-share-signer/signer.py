@@ -23,7 +23,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ALLOWED_HOSTS = {"www.xilianhui.cn", "xilianhui.cn"}
 ALLOWED_PREFIX = "/huoke/"
-ROUTE = "/huoke/api/wx-sign"
+# The site's own nginx receives the address with /huoke stripped (web_shop03 rewrites it).
+ROUTES = {"/huoke/api/wx-sign", "/api/wx-sign"}
 WECHAT = "https://api.weixin.qq.com/cgi-bin"
 
 
@@ -95,7 +96,7 @@ def make_handler(tickets: Tickets):
 
         def do_GET(self):
             parts = urllib.parse.urlsplit(self.path)
-            if parts.path != ROUTE:
+            if parts.path not in ROUTES:
                 return self._reply(404, {"error": "not_found"})
             page = allowed_page((urllib.parse.parse_qs(parts.query).get("url") or [""])[0])
             if not page:

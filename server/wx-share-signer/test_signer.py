@@ -49,6 +49,8 @@ class SignerTest(unittest.TestCase):
             self.assertEqual("wxapp", body["appId"])
             self.assertEqual(signature("TK", body["nonceStr"], body["timestamp"], page), body["signature"])
             self.assertNotIn("the-secret", json.dumps(body))
+            with urllib.request.urlopen(base + "/api/wx-sign?url=" + urllib.parse.quote(page)) as response:
+                self.assertEqual("wxapp", json.loads(response.read())["appId"], "the path the site's nginx forwards")
             with self.assertRaises(urllib.error.HTTPError) as refused:
                 urllib.request.urlopen(base + "/huoke/api/wx-sign?url=" + urllib.parse.quote("https://evil.example/"))
             self.assertEqual(400, refused.exception.code)
