@@ -372,6 +372,7 @@ async function main() {
       },
       importFolder: async (folderPath, recursive) => {
         calls.push(["importFolder", folderPath, recursive]);
+        if (String(folderPath).includes("engine-gone-")) throw Object.assign(new Error("engine exited"), { code: "CONTENT_ENGINE_EXITED" });
         if (String(folderPath).includes("unreadable-")) throw Object.assign(new Error("folder unreadable"), { code: "ASSET_SOURCE_NOT_FOUND" });
         return {
           items: [asset()],
@@ -896,9 +897,16 @@ async function main() {
     assert.equal(partial.ok, true, "the clips already imported still reach the batch");
     assert.equal(partial.data.items.length, 1);
     assert.equal(partial.data.skippedCount, 1);
+    assert.equal(partial.data.unreadableFolders, 1);
     assert.deepEqual(partial.data.skipped, [{ index: -1, reason: "folder_unreadable" }]);
     const alone = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [unreadable] });
     assert.equal(alone.ok, false, "a folder dropped on its own that cannot be read says so");
+    const engineGone = fs.mkdtempSync(path.join(root, "engine-gone-"));
+    const notificationsBeforeCrash = notifications.length;
+    const crashed = await handlers.get(CONTENT_ENGINE_CHANNELS.importPaths)({}, { paths: [droppedFile, engineGone] });
+    assert.equal(crashed.ok, false, "the engine stopping is reported as that, not as an unreadable folder");
+    assert.equal(crashed.code, "CONTENT_ENGINE_EXITED");
+    notifications.splice(notificationsBeforeCrash); // the stopped-engine notice belongs to this case only
     for (const [paths, code] of [
       [[], "dropped_paths_empty"],
       ["C:\\one", "dropped_paths_empty"],

@@ -144,17 +144,32 @@ class BillingTest(unittest.TestCase):
         # A real account is unaffected.
         self.assertEqual(200, self.chat()[0])
 
-    def test_the_trial_keeps_a_bounded_list_of_computers(self):
+    def test_the_trial_keeps_a_bounded_list_of_computers_without_pushing_anyone_out(self):
         import accounts
         previous, accounts.DEMO_DEVICE_LIMIT = accounts.DEMO_DEVICE_LIMIT, 3
         try:
-            for index in range(6):
-                self.server.accounts.failures.clear()
-                self.assertEqual(200, self.demo_session(f"5555555{index}-5555-5555-5555-555555555555")[0])
             store = self.server.accounts
+            tokens = []
+            for index in range(3):
+                store.failures.clear()
+                status, session = self.demo_session(f"5555555{index}-5555-5555-5555-555555555555")
+                self.assertEqual(200, status)
+                tokens.append(session["token"])
+            store.failures.clear()
+            self.assertEqual(429, self.demo_session("55555559-5555-5555-5555-555555555555")[0],
+                             "a full list of computers in use is never emptied by new logins")
             demo = store._row("subject=?", (accounts.DEMO_SUBJECT,))
+            for token in tokens:
+                self.assertEqual(200, self.call(PREFIX + "/billing/balance", token=token)[0], "people using the trial stay signed in")
+            store.db.execute("UPDATE account_devices SET last_seen_at=last_seen_at-200000 WHERE account_id=? AND install_id=?",
+                             (demo["id"], "55555550-5555-5555-5555-555555555555"))
+            store.db.commit()
+            store.failures.clear()
+            self.assertEqual(200, self.demo_session("55555559-5555-5555-5555-555555555555")[0], "a computer idle for a day makes room")
             count = store.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (demo["id"],)).fetchone()[0]
-            self.assertEqual(3, count, "the oldest trial computers are dropped")
+            self.assertEqual(3, count)
+            store.failures.clear()
+            self.assertEqual(200, self.demo_session("55555551-5555-5555-5555-555555555555")[0], "a known computer signs in again")
         finally:
             accounts.DEMO_DEVICE_LIMIT = previous
 

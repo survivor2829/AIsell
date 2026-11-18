@@ -427,13 +427,13 @@ export function BatchCreativePage({ initial, onInitialConsumed, onOpenHistory, o
   async function importDropped(group: Group, files: File[]) {
     if (locked || !files.length) return;
     await run(async () => {
-      const library = window.xiaoxiContent?.library as { importDropped?: (files: File[]) => Promise<{ ok: boolean; error?: string; data?: { items: { assetId: string }[]; skippedCount?: number; skipped?: { reason?: string }[] } }> } | undefined;
+      const library = window.xiaoxiContent?.library as { importDropped?: (files: File[]) => Promise<{ ok: boolean; error?: string; data?: { items: { assetId: string }[]; skippedCount?: number; unreadableFolders?: number } }> } | undefined;
       const r = await library?.importDropped?.(files);
       if (!r?.ok) throw new Error(r?.error || "拖进来的文件没能添加，请换用「添加文件」按钮。");
       const ids = r.data?.items.map((a) => a.assetId) || [];
       changeGroups({ ...groups, [group]: [...new Set([...groups[group], ...ids])] }); await refreshAssets();
       const skipped = Number(r.data?.skippedCount || 0);
-      const folders = (r.data?.skipped || []).filter((item) => item.reason === "folder_unreadable").length;
+      const folders = Number(r.data?.unreadableFolders || 0);
       const parts = [skipped - folders > 0 ? `${skipped - folders} 个文件不是视频或图片` : "", folders ? `${folders} 个文件夹打不开` : ""].filter(Boolean);
       if (parts.length) setNotice(`已添加 ${ids.length} 个素材；${parts.join("，")}，已跳过。`);
     });

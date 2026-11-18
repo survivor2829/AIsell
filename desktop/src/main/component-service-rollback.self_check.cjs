@@ -34,15 +34,20 @@ for (let i = 0; i < 5; i += 1) assert.equal(decide("PRODUCT_DETAIL_START_TIMEOUT
 assert.equal(serviceRollbackDecision("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/", null).rollback, false,
   "not even without version information");
 // A service the update changed that never starts (a real hang) is undone after three launches in a row;
-// a start that works in between resets the count (review 2026-11-18).
-const { clearSlowStarts } = require("./component-paths.cjs");
-assert.deepEqual(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/"), { rollback: false, basis: "service_slow_start" });
-assert.deepEqual(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/"), { rollback: false, basis: "service_slow_start" });
+// a start that works in between resets the count, repeated reports in one launch count once, and the
+// count is spent on the rollback (review 2026-11-18).
+const { clearSlowStarts, resetSlowStartRun } = require("./component-paths.cjs");
+const launch = () => { resetSlowStartRun(); return decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/"); };
+assert.deepEqual(launch(), { rollback: false, basis: "service_slow_start" });
+for (let i = 0; i < 4; i += 1) assert.equal(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/").rollback, false, "the same launch reporting again or retrying is not counted");
+assert.equal(launch().rollback, false);
 clearSlowStarts("resources/content-engine/", context);
-assert.equal(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/").rollback, false, "the count started again");
-assert.equal(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/").rollback, false);
-assert.deepEqual(decide("CONTENT_ENGINE_START_TIMEOUT", "resources/content-engine/"), { rollback: true, basis: "service_slow_start_repeated" },
-  "three slow starts in a row of a changed service restore the previous version");
+assert.equal(launch().rollback, false, "the count started again");
+assert.equal(launch().rollback, false);
+assert.deepEqual(launch(), { rollback: true, basis: "service_slow_start_repeated" },
+  "three slow launches in a row of a changed service restore the previous version");
+assert.equal(launch().rollback, false, "the same release applied again starts from zero");
+resetSlowStartRun();
 assert.deepEqual(decide("PRODUCT_DETAIL_EXITED", "resources/product-detail/"), { rollback: false, basis: "service_unchanged_by_update" });
 assert.deepEqual(decide("CONTENT_ENGINE_EXITED", "resources/content-engine/"), { rollback: true, basis: "service_changed_by_update" },
   "a service the update changed that exits may be what broke: the previous version is restored");

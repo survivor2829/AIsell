@@ -25,12 +25,18 @@ assert.equal(blocksInTrial("map-acquisition:invoke"), true, "an unnamed workbenc
 // Only using a feature brings up the advisor's card; a page reading something unusual is refused quietly.
 assert.equal(promptsAdvisor("wechat-workflow:start"), true);
 assert.equal(promptsAdvisor("geo:invoke", "start-task"), true);
-assert.equal(promptsAdvisor("ai-expert:remove"), false);
+assert.equal(promptsAdvisor("content-engine:archive-asset"), true, "archiving is using the feature");
+assert.equal(promptsAdvisor("keyword-acquisition:open-conversation"), true);
+assert.equal(promptsAdvisor("content-engine:backfill-covers"), false, "a page filling in covers on load is refused quietly");
+// Opening a finished example on this computer is looking, not using (review 2026-11-18).
+assert.equal(blocksInTrial("content-engine:open-finished"), false);
+assert.equal(blocksInTrial("content-engine:open-generated-video"), false);
 
 // The wrapper: refused only while the trial is signed in, with one friendly line; the handler never runs.
 const registered = new Map();
 const sent = new Map();
-const ipcMain = { handle: (channel, listener) => registered.set(channel, listener), on: (channel, listener) => sent.set(channel, listener) };
+const ipcMain = { handle: (channel, listener) => registered.set(channel, listener), on: (channel, listener) => sent.set(channel, listener),
+  removeListener: (channel, listener) => { if (sent.get(channel) === listener) sent.delete(channel); } };
 let demo = true, blocked = [], ran = 0;
 installDemoModeGuard(ipcMain, { isDemo: () => demo, onBlocked: (channel) => blocked.push(channel) });
 installDemoModeGuard(ipcMain, { isDemo: () => false }); // a second install changes nothing

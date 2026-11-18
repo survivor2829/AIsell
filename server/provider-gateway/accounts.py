@@ -29,9 +29,11 @@ FAILED_LOGIN_LIMIT, FAILED_LOGIN_WINDOW = 5, 15 * 60
 # no password. It can look at every example but never spends 算力 (service.py refuses its paid work).
 DEMO_SUBJECT = "demo-experience"
 DEMO_LOGINS_PER_CLIENT = 30
-# The shared trial keeps at most this many computers (the least recently seen go first), so its device
-# list cannot grow without bound (review 2026-11-18).
+# The shared trial keeps at most this many computers so its device list cannot grow without bound.
+# Only computers idle for a day make room; when every place is in recent use a new trial waits,
+# so nobody can push people who are using the trial out by logging in many times (review 2026-11-18).
 DEMO_DEVICE_LIMIT = 2000
+DEMO_DEVICE_IDLE_SECONDS = 24 * 3600
 # One address can be a whole office behind one router, so it gets more room than one phone number.
 FAILED_LOGIN_CLIENT_LIMIT = 30
 
@@ -193,12 +195,21 @@ class AccountStore:
                 account = self._row("subject=?", (DEMO_SUBJECT,))
             # An administrator can still switch the trial off by disabling this account.
             account = self._usable(account)
-            token = self._bind_device(account, install_id)
-            self.db.execute("""DELETE FROM account_devices WHERE account_id=? AND id NOT IN
-                (SELECT id FROM account_devices WHERE account_id=? ORDER BY last_seen_at DESC, id DESC LIMIT ?)""",
-                (account["id"], account["id"], DEMO_DEVICE_LIMIT))
-            self.db.commit()
-            return account, token
+            now = time.time()
+            known = self.db.execute("SELECT 1 FROM account_devices WHERE account_id=? AND install_id=?",
+                                    (account["id"], install_id)).fetchone()
+            if not known:
+                self.db.execute("DELETE FROM account_devices WHERE account_id=? AND expires_at<=?", (account["id"], now))
+                count = self.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (account["id"],)).fetchone()[0]
+                if count >= DEMO_DEVICE_LIMIT:
+                    self.db.execute("""DELETE FROM account_devices WHERE id IN (SELECT id FROM account_devices
+                        WHERE account_id=? AND last_seen_at<? ORDER BY last_seen_at, id LIMIT ?)""",
+                        (account["id"], now - DEMO_DEVICE_IDLE_SECONDS, count - DEMO_DEVICE_LIMIT + 1))
+                    count = self.db.execute("SELECT COUNT(*) FROM account_devices WHERE account_id=?", (account["id"],)).fetchone()[0]
+                    if count >= DEMO_DEVICE_LIMIT:
+                        self.db.commit()
+                        raise AccountError("login_throttled", 429)
+            return account, self._bind_device(account, install_id)
 
     # ---- customer logins -------------------------------------------------------------
     def login_password(self, phone, password, install_id: str, client: str) -> tuple[dict, str]:

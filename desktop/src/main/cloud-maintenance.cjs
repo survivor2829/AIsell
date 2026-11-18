@@ -29,6 +29,9 @@ function diskFullMessage(error) {
   return `${where}空间不足${amounts}。请清理${where}后重新打开软件，会自动更新到最新版。故障编号：disk_space_insufficient`;
 }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
+const ROUTINE_CHECK_FAILURES = new Set(["cloud_timeout", "cloud_slow", "cloud_stopped", "cloud_release_superseded", "cloud_release_rollback", "cloud_release_conflict"]);
+const NETWORK_ERROR_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ENOTFOUND", "ETIMEDOUT", "EAI_AGAIN", "EHOSTUNREACH",
+  "ENETUNREACH", "ENETDOWN", "EPIPE", "ERR_SSL_WRONG_VERSION_NUMBER", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_HAS_EXPIRED"]);
 function createCloudMaintenance({ rootDir, config, version, buildId, logger, canInstall = () => false, transport, launch = spawn,
   componentBaseRoot, userData, getLicenseStatus = () => null }) {
   const dir = path.join(rootDir, "cloud-maintenance");
@@ -379,9 +382,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
       const baseDamaged = ["component_base_file_missing", "component_base_file_damaged"].includes(error?.code);
-      // A check that fails (offline, server unreachable) is routine: it stays out of the field reports.
-      // A damaged installed program is a real problem and becomes a field report.
-      try { logger?.event?.(baseDamaged ? "update" : "maintenance", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
+      // Only routine trouble (offline, a slow or unreachable server, a newer release, stopping) stays out
+      // of the field reports; a full disk, a bad signature, failed verification or a locked file is a
+      // real reason a computer cannot update and becomes a field report (review 2026-11-18).
+      const routine = ROUTINE_CHECK_FAILURES.has(error?.code) || NETWORK_ERROR_CODES.has(error?.code);
+      try { logger?.event?.(routine ? "maintenance" : "update", "update.failed", { stage: view.stage, ...(baseDamaged ? { base_entry_kind: String(error.path || "").split("/").pop().slice(0, 120) } : {}) }, {
         level: "error", code: updateFailure(error, "prepare").code, phase: "check"
       }); } catch {}
       // Both are fixed by the customer, not by retrying: the launch gate lets them in and shows these steps.

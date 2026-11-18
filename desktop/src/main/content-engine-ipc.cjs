@@ -2339,7 +2339,8 @@ function registerContentEngineIpc(options = {}) {
     if (files.length) results.push(await controller.importFiles(files));
     for (const folder of folders) {
       try { results.push(await controller.importFolder(folder, true)); } catch (error) {
-        if (!files.length && folders.length === 1) throw error; // the only thing dropped: say why
+        // The engine itself stopping is not an unreadable folder: say what really happened.
+        if (!files.length && folders.length === 1 || /^CONTENT_ENGINE_/u.test(String(error?.code || ""))) throw error;
         failedFolders.push(folder);
       }
     }
@@ -2351,6 +2352,7 @@ function registerContentEngineIpc(options = {}) {
       createdAssets: results.reduce((sum, result) => sum + Number(result?.created_assets || 0), 0),
       createdLocations: results.reduce((sum, result) => sum + Number(result?.created_locations || 0), 0),
       skippedCount: results.reduce((sum, result) => sum + Number(result?.skipped_count || 0), 0) + failedFolders.length,
+      unreadableFolders: failedFolders.length,
       skipped: skipped.slice(0, 500).map((item) => ({
         index: -1,
         reason: safeText(item?.reason, 64)
