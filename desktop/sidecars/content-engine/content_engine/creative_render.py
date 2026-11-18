@@ -2230,8 +2230,10 @@ class FFmpegCreativeRenderer:
         configured = os.environ.get("XIAOXI_CREATIVE_FONT_PATH")
         windows_root = Path(os.environ.get("WINDIR") or "C:/Windows")
         fallback = Path(configured) if configured else None
+        # Not resolve(): that leaves the short launch junction for a path Windows may not open
+        # (see auto_mix_resources.BUILTIN_VOICE_CATALOG).
         bundled = (
-            Path(__file__).resolve().parent
+            Path(__file__).parent
             / "assets"
             / "fonts"
             / "NotoSansSC-Variable.ttf"

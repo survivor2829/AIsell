@@ -24,11 +24,32 @@ POPULAR_VOICE_PREVIEW_SAMPLE = (
 )
 SUPPORTED_VOICE_MODELS = {"bailian": {AUTO_MIX_TTS_MODEL}, "volcengine": {"seed-tts-1.0", "seed-tts-2.0"}}
 MAX_VOICE_PREVIEW_BYTES = 8 * 1024 * 1024
+# Never Path(__file__).resolve(): the desktop starts the engine through a short junction
+# (runtime-link.cjs) because the update folder is deep, and resolve() walks back into it. There
+# this file sits at 255 characters for the development machine's user name and past Windows' 260
+# for any name five letters longer ("Administrator"): reading it failed, the catalog came back
+# empty, every official voice was retired and narrated videos stopped with "这台电脑上没有可用的
+# 配音声音" (field eb308612, 1.3.33 and 1.3.38).
 BUILTIN_VOICE_CATALOG = (
-    Path(__file__).resolve().parent
+    Path(__file__).parent
     / "assets"
     / "auto-mix-voice-personas.v1.json"
 )
+
+
+# Whether the last read of the shipped catalog (by configured_voice_personas) failed. The sync
+# decides on that very read: reading again could succeed a moment later (a file briefly locked by
+# antivirus) and the empty list from the failed read would still retire every voice.
+_last_builtin_read_failed = False
+
+
+def builtin_voice_catalog_unreadable() -> bool:
+    """True when the last read of the shipped voice catalog failed.
+
+    An empty catalog from a read failure must never retire the voices this computer already
+    has: only a catalog that was read can say a voice is gone.
+    """
+    return _last_builtin_read_failed
 
 
 def _clean(value: Any, maximum: int) -> str:
@@ -89,12 +110,15 @@ def _configured_persona(value: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _builtin_voice_personas() -> list[dict[str, Any]]:
+    global _last_builtin_read_failed
+    _last_builtin_read_failed = True
     try:
         payload = json.loads(BUILTIN_VOICE_CATALOG.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
     if not isinstance(payload, dict) or payload.get("schemaVersion") != 1:
         return []
+    _last_builtin_read_failed = False
     catalog_version = _clean(payload.get("catalogVersion"), 80)
     personas = []
     for item in payload.get("personas") or []:

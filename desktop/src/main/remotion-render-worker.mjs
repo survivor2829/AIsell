@@ -128,6 +128,29 @@ function trustedPath(value, { directory, code }) {
   return resolved;
 }
 
+// Remotion starts remotion.exe/ffmpeg/ffprobe from its compositor package. From the update folder
+// that path is 275 characters for the user Administrator and Windows refuses to start it (ENOENT,
+// and the spawn error crashed this worker; reproduced 2026-11-18). The desktop hands over a short
+// route through its runtime link (XIAOXI_COMPOSITOR_DIR); it is used only when it leads to the very
+// same folder Node resolves for this worker (so the same verified files), otherwise Remotion keeps
+// its default.
+export function compositorBinariesDirectory(given = process.env.XIAOXI_COMPOSITOR_DIR, resolvePackage = () =>
+  path.dirname(require.resolve("@remotion/compositor-win32-x64-msvc/package.json"))) {
+  const route = String(given || "").trim();
+  if (!route || !path.isAbsolute(route) || isRemoteOrDevice(route)) return null;
+  try {
+    const expected = fs.realpathSync.native(resolvePackage());
+    // A fixed case fold (as runtime-link.cjs): toLocaleLowerCase differs on e.g. Turkish Windows.
+    // The route lives in the app's own data folder, the same trust as the runtime link the whole
+    // engine is started through.
+    if (fs.realpathSync.native(route).toLowerCase() !== expected.toLowerCase()) return null;
+    if (!fs.statSync(path.join(route, "remotion.exe")).isFile()) return null;
+    return route;
+  } catch {
+    return null;
+  }
+}
+
 function containedPath(root, relative) {
   if (relative.includes("\\") || relative.includes("\0")) return null;
   let decoded;
@@ -413,7 +436,9 @@ async function renderRequest(envelope) {
     try {
       const puppeteerInstance = await ensureExplicitBrowser(executable);
       taskServer = await serveTask(bundleRoot, sourcePath, publicProps.sourceFile);
+      const binariesDirectory = compositorBinariesDirectory();
       const composition = await selectComposition({
+        binariesDirectory,
         serveUrl: taskServer.serveUrl,
         id: "DynamicPackaging",
         inputProps: publicProps,
@@ -424,6 +449,7 @@ async function renderRequest(envelope) {
         mediaCacheSizeInBytes: 64 * 1024 * 1024
       });
       await renderMedia({
+        binariesDirectory,
         composition,
         serveUrl: taskServer.serveUrl,
         codec: "h264",
@@ -525,25 +551,28 @@ function acceptEnvelope(value) {
   }
 }
 
-process.stdin.on("data", (chunk) => {
-  inputBuffer = Buffer.concat([inputBuffer, Buffer.from(chunk)]);
-  if (inputBuffer.length > MAX_ENVELOPE_BYTES && !inputBuffer.includes(0x0a)) {
-    inputBuffer = Buffer.alloc(0);
-    process.exit(2);
-    return;
-  }
-  while (true) {
-    const newline = inputBuffer.indexOf(0x0a);
-    if (newline < 0) return;
-    const line = inputBuffer.subarray(0, newline);
-    inputBuffer = inputBuffer.subarray(newline + 1);
-    if (line.length < 2 || line.length > MAX_ENVELOPE_BYTES) continue;
-    try {
-      acceptEnvelope(JSON.parse(line.toString("utf8")));
-    } catch {
-      // Invalid input is ignored without echoing any private payload.
+// A self-check imports this file to test compositorBinariesDirectory without starting the loop.
+if (process.env.XIAOXI_REMOTION_WORKER_IMPORT_ONLY !== "1") {
+  process.stdin.on("data", (chunk) => {
+    inputBuffer = Buffer.concat([inputBuffer, Buffer.from(chunk)]);
+    if (inputBuffer.length > MAX_ENVELOPE_BYTES && !inputBuffer.includes(0x0a)) {
+      inputBuffer = Buffer.alloc(0);
+      process.exit(2);
+      return;
     }
-  }
-});
+    while (true) {
+      const newline = inputBuffer.indexOf(0x0a);
+      if (newline < 0) return;
+      const line = inputBuffer.subarray(0, newline);
+      inputBuffer = inputBuffer.subarray(newline + 1);
+      if (line.length < 2 || line.length > MAX_ENVELOPE_BYTES) continue;
+      try {
+        acceptEnvelope(JSON.parse(line.toString("utf8")));
+      } catch {
+        // Invalid input is ignored without echoing any private payload.
+      }
+    }
+  });
 
-process.stdin.resume();
+  process.stdin.resume();
+}

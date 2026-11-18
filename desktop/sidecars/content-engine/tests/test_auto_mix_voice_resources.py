@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -671,6 +672,95 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         )
         self.assertEqual(calls, len(self.analyzer.calls))
         self.assertEqual([], self.analyzer.design_calls)
+
+    def test_an_unreadable_shipped_catalog_never_retires_the_voices_already_here(self):
+        # Field eb308612 (1.3.33, 1.3.38): the shipped catalog could not be opened (its path was
+        # too long), came back empty, and every official voice was retired.
+        self._sync(configured_voice_personas())
+        official = [row["id"] for row in self.service.connection.execute(
+            "SELECT id FROM voice_personas_v1 WHERE provider='volcengine' AND active=1 AND approved_at IS NOT NULL")]
+        self.assertGreater(len(official), 5)
+        missing = self.root / "no-such-dir" / "auto-mix-voice-personas.v1.json"
+        with mock.patch("content_engine.auto_mix_resources.BUILTIN_VOICE_CATALOG", missing):
+            self.assertEqual([], configured_voice_personas({}))
+            with mock.patch("content_engine.creative_domain.configured_voice_personas", return_value=[]):
+                self.assertFalse(self.service.creative_domain._sync_configured_voice_persona())
+        still = [row["id"] for row in self.service.connection.execute(
+            "SELECT id FROM voice_personas_v1 WHERE provider='volcengine' AND active=1 AND approved_at IS NOT NULL")]
+        self.assertEqual(sorted(official), sorted(still))
+        # The decision rests on that same read: a later successful read clears it.
+        from content_engine.auto_mix_resources import builtin_voice_catalog_unreadable
+        self.assertGreater(len(configured_voice_personas({})), 5)
+        self.assertFalse(builtin_voice_catalog_unreadable())
+
+    def test_a_voice_table_emptied_earlier_is_restored_at_the_next_engine_start(self):
+        # A computer whose official voices were retired by the unreadable catalog gets them back
+        # from the catalog sync the next time the engine starts (after this update).
+        self._sync(configured_voice_personas())
+        self.service.connection.execute("UPDATE voice_personas_v1 SET active = 0")
+        domain = self.service.creative_domain
+        self.assertIsNone(domain._usable_auto_mix_voice_persona())
+        self.assertTrue(domain._sync_configured_voice_persona())
+        self.assertEqual("volcengine", domain._usable_auto_mix_voice_persona()["provider"])
+        # Nothing left at all: the error says why, in counts only.
+        batches = self.service._narrated_batches()
+        self.service.connection.execute("UPDATE voice_personas_v1 SET active = 0")
+        with self.assertRaises(ContentEngineError) as caught:
+            batches._require_approved_voice({"settings": {}})
+        self.assertEqual("auto_mix_voice_persona_approval_required", caught.exception.code)
+        self.assertIn("voice_rows", caught.exception.details)
+        self.assertFalse(caught.exception.details["catalog_unreadable"])
+
+    def test_no_engine_file_finds_its_assets_through_resolve(self):
+        # resolve() leaves the short launch junction for the deep update folder (see
+        # auto_mix_resources.BUILTIN_VOICE_CATALOG). Any asset path built that way can fail on a
+        # customer computer with a longer Windows user name.
+        offenders = []
+        detail_app = SIDECAR_ROOT.parent / "product-detail" / "app"
+        files = list((SIDECAR_ROOT / "content_engine").rglob("*.py")) + [
+            path for path in detail_app.rglob("*.py")
+            # Shipped runtime only: developer scripts and tests never run on a customer computer.
+            if not {"scripts", "tests", "docs"} & set(path.relative_to(detail_app).parts)
+        ]
+        # The two places that resolve on purpose: compared with other resolved paths, never read
+        # from (an exact allowlist; a comment cannot exempt a line).
+        allowed = {
+            ("desktop_entry.py", '_REAL_RESOURCE_DIR = Path(__file__).resolve().parent'),
+            ("browser_runtime.py", 'Path(sys.executable).resolve().parent.parent'),
+        }
+        # Path( ... __file__ / the resource-folder setting ... ).resolve(), across lines too.
+        anchors = ("__file__", "sys.executable", "XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR")
+
+        def spanning_resolves(text):
+            # Each ").resolve(" : walk back to the matching "(" and look at what is inside.
+            for match in re.finditer(r"\)\s*\.(?:absolute\(\)\.)?resolve\(", text):
+                depth, index = 0, match.start()
+                while index >= 0:
+                    depth += {")": 1, "(": -1}.get(text[index], 0)
+                    if depth == 0:
+                        break
+                    index -= 1
+                if index >= 0 and any(anchor in text[index:match.start()] for anchor in anchors):
+                    yield match.end()
+        for path in files:
+            if "__pycache__" in path.parts:
+                continue
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            text = "\n".join(line.split("#", 1)[0] for line in lines)
+            flagged = set()
+            for end in spanning_resolves(text):
+                flagged.add(text.count("\n", 0, end) + 1)
+            for number, line in enumerate(lines, 1):
+                code = line.split("#", 1)[0]
+                anchored = "__file__" in code or "sys.executable" in code
+                if anchored and (".resolve(" in code or "realpath(" in code):
+                    flagged.add(number)
+            for number in sorted(flagged):
+                code = lines[number - 1].split("#", 1)[0]
+                if any(path.name == name and expected in code for name, expected in allowed):
+                    continue
+                offenders.append(f"{path.name}:{number}")
+        self.assertEqual([], offenders)
 
     def test_changed_configuration_on_return_still_revokes_approval_and_preview(self):
         # Regression protection: this held before CE2 and must keep holding.

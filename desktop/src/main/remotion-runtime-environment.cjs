@@ -228,7 +228,11 @@ function verifyPackagedRuntime(resourcesPath) {
   if (hashWorkerRuntime(bundlePath, packagingRoot, workerPath) !== manifest.runtimeHash) {
     throw new Error("Packaged Remotion runtime hash mismatch");
   }
-  return { browserPath, bundlePath, workerPath };
+  // Remotion's own executables (remotion.exe, ffmpeg, ffprobe and their DLLs), hash-checked above
+  // as part of the dependency closure. Handed over separately so the app can route them through
+  // the short runtime link: started from the update folder they sat at 275 characters for the user
+  // Administrator and Windows refused to start them (reproduced 2026-11-18: ENOENT, worker crash).
+  return { browserPath, bundlePath, workerPath, ...compositorFor(contentEngineRoot) };
 }
 
 const VERIFICATION_CACHE_SCHEMA = "xiaoxi-remotion-verification-v1";
@@ -262,12 +266,19 @@ async function fingerprintPackagedRuntime(resourcesPath) {
   return digest.digest("hex");
 }
 
+// Remotion's compositor folder (remotion.exe, ffmpeg, ffprobe), when the package carries it.
+function compositorFor(contentEngineRoot) {
+  const compositorDir = path.join(contentEngineRoot, "node_modules", "@remotion", "compositor-win32-x64-msvc");
+  return fs.existsSync(path.join(compositorDir, "remotion.exe")) ? { compositorDir } : {};
+}
+
 function runtimePaths(resourcesPath) {
   const contentEngineRoot = path.join(path.resolve(resourcesPath), "content-engine");
   return {
     browserPath: path.join(contentEngineRoot, "browser", "chrome.exe"),
     bundlePath: path.join(contentEngineRoot, "remotion-bundle"),
-    workerPath: path.join(contentEngineRoot, "remotion-render-worker.mjs")
+    workerPath: path.join(contentEngineRoot, "remotion-render-worker.mjs"),
+    ...compositorFor(contentEngineRoot)
   };
 }
 
@@ -353,7 +364,9 @@ function resolveRemotionRuntimeEnvironment({
     XIAOXI_REMOTION_WORKER_PATH: runtime.workerPath,
     XIAOXI_REMOTION_BUNDLE_PATH: runtime.bundlePath,
     XIAOXI_REMOTION_BROWSER_PATH: runtime.browserPath,
-    XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE: "1"
+    XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE: "1",
+    // Not an XIAOXI_REMOTION_ key on purpose: those stay real, this one goes through the link.
+    ...(runtime.compositorDir ? { XIAOXI_COMPOSITOR_DIR: runtime.compositorDir } : {})
   };
 }
 

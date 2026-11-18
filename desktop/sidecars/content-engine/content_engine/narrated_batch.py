@@ -968,13 +968,26 @@ class NarratedBatchDomain:
         settings = b.setdefault("settings", {})
         persona_id = str(settings.get("voice_persona_id") or "").strip()
         persona = self.d._usable_auto_mix_voice_persona(selected_id=persona_id or None)
-        require(persona is not None, "auto_mix_voice_persona_approval_required",
-                "这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。")
+        # A voice table emptied by an unreadable catalog (field eb308612) is filled again by the
+        # catalog sync every engine start; if it is still empty here, the counts say why.
+        if persona is None:
+            raise ContentEngineError(
+                "auto_mix_voice_persona_approval_required",
+                "这台电脑上没有可用的配音声音，请更新到最新版本后再试；已有制作进度已保留。",
+                details=self._voice_evidence(),
+            )
         if persona_id and persona["id"] != persona_id:
             settings["voice_persona_id"] = persona["id"]
             b["voice_notice"] = f"原来的声音在这台电脑上用不了，已自动换成「{persona['display_name'] or '官方声音'}」继续制作。"
             self._store(b)
         return persona
+
+    def _voice_evidence(self):
+        # Gathering the counts must never replace the error the customer is meant to see.
+        try:
+            return self.d._voice_table_evidence()
+        except Exception:
+            return {}
 
     def require_voice_to_resume(self, task_id):
         """Requeuing a stopped production is the same paid work as starting it.

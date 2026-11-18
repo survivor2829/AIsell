@@ -53,6 +53,7 @@ from .auto_mix_resources import (
     VOICE_PREFIX,
     VOICE_PREVIEW_SAMPLE,
     auto_select_voice_persona_ids,
+    builtin_voice_catalog_unreadable,
     configured_voice_personas,
     normalize_voice_preview,
     voice_preview_cache_key,
@@ -547,9 +548,15 @@ class CreativeDomain:
     def _sync_configured_voice_persona(self):
         now = self._now()
         personas = configured_voice_personas()
+        # A catalog that could not be read says nothing about which voices exist: retiring on it
+        # took every official voice away (field eb308612). Keep what is there; previews saved on
+        # this computer are still registered.
+        readable = bool(personas) or not builtin_voice_catalog_unreadable()
         with self.database.transaction():
-            self._sync_configured_voice_persona_rows(now, personas)
+            if readable:
+                self._sync_configured_voice_persona_rows(now, personas)
             self._register_saved_voice_previews(now)
+        return readable
 
     def _sync_configured_voice_persona_rows(self, now, personas):
         configured_ids = {persona["persona_id"] for persona in personas}
@@ -4403,6 +4410,19 @@ class CreativeDomain:
                 }
             )
         return cards
+
+    def _voice_table_evidence(self):
+        """Counts only (no voice ids or names): why no voice could be used on this computer."""
+        rows = self.connection.execute(
+            "SELECT provider, active, approved_at IS NOT NULL AS approved, COUNT(*) AS n "
+            "FROM voice_personas_v1 GROUP BY provider, active, approved_at IS NOT NULL"
+        ).fetchall()
+        return {
+            "voice_rows": {f"{row['provider']}:{'active' if row['active'] else 'retired'}:{'approved' if row['approved'] else 'pending'}": int(row["n"]) for row in rows},
+            "catalog_voice_count": len(configured_voice_personas()),
+            "catalog_unreadable": builtin_voice_catalog_unreadable(),
+            "voice_providers": list(self._voice_providers()),
+        }
 
     def _voice_providers(self):
         """The voice providers this computer's voice service reaches (empty: no restriction known)."""

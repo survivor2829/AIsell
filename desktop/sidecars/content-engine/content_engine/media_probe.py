@@ -49,7 +49,8 @@ def discover_ffprobe() -> Path | None:
             candidates.append(configured_path)
 
     if getattr(sys, "frozen", False):
-        runtime_dir = Path(sys.executable).resolve().parent
+        # Not resolve(): stay below the short launch junction (auto_mix_resources.BUILTIN_VOICE_CATALOG).
+        runtime_dir = Path(sys.executable).parent
         candidates.extend(
             (runtime_dir / "ffprobe.exe", runtime_dir / "media-tools" / "ffprobe.exe")
         )

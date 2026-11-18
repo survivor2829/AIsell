@@ -34,7 +34,13 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 
 
 VERSION = "2.0.0-desktop"
-RESOURCE_DIR = Path(__file__).resolve().parent
+# Templates and static files are read by the route the app started this runtime from: its short
+# runtime link (runtime-link.cjs). resolve() walked back into the deep update folder, where 32
+# templates and 30 static images pass Windows' 260 characters for a long Windows user name
+# (2026-11-18, the same failure that took the touch title reader and the official voices away).
+RESOURCE_DIR = Path(__file__).absolute().parent
+# The real location, only to keep the data directory out of the read-only resources.
+_REAL_RESOURCE_DIR = Path(__file__).resolve().parent  # real path for containment only
 _MUTABLE_STATIC_ROOTS = {"uploads", "outputs", "cache", "ai_refine_v2"}
 _TOKEN_MIN_LENGTH = 32
 
@@ -101,7 +107,7 @@ def _resolve_data_dir(value: str | os.PathLike[str] | Path) -> Path:
     if not candidate.is_absolute():
         raise ValueError("data-dir must be an absolute path")
     resolved = candidate.resolve()
-    if resolved == RESOURCE_DIR or RESOURCE_DIR in resolved.parents:
+    if resolved == _REAL_RESOURCE_DIR or _REAL_RESOURCE_DIR in resolved.parents:
         raise ValueError("data-dir must be outside the read-only resource directory")
     return resolved
 

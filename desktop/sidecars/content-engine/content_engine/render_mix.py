@@ -34,7 +34,8 @@ PLATFORM_PRESETS = {
 
 
 def _runtime_search_directories() -> tuple[Path, ...]:
-    candidates = [Path(sys.executable).resolve().parent]
+    # Not resolve(): stay below the short launch junction (auto_mix_resources.BUILTIN_VOICE_CATALOG).
+    candidates = [Path(sys.executable).parent]
     if getattr(sys, "frozen", False):
         bundle_dir = Path(getattr(sys, "_MEIPASS", candidates[0]))
         candidates.extend((bundle_dir, bundle_dir / "media-tools"))
