@@ -15,7 +15,7 @@ def _packaged_browser_path() -> Path:
     """Return the browser packaged beside the content engine, if present."""
 
     return (
-        Path(sys.executable).resolve().parent.parent
+        Path(sys.executable).resolve().parent.parent  # real path for containment only
         / "content-engine"
         / "browser"
         / "chrome.exe"
@@ -34,7 +34,9 @@ def chromium_executable() -> Path | None:
             candidate = Path(configured).expanduser().resolve(strict=True)
         except (OSError, RuntimeError):
             return None
-        return candidate if candidate == expected.resolve() and candidate.is_file() else None
+        # Started by the route the app handed over (its short runtime link), once it is known to be
+        # the packaged browser: the resolved path is the deep update folder.
+        return Path(configured).expanduser() if candidate == expected.resolve() and candidate.is_file() else None
 
     if not configured:
         return None

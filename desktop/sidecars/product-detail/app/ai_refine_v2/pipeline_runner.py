@@ -41,12 +41,14 @@ from typing import Any
 from browser_runtime import launch_chromium
 from ai_refine_v2.image_profile import DEFAULT_PROFILE, normalize_profile
 
+# absolute(), not resolve(): keep the short route the runtime was started by (desktop_entry.py
+# RESOURCE_DIR); the deep update folder is past Windows' path limit on long user names.
 _RESOURCE_ROOT = Path(
     os.environ.get(
         "XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR",
-        Path(__file__).resolve().parents[1],
+        Path(__file__).absolute().parents[1],
     )
-).resolve()
+).absolute()
 _DATA_ROOT = Path(
     os.environ.get("XIAOXI_PRODUCT_DETAIL_DATA_DIR", _RESOURCE_ROOT)
 ).resolve()

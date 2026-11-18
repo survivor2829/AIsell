@@ -715,10 +715,18 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
         # auto_mix_resources.BUILTIN_VOICE_CATALOG). Any asset path built that way can fail on a
         # customer computer with a longer Windows user name.
         offenders = []
-        for path in (SIDECAR_ROOT / "content_engine").rglob("*.py"):
+        detail_app = SIDECAR_ROOT.parent / "product-detail" / "app"
+        files = list((SIDECAR_ROOT / "content_engine").rglob("*.py")) + [
+            path for path in detail_app.rglob("*.py")
+            # Shipped runtime only: developer scripts and tests never run on a customer computer.
+            if not {"scripts", "tests", "docs"} & set(path.relative_to(detail_app).parts)
+        ]
+        for path in files:
             if "__pycache__" in path.parts:
                 continue
             for number, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                if "real path for containment only" in line:
+                    continue  # compared, never read from (desktop_entry._REAL_RESOURCE_DIR)
                 code = line.split("#", 1)[0]
                 # Any canonicalising of the engine's own location: __file__ or the executable,
                 # through resolve(), realpath() or absolute().resolve() in any order.

@@ -258,6 +258,12 @@ class RemotionWorkerClient:
         )
         if self._electron_run_as_node:
             environment["ELECTRON_RUN_AS_NODE"] = "1"
+        # The short route to Remotion's own executables (the desktop's runtime link). The worker
+        # uses it only when it leads to the same verified folder it would use anyway; from the
+        # update folder itself Windows refused to start them on longer user names.
+        compositor = str(os.environ.get("XIAOXI_COMPOSITOR_DIR") or "").strip()
+        if compositor:
+            environment["XIAOXI_COMPOSITOR_DIR"] = compositor
         return environment
 
     def _detach_worker_locked(self, expected_process=None):

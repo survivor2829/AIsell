@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # screen_types.yaml 默认路径 (与本模块同目录)
-_YAML_PATH = Path(__file__).resolve().parent / "screen_types.yaml"
+_YAML_PATH = Path(__file__).absolute().parent / "screen_types.yaml"  # not resolve(): stay on the short route
 
 # enabled 字面解析的"真"值集合 (与 YAML 1.1/1.2 的 boolean truthy 子集对齐)
 _TRUTHY_LITERALS = {"true", "yes", "on", "1"}

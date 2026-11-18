@@ -25,13 +25,17 @@ const TRUSTED_RUNTIME_ENV_KEYS = new Set([
   "XIAOXI_REMOTION_WORKER_PATH",
   "XIAOXI_REMOTION_BUNDLE_PATH",
   "XIAOXI_REMOTION_BROWSER_PATH",
-  "XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE"
+  "XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE",
+  "XIAOXI_COMPOSITOR_DIR"
 ]);
 // Remotion paths stay real: remotion_render._trusted_runtime_path refuses any path through a link,
 // so 1.3.1 (which linked them) reported the formal renderer unavailable on every computer. The four
 // paths the engine itself checks are at most 226 characters for the user Administrator (worker,
 // bundle/index.html, browser; node is the app's own exe), below MAX_PATH even for 20-character
 // Windows user names; the deeper node_modules files are read by Node, which handles long paths.
+// But Remotion *starts* its compositor executables from node_modules, and Windows will not start a
+// program past 259 characters (275 for Administrator): XIAOXI_COMPOSITOR_DIR therefore goes through
+// the link, and the worker checks it leads to the very same verified folder (2026-11-18).
 const isRemotionKey = (key) => key.startsWith("XIAOXI_REMOTION_");
 const PROVIDER_ENV_KEYS = new Set([
   "DASHSCOPE_API_KEY",

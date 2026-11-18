@@ -1808,7 +1808,7 @@ _DZ600M_TEXT = (
 def _load_golden_dz600m() -> dict | None:
     """从 w1_samples/10_device_dz600m.json 加载黄金样本的 planner_output."""
     from pathlib import Path
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).absolute().parents[1]
     jp = repo_root / "docs" / "PRD_AI_refine_v2" / "w1_samples" / "10_device_dz600m.json"
     if not jp.is_file():
         return None
