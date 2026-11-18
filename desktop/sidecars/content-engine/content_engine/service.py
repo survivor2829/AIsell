@@ -56,6 +56,21 @@ TASK_TRANSITIONS = {
 }
 
 
+def missing_file_evidence(path: Path) -> dict:
+    """Why a recorded material file is not there, without its path (field reports 2026-11-13..18)."""
+    try:
+        anchor = path.anchor or ""
+        return {
+            "reason": "unsafe_path" if has_unsafe_component(path) else "file_missing",
+            "drive_kind": "network" if anchor.startswith("\\\\") else "drive" if anchor else "relative",
+            "drive_present": bool(anchor) and Path(anchor).exists(),
+            "folder_present": path.parent.exists(),
+            "suffix": path.suffix.lower()[:8],
+        }
+    except OSError:
+        return {"reason": "file_missing", "inspect_failed": True}
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
@@ -565,6 +580,21 @@ class ContentEngineService:
 
     def archive_narrated_batch(self, batch_id):
         return self._narrated_batches().archive(batch_id)
+
+    def abandon_narrated_batch(self, request):
+        """Give up on a stopped batch whose provider call is uncertain, and archive it.
+
+        The paused task is cancelled first (a submitted cover keeps it paused, which is
+        fine: the archived batch is never resumed). Nothing is submitted again.
+        """
+        result = self._narrated_batches().abandon(request)
+        if result.get("task_id") and result.get("task_status") == "paused":
+            try:
+                self.update_task(result["task_id"], "cancelled", error_code="narrated_batch_abandoned",
+                                 error_message="用户已放弃这条视频。")
+            except ContentEngineError:
+                pass  # the batch is archived either way; the task stays stopped
+        return {"batch_id": result["batch_id"]}
 
     def save_narrated_batch(self, request):
         return self._narrated_batches().save(request)
@@ -1978,10 +2008,12 @@ class ContentEngineService:
             (asset_id,),
         ).fetchone()
         if row is None:
-            raise ContentEngineError("asset_path_unavailable", "No asset file is available.")
+            raise ContentEngineError("asset_path_unavailable", "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。",
+                                     details={"reason": "no_available_location"})
         path = Path(row["absolute_path"])
         if not path.is_file() or has_unsafe_component(path):
-            raise ContentEngineError("asset_path_unavailable", "No asset file is available.")
+            raise ContentEngineError("asset_path_unavailable", "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。",
+                                     details=missing_file_evidence(path))
         return {"asset_id": asset_id, "absolute_path": str(path.resolve(strict=True))}
 
     def create_task(

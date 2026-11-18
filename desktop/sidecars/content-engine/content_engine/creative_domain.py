@@ -11300,7 +11300,19 @@ class CreativeDomain:
             (asset_id,),
         ).fetchone()
         if row is None or not Path(row["absolute_path"]).is_file():
-            raise ContentEngineError("asset_path_unavailable", "No asset file is available.")
+            # Why it is gone, without the path: no recorded location, a missing drive or folder.
+            details = {"reason": "no_available_location"}
+            if row is not None:
+                path = Path(row["absolute_path"])
+                try:
+                    details = {"reason": "file_missing", "drive_present": bool(path.anchor) and Path(path.anchor).exists(),
+                               "folder_present": path.parent.exists(), "network": path.anchor.startswith("\\\\"),
+                               "suffix": path.suffix.lower()[:8]}
+                except OSError:
+                    details = {"reason": "file_missing", "inspect_failed": True}
+            raise ContentEngineError("asset_path_unavailable",
+                                     "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。",
+                                     details=details)
         return row["absolute_path"]
 
     def _resolve_render_asset_path(self, asset_id):

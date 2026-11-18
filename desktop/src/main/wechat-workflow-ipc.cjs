@@ -278,6 +278,7 @@ function registerWechatWorkflowIpc(options) {
     const result = await controller.retrySkipped(String(payload?.id || ""), payload?.contactIds);
     return payload?.andStart === true ? { ...result, ...(await start()) } : result;
   }, true);
+  handle("settle-skipped", (payload) => controller.settleSkipped(String(payload?.id || "")), true);
   handle("retry-all-and-start", async () => {
     const result = await controller.retryAll(true);
     return { ...result, ...(await start()) };

@@ -480,11 +480,30 @@ function createWechatWorkflowController(options) {
   // A touch stopped for attention holds reply until it is dealt with, whatever the date (an unknown
   // send result must never be followed by a reply). Only a task left from before this rule (no
   // attentionAt) never holds it, so an update cannot switch off the reception a customer relies on.
+  //
+  // 2026-11-18 (user): reply starts only after every touch is really done. On another computer a touch
+  // that could not reach people "finished" by skipping them and reply started at once. Now these all
+  // hold reply for this account (or a task with no account): waiting, working, stopped for attention,
+  // missed its date, and finished with people who can still be retried until the customer retries them
+  // or says 「这些人不再重试」 (skippedSettledAt). Cancelled and deleted tasks never hold it.
+  function touchHoldsReply(task) {
+    if (task.type !== "touch" || (task.accountName && task.accountName !== getAccount())) return false;
+    if (["pending", "running", "needs_attention", "missed"].includes(task.status)) return true;
+    return task.status === "completed" && !task.skippedSettledAt && retryableSkips(task) > 0;
+  }
   function touchUnfinished() {
-    return store.tasks.some((task) => task.type === "touch" && (
-      (["pending", "running"].includes(task.status) && (!task.accountName || task.accountName === getAccount()))
-      // A stopped task without an account can be neither retried nor resolved, so it never holds reply.
-      || (task.status === "needs_attention" && task.accountName === getAccount() && Boolean(task.attentionAt))));
+    return store.tasks.some(touchHoldsReply);
+  }
+  // Counting the retryable people reads the task's records; it is remembered per task until the task
+  // changes (status, progress, completion or settlement).
+  const retryableSkipCache = new Map();
+  function retryableSkips(task) {
+    const key = [task.status, task.progress?.done, task.progress?.total, task.completedAt, task.skippedSettledAt].join("|");
+    const cached = retryableSkipCache.get(task.id);
+    if (cached?.key === key) return cached.count;
+    const count = (skippedTouchState(task)?.skipped_records || []).filter((row) => (row.bulk_retryable ?? row.retryable) === true).length;
+    retryableSkipCache.set(task.id, { key, count });
+    return count;
   }
 
 
@@ -968,6 +987,7 @@ function createWechatWorkflowController(options) {
     task.progress = { done: retried.task.current_index, total: retried.task.total };
     task.status = "pending";
     task.error = "";
+    delete task.skippedSettledAt;
     delete task.reasonCode;
     delete task.completedAt;
     delete task.lastCompletedDate;
@@ -1004,6 +1024,18 @@ function createWechatWorkflowController(options) {
       };
     }); }
     catch (failure) { resumeAfterFailedRetry(generation); throw failure; }
+  }
+
+  async function settleSkipped(id) {
+    return serialize(() => {
+      const task = findTask(id);
+      if (task.type !== "touch" || task.status !== "completed") throw new Error("只有做完的触达任务可以这样处理。");
+      task.skippedSettledAt = new Date(now()).toISOString();
+      log("touch.skipped_settled", { stage: "settle_skipped", task_kind: task.type, task_id: task.id, retryable_count: retryableSkips(task) },
+        { level: "info", code: "touch_skipped_settled" });
+      persist(); emit();
+      return { ok: true, state: status() };
+    });
   }
 
   async function retryTask(id, andStart = false) {
@@ -1121,6 +1153,7 @@ function createWechatWorkflowController(options) {
       persist(); emit(); return { ok: true, state: status() };
     }),
     retrySkipped,
+    settleSkipped,
     resolveTouchUnknown: (id, resolution) => serialize(() => {
       assertPlanEditable();
       const task = findTask(id);
