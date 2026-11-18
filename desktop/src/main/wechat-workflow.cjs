@@ -50,6 +50,8 @@ function localDate(value) {
 // latest day (user 2026-10-29: 每天重复也要记录). One entry per occurrence: finishing the same
 // occurrence again (e.g. after re-queuing skipped contacts) updates it rather than counting twice.
 const RUN_HISTORY_LIMIT = 120;
+// One rule for "can be retried in bulk", used by 全部重试 and by the touch-first hold on reply.
+const bulkRetryable = (row) => (row?.bulk_retryable ?? row?.retryable) === true;
 function recordRun(task) {
   const occurrence = String(task.occurrenceDate || localDate(task.completedAt));
   const run = { occurrence, completedAt: task.completedAt, done: Number(task.progress?.done) || 0, total: Number(task.progress?.total) || 0 };
@@ -514,7 +516,7 @@ function createWechatWorkflowController(options) {
     const key = [Math.floor(now() / 60_000), task.status, task.progress?.done, task.progress?.total, task.completedAt, task.skippedSettledAt].join("|");
     const cached = retryableSkipCache.get(task.id);
     if (cached?.key === key) return cached.count;
-    const count = (skippedTouchState(task)?.skipped_records || []).filter((row) => (row.bulk_retryable ?? row.retryable) === true).length;
+    const count = (skippedTouchState(task)?.skipped_records || []).filter(bulkRetryable).length;
     retryableSkipCache.set(task.id, { key, count });
     return count;
   }
@@ -1046,9 +1048,10 @@ function createWechatWorkflowController(options) {
       const task = findTask(id);
       if (task.type !== "touch" || task.status !== "completed") throw new Error("只有做完的触达任务可以这样处理。");
       if (task.accountName !== getAccount()) throw new Error("这项任务属于另一个微信账号，请切换到该账号后再处理。");
-      if (!(retryableSkips(task) > 0)) throw new Error("这项任务没有需要处理的跳过联系人。");
+      const retryableCount = retryableSkips(task);
+      if (!(retryableCount > 0)) throw new Error("这项任务没有需要处理的跳过联系人。");
       task.skippedSettledAt = new Date(now()).toISOString();
-      log("touch.skipped_settled", { stage: "settle_skipped", task_kind: task.type, task_id: task.id, retryable_count: retryableSkips(task) },
+      log("touch.skipped_settled", { stage: "settle_skipped", task_kind: task.type, task_id: task.id, retryable_count: retryableCount },
         { level: "info", code: "touch_skipped_settled" });
       persist(); emit();
       return { ok: true, state: status() };
@@ -1077,7 +1080,7 @@ function createWechatWorkflowController(options) {
   function retryAllEligible(task) {
     if (task.status === "cancelled" || task.accountName !== getAccount() || unknownResolution(task)) return null;
     const skipped = ["completed", "needs_attention"].includes(task.status)
-      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some((row) => (row.bulk_retryable ?? row.retryable) === true);
+      && task.type === "touch" && skippedTouchState(task)?.skipped_records?.some(bulkRetryable);
     return skipped ? "skipped" : canRetry(task) ? "task" : null;
   }
 

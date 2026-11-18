@@ -929,7 +929,8 @@ class NarratedBatchDomain:
         require(request.get("user_confirmed") is True, "narrated_abandon_confirmation_required",
                 "请先确认放弃这条视频。")
         b = self._load(request.get("batch_id"))
-        require(not b.get("_archived_at"), "narrated_batch_archived", "这条视频已经放弃并归档。")
+        require(not b.get("_archived_at"), "narrated_batch_archived",
+                "这条视频已经放弃并归档。" if b.get("_abandoned") else "这条视频已经归档了。")
         task = None
         if b.get("task_id"):
             try:

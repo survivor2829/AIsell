@@ -5,6 +5,7 @@ import json
 import re
 import unittest
 import time
+import types
 from unittest.mock import patch
 
 import test_narrated_batch as batch_fixtures
@@ -488,6 +489,17 @@ class NarratedProductionTests(unittest.TestCase):
         with self.assertRaises(ContentEngineError) as unconfirmed:
             self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id']})
         self.assertEqual('narrated_abandon_confirmation_required', unconfirmed.exception.code)
+
+        # Paused but the worker is still finishing its step: giving up waits, nothing is archived.
+        jobs = self.s._creative_jobs
+        self.s._creative_jobs = types.SimpleNamespace(is_running=lambda _task_id: True)
+        try:
+            with self.assertRaises(ContentEngineError) as stopping:
+                self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id'], 'user_confirmed': True})
+            self.assertEqual('narrated_batch_stopping', stopping.exception.code)
+            self.assertFalse(self.domain._load(self.batch['batch_id']).get('_archived_at'))
+        finally:
+            self.s._creative_jobs = jobs
 
         self.assertEqual({'batch_id': self.batch['batch_id']},
                          self.s.abandon_narrated_batch({'batch_id': self.batch['batch_id'], 'user_confirmed': True}))

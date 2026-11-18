@@ -5,6 +5,7 @@ import inspect
 import itertools
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -422,12 +423,23 @@ def _supported_image_mime_type(path: Path) -> str | None:
     return None
 
 
+def _remote_drive(anchor: str) -> bool:
+    """A mapped network drive letter (Z:\); asking Windows does not touch the network."""
+    if os.name != "nt" or not anchor:
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetDriveTypeW(anchor) == 4  # DRIVE_REMOTE
+    except (AttributeError, OSError):
+        return False
+
+
 def missing_file_evidence(path: Path) -> dict:
     """Why a recorded material file is not there, without its path (field reports 2026-11-13..18)."""
     try:
         anchor = path.anchor or ""
         unsafe = any(part in {".", ".."} for part in path.parts)
-        network = str(path).startswith(("\\\\", "//")) or anchor.startswith("\\\\")
+        network = str(path).startswith(("\\\\", "//")) or anchor.startswith("\\\\") or _remote_drive(anchor)
         details = {
             "reason": "unsafe_path" if unsafe else "file_missing",
             "drive_kind": "network" if network else "drive" if anchor else "relative",

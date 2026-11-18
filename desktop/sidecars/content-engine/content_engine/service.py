@@ -162,6 +162,11 @@ class _CreativeJobWorker:
         self._queue.put(None)
         self._thread.join()
 
+    def is_running(self, task_id: str) -> bool:
+        """True while the worker thread is still inside this task (a pause takes effect after it)."""
+        with self._active_lock:
+            return self._active_task_id == task_id
+
     def cancel_task(self, task_id: str) -> None:
         with self._active_lock:
             is_active = self._active_task_id == task_id
@@ -585,6 +590,11 @@ class ContentEngineService:
         fine: the archived batch is never resumed). Nothing is submitted again.
         """
         def stop(task):
+            # A pause takes effect when the worker leaves the task; until then it still holds its own
+            # copy of the batch and would write it back over the give-up (review 2026-11-18).
+            is_running = getattr(self._creative_jobs, "is_running", None)
+            if callable(is_running) and is_running(task["id"]):
+                raise ContentEngineError("narrated_batch_stopping", "这条视频还在停下来，请等几秒再放弃。")
             # No error code of our own: a submitted cover keeps the task paused with its own
             # cover_submission_inflight reason. The abandoned batch refuses to run either way.
             if task["status"] == "paused":
@@ -2008,8 +2018,11 @@ class ContentEngineService:
                                      details={"reason": "no_available_location"})
         path = Path(row["absolute_path"])
         if not path.is_file() or has_unsafe_component(path):
-            raise ContentEngineError("asset_path_unavailable", "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。",
-                                     details=missing_file_evidence(path))
+            details = missing_file_evidence(path)
+            message = ("这个素材放在快捷方式或链接文件夹里，软件不能直接读取。请把文件复制到普通文件夹后，在素材库里重新添加。"
+                       if details.get("reason") == "unsafe_path" else
+                       "这个素材的原文件找不到了，可能被移动或删除了。请在素材库里重新添加这个文件。")
+            raise ContentEngineError("asset_path_unavailable", message, details=details)
         return {"asset_id": asset_id, "absolute_path": str(path.resolve(strict=True))}
 
     def create_task(
